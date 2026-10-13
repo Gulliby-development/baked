@@ -93,7 +93,10 @@ test("existing tests need a reason in the plan to be changed, unless the guard o
 /** An executor whose plan creates a test file, and whose first implementation skips a test. */
 class SkippingExecutor extends FixtureExecutor {
   implementations = 0;
-  constructor(private dir: string) {
+  constructor(
+    private dir: string,
+    private always = false,
+  ) {
     super(dir);
   }
   override async execute(request: ExecutionRequest) {
@@ -105,7 +108,7 @@ class SkippingExecutor extends FixtureExecutor {
     }
     if (request.profile.output !== "implementation") return super.execute(request);
     this.implementations++;
-    const first = this.implementations === 1;
+    const first = this.always || this.implementations === 1;
     writeFileSync(join(this.dir, "value.txt"), "ready");
     writeFileSync(join(this.dir, "value.test.ts"), `it${first ? ".skip" : ""}("is ready", () => { expect(read()).toBe("ready"); });\n`);
     return { output: { schemaVersion: 1, taskId: request.task?.id, outcome: "implemented", summary: "Wrote value", evidenceIds: [], unresolved: [] }, inputTokens: 25, outputTokens: 25 };
@@ -130,6 +133,21 @@ test("a task that skips a test gets a finding naming the test, and a repair remo
   // The repair wrote the test without the skip, and the run went on.
   expect(executor.implementations).toBe(2);
   expect((await service.get(run.runId)).status).toBe("completed");
+});
+
+test("a skip that a repair leaves in place is found again at feature scope, and the run does not pass", async () => {
+  const fixture = workflowFixture({ executor: (root) => new SkippingExecutor(root, true) });
+  cleanups.push(fixture.dispose);
+  const { service } = fixture;
+  const run = await fixture.start();
+  await service.drive(run.runId, signal());
+  await fixture.approve(run.runId);
+  await service.drive(run.runId, signal());
+
+  const claims = service.store.findings(run.runId).map((f) => (JSON.parse(f.body_json) as { claim: string }).claim);
+  expect(claims).toContain("Test integrity (skip): the run added 1 skip, only, todo or ignore marker(s) in value.test.ts");
+  expect(service.store.latestArtifact(run.runId, "integrity/run.json")).not.toBeNull();
+  expect((await service.get(run.runId)).status).not.toBe("completed");
 });
 
 test("under testIntegrity warn the finding is only recorded", async () => {

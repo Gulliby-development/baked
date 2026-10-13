@@ -973,9 +973,12 @@ export class WorkflowScheduler {
               break;
             }
             case "checks": {
-              const failed = v2
-                ? await this.runCheckStage(runId, stepId, state, policy, v2, signal)
-                : await this.runChecks(runId, stepId, state, policy, signal);
+              const failed = [
+                ...(v2
+                  ? await this.runCheckStage(runId, stepId, state, policy, v2, signal)
+                  : await this.runChecks(runId, stepId, state, policy, signal)),
+                ...this.runIntegrityFailures(runId, state, policy),
+              ];
               if (failed.length) {
                 repairFindings = { findings: failed, kind: "repair" };
                 advance = false;
@@ -3852,6 +3855,105 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       impact: "The tests no longer verify the behavior the spec requires",
       suggestedFix: integrityFix(finding),
     }));
+  }
+  /**
+   * The test-integrity scan at feature scope: every file the run changed, from its content before
+   * the run to now, so a problem a repair left in place or one spread over several tasks is still
+   * found. Recorded in `integrity/run.json`; under `block` the findings are recorded and repaired
+   * like failed checks.
+   */
+  private runIntegrityFailures(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+  ): Review["findings"] {
+    const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [];
+    if (!tasks.length) return [];
+    const root = runRoot(this.store.workspace, state);
+    const rootId = rootField(this.store.workspace, root).root ?? "";
+    const baseline = new Map<string, string | null>();
+    for (const effect of this.store.effects(runId)) {
+      if (
+        effect.kind !== "file_patch" ||
+        !["applied", "reconciled"].includes(effect.status) ||
+        intentRoot(effect.intent_json) !== rootId
+      )
+        continue;
+      const path = (JSON.parse(effect.intent_json) as { path: string }).path;
+      if (!baseline.has(path)) baseline.set(path, effect.before_hash);
+    }
+    // A change the journal did not see (a check fixer, a tool outside it) is in the task diffs.
+    for (const artifact of this.store.artifacts(runId)) {
+      if (!/^tasks\/[^/]+\/diff\.json$/.test(artifact.logical_path)) continue;
+      const diff = JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+        before?: Record<string, string | null>;
+      };
+      for (const [path, hash] of Object.entries(diff.before ?? {}))
+        if (!baseline.has(path)) baseline.set(path, hash);
+    }
+    const changed = [...baseline.keys()].filter(
+      (path) => fileHash(workspacePath(root, path)) !== baseline.get(path),
+    );
+    if (!changed.length) return [];
+    const read = (path: string): string | null => {
+      const absolute = workspacePath(root, path);
+      if (!existsSync(absolute)) return null;
+      const bytes = readFileSync(absolute);
+      return bytes.length > MAX_INTEGRITY_BYTES ? null : bytes.toString("utf8");
+    };
+    const found = scanTestIntegrity(
+      changed.map((path) => {
+        const hash = baseline.get(path) ?? null;
+        const kept =
+          hash === null ? null : (readKept(this.store, runId, hash)?.toString("utf8") ?? "");
+        return { path, before: kept, after: read(path) };
+      }),
+      {
+        reasoned: new Set(
+          tasks.flatMap((t) => t.writes.filter((w) => w.reason).map((w) => w.path)),
+        ),
+        specText: `${state.spec ? canonical(state.spec) : ""}\n${state.plan ?? ""}`,
+      },
+    );
+    if (!found.length) return [];
+    const mode = testIntegrityOf(policy);
+    const evidenceId = this.store.transaction(() => {
+      const artifact = this.store.artifact(
+        runId,
+        "diagnostic",
+        "integrity/run.json",
+        canonical({ mode, findings: found }),
+      );
+      return this.store.addEvidence(runId, "diff", state.snapshotId ?? "", artifact.id);
+    });
+    if (mode === "warn") return [];
+    const failures = found.flatMap((finding) => {
+      const owner = tasks.findLast((t) => t.writes.some((w) => w.path === finding.path));
+      if (!owner) return [];
+      return [
+        {
+          id: newId(),
+          kind: "correctness" as const,
+          severity: "high" as const,
+          requirementIds: owner.requirementIds,
+          criterionIds: owner.criterionIds,
+          file: finding.path,
+          symbol: null,
+          evidenceIds: [evidenceId],
+          claim: `Test integrity (${finding.rule}): the run ${finding.detail} in ${finding.path}`,
+          impact: "The tests no longer verify the behavior the spec requires",
+          suggestedFix: integrityFix(finding),
+        },
+      ];
+    });
+    if (!failures.length) return [];
+    return this.recordFindings(runId, {
+      schemaVersion: 1,
+      snapshotHash: state.workspaceHash ?? "",
+      verdict: "changes_requested",
+      coverage: [],
+      findings: failures,
+    });
   }
   /**
    * A task reported that the spec and the tests cannot both hold. It stops without fitting the
