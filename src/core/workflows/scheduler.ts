@@ -37,6 +37,14 @@ import {
 } from "../verification/evidence.js";
 import { findingBlocks, fingerprint, requiresSecurityReview } from "../verification/findings.js";
 import {
+  type BaselineCount,
+  baselineRegression,
+  CHECK_BASELINE_PATH,
+  commandKey,
+  outputCounts,
+  TEST_FILE,
+} from "../verification/output-counts.js";
+import {
   missingReproAdvice,
   type ReproOutcome,
   reproAllows,
@@ -978,6 +986,7 @@ export class WorkflowScheduler {
                 advance = false;
                 break;
               }
+              await this.recordCheckBaseline(runId, state, policy, signal);
               if (policy.maxConcurrentWriters > 1 && state.worktree)
                 await this.implementParallel(runId, stepId, state, policy, profiles, signal);
               else await this.implement(runId, stepId, state, policy, profiles, signal);
@@ -1615,6 +1624,66 @@ export class WorkflowScheduler {
       ),
     );
     return split;
+  }
+  /**
+   * Before the first task of an update run, runs each feature check once on the code the run starts
+   * from and stores the counts its output reports (a linter's diagnostics, a test runner's tests)
+   * as `facts/check-baseline.json`. The checks stage compares the same commands with it.
+   * Nothing is measured for a scaffold, after a task has started, or for output no parser reads.
+   */
+  private async recordCheckBaseline(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (this.store.latestArtifact(runId, CHECK_BASELINE_PATH)) return;
+    const feature = policy.checks.filter((check) => check.scope === "feature");
+    if (!feature.length || this.baselineScaffold(runId, state)) return;
+    const fresh = this.store.tasks(runId).every((task) => task.status === "pending");
+    const counts: Record<string, BaselineCount[]> = {};
+    if (fresh)
+      for (const check of feature) {
+        const result = await this.checks.measure(
+          check,
+          signal,
+          runRoot(this.store.workspace, state),
+        );
+        if (result.truncated || result.status === "inconclusive") continue;
+        const found = outputCounts(result.output, result.status === "passed");
+        if (found.length) counts[commandKey(check)] = found;
+      }
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "facts",
+        CHECK_BASELINE_PATH,
+        canonical({ schemaVersion: 1, measured: fresh, counts }),
+      ),
+    );
+  }
+  /** What a passing required check fell behind the baseline by, as a failure reason; else null. */
+  private checkRegression(
+    runId: string,
+    state: RuntimeState,
+    check: Check,
+    output: string,
+  ): string | null {
+    const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
+    if (!artifact) return null;
+    const baseline = (
+      JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+        counts?: Record<string, BaselineCount[]>;
+      }
+    ).counts?.[commandKey(check)];
+    if (!baseline?.length) return null;
+    const deletesTests = (state.graph?.tasks ?? []).some((task) =>
+      task.writes.some((w) => w.action === "delete" && TEST_FILE.test(w.path)),
+    );
+    const regressions = baseline.flatMap(
+      (count) => baselineRegression(count, output, deletesTests) ?? [],
+    );
+    return regressions.length ? regressions.join("; ") : null;
   }
   /** Whether the workspace the run started from held no source files (empty or a scaffold). */
   private baselineScaffold(runId: string, state: RuntimeState): boolean {
@@ -4052,9 +4121,13 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         runRoot(this.store.workspace, state),
       );
       this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
-      if (result.status === "passed") passedIds.push(check.id);
+      const regression =
+        result.status === "passed" && check.required
+          ? this.checkRegression(runId, state, check, result.output)
+          : null;
+      if (result.status === "passed" && !regression) passedIds.push(check.id);
       if (result.status === "inconclusive" && check.required) inconclusive ??= check.id;
-      if (result.status === "failed" && check.required) {
+      if ((result.status === "failed" || regression) && check.required) {
         failedIds.push(check.id);
         const task =
           state.graph?.tasks.find((t) => t.checkIds.includes(check.id)) ?? state.graph?.tasks[0];
@@ -4067,7 +4140,9 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
             result.output,
             (state.rootGraph ?? state.graph)?.tasks ?? [],
             task,
-            `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
+            regression
+              ? `The check passed but ${regression} (evidence ${result.evidenceId}).`
+              : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
             newId,
           ),
         );
@@ -4680,8 +4755,12 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         attempts: result.attempts,
         flaky: result.flaky,
       });
-      if (result.status === "passed") passedIds.push(check.id);
-      if (!check.required || result.status === "passed") continue;
+      const regression =
+        result.status === "passed" && check.required
+          ? this.checkRegression(runId, state, check, result.output ?? "")
+          : null;
+      if (result.status === "passed" && !regression) passedIds.push(check.id);
+      if (!check.required || (result.status === "passed" && !regression)) continue;
       if (result.status === "inconclusive") {
         inconclusive ??= check.id;
         continue;
@@ -4703,7 +4782,9 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           fallback,
           result.reason
             ? `${result.reason}: restore the approved test or promote a new one (evidence ${result.evidenceId}).`
-            : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
+            : regression
+              ? `The check passed but ${regression} (evidence ${result.evidenceId}).`
+              : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
           newId,
         ),
       );
