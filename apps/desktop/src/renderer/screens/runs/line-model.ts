@@ -349,7 +349,9 @@ export function handoff(
 ): Handoff | null {
   if (before.length !== after.length) return null;
   const moving = (s: Station): boolean => s.state === "current" || s.state === "waiting";
-  const was = before.findIndex(moving);
+  // A loop restarts an earlier stage after the stage that failed, or asked for changes, stopped.
+  const working = before.findIndex(moving);
+  const was = working >= 0 ? working : before.findIndex((s) => s.state === "failed");
   const now = after.findIndex(moving);
   if (now >= 0 && was >= 0 && now < was) {
     const loop = loops.find((l) => l.from === after[was]?.id && l.to === after[now]?.id);
