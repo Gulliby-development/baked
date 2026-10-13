@@ -532,6 +532,7 @@ export class NativeWorkflowService implements WorkflowService {
         new NativeAgentExecutor(this.store, leases, this.config, this.rootContext),
     );
     lane.browserDriver = this.scheduler.browserDriver;
+    lane.waitClock = this.scheduler.waitClock;
     return lane;
   }
   async pause(runId: string, command: CommandIdentity): Promise<RunSnapshot> {
