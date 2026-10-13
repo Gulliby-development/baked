@@ -1282,6 +1282,8 @@ export const EventSchema = z.discriminatedUnion("type", [
           tool: z.string().max(128),
           status: z.enum(["ok", "error", "deadline"]),
           durationMs: z.number().int().nonnegative(),
+          /** Size of the JSON result handed back to the model, which later steps resend. */
+          resultBytes: z.number().int().nonnegative().optional(),
         })
         .strict(),
     })
