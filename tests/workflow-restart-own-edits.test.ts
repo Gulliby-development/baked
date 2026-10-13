@@ -100,3 +100,57 @@ test("a restarted task creates again the file its earlier attempt created when t
   expect(errors).toEqual([]);
   expect(readFileSync(file, "utf8")).toBe("ready, edited");
 });
+
+test("a restarted task edits its file when the rebuilt worktree holds an earlier state of its own writes", async () => {
+  // Bench R17 (#991): after repeated invalidations or a second worker loss the rebuilt worktree
+  // held a state the task's own lineage wrote in between (the integrated file, or the first
+  // attempt's content). It was neither the last journaled hash nor the hash before the first
+  // write, so every edit was refused as a change made outside the attempt.
+  const fixture = workflowFixture({ policy: { ...fixturePolicy, clarification: "assume" } });
+  cleanups.push(fixture.dispose);
+  const { service, executor, root } = fixture;
+  const file = join(root, "props.txt");
+  const errors: string[] = [];
+  let attempts = 0;
+  const original = executor.execute.bind(executor);
+  executor.execute = async (request: ExecutionRequest) => {
+    if (request.profile.output !== "implementation") {
+      const out = await original(request);
+      if (request.profile.output === "plan") {
+        const plan = out.output as { taskGraph: { tasks: { writes: { path: string; action: string }[] }[] } };
+        plan.taskGraph.tasks[0]?.writes.unshift({ path: "props.txt", action: "create" });
+      }
+      return out;
+    }
+    attempts++;
+    // The rebuilt worktree of the restart holds the first write's content, not the last.
+    if (attempts === 2) writeFileSync(file, "first");
+    const policy = JSON.parse(service.store.run(request.runId).policy_json) as RunPolicy;
+    const guard = new WorkflowToolPolicy(service.store, service.leases, request.runId, request.attemptId, request.profile, policy, request.task);
+    try {
+      if (attempts === 1) {
+        await guard.execute("edit_file", { path: "props.txt" }, async () => writeFileSync(file, "first"));
+        await guard.execute("edit_file", { path: "props.txt" }, async () => writeFileSync(file, "second"));
+      } else {
+        await guard.execute("edit_file", { path: "props.txt" }, async () => writeFileSync(file, "ready"));
+        await guard.execute("edit_file", { path: "props.txt" }, async () => writeFileSync(file, "ready, edited"));
+        await guard.execute("edit_file", { path: "value.txt" }, async () => writeFileSync(join(root, "value.txt"), "ready"));
+      }
+    } catch (error) {
+      errors.push((error as Error).message);
+    }
+    return {
+      output: { schemaVersion: 1, taskId: request.task?.id, outcome: attempts === 1 ? "blocked" : "implemented", summary: attempts === 1 ? "Ran out of steps" : "Wrote value", evidenceIds: [], unresolved: attempts === 1 ? ["value is a draft"] : [] },
+      inputTokens: 25,
+      outputTokens: 25,
+    };
+  };
+  const run = await fixture.start();
+  await service.drive(run.runId, signal());
+  await fixture.approve(run.runId);
+  await fixture.resume(run.runId);
+  await service.drive(run.runId, signal());
+  expect(attempts).toBe(2);
+  expect(errors).toEqual([]);
+  expect(readFileSync(file, "utf8")).toBe("ready, edited");
+});
