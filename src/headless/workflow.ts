@@ -20,6 +20,11 @@ import type { PullRequestProvider } from "../core/workflows/delivery-provider.js
 import { preRunEstimate, runDoctor } from "../core/workflows/doctor.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
 import { uniqueFeatureId } from "../core/workflows/feature-id.js";
+import {
+  fixChecksRequest,
+  followPullRequest,
+  pullRequestChecks,
+} from "../core/workflows/follow.js";
 import { issueStart } from "../core/workflows/issue-source.js";
 import { describeProposal, presetChoice } from "../core/workflows/preset-router.js";
 import {
@@ -647,6 +652,46 @@ export async function executeWorkflowCommand(
       return {
         ...prepared,
         next: `baked workflow approve ${runId} --request ${prepared.requestId} --digest ${prepared.digest} --expected-revision ${prepared.revision}`,
+      };
+    }
+    case "follow": {
+      const provider = options.pullRequests === undefined ? {} : { provider: options.pullRequests };
+      const read = args.flags.once
+        ? await pullRequestChecks(
+            service.store,
+            service.config,
+            runId,
+            ...(options.pullRequests === undefined ? [] : [options.pullRequests]),
+          )
+        : await followPullRequest(service.store, service.config, runId, {
+            ...(typeof args.flags.interval === "string"
+              ? { intervalSeconds: Number(args.flags.interval) }
+              : {}),
+            ...(typeof args.flags.timeout === "string"
+              ? { timeoutMinutes: Number(args.flags.timeout) }
+              : {}),
+            signal,
+            ...provider,
+          });
+      if (read.state !== "failed") return read;
+      const fix = fixChecksRequest(service.store, read);
+      // Without --fix the request of the fix run is returned for the caller to start.
+      if (!args.flags.fix) return { ...read, fix };
+      const fixRun = (await executeWorkflowCommand(
+        service,
+        {
+          command: "run",
+          positional: [],
+          flags: { workflow: fix.workflowId, feature: fix.featureId, prompt: fix.prompt },
+        },
+        signal,
+        onDrive,
+        options,
+      )) as { runId?: string };
+      return {
+        ...read,
+        fixRun,
+        next: `baked workflow deliver ${fixRun.runId ?? "FIX_RUN_ID"} --follow-up ${runId}`,
       };
     }
     case "discard-worktree":

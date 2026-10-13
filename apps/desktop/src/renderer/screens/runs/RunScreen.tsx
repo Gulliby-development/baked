@@ -42,6 +42,7 @@ import {
 import { type RunData, useRun } from "./load.js";
 import { RunMaintenance } from "./Maintenance.js";
 import { clock, duration, pipeline, type RunTrace, taskCount } from "./model.js";
+import { PullRequestPanel } from "./PullRequestPanel.js";
 import { Meter, Panel, StatusPill, TONE_TEXT } from "./parts.js";
 import { ReportView } from "./ReportView.js";
 import {
@@ -860,6 +861,7 @@ function RunBody({
       />
       {undone && <UndoReport report={undone.report} onClose={() => setUndone(null)} />}
       {(run.status === "blocked" || run.status === "failed") && <StopNote run={run} />}
+      {run.status === "completed" && <PullRequestPanel projectKey={projectKey} runId={run.runId} />}
       {pending.length > 0 && (
         <section aria-label="Your part" className="flex flex-col gap-3">
           {pending.map((r) => (
