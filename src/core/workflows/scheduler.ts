@@ -278,6 +278,7 @@ import {
   accountRefusal,
   endedOnProse,
   isCapacityError,
+  isInputTooLarge,
   isTransient,
   reportsLostTool,
   retryAfterMs,
@@ -2888,11 +2889,45 @@ export class WorkflowScheduler {
       // A model that keeps failing, or whose window cannot hold the prompt, hands the step to the
       // next model of its route. Nothing is handed over once the attempt has changed files.
       const windowTooSmall =
-        error instanceof WorkflowFault &&
-        error.code === "BUDGET_EXHAUSTED" &&
-        error.details.reason === "context_window";
+        (error instanceof WorkflowFault &&
+          error.code === "BUDGET_EXHAUSTED" &&
+          error.details.reason === "context_window") ||
+        isInputTooLarge(error);
       if (next !== undefined && !signal.aborted && !wrote && (isTransient(error) || windowTooSmall))
         return again(0, fallbackIndex + 1, placement.primaryError ?? error);
+      // A request too large for the provider is an error of the prompt, not a lost worker: a
+      // restart on the same history failed the same way (#997). One fresh session, which does
+      // not carry that history, is tried; then the step stops for the size.
+      if (isInputTooLarge(error) && !signal.aborted) {
+        if (!placement.stepRetry && !wrote)
+          return this.call(
+            runId,
+            stepId,
+            state,
+            policy,
+            stageProfile,
+            extra,
+            signal,
+            task,
+            0,
+            validate,
+            limits,
+            hostTools,
+            {
+              ...(placement.root ? { root: placement.root } : {}),
+              ...(fallbackIndex ? { fallbackIndex } : {}),
+              ...(placement.primaryError !== undefined
+                ? { primaryError: placement.primaryError }
+                : {}),
+              stepRetry: true,
+            },
+          );
+        throw new WorkflowFault(
+          "BUDGET_EXHAUSTED",
+          `The model input exceeded the limit of ${profile.model}: ${error instanceof Error ? error.message : String(error)}`,
+          { reason: "context_window" },
+        );
+      }
       if (placement.primaryError !== undefined && !signal.aborted) {
         const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
         throw new WorkflowFault(

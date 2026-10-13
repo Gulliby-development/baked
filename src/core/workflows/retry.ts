@@ -61,6 +61,23 @@ export function isCapacityError(error: unknown): boolean {
 export const CAPACITY_RETRIES = 4;
 const CAPACITY_WAITS_MS = [5_000, 15_000, 45_000, 90_000];
 
+const INPUT_TOO_LARGE =
+  /input_too_large|input exceeds the maximum length|prompt is too long|context_length_exceeded|maximum context length|request too large/i;
+
+/**
+ * The provider refused the request for its size: the codex app-server's `input_too_large`
+ * ("Input exceeds the maximum length of 1048576 characters"), a context-length error, or a 413.
+ * It is an error of the prompt, not of the provider: the same history fails the same way (#997).
+ */
+export function isInputTooLarge(error: unknown): boolean {
+  if (error instanceof WorkflowFault) return false;
+  const info = error as ProviderError | undefined;
+  return (
+    info?.statusCode === 413 ||
+    INPUT_TOO_LARGE.test(`${info?.message ?? ""} ${info?.responseBody ?? ""}`)
+  );
+}
+
 /** A provider failure worth trying again: a timeout, rate limit, overload or network error. */
 export function isTransient(error: unknown): boolean {
   if (error instanceof WorkflowFault || accountRefusal(error)) return false;

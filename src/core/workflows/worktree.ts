@@ -16,7 +16,7 @@ import {
   symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { canonical } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { git, gitMode, internalPath, looksSecret, statusPaths } from "./delivery-git.js";
@@ -72,6 +72,26 @@ async function required(
       { reason: "worktree_failed" },
     );
   return result.stdout.trim();
+}
+
+/** The last `git worktree` command started for each repository; see `worktreeCommand`. */
+const worktreeCommands = new Map<string, Promise<unknown>>();
+
+/**
+ * Runs `git worktree add`, `remove` or `prune` steps for a repository one at a time in this
+ * process. Git does not guard `.git/worktrees` against concurrent commands: `add` reads every
+ * entry, so one that another `add` is still creating fails it with "failed to read
+ * .git/worktrees/main/commondir". Parallel runs and parallel task writers create worktrees at once.
+ */
+function worktreeCommand<T>(workspace: string, command: () => Promise<T>): Promise<T> {
+  const key = resolve(workspace);
+  const result = (worktreeCommands.get(key) ?? Promise.resolve()).then(command, command);
+  const tail = result.catch(() => undefined);
+  worktreeCommands.set(key, tail);
+  void tail.then(() => {
+    if (worktreeCommands.get(key) === tail) worktreeCommands.delete(key);
+  });
+  return result;
 }
 
 /**
@@ -193,16 +213,18 @@ export async function ensureRunWorktree(
   // A branch from an interrupted creation has no commit of its own yet: its tip is the baseline.
   const baseHead = existing || start;
   if (!existsSync(join(absolute, ".git"))) {
-    await git(workspace, ["worktree", "prune"]);
     mkdirSync(dirname(absolute), { recursive: true });
     const hooks = join(workspace, ".baked", "no-hooks");
-    await required(workspace, [
-      "-c",
-      `core.hooksPath=${hooks}`,
-      "worktree",
-      "add",
-      ...(existing ? [absolute, branch] : ["-b", branch, absolute, baseHead]),
-    ]);
+    await worktreeCommand(workspace, async () => {
+      await git(workspace, ["worktree", "prune"]);
+      await required(workspace, [
+        "-c",
+        `core.hooksPath=${hooks}`,
+        "worktree",
+        "add",
+        ...(existing ? [absolute, branch] : ["-b", branch, absolute, baseHead]),
+      ]);
+    });
   }
   linkDependencies(workspace, absolute);
   const worktree: WorktreeState = {
@@ -322,16 +344,18 @@ export async function createTaskWorktree(
   const absolute = join(workspace, path);
   mkdirSync(dirname(absolute), { recursive: true });
   const hooks = join(workspace, ".baked", "no-hooks");
-  await required(workspace, [
-    ...BYTE_EXACT,
-    "-c",
-    `core.hooksPath=${hooks}`,
-    "worktree",
-    "add",
-    "--detach",
-    absolute,
-    base,
-  ]);
+  await worktreeCommand(workspace, () =>
+    required(workspace, [
+      ...BYTE_EXACT,
+      "-c",
+      `core.hooksPath=${hooks}`,
+      "worktree",
+      "add",
+      "--detach",
+      absolute,
+      base,
+    ]),
+  );
   linkDependencies(workspace, absolute);
   const source = store.state(runId).worktree;
   if (source) alignTaskFiles(join(workspace, source.path), absolute, files);
@@ -452,9 +476,11 @@ export async function removeTaskWorktree(
   purgeWorktreeTrash(workspace);
   await (options.stopHolders ?? stopHolders)(absolute);
   if (existsSync(join(absolute, ".git")))
-    await git(workspace, ["worktree", "remove", "--force", absolute]);
+    await worktreeCommand(workspace, () =>
+      git(workspace, ["worktree", "remove", "--force", absolute]),
+    );
   const locked = await removeDirectory(absolute, options);
-  await git(workspace, ["worktree", "prune"]);
+  await worktreeCommand(workspace, () => git(workspace, ["worktree", "prune"]));
   if (!locked) return { removed: true };
   if (moveAside(workspace, absolute)) return { removed: true, movedAside: true };
   return { removed: false, warning: `${path} stays on disk: ${locked.message}` };
@@ -565,8 +591,11 @@ export async function removeRunWorktree(
     for (const entry of readdirSync(runDirectory))
       if (join(runDirectory, entry) !== absolute)
         await removeTaskWorktree(workspace, join(dirname(worktree.path), entry));
-  if (existsSync(absolute)) await required(workspace, ["worktree", "remove", "--force", absolute]);
-  await git(workspace, ["worktree", "prune"]);
+  if (existsSync(absolute))
+    await worktreeCommand(workspace, () =>
+      required(workspace, ["worktree", "remove", "--force", absolute]),
+    );
+  await worktreeCommand(workspace, () => git(workspace, ["worktree", "prune"]));
   const runRoot = join(workspace, ".baked", "worktrees", runId);
   await stopHolders(runRoot);
   let left = await removeDirectory(runRoot);

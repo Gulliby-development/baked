@@ -11,6 +11,7 @@ import { type TestIntegrityMode, testIntegrityOf } from "../../core/workflows/te
 import {
   type BudgetPresetId,
   clampWriters,
+  costCapInput,
   executionRequest,
   initialExecution,
   type StartRunInput,
@@ -34,6 +35,7 @@ const FIELDS = [
   "feature",
   "workflow",
   "budget",
+  "cost",
   "execution",
   "writers",
   "clarification",
@@ -76,6 +78,8 @@ export function NewRunForm({
   const [workflow, setWorkflow] = useState<string | null>(initialWorkflow);
   // Null follows the proposal from the request until the person picks a budget.
   const [budgetPick, setBudget] = useState<BudgetPresetId | null>(null);
+  // Empty keeps the policy's cost cap (`maxCostUsd`); a number caps this run in US dollars.
+  const [costText, setCostText] = useState("");
   // Null follows the chosen workflow's own execution mode; a toggle overrides it.
   const [worktreeOverride, setWorktreeOverride] = useState<boolean | null>(null);
   const [writers, setWriters] = useState<number | null>(null);
@@ -113,12 +117,15 @@ export function NewRunForm({
   const worktreeRefusal = execution.worktree ? (definition?.worktreeRefusal ?? null) : null;
   // With an issue and no feature typed, the core names the feature after the issue.
   const sentFeature = fromIssue && !featureTouched ? "" : feature;
+  const costCap = costCapInput(costText);
+  const policyCap = info?.policy.maxCostUsd ?? null;
   const problems = [
     !prompt.trim() && !fromIssue && "Describe the feature or give a GitHub issue",
     (sentFeature || !fromIssue) &&
       !isFeatureId(sentFeature) &&
       "Feature ID: letters, digits, - and _ only",
     modelMissing && "Select a model (Esc, then Ctrl+L)",
+    costCap === null && "Cost cap: a positive number of US dollars, or empty",
     worktreeRefusal,
   ].filter((p): p is string => typeof p === "string");
   // The writer count applies only to worktree execution, so navigation skips it otherwise.
@@ -149,6 +156,7 @@ export function NewRunForm({
         testIntegrity,
         ...(proposal ? { autoPreset: true } : {}),
         ...(strict ? { modelStrict: true } : {}),
+        ...(typeof costCap === "number" ? { maxCostUsd: costCap } : {}),
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -311,6 +319,21 @@ export function NewRunForm({
             keyHint="←/→"
           />
         </FocusTarget>
+        <text fg={focus === "cost" ? t.brand : t.textMuted}>
+          {"Cost cap in US dollars (optional; the token budget still applies)"}
+        </text>
+        <box {...box(focus === "cost")}>
+          <input
+            value={costText}
+            onInput={setCostText}
+            onSubmit={() => move(1)}
+            placeholder={
+              policyCap !== null ? `the policy's $${policyCap}` : "none: only the token budget"
+            }
+            focused={active && focus === "cost"}
+            backgroundColor={t.bgPopup}
+          />
+        </box>
         <FocusTarget active={focus === "execution"}>
           <Field
             label="Mode"

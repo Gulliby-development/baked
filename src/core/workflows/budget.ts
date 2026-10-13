@@ -140,6 +140,18 @@ export function routedModels(routing: RoutingRecord): string[] {
 }
 
 /**
+ * The dollar cap a run starts with: the one it asked for (`--max-cost-usd`), the policy's own,
+ * then the `runBudget.maxCostUsd` setting; null when none is set.
+ */
+export function startCostCap(
+  requested: number | undefined,
+  policy: Pick<RunPolicy, "maxCostUsd">,
+  config: { runBudget?: { maxCostUsd?: number } },
+): number | null {
+  return requested ?? policy.maxCostUsd ?? config.runBudget?.maxCostUsd ?? null;
+}
+
+/**
  * A dollar cap (`maxCostUsd`) holds only when every model the run can call has a price in the
  * shared price table; a model without one would spend outside the cap, so the run is refused.
  */

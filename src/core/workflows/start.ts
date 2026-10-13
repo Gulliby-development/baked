@@ -12,7 +12,7 @@ import {
   stricterSandboxMode,
 } from "../security/sandbox.js";
 import { hashBytes, hashJson } from "../specs/hash.js";
-import { assertCostCapPriced } from "./budget.js";
+import { assertCostCapPriced, startCostCap } from "./budget.js";
 import { validateChecks } from "./check-policy.js";
 import { frozenInstructions } from "./context.js";
 import { WorkflowFault } from "./errors.js";
@@ -113,6 +113,7 @@ export async function prepareStart(
     | "executionMode"
     | "sandbox"
     | "maxConcurrentWriters"
+    | "maxCostUsd"
     | "candidates"
     | "clarification"
     | "testIntegrity"
@@ -316,6 +317,7 @@ export async function prepareStart(
     ...(request.maxConcurrentWriters !== undefined
       ? { maxConcurrentWriters: request.maxConcurrentWriters }
       : {}),
+    maxCostUsd: startCostCap(request.maxCostUsd, rest, config),
     ...(candidates > 1 ? { candidates } : {}),
   });
   const writers = writerPolicyProblem(policy);

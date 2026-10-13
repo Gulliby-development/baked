@@ -30,6 +30,12 @@ const MAX_THREADS = 16;
 const LATE_USAGE_WAIT_MS = 500;
 /** How long a dropped thread is listened to when Codex never confirms that its turn ended. */
 const RETIRED_THREAD_MS = 120_000;
+/** The app-server refuses a turn input or tool result above this many characters (`input_too_large`). */
+export const CODEX_MAX_INPUT_CHARS = 1_048_576;
+/** What one input may use; the rest is headroom for what the app-server wraps around it. */
+const INPUT_BUDGET = Math.floor(CODEX_MAX_INPUT_CHARS * 0.9);
+/** A tool result shrunk to fit keeps at least this much of its head and tail. */
+const MIN_RESULT_CHARS = 4_000;
 
 const ADAPTER_PREAMBLE = [
   "You are the language model behind baked, a coding agent that runs on the user's machine.",
@@ -153,6 +159,47 @@ export function renderCodexNativeInput(messages: PromptMessage[], stepNote: stri
         "Continue from the last message.",
       ].join("\n");
   return stepNote ? `${body}\n\n${stepNote}` : body;
+}
+
+/**
+ * `text` cut in the middle to at most `limit` characters, with a note of what was left out: an
+ * input above the app-server's limit fails the turn, and every restart repeated it (#997).
+ */
+export function boundInputText(text: string, limit = INPUT_BUDGET): string {
+  if (text.length <= limit) return text;
+  const note = `\n\n[${text.length - limit} characters elided: the input exceeded the ${CODEX_MAX_INPUT_CHARS}-character limit of the model's input. Ask for a narrower range or a shorter output if the elided part is needed.]\n\n`;
+  const keep = Math.max(0, limit - note.length);
+  const head = Math.ceil(keep / 2);
+  return `${text.slice(0, head)}${note}${text.slice(text.length - (keep - head))}`;
+}
+
+/**
+ * A turn's input within `limit`: tool results are shrunk oldest first, then the whole text is
+ * cut if the rest alone is too large.
+ */
+export function boundCodexNativeInput(
+  messages: PromptMessage[],
+  stepNote: string,
+  limit = INPUT_BUDGET,
+): string {
+  let text = renderCodexNativeInput(messages, stepNote);
+  let current = messages;
+  for (const [index, message] of messages.entries()) {
+    if (text.length <= limit) return text;
+    if (message.role !== "tool") continue;
+    let excess = text.length - limit;
+    const content = message.content.map((part) => {
+      if (part.type !== "tool-result") return part;
+      const rendered = renderToolResult(part);
+      if (excess <= 0 || rendered.length <= MIN_RESULT_CHARS) return part;
+      const value = boundInputText(rendered, Math.max(MIN_RESULT_CHARS, rendered.length - excess));
+      excess -= rendered.length - value.length;
+      return { ...part, output: { type: "text" as const, value } };
+    });
+    current = current.map((m, i) => (i === index ? { ...message, content } : m));
+    text = renderCodexNativeInput(current, stepNote);
+  }
+  return boundInputText(text, limit);
 }
 
 interface StepSink {
@@ -375,11 +422,18 @@ export class CodexAppServerSessions {
           // Messages BAKED appended after the result ride along with it; a new turn would need the
           // pending call dropped, and with it the thread and the response's usage report (#820).
           const appended = startedPlan.appended.length
-            ? [{ type: "inputText", text: renderCodexNativeInput(startedPlan.appended, "") }]
+            ? [{ type: "inputText", text: boundCodexNativeInput(startedPlan.appended, "") }]
             : [];
+          const room = INPUT_BUDGET - (appended[0]?.text.length ?? 0);
           connection.respond(pending.requestId, {
             contentItems: [
-              { type: "inputText", text: renderToolResult(startedPlan.result) },
+              {
+                type: "inputText",
+                text: boundInputText(
+                  renderToolResult(startedPlan.result),
+                  Math.max(MIN_RESULT_CHARS, room),
+                ),
+              },
               ...appended,
             ],
             success: !output.type.startsWith("error"),
@@ -526,7 +580,7 @@ export class CodexAppServerSessions {
     fromIndex: number,
   ): void {
     const messages = request.conversation.slice(fromIndex);
-    const text = renderCodexNativeInput(
+    const text = boundCodexNativeInput(
       messages.length > 0
         ? messages
         : [{ role: "user", content: [{ type: "text", text: "Begin." }] }],
