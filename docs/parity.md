@@ -126,6 +126,7 @@ bun test tests/feature-parity.test.ts
 | Duplication and dead-code ratchet | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | Anti-slop rule pack on the lines a run adds | `/code-quality`, `/workflow` | Not needed: rule choices and ast-grep files live in quality of config.json; baked workflow report shows the findings | `/v1/settings`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | New dependencies looked up before checks; Semgrep on the run's diff | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
+| Docs for the locked library versions a task uses | **Gap** [#763](https://github.com/Gulliby-development/baked/issues/763) | `baked workflow doctor` | **Gap** [#763](https://github.com/Gulliby-development/baked/issues/763) | **Gap** [#763](https://github.com/Gulliby-development/baked/issues/763) |
 | Mutation gate on the lines a run added | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | Property-based tests from marked acceptance criteria | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | Harden preset: strengthen the tests of existing code | `/workflow` | `baked workflow run` | `/v1/workflow/runs`, `/v1/workflow/definitions` | `project/overview` |
@@ -178,5 +179,6 @@ bun test tests/feature-parity.test.ts
 
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
 - [#533](https://github.com/Gulliby-development/baked/issues/533): Gates on the run's line: what each does, blocks or advises, last result
+- [#763](https://github.com/Gulliby-development/baked/issues/763): Docs for the locked library versions a task uses
 
 <!-- parity:end -->

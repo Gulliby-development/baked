@@ -775,6 +775,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/chat: Code quality page"],
   },
   {
+    id: "library-docs",
+    group: "Workflow runs",
+    title: "Docs for the locked library versions a task uses",
+    tui: gap(763),
+    cli: ["baked workflow doctor: libraryDocs in config.json"],
+    api: gap(763),
+    desktop: gap(763),
+  },
+  {
     id: "mutation-gate",
     group: "Workflow runs",
     title: "Mutation gate on the lines a run added",

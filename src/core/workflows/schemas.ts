@@ -1,5 +1,6 @@
 /** Workflow v1 contracts. */
 import { z } from "zod";
+import { LibraryDocsSchema } from "./library-docs.js";
 
 export const SafeId = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/);
 export const Hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -231,6 +232,12 @@ export const PolicySchema = z
      * `editDiagnostics` setting when the policy does not name it (start.ts).
      */
     editDiagnostics: z.enum(["feedback", "reject"]).optional(),
+    /**
+     * Where implementers get docs for the locked versions of the libraries a task uses (#741):
+     * the configured `libraryDocs` source, frozen at start. Absent means no docs, so stored
+     * policies keep their hash.
+     */
+    libraryDocs: LibraryDocsSchema.optional(),
     allowedTools: UniqueStrings,
     network: z.enum(["deny", "ask", "allow"]),
     checks: z.array(CheckSchema),
