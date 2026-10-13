@@ -292,6 +292,8 @@ const ctx = createWorkerHandler(
         const paused = await runtime.get(id);
         await runtime.resume(id, { commandId: newId(), expectedRevision: paused.revision });
       } else if (input === "resume") await runtime.resume(id, command);
+      else if (input === "accept-workspace")
+        await runtime.resume(id, command, { acceptWorkspace: true });
       else await runtime.decide(id, command, DecisionSchema.parse(input));
       const state = await runtime.get(id);
       if (
@@ -303,6 +305,10 @@ const ctx = createWorkerHandler(
       )
         return runtime.drive(id, new AbortController().signal);
       return state;
+    },
+    // The files a person changed outside the run, for the "accept changes" confirmation.
+    async outsideChanges(runId) {
+      return current().outsideChanges(SafeId.parse(runId));
     },
     // Undo never drives: the run stays where it stopped, and the report says what changed.
     async undo(runId) {

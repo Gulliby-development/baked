@@ -194,6 +194,7 @@ export interface RunAction {
   label: string;
   action:
     | "resume"
+    | "accept-workspace"
     | "pause"
     | "cancel"
     | "fork"
@@ -258,6 +259,9 @@ export function runActions(
       label: s === "created" ? "start" : s === "blocked" ? "retry" : "resume",
       action: "resume",
     });
+  // Keeps the files a person changed outside the run instead of restoring them.
+  if (s === "blocked" && snapshot.reason === "input_changed")
+    actions.push({ key: "A", label: "accept changes", action: "accept-workspace" });
   if (s === "running") actions.push({ key: "P", label: "pause", action: "pause" });
   if (s === "blocked" && snapshot.reason === "budget_exhausted" && (!budget || canExtend(budget)))
     actions.push({ key: "B", label: "raise limits", action: "extend" });

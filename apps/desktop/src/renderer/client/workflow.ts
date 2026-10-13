@@ -66,8 +66,16 @@ export const workflow = {
       requestId,
       answers,
     }),
-  resume: (key: string, run: Pick<RunSnapshot, "runId" | "revision">) =>
-    call<RunSnapshot>(key, "POST", runPath(run.runId, "resume"), command(run)),
+  /** `acceptWorkspace` keeps the files a person changed outside a run blocked on `input_changed`. */
+  resume: (
+    key: string,
+    run: Pick<RunSnapshot, "runId" | "revision">,
+    options: { acceptWorkspace?: boolean } = {},
+  ) =>
+    call<RunSnapshot>(key, "POST", runPath(run.runId, "resume"), {
+      ...command(run),
+      ...(options.acceptWorkspace ? { acceptWorkspace: true } : {}),
+    }),
   pause: (key: string, run: Pick<RunSnapshot, "runId" | "revision">) =>
     call<RunSnapshot>(key, "POST", runPath(run.runId, "pause"), command(run)),
   cancel: (key: string, run: Pick<RunSnapshot, "runId" | "revision">) =>

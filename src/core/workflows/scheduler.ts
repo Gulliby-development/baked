@@ -2585,9 +2585,14 @@ export class WorkflowScheduler {
         this.store.transaction(() =>
           this.store.invalidateEvidence(runId, state.snapshotId ?? "", "source_changed"),
         );
+      const outside = differing.filter(
+        (path) => runWrittenHash(this.store, runId, path) !== (files[path] ?? null),
+      );
+      const listed = `${outside.slice(0, 10).join(", ")}${outside.length > 10 ? `, and ${String(outside.length - 10)} more` : ""}`;
       throw new WorkflowFault(
         "INPUT_CHANGED",
-        "Sources changed outside the active task; revise or revalidate before continuing",
+        `Files changed outside the run: ${listed}. Keep the changes with \`baked workflow resume RUN_ID --accept-workspace\` (Accept changes in the terminal UI and the desktop app), or restore them and resume, or fork the run`,
+        { paths: outside },
       );
     }
   }
