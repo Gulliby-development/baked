@@ -649,6 +649,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         fallbackStepTokens:
           request.profile.maxOutputTokens + Math.ceil(Buffer.byteLength(request.prompt) / 2),
         maxOutputTokens: request.profile.maxOutputTokens,
+        ...(request.profile.compaction ? { compaction: request.profile.compaction } : {}),
         ...(request.profile.role === "implementer" && request.task?.writes.length
           ? { editNudgeAfterReads: EDIT_NUDGE_AFTER_READS }
           : {}),
