@@ -1,5 +1,7 @@
 /** Workflow v1 contracts. */
 import { z } from "zod";
+import { RouteEffort } from "../llm/model-routing.js";
+import { LibraryDocsSchema } from "./library-docs.js";
 
 export const SafeId = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/);
 export const Hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -102,7 +104,18 @@ export const TaskSchema = z
     dependsOn: z.array(TaskId),
     profileId: SafeId,
     writes: z.array(
-      z.object({ path: RelativePath, action: z.enum(["create", "modify", "delete"]) }).strict(),
+      z
+        .object({
+          path: RelativePath,
+          action: z.enum(["create", "modify", "delete"]),
+          /**
+           * Why the task changes or deletes a test file that existed before the run. Without it
+           * the test-integrity guard keeps such a file read-only for the implementer. Absent on
+           * every other write, so stored graphs keep their hash.
+           */
+          reason: Text.optional(),
+        })
+        .strict(),
     ),
     readHints: z.array(RelativePath),
     /**
@@ -183,9 +196,29 @@ export const AutoApprovalSchema = z
       })
       .strict()
       .nullable(),
+    /**
+     * Opt-in: a package that leaves the limits only by its task count, file count or paths goes
+     * to the `approval-reviewer` profile, which may approve a low-risk one. Everything else, and
+     * any reviewer failure, still waits for a person.
+     */
+    modelReview: z.boolean().optional(),
   })
   .strict()
-  .refine((value) => value.renewal || value.limits !== null, "Auto approval requires limits");
+  .refine((value) => value.renewal || value.limits !== null, "Auto approval requires limits")
+  .refine(
+    (value) => !value.modelReview || value.limits !== null,
+    "Model review of approvals requires limits",
+  );
+
+/** What the `approval-reviewer` profile returns for a package auto approval declined. */
+export const ApprovalReviewSchema = z
+  .object({
+    verdict: z.enum(["approve", "escalate"]),
+    risk: z.enum(["low", "medium", "high"]),
+    reasons: z.array(z.string().min(1).max(2000)).min(1).max(10),
+  })
+  .strict();
+export type ApprovalReview = z.infer<typeof ApprovalReviewSchema>;
 
 /** The review confidence a finding needs to start a correction when the policy does not say. */
 export const DEFAULT_REVIEW_MIN_CONFIDENCE = 0.8;
@@ -231,6 +264,12 @@ export const PolicySchema = z
      * `editDiagnostics` setting when the policy does not name it (start.ts).
      */
     editDiagnostics: z.enum(["feedback", "reject"]).optional(),
+    /**
+     * Where implementers get docs for the locked versions of the libraries a task uses (#741):
+     * the configured `libraryDocs` source, frozen at start. Absent means no docs, so stored
+     * policies keep their hash.
+     */
+    libraryDocs: LibraryDocsSchema.optional(),
     allowedTools: UniqueStrings,
     network: z.enum(["deny", "ask", "allow"]),
     checks: z.array(CheckSchema),
@@ -248,6 +287,12 @@ export const PolicySchema = z
      * Absent means on, so stored policies keep their hash.
      */
     projectMemory: z.boolean().optional(),
+    /**
+     * What the test-integrity guard does with what it finds in a task's diff (test-integrity.ts):
+     * `block` makes each finding a repair, `warn` records it only. Absent means `block`; only
+     * `warn` is stored, so stored policies keep their hash.
+     */
+    testIntegrity: z.enum(["block", "warn"]).optional(),
     /**
      * Review findings whose confidence is below this are notes and start no correction. Absent
      * means 0.8 (`DEFAULT_REVIEW_MIN_CONFIDENCE`), so stored policies keep their hash; a run start
@@ -339,6 +384,12 @@ export const PolicySchema = z
      */
     executionMode: z.enum(["inline", "worktree"]).optional(),
     /**
+     * OS sandbox of the run's check, fixer, probe, repro and acceptance processes. Absent means
+     * off, so stored policies keep their hash. Network inside it follows `network`: only `allow`
+     * grants it. See docs/sandbox.md.
+     */
+    sandbox: z.enum(["auto", "required"]).optional(),
+    /**
      * Lets independent tasks of one batch write the same path; their results are integrated
      * through an integrator task. Absent means false, so stored policies keep their hash.
      */
@@ -393,6 +444,23 @@ export function writerPolicyProblem(policy: {
   return null;
 }
 
+/**
+ * Per-profile compaction of replayed tool output. `keepRecent` tool-result messages stay verbatim;
+ * compaction starts once the attempt has spent `startAtTokens`, or `startAtShare` of its token
+ * cap, and stays on for the rest of the attempt. Without a start it runs from the first step.
+ */
+export const ProfileCompactionSchema = z
+  .object({
+    keepRecent: z.number().int().min(1).max(20).optional(),
+    startAtTokens: z.number().int().min(1000).max(10_000_000).optional(),
+    startAtShare: z.number().gt(0).max(1).optional(),
+  })
+  .strict()
+  .refine((value) => value.startAtTokens === undefined || value.startAtShare === undefined, {
+    message: "Set startAtTokens or startAtShare, not both",
+  });
+export type ProfileCompaction = z.infer<typeof ProfileCompactionSchema>;
+
 export const ProfileSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -435,10 +503,15 @@ export const ProfileSchema = z
       "acceptance",
       "acceptance-draft",
       "initiativePlan",
+      "approval-review",
       "critique",
     ]),
     maxSteps: z.number().int().min(1).max(100),
     maxOutputTokens: z.number().int().min(256).max(65536),
+    /** Reasoning effort when the profile's model route sets none (#334). */
+    effort: RouteEffort.optional(),
+    /** When an attempt starts compacting older tool output (#334); unset keeps the runtime default. */
+    compaction: ProfileCompactionSchema.optional(),
   })
   .strict();
 
@@ -658,7 +731,11 @@ export const ImplementationSchema = z
   .object({
     schemaVersion: z.literal(1),
     taskId: TaskId,
-    outcome: z.enum(["implemented", "already_satisfied", "blocked", "failed"]),
+    /**
+     * `spec_conflict`: the spec and the tests (or the criteria) cannot both hold. The task stops
+     * without fitting the tests and the run asks a person which one is right.
+     */
+    outcome: z.enum(["implemented", "already_satisfied", "blocked", "failed", "spec_conflict"]),
     summary: Text,
     evidenceIds: z.array(SafeId),
     unresolved: z.array(Text),
@@ -1252,6 +1329,11 @@ export interface StartRequest {
    * definition; omitted, the definition's `execution`, then the policy's `executionMode` apply.
    */
   executionMode?: ExecutionMode;
+  /**
+   * OS sandbox requested for this run (CLI `--sandbox MODE`). It overrides the configured mode and
+   * the policy; omitted, the stricter of the policy and the configuration applies.
+   */
+  sandbox?: "off" | "auto" | "required";
   /** Concurrent writers requested for this run (CLI `--writers N`); it overrides the policy. */
   maxConcurrentWriters?: number;
   /**
@@ -1261,6 +1343,8 @@ export interface StartRequest {
   modelStrict?: boolean;
   /** What blocking questions do in this run (CLI `--clarification MODE`); it overrides the policy. */
   clarification?: ClarificationMode;
+  /** What the test-integrity guard does in this run (CLI `--test-integrity MODE`); it overrides the policy. */
+  testIntegrity?: "block" | "warn";
   /** The duplication ratchet of this run (CLI `--duplication MODE`); it overrides the policy. */
   duplication?: "off" | "warn" | "ratchet";
   /** Semgrep on the run's diff (CLI `--sast MODE`); it overrides the policy. */

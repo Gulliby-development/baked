@@ -402,6 +402,13 @@ export interface AppConfig {
    * the errors with the original text. Workflow runs take it from their policy.
    */
   editDiagnostics?: "feedback" | "reject";
+  /**
+   * Where workflow implementers get docs for the locked versions of the libraries a task uses: a
+   * directory of `<name>@<version>.md` files or an MCP tool. A project value replaces the global one.
+   */
+  libraryDocs?: import("zod").infer<
+    typeof import("../core/workflows/library-docs.js").LibraryDocsSchema
+  >;
   /** Diagnostics around edits. Global only. */
   diagnostics?: {
     /** Wait for diagnostics before and after an edit, each, in ms. Default 2500. */
@@ -423,6 +430,13 @@ export interface AppConfig {
   watchdogTimeouts?: WatchdogTimeouts;
   /** Tool call timeout in minutes. Applies to shell, project, and agent tools. Default: 2 */
   toolTimeout?: number;
+  /**
+   * OS sandbox for shell, project and check commands. Default "off". Only the global config sets
+   * it; a project config can only raise it. See docs/sandbox.md.
+   */
+  sandbox?: "off" | "auto" | "required";
+  /** Network inside the chat sandbox; workflow runs follow their policy's `network`. Default "allow". */
+  sandboxNetwork?: "allow" | "deny";
   /** Retry behavior for transient provider errors (429, 529, 503, timeouts, overloaded). */
   retry?: RetryConfig;
   /** Memory subsystem config. embeddingModel: AI SDK model id (e.g. "openai/text-embedding-3-small"). null/undefined falls back to hashbag-v2. */

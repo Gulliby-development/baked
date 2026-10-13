@@ -5,6 +5,12 @@ import type { ProfileRegistry } from "../agents/profiles/registry.js";
 import { parseModelRouting, type RoutingRecord } from "../llm/model-routing.js";
 import { checkProviders, getCachedProviderStatuses } from "../llm/provider.js";
 import { availableVendorModels } from "../llm/vendor-models.js";
+import { detectSandbox } from "../platform/sandbox.js";
+import {
+  SandboxUnavailableError,
+  sandboxSettings,
+  stricterSandboxMode,
+} from "../security/sandbox.js";
 import { hashBytes, hashJson } from "../specs/hash.js";
 import { validateChecks } from "./check-policy.js";
 import { frozenInstructions } from "./context.js";
@@ -35,6 +41,7 @@ import {
   type WorkflowDefinition,
   writerPolicyProblem,
 } from "./schemas.js";
+import { testIntegrityOf } from "./test-integrity.js";
 import {
   type Gate,
   validateWorkflowV2,
@@ -103,8 +110,10 @@ export async function prepareStart(
     | "routes"
     | "autoApprovalConfirmation"
     | "executionMode"
+    | "sandbox"
     | "maxConcurrentWriters"
     | "clarification"
+    | "testIntegrity"
     | "duplication"
     | "sast"
     | "mutation"
@@ -203,7 +212,9 @@ export async function prepareStart(
     executionModeOf(policy);
   const {
     executionMode: _previous,
+    sandbox: policySandbox,
     clarification: _clarification,
+    testIntegrity: _testIntegrity,
     duplication: _duplication,
     qualityRules: requestRules,
     sast: policySast,
@@ -215,12 +226,17 @@ export async function prepareStart(
     propertyTests: policyPropertyTests,
     allowOverlappingWrites,
     editDiagnostics: _editDiagnostics,
+    libraryDocs: policyLibraryDocs,
     ...rest
   } = policy;
+  // The policy's own source wins over the configured one; without either the field stays out.
+  const libraryDocs = policyLibraryDocs ?? config.libraryDocs;
   // The project's chat setting is the default; `feedback` leaves the field out of the hash.
   const editDiagnostics = policy.editDiagnostics ?? config.editDiagnostics ?? "feedback";
   // `ask` leaves the field out, so the policy hash of an asking run is what it was before.
   const clarification = request.clarification ?? clarificationOf(policy);
+  // `block` is the default and is left out, so the policy hash of a guarded run is what it was.
+  const testIntegrity = request.testIntegrity ?? testIntegrityOf(policy);
   // The run flag overrides the policy, which overrides the configured default; `warn` is the
   // default and leaves the field out, so the policy hash stays what it was before the ratchet.
   const duplication =
@@ -248,12 +264,24 @@ export async function prepareStart(
     presetPropertyTests(preset);
   // Overlapping writes are kept only when permitted, so a policy that leaves them off keeps the
   // hash it had before the field existed; the requested writer count overrides the policy.
+  // The requested mode wins; otherwise the policy and the configuration can each only raise it.
+  // Off leaves the field out, so the policy hash of an unsandboxed run is what it was before.
+  const sandbox =
+    request.sandbox ?? stricterSandboxMode(policySandbox, sandboxSettings(workspace).effective);
+  if (sandbox === "required") {
+    const detection = detectSandbox();
+    if (!detection.available)
+      throw new WorkflowFault("INVALID_DEFINITION", new SandboxUnavailableError(detection).message);
+  }
   policy = PolicySchema.parse({
     ...rest,
     ...(mode === "worktree" ? { executionMode: mode } : {}),
+    ...(sandbox !== "off" ? { sandbox } : {}),
     ...(allowOverlappingWrites ? { allowOverlappingWrites } : {}),
     ...(clarification === "assume" ? { clarification } : {}),
+    ...(testIntegrity === "warn" ? { testIntegrity } : {}),
     ...(editDiagnostics === "reject" ? { editDiagnostics } : {}),
+    ...(libraryDocs ? { libraryDocs } : {}),
     ...(duplication !== DEFAULT_DUPLICATION ? { duplication } : {}),
     ...(qualityRules ? { qualityRules } : {}),
     ...(sast === "off" ? { sast } : {}),

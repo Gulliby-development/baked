@@ -56,6 +56,8 @@ export interface StartRunInput {
   maxConcurrentWriters?: number;
   /** What blocking spec questions do, as `--clarification`; omitted, the policy decides. */
   clarification?: ClarificationMode;
+  /** What the test-integrity guard does, as `--test-integrity`; omitted, the policy decides. */
+  testIntegrity?: "block" | "warn";
   /** The form proposed the workflow from the request (`--auto-preset`); the run records it. */
   autoPreset?: boolean;
   /** The run model overrides the configured routes, as `--model-strict`. */
@@ -574,5 +576,6 @@ function autoApprovalText(policy: RunPolicy): string | null {
         ]
       : []),
   ];
-  return parts.length ? parts.join(" or ") : null;
+  if (!parts.length) return null;
+  return `${parts.join(" or ")}${policy.autoApproval?.modelReview ? "; outside the limits by size or paths, the approval reviewer decides" : ""}`;
 }

@@ -132,6 +132,7 @@ import {
   UndoBody,
   UsageQuery,
   WorkingSetBody,
+  WorktreeCleanBody,
 } from "./schemas.js";
 import { type SettingsSecretStore, settingsRoute } from "./settings-routes.js";
 import { setupRoute } from "./setup-routes.js";
@@ -165,6 +166,7 @@ export const CAPABILITIES = [
   "mcp",
   "lsp",
   "run-maintenance",
+  "worktrees",
   "lsp-diagnose",
   "workflow-editor",
   "custom-commands",
@@ -179,6 +181,7 @@ export const CAPABILITIES = [
   "progress",
   "coordinator",
   "watch",
+  "sandbox",
   "artifacts",
   "run-compare",
   "preset-proposal",
@@ -424,13 +427,16 @@ function startArgs(raw: unknown): WorkflowArgs {
   if (body.worktree) flags.worktree = true;
   if (body.writers !== undefined) flags.writers = String(body.writers);
   if (body.clarification) flags.clarification = body.clarification;
+  if (body.testIntegrity) flags["test-integrity"] = body.testIntegrity;
   if (body.duplication) flags.duplication = body.duplication;
   if (body.sast) flags.sast = body.sast;
   if (body.mutation) flags.mutation = body.mutation;
   if (body.propertyTests) flags["property-tests"] = body.propertyTests;
   if (body.modelStrict) flags["model-strict"] = true;
+  if (body.sandbox) flags.sandbox = body.sandbox;
   if (body.policy !== undefined) flags.policy = true;
   if (body.budget) flags.budget = body.budget;
+  if (body.approvalReview) flags["approval-review"] = true;
   if (body.autoPreset) flags["auto-preset"] = true;
   return validateWorkflowArgs({
     command: "run",
@@ -964,6 +970,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       (await diagnosticsRoute({
         ...ctx,
         dirs: storageDirs(service.workspace, options.configDir ?? defaultConfigDir()),
+        workspace: service.workspace,
         clearSessions: () => chat.clearAll(),
         clearRepoMap: async () => {
           if (drives.size > 0)
@@ -1123,6 +1130,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       if (query.modelStrict === "true") flags["model-strict"] = true;
       if (query.worktree === "true") flags.worktree = true;
       if (query.writers) flags.writers = query.writers;
+      if (query.sandbox) flags.sandbox = query.sandbox;
       if (query.confirmAutoApproval) flags["confirm-auto-approval"] = query.confirmAutoApproval;
       const command = path.endsWith("doctor") ? "doctor" : "estimate";
       return json(
@@ -1155,6 +1163,23 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
           command: "gc",
           positional: [],
           flags: { before: body.before, ...(body.dryRun ? { "dry-run": true } : {}) },
+        }),
+        origin,
+      );
+    }
+    if (path === "/v1/workflow/worktrees") {
+      only("GET");
+      return json(200, await execute({ command: "worktrees", positional: [], flags: {} }), origin);
+    }
+    if (path === "/v1/workflow/worktrees/clean") {
+      only("POST");
+      const body = WorktreeCleanBody.parse(await readJson(req));
+      return json(
+        200,
+        await execute({
+          command: "worktrees",
+          positional: [],
+          flags: { clean: true, ...(body.dryRun ? { "dry-run": true } : {}) },
         }),
         origin,
       );
