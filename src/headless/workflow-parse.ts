@@ -29,6 +29,7 @@ const commands = [
   "candidate",
   "usage",
   "report",
+  "recording",
   "outcomes",
   "compare",
   "memory",
@@ -75,6 +76,7 @@ export interface WorkflowArgs {
 const globalFlags = ["json", "cwd", "help"];
 const booleanFlags = new Set([
   "approval-review",
+  "record-model-calls",
   "refresh",
   "clean",
   "auto-preset",
@@ -145,6 +147,8 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "budget",
     "approval-review",
     "auto-preset",
+    "record-model-calls",
+    "replay",
   ],
   quick: [
     "feature",
@@ -198,6 +202,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
   usage: ["model", "stage", "top", "format", "output"],
   report: ["output"],
+  recording: ["output"],
   outcomes: ["refresh"],
   compare: ["output"],
   memory: ["text"],
@@ -552,7 +557,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--candidates N] [--clarification ask|assume] [--sandbox off|auto|required] [--duplication off|warn|ratchet] [--sast auto|off] [--mutation off|advisory|required] [--property-tests auto|off] [--budget PRESET] [--approval-review]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--candidates N] [--clarification ask|assume] [--sandbox off|auto|required] [--duplication off|warn|ratchet] [--sast auto|off] [--mutation off|advisory|required] [--property-tests auto|off] [--budget PRESET] [--approval-review] [--record-model-calls] [--replay FILE]
 run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --prompt-file FILE] [other run options]
   --issue takes the request from a GitHub issue (its title and body; --prompt adds instructions)
   and names the feature issue-N-TITLE unless --feature is given; the delivery pull request says
@@ -578,6 +583,9 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   --approval-review lets the approval reviewer (a model) approve a low-risk plan that leaves the
   auto approval limits only by its task count, file count or paths; it needs autoApproval.limits.
   Always-human paths, deletions and the token limit still wait for you
+  --record-model-calls stores each model call of the run (request fingerprint and answer) in
+  the run, for the recording command; --replay FILE answers the model calls from such a recording instead
+  of the provider and blocks the run (replay_diverged) at the first request that differs
   --duplication ratchet blocks code the run copies and code it adds that nothing uses; warn (the
   default) reports them in the run report; off skips the measurement. Default: the policy's
   duplication, then the quality.duplication setting, otherwise warn
@@ -676,6 +684,9 @@ usage RUN_ID [--model ID] [--stage NAME] [--top N] [--format md] [--output FILE]
 report RUN_ID [--output FILE] [--json]
   One Markdown report of the run: summary, changes, tasks, checks, criteria, findings, decisions,
   tokens by stage and model, artifacts. Printed, or written to FILE; deliver uses it as the PR body.
+recording RUN_ID [--output FILE] [--json]
+  The model calls a run recorded with --record-model-calls (or a replay recorded), for
+  run --replay FILE. Printed, or written to FILE.
 outcomes [RUN_ID] [--refresh] [--json]
   The critic outcome log: each critic score with whether the task's checks passed, how the run
   ended, the delivered commit's fate and the share of its lines that survive (final after 30 days).
