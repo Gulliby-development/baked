@@ -174,6 +174,7 @@ import { type LearnedRule, rulesFor } from "./project-memory.js";
 import {
   checkDependencies,
   dependencyClaim,
+  PROPERTY_LIBRARY_PACKAGES,
   QUALITY_DEPENDENCIES,
 } from "./quality/dependencies.js";
 import {
@@ -6858,10 +6859,21 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         for (const m of text.matchAll(/"([^"*]+?)\/?\*"\s*:\s*\[/g))
           if (m[1] && m[1] !== "paths") aliases.push(m[1]);
     }
+    // `allowNewDependencies` is always false: a package added to an existing manifest needs the
+    // request or the approved spec to name it (#802). A scaffold baseline is still being set up.
+    // A property criterion asks for the ecosystem's property-test library.
+    const requested = this.baselineScaffold(runId, state)
+      ? undefined
+      : [
+          state.requestText,
+          state.spec ? canonical(state.spec) : "",
+          ...(state.spec?.criteria.some((c) => c.property) ? PROPERTY_LIBRARY_PACKAGES : []),
+        ].join("\n");
     const result = await checkDependencies(changed, known, {
       lookups: policy.registryLookups !== false,
       ...(this.registryFetch ? { fetcher: this.registryFetch } : {}),
       aliases,
+      ...(requested !== undefined ? { requested } : {}),
     });
     const evidenceId = this.store.transaction(() => {
       const artifact = this.store.artifact(
@@ -6885,11 +6897,15 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         evidenceId,
         claim: `Dependency ${d.name}: ${d.detail} (${d.file}:${d.line})`,
         impact:
-          "Installing a package that does not exist or imitates a popular one can run an attacker's code.",
+          d.verdict === "unrequested"
+            ? "The run adds a dependency nobody asked for to an existing project; the policy forbids new dependencies."
+            : "Installing a package that does not exist or imitates a popular one can run an attacker's code.",
         suggestedFix:
-          d.verdict === "missing"
-            ? `Remove ${d.name}, or use the package that really provides it; do not invent package names.`
-            : `Replace ${d.name} with the package it imitates, or remove it.`,
+          d.verdict === "unrequested"
+            ? `Remove ${d.name} from ${d.file} and the code that uses it; implement the behavior with the dependencies the project already has.`
+            : d.verdict === "missing"
+              ? `Remove ${d.name}, or use the package that really provides it; do not invent package names.`
+              : `Replace ${d.name} with the package it imitates, or remove it.`,
       }),
     );
   }

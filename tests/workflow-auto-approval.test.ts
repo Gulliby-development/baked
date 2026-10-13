@@ -136,6 +136,10 @@ describe("auto approval", () => {
     ["a delete", limited, graph([{ path: "src/a.ts", action: "delete" }]), "src/a.ts would be deleted"],
     ["a larger token budget", { ...limited, maxTotalTokens: limits.maxTotalTokens + 100000 }, graph([modify("src/a.ts")]), "token budget"],
     ["a package manifest", { ...limited, autoApproval: { renewal: false, limits: { ...limits, allowedPaths: ["**"] } } }, graph([modify("package.json")]), "always needs a person"],
+    // dirdrift-update 6b57dc61: a test project file took a new NuGet package without a person.
+    ...["tests/App.Tests/App.Tests.csproj", "src/App.fsproj", "pom.xml", "build.gradle.kts", "Directory.Packages.props"].map(
+      (path): [string, RunPolicy, TaskGraph, string] => [`the .NET/JVM manifest ${path}`, { ...limited, autoApproval: { renewal: false, limits: { ...limits, allowedPaths: ["**"] } } }, graph([modify(path)]), "always needs a person"],
+    ),
     ["a lock file", { ...limited, autoApproval: { renewal: false, limits: { ...limits, allowedPaths: ["**"] } } }, graph([modify("bun.lock")]), "always needs a person"],
     ["CI configuration", { ...limited, autoApproval: { renewal: false, limits: { ...limits, allowedPaths: ["**"] } } }, graph([modify(".github/workflows/ci.yml")]), "always needs a person"],
     ["project instructions in any case", { ...limited, autoApproval: { renewal: false, limits: { ...limits, allowedPaths: ["**"] } } }, graph([modify("src/agents.md")]), "always needs a person"],
