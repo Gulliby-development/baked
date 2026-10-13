@@ -9,6 +9,7 @@ import { MAX_CANDIDATES } from "../workflows/candidates.js";
 import { MAX_CONCURRENT_WRITERS, RunStatus, SafeId } from "../workflows/schemas.js";
 import { USAGE_DIMENSIONS } from "../workflows/usage.js";
 import { MAX_LOOP_ROUNDS } from "../workflows/v2/definition.js";
+import { INSERTABLE_STAGES } from "../workflows/v2/editor.js";
 
 /** Every mutation names a client-chosen command ID; a retry with the same ID returns the first result. */
 const Command = z.object({
@@ -283,6 +284,12 @@ export const EditorOpBody = z.discriminatedUnion("op", [
   z.strictObject({ op: z.literal("removeTransition"), id: z.string().min(1).max(200) }),
   z.strictObject({ op: z.literal("addWaitStage"), after: SafeId }),
   z.strictObject({ op: z.literal("removeWaitStage"), stageId: SafeId }),
+  z.strictObject({
+    op: z.literal("addStage"),
+    stageType: z.enum(INSERTABLE_STAGES),
+    transition: z.string().min(1).max(200),
+  }),
+  z.strictObject({ op: z.literal("removeStage"), stageId: SafeId }),
   z.strictObject({
     op: z.literal("changeField"),
     stageId: SafeId,

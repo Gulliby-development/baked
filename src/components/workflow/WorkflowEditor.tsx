@@ -16,6 +16,8 @@ import {
   type EditorState,
   type EditResult,
   estimateDefinition,
+  INSERTABLE_STAGES,
+  insertStage,
   insertWaitStage,
   type LibraryGateView,
   markSaved,
@@ -28,9 +30,10 @@ import {
   prepareSave,
   problemCount,
   removeGate,
+  removeStage,
   removeTransition,
-  removeWaitStage,
   type SaveReview,
+  STATION_WORDS,
   selectedStage,
   selectedTarget,
   stageFields,
@@ -75,6 +78,7 @@ export type EditorMode =
   | "draft"
   | "transition"
   | "options"
+  | "station"
   | "review"
   | "problems"
   | "discard"
@@ -91,6 +95,7 @@ export const EDITOR_HINTS: Record<EditorMode, { key: string; label: string }[]> 
     { key: "M", label: "mode" },
     { key: "J/K", label: "move" },
     { key: "N", label: "transition" },
+    { key: "I", label: "station" },
     { key: "W", label: "wait stage" },
     { key: "E", label: "options" },
     { key: "C", label: "duplicate" },
@@ -118,6 +123,11 @@ export const EDITOR_HINTS: Record<EditorMode, { key: string; label: string }[]> 
     { key: "↑↓", label: "field" },
     { key: "←→", label: "change" },
     { key: "Enter", label: "add" },
+    { key: "Esc", label: "cancel" },
+  ],
+  station: [
+    { key: "↑↓", label: "select" },
+    { key: "Enter", label: "insert" },
     { key: "Esc", label: "cancel" },
   ],
   options: [
@@ -153,6 +163,22 @@ const PANE_TITLE: Record<Pane, string> = {
   gates: "Gates",
 };
 const TRANSITION_FIELDS = ["to", "on", "loop"] as const;
+
+/**
+ * The transition a new station goes on: the selected one in the transitions pane, else the one
+ * `passed` transition out of the selected stage. Loops take no station.
+ */
+function stationArrow(state: EditorState): string | null {
+  const target = selectedTarget(state);
+  const d = state.definition;
+  if (state.pane === "transitions" && target?.kind === "transition") {
+    const t = d.transitions.find((x) => x.id === target.id);
+    return t && !t.loop ? t.id : null;
+  }
+  const stage = selectedStage(state);
+  const out = d.transitions.filter((t) => t.from === stage?.id && t.on === "passed" && !t.loop);
+  return out.length === 1 ? (out[0]?.id ?? null) : null;
+}
 
 /** The rows of a list that fit, scrolled so the cursor stays visible. */
 function visible<T>(
@@ -424,6 +450,24 @@ export function WorkflowEditor({
       }
       return;
     }
+    if (mode === "station") {
+      evt.preventDefault();
+      const arrow = stationArrow(state);
+      const max = INSERTABLE_STAGES.length;
+      if (key === "escape") setMode("browse");
+      else if (key === "up" || key === "down")
+        setPick((p) => (p + (key === "up" ? max - 1 : 1)) % max);
+      else if (key === "return" && arrow) {
+        const type = INSERTABLE_STAGES[pick] ?? "check";
+        const result = insertStage(state, arrow, type);
+        apply(result);
+        if (!result.error) {
+          setMode("browse");
+          notify("ok", `${STATION_WORDS[type].name} station added on ${arrow}`);
+        }
+      }
+      return;
+    }
     if (mode === "options") {
       evt.preventDefault();
       if (!stage) return;
@@ -485,9 +529,8 @@ export function WorkflowEditor({
       if (gatesPane && target) apply(removeGate(state, target, state.gate));
       else if (state.pane === "transitions" && target?.kind === "transition")
         apply(removeTransition(state, target.id));
-      else if (state.pane === "stages" && stage?.type === "wait")
-        apply(removeWaitStage(state, stage.id));
-      else notify("info", "Select a gate, a transition or a wait stage to remove.");
+      else if (state.pane === "stages" && stage) apply(removeStage(state, stage.id));
+      else notify("info", "Select a gate, a transition or a stage to remove.");
     } else if (key === "m") {
       evt.preventDefault();
       if (gatesPane && target) apply(toggleMode(state, target, state.gate));
@@ -499,6 +542,16 @@ export function WorkflowEditor({
         setDraft(defaultTransitionDraft(state.definition, stage.id));
         setField(0);
         setMode("transition");
+      }
+    } else if (key === "i" && stage) {
+      evt.preventDefault();
+      const arrow = stationArrow(state);
+      if (state.readOnly) notify("info", state.readOnly);
+      else if (!arrow)
+        notify("info", "Select a forward transition, or a stage with one passed transition.");
+      else {
+        setPick(0);
+        setMode("station");
       }
     } else if (key === "w" && stage) {
       evt.preventDefault();
@@ -604,6 +657,33 @@ export function WorkflowEditor({
             </box>
           );
         })}
+      </box>
+    );
+  }
+
+  if (mode === "station" && state) {
+    const arrow = stationArrow(state);
+    return (
+      <box flexDirection="column">
+        {header}
+        <text
+          fg={t.textPrimary}
+          attributes={1}
+        >{`Put a station on ${arrow ?? "the transition"}`}</text>
+        {INSERTABLE_STAGES.map((type, i) => (
+          <box
+            key={type}
+            flexDirection="row"
+            backgroundColor={i === pick ? t.bgPopupHighlight : t.bgPopup}
+          >
+            <text fg={i === pick ? t.brand : t.textPrimary}>
+              {clip(
+                `${GLYPH[type]} ${STATION_WORDS[type].name}  ${STATION_WORDS[type].what}`,
+                width,
+              )}
+            </text>
+          </box>
+        ))}
       </box>
     );
   }
