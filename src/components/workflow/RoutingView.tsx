@@ -110,7 +110,7 @@ interface Shown {
 
 const REVIEW_MODES = [null, "off", "warn", "require", "provider"] as const;
 const CONFIDENCE_STEP = 0.05;
-const CRITIC_MODES = [null, "off", "advise"] as const;
+const CRITIC_MODES = [null, "off", "advise", "select", "earlyStop"] as const;
 const clip = (text: string, width: number): string =>
   width <= 0 ? "" : text.length <= width ? text : `${text.slice(0, Math.max(1, width - 1))}…`;
 const pad = (text: string, width: number): string => clip(text, width).padEnd(width);
@@ -705,9 +705,9 @@ export function RoutingView({
     detail.push("when a reviewer shares the implementation's model; provider moves reviewers");
     detail.push("to another vendor's model (Codex reviews Claude Code and back).");
   } else if (current?.kind === "critic") {
-    detail.push("The critic scores every task attempt (intent, instructions, scope, test");
-    detail.push("integrity, completeness) as advice. Unset runs it only on a vendor other");
-    detail.push("than the implementation's; advise always, off never.");
+    detail.push("The critic scores every task attempt. advise only shows the score; select");
+    detail.push("keeps the best attempt and earlyStop ends a passing correction loop, once");
+    detail.push("/workflow outcomes calibrates it. Unset runs it on another vendor; off never.");
   } else if (current?.kind === "confidence") {
     detail.push(`Effective: ${confidence}. Review findings below this confidence stay notes`);
     detail.push("and start no correction. ←→ change it by 0.05, D clears it.");
