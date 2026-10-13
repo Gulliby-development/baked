@@ -128,3 +128,50 @@ describe("the repair scope follows the files a failed check names", () => {
     );
   });
 });
+
+// Bench round 08, commitbump cd842f0f: repair T008 reported `implemented` three times with no
+// edit while fmt still failed on src/*.rs, which it could not write; each resume tried again.
+describe("a correction that changes nothing on a failure outside its files", () => {
+  const repair = task("T008", "tests/docs.rs", "implementer", {
+    origin: "repair",
+    findingIds: ["F1"],
+    checkIds: ["fmt"],
+  });
+  const fmt = { id: "fmt", required: true, scope: "task", executable: "cargo", args: ["fmt"] } as RunPolicy["checks"][number];
+  const satisfied = (output: string, status: "failed" | "passed" = "failed") => {
+    const subject = Object.create(WorkflowScheduler.prototype) as {
+      store: WorkflowStore;
+      runTaskCheck: () => Promise<{ status: string; evidenceId: string; output: string }>;
+      correctionSatisfied(...args: unknown[]): Promise<boolean | Error>;
+    };
+    subject.store = {
+      tasks: () => [{ id: "T008", generation: 0 }],
+      findings: () => [{ id: "F1", body_json: JSON.stringify({ claim: "Required check fmt failed" }) }],
+    } as unknown as WorkflowStore;
+    subject.runTaskCheck = async () => ({ status, evidenceId: "E9", output });
+    const state = { ...stateOf(), graph: { ...root, tasks: [...root.tasks, repair] } } as RuntimeState;
+    return subject.correctionSatisfied(
+      "run",
+      state,
+      "step",
+      { checks: [fmt] } as unknown as RunPolicy,
+      repair,
+      { taskId: "T008", outcome: "implemented", unresolved: [] },
+      new AbortController().signal,
+      "/root",
+    );
+  };
+
+  test("blocks at once with out_of_scope_failure naming the files", async () => {
+    const outcome = await satisfied("Diff in src/lib.rs\nDiff in src/render.rs");
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as Error).message).toMatch(/^out_of_scope_failure: T008 changed nothing and check fmt still fails on src\/lib\.rs, src\/render\.rs/);
+    expect((outcome as { code?: string }).code).toBe("RECOVERY_REQUIRED");
+  });
+
+  test("a failure on its own file, or on no planned file, stays an ordinary unfinished task", async () => {
+    expect(await satisfied("Diff in tests/docs.rs\nDiff in src/lib.rs")).toBe(false);
+    expect(await satisfied("error: could not compile")).toBe(false);
+    expect(await satisfied("", "passed")).toBe(true);
+  });
+});

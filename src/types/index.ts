@@ -23,6 +23,8 @@ export interface ToolResult {
   error?: string;
   /** Which intelligence backend handled this (ts-morph, lsp, tree-sitter, regex) */
   backend?: string;
+  /** The language server that answered, when `backend` is lsp (rust-analyzer, jdtls). */
+  server?: string;
   /** True when read returned only an outline (large file) — tracker should not cache this as a full read */
   outlineOnly?: boolean;
   /** Files edited by dispatch tool — used by /changes panel to track per-tab edits */
@@ -287,7 +289,21 @@ export interface AgentFeatures {
 /** Doppelganger (spark) = inherits parent conversation, same model, cache hits. Diverge (ember) = fresh context, can use cheaper model. */
 export type TaskTier = "spark" | "ember";
 
+/** Defaults of the code quality gates of workflow runs (#630); each run freezes them in its policy. */
+export interface QualityConfig {
+  /** Duplication and dead-code ratchet: `warn` (default) reports, `ratchet` blocks, `off` skips. */
+  duplication?: "off" | "warn" | "ratchet";
+  /** Rules of the anti-slop pack that do not run (built-in or ast-grep rule IDs). */
+  disabledRules?: string[];
+  /** Severity per rule ID: `error` blocks the run, `warning` is a note. */
+  ruleSeverity?: Record<string, "error" | "warning">;
+  /** The project's ast-grep rule files, relative to the workspace; they run when ast-grep is installed. */
+  ruleFiles?: string[];
+}
+
 export interface AppConfig {
+  /** Code quality gate defaults for new workflow runs. */
+  quality?: QualityConfig;
   workflows?: import("zod").infer<
     typeof import("../core/workflows/schemas.js").WorkflowConfigSchema
   >;
@@ -335,6 +351,10 @@ export interface AppConfig {
   anthropicTextEditor?: boolean;
   /** Enable web search tool for all LLMs. Always prompts for approval before searching. Default: true */
   webSearch?: boolean;
+  /** Allow deploying artifacts to the user's Vercel account. Each deploy still asks. Default: false */
+  artifactDeploy?: boolean;
+  /** The Vercel team artifacts deploy to; unset (or VERCEL_TEAM_ID unset) is the personal account. */
+  vercelTeamId?: string;
   /** Show verbose tool output (plan updates, etc.) in chat. Default: false */
   verbose?: boolean;
   /** Diff display style: "default" | "sidebyside" | "compact". Default: "default" */

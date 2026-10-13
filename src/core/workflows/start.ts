@@ -10,6 +10,8 @@ import { validateChecks } from "./check-policy.js";
 import { frozenInstructions } from "./context.js";
 import { WorkflowFault } from "./errors.js";
 import { languageReviewProfile } from "./language.js";
+import { DEFAULT_DUPLICATION } from "./quality/duplication.js";
+import { configuredRules } from "./quality/rules.js";
 import {
   independentReviewMode,
   reviewIndependence,
@@ -79,6 +81,10 @@ async function availableModels(): Promise<string[]> {
   return availableVendorModels(statuses.filter((s) => s.available).map((s) => s.id));
 }
 
+/** Why a shipped preset with a check stage cannot start in a project without feature checks. */
+export const missingFeatureChecks = (workflowId: string): string =>
+  `Workflow ${workflowId} needs at least one feature check in the workflow policy (workflows.policy.checks); /workflow gates adds them`;
+
 /**
  * The validation half of a run start. It reads the workspace but writes nothing, so `workflow
  * doctor` runs it to report exactly the refusals a start would make.
@@ -96,6 +102,7 @@ export async function prepareStart(
     | "executionMode"
     | "maxConcurrentWriters"
     | "clarification"
+    | "duplication"
     | "modelStrict"
   >,
   deps: StartDeps = {},
@@ -165,6 +172,12 @@ export async function prepareStart(
           `Profile output does not match stage ${stage.id}`,
         );
   } else {
+    // A shipped preset bound to a project without feature checks has a check stage with no gates;
+    // refuse here so every front end reports it instead of a run that blocks at once.
+    if (!loaded.path && loaded.definition.stages.some((s) => s.type === "check" && !s.gates.length))
+      throw new WorkflowFault("INVALID_DEFINITION", missingFeatureChecks(request.workflowId), {
+        missingFeatureChecks: true,
+      });
     const bound = bindDefinition(
       workspace,
       loaded.definition,
@@ -185,11 +198,20 @@ export async function prepareStart(
   const {
     executionMode: _previous,
     clarification: _clarification,
+    duplication: _duplication,
+    qualityRules: requestRules,
     allowOverlappingWrites,
     ...rest
   } = policy;
   // `ask` leaves the field out, so the policy hash of an asking run is what it was before.
   const clarification = request.clarification ?? clarificationOf(policy);
+  // The run flag overrides the policy, which overrides the configured default; `warn` is the
+  // default and leaves the field out, so the policy hash stays what it was before the ratchet.
+  const duplication =
+    request.duplication ?? policy.duplication ?? config.quality?.duplication ?? DEFAULT_DUPLICATION;
+  // The policy's own rule choices win over the configured ones; the built-in pack as shipped
+  // leaves the field out.
+  const qualityRules = requestRules ?? configuredRules(config.quality);
   // Overlapping writes are kept only when permitted, so a policy that leaves them off keeps the
   // hash it had before the field existed; the requested writer count overrides the policy.
   policy = PolicySchema.parse({
@@ -197,6 +219,8 @@ export async function prepareStart(
     ...(mode === "worktree" ? { executionMode: mode } : {}),
     ...(allowOverlappingWrites ? { allowOverlappingWrites } : {}),
     ...(clarification === "assume" ? { clarification } : {}),
+    ...(duplication !== DEFAULT_DUPLICATION ? { duplication } : {}),
+    ...(qualityRules ? { qualityRules } : {}),
     ...(request.maxConcurrentWriters !== undefined
       ? { maxConcurrentWriters: request.maxConcurrentWriters }
       : {}),

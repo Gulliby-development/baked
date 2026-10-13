@@ -28,6 +28,7 @@ const commands = [
   "candidate",
   "usage",
   "report",
+  "compare",
   "memory",
   "extend",
   "reroute",
@@ -65,74 +66,8 @@ export interface WorkflowArgs {
    */
   inline?: Record<string, unknown>;
 }
-const flags = new Set([
-  "model-strict",
-  "feature",
-  "workflow",
-  "prompt",
-  "prompt-file",
-  "policy",
-  "owner",
-  "model",
-  "json",
-  "events",
-  "request",
-  "digest",
-  "expected-revision",
-  "command-id",
-  "answers-file",
-  "file",
-  "accept",
-  "reason",
-  "candidate",
-  "source",
-  "path",
-  "destination",
-  "before",
-  "dry-run",
-  "limit",
-  "cursor",
-  "status",
-  "stage",
-  "top",
-  "format",
-  "after",
-  "effect",
-  "resolution",
-  "tokens",
-  "calls",
-  "time-ms",
-  "spec",
-  "plan",
-  "tasks",
-  "cwd",
-  "from",
-  "all",
-  "confirm-auto-approval",
-  "help",
-  "remote",
-  "branch",
-  "draft",
-  "no-pr",
-  "execute",
-  "worktree",
-  "writers",
-  "exclude-user-changes",
-  "route",
-  "resume",
-  "no-resume",
-  "clarification",
-  "issue",
-  "output",
-  "text",
-  "provider",
-  "kind",
-  "id",
-  "save",
-  "from-criteria",
-  "at",
-  "budget",
-]);
+/** Options every workflow command takes. */
+const globalFlags = ["json", "cwd", "help"];
 const booleanFlags = new Set([
   "all",
   "save",
@@ -145,6 +80,8 @@ const booleanFlags = new Set([
   "help",
   "draft",
   "no-pr",
+  "with-specs",
+  "no-specs",
   "execute",
   "worktree",
   "exclude-user-changes",
@@ -182,6 +119,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "route",
     "model-strict",
     "clarification",
+    "duplication",
     "issue",
     "budget",
   ],
@@ -236,6 +174,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
   usage: ["model", "stage", "top", "format", "output"],
   report: ["output"],
+  compare: ["output"],
   memory: ["text"],
   extend: [
     "tokens",
@@ -256,15 +195,27 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   define: ["from"],
   gates: ["all"],
   gate: ["text", "kind", "id", "model", "from-criteria", "save", "file", "json", "workflow", "at"],
-  deliver: ["remote", "branch", "draft", "no-pr", "execute", "request", "expected-revision"],
+  deliver: [
+    "remote",
+    "branch",
+    "draft",
+    "no-pr",
+    "with-specs",
+    "no-specs",
+    "execute",
+    "request",
+    "expected-revision",
+  ],
   "discard-worktree": ["expected-revision", "command-id"],
   route: ["workflow", "model", "route", "json"],
   models: ["model", "provider", "json"],
   doctor: preRunFlags,
   estimate: preRunFlags,
 };
+/** Every option the parser knows: derived from the command tables, so a flag cannot be missed. */
+const flags = new Set([...globalFlags, ...Object.values(commandFlags).flat()]);
 /** The flag tables the argv parser checks, exposed so tests can assert they agree. */
-export const workflowFlagTables = { flags, booleanFlags, commandFlags };
+export const workflowFlagTables = { flags, booleanFlags, commandFlags, globalFlags };
 export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
   const command = argv[0];
   if (!commands.includes(command as WorkflowCommand))
@@ -302,7 +253,7 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
 /** Checks option combinations and values of parsed or programmatically built workflow arguments. */
 export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
   for (const name of Object.keys(result.flags)) {
-    if (!["json", "cwd", "help", ...commandFlags[result.command]].includes(name))
+    if (!globalFlags.includes(name) && !commandFlags[result.command].includes(name))
       throw new WorkflowFault("INVALID_DEFINITION", `--${name} is not valid for ${result.command}`);
     if (name === "status" && !RunStatus.safeParse(result.flags[name]).success)
       throw new WorkflowFault(
@@ -336,6 +287,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
       list: [0, false],
       add: [0, true],
       edit: [1, true],
+      accept: [1, false],
       forget: [1, false],
       restore: [1, false],
     } as const;
@@ -343,7 +295,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     if (!rule)
       throw new WorkflowFault(
         "INVALID_DEFINITION",
-        "memory accepts list, add, edit, forget or restore",
+        "memory accepts list, add, edit, accept, forget or restore",
       );
     if (rest.length !== rule[0])
       throw new WorkflowFault(
@@ -372,7 +324,9 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
       ["list", "profiles", "models", "import", "gc", "definitions"].includes(result.command) ||
       (result.command === "validate" && result.flags.file)
         ? 0
-        : 1;
+        : result.command === "compare"
+          ? 2
+          : 1;
     if (result.positional.length !== count)
       throw new WorkflowFault(
         "INVALID_DEFINITION",
@@ -386,7 +340,14 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
   )
     throw new WorkflowFault("INVALID_DEFINITION", "--events and --after need --resume");
   if (!result.flags.help && result.command === "deliver") {
-    const planning = ["remote", "branch", "draft", "no-pr"].filter((name) => name in result.flags);
+    const planning = ["remote", "branch", "draft", "no-pr", "with-specs", "no-specs"].filter(
+      (name) => name in result.flags,
+    );
+    if (result.flags["with-specs"] && result.flags["no-specs"])
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        "--with-specs and --no-specs exclude each other",
+      );
     if (result.flags.execute) {
       if (planning.length)
         throw new WorkflowFault(
@@ -428,6 +389,12 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     !["ask", "assume"].includes(String(result.flags.clarification))
   )
     throw new WorkflowFault("INVALID_DEFINITION", "--clarification accepts ask or assume");
+  if (
+    !result.flags.help &&
+    "duplication" in result.flags &&
+    !["off", "warn", "ratchet"].includes(String(result.flags.duplication))
+  )
+    throw new WorkflowFault("INVALID_DEFINITION", "--duplication accepts off, warn or ratchet");
   if (!result.flags.help && ["run", "doctor", "estimate"].includes(result.command)) {
     if ("writers" in result.flags) {
       const writers = String(result.flags.writers);
@@ -453,7 +420,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--budget PRESET]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--duplication off|warn|ratchet] [--budget PRESET]
 run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --prompt-file FILE] [other run options]
   --issue takes the request from a GitHub issue (its title and body; --prompt adds instructions)
   and names the feature issue-N-TITLE unless --feature is given; the delivery pull request says
@@ -467,6 +434,9 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   --clarification assume lets research, spec and analysis settle blocking questions with recorded
   assumptions, shown at approval; only questions without a safe default wait for you. Default: the
   policy's clarification, otherwise ask
+  --duplication ratchet blocks code the run copies and code it adds that nothing uses; warn (the
+  default) reports them in the run report; off skips the measurement. Default: the policy's
+  duplication, then the quality.duplication setting, otherwise warn
   --budget quick|standard|extended|checkpoints scales the policy (--policy, the config's
   workflows.policy, or the built-in default): quick halves the limits, extended doubles them,
   checkpoints drops the token cap and pauses for your go-ahead. Default: standard
@@ -475,10 +445,11 @@ quick TEXT... | --prompt-file FILE [--feature ID] [--model ID] [--route STAGE=MO
   implementation, the policy checks and one correctness review. The feature ID is derived from
   the text. Runs workflows.quickWorkflow when set, otherwise the quick preset. Also: baked quick
 status RUN_ID [--json]
-memory [list] [--json] | memory add --text TEXT | memory edit ID --text TEXT | memory forget|restore ID
-  What earlier runs taught new runs (answers, approved assumptions, passing checks) and your notes.
-  add writes a note; edit rewords a note, answer or assumption; forget deletes a note or hides an
-  entry; restore brings an entry back as runs recorded it. Runs started afterwards read the result
+memory [list] [--json] | memory add --text TEXT | memory edit ID --text TEXT | memory accept|forget|restore ID
+  What earlier runs taught new runs (answers, approved assumptions, passing checks, code rules
+  learned from recurring findings) and your notes. add writes a note; edit rewords a note, answer,
+  assumption or rule; accept activates a proposed rule; forget deletes a note or hides an entry
+  (retires a rule); restore brings an entry back as runs recorded it. Runs started afterwards read the result
 list [--feature ID] [--status STATUS] [--limit 20] [--cursor RUN_ID]
   --status accepts: ${RunStatus.options.join(", ")}
 resume RUN_ID --expected-revision N [--events]
@@ -547,8 +518,11 @@ usage RUN_ID [--model ID] [--stage NAME] [--top N] [--format md] [--output FILE]
 report RUN_ID [--output FILE] [--json]
   One Markdown report of the run: summary, changes, tasks, checks, criteria, findings, decisions,
   tokens by stage and model, artifacts. Printed, or written to FILE; deliver uses it as the PR body.
+compare RUN_A RUN_B [--output FILE] [--json]
+  an A/B of two runs (one feature run with two --route maps): the routes that differ, then status,
+  tokens, cost, active time, agent calls, repairs, checks and review findings side by side
 gc --before ISO_DATE [--dry-run]          redact RUN_ID --file ARTIFACT_ID --reason TEXT
-deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr]
+deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr] [--with-specs|--no-specs]
   Prepare Git delivery of a completed, verified run: one commit of the run's files on a new
   branch, push, and a pull request. Stores the plan and a delivery request; nothing runs yet.
   Approve the exact plan with: approve RUN_ID --request ID --digest SHA256 --expected-revision N

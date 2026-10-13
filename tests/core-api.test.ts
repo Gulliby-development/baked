@@ -268,6 +268,11 @@ describe("local core API", () => {
     const report = (await (await call(`/v1/workflow/runs/${run.runId}/report`)).json()) as { runId: string; markdown: string };
     expect(report.runId).toBe(run.runId);
     expect(report.markdown).toContain("## Usage");
+    const compared = (await (await call(`/v1/workflow/compare?a=${run.runId}&b=${run.runId}`)).json()) as { a: { runId: string }; sameFeature: boolean; markdown: string };
+    expect(compared.a.runId).toBe(run.runId);
+    expect(compared.sameFeature).toBe(true);
+    expect(compared.markdown).toContain("# Run comparison");
+    expect((await call("/v1/workflow/compare?a=x")).status).toBe(400);
     expect(server.port).toBeGreaterThan(0);
   }, 60000);
 
@@ -330,6 +335,35 @@ describe("local core API", () => {
     const policy = JSON.parse(fixture.service.store.run(run.runId).policy_json) as { maxTotalTokens: number };
     expect(policy.maxTotalTokens).toBe(presetPolicy(fixture.service.config.workflows?.policy, "quick").maxTotalTokens);
     expect((await post("/v1/workflow/runs", { ...startBody(), budget: "huge" })).status).toBe(400);
+  }, 60000);
+
+  test("a quick task without feature checks is refused, and a blocked run says why", async () => {
+    const { call, post, fixture } = await setup();
+    const quick = await post("/v1/workflow/runs", {
+      ...startBody(),
+      workflow: "quick",
+      policy: { ...fixture.policy, checks: [] },
+    });
+    expect(quick.status).toBe(400);
+    const { error } = (await quick.json()) as { error: { code: string; message: string } };
+    expect(error.code).toBe("INVALID_DEFINITION");
+    expect(error.message).toContain("Workflow quick needs at least one feature check in the workflow policy");
+    // With the configured checks the same workflow is ready.
+    const doctor = (await (await call("/v1/workflow/doctor?workflow=quick")).json()) as { ready: boolean };
+    expect(doctor.ready).toBe(true);
+
+    const run = (await (await post("/v1/workflow/runs", startBody())).json()) as RunSnapshot;
+    const status = async () =>
+      (await (await call(`/v1/workflow/runs/${run.runId}`)).json()) as RunSnapshot & { stopDetail: string | null };
+    expect((await until(status, (s) => s.status === "waiting")).stopDetail).toBeNull();
+    const store = fixture.service.store;
+    store.transaction(() => {
+      store.artifact(run.runId, "diagnostic", "errors/x.txt", "stages[3].gates: Too small");
+      store.transition(run.runId, "blocked", "invalid_output");
+    });
+    const blocked = await status();
+    expect(blocked.status).toBe("blocked");
+    expect(blocked.stopDetail).toBe("stages[3].gates: Too small");
   }, 60000);
 
   test("attention lists blocked runs and advisory acceptance requests as not blocking", async () => {

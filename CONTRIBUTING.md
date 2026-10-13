@@ -23,6 +23,7 @@ Keep agent logic independent of the UI. Preserve approval callbacks, secret hand
 - [SDD workflows](docs/workflows/README.md): architecture, the v2 definition format and the runtime guide. Workflows are on by default; `workflows.enabled: false` turns them off.
 - Run `bun test tests/workflow-runtime.test.ts tests/workflow-adapters.test.ts` for deterministic workflow integration, native SDK tool execution and terminal UI coverage. Fixtures do not require provider credentials.
 - Change run state through `NativeWorkflowService`; keep React and UI stores out of the runtime. Durable events and SQLite are authoritative. Never use a model's claim as command evidence or bypass a stale approval.
+- A `baked workflow` option is added once, to its command's list in `commandFlags` (and to `booleanFlags` when it takes no value) in `src/headless/workflow-parse.ts`; the parser's set of known options is derived from those lists. `tests/workflow-argv-spawn.test.ts` starts the real CLI with every option of the commands that start or change runs, so add a command there when it gains options.
 
 ## Verification
 
@@ -61,11 +62,18 @@ Every package must keep its `deps/` tree (OpenTUI native library, worker bundles
 
 ## Releases
 
-Versions follow semantic versioning and are tagged `vX.Y.Z`. From an up-to-date `main` with every change merged:
+Versions follow semantic versioning and are tagged `vX.Y.Z`. `main` takes changes only through the merge queue, so a release is a pull request followed by a tag. From an up-to-date `main` with every change merged:
 
 ```sh
 bun run release:dry     # next version and the commits since the last tag
 bun run release:minor   # or release:patch / release:major
 ```
 
-`scripts/release.sh` runs the checks, commits the version bump as "Release X.Y.Z", tags it and pushes `main` and the tag. The tag starts `.github/workflows/release.yml`, which runs the full check suite, builds every archive through the Builds workflow and publishes a GitHub release with `SHA256SUMS.txt` and notes generated from the merged pull requests. Label a pull request `skip-changelog` to leave it out of the notes; Dependabot pull requests are grouped under "Dependencies".
+`scripts/release.sh` runs the checks, commits the version bump of `package.json` and `apps/desktop/package.json` as "Release X.Y.Z" on a `feature/release-x-y-z` branch and pushes it; with the GitHub CLI installed it also opens the pull request and adds it to the merge queue. Once that pull request is merged, pull `main` and tag the merged commit:
+
+```sh
+git switch main && git pull
+bun run release:tag     # tags vX.Y.Z from package.json and pushes the tag
+```
+
+The tag starts `.github/workflows/release.yml`, which checks that the tag matches `package.json`, runs the full check suite, builds every archive through the Builds workflow and publishes a GitHub release with `SHA256SUMS.txt` and notes generated from the merged pull requests. Label a pull request `skip-changelog` to leave it out of the notes; Dependabot pull requests are grouped under "Dependencies".

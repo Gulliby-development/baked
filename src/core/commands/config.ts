@@ -1,5 +1,5 @@
 import type { ConfigScope } from "../../components/layout/shared.js";
-import { loadConfig } from "../../config/index.js";
+import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../../config/index.js";
 import { existingWorkflowSession, reloadWorkflowSession } from "../../hooks/useWorkflow.js";
 import { useUIStore } from "../../stores/ui.js";
 import type { AgentFeatures, AppConfig, ChatEffort } from "../../types/index.js";
@@ -12,10 +12,11 @@ import {
   parseNotificationsArgs,
   parseOnOff,
 } from "../notification-settings.js";
-import { SETTINGS } from "../settings/schema.js";
+import { readSettingPath, SETTINGS, writeSettingPath } from "../settings/schema.js";
 import { telemetryStatus } from "../telemetry.js";
 import { applyTheme, getThemeTokens, listThemes, useThemeStore } from "../theme/index.js";
 import { getMotion, type MotionMode, setMotion } from "../utils/motion.js";
+import { qualityRuleCatalog } from "../workflows/quality/builtin-rules.js";
 import type { CommandContext, CommandHandler } from "./types.js";
 import { sysMsg } from "./utils.js";
 
@@ -537,6 +538,88 @@ function handleAgentFeatures(_input: string, ctx: CommandContext): void {
   });
 }
 
+/**
+ * The Code quality page of the shared settings schema, as on the desktop: a choice setting moves
+ * to its next value on Enter, and each rule of the anti-slop pack is a row that turns it on or
+ * off. New workflow runs freeze these defaults in their policy.
+ */
+function handleCodeQuality(_input: string, ctx: CommandContext): void {
+  const settings = SETTINGS.filter((setting) => setting.page === "code-quality");
+  let effective: Record<string, unknown> = mergeConfigs(
+    loadConfig(),
+    loadEffectiveProjectConfig(process.cwd()),
+  ) as unknown as Record<string, unknown>;
+  const currentValue = (id: string): unknown => {
+    const setting = settings.find((s) => s.id === id);
+    return readSettingPath(effective, id) ?? setting?.default;
+  };
+  const offList = (id: string): string[] => {
+    const value = currentValue(id);
+    return Array.isArray(value) ? value.map(String) : [];
+  };
+  // A rule row is `SETTING_ID|RULE_ID`; other rows are the setting ID.
+  const buildOptions = () =>
+    settings.flatMap((setting) =>
+      setting.type === "string-list" && setting.catalog === "quality-rules"
+        ? qualityRuleCatalog().map((rule) => ({
+            value: `${setting.id}|${rule.name}`,
+            label: `Rule ${rule.name}: ${offList(setting.id).includes(rule.name) ? "off" : "on"}`,
+            description: rule.description,
+          }))
+        : [
+            {
+              value: setting.id,
+              label: `${setting.label}: ${String(currentValue(setting.id) ?? "")}`,
+              description: setting.help,
+            },
+          ],
+    );
+  const next = (row: string): { id: string; value: unknown } | null => {
+    const [id = "", rule] = row.split("|");
+    const setting = settings.find((s) => s.id === id);
+    if (rule) {
+      const off = offList(id);
+      return {
+        id,
+        value: off.includes(rule) ? off.filter((name) => name !== rule) : [...off, rule],
+      };
+    }
+    if (setting?.type === "boolean") return { id, value: currentValue(id) !== true };
+    if (setting?.type !== "enum") return null;
+    const values = setting.options.map((o) => o.value);
+    return {
+      id,
+      value: values[(values.indexOf(String(currentValue(id))) + 1) % values.length],
+    };
+  };
+  const patch = (id: string, value: unknown) =>
+    writeSettingPath({}, id, value) as Partial<AppConfig>;
+  ctx.openCommandPicker({
+    title: "Code Quality",
+    icon: icon("system"),
+    keepOpen: true,
+    currentValue: "",
+    options: buildOptions(),
+    scopeEnabled: true,
+    initialScope: ctx.detectScope("quality"),
+    onSelect: (row, scope) => {
+      const change = next(row);
+      if (!change) return;
+      ctx.saveToScope(patch(change.id, change.value), scope ?? "project");
+      effective = writeSettingPath(effective, change.id, change.value);
+      const shown = Array.isArray(change.value)
+        ? `off: ${change.value.join(", ") || "none"}`
+        : String(change.value);
+      sysMsg(ctx, `${change.id} ${shown} (${scope ?? "project"}); new workflow runs use it`);
+      useUIStore.getState().updatePickerOptions(buildOptions());
+    },
+    onScopeMove: (row, from, to) => {
+      const [id = ""] = row.split("|");
+      ctx.saveToScope(patch(id, readSettingPath(effective, id)), to, from);
+    },
+  });
+}
+
 async function handleInstructions(input: string, ctx: CommandContext): Promise<void> {
   const [sub = "", ...rest] = input.trim().split(/\s+/).slice(1);
   const arg = rest.join(" ");
@@ -788,6 +871,7 @@ const settingsHandlers: Record<string, (input: string, ctx: CommandContext) => v
   compaction: handleCompaction,
   "diff-style": handleDiffStyle,
   "agent-features": handleAgentFeatures,
+  "code-quality": handleCodeQuality,
   instructions: handleInstructions as CommandHandler,
   "model-scope": handleModelScope,
   timeouts: handleTimeouts,
@@ -820,6 +904,11 @@ function handleSettingsHub(_input: string, ctx: CommandContext): void {
       { value: "compaction", label: `${icon("compact")} Compaction`, description: compaction },
       { value: "diff-style", label: `${icon("git")} Diff Style`, description: diffStyle },
       { value: "agent-features", label: `${icon("system")} Agent Features`, description: "toggle" },
+      {
+        value: "code-quality",
+        label: `${icon("system")} Code Quality`,
+        description: "workflow gates",
+      },
       {
         value: "instructions",
         label: `${icon("system")} Instructions`,
@@ -1134,6 +1223,7 @@ export function register(map: Map<string, CommandHandler>): void {
   map.set("/compact settings", handleCompaction);
   map.set("/compaction", handleCompaction); // legacy alias
   map.set("/agent-features", handleAgentFeatures);
+  map.set("/code-quality", handleCodeQuality);
   map.set("/instructions", handleInstructions);
   map.set("/diff-style", handleDiffStyle); // legacy alias
   map.set("/model-scope", handleModelScope);

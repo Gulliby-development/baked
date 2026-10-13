@@ -7,6 +7,12 @@
 import type { z } from "zod";
 import { modelVendor } from "../llm/model-vendor.js";
 import {
+  type DuplicationResult,
+  metricDeltas,
+  QUALITY_DUPLICATION,
+} from "./quality/duplication.js";
+import { QUALITY_RULES, type RulesResult } from "./quality/rules.js";
+import {
   type Critique,
   ReportSchema,
   type ReviewSchema,
@@ -14,7 +20,7 @@ import {
   TaskSchema,
 } from "./schemas.js";
 import type { ArtifactRow, WorkflowStore } from "./store.js";
-import { type RunUsageReport, runUsage } from "./usage.js";
+import { type RunUsageReport, runUsage, toolBackendLine } from "./usage.js";
 import { parseRunDefinition } from "./v2/runtime.js";
 import { changesOf, type FileChange, readRoutingSummary } from "./view.js";
 
@@ -154,6 +160,16 @@ function stagesInRunOrder(store: WorkflowStore, usage: RunUsageReport): RunUsage
 }
 
 /** Facts read once from the store; rendering at several row caps reuses them. */
+/**
+ * The repro cell of a finding: what its repro showed, or for a correctness finding without one,
+ * why none was given or that the claim is unverified.
+ */
+function reproColumn(body: Partial<Finding>, outcomes: Map<string, string>): string | null {
+  if (body.repro) return (body.id && outcomes.get(body.id)) || "attached";
+  if (body.kind !== "correctness") return null;
+  return body.noRepro ? `none: ${body.noRepro}` : "unverified";
+}
+
 function collect(store: WorkflowStore, runId: string) {
   return store.readTransaction(() => {
     const run = store.run(runId);
@@ -172,6 +188,8 @@ function collect(store: WorkflowStore, runId: string) {
     const latestArtifacts = new Map<string, ArtifactRow>();
     const taskDiffs = new Map<string, ArtifactRow>();
     const critiques: CritiqueRecord[] = [];
+    // What the host's run of each finding's repro showed, by finding id.
+    const reproOutcomes = new Map<string, string>();
     for (const artifact of store.artifacts(runId)) {
       if (/^tasks\/[^/]+\/critique\.json$/.test(artifact.logical_path))
         critiques.push(
@@ -189,6 +207,20 @@ function collect(store: WorkflowStore, runId: string) {
       latestArtifacts.set(artifact.logical_path, artifact);
       if (/^tasks\/[^/]+\/diff\.json$/.test(artifact.logical_path))
         taskDiffs.set(artifact.logical_path, artifact);
+      if (artifact.logical_path.startsWith("reviews/repro-")) {
+        const record = parse<{ outcomes?: Record<string, { status?: unknown }> }>(
+          (() => {
+            try {
+              return store.readArtifact(runId, artifact.id);
+            } catch {
+              return null;
+            }
+          })(),
+          {},
+        );
+        for (const [id, outcome] of Object.entries(record.outcomes ?? {}))
+          if (typeof outcome?.status === "string") reproOutcomes.set(id, outcome.status);
+      }
     }
     const checks = new Map<
       string,
@@ -203,9 +235,20 @@ function collect(store: WorkflowStore, runId: string) {
         ms: (known?.ms ?? 0) + row.duration_ms,
       });
     }
+    const readJson = <T>(path: string): T | null => {
+      const row = latestArtifacts.get(path);
+      if (!row) return null;
+      try {
+        return parse<T | null>(store.readArtifact(runId, row.id), null);
+      } catch {
+        return null;
+      }
+    };
     return {
       run,
       state,
+      duplication: readJson<DuplicationResult>(QUALITY_DUPLICATION),
+      rules: readJson<RulesResult>(QUALITY_RULES),
       workflowId: definition,
       policy: parse<Partial<RunPolicy>>(run.policy_json, {}),
       report,
@@ -215,7 +258,13 @@ function collect(store: WorkflowStore, runId: string) {
           id: row.id,
           status: row.status,
           title: task.success ? task.data.title : null,
-          origin: task.success ? task.data.origin : null,
+          // A correction that started from a clean context after repeated failures.
+          origin:
+            task.success && state?.freshTasks?.[row.id]
+              ? `${task.data.origin}, fresh context`
+              : task.success
+                ? task.data.origin
+                : null,
           writes: task.success ? task.data.writes.map((w) => w.path) : [],
         };
       }),
@@ -235,11 +284,10 @@ function collect(store: WorkflowStore, runId: string) {
           ),
         ),
       ),
-      findings: store.findings(runId).map((row) => ({
-        id: row.id,
-        status: row.status,
-        body: parse<Partial<Finding>>(row.body_json, {}),
-      })),
+      findings: store.findings(runId).map((row) => {
+        const body = parse<Partial<Finding>>(row.body_json, {});
+        return { id: row.id, status: row.status, body, repro: reproColumn(body, reproOutcomes) };
+      }),
       requests: store.requests(runId),
       routing: readRoutingSummary(store, runId),
       critiques,
@@ -272,6 +320,78 @@ function reviewModels(routing: Facts["routing"]): string | null {
   const implementation = models(["implementer"]);
   if (!review.length) return null;
   return `Reviewed on ${named(review)}${implementation.length ? `; implemented on ${named(implementation)}` : ""}.`;
+}
+
+/** The code quality gates: the duplication ratchet (#638) and the anti-slop rules (#639). */
+function qualitySection(
+  duplication: DuplicationResult | null,
+  rules: RulesResult | null,
+  cap: number,
+): string[] {
+  return [
+    ...(duplication ? duplicationSection(duplication, cap) : []),
+    ...(rules ? rulesSection(rules, cap) : []),
+  ];
+}
+
+function rulesSection(result: RulesResult, cap: number): string[] {
+  const blocking = result.findings.filter((f) => f.blocking).length;
+  const out = [
+    `Anti-slop rules: ${blocking} blocking, ${result.findings.length - blocking} noted on the lines the run added.`,
+    "",
+  ];
+  if (result.disabled.length)
+    out.push(`Turned off for this project: ${result.disabled.map(code).join(", ")}.`, "");
+  if (result.astGrep)
+    out.push(
+      `Project ast-grep rules (${result.astGrep.files.map(code).join(", ")}): ${result.astGrep.ran ? "ran" : "not run"}${result.astGrep.note ? `; ${result.astGrep.note}` : ""}.`,
+      "",
+    );
+  out.push(
+    ...table(
+      ["Rule", "Severity", "Where", "Line"],
+      result.findings.map((f) => [
+        code(f.rule),
+        f.blocking ? `${f.severity}, blocking` : f.severity,
+        code(`${f.file}:${f.line}`),
+        code(f.text),
+      ]),
+      cap,
+    ),
+  );
+  if (result.findings.length) out.push("");
+  return out;
+}
+
+/** The duplication ratchet's deltas and what it found (#638). */
+function duplicationSection(result: DuplicationResult, cap: number): string[] {
+  const out: string[] = [];
+  if (result.skipped) return [...out, `Duplication ratchet skipped: ${result.skipped}.`, ""];
+  const verdict = result.blocking
+    ? "blocking"
+    : result.clones.length || result.unused.length
+      ? "noted"
+      : "clean";
+  out.push(`Duplication ratchet (\`${result.mode}\`): ${verdict}.`, "");
+  out.push(...metricDeltas(result).map((line) => `- ${line}`), "");
+  const span = (s: { file: string; startLine: number; endLine: number }) =>
+    code(`${s.file}:${s.startLine}-${s.endLine}`);
+  out.push(
+    ...table(
+      ["Added", "Where", "Detail"],
+      [
+        ...result.clones.map((c) => ["copy", span(c), `copies ${span(c.original)}`]),
+        ...result.unused.map((u) => [
+          "unused code",
+          code(`${u.file}:${u.line}`),
+          `${code(u.name)} is used nowhere`,
+        ]),
+      ],
+      cap,
+    ),
+  );
+  if (result.clones.length || result.unused.length) out.push("");
+  return out;
 }
 
 function render(facts: Facts, cap: number): string {
@@ -357,6 +477,9 @@ function render(facts: Facts, cap: number): string {
     );
   else out.push("No checks ran.", "");
 
+  if (facts.duplication || facts.rules)
+    out.push("## Code quality", "", ...qualitySection(facts.duplication, facts.rules, cap));
+
   if (spec?.criteria.length) {
     out.push("## Acceptance criteria", "");
     out.push(
@@ -384,12 +507,13 @@ function render(facts: Facts, cap: number): string {
     out.push(`${open.length} open of ${facts.findings.length} recorded.`, "");
     out.push(
       ...table(
-        ["Finding", "Status", "Severity", "Kind", "Where", "Claim"],
+        ["Finding", "Status", "Severity", "Kind", "Repro", "Where", "Claim"],
         facts.findings.map((f) => [
           f.id,
           f.status,
           f.body.severity ?? null,
           f.body.kind ?? null,
+          f.repro,
           f.body.file ? code(f.body.file) : null,
           f.body.claim ?? null,
         ]),
@@ -515,6 +639,8 @@ function render(facts: Facts, cap: number): string {
       ),
       "",
     );
+  const backends = toolBackendLine(usage.toolBackends ?? []);
+  if (backends) out.push(`Code intelligence: ${backends}.`, "");
 
   out.push("## Artifacts", "");
   const hidden = facts.internalArtifacts
