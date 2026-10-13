@@ -53,7 +53,8 @@ if (cliArgs[0] === "mcp") {
 
 if (cliArgs[0] === "add" || cliArgs[0] === "packages") {
   const { runPackagesCli } = await import("./headless/packages.js");
-  // `baked add PATH` installs a package; `baked packages list|remove` manages installed ones.
+  // `baked add PATH` installs a package; `baked packages list|remove` manages installed ones and
+  // `baked packages pack PATH` writes the manifest of a package folder.
   process.exit(await runPackagesCli(cliArgs[0] === "add" ? cliArgs : cliArgs.slice(1)));
 }
 

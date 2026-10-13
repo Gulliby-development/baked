@@ -350,6 +350,17 @@ export const UsageQuery = z.strictObject({
 /** `POST /v1/packages/inspect`: a package folder, relative to the workspace or absolute. */
 export const PackageInspectBody = z.strictObject({ path: z.string().min(1).max(1000) });
 /**
+ * `POST /v1/packages/pack`: writes the manifest of a package folder the person authors; the name,
+ * version and description default to the existing manifest's, and `check` writes nothing.
+ */
+export const PackagePackBody = z.strictObject({
+  path: z.string().min(1).max(1000),
+  name: z.string().max(200).optional(),
+  version: z.string().max(200).optional(),
+  description: z.string().max(4000).optional(),
+  check: z.boolean().optional(),
+});
+/**
  * `POST /v1/packages/install`: the `planHash` of the plan the person approved; the server plans
  * again and refuses a different one, so an install never writes what was not shown.
  */

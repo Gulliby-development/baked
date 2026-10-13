@@ -518,6 +518,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/packages"],
   },
   {
+    id: "packages-pack",
+    group: "Tools and code intelligence",
+    title: "Packages: write a package's manifest with every file's hash after the install checks",
+    tui: ["/packages pack"],
+    cli: ["baked packages pack: --check exits 1 when out of date"],
+    api: ["/v1/packages/pack"],
+    desktop: ["project/packages: Write manifest"],
+  },
+  {
     id: "baked-help",
     group: "Tools and code intelligence",
     title: "Ask the agent about BAKED itself (bundled docs, baked_help tool)",

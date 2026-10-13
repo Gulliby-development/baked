@@ -44,6 +44,57 @@ function plan(key: string): PackagePlan {
   };
 }
 
+/** The manifest of the mock package folder per project; `pack` changes it. */
+const manifests = new Map<string, { name: string; version: string; description?: string }>();
+
+function pack(
+  key: string,
+  request: { name?: string; version?: string; description?: string; check?: boolean },
+) {
+  const current = manifests.get(key) ?? {
+    name: "acme-review",
+    version: "1.2.0",
+    description: "Acme's review profile, its checklist skill, a quick workflow and the lint gate.",
+  };
+  const next = {
+    name: request.name ?? current.name,
+    version: request.version ?? current.version,
+    ...(request.description !== undefined
+      ? request.description
+        ? { description: request.description }
+        : {}
+      : current.description
+        ? { description: current.description }
+        : {}),
+  };
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(next.name) || !/^\d+\.\d+\.\d+/.test(next.version))
+    return response(400, {
+      error: { code: "INVALID_ARGUMENT", message: "A name and a semantic version are needed" },
+    });
+  const { files, contents } = plan(key);
+  const upToDate = JSON.stringify(next) === JSON.stringify(current);
+  const written = !request.check && !upToDate;
+  if (written) manifests.set(key, next);
+  return response(written ? 201 : 200, {
+    root: MOCK_PACKAGE_PATH,
+    manifestPath: `${MOCK_PACKAGE_PATH}/baked-package.json`,
+    name: next.name,
+    version: next.version,
+    description: next.description ?? null,
+    files: files.map(({ path, kind, sha256, size }) => ({ path, kind, sha256, size })),
+    contents,
+    problems: [],
+    manifest: {
+      schemaVersion: 1,
+      ...next,
+      files: files.map(({ path, sha256 }) => ({ path, sha256 })),
+    },
+    existing: true,
+    upToDate,
+    written,
+  });
+}
+
 const notFound = (message: string) => response(404, { error: { code: "NOT_FOUND", message } });
 
 export const packageRoutes: MockRoute = ({ key, method, path, body }) => {
@@ -55,6 +106,10 @@ export const packageRoutes: MockRoute = ({ key, method, path, body }) => {
     return request.path === MOCK_PACKAGE_PATH
       ? response(200, plan(key))
       : notFound(`${request.path} has no baked-package.json`);
+  if (path === "/v1/packages/pack" && method === "POST")
+    return request.path === MOCK_PACKAGE_PATH
+      ? pack(key, body as Parameters<typeof pack>[1])
+      : notFound(`${request.path} does not exist`);
   if (path === "/v1/packages/install" && method === "POST") {
     if (request.path !== MOCK_PACKAGE_PATH) return notFound(`${request.path} does not exist`);
     const current = plan(key);

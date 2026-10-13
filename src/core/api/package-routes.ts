@@ -1,12 +1,13 @@
 /**
  * BAKED packages over the local API (`packages` capability, #135): list the installed packages,
  * plan an install from a local package folder, install a plan the person approved (its
- * `planHash`), and remove a package. Core logic is in src/core/packages/; `baked add` and
+ * `planHash`), remove a package, and write the manifest of a package folder the person authors. Core logic is in src/core/packages/; `baked add` and
  * `baked packages` are the same in a shell.
  */
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { AppConfig } from "../../types/index.js";
 import { PackageError } from "../packages/manifest.js";
+import { packPackage } from "../packages/pack.js";
 import {
   type InspectOptions,
   type InstallResult,
@@ -19,7 +20,7 @@ import { defaultWorkflowPolicy } from "../workflows/defaults.js";
 import { PolicySchema } from "../workflows/schemas.js";
 import { gateDirectories } from "../workflows/v2/library.js";
 import type { RouteContext } from "./route-context.js";
-import { PackageInspectBody, PackageInstallBody } from "./schemas.js";
+import { PackageInspectBody, PackageInstallBody, PackagePackBody } from "./schemas.js";
 
 export interface PackageRouteContext extends RouteContext {
   workspace: string;
@@ -86,6 +87,17 @@ export async function packageRoute(ctx: PackageRouteContext): Promise<Response |
         if (completed.size > MAX_REMEMBERED) completed.delete(completed.keys().next().value ?? "");
       }
       return ctx.json(201, result);
+    }
+    // A package named "pack" can still be removed with DELETE.
+    if (ctx.path === "/v1/packages/pack" && ctx.method !== "DELETE") {
+      ctx.only("POST");
+      const { path, check, ...fields } = PackagePackBody.parse(await ctx.readJson());
+      const result = packPackage(resolve(ctx.workspace, path), {
+        ...fields,
+        check: check === true,
+        policy: options().policy,
+      });
+      return ctx.json(result.written ? 201 : 200, result);
     }
     const match = /^\/v1\/packages\/([A-Za-z0-9._-]+)$/.exec(ctx.path);
     if (!match) return null;

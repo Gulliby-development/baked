@@ -158,7 +158,8 @@ function readDirectory(directory: string, problems: string[]): { gate: Gate; pat
 export function loadGateLibrary(
   workspace: string,
   policy: RunPolicy,
-  directories = gateDirectories(workspace),
+  /** null: only the built-in and policy gates, as when a package is checked on its own. */
+  directories: { user: string; project: string } | null = gateDirectories(workspace),
 ): GateLibrary {
   const entries = new Map<string, LibraryEntry>();
   const problems: string[] = [];
@@ -180,9 +181,11 @@ export function loadGateLibrary(
   };
   for (const gate of builtinReviewGates(policy)) add(gate, "builtin", null);
   for (const check of policy.checks) add(checkToGate(check), "policy", null);
-  for (const { gate, path } of readDirectory(directories.user, problems)) add(gate, "user", path);
-  for (const { gate, path } of readDirectory(directories.project, problems))
-    add(gate, "project", path);
+  if (directories) {
+    for (const { gate, path } of readDirectory(directories.user, problems)) add(gate, "user", path);
+    for (const { gate, path } of readDirectory(directories.project, problems))
+      add(gate, "project", path);
+  }
   return {
     entries,
     gates: new Map([...entries].map(([id, entry]) => [id, entry.gate])),

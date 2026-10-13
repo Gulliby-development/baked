@@ -52,6 +52,7 @@ ${BOLD}Automation:${RST}
   baked sandbox status [--json]                      OS sandbox mode and backend
   baked add <path> [--yes] [--overwrite]             Install a package into baked/ (see --help)
   baked packages list|remove <name>                  Installed packages of this project
+  baked packages pack <path> [--name N] [--version V] Write a package's baked-package.json
 
 ${BOLD}Exit codes:${RST} 0=success, 1=error, 2=timeout, 130=abort
 `;

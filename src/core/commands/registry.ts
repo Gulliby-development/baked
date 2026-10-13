@@ -678,6 +678,14 @@ const COMMAND_DEFS: CommandDef[] = [
     hidden: true,
   },
   {
+    cmd: "/packages pack",
+    ic: "skills",
+    desc: "Write the baked-package.json of a package folder you author (hashes and checks)",
+    category: "Intelligence",
+    tags: ["package", "manifest", "author", "hash"],
+    hidden: true,
+  },
+  {
     cmd: "/packages remove",
     ic: "skills",
     desc: "Remove an installed package's unchanged files (asks first)",

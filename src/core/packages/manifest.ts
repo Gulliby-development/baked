@@ -25,7 +25,7 @@ export type PackageKind = (typeof PACKAGE_KINDS)[number];
 export const MAX_PACKAGE_FILES = 500;
 export const MAX_FILE_BYTES = 2 * 1024 * 1024;
 export const MAX_PACKAGE_BYTES = 20 * 1024 * 1024;
-const MAX_MANIFEST_BYTES = 256 * 1024;
+export const MAX_MANIFEST_BYTES = 256 * 1024;
 
 export type PackageErrorCode =
   | "NOT_FOUND"
@@ -41,7 +41,8 @@ export type PackageErrorCode =
   | "NOT_APPROVED"
   | "STALE_PLAN"
   | "CONFLICT"
-  | "INVALID_LOCK";
+  | "INVALID_LOCK"
+  | "INVALID_ARGUMENT";
 
 export class PackageError extends Error {
   constructor(
@@ -132,8 +133,11 @@ function fail(code: PackageErrorCode, message: string): never {
   throw new PackageError(code, message);
 }
 
-/** Every file below `root` as a `/`-separated path; a symbolic link or special file is refused. */
-function walk(root: string): string[] {
+/**
+ * Every file below `root` as a `/`-separated path, without a top-level `.git`. A symbolic link or
+ * special file is refused: it throws, or, given `problems`, is added there and skipped.
+ */
+export function walk(root: string, problems?: string[]): string[] {
   const found: string[] = [];
   const visit = (dir: string, prefix: string): void => {
     let entries: Dirent[];
@@ -146,10 +150,13 @@ function walk(root: string): string[] {
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
       // Version control data of a package kept in its own repository is not package content.
       if (!prefix && entry.name === ".git") continue;
-      if (entry.isSymbolicLink())
-        fail("SYMLINK", `${rel} is a symbolic link; a package holds only regular files`);
-      if (entry.isDirectory()) visit(join(dir, entry.name), rel);
+      if (entry.isSymbolicLink()) {
+        const text = `${rel} is a symbolic link; a package holds only regular files`;
+        if (!problems) fail("SYMLINK", text);
+        problems.push(text);
+      } else if (entry.isDirectory()) visit(join(dir, entry.name), rel);
       else if (entry.isFile()) found.push(rel);
+      else if (problems) problems.push(`${rel} is not a regular file`);
       else fail("INVALID_PACKAGE", `${rel} is not a regular file`);
       if (found.length > MAX_PACKAGE_FILES * 2)
         fail("TOO_LARGE", `The package folder holds more than ${MAX_PACKAGE_FILES} files`);
