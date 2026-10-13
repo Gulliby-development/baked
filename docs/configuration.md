@@ -43,7 +43,7 @@ The chat settings that the terminal pickers edit (provider options, chat router 
 | `thinking.mode` | `"auto"` | `off`, `auto`/`adaptive` or `enabled`; `thinking.budgetTokens` (at least 1024) with `enabled` |
 | `performance` | unset | Effort, speed, OpenAI reasoning effort, service tier and verbosity; set through `/provider-settings`. A chat's own [reasoning effort](providers.md#reasoning-effort-per-chat) replaces the effort settings for that chat |
 | `agentFeatures` | see [guide](guide.md#agent-features) | Agent behavior toggles |
-| `quality` | `duplication: "warn"` | Defaults of the [code quality gates](workflows/code-quality.md) of new workflow runs; `/code-quality` |
+| `quality` | `duplication: "warn"` | Defaults of the [code quality gates](workflows/code-quality.md) of new workflow runs: `duplication`, and `disabledRules`, `ruleSeverity`, `ruleFiles` of the anti-slop rule pack; `/code-quality` |
 | `disabledTools` | `[]` | Tools turned off with `/tools` |
 | `webSearch` | `true` | Web search tool (asks before each search) |
 | `artifactDeploy` | `false` | Allow deploying [artifacts](artifacts.md) to your Vercel account (asks before each deploy) |

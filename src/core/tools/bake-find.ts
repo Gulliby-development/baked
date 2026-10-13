@@ -33,12 +33,12 @@ export const bakeFindTool = {
 
       if (repoMapResults && repoMapResults.length > 0) {
         const symbolDetails = await buildSymbolDetails(repoMap, repoMapResults);
-        return { success: true, output: symbolDetails };
+        return { success: true, output: symbolDetails, backend: "repo-map" };
       }
 
       const fileResults = await fuzzyFileSearch(query, args.type, limit, cwd);
       if (!fileResults.length) {
-        return { success: true, output: `No files matching "${query}".` };
+        return { success: true, output: `No files matching "${query}".`, backend: "file-list" };
       }
 
       const enriched = repoMap?.isReady
@@ -48,6 +48,7 @@ export const bakeFindTool = {
       return {
         success: true,
         output: `${String(fileResults.length)} files matching "${query}":\n\n${enriched}`,
+        backend: "file-list",
       };
     };
   },
