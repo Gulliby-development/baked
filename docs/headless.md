@@ -32,7 +32,7 @@ baked --headless --watch                          # turns from baked! / baked? c
 
 Exit codes: `0` success, `1` error, `2` timeout, `130` aborted.
 
-`--events` emits one JSON object per line with a `type` of `start`, `input-context`, `text`, `tool-call`, `tool-result`, `step`, `error`, `done` or `session-saved`. `input-context` carries `items` (`{kind, ref, ok, summary, output?}`) for the prompt's `@` mentions and `!` command. `step` carries the running `tokens` with the step's own `lastStepInput`, `lastStepOutput` and `lastStepCacheRead`; with the Codex provider over app-server it also has `modelRequests`, the number of model responses whose usage Codex reported during the step (see [providers](providers.md#openai-codex)).
+`--events` emits one JSON object per line with a `type` of `start`, `input-context`, `text`, `tool-call`, `tool-result`, `step`, `warning`, `error`, `done` or `session-saved`. `tool-result` has a `summary` of up to 200 characters: the tool's output, or the text of an MCP tool's result. `warning` names what the provider does not support and why (`[unsupported] temperature: Codex CLI ignores this setting`), once per run however many steps repeat it. `input-context` carries `items` (`{kind, ref, ok, summary, output?}`) for the prompt's `@` mentions and `!` command. `step` carries the running `tokens` with the step's own `lastStepInput`, `lastStepOutput` and `lastStepCacheRead`; with the Codex provider over app-server it also has `modelRequests`, the number of model responses whose usage Codex reported during the step (see [providers](providers.md#openai-codex)).
 
 ## Changed files
 
