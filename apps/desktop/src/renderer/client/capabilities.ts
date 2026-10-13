@@ -23,11 +23,11 @@ export const CHAT_UNDO_CAPABILITY = "chat-undo";
 export const CHECKPOINTS_CAPABILITY = "checkpoints";
 /** `/v1/coordinator*` (the Coordinator section). */
 export const COORDINATOR_CAPABILITY = "coordinator";
-/** `GET|POST /v1/workflow/memory` (the Run memory section). */
+/** `GET|POST /v1/workflow/memory` (the Runs part of the Memory section). */
 export const RUN_MEMORY_CAPABILITY = "run-memory";
 /** `GET /v1/workflow/critic` (the critic's outcome log and calibration in Model routing). */
 export const CRITIC_OUTCOMES_CAPABILITY = "critic-outcomes";
-/** `/v1/memory*` (the Chat memory section). */
+/** `/v1/memory*` (the Chat part of the Memory section). */
 export const CHAT_MEMORY_CAPABILITY = "chat-memory";
 /** `images` on chat messages (paste and drop in the composer). */
 export const IMAGES_CAPABILITY = "images";

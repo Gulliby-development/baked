@@ -40,7 +40,8 @@ describe("chat memory client", () => {
     expect(purged.cleared).toBeGreaterThan(0);
   });
 
-  test("has its own project section", () => {
-    expect(parseRoute(projectHref("baked", "chat-memory"))).toEqual({ name: "project", key: "baked", section: "chat-memory", id: null });
+  test("is the Chat part of the Memory section", () => {
+    expect(parseRoute(projectHref("baked", "memory"))).toEqual({ name: "project", key: "baked", section: "memory", id: null });
+    expect(parseRoute("#/p/baked/chat-memory")).toEqual({ name: "project", key: "baked", section: "memory", id: "chat" });
   });
 });

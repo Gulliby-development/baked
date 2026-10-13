@@ -20,7 +20,7 @@ async function settle(view: View): Promise<string> {
   return view.captureCharFrame();
 }
 
-test("Ctrl+E on the All tab rewords a memory's summary and keeps its details", async () => {
+test("Ctrl+E on the Chat tab rewords a memory's summary and keeps its details", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "baked-memory-ui-"));
   dirs.push(cwd);
   const globalDir = join(cwd, "global");

@@ -277,9 +277,9 @@ B adds the remaining `baked workflow` commands the screens need. Each takes `com
 | `POST /v1/workflow/runs/RUN_ID/fork` | | `fork` |
 | `POST /v1/workflow/runs/RUN_ID/undo` | `path?` | `undo` |
 | `POST /v1/workflow/runs/RUN_ID/discard-worktree` | | `discard-worktree` |
-| `POST /v1/workflow/runs/RUN_ID/deliver` | `remote?`, `branch?`, `draft?`, `pullRequest?` (default true), `followUp?` (a delivered run whose branch and pull request get this run's commit, as `--follow-up`; not with `branch`, `draft` or `pullRequest`); no revision | `deliver` (prepares the plan and its approval request; a follow-up plan's request body has `followUp: {runId, pullRequest}`) |
+| `POST /v1/workflow/runs/RUN_ID/deliver` | `remote?`, `branch?`, `draft?`, `pullRequest?` (default true), `followUp?` (a delivered run whose branch and pull request get this run's commit, as `--follow-up`; not with `branch`, `draft` or `pullRequest`), `answerThreads?` (review thread IDs of the followed pull request answered after the push, as `--answer-threads`; needs `followUp`), `resolve?` (also resolve them); no revision | `deliver` (prepares the plan and its approval request; a follow-up plan's request body has `followUp: {runId, pullRequest}`, and with threads `reviewReplies: {threads[], resolve, body}`) |
 | `POST /v1/workflow/runs/RUN_ID/deliver/execute` | `expectedRevision`, `requestId?`; no `commandId` | `deliver --execute`, after the plan was approved |
-| `GET /v1/workflow/runs/RUN_ID/checks` | | `follow --once`: the checks GitHub reports on the commit the run's latest delivery pushed (`{runId, repository, branch, commit, pullRequest, state, checks[], checkedAt}`, `state` `none`, `pending`, `passed` or `failed`; each check `{name, state, detail, url}`), and with a failed check `fix: {workflowId, featureId, prompt, followUp}`, the fix-ci run to start with `POST /v1/workflow/runs`. 404 for a run without a pushed delivery |
+| `GET /v1/workflow/runs/RUN_ID/checks` | | `follow --once`: the checks GitHub reports on the commit the run's latest delivery pushed (`{runId, repository, branch, commit, pullRequest, state, checks[], checkedAt}`, `state` `none`, `pending`, `passed` or `failed`; each check `{name, state, detail, url}`), and with a failed check `fix: {workflowId, featureId, prompt, followUp}`, the fix-ci run to start with `POST /v1/workflow/runs`. With `?reviews=true` and no failed check also `reviews: {state, threads[], changesRequested[]}` and, when changes are asked for, `repair: {workflowId, featureId, prompt, followUp, threads}`, the quick-fix run to start ([repairing from review comments](../workflows/runtime.md#repairing-from-review-comments)). 404 for a run without a pushed delivery |
 | `GET /v1/workflow/runs/RUN_ID/progress` | | `export-progress` |
 | `POST /v1/workflow/runs/RUN_ID/export` | `destination?` (a new directory, relative to the workspace); no `commandId` | `export`: writes `manifest.json` and returns `{path, manifestHash}`. Without `destination` it is `.baked/exports/RUN_ID-STAMP`; a directory outside the workspace is refused with 403 `CAPABILITY_DENIED`, one that exists with 409 |
 | `POST /v1/workflow/runs/RUN_ID/redact` | `artifactId`, `reason` (required); no `commandId` | `redact`: `{redacted: true}` |
@@ -667,8 +667,8 @@ The [artifacts](../artifacts.md) of the user, the same for every project's serve
 | Settings: model routing, providers | `GET|PATCH /v1/config`, `GET|PATCH /v1/workflow/routing`, `GET /v1/workflow/critic`, `GET /v1/providers`, `PUT|DELETE /v1/providers/ID/key`, `GET|POST|DELETE /v1/providers/ID/login`, `POST /v1/providers/ID/logout`, `POST /v1/providers/ID/switch`, `GET /v1/models` |
 | Project setup: workflows | `GET /v1/workflow/definitions`, `POST /v1/workflow/editor`, `POST /v1/workflow/editor/review\|save` |
 | Project setup: hooks | `GET /v1/hooks`, `POST /v1/hooks/session` |
-| Run memory | `GET\|POST /v1/workflow/memory` |
-| Chat memory | `GET\|POST /v1/memory`, `PUT /v1/memory/settings`, `GET\|POST /v1/memory/cleanup` |
+| Memory: Runs | `GET\|POST /v1/workflow/memory` |
+| Memory: Chat | `GET\|POST /v1/memory`, `PUT /v1/memory/settings`, `GET\|POST /v1/memory/cleanup` |
 | Git | `GET /v1/git`, `POST /v1/git/actions` |
 | Code graph | `POST /v1/graph`, `GET /v1/graph/file`, `GET /v1/graph/link`, `GET /v1/graph/search` |
 | Project setup: gates and checks | `GET\|PUT /v1/workflow/checks`, `GET /v1/workflow/checks/suggestions`, `POST /v1/workflow/checks/ID/run`; gate definition files in `GET /v1/workflow/gates` and `POST /v1/workflow/gates/confirm` |
