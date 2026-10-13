@@ -277,7 +277,7 @@ B adds the remaining `baked workflow` commands the screens need. Each takes `com
 | `POST /v1/workflow/runs/RUN_ID/fork` | | `fork` |
 | `POST /v1/workflow/runs/RUN_ID/undo` | `path?` | `undo` |
 | `POST /v1/workflow/runs/RUN_ID/discard-worktree` | | `discard-worktree` |
-| `POST /v1/workflow/runs/RUN_ID/deliver` | `remote?`, `branch?`, `draft?`, `pullRequest?` (default true); no revision | `deliver` (prepares the plan and its approval request) |
+| `POST /v1/workflow/runs/RUN_ID/deliver` | `remote?`, `branch?`, `draft?`, `pullRequest?` (default true), `followUp?` (a delivered run whose branch and pull request get this run's commit, as `--follow-up`; not with `branch`, `draft` or `pullRequest`); no revision | `deliver` (prepares the plan and its approval request; a follow-up plan's request body has `followUp: {runId, pullRequest}`) |
 | `POST /v1/workflow/runs/RUN_ID/deliver/execute` | `expectedRevision`, `requestId?`; no `commandId` | `deliver --execute`, after the plan was approved |
 | `GET /v1/workflow/runs/RUN_ID/progress` | | `export-progress` |
 | `POST /v1/workflow/runs/RUN_ID/export` | `destination?` (a new directory, relative to the workspace); no `commandId` | `export`: writes `manifest.json` and returns `{path, manifestHash}`. Without `destination` it is `.baked/exports/RUN_ID-STAMP`; a directory outside the workspace is refused with 403 `CAPABILITY_DENIED`, one that exists with 409 |

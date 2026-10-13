@@ -994,6 +994,8 @@ Preparation refuses, with `details.reason` in the error:
 | `detached_head`, `no_commits`, `missing_identity` | No base branch, no base commit, or no `user.name`/`user.email` |
 | `nothing_to_deliver` | Every changed file was excluded |
 | `worktree_missing`, `branch_moved` | A worktree run's worktree was removed, or its run branch no longer points at the accepted commit |
+| `invalid_follow_up`, `not_delivered` | `--follow-up` names the run itself, or a run with no pushed delivery |
+| `branch_missing`, `fetch_required`, `branch_checked_out` | The followed branch is gone from the remote, its tip is not in the local repository (`git fetch` it), or it is checked out in the working copy or a worktree |
 
 A HEAD that moved since the run's baseline is accepted when the new commits do not touch the delivered files; the plan records `headMoved`.
 
@@ -1010,6 +1012,16 @@ Pull requests use the GitHub REST API. The token is read from the environment va
 ```json
 { "workflows": { "delivery": { "tokenEnv": "GITHUB_TOKEN", "apiUrl": "https://api.github.com" } } }
 ```
+
+### Follow-up commits to a delivered pull request
+
+A later run can add its commit to the branch and pull request of a run that was already delivered, for example a `fix-ci` run for a check that failed on that pull request, or a run that answers its review:
+
+```sh
+baked workflow deliver RUN_ID --follow-up DELIVERED_RUN_ID
+```
+
+The plan takes the branch and remote of the followed run's latest pushed delivery and builds the commit on that branch's remote tip (`base.commit`) instead of HEAD; `base.branch` stays the pull request's base. Its operations are `commit` and `push`: no pull request is opened, and `followUp` names the followed run and its pull request, which shows the new commit. The usual checks apply against that tip instead of HEAD, so a file whose content when the run started differs from the branch is refused as `base_mismatch`. A run that works on the followed run's result from the working copy (its files are still there, uncommitted) therefore delivers just its own change. The local copy of the branch, if there is one, must point at the remote tip and not be checked out in the working copy or a worktree (`branch_moved`, `branch_checked_out`): execution fast-forwards it with the commit and never changes a checkout. The push is a fast-forward as always; when someone pushed to the branch after the plan, the push is refused as `non_fast_forward`, and the next plan needs that commit fetched. `--branch`, `--draft` and `--no-pr` plan a new branch and are refused with `--follow-up`. The TUI and desktop approval views show which branch and pull request the commit goes to.
 
 ## Initiatives
 

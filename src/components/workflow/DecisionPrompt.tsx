@@ -87,6 +87,8 @@ interface DeliveryBody {
   userChanges?: string[];
   commitMessage?: string;
   pullRequest?: { title: string; base: string; draft: boolean } | null;
+  /** A follow-up: the commit goes onto the branch and pull request of an earlier delivered run. */
+  followUp?: { runId: string; pullRequest: { number: number; url: string } | null };
 }
 interface AcceptanceBody {
   acceptance?: {
@@ -746,18 +748,28 @@ export function DecisionPrompt({
   if (request.kind === "delivery") {
     const body = parse<DeliveryBody>(request.body_json);
     const operations = body.operations ?? [];
+    const follow = body.followUp;
     return (
       <box flexDirection="column">
         <Section
-          title="Approve the Git delivery"
-          description="Approving lets BAKED commit exactly these files, push the branch and open the pull request below. Nothing is force-pushed or merged."
+          title={follow ? "Approve the follow-up commit" : "Approve the Git delivery"}
+          description={
+            follow
+              ? "Approving lets BAKED commit exactly these files on top of the branch below and push it as a fast-forward. No new pull request is opened. Nothing is force-pushed or merged."
+              : "Approving lets BAKED commit exactly these files, push the branch and open the pull request below. Nothing is force-pushed or merged."
+          }
         >
           <text fg={t.textPrimary}>
             {`${operations.join(", ")} to ${body.remote?.name ?? "?"} (${body.remote?.url ?? "?"})`}
           </text>
           <text fg={t.textMuted}>
-            {`Branch ${body.branch ?? "?"} from ${body.base?.branch ?? "?"} at ${(body.base?.commit ?? "").slice(0, 12)}`}
+            {follow
+              ? `Adds to branch ${body.branch ?? "?"} at ${(body.base?.commit ?? "").slice(0, 12)}, delivered by run ${follow.runId}`
+              : `Branch ${body.branch ?? "?"} from ${body.base?.branch ?? "?"} at ${(body.base?.commit ?? "").slice(0, 12)}`}
           </text>
+          {follow?.pullRequest ? (
+            <text fg={t.textMuted}>{`Pull request: ${follow.pullRequest.url}`}</text>
+          ) : null}
           <text fg={t.textSecondary} attributes={1}>{`Files (${body.files?.length ?? 0})`}</text>
           {(body.files ?? []).map((f) => (
             <text key={f} fg={t.textMuted}>{`  ${f}`}</text>

@@ -54,6 +54,7 @@ export function DeliveryDetail({ item, onDone }: DetailProps) {
         if (!request) return <Gone item={item} />;
         const plan = parseBody<DeliveryBody>(request);
         const pr = plan.pullRequest ?? null;
+        const follow = plan.followUp ?? null;
         return (
           <>
             <DetailHeader
@@ -61,6 +62,9 @@ export function DeliveryDetail({ item, onDone }: DetailProps) {
               aside={<span className={ASIDE}>{operationsLine(plan.operations)}</span>}
             />
             <p className={LEDE}>
+              {follow
+                ? "A follow-up commit on the branch of an earlier delivery, pushed as a fast-forward. No new pull request is opened. "
+                : ""}
               Nothing in Git changes until you approve this exact plan. Your other uncommitted files
               stay as they are.
             </p>
@@ -74,7 +78,21 @@ export function DeliveryDetail({ item, onDone }: DetailProps) {
                 </span>
               </Fact>
               <Fact label="Pull request">
-                {pr ? (pr.draft ? "Draft" : "Ready for review") : "None"}
+                {follow ? (
+                  follow.pullRequest ? (
+                    <span className="font-mono">{follow.pullRequest.url}</span>
+                  ) : (
+                    "None"
+                  )
+                ) : pr ? (
+                  pr.draft ? (
+                    "Draft"
+                  ) : (
+                    "Ready for review"
+                  )
+                ) : (
+                  "None"
+                )}
               </Fact>
             </div>
             <section className={LIST} aria-label="Files in the commit">
