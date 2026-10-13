@@ -47,6 +47,13 @@ describe("spec-side checks", () => {
     expect(specCoverageProblems({ ...fixed, criteria: [...fixed.criteria, visual] })).toEqual([]);
     expect(specCoverageProblems({ ...fixed, criteria: [...fixed.criteria, { ...readme, method: "automated" as const }] })).toEqual([]);
   });
+  test("a manual criterion about a property of the code is sent back to the spec author", () => {
+    // logslice 242ff843 AC-021: three reviews passed it, converge still asked a person.
+    const streaming = { ...criterion("AC-021", ["FR-001"]), given: "a large input", when: "a reviewer inspects it", then: "input is iterated line by line and not read fully", method: "manual" as const };
+    const spec: Spec = { ...fixed, criteria: [...fixed.criteria, streaming] };
+    expect(manualRepositoryCriteria(spec)).toEqual(["AC-021"]);
+    expect(specCoverageProblems(spec).join(" ")).toContain("criterion AC-021 is about a file in the repository or a property of its code");
+  });
   test("an automated criterion only other platforms can prove is sent back to the spec author", () => {
     // propdrift eea2e0e9 AC-008: blocked at converge, two identical convergence calls.
     const crossOs = { ...criterion("AC-005", ["FR-001"]), given: "the CLI", when: "it runs", then: "MIT license terms are present and behavior is confirmed on Windows, macOS, and Linux" };

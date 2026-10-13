@@ -1225,21 +1225,24 @@ export function validateSpecCoverage(spec: Spec): string[] {
 const REPOSITORY_FILE =
   /\b(?:readme|changelog|license|contributing|dockerfile|makefile)(?:\.\w+)?\b|(?:^|[\s\x60'"(])[\w./-]*\.(?:md|mdx|txt|rst|json|jsonc|ya?ml|toml|ini|cfg|env|lock|[cm]?[jt]sx?|py|go|rs|rb|java|kt|cs|php|sh|css|html)\b/im;
 
+// A property of the code ("input is iterated line by line", when "a reviewer inspects it").
+const CODE_PROPERTY =
+  /\b(?:reviewers?|code review|source code|the code|implementation|(?:inspects?|reads?) the (?:source|module|function|class))\b/i;
+
 /**
  * Criteria about a file of the repository (README text, docs, configuration, source) whose method
  * is manual. A reviewer reads the file and the checks can grep it; only a person can answer a
  * manual request, so the run would wait for someone who just reads the same file (run 2fbac09c,
- * AC-003: 12 hours).
+ * AC-003: 12 hours). A property of the code is the same case: a reviewer passed logslice 242ff843
+ * AC-021 three times and converge still asked a person.
  */
 export function manualRepositoryCriteria(spec: Spec): string[] {
   return spec.criteria
-    .filter(
-      (c) =>
-        c.method === "manual" &&
-        REPOSITORY_FILE.test(`${c.given}
-${c.when}
-${c.then}`),
-    )
+    .filter((c) => {
+      if (c.method !== "manual") return false;
+      const text = `${c.given}\n${c.when}\n${c.then}`;
+      return REPOSITORY_FILE.test(text) || CODE_PROPERTY.test(text);
+    })
     .map((c) => c.id);
 }
 
@@ -1285,7 +1288,7 @@ export function specCoverageProblems(spec: Spec): string[] {
     ),
     ...manualRepositoryCriteria(spec).map(
       (id) =>
-        `criterion ${id} is about a file in the repository but has method manual: use method automated (a command check or the reviewer reading the file), because a person can add nothing a reviewer cannot read there. Keep manual for behavior only a person can observe.`,
+        `criterion ${id} is about a file in the repository or a property of its code but has method manual: use method automated (a test, a command check, or the reviewer reading the file or code), because a person can add nothing a reviewer cannot read there. Keep manual for behavior only a person can observe.`,
     ),
     ...hostBoundCriteria(spec).map(
       (id) =>
