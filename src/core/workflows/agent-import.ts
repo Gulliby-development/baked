@@ -84,6 +84,9 @@ export interface AgentList {
 }
 
 const MAX_FILE_BYTES = 64 * 1024;
+const PRESENCE_TTL_MS = 5000;
+/** Whether a project has agents, per workspace, for `hasProjectAgents`. */
+const presence = new Map<string, { at: number; value: boolean }>();
 const MAX_TEXT = 16000;
 
 const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
@@ -293,6 +296,7 @@ export function writeAgentFile(
 
 /** Deletes an agent's file. A Roo mode is refused: other modes share `.roomodes`. */
 export function removeAgentFile(workspace: string, key: string, expectedHash?: string): AgentWrite {
+  presence.delete(workspace);
   const found = listAgents(workspace).agents.find((a) => a.key === key);
   if (!found) return { status: "unknown", message: `No agent ${key} in this project` };
   if (!found.removable)
@@ -618,4 +622,74 @@ export function conversionBases(workspace: string, policy: RunPolicy): string[] 
     .filter((d) => d.schemaVersion === 2 && d.line.stages.some((s) => s.type === "tasks"))
     .map((d) => d.id);
   return ["standard", ...ids.filter((id) => id !== "standard")].filter((id) => ids.includes(id));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Front-end helpers
+
+/**
+ * Whether the project has any custom agent, cached for a few seconds: the TUI asks on every
+ * palette render to show `/agents` only in projects that have agents.
+ */
+export function hasProjectAgents(workspace: string): boolean {
+  const cached = presence.get(workspace);
+  if (cached && Date.now() - cached.at < PRESENCE_TTL_MS) return cached.value;
+  let value = false;
+  try {
+    value = listAgents(workspace).agents.length > 0;
+  } catch {
+    value = false;
+  }
+  presence.set(workspace, { at: Date.now(), value });
+  return value;
+}
+
+/** Forgets the cached presence, after a conversion or removal. */
+export function forgetAgentPresence(workspace: string): void {
+  presence.delete(workspace);
+}
+
+/** A free workflow ID for a conversion: `base`, then `base-2` and so on. */
+export function freeWorkflowId(workspace: string, base = "agents"): string {
+  let id = base;
+  for (let n = 2; existsSync(join(workspace, "baked", "workflows", `${id}.json`)); n++)
+    id = `${base}-${n}`;
+  return id;
+}
+
+/** How a person reads each stage. */
+export const STAGE_LABELS: Record<AgentStage, string> = {
+  research: "Research",
+  specify: "Specify",
+  plan: "Plan",
+  implement: "Implement",
+  review: "Review",
+  skip: "Not used",
+};
+
+/** The tools the agents come from, in words: "Claude Code" or "Claude Code and Roo Code". */
+export function agentOrigins(agents: readonly FoundAgent[]): string {
+  const labels = [...new Set(agents.map((a) => a.sourceLabel))];
+  return labels.length <= 1
+    ? (labels[0] ?? "")
+    : `${labels.slice(0, -1).join(", ")} and ${labels.at(-1)}`;
+}
+
+/** The outcome of a conversion as lines for the TUI and the CLI. */
+export function describeConversion(result: ConvertResult): string[] {
+  const used = result.profiles.length + result.gates.length;
+  const lines = [
+    `Made workflow ${result.workflowId} from ${used} agent${used === 1 ? "" : "s"} (based on ${result.from}): ${result.path}`,
+    ...result.profiles.map((p) => `  ${STAGE_LABELS[p.stage]}: profile ${p.id} from ${p.agent}`),
+    ...result.gates.map((g) => `  Review: gate ${g.id} from ${g.agent}`),
+  ];
+  if (result.removed.length)
+    lines.push(
+      `Removed ${result.removed.length} agent file${result.removed.length === 1 ? "" : "s"}: ${result.removed.join(", ")}`,
+    );
+  for (const k of result.kept) lines.push(`Kept ${k.key}: ${k.reason}`);
+  for (const note of result.notes) lines.push(`Note: ${note}`);
+  if (result.problems.length)
+    lines.push(`Fix in the editor before a run: ${result.problems.join("; ")}`);
+  return lines;
 }
