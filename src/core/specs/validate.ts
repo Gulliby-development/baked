@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { WorkflowFault } from "../workflows/errors.js";
 import {
   RelativePath,
@@ -8,6 +8,17 @@ import {
   validateTaskGraph,
 } from "../workflows/schemas.js";
 import { hashBytes, hashJson } from "./hash.js";
+
+/**
+ * A path under the root to read, not write. A worktree's `node_modules` links to the working
+ * copy's (a junction on Windows), so a dependency installed there resolves outside the worktree;
+ * it is read in place. Every other path must stay inside the root.
+ */
+export function readablePath(root: string, path: string): string {
+  const parts = path.split(/[\\/]/);
+  if (parts[0] === "node_modules" && !parts.includes("..")) return join(root, path);
+  return workspacePath(root, path);
+}
 
 export function workspacePath(workspace: string, path: string): string {
   RelativePath.parse(path);

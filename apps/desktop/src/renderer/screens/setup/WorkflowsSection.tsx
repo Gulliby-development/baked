@@ -24,6 +24,7 @@ import { cn } from "../../lib/cn.js";
 import { LABEL } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
+import { AgentsNudge } from "./AgentsSection.js";
 import {
   ACTIONS,
   errorText,
@@ -62,13 +63,16 @@ function WorkflowList({ project }: Pick<SectionProps, "project">) {
   const [list] = useLoad(() => start.definitions(project.key), [project.key, "definitions"]);
   if (list.state !== "ready") return <LoadState value={list} what="workflows" />;
   return (
-    <WorkflowGallery
-      definitions={list.data}
-      projectKey={project.key}
-      onOpen={(tab) => {
-        requestedTab = tab;
-      }}
-    />
+    <div className="flex min-w-0 flex-col gap-5">
+      <AgentsNudge projectKey={project.key} />
+      <WorkflowGallery
+        definitions={list.data}
+        projectKey={project.key}
+        onOpen={(tab) => {
+          requestedTab = tab;
+        }}
+      />
+    </div>
   );
 }
 

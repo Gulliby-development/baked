@@ -21,7 +21,7 @@ import { runSandbox } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { renderSpec, renderTasks } from "../specs/render.js";
-import { validatePackage, workspacePath } from "../specs/validate.js";
+import { readablePath, validatePackage, workspacePath } from "../specs/validate.js";
 import {
   assertAcceptance,
   assertAcceptanceV2,
@@ -41,6 +41,7 @@ import {
   convergenceStop,
   earlierFindings,
   grantRound,
+  noteInconclusiveReview,
   noteUnverifiedCriteria,
   passesWithNotes,
   REPEAT_NOTE,
@@ -120,6 +121,7 @@ import {
   fixerTiers,
   isCodePath,
   isWholeUnitCheck,
+  isWholeUnitFormatter,
   taskCheckList,
   validateChecks,
   withCoveringChecks,
@@ -226,12 +228,7 @@ import {
   runMutants,
   scoreMutants,
 } from "./quality/mutation.js";
-import {
-  detectMutationTool,
-  runMutationTool,
-  type ToolShell,
-  toolPath,
-} from "./quality/mutation-tools.js";
+import { detectMutationTool, runMutationTool, type ToolShell } from "./quality/mutation-tools.js";
 import {
   checkPropertyTests,
   propertyClaim,
@@ -291,6 +288,7 @@ import {
   executionModeOf,
   generatedPaths,
   ImplementationSchema,
+  type InterruptCause,
   type MutantProposal,
   MutantProposalSchema,
   PlanSchema,
@@ -336,6 +334,7 @@ import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./s
 import {
   hasTaskGate,
   missingArtifactOwners,
+  namesPath,
   pendingCodePaths,
   pendingOwners,
   readyTasks,
@@ -426,12 +425,17 @@ function planGraph(
   plan: { markdown: string; taskGraph: TaskGraph },
   policy: RunPolicy,
   profiles: AgentProfile[],
+  stageProfile?: string,
 ): TaskGraph {
   const graph = withCommandDependencies(
     withReadDependencies(
       withModuleDependencies(
         withDerivedRequirements(spec, {
-          ...withImplementationProfiles(withoutApprovalRemarks(plan.taskGraph), profiles),
+          ...withImplementationProfiles(
+            withoutApprovalRemarks(plan.taskGraph),
+            profiles,
+            stageProfile,
+          ),
           specHash: hashJson(spec),
           planHash: hashBytes(plan.markdown),
         }),
@@ -933,7 +937,7 @@ export class WorkflowScheduler {
               }
               if (problems.length)
                 throw new WorkflowFault("INVALID_REFERENCE", problems.join("\n"));
-              const planned = planGraph(spec, plan, policy, profiles);
+              const planned = planGraph(spec, plan, policy, profiles, this.tasksProfile(runId));
               const graph = policy.sizing ? this.splitTests(runId, planned, policy) : planned;
               state.graph = graph;
               state.hostSplitTasks = graph.tasks.length - planned.tasks.length;
@@ -2160,7 +2164,10 @@ export class WorkflowScheduler {
     policy: RunPolicy,
     task: Task,
   ): ((root: string, signal: AbortSignal) => Promise<string[]>) | undefined {
-    const checks = policy.checks.filter((c) => c.scope === "feature" && isWholeUnitCheck(c));
+    // A formatter reports no type errors to keep, so it would only cost a run (#842).
+    const checks = policy.checks.filter(
+      (c) => c.scope === "feature" && isWholeUnitCheck(c) && !isWholeUnitFormatter(c),
+    );
     const written = writtenCodePaths(task);
     if (!checks.length || !written.length) return undefined;
     return async (root, signal) => {
@@ -2260,6 +2267,13 @@ export class WorkflowScheduler {
     );
     return facts;
   }
+  /** The implementation profile a v2 definition's tasks stage names (#832), if any. */
+  private tasksProfile(runId: string): string | undefined {
+    const parsed = parseRunDefinition(this.store.run(runId).definition_json);
+    if (parsed.schemaVersion !== 2) return undefined;
+    const stage = parsed.definition.stages.find((s) => s.type === "tasks");
+    return stage?.type === "tasks" ? stage.profileId : undefined;
+  }
   /** Every package problem the scheduler would reject, as messages the planner can act on. */
   private planProblems(
     runId: string,
@@ -2268,7 +2282,7 @@ export class WorkflowScheduler {
     policy: RunPolicy,
     profiles: AgentProfile[],
   ): string[] {
-    const graph = planGraph(spec, plan, policy, profiles);
+    const graph = planGraph(spec, plan, policy, profiles, this.tasksProfile(runId));
     const problems: string[] = [];
     const root = this.rootOf(runId);
     try {
@@ -3375,6 +3389,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       return this.store.beginStep(runId, `task-${task.id}`, stepId);
     });
     let integrity: Review["findings"] = [];
+    let reported: { summary: string; unresolved: string[] } | undefined;
     if (!checking && task.writes.length === 0) {
       // A task that may not write has nothing for a model to do: its task checks decide it,
       // and the checks stage covers the rest.
@@ -3554,7 +3569,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           // all of them, and keeps this attempt's edits.
           this.store.transaction(() => {
             state.widenedCorrections.push(task.id);
-            this.store.taskStatus(runId, task.id, "interrupted");
+            this.store.taskStatus(runId, task.id, "interrupted", null, {
+              cause: "widened_correction",
+            });
             this.store.finishStep(runId, child, "failed");
             this.store.saveState(runId, state);
           });
@@ -3576,7 +3593,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           this.store.transaction(() => {
             if (!this.deferOnMissingArtifact(runId, state, child, task, result, changed))
               return false;
-            this.store.taskStatus(runId, task.id, "interrupted");
+            this.store.taskStatus(runId, task.id, "interrupted", null, {
+              cause: "waits_for_artifact",
+            });
             this.store.finishStep(runId, child, "failed");
             this.store.saveState(runId, state);
             return true;
@@ -3590,21 +3609,33 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         ) {
           // A fresh session gets the task again; a session without its edit tool stays without it.
           this.store.transaction(() => {
-            this.store.taskStatus(runId, task.id, "interrupted");
+            this.store.taskStatus(runId, task.id, "interrupted", null, {
+              cause: "restart",
+              detail: restartReason,
+            });
             this.store.finishStep(runId, child, "failed");
             this.store.saveState(runId, state);
           });
           return;
         }
+        const atCap = changed.length > 0 && this.continueAtCap(runId, state, child, task);
         if (
-          changed.length > 0 &&
-          (this.continueAtCap(runId, state, child, task) ||
-            (restartReason !== null &&
-              this.restartOnce(runId, state, child, task.id, restartReason, changed, account)))
+          atCap ||
+          (changed.length > 0 &&
+            restartReason !== null &&
+            this.restartOnce(runId, state, child, task.id, restartReason, changed, account))
         ) {
           // The task is ready again and the next pass of the task loop continues it.
           this.store.transaction(() => {
-            this.store.taskStatus(runId, task.id, "interrupted");
+            this.store.taskStatus(
+              runId,
+              task.id,
+              "interrupted",
+              null,
+              atCap
+                ? { cause: "continue_at_cap" }
+                : { cause: "restart", detail: restartReason ?? undefined },
+            );
             this.store.finishStep(runId, child, "failed");
             this.store.saveState(runId, state);
           });
@@ -3620,6 +3651,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       }
       if (result.outcome === "already_satisfied")
         this.validateSatisfiedEvidence(runId, state, after, result);
+      reported = { summary: result.summary, unresolved: result.unresolved };
       await this.snapshot(runId, state, policy, signal);
       const beforeHashes = Object.fromEntries(
         changed.map((p) => [p, earlier.has(p) ? (earlier.get(p) ?? null) : (before[p] ?? null)]),
@@ -3688,6 +3720,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       signal,
     );
     this.settleTask(runId, state, policy, task, child, taskFailures, checkEvidence);
+    if (!taskFailures.length && reported)
+      await this.routeReportedDefect(runId, state, policy, task, child, reported, signal, taskRoot);
   }
   /**
    * Implementation with several writers (a worktree run whose policy allows more than one). Ready
@@ -4269,36 +4303,41 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       if (restart && outcome.edits) this.carryEdits(runId, state, entry, outcome.edits);
       if (!restart) lost.set(entry.task.id, outcome.reason);
       this.store.transaction(() => {
-        this.store.taskStatus(runId, entry.task.id, "interrupted");
+        this.store.taskStatus(runId, entry.task.id, "interrupted", null, {
+          cause: outcome.cause,
+          detail: outcome.reason,
+        });
         this.store.finishStep(runId, entry.child, "interrupted");
       });
     } else if (outcome.kind === "rejected") {
-      const again =
-        (outcome.blocked !== undefined &&
-          this.deferOnMissingArtifact(
-            runId,
-            state,
-            entry.child,
-            entry.task,
-            outcome.blocked,
-            [],
-          )) ||
-        (outcome.edits !== undefined &&
-          this.continueAtCap(runId, state, entry.child, entry.task)) ||
-        (outcome.restart !== undefined &&
-          this.restartOnce(
-            runId,
-            state,
-            entry.child,
-            entry.task.id,
-            outcome.restart.reason,
-            outcome.edits?.changed ?? [],
-            outcome.restart.account,
-          ));
+      const cause: InterruptCause | null =
+        outcome.blocked !== undefined &&
+        this.deferOnMissingArtifact(runId, state, entry.child, entry.task, outcome.blocked, [])
+          ? "waits_for_artifact"
+          : outcome.edits !== undefined && this.continueAtCap(runId, state, entry.child, entry.task)
+            ? "continue_at_cap"
+            : outcome.restart !== undefined &&
+                this.restartOnce(
+                  runId,
+                  state,
+                  entry.child,
+                  entry.task.id,
+                  outcome.restart.reason,
+                  outcome.edits?.changed ?? [],
+                  outcome.restart.account,
+                )
+              ? "restart"
+              : null;
+      const again = cause !== null;
       if (again && outcome.edits) this.carryEdits(runId, state, entry, outcome.edits);
       if (!again) failure ??= outcome.error;
       this.store.transaction(() => {
-        this.store.taskStatus(runId, entry.task.id, again ? "interrupted" : "blocked");
+        if (cause)
+          this.store.taskStatus(runId, entry.task.id, "interrupted", null, {
+            cause,
+            ...(cause === "restart" && outcome.restart ? { detail: outcome.restart.reason } : {}),
+          });
+        else this.store.taskStatus(runId, entry.task.id, "blocked");
         this.store.finishStep(runId, entry.child, "failed");
         if (again) this.store.saveState(runId, state);
       });
@@ -4346,13 +4385,27 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     account?: { summary: string; unresolved: string[] },
   ): boolean {
     if ((state.taskRestarts[taskId] ?? 0) > 0) return false;
+    // What the restart reuses of the attempt it replaces (#843): the files it carries and the
+    // tokens that attempt spent, which count as reused only when files are carried.
+    const interruptedTokens = this.store
+      .attempts(runId)
+      .filter((attempt) => attempt.step_id === stepId)
+      .reduce((sum, attempt) => sum + (attempt.used_tokens ?? 0), 0);
     this.store.transaction(() => {
       state.taskRestarts[taskId] = 1;
       this.store.artifact(
         runId,
         "recovery",
         `tasks/restarts/${taskId}.json`,
-        canonical({ taskId, stepId, reason, carriedPaths, ...account }),
+        canonical({
+          taskId,
+          stepId,
+          reason,
+          carriedPaths,
+          interruptedTokens,
+          carriedTokens: carriedPaths.length ? interruptedTokens : 0,
+          ...account,
+        }),
       );
       this.store.saveState(runId, state);
     });
@@ -4539,7 +4592,14 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           ? this.missingArtifactOwnersOf(runId, state, task, result)
           : [];
       if (restartReason && changed.length === 0 && !waits.length)
-        return { kind: "interrupted", entry, leaseLost: false, reason: restartReason, account };
+        return {
+          kind: "interrupted",
+          entry,
+          leaseLost: false,
+          cause: "restart",
+          reason: restartReason,
+          account,
+        };
       const refused = takeHashRefusals(root);
       const correction =
         result.outcome === "implemented" && changed.length === 0
@@ -4582,7 +4642,15 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         );
         results.push({ check, checked });
       }
-      return { kind: "done", entry, before, after, changed, checks: results };
+      return {
+        kind: "done",
+        entry,
+        before,
+        after,
+        changed,
+        checks: results,
+        account: { summary: result.summary, unresolved: result.unresolved },
+      };
     } catch (error) {
       if (runSignal.aborted) return { kind: "fatal", entry, error: runSignal.reason ?? error };
       if (
@@ -4606,6 +4674,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           kind: "interrupted",
           entry,
           leaseLost,
+          cause: leaseLost ? "lease_lost" : "worker_lost",
           ...(!leaseLost && before
             ? await this.lostWorkerEdits(runId, policy, entry, known, before)
             : {}),
@@ -4802,6 +4871,17 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       signal,
     );
     this.settleTask(runId, state, policy, task, entry.child, failures, evidence);
+    if (!failures.length)
+      await this.routeReportedDefect(
+        runId,
+        state,
+        policy,
+        task,
+        entry.child,
+        outcome.account,
+        signal,
+        mainRoot,
+      );
   }
   /**
    * A required task check that failed and declares a fixer gets one host repair before it becomes
@@ -5714,7 +5794,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         `tasks/conflicts/${task.id}.json`,
         canonical(account),
       );
-      this.store.taskStatus(runId, task.id, "interrupted");
+      this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
       this.store.finishStep(runId, child, "failed");
     });
     this.wait("clarification", state, {
@@ -6002,6 +6082,88 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     }
   }
   /**
+   * Routes a defect a task names in another task's file to that file's owner at once (#839). A
+   * test task may not edit the source it exposes a defect in, so it names the file in its summary
+   * and reports implemented; until now nothing acted on that before the checks stage, and every
+   * later test task paid for the same failure (cfgtrace 276e4858: four test tasks, 1.94M tokens,
+   * named env_source.py). When the account names a file an implemented task writes, the run's
+   * required feature checks run once; the findings of a failing one on the named files become a
+   * corrective task of their owner, with the failing check as the repro. The account alone starts
+   * nothing: without a failing check there is no evidence of a defect.
+   */
+  private async routeReportedDefect(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    child: string,
+    account: { summary: string; unresolved: string[] },
+    signal: AbortSignal,
+    root: string,
+  ): Promise<void> {
+    const graph = state.graph;
+    if (!graph || !state.rootGraph) return;
+    const rows = this.store.tasks(runId);
+    if (rows.find((r) => r.id === task.id)?.status !== "implemented") return;
+    if (this.store.latestArtifact(runId, `tasks/defects/${task.id}.json`)) return;
+    const done = new Set(
+      rows.filter((r) => ["implemented", "verified"].includes(r.status)).map((r) => r.id),
+    );
+    const text = [account.summary, ...account.unresolved].join("\n");
+    const files = [
+      ...new Set(
+        graph.tasks
+          .filter((t) => t.id !== task.id && done.has(t.id))
+          .flatMap((t) => t.writes.filter((w) => w.action !== "delete").map((w) => w.path))
+          .filter((path) => !task.writes.some((w) => w.path === path) && namesPath(text, path)),
+      ),
+    ];
+    if (!files.length) return;
+    const findings: Review["findings"] = [];
+    const ran: { checkId: string; status: string; evidenceId: string }[] = [];
+    for (const check of policy.checks.filter((c) => c.required && c.scope === "feature")) {
+      const checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
+      ran.push({ checkId: check.id, status: checked.status, evidenceId: checked.evidenceId });
+      if (checked.status !== "failed") continue;
+      const failed = failedCheckFindings(
+        check,
+        checked.evidenceId,
+        checked.output ?? "",
+        state.rootGraph.tasks,
+        task,
+        `${task.id} reported a defect in ${files.join(", ")}: ${account.summary.slice(0, 600)} Run the failing tests of evidence ${checked.evidenceId} first and fix the cause in the source; the tests stay as written.`,
+        newId,
+      );
+      // Output that names planned files decides who owns the failure; output that names none
+      // (a bare assertion) is the reporting task's account of where the defect is.
+      const named = failed.filter((f) => f.file !== null && files.includes(f.file));
+      const unnamed = failed.every((f) => f.file === null);
+      findings.push(
+        ...(named.length || !unnamed
+          ? named
+          : files.flatMap((file) => failed.map((f) => ({ ...f, id: newId(), file })))),
+      );
+    }
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `tasks/defects/${task.id}.json`,
+        canonical({ taskId: task.id, files, checks: ran, findings: findings.map((f) => f.id) }),
+      ),
+    );
+    if (!findings.length) return;
+    const recorded = this.recordFindings(runId, {
+      schemaVersion: 1,
+      snapshotHash: state.workspaceHash ?? "",
+      verdict: "changes_requested",
+      coverage: [],
+      findings,
+    });
+    this.repair(runId, state, policy, recorded, "repair", "task");
+    this.store.transaction(() => this.store.saveState(runId, state));
+  }
+  /**
    * Closes a task after its checks: failures become corrective tasks; otherwise the task gets its
    * check gate and the repair chain it closes is restored.
    */
@@ -6034,7 +6196,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         findings: taskFailures,
       });
       for (const finding of recorded) state.repairPredecessors[finding.id] = task.id;
-      this.repair(runId, state, policy, recorded, "repair");
+      this.repair(runId, state, policy, recorded, "repair", "task");
       this.store.transaction(() => this.store.saveState(runId, state));
     } else {
       this.store.transaction(() => {
@@ -6492,15 +6654,21 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const libraries = propertyLibraries({
       read: (path) => {
         try {
-          return readFileSync(workspacePath(root, path), "utf8");
+          return readFileSync(readablePath(root, path), "utf8");
         } catch {
           return null;
         }
       },
-      exists: (path) => existsSync(workspacePath(root, path)),
+      exists: (path) => {
+        try {
+          return existsSync(readablePath(root, path));
+        } catch {
+          return false;
+        }
+      },
       list: (directory) => {
         try {
-          return readdirSync(directory ? workspacePath(root, directory) : root).map((name) =>
+          return readdirSync(directory ? readablePath(root, directory) : root).map((name) =>
             directory ? `${directory}/${name}` : name,
           );
         } catch {
@@ -6832,7 +7000,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const scratch = join(tmpdir(), "baked-mutation", runId);
     mkdirSync(scratch, { recursive: true });
     const sandbox = runSandbox(policy, root);
-    const absolute = (path: string) => (isAbsolute(path) ? path : toolPath(root, path));
+    const absolute = (path: string) => (isAbsolute(path) ? path : readablePath(root, path));
     return {
       root,
       scratch: scratch.replaceAll("\\", "/"),
@@ -7669,6 +7837,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
               ...(reviewer.dimension === "correctness" && Object.keys(references).length
                 ? { references }
                 : {}),
+              // Named in the prompt as well as the tool list: round 11 reviewers said no tool was
+              // available while run_repro was offered (#528).
+              ...(canRepro ? { reproTool: { name: "run_repro", programs: executables } } : {}),
               ...(reviewer.dimension === "correctness" && examples.length
                 ? { documentedExamples: examples }
                 : {}),
@@ -7690,7 +7861,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
               );
               // Asked once: a reviewer that still has no repro after the advice is not blocked.
               if (problems.length || reproAdvised || !canRepro) return problems;
-              const advice = missingReproAdvice(output as Review);
+              const advice = missingReproAdvice(output as Review, executables);
               if (advice.length) reproAdvised = true;
               return advice;
             },
@@ -7747,13 +7918,29 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         // a test or declared check as a convergence task; without such a stage, or when the
         // verdict has no criterion behind it, the run blocks as before.
         const gaps = result.coverage.filter((c) => c.verdict === "inconclusive");
-        if (!routeGaps || !gaps.length)
+        if (!gaps.length)
           throw new WorkflowFault("OUTPUT_INVALID", `${reviewer.dimension} review inconclusive`);
-        state.reviewGaps[reviewer.key] = gaps.map((c) => ({
-          criterionId: c.criterionId,
-          explanation: c.explanation,
-        }));
-        result.verdict = result.findings.length ? "changes_requested" : "pass";
+        if (routeGaps) {
+          state.reviewGaps[reviewer.key] = gaps.map((c) => ({
+            criterionId: c.criterionId,
+            explanation: c.explanation,
+          }));
+          result.verdict = result.findings.length ? "changes_requested" : "pass";
+        } else {
+          // Without a converge stage (`quick`), a review with no finding has no defect to repair:
+          // when the required checks pass, its open criteria become known limitations instead of
+          // blocking the run on a verdict word (envguard-update f67dcde0, 445k tokens, #841).
+          if (result.findings.length || !requiredChecksPass(this.store, runId, state, policy))
+            throw new WorkflowFault("OUTPUT_INVALID", `${reviewer.dimension} review inconclusive`);
+          noteInconclusiveReview(
+            state,
+            reviewer.dimension,
+            gaps,
+            this.store.run(runId).convergence_rounds,
+          );
+          result.verdict = "pass";
+          delete state.reviewGaps[reviewer.key];
+        }
       } else delete state.reviewGaps[reviewer.key];
       this.store.transaction(() => this.store.finishStep(runId, child, "completed"));
       return { reviewer, result };
@@ -8712,9 +8899,10 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     policy: RunPolicy,
     findings: Review["findings"],
     kind: "repair" | "convergence",
+    scope: "round" | "task" = "round",
   ): void {
     this.store.transaction(() => {
-      appendCorrections(this.store, runId, state, policy, findings, kind);
+      appendCorrections(this.store, runId, state, policy, findings, kind, scope);
       // A v2 run keeps its position: a task's repair runs in the tasks stage it is in, and a
       // stage's failure goes back along the definition's repair transition (#853).
       const parsed = parseRunDefinition(this.store.run(runId).definition_json);
@@ -8928,6 +9116,8 @@ type WorkerOutcome =
       after: Record<string, string>;
       changed: string[];
       checks: WorkerCheck[];
+      /** The worker's summary and unresolved items, for a defect it names in another task's file. */
+      account: { summary: string; unresolved: string[] };
     }
   /** The task's result is refused: a change outside its writes, or no complete implementation. */
   | {
@@ -8947,6 +9137,8 @@ type WorkerOutcome =
   | {
       kind: "interrupted";
       entry: BatchEntry;
+      /** Why the worker stopped: a restart it asked for, or a lost worker or worktree lease. */
+      cause: InterruptCause;
       reason: string;
       /** Another owner took the task worktree's lease, so the worktree is not this run's to reuse. */
       leaseLost: boolean;

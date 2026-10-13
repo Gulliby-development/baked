@@ -17,6 +17,12 @@
   --animate-tray-back: tray-repair 1.8s ease-in-out forwards;
   --animate-lane: lane-dash 600ms linear infinite;
   --animate-pulse-dot: pulse-dot 1s ease-in-out infinite;
+  /* The Agents section (screens/setup/AgentsSection.tsx): agents waiting above the line, landing
+     on their stations when converted, and the panel that rises with the result. */
+  --animate-agent-float: agent-float 2.6s ease-in-out infinite;
+  --animate-agent-land: agent-land 650ms cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+  --animate-station-lit: station-lit 520ms ease-out both;
+  --animate-rise: rise 360ms ease-out both;
 
   @keyframes belt-roll {
     to {
@@ -63,6 +69,41 @@
   @keyframes pulse-dot {
     50% {
       transform: scale(1.35);
+    }
+  }
+  @keyframes agent-float {
+    50% {
+      transform: translateY(-4px);
+    }
+  }
+  @keyframes agent-land {
+    from {
+      opacity: 0.4;
+      transform: translateY(-28px) scale(0.92);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+  @keyframes station-lit {
+    from {
+      transform: translate(var(--shadow-x), var(--shadow-y));
+      box-shadow: 0 0 0 0 var(--ink);
+    }
+    to {
+      transform: translate(0, 0);
+      box-shadow: var(--shadow);
+    }
+  }
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
     }
   }
 }

@@ -28,7 +28,7 @@ Type `/` in the input or press `Ctrl+K` for the command palette. `/help` opens t
 
 ## Slash commands
 
-The tables below list the commands the palette shows, generated from `src/core/commands/registry.ts`. Some commands take arguments that are not listed: `/plan <task>`, `/mode <name>`, `/effort <level>`, `/checkpoint undo [N]` or `/undo [N]` (see the [user guide](guide.md#checkpoints)), `/workflow new TEXT`, `/workflow quick TEXT`, `/workflow edit ID`, `/workflow routing` and `/workflow usage`, `/workflow report RUN_ID`, `/workflow usage RUN_ID --format md` (see the [runtime guide](workflows/runtime.md#tui)).
+The tables below list the commands the palette shows, generated from `src/core/commands/registry.ts`. Some commands take arguments that are not listed: `/plan <task>`, `/mode <name>`, `/effort <level>`, `/checkpoint undo [N]` or `/undo [N]` (see the [user guide](guide.md#checkpoints)), `/workflow new TEXT`, `/workflow quick TEXT`, `/workflow edit ID`, `/workflow definitions`, `/workflow routing` and `/workflow usage`, `/workflow report RUN_ID`, `/workflow usage RUN_ID --format md` (see the [runtime guide](workflows/runtime.md#tui)).
 
 ### Session
 
@@ -120,6 +120,7 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 | `/repo-map` | Baked map settings (AST index) |
 | `/skills` | Browse & install skills |
 | `/packages` | [Packages](packages.md) installed in the project; `/packages add PATH` shows a local package's plan and installs it after you pick Install, `/packages remove NAME` deletes its unchanged files (both ask first); `/packages pack PATH [--name NAME] [--version VER] [--description "TEXT"] [--check]` writes the manifest of a package folder you author |
+| `/agents` | Only in a project that has [agents from other tools](workflows/runtime.md#workflows-from-a-projects-agents) (Claude Code, GitHub Copilot, OpenCode, Roo Code): lists them, edits one in `$EDITOR`, removes its file, and turns them into a workflow (keys 1-9 pick each agent's stage, `b` the base workflow, `r` whether the agent files go); `/agents convert [ID]` starts there, `/agents edit NAME` opens one |
 | `/tools` | Enable/disable tools for the agent |
 | `/artifacts` | [Artifacts](artifacts.md) shared by every project: pick one to open it in the browser; `/artifacts open ID` opens one, `/artifacts deploy ID [prod]` asks the agent to deploy it (it asks before it deploys) |
 | `/watch` | Watch files: saved baked! and baked? comments start the agent; `/watch on` starts it in this tab, `/watch off` stops it, `/watch status` shows it ([watch mode](watch.md)) |

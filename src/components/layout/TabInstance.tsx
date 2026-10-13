@@ -325,11 +325,8 @@ export const TabInstance = memo(function TabInstance({
       clearEditStacks(tabId);
       // Close tab in coordinator — releases claims, clears agents, blocks ghost claims
       getWorkspaceCoordinator().closeTab(tabId);
-      // Clean up checkpoint git tags (skip if session is being saved) and state
-      if (!useCheckpointStore.getState().shouldSkipCleanup(tabId)) {
-        useCheckpointStore.getState().cleanupGitTags(tabId, cwd);
-      }
-      useCheckpointStore.getState().clear(tabId);
+      // Forget the checkpoint state; the tags stay unless the user closed the tab
+      void useCheckpointStore.getState().releaseTab(tabId, cwd);
       // Clean up any pending plan file on disk
       const p = join(cwd, ".baked", "plans", planFileName(chat.sessionId));
       unlink(p).catch(() => {});

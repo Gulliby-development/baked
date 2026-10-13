@@ -34,7 +34,8 @@ export type WorkflowScreen =
   | "editor"
   | "initiatives"
   | "routing"
-  | "usage";
+  | "usage"
+  | "workflows";
 /** Compact status shown outside the panel while a run is tracked in this tab session. */
 export interface WorkflowBadge {
   runId: string;
@@ -63,6 +64,8 @@ interface WorkflowUIState {
   showRouting: () => void;
   /** Usage across runs over days, by model, stage or day. */
   showUsage: () => void;
+  /** The workflows a run can start from, with each one's line and a step-through. */
+  showWorkflows: () => void;
   /** The definition the editor window shows, and the screen Esc returns to. */
   editorId: string | null;
   editorReturn: "home" | "new";
@@ -101,6 +104,7 @@ export const useWorkflowStore = create<WorkflowUIState>((set) => ({
   showGates: () => set({ screen: "gates" }),
   showRouting: () => set({ screen: "routing" }),
   showUsage: () => set({ screen: "usage" }),
+  showWorkflows: () => set({ screen: "workflows" }),
   editorId: null,
   editorReturn: "home",
   showEditor: (id, from = "home") => set({ screen: "editor", editorId: id, editorReturn: from }),

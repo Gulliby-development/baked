@@ -95,7 +95,8 @@ interface PerTab {
 
 interface CheckpointState {
   tabs: Record<string, PerTab>;
-  skipCleanupTabs: Set<string>;
+  /** Tabs the user closed: their snapshots leave the session, so their tags go with the view. */
+  discardedTabs: Set<string>;
 
   // Sync
   syncFromMessages(tabId: string, messages: ChatMessage[], isLoading: boolean): void;
@@ -140,11 +141,17 @@ interface CheckpointState {
     tags: Array<{ index: number; anchorMessageId: string; gitTag: string }>,
     redoTurns?: RedoTurn[],
   ): void;
-  skipCleanup(tabId: string): void;
-  shouldSkipCleanup(tabId: string): boolean;
+  /** Marks a tab the user closed, so releasing it deletes its snapshot tags. */
+  discardTags(tabId: string): void;
 
   // Cleanup
   cleanupGitTags(tabId: string, cwd: string): Promise<void>;
+  /**
+   * Forgets the tab when its view goes away. The snapshot tags stay: on quit, restart or a session
+   * switch the saved session still names them for undo and redo after a resume. Only a tab the
+   * user closed (discardTags) loses its tags, since it is dropped from the session.
+   */
+  releaseTab(tabId: string, cwd: string): Promise<void>;
   clear(tabId: string): void;
 }
 
@@ -158,7 +165,7 @@ function getTab(tabs: Record<string, PerTab>, tabId: string): PerTab {
 
 export const useCheckpointStore = create<CheckpointState>()((set, get) => ({
   tabs: {},
-  skipCleanupTabs: new Set(),
+  discardedTabs: new Set(),
 
   syncFromMessages(tabId: string, messages: ChatMessage[], isLoading: boolean) {
     const state = get();
@@ -506,6 +513,12 @@ export const useCheckpointStore = create<CheckpointState>()((set, get) => ({
     }
   },
 
+  async releaseTab(tabId: string, cwd: string): Promise<void> {
+    const discard = get().discardedTabs.has(tabId);
+    get().clear(tabId);
+    if (discard) await get().cleanupGitTags(tabId, cwd);
+  },
+
   restoreTagsFromMeta(
     tabId: string,
     tags: Array<{ index: number; anchorMessageId: string; gitTag: string }>,
@@ -550,21 +563,17 @@ export const useCheckpointStore = create<CheckpointState>()((set, get) => ({
     });
   },
 
-  skipCleanup(tabId: string) {
-    const next = new Set(get().skipCleanupTabs);
+  discardTags(tabId: string) {
+    const next = new Set(get().discardedTabs);
     next.add(tabId);
-    set({ skipCleanupTabs: next });
-  },
-
-  shouldSkipCleanup(tabId: string): boolean {
-    return get().skipCleanupTabs.has(tabId);
+    set({ discardedTabs: next });
   },
 
   clear(tabId: string) {
     const state = get();
     const { [tabId]: _, ...rest } = state.tabs;
-    const next = new Set(state.skipCleanupTabs);
+    const next = new Set(state.discardedTabs);
     next.delete(tabId);
-    set({ tabs: rest, skipCleanupTabs: next });
+    set({ tabs: rest, discardedTabs: next });
   },
 }));

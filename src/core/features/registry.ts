@@ -954,6 +954,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs: conveyor gate marks and station gates"],
   },
   {
+    id: "workflow-walkthrough",
+    group: "Workflow runs",
+    title: "Each workflow's family and line, and a step-through of a run along it",
+    tui: ["/workflow: definitions screen (W), a line per workflow; Enter steps through a run"],
+    cli: ["baked workflow definitions"],
+    api: ["/v1/workflow/definitions"],
+    desktop: ["project/workflows"],
+  },
+  {
     id: "run-compare",
     group: "Workflow runs",
     title: "Compare two runs side by side (A/B of routing maps)",
@@ -975,6 +984,16 @@ export const FEATURES: readonly Feature[] = [
       "/v1/workflow/editor/save",
     ],
     desktop: ["project/workflows: gallery, Flow walkthrough, Graph editor, Stages"],
+  },
+  {
+    id: "project-agents",
+    group: "Workflow runs",
+    title:
+      "Agents a project brought from other tools: edit them and turn them into a workflow (shown only when the project has some)",
+    tui: ["/agents: the landing page shows a card for them"],
+    cli: ["baked workflow agents"],
+    api: ["/v1/agents", "/v1/agents/convert"],
+    desktop: ["project/agents", "project/workflows: a line points at Agents"],
   },
   {
     id: "wait-stage",

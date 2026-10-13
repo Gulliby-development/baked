@@ -18,6 +18,7 @@ import { WorkflowToolPolicy } from "../src/core/workflows/tool-policy.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
 import { sddWorkflow } from "../src/core/workflows/builtin/sdd.js";
 import { upgradeWorkflowV1 } from "../src/core/workflows/v2/upgrade.js";
+import { runReport } from "../src/core/workflows/run-report.js";
 import { worktreeView } from "../src/core/workflows/worktree.js";
 import { parseWorkflowArgs } from "../src/headless/workflow-parse.js";
 import { FixtureExecutor, fixturePolicy } from "./helpers/workflow-fixture.js";
@@ -107,12 +108,12 @@ function userCanEdit(workspace: string): boolean {
   }
 }
 
-function setup(options: { git?: boolean; policy?: RunPolicy } = {}) {
+function setup(options: { git?: boolean; policy?: RunPolicy; executor?: (root: string) => RootExecutor } = {}) {
   const root = mkdtempSync(join(tmpdir(), "baked-worktree-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const head = options.git === false ? "" : repository(root);
   const policy = options.policy ?? fixturePolicy;
-  const executor = new RootExecutor(root);
+  const executor = options.executor ? options.executor(root) : new RootExecutor(root);
   const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } };
   const service = new NativeWorkflowService(root, config, executor);
   executor.service = service;
@@ -508,6 +509,62 @@ class OverlapExecutor implements AgentExecutor {
     return new FixtureExecutor(root).execute(request);
   }
 }
+
+/** Adds a JavaScript module and its test to the fixture flow, so the mutation gate has code to mutate. */
+class SignExecutor extends RootExecutor {
+  override async execute(request: ExecutionRequest) {
+    const root = request.root ?? "";
+    const result = await super.execute(request);
+    if (request.profile.output === "plan") {
+      const plan = result.output as { taskGraph: { tasks: { writes: { path: string; action: string }[] }[] } };
+      plan.taskGraph.tasks[0]?.writes.push({ path: "src/sign.js", action: "create" }, { path: "tests/sign.test.js", action: "create" });
+    }
+    if (request.profile.output === "implementation") {
+      mkdirSync(join(root, "src"), { recursive: true });
+      mkdirSync(join(root, "tests"), { recursive: true });
+      writeFileSync(join(root, "src/sign.js"), "export const sign = (n) => (n < 0 ? -1 : 1);\n");
+      writeFileSync(
+        join(root, "tests/sign.test.js"),
+        'import { expect, test } from "bun:test";\nimport { sign } from "../src/sign.js";\ntest("sign", () => {\n  expect(sign(-5)).toBe(-1);\n  expect(sign(0)).toBe(1);\n});\n',
+      );
+    }
+    return result;
+  }
+}
+
+describe("mutation tools in a worktree run", () => {
+  // Bench round 13 (#835): every JS/TS worktree run blocked with "Path escapes workspace", because
+  // the worktree's node_modules links to the working copy's and Stryker resolved outside the worktree.
+  test("Stryker installed in the working copy runs through the worktree's linked node_modules", async () => {
+    const first = fixturePolicy.checks[0] as (typeof fixturePolicy.checks)[number];
+    const fx = setup({
+      policy: { ...fixturePolicy, mutation: "required", checks: [...fixturePolicy.checks, { ...first, id: "unit", args: ["test", "tests/"] }] },
+      executor: (root) => new SignExecutor(root),
+    });
+    writeFileSync(join(fx.root, ".git/info/exclude"), "node_modules/\n");
+    // A stand-in for Stryker that kills every mutant on the lines it is asked to mutate.
+    const bin = join(fx.root, "node_modules/@stryker-mutator/core/bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      join(bin, "stryker.js"),
+      [
+        'const { mkdirSync, writeFileSync } = require("node:fs");',
+        "const args = process.argv.slice(2);",
+        'const files = args[args.indexOf("--mutate") + 1].split(",");',
+        "const location = { start: { line: 1, column: 23 }, end: { line: 1, column: 28 } };",
+        'const mutants = [{ id: "0", mutatorName: "EqualityOperator", replacement: "n <= 0", status: "Killed", location }];',
+        'mkdirSync("reports/mutation", { recursive: true });',
+        'writeFileSync("reports/mutation/mutation.json", JSON.stringify({ schemaVersion: "1.0", files: Object.fromEntries(files.map((f) => [f, { mutants }])) }));',
+        "",
+      ].join("\n"),
+    );
+    const run = await fx.start("worktree");
+    const done = await fx.complete(run.runId);
+    expect(fx.service.store.run(run.runId).stop_detail ?? "").not.toContain("Path escapes workspace");
+    expect(done.status).toBe("completed");
+    expect(runReport(fx.service.store, run.runId)).toContain("Mutation gate (`required`, stryker): score 100% (1 of 1 mutants killed)");
+  });
+});
 
 describe("parallel worktree runs", () => {
   function parallelSetup(maxParallelRuns?: number) {

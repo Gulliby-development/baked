@@ -12,6 +12,7 @@ export const PROJECT_SECTIONS = [
   "artifacts",
   "gates",
   "workflows",
+  "agents",
   "instructions",
   "working-set",
   "memory",
