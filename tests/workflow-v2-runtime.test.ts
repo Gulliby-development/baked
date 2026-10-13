@@ -11,6 +11,7 @@ import { passesWithNotes } from "../src/core/verification/convergence-stop.js";
 import { runReport } from "../src/core/workflows/run-report.js";
 import { uncommittedEdits } from "../src/core/workflows/rollback.js";
 import type { RunPolicy, Spec, WorkflowEvent } from "../src/core/workflows/schemas.js";
+import { WorkflowScheduler } from "../src/core/workflows/scheduler.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
 import { type AgentExecutor, type ExecutionRequest, RuntimeStateSchema } from "../src/core/workflows/types.js";
@@ -602,20 +603,41 @@ describe("workflow v2 scheduler", () => {
   }, 30000);
 
   // #853: the repair of a failed task check read the definition with the schema-1 parser, so a
-  // run of any preset blocked with a schema error instead of correcting the task.
-  test("a failed task check in a v2 run starts a corrective task and the run completes", async () => {
-    const checked: RunPolicy = { ...policy, checks: [valueCheck, { ...valueCheck, id: "task-check", scope: "task" }] };
-    const { start, complete, service } = setup({ broken: 1, taskCheck: true }, checked);
-    const run = await start("standard");
-    const final = await complete(run.runId);
-    expect(lastError(service, run.runId)).toBe("");
-    expect(final.status).toBe("completed");
-    const tasks = service.store.tasks(run.runId);
-    expect(tasks.map((t) => t.id)).toEqual(["T001", "T002"]);
-    expect(JSON.parse(tasks[1]?.definition_json ?? "{}").origin).toBe("repair");
-    expect(service.store.checks(run.runId).map((c) => `${c.check_id}:${c.status}`)).toEqual(["task-check:failed", "task-check:passed", "check:passed"]);
-    expect(ofType(events(service, run.runId), "transition.taken").map((e) => e.payload.transitionId)).not.toContain("checks-repair");
-  }, 30000);
+  // run of any preset blocked with a schema error instead of correcting the task. #866: without a
+  // review stage (quick fix) the passing corrective task closes the host's finding itself.
+  const checked: RunPolicy = { ...policy, checks: [valueCheck, { ...valueCheck, id: "task-check", scope: "task" }] };
+  for (const workflow of ["standard", "quick-fix"]) {
+    test(`a failed task check in a ${workflow} run starts a corrective task and the run completes`, async () => {
+      const { start, complete, service, define } = setup({ broken: 1, taskCheck: true }, checked);
+      const preset = builtinPresets.get(workflow);
+      if (!preset) throw new Error(`${workflow} preset missing`);
+      define({ ...instantiatePreset(preset, checked), id: `custom-${workflow}`, preset: "custom" });
+      const run = await start(`custom-${workflow}`);
+      const final = await complete(run.runId);
+      expect(lastError(service, run.runId)).toBe("");
+      expect(final.status).toBe("completed");
+      const tasks = service.store.tasks(run.runId);
+      expect(tasks.map((t) => t.id)).toEqual(["T001", "T002"]);
+      expect(JSON.parse(tasks[1]?.definition_json ?? "{}").origin).toBe("repair");
+      expect(service.store.checks(run.runId).map((c) => `${c.check_id}:${c.status}`)).toEqual(["task-check:failed", "task-check:passed", "check:passed"]);
+      expect(service.store.findings(run.runId).map((f) => `${JSON.parse(f.body_json).claim}:${f.status}`)).toEqual(["Task T001 required check task-check failed:resolved"]);
+      expect(ofType(events(service, run.runId), "transition.taken").map((e) => e.payload.transitionId)).not.toContain("checks-repair");
+      // Sizing prices the tasks with the model routing gives the tasks stage, not null (#866).
+      const routed: unknown[] = [];
+      const probe = Object.create(WorkflowScheduler.prototype) as {
+        store: NativeWorkflowService["store"];
+        stageRoute: (runId: string, stage: unknown) => { models: string[] };
+        sizingModel(runId: string, graph: unknown): string | null;
+      };
+      probe.store = service.store;
+      probe.stageRoute = (_runId, stage) => {
+        routed.push(stage);
+        return { models: ["routed/model"] };
+      };
+      expect(probe.sizingModel(run.runId, service.store.state(run.runId).graph)).toBe("routed/model");
+      expect(routed).toEqual(["implement"]);
+    }, 30000);
+  }
 
   // A check whose fixer resolves what it reports passes without a repair task (#235).
   const fixer = (to: string) => ({
