@@ -89,6 +89,39 @@ async function noticeFor(chat: ChatService, pattern: RegExp): Promise<string> {
 }
 
 describe("coordinator launches", () => {
+  test("message_session sends a launched session a follow-up and its answer comes back", async () => {
+    const { chat, coordinator, tool } = await setup();
+    const launched = await tool("launch_session").execute({
+      title: "Survey the auth code",
+      brief: "List every place that checks a token.",
+      mode: "architect",
+      why: "Find the token checks",
+    });
+    const sessionId = /session ([0-9a-f-]{36})/.exec(launched.output)?.[1] ?? "";
+    await chat.get(sessionId).settled();
+    expect(await noticeFor(chat, /^Session/)).toBe('Session "Survey the auth code": done');
+
+    const stranger = await chat.create({ title: "Someone else's chat" });
+    expect(await tool("message_session").execute({ id: stranger.id, text: "Hi" })).toMatchObject({
+      success: false,
+      error: expect.stringContaining("not one you launched"),
+    });
+
+    const sent = await tool("message_session").execute({ id: sessionId, text: "Also check the CLI." });
+    expect(sent).toMatchObject({ success: true });
+    const session = chat.get(sessionId);
+    await session.settled();
+    expect(session.messages.filter((m) => m.role === "user").at(-1)?.content).toBe(
+      "Message from the project coordinator:\n\nAlso check the CLI.",
+    );
+    // Even when the follow-up's turn ends between two checks, its new answer is reported.
+    expect(await noticeFor(chat, /^Session/)).toBe('Session "Survey the auth code": done');
+    const notes = coordinator.messages.filter((m) => m.launch?.id === sessionId);
+    expect(notes).toHaveLength(2);
+    expect(notes.at(-1)?.launch).toMatchObject({ status: "done", result: "done" });
+    expect(await chat.syncLaunched()).toEqual([]);
+  }, 60000);
+
   test("a background session and a run show in their lists and report back", async () => {
     const { fixture, chat, coordinator, tool, server } = await setup();
 
@@ -102,21 +135,24 @@ describe("coordinator launches", () => {
     const sessionId = /session ([0-9a-f-]{36})/.exec(session.output)?.[1] ?? "";
     expect(chat.list().map((s) => s.id)).toContain(sessionId);
     await chat.get(sessionId).settled();
-    expect(await noticeFor(chat, /^session/)).toContain(`session ${sessionId}: done (Find the token checks)`);
+    expect(await noticeFor(chat, /^Session/)).toBe('Session "Survey the auth code": done');
 
     const run = await tool("start_run").execute({ prompt: "Create ready value", feature: "fixture", why: "Ship the value" });
     expect(run).toMatchObject({ success: true });
     const runId = /run ([0-9a-f-]{36})/.exec(run.output)?.[1] ?? "";
     expect((await fixture.service.list({ limit: 10 })).items.map((r) => r.runId)).toContain(runId);
-    expect(await noticeFor(chat, /^run/)).toBe(`run ${runId}: waiting: approval (Ship the value)`);
+    expect(await noticeFor(chat, /^Run/)).toBe('Run "Create ready value": waiting: approval');
 
     const brief = new BriefStore(chat.workspace, coordinator.id).read();
     expect(brief.launched.map((l) => [l.kind, l.id, l.status])).toEqual([
       ["session", sessionId, "done"],
       ["run", runId, "waiting: approval"],
     ]);
-    const notices = coordinator.messages.filter((m) => m.role === "system").map((m) => m.content);
-    expect(notices).toContain(`Launched run ${runId}: waiting: approval (Ship the value)`);
+    const notices = coordinator.messages.filter((m) => m.role === "system");
+    expect(notices.find((m) => m.launch?.kind === "run")).toMatchObject({
+      content: 'Run "Create ready value": waiting: approval',
+      launch: { kind: "run", id: runId, title: "Create ready value", status: "waiting: approval", why: "Ship the value", event: "status" },
+    });
     // Nothing new: no second notice.
     expect(await chat.syncLaunched()).toEqual([]);
 
@@ -370,8 +406,8 @@ describe("coordinator tasks", () => {
     const tasks = new FakeTasks();
     tasks.closedRefs.add("acme/widget#120");
     expect(await syncLaunched(chat, coordinator, state, tasks)).toEqual([
-      "feature api of initiative checkout (acme/widget#120): completed (Build api)",
-      "task acme/widget#120 closed: the pull request of feature api of initiative checkout (acme/widget#120) merged",
+      'Feature "api" of initiative checkout (acme/widget#120): completed',
+      'Task acme/widget#120 closed: the pull request of Feature "api" of initiative checkout merged',
     ]);
   });
 
@@ -415,11 +451,11 @@ describe("coordinator tasks", () => {
     } as unknown as ProjectStateSource;
     const tasks = new FakeTasks();
 
-    expect(await syncLaunched(chat, coordinator, state, tasks)).toEqual(["run run-1 (acme/widget#120): completed (Ship)"]);
+    expect(await syncLaunched(chat, coordinator, state, tasks)).toEqual(["Run run-1 (acme/widget#120): completed"]);
     expect(store.read().launched[0]?.task?.state).toBe("open");
     tasks.closedRefs.add("acme/widget#120");
     expect(await syncLaunched(chat, coordinator, state, tasks)).toEqual([
-      "task acme/widget#120 closed: the pull request of run run-1 (acme/widget#120) merged",
+      "Task acme/widget#120 closed: the pull request of Run run-1 merged",
     ]);
     expect(store.read().launched[0]?.task?.state).toBe("closed");
     expect(await syncLaunched(chat, coordinator, state, tasks)).toEqual([]);

@@ -65,6 +65,16 @@ describe("coordinator client", () => {
       ["run", true, "acme/baked#231"],
       ["run", true, "acme/baked#120"],
     ]);
+    const detail = await until(
+      () => chat.get("baked", session.id),
+      (d) => d.messages.some((m) => m.launch),
+    );
+    expect(detail.messages.find((m) => m.launch)?.launch).toMatchObject({
+      kind: "run",
+      title: "API endpoint",
+      status: "waiting: approval",
+      event: "status",
+    });
   });
 });
 
@@ -91,6 +101,32 @@ describe("coordinator screen model", () => {
     expect(model.launchedTone({ status: "running", active: true })).toBe("busy");
     expect(model.launchedTone({ status: "failed: check", active: false })).toBe("err");
     expect(model.launchedTone({ status: "completed", active: false })).toBe("ok");
+  });
+
+  test("names launched work by its title, not its id", () => {
+    const uuid = "e372f9bc-ae25-4098-96b0-3c7188fb7fd3";
+    expect(model.launchName({ id: uuid, title: "Deploy to Vercel" })).toBe("Deploy to Vercel");
+    expect(model.launchName({ id: uuid })).toBe("e372f9bc");
+    expect(model.launchName({ id: "checkout", feature: "api" })).toBe("api");
+    expect(model.launchKind({ kind: "session", id: uuid })).toBe("Session");
+    expect(model.launchKind({ kind: "initiative", id: "checkout", feature: "api" })).toBe(
+      "Feature of checkout",
+    );
+    expect(model.launchWhy({ title: "API endpoint", why: "API endpoint (split)" })).toBe("");
+    expect(model.launchWhy({ title: "Deploy", why: "Publish the page" })).toBe("Publish the page");
+    const note = { kind: "run" as const, id: "r1", why: "Ship", status: "completed" };
+    expect(model.noteTone({ ...note, event: "status" })).toBe("ok");
+    expect(model.noteTone({ ...note, status: "waiting for you", event: "status" })).toBe("warn");
+    expect(model.noteTone({ ...note, status: "failed: check", event: "status" })).toBe("err");
+    expect(model.noteTone({ ...note, status: "working", event: "status" })).toBe("busy");
+    expect(model.noteTone({ ...note, event: "task-closed" })).toBe("ok");
+  });
+
+  test("recognises a message the coordinator sent a launched session", () => {
+    expect(model.fromCoordinator("Message from the project coordinator:\n\nCheck the CLI")).toBe(
+      "Check the CLI",
+    );
+    expect(model.fromCoordinator("Check the CLI")).toBeNull();
   });
 
   test("hands a chat's last request to the coordinator", () => {

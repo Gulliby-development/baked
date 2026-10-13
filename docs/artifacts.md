@@ -8,7 +8,7 @@ Artifacts are stored in the BAKED data folder: `~/.baked/artifacts/` on macOS an
 
 ## From any chat
 
-The agent's `artifact` tool saves a page it wrote (as HTML, or from an `.html` file of the project), lists and reads artifacts, and deploys one. Ask in words: "save this page as an artifact", "deploy the release-notes artifact", "deploy it to production". A deploy shows what goes where and waits for your yes in every approval mode, auto included; a chat that cannot ask (a headless run) refuses to deploy. Subagents cannot deploy.
+The agent's `artifact` tool saves a page it wrote (as HTML, or from an `.html` file of the project), lists and reads artifacts, and deploys one. Ask in words: "save this page as an artifact", "deploy the release-notes artifact", "deploy it to production". A deploy shows what goes where and waits for your yes in every approval mode, auto included; a chat that cannot ask (a headless run) refuses to deploy. Subagents cannot deploy. In architect and plan mode, the coordinator included, the tool only lists and reads artifacts.
 
 ## Terminal and desktop
 

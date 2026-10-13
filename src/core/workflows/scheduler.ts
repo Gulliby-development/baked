@@ -65,6 +65,7 @@ import {
   TEST_FILE,
 } from "../verification/output-counts.js";
 import {
+  carryNoRepro,
   missingReproAdvice,
   outputShows,
   type ReproOutcome,
@@ -147,6 +148,12 @@ import { dependencyContracts } from "./dependencies.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { keepOutside, restoreOutside } from "./fixer-scope.js";
+import {
+  FORK_SEED_ARTIFACT,
+  FORK_SEEDED_ARTIFACT,
+  type ForkSeed,
+  seedBytes,
+} from "./fork-stage.js";
 import { outputTail } from "./gates.js";
 import {
   InitiativePlanSchema,
@@ -246,6 +253,8 @@ import {
   QUALITY_RULES,
   type RuleFinding,
   ruleClaim,
+  ruleClaimKey,
+  ruleFindingKey,
 } from "./quality/rules.js";
 import { DEFAULT_SAST_CONFIG, QUALITY_SAST, runSast, sastClaim, sastOf } from "./quality/sast.js";
 import { carriesOver, changedSince, previousRound } from "./re-review.js";
@@ -664,6 +673,7 @@ export class WorkflowScheduler {
       if (executionModeOf(policy) === "worktree") await ensureRunWorktree(this.store, runId);
       this.restoreMutatedFiles(runId);
       this.store.transaction(() => this.store.transition(runId, "running"));
+      await this.seedFork(runId, policy, signal);
       await withinWorkflow(this.leases.owner, async () => {
         while (this.store.run(runId).status === "running") {
           signal.throwIfAborted();
@@ -3051,6 +3061,121 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         last.kind === "convergence" ? "no_progress" : last.kind,
       );
     this.store.saveState(runId, state);
+  }
+  /**
+   * The first drive of a fork made with `fromStage` (#855): the workspace goes back to the
+   * parent's base content of each file the parent changed, which becomes the fork's baseline, and
+   * the parent's changes are written again as the fork's own journaled edits, so the review
+   * bundle, undo and delivery see them as this run's change. The tasks count as implemented. When
+   * the content is the parent's snapshot, the parent's check results and manual evidence and,
+   * for a fork at the convergence, its reviews are carried over.
+   */
+  private async seedFork(runId: string, policy: RunPolicy, signal: AbortSignal): Promise<void> {
+    const row = this.store.latestArtifact(runId, FORK_SEED_ARTIFACT);
+    if (!row || this.store.latestArtifact(runId, FORK_SEEDED_ARTIFACT)) return;
+    const seed = JSON.parse(this.store.readArtifact(runId, row.id)) as ForkSeed;
+    const state = this.store.state(runId);
+    const root = runRoot(this.store.workspace, state);
+    signal.throwIfAborted();
+    const published = new Set(
+      this.store
+        .effects(runId)
+        .filter((e) => e.kind === "file_patch" && ["applied", "reconciled"].includes(e.status))
+        .map((e) => (JSON.parse(e.intent_json) as { path: string }).path),
+    );
+    if (!state.manifest.baselineSnapshotId) {
+      for (const file of seed.files) {
+        const absolute = workspacePath(root, file.path);
+        const before = seedBytes(file.before);
+        if (fileHash(absolute) === (before === null ? null : hashBytes(before))) continue;
+        if (before === null) rmSync(absolute, { force: true });
+        else {
+          mkdirSync(dirname(absolute), { recursive: true });
+          writeFileSync(absolute, before);
+        }
+      }
+      const baseline = await this.snapshot(runId, state, policy, signal);
+      const repository = await gitBaseline(root);
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "baseline",
+          `baselines/${baseline.id}.json`,
+          canonical({ snapshotId: baseline.id, repository }),
+        ),
+      );
+      state.manifest.baselineSnapshotId = baseline.id;
+      this.store.transaction(() => this.store.saveState(runId, state));
+      await this.measureQualityBaseline(runId, state, policy, signal);
+      await this.recordCheckBaseline(runId, state, policy, signal);
+    }
+    const stepId = this.store.transaction(() => this.store.beginStep(runId, "fork-seed"));
+    const attempt = this.store.reserve(runId, stepId, null, 0, policy);
+    for (const file of seed.files) {
+      if (published.has(file.path)) continue;
+      const absolute = workspacePath(root, file.path);
+      const before = this.store.transaction(() => capturePreImage(this.store, runId, absolute));
+      this.journal.publish(
+        runId,
+        attempt,
+        file.path,
+        seedBytes(file.content),
+        before,
+        "file_patch",
+        root,
+      );
+    }
+    this.store.transaction(() => {
+      this.store.finishAttempt(runId, attempt, "completed", 0);
+      this.store.finishStep(runId, stepId, "completed");
+    });
+    const snapshot = await this.snapshot(runId, state, policy, signal);
+    this.store.transaction(() => {
+      for (const task of state.graph?.tasks ?? [])
+        this.store.taskStatus(runId, task.id, "implemented", snapshot.id);
+      const parent = seed.parentSnapshotId;
+      const same = parent !== null && snapshot.hash === seed.parentSnapshotHash;
+      if (same) {
+        const artifacts = new Map(this.store.artifacts(seed.parentRunId).map((a) => [a.id, a]));
+        for (const evidence of currentEvidence(this.store, seed.parentRunId, parent)) {
+          const artifact = artifacts.get(evidence.artifact_id);
+          const kind = evidence.kind;
+          // The fork builds its own review bundle; check results and manual evidence carry over.
+          if (!artifact || !(kind === "command" || kind === "manual")) continue;
+          const copy = this.store.artifact(
+            runId,
+            artifact.kind,
+            artifact.logical_path,
+            this.store.readArtifact(seed.parentRunId, artifact.id),
+          );
+          const id = this.store.addEvidence(runId, kind, snapshot.id, copy.id);
+          this.store.copyCheckResults(seed.parentRunId, evidence.id, runId, id);
+        }
+        const definition = parseRunDefinition(this.store.run(runId).definition_json);
+        const converge =
+          definition.schemaVersion === 1
+            ? definition.definition.stages[state.stageIndex]?.kind === "converge"
+            : definition.definition.stages.some(
+                (s) => s.id === state.position?.stageId && stageKind(s) === "converge",
+              );
+        if (converge) {
+          const reviews = this.store.state(seed.parentRunId).reviews;
+          for (const [key, review] of Object.entries(reviews))
+            if (review.snapshotHash === snapshot.hash) state.reviews[key] = review;
+        }
+      }
+      this.store.artifact(
+        runId,
+        "fork",
+        FORK_SEEDED_ARTIFACT,
+        canonical({
+          files: seed.files.length,
+          snapshotId: snapshot.id,
+          carriedEvidence: same,
+        }),
+      );
+      this.store.saveState(runId, state);
+    });
   }
   private async publish(
     runId: string,
@@ -6475,59 +6600,64 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const attempt = this.store.beginHostAttempt(runId, stepId);
     const scope = new ProcessScope();
     let changed = false;
+    // Unsignalled, so the put-back also runs after the pass was aborted.
+    const changedOutside = async () =>
+      changedPaths(before, await sourceManifest(root, generated)).filter(
+        (path) => !owners.has(path),
+      );
     try {
-      for (const check of fixable) {
-        for (const fix of fixerTiers(check))
-          for (const path of paths) {
-            signal.throwIfAborted();
-            this.leases.assert(lease);
-            const target = workspacePath(root, path);
-            const preImage = capturePreImage(this.store, runId, target);
-            const effectId = this.store.transaction(() =>
-              this.store.prepareEffect(
-                runId,
-                attempt,
-                "file_patch",
-                {
-                  path,
-                  tool: "apply_fix",
-                  checkId: check.id,
-                  taskId: owners.get(path),
-                  ...rootField(this.store.workspace, root),
-                },
-                preImage,
-                null,
-              ),
-            );
-            try {
-              // A fixer that cannot fix everything exits non-zero; the rerun check decides.
-              const command = fixerCommand(fix, path);
-              await executeCheckCommand(
-                scope,
-                command.executable === "bun" ? process.execPath : command.executable,
-                command.args,
-                {
-                  cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
-                  env: buildCheckEnv(check),
-                  timeoutMs: check.timeoutMs,
-                  signal,
-                  sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
-                },
+      try {
+        for (const check of fixable) {
+          for (const fix of fixerTiers(check))
+            for (const path of paths) {
+              signal.throwIfAborted();
+              this.leases.assert(lease);
+              const target = workspacePath(root, path);
+              const preImage = capturePreImage(this.store, runId, target);
+              const effectId = this.store.transaction(() =>
+                this.store.prepareEffect(
+                  runId,
+                  attempt,
+                  "file_patch",
+                  {
+                    path,
+                    tool: "apply_fix",
+                    checkId: check.id,
+                    taskId: owners.get(path),
+                    ...rootField(this.store.workspace, root),
+                  },
+                  preImage,
+                  null,
+                ),
               );
-              const after = fileHash(target);
-              this.store.transaction(() => this.store.finishFileEffect(runId, effectId, after));
-              if (after !== preImage) changed = true;
-            } catch (error) {
-              this.store.transaction(() => this.store.effectStatus(runId, effectId, "unknown"));
-              throw error;
+              try {
+                // A fixer that cannot fix everything exits non-zero; the rerun check decides.
+                const command = fixerCommand(fix, path);
+                await executeCheckCommand(
+                  scope,
+                  command.executable === "bun" ? process.execPath : command.executable,
+                  command.args,
+                  {
+                    cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+                    env: buildCheckEnv(check),
+                    timeoutMs: check.timeoutMs,
+                    signal,
+                    sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
+                  },
+                );
+                const after = fileHash(target);
+                this.store.transaction(() => this.store.finishFileEffect(runId, effectId, after));
+                if (after !== preImage) changed = true;
+              } catch (error) {
+                this.store.transaction(() => this.store.effectStatus(runId, effectId, "unknown"));
+                throw error;
+              }
             }
-          }
+        }
+      } finally {
+        // Also when a fixer run throws: a whole-crate formatter may already have rewritten files.
+        restoreOutside(root, kept, await changedOutside());
       }
-      const changedOutside = async () =>
-        changedPaths(before, await sourceManifest(root, generated, signal)).filter(
-          (path) => !owners.has(path),
-        );
-      restoreOutside(root, kept, await changedOutside());
       const outside = await changedOutside();
       if (outside.length)
         throw new WorkflowFault(
@@ -7484,6 +7614,33 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const root = runRoot(this.store.workspace, state);
     const changed = await this.changedFiles(runId, state, isCodePath);
     const result = checkQualityRules(root, changed, policy.qualityRules ?? {});
+    // A deterministic rule that still matches the same text after its correction would only ask
+    // again: it stays in the report and becomes a known limitation (#845).
+    const earlier = new Map<string, ReturnType<WorkflowStore["findings"]>[number]>();
+    for (const finding of this.store.findings(runId)) {
+      const key = ruleClaimKey(JSON.parse(finding.body_json).claim);
+      if (key && !earlier.has(key)) earlier.set(key, finding);
+    }
+    for (const match of result.findings) {
+      const before = match.blocking ? earlier.get(ruleFindingKey(match)) : undefined;
+      if (!before) continue;
+      match.blocking = false;
+      match.kept = true;
+      if (state.limitations.some((l) => l.findingId === before.id)) continue;
+      const body = JSON.parse(before.body_json) as Review["findings"][number];
+      state.limitations.push({
+        findingId: before.id,
+        severity: body.severity,
+        kind: body.kind,
+        criterionIds: body.criterionIds,
+        file: body.file,
+        symbol: body.symbol,
+        claim: body.claim,
+        impact: "The rule still matched the same text after its correction",
+        decidedBy: "rule",
+        round: this.store.run(runId).convergence_rounds,
+      });
+    }
     const evidenceId = this.store.transaction(() => {
       const artifact = this.store.artifact(runId, "quality", QUALITY_RULES, canonical(result));
       return this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
@@ -7841,7 +7998,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
               );
               // Asked once: a reviewer that still has no repro after the advice is not blocked.
               if (problems.length || reproAdvised || !canRepro) return problems;
-              const advice = missingReproAdvice(output as Review, executables);
+              const advice = missingReproAdvice(output as Review, executables, prior?.review);
               if (advice.length) reproAdvised = true;
               return advice;
             },
@@ -7852,6 +8009,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             canRepro ? () => ({ run_repro: reproTool(executables, repro) }) : undefined,
           ),
         );
+        carryNoRepro(answer, prior?.review);
         // The host owns the snapshot hash and the evidence ids; omitted criteria are listed as
         // inconclusive, and the converge stage settles coverage.
         completeReview(

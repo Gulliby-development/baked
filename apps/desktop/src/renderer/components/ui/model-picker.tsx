@@ -5,6 +5,7 @@ import {
   modelChoiceGroups,
 } from "../../../../../../src/core/llm/model-choices.js";
 import { cn } from "../../lib/cn.js";
+import { MODELS_STALE_MS, modelsKey } from "../../lib/models.js";
 import { useQuery } from "../../lib/query.js";
 import { Button } from "./button.js";
 import { Input } from "./input.js";
@@ -20,8 +21,10 @@ export function useModelCatalog(
   catalog: ModelCatalog | null;
   error: string | null;
 } {
-  const query = useQuery(projectKey === null ? null : [projectKey, "models"], () =>
-    load(projectKey ?? ""),
+  const query = useQuery(
+    projectKey === null ? null : modelsKey(projectKey),
+    () => load(projectKey ?? ""),
+    MODELS_STALE_MS,
   );
   if (query.hasData) return { catalog: query.data ?? null, error: null };
   const { error } = query;

@@ -172,8 +172,17 @@ export function claimsNoReproTool(reason: string): boolean {
  * With `programs` (run_repro is offered), a `noRepro` that says no tool was available is advised
  * too, naming the tool and what it can start (#528).
  */
-export function missingReproAdvice(review: Review, programs?: readonly string[]): string[] {
-  const correctness = review.findings.filter((f) => f.kind === "correctness" && !f.repro);
+export function missingReproAdvice(
+  review: Review,
+  programs?: readonly string[],
+  earlier?: Review,
+): string[] {
+  // Asked once per finding across rounds: a repeat of a finding the previous round already gave a
+  // noRepro for keeps that reason (`carryNoRepro`) instead of being asked again (#528).
+  const settled = new Set(earlier?.findings.filter((f) => f.noRepro).map((f) => f.id));
+  const correctness = review.findings.filter(
+    (f) => f.kind === "correctness" && !f.repro && !(f.repeatOf && settled.has(f.repeatOf)),
+  );
   const missing = correctness.filter((f) => !f.noRepro);
   const unseen = programs?.length
     ? correctness.filter((f) => f.noRepro && claimsNoReproTool(f.noRepro))
@@ -188,6 +197,22 @@ export function missingReproAdvice(review: Review, programs?: readonly string[])
       `Correctness finding(s) ${unseen.map((f) => f.id).join(", ")} say no tool was available to reproduce them, but this review offers run_repro, which starts ${programs.join(", ")} with your arguments in the workspace root. Try the claim with run_repro and attach the repro; keep noRepro only for a reason a command cannot overcome. Then call submit_result again with the complete review.`,
     );
   return advice;
+}
+
+/**
+ * Gives a repeated correctness finding without a repro the `noRepro` reason of the earlier finding
+ * it repeats, so a reason given once holds in later rounds and the report shows it (linehunk
+ * f0b66451 raised one finding in four rounds with the same reason).
+ */
+export function carryNoRepro(review: Review, earlier: Review | undefined): void {
+  if (!earlier) return;
+  const reasons = new Map(earlier.findings.flatMap((f) => (f.noRepro ? [[f.id, f.noRepro]] : [])));
+  for (const finding of review.findings) {
+    if (finding.kind !== "correctness" || finding.repro || finding.noRepro || !finding.repeatOf)
+      continue;
+    const reason = reasons.get(finding.repeatOf);
+    if (reason) finding.noRepro = reason;
+  }
 }
 
 /** The host tool a reviewer tries a repro with before it attaches the repro to a finding. */
