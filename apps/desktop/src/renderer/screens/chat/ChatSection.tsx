@@ -16,6 +16,7 @@ import {
   CHECKPOINTS_CAPABILITY,
   COMPACTION_CAPABILITY,
   COORDINATOR_CAPABILITY,
+  COORDINATOR_SUMMARY_CAPABILITY,
   CUSTOM_COMMANDS_CAPABILITY,
   DIFF_STATS_CAPABILITY,
   IMAGES_CAPABILITY,
@@ -58,6 +59,7 @@ import {
   ChatHeader,
   type CompactControl,
   type RewindControl,
+  type SummaryControl,
   type WatchControl,
 } from "./Header.js";
 import { pendingText } from "./images.js";
@@ -310,6 +312,8 @@ export function SessionView({
   const acceptsImages = capabilities?.includes(IMAGES_CAPABILITY) === true;
   const hasEffort = capabilities?.includes(CHAT_EFFORT_CAPABILITY) === true;
   const canWatch = !coordinator && capabilities?.includes(WATCH_CAPABILITY) === true;
+  const canSummarize =
+    coordinator && capabilities?.includes(COORDINATOR_SUMMARY_CAPABILITY) === true;
   const voice = useVoiceInput();
   // Older servers list commands under `library` but send them to the model unexpanded.
   const expandsCommands = capabilities?.includes(CUSTOM_COMMANDS_CAPABILITY) === true;
@@ -474,6 +478,16 @@ export function SessionView({
         }
       : undefined;
 
+  const summarize = (): void => {
+    setActionError(null);
+    stick();
+    coordinatorApi.summary(key).catch((e: unknown) => setActionError(message(e)));
+  };
+  const summaryControl: SummaryControl | undefined =
+    canSummarize && !draft
+      ? { run: summarize, disabled: turnRunning ? "Available when the turn ends." : null }
+      : undefined;
+
   const toggleWatch = (): void => {
     if (!watchState) return;
     setActionError(null);
@@ -569,6 +583,7 @@ export function SessionView({
               ...(compactControl ? { compact: compactControl } : {}),
               ...(rewindControl ? { rewind: rewindControl } : {}),
               ...(watchControl ? { watch: watchControl } : {}),
+              ...(summaryControl ? { summary: summaryControl } : {}),
               ...(coordinator
                 ? {}
                 : {

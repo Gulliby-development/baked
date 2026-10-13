@@ -97,10 +97,19 @@ function handleGraph(_input: string, ctx: CommandContext): void {
     );
     return;
   }
+  const tk = getThemeTokens();
+  const lines = graphOverviewLines(graphOverview(model), tk);
+  // The cached graph shows at once; a running update only adds a note.
+  if (ctx.contextManager.isRepoMapScanning())
+    lines.unshift({
+      type: "text",
+      label: "Updating the index in the background…",
+      color: tk.amber,
+    });
   ctx.openInfoPopup({
     title: "Code graph",
     icon: icon("repomap"),
-    lines: graphOverviewLines(graphOverview(model), getThemeTokens()),
+    lines,
     width: 96,
     labelWidth: 44,
   });

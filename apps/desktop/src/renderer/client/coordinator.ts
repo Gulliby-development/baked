@@ -74,6 +74,9 @@ export const coordinator = {
       launched: brief.launched,
       expectedRevision,
     }),
+  /** Starts a short coordinator turn that answers what runs, waits, finished and is open. */
+  summary: (key: string) =>
+    call<{ turnId: string; queued: boolean }>(key, "POST", "/v1/coordinator/summary", {}),
   launched: (key: string) =>
     call<{ launched: LaunchedView[] }>(key, "GET", "/v1/coordinator/launched"),
   /** Stops a session's turn, cancels a run or pauses an initiative. */

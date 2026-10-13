@@ -181,6 +181,16 @@ describe("a scope finding that adds a restriction the request lacks", () => {
     expect(restrictsRequest({ ...base, description: "The spec restricts ISO 8601 input to three forms; the request names no such limit" })).toBe(true);
     expect(restrictsRequest({ ...base, description: "FR-002 excludes root-relative links, which the request does not exclude" })).toBe(true);
   });
+  test("is recognised for a requirement the request never asked for", () => {
+    for (const description of [
+      "AC-009 makes three-platform passing an acceptance condition the request does not ask for",
+      "FR-009 configures CI on Windows, macOS and Linux; the request does not mention CI",
+      "T006 adds a cross-platform CI matrix that is absent from the request",
+      "The spec invents a release workflow",
+    ])
+      expect(restrictsRequest({ ...base, description })).toBe(true);
+    expect(restrictsRequest({ ...base, description: "The spec omits the --json flag; the request does not mention a default" })).toBe(false);
+  });
   test("is not recognised for a dropped clause, the host coverage finding or another kind", () => {
     expect(restrictsRequest({ ...base, description: "The spec omits the --json flag the request asks for" })).toBe(false);
     expect(restrictsRequest({ id: "COVERAGE-1", kind: "scope", blocking: true, description: "No task limits itself to source files" })).toBe(false);

@@ -234,7 +234,11 @@ describe("code graph over the local API", () => {
     });
     const fixture = workflowFixture();
     let ready = false;
-    const fake = { isRepoMapReady: () => ready, dispose: async () => {} } as unknown as ContextManager;
+    const fake = {
+      isRepoMapReady: () => ready,
+      isRepoMapScanning: () => false,
+      dispose: async () => {},
+    } as unknown as ContextManager;
     Object.defineProperty(fixture.service, "rootContext", { value: new SharedRootContext(async () => fake) });
     const configDir = mkdtempSync(join(tmpdir(), "baked-api-config-"));
     const homeDir = mkdtempSync(join(tmpdir(), "baked-api-home-"));
@@ -273,5 +277,61 @@ describe("code graph over the local API", () => {
     expect(await (await call("/v1/graph/search?q=pars")).json()).toEqual({ paths: ["src/parse.ts"] });
     expect((await call("/v1/graph", { method: "POST", body: JSON.stringify({ bogus: 1 }) })).status).toBe(400);
     expect((await call("/v1/graph")).status).toBe(405);
+  });
+
+  test("baked serve opens the index in the background and reports its updates", async () => {
+    const noRepoMap = process.env.BAKED_NO_REPOMAP;
+    delete process.env.BAKED_NO_REPOMAP;
+    cleanups.push(async () => {
+      if (noRepoMap !== undefined) process.env.BAKED_NO_REPOMAP = noRepoMap;
+    });
+    const fixture = workflowFixture();
+    let opened = 0;
+    let scanning = false;
+    const fake = {
+      isRepoMapReady: () => true,
+      isRepoMapScanning: () => scanning,
+      updateRepoMapInBackground: async () => {},
+      dispose: async () => {},
+    } as unknown as ContextManager;
+    Object.defineProperty(fixture.service, "rootContext", {
+      value: new SharedRootContext(async () => {
+        opened++;
+        return fake;
+      }),
+    });
+    const configDir = mkdtempSync(join(tmpdir(), "baked-api-config-"));
+    const homeDir = mkdtempSync(join(tmpdir(), "baked-api-home-"));
+    const server = await startApiServer({
+      service: fixture.service,
+      pollMs: 20,
+      configDir,
+      homeDir,
+      log: () => {},
+      backgroundIndex: true,
+      backgroundIndexDelayMs: 10,
+    });
+    cleanups.push(async () => {
+      await server.stop();
+      await fixture.dispose();
+      await removeTempDir(configDir);
+      await removeTempDir(homeDir);
+    });
+    for (let i = 0; i < 100 && opened === 0; i++) await Bun.sleep(10);
+    expect(opened).toBe(1);
+
+    writeRepoMap(fixture.root);
+    const view = async () =>
+      (await (
+        await fetch(`${server.url}/v1/graph`, {
+          method: "POST",
+          body: "{}",
+          headers: { Authorization: `Bearer ${server.token}`, "Content-Type": "application/json" },
+        })
+      ).json()) as { state: string; indexing: boolean };
+    expect(await view()).toMatchObject({ state: "ready", indexing: false });
+    // A background update keeps the last graph and only flags it.
+    scanning = true;
+    expect(await view()).toMatchObject({ state: "ready", indexing: true });
   });
 });

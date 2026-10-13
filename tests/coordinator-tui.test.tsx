@@ -246,7 +246,7 @@ describe("terminal coordinator view model", () => {
     });
     const lines = launchedLines([item("a"), item("b"), item("c", true)], 200, 1).map((l) => l.text);
     expect(lines).toEqual(['  ○ Run "a": completed · 0 tokens', '› ○ Run "b": completed · 0 tokens', "1 closed"]);
-    expect(keyHints(undefined, false, item("a")).map((h) => h.label)).toEqual(["send", "select launched", "close it", "back"]);
+    expect(keyHints(undefined, false, item("a")).map((h) => h.label)).toEqual(["send", "select launched", "close it", "what's happening", "back"]);
     expect(keyHints(undefined, false, { ...item("a"), status: "running", active: true }).map((h) => h.label)).toContain(
       "stop it",
     );
@@ -334,6 +334,15 @@ describe("terminal coordinator view model", () => {
     ]);
   });
 
+  test("a thread's message reads as the thread's, not the person's", () => {
+    const [line] = messageLines(
+      [{ id: "1", role: "user", content: 'Message from session "API" (s-1):\n\nDone.', timestamp: 0 }],
+      "",
+      80,
+    );
+    expect(line).toEqual({ text: 'from "API": Done.', tone: "accent" });
+  });
+
   test("messages label the speaker and list tool calls", () => {
     const lines = messageLines(
       [
@@ -362,7 +371,7 @@ describe("terminal coordinator view model", () => {
       "edit",
       "back",
     ]);
-    expect(keyHints(undefined, false).map((h) => h.label)).toEqual(["send", "back"]);
+    expect(keyHints(undefined, false).map((h) => h.label)).toEqual(["send", "what's happening", "back"]);
     expect(keyHints(undefined, true).map((h) => h.label)).toEqual(["send", "stop"]);
   });
 
