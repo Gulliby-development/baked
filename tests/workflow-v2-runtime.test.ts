@@ -1095,7 +1095,7 @@ describe("passesWithNotes", () => {
     expect(passesWithNotes(finding, coverage, true)).toBe(true);
     expect(passesWithNotes(finding, coverage, false)).toBe(false);
     expect(passesWithNotes({ ...finding, severity: "medium" }, coverage, true)).toBe(false);
-    expect(passesWithNotes({ ...finding, kind: "correctness" }, coverage, true)).toBe(false);
+    expect(passesWithNotes({ ...finding, kind: "security" }, coverage, true)).toBe(false);
     expect(passesWithNotes({ ...finding, criterionIds: [] }, coverage, true)).toBe(false);
     expect(passesWithNotes(finding, [{ ...coverage[0]!, evidenceIds: [] }], true)).toBe(false);
   });
@@ -1106,6 +1106,15 @@ describe("passesWithNotes", () => {
     for (const file of [null, "src/store.ts", "src/latest.ts"])
       expect(passesWithNotes({ ...medium, file }, coverage, true)).toBe(false);
     expect(passesWithNotes({ ...medium, severity: "high", file: "README.md" }, coverage, true)).toBe(false);
+  });
+  test("a low correctness or contradicts finding passes when the checks do (#744)", () => {
+    for (const kind of ["correctness", "contradicts"] as const) {
+      expect(passesWithNotes({ ...finding, kind, file: "src/app.go" }, coverage, true)).toBe(true);
+      expect(passesWithNotes({ ...finding, kind }, coverage, false)).toBe(false);
+      expect(passesWithNotes({ ...finding, kind, severity: "medium", file: "tests/app_test.go" }, coverage, true)).toBe(false);
+      expect(passesWithNotes({ ...finding, kind, criterionIds: [] }, coverage, true)).toBe(false);
+    }
+    expect(passesWithNotes({ ...finding, kind: "unrequested" }, coverage, true)).toBe(false);
   });
   test("a missing test or documentation gap passes like a partial one", () => {
     for (const severity of ["low", "medium"] as const)

@@ -436,7 +436,10 @@ export const testOrDocFile = (file: string | null): boolean =>
  * cost 263k, 23% of its run, while the behavior was already verified. A `missing` finding on a test
  * or documentation file qualifies as well: reviewers label an absent test or README section
  * `missing` rather than `partial` (all 5 such repairs in round R06, about 635k), and the gap is the
- * same kind when every criterion it names has evidence.
+ * same kind when every criterion it names has evidence. A low `correctness` or `contradicts`
+ * finding qualifies too: with every required check passing it is a detail the checks accept
+ * (junitdigest 3e5be74b spent about 1.1M each on `time.After` in a test helper and `%q` in an
+ * error message, #744), not a reason for another convergence round.
  */
 export function passesWithNotes(
   finding: Finding,
@@ -447,7 +450,10 @@ export function passesWithNotes(
     checksPass &&
     (finding.severity === "low" ||
       (finding.severity === "medium" && testOrDocFile(finding.file))) &&
-    (finding.kind === "partial" || (finding.kind === "missing" && testOrDocFile(finding.file))) &&
+    (finding.kind === "partial" ||
+      (finding.kind === "missing" && testOrDocFile(finding.file)) ||
+      (finding.severity === "low" &&
+        (finding.kind === "correctness" || finding.kind === "contradicts"))) &&
     finding.criterionIds.length > 0 &&
     finding.criterionIds.every(
       (id) => (coverage.find((c) => c.criterionId === id)?.evidenceIds.length ?? 0) > 0,
