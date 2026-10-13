@@ -164,6 +164,7 @@ import {
   fileReferences,
   PLAN_CONSISTENCY_CHECKS,
   planConsistencyProblems,
+  withCommandDependencies,
   withDerivedRequirements,
   withImplementationProfiles,
   withModuleDependencies,
@@ -389,13 +390,15 @@ function planGraph(
   policy: RunPolicy,
   profiles: AgentProfile[],
 ): TaskGraph {
-  const graph = withReadDependencies(
-    withModuleDependencies(
-      withDerivedRequirements(spec, {
-        ...withImplementationProfiles(plan.taskGraph, profiles),
-        specHash: hashJson(spec),
-        planHash: hashBytes(plan.markdown),
-      }),
+  const graph = withCommandDependencies(
+    withReadDependencies(
+      withModuleDependencies(
+        withDerivedRequirements(spec, {
+          ...withImplementationProfiles(plan.taskGraph, profiles),
+          specHash: hashJson(spec),
+          planHash: hashBytes(plan.markdown),
+        }),
+      ),
     ),
   );
   // Tests first runs the test tasks before the code; otherwise a test task waits for its code.
