@@ -7479,6 +7479,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       signal,
       sandbox: (dir) => runSandbox(policy, dir),
     });
+    // Documents without command examples run nothing, so there is nothing to keep.
+    if (!examples.length) return [];
     this.store.transaction(() =>
       this.store.artifact(runId, "diagnostic", logicalPath, canonical({ examples })),
     );
