@@ -613,6 +613,9 @@ export async function executeWorkflowCommand(
       const changed = editProjectMemory(service.store, edit);
       return { id: changed, ...projectMemoryView(service.store, policy) };
     }
+    case "worktrees":
+      if (args.flags.clean) return service.cleanWorktrees(args.flags["dry-run"] === true);
+      return service.worktrees();
     case "gc":
       return artifacts.gc({
         before: stringFlag(args, "before"),

@@ -120,6 +120,7 @@ bun test tests/feature-parity.test.ts
 | Pause, resume, cancel, extend, reroute, undo edits | `/workflow` | `baked workflow pause`, `baked workflow resume`, `baked workflow cancel` +3 | `/v1/workflow/runs/:id/pause`, `/v1/workflow/runs/:id/resume`, `/v1/workflow/runs/:id/cancel` +3 | `project/runs` |
 | Fork a run | `/workflow` | `baked workflow fork` | `/v1/workflow/runs/:id/fork` | `project/runs` |
 | Discard a run's worktree | `/workflow` | `baked workflow discard-worktree` | `/v1/workflow/runs/:id/discard-worktree` | `project/runs` |
+| Worktree sizes and cleanup | `/workflow` | `baked workflow worktrees` | `/v1/workflow/worktrees`, `/v1/workflow/worktrees/clean` | `project/runs` |
 | Deliver a run (commit, pull request) | `/workflow` | `baked workflow deliver` | `/v1/workflow/runs/:id/deliver`, `/v1/workflow/runs/:id/deliver/execute` | `project/runs`, `attention` |
 | Revise a run after its instructions change | `/workflow` | `baked workflow candidate`, `baked workflow revise` | `/v1/workflow/runs/:id/candidate`, `/v1/workflow/runs/:id/revise` | `project/runs` |
 | Approval reviewer: a model decides low-risk plans outside the auto approval limits | `/workflow` | `baked workflow run`, `baked quick`, `approval-review` | `/v1/workflow/runs` | `project/runs` |
@@ -129,6 +130,7 @@ bun test tests/feature-parity.test.ts
 | Anti-slop rule pack on the lines a run adds | `/code-quality`, `/workflow` | Not needed: rule choices and ast-grep files live in quality of config.json; baked workflow report shows the findings | `/v1/settings`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | New dependencies looked up before checks; Semgrep on the run's diff | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | Docs for the locked library versions a task uses | **Gap** [#763](https://github.com/Gulliby-development/baked/issues/763) | `baked workflow doctor` | **Gap** [#763](https://github.com/Gulliby-development/baked/issues/763) | **Gap** [#763](https://github.com/Gulliby-development/baked/issues/763) |
+| Per-profile effort and compaction threshold (set in agent profile files) | `/workflow` | `baked workflow profiles`, `baked workflow route` | `/v1/workflow/profiles`, `/v1/workflow/route` | `settings/routing` |
 | Mutation gate on the lines a run added | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | Property-based tests from marked acceptance criteria | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | Harden preset: strengthen the tests of existing code | `/workflow` | `baked workflow run` | `/v1/workflow/runs`, `/v1/workflow/definitions` | `project/overview` |
