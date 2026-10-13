@@ -89,11 +89,18 @@ const ASSUME_RULES = [
   "Otherwise ask a person.",
 ];
 
-/** The identity of a finding set: the same claims against the same criteria. */
+/**
+ * The identity of a finding set: the same claims against the same criteria. A failed task check
+ * names the corrective task that ran it, a new ID every round, so the ID is left out.
+ */
 export const findingSetHash = (findings: Review["findings"]): string =>
   hashJson(
     findings
-      .map((f) => ({ claim: f.claim, criteria: f.criterionIds, impact: f.impact }))
+      .map((f) => ({
+        claim: f.claim.replace(/^Task T\d+ required check /, "Task required check "),
+        criteria: f.criterionIds,
+        impact: f.impact,
+      }))
       .sort((a, b) => a.claim.localeCompare(b.claim)),
   );
 

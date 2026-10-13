@@ -138,7 +138,7 @@ describe("correction scope", () => {
       approvalRoot: "a".repeat(64),
     } as unknown as RuntimeState;
     const policy = { maxRepairRounds: 2, maxConvergenceRounds: 2, maxCorrectiveTasks: 20 } as RunPolicy;
-    const findings = [{ id: "F1" }] as Review["findings"];
+    const findings = [{ id: "F1", claim: "Value is wrong", criterionIds: [], impact: "" }] as unknown as Review["findings"];
     let fault: unknown;
     try {
       appendCorrections(store, "run", state, policy, findings, "repair");

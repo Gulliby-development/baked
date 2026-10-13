@@ -115,6 +115,8 @@ const flags = new Set([
   "branch",
   "draft",
   "no-pr",
+  "with-specs",
+  "no-specs",
   "execute",
   "worktree",
   "writers",
@@ -147,6 +149,8 @@ const booleanFlags = new Set([
   "help",
   "draft",
   "no-pr",
+  "with-specs",
+  "no-specs",
   "execute",
   "worktree",
   "exclude-user-changes",
@@ -260,7 +264,17 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   define: ["from"],
   gates: ["all"],
   gate: ["text", "kind", "id", "model", "from-criteria", "save", "file", "json", "workflow", "at"],
-  deliver: ["remote", "branch", "draft", "no-pr", "execute", "request", "expected-revision"],
+  deliver: [
+    "remote",
+    "branch",
+    "draft",
+    "no-pr",
+    "with-specs",
+    "no-specs",
+    "execute",
+    "request",
+    "expected-revision",
+  ],
   "discard-worktree": ["expected-revision", "command-id"],
   route: ["workflow", "model", "route", "json"],
   models: ["model", "provider", "json"],
@@ -392,7 +406,14 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
   )
     throw new WorkflowFault("INVALID_DEFINITION", "--events and --after need --resume");
   if (!result.flags.help && result.command === "deliver") {
-    const planning = ["remote", "branch", "draft", "no-pr"].filter((name) => name in result.flags);
+    const planning = ["remote", "branch", "draft", "no-pr", "with-specs", "no-specs"].filter(
+      (name) => name in result.flags,
+    );
+    if (result.flags["with-specs"] && result.flags["no-specs"])
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        "--with-specs and --no-specs exclude each other",
+      );
     if (result.flags.execute) {
       if (planning.length)
         throw new WorkflowFault(
@@ -566,7 +587,7 @@ compare RUN_A RUN_B [--output FILE] [--json]
   an A/B of two runs (one feature run with two --route maps): the routes that differ, then status,
   tokens, cost, active time, agent calls, repairs, checks and review findings side by side
 gc --before ISO_DATE [--dry-run]          redact RUN_ID --file ARTIFACT_ID --reason TEXT
-deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr]
+deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr] [--with-specs|--no-specs]
   Prepare Git delivery of a completed, verified run: one commit of the run's files on a new
   branch, push, and a pull request. Stores the plan and a delivery request; nothing runs yet.
   Approve the exact plan with: approve RUN_ID --request ID --digest SHA256 --expected-revision N
