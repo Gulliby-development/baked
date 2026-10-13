@@ -27,6 +27,7 @@ import {
   type ProjectAction,
   type WindowAction,
 } from "../shared/bridge.js";
+import { APP_USER_MODEL_ID } from "./app-id.js";
 import { AttentionHub } from "./attention.js";
 import { Backend } from "./backend.js";
 import { resolveBackendCommand } from "./backend-command.js";
@@ -440,6 +441,7 @@ async function boot(): Promise<void> {
   }
 }
 
+if (process.platform === "win32") app.setAppUserModelId(APP_USER_MODEL_ID);
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on("second-instance", () => showWindow());

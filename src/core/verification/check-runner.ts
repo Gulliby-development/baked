@@ -6,6 +6,7 @@ import type { ProcessResult, ProcessScope } from "../workflows/process-scope.js"
 import { generatedPaths, type RunPolicy } from "../workflows/schemas.js";
 import type { WorkflowStore } from "../workflows/store.js";
 import type { Check } from "../workflows/types.js";
+import { MISSING_GATE_REPORT, readGateReport, renderGateReport } from "./gate-report.js";
 import { changedPaths, sourceManifest } from "./snapshot.js";
 
 /** Shared process execution for native checks and the legacy project formatter. */
@@ -94,6 +95,44 @@ export class CheckRunner {
       output: message,
     };
   }
+  /**
+   * Runs a check's command once and records nothing: the polls of a wait stage. Only the run that
+   * decides the stage goes through `run`, so hours of polling leave one evidence per gate.
+   */
+  async probe(
+    check: Check,
+    signal: AbortSignal,
+    root: string,
+    timeoutMs: number,
+  ): Promise<"passed" | "failed" | "inconclusive"> {
+    return (await this.measure(check, signal, root, timeoutMs)).status;
+  }
+  /** Like `probe`, and also returns the output: a baseline count records no evidence either. */
+  async measure(
+    check: Check,
+    signal: AbortSignal,
+    root: string,
+    timeoutMs: number = check.timeoutMs,
+  ): Promise<{ status: "passed" | "failed" | "inconclusive"; output: string; truncated: boolean }> {
+    try {
+      const executable = check.executable === "bun" ? process.execPath : check.executable;
+      const result = await executeCheckCommand(this.processes, executable, check.args, {
+        cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+        env: buildCheckEnv(check),
+        timeoutMs: Math.min(check.timeoutMs, timeoutMs),
+        signal,
+      });
+      const status =
+        result.timedOut || result.cancelled || result.exitCode === null
+          ? "inconclusive"
+          : result.exitCode === 0
+            ? "passed"
+            : "failed";
+      return { status, output: result.output, truncated: result.truncated };
+    } catch {
+      return { status: "inconclusive", output: "", truncated: false };
+    }
+  }
   async run(
     runId: string,
     attemptId: string,
@@ -105,6 +144,8 @@ export class CheckRunner {
     evidenceId: string;
     snapshotId: string;
     output: string;
+    /** Why the status is what it is: `exit`, `spawn_error`, `timeout`, `cancelled`, `source_changed`. */
+    reason: string;
   }> {
     const generated = generatedPaths(JSON.parse(this.store.run(runId).policy_json) as RunPolicy);
     for (const path of check.writes) workspacePath(root, path);
@@ -154,7 +195,7 @@ export class CheckRunner {
     if (note) result = { ...result, output: `${result.output}\n\n${note}` };
     const after = await sourceManifest(root, generated);
     const unstable = changedPaths(before, after).length > 0;
-    const status =
+    let status: "passed" | "failed" | "inconclusive" =
       unstable || result.timedOut || result.cancelled || result.exitCode === null
         ? "inconclusive"
         : result.exitCode === 0
@@ -163,6 +204,17 @@ export class CheckRunner {
     if (unstable) reason = "source_changed";
     else if (result.timedOut) reason = "timeout";
     else if (result.cancelled) reason = "cancelled";
+    else if (check.report === "json" && reason === "exit") {
+      const report = readGateReport(result.output);
+      // A passing report from a command that exited nonzero contradicts itself; neither is trusted.
+      const contradicts = report?.status === "passed" && result.exitCode !== 0;
+      status = report && !contradicts ? report.status : "inconclusive";
+      reason = !report ? "no_report" : contradicts ? "report_exit_mismatch" : "report";
+      result = {
+        ...result,
+        output: `${result.output}\n\n${report ? renderGateReport(report) : MISSING_GATE_REPORT}`,
+      };
+    }
     const evidenceId = this.store.transaction(() => {
       this.store.effectStatus(runId, effectId, "reconciled");
       const artifact = this.store.artifact(
@@ -197,6 +249,6 @@ export class CheckRunner {
       if (unstable) this.store.invalidateEvidence(runId, snapshot.id, "source_changed");
       return evidence;
     });
-    return { status, evidenceId, snapshotId: snapshot.id, output: result.output };
+    return { status, evidenceId, snapshotId: snapshot.id, output: result.output, reason };
   }
 }

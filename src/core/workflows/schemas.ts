@@ -73,6 +73,22 @@ export const SpecSchema = z
       )
       .min(1),
     dependencies: z.array(z.object({ featureId: SafeId, contractHash: Hash }).strict()),
+    /**
+     * The request's deliverables in its own words, each covered by requirements or left out by
+     * the request's own words (see request-coverage.ts). Optional, so specs stored before it keep
+     * their hashes.
+     */
+    deliverables: z
+      .array(
+        z
+          .object({
+            quote: Text,
+            requirementIds: z.array(RequirementId),
+            outOfScope: Text.optional(),
+          })
+          .strict(),
+      )
+      .optional(),
   })
   .strict();
 
@@ -126,6 +142,20 @@ export const CheckSchema = z
       .object({ executable: z.string().min(1).max(512), args: z.array(z.string().max(2048)) })
       .strict()
       .optional(),
+    /**
+     * A second fixer tier run after `fix` on the same files, for fixes the tool marks unsafe
+     * (`biome check --write --unsafe`), limited to what the project allows. Used only with `fix`.
+     */
+    fixUnsafe: z
+      .object({ executable: z.string().min(1).max(512), args: z.array(z.string().max(2048)) })
+      .strict()
+      .optional(),
+    /**
+     * `json`: the command prints a JSON report (`status`, `summary`, `findings`) as its last JSON
+     * line and that report decides the result; without one the check is inconclusive. Absent means
+     * the exit code decides.
+     */
+    report: z.enum(["exit", "json"]).optional(),
   })
   .strict();
 
@@ -152,9 +182,14 @@ export const AutoApprovalSchema = z
   .strict()
   .refine((value) => value.renewal || value.limits !== null, "Auto approval requires limits");
 
+/** The review confidence a finding needs to start a correction when the policy does not say. */
+export const DEFAULT_REVIEW_MIN_CONFIDENCE = 0.8;
+
 /** Upper bound of `maxConcurrentWriters`. */
 export const MAX_CONCURRENT_WRITERS = 4;
 
+/** Repair rounds that repeat the same failures before a fresh-context correction (see the policy). */
+export const DEFAULT_FRESH_RESTART_AFTER = 2;
 export const PolicySchema = z
   .object({
     maxConcurrentReadAgents: z.number().int().min(1).max(8),
@@ -184,6 +219,13 @@ export const PolicySchema = z
       .strict(),
     skepticProfileId: SafeId,
     forceSecurityReview: z.boolean(),
+    /**
+     * What an edit that introduces errors in the edited file or a file importing it does during
+     * the run: `feedback` returns the errors, `reject` also restores the file. Absent means
+     * `feedback`, so stored policies keep their hash; a run takes `reject` from the project's
+     * `editDiagnostics` setting when the policy does not name it (start.ts).
+     */
+    editDiagnostics: z.enum(["feedback", "reject"]).optional(),
     allowedTools: UniqueStrings,
     network: z.enum(["deny", "ask", "allow"]),
     checks: z.array(CheckSchema),
@@ -201,6 +243,31 @@ export const PolicySchema = z
      * Absent means on, so stored policies keep their hash.
      */
     projectMemory: z.boolean().optional(),
+    /**
+     * Review findings whose confidence is below this are notes and start no correction. Absent
+     * means 0.8 (`DEFAULT_REVIEW_MIN_CONFIDENCE`), so stored policies keep their hash; a run start
+     * copies `modelRouting.reviewMinConfidence` here when it is set.
+     */
+    reviewMinConfidence: z.number().min(0).max(1).optional(),
+    /**
+     * The critic that scores every task attempt with a rubric (#646): `advise` shows the score
+     * and decides nothing, `off` skips it. Absent means `advise` when the critic's model is of
+     * another vendor than the implementation's, else off, so stored policies keep their hash.
+     */
+    critic: z.enum(["off", "advise"]).optional(),
+    /**
+     * `false` leaves out learned code rules (#643): rules proposed from findings that recurred in
+     * earlier runs and activated by recurrence or a person. Absent means on, so stored policies
+     * keep their hash.
+     */
+    learnedRules: z.boolean().optional(),
+    /**
+     * How many repair rounds in a row may leave the same failures before the next correction
+     * starts from a clean context: the spec, the task, the current files and a host-written account
+     * of what was tried, without the earlier attempts' evidence. If that attempt fails the same way
+     * the run stops. Absent means `DEFAULT_FRESH_RESTART_AFTER`, so stored policies keep their hash.
+     */
+    freshRestartAfter: z.number().int().min(1).max(5).optional(),
     /**
      * The duplication and dead-code ratchet (quality/duplication.ts). Absent means `warn`: copies
      * and unused declarations the run adds are reported, never blocking, so stored policies keep
@@ -354,6 +421,7 @@ export const ProfileSchema = z
       "acceptance",
       "acceptance-draft",
       "initiativePlan",
+      "critique",
     ]),
     maxSteps: z.number().int().min(1).max(100),
     maxOutputTokens: z.number().int().min(256).max(65536),
@@ -438,6 +506,7 @@ export const ReasonCode = z.enum([
   "checkpoint",
   "no_progress",
   "verification_failed",
+  "check_unavailable",
   "provider_unavailable",
   "provider_account",
   "tool_denied",
@@ -505,11 +574,22 @@ export const ReviewSchema = z
              */
             basis: z.enum(["spec", "inferred"]).optional(),
             /**
+             * How sure the reviewer is that the finding is real and introduced by this change, 0
+             * to 1. Below the run's `reviewMinConfidence` the finding is a note. Absent counts as 1.
+             */
+            confidence: z.number().min(0).max(1).optional(),
+            /**
              * A command that shows the claimed behavior: it prints `actual` on a line of its
              * output where the spec requires `expected`. The runtime runs it before the finding
              * starts a correction; a finding whose repro does not print `actual` is a note.
              */
             repro: ReproSchema.optional(),
+            /**
+             * Why no command can show a correctness finding (for example it is about concurrency,
+             * a platform the workspace cannot run, or wording). A correctness finding without a
+             * repro and without this reason is unverified.
+             */
+            noRepro: Text.optional(),
             /**
              * The id of an earlier finding of the run that this one repeats (the same defect, even
              * when the file, symbol or wording changed), or null for a new defect. Absent means the
@@ -530,6 +610,35 @@ export const ReviewSchema = z
       .max(100),
   })
   .strict();
+
+/**
+ * One item of the rubric a critic scores a task attempt on (#646): 0 is bad, 1 good. The items:
+ * the attempt understood the intent, followed the instructions, stayed in scope, did not game the
+ * tests, and implemented the task completely.
+ */
+const RubricItem = z.object({ score: z.number().min(0).max(1), note: Text }).strict();
+/**
+ * A critic's score of one task attempt: advice shown in the run, not a gate. `score` is the
+ * critic's estimate that the attempt is correct and will be kept as it is.
+ */
+export const CritiqueSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    taskId: TaskId,
+    score: z.number().min(0).max(1),
+    rubric: z
+      .object({
+        intent: RubricItem,
+        instructions: RubricItem,
+        scope: RubricItem,
+        testIntegrity: RubricItem,
+        completeness: RubricItem,
+      })
+      .strict(),
+    summary: Text,
+  })
+  .strict();
+export type Critique = z.infer<typeof CritiqueSchema>;
 
 export const ImplementationSchema = z
   .object({
@@ -663,6 +772,8 @@ export const WorkflowConfigSchema = z
         stepStallMs: z.number().int().min(10_000).max(14_400_000).optional(),
         maxToolTimeouts: z.number().int().min(1).max(50).optional(),
         autoResumes: z.number().int().min(0).max(20).optional(),
+        providerResumes: z.number().int().min(0).max(20).optional(),
+        providerWaitMs: z.number().int().min(0).max(3_600_000).optional(),
       })
       .strict()
       .optional(),
@@ -702,6 +813,7 @@ export const EventType = z.enum([
   "stage.finished",
   "attempt.started",
   "attempt.finished",
+  "attempt.advisory",
   "task.state_changed",
   "artifact.committed",
   "check.finished",
@@ -714,6 +826,7 @@ export const EventType = z.enum([
   "snapshot.invalidated",
   "transition.taken",
   "gate.finished",
+  "wait.progress",
   "acceptance.phase",
   "tool.started",
   "tool.finished",
@@ -802,6 +915,21 @@ export const EventSchema = z.discriminatedUnion("type", [
           status: z.enum(["completed", "failed", "interrupted", "cancelled"]),
           usageComplete: z.boolean(),
           usedTokens: z.number().int().nonnegative().nullable(),
+        })
+        .strict(),
+    })
+    .strict(),
+  // The progress watcher noticed a stuck loop: it steered the attempt once, then stopped it.
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("attempt.advisory"),
+      payload: z
+        .object({
+          attemptId: SafeId,
+          signal: z.enum(["repeated-reads", "no-edits", "same-failure"]),
+          action: z.enum(["steered", "stopped"]),
+          detail: z.string().max(500),
         })
         .strict(),
     })
@@ -965,6 +1093,23 @@ export const EventSchema = z.discriminatedUnion("type", [
         .strict(),
     })
     .strict(),
+  // A wait stage polls its gates: emitted when it starts or resumes and when the gates it still
+  // waits for change, not on every poll.
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("wait.progress"),
+      payload: z
+        .object({
+          stageId: SafeId,
+          deadline: z.iso.datetime(),
+          intervalSeconds: z.number().int().positive(),
+          pending: z.array(SafeId),
+          polls: z.number().int().nonnegative(),
+        })
+        .strict(),
+    })
+    .strict(),
   // A phase of an AI acceptance gate (walk, draft, verify, approval, promotion).
   z
     .object({
@@ -1050,6 +1195,11 @@ export interface RunSnapshot {
    * the owner is alive and its work is not advancing.
    */
   stalled?: { silentMs: number; lastEventAt: string | null };
+  /**
+   * Present while a run blocked with `provider_unavailable` waits for its automatic resume
+   * (`workflows.stall.providerResumes`): when it retries, and which resume that is.
+   */
+  autoRetry?: { at: string; attempt: number; of: number };
   pendingRequestIds: string[];
   /** The project of the run's workspace when it was created. */
   projectId?: string;
@@ -1107,6 +1257,8 @@ export interface StartRequest {
   routes?: Record<string, string>;
   /** The GitHub issue the request comes from (CLI `--issue`); the delivery pull request closes it. */
   issue?: { repository: string; number: number; url: string; title: string };
+  /** The proposal of `--auto-preset` and the workflow the run took (`PresetChoice`). */
+  presetChoice?: import("./preset-router.js").PresetChoice;
 }
 export type Decision =
   | {
@@ -1289,21 +1441,56 @@ export function validateSpecCoverage(spec: Spec): string[] {
 const REPOSITORY_FILE =
   /\b(?:readme|changelog|license|contributing|dockerfile|makefile)(?:\.\w+)?\b|(?:^|[\s\x60'"(])[\w./-]*\.(?:md|mdx|txt|rst|json|jsonc|ya?ml|toml|ini|cfg|env|lock|[cm]?[jt]sx?|py|go|rs|rb|java|kt|cs|php|sh|css|html)\b/im;
 
+// A property of the code ("input is iterated line by line", when "a reviewer inspects it").
+const CODE_PROPERTY =
+  /\b(?:reviewers?|code review|source code|the code|implementation|(?:inspects?|reads?) the (?:source|module|function|class))\b/i;
+
 /**
  * Criteria about a file of the repository (README text, docs, configuration, source) whose method
  * is manual. A reviewer reads the file and the checks can grep it; only a person can answer a
  * manual request, so the run would wait for someone who just reads the same file (run 2fbac09c,
- * AC-003: 12 hours).
+ * AC-003: 12 hours). A property of the code is the same case: a reviewer passed logslice 242ff843
+ * AC-021 three times and converge still asked a person.
  */
 export function manualRepositoryCriteria(spec: Spec): string[] {
   return spec.criteria
-    .filter(
-      (c) =>
-        c.method === "manual" &&
-        REPOSITORY_FILE.test(`${c.given}
-${c.when}
-${c.then}`),
-    )
+    .filter((c) => {
+      if (c.method !== "manual") return false;
+      const text = `${c.given}\n${c.when}\n${c.then}`;
+      return REPOSITORY_FILE.test(text) || CODE_PROPERTY.test(text);
+    })
+    .map((c) => c.id);
+}
+
+const OPERATING_SYSTEMS = [/\bwindows\b/i, /\bmac\s?os\b|\bos x\b|\bdarwin\b/i, /\blinux\b/i];
+const BROWSERS = [
+  /\bchrom(?:e|ium)\b/i,
+  /\bfirefox\b/i,
+  /\bsafari\b/i,
+  /\bedge browser\b|\bmicrosoft edge\b/i,
+];
+const EVERY_HOST =
+  /\bcross[- ](?:platform|browser|os)\b|\b(?:all|every|each) (?:supported )?(?:operating systems?|platforms?|os(?:es)?|browsers?)\b|\b(?:real|physical) (?:device|phone|hardware)s?\b|\bon (?:an? )?(?:iphone|ipad|android (?:phone|device|tablet))s?\b/i;
+// A CI matrix file or a simulated platform is evidence one host can read or run.
+const HOST_EVIDENCE =
+  /\bmatrix\b|\bruns-on\b|\.github\/workflows|\bci workflow\b|\bworkflow file\b|\bpath\.(?:win32|posix)\b|\bsimulat|\bemulat|\bmock/i;
+
+/**
+ * Automated criteria that claim behavior on several operating systems, browsers or real devices.
+ * A run checks on one host, so no declared check can prove them and convergence can only answer
+ * inconclusive (propdrift eea2e0e9 AC-008: "behavior is confirmed on Windows, macOS, and Linux",
+ * two convergence calls and a block). A criterion about a CI matrix file or a simulated platform
+ * is checkable here and stays.
+ */
+export function hostBoundCriteria(spec: Spec): string[] {
+  return spec.criteria
+    .filter((c) => {
+      if (c.method !== "automated") return false;
+      const text = `${c.given}\n${c.when}\n${c.then}`;
+      if (HOST_EVIDENCE.test(text)) return false;
+      const count = (patterns: RegExp[]) => patterns.filter((p) => p.test(text)).length;
+      return count(OPERATING_SYSTEMS) >= 2 || count(BROWSERS) >= 2 || EVERY_HOST.test(text);
+    })
     .map((c) => c.id);
 }
 
@@ -1317,7 +1504,11 @@ export function specCoverageProblems(spec: Spec): string[] {
     ),
     ...manualRepositoryCriteria(spec).map(
       (id) =>
-        `criterion ${id} is about a file in the repository but has method manual: use method automated (a command check or the reviewer reading the file), because a person can add nothing a reviewer cannot read there. Keep manual for behavior only a person can observe.`,
+        `criterion ${id} is about a file in the repository or a property of its code but has method manual: use method automated (a test, a command check, or the reviewer reading the file or code), because a person can add nothing a reviewer cannot read there. Keep manual for behavior only a person can observe.`,
+    ),
+    ...hostBoundCriteria(spec).map(
+      (id) =>
+        `criterion ${id} is automated but claims behavior on other operating systems, browsers or devices, and the run checks on one host, so nothing can prove it. Rewrite it as what this host can check (platform-neutral path, line-ending and process APIs; the tests pass here). When the request asks for proof on other platforms, add a criterion that a CI workflow file runs the checks on a matrix of those platforms (for example ubuntu-latest, macos-latest, windows-latest), which the reviewer verifies by reading the file. Use post-release only for a claim that needs a release or a real device.`,
     ),
   ];
 }

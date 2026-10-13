@@ -340,17 +340,19 @@ describe("initiative runtime", () => {
 
   test("the shared budget is split equally between features that have not started", async () => {
     const t = setup(threeFeatures, 1000);
-    const budget = { maxTotalTokens: 90000, maxAgentCalls: 90, maxActiveMs: 900000 };
+    // A share must hold a plan step's reservation (its prompt plus the profile's output cap,
+    // about 28000 tokens), with room for the profiles' instructions to grow.
+    const budget = { maxTotalTokens: 180000, maxAgentCalls: 90, maxActiveMs: 900000 };
     let view = await t.start({ plan: threeFeatures, budget });
     expect(view.budget.limits).toEqual(budget);
     await t.approveSplit();
     view = t.initiatives.view("values");
     expect(view.budget.unstartedFeatures).toBe(3);
-    expect(view.budget.nextShare).toEqual({ tokens: 30000, calls: 30, activeMs: 300000 });
+    expect(view.budget.nextShare).toEqual({ tokens: 60000, calls: 30, activeMs: 300000 });
     view = await t.drive();
     const coreRun = t.featureOf(view, "core").runId ?? "";
     const corePolicy = JSON.parse(t.workflows.store.run(coreRun).policy_json) as RunPolicy;
-    expect(corePolicy.maxTotalTokens).toBe(30000);
+    expect(corePolicy.maxTotalTokens).toBe(60000);
     expect(corePolicy.maxAgentCalls).toBe(30);
     expect(corePolicy.autoApproval ?? null).toBeNull();
     await t.approveFeature("core");
@@ -422,6 +424,21 @@ describe("initiative runtime", () => {
     const runId = t.featureOf(view, "core").runId ?? "";
     expect(JSON.parse(t.workflows.store.run(runId).policy_json).autoApproval ?? null).toBeNull();
     expect(t.featureOf(view, "core").state).toBe("needs_decision");
+  });
+
+  test("a feature with an issue starts its run from it, so delivery closes it; the plan digest stays the same", async () => {
+    const issue = { repository: "acme/widget", number: 7, url: "https://github.com/acme/widget/issues/7", title: "Core values" };
+    const plain = setup();
+    const without = await plain.start({ plan: threeFeatures });
+    const t = setup();
+    const view0 = await t.start({ plan: threeFeatures, featureIssues: { core: issue } });
+    expect(view0.planDigest).toBe(without.planDigest);
+    await t.approveSplit();
+    const view = await t.drive();
+    const runId = t.featureOf(view, "core").runId ?? "";
+    expect(t.workflows.store.state(runId).issue).toEqual(issue);
+    await expect(t.start({ initiativeId: "other", plan: threeFeatures, featureIssues: { nope: issue } })).rejects.toThrow("nope");
+    await expect(t.start({ initiativeId: "third", featureIssues: { core: issue } })).rejects.toThrow("plan");
   });
 
   test("re-planning the split after approval keeps unchanged finished features", async () => {

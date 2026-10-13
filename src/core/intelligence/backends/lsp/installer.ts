@@ -1,12 +1,21 @@
 //
 // Uses Mason's registry.json (576+ packages) as the package source.
 // Reads local cache if available, otherwise downloads from GitHub.
-// Installs to ~/.baked/lsp-servers/ via bun (npm), curl+tar (github), pip, go, cargo.
+// Installs to ~/.baked/lsp-servers/ via bun (npm), curl+tar (github), pip, go, cargo,
+// and plain downloads (generic) unpacked into lsp-servers/packages/<name>/.
 
 import { execFile, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { extractArchive } from "../../../platform/archive.js";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { extractArchive, tarCommand } from "../../../platform/archive.js";
 import {
   CMD_EXT,
   commandExists,
@@ -24,7 +33,7 @@ const MASON_REGISTRY_RELEASE_URL =
 const REGISTRY_CACHE = join(configDir(), "mason-registry.json");
 const MASON_BIN_DIR = join(dataDir(), "mason", "bin");
 
-type InstallMethod = "npm" | "pypi" | "cargo" | "golang" | "github" | "unknown";
+type InstallMethod = "npm" | "pypi" | "cargo" | "golang" | "github" | "generic" | "unknown";
 export type PackageCategory = "LSP" | "Formatter" | "Linter" | "DAP" | "Runtime" | "Compiler";
 
 export interface MasonPackage {
@@ -42,9 +51,19 @@ export interface MasonPackage {
       file: string;
       bin?: string;
     }>;
+    /** pkg:generic packages: files to download per target, keyed by local file name. */
+    download?: MasonDownload[];
   };
   bin?: Record<string, string>;
   deprecation?: { since: string; message: string };
+}
+
+/** A Mason download entry; `target` is one target name or a list of them. */
+export interface MasonDownload {
+  target: string | string[];
+  files: Record<string, string>;
+  config?: string;
+  bin?: string;
 }
 
 export interface PackageStatus {
@@ -114,13 +133,19 @@ function getInstallMethod(purl: ParsedPurl): InstallMethod {
       return "golang";
     case "github":
       return "github";
+    case "generic":
+      return "generic";
     default:
       return "unknown";
   }
 }
 
-function getToolchainRequirement(method: InstallMethod): string | null {
+const PYTHON_CMD = IS_WIN ? "python" : "python3";
+
+function getToolchainRequirement(method: InstallMethod, pkg: MasonPackage): string | null {
   switch (method) {
+    case "generic":
+      return Object.values(pkg.bin ?? {}).some((b) => b.startsWith("python:")) ? PYTHON_CMD : null;
     case "cargo":
       return "cargo";
     case "golang":
@@ -177,7 +202,7 @@ export async function downloadRegistry(signal?: AbortSignal): Promise<MasonPacka
 
     await new Promise<void>((resolve, reject) => {
       execFile(
-        IS_WIN ? "tar" : "unzip",
+        IS_WIN ? tarCommand() : "unzip",
         IS_WIN ? ["-xf", tmpZip, "-C", configDir()] : ["-o", tmpZip, "-d", configDir()],
         { windowsHide: true, timeout: 30_000, signal: requestSignal },
         (error) => (error ? reject(error) : resolve()),
@@ -277,7 +302,7 @@ export function getUpdatablePackages(): PackageStatus[] {
 export function checkPackageStatus(pkg: MasonPackage): PackageStatus {
   const purl = parsePurl(pkg.source.id);
   const method = purl ? getInstallMethod(purl) : "unknown";
-  const toolchain = getToolchainRequirement(method);
+  const toolchain = getToolchainRequirement(method, pkg);
   const binaries = getBinaries(pkg);
 
   // Windows: a bin shim can be `<bin>.exe`, `<bin>.cmd`, or bare. Probe all.
@@ -624,6 +649,12 @@ export async function installPackage(
         break;
       }
 
+      case "generic": {
+        const error = await installGeneric(pkg, purl.version, log);
+        if (error) return { success: false, error };
+        break;
+      }
+
       default:
         return { success: false, error: `Unsupported install method: ${purl.type}` };
     }
@@ -715,6 +746,16 @@ export async function uninstallPackage(
         break;
       }
 
+      case "generic": {
+        log(`Removing ${pkg.name}...`);
+        for (const bin of binaries) {
+          removeBin(join(BAKED_LSP_DIR, "bin"), bin);
+        }
+        const pkgDir = genericPackageDir(pkg.name);
+        if (pkgDir) rmSync(pkgDir, { recursive: true, force: true });
+        break;
+      }
+
       default:
         return { success: false, error: `Unsupported install method: ${purl.type}` };
     }
@@ -789,7 +830,149 @@ function findPlatformAsset(
   return null;
 }
 
-function resolveAssetTemplate(template: string, version: string): string {
+/**
+ * Mason target names that match a platform and architecture: `unix`, `linux`,
+ * `linux_x64` and `linux_x64_gnu` on x64 Linux; `win` and `win_x64` on Windows.
+ */
+export function masonTargetsFor(platform: NodeJS.Platform, arch: string): string[] {
+  const os = platform === "win32" ? "win" : platform === "darwin" ? "darwin" : "linux";
+  const masonArch =
+    arch === "arm64" ? "arm64" : arch === "ia32" ? "x86" : arch === "arm" ? "arm" : "x64";
+  const targets = os === "win" ? [os] : ["unix", os];
+  targets.push(`${os}_${masonArch}`);
+  if (os === "linux") targets.push(`${os}_${masonArch}_gnu`);
+  return targets;
+}
+
+/** The first download entry whose target matches the platform, as Mason picks it. */
+export function findPlatformDownload(
+  downloads: MasonDownload[] | undefined,
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): MasonDownload | null {
+  if (!downloads) return null;
+  const accepted = new Set(masonTargetsFor(platform, arch));
+  return (
+    downloads.find((d) =>
+      (Array.isArray(d.target) ? d.target : [d.target]).some((t) => accepted.has(t)),
+    ) ?? null
+  );
+}
+
+const ARCHIVE_SUFFIXES = [".tar.gz", ".tgz", ".tar.xz", ".txz", ".zip"];
+
+function archiveSuffix(name: string): string | null {
+  const lower = name.toLowerCase();
+  return ARCHIVE_SUFFIXES.find((s) => lower.endsWith(s)) ?? null;
+}
+
+/** `<lsp-servers>/packages/<name>`, or null when the name could escape that directory. */
+function genericPackageDir(name: string): string | null {
+  if (!/^[\w@.+-]+$/.test(name) || name === "." || name === "..") return null;
+  return join(BAKED_LSP_DIR, "packages", name);
+}
+
+/** Resolve a registry-supplied relative path inside `root`; null when it points outside. */
+function insideDir(root: string, rel: string): string | null {
+  const full = resolve(root, rel);
+  const fromRoot = relative(root, full);
+  if (fromRoot === "" || fromRoot.startsWith("..") || isAbsolute(fromRoot)) return null;
+  return full;
+}
+
+type GenericBin = { kind: "python" | "exec"; path: string };
+
+/** Parse a Mason `bin` value of a generic package: `python:REL`, `exec:REL` or plain `REL`. */
+export function parseGenericBin(value: string): GenericBin | { error: string } {
+  if (value.includes("{{")) return { error: `templated bin "${value}" is not supported` };
+  const prefixed = value.match(/^([a-z][a-z0-9-]*):(.+)$/);
+  if (!prefixed) return { kind: "exec", path: value };
+  const [, prefix = "", path = ""] = prefixed;
+  if (prefix === "python") return { kind: "python", path };
+  if (prefix === "exec") return { kind: "exec", path };
+  return { error: `bin prefix "${prefix}:" is not supported (in "${value}")` };
+}
+
+function shQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function writeLauncher(binDir: string, binName: string, bin: GenericBin, target: string): void {
+  if (IS_WIN) {
+    const command = bin.kind === "python" ? `${PYTHON_CMD} "${target}"` : `"${target}"`;
+    writeFileSync(join(binDir, binName + CMD_EXT), `@echo off\r\n${command} %*\r\n`);
+    return;
+  }
+  if (bin.kind === "exec") chmodSync(target, 0o755);
+  // Exec the file by its real path so scripts can find files relative to themselves.
+  const command = bin.kind === "python" ? `${PYTHON_CMD} ${shQuote(target)}` : shQuote(target);
+  const launcher = join(binDir, binName);
+  writeFileSync(launcher, `#!/bin/sh\nexec ${command} "$@"\n`);
+  chmodSync(launcher, 0o755);
+}
+
+/** Install a pkg:generic package. Returns an error message, or null on success. */
+async function installGeneric(
+  pkg: MasonPackage,
+  version: string,
+  log: (msg: string) => void,
+): Promise<string | null> {
+  const pkgDir = genericPackageDir(pkg.name);
+  if (!pkgDir) return `Invalid package name: ${pkg.name}`;
+  const download = findPlatformDownload(pkg.source.download);
+  if (!download) {
+    return `No download of ${pkg.name} for ${process.platform}/${process.arch}`;
+  }
+
+  // Validate every bin before touching the disk so an unsupported package fails cleanly.
+  const bins: [string, GenericBin][] = [];
+  for (const [binName, value] of Object.entries(pkg.bin ?? {})) {
+    const parsed = parseGenericBin(value);
+    if ("error" in parsed) return `Cannot install ${pkg.name}: ${parsed.error}`;
+    bins.push([binName, parsed]);
+  }
+
+  rmSync(pkgDir, { recursive: true, force: true });
+  mkdirSync(pkgDir, { recursive: true });
+  for (const [fileName, urlTemplate] of Object.entries(download.files)) {
+    const url = resolveAssetTemplate(urlTemplate, version);
+    // A key ending in "/" names a directory the archive unpacks into.
+    const intoDir = fileName.endsWith("/");
+    const dest = insideDir(pkgDir, intoDir ? fileName.slice(0, -1) : fileName);
+    if (!dest) throw new Error(`Refusing to write outside the package directory: ${fileName}`);
+    log(`Downloading ${url}...`);
+    const resp = await fetch(url, { signal: AbortSignal.timeout(600_000) });
+    if (!resp.ok) throw new Error(`Download of ${url} failed: HTTP ${String(resp.status)}`);
+    const body = Buffer.from(await resp.arrayBuffer());
+    const suffix = archiveSuffix(intoDir ? (url.split(/[?#]/)[0] ?? "") : fileName);
+    if (suffix) {
+      // Unpack in place so the archive's own layout (bin/, plugins/, config_*/) is kept.
+      const extractTo = intoDir ? dest : dirname(dest);
+      mkdirSync(extractTo, { recursive: true });
+      const archivePath = join(pkgDir, `.download${suffix}`);
+      writeFileSync(archivePath, body);
+      const result = extractArchive(archivePath, extractTo);
+      unlinkSync(archivePath);
+      if (!result.success) throw new Error(`Extract of ${fileName} failed: ${result.error}`);
+    } else {
+      mkdirSync(dirname(dest), { recursive: true });
+      writeFileSync(dest, body);
+    }
+  }
+
+  const binDir = join(BAKED_LSP_DIR, "bin");
+  mkdirSync(binDir, { recursive: true });
+  for (const [binName, bin] of bins) {
+    const target = insideDir(pkgDir, bin.path);
+    if (!target) throw new Error(`Bin ${binName} points outside the package: ${bin.path}`);
+    if (!existsSync(target)) throw new Error(`Bin ${binName} not found in package: ${bin.path}`);
+    writeLauncher(binDir, binName, bin, target);
+  }
+  return null;
+}
+
+/** Render Mason's `{{ version }}` and `{{ version | strip_prefix "v" }}` templates. */
+export function resolveAssetTemplate(template: string, version: string): string {
   return template
     .replace(/\{\{\s*version\s*\}\}/g, version)
     .replace(/\{\{\s*version\s*\|\s*strip_prefix\s*"v"\s*\}\}/g, version.replace(/^v/, ""));

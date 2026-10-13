@@ -58,62 +58,7 @@ export class ProfileRegistry {
       legacy: { coding: models.coding, review: models.review },
     });
     const resolved = { ...profile, model: routed.model };
-    const available = new Set([
-      "read",
-      "bake_find",
-      "bake_impact",
-      "navigate",
-      "edit_file",
-      "multi_edit",
-      "delete_file",
-      "request_check",
-      "submit_result",
-      "submit_review",
-      "submit_artifact",
-    ]);
-    // Host tools of the AI acceptance gate exist only for its own two roles.
-    const walkTools = [
-      "app_start",
-      "app_stop",
-      "terminal_send",
-      "terminal_read",
-      "command_run",
-      "browser_open",
-      "browser_snapshot",
-      "browser_click",
-      "browser_type",
-      "browser_key",
-      "record_step",
-    ];
-    if (resolved.role === "acceptance-walker") for (const name of walkTools) available.add(name);
-    if (resolved.role === "acceptance-writer") available.add("write_test");
-    // Reviewers try a finding's repro with the runtime's own runner (#155).
-    if (resolved.role === "reviewer") available.add("run_repro");
-    // Repair tasks isolate a failing check with a probe before they edit again.
-    if (resolved.role === "implementer") available.add("run_probe");
-    // MCP grants (#133) are open to agent roles; the acceptance roles run on host tools only.
-    const mcpAllowed =
-      resolved.role !== "acceptance-walker" && resolved.role !== "acceptance-writer";
-    if (resolved.allowedTools.some((t) => !available.has(t) && !(mcpAllowed && isMcpGrant(t))))
-      throw new WorkflowFault("CAPABILITY_DENIED", `Unsupported tool in profile ${profile.id}`);
-    if (
-      resolved.role !== "implementer" &&
-      resolved.allowedTools.some(
-        (t) =>
-          t === "edit_file" || t === "multi_edit" || t === "delete_file" || t === "request_check",
-      )
-    )
-      throw new WorkflowFault(
-        "CAPABILITY_DENIED",
-        `Read-only profile ${profile.id} declares writing tools`,
-      );
-    if ((resolved.role === "implementer") !== (resolved.output === "implementation"))
-      throw new WorkflowFault("INVALID_DEFINITION", `Incompatible role/output for ${profile.id}`);
-    if (
-      (resolved.role === "acceptance-walker") !== (resolved.output === "acceptance") ||
-      (resolved.role === "acceptance-writer") !== (resolved.output === "acceptance-draft")
-    )
-      throw new WorkflowFault("INVALID_DEFINITION", `Incompatible role/output for ${profile.id}`);
+    assertProfileCapabilities(resolved);
     this.entries.set(profile.id, {
       profile: resolved,
       source,
@@ -130,4 +75,66 @@ export class ProfileRegistry {
     if (!entry) throw new WorkflowFault("NOT_FOUND", `Unknown profile ${id}`);
     return entry.profile;
   }
+}
+
+/**
+ * Throws when a profile asks for tools its role may not use or pairs a role with the wrong output.
+ * The registry runs it on every profile it loads; package inspection runs it before an install.
+ */
+export function assertProfileCapabilities(profile: AgentProfile): void {
+  const available = new Set([
+    "read",
+    "bake_find",
+    "bake_impact",
+    "navigate",
+    "edit_file",
+    "multi_edit",
+    "delete_file",
+    "request_check",
+    "submit_result",
+    "submit_review",
+    "submit_artifact",
+  ]);
+  // Host tools of the AI acceptance gate exist only for its own two roles.
+  const walkTools = [
+    "app_start",
+    "app_stop",
+    "terminal_send",
+    "terminal_read",
+    "command_run",
+    "browser_open",
+    "browser_snapshot",
+    "browser_click",
+    "browser_type",
+    "browser_key",
+    "record_step",
+  ];
+  if (profile.role === "acceptance-walker") for (const name of walkTools) available.add(name);
+  if (profile.role === "acceptance-writer") available.add("write_test");
+  // Reviewers try a finding's repro with the runtime's own runner (#155).
+  if (profile.role === "reviewer") available.add("run_repro");
+  // Repair tasks isolate a failing check with a probe; documentation tasks capture real output.
+  if (profile.role === "implementer") available.add("run_probe");
+  // MCP grants (#133) are open to agent roles; the acceptance roles run on host tools only.
+  const mcpAllowed = profile.role !== "acceptance-walker" && profile.role !== "acceptance-writer";
+  if (profile.allowedTools.some((t) => !available.has(t) && !(mcpAllowed && isMcpGrant(t))))
+    throw new WorkflowFault("CAPABILITY_DENIED", `Unsupported tool in profile ${profile.id}`);
+  if (
+    profile.role !== "implementer" &&
+    profile.allowedTools.some(
+      (t) =>
+        t === "edit_file" || t === "multi_edit" || t === "delete_file" || t === "request_check",
+    )
+  )
+    throw new WorkflowFault(
+      "CAPABILITY_DENIED",
+      `Read-only profile ${profile.id} declares writing tools`,
+    );
+  if ((profile.role === "implementer") !== (profile.output === "implementation"))
+    throw new WorkflowFault("INVALID_DEFINITION", `Incompatible role/output for ${profile.id}`);
+  if (
+    (profile.role === "acceptance-walker") !== (profile.output === "acceptance") ||
+    (profile.role === "acceptance-writer") !== (profile.output === "acceptance-draft")
+  )
+    throw new WorkflowFault("INVALID_DEFINITION", `Incompatible role/output for ${profile.id}`);
 }

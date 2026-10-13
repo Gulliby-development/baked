@@ -5,6 +5,7 @@
  */
 
 import architectureMd from "../../../docs/architecture.md" with { type: "text" };
+import artifactsMd from "../../../docs/artifacts.md" with { type: "text" };
 import benchLoopMd from "../../../docs/bench-loop.md" with { type: "text" };
 import brandMd from "../../../docs/brand.md" with { type: "text" };
 import commandsMd from "../../../docs/commands.md" with { type: "text" };
@@ -17,6 +18,7 @@ import extensionsMd from "../../../docs/extensions.md" with { type: "text" };
 import gettingStartedMd from "../../../docs/getting-started.md" with { type: "text" };
 import guideMd from "../../../docs/guide.md" with { type: "text" };
 import headlessMd from "../../../docs/headless.md" with { type: "text" };
+import packagesMd from "../../../docs/packages.md" with { type: "text" };
 import parityMd from "../../../docs/parity.md" with { type: "text" };
 import privacyMd from "../../../docs/privacy.md" with { type: "text" };
 import projectsMd from "../../../docs/projects.md" with { type: "text" };
@@ -42,6 +44,7 @@ import workflowsV2DesignMd from "../../../docs/workflows/v2-design.md" with { ty
 export const BUNDLED_DOCS: ReadonlyArray<readonly [path: string, text: string]> = [
   ["README.md", readmeMd],
   ["architecture.md", architectureMd],
+  ["artifacts.md", artifactsMd],
   ["bench-loop.md", benchLoopMd],
   ["brand.md", brandMd],
   ["commands.md", commandsMd],
@@ -54,6 +57,7 @@ export const BUNDLED_DOCS: ReadonlyArray<readonly [path: string, text: string]> 
   ["getting-started.md", gettingStartedMd],
   ["guide.md", guideMd],
   ["headless.md", headlessMd],
+  ["packages.md", packagesMd],
   ["parity.md", parityMd],
   ["privacy.md", privacyMd],
   ["projects.md", projectsMd],

@@ -24,6 +24,7 @@ const Text = z
 const EditBody = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("add"), text: Text }),
   z.strictObject({ action: z.literal("edit"), id: Id, text: Text }),
+  z.strictObject({ action: z.literal("accept"), id: Id }),
   z.strictObject({ action: z.literal("forget"), id: Id }),
   z.strictObject({ action: z.literal("restore"), id: Id }),
 ]);

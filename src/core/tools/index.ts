@@ -20,6 +20,7 @@ import { needsOutsideConfirm } from "../security/outside-cwd.js";
 import type { IntelligenceClient } from "../workers/intelligence-client.js";
 import { guardWorkspaceTools } from "../workflows/mutation-guard.js";
 import { analyzeTool } from "./analyze.js";
+import { createArtifactTool } from "./artifact.js";
 import { astEditTool } from "./ast-edit.js";
 import { bakeAnalyzeTool } from "./bake-analyze.js";
 import { bakeFindTool } from "./bake-find.js";
@@ -439,6 +440,8 @@ export function buildTools(
     onApproveFetchPage?: (url: string) => Promise<boolean>;
     onApproveOutsideCwd?: (toolName: string, path: string) => Promise<boolean>;
     onApproveDestructive?: (description: string) => Promise<boolean>;
+    /** Asked before every artifact deploy; without it the artifact tool refuses deploys. */
+    onApproveArtifactDeploy?: (question: string) => Promise<boolean>;
     tabId?: string;
     tabLabel?: string;
     activeDeferredTools?: Set<string>;
@@ -962,7 +965,7 @@ export function buildTools(
       }),
       execute: deferExecute((args) => {
         resetReadCounter();
-        return bakeFindTool.createExecute(opts?.repoMap)(args);
+        return bakeFindTool.createExecute(opts?.repoMap, cwd)(args);
       }),
     }),
 
@@ -1200,6 +1203,13 @@ export function buildTools(
     memory: memoryTool,
     ...(skillsTool ? { skills: skillsTool } : {}),
     baked_help: { ...createBakedHelpTool(), ...TEXT_OUTPUT },
+    artifact: {
+      ...createArtifactTool({
+        cwd: effectiveCwd,
+        ...(opts?.onApproveArtifactDeploy ? { onApproveDeploy: opts.onApproveArtifactDeploy } : {}),
+      }),
+      ...TEXT_OUTPUT,
+    },
     final_response: createFinalResponseTool(),
 
     navigate: tool({

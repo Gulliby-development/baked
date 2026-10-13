@@ -3,6 +3,7 @@ import { WorkflowFault } from "../workflows/errors.js";
 import { counterexampleOf } from "../workflows/quality/properties.js";
 import {
   CorrectionSchema,
+  DEFAULT_FRESH_RESTART_AFTER,
   type Review,
   type RunPolicy,
   type Spec,
@@ -223,36 +224,45 @@ export function appendCorrections(
       ? policy.maxRepairRounds
       : policy.maxConvergenceRounds + state.extraConvergenceRounds;
   const cap = policy.maxCorrectiveTasks + state.extraCorrectiveTasks;
+  const findingSet = findingSetHash(findings);
+  const repeats = state.previousFindingSet === findingSet ? state.noProgressRounds + 1 : 0;
+  // A repair that leaves the failing output as it was may have had no way to see the cause
+  // (hookdrop c325575b: a library dropped a character the code could not restore). Repeats before
+  // `freshRestartAfter` get the next repair round, told to isolate the failure with run_probe
+  // before editing again. At `freshRestartAfter` the correction starts from a clean context:
+  // the accumulated attempts are what it would otherwise keep repeating. A repeat after that
+  // stops the run. Convergence repeats go to a person first (convergenceStop), so a convergence
+  // round never repeats.
+  const after = kind === "repair" ? (policy.freshRestartAfter ?? DEFAULT_FRESH_RESTART_AFTER) : 0;
+  const fresh = kind === "repair" && repeats === after;
+  // The fresh-context attempt is the restart of a repeated failure, not another repair round, so
+  // the round limit does not refuse it; the corrective task cap still applies.
+  const overRounds = round > limit && !fresh;
   // Not BUDGET_EXHAUSTED: `workflow extend` raises tokens, calls and time, none of which helps.
-  if (round > limit || run.corrective_tasks + findings.length > cap) {
-    const setting =
-      round > limit
-        ? kind === "repair"
-          ? "maxRepairRounds"
-          : "maxConvergenceRounds"
-        : "maxCorrectiveTasks";
+  if (overRounds || run.corrective_tasks + findings.length > cap) {
+    const setting = overRounds
+      ? kind === "repair"
+        ? "maxRepairRounds"
+        : "maxConvergenceRounds"
+      : "maxCorrectiveTasks";
     throw new WorkflowFault(
       "RECOVERY_REQUIRED",
-      `no_progress: ${findings.length} finding(s) remain after the policy's ${setting} (${round > limit ? limit : cap}). Narrow the spec or raise ${setting} with workflow revise, or fork the run.`,
+      `no_progress: ${findings.length} finding(s) remain after the policy's ${setting} (${overRounds ? limit : cap}). Narrow the spec or raise ${setting} with workflow revise, or fork the run.`,
       { reason: "no_progress", limit: setting },
     );
   }
-  const findingSet = findingSetHash(findings);
-  state.noProgressRounds = state.previousFindingSet === findingSet ? state.noProgressRounds + 1 : 0;
-  state.previousFindingSet = findingSet;
-  // A repair that leaves the failing output as it was may have had no way to see the cause
-  // (hookdrop c325575b: a library dropped a character the code could not restore). The first
-  // repeat gets the next repair round, told to isolate the failure with run_probe before it
-  // edits again; the second identical repeat stops the run.
-  const repeatsAllowed = kind === "repair" ? 1 : 0;
-  if (state.noProgressRounds > repeatsAllowed)
+  if (repeats > after)
     throw new WorkflowFault(
       "RECOVERY_REQUIRED",
-      "no_progress: consecutive reflection rounds repeat the same findings",
-      { reason: "no_progress" },
+      kind === "repair"
+        ? `no_progress: a correction started from a clean context left the same ${findings.length} finding(s) as the ${String(after)} repair round(s) before it. Fix the cause by hand or revise the plan, then resume.`
+        : "no_progress: consecutive reflection rounds repeat the same findings",
+      { reason: "no_progress", ...(kind === "repair" ? { freshRestart: true } : {}) },
     );
+  state.noProgressRounds = repeats;
+  state.previousFindingSet = findingSet;
   const toCorrect =
-    state.noProgressRounds > 0
+    repeats > 0 && !fresh
       ? findings.map((f) => ({
           ...f,
           suggestedFix: `${f.suggestedFix} The previous correction left this failure unchanged: isolate the cause with run_probe (a minimal program or the failing test alone) and confirm what the code or a library actually does before editing again; if the cause lies outside the files you may edit, say so in unresolved.`,
@@ -369,11 +379,73 @@ export function appendCorrections(
   state.manifest.correctionHashes = [...state.correctionHashes];
   state.graph = graph;
   state.manifest.effectiveGraphHash = hashJson(graph);
+  // The reviews this correction supersedes, with what they reviewed, for the next round.
+  if (state.expectedFiles) {
+    const files = state.expectedFiles;
+    state.priorReviews = Object.fromEntries(
+      Object.entries(state.reviews).map(([key, review]) => [key, { review, files }]),
+    );
+  }
   state.reviews = {};
   state.convergence = null;
   state.verificationState = "stale";
   store.syncTasks(runId, graph);
   for (const task of additions)
     for (const id of task.findingIds) store.findingStatus(runId, id, "confirmed", task.id);
+  if (fresh) {
+    const account = freshAccount(store, runId, state, round, repeats, findings);
+    for (const task of additions) {
+      const artifact = store.artifact(
+        runId,
+        "diagnostic",
+        `tasks/${task.id}/fresh-start.json`,
+        canonical({ taskId: task.id, repeats, ...account }),
+      );
+      state.freshTasks[task.id] = artifact.id;
+    }
+  }
   store.addRound(runId, kind, additions.length);
+}
+
+/**
+ * The host's account of the repair rounds a fresh-context correction replaces, from the journal:
+ * each earlier corrective task, what it changed and the failures that came back. Nothing a worker
+ * wrote about itself is used, so the fresh attempt does not inherit its reasoning.
+ */
+function freshAccount(
+  store: WorkflowStore,
+  runId: string,
+  state: RuntimeState,
+  round: number,
+  repeats: number,
+  findings: Review["findings"],
+): { summary: string; attempts: { taskId: string; title: string; changed: string[] }[] } {
+  const attempts: { taskId: string; title: string; changed: string[] }[] = [];
+  for (let earlier = round - repeats; earlier < round; earlier++) {
+    const record = store.latestArtifact(runId, `corrections/repair-${String(earlier)}.json`);
+    if (!record) continue;
+    const { taskIds } = JSON.parse(store.readArtifact(runId, record.id)) as { taskIds: string[] };
+    for (const taskId of taskIds) {
+      const diff = store.latestArtifact(runId, `tasks/${taskId}/diff.json`);
+      const changed = diff
+        ? (JSON.parse(store.readArtifact(runId, diff.id)) as { changed?: string[] }).changed
+        : [];
+      attempts.push({
+        taskId,
+        title: state.graph?.tasks.find((t) => t.id === taskId)?.title ?? taskId,
+        changed: changed ?? [],
+      });
+    }
+  }
+  const tried = attempts
+    .map(
+      (a) =>
+        `${a.taskId} changed ${a.changed.length ? a.changed.slice(0, 8).join(", ") : "no file"}`,
+    )
+    .join("; ");
+  const failing = findings.map((f) => f.claim).join("; ");
+  return {
+    summary: `${String(attempts.length)} earlier correction(s) of this failure (${tried || "no record"}) each left it as it was: ${failing}. Their approach did not work.`,
+    attempts,
+  };
 }

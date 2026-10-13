@@ -24,15 +24,24 @@ export interface MemoryCheck {
   command: string;
   runs: number;
 }
+/** A code rule learned from findings that recurred across runs (#643), as agents receive it. */
+export interface LearnedRule {
+  id: string;
+  text: string;
+  /** Paths it applies to: `**` for every path, or `DIR/**` for one directory and below. */
+  scope: string;
+}
 export interface ProjectMemory {
   answers: MemoryAnswer[];
   assumptions: { text: string; runId: string }[];
   checks: MemoryCheck[];
   /** Notes people added themselves; absent in memory captured before notes existed. */
   notes?: string[];
+  /** Active learned rules; absent when there are none or `learnedRules` is off. */
+  rules?: LearnedRule[];
 }
 
-export type MemoryEntryKind = "note" | "answer" | "assumption" | "check";
+export type MemoryEntryKind = "note" | "answer" | "assumption" | "check" | "rule";
 /** One entry of project memory as people review and edit it. */
 export interface MemoryEntry {
   /** Stable across runs: derived from the question, assumption or command; random for a note. */
@@ -44,14 +53,24 @@ export interface MemoryEntry {
   question?: string;
   /** The newest run that recorded the entry; absent for a note. */
   runId?: string;
-  /** For a check: how many completed runs it passed in. */
+  /** For a check: how many completed runs it passed in; for a rule, how many runs had its finding. */
   runs?: number;
+  /** For a rule: the paths it applies to (`**` or `DIR/**`). */
+  scope?: string;
+  /**
+   * For a rule: `proposed` until its finding recurred in `RULE_ACTIVE_RUNS` runs or a person
+   * accepted or reworded it, then `active`. Only active rules reach agents.
+   */
+  status?: "proposed" | "active";
+  /** For a rule: the findings it came from, as `RUN/FINDING`, newest first. */
+  findings?: string[];
   /** What runs recorded, when a person reworded the entry. */
   recorded?: string;
   hidden: boolean;
 }
 export type MemoryEdit =
   | { action: "add"; text: string }
+  | { action: "accept"; id: string }
   | { action: "edit"; id: string; text: string }
   | { action: "forget"; id: string }
   | { action: "restore"; id: string };
@@ -67,11 +86,17 @@ export interface ProjectMemoryView {
 }
 
 const MAX_NOTES = 12;
+const MAX_RULES = 12;
+const MAX_RULE = 300;
+/** Runs a finding must recur in before it is proposed as a rule, and before it activates itself. */
+export const RULE_PROPOSE_RUNS = 2;
+export const RULE_ACTIVE_RUNS = 3;
 export const MAX_NOTE = 600;
 const LIMITS: Record<Exclude<MemoryEntryKind, "note">, number> = {
   answer: MAX_ANSWERS,
   assumption: MAX_ASSUMPTIONS,
   check: MAX_CHECKS,
+  rule: MAX_RULES,
 };
 
 const clip = (text: string, max: number): string => {
@@ -101,6 +126,79 @@ const commandOf = (check: RunPolicy["checks"][number]): string =>
   [check.cwd === "." ? null : `(in ${check.cwd})`, check.executable, ...check.args]
     .filter(Boolean)
     .join(" ");
+
+/** The rule scope of a finding's file: its directory and below, or every path. */
+export function ruleScope(file: string | null | undefined): string {
+  if (!file) return "**";
+  const slash = file.lastIndexOf("/");
+  return slash > 0 ? `${file.slice(0, slash)}/**` : "**";
+}
+
+/** Whether a rule's scope covers a workspace-relative path. */
+export function ruleApplies(scope: string, path: string): boolean {
+  if (scope === "**") return true;
+  const dir = scope.endsWith("/**") ? scope.slice(0, -3) : scope;
+  return path === dir || path.startsWith(`${dir}/`);
+}
+
+/**
+ * Rules proposed from review and convergence findings that recurred: findings of the same kind in
+ * the same directory (see `ruleScope`) in at least `RULE_PROPOSE_RUNS` runs. The rule says what the
+ * newest finding's fix says; refuted findings and failed-check findings do not count.
+ */
+function recordedRules(store: WorkflowStore, limit: number): MemoryEntry[] {
+  const groups = new Map<
+    string,
+    {
+      scope: string;
+      kind: string;
+      runs: Set<string>;
+      findings: string[];
+      text: string;
+      runId: string;
+    }
+  >();
+  for (const run of store.pastRuns(limit))
+    for (const row of store.findings(run.id).reverse()) {
+      if (row.status === "refuted") continue;
+      let body: { kind?: unknown; file?: unknown; claim?: unknown; suggestedFix?: unknown };
+      try {
+        body = JSON.parse(row.body_json) as typeof body;
+      } catch {
+        continue;
+      }
+      if (typeof body.kind !== "string" || typeof body.suggestedFix !== "string") continue;
+      if (typeof body.claim === "string" && /^Required check \S+ failed$/.test(body.claim))
+        continue;
+      const scope = ruleScope(typeof body.file === "string" ? body.file : null);
+      const key = `${body.kind}|${scope}`;
+      const group = groups.get(key) ?? {
+        scope,
+        kind: body.kind,
+        runs: new Set<string>(),
+        findings: [],
+        text: clip(body.suggestedFix, MAX_RULE),
+        runId: run.id,
+      };
+      group.runs.add(run.id);
+      group.findings.push(`${run.id}/${row.id}`);
+      groups.set(key, group);
+    }
+  return [...groups]
+    .filter(([, g]) => g.runs.size >= RULE_PROPOSE_RUNS)
+    .map(([key, g]) => ({
+      id: entryId("r", key),
+      kind: "rule" as const,
+      text: g.text,
+      scope: g.scope,
+      runs: g.runs.size,
+      runId: g.runId,
+      findings: g.findings.slice(0, 10),
+      status: g.runs.size >= RULE_ACTIVE_RUNS ? ("active" as const) : ("proposed" as const),
+      hidden: false,
+    }))
+    .sort((a, b) => (b.runs ?? 0) - (a.runs ?? 0));
+}
 
 /** Everything earlier runs recorded, newest first per kind, before limits and edits apply. */
 function recordedEntries(store: WorkflowStore, limit: number): MemoryEntry[] {
@@ -190,7 +288,7 @@ function recordedEntries(store: WorkflowStore, limit: number): MemoryEntry[] {
     runId: newest.get(command) ?? "",
     hidden: false,
   }));
-  return [...answers, ...assumptions, ...checks];
+  return [...answers, ...assumptions, ...checks, ...recordedRules(store, limit)];
 }
 
 /**
@@ -211,10 +309,12 @@ function memoryEntries(store: WorkflowStore, limit: number): MemoryEntry[] {
       visible[entry.kind] = count;
       if (count > LIMITS[entry.kind as keyof typeof LIMITS]) return [];
     }
+    // A rule a person accepted or reworded is active; accepting keeps the text runs recorded.
+    const accepted = entry.kind === "rule" && edit?.text ? { status: "active" as const } : {};
     return [
-      edit?.text
-        ? { ...entry, text: edit.text, recorded: entry.text, hidden }
-        : { ...entry, hidden },
+      edit?.text && edit.text !== entry.text
+        ? { ...entry, ...accepted, text: edit.text, recorded: entry.text, hidden }
+        : { ...entry, ...accepted, hidden },
     ];
   });
   return [...notes.slice(0, MAX_NOTES), ...recorded];
@@ -227,9 +327,19 @@ function memoryEntries(store: WorkflowStore, limit: number): MemoryEntry[] {
  * that passed in completed runs. Analysis findings are left out: they are about one run's plan.
  * People's notes and edits (`editProjectMemory`) apply: forgotten entries are left out.
  */
-export function collectProjectMemory(store: WorkflowStore, limit = MEMORY_RUNS): ProjectMemory {
+export function collectProjectMemory(
+  store: WorkflowStore,
+  limit = MEMORY_RUNS,
+  options: { rules?: boolean } = {},
+): ProjectMemory {
   const entries = memoryEntries(store, limit).filter((e) => !e.hidden);
   const notes = entries.filter((e) => e.kind === "note").map((e) => e.text);
+  const rules =
+    options.rules === false
+      ? []
+      : entries
+          .filter((e) => e.kind === "rule" && e.status === "active")
+          .map((e) => ({ id: e.id, text: e.text, scope: e.scope ?? "**" }));
   return {
     answers: entries
       .filter((e) => e.kind === "answer")
@@ -241,31 +351,38 @@ export function collectProjectMemory(store: WorkflowStore, limit = MEMORY_RUNS):
       .filter((e) => e.kind === "check")
       .map((e) => ({ command: e.text, runs: e.runs ?? 0 })),
     ...(notes.length ? { notes } : {}),
+    ...(rules.length ? { rules } : {}),
   };
 }
 
 /** Project memory as a person reviews it before the next run, with what that run would read. */
 export function projectMemoryView(
   store: WorkflowStore,
-  policy: Pick<RunPolicy, "checks" | "projectMemory">,
+  policy: Pick<RunPolicy, "checks" | "projectMemory" | "learnedRules">,
   limit = MEMORY_RUNS,
 ): ProjectMemoryView {
   const entries = memoryEntries(store, limit);
   const own = new Set(policy.checks.map(commandOf));
+  const rules = policy.learnedRules !== false;
+  const sent = (e: MemoryEntry): boolean =>
+    e.kind === "check"
+      ? !own.has(e.text)
+      : e.kind === "rule"
+        ? rules && e.status === "active"
+        : true;
   return {
     enabled: policy.projectMemory !== false,
-    entries: entries
-      .filter((e) => !e.hidden)
-      .map((e) => ({ ...e, sent: !(e.kind === "check" && own.has(e.text)) })),
+    entries: entries.filter((e) => !e.hidden).map((e) => ({ ...e, sent: sent(e) })),
     hidden: entries.filter((e) => e.hidden),
-    rendered: renderProjectMemory(collectProjectMemory(store, limit), policy),
+    rendered: renderProjectMemory(collectProjectMemory(store, limit, { rules }), policy),
   };
 }
 
 /**
  * Applies a person's change to project memory and returns the entry's ID. `add` writes a note,
- * `edit` rewords a note, an answer or an assumption, `forget` deletes a note or hides a recorded
- * entry, and `restore` brings back a recorded entry as runs recorded it. Runs started afterwards
+ * `edit` rewords a note, an answer, an assumption or a rule (a reworded rule is active), `accept`
+ * activates a proposed rule as recorded, `forget` deletes a note or hides a recorded entry (a
+ * forgotten rule is retired), and `restore` brings back a recorded entry as runs recorded it. Runs started afterwards
  * read the result; started runs keep the memory they captured.
  */
 export function editProjectMemory(
@@ -288,8 +405,8 @@ export function editProjectMemory(
   }
   const note = store.memoryEdits().find((e) => e.id === edit.id && e.note);
   if (note) {
-    if (edit.action === "restore")
-      throw new WorkflowFault("INVALID_DEFINITION", "A note has nothing to restore");
+    if (edit.action === "restore" || edit.action === "accept")
+      throw new WorkflowFault("INVALID_DEFINITION", `A note has nothing to ${edit.action}`);
     if (edit.action === "forget") store.deleteMemoryEdit(note.id);
     else store.saveMemoryEdit({ id: note.id, note: 1, hidden: 0, text });
     return note.id;
@@ -303,6 +420,12 @@ export function editProjectMemory(
       "A check command cannot be reworded; forget it or change the workspace checks",
     );
   const current = store.memoryEdits().find((e) => e.id === entry.id);
+  if (edit.action === "accept") {
+    if (entry.kind !== "rule")
+      throw new WorkflowFault("INVALID_DEFINITION", "Only a proposed rule can be accepted");
+    store.saveMemoryEdit({ id: entry.id, note: 0, hidden: 0, text: entry.text });
+    return entry.id;
+  }
   if (edit.action === "forget")
     store.saveMemoryEdit({ id: entry.id, note: 0, hidden: 1, text: current?.text ?? null });
   else if (edit.action === "restore")
@@ -323,7 +446,14 @@ export function renderProjectMemory(
   const own = new Set(policy.checks.map(commandOf));
   const checks = memory.checks.filter((c) => !own.has(c.command));
   const notes = memory.notes ?? [];
-  if (!notes.length && !memory.answers.length && !memory.assumptions.length && !checks.length)
+  const rules = memory.rules ?? [];
+  if (
+    !notes.length &&
+    !memory.answers.length &&
+    !memory.assumptions.length &&
+    !checks.length &&
+    !rules.length
+  )
     return null;
   const run = (id: string) => `run ${id.slice(0, 8)}`;
   return [
@@ -345,6 +475,13 @@ export function renderProjectMemory(
           ...memory.assumptions.map((a) => `- ${a.text} (${run(a.runId)})`),
         ]
       : []),
+    ...(rules.length
+      ? [
+          "",
+          "Code rules learned from findings that recurred in earlier runs (plan for them):",
+          ...rules.map((r) => `- ${r.text} (applies to ${r.scope})`),
+        ]
+      : []),
     ...(checks.length
       ? [
           "",
@@ -355,4 +492,25 @@ export function renderProjectMemory(
         ]
       : []),
   ].join("\n");
+}
+
+/** Logical path of the learned rules a run captures at creation (#643). */
+export const LEARNED_RULES_ARTIFACT = "project/learned-rules.json";
+
+/**
+ * The learned rules an implementer or reviewer gets: those whose scope covers one of `paths`
+ * (every rule when `paths` is null), as a short prescriptive list, or null when none applies.
+ */
+export function rulesFor(
+  rules: readonly LearnedRule[],
+  paths: readonly string[] | null,
+): { note: string; rules: { text: string; scope: string }[] } | null {
+  const applying = rules.filter(
+    (r) => paths === null || paths.some((path) => ruleApplies(r.scope, path)),
+  );
+  if (!applying.length) return null;
+  return {
+    note: "Code rules this project learned from findings that recurred in earlier runs. Follow each rule in the files of its scope; the task, the spec and the plan take precedence.",
+    rules: applying.map((r) => ({ text: r.text, scope: r.scope })),
+  };
 }

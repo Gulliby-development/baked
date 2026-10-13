@@ -6,8 +6,8 @@ import { NativeAgentExecutor } from "../src/core/workflows/agent-executor.js";
 import { WorkspaceLeases } from "../src/core/workflows/leases.js";
 import { type AgentProfile, ProfileSchema } from "../src/core/workflows/schemas.js";
 import { AttemptStepController, type AttemptUsageRecord } from "../src/core/workflows/step-budget.js";
-import { runUsage } from "../src/core/workflows/usage.js";
-import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
+import { mergeToolBackends, runUsage, toolBackendLine } from "../src/core/workflows/usage.js";
+import type { AgentExecutor, ExecutionRequest, Task } from "../src/core/workflows/types.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -49,15 +49,15 @@ function scriptModel(script: Array<LanguageModelV3GenerateResult | (() => never)
   });
 }
 
-async function nativeAttempt(policy = fixturePolicy) {
+async function nativeAttempt(policy = fixturePolicy, role: "research" | "implementation" = "research", task?: Task) {
   const fixture = workflowFixture({ policy });
   cleanups.push(fixture.dispose);
   const { store } = fixture.service;
   const run = await fixture.start();
   store.transaction(() => store.transition(run.runId, "running"));
   const profiles = ProfileSchema.array().parse(JSON.parse(store.run(run.runId).profiles_json));
-  const researcher = profiles.find((p) => p.output === "research");
-  if (!researcher) throw new Error("research profile missing");
+  const researcher = profiles.find((p) => p.output === role);
+  if (!researcher) throw new Error(`${role} profile missing`);
   const profile: AgentProfile = { ...researcher, model: "openai/fixture-model" };
   const stepId = store.beginStep(run.runId, "fixture");
   const attemptId = store.reserve(run.runId, stepId, profile.model, 2000, policy);
@@ -73,6 +73,7 @@ async function nativeAttempt(policy = fixturePolicy) {
     prompt: "Research the fixture",
     signal: new AbortController().signal,
     maxSteps: 10,
+    ...(task ? { task } : {}),
   };
   const usageRecord = (): AttemptUsageRecord | undefined => {
     const row = store.latestArtifact(run.runId, `attempts/${attemptId}/usage.json`);
@@ -130,6 +131,17 @@ describe("attempt usage of a failing native attempt", () => {
     expect(store.attempts(run.runId).find((a) => a.id === attemptId)).toMatchObject({ used_tokens: 12_500, usage_complete: 1 });
   });
 
+  test("a sized run at its ceiling blocks before an attempt its budget cannot cover (#747)", async () => {
+    // 50,000 left of a 60,000 ceiling, below the default attempt cap: no model step runs.
+    const policy = { ...fixturePolicy, maxTotalTokens: 60_000, sizing: { maxRunTokens: 60_000 } };
+    scriptModel([step(12_000, 500, { name: "unknown_tool", input: {} })]);
+    const { store, run, attemptId, executor, request } = await nativeAttempt(policy);
+    const other = store.beginStep(run.runId, "other");
+    store.reserve(run.runId, other, "openai/fixture-model", 10_000, policy);
+    await expect(executor.execute(request)).rejects.toThrow("The next attempt needs more tokens than the run budget has left");
+    expect(store.recordedUsage(run.runId, attemptId)).toBe(0);
+  });
+
   test("an attempt that fails before any model step records zero tokens", async () => {
     scriptModel([
       () => {
@@ -166,6 +178,147 @@ describe("attempt usage of a failing native attempt", () => {
     expect(usage?.maxTokens).toBe(30_000);
     // After the first step two more would pass the cap, so the second was the submit-only step.
     expect(usage).toMatchObject({ finalizedBy: "tokens", stopReason: "submitted", totalTokens: 20_400 });
+  });
+});
+
+describe("attempts whose provider reports no tokens", () => {
+  const result = {
+    schemaVersion: 1,
+    summary: "Fixture researched",
+    facts: [],
+    unknowns: [],
+    constraints: [],
+    suggestedScope: [],
+  };
+
+  test("a submit step that reports zero tokens leaves the attempt's usage unknown", async () => {
+    // Codex reports a response's usage only after its tool call is answered, so an attempt that
+    // ends at its only call (the submit) sees zero input and zero output tokens.
+    scriptModel([step(0, 0, { name: "submit_result", input: result })]);
+    const { executor, request } = await nativeAttempt();
+    await expect(executor.execute(request)).resolves.toMatchObject({
+      output: result,
+      usageComplete: false,
+    });
+  });
+
+  test("an attempt with reported tokens stays complete", async () => {
+    scriptModel([
+      step(0, 0, { name: "unknown_tool", input: {} }),
+      step(5_000, 100, { name: "submit_result", input: result }),
+    ]);
+    const { executor, request } = await nativeAttempt();
+    const response = await executor.execute(request);
+    expect(response).toMatchObject({ inputTokens: 5_000, outputTokens: 100 });
+    expect(response.usageComplete).toBeUndefined();
+  });
+});
+
+describe("repair probes", () => {
+  test("each run_probe call is journaled with the attempt", async () => {
+    scriptModel([
+      step(1000, 50, { name: "run_probe", input: { executable: "bun", args: ["-e", "console.log('probe-ok')"] } }),
+      () => {
+        throw new Error("provider unavailable");
+      },
+    ]);
+    const repair: Task = {
+      id: "T900",
+      title: "Repair",
+      description: "Repair the failing check",
+      requirementIds: ["FR-001"],
+      criterionIds: ["AC-001"],
+      dependsOn: [],
+      profileId: "implementer",
+      writes: [{ path: "value.txt", action: "modify" }],
+      readHints: [],
+      checkIds: ["check"],
+      origin: "repair",
+      findingIds: [],
+      rationale: "check failed",
+    };
+    const { store, run, attemptId, executor, request } = await nativeAttempt(fixturePolicy, "implementation", repair);
+    await expect(executor.execute(request)).rejects.toThrow("provider unavailable");
+    const row = store.latestArtifact(run.runId, `attempts/${attemptId}/probe-1.json`);
+    expect(row?.kind).toBe("probe");
+    const probe = JSON.parse(store.readArtifact(run.runId, row?.id ?? "")) as Record<string, unknown>;
+    expect(probe).toMatchObject({ taskId: "T900", executable: "bun", status: "ran", exitCode: 0 });
+    expect(String(probe.output)).toContain("probe-ok");
+    const tools = store
+      .events(run.runId)
+      .filter((e) => e.type === "tool.finished")
+      .map((e) => e.payload as { tool: string; status: string });
+    expect(tools).toContainEqual(expect.objectContaining({ tool: "run_probe", status: "ok" }));
+  });
+});
+
+describe("documentation probes", () => {
+  const planned = (path: string): Task => ({
+    id: "T004",
+    title: "Write the README",
+    description: "Document the CLI",
+    requirementIds: ["FR-001"],
+    criterionIds: ["AC-001"],
+    dependsOn: [],
+    profileId: "implementer",
+    writes: [{ path, action: "modify" }],
+    readHints: [],
+    checkIds: ["check"],
+    origin: "planned",
+    findingIds: [],
+    rationale: "docs",
+  });
+  const probeOnce = async (path: string) => {
+    scriptModel([
+      step(1000, 50, { name: "run_probe", input: { executable: "bun", args: ["-e", "console.log('usage: app <dir>/')"] } }),
+      () => {
+        throw new Error("provider unavailable");
+      },
+    ]);
+    const { store, run, attemptId, executor, request } = await nativeAttempt(fixturePolicy, "implementation", planned(path));
+    await expect(executor.execute(request)).rejects.toThrow("provider unavailable");
+    return store.latestArtifact(run.runId, `attempts/${attemptId}/probe-1.json`);
+  };
+
+  // R09 propdrift 90c09da7: README examples were written from the spec and disagreed with the CLI.
+  test("a planned task that writes a README can run the program to capture its output", async () => {
+    expect((await probeOnce("README.md"))?.kind).toBe("probe");
+  });
+
+  test("a planned task that writes only code has no probe", async () => {
+    expect(await probeOnce("value.txt")).toBeNull();
+  });
+});
+
+describe("code intelligence backends in attempt usage", () => {
+  test("each tool call is counted under the backend that answered it", async () => {
+    scriptModel([
+      step(1000, 50, { name: "bake_find", input: { query: "value" } }),
+      step(1000, 50, { name: "bake_find", input: { query: "fixture" } }),
+      () => {
+        throw new Error("provider unavailable");
+      },
+    ]);
+    const { executor, request, usageRecord } = await nativeAttempt();
+    await expect(executor.execute(request)).rejects.toThrow("provider unavailable");
+    // Without a repo map bake_find lists files itself.
+    expect(usageRecord()?.toolBackends).toEqual([
+      { tool: "bake_find", backend: "file-list", server: null, calls: 2 },
+    ]);
+  });
+
+  test("counts of the same tool, backend and server add up across attempts", () => {
+    const merged = mergeToolBackends([
+      { tool: "navigate", backend: "lsp", server: "rust-analyzer", calls: 2 },
+      { tool: "navigate", backend: "tree-sitter", server: null, calls: 1 },
+      { tool: "navigate", backend: "lsp", server: "rust-analyzer", calls: 3 },
+    ]);
+    expect(merged).toEqual([
+      { tool: "navigate", backend: "lsp", server: "rust-analyzer", calls: 5 },
+      { tool: "navigate", backend: "tree-sitter", server: null, calls: 1 },
+    ]);
+    expect(toolBackendLine(merged)).toBe("navigate lsp (rust-analyzer) 5, navigate tree-sitter 1");
+    expect(toolBackendLine([])).toBeNull();
   });
 });
 

@@ -2,6 +2,11 @@ import { isAbsolute, relative } from "node:path";
 import { workspacePath } from "../specs/validate.js";
 import { fileHash, intentRoot, rootField, sameContentIgnoringEol } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
+import {
+  accountIdentityMessage,
+  findAccountIdentity,
+  foreignAccountIdentities,
+} from "./host-identity.js";
 import { mutationLeaseFor, type WorkspaceLeases } from "./leases.js";
 import { isMcpToolName, toolListAllows } from "./mcp-grants.js";
 import { capturePreImage, createdByRunLineage } from "./rollback.js";
@@ -98,6 +103,11 @@ export class WorkflowToolPolicy {
     const write = this.task.writes.find((w) => w.path === path);
     if (!write || (write.action === "delete") !== (name === "delete_file"))
       throw new WorkflowFault("CAPABILITY_DENIED", `Task ${this.task.id} cannot write ${path}`);
+    if (
+      name !== "delete_file" &&
+      findAccountIdentity(JSON.stringify(args), foreignAccountIdentities(this.root))
+    )
+      throw new WorkflowFault("CAPABILITY_DENIED", accountIdentityMessage(`The edit to ${path}`));
     const existing = fileHash(workspacePath(this.root, path));
     const ownEffect = this.store
       .effects(this.runId)
@@ -151,6 +161,21 @@ export class WorkflowToolPolicy {
     args: Record<string, unknown>,
     action: () => Promise<unknown>,
   ): Promise<unknown> {
+    return this.journaled(name, (deadlineHit) => this.guarded(name, args, action, deadlineHit));
+  }
+  /**
+   * Runs a host tool the executor already granted, such as `run_probe`, under its deadline and
+   * journal, without the workspace path checks of a model tool.
+   */
+  async host(name: string, action: () => Promise<unknown>): Promise<unknown> {
+    return this.journaled(name, () =>
+      withDeadline(name, toolDeadlineMs(this.settings, name), action),
+    );
+  }
+  private async journaled(
+    name: string,
+    run: (deadlineHit: (hit: boolean) => void) => Promise<unknown>,
+  ): Promise<unknown> {
     const started = Date.now();
     const journal = (
       type: "tool.started" | "tool.finished",
@@ -181,7 +206,7 @@ export class WorkflowToolPolicy {
     toolStarted(this.runId);
     let status: "ok" | "error" | "deadline" = "ok";
     try {
-      return await this.guarded(name, args, action, (hit) => {
+      return await run((hit) => {
         if (hit) status = "deadline";
       });
     } catch (error) {

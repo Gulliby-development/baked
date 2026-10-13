@@ -16,16 +16,23 @@ import {
 } from "../config/index.js";
 import { getIntelligenceClient } from "../core/intelligence/instance.js";
 import { loadModelCatalog } from "../core/llm/model-catalog.js";
+import { cachedVendorModels } from "../core/llm/vendor-models.js";
 import { type WorkflowAction, WorkflowClient } from "../core/workers/workflow-client.js";
 import { defaultWorkflowPolicy } from "../core/workflows/defaults.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
 import { detectGates, readGates, writeGates } from "../core/workflows/gates.js";
-import { explainRoute } from "../core/workflows/routing.js";
+import { explainRoute, independentReviewMode } from "../core/workflows/routing.js";
 import { PolicySchema, workflowsEnabled } from "../core/workflows/schemas.js";
 import { WorkflowStore } from "../core/workflows/store.js";
 import { usageSummary } from "../core/workflows/usage.js";
 import { listDefinitions } from "../core/workflows/v2/definitions.js";
-import { readEditorSource, writeDefinitionFile } from "../core/workflows/v2/editor.js";
+import {
+  libraryViews,
+  readEditorSource,
+  writeDefinitionFile,
+} from "../core/workflows/v2/editor.js";
+import { configuredDraftModel, draftGate, saveGateDraft } from "../core/workflows/v2/gate-draft.js";
+import { loadGateLibrary } from "../core/workflows/v2/library.js";
 import type { RunSummary, WorkflowInfo } from "../core/workflows/view.js";
 import { useWorkflowStore } from "../stores/workflow.js";
 
@@ -230,14 +237,21 @@ export function workflowGatesApi(workspace: string): GatesApi {
  */
 export function workflowEditorApi(workspace: string): WorkflowEditorApi {
   const config = () => mergeConfigs(loadConfig(), loadEffectiveProjectConfig(workspace));
+  const policy = () => PolicySchema.parse(config().workflows?.policy ?? defaultWorkflowPolicy);
   return {
-    open: (id) =>
-      readEditorSource(
-        workspace,
-        id,
-        PolicySchema.parse(config().workflows?.policy ?? defaultWorkflowPolicy),
-      ),
+    open: (id) => readEditorSource(workspace, id, policy()),
     save: (definition) => writeDefinitionFile(workspace, definition),
+    draftGate: (request) =>
+      draftGate(
+        workspace,
+        request,
+        configuredDraftModel(config()),
+        loadGateLibrary(workspace, policy()),
+      ),
+    saveGate: (draft) => {
+      saveGateDraft(workspace, draft, () => loadGateLibrary(workspace, policy()));
+      return libraryViews(workspace, policy());
+    },
     history: async () => {
       if (!workflowsEnabled(config()) && !existingWorkflowSession(workspace)) return null;
       try {
@@ -287,10 +301,15 @@ export function workflowRoutingApi(workspace: string): RoutingApi {
           coding: effective.taskRouter?.ember ?? effective.taskRouter?.coding ?? undefined,
           review: effective.taskRouter?.verify ?? undefined,
         },
+        reviewMode: independentReviewMode(effective),
       };
     },
     explain: (workflowId, model) =>
-      explainRoute(workspace, config(), { workflowId, model: model ?? undefined }),
+      explainRoute(workspace, config(), {
+        workflowId,
+        model: model ?? undefined,
+        availableModels: cachedVendorModels(),
+      }),
     save: (scope, routing) => {
       if (scope === "global") {
         if (routing) saveGlobalConfig({ modelRouting: routing });

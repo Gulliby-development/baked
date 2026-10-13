@@ -112,6 +112,20 @@ export function updateLastAfterHash(
   }
 }
 
+/** Removes the newest undo entry of a file (of `tabId` when given) after an edit was undone. */
+export function dropLastEdit(absPath: string, tabId?: string): void {
+  const stack = stacks.get(absPath);
+  if (!stack) return;
+  for (let i = stack.length - 1; i >= 0; i--) {
+    const item = stack[i];
+    if (item && (!tabId || !item.tabId || item.tabId === tabId)) {
+      stack.splice(i, 1);
+      break;
+    }
+  }
+  if (stack.length === 0) stacks.delete(absPath);
+}
+
 interface PopResult {
   content: string;
   stale: boolean;

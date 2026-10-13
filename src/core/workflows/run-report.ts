@@ -5,6 +5,7 @@
  */
 
 import type { z } from "zod";
+import { modelVendor } from "../llm/model-vendor.js";
 import { type DependencyResult, QUALITY_DEPENDENCIES } from "./quality/dependencies.js";
 import {
   type DuplicationResult,
@@ -15,11 +16,17 @@ import { type MutationResult, QUALITY_MUTATION } from "./quality/mutation.js";
 import { type PropertiesResult, QUALITY_PROPERTIES } from "./quality/properties.js";
 import { QUALITY_RULES, type RulesResult } from "./quality/rules.js";
 import { QUALITY_SAST, type SastResult } from "./quality/sast.js";
-import { ReportSchema, type ReviewSchema, type RunPolicy, TaskSchema } from "./schemas.js";
+import {
+  type Critique,
+  ReportSchema,
+  type ReviewSchema,
+  type RunPolicy,
+  TaskSchema,
+} from "./schemas.js";
 import type { ArtifactRow, WorkflowStore } from "./store.js";
-import { type RunUsageReport, runUsage } from "./usage.js";
+import { type RunUsageReport, runUsage, toolBackendLine } from "./usage.js";
 import { parseRunDefinition } from "./v2/runtime.js";
-import { changesOf, type FileChange } from "./view.js";
+import { changesOf, type FileChange, readRoutingSummary } from "./view.js";
 
 /** GitHub refuses pull request bodies over 65,536 characters; delivery keeps a margin. */
 export const PULL_REQUEST_BODY_LIMIT = 60_000;
@@ -157,6 +164,16 @@ function stagesInRunOrder(store: WorkflowStore, usage: RunUsageReport): RunUsage
 }
 
 /** Facts read once from the store; rendering at several row caps reuses them. */
+/**
+ * The repro cell of a finding: what its repro showed, or for a correctness finding without one,
+ * why none was given or that the claim is unverified.
+ */
+function reproColumn(body: Partial<Finding>, outcomes: Map<string, string>): string | null {
+  if (body.repro) return (body.id && outcomes.get(body.id)) || "attached";
+  if (body.kind !== "correctness") return null;
+  return body.noRepro ? `none: ${body.noRepro}` : "unverified";
+}
+
 function collect(store: WorkflowStore, runId: string) {
   return store.readTransaction(() => {
     const run = store.run(runId);
@@ -174,10 +191,40 @@ function collect(store: WorkflowStore, runId: string) {
     })();
     const latestArtifacts = new Map<string, ArtifactRow>();
     const taskDiffs = new Map<string, ArtifactRow>();
+    const critiques: CritiqueRecord[] = [];
+    // What the host's run of each finding's repro showed, by finding id.
+    const reproOutcomes = new Map<string, string>();
     for (const artifact of store.artifacts(runId)) {
+      if (/^tasks\/[^/]+\/critique\.json$/.test(artifact.logical_path))
+        critiques.push(
+          parse<CritiqueRecord>(
+            (() => {
+              try {
+                return store.readArtifact(runId, artifact.id);
+              } catch {
+                return null;
+              }
+            })(),
+            { taskId: artifact.logical_path.split("/")[1] ?? "", attempt: 0 },
+          ),
+        );
       latestArtifacts.set(artifact.logical_path, artifact);
       if (/^tasks\/[^/]+\/diff\.json$/.test(artifact.logical_path))
         taskDiffs.set(artifact.logical_path, artifact);
+      if (artifact.logical_path.startsWith("reviews/repro-")) {
+        const record = parse<{ outcomes?: Record<string, { status?: unknown }> }>(
+          (() => {
+            try {
+              return store.readArtifact(runId, artifact.id);
+            } catch {
+              return null;
+            }
+          })(),
+          {},
+        );
+        for (const [id, outcome] of Object.entries(record.outcomes ?? {}))
+          if (typeof outcome?.status === "string") reproOutcomes.set(id, outcome.status);
+      }
     }
     const checks = new Map<
       string,
@@ -221,7 +268,13 @@ function collect(store: WorkflowStore, runId: string) {
           id: row.id,
           status: row.status,
           title: task.success ? task.data.title : null,
-          origin: task.success ? task.data.origin : null,
+          // A correction that started from a clean context after repeated failures.
+          origin:
+            task.success && state?.freshTasks?.[row.id]
+              ? `${task.data.origin}, fresh context`
+              : task.success
+                ? task.data.origin
+                : null,
           writes: task.success ? task.data.writes.map((w) => w.path) : [],
         };
       }),
@@ -241,12 +294,13 @@ function collect(store: WorkflowStore, runId: string) {
           ),
         ),
       ),
-      findings: store.findings(runId).map((row) => ({
-        id: row.id,
-        status: row.status,
-        body: parse<Partial<Finding>>(row.body_json, {}),
-      })),
+      findings: store.findings(runId).map((row) => {
+        const body = parse<Partial<Finding>>(row.body_json, {});
+        return { id: row.id, status: row.status, body, repro: reproColumn(body, reproOutcomes) };
+      }),
       requests: store.requests(runId),
+      routing: readRoutingSummary(store, runId),
+      critiques,
       usage: stagesInRunOrder(store, runUsage(store, runId)),
       artifacts: [...latestArtifacts.values()].filter((a) => !internalArtifact(a.logical_path)),
       internalArtifacts: [...latestArtifacts.values()].filter((a) =>
@@ -256,6 +310,27 @@ function collect(store: WorkflowStore, runId: string) {
   });
 }
 type Facts = ReturnType<typeof collect>;
+/** A stored `tasks/TASK/critique.json`: a critique, or the error of a critic that failed. */
+interface CritiqueRecord {
+  taskId: string;
+  attempt: number;
+  critique?: Critique;
+  error?: string;
+}
+
+/** Which models and vendors reviewed the change and which implemented it (#635). */
+function reviewModels(routing: Facts["routing"]): string | null {
+  if (!routing) return null;
+  const models = (targets: string[]) => [
+    ...new Set(routing.effective.filter((r) => targets.includes(r.target)).map((r) => r.model)),
+  ];
+  const named = (list: string[]) =>
+    list.map((model) => `${code(model)} (${modelVendor(model)})`).join(", ");
+  const review = models(["reviewer", "spec-auditor"]);
+  const implementation = models(["implementer"]);
+  if (!review.length) return null;
+  return `Reviewed on ${named(review)}${implementation.length ? `; implemented on ${named(implementation)}` : ""}.`;
+}
 
 interface QualityFacts {
   duplication: DuplicationResult | null;
@@ -463,6 +538,12 @@ function render(facts: Facts, cap: number): string {
     "",
   );
 
+  const choice = state.presetChoice;
+  if (choice)
+    out.push(
+      `Workflow proposed from the request: ${code(choice.proposed)}, ${choice.reason} (budget ${choice.budget}, ${choice.confidence} confidence)${choice.overridden ? `; the person chose ${code(choice.chosen)}` : ""}.`,
+      "",
+    );
   out.push("## Summary", "");
   if (spec) out.push(spec.outcome, "");
   if (report) {
@@ -551,16 +632,19 @@ function render(facts: Facts, cap: number): string {
 
   const open = facts.findings.filter((f) => f.status === "open" || f.status === "confirmed");
   out.push("## Findings", "");
+  const reviewedBy = reviewModels(facts.routing);
+  if (reviewedBy) out.push(reviewedBy, "");
   if (facts.findings.length) {
     out.push(`${open.length} open of ${facts.findings.length} recorded.`, "");
     out.push(
       ...table(
-        ["Finding", "Status", "Severity", "Kind", "Where", "Claim"],
+        ["Finding", "Status", "Severity", "Kind", "Repro", "Where", "Claim"],
         facts.findings.map((f) => [
           f.id,
           f.status,
           f.body.severity ?? null,
           f.body.kind ?? null,
+          f.repro,
           f.body.file ? code(f.body.file) : null,
           f.body.claim ?? null,
         ]),
@@ -569,6 +653,34 @@ function render(facts: Facts, cap: number): string {
       "",
     );
   } else out.push("No findings recorded.", "");
+
+  if (facts.critiques.length) {
+    out.push(
+      "## Critic",
+      "",
+      "Advice only: each task attempt scored from 0 to 1 by a second model; the lowest rubric item is named.",
+      "",
+      ...table(
+        ["Task", "Attempt", "Score", "Lowest", "Summary"],
+        facts.critiques.map((c) => {
+          if (!c.critique)
+            return [c.taskId, c.attempt, null, null, `critic failed: ${c.error ?? "unknown"}`];
+          const lowest = Object.entries(c.critique.rubric).sort(
+            ([, a], [, b]) => a.score - b.score,
+          )[0];
+          return [
+            c.taskId,
+            c.attempt,
+            c.critique.score.toFixed(2),
+            lowest ? `${lowest[0]} ${lowest[1].score.toFixed(2)}: ${lowest[1].note}` : null,
+            c.critique.summary,
+          ];
+        }),
+        cap,
+      ),
+      "",
+    );
+  }
 
   if (state.limitations.length) {
     out.push(
@@ -658,6 +770,8 @@ function render(facts: Facts, cap: number): string {
       ),
       "",
     );
+  const backends = toolBackendLine(usage.toolBackends ?? []);
+  if (backends) out.push(`Code intelligence: ${backends}.`, "");
 
   out.push("## Artifacts", "");
   const hidden = facts.internalArtifacts
