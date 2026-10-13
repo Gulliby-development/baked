@@ -82,7 +82,9 @@ The orchestrator tells you the level (1-5). Start at 1; it goes up under the orc
 | 2 | Two cooperating parts: CLI + library API, core + console, server + small UI, worker pool (junitdigest, dirdrift, linehunk) | 5-8 source files, about 10 tasks; persistence in files or SQLite | 1.5-7M, median about 3M | evidence and restart bookkeeping, the review and convergence loop, run budget |
 | 3 | A larger single app with many modules and a broad test suite (cfgtrace), or a two-layer update of an existing codebase (a model change plus its CLI and output) | 8-12 source files, about 15 tasks, 100+ tests | 5-8M, median about 6.6M | active-time and repair-round limits, the 8M run ceiling |
 | 4 | A larger app that BAKED should split itself (initiatives, several writers) | 8-15 source files, about 22 tasks | about 14M at today's cost | parallel writers on one file, coordination between writers, the run budget |
-| 5 | A small service: API + CLI + SQLite schema with migrations + CI, built as an initiative of several runs | 15-30 source files, about 30 tasks across its runs | about 30M across its runs | handing state between runs, the round budget |
+| 5 | A small service: API + CLI + SQLite schema with migrations + CI, always built as a BAKED initiative (3-12 features, one run per feature) | 15-30 source files, about 30 tasks across its feature runs | about 30M across its runs | the split, contracts between features, handing state between runs, the round budget |
+
+Every level-5 app is built as an initiative, never as one workflow run: write its brief so it splits into 3-12 features with clear boundaries, and say in `ideas.md` which features you expect.
 
 Above level 5 (a multi-service product: frontend, API, workers, auth; 100+ files) is out of scope for the loop: such work needs milestones over days, not runs, and is not proposed.
 
