@@ -148,6 +148,16 @@ function stagesInRunOrder(store: WorkflowStore, usage: RunUsageReport): RunUsage
 }
 
 /** Facts read once from the store; rendering at several row caps reuses them. */
+/**
+ * The repro cell of a finding: what its repro showed, or for a correctness finding without one,
+ * why none was given or that the claim is unverified.
+ */
+function reproColumn(body: Partial<Finding>, outcomes: Map<string, string>): string | null {
+  if (body.repro) return (body.id && outcomes.get(body.id)) || "attached";
+  if (body.kind !== "correctness") return null;
+  return body.noRepro ? `none: ${body.noRepro}` : "unverified";
+}
+
 function collect(store: WorkflowStore, runId: string) {
   return store.readTransaction(() => {
     const run = store.run(runId);
@@ -165,10 +175,26 @@ function collect(store: WorkflowStore, runId: string) {
     })();
     const latestArtifacts = new Map<string, ArtifactRow>();
     const taskDiffs = new Map<string, ArtifactRow>();
+    // What the host's run of each finding's repro showed, by finding id.
+    const reproOutcomes = new Map<string, string>();
     for (const artifact of store.artifacts(runId)) {
       latestArtifacts.set(artifact.logical_path, artifact);
       if (/^tasks\/[^/]+\/diff\.json$/.test(artifact.logical_path))
         taskDiffs.set(artifact.logical_path, artifact);
+      if (artifact.logical_path.startsWith("reviews/repro-")) {
+        const record = parse<{ outcomes?: Record<string, { status?: unknown }> }>(
+          (() => {
+            try {
+              return store.readArtifact(runId, artifact.id);
+            } catch {
+              return null;
+            }
+          })(),
+          {},
+        );
+        for (const [id, outcome] of Object.entries(record.outcomes ?? {}))
+          if (typeof outcome?.status === "string") reproOutcomes.set(id, outcome.status);
+      }
     }
     const checks = new Map<
       string,
@@ -215,11 +241,10 @@ function collect(store: WorkflowStore, runId: string) {
           ),
         ),
       ),
-      findings: store.findings(runId).map((row) => ({
-        id: row.id,
-        status: row.status,
-        body: parse<Partial<Finding>>(row.body_json, {}),
-      })),
+      findings: store.findings(runId).map((row) => {
+        const body = parse<Partial<Finding>>(row.body_json, {});
+        return { id: row.id, status: row.status, body, repro: reproColumn(body, reproOutcomes) };
+      }),
       requests: store.requests(runId),
       routing: readRoutingSummary(store, runId),
       usage: stagesInRunOrder(store, runUsage(store, runId)),
@@ -356,12 +381,13 @@ function render(facts: Facts, cap: number): string {
     out.push(`${open.length} open of ${facts.findings.length} recorded.`, "");
     out.push(
       ...table(
-        ["Finding", "Status", "Severity", "Kind", "Where", "Claim"],
+        ["Finding", "Status", "Severity", "Kind", "Repro", "Where", "Claim"],
         facts.findings.map((f) => [
           f.id,
           f.status,
           f.body.severity ?? null,
           f.body.kind ?? null,
+          f.repro,
           f.body.file ? code(f.body.file) : null,
           f.body.claim ?? null,
         ]),
