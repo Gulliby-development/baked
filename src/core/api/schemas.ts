@@ -43,11 +43,18 @@ export const StartBody = z
     mutation: z.enum(["off", "advisory", "required"]).optional(),
     /** The run model overrides configured model routes, as `--model-strict`. */
     modelStrict: z.boolean().optional(),
+    /**
+     * Propose the workflow and budget from the request, as `--auto-preset`; with `workflow` the
+     * person's pick runs and both are recorded.
+     */
+    autoPreset: z.boolean().optional(),
   })
   .refine((body) => body.issue !== undefined || (body.feature && body.prompt), {
     message: "feature and prompt are required without issue",
   });
 export const CommandBody = Command.strict();
+/** `POST /v1/workflow/propose`: the request text a run would start with. */
+export const ProposeBody = z.strictObject({ prompt: z.string().min(1).max(100_000) });
 export const ApproveBody = Command.extend({
   requestId: SafeId,
   digest: z.string().min(1),

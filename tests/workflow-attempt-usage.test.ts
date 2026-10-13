@@ -241,6 +241,44 @@ describe("repair probes", () => {
   });
 });
 
+describe("documentation probes", () => {
+  const planned = (path: string): Task => ({
+    id: "T004",
+    title: "Write the README",
+    description: "Document the CLI",
+    requirementIds: ["FR-001"],
+    criterionIds: ["AC-001"],
+    dependsOn: [],
+    profileId: "implementer",
+    writes: [{ path, action: "modify" }],
+    readHints: [],
+    checkIds: ["check"],
+    origin: "planned",
+    findingIds: [],
+    rationale: "docs",
+  });
+  const probeOnce = async (path: string) => {
+    scriptModel([
+      step(1000, 50, { name: "run_probe", input: { executable: "bun", args: ["-e", "console.log('usage: app <dir>/')"] } }),
+      () => {
+        throw new Error("provider unavailable");
+      },
+    ]);
+    const { store, run, attemptId, executor, request } = await nativeAttempt(fixturePolicy, "implementation", planned(path));
+    await expect(executor.execute(request)).rejects.toThrow("provider unavailable");
+    return store.latestArtifact(run.runId, `attempts/${attemptId}/probe-1.json`);
+  };
+
+  // R09 propdrift 90c09da7: README examples were written from the spec and disagreed with the CLI.
+  test("a planned task that writes a README can run the program to capture its output", async () => {
+    expect((await probeOnce("README.md"))?.kind).toBe("probe");
+  });
+
+  test("a planned task that writes only code has no probe", async () => {
+    expect(await probeOnce("value.txt")).toBeNull();
+  });
+});
+
 describe("code intelligence backends in attempt usage", () => {
   test("each tool call is counted under the backend that answered it", async () => {
     scriptModel([

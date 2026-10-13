@@ -101,7 +101,7 @@ import {
   workflowsEnabled,
   writerPolicyProblem,
 } from "./schemas.js";
-import { stallSettings } from "./stall.js";
+import { providerResumeWaitMs, stallSettings } from "./stall.js";
 import { bindDefinition, type PreparedStart, prepareStart } from "./start.js";
 import { assertMutable } from "./state-machine.js";
 import { newId, WorkflowStore } from "./store.js";
@@ -296,6 +296,7 @@ export class NativeWorkflowService implements WorkflowService {
       workspaceHash: null,
       expectedFiles: null,
       reviews: {},
+      priorReviews: {},
       reviewGaps: {},
       convergence: null,
       approvalRoot: null,
@@ -327,6 +328,7 @@ export class NativeWorkflowService implements WorkflowService {
       taskRestarts: {},
       ownerLostResumes: 0,
       stallResumes: 0,
+      providerResumes: 0,
       taskCarry: {},
       taskGates: {},
       position: v2 ? initialPosition(v2) : null,
@@ -341,6 +343,7 @@ export class NativeWorkflowService implements WorkflowService {
       gateResults: {},
       acceptance: {},
       issue: request.issue ?? null,
+      presetChoice: request.presetChoice ?? null,
     };
     return this.store.transaction(() => {
       const duplicate = this.store.previousCommand(request.commandId, request);
@@ -496,6 +499,7 @@ export class NativeWorkflowService implements WorkflowService {
       const snapshot = await this.driveOnce(runId, signal);
       if (await this.resumeOwnerLost(runId, signal)) continue;
       if (await this.resumeStalled(runId, signal)) continue;
+      if (await this.resumeProviderOutage(runId, signal)) continue;
       return snapshot;
     }
   }
@@ -569,6 +573,53 @@ export class NativeWorkflowService implements WorkflowService {
         commandId: newId(),
         expectedRevision: this.store.run(runId).revision,
       });
+    } catch {
+      return false;
+    }
+    return true;
+  }
+  /**
+   * A run that blocked with `provider_unavailable` (the provider stayed down, was at capacity, or
+   * the connection kept dropping through the in-call retries and the route's fallbacks) resumes by
+   * itself after a growing wait, at most `workflows.stall.providerResumes` times. The failed call
+   * changed no files, so a person would only have resumed it. The wait is journaled first, with the
+   * time of the retry, so `workflow status` and the desktop run view can show when it comes back.
+   */
+  private async resumeProviderOutage(runId: string, signal: AbortSignal): Promise<boolean> {
+    if (signal.aborted) return false;
+    const run = this.store.run(runId);
+    if (run.status !== "blocked" || run.reason !== "provider_unavailable") return false;
+    const state = this.store.state(runId);
+    const settings = stallSettings(this.config);
+    if (state.providerResumes >= settings.providerResumes) return false;
+    if (this.store.requests(runId).some(blocksRun)) return false;
+    const attempt = state.providerResumes + 1;
+    const wait = providerResumeWaitMs(settings, attempt);
+    this.store.transaction(() => {
+      state.providerResumes = attempt;
+      this.store.artifact(
+        runId,
+        "recovery",
+        `provider/resume-${attempt}.json`,
+        canonical({
+          attempt,
+          of: settings.providerResumes,
+          waitMs: wait,
+          retryAt: new Date(Date.now() + wait).toISOString(),
+        }),
+      );
+      this.store.saveState(runId, state);
+    });
+    try {
+      await abortableDelay(wait, signal);
+    } catch {
+      return false;
+    }
+    // A person may have resumed, paused or cancelled the run during the wait.
+    const current = this.store.run(runId);
+    if (current.status !== "blocked" || current.reason !== "provider_unavailable") return false;
+    try {
+      await this.resume(runId, { commandId: newId(), expectedRevision: current.revision });
     } catch {
       return false;
     }
@@ -1173,6 +1224,7 @@ export class NativeWorkflowService implements WorkflowService {
         state.position = restartPosition(this.store.run(runId).definition_json, true);
         state.analysisPassed = false;
         state.reviews = {};
+        state.priorReviews = {};
         state.convergence = null;
         state.manualCriteria = {};
         state.correctionHashes = [];
@@ -1395,6 +1447,8 @@ export class NativeWorkflowService implements WorkflowService {
         policy,
         loadGateLibrary(this.workspace, policy).gates,
         profiles,
+        // A reroute names its models, so `provider` only warns about a shared vendor.
+        independence === "provider" ? "provider" : "model",
       );
       if (found.length && independence === "require")
         throw new WorkflowFault(
@@ -1508,6 +1562,7 @@ export class NativeWorkflowService implements WorkflowService {
       state.workspaceHash = null;
       state.expectedFiles = null;
       state.reviews = {};
+      state.priorReviews = {};
       state.convergence = null;
       state.manualCriteria = {};
       state.correctionHashes = [];

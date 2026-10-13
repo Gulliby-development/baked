@@ -55,47 +55,21 @@ async function applyEdits(edits: FileEdit[], tabId?: string): Promise<void> {
   }
 }
 
-async function applyAndDiagnose(
-  edits: FileEdit[],
-  router: ReturnType<typeof getIntelligenceRouter>,
-  tabId?: string,
-): Promise<string | null> {
-  // Snapshot before-diagnostics for each file
-  const client = getIntelligenceClient();
-  const beforeMap = new Map<string, import("../intelligence/types.js").Diagnostic[]>();
-  for (const edit of edits) {
-    let diags: import("../intelligence/types.js").Diagnostic[] | null = null;
-    if (client) {
-      const tracked = await client.routerGetDiagnostics(edit.file);
-      diags = tracked?.value ?? null;
-    } else {
-      const lang = router.detectLanguage(edit.file);
-      diags = await router.executeWithFallback(lang, "getDiagnostics", (b) =>
-        b.getDiagnostics ? b.getDiagnostics(edit.file) : Promise.resolve(null),
-      );
-    }
-    if (diags) beforeMap.set(edit.file, diags);
-  }
+async function applyAndDiagnose(edits: FileEdit[], tabId?: string): Promise<string | null> {
+  // Baselines of every edited file before writing, so the comparison sees what the edit changed.
+  const { startPreEditDiagnostics, appendPostEditDiagnostics } = await import(
+    "./post-edit-helpers.js"
+  );
+  const contexts = await Promise.all(edits.map((edit) => startPreEditDiagnostics(edit.file)));
 
   await applyEdits(edits, tabId);
 
-  // Run diagnostic diff on each file
-  try {
-    const { formatPostEditResult, sameFileDiagnostics } = await import(
-      "../intelligence/post-edit.js"
-    );
-    const parts: string[] = [];
-    for (const edit of edits) {
-      const lang = router.detectLanguage(edit.file);
-      const before = beforeMap.get(edit.file) ?? [];
-      const diffResult = await sameFileDiagnostics(router, edit.file, lang, before);
-      const diffOutput = formatPostEditResult(diffResult);
-      if (diffOutput) parts.push(diffOutput);
-    }
-    return parts.length > 0 ? parts.join("\n") : null;
-  } catch {
-    return null;
+  const parts: string[] = [];
+  for (const [i, edit] of edits.entries()) {
+    const { output } = await appendPostEditDiagnostics(contexts[i] ?? null, edit.file, "");
+    if (output.trim()) parts.push(output.trim());
   }
+  return parts.length > 0 ? parts.join("\n") : null;
 }
 
 function formatResult(result: RefactorResult, applied: boolean): string {
@@ -199,7 +173,7 @@ export const refactorTool = {
 
           let diagOutput: string | null = null;
           if (shouldApply) {
-            diagOutput = await applyAndDiagnose(tracked.value.edits, router, args.tabId);
+            diagOutput = await applyAndDiagnose(tracked.value.edits, args.tabId);
           }
           let output = formatResult(tracked.value, shouldApply);
           if (diagOutput) output += `\n${diagOutput}`;
@@ -265,7 +239,7 @@ export const refactorTool = {
 
           let diagOutput: string | null = null;
           if (shouldApply) {
-            diagOutput = await applyAndDiagnose(tracked.value.edits, router, args.tabId);
+            diagOutput = await applyAndDiagnose(tracked.value.edits, args.tabId);
           }
           let output = formatResult(tracked.value, shouldApply);
           if (diagOutput) output += `\n${diagOutput}`;
@@ -382,7 +356,7 @@ export const refactorTool = {
 
           let diagOutput: string | null = null;
           if (shouldApply) {
-            diagOutput = await applyAndDiagnose(tracked.value.edits, router, args.tabId);
+            diagOutput = await applyAndDiagnose(tracked.value.edits, args.tabId);
           }
           let output = formatResult(tracked.value, shouldApply);
           if (diagOutput) output += `\n${diagOutput}`;

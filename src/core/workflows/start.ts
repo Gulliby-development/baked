@@ -2,7 +2,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AppConfig } from "../../types/index.js";
 import type { ProfileRegistry } from "../agents/profiles/registry.js";
-import type { RoutingRecord } from "../llm/model-routing.js";
+import { parseModelRouting, type RoutingRecord } from "../llm/model-routing.js";
+import { checkProviders, getCachedProviderStatuses } from "../llm/provider.js";
+import { availableVendorModels } from "../llm/vendor-models.js";
 import { hashBytes, hashJson } from "../specs/hash.js";
 import { validateChecks } from "./check-policy.js";
 import { frozenInstructions } from "./context.js";
@@ -13,8 +15,8 @@ import { presetMutation, presetOf } from "./quality/mutation.js";
 import { configuredRules } from "./quality/rules.js";
 import { DEFAULT_SAST_CONFIG } from "./quality/sast.js";
 import {
-  independenceWarnings,
   independentReviewMode,
+  reviewIndependence,
   routedProfiles,
   routingRecord,
   shadowedModelWarnings,
@@ -70,6 +72,17 @@ export interface PreparedStart {
   instructionHashes: ReturnType<typeof frozenInstructions>["hashes"];
 }
 
+export interface StartDeps {
+  /** Models of available providers a cross-provider review may move to; tests replace it. */
+  availableModels?: () => Promise<string[]>;
+}
+
+/** Models of the providers that are signed in, from the last provider check or a new one. */
+async function availableModels(): Promise<string[]> {
+  const statuses = getCachedProviderStatuses() ?? (await checkProviders());
+  return availableVendorModels(statuses.filter((s) => s.available).map((s) => s.id));
+}
+
 /** Why a shipped preset with a check stage cannot start in a project without feature checks. */
 export const missingFeatureChecks = (workflowId: string): string =>
   `Workflow ${workflowId} needs at least one feature check in the workflow policy (workflows.policy.checks); /workflow gates adds them`;
@@ -96,6 +109,7 @@ export async function prepareStart(
     | "mutation"
     | "modelStrict"
   >,
+  deps: StartDeps = {},
 ): Promise<PreparedStart> {
   const config = request.modelStrict ? strictRoutingConfig(configured) : configured;
   const model = request.model ?? config.defaultModel;
@@ -127,7 +141,7 @@ export async function prepareStart(
       error instanceof Error ? error.message : String(error),
     );
   }
-  const routing = routingRecord(
+  let routing = routingRecord(
     config,
     registry,
     model,
@@ -197,8 +211,11 @@ export async function prepareStart(
     mutationThresholds: policyThresholds,
     mutationBudgetMs: policyMutationBudget,
     allowOverlappingWrites,
+    editDiagnostics: _editDiagnostics,
     ...rest
   } = policy;
+  // The project's chat setting is the default; `feedback` leaves the field out of the hash.
+  const editDiagnostics = policy.editDiagnostics ?? config.editDiagnostics ?? "feedback";
   // `ask` leaves the field out, so the policy hash of an asking run is what it was before.
   const clarification = request.clarification ?? clarificationOf(policy);
   // The run flag overrides the policy, which overrides the configured default; `warn` is the
@@ -228,6 +245,7 @@ export async function prepareStart(
     ...(mode === "worktree" ? { executionMode: mode } : {}),
     ...(allowOverlappingWrites ? { allowOverlappingWrites } : {}),
     ...(clarification === "assume" ? { clarification } : {}),
+    ...(editDiagnostics === "reject" ? { editDiagnostics } : {}),
     ...(duplication !== DEFAULT_DUPLICATION ? { duplication } : {}),
     ...(qualityRules ? { qualityRules } : {}),
     ...(sast === "off" ? { sast } : {}),
@@ -255,22 +273,35 @@ export async function prepareStart(
       );
   if (registry.get(policy.skepticProfileId).output !== "refutation")
     throw new WorkflowFault("INVALID_DEFINITION", "Skeptic must return RefutationSchema");
-  const independence = independentReviewMode(config);
-  if (independence !== "off") {
-    const warnings = independenceWarnings(
-      routing,
-      loaded.definition,
-      policy,
-      loadGateLibrary(workspace, policy).gates,
-      profiles,
+  const independence = reviewIndependence(
+    config,
+    routing,
+    loaded.definition,
+    policy,
+    loadGateLibrary(workspace, policy).gates,
+    profiles,
+    independentReviewMode(config) === "provider"
+      ? await (deps.availableModels ?? availableModels)()
+      : [],
+  );
+  if (independence.refuse)
+    throw new WorkflowFault(
+      "INVALID_DEFINITION",
+      `${independence.warnings.join("\n")}\nmodelRouting.independentReview is "require"; route the reviewers to another model`,
     );
-    if (warnings.length && independence === "require")
-      throw new WorkflowFault(
-        "INVALID_DEFINITION",
-        `${warnings.join("\n")}\nmodelRouting.independentReview is "require"; route the reviewers to another model`,
-      );
-    if (warnings.length) routing.warnings = [...(routing.warnings ?? []), ...warnings];
-  }
+  routing = independence.record;
+  const notes = [...independence.moved, ...independence.warnings];
+  if (notes.length) routing.warnings = [...(routing.warnings ?? []), ...notes];
+  // Review settings of modelRouting join the policy, so the approval digest covers them; a
+  // policy that sets one itself keeps it.
+  const reviewSettings = parseModelRouting(config.modelRouting);
+  if (reviewSettings?.reviewMinConfidence !== undefined && policy.reviewMinConfidence === undefined)
+    policy = PolicySchema.parse({
+      ...policy,
+      reviewMinConfidence: reviewSettings.reviewMinConfidence,
+    });
+  if (reviewSettings?.critic && policy.critic === undefined)
+    policy = PolicySchema.parse({ ...policy, critic: reviewSettings.critic });
   const instructions = frozenInstructions(workspace, config.instructionFiles);
   const skillHashes: Record<string, string> = {};
   for (const profile of profiles)

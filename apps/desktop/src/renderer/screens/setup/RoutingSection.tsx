@@ -3,6 +3,7 @@ import type { ModelCatalog } from "../../../../../../src/core/llm/model-choices.
 import { ApiError } from "../../client/api.js";
 import { chat } from "../../client/chat.js";
 import {
+  type CriticMode,
   type Effort,
   type IndependentReview,
   type RoutingChange,
@@ -68,7 +69,9 @@ const LAYERS: { scope: RoutingScope; label: string }[] = [
   { scope: "global", label: "All projects" },
   { scope: "project", label: "This project" },
 ];
-const REVIEW_MODES: (IndependentReview | null)[] = [null, "off", "warn", "require"];
+const REVIEW_MODES: (IndependentReview | null)[] = [null, "off", "warn", "require", "provider"];
+const CONFIDENCE_CHOICES: (number | null)[] = [null, 0.5, 0.6, 0.7, 0.8, 0.9];
+const CRITIC_CHOICES: (CriticMode | null)[] = [null, "off", "advise"];
 
 const LAYER_HINT =
   "All projects writes ~/.baked/config.json and applies everywhere. This project writes the project's own .baked/config.json, which wins over All projects for that project, route by route.";
@@ -348,6 +351,8 @@ function RoutingTables({
         </div>
       ))}
       <IndependentReviewRow view={view} scope={scope} busy={busy} onChange={onChange} />
+      <ReviewConfidenceRow view={view} scope={scope} busy={busy} onChange={onChange} />
+      <CriticRow view={view} scope={scope} busy={busy} onChange={onChange} />
       {view.warnings.length > 0 && (
         <ul className={cn("m-0 list-none p-0", WARN, NOTE)}>
           {view.warnings.map((w) => (
@@ -643,8 +648,9 @@ function IndependentReviewRow({
           <Hint label="independent review">
             A second model catches mistakes the first one is blind to. This decides what happens
             when a reviewer would use the same model as the code it reviews: off allows it, warn
-            records a warning, require refuses to start the run. Inherit uses the other file's
-            choice.
+            records a warning, require refuses to start the run, provider moves the reviewers to a
+            model of another vendor (Codex reviews Claude Code and back) and warns when none is set
+            up. Inherit uses the other file's choice.
           </Hint>
         </span>
         <span className={cn("text-dim-foreground", NOTE)}>
@@ -663,6 +669,104 @@ function IndependentReviewRow({
                 { independentReview: mode },
                 mode ? `Set independentReview to ${mode}` : "Cleared independentReview",
               )
+            }
+          >
+            {mode ?? "inherit"}
+          </Segment>
+        ))}
+      </SegmentGroup>
+    </div>
+  );
+}
+
+function ReviewConfidenceRow({
+  view,
+  scope,
+  busy,
+  onChange,
+}: {
+  view: RoutingOverview;
+  scope: RoutingScope;
+  busy: boolean;
+  onChange: (change: RoutingChange, what: string) => Promise<void>;
+}) {
+  const own = view.reviewMinConfidence?.[scope] ?? null;
+  return (
+    <div className={cn(PANEL, ROW)}>
+      <span className={cn(GROW, COLUMN)}>
+        <span className="flex items-center">
+          Review confidence
+          <Hint label="review confidence">
+            Every review finding carries the reviewer's confidence that it is real and caused by the
+            change. Findings below this threshold stay notes and start no correction. Inherit uses
+            the other file's choice, or 0.8.
+          </Hint>
+        </span>
+        <span className={cn("text-dim-foreground", NOTE)}>
+          Findings below this confidence stay notes. In effect:{" "}
+          <span className="font-mono">{view.reviewMinConfidence?.effective ?? 0.8}</span>.
+        </span>
+      </span>
+      <SegmentGroup aria-label="Review confidence">
+        {CONFIDENCE_CHOICES.map((value) => (
+          <Segment
+            key={value ?? "unset"}
+            aria-pressed={own === value}
+            disabled={busy}
+            onClick={() =>
+              void onChange(
+                { reviewMinConfidence: value },
+                value === null
+                  ? "Cleared reviewMinConfidence"
+                  : `Set reviewMinConfidence to ${value}`,
+              )
+            }
+          >
+            {value ?? "inherit"}
+          </Segment>
+        ))}
+      </SegmentGroup>
+    </div>
+  );
+}
+
+function CriticRow({
+  view,
+  scope,
+  busy,
+  onChange,
+}: {
+  view: RoutingOverview;
+  scope: RoutingScope;
+  busy: boolean;
+  onChange: (change: RoutingChange, what: string) => Promise<void>;
+}) {
+  const own = view.critic?.[scope] ?? null;
+  return (
+    <div className={cn(PANEL, ROW)}>
+      <span className={cn(GROW, COLUMN)}>
+        <span className="flex items-center">
+          Critic
+          <Hint label="critic">
+            A second model scores every task attempt on intent, instructions, scope, test integrity
+            and completeness. The score is advice shown in the run and the run report; it decides
+            nothing. Inherit runs it only when the critic's model is from another vendor than the
+            implementation's; advise always runs it, off never.
+          </Hint>
+        </span>
+        <span className={cn("text-dim-foreground", NOTE)}>
+          Scores each task attempt as advice. In effect:{" "}
+          <span className="font-mono">{view.critic?.effective ?? "on another vendor"}</span>.
+        </span>
+      </span>
+      <SegmentGroup aria-label="Critic">
+        {CRITIC_CHOICES.map((mode) => (
+          <Segment
+            key={mode ?? "unset"}
+            aria-pressed={own === mode}
+            disabled={busy}
+            onClick={() =>
+              void onChange({ critic: mode }, mode ? `Set critic to ${mode}` : "Cleared critic")
             }
           >
             {mode ?? "inherit"}
