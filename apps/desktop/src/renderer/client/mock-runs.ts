@@ -1229,6 +1229,44 @@ function gc(body: GcBody) {
   });
 }
 
+/** The mock's worktrees: one per ended sample run, until a cleanup removes them. */
+let worktreesCleaned = false;
+function worktreeRows() {
+  if (worktreesCleaned) return [];
+  return all()
+    .filter((r) => ENDED.includes(r.status))
+    .map((r, index) => {
+      const bytes = (index + 1) * 48_000_000;
+      return {
+        runId: r.runId,
+        path: `.baked/worktrees/${r.runId}`,
+        bytes,
+        worktrees: [{ name: "main", bytes }],
+        status: r.status,
+        featureId: r.featureId,
+        removable: true,
+      };
+    });
+}
+function worktrees() {
+  const rows = worktreeRows();
+  return response(200, {
+    worktrees: rows,
+    bytes: rows.reduce((sum, r) => sum + r.bytes, 0),
+    trashBytes: 0,
+  });
+}
+function cleanWorktrees(body: { dryRun?: boolean }) {
+  const rows = worktreeRows();
+  if (!body.dryRun) worktreesCleaned = true;
+  return response(200, {
+    runIds: rows.map((r) => r.runId),
+    bytes: rows.reduce((sum, r) => sum + r.bytes, 0),
+    dryRun: body.dryRun === true,
+    warnings: [],
+  });
+}
+
 function importCandidate(body: ImportBody) {
   if (!body.path.trim()) return invalid("Import source must be a local directory without symlinks");
   return response(200, {
@@ -1352,6 +1390,9 @@ const runRoutes: MockRoute = ({ key, method, path, query, body }) => {
     return response(200, mockCompare(a, b));
   }
   if (method === "POST" && path === "/v1/workflow/gc") return gc(body as GcBody);
+  if (method === "GET" && path === "/v1/workflow/worktrees") return worktrees();
+  if (method === "POST" && path === "/v1/workflow/worktrees/clean")
+    return cleanWorktrees(body as { dryRun?: boolean });
   if (method === "POST" && path === "/v1/workflow/import")
     return importCandidate(body as ImportBody);
   const match = /^\/v1\/workflow\/runs\/([^/]+)(?:\/([a-z-]+))?$/.exec(path);

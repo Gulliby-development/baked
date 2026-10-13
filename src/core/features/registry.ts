@@ -727,6 +727,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs"],
   },
   {
+    id: "run-worktrees",
+    group: "Workflow runs",
+    title: "Worktree sizes and cleanup",
+    tui: ["/workflow: typed command"],
+    cli: ["baked workflow worktrees"],
+    api: ["/v1/workflow/worktrees", "/v1/workflow/worktrees/clean"],
+    desktop: ["project/runs: Worktrees"],
+  },
+  {
     id: "run-deliver",
     group: "Workflow runs",
     title: "Deliver a run (commit, pull request)",
