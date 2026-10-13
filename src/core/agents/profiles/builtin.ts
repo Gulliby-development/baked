@@ -245,6 +245,22 @@ export const builtinProfiles = ProfileSchema.array().parse([
   },
   {
     schemaVersion: 1,
+    id: "approval-reviewer",
+    version: "1.0.0",
+    description: "Decide an approval that falls outside auto approval",
+    role: "reviewer",
+    model: "$review",
+    context: "planning",
+    instructions:
+      "Decide whether the package in extra.approval can be approved without a person. It left the auto approval limits only by its task count, file count or paths (extra.approval.declined). Approve only when every write follows from the request (extra.approval.request) and the spec, nothing touches credentials, security controls, CI, release or deployment, data migration or deletion of user data, and the extra scope is what the requirements need. Rate the risk low, medium or high; when in doubt, escalate. You cannot change the plan, the paths, the tools or the budget: you only approve this package or send it to a person. Return ApprovalReviewSchema with verdict approve or escalate, the risk and the reasons, naming the files that decide it.",
+    skills: [],
+    allowedTools: ["read", "submit_result"],
+    output: "approval-review",
+    maxSteps: 12,
+    maxOutputTokens: 2048,
+  },
+  {
+    schemaVersion: 1,
     id: "acceptance-walker",
     version: "1.0.0",
     description: "Walk a user scenario through the running application",

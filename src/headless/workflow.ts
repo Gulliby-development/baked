@@ -5,6 +5,7 @@ import { getCwd } from "../core/cwd.js";
 import { loadModelCatalog } from "../core/llm/model-catalog.js";
 import { parseRouteOverrides } from "../core/llm/model-routing.js";
 import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
+import { withModelReview } from "../core/workflows/auto-approval.js";
 import { type BudgetLimits, type BudgetPresetId, presetPolicy } from "../core/workflows/budget.js";
 import { compareRuns, comparisonMarkdown } from "../core/workflows/compare.js";
 import {
@@ -281,11 +282,12 @@ export async function executeWorkflowCommand(
       const workflowId = named ?? proposal?.workflowId ?? defaultWorkflow;
       const choice = proposal ? presetChoice(proposal, workflowId) : null;
       // The proposed budget applies to the proposed workflow unless --budget names one.
-      const policy = startPolicy(
+      const base = startPolicy(
         choice && !choice.overridden && typeof args.flags.budget !== "string"
           ? { ...args, flags: { ...args.flags, budget: choice.budget } }
           : args,
       );
+      const policy = args.flags["approval-review"] === true ? withModelReview(base) : base;
       if (proposal)
         process.stderr.write(
           `preset: ${describeProposal(proposal)}${choice?.overridden ? `; running ${workflowId} as asked` : ""}\n`,
