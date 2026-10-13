@@ -6,7 +6,7 @@ import { NativeAgentExecutor } from "../src/core/workflows/agent-executor.js";
 import { WorkspaceLeases } from "../src/core/workflows/leases.js";
 import { type AgentProfile, ProfileSchema } from "../src/core/workflows/schemas.js";
 import { AttemptStepController, type AttemptUsageRecord } from "../src/core/workflows/step-budget.js";
-import { runUsage } from "../src/core/workflows/usage.js";
+import { mergeToolBackends, runUsage, toolBackendLine } from "../src/core/workflows/usage.js";
 import type { AgentExecutor, ExecutionRequest, Task } from "../src/core/workflows/types.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
@@ -238,6 +238,38 @@ describe("repair probes", () => {
       .filter((e) => e.type === "tool.finished")
       .map((e) => e.payload as { tool: string; status: string });
     expect(tools).toContainEqual(expect.objectContaining({ tool: "run_probe", status: "ok" }));
+  });
+});
+
+describe("code intelligence backends in attempt usage", () => {
+  test("each tool call is counted under the backend that answered it", async () => {
+    scriptModel([
+      step(1000, 50, { name: "bake_find", input: { query: "value" } }),
+      step(1000, 50, { name: "bake_find", input: { query: "fixture" } }),
+      () => {
+        throw new Error("provider unavailable");
+      },
+    ]);
+    const { executor, request, usageRecord } = await nativeAttempt();
+    await expect(executor.execute(request)).rejects.toThrow("provider unavailable");
+    // Without a repo map bake_find lists files itself.
+    expect(usageRecord()?.toolBackends).toEqual([
+      { tool: "bake_find", backend: "file-list", server: null, calls: 2 },
+    ]);
+  });
+
+  test("counts of the same tool, backend and server add up across attempts", () => {
+    const merged = mergeToolBackends([
+      { tool: "navigate", backend: "lsp", server: "rust-analyzer", calls: 2 },
+      { tool: "navigate", backend: "tree-sitter", server: null, calls: 1 },
+      { tool: "navigate", backend: "lsp", server: "rust-analyzer", calls: 3 },
+    ]);
+    expect(merged).toEqual([
+      { tool: "navigate", backend: "lsp", server: "rust-analyzer", calls: 5 },
+      { tool: "navigate", backend: "tree-sitter", server: null, calls: 1 },
+    ]);
+    expect(toolBackendLine(merged)).toBe("navigate lsp (rust-analyzer) 5, navigate tree-sitter 1");
+    expect(toolBackendLine([])).toBeNull();
   });
 });
 

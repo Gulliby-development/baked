@@ -3,6 +3,7 @@
  * serves the schema with the values, so the pages render whatever settings it describes.
  */
 import type {
+  SettingCatalog,
   SettingDefinition,
   SettingPage,
   SettingScope,
@@ -26,7 +27,8 @@ export interface SettingsView {
   pages: SettingPage[];
   settings: SettingDefinition[];
   values: Record<string, SettingValue>;
-  catalogs: { tools: { name: string; description: string }[] };
+  /** Catalogs of `string-list` settings; a server older than a catalog leaves it out. */
+  catalogs: Partial<Record<SettingCatalog, { name: string; description: string }[]>>;
 }
 
 export interface SettingsChange {

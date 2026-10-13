@@ -338,6 +338,7 @@ export const navigateTool = {
             success: true,
             output: annotation ? `${defOutput}${annotation}` : defOutput,
             backend: tracked.backend,
+            server: tracked.server,
           };
         }
 
@@ -390,6 +391,7 @@ export const navigateTool = {
             success: true,
             output: refsAnnotation ? `${refsOutput}${refsAnnotation}` : refsOutput,
             backend: tracked.backend,
+            server: tracked.server,
           };
         }
 
@@ -408,6 +410,7 @@ export const navigateTool = {
             success: true,
             output: `Symbols in ${file} (${String(tracked.value.length)}):\n${tracked.value.map(formatSymbol).join("\n")}`,
             backend: tracked.backend,
+            server: tracked.server,
           };
         }
 
@@ -430,6 +433,7 @@ export const navigateTool = {
             success: true,
             output: `Imports in ${file} (${String(tracked.value.length)}):\n${lines.join("\n")}`,
             backend: tracked.backend,
+            server: tracked.server,
           };
         }
 
@@ -452,6 +456,7 @@ export const navigateTool = {
             success: true,
             output: `Exports from ${file} (${String(tracked.value.length)}):\n${lines.join("\n")}`,
             backend: tracked.backend,
+            server: tracked.server,
           };
         }
 
@@ -487,6 +492,7 @@ export const navigateTool = {
             success: true,
             output: `Workspace symbols matching '${query}' (${String(wsSyms.length)}):\n${cappedWs.map(formatSymbol).join("\n")}${wsOverflow}`,
             backend: tracked.backend,
+            server: tracked.server,
           };
         }
 
@@ -535,6 +541,7 @@ export const navigateTool = {
             success: true,
             output: parts.join("\n"),
             backend: tracked.backend,
+            server: tracked.server,
           };
         }
 
@@ -574,6 +581,7 @@ export const navigateTool = {
             success: true,
             output: `Implementations of '${symbol}' (${String(impls.length)}):\n${cappedImpls.map(formatLocation).join("\n")}${implOverflow}`,
             backend: tracked.backend,
+            server: tracked.server,
           };
         }
 
@@ -624,6 +632,7 @@ export const navigateTool = {
             success: true,
             output: parts.join("\n"),
             backend: tracked.backend,
+            server: tracked.server,
           };
         }
 
@@ -660,6 +669,7 @@ export const navigateTool = {
             success: true,
             output: `Symbols matching '${query}' (${String(searchSyms.length)}):\n${cappedSearch.map(formatSymbol).join("\n")}${searchOverflow}`,
             backend: tracked.backend,
+            server: tracked.server,
           };
         }
 
