@@ -13,8 +13,10 @@ export function preRunRequest(args: WorkflowArgs, cwd: string): PreRunRequest {
   const workflowId = text("workflow") ?? args.positional[0];
   const policy = text("policy");
   const writers = text("writers");
+  const candidates = text("candidates");
   const route = text("route");
   const confirmation = text("confirm-auto-approval");
+  const sandbox = text("sandbox");
   return {
     ...(workflowId ? { workflowId } : {}),
     ...(text("model") ? { model: text("model") } : {}),
@@ -23,6 +25,8 @@ export function preRunRequest(args: WorkflowArgs, cwd: string): PreRunRequest {
     ...(args.flags.worktree === true ? { worktree: true } : {}),
     ...(args.flags["model-strict"] === true ? { modelStrict: true } : {}),
     ...(writers ? { writers: Number(writers) } : {}),
+    ...(candidates ? { candidates: Number(candidates) } : {}),
+    ...(sandbox === "off" || sandbox === "auto" || sandbox === "required" ? { sandbox } : {}),
     ...(confirmation ? { autoApprovalConfirmation: confirmation } : {}),
   };
 }

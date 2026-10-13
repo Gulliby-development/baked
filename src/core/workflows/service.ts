@@ -107,6 +107,7 @@ import { bindDefinition, type PreparedStart, prepareStart } from "./start.js";
 import { assertMutable } from "./state-machine.js";
 import { newId, WorkflowStore } from "./store.js";
 import { reusableImplementations } from "./task-graph.js";
+import { isTestTask } from "./tests-first.js";
 import { type AgentExecutor, type RuntimeState, RuntimeStateSchema } from "./types.js";
 import { blocksRun, isAcceptanceRequest } from "./v2/acceptance.js";
 import { decideAcceptance } from "./v2/acceptance-gate.js";
@@ -128,6 +129,12 @@ import {
   stageKind,
 } from "./v2/runtime.js";
 import { removeRunWorktree, runRoot } from "./worktree.js";
+import {
+  cleanWorktrees,
+  type WorktreeCleanup,
+  type WorktreeReport,
+  worktreeUsage,
+} from "./worktree-usage.js";
 
 /** A checked reroute that is not written yet (`planReroute`). */
 export interface PlannedReroute {
@@ -336,6 +343,7 @@ export class NativeWorkflowService implements WorkflowService {
       sizingReplans: 0,
       hostSplitTasks: 0,
       deferredChecks: {},
+      affectedTests: {},
       analysisReplans: 0,
       revisedRejections: [],
       taskContinuations: {},
@@ -357,6 +365,7 @@ export class NativeWorkflowService implements WorkflowService {
       gateResults: {},
       acceptance: {},
       issue: request.issue ?? null,
+      testsFirst: null,
       presetChoice: request.presetChoice ?? null,
     };
     return this.store.transaction(() => {
@@ -837,7 +846,29 @@ export class NativeWorkflowService implements WorkflowService {
       const state = this.store.state(runId);
       const body = JSON.parse(request.body_json) as Record<string, unknown>;
       let accepted = true;
-      if (decision.kind === "approve") {
+      const testsFirst = request.kind === "approval" && "testsFirst" in body;
+      if (testsFirst && (decision.kind === "approve" || decision.kind === "reject")) {
+        if (state.testsFirst?.digest !== request.digest)
+          throw new WorkflowFault("STALE_DECISION", "The tests changed since this request");
+        if (decision.kind === "approve") {
+          if (decision.digest !== request.digest)
+            throw new WorkflowFault("STALE_DECISION", "Approval digest does not match the tests");
+          state.testsFirst = { ...state.testsFirst, approved: true };
+        } else {
+          // The tests are written again with the person's note; the code still waits for them.
+          accepted = false;
+          state.prompt += `\nUser rejected the tests written first: ${decision.explanation}`;
+          state.testsFirst = null;
+          const tests = new Set(
+            (state.graph?.tasks ?? []).filter(isTestTask).map((task) => task.id),
+          );
+          for (const row of this.store.tasks(runId))
+            if (tests.has(row.id) && ["implemented", "verified"].includes(row.status)) {
+              delete state.taskGates[row.id];
+              this.store.taskStatus(runId, row.id, "invalidated");
+            }
+        }
+      } else if (decision.kind === "approve") {
         assertFrozenInputs(state);
         if (
           request.kind !== "approval" ||
@@ -1244,6 +1275,7 @@ export class NativeWorkflowService implements WorkflowService {
         state.correctionHashes = [];
         state.repairPredecessors = {};
         state.taskGates = {};
+        state.affectedTests = {};
         state.previousFindingSet = null;
         state.noProgressRounds = 0;
         state.extraConvergenceRounds = 0;
@@ -1589,6 +1621,7 @@ export class NativeWorkflowService implements WorkflowService {
       state.manifest.rootGraphHash = state.graph ? hashJson(state.graph) : null;
       state.repairPredecessors = {};
       state.taskGates = {};
+      state.affectedTests = {};
       state.previousFindingSet = null;
       state.noProgressRounds = 0;
       state.extraConvergenceRounds = 0;
@@ -1767,6 +1800,14 @@ export class NativeWorkflowService implements WorkflowService {
         canonical({ ...worktree, discardedAt: new Date().toISOString() }),
       );
     });
+  }
+  /** Run and task worktrees on disk with their size and run status (`baked workflow worktrees`). */
+  worktrees(): Promise<WorktreeReport> {
+    return worktreeUsage(this.store, (runId) => this.active.has(runId));
+  }
+  /** Removes the worktrees of ended and unknown runs; their branches stay. */
+  cleanWorktrees(dryRun: boolean): Promise<WorktreeCleanup> {
+    return cleanWorktrees(this.store, { dryRun, isActive: (runId) => this.active.has(runId) });
   }
   events(runId: string, afterSeq: number, signal: AbortSignal) {
     return replayEvents(this.store, runId, afterSeq, signal);

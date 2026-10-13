@@ -67,10 +67,13 @@ export const isStaticCheck = (check: Check): boolean =>
  * type of the project, so in a task's own worktree they fail until the sibling tasks' files exist
  * (bench round 08, commitbump: `cargo clippy` E0583 for a `mod parse;` whose file another task
  * writes, and 2.2M tokens of repairs that could not pass). They run in the checks stage after
- * integration, not per task. Formatters and file-local linters (fmt, ruff, biome, eslint) read
- * one file at a time and stay per task.
+ * integration, not per task. `cargo fmt` and `rustfmt` count too: they follow every `mod x;` and
+ * fail on a module file a later task writes (bench round 11, mdrefs: a skeleton task blocked on
+ * "failed to resolve mod"). Other formatters and file-local linters (gofmt, ruff, biome, eslint)
+ * read one file at a time and stay per task.
  */
-const WHOLE_UNIT_COMMAND = /\b(?:clippy|vet|tsc|typecheck|mypy|pyright)\b|\bcargo\s+check\b/i;
+const WHOLE_UNIT_COMMAND =
+  /\b(?:clippy|vet|tsc|typecheck|mypy|pyright|rustfmt)\b|\bcargo\s+(?:check|fmt)\b/i;
 
 export const isWholeUnitCheck = (check: Check): boolean =>
   WHOLE_UNIT_COMMAND.test([check.id, check.executable, ...check.args].join(" "));

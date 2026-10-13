@@ -193,9 +193,26 @@ function collect(store: WorkflowStore, runId: string) {
     const latestArtifacts = new Map<string, ArtifactRow>();
     const taskDiffs = new Map<string, ArtifactRow>();
     const critiques: CritiqueRecord[] = [];
+    const selections: SelectionRecord[] = [];
+    const candidates: CandidateRecord[] = [];
     // What the host's run of each finding's repro showed, by finding id.
     const reproOutcomes = new Map<string, string>();
+    const readQuietly = (id: string): string | null => {
+      try {
+        return store.readArtifact(runId, id);
+      } catch {
+        return null;
+      }
+    };
     for (const artifact of store.artifacts(runId)) {
+      if (/^tasks\/[^/]+\/selection\.json$/.test(artifact.logical_path)) {
+        const record = parse<SelectionRecord | null>(readQuietly(artifact.id), null);
+        if (record) selections.push(record);
+      }
+      if (/^tasks\/[^/]+\/candidates\/\d+\.json$/.test(artifact.logical_path)) {
+        const record = parse<CandidateRecord | null>(readQuietly(artifact.id), null);
+        if (record) candidates.push(record);
+      }
       if (/^tasks\/[^/]+\/critique\.json$/.test(artifact.logical_path))
         critiques.push(
           parse<CritiqueRecord>(
@@ -303,6 +320,8 @@ function collect(store: WorkflowStore, runId: string) {
       requests: store.requests(runId),
       routing: readRoutingSummary(store, runId),
       critiques,
+      selections,
+      candidates,
       outcomes: store.criticOutcomes(runId),
       usage: stagesInRunOrder(store, runUsage(store, runId)),
       artifacts: [...latestArtifacts.values()].filter((a) => !internalArtifact(a.logical_path)),
@@ -319,6 +338,61 @@ interface CritiqueRecord {
   attempt: number;
   critique?: Critique;
   error?: string;
+}
+
+/** A stored `tasks/TASK/selection.json` of a best-of-N task (#642). */
+interface SelectionRecord {
+  taskId: string;
+  candidates: number;
+  winner: number | null;
+  method: string;
+  reason: string;
+  oracle: boolean;
+  selectedPassed: boolean;
+}
+/** A stored `tasks/TASK/candidates/N.json`. */
+interface CandidateRecord {
+  taskId: string;
+  index: number;
+  outcome: string;
+  failedChecks: string[];
+  changedLines: number;
+  score: number | null;
+  selected: boolean;
+  error?: string;
+}
+
+/** Best-of-N (#642): each candidate's result, the choice and the oracle and selected rates. */
+function candidatesSection(facts: Facts, cap: number): string[] {
+  const selections = facts.selections;
+  const oracle = selections.filter((s) => s.oracle).length;
+  const selected = selections.filter((s) => s.selectedPassed).length;
+  const of = String(selections.length);
+  return [
+    `${of} task(s) ran as several candidates. Oracle rate ${String(oracle)}/${of} (some candidate passed its required checks); selected rate ${String(selected)}/${of} (the selected candidate passed them).`,
+    "",
+    ...table(
+      ["Task", "Candidate", "Result", "Failed checks", "Lines", "Score", "Selected"],
+      [...facts.candidates]
+        .sort((a, b) => a.taskId.localeCompare(b.taskId) || a.index - b.index)
+        .map((c) => [
+          c.taskId,
+          c.index,
+          c.error ? `${c.outcome}: ${c.error}` : c.outcome,
+          c.failedChecks.join(", ") || null,
+          c.changedLines,
+          c.score === null ? null : c.score.toFixed(2),
+          c.selected ? "yes" : null,
+        ]),
+      cap,
+    ),
+    "",
+    ...list(
+      selections.map((s) => `- ${s.taskId} (${s.method}): ${s.reason}`),
+      cap,
+    ),
+    "",
+  ];
 }
 
 /** Which models and vendors reviewed the change and which implemented it (#635). */
@@ -420,10 +494,12 @@ function mutationSection(
   const extra = [
     ...(count("timeout") ? [`${count("timeout")} timed out`] : []),
     ...(count("not-run") ? [`${count("not-run")} not run`] : []),
+    ...(count("equivalent") ? [`${count("equivalent")} judged equivalent`] : []),
   ];
   const score = result.score === null ? "no score" : `score ${result.score}%`;
+  const engine = result.engine && result.engine !== "built-in" ? `, ${result.engine}` : "";
   const out = [
-    `Mutation gate (\`${result.mode}\`): ${score} (${killed} of ${ran} mutants killed${extra.length ? `, ${extra.join(", ")}` : ""})${blocking ? `, ${blocking} blocking` : ""}${result.tests.length ? `; tests: ${result.tests.map(code).join(", ")}` : ""}${result.note ? `; ${result.note}` : ""}.`,
+    `Mutation gate (\`${result.mode}\`${engine}): ${score} (${killed} of ${ran} mutants killed${extra.length ? `, ${extra.join(", ")}` : ""})${blocking ? `, ${blocking} blocking` : ""}${result.tests.length ? `; tests: ${result.tests.map(code).join(", ")}` : ""}${result.note ? `; ${result.note}` : ""}.`,
     "",
   ];
   if (before)
@@ -431,7 +507,9 @@ function mutationSection(
       `Mutation score before the run: ${before.score === null ? "none" : `${before.score}%`} -> after: ${result.score === null ? "none" : `${result.score}%`}.`,
       "",
     );
-  const survivors = result.mutants.filter((m) => m.status === "survived");
+  const survivors = result.mutants.filter(
+    (m) => m.status === "survived" || m.status === "equivalent",
+  );
   if (survivors.length)
     out.push(
       ...table(
@@ -439,8 +517,12 @@ function mutationSection(
         survivors.map((m) => [
           m.id,
           code(`${m.file}:${m.line}`),
-          code(m.mutated.trim()),
-          m.blocking ? "survived, blocking" : "survived",
+          m.description ? m.description : code(m.mutated.trim()),
+          m.status === "equivalent"
+            ? `equivalent: ${(m.equivalence ?? "").slice(0, 200)}`.trim()
+            : m.blocking
+              ? "survived, blocking"
+              : "survived",
         ]),
         cap,
       ),
@@ -609,6 +691,8 @@ function render(facts: Facts, cap: number): string {
       "",
     );
   }
+
+  if (facts.selections.length) out.push("## Best-of-N", "", ...candidatesSection(facts, cap));
 
   out.push("## Checks", "");
   if (facts.checks.length)

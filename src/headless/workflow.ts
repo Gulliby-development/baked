@@ -308,8 +308,19 @@ export async function executeWorkflowCommand(
         ...(typeof args.flags.writers === "string"
           ? { maxConcurrentWriters: Number(args.flags.writers) }
           : {}),
+        ...(typeof args.flags.candidates === "string"
+          ? { candidates: Number(args.flags.candidates) }
+          : {}),
         ...(args.flags.clarification === "ask" || args.flags.clarification === "assume"
           ? { clarification: args.flags.clarification }
+          : {}),
+        ...(args.flags["test-integrity"] === "block" || args.flags["test-integrity"] === "warn"
+          ? { testIntegrity: args.flags["test-integrity"] }
+          : {}),
+        ...(args.flags.sandbox === "off" ||
+        args.flags.sandbox === "auto" ||
+        args.flags.sandbox === "required"
+          ? { sandbox: args.flags.sandbox }
           : {}),
         ...(args.flags.duplication === "off" ||
         args.flags.duplication === "warn" ||
@@ -608,6 +619,9 @@ export async function executeWorkflowCommand(
       const changed = editProjectMemory(service.store, edit);
       return { id: changed, ...projectMemoryView(service.store, policy) };
     }
+    case "worktrees":
+      if (args.flags.clean) return service.cleanWorktrees(args.flags["dry-run"] === true);
+      return service.worktrees();
     case "gc":
       return artifacts.gc({
         before: stringFlag(args, "before"),

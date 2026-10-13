@@ -15,7 +15,7 @@ Goals:
 5. Gates are a library: command, human, AI review and AI acceptance gates are defined once in `baked/gates/*.json` and attached to transitions in an editor window.
 6. An AI acceptance gate can walk a finished feature like a user would, but a model's claim never closes a required gate: the walk-through becomes a deterministic test first.
 
-Not in this document: initiatives and decomposition (section 3 of the plan), Git delivery (section 4) and parallel worktrees ([separate design](parallel-worktrees.md)). Section 12 states what they need from v2. Also out of scope: several writers in one workspace, a daemon, remote workers, executable plugins, arbitrary scripting in conditions, an OS sandbox.
+Not in this document: initiatives and decomposition (section 3 of the plan), Git delivery (section 4) and parallel worktrees ([separate design](parallel-worktrees.md)). Section 12 states what they need from v2. Also out of scope: several writers in one workspace, a daemon, remote workers, executable plugins, arbitrary scripting in conditions, a per-gate OS sandbox (the run-wide OS sandbox is in [OS sandbox](../sandbox.md)).
 
 ## 2. What v1 gives, and what v2 must not change
 
@@ -57,7 +57,7 @@ The v1 stage kinds become seven stage types, each an existing v1 mechanism with 
 | Type | What it does | Produces | Effects | Outcomes | v1 kinds |
 | --- | --- | --- | --- | --- | --- |
 | `agent` | A read-only agent submits one typed result | the contract it names | none | passed | research, specify, plan, analyze |
-| `tasks` | Runs the approved task graph; the only stage that edits files | `implementation` | `workspace-write` | passed | task-graph |
+| `tasks` | Runs the approved task graph; the only stage that edits files. Optional `candidates` (2..8) runs each planned task as [best-of-N candidates](runtime.md#best-of-n-candidates) | `implementation` | `workspace-write` | passed | task-graph |
 | `check` | Runs its command gates on a frozen snapshot, no model | `gates` | none | passed, failed | checks |
 | `wait` | Runs its command gates every `intervalSeconds` until they pass or `timeoutMinutes` pass, no model | `gates` | none | passed, failed | (new) |
 | `approval` | A decision bound to the digest of the contracts it covers | `decision` | none | passed | approve |
@@ -133,7 +133,9 @@ Each preset is a file in `src/core/workflows/v2/presets/` and is checked: valid 
 | --- | --- | --- | --- | --- |
 | Quick fix | plan, approve, implement, checks | yes, after approval | task tests on implement, then typecheck, lint, tests | A small, well understood change |
 | Standard | research, specify, plan, analyze, approve, implement, checks, review | yes, after approval | as Quick fix, plus correctness review | The normal feature |
-| Full | the current SDD: Standard plus security review, convergence on every criterion and learn | yes, after approval | as Standard, security review when triggered | Large or risky changes |
+| Full | the current SDD: Standard plus tests first, security review, convergence on every criterion and learn | yes, after approval | as Standard, security review when triggered | Large or risky changes |
+| Best-of-N | as Standard, in a worktree; the tasks stage has `candidates: 3` | yes, after approval | as Standard | Tasks where picking among several attempts pays for them ([best-of-N](runtime.md#best-of-n-candidates)) |
+| TDD | as Standard, with the test tasks run, checked red and approved before the code | yes, after approval | as Standard; the approved tests are read-only for code tasks | Correctness first ([tests first](runtime.md#tests-first)) |
 | Spike | research, report | never | none | Learn something and write it down |
 | Review only | review of an existing diff | never | correctness and security review | Check a diff against criteria |
 | Fix CI | reproduce, research, plan, approve, implement, verify | yes, after approval | typecheck, lint, tests in reproduce and verify, task tests on implement | Make failing checks pass ([Fix CI](fix-ci.md)) |
@@ -304,7 +306,7 @@ All default to denied and each appears in the approval digest when granted.
 
 The model gets no shell, no generic file tool and no web tools during the walk-through. Its tools are `app_start` and `app_stop` (for the declared command only), the driver actions (for a browser: snapshot, click, type, key; for a terminal: send and read), and `record_step`, which stores the action, the observation and the expectation it concerns.
 
-Honest limit: BAKED has no operating system sandbox. The grants above are enforced where the host controls the path (which processes start, which sockets the process tree listens on, which hosts the driver browser reaches, what changed on disk). The application process itself can still open outbound connections the host does not see. Users who need that closed run the gate in a container or a network namespace; the design leaves a place for a `sandbox` field and does not claim isolation it cannot provide.
+Honest limit: the grants above are enforced where the host controls the path (which processes start, which sockets the process tree listens on, which hosts the driver browser reaches, what changed on disk). A run with the OS sandbox on ([OS sandbox](../sandbox.md)) also enforces `writePaths` at the file system level: the application gets only those directories writable. Its network is isolated only when the gate grants neither ports nor hosts, since the host browser and proxy must reach it; otherwise the application process can still open outbound connections the host does not see. Users who need that closed run the gate in a container or a network namespace. A per-gate `sandbox` field stays reserved.
 
 ### 9.3 Lifecycle
 

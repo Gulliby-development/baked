@@ -103,7 +103,7 @@ export const SETTING_PAGES: readonly SettingPage[] = [
   {
     id: "tools",
     title: "Tools",
-    description: "Tools the chat agent may call, and keys for better web search.",
+    description: "Tools the chat agent may call, keys for better web search, and the OS sandbox.",
     command: "/tools",
   },
   {
@@ -488,6 +488,44 @@ export const SETTINGS: readonly SettingDefinition[] = [
     envVar: "JINA_API_KEY",
   },
   {
+    id: "sandbox",
+    page: "tools",
+    section: "Sandbox",
+    label: "OS sandbox",
+    help: "Run shell, project and check commands in an OS sandbox (bubblewrap on Linux, seatbelt on macOS): writes stay in the project, credential files are hidden. A project config can only raise it.",
+    scopes: GLOBAL,
+    type: "enum",
+    default: "off",
+    options: [
+      { value: "off", label: "Off", help: "Commands run without OS sandbox." },
+      {
+        value: "auto",
+        label: "Auto",
+        help: "Sandbox when a backend is available; otherwise run without it and warn once.",
+      },
+      {
+        value: "required",
+        label: "Required",
+        help: "Refuse to run commands when no sandbox backend is available.",
+      },
+    ],
+  },
+  {
+    id: "sandboxNetwork",
+    page: "tools",
+    section: "Sandbox",
+    label: "Network in the sandbox",
+    help: "Network access of sandboxed chat commands. Workflow runs follow their policy's network setting.",
+    scopes: GLOBAL,
+    type: "enum",
+    default: "allow",
+    options: [
+      { value: "allow", label: "Allow" },
+      { value: "deny", label: "Deny", help: "Only loopback works." },
+    ],
+    enabledWhen: { id: "sandbox", values: ["auto", "required"] },
+  },
+  {
     id: "artifactDeploy",
     page: "tools",
     section: "Artifacts",
@@ -531,6 +569,16 @@ export const SETTINGS: readonly SettingDefinition[] = [
         help: "Restore the file and return the errors with the original text.",
       },
     ],
+  },
+  {
+    id: "agentFeatures.approvalReview",
+    page: "agent-features",
+    section: "Approvals",
+    label: "Approval reviewer",
+    help: "Before asking you, the chat model reviews project-local cleanup commands (rm inside the project, git rebase, git branch -D, kill of a process) and edits of CI or Docker files, and runs them only at low risk. Force pushes, hard resets, database drops, piped scripts, secrets and anything outside the project always ask.",
+    scopes: BOTH,
+    type: "boolean",
+    default: false,
   },
   {
     id: "agentFeatures.desloppify",
@@ -885,6 +933,20 @@ export const SETTINGS: readonly SettingDefinition[] = [
       { value: "off", label: "off", help: "Do not run the gate." },
       { value: "advisory", label: "advisory", help: "Report surviving mutants." },
       { value: "required", label: "required", help: "Block until a test kills them." },
+    ],
+  },
+  {
+    id: "quality.mutationEngine",
+    page: "code-quality",
+    section: "Tests",
+    label: "Mutation engine",
+    help: "Which engine makes the mutation gate's mutants. auto runs the project's own mutation tool when it is already installed (Stryker, mutmut, cargo-mutants, PIT, go-mutesting) and the built-in operators otherwise; built-in always uses the operators. BAKED never installs a tool.",
+    scopes: BOTH,
+    type: "enum",
+    default: "auto",
+    options: [
+      { value: "auto", label: "auto", help: "Use an installed tool, else the built-in operators." },
+      { value: "built-in", label: "built-in", help: "Always use the built-in operators." },
     ],
   },
   {

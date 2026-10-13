@@ -20,8 +20,10 @@ baked doctor                                     # check keys, models, checks an
 | `quick-fix` | Plan, approve, implement and check a small change |
 | `standard` | Research, specify, plan, analyze, approve, implement, check and review |
 | `full` | The SDD pipeline as a v2 definition, with security review, convergence on every criterion and learning |
+| `best-of-n` | `standard` in a worktree, with each planned task implemented three times and the best candidate kept ([best-of-N](runtime.md#best-of-n-candidates)) |
 | `spike` | Research and a written report; no file changes |
 | `review-only` | Review an existing diff against criteria; no file changes |
+| `tdd` | `standard` with [tests first](runtime.md#tests-first): failing tests per criterion are written and approved before the code |
 | `fix-ci` | Reproduce failing checks, research the failure, plan, approve, fix and rerun the same checks ([Fix CI](fix-ci.md)) |
 | `harden` | Strengthen the tests of existing code without changing it, until the tests kill the module's mutants ([Harden](harden.md)) |
 

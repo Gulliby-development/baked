@@ -3,7 +3,9 @@ import { isAbsolute, join, resolve } from "node:path";
 import type { AppConfig } from "../../types/index.js";
 import type { LspStatusView } from "../intelligence/lsp-service.js";
 import { getProvider } from "../llm/providers/index.js";
+import { detectSandbox, type SandboxDetection } from "../platform/sandbox.js";
 import { getProviderApiKey } from "../secrets.js";
+import { type SandboxMode, sandboxSettings } from "../security/sandbox.js";
 import { defaultWorkflowPolicy } from "./defaults.js";
 import { WorkflowFault } from "./errors.js";
 import { estimateHistory, type PreRunEstimate } from "./estimate.js";
@@ -56,6 +58,10 @@ export interface PreRunRequest {
   policy?: unknown;
   worktree?: boolean;
   writers?: number;
+  /** Best-of-N candidates per planned task, as `--candidates`. */
+  candidates?: number;
+  /** The run's OS sandbox, as `--sandbox`. */
+  sandbox?: SandboxMode;
   autoApprovalConfirmation?: string;
 }
 
@@ -74,6 +80,8 @@ export interface DoctorDeps {
   git(args: string[], cwd: string): Promise<{ code: number; stdout: string }>;
   /** The project's language servers; without it the doctor skips that line. */
   languageServers?(workspace: string): Promise<LspStatusView>;
+  /** The OS sandbox backend; without it the doctor skips that line. */
+  sandbox?(): SandboxDetection;
 }
 
 const PROBE_TIMEOUT_MS = 5000;
@@ -111,6 +119,7 @@ export const defaultDoctorDeps: DoctorDeps = {
     }
     return Bun.which(command, { cwd }) ?? null;
   },
+  sandbox: detectSandbox,
   async languageServers(workspace) {
     const { lspStatus } = await import("../intelligence/lsp-service.js");
     return lspStatus({ workspace });
@@ -249,6 +258,39 @@ function startRequest(config: AppConfig, request: PreRunRequest) {
       : {}),
     ...(request.worktree ? { executionMode: "worktree" as const } : {}),
     ...(request.writers !== undefined ? { maxConcurrentWriters: request.writers } : {}),
+    ...(request.candidates !== undefined ? { candidates: request.candidates } : {}),
+    ...(request.sandbox ? { sandbox: request.sandbox } : {}),
+  };
+}
+
+/** The doctor line of the run's OS sandbox mode and the backend it needs. */
+export function sandboxCheck(mode: SandboxMode, detection: SandboxDetection): DoctorCheck {
+  if (mode === "off")
+    return {
+      id: "sandbox",
+      status: "ok",
+      title: "OS sandbox is off",
+      detail: "Checks, fixes and acceptance apps run without OS sandbox (see docs/sandbox.md).",
+    };
+  if (detection.available)
+    return {
+      id: "sandbox",
+      status: "ok",
+      title: `OS sandbox ${mode}: ${detection.backend}`,
+      subject: detection.path ?? undefined,
+    };
+  return {
+    id: "sandbox",
+    status: mode === "required" ? "fail" : "warn",
+    title:
+      mode === "required"
+        ? "OS sandbox is required but unavailable"
+        : "OS sandbox is auto but unavailable: commands run without OS sandbox",
+    detail: detection.reason ?? "no backend",
+    fix:
+      detection.backend === "bwrap"
+        ? "Install bubblewrap (apt install bubblewrap) and allow user namespaces"
+        : "Set sandbox to auto or off, or run on Linux or macOS",
   };
 }
 
@@ -628,6 +670,12 @@ export async function runDoctor(
     if (deps.languageServers) {
       const status = await deps.languageServers(workspace).catch(() => null);
       if (status) checks.push(...languageServerChecks(status));
+    }
+    if (deps.sandbox) {
+      const mode: SandboxMode = prepared
+        ? (prepared.policy.sandbox ?? "off")
+        : (request.sandbox ?? sandboxSettings(workspace).effective);
+      checks.push(sandboxCheck(mode, deps.sandbox()));
     }
     checks.push(...(await gitChecks(workspace, prepared?.mode ?? null, deps.git)));
     if (store) checks.push(leaseCheck(store));

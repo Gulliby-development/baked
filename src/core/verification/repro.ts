@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import type { SandboxRequest } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import type { ProcessScope } from "../workflows/process-scope.js";
 import { ProbeSchema, type Repro, ReproSchema, type Review } from "../workflows/schemas.js";
@@ -71,6 +72,8 @@ export async function runRepro(
     executables: readonly string[];
     generated: string[];
     signal: AbortSignal;
+    /** The run's OS sandbox (see runSandbox), or null. */
+    sandbox: SandboxRequest | null;
   },
 ): Promise<ReproOutcome> {
   if (!options.executables.includes(repro.executable))
@@ -89,6 +92,7 @@ export async function runRepro(
       env: reproEnv(options.root),
       timeoutMs: REPRO_TIMEOUT_MS,
       signal: options.signal,
+      sandbox: options.sandbox,
     });
   } catch (error) {
     options.signal.throwIfAborted();
@@ -208,6 +212,8 @@ export async function runProbe(
     executables: readonly string[];
     generated: string[];
     signal: AbortSignal;
+    /** The run's OS sandbox (see runSandbox), or null. */
+    sandbox: SandboxRequest | null;
   },
 ): Promise<ProbeOutcome> {
   if (!options.executables.includes(probe.executable))
@@ -225,6 +231,7 @@ export async function runProbe(
       env: reproEnv(options.root),
       timeoutMs: REPRO_TIMEOUT_MS,
       signal: options.signal,
+      sandbox: options.sandbox,
     });
   } catch (error) {
     options.signal.throwIfAborted();
