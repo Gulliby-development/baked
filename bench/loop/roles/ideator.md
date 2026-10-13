@@ -84,7 +84,7 @@ The orchestrator tells you the level (1-5). Start at 1; it goes up under the orc
 | 4 | A larger app that BAKED should split itself (initiatives, several writers) | 8-15 source files, about 22 tasks | about 14M at today's cost | parallel writers on one file, coordination between writers, the run budget |
 | 5 | A small service: API + CLI + SQLite schema with migrations + CI, always built as a BAKED initiative (3-12 features, one run per feature) | 15-30 source files, about 30 tasks across its feature runs | about 30M across its runs | the split, contracts between features, handing state between runs, the round budget |
 
-Every level-5 app is built as an initiative, never as one workflow run: write its brief so it splits into 3-12 features with clear boundaries, and say in `ideas.md` which features you expect.
+Every level-5 app is built as an initiative, never as one workflow run. The brief describes the whole product as a user would (parts, behavior, tests, README) and does not list features: BAKED's decomposer splits it into 3-12 features itself. Note in `ideas.md` the split you would expect, for the analyst to compare with BAKED's split; it is never given to BAKED.
 
 Above level 5 (a multi-service product: frontend, API, workers, auth; 100+ files) is out of scope for the loop: such work needs milestones over days, not runs, and is not proposed.
 
