@@ -6,6 +6,7 @@ import { loadConfig } from "../../config/index.js";
 import { deployArtifact, planDeploy } from "../artifacts/deploy.js";
 import { ArtifactError, type ArtifactMeta, ArtifactStore } from "../artifacts/store.js";
 import { VercelError } from "../artifacts/vercel.js";
+import { applyKitToPage, designKitMode, KIT_CLASSES, pageIsUnstyled } from "../kit/index.js";
 import { isInside, realPath } from "../projects/paths.js";
 
 const nullToUndef = <T>(v: T | null | undefined): T | undefined => v ?? undefined;
@@ -46,7 +47,8 @@ export function createArtifactTool(opts: {
       "Artifacts: self-contained HTML pages (styles and scripts inline) kept for the user and shared by every project and chat. " +
       "Actions: list → saved artifacts; read (id, optional version) → the page; save (html or path to an .html file in the project, optional title, id to add a version) → its id; " +
       "deploy (id, target preview|production, default preview) → publishes the latest version to the user's own Vercel account after the user approves. " +
-      "Deploy only when the user asks for it.",
+      "Deploy only when the user asks for it. " +
+      `A page saved without styles of its own (no <style> or stylesheet link) gets the BAKED kit: BAKED inlines its stylesheet and a small "Made with BAKED" footer, so write semantic HTML and use its classes (${KIT_CLASSES}). Pass kit=false to save the page exactly as written, kit=true to add the kit to a page that has some styles. Follow the user's request when they want another look.`,
     inputSchema: z.object({
       action: z.enum(["list", "read", "save", "deploy"]),
       id: z.string().nullable().optional().transform(nullToUndef),
@@ -65,6 +67,14 @@ export function createArtifactTool(opts: {
         .optional()
         .transform(nullToUndef)
         .describe("For deploy"),
+      kit: z
+        .boolean()
+        .nullable()
+        .optional()
+        .transform(nullToUndef)
+        .describe(
+          "For save: true adds the BAKED kit, false never; unset adds it to unstyled pages",
+        ),
     }),
     execute: async (args, { abortSignal }) => {
       try {
@@ -81,13 +91,14 @@ export function createArtifactTool(opts: {
           case "save": {
             const html = args.html ?? (args.path ? readProjectFile(opts.cwd, args.path) : null);
             if (!html) return "Give the page as html, or path to an HTML file in the project.";
+            const kit = args.kit ?? (designKitMode(opts.cwd) !== "off" && pageIsUnstyled(html));
             const meta = store.save({
-              html,
+              html: kit ? applyKitToPage(html) : html,
               ...(args.id ? { id: args.id } : {}),
               ...(args.title ? { title: args.title } : {}),
               project: opts.cwd,
             });
-            return `Saved artifact ${meta.id} v${meta.version} "${meta.title}". Every project and chat can open or deploy it.`;
+            return `Saved artifact ${meta.id} v${meta.version} "${meta.title}"${kit ? ", styled with the BAKED kit" : ""}. Every project and chat can open or deploy it.`;
           }
           case "deploy": {
             if (!args.id) return "Name the artifact to deploy: id.";
