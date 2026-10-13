@@ -122,6 +122,7 @@ bun test tests/feature-parity.test.ts
 | Worktree sizes and cleanup | `/workflow` | `baked workflow worktrees` | `/v1/workflow/worktrees`, `/v1/workflow/worktrees/clean` | `project/runs` |
 | Deliver a run (commit, pull request) | `/workflow` | `baked workflow deliver` | `/v1/workflow/runs/:id/deliver`, `/v1/workflow/runs/:id/deliver/execute` | `project/runs`, `attention` |
 | Revise a run after its instructions change | `/workflow` | `baked workflow candidate`, `baked workflow revise` | `/v1/workflow/runs/:id/candidate`, `/v1/workflow/runs/:id/revise` | `project/runs` |
+| Approval reviewer: a model decides low-risk plans outside the auto approval limits | `/workflow` | `baked workflow run`, `baked quick`, `approval-review` | `/v1/workflow/runs` | `project/runs` |
 | Checks: list, edit, run now, suggestions | `/workflow` | `baked doctor` | `/v1/workflow/checks`, `/v1/workflow/checks/suggestions`, `/v1/workflow/checks/:id/run` | `project/gates` |
 | Gates: list and confirm | `/workflow` | `baked workflow gates` | `/v1/workflow/gates`, `/v1/workflow/gates/confirm` | `project/gates` |
 | Duplication and dead-code ratchet | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |

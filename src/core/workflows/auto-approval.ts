@@ -1,6 +1,8 @@
 import { canonical, hashJson } from "../specs/hash.js";
+import { WorkflowFault } from "./errors.js";
 import { unmappedDeliverables } from "./request-coverage.js";
 import {
+  type ApprovalReview,
   clarificationOf,
   type InputManifest,
   type RunPolicy,
@@ -10,15 +12,28 @@ import {
 import type { ArtifactRow, RequestRow } from "./store.js";
 import { isAcceptanceRequest } from "./v2/acceptance.js";
 
+/** The built-in profile that decides packages `autoApproval.modelReview` sends to it. */
+export const APPROVAL_REVIEWER = "approval-reviewer";
+
 export interface AutoApproval {
-  mode: "renewal" | "limits";
+  mode: "renewal" | "limits" | "model-review";
   /** Hash of the policy bounds the decision was taken under. */
   limitsHash: string;
+  /** The reviewer's verdict, for `model-review`. */
+  review?: ApprovalReview;
 }
 export interface AutoApprovalResult {
   approval: AutoApproval | null;
   /** Why the package needs a person; empty when auto approval is approved or disabled. */
   reasons: string[];
+  /**
+   * The package left the limits only by its task count, file count or paths, and the policy
+   * turns on `modelReview`: the approval reviewer may decide it. Never set for always-human
+   * writes, deletes, the token budget or renewal problems.
+   */
+  reviewable?: boolean;
+  /** The policy bounds hash a `model-review` approval records, set with `reviewable`. */
+  limitsHash?: string;
 }
 /**
  * A policy the operator set with an explicit workflow command (`extend`, or `revise` of a staged
@@ -127,34 +142,55 @@ export function evaluateAutoApproval(
       return { approval: { mode: "renewal", limitsHash }, reasons: [] };
     reasons.push(...renewal.map((reason) => `Renewal: ${reason}`));
   }
+  let reviewable = false;
   if (config.limits) {
     const limits = config.limits;
-    const problems = scopeProblems(limits, graph, context.hostSplitTasks ?? 0);
+    const scope = scopeProblems(limits, graph, context.hostSplitTasks ?? 0);
+    const problems = scope.map((p) => p.text);
     if (policy.maxTotalTokens > limits.maxTotalTokens)
       problems.push(`the token budget ${policy.maxTotalTokens} exceeds ${limits.maxTotalTokens}`);
     if (!common.length && !problems.length)
       return { approval: { mode: "limits", limitsHash }, reasons: [] };
     reasons.push(...problems.map((reason) => `Limits: ${reason}`));
+    reviewable =
+      config.modelReview === true &&
+      !common.length &&
+      problems.length > 0 &&
+      problems.length === scope.length &&
+      scope.every((p) => p.reviewable);
   }
-  return { approval: null, reasons: [...new Set(reasons)] };
+  return {
+    approval: null,
+    reasons: [...new Set(reasons)],
+    ...(reviewable ? { reviewable, limitsHash } : {}),
+  };
 }
 
 type Limits = NonNullable<NonNullable<RunPolicy["autoApproval"]>["limits"]>;
 
-/** Where a task graph leaves the limits' scope: task and file counts, paths and deletions. */
-function scopeProblems(limits: Limits, graph: TaskGraph, hostSplitTasks = 0): string[] {
+/**
+ * Where a task graph leaves the limits' scope: task and file counts, paths and deletions. A
+ * deletion is never left to the approval reviewer.
+ */
+function scopeProblems(
+  limits: Limits,
+  graph: TaskGraph,
+  hostSplitTasks = 0,
+): { text: string; reviewable: boolean }[] {
   const writes = graph.tasks.flatMap((task) => task.writes);
-  const problems: string[] = [];
+  const problems: { text: string; reviewable: boolean }[] = [];
   const planned = graph.tasks.length - hostSplitTasks;
-  if (planned > limits.maxTasks) problems.push(`${planned} tasks exceed ${limits.maxTasks}`);
+  if (planned > limits.maxTasks)
+    problems.push({ text: `${planned} tasks exceed ${limits.maxTasks}`, reviewable: true });
   const files = new Set(writes.map((write) => write.path.toLowerCase()));
-  if (files.size > limits.maxFiles) problems.push(`${files.size} files exceed ${limits.maxFiles}`);
+  if (files.size > limits.maxFiles)
+    problems.push({ text: `${files.size} files exceed ${limits.maxFiles}`, reviewable: true });
   const globs = limits.allowedPaths.map((pattern) => new Bun.Glob(pattern.toLowerCase()));
   for (const write of writes) {
     if (!globs.some((glob) => glob.match(write.path.toLowerCase())))
-      problems.push(`${write.path} is outside the allowed paths`);
+      problems.push({ text: `${write.path} is outside the allowed paths`, reviewable: true });
     if (write.action === "delete" && !limits.allowDelete)
-      problems.push(`${write.path} would be deleted`);
+      problems.push({ text: `${write.path} would be deleted`, reviewable: false });
   }
   return problems;
 }
@@ -198,7 +234,7 @@ export function planScopeAdvice(
     .flatMap((task) => task.writes)
     .filter((write) => needsPerson(write, exists, scaffold))
     .map((write) => `${write.path} always needs a person`);
-  const problems = [...new Set([...always, ...scopeProblems(limits, graph)])];
+  const problems = [...new Set([...always, ...scopeProblems(limits, graph).map((p) => p.text)])];
   if (!problems.length) return [];
   return [
     `This plan needs a person at approval: ${problems.join("; ")}. Automatic approval covers at most ${limits.maxTasks} tasks and ${limits.maxFiles} files under ${limits.allowedPaths.join(", ")}${limits.allowDelete ? "" : " without deletions"}. Drop writes the requirements do not need (an optional refactor, a type or helper that can live in a file already written) and merge small tasks; if every listed write is needed, submit the same plan again and a person approves it.`,
@@ -316,6 +352,29 @@ export function policyDecisions(
       decisions.push({ policyHash: body.policyHash });
   }
   return decisions;
+}
+
+/** What an approval request's `autoApproval` says about the approval reviewer, in one line. */
+export function approvalReviewText(autoApproval: {
+  review?: ApprovalReview;
+  reviewError?: string;
+}): string | null {
+  if (autoApproval.reviewError)
+    return `The approval reviewer could not decide (${autoApproval.reviewError}), so it waits for you.`;
+  const review = autoApproval.review;
+  if (!review) return null;
+  return `The approval reviewer ${review.verdict === "approve" ? "would approve" : "escalated"} at ${review.risk} risk: ${review.reasons.join(" ")}`;
+}
+
+/** The policy with the approval reviewer turned on (`--approval-review`); it needs limits. */
+export function withModelReview(policy: RunPolicy): RunPolicy {
+  const config = policy.autoApproval;
+  if (!config?.limits)
+    throw new WorkflowFault(
+      "INVALID_DEFINITION",
+      "--approval-review needs auto approval limits (workflows.policy.autoApproval.limits)",
+    );
+  return { ...policy, autoApproval: { ...config, modelReview: true } };
 }
 
 /**
