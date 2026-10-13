@@ -19,6 +19,7 @@ import type {
   CommandEntry,
   ConfigFile,
   ConfigView,
+  CriticMode,
   Effort,
   GateDraft,
   GateDraftKind,
@@ -511,6 +512,7 @@ function mergeRouting(base?: ModelRouting, layer?: ModelRouting): ModelRouting |
     workflows[id] = { stages: { ...workflows[id]?.stages, ...entry.stages } };
   const independentReview = layer.independentReview ?? base.independentReview;
   const reviewMinConfidence = layer.reviewMinConfidence ?? base.reviewMinConfidence;
+  const critic = layer.critic ?? base.critic;
   return {
     classes: { ...base.classes, ...layer.classes },
     roles: { ...base.roles, ...layer.roles },
@@ -518,6 +520,7 @@ function mergeRouting(base?: ModelRouting, layer?: ModelRouting): ModelRouting |
     workflows,
     ...(independentReview ? { independentReview } : {}),
     ...(reviewMinConfidence !== undefined ? { reviewMinConfidence } : {}),
+    ...(critic ? { critic } : {}),
   };
 }
 
@@ -917,6 +920,11 @@ function routingOverview(s: SetupState, workflow: string | null): RoutingOvervie
       global: global?.reviewMinConfidence ?? null,
       project: project?.reviewMinConfidence ?? null,
       effective: effective?.reviewMinConfidence ?? 0.8,
+    },
+    critic: {
+      global: global?.critic ?? null,
+      project: project?.critic ?? null,
+      effective: effective?.critic ?? null,
     },
     warnings: route.warnings,
     error: null,
@@ -1664,6 +1672,7 @@ export const setupRoutes: MockRoute = (request) => {
           create: boolean;
           independentReview: IndependentReview | null;
           reviewMinConfidence: number | null;
+          critic: CriticMode | null;
         }
       >(request);
       const scope = edit.scope === "global" ? "global" : "project";
@@ -1675,6 +1684,9 @@ export const setupRoutes: MockRoute = (request) => {
         next = edit.independentReview
           ? { ...rest, independentReview: edit.independentReview }
           : rest;
+      } else if (edit.critic !== undefined) {
+        const { critic: _previous, ...rest } = current ?? {};
+        next = edit.critic === null ? rest : { ...rest, critic: edit.critic };
       } else if (edit.reviewMinConfidence !== undefined) {
         const { reviewMinConfidence: _previous, ...rest } = current ?? {};
         next =

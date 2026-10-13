@@ -6,7 +6,13 @@
 
 import type { z } from "zod";
 import { modelVendor } from "../llm/model-vendor.js";
-import { ReportSchema, type ReviewSchema, type RunPolicy, TaskSchema } from "./schemas.js";
+import {
+  type Critique,
+  ReportSchema,
+  type ReviewSchema,
+  type RunPolicy,
+  TaskSchema,
+} from "./schemas.js";
 import type { ArtifactRow, WorkflowStore } from "./store.js";
 import { type RunUsageReport, runUsage } from "./usage.js";
 import { parseRunDefinition } from "./v2/runtime.js";
@@ -165,7 +171,21 @@ function collect(store: WorkflowStore, runId: string) {
     })();
     const latestArtifacts = new Map<string, ArtifactRow>();
     const taskDiffs = new Map<string, ArtifactRow>();
+    const critiques: CritiqueRecord[] = [];
     for (const artifact of store.artifacts(runId)) {
+      if (/^tasks\/[^/]+\/critique\.json$/.test(artifact.logical_path))
+        critiques.push(
+          parse<CritiqueRecord>(
+            (() => {
+              try {
+                return store.readArtifact(runId, artifact.id);
+              } catch {
+                return null;
+              }
+            })(),
+            { taskId: artifact.logical_path.split("/")[1] ?? "", attempt: 0 },
+          ),
+        );
       latestArtifacts.set(artifact.logical_path, artifact);
       if (/^tasks\/[^/]+\/diff\.json$/.test(artifact.logical_path))
         taskDiffs.set(artifact.logical_path, artifact);
@@ -222,6 +242,7 @@ function collect(store: WorkflowStore, runId: string) {
       })),
       requests: store.requests(runId),
       routing: readRoutingSummary(store, runId),
+      critiques,
       usage: stagesInRunOrder(store, runUsage(store, runId)),
       artifacts: [...latestArtifacts.values()].filter((a) => !internalArtifact(a.logical_path)),
       internalArtifacts: [...latestArtifacts.values()].filter((a) =>
@@ -231,6 +252,13 @@ function collect(store: WorkflowStore, runId: string) {
   });
 }
 type Facts = ReturnType<typeof collect>;
+/** A stored `tasks/TASK/critique.json`: a critique, or the error of a critic that failed. */
+interface CritiqueRecord {
+  taskId: string;
+  attempt: number;
+  critique?: Critique;
+  error?: string;
+}
 
 /** Which models and vendors reviewed the change and which implemented it (#635). */
 function reviewModels(routing: Facts["routing"]): string | null {
@@ -370,6 +398,34 @@ function render(facts: Facts, cap: number): string {
       "",
     );
   } else out.push("No findings recorded.", "");
+
+  if (facts.critiques.length) {
+    out.push(
+      "## Critic",
+      "",
+      "Advice only: each task attempt scored from 0 to 1 by a second model; the lowest rubric item is named.",
+      "",
+      ...table(
+        ["Task", "Attempt", "Score", "Lowest", "Summary"],
+        facts.critiques.map((c) => {
+          if (!c.critique)
+            return [c.taskId, c.attempt, null, null, `critic failed: ${c.error ?? "unknown"}`];
+          const lowest = Object.entries(c.critique.rubric).sort(
+            ([, a], [, b]) => a.score - b.score,
+          )[0];
+          return [
+            c.taskId,
+            c.attempt,
+            c.critique.score.toFixed(2),
+            lowest ? `${lowest[0]} ${lowest[1].score.toFixed(2)}: ${lowest[1].note}` : null,
+            c.critique.summary,
+          ];
+        }),
+        cap,
+      ),
+      "",
+    );
+  }
 
   if (state.limitations.length) {
     out.push(

@@ -209,6 +209,22 @@ export const builtinProfiles = ProfileSchema.array().parse([
   },
   {
     schemaVersion: 1,
+    id: "critic",
+    version: "1.0.0",
+    description: "Rubric score of a task attempt",
+    role: "reviewer",
+    model: "$review",
+    context: "review",
+    instructions:
+      "Score one task attempt. The input holds the task, the patch of its changes and the checks that failed. Score five items from 0 (bad) to 1 (good), each with a one-sentence note that cites the patch: intent (the change does what the task and the spec mean, not a literal or mistaken reading), instructions (it follows the task, the plan's decisions and the project instructions), scope (it changes only what the task needs: no unrequested features, refactors or files), testIntegrity (it does not weaken, skip, delete or special-case tests or checks to make them pass), completeness (it implements the whole task, with no stubs, TODOs or placeholder logic). Set score to your estimate, from 0 to 1, that the attempt is correct and will be kept as it is. Your score is advice for a person and changes nothing in the run. Do not change files. Read a file only when the patch does not show what you need.",
+    skills: [],
+    allowedTools: ["read", "navigate", "submit_result"],
+    output: "critique",
+    maxSteps: 8,
+    maxOutputTokens: 4096,
+  },
+  {
+    schemaVersion: 1,
     id: "spec-auditor",
     version: "1.5.0",
     description: "Specification coverage review",

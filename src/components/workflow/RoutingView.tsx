@@ -20,6 +20,7 @@ import {
   resolveTarget,
   routeAt,
   routingClasses,
+  setCritic,
   setIndependentReview,
   setReviewMinConfidence,
   targetPath,
@@ -85,6 +86,7 @@ type Row =
   | { kind: "new-class" }
   | { kind: "review" }
   | { kind: "confidence" }
+  | { kind: "critic" }
   | { kind: "note"; text: string; tone: "muted" | "error" };
 
 type Field = "name" | "model" | "effort" | "fallback";
@@ -108,6 +110,7 @@ interface Shown {
 
 const REVIEW_MODES = [null, "off", "warn", "require", "provider"] as const;
 const CONFIDENCE_STEP = 0.05;
+const CRITIC_MODES = [null, "off", "advise"] as const;
 const clip = (text: string, width: number): string =>
   width <= 0 ? "" : text.length <= width ? text : `${text.slice(0, Math.max(1, width - 1))}…`;
 const pad = (text: string, width: number): string => clip(text, width).padEnd(width);
@@ -118,7 +121,8 @@ function selectable(row: Row | undefined): boolean {
     (row.kind === "route" ||
       row.kind === "new-class" ||
       row.kind === "review" ||
-      row.kind === "confidence")
+      row.kind === "confidence" ||
+      row.kind === "critic")
   );
 }
 
@@ -235,6 +239,7 @@ export function RoutingView({
     out.push({ kind: "header", title: "Independent review" });
     out.push({ kind: "review" });
     out.push({ kind: "confidence" });
+    out.push({ kind: "critic" });
     return out;
   }, [layers.global, layers.project, workflow, explained]);
 
@@ -428,6 +433,20 @@ export function RoutingView({
       const next = Math.min(1, Math.max(0, own + (key === "left" ? -1 : 1) * CONFIDENCE_STEP));
       const rounded = Math.round(next * 100) / 100;
       save(setReviewMinConfidence(layers[scope], rounded), `Set reviewMinConfidence to ${rounded}`);
+      return;
+    }
+    if (current.kind === "critic" && (key === "left" || key === "right" || key === "space")) {
+      evt.preventDefault();
+      const i = CRITIC_MODES.indexOf(layers[scope]?.critic ?? null);
+      const step = key === "left" ? CRITIC_MODES.length - 1 : 1;
+      const next = CRITIC_MODES[(i + step) % CRITIC_MODES.length] ?? null;
+      save(setCritic(layers[scope], next), next ? `Set critic to ${next}` : "Cleared critic");
+      return;
+    }
+    if ((key === "d" || key === "delete" || key === "backspace") && current.kind === "critic") {
+      evt.preventDefault();
+      if (!layers[scope]?.critic) return;
+      save(setCritic(layers[scope], null), "Cleared critic");
       return;
     }
     if ((key === "d" || key === "delete" || key === "backspace") && current.kind === "confidence") {
@@ -641,6 +660,12 @@ export function RoutingView({
         ? { value: `‹ ${own} ›`, tone: "set" }
         : { value: `‹ unset › = ${reviewMode}`, tone: "default" };
     }
+    if (row.kind === "critic") {
+      const own = layers[scope]?.critic;
+      return own
+        ? { value: `‹ ${own} ›`, tone: "set" }
+        : { value: `‹ unset › = ${effective?.critic ?? "on another vendor"}`, tone: "default" };
+    }
     if (row.kind === "confidence") {
       const own = layers[scope]?.reviewMinConfidence;
       return own !== undefined
@@ -679,6 +704,10 @@ export function RoutingView({
     detail.push(`Effective: ${reviewMode}. warn records a warning, require refuses the start`);
     detail.push("when a reviewer shares the implementation's model; provider moves reviewers");
     detail.push("to another vendor's model (Codex reviews Claude Code and back).");
+  } else if (current?.kind === "critic") {
+    detail.push("The critic scores every task attempt (intent, instructions, scope, test");
+    detail.push("integrity, completeness) as advice. Unset runs it only on a vendor other");
+    detail.push("than the implementation's; advise always, off never.");
   } else if (current?.kind === "confidence") {
     detail.push(`Effective: ${confidence}. Review findings below this confidence stay notes`);
     detail.push("and start no correction. ←→ change it by 0.05, D clears it.");
@@ -714,7 +743,9 @@ export function RoutingView({
                 ? "+ new class"
                 : row.kind === "confidence"
                   ? "reviewMinConfidence"
-                  : "independentReview";
+                  : row.kind === "critic"
+                    ? "critic"
+                    : "independentReview";
           const { value, tone } = rowText(row);
           return (
             <text key={`r-${index}`} bg={bg}>
