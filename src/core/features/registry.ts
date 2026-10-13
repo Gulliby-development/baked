@@ -64,8 +64,6 @@ export const GROUPS = [
   "Terminal interface",
 ] as const;
 
-const gap = (issue: number, note?: string): Gap =>
-  note === undefined ? { status: "gap", issue } : { status: "gap", issue, note };
 const partial = (reach: string[], issue: number, note: string): Partial => ({
   status: "partial",
   reach,
