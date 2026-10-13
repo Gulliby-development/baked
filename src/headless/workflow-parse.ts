@@ -114,6 +114,8 @@ const flags = new Set([
   "branch",
   "draft",
   "no-pr",
+  "with-specs",
+  "no-specs",
   "execute",
   "worktree",
   "writers",
@@ -123,6 +125,7 @@ const flags = new Set([
   "no-resume",
   "clarification",
   "sandbox",
+  "duplication",
   "issue",
   "output",
   "text",
@@ -146,6 +149,8 @@ const booleanFlags = new Set([
   "help",
   "draft",
   "no-pr",
+  "with-specs",
+  "no-specs",
   "execute",
   "worktree",
   "exclude-user-changes",
@@ -185,6 +190,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "model-strict",
     "clarification",
     "sandbox",
+    "duplication",
     "issue",
     "budget",
   ],
@@ -259,7 +265,17 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   define: ["from"],
   gates: ["all"],
   gate: ["text", "kind", "id", "model", "from-criteria", "save", "file", "json", "workflow", "at"],
-  deliver: ["remote", "branch", "draft", "no-pr", "execute", "request", "expected-revision"],
+  deliver: [
+    "remote",
+    "branch",
+    "draft",
+    "no-pr",
+    "with-specs",
+    "no-specs",
+    "execute",
+    "request",
+    "expected-revision",
+  ],
   "discard-worktree": ["expected-revision", "command-id"],
   route: ["workflow", "model", "route", "json"],
   models: ["model", "provider", "json"],
@@ -389,7 +405,14 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
   )
     throw new WorkflowFault("INVALID_DEFINITION", "--events and --after need --resume");
   if (!result.flags.help && result.command === "deliver") {
-    const planning = ["remote", "branch", "draft", "no-pr"].filter((name) => name in result.flags);
+    const planning = ["remote", "branch", "draft", "no-pr", "with-specs", "no-specs"].filter(
+      (name) => name in result.flags,
+    );
+    if (result.flags["with-specs"] && result.flags["no-specs"])
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        "--with-specs and --no-specs exclude each other",
+      );
     if (result.flags.execute) {
       if (planning.length)
         throw new WorkflowFault(
@@ -437,6 +460,12 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     !["off", "auto", "required"].includes(String(result.flags.sandbox))
   )
     throw new WorkflowFault("INVALID_DEFINITION", "--sandbox accepts off, auto or required");
+  if (
+    !result.flags.help &&
+    "duplication" in result.flags &&
+    !["off", "warn", "ratchet"].includes(String(result.flags.duplication))
+  )
+    throw new WorkflowFault("INVALID_DEFINITION", "--duplication accepts off, warn or ratchet");
   if (!result.flags.help && ["run", "doctor", "estimate"].includes(result.command)) {
     if ("writers" in result.flags) {
       const writers = String(result.flags.writers);
@@ -462,7 +491,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--sandbox off|auto|required] [--budget PRESET]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--sandbox off|auto|required] [--duplication off|warn|ratchet] [--budget PRESET]
 run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --prompt-file FILE] [other run options]
   --issue takes the request from a GitHub issue (its title and body; --prompt adds instructions)
   and names the feature issue-N-TITLE unless --feature is given; the delivery pull request says
@@ -479,6 +508,9 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   --sandbox runs the run's checks, fixes, probes and acceptance apps in the OS sandbox (see
   docs/sandbox.md); required refuses to start without a backend. Default: the stricter of the
   policy's sandbox and the sandbox setting
+  --duplication ratchet blocks code the run copies and code it adds that nothing uses; warn (the
+  default) reports them in the run report; off skips the measurement. Default: the policy's
+  duplication, then the quality.duplication setting, otherwise warn
   --budget quick|standard|extended|checkpoints scales the policy (--policy, the config's
   workflows.policy, or the built-in default): quick halves the limits, extended doubles them,
   checkpoints drops the token cap and pauses for your go-ahead. Default: standard
@@ -560,7 +592,7 @@ report RUN_ID [--output FILE] [--json]
   One Markdown report of the run: summary, changes, tasks, checks, criteria, findings, decisions,
   tokens by stage and model, artifacts. Printed, or written to FILE; deliver uses it as the PR body.
 gc --before ISO_DATE [--dry-run]          redact RUN_ID --file ARTIFACT_ID --reason TEXT
-deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr]
+deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr] [--with-specs|--no-specs]
   Prepare Git delivery of a completed, verified run: one commit of the run's files on a new
   branch, push, and a pull request. Stores the plan and a delivery request; nothing runs yet.
   Approve the exact plan with: approve RUN_ID --request ID --digest SHA256 --expected-revision N

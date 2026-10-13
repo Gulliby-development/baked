@@ -1,4 +1,4 @@
-import { runSandbox, SandboxUnavailableError } from "../security/sandbox.js";
+import { runSandbox, type SandboxRequest, SandboxUnavailableError } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
@@ -108,6 +108,16 @@ export class CheckRunner {
     timeoutMs: number,
   ): Promise<"passed" | "failed" | "inconclusive"> {
     const policy = JSON.parse(this.store.run(runId).policy_json) as RunPolicy;
+    return (await this.measure(check, signal, root, runSandbox(policy, root), timeoutMs)).status;
+  }
+  /** Like `probe`, and also returns the output: a baseline count records no evidence either. */
+  async measure(
+    check: Check,
+    signal: AbortSignal,
+    root: string,
+    sandbox: SandboxRequest | null,
+    timeoutMs: number = check.timeoutMs,
+  ): Promise<{ status: "passed" | "failed" | "inconclusive"; output: string; truncated: boolean }> {
     try {
       const executable = check.executable === "bun" ? process.execPath : check.executable;
       const result = await executeCheckCommand(this.processes, executable, check.args, {
@@ -115,12 +125,17 @@ export class CheckRunner {
         env: buildCheckEnv(check),
         timeoutMs: Math.min(check.timeoutMs, timeoutMs),
         signal,
-        sandbox: runSandbox(policy, root),
+        sandbox,
       });
-      if (result.timedOut || result.cancelled || result.exitCode === null) return "inconclusive";
-      return result.exitCode === 0 ? "passed" : "failed";
+      const status =
+        result.timedOut || result.cancelled || result.exitCode === null
+          ? "inconclusive"
+          : result.exitCode === 0
+            ? "passed"
+            : "failed";
+      return { status, output: result.output, truncated: result.truncated };
     } catch {
-      return "inconclusive";
+      return { status: "inconclusive", output: "", truncated: false };
     }
   }
   async run(

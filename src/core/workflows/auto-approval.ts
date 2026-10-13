@@ -308,3 +308,12 @@ export function policyDecisions(
   }
   return decisions;
 }
+
+/**
+ * Why a v2 approval stage marked human waits for a person, and how to approve automatically: the
+ * project policy's `autoApproval` applies only to schema 1 workflows, so an operator who set it
+ * for `sdd` would otherwise not know why a `quick` run waits.
+ */
+export function humanApprovalReason(workflowId: string, stageId: string): string {
+  return `Stage ${stageId} of workflow ${workflowId} asks a person; the project policy's autoApproval applies only to schema 1 workflows such as sdd. To approve automatically, copy it (baked workflow define ID --from ${workflowId}), set the stage to auto, start the copy with --confirm-auto-approval HASH, and for baked quick set workflows.quickWorkflow to ID.`;
+}

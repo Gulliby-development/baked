@@ -272,6 +272,11 @@ export async function executeWorkflowCommand(
         args.flags.sandbox === "required"
           ? { sandbox: args.flags.sandbox }
           : {}),
+        ...(args.flags.duplication === "off" ||
+        args.flags.duplication === "warn" ||
+        args.flags.duplication === "ratchet"
+          ? { duplication: args.flags.duplication }
+          : {}),
       });
       // The run's record keeps these warnings; the operator sees them before the run goes on.
       for (const warning of readRoutingSummary(service.store, run.runId)?.warnings ?? [])
@@ -553,6 +558,8 @@ export async function executeWorkflowCommand(
         ...(typeof args.flags.branch === "string" ? { branch: args.flags.branch } : {}),
         draft: args.flags.draft === true,
         pullRequest: args.flags["no-pr"] !== true,
+        ...(args.flags["with-specs"] ? { specs: true } : {}),
+        ...(args.flags["no-specs"] ? { specs: false } : {}),
         ...provider,
       });
       return {

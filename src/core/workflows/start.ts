@@ -14,6 +14,7 @@ import { validateChecks } from "./check-policy.js";
 import { frozenInstructions } from "./context.js";
 import { WorkflowFault } from "./errors.js";
 import { languageReviewProfile } from "./language.js";
+import { DEFAULT_DUPLICATION } from "./quality/duplication.js";
 import {
   independenceWarnings,
   independentReviewMode,
@@ -94,6 +95,7 @@ export async function prepareStart(
     | "sandbox"
     | "maxConcurrentWriters"
     | "clarification"
+    | "duplication"
     | "modelStrict"
   >,
 ): Promise<PreparedStart> {
@@ -189,11 +191,16 @@ export async function prepareStart(
     executionMode: _previous,
     sandbox: policySandbox,
     clarification: _clarification,
+    duplication: _duplication,
     allowOverlappingWrites,
     ...rest
   } = policy;
   // `ask` leaves the field out, so the policy hash of an asking run is what it was before.
   const clarification = request.clarification ?? clarificationOf(policy);
+  // The run flag overrides the policy, which overrides the configured default; `warn` is the
+  // default and leaves the field out, so the policy hash stays what it was before the ratchet.
+  const duplication =
+    request.duplication ?? policy.duplication ?? config.quality?.duplication ?? DEFAULT_DUPLICATION;
   // Overlapping writes are kept only when permitted, so a policy that leaves them off keeps the
   // hash it had before the field existed; the requested writer count overrides the policy.
   // The requested mode wins; otherwise the policy and the configuration can each only raise it.
@@ -211,6 +218,7 @@ export async function prepareStart(
     ...(sandbox !== "off" ? { sandbox } : {}),
     ...(allowOverlappingWrites ? { allowOverlappingWrites } : {}),
     ...(clarification === "assume" ? { clarification } : {}),
+    ...(duplication !== DEFAULT_DUPLICATION ? { duplication } : {}),
     ...(request.maxConcurrentWriters !== undefined
       ? { maxConcurrentWriters: request.maxConcurrentWriters }
       : {}),
