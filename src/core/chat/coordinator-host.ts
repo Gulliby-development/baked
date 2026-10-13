@@ -13,6 +13,7 @@ import type { InitiativeStartInput } from "../workflows/initiatives/forms.js";
 import { InitiativeService, type InitiativeView } from "../workflows/initiatives/service.js";
 import type { InitiativeAction } from "../workflows/initiatives/view-model.js";
 import { NativeWorkflowService } from "../workflows/service.js";
+import { usageSummary } from "../workflows/usage.js";
 import { githubTasks, type ProjectLauncher } from "./coordinator-launch.js";
 import { BakeChatHost } from "./host.js";
 import { type ProjectStateSource, serviceStateSource } from "./project-state.js";
@@ -76,6 +77,9 @@ export class ReadonlyProjectState implements ProjectStateSource {
   }
   attention() {
     return this.open()?.attention() ?? [];
+  }
+  usage(days: number) {
+    return this.open()?.usage?.(days) ?? usageSummary(null, { days, groupBy: ["model", "stage"] });
   }
 
   close(): void {

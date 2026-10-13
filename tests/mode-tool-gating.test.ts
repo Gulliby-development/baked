@@ -114,6 +114,23 @@ describe("mode tool gating", () => {
     }
   });
 
+  test("architect mode reads git but refuses changes and flags that write", async () => {
+    const git = makeAgent("architect").tools.git!;
+    const status = (await git.execute!({ action: "status" }, {})) as { error?: string };
+    expect(status.error).not.toBe("mode_restricted");
+    for (const input of [
+      { action: "commit", message: "x" },
+      { action: "push" },
+      { action: "branch", sub_action: "create", name: "x" },
+      { action: "stash" },
+      { action: "diff", flags: ["--output=out.txt"] },
+      { action: "log", flags: ["-oout.txt"] },
+    ]) {
+      const denied = (await git.execute!(input, {})) as { error?: string };
+      expect(denied.error).toBe("mode_restricted");
+    }
+  });
+
   test("default mode does not deny-stub edit_file (distinct execute from architect's stub)", () => {
     // The architect edit_file execute is the deny stub; the default one is the
     // real tool. They must be different function references — proves default

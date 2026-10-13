@@ -178,6 +178,37 @@ export const CATEGORIES = [
 
 const COMMAND_DEFS: CommandDef[] = [
   {
+    cmd: "/coordinator",
+    ic: "dispatch",
+    desc: "The project coordinator: reads the whole project, splits work into runs, keeps the brief",
+    category: "Session",
+    tags: [
+      "project",
+      "brief",
+      "split",
+      "launch",
+      "runs",
+      "orchestrate",
+      "usage",
+      "git",
+      "artifacts",
+    ],
+  },
+  {
+    cmd: "/coordinator summary",
+    ic: "dispatch",
+    desc: "Ask the coordinator what is running, what waits for you, what finished and what is open",
+    category: "Session",
+    tags: ["project", "status", "digest", "overview", "happening", "runs"],
+  },
+  {
+    cmd: "/coordinator rules",
+    ic: "dispatch",
+    desc: "Rules the coordinator answers routine approvals by: on, off, add, remove",
+    category: "Session",
+    tags: ["approvals", "auto", "rules", "allow", "coordinator"],
+  },
+  {
     cmd: "/project",
     ic: "folder",
     desc: "This project: sessions, workflow runs, what waits for you",
@@ -197,27 +228,6 @@ const COMMAND_DEFS: CommandDef[] = [
     desc: "Rename this project in every app; no name restores the default",
     category: "Session",
     tags: ["folder", "workspace", "name", "title"],
-  },
-  {
-    cmd: "/coordinator",
-    ic: "dispatch",
-    desc: "The project coordinator: one chat that splits work into runs and keeps the brief",
-    category: "Session",
-    tags: ["project", "brief", "split", "launch", "runs", "orchestrate"],
-  },
-  {
-    cmd: "/coordinator rules",
-    ic: "dispatch",
-    desc: "Rules the coordinator answers routine approvals by: on, off, add, remove",
-    category: "Session",
-    tags: ["approvals", "auto", "rules", "allow", "coordinator"],
-  },
-  {
-    cmd: "/coordinator summary",
-    ic: "dispatch",
-    desc: "Ask the coordinator what is running, what waits for you, what finished and what is open",
-    category: "Session",
-    tags: ["project", "status", "digest", "overview", "happening", "runs"],
   },
   {
     cmd: "/projects",

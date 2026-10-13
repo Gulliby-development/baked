@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 
 export const PROJECT_SECTIONS = [
+  "coordinator",
   "overview",
   "chat",
-  "coordinator",
   "runs",
   "initiatives",
   "usage",
@@ -73,9 +73,10 @@ export function parseRoute(hash: string): Route {
     // Run memory and Chat memory were two sections before they became parts of Memory.
     if (b === "run-memory") return { name: "project", key: a, section: "memory", id: "runs" };
     if (b === "chat-memory") return { name: "project", key: a, section: "memory", id: "chat" };
+    // A project opens on its coordinator.
     const section = (PROJECT_SECTIONS as readonly string[]).includes(b ?? "")
       ? (b as ProjectSection)
-      : "overview";
+      : "coordinator";
     return { name: "project", key: a, section, id: c ?? null };
   }
   return { name: "projects" };
@@ -98,7 +99,7 @@ export function href(route: Route): string {
 
 export function projectHref(
   key: string,
-  section: ProjectSection = "overview",
+  section: ProjectSection = "coordinator",
   id?: string,
 ): string {
   return href({ name: "project", key, section, id: id ?? null });
