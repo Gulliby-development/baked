@@ -46,6 +46,7 @@ import {
 } from "../verification/repro.js";
 import { completeReview, reviewProblems, validateReview } from "../verification/review.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
+import { affectedTestsFor } from "./affected-tests.js";
 import { outputSchemas } from "./agent-executor.js";
 import {
   assumable,
@@ -2654,6 +2655,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
               : {}),
             unresolvedMeans: UNRESOLVED_MEANING,
             ...this.previousAttempt(runId, task.id),
+            ...this.affectedTestsContext(root, policy, task),
             ...(inherited.length
               ? {
                   earlierEdits: {
@@ -3118,8 +3120,12 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           state,
           policy,
           entry.profile,
-          earlierEdits && entry.extra && typeof entry.extra === "object"
-            ? { ...entry.extra, earlierEdits }
+          entry.extra && typeof entry.extra === "object"
+            ? {
+                ...entry.extra,
+                ...(earlierEdits ? { earlierEdits } : {}),
+                ...this.affectedTestsContext(root, policy, task),
+              }
             : entry.extra,
           signal,
           task,
@@ -3767,6 +3773,28 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       if (checked.status !== "passed") return false;
     }
     return true;
+  }
+  /**
+   * The existing tests that reach the task's files (#634), for the implementer's context, with
+   * the check that runs only them when a test check of the policy takes test files.
+   */
+  private affectedTestsContext(
+    root: string,
+    policy: RunPolicy,
+    task: Task,
+  ): { affectedTests?: { paths: string[]; checkId: string | null; note: string } } {
+    if (!task.writes.length) return {};
+    const { tests, check } = affectedTestsFor(root, policy.checks, task.writes);
+    if (!tests.length) return {};
+    return {
+      affectedTests: {
+        paths: tests.map((t) => t.path),
+        checkId: check?.id ?? null,
+        note: check
+          ? `Existing tests that exercise the files this task changes, nearest first. Keep them passing: run them with request_check ${check.id} after your edits and fix what your change broke before submitting.`
+          : "Existing tests that exercise the files this task changes, nearest first. Keep them passing: read the ones that cover the code you change before editing it.",
+      },
+    };
   }
   private async runTaskCheck(
     runId: string,
