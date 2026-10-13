@@ -10,6 +10,7 @@ import { resolveTaskModel } from "../llm/task-router.js";
 import { emitCacheReset } from "../tools/file-events.js";
 import { createChatAgent, createSharedCacheRef } from "./agent.js";
 import { BRIEF_TOOL, BriefStore, briefTool, coordinatorInstructions } from "./coordinator.js";
+import { ScheduleStore, scheduleInstructions } from "./coordinator-schedules.js";
 import { type ExpandedChatInput, expandChatInput } from "./input-expansion.js";
 import { type MentionSuggestion, suggestMentions } from "./mention-suggest.js";
 import type {
@@ -86,7 +87,13 @@ export class BakeChatHost implements ChatAgentHost {
     const brief = request.coordinator ? new BriefStore(this.workspace, request.sessionId) : null;
     context.setProjectInstructions(
       brief
-        ? [instructions, coordinatorInstructions(brief.read())].filter(Boolean).join("\n\n")
+        ? [
+            instructions,
+            coordinatorInstructions(brief.read()),
+            scheduleInstructions(new ScheduleStore(this.workspace, request.sessionId)),
+          ]
+            .filter(Boolean)
+            .join("\n\n")
         : instructions,
     );
     context.setBakeMode(request.mode);

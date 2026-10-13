@@ -5,6 +5,7 @@
  */
 
 import { BriefError, BriefStore } from "../chat/coordinator.js";
+import { ScheduleError, ScheduleStore } from "../chat/coordinator-schedules.js";
 import {
   acceptImages,
   type ImageInput,
@@ -26,9 +27,11 @@ import {
   ModelsQuery,
   PromptAnswerBody,
   RedoSessionBody,
+  ScheduleBody,
   SessionExportQuery,
   SessionListQuery,
   UndoSessionBody,
+  UpdateScheduleBody,
   UpdateSessionBody,
   WatchBody,
 } from "./schemas.js";
@@ -102,6 +105,34 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
     } catch (err) {
       if (err instanceof BriefError)
         ctx.fail(err.code === "STALE_REVISION" ? 409 : 400, err.code, err.message);
+      throw err;
+    }
+  }
+  if (path === "/v1/coordinator/schedules" || path.startsWith("/v1/coordinator/schedules/")) {
+    const session = await chat.coordinator(false);
+    if (!session) ctx.fail(404, "NOT_FOUND", "This project has no coordinator yet");
+    const store = new ScheduleStore(chat.workspace, session.id);
+    const id = path.slice("/v1/coordinator/schedules/".length);
+    try {
+      if (path === "/v1/coordinator/schedules") {
+        only("GET", "POST");
+        if (method === "GET") return ctx.json(200, { schedules: store.list() });
+        return ctx.json(201, store.add(ScheduleBody.parse(await ctx.readJson())));
+      }
+      only("PATCH", "DELETE");
+      if (method === "DELETE") {
+        store.remove(decodeURIComponent(id));
+        return new Response(null, { status: 204 });
+      }
+      const { enabled } = UpdateScheduleBody.parse(await ctx.readJson());
+      return ctx.json(200, store.setEnabled(decodeURIComponent(id), enabled));
+    } catch (err) {
+      if (err instanceof ScheduleError)
+        ctx.fail(
+          err.code === "NOT_FOUND" ? 404 : 400,
+          err.code === "LIMIT" ? "INVALID_REQUEST" : err.code,
+          err.message,
+        );
       throw err;
     }
   }

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { BriefContentSchema } from "../chat/coordinator.js";
+import { ScheduleInputSchema } from "../chat/coordinator-schedules.js";
 import { MAX_IMAGES_PER_MESSAGE } from "../chat/images.js";
 import { CHAT_MODES, PLAN_ACTIONS } from "../chat/sessions.js";
 import { CHAT_EFFORTS } from "../llm/provider-options.js";
@@ -160,6 +161,8 @@ export const CoordinatorBody = z.strictObject({ model: ModelId.optional() });
 export const BriefBody = BriefContentSchema.extend({
   expectedRevision: z.number().int().min(0),
 });
+export const ScheduleBody = ScheduleInputSchema;
+export const UpdateScheduleBody = z.strictObject({ enabled: z.boolean() });
 export const UpdateSessionBody = z
   .strictObject({
     title: Title.optional(),

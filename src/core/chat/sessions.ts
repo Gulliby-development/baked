@@ -78,6 +78,14 @@ import {
   type ProjectLauncher,
   syncLaunched,
 } from "./coordinator-launch.js";
+import {
+  SCHEDULE_TICK_MS,
+  SCHEDULE_TOOL,
+  type Schedule,
+  ScheduleStore,
+  scheduledTurnText,
+  scheduleTool,
+} from "./coordinator-schedules.js";
 import { editedFiles, type SessionDiffStats, sessionDiffStats } from "./diff-stats.js";
 import { userContent } from "./images.js";
 import type { ExpandedChatInput } from "./input-expansion.js";
@@ -658,6 +666,15 @@ export class ChatSession {
   /** Starts a watch mode turn, or queues it as a turn of its own behind the running one. */
   sendWatch(turn: WatchTurn): { turnId: string; queued: boolean } {
     return this.submit({ text: turn.prompt, display: watchTurnDisplay(turn), verbatim: true });
+  }
+
+  /** Starts the turn a coordinator schedule fires, or queues it behind the running one. */
+  sendScheduled(schedule: Schedule): { turnId: string; queued: boolean } {
+    return this.submit({
+      text: scheduledTurnText(schedule),
+      display: `Scheduled: ${schedule.name}`,
+      verbatim: true,
+    });
   }
 
   emitWatch(watch: WatchStatus): void {
@@ -1540,6 +1557,7 @@ export class ChatService {
   private projectState: ProjectStateSource | null = null;
   private launcher: ProjectLauncher | null = null;
   private watch: ReturnType<typeof setInterval> | null = null;
+  private scheduleTimer: ReturnType<typeof setInterval> | null = null;
   private syncing = false;
 
   /**
@@ -1554,10 +1572,41 @@ export class ChatService {
     this.projectState = source;
     this.launcher = launcher;
     if (this.watch) clearInterval(this.watch);
+    if (this.scheduleTimer) clearInterval(this.scheduleTimer);
     this.watch = null;
+    this.scheduleTimer = null;
     if (watchMs > 0) {
       this.watch = setInterval(() => void this.syncLaunched(), watchMs);
       this.watch.unref?.();
+      // A schedule missed while nothing ran fires once now.
+      setTimeout(() => void this.fireSchedules(), 0).unref?.();
+      this.scheduleTimer = setInterval(() => void this.fireSchedules(), SCHEDULE_TICK_MS);
+      this.scheduleTimer.unref?.();
+    }
+  }
+
+  /**
+   * Starts a coordinator turn for every schedule due at `now`; returns the schedules fired. A
+   * schedule that cannot start its turn leaves a note in the coordinator's chat.
+   */
+  async fireSchedules(now = Date.now()): Promise<Schedule[]> {
+    if (this.closed) return [];
+    try {
+      const coordinator = await this.coordinator(false);
+      if (!coordinator) return [];
+      const due = new ScheduleStore(this.workspace, coordinator.id).claimDue(now);
+      for (const schedule of due)
+        try {
+          coordinator.sendScheduled(schedule);
+        } catch (err) {
+          await coordinator.addNotice(
+            `Schedule "${schedule.name}" could not start a turn: ${errorText(err)}`,
+          );
+        }
+      return due;
+    } catch (err) {
+      logBackgroundError("chat:coordinator-schedules", errorText(err));
+      return [];
     }
   }
 
@@ -1593,6 +1642,9 @@ export class ChatService {
     };
     return {
       [STATE_TOOL]: stateTool(this.projectState, sessions),
+      [SCHEDULE_TOOL]: scheduleTool(new ScheduleStore(this.workspace, coordinator.id), (text) =>
+        coordinator.confirm(text),
+      ),
       ...launchTools(
         this,
         coordinator,
@@ -1909,7 +1961,9 @@ export class ChatService {
   async shutdown(): Promise<void> {
     this.closed = true;
     if (this.watch) clearInterval(this.watch);
+    if (this.scheduleTimer) clearInterval(this.scheduleTimer);
     this.watch = null;
+    this.scheduleTimer = null;
     this.stopWatch();
     const sessions = [...this.live.values()];
     for (const session of sessions) session.interrupt();
