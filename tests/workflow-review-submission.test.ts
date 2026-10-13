@@ -6,7 +6,7 @@ import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { resolveEvidenceId } from "../src/core/verification/evidence.js";
 import { capturePreImage } from "../src/core/workflows/rollback.js";
-import { buildReviewBundle } from "../src/core/workflows/review-bundle.js";
+import { buildReviewBundle, taskChangedFiles } from "../src/core/workflows/review-bundle.js";
 import { completeReview, reviewProblems } from "../src/core/verification/review.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import type { Review, RunPolicy, Spec } from "../src/core/workflows/schemas.js";
@@ -184,5 +184,12 @@ describe("review bundle", () => {
     expect(bundle.patch).toContain("+new a");
     expect(bundle.patch).toContain("+created b");
     expect(bundle.patch).toContain("--- /dev/null");
+    // Each task's changed files; a task that changed nothing is left out.
+    const tasks = [
+      { id: "T001", writes: [{ path: "a.txt" }, { path: "c.txt" }] },
+      { id: "T002", writes: [{ path: "b.txt" }] },
+      { id: "T003", writes: [{ path: "d.txt" }] },
+    ];
+    expect(taskChangedFiles(tasks, bundle.changed)).toEqual({ T001: ["a.txt"], T002: ["b.txt"] });
   });
 });

@@ -140,7 +140,7 @@ import {
   retryAfterMs,
   retryDelay,
 } from "./retry.js";
-import { buildReviewBundle, REVIEW_BUNDLE_PATH } from "./review-bundle.js";
+import { buildReviewBundle, REVIEW_BUNDLE_PATH, taskChangedFiles } from "./review-bundle.js";
 import {
   capturePreImage,
   createdByRunLineage,
@@ -2458,6 +2458,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             bundle.changed.map((path) => [path, state.expectedFiles?.[path] ?? null]),
           ),
           criteriaToTasks: criteria,
+          taskFiles: taskChangedFiles(state.graph?.tasks ?? [], bundle.changed),
           patch: bundle.patch,
         }),
       );
