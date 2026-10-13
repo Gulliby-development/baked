@@ -74,7 +74,11 @@ const root: TaskGraph = {
 const policy = { maxRepairRounds: 3, maxConvergenceRounds: 3, maxCorrectiveTasks: 20 } as RunPolicy;
 const store = {
   run: () => ({ repair_rounds: 0, convergence_rounds: 0, corrective_tasks: 0 }),
-  artifact: () => ({ content_hash: "h".repeat(64) }),
+  artifact: (_run: string, _kind: string, path: string) => ({
+    id: `artifact:${path}`,
+    content_hash: "h".repeat(64),
+  }),
+  latestArtifact: () => null,
   syncTasks: () => undefined,
   findingStatus: () => undefined,
   addRound: () => undefined,
@@ -91,6 +95,7 @@ const stateOf = (): RuntimeState =>
     expectedFiles: null,
     noProgressRounds: 0,
     previousFindingSet: null,
+    freshTasks: {},
   }) as unknown as RuntimeState;
 let ids = 0;
 const failing = (output: string): Review["findings"] =>
@@ -127,12 +132,35 @@ describe("no-progress detection of repair rounds", () => {
     expect(state.graph?.tasks.at(-2)?.description).not.toContain("run_probe");
   });
 
-  test("a second identical failure stops the run", () => {
+  test("a second identical failure starts the correction from a clean context, a third stops", () => {
     const state = stateOf();
     appendCorrections(store, "run", state, policy, failing(ONE), "repair");
     appendCorrections(store, "run", state, policy, failing(ONE), "repair");
+    appendCorrections(store, "run", state, policy, failing(ONE), "repair");
+    const fresh = state.graph?.tasks.at(-1);
+    expect(fresh?.description).not.toContain("run_probe");
+    expect(state.freshTasks[fresh?.id ?? ""]).toBe(`artifact:tasks/${fresh?.id}/fresh-start.json`);
+    expect(Object.keys(state.freshTasks)).toHaveLength(1);
     const stop = fault(() => appendCorrections(store, "run", state, policy, failing(ONE), "repair"));
-    expect(stop?.details.reason).toBe("no_progress");
+    expect(stop?.details).toMatchObject({ reason: "no_progress", freshRestart: true });
+    expect(stop?.message).toContain("clean context");
+  });
+
+  test("freshRestartAfter sets the repeat that restarts, and the round limit does not refuse it", () => {
+    const state = stateOf();
+    const one = { ...policy, freshRestartAfter: 1 } as RunPolicy;
+    appendCorrections(store, "run", state, one, failing(ONE), "repair");
+    appendCorrections(store, "run", state, one, failing(ONE), "repair");
+    expect(Object.keys(state.freshTasks)).toEqual([state.graph?.tasks.at(-1)?.id ?? ""]);
+    // At the round limit a repeat that is due a clean-context restart still gets it.
+    const limited = stateOf();
+    const capped = { ...policy, maxRepairRounds: 0, freshRestartAfter: 1 } as RunPolicy;
+    const atLimit = { ...store, run: () => ({ repair_rounds: 1, convergence_rounds: 0, corrective_tasks: 0 }) } as unknown as WorkflowStore;
+    limited.previousFindingSet = null;
+    expect(fault(() => appendCorrections(atLimit, "run", limited, capped, failing(ONE), "repair"))?.details).toMatchObject({ limit: "maxRepairRounds" });
+    appendCorrections(store, "run", limited, { ...capped, maxRepairRounds: 3 }, failing(ONE), "repair");
+    appendCorrections(atLimit, "run", limited, capped, failing(ONE), "repair");
+    expect(Object.keys(limited.freshTasks)).toHaveLength(1);
   });
 
   test("fewer failures count as progress", () => {

@@ -363,6 +363,24 @@ describe("workflow v2 scheduler", () => {
     expect(service.store.checks(run.runId).map((c) => `${c.check_id}:${c.status}`)).toEqual(["check:passed"]);
   }, 30000);
 
+  test("rejecting an approval with a note sends the resumed run back to specify with the note", async () => {
+    const { start, drive, service, executor, pending } = setup();
+    const run = await start("standard");
+    expect((await drive(run.runId)).reason).toBe("approval");
+    const first = pending(run.runId, "approval");
+    if (!first) throw new Error("No pending approval");
+    const waiting = await service.get(run.runId);
+    const paused = await service.decide(run.runId, { commandId: newId(), expectedRevision: waiting.revision }, { kind: "reject", requestId: first.id, explanation: "Implementing the CLI and its tests is in scope" });
+    expect(paused.status).toBe("paused");
+    await service.resume(run.runId, { commandId: newId(), expectedRevision: paused.revision });
+    expect((await drive(run.runId)).reason).toBe("approval");
+    expect(executor.calls).toEqual(["research", "spec", "plan", "analysis", "spec", "plan", "analysis"]);
+    expect(executor.prompts[4]).toContain("Implementing the CLI and its tests is in scope");
+    expect(service.store.state(run.runId).revisedRejections).toEqual([first.id]);
+    const approvals = service.store.requests(run.runId).filter((r) => r.kind === "approval");
+    expect(approvals.map((r) => r.status)).toEqual(["rejected", "pending"]);
+  }, 30000);
+
   test("a plan finding from analysis goes back to the plan stage once before a person", async () => {
     const { start, drive, service, executor } = setup({ analysisFindings: 1 });
     const run = await start("standard");
