@@ -323,6 +323,9 @@ export async function executeWorkflowCommand(
         ...(typeof args.flags.writers === "string"
           ? { maxConcurrentWriters: Number(args.flags.writers) }
           : {}),
+        ...(typeof args.flags["max-cost-usd"] === "string"
+          ? { maxCostUsd: Number(args.flags["max-cost-usd"]) }
+          : {}),
         ...(typeof args.flags.candidates === "string"
           ? { candidates: Number(args.flags.candidates) }
           : {}),

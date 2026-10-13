@@ -364,9 +364,9 @@ describe("handleTimeouts (real handler)", () => {
 		const top = pickerCfgs[0];
 		expect(top.title).toBe("Timeouts & Watchdog");
 		expect(top.scopeEnabled).toBe(false);
-		// 7 category options
+		// 8 category options
 		const values = top.options.map((o: any) => o.value);
-		expect(values).toEqual(["tool-timeout", "edit-diagnostics", "watchdog-toggle", "wd-first", "wd-chunk", "wd-tool", "wd-force"]);
+		expect(values).toEqual(["tool-timeout", "edit-diagnostics", "watchdog-toggle", "wd-first", "wd-chunk", "wd-tool", "wd-force", "cost-cap"]);
 	});
 
 	test("top-level option descriptions reflect current settings", () => {

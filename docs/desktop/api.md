@@ -277,6 +277,8 @@ Exists: `GET /v1/workflow/definitions` (each summary has `stages` and `line`: `s
 
 `POST /v1/workflow/runs` also takes `testIntegrity` (`block` or `warn`, as `--test-integrity`; see [test integrity](../workflows/runtime.md#test-integrity)); omitted, the policy decides.
 
+`POST /v1/workflow/runs` also takes `maxCostUsd` (a positive number of US dollars, as `--max-cost-usd`); omitted, the policy's cap and then the `runBudget.maxCostUsd` setting apply ([cost cap](../workflows/runtime.md#cost-cap)). `GET /v1/workflow/doctor` and `/estimate` take it as `?maxCostUsd=`; the estimate then has `cost: {maxCostUsd, fits}` and the doctor a `budget.cost` warning when the estimate may pass the cap.
+
 `POST /v1/workflow/runs` and the `GET /v1/workflow/doctor` and `/estimate` queries take `sandbox` (`off`, `auto` or `required`, as `--sandbox`): the run's [OS sandbox](../sandbox.md), frozen in its policy; omitted, the stricter of the policy's `sandbox` and the configured `sandbox` setting applies, and `required` without a backend is refused with 400 `INVALID_DEFINITION`.
 
 `POST /v1/workflow/runs` takes `approvalReview: true` (as `--approval-review`): the [approval reviewer](../workflows/runtime.md#auto-approval) may approve a low-risk plan outside the auto approval limits. It is refused without `autoApproval.limits`, and a pending approval's body then carries `autoApproval.review` or `autoApproval.reviewError`.

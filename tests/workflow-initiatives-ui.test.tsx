@@ -264,8 +264,11 @@ for (const [width, height] of SIZES) {
       );
     });
     try {
-      // The prompt fills the feature ID, so focus starts on it: feature → workflow → budget → execution.
+      // The prompt fills the feature ID, so focus starts on it: feature → workflow → budget → cost cap.
       for (let i = 0; i < 3; i++) await press(view, "tab");
+      await act(async () => { await view.mockInput.typeText("2.5"); });
+      // Then the execution mode.
+      await press(view, "tab");
       let text = await frame(view, width, height, "inline");
       expect(text).toContain("‹ inline ›");
       // The skipped writer row lies below the focused field; a small terminal scrolls past it.
@@ -282,7 +285,7 @@ for (const [width, height] of SIZES) {
       if (height >= 40) expect(await frame(view, width, height, "run model only")).toContain("‹ run model only ›");
       await press(view, "tab");
       await press(view, "return");
-      expect(started.at(-1)).toMatchObject({ executionMode: "inline", clarification: "assume", testIntegrity: "warn", modelStrict: true });
+      expect(started.at(-1)).toMatchObject({ executionMode: "inline", clarification: "assume", testIntegrity: "warn", modelStrict: true, maxCostUsd: 2.5 });
       expect(started.at(-1)?.maxConcurrentWriters).toBeUndefined();
       for (let i = 0; i < 4; i++) await press(view, "up");
       await press(view, "right");
@@ -299,11 +302,10 @@ for (const [width, height] of SIZES) {
       expect(started.at(-1)).toMatchObject({ workflowId: "sdd", executionMode: "worktree", maxConcurrentWriters: 3 });
       // Review-only refuses a worktree with the core's own words, and nothing starts.
       const count = started.length;
-      for (let i = 0; i < 3; i++) await press(view, "up");
+      for (let i = 0; i < 4; i++) await press(view, "up");
       await press(view, "right");
       expect(started.length).toBe(count);
-      await press(view, "down");
-      await press(view, "down");
+      for (let i = 0; i < 3; i++) await press(view, "down");
       await press(view, "right");
       await act(async () => view.mockInput.pressKey("s", { ctrl: true }));
       await act(async () => { await Bun.sleep(20); });

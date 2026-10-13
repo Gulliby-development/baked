@@ -170,8 +170,20 @@ export function preRunQuery(input: PreRunInput): string {
   if (input.writers !== undefined && input.writers > 1)
     params.set("writers", String(input.writers));
   if (input.sandbox) params.set("sandbox", input.sandbox);
+  if (input.maxCostUsd !== undefined) params.set("maxCostUsd", String(input.maxCostUsd));
   const text = params.toString();
   return text ? `?${text}` : "";
+}
+
+/**
+ * The cost cap typed in the start form: undefined when empty (the policy or the setting applies),
+ * the US dollars, or null when the text is not a positive number (`--max-cost-usd`).
+ */
+export function costCapInput(text: string): number | undefined | null {
+  const trimmed = text.trim().replace(/^\$/, "");
+  if (!trimmed) return undefined;
+  const value = Number(trimmed);
+  return /^\d+(\.\d+)?$/.test(trimmed) && value > 0 && Number.isFinite(value) ? value : null;
 }
 
 /** The hint under the recipes: what was proposed from the request, and whether the pick differs. */

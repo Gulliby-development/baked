@@ -355,7 +355,7 @@ export function usePreRun(key: string, input: PreRunInput, delayMs = 350): PreRu
     estimateError: null,
     loading: true,
   });
-  const { workflow, model, worktree, writers, sandbox } = input;
+  const { workflow, model, worktree, writers, sandbox, maxCostUsd } = input;
   useEffect(() => {
     let live = true;
     setState((s) => ({ ...s, loading: true }));
@@ -366,6 +366,7 @@ export function usePreRun(key: string, input: PreRunInput, delayMs = 350): PreRu
         worktree,
         writers,
         ...(sandbox ? { sandbox } : {}),
+        ...(maxCostUsd !== undefined ? { maxCostUsd } : {}),
       };
       void Promise.allSettled([start.doctor(key, request), start.estimate(key, request)]).then(
         ([doctor, estimate]) => {
@@ -384,7 +385,7 @@ export function usePreRun(key: string, input: PreRunInput, delayMs = 350): PreRu
       live = false;
       clearTimeout(timer);
     };
-  }, [key, workflow, model, worktree, writers, sandbox, delayMs]);
+  }, [key, workflow, model, worktree, writers, sandbox, maxCostUsd, delayMs]);
   return state;
 }
 

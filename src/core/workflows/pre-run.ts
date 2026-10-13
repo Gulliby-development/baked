@@ -100,6 +100,7 @@ export function estimatePrepared(
     workflowId,
     stages: plannedStages(prepared),
     maxTotalTokens: prepared.policy.maxTotalTokens,
+    maxCostUsd: prepared.policy.maxCostUsd,
     price: tablePrice,
   });
 }
