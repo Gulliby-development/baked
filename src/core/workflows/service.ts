@@ -304,6 +304,7 @@ export class NativeWorkflowService implements WorkflowService {
       taskRestarts: {},
       ownerLostResumes: 0,
       stallResumes: 0,
+      providerResumes: 0,
       taskCarry: {},
       taskGates: {},
       position: v2 ? initialPosition(v2) : null,
@@ -411,6 +412,7 @@ export class NativeWorkflowService implements WorkflowService {
       const snapshot = await this.driveOnce(runId, signal);
       if (await this.resumeOwnerLost(runId, signal)) continue;
       if (await this.resumeStalled(runId, signal)) continue;
+      if (await this.resumeProviderOutage(runId, signal)) continue;
       return snapshot;
     }
   }
@@ -461,6 +463,55 @@ export class NativeWorkflowService implements WorkflowService {
    * stalled attempt left open were already settled from the file hashes, so nothing needs a person.
    * Each resume is journaled as a recovery artifact.
    */
+  /** Waits before the automatic resumes of a run blocked with `provider_unavailable`. */
+  providerOutageBackoffMs: number[] = [60_000, 300_000, 900_000];
+  /**
+   * A run that blocked with `provider_unavailable` (every model of a route failed after its
+   * in-call retries, such as "Selected model is at capacity") waits and resumes by itself, at
+   * most `providerOutageBackoffMs.length` times, instead of waiting for a person to resume it
+   * (#480). The recovery artifact is written before the wait, so it names when the run retries.
+   */
+  private async resumeProviderOutage(runId: string, signal: AbortSignal): Promise<boolean> {
+    if (signal.aborted) return false;
+    const run = this.store.run(runId);
+    if (run.status !== "blocked" || run.reason !== "provider_unavailable") return false;
+    const state = this.store.state(runId);
+    const wait = this.providerOutageBackoffMs[state.providerResumes];
+    if (wait === undefined || this.store.requests(runId).some(blocksRun)) return false;
+    const attempt = state.providerResumes + 1;
+    this.store.transaction(() => {
+      state.providerResumes = attempt;
+      this.store.artifact(
+        runId,
+        "recovery",
+        `provider-outage/resume-${attempt}.json`,
+        canonical({
+          attempt,
+          of: this.providerOutageBackoffMs.length,
+          waitMs: wait,
+          retryAt: new Date(Date.now() + wait).toISOString(),
+        }),
+      );
+      this.store.saveState(runId, state);
+    });
+    try {
+      await abortableDelay(wait, signal);
+    } catch {
+      return false;
+    }
+    // A person may have resumed, cancelled or changed the run while it waited.
+    const current = this.store.run(runId);
+    if (current.status !== "blocked" || current.reason !== "provider_unavailable") return false;
+    try {
+      await this.resume(runId, {
+        commandId: newId(),
+        expectedRevision: current.revision,
+      });
+    } catch {
+      return false;
+    }
+    return true;
+  }
   private async resumeStalled(runId: string, signal: AbortSignal): Promise<boolean> {
     if (signal.aborted) return false;
     const run = this.store.run(runId);

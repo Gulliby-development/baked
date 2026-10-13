@@ -524,6 +524,8 @@ Configuration (milliseconds, all optional):
 
 `autoResumes: 0` turns the automatic resume off. Set `stepStallMs` above the longest model call of the models you route to.
 
+A run that blocks with `provider_unavailable` (every model of a route failed after its in-call retries, such as a model at capacity or a provider that cannot be reached) also resumes by itself: the service waits 1, 5 and then 15 minutes before its first, second and third resume, counted in `providerResumes` of the run state. Before each wait it records `provider-outage/resume-N.json` with the attempt, the wait and `retryAt`, so the run's artifacts say when it retries. The run shows as blocked while it waits; resuming, pausing or cancelling it in the meantime takes precedence. After the third resume the run stays blocked for a person. The resume runs in the process that drives the run, so it works the same from the TUI, the headless CLI and the desktop app.
+
 ### Stopped convergence
 
 Convergence repairs the findings of its final review for at most `maxConvergenceRounds` rounds (and `maxCorrectiveTasks` corrective tasks). When it cannot start another round, the run no longer ends as `blocked` with `no_progress`: it moves to `waiting` (reason `no_progress`) with a durable request of kind `convergence`. The request body (`topic: "convergence"`) holds the `reason`, a one-line `summary`, `checksPassing` (every required check passes on the current snapshot), the `criteria` (total, passing, and the failing ones with their verdict), the open `findings` (ID, severity, kind, criteria, file, symbol, claim, impact, suggested fix) and the `contradictions` the findings ledger found. The reasons are:

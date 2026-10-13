@@ -181,6 +181,8 @@ describe("scheduler accounting of failed attempts", () => {
       },
     };
     (service as unknown as { scheduler: { executor: AgentExecutor } }).scheduler.executor = failing;
+    // The run stays blocked on the provider failure instead of waiting to resume.
+    service.providerOutageBackoffMs = [];
     const run = await fixture.start();
     await fixture.resume(run.runId);
     await service.drive(run.runId, new AbortController().signal).catch(() => {});
