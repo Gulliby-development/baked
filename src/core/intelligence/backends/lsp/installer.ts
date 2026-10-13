@@ -6,7 +6,7 @@
 import { execFile, spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { extractArchive } from "../../../platform/archive.js";
+import { extractArchive, tarCommand } from "../../../platform/archive.js";
 import {
   CMD_EXT,
   commandExists,
@@ -177,7 +177,7 @@ export async function downloadRegistry(signal?: AbortSignal): Promise<MasonPacka
 
     await new Promise<void>((resolve, reject) => {
       execFile(
-        IS_WIN ? "tar" : "unzip",
+        IS_WIN ? tarCommand() : "unzip",
         IS_WIN ? ["-xf", tmpZip, "-C", configDir()] : ["-o", tmpZip, "-d", configDir()],
         { windowsHide: true, timeout: 30_000, signal: requestSignal },
         (error) => (error ? reject(error) : resolve()),
