@@ -230,6 +230,7 @@ const { getVendoredPath, installRipgrep, installFd, installAstGrep } = installMo
 
 let resumeSessionId: string | undefined;
 let forceWizard = false;
+let startOnCoordinator = false;
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -242,6 +243,8 @@ for (let i = 0; i < args.length; i++) {
     resumeSessionId = arg.slice("--resume=".length);
   } else if (arg === "--wizard") {
     forceWizard = true;
+  } else if (arg === "--coordinator") {
+    startOnCoordinator = true;
   }
 }
 
@@ -375,6 +378,7 @@ await start({
   projectConfig,
   resumeSessionId,
   forceWizard,
+  startOnCoordinator,
   bootProviders,
   bootPrereqs,
   contextManager,

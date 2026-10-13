@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { href, parseRoute } from "../src/renderer/router.ts";
+import { href, parseRoute, projectHref } from "../src/renderer/router.ts";
 
 describe("routes", () => {
   test("parse and print round trip", () => {
@@ -9,10 +9,16 @@ describe("routes", () => {
 
   test("unknown routes fall back", () => {
     expect(parseRoute("")).toEqual({ name: "projects" });
-    expect(parseRoute("#/p/abc/nope")).toEqual({ name: "project", key: "abc", section: "overview", id: null });
+    expect(parseRoute("#/p/abc/nope")).toEqual({ name: "project", key: "abc", section: "coordinator", id: null });
     expect(parseRoute("#/settings/x")).toEqual({ name: "settings", section: "app" });
     expect(parseRoute("#/settings/global")).toEqual({ name: "settings", section: "providers" });
     expect(parseRoute("#/settings/chat")).toEqual({ name: "settings", section: "chat" });
+  });
+
+  test("a project opens on its coordinator", () => {
+    expect(parseRoute("#/p/abc")).toEqual({ name: "project", key: "abc", section: "coordinator", id: null });
+    expect(projectHref("abc")).toBe("#/p/abc/coordinator");
+    expect(projectHref("abc", "overview")).toBe("#/p/abc/overview");
   });
 
   test("old acceptance links open the run", () => {

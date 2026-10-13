@@ -39,6 +39,7 @@ import {
   CORE_TOOL_NAMES,
   PLAN_EXECUTION_TOOL_NAMES,
   RESTRICTED_TOOL_ACTIONS,
+  RESTRICTED_TOOL_INPUTS,
   RESTRICTED_TOOL_NAMES,
 } from "../tools/index.js";
 import { renderTaskList } from "../tools/task-list.js";
@@ -976,9 +977,9 @@ export function createBakeAgent({
           ? "call plan with the changes you intended"
           : "give the design as your answer";
       if (modeDenials > 1) {
-        return `Tool "${name}" refused again (${modeDenials} refusals this turn). No edit, write, shell or git tool runs in ${bakeMode} mode, so stop calling them and ${next} now.`;
+        return `Tool "${name}" refused again (${modeDenials} refusals this turn). No edit, write, shell or git change runs in ${bakeMode} mode, so stop calling them and ${next} now.`;
       }
-      return `Tool "${name}" is disabled in ${bakeMode} mode (read-only/analysis only). Every edit, write, shell and git tool is refused for this whole turn, so do not try another one. Use read/navigate/bake_* to investigate, then ${next}. To make edits, the user must switch out of ${bakeMode} mode.`;
+      return `Tool "${name}" is disabled in ${bakeMode} mode (read-only/analysis only). Every edit, write, shell and git change is refused for this whole turn, so do not try another one. Use read/navigate/bake_*, git status/diff/log/show/blame and artifact list/read to investigate, then ${next}. To make edits, the user must switch out of ${bakeMode} mode.`;
     }
     return `Tool "${name}" is not available during plan execution. The plan already contains the intended changes — use edit_file/multi_edit/shell/project and update_plan_step to execute them.`;
   };
@@ -989,13 +990,18 @@ export function createBakeAgent({
       if (typeof tool.execute !== "function") continue;
       const readActions = isRestricted ? RESTRICTED_TOOL_ACTIONS[name] : undefined;
       if (readActions) {
-        // Read-only actions of a tool that can also write (listing artifacts) run as usual.
+        // Read-only actions of a tool that can also write (listing artifacts, git log) run as usual.
         const execute = tool.execute;
+        const inputAllowed = RESTRICTED_TOOL_INPUTS[name];
         (allTools as Record<string, unknown>)[name] = {
           ...(def as Record<string, unknown>),
           execute: (input: unknown, ...rest: unknown[]) => {
             const action = (input as { action?: unknown } | null)?.action;
-            if (typeof action === "string" && readActions.includes(action))
+            if (
+              typeof action === "string" &&
+              readActions.includes(action) &&
+              (inputAllowed?.(input as Record<string, unknown>) ?? true)
+            )
               return execute(input, ...rest);
             return Promise.resolve({
               success: false,

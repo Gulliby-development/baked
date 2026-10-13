@@ -176,6 +176,23 @@ export const CATEGORIES = [
 
 const COMMAND_DEFS: CommandDef[] = [
   {
+    cmd: "/coordinator",
+    ic: "dispatch",
+    desc: "The project coordinator: reads the whole project, splits work into runs, keeps the brief",
+    category: "Session",
+    tags: [
+      "project",
+      "brief",
+      "split",
+      "launch",
+      "runs",
+      "orchestrate",
+      "usage",
+      "git",
+      "artifacts",
+    ],
+  },
+  {
     cmd: "/project",
     ic: "folder",
     desc: "This project: sessions, workflow runs, what waits for you",
@@ -195,13 +212,6 @@ const COMMAND_DEFS: CommandDef[] = [
     desc: "Rename this project in every app; no name restores the default",
     category: "Session",
     tags: ["folder", "workspace", "name", "title"],
-  },
-  {
-    cmd: "/coordinator",
-    ic: "dispatch",
-    desc: "The project coordinator: one chat that splits work into runs and keeps the brief",
-    category: "Session",
-    tags: ["project", "brief", "split", "launch", "runs", "orchestrate"],
   },
   {
     cmd: "/projects",
