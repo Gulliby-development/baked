@@ -200,6 +200,7 @@ export function mergeConfigs(global: AppConfig, project: Partial<AppConfig> | nu
       ? { ...merged.agentFeatures, ...layer.agentFeatures }
       : merged.agentFeatures;
     const cache = layer.cache ? { ...merged.cache, ...layer.cache } : merged.cache;
+    const quality = layer.quality ? { ...merged.quality, ...layer.quality } : merged.quality;
     const watchdogTimeouts = layer.watchdogTimeouts
       ? { ...merged.watchdogTimeouts, ...layer.watchdogTimeouts }
       : merged.watchdogTimeouts;
@@ -219,6 +220,7 @@ export function mergeConfigs(global: AppConfig, project: Partial<AppConfig> | nu
       taskRouter,
       agentFeatures,
       cache,
+      ...(quality ? { quality } : {}),
       watchdogTimeouts,
       mcpServers,
     };
@@ -324,6 +326,7 @@ const NESTED_KEYS = [
   "retry",
   "workflows",
   "watch",
+  "quality",
 ] as const;
 
 export function applyConfigPatch<T extends Partial<AppConfig>>(

@@ -347,6 +347,11 @@ export interface ExecutionResponse {
   output: unknown;
   inputTokens: number | null;
   outputTokens: number | null;
+  /**
+   * False when the provider reported no tokens for model steps that ran, so the spend is
+   * unknown: the attempt keeps its reservation instead of being counted as free.
+   */
+  usageComplete?: boolean;
 }
 export interface AgentExecutor {
   execute(request: ExecutionRequest): Promise<ExecutionResponse>;

@@ -545,6 +545,48 @@ describe("codex app-server native model", () => {
     expect(fake.count("turn/start")).toBe(1);
   });
 
+  test("waits for a usage report that arrives after turn/completed", async () => {
+    const { fake, model } = setup();
+    fake.onTurnStart = (threadId) => {
+      fake.text(threadId, "m1", "Done.");
+      fake.complete(threadId);
+      setTimeout(() => fake.usage(threadId, 3000, 0, 50), 20);
+    };
+    const result = await model.doGenerate({ prompt: userPrompt, tools: READ_TOOL });
+    expect(result.usage).toMatchObject({ inputTokens: 3000, outputTokens: 50 });
+    expect(result.providerMetadata).toEqual({ codex: { responses: 1 } });
+  });
+
+  test("usage reported between steps goes to the next step on the thread", async () => {
+    const { fake, model } = setup();
+    let threadOf = "";
+    fake.onTurnStart = (threadId) => {
+      threadOf = threadId;
+      fake.text(threadId, "m1", "First.");
+      fake.usage(threadId, 1000, 0, 10);
+      fake.complete(threadId);
+    };
+    const first = await model.doGenerate({ prompt: userPrompt, tools: READ_TOOL });
+    expect(first.usage).toMatchObject({ inputTokens: 1000, outputTokens: 10 });
+    // A late report for the first turn lands while no step is open.
+    fake.usage(threadOf, 1500, 0, 30);
+    fake.onTurnStart = (threadId) => {
+      fake.text(threadId, "m2", "Second.");
+      fake.usage(threadId, 2500, 0, 50);
+      fake.complete(threadId);
+    };
+    const second = await model.doGenerate({
+      prompt: [
+        ...userPrompt,
+        { role: "assistant", content: [{ type: "text", text: "First." }] },
+        { role: "user", content: [{ type: "text", text: "And then?" }] },
+      ],
+      tools: READ_TOOL,
+    });
+    expect(fake.count("thread/start")).toBe(1);
+    expect(second.usage).toMatchObject({ inputTokens: 1500, outputTokens: 40 });
+  });
+
   test("sends the chat's reasoning effort on the turn", async () => {
     const { fake, model } = setup();
     fake.onTurnStart = (threadId) => fake.complete(threadId);
