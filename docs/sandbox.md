@@ -8,7 +8,7 @@ BAKED can run the commands it starts on the agent's behalf inside an operating-s
 | --- | --- | --- | --- |
 | Chat `shell` tool, including the pre-commit lint of `git commit -m` | yes | the project root and an approved outside `cwd` | `sandboxNetwork` (default allow) |
 | Chat `project` tool (test, lint, build, typecheck, run) | yes | the project root | `sandboxNetwork` |
-| Workflow checks, wait-stage polls, the check baseline measurement, the whole-unit checks at the end of a task, the test runs of mutation testing, `request_check`, `apply_fix` and the host fixer pass | yes | the run root (the project or its worktree) | the policy's `network`: only `allow` grants it |
+| Workflow checks, wait-stage polls, the check baseline measurement, the whole-unit checks at the end of a task, the test runs of mutation testing, `request_check`, `apply_fix` and the host fixer pass | yes | the run root (the project or its worktree; in a worktree run also the Git common directory, see [Git writes in a worktree run](#git-writes-in-a-worktree-run)) | the policy's `network`: only `allow` grants it |
 | Review repros and `run_probe` | yes | the run root | the policy's `network` |
 | AI acceptance applications, declared commands and promoted tests | yes | the gate's `capabilities.writePaths` only; the workspace stays read-only | shared while the gate grants `listenPorts` or `outboundHosts`, else the policy's `network` |
 | `baked workflow gate run` (a gate outside any run) | yes | the project root | denied |
@@ -37,6 +37,7 @@ Auto approval treats a weaker sandbox like a wider capability: a policy whose sa
 | Terminal UI | `/sandbox` opens a picker; `/sandbox off\|auto\|required` saves the mode globally; `/sandbox status` prints mode, backend and network |
 | Headless | `baked --headless --sandbox MODE ...` replaces the global mode for that process (the project config can still raise it); `baked sandbox status [--json]` prints the status and exits 1 when the sandbox is required but unavailable |
 | Workflows | `baked workflow run --sandbox MODE`; `baked workflow doctor` reports a `sandbox` line |
+| Self-check | `baked self-check` prints a `sandbox` line with the mode and backend and, when the backend works, starts `/bin/sh -c true` through it; it fails when that command does not start, or when the mode is `required` and no backend works. Windows reports "not supported on Windows" without failing |
 | Local API | `GET /v1/diagnostics/sandbox`; the settings in `GET\|PATCH /v1/settings` (Tools page, section Sandbox); `sandbox` in the start body ([desktop API](desktop/api.md)) |
 | Desktop | Chat settings, Tools page; Diagnostics, Sandbox panel; New run, OS sandbox select |
 
@@ -60,7 +61,7 @@ The whole host is readable, so toolchains, `node_modules`, `~/.bun`, `~/.cargo/b
 
 ### macOS: seatbelt
 
-BAKED uses `/usr/bin/sandbox-exec` with a generated profile: everything is allowed except writes outside the writable paths, `/private/tmp`, `/private/var/folders`, `/dev/null`, `/dev/tty`, `/dev/fd` and the caches; protected paths are denied writes after the allows, credential paths are denied reads and writes, and without network everything but loopback and Unix sockets is denied. Paths reach the profile as `-D` parameters and are resolved to their real paths (`/tmp` is `/private/tmp`). Apple marks `sandbox-exec` deprecated; it still ships with macOS.
+BAKED uses `/usr/bin/sandbox-exec` with a generated profile: everything is allowed except writes outside the writable paths, `/private/tmp`, `/private/var/folders`, `/dev/null`, `/dev/tty`, `/dev/fd` and the caches; protected paths are denied writes after the allows, credential paths are denied reads and writes, and without network everything but loopback and Unix sockets is denied, together with the keychain daemon (see [Keychain](#macos-keychain)). Paths reach the profile as `-D` parameters and are resolved to their real paths (`/tmp` is `/private/tmp`). Apple marks `sandbox-exec` deprecated; it still ships with macOS.
 
 ### Windows
 
@@ -75,7 +76,22 @@ Credential stores in the home directory are replaced by an empty directory or an
 
 `SSH_AUTH_SOCK`, `GPG_AGENT_INFO` and `DBUS_SESSION_BUS_ADDRESS` are removed from the command's environment, so it cannot reach the SSH agent or the keyring over D-Bus.
 
-Inside a writable workspace these stay read-only: `.git/hooks`, `.git/config`, `.baked` and, for workflow processes, `baked/` (workflow definitions). BAKED runs Git unsandboxed, so a hook, `core.hooksPath` or `core.fsmonitor` written by a sandboxed command would otherwise run on the host. On Linux a missing `.git/hooks` is created before the command starts so it can be mounted read-only.
+Inside a writable workspace these stay read-only: the Git state listed below, `.baked` and, for workflow processes, `baked/` (workflow definitions). BAKED runs Git unsandboxed, so a hook, `core.hooksPath` or `core.fsmonitor` written by a sandboxed command would otherwise run on the host.
+
+| Workspace | Read-only Git state |
+| --- | --- |
+| `.git` is a directory | `.git/config`, `.git/hooks`, and `config` and `hooks` of every submodule under `.git/modules` (nested submodules and names with `/` included); `config.worktree` where it exists |
+| `.git` is a file (a worktree or a submodule checkout) | the `.git` file itself, so it cannot point host Git at another repository; `config` and `hooks` of the directory its `gitdir:` names, of the common directory its `commondir` file names, and of their submodules |
+
+Bubblewrap mounts only paths that exist when the command starts; on Linux a missing `hooks` directory of these Git directories is created first (as `git init` would) so it can be mounted read-only. Seatbelt also denies writes to the `config` and `hooks` paths that do not exist yet.
+
+### Git writes in a worktree run
+
+A workflow run in worktree mode checks its own worktree (under `.baked/worktrees/<run>/`), whose Git state lives outside it, in the project's `.git`. For those runs the workflow runtime sets `gitWrite` on the request, so Git commands of a check (`git add`, `git stash`, `git commit`) work: the common directory (`<project>/.git`, with the worktree's gitdir `.git/worktrees/<name>` in it) becomes writable. Its `config`, `hooks`, the submodule `config` and `hooks` under `modules`, the `commondir`, `gitdir` and `config.worktree` files of every worktree, and the main checkout's `HEAD` and `index` stay read-only; these protections are mounted after the writable bind (bubblewrap) or follow the allow rule (seatbelt). Inline runs and chat commands never set `gitWrite`, and it has no effect on a workspace whose `.git` is a directory.
+
+### macOS keychain
+
+Hiding `~/Library/Keychains` is not enough on its own: the `security` tool asks the keychain daemon (`com.apple.SecurityServer`), which reads the keychain files outside the sandbox. When the network is denied, the profile also denies the Mach lookup of `com.apple.SecurityServer`, so `security find-generic-password` and other keychain reads fail. When the network is allowed, the lookup stays allowed: certificate trust evaluation of some TLS stacks (Security.framework clients such as Go programs and Apple's tools) can need the daemon, and denying it could break HTTPS for those tools in ways that CI cannot cover for every tool. With the network allowed, a sandboxed command can therefore still read keychain items whose access control lets it; deny the network (`sandboxNetwork: "deny"`, or a run policy without `network: "allow"`) where that matters.
 
 Package caches stay writable when they exist: `~/.bun/install/cache`, `~/.cache/bun`, `~/.cache/go-build`, `~/.cache/pip`, `~/.npm`, `~/.cargo/registry`, `~/.cargo/git`, `$GOMODCACHE` (or `~/go/pkg/mod`), and on macOS `~/Library/Caches`.
 
@@ -84,9 +100,10 @@ Package caches stay writable when they exist: `~/.bun/install/cache`, `~/.cache/
 - Commands that need credentials fail in the sandbox: `git push` over SSH, `gh`, and installs from private registries configured in `~/.npmrc`. Run them with the sandbox off, or outside BAKED.
 - With the network denied, cold-cache builds fail: `bun install`, `go test` and `cargo test` download modules on first use. Allow the network for the run (`network: "allow"` in the policy) or warm the caches first.
 - An AI acceptance gate that grants ports or hosts shares the host network: the host browser and the filter proxy must reach the application, so only its file system is isolated.
-- In a worktree run, the Git common directory (`<project>/.git/worktrees/<id>`) is not writable, so commands that write Git state in worktree checks fail; read-only Git works.
-- Submodule configs (`.git/modules/*/config`) are not protected yet, and macOS keychain access is blocked only at file level (the `security` tool's Mach service is not denied).
-- Follow-up issue #625 tracks making `auto` the default after a soak, protecting submodule configs, a writable worktree Git common directory and the keychain Mach lookup.
+- In a worktree run with Git writes, a check can move branch refs of the shared repository (refs and objects live in the common directory); BAKED's own Git state files listed above stay read-only.
+- Only the Git directories that exist when the command starts are protected: a repository the command creates inside the workspace (for example a new nested `.git` directory) is not, and with bubblewrap neither is a `config` or `config.worktree` file that does not exist yet.
+- On macOS the keychain daemon is denied only when the network is denied (see [macOS keychain](#macos-keychain)).
+- Follow-up issue #625 tracks making `auto` the default after a soak.
 
 ## Troubleshooting
 
