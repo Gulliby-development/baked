@@ -163,8 +163,8 @@ export function NewRunForm({
       move(evt.name === "up" || (evt.name === "tab" && evt.shift) ? -1 : 1);
       return;
     }
-    const toggle = focus === "execution" || focus === "clarification" || focus === "tests" ||
-      focus === "strict";
+    const toggle =
+      focus === "execution" || focus === "clarification" || focus === "tests" || focus === "strict";
     const choice = focus === "workflow" || focus === "budget" || toggle;
     if (
       (choice || focus === "writers") &&

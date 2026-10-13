@@ -438,6 +438,8 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     !["block", "warn"].includes(String(result.flags["test-integrity"]))
   )
     throw new WorkflowFault("INVALID_DEFINITION", "--test-integrity accepts block or warn");
+  if (
+    !result.flags.help &&
     "duplication" in result.flags &&
     !["off", "warn", "ratchet"].includes(String(result.flags.duplication))
   )

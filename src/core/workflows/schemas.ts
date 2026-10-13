@@ -225,6 +225,7 @@ export const PolicySchema = z
      * `warn` is stored, so stored policies keep their hash.
      */
     testIntegrity: z.enum(["block", "warn"]).optional(),
+    /**
      * The duplication and dead-code ratchet (quality/duplication.ts). Absent means `warn`: copies
      * and unused declarations the run adds are reported, never blocking, so stored policies keep
      * their hash. `ratchet` makes them blocking findings; `off` skips the measurement.
