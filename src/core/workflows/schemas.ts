@@ -154,6 +154,8 @@ export const AutoApprovalSchema = z
 /** Upper bound of `maxConcurrentWriters`. */
 export const MAX_CONCURRENT_WRITERS = 4;
 
+/** Repair rounds that repeat the same failures before a fresh-context correction (see the policy). */
+export const DEFAULT_FRESH_RESTART_AFTER = 2;
 export const PolicySchema = z
   .object({
     maxConcurrentReadAgents: z.number().int().min(1).max(8),
@@ -200,6 +202,13 @@ export const PolicySchema = z
      * Absent means on, so stored policies keep their hash.
      */
     projectMemory: z.boolean().optional(),
+    /**
+     * How many repair rounds in a row may leave the same failures before the next correction
+     * starts from a clean context: the spec, the task, the current files and a host-written account
+     * of what was tried, without the earlier attempts' evidence. If that attempt fails the same way
+     * the run stops. Absent means `DEFAULT_FRESH_RESTART_AFTER`, so stored policies keep their hash.
+     */
+    freshRestartAfter: z.number().int().min(1).max(5).optional(),
     /**
      * Directories the applications of the run's AI acceptance gates may write. Like the outputs
      * of checks they are left out of source snapshots. Absent when no such gate grants writes.

@@ -294,6 +294,7 @@ export class NativeWorkflowService implements WorkflowService {
       frozenFiles: instructions.files,
       repairPredecessors: {},
       repairScope: {},
+      freshTasks: {},
       taskBudgets: {},
       taskSteps: {},
       sizingReplans: 0,
