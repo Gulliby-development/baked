@@ -79,6 +79,7 @@ import {
 import { approvalDigest } from "./approval.js";
 import { writeViaTemp } from "./atomic-write.js";
 import {
+  APPROVAL_REVIEWER,
   evaluateAutoApproval,
   humanApprovalReason,
   plannerApprovalLimits,
@@ -227,6 +228,8 @@ import {
 import {
   type AgentProfile,
   AnalysisSchema,
+  type ApprovalReview,
+  ApprovalReviewSchema,
   type Critique,
   CritiqueSchema,
   DEFAULT_MAX_PARALLEL_RUNS,
@@ -721,7 +724,8 @@ export class WorkflowScheduler {
                   planner,
                   {
                     checks: policy.checks,
-                    profiles,
+                    // The approval reviewer decides approvals; no task can be assigned to it.
+                    profiles: profiles.filter((p) => p.output !== "approval-review"),
                     workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
                     ...(approvalLimits ? { approvalLimits } : {}),
                     ...(policy.sizing
@@ -1101,6 +1105,31 @@ export class WorkflowScheduler {
                             existsSync(join(runRoot(this.store.workspace, state), path)),
                         },
                       );
+                // A package that leaves the limits only by its size or paths may go to the
+                // approval reviewer (`autoApproval.modelReview`). It fails closed: any error or
+                // an answer other than a low-risk approve leaves the request with a person.
+                let review: { review: ApprovalReview } | { reviewError: string } | null = null;
+                if (!auto.approval && auto.reviewable && auto.limitsHash) {
+                  review = await this.reviewApproval(
+                    runId,
+                    stepId,
+                    state,
+                    policy,
+                    profiles,
+                    auto.reasons,
+                    signal,
+                  );
+                  if (
+                    "review" in review &&
+                    review.review.verdict === "approve" &&
+                    review.review.risk === "low"
+                  )
+                    auto.approval = {
+                      mode: "model-review",
+                      limitsHash: auto.limitsHash,
+                      review: review.review,
+                    };
+                }
                 const body = {
                   manifest: state.manifest,
                   writes,
@@ -1133,7 +1162,12 @@ export class WorkflowScheduler {
                     ? { acceptanceCapabilities: acceptanceGrants(v2.gates) }
                     : {}),
                   ...(policy.autoApproval || human
-                    ? { autoApproval: auto.approval ?? { declined: auto.reasons } }
+                    ? {
+                        autoApproval: auto.approval ?? {
+                          declined: auto.reasons,
+                          ...(review ?? {}),
+                        },
+                      }
                     : {}),
                 };
                 if (!auto.approval) {
@@ -2558,6 +2592,8 @@ export class WorkflowScheduler {
           profiles: ProfileSchema.array()
             .parse(JSON.parse(this.store.run(runId).profiles_json))
             .filter((p) => profile.context !== "implementation" || p.id === profile.id)
+            // The approval reviewer takes no part in a run's work, only in its approvals.
+            .filter((p) => p.output !== "approval-review" || p.id === profile.id)
             .map((p) => ({ id: p.id, role: p.role, allowedTools: p.allowedTools })),
           policy: { allowedTools: policy.allowedTools, network: policy.network },
         },
@@ -6154,6 +6190,59 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         },
       }),
     );
+  }
+  /**
+   * Asks the `approval-reviewer` profile about a package auto approval declined only for its
+   * size or paths. It sees the request, the spec and the writes; it cannot change any of them.
+   */
+  private async reviewApproval(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    profiles: AgentProfile[],
+    declined: string[],
+    signal: AbortSignal,
+  ): Promise<{ review: ApprovalReview } | { reviewError: string }> {
+    const profile = profiles.find((p) => p.id === APPROVAL_REVIEWER);
+    if (profile?.output !== "approval-review")
+      return { reviewError: `profile ${APPROVAL_REVIEWER} is not available` };
+    const spec = state.spec;
+    try {
+      const output = await this.call(
+        runId,
+        stepId,
+        state,
+        policy,
+        profile,
+        {
+          approval: {
+            request: state.requestText ?? state.prompt,
+            spec: spec
+              ? {
+                  title: spec.title,
+                  outcome: spec.outcome,
+                  inScope: spec.inScope,
+                  outOfScope: spec.outOfScope,
+                  requirements: spec.requirements.map((r) => ({ id: r.id, text: r.text })),
+                }
+              : null,
+            tasks: (state.graph?.tasks ?? []).map((t) => ({
+              id: t.id,
+              title: t.title,
+              writes: t.writes,
+            })),
+            declined,
+            limits: policy.autoApproval?.limits ?? null,
+          },
+        },
+        signal,
+      );
+      return { review: ApprovalReviewSchema.parse(output) };
+    } catch (error) {
+      if (signal.aborted) throw error;
+      return { reviewError: error instanceof Error ? error.message : String(error) };
+    }
   }
   /**
    * Runs one command gate with its retries. Every attempt is recorded as a check result; a pass

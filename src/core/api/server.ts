@@ -431,6 +431,7 @@ function startArgs(raw: unknown): WorkflowArgs {
   if (body.modelStrict) flags["model-strict"] = true;
   if (body.policy !== undefined) flags.policy = true;
   if (body.budget) flags.budget = body.budget;
+  if (body.approvalReview) flags["approval-review"] = true;
   if (body.autoPreset) flags["auto-preset"] = true;
   return validateWorkflowArgs({
     command: "run",
