@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
+import { getCwd } from "../../core/cwd.js";
 import { icon } from "../../core/icons.js";
 import type { ProviderStatus } from "../../core/llm/provider.js";
 import type { PrerequisiteStatus } from "../../core/setup/prerequisites.js";
 import { useTheme } from "../../core/theme/index.js";
 import { BUN_WIDTH } from "../../core/utils/bake-art.js";
+import { agentOrigins, listAgents } from "../../core/workflows/agent-import.js";
 import { useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { useMCPStore } from "../../stores/mcp.js";
 import { useRepoMapStore } from "../../stores/repomap.js";
@@ -148,6 +150,56 @@ function StartCard({ hasModel }: { hasModel: boolean }) {
   );
 }
 
+// ── Agents card: only in a project that brought agents from other tools ──
+
+/** The track an agent glyph travels along, toward the workflow's stations. */
+const TRACK = 14;
+
+/**
+ * Shown only when the project already has custom agents (#832): BAKED is customized through
+ * workflows, so the card points at `/agents`, which turns them into one. A small glyph runs
+ * from the agents to the workflow while the page is open.
+ */
+export function AgentsCard({ count, origins }: { count: number; origins: string }) {
+  const tk = useTheme();
+  const [step, setStep] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => setStep((s) => (s + 1) % (TRACK + 4)), 160);
+    return () => clearInterval(timer);
+  }, []);
+  const at = Math.min(step, TRACK - 1);
+  const arrived = step >= TRACK;
+  const track = Array.from({ length: TRACK }, (_, i) => (i === at && !arrived ? "◆" : "─")).join(
+    "",
+  );
+  return (
+    <BrutalBox width={CARD_WIDTH} height={5} title="YOUR AGENTS">
+      <text wrapMode="none" fg={tk.textSecondary}>
+        {`${String(count)} agent${count === 1 ? "" : "s"} from ${origins} in this project`}
+      </text>
+      <text wrapMode="none">
+        <span fg={tk.textMuted}>{"agents "}</span>
+        <span fg={tk.textFaint}>{track}</span>
+        <span fg={arrived ? tk.success : tk.textMuted}>{" ▣ workflow"}</span>
+      </text>
+      <KeyRow keys={[["/agents", "turn them into a workflow"]]} />
+    </BrutalBox>
+  );
+}
+
+/** The project's agents for the card, read once per landing page. */
+function useProjectAgents(): { count: number; origins: string } {
+  const [found] = useState(() => {
+    try {
+      const { agents } = listAgents(getCwd());
+      return { count: agents.length, origins: agentOrigins(agents) };
+    } catch {
+      return { count: 0, origins: "" };
+    }
+  });
+  return found;
+}
+
 // ── Main landing page ───────────────────────────────────────────────
 
 interface LandingPageProps {
@@ -169,6 +221,8 @@ export function LandingPage({
   const showCard = columns >= CARD_WIDTH + 4 && rows >= 16;
   const showBun = columns >= BUN_WIDTH + 2 && rows >= (showCard ? 20 : 14);
   const hasModel = Boolean(activeModel && activeModel !== "none");
+  const agents = useProjectAgents();
+  const showAgents = showCard && agents.count > 0 && rows >= (showBun ? 26 : 20);
 
   return (
     <box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0} overflow="hidden">
@@ -185,6 +239,8 @@ export function LandingPage({
             {hasModel ? "Ask anything · / for commands" : "No model yet · ^L to pick one"}
           </text>
         )}
+
+        {showAgents && <AgentsCard count={agents.count} origins={agents.origins} />}
 
         {/* Status line: only appears when something is wrong */}
         <StatusBlock />

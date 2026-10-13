@@ -118,7 +118,7 @@ Local state:
 .baked/workflow-runs/<run-id>/tmp/
 ```
 
-The `baked/` directory is chosen for shared definitions because `.baked/` is already gitignored. Global user profiles are allowed in `~/.baked/agents/`; the runtime does not scan arbitrary directories of other products.
+The `baked/` directory is chosen for shared definitions because `.baked/` is already gitignored. Global user profiles are allowed in `~/.baked/agents/`; the runtime does not scan arbitrary directories of other products. Agents of other tools in a project (`.claude/agents`, `.github/agents`, `.roomodes`, ...) are read only to [convert them](runtime.md#workflows-from-a-projects-agents) into these files.
 
 `spec.json` is the canonical structured representation of requirements. `spec.md` is generated from it. This refinement of the earlier proposal is needed for stable addressing of criteria, import and schema validation. `plan.md` is the canonical text of technical decisions. `tasks.json` is the canonical task definition; `tasks.md` is generated. Runtime statuses are not written automatically into the Git-tracked tasks.md. The export-progress command creates a separate report.
 

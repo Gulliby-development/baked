@@ -44,5 +44,16 @@
   "stop": {
     "maxRoundsWithoutProgress": 3,
     "maxRoundsOverBudget": 2
+  },
+  "confirm": {
+    "crossModel": null,
+    "maxTokensPerRound": 3000000
+  },
+  "review": {
+    "rotateReviewer": true
+  },
+  "retro": {
+    "everyRounds": 3,
+    "maxChangesPerRetro": 2
   }
 }

@@ -8,10 +8,11 @@ import {
   diagnostics,
   taskErrors,
 } from "../src/core/verification/task-end-check.js";
+import { WorkflowScheduler } from "../src/core/workflows/scheduler.js";
 import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
 import type { TaskRow } from "../src/core/workflows/store.js";
 import { pendingCodePaths } from "../src/core/workflows/task-graph.js";
-import type { Task } from "../src/core/workflows/types.js";
+import type { Check, RuntimeState, Task } from "../src/core/workflows/types.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -150,5 +151,35 @@ describe("whole-unit baseline", () => {
     expect(stored.diagnostics[commandKey(typecheck)]).toEqual([
       diagnosticKey({ path: "src/a.ts", text: "error TS2322: Type 'number' is not assignable to type 'string'." }),
     ]);
+  });
+});
+
+describe("task-end check selection", () => {
+  const cargo = (id: string, args: string[]): Check => ({
+    id,
+    executable: "cargo",
+    args,
+    cwd: ".",
+    timeoutMs: 10000,
+    required: true,
+    scope: "feature",
+    envNames: [],
+    writes: [],
+  });
+  const task = {
+    id: "T002",
+    writes: [{ path: "src/parse.rs", action: "create" }],
+  } as unknown as Task;
+  const select = (checks: Check[]) =>
+    (
+      Object.create(WorkflowScheduler.prototype) as {
+        taskEndCheck(runId: string, state: RuntimeState, policy: RunPolicy, task: Task): unknown;
+      }
+    ).taskEndCheck("run", {} as RuntimeState, { ...fixturePolicy, checks }, task);
+
+  // A formatter reports no type errors, so a run of it per task only costs a check (#842).
+  test("skips whole-unit formatters and keeps the type checks", () => {
+    expect(select([cargo("cargo-fmt", ["fmt", "--check"])])).toBeUndefined();
+    expect(select([cargo("cargo-fmt", ["fmt", "--check"]), cargo("clippy", ["clippy"])])).toBeInstanceOf(Function);
   });
 });
