@@ -170,6 +170,8 @@ export interface StartBody {
   writers?: number;
   /** What blocking spec questions do (`--clarification`); omitted, the policy decides. */
   clarification?: "ask" | "assume";
+  /** The run model overrides every configured route (`--model-strict`). */
+  modelStrict?: boolean;
   /** The run records the proposal of `POST /v1/workflow/propose` and the workflow kept. */
   autoPreset?: boolean;
 }

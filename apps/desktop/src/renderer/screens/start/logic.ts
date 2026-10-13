@@ -123,8 +123,11 @@ export function quickBlocker(input: {
   prompt: string;
   feature: string;
   hasWorkflow: boolean | null;
+  /** Why the doctor says the start would be refused, as the server would refuse it. */
+  refusal?: string | null;
 }): string | null {
   if (input.hasWorkflow === false) return "This project has no quick workflow.";
+  if (input.refusal) return input.refusal;
   if (!input.prompt.trim()) return "Describe the change first.";
   if (!isFeatureId(input.feature))
     return "Fix the feature ID: letters, digits, - and _, starting with a letter or digit.";
@@ -178,4 +181,10 @@ export function proposalText(
   return workflow === proposal.workflowId
     ? `Proposed from your request: ${proposal.reason} (${proposal.budget} budget). Pick another recipe to change it.`
     : `Proposed ${proposal.workflowId}: ${proposal.reason}. Your pick, ${workflow}, is kept and recorded with the run.`;
+}
+
+/** The doctor's start refusal, or null when the start would go through or was not checked. */
+export function startRefusal(report: DoctorReport | null): string | null {
+  const start = report?.checks.find((c) => c.id === "start");
+  return start?.status === "fail" ? (start.detail ?? start.title) : null;
 }

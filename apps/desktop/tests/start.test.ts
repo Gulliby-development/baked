@@ -12,6 +12,7 @@ import {
   presetTokens,
   proposalText,
   quickBlocker,
+  startRefusal,
   rangeText,
   uniqueFeatureId,
   usdRange,
@@ -43,6 +44,22 @@ describe("quick task", () => {
     expect(quickBlocker({ ...ok, feature: "-bad" })).toMatch(/^Fix the feature ID/);
     expect(quickBlocker({ ...ok, hasWorkflow: false })).toBe("This project has no quick workflow.");
     expect(quickBlocker({ ...ok, hasWorkflow: null })).toBeNull();
+    expect(quickBlocker({ ...ok, refusal: "Workflow quick needs at least one feature check" })).toBe(
+      "Workflow quick needs at least one feature check",
+    );
+  });
+
+  test("the doctor's start refusal blocks the start", () => {
+    const report = (status: "ok" | "fail") =>
+      ({
+        schemaVersion: 1,
+        workflowId: "quick",
+        ready: status === "ok",
+        checks: [{ id: "start", status, title: "Workflow quick would not start", detail: "No checks" }],
+      }) as unknown as Parameters<typeof startRefusal>[0];
+    expect(startRefusal(null)).toBeNull();
+    expect(startRefusal(report("ok"))).toBeNull();
+    expect(startRefusal(report("fail"))).toBe("No checks");
   });
 });
 

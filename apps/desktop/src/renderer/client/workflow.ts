@@ -18,6 +18,8 @@ export interface RunStatus extends RunSnapshot {
     digest: string;
     body_json: string | null;
   }[];
+  /** For a blocked or failed run, the error the runtime recorded when it stopped it. */
+  stopDetail?: string | null;
 }
 
 const commandId = (): string => crypto.randomUUID();

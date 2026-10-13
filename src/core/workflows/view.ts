@@ -54,6 +54,8 @@ export interface StartRunInput {
   clarification?: ClarificationMode;
   /** The form proposed the workflow from the request (`--auto-preset`); the run records it. */
   autoPreset?: boolean;
+  /** The run model overrides the configured routes, as `--model-strict`. */
+  modelStrict?: boolean;
 }
 
 /** The execution controls of the new-run form. */
