@@ -1,3 +1,4 @@
+import { getModelContextSizes } from "./context-sizes.js";
 import type { ModelCatalog } from "./model-choices.js";
 import { fetchProviderModels } from "./models.js";
 import { checkProviders } from "./provider.js";
@@ -20,11 +21,13 @@ export async function loadModelCatalog(only?: string): Promise<ModelCatalog> {
         models: fetched.models.map((m) => {
           const id = `${status.id}/${m.id}`;
           const efforts = getModelEffortLevels(id);
+          const contextSizes = getModelContextSizes(id);
           return {
             id,
             name: m.name,
             ...(m.contextWindow ? { contextWindow: m.contextWindow } : {}),
             ...(efforts.length > 0 ? { efforts } : {}),
+            ...(contextSizes.length > 0 ? { contextSizes } : {}),
           };
         }),
         ...("error" in fetched && fetched.error ? { error: fetched.error } : {}),

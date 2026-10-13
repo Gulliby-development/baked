@@ -7,6 +7,7 @@ import type {
   AgentFeatures,
   AppConfig,
   BakeMode,
+  ChatContextSize,
   ChatEffort,
   ChatStyle,
 } from "../../types/index.js";
@@ -33,6 +34,8 @@ export interface CommandContext {
   setBakeMode: (mode: BakeMode) => void;
   /** Sets the active tab's reasoning effort and the header chip. */
   setEffort: (effort: ChatEffort) => void;
+  /** Sets the active tab's context size and the header chip. */
+  setContextSize: (size: ChatContextSize) => void;
   currentMode: BakeMode;
   currentModeLabel: string;
   contextManager: ContextManager;

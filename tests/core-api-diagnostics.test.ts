@@ -101,6 +101,9 @@ function makeHistory(dir: string): void {
   db.run("CREATE TABLE history (id INTEGER PRIMARY KEY, text TEXT)");
   const insert = db.prepare("INSERT INTO history (text) VALUES (?)");
   for (let i = 0; i < 200; i++) insert.run(`prompt ${String(i)} ${"x".repeat(200)}`);
+  // An unfinalized statement keeps the file open after close until it is collected, and Windows
+  // cannot remove the test folder while it is open.
+  insert.finalize();
   db.close();
 }
 

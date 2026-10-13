@@ -137,6 +137,11 @@ export const WorkingSetBody = z
 
 const ChatModeSchema = z.enum(CHAT_MODES);
 const ChatEffortSchema = z.enum(CHAT_EFFORTS);
+/** `default`, `max`, or a window in tokens; a size the model lacks picks the nearest smaller. */
+const ChatContextSizeSchema = z.union([
+  z.enum(["default", "max"]),
+  z.number().int().min(1_000).max(100_000_000),
+]);
 const ModelId = z
   .string()
   .min(3)
@@ -158,6 +163,7 @@ export const CreateSessionBody = z.strictObject({
   model: ModelId.optional(),
   mode: ChatModeSchema.optional(),
   effort: ChatEffortSchema.optional(),
+  contextSize: ChatContextSizeSchema.optional(),
   text: Text.optional(),
   images: Images.optional(),
 });
@@ -174,6 +180,7 @@ export const UpdateSessionBody = z
     model: ModelId.optional(),
     mode: ChatModeSchema.optional(),
     effort: ChatEffortSchema.optional(),
+    contextSize: ChatContextSizeSchema.optional(),
   })
   .refine((body) => Object.keys(body).length > 0, { message: "Name a field to change" });
 export const ForkSessionBody = z.strictObject({

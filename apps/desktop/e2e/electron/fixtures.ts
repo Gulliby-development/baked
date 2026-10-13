@@ -53,8 +53,8 @@ export const test = base.extend<Fixtures>({
         return path;
       },
     });
-    // A backend child can still be flushing its cache when the app closes (ENOTEMPTY on CI).
-    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    // A backend that is still shutting down can write into the temp home while it is removed.
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   },
   launch: async ({ workspace }, use) => {
     const apps: ElectronApplication[] = [];

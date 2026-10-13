@@ -1,4 +1,4 @@
-import type { BakeMode, ChatEffort, ChatMessage } from "../../types/index.js";
+import type { BakeMode, ChatContextSize, ChatEffort, ChatMessage } from "../../types/index.js";
 
 export interface TabMeta {
   workflowRunId?: string;
@@ -12,6 +12,8 @@ export interface TabMeta {
   bakeMode?: BakeMode;
   /** The conversation's reasoning effort; absent or `default` follows the global setting. */
   effort?: ChatEffort;
+  /** The conversation's context size; absent or `default` follows the chat's kind. */
+  contextSize?: ChatContextSize;
   tokenUsage: {
     prompt: number;
     completion: number;
