@@ -9,7 +9,11 @@ import {
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { renderSpec, renderTasks } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
-import { assertAcceptance, assertAcceptanceV2 } from "../verification/acceptance.js";
+import {
+  assertAcceptance,
+  assertAcceptanceV2,
+  v1ReviewDimensions,
+} from "../verification/acceptance.js";
 import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
 import {
   appendCorrections,
@@ -4287,16 +4291,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
   }
   /** The v1 review stage: correctness, security when triggered and language, each blocking. */
   private v1Reviewers(state: RuntimeState, policy: RunPolicy): Reviewer[] {
-    const dimensions = [
-      "correctness",
-      ...(requiresSecurityReview(
-        state.graph?.tasks.flatMap((t) => t.writes.map((w) => w.path)) ?? [],
-        policy.forceSecurityReview,
-      )
-        ? ["security"]
-        : []),
-      ...(policy.reviewProfiles.language ? ["language"] : []),
-    ] as (keyof RunPolicy["reviewProfiles"])[];
+    const dimensions = v1ReviewDimensions(state, policy);
     return dimensions.map((dimension) => ({
       key: dimension,
       dimension,
