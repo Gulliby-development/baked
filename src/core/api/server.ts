@@ -121,6 +121,7 @@ import {
   ImportBody,
   ListQuery,
   PreRunQuery,
+  ProposeBody,
   RecoverBody,
   RedactBody,
   RejectBody,
@@ -179,6 +180,7 @@ export const CAPABILITIES = [
   "watch",
   "artifacts",
   "run-compare",
+  "preset-proposal",
   "packages",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
@@ -425,6 +427,7 @@ function startArgs(raw: unknown): WorkflowArgs {
   if (body.modelStrict) flags["model-strict"] = true;
   if (body.policy !== undefined) flags.policy = true;
   if (body.budget) flags.budget = body.budget;
+  if (body.autoPreset) flags["auto-preset"] = true;
   return validateWorkflowArgs({
     command: "run",
     positional: [],
@@ -1093,6 +1096,15 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       return json(
         200,
         { view: editorView(state, request, history), ...(error ? { error } : {}) },
+        origin,
+      );
+    }
+    if (path === "/v1/workflow/propose") {
+      only("POST");
+      const body = ProposeBody.parse(await readJson(req));
+      return json(
+        200,
+        await execute({ command: "propose", positional: [], flags: { prompt: body.prompt } }),
         origin,
       );
     }

@@ -16,6 +16,7 @@ import {
   rangeOf,
   rangeText,
 } from "../src/core/workflows/estimate.js";
+import { DEFAULT_PER_FILE } from "../src/core/workflows/sizing.js";
 import { newId } from "../src/core/workflows/store.js";
 import { readWorkflowView } from "../src/core/workflows/view.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
@@ -48,6 +49,19 @@ describe("estimate before a run starts", () => {
     expect(estimate.label).toContain("Estimate:");
     expect(estimate.label).toContain("generic range");
     expect(pricesFrom([]).task).toEqual(DEFAULT_TASK_RANGE);
+  });
+  // R09: the start estimate was 130k-950k on 7 of 10 fresh-workspace runs that spent 0.54M-2.45M.
+  test("a task without history is priced like the plan's sizing prices a code and a test file", () => {
+    const { code, test: tests } = DEFAULT_PER_FILE;
+    expect(DEFAULT_TASK_RANGE).toEqual({
+      low: code.create.low + tests.create.low,
+      high: code.create.high + tests.create.high,
+    });
+    const { tokens } = estimateStart([]);
+    for (const actual of [540_000, 680_000, 1_600_000, 2_450_000]) {
+      expect(tokens.low).toBeLessThanOrEqual(actual);
+      expect(tokens.high).toBeGreaterThanOrEqual(actual);
+    }
   });
   test("with history it follows what this project's runs spent per stage and per task", () => {
     const history = [past(), past({ taskCount: 6, taskTokens: 240000, stageTokens: { research: 60000, specify: 30000, plan: 50000, analyze: 20000, implement: 240000, review: 40000 } })];

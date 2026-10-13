@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { RouteEffort } from "../llm/model-routing.js";
+import { PresetChoiceSchema } from "./preset-router.js";
 import {
   type AgentProfile,
   Hash,
@@ -79,6 +80,17 @@ export const RuntimeStateSchema = z
     workspaceHash: z.string().nullable(),
     expectedFiles: z.record(z.string(), z.string()).nullable(),
     reviews: z.record(z.string(), ReviewSchema),
+    /**
+     * The reviews of the round before the last correction, by reviewer key, with the source
+     * manifest they reviewed: a later round skips a dimension that passed and whose files did not
+     * change, and tells a rerun reviewer what it found and what changed since.
+     */
+    priorReviews: z
+      .record(
+        z.string(),
+        z.object({ review: ReviewSchema, files: z.record(z.string(), z.string()) }),
+      )
+      .default({}),
     /**
      * Criteria a required reviewer could not establish after its one re-prompt, by reviewer key:
      * the converge stage gets them as evidence gaps and settles them with a test or a check.
@@ -311,6 +323,8 @@ export const RuntimeStateSchema = z
       )
       .default({}),
     issue: IssueSourceSchema.nullable().default(null),
+    /** Set on a run started with `--auto-preset`: what was proposed, why, and what ran. */
+    presetChoice: PresetChoiceSchema.nullable().default(null),
   })
   .strict();
 export type RuntimeState = z.infer<typeof RuntimeStateSchema>;

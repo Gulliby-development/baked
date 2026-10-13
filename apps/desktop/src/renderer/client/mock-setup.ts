@@ -510,12 +510,14 @@ function mergeRouting(base?: ModelRouting, layer?: ModelRouting): ModelRouting |
   for (const [id, entry] of Object.entries(layer.workflows ?? {}))
     workflows[id] = { stages: { ...workflows[id]?.stages, ...entry.stages } };
   const independentReview = layer.independentReview ?? base.independentReview;
+  const reviewMinConfidence = layer.reviewMinConfidence ?? base.reviewMinConfidence;
   return {
     classes: { ...base.classes, ...layer.classes },
     roles: { ...base.roles, ...layer.roles },
     profiles: { ...base.profiles, ...layer.profiles },
     workflows,
     ...(independentReview ? { independentReview } : {}),
+    ...(reviewMinConfidence !== undefined ? { reviewMinConfidence } : {}),
   };
 }
 
@@ -910,6 +912,11 @@ function routingOverview(s: SetupState, workflow: string | null): RoutingOvervie
       global: global?.independentReview ?? null,
       project: project?.independentReview ?? null,
       effective: effective?.independentReview ?? (effective ? "warn" : "off"),
+    },
+    reviewMinConfidence: {
+      global: global?.reviewMinConfidence ?? null,
+      project: project?.reviewMinConfidence ?? null,
+      effective: effective?.reviewMinConfidence ?? 0.8,
     },
     warnings: route.warnings,
     error: null,
@@ -1673,6 +1680,7 @@ export const setupRoutes: MockRoute = (request) => {
           route: RouteDraft | null;
           create: boolean;
           independentReview: IndependentReview | null;
+          reviewMinConfidence: number | null;
         }
       >(request);
       const scope = edit.scope === "global" ? "global" : "project";
@@ -1684,6 +1692,12 @@ export const setupRoutes: MockRoute = (request) => {
         next = edit.independentReview
           ? { ...rest, independentReview: edit.independentReview }
           : rest;
+      } else if (edit.reviewMinConfidence !== undefined) {
+        const { reviewMinConfidence: _previous, ...rest } = current ?? {};
+        next =
+          edit.reviewMinConfidence === null
+            ? rest
+            : { ...rest, reviewMinConfidence: edit.reviewMinConfidence };
       } else if (edit.target) {
         const draft = edit.route ?? null;
         const route: Route | null = draft
@@ -1714,7 +1728,12 @@ export const setupRoutes: MockRoute = (request) => {
             error: { code: "ROUTING_REFUSED", message: problems.join("; ") },
             problems,
           });
-      } else return error(400, "INVALID_REQUEST", "Name a target or independentReview");
+      } else
+        return error(
+          400,
+          "INVALID_REQUEST",
+          "Name a target, independentReview or reviewMinConfidence",
+        );
       if (scope === "global") globalConfig = { ...globalConfig, modelRouting: next };
       else s.project = { ...s.project, modelRouting: next };
       return response(200, routingOverview(s, edit.workflow ?? null));

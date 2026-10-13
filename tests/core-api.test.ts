@@ -418,6 +418,14 @@ describe("local core API", () => {
     expect((await call("/v1/workflow/estimate?policy=x")).status).toBe(400);
     expect((await call("/v1/workflow/doctor?writers=2")).status).toBe(400);
     expect((await post("/v1/workflow/doctor", {})).status).toBe(405);
+
+    const proposed = await post("/v1/workflow/propose", { prompt: "Fix the typo in the README" });
+    expect(proposed.status).toBe(200);
+    expect(await proposed.json()).toMatchObject({ kind: "docs", budget: "quick" });
+    expect((await post("/v1/workflow/propose", {})).status).toBe(400);
+    expect((await call("/v1/workflow/propose")).status).toBe(405);
+    const health = (await (await call("/v1/health")).json()) as { capabilities: string[] };
+    expect(health.capabilities).toContain("preset-proposal");
   });
 
   test("maps faults and request problems to HTTP statuses", async () => {
