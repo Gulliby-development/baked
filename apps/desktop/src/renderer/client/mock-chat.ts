@@ -1,5 +1,6 @@
 import { applyChatEvent, emptyTranscript, type Transcript } from "../screens/chat/transcript.js";
 import type {
+  ChatContextSize,
   ChatEffort,
   ChatEvent,
   ChatEventBody,
@@ -30,6 +31,25 @@ import { type MockRoute, type MockStream, response } from "./mock-routes.js";
 
 const MINUTE = 60_000;
 const DEFAULT_MODEL = "anthropic/claude-sonnet-5-5";
+
+/** The mock's one model with a choice of context window, as Claude Code offers `opus[1m]`. */
+const SIZED_MODEL = "claude-code/opus";
+const SIZED_WINDOWS = [200_000, 1_000_000];
+
+/** The context fields of a mock session summary, as the server computes them. */
+function contextFields(
+  model: string | null,
+  size: ChatContextSize,
+): Pick<SessionSummary, "contextSize" | "contextSizes" | "contextTokens"> {
+  if (model !== SIZED_MODEL) return { contextSize: size, contextSizes: [], contextTokens: null };
+  const tokens =
+    size === "max"
+      ? 1_000_000
+      : size === "default"
+        ? 200_000
+        : ([...SIZED_WINDOWS].reverse().find((t) => t <= size) ?? 200_000);
+  return { contextSize: size, contextSizes: SIZED_WINDOWS, contextTokens: tokens };
+}
 
 interface MockSession {
   key: string;
@@ -963,6 +983,7 @@ function create(
     model?: string;
     mode?: ChatMode;
     effort?: ChatEffort;
+    contextSize?: ChatContextSize;
     text?: string;
     images?: ImageUpload[];
     parentId?: string;
@@ -980,6 +1001,7 @@ function create(
     model: body.model ?? DEFAULT_MODEL,
     mode: body.mode ?? "default",
     effort: body.effort ?? "default",
+    ...contextFields(body.model ?? DEFAULT_MODEL, body.contextSize ?? "default"),
     ...(body.parentId ? { parentId: body.parentId } : {}),
   };
   const session: MockSession = {
@@ -1107,6 +1129,19 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
             { id: "anthropic/claude-haiku-5", name: "Claude Haiku 5", contextWindow: 200_000 },
           ],
         },
+        {
+          id: "claude-code",
+          name: "Claude Code",
+          configured: true,
+          models: [
+            {
+              id: SIZED_MODEL,
+              name: "Opus (latest)",
+              efforts: ["low", "medium", "high", "xhigh", "max"],
+              contextSizes: SIZED_WINDOWS,
+            },
+          ],
+        },
         { id: "openai", name: "OpenAI", configured: false, models: [] },
       ],
     });
@@ -1228,13 +1263,16 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
       model?: string;
       mode?: ChatMode;
       effort?: ChatEffort;
+      contextSize?: ChatContextSize;
     };
+    const model = changes.model ?? session.summary.model;
     session.summary = {
       ...session.summary,
       ...(changes.title ? { title: changes.title } : {}),
       ...(changes.model ? { model: changes.model } : {}),
       ...(changes.mode ? { mode: changes.mode } : {}),
       ...(changes.effort ? { effort: changes.effort } : {}),
+      ...contextFields(model, changes.contextSize ?? session.summary.contextSize ?? "default"),
     };
     emitSession(session);
     return response(200, session.summary);

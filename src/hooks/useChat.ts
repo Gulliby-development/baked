@@ -50,6 +50,7 @@ import {
   userPromptHooks,
   withHookContext,
 } from "../core/hooks/index.js";
+import { withContextSize } from "../core/llm/context-sizes.js";
 import {
   getModelContextInfo,
   getModelContextInfoSync,
@@ -92,6 +93,7 @@ import { accumulateModelUsage, useStatusBarStore, ZERO_USAGE } from "../stores/s
 import { useToolsStore } from "../stores/tools.js";
 import type {
   AppConfig,
+  ChatContextSize,
   ChatEffort,
   ChatMessage,
   ImageAttachment,
@@ -134,6 +136,8 @@ export interface TabState {
   bakeMode: import("../types/index.js").BakeMode;
   /** The tab's reasoning effort; absent means `default` (the global setting). */
   effort?: ChatEffort;
+  /** The tab's context size; absent means `default` (the model's own size). */
+  contextSize?: ChatContextSize;
 }
 
 interface TokenUsage {
@@ -287,6 +291,9 @@ export interface ChatInstance {
   /** Reasoning effort of this tab's turns; `default` follows the global setting. */
   effort: ChatEffort;
   setEffort: (effort: ChatEffort) => void;
+  /** Context window of this tab's turns when the model offers several; `default` keeps the model's. */
+  contextSize: ChatContextSize;
+  setContextSize: (size: ChatContextSize) => void;
   cycleMode: () => import("../types/index.js").BakeMode;
   rotateRoutingSession: () => void;
   /**
@@ -527,6 +534,11 @@ export function useChat({
   const [effort, setEffortState] = useState<ChatEffort>(initialState?.effort ?? "default");
   const effortRef = useRef(effort);
   effortRef.current = effort;
+  const [contextSize, setContextSizeState] = useState<ChatContextSize>(
+    initialState?.contextSize ?? "default",
+  );
+  const contextSizeRef = useRef(contextSize);
+  contextSizeRef.current = contextSize;
 
   const setBakeMode = useCallback(
     (mode: import("../types/index.js").BakeMode) => {
@@ -540,6 +552,11 @@ export function useChat({
   const setEffort = useCallback((next: ChatEffort) => {
     setEffortState(next);
     effortRef.current = next;
+  }, []);
+
+  const setContextSize = useCallback((next: ChatContextSize) => {
+    setContextSizeState(next);
+    contextSizeRef.current = next;
   }, []);
 
   const cycleModeFn = useCallback((): import("../types/index.js").BakeMode => {
@@ -657,6 +674,7 @@ export function useChat({
           coAuthorCommits,
           bakeMode: bakeModeRef.current,
           effort: effortRef.current,
+          contextSize: contextSizeRef.current,
           tokenUsage: tokenUsageRef.current,
           messages: filtered,
           coreMessages: cores,
@@ -1963,7 +1981,8 @@ export function useChat({
 
         try {
           setIsLoading(true);
-          const modelId = activeModelRef.current;
+          // The tab's context size picks the model variant with that window (Claude Code `[1m]`).
+          const modelId = withContextSize(activeModelRef.current, contextSizeRef.current);
           // Pin upstream gateway routing to this tab's conversation id
           // (x-session-id / x-session-affinity) for prompt-cache locality.
           setActiveSessionId(routingSessionIdRef.current);
@@ -3976,6 +3995,7 @@ export function useChat({
       planRequest: planRequestRef.current,
       bakeMode,
       effort,
+      contextSize,
     }),
     [
       messages,
@@ -3987,6 +4007,7 @@ export function useChat({
       coAuthorCommits,
       bakeMode,
       effort,
+      contextSize,
     ],
   );
 
@@ -4048,6 +4069,8 @@ export function useChat({
     cycleMode: cycleModeFn,
     effort,
     setEffort,
+    contextSize,
+    setContextSize,
     persist,
   };
 }
