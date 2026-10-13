@@ -10,6 +10,7 @@ import type {
   SharedV2ProviderMetadata,
 } from "@ai-sdk/provider";
 import { getCwd } from "../../../cwd.js";
+import { cliReasoningEffort } from "../cli-effort.js";
 import { imageUrl, promptImages } from "../prompt-images.js";
 import { type CodexAppServerConnection, startCodexAppServerSession } from "./client.js";
 import {
@@ -65,6 +66,8 @@ export interface CodexNativeRequest {
   /** Per-call rules (tool choice) appended to a new turn's input. */
   stepNote: string;
   outputSchema?: unknown;
+  /** Reasoning effort for this turn; the thread's default when absent. */
+  effort?: string;
 }
 
 /** A message's identity for matching, without per-step provider options such as cache markers. */
@@ -100,8 +103,10 @@ export function buildCodexNativeRequest(
     description: tool.description ?? "",
     inputSchema: tool.inputSchema,
   }));
+  const effort = cliReasoningEffort(options.providerOptions, "codex");
   return {
     modelId,
+    ...(effort ? { effort } : {}),
     instructions: [ADAPTER_PREAMBLE, ...system].join("\n\n"),
     dynamicTools,
     conversation,
@@ -443,6 +448,7 @@ export class CodexAppServerSessions {
         threadId: thread.threadId,
         input: [{ type: "text", text, text_elements: [] }, ...images],
         ...(request.outputSchema ? { outputSchema: request.outputSchema } : {}),
+        ...(request.effort ? { effort: request.effort } : {}),
       })
       .then((result) => {
         const id = (result as { turn?: { id?: unknown } } | undefined)?.turn?.id;

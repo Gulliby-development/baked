@@ -3,7 +3,13 @@ import type { CommandPickerConfig } from "../../components/modals/CommandPicker.
 import type { InfoPopupConfig } from "../../components/modals/InfoPopup.js";
 import type { ChatInstance } from "../../hooks/useChat.js";
 import type { UseTabsReturn } from "../../hooks/useTabs.js";
-import type { AgentFeatures, AppConfig, BakeMode, ChatStyle } from "../../types/index.js";
+import type {
+  AgentFeatures,
+  AppConfig,
+  BakeMode,
+  ChatEffort,
+  ChatStyle,
+} from "../../types/index.js";
 import type { CompactionStrategy } from "../compaction/types.js";
 import type { ContextManager } from "../context/manager.js";
 
@@ -25,6 +31,8 @@ export interface CommandContext {
   cwd: string;
   refreshGit: () => void;
   setBakeMode: (mode: BakeMode) => void;
+  /** Sets the active tab's reasoning effort and the header chip. */
+  setEffort: (effort: ChatEffort) => void;
   currentMode: BakeMode;
   currentModeLabel: string;
   contextManager: ContextManager;
