@@ -111,6 +111,7 @@ bun test tests/feature-parity.test.ts
 | Start a full run or a quick task | `/workflow` | `baked workflow run`, `baked quick`, `baked workflow definitions` +1 | `/v1/workflow/runs`, `/v1/workflow/definitions`, `/v1/workflow/profiles` | `project/overview` |
 | Propose the workflow and budget from the request | `/workflow` | `baked workflow propose`, `baked workflow run`, `auto-preset` | `/v1/workflow/propose` | `project/overview` |
 | Run list, detail, report, artifacts and usage | `/workflow` | `baked workflow list`, `baked workflow status`, `baked workflow report` +2 | `/v1/workflow/runs`, `/v1/workflow/runs/:id`, `/v1/workflow/runs/:id/events` +3 | `project/runs` |
+| Critic outcome log: scores with checks, acceptance, delivery and line survival | `/workflow` | `baked workflow outcomes` | Partial [#646](https://github.com/Gulliby-development/baked/issues/646): the log across runs comes with calibration | Partial [#646](https://github.com/Gulliby-development/baked/issues/646): the log across runs comes with calibration |
 | Progress watcher: steer, then stop, a stuck agent attempt | `/workflow` | `baked workflow run`, `baked workflow resume` | `/v1/workflow/runs/:id/events` | `project/runs` |
 | Approve, reject, answer, give evidence, continue, accept a stopped convergence | `/workflow` | `baked workflow approve`, `baked workflow reject`, `baked workflow answer` +3 | `/v1/workflow/runs/:id/approve`, `/v1/workflow/runs/:id/reject`, `/v1/workflow/runs/:id/answer` +3 | `project/runs`, `attention` |
 | Acceptance: criteria that need a person's evidence | `/workflow` | `baked workflow evidence` | `/v1/workflow/runs/:id/evidence` | `project/runs`, `attention` |
@@ -177,5 +178,6 @@ bun test tests/feature-parity.test.ts
 
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
 - [#533](https://github.com/Gulliby-development/baked/issues/533): Gates on the run's line: what each does, blocks or advises, last result
+- [#646](https://github.com/Gulliby-development/baked/issues/646): Critic outcome log: scores with checks, acceptance, delivery and line survival
 
 <!-- parity:end -->

@@ -24,7 +24,7 @@ import {
   type RunPolicy,
   TaskSchema,
 } from "./schemas.js";
-import type { ArtifactRow, WorkflowStore } from "./store.js";
+import type { ArtifactRow, CriticOutcomeRow, WorkflowStore } from "./store.js";
 import { type RunUsageReport, runUsage, toolBackendLine } from "./usage.js";
 import { parseRunDefinition } from "./v2/runtime.js";
 import { changesOf, type FileChange, readRoutingSummary } from "./view.js";
@@ -303,6 +303,7 @@ function collect(store: WorkflowStore, runId: string) {
       requests: store.requests(runId),
       routing: readRoutingSummary(store, runId),
       critiques,
+      outcomes: store.criticOutcomes(runId),
       usage: stagesInRunOrder(store, runUsage(store, runId)),
       artifacts: [...latestArtifacts.values()].filter((a) => !internalArtifact(a.logical_path)),
       internalArtifacts: [...latestArtifacts.values()].filter((a) =>
@@ -674,10 +675,17 @@ function render(facts: Facts, cap: number): string {
       "Advice only: each task attempt scored from 0 to 1 by a second model; the lowest rubric item is named.",
       "",
       ...table(
-        ["Task", "Attempt", "Score", "Lowest", "Summary"],
+        ["Task", "Attempt", "Score", "Lowest", "Summary", "Outcome"],
         facts.critiques.map((c) => {
           if (!c.critique)
-            return [c.taskId, c.attempt, null, null, `critic failed: ${c.error ?? "unknown"}`];
+            return [
+              c.taskId,
+              c.attempt,
+              null,
+              null,
+              `critic failed: ${c.error ?? "unknown"}`,
+              null,
+            ];
           const lowest = Object.entries(c.critique.rubric).sort(
             ([, a], [, b]) => a.score - b.score,
           )[0];
@@ -687,6 +695,9 @@ function render(facts: Facts, cap: number): string {
             c.critique.score.toFixed(2),
             lowest ? `${lowest[0]} ${lowest[1].score.toFixed(2)}: ${lowest[1].note}` : null,
             c.critique.summary,
+            outcomeOf(
+              facts.outcomes.find((o) => o.task_id === c.taskId && o.attempt === c.attempt),
+            ),
           ];
         }),
         cap,
@@ -809,6 +820,24 @@ function render(facts: Facts, cap: number): string {
   } else out.push(`No artifacts.${hidden}`, "");
 
   return `${out.join("\n").trimEnd()}\n`;
+}
+
+/** The labels the critic outcome log holds for an attempt so far, or null. */
+function outcomeOf(row: CriticOutcomeRow | undefined): string | null {
+  if (!row) return null;
+  const parts = [
+    row.task_result === "passed"
+      ? "checks passed"
+      : row.task_result === "repaired"
+        ? "repaired"
+        : null,
+    row.acceptance,
+    row.delivery,
+    row.survival === null
+      ? null
+      : `${Math.round(row.survival * 100)}% of lines kept${row.survival_final ? "" : " so far"}`,
+  ].filter(Boolean);
+  return parts.length ? parts.join(", ") : null;
 }
 
 /**
