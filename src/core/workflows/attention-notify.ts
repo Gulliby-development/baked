@@ -59,6 +59,7 @@ const KIND_LABELS: Record<string, string> = {
   convergence: "a convergence decision",
   delivery: "delivery approval",
   budget_exhausted: "a budget extension",
+  attempt_cap: "a resume",
 };
 
 /** What a run waits for, in words. */

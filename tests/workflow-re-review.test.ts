@@ -99,7 +99,7 @@ describe("a review round after a correction", () => {
     await fixture.approve(run.runId);
     const final = await service.drive(run.runId, new AbortController().signal);
     expect(final.status).toBe("completed");
-    expect(service.store.run(run.runId).repair_rounds).toBe(1);
+    expect(service.store.run(run.runId).review_rounds).toBe(1);
     // Round one ran both dimensions; round two ran correctness only.
     expect(reviews.map((r) => r.dimension).sort()).toEqual(["correctness", "correctness", "security"]);
     const rerun = reviews.filter((r) => r.dimension === "correctness")[1]?.extra.previousRound as {

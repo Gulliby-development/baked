@@ -155,6 +155,8 @@ export interface BudgetView {
   activeMs: number;
   maxActiveMs: number;
   repairRounds: number;
+  /** Repair rounds review passes started; they have their own `maxRepairRounds` budget. */
+  reviewRounds: number;
   maxRepairRounds: number;
   /** Soft checkpoint interval and the token count of the next pause, when the run uses them. */
   checkpointTokens?: number | null;
@@ -298,6 +300,7 @@ function budgetOf(store: WorkflowStore, row: RunRow): BudgetView {
     activeMs: usage.activeMs,
     maxActiveMs: policy.maxActiveMs,
     repairRounds: row.repair_rounds,
+    reviewRounds: row.review_rounds ?? 0,
     maxRepairRounds: policy.maxRepairRounds,
     checkpointTokens: policy.checkpointTokens ?? null,
     nextCheckpoint: store.checkpointBoundary(row.id, policy),

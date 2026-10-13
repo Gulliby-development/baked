@@ -36,7 +36,7 @@ const root: TaskGraph = {
 const policy = { maxRepairRounds: 2, maxConvergenceRounds: 2, maxCorrectiveTasks: 20 } as RunPolicy;
 
 function fakeStore() {
-  const counts = { repair_rounds: 0, convergence_rounds: 0, corrective_tasks: 0 };
+  const counts = { repair_rounds: 0, review_rounds: 0, convergence_rounds: 0, corrective_tasks: 0 };
   const paths: string[] = [];
   const store = {
     run: () => ({ ...counts }),
@@ -46,8 +46,8 @@ function fakeStore() {
     },
     syncTasks: () => undefined,
     findingStatus: () => undefined,
-    addRound: (_run: string, kind: "repair" | "convergence", count: number) => {
-      counts[kind === "repair" ? "repair_rounds" : "convergence_rounds"]++;
+    addRound: (_run: string, kind: "repair" | "review" | "convergence", count: number) => {
+      counts[`${kind}_rounds`]++;
       counts.corrective_tasks += count;
     },
     addCorrectiveTasks: (_run: string, count: number) => {
@@ -103,12 +103,32 @@ describe("repair rounds and task-level corrections", () => {
     const state = stateOf();
     expect(taskRepair(store, state, "T003", "lint-1")).toBe("T007");
     expect(taskRepair(store, state, "T005", "integrity-1")).toBe("T008");
-    expect(counts).toEqual({ repair_rounds: 0, convergence_rounds: 0, corrective_tasks: 2 });
+    expect(counts).toEqual({ repair_rounds: 0, review_rounds: 0, convergence_rounds: 0, corrective_tasks: 2 });
     expect(paths).toEqual(["corrections/task-T007.json", "corrections/task-T008.json"]);
     // The checks stage still has both rounds.
     appendCorrections(store, "run", state, policy, [finding("F1", "a.py", "E1")], "repair");
     appendCorrections(store, "run", state, policy, [finding("F2", "a.py", "E2")], "repair");
     expect(counts.repair_rounds).toBe(2);
+  });
+
+  // mdrefs 8531a4f0 (#928): the checks stage used both rounds and the review's correction was
+  // refused as round 3.
+  test("review passes have their own maxRepairRounds budget", () => {
+    const { store, counts, paths } = fakeStore();
+    const state = stateOf();
+    appendCorrections(store, "run", state, policy, [finding("C1", "a.py", "E1")], "repair");
+    appendCorrections(store, "run", state, policy, [finding("C2", "a.py", "E2")], "repair");
+    appendCorrections(store, "run", state, policy, [finding("R1", "b.py", "E3", "Diagnostics use Debug formatting")], "repair", "review");
+    appendCorrections(store, "run", state, policy, [finding("R2", "b.py", "E4", "Another reproduced defect")], "repair", "review");
+    expect(counts).toEqual({ repair_rounds: 2, review_rounds: 2, convergence_rounds: 0, corrective_tasks: 4 });
+    expect(paths).toEqual(["corrections/repair-1.json", "corrections/repair-2.json", "corrections/review-1.json", "corrections/review-2.json"]);
+    // Each budget still refuses its next round.
+    expect(() =>
+      appendCorrections(store, "run", state, policy, [finding("R3", "c.py", "E5", "A third defect")], "repair", "review"),
+    ).toThrow("maxRepairRounds (2)");
+    expect(() => appendCorrections(store, "run", state, policy, [finding("C3", "c.py", "E6")], "repair")).toThrow(
+      "maxRepairRounds (2)",
+    );
   });
 
   test("a chain of task-level corrections stops at maxTaskRepairs", () => {
