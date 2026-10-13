@@ -1126,8 +1126,9 @@ export class WorkflowScheduler {
               // text and a note that it is a defect to fix, not a decision to assume.
               const defectRound =
                 state.analysisReplans === 2 && findings.some((f) => persistentDefect(f));
-              // A scope finding that adds a restriction absent from the request gets the same extra
-              // return with the instruction that the request is authoritative; a survivor is assumed.
+              // A scope finding that adds a restriction or a requirement absent from the request gets
+              // the same extra return with the instruction that the request is authoritative; a
+              // survivor is assumed.
               const restrictsRound =
                 !defectRound &&
                 state.analysisReplans === 2 &&
