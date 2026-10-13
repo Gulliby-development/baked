@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { createContext, type ReactNode, useContext, useId, useState } from "react";
 import type {
   ChatMessage,
   ChatPlan,
@@ -13,7 +13,7 @@ import { SplitFlows } from "../../components/SplitFlows.js";
 import { Button } from "../../components/ui/button.js";
 import { cn } from "../../lib/cn.js";
 import { LaunchNoteCard } from "../coordinator/LaunchNote.js";
-import { fromCoordinator } from "../coordinator/model.js";
+import { messageSender } from "../coordinator/model.js";
 import { storedImageUrl } from "./images.js";
 import { INLINE_CODE, Markdown } from "./Markdown.js";
 import { CHIP_SMALL } from "./Popover.js";
@@ -162,7 +162,15 @@ function DiffCard({ call, diff }: { call: ToolCall; diff: ToolDiff }) {
   );
 }
 
+/**
+ * Lets a screen draw some tool calls its own way, such as the coordinator's launched sessions as
+ * live thread cards; it returns null for the calls it leaves to the ordinary tool line.
+ */
+export const ToolRenderer = createContext<((call: ToolCall) => ReactNode | null) | null>(null);
+
 function Tool({ call }: { call: ToolCall }) {
+  const custom = useContext(ToolRenderer)?.(call);
+  if (custom) return custom;
   if (HIDDEN_TOOLS.has(call.name)) return null;
   const diff = toolDiff(call.name, call.args);
   return diff ? <DiffCard call={call} diff={diff} /> : <ToolLine call={call} />;
@@ -816,9 +824,9 @@ export function Conversation({
         message.role === "user" ? (
           <UserBubble
             key={message.id}
-            text={fromCoordinator(message.content) ?? message.content}
-            {...(fromCoordinator(message.content) !== null
-              ? { note: "From the coordinator" }
+            text={messageSender(message.content)?.text ?? message.content}
+            {...(messageSender(message.content)
+              ? { note: `From ${messageSender(message.content)?.from}` }
               : message.isSteering
                 ? { note: "Sent while working" }
                 : {})}

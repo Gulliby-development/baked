@@ -420,6 +420,18 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/lsp", "project/overview: Doctor language-server line"],
   },
   {
+    id: "design-kit",
+    group: "Tools and code intelligence",
+    title: "BAKED kit: default styles for web projects and artifacts that have none",
+    tui: ["/agent-features: BAKED kit"],
+    cli: [
+      "--headless: the agent gets the kit guidance",
+      "baked workflow run: in frozen instructions",
+    ],
+    api: ["/v1/settings: agent-features page"],
+    desktop: ["settings/chat: Agent features page"],
+  },
+  {
     id: "artifacts",
     group: "Tools and code intelligence",
     title: "Artifacts: HTML pages shared by every project, deployed to the user's Vercel",
@@ -466,6 +478,15 @@ export const FEATURES: readonly Feature[] = [
     cli: notNeeded("a picture; scripts query the API"),
     api: ["/v1/graph", "/v1/graph/file", "/v1/graph/link", "/v1/graph/search"],
     desktop: ["project/graph"],
+  },
+  {
+    id: "index-background-refresh",
+    group: "Tools and code intelligence",
+    title: "Background index updates after file changes, edits, runs and Git checkouts",
+    tui: ["/graph: updating note; updates run while the terminal UI is open"],
+    cli: notNeeded("a one-shot run indexes once when it starts"),
+    api: ["/v1/graph: indexing while baked serve updates", "/v1/settings: baked-map page"],
+    desktop: ["project/graph: Updating chip", "settings/chat: Baked map page"],
   },
   {
     id: "work-progress",

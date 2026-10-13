@@ -10,6 +10,7 @@ import { logBackgroundError } from "../diagnostics/errors.js";
 import { recordModelCall } from "../diagnostics/model-events.js";
 import { getIntelligenceClient, setIntelligenceClient } from "../intelligence/instance.js";
 import type { SymbolForSummary } from "../intelligence/repo-map.js";
+import { kitGuidanceFor } from "../kit/guidance.js";
 import { cacheTtlToMs, supportsPromptCache } from "../llm/cache-support.js";
 import { resolveModel } from "../llm/provider.js";
 import { EPHEMERAL_CACHE, supportsTemperature } from "../llm/provider-options.js";
@@ -85,6 +86,8 @@ export class ContextManager {
   private repoMapReady = false;
   private repoMapEnabled = process.env.BAKED_NO_REPOMAP !== "1";
   private repoMapGeneration = 0;
+  /** The scan in flight, initial or background. */
+  private repoMapScan: Promise<void> | null = null;
   private editedFiles = new Set<string>();
   private mentionedFiles = new Set<string>();
   // conversationTerms removed — FTS boosting was noisy, PageRank handles ranking
@@ -118,6 +121,8 @@ export class ContextManager {
   private ownsIntelligence = true;
   private projectInstructions = "";
   private projectInstructionsVersion = 0;
+  /** Kit guidance for the instructions version it was computed for; files are read once per version. */
+  private designGuidance: { version: number; text: string } | null = null;
   /** The project working set captured for this session; undefined until first needed. */
   private workingSet: string | null | undefined = undefined;
   private workingSetVersion = 0;
@@ -361,7 +366,37 @@ export class ContextManager {
   private startRepoMapScan(): void {
     if (!this.ownsIntelligence) return;
     this.syncRepoMapStore("scanning");
-    this.repoMap.scan().catch((err: unknown) => this.handleScanError(err));
+    this.trackScan();
+  }
+
+  private trackScan(): Promise<void> {
+    const scan = this.repoMap
+      .scan()
+      .catch((err: unknown) => this.handleScanError(err))
+      .finally(() => {
+        if (this.repoMapScan === scan) this.repoMapScan = null;
+      });
+    this.repoMapScan = scan;
+    return scan;
+  }
+
+  /** True while this root's index scan runs, the first one or a background update. */
+  isRepoMapScanning(): boolean {
+    if (!this.repoMapEnabled) return false;
+    if (this.isChild) return this.shared?.parent?.isRepoMapScanning() ?? false;
+    return this.repoMapScan !== null;
+  }
+
+  /**
+   * Brings the index up to date without taking it offline: the map stays readable while the
+   * scan re-indexes only files whose time or size changed. Waits for a scan already in flight,
+   * then scans once more so changes made during it are seen.
+   */
+  async updateRepoMapInBackground(): Promise<void> {
+    if (!this.repoMapEnabled || !this.ownsIntelligence || this.isChild) return;
+    if (this.repoMapScan) await this.repoMapScan;
+    if (this.repoMapScan) return this.repoMapScan;
+    await this.trackScan();
   }
 
   /** Tracks readiness of a borrowed worker; its owner scans and generates summaries. */
@@ -1146,7 +1181,7 @@ export class ContextManager {
     this.bakeMapSnapshot = null;
     this.syncRepoMapStore("scanning");
     useRepoMapStore.getState().setScanError("");
-    await this.repoMap.scan().catch((err: unknown) => this.handleScanError(err));
+    await this.trackScan();
   }
 
   async clearRepoMap(): Promise<void> {
@@ -1282,6 +1317,19 @@ export class ContextManager {
     return cleared;
   }
 
+  /**
+   * The BAKED kit guidance for this project. Decided once per instructions version, so files the
+   * agent creates mid-session do not change the cached system prompt.
+   */
+  private getDesignGuidance(): string {
+    if (this.designGuidance?.version !== this.projectInstructionsVersion)
+      this.designGuidance = {
+        version: this.projectInstructionsVersion,
+        text: kitGuidanceFor(this.cwd, this.projectInstructions),
+      };
+    return this.designGuidance.text;
+  }
+
   /** Build a system prompt with project context, scaled to context window. */
   buildSystemPrompt(modelIdOverride?: string): string {
     if (this.hasGhCli === null) {
@@ -1302,6 +1350,7 @@ export class ContextManager {
       hasSymbols: this.isRepoMapReady() && this.repoMap.getStatsCached().symbols > 0,
       bakeMode: this.bakeMode,
       projectInstructions: this.projectInstructions || null,
+      designGuidance: this.getDesignGuidance() || null,
       cwd: this.cwd,
       hasGhCli: this.hasGhCli,
     };

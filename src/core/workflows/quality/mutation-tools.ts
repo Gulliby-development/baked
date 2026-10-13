@@ -5,6 +5,9 @@
  * report maps to the gate's own mutants, kept only on the lines the run added, so the findings,
  * thresholds and run report stay the same whichever engine made them.
  */
+import { existsSync, readFileSync } from "node:fs";
+import { isAbsolute } from "node:path";
+import { readablePath } from "../../specs/validate.js";
 import { isTestCodePath } from "./duplication.js";
 import type { MutantOutcome, MutationEngine } from "./mutation.js";
 import { addedLines, type ChangedFile } from "./rules.js";
@@ -30,6 +33,24 @@ export interface ToolShell {
   remove(path: string): void;
   which(command: string): string | null;
   now(): number;
+}
+
+/**
+ * How a tool shell reads the run's root: an absolute path as it is, a relative one under the root,
+ * with a worktree's linked `node_modules` read in place (`readablePath`).
+ */
+export function toolShellFiles(root: string): Pick<ToolShell, "read" | "exists"> {
+  const absolute = (path: string) => (isAbsolute(path) ? path : readablePath(root, path));
+  return {
+    read: (path) => {
+      try {
+        return readFileSync(absolute(path), "utf8");
+      } catch {
+        return null;
+      }
+    },
+    exists: (path) => existsSync(absolute(path)),
+  };
 }
 
 /** A tool's mutant before the gate numbers it. */
