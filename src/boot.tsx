@@ -14,6 +14,12 @@ import { installGlobalFetch } from "./core/llm/http-agent.js";
 // No-op when running from source or as `dist/index.js` under bun.
 import { hydrateCompiledRuntime } from "./core/utils/hydrate-runtime.js";
 
+// The Windows sandbox launcher runs once per sandboxed command, so it skips the rest of start-up.
+if (process.argv[2] === "__sandbox-exec") {
+  const { runSandboxExecCli } = await import("./core/platform/windows-sandbox.js");
+  process.exit(runSandboxExecCli(process.argv.slice(3)));
+}
+
 installGlobalFetch();
 reapOrphanedLspProcesses();
 hydrateCompiledRuntime();

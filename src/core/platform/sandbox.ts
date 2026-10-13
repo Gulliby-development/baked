@@ -1,22 +1,24 @@
 /**
  * OS sandbox backends: detection and the pure builders of a sandboxed launch.
  *
- * Linux wraps a command in bubblewrap (`bwrap`), macOS in a `sandbox-exec` seatbelt profile.
- * Windows has no backend yet (#624). The builders take the host (platform, home,
- * filesystem probes) as a parameter, so tests check Linux and macOS output on any machine.
+ * Linux wraps a command in bubblewrap (`bwrap`), macOS in a `sandbox-exec` seatbelt profile and
+ * Windows in BAKED's own launcher, which runs it with a low-integrity restricted token in a job
+ * object (`windows-sandbox.ts`). The builders take the host (platform, home, filesystem probes) as
+ * a parameter, so tests check every backend's output on any machine.
  * Mode handling (off, auto, required) lives in `src/core/security/sandbox.ts`.
  */
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { posix } from "node:path";
-import { findOnPath, unsupportedOnWindows, userHome } from "./index.js";
+import { posix, win32 } from "node:path";
+import { findOnPath, userHome } from "./index.js";
+import { encodeSpec, WINDOWS_NETWORK_GAP, windowsLauncher } from "./windows-sandbox.js";
 
-// The profiles are built only for Linux and macOS hosts, so paths join with `/` on any build host.
-const { basename, dirname, join, resolve } = posix;
+/** Path functions of the host a profile is built for, whatever machine builds it. */
+export const pathsFor = (platform: NodeJS.Platform) => (platform === "win32" ? win32 : posix);
 
 export type SandboxMode = "off" | "auto" | "required";
-export type SandboxBackend = "bwrap" | "seatbelt" | "none";
+export type SandboxBackend = "bwrap" | "seatbelt" | "restricted-token" | "none";
 /** The part of BAKED that starts the process; "auto" warns once per surface. */
 export type SandboxSurface = "chat" | "workflow" | "acceptance";
 
@@ -48,14 +50,17 @@ export interface SandboxApplied {
   backend: SandboxBackend;
   mode: "auto" | "required";
   network: boolean;
-  /** Why the process ran without isolation (auto mode with no usable backend). */
+  /**
+   * Why the process ran without isolation (auto mode with no usable backend), or which part of the
+   * request the backend could not enforce (the network on Windows).
+   */
   reason?: string;
 }
 
 export interface SandboxDetection {
   backend: SandboxBackend;
   available: boolean;
-  /** Absolute path of `bwrap` or `sandbox-exec`, when found. */
+  /** Absolute path of `bwrap`, `sandbox-exec` or the Windows launcher's program, when found. */
   path: string | null;
   reason: string | null;
 }
@@ -146,6 +151,7 @@ const HIDDEN_DIRS_DARWIN = [
   "Library/Application Support/BraveSoftware",
   "Library/Cookies",
 ];
+const HIDDEN_DIRS_WIN32 = ["AppData/Roaming/GitHub CLI"];
 const HIDDEN_FILES = [
   ".netrc",
   ".npmrc",
@@ -167,15 +173,25 @@ const CACHES = [
   ".cargo/registry",
   ".cargo/git",
 ];
+const CACHES_WIN32 = [
+  "AppData/Local/npm-cache",
+  "AppData/Local/pip/Cache",
+  "AppData/Local/go-build",
+];
 
 /** Environment names removed from a sandboxed process: agent sockets reach keys outside it. */
 export const SANDBOX_UNSET_ENV = ["SSH_AUTH_SOCK", "GPG_AGENT_INFO", "DBUS_SESSION_BUS_ADDRESS"];
 
-const inside = (path: string, root: string): boolean =>
-  path === root || path.startsWith(root.endsWith("/") ? root : `${root}/`);
+function inside(host: SandboxHost, path: string, root: string): boolean {
+  const { sep } = pathsFor(host.platform);
+  const [p, r] =
+    host.platform === "win32" ? [path.toLowerCase(), root.toLowerCase()] : [path, root];
+  return p === r || p.startsWith(r.endsWith(sep) ? r : `${r}${sep}`);
+}
 
 /** The real path, or for a missing path the real parent joined with its name. */
 function canonicalPath(host: SandboxHost, path: string): string {
+  const { basename, dirname, join } = pathsFor(host.platform);
   try {
     return host.realpath(path);
   } catch {
@@ -200,12 +216,14 @@ function existingWithReal(host: SandboxHost, paths: string[]): string[] {
 
 /** The repository a `.git` file (a worktree or submodule checkout) names with `gitdir:`. */
 function gitFileTarget(host: SandboxHost, dotGit: string): string | null {
+  const { dirname, resolve } = pathsFor(host.platform);
   const target = host.readFile(dotGit)?.match(/^gitdir:\s*(.+?)\s*$/m)?.[1];
   return target ? canonicalPath(host, resolve(dirname(dotGit), target)) : null;
 }
 
 /** The common directory a worktree's gitdir names in its `commondir` file. */
 function commonDirOf(host: SandboxHost, gitDir: string): string | null {
+  const { join, resolve } = pathsFor(host.platform);
   const target = host.readFile(join(gitDir, "commondir"))?.trim();
   return target ? canonicalPath(host, resolve(gitDir, target)) : null;
 }
@@ -214,6 +232,7 @@ const MODULE_DEPTH = 8;
 
 /** Git directories of the submodules under `<gitDir>/modules`, nested submodules included. */
 function submoduleGitDirs(host: SandboxHost, gitDir: string): string[] {
+  const { join } = pathsFor(host.platform);
   const found: string[] = [];
   const walk = (dir: string, depth: number): void => {
     if (depth > MODULE_DEPTH) return;
@@ -241,6 +260,7 @@ export interface WorkspaceGit {
 }
 
 export function workspaceGit(host: SandboxHost, root: string, gitWrite = false): WorkspaceGit {
+  const { join } = pathsFor(host.platform);
   const dotGit = join(root, ".git");
   const roots: string[] = [];
   const files: string[] = [];
@@ -256,7 +276,7 @@ export function workspaceGit(host: SandboxHost, root: string, gitWrite = false):
       if (gitWrite && host.isDirectory(gitDir)) {
         const top = common && host.isDirectory(common) ? common : gitDir;
         writable.push(top);
-        if (!inside(gitDir, top)) writable.push(gitDir);
+        if (!inside(host, gitDir, top)) writable.push(gitDir);
         // With the common directory writable, the files that send a worktree's Git elsewhere,
         // and the main checkout's HEAD and index, stay as they are.
         const worktrees = join(top, "worktrees");
@@ -280,6 +300,8 @@ export function sandboxProfile(
   host: SandboxHost = currentSandboxHost(),
 ): SandboxProfile {
   const darwin = host.platform === "darwin";
+  const windows = host.platform === "win32";
+  const { join } = pathsFor(host.platform);
   const home = host.home;
   const writable: string[] = [];
   const addWritable = (path: string): void => {
@@ -313,18 +335,23 @@ export function sandboxProfile(
   const goModCache = host.env.GOMODCACHE;
   cacheCandidates.push(goModCache || join(home, "go", "pkg", "mod"));
   if (darwin) cacheCandidates.push(join(home, "Library", "Caches"));
+  if (windows) cacheCandidates.push(...fromHome(CACHES_WIN32));
   const caches = existingWithReal(host, cacheCandidates);
   const hiddenDirCandidates = fromHome(
-    darwin ? [...HIDDEN_DIRS, ...HIDDEN_DIRS_DARWIN] : HIDDEN_DIRS,
+    darwin
+      ? [...HIDDEN_DIRS, ...HIDDEN_DIRS_DARWIN]
+      : windows
+        ? [...HIDDEN_DIRS, ...HIDDEN_DIRS_WIN32]
+        : HIDDEN_DIRS,
   );
   const runtimeDir = host.env.XDG_RUNTIME_DIR;
-  if (!darwin && runtimeDir) hiddenDirCandidates.push(runtimeDir);
+  if (!darwin && !windows && runtimeDir) hiddenDirCandidates.push(runtimeDir);
   // A credential directory that holds the working directory itself is left visible.
   const hiddenDirs = existingWithReal(host, hiddenDirCandidates).filter(
-    (dir) => !writable.some((w) => inside(w, dir)) && !inside(cwd, dir),
+    (dir) => !writable.some((w) => inside(host, w, dir)) && !inside(host, cwd, dir),
   );
   const hiddenFiles = existingWithReal(host, fromHome(HIDDEN_FILES)).filter(
-    (file) => !hiddenDirs.some((dir) => inside(file, dir)),
+    (file) => !hiddenDirs.some((dir) => inside(host, file, dir)),
   );
   return {
     cwd: canonicalPath(host, cwd),
@@ -430,21 +457,63 @@ export function seatbeltArgv(
   return argv;
 }
 
+/**
+ * The Windows launcher argv: the launcher program, then one encoded argument with the command and
+ * the paths to label, so no quoting rule applies to it. `verbatim` args are a ready command line.
+ */
+export function restrictedTokenArgv(
+  launcher: string[],
+  profile: SandboxProfile,
+  executable: string,
+  args: string[],
+  verbatim = false,
+): string[] {
+  const spec = encodeSpec({
+    executable,
+    args,
+    verbatim,
+    cwd: profile.cwd,
+    writable: profile.writable,
+    caches: profile.caches,
+    protectDirs: profile.protectDirs,
+    protectFiles: profile.protectFiles,
+    hiddenDirs: profile.hiddenDirs,
+    hiddenFiles: profile.hiddenFiles,
+  });
+  return [...launcher, spec];
+}
+
 /** The argv that runs `executable` inside the detected backend. */
 export function sandboxArgv(
   detection: SandboxDetection,
   profile: SandboxProfile,
   executable: string,
   args: string[],
+  options: { verbatim?: boolean; launcher?: string[] } = {},
 ): string[] {
   if (!detection.available || !detection.path) throw new Error("No sandbox backend is available");
+  if (detection.backend === "restricted-token")
+    return restrictedTokenArgv(
+      options.launcher ?? windowsLauncher(),
+      profile,
+      executable,
+      args,
+      options.verbatim,
+    );
   return detection.backend === "bwrap"
     ? bwrapArgv(detection.path, profile, executable, args)
     : seatbeltArgv(detection.path, profile, executable, args);
 }
 
+/** Why a launch on this backend is less isolated than requested, or null. */
+export function sandboxGap(detection: SandboxDetection, request: SandboxRequest): string | null {
+  return detection.backend === "restricted-token" && !request.network ? WINDOWS_NETWORK_GAP : null;
+}
+
 export interface SandboxProbeDeps {
   platform: NodeJS.Platform;
+  /** The Windows launcher's program and leading arguments; defaults to `windowsLauncher()`. */
+  launcher?: string[];
   find(bin: string): string | null;
   exists(path: string): boolean;
   run(command: string, args: string[]): { status: number | null; stderr: string; error?: string };
@@ -457,8 +526,10 @@ function defaultProbeDeps(): SandboxProbeDeps {
     exists: existsSync,
     run: (command, args) => {
       const result = spawnSync(command, args, {
-        timeout: 2000,
+        // The Windows probe starts Bun with the launcher, which can take seconds on a cold disk.
+        timeout: process.platform === "win32" ? 15_000 : 2000,
         encoding: "utf8",
+        windowsHide: true,
         stdio: ["ignore", "ignore", "pipe"],
       });
       return {
@@ -525,13 +596,38 @@ export function probeSandbox(deps: SandboxProbeDeps = defaultProbeDeps()): Sandb
       reason: line ? `sandbox-exec does not start: ${line.trim()}` : "sandbox-exec does not start",
     };
   }
-  if (deps.platform === "win32")
+  if (deps.platform === "win32") {
+    const launcher = deps.launcher ?? windowsLauncher();
+    const [program, ...lead] = launcher;
+    if (!program)
+      return { backend: "restricted-token", available: false, path: null, reason: "no launcher" };
+    const spec = encodeSpec({
+      executable: "cmd.exe",
+      args: ["/d", "/c", "exit 0"],
+      verbatim: false,
+      cwd: process.env.SystemRoot ?? "C:\\Windows",
+      writable: [],
+      caches: [],
+      protectDirs: [],
+      protectFiles: [],
+      hiddenDirs: [],
+      hiddenFiles: [],
+    });
+    const result = deps.run(program, [...lead, spec]);
+    if (result.status === 0)
+      return { backend: "restricted-token", available: true, path: program, reason: null };
+    const line = `${result.stderr}\n${result.error ?? ""}`.split("\n").find((l) => l.trim());
     return {
-      backend: "none",
+      backend: "restricted-token",
       available: false,
-      path: null,
-      reason: unsupportedOnWindows("no OS sandbox without native code yet (#624)"),
+      path: program,
+      reason: line
+        ? `the sandbox launcher does not start: ${line.trim()}`
+        : `the sandbox launcher does not start (${
+            result.status === null ? "no exit status: timed out or killed" : `exit ${result.status}`
+          })`,
     };
+  }
   return {
     backend: "none",
     available: false,

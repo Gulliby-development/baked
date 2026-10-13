@@ -5,8 +5,8 @@ import { formatSandboxStatus, sandboxStatus } from "../core/security/sandbox.js"
 const USAGE = `baked sandbox status [--json]
 
 Shows the OS sandbox mode of shell, project and check commands (the sandbox setting, raised by the
-project config), the backend of this machine (bubblewrap on Linux, seatbelt on macOS) and whether
-commands run isolated. See docs/sandbox.md.
+project config), the backend of this machine (bubblewrap on Linux, seatbelt on macOS, a restricted
+token on Windows) and whether commands run isolated. See docs/sandbox.md.
 `;
 
 export function runSandboxCli(argv: string[]): number {

@@ -139,7 +139,7 @@ baked sandbox status --json        # the shape of GET /v1/diagnostics/sandbox
 baked --headless --sandbox required "run the tests"
 ```
 
-`baked sandbox status` prints the effective [OS sandbox](sandbox.md) mode (the global `sandbox` setting, raised by the project config), the backend of this machine (`bwrap` on Linux, `seatbelt` on macOS, none on Windows) or why it is unavailable, and the network of sandboxed chat commands. It exits 1 when the mode is `required` and no backend works, so CI can check the sandbox before it runs anything. `--sandbox MODE` on a headless run replaces the global mode for that process; with `required` and no backend, shell and project commands are refused.
+`baked sandbox status` prints the effective [OS sandbox](sandbox.md) mode (the global `sandbox` setting, raised by the project config), the backend of this machine (`bwrap` on Linux, `seatbelt` on macOS, `restricted-token` on Windows) or why it is unavailable, and the network of sandboxed chat commands. It exits 1 when the mode is `required` and no backend works, so CI can check the sandbox before it runs anything. `--sandbox MODE` on a headless run replaces the global mode for that process; with `required` and no backend, shell and project commands are refused.
 
 ## Artifacts
 

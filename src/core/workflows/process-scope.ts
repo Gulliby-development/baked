@@ -86,10 +86,22 @@ export class ProcessScope {
     const scope = randomUUID();
     const batch = process.platform === "win32" && !options.verbatim && isWindowsBatch(executable);
     const direct = batch ? windowsBatchInvocation(executable, args) : { executable, args };
-    // Wrapping follows the batch rewrite. Both never combine: Windows has no sandbox backend.
+    // Wrapping follows the batch rewrite; the Windows launcher joins a verbatim line unquoted.
+    const verbatim = (options.verbatim === true || batch) && process.platform === "win32";
     const launch = options.sandbox
-      ? sandboxLaunch(direct.executable, direct.args, options.sandbox, options.cwd)
+      ? sandboxLaunch(
+          direct.executable,
+          direct.args,
+          options.sandbox,
+          options.cwd,
+          undefined,
+          undefined,
+          {
+            verbatim,
+          },
+        )
       : null;
+    const wrapped = launch !== null && launch.applied.backend !== "none";
     const env = launch ? sandboxEnv(options.env, launch) : options.env;
     return new Promise((resolve, reject) => {
       const child = spawn(launch?.executable ?? direct.executable, launch?.args ?? direct.args, {
@@ -97,8 +109,8 @@ export class ProcessScope {
         env: { ...env, [PROCESS_SCOPE_ENV]: scope },
         shell: false,
         windowsHide: true,
-        windowsVerbatimArguments:
-          (options.verbatim === true || batch) && process.platform === "win32",
+        // The launcher's own argument is one base64 word; only an unwrapped line goes verbatim.
+        windowsVerbatimArguments: verbatim && !wrapped,
         detached: process.platform !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
       });
