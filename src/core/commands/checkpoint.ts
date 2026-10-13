@@ -116,8 +116,9 @@ async function handleCheckpointUndo(input: string, ctx: CommandContext): Promise
   }
   ctx.chat.setMessages(result.messages);
   ctx.chat.setCoreMessages(rebuildCoreMessages(result.messages));
-  // Saved now, so the undone turns survive a quit before the next turn.
-  ctx.chat.persist();
+  // Saved now, so the undone turns survive a quit before the next turn. The save drops the
+  // undone messages the session file still holds; they are kept in its redo stack.
+  await ctx.chat.persist({ rewrite: true });
   ctx.refreshGit();
   sysMsg(
     ctx,
@@ -148,8 +149,8 @@ async function handleCheckpointRedo(input: string, ctx: CommandContext): Promise
   }
   ctx.chat.setMessages(result.messages);
   ctx.chat.setCoreMessages(rebuildCoreMessages(result.messages));
-  // Saved now, so the undone turns survive a quit before the next turn.
-  ctx.chat.persist();
+  // Saved now, so the turn put back survives a quit before the next turn.
+  await ctx.chat.persist();
   ctx.refreshGit();
   sysMsg(ctx, `Redo applied. ${rollbackSummary(result.rollback, ctx.cwd)}`);
 }

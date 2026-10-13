@@ -545,6 +545,107 @@ describe("codex app-server native model", () => {
     expect(fake.count("turn/start")).toBe(1);
   });
 
+  test("a user message appended after a tool result rides on the same thread (#820)", async () => {
+    const { fake, model } = setup();
+    const call = (id: string, path: string) => ({
+      role: "assistant" as const,
+      content: [{ type: "tool-call" as const, toolCallId: id, toolName: "read_file", input: { path } }],
+    });
+    const result = (id: string, value: string) => ({
+      role: "tool" as const,
+      content: [
+        {
+          type: "tool-result" as const,
+          toolCallId: id,
+          toolName: "read_file",
+          output: { type: "text" as const, value },
+        },
+      ],
+    });
+    const reminder = {
+      role: "user" as const,
+      content: [{ type: "text" as const, text: "<system-reminder>\nFinish with final_response.\n</system-reminder>" }],
+    };
+    fake.onTurnStart = (threadId) => fake.toolCall(threadId, "call-1", "read_file", { path: "a.txt" });
+    const answers: unknown[] = [];
+    let input = 1000;
+    fake.onRespond = (threadId, _id, answer) => {
+      answers.push(answer);
+      // Codex reports the answered response, then the model continues.
+      fake.usage(threadId, input, 0, 10);
+      input += 1000;
+      if (answers.length === 1) fake.toolCall(threadId, "call-2", "read_file", { path: "b.txt" });
+      else {
+        fake.text(threadId, "m", "Done.");
+        fake.usage(threadId, input, 0, 20);
+        fake.complete(threadId);
+      }
+    };
+
+    const first = await model.doGenerate({ prompt: userPrompt, tools: READ_TOOL });
+    const second = await model.doGenerate({
+      prompt: [...userPrompt, call("call-1", "a.txt"), result("call-1", "b.txt next")],
+      tools: READ_TOOL,
+    });
+    const third = await model.doGenerate({
+      prompt: [
+        ...userPrompt,
+        call("call-1", "a.txt"),
+        result("call-1", "b.txt next"),
+        call("call-2", "b.txt"),
+        result("call-2", "end"),
+        reminder,
+      ],
+      tools: READ_TOOL,
+    });
+
+    expect(third.content).toEqual([{ type: "text", text: "Done." }]);
+    expect(fake.count("thread/start")).toBe(1);
+    expect(fake.count("turn/start")).toBe(1);
+    expect(answers[1]).toEqual({
+      contentItems: [
+        { type: "inputText", text: "end" },
+        { type: "inputText", text: "<system-reminder>\nFinish with final_response.\n</system-reminder>" },
+      ],
+      success: true,
+    });
+    // Every response is reported: the second step carries the first, the third the other two.
+    expect([first, second, third].map((step) => step.providerMetadata)).toEqual([
+      { codex: { responses: 0 } },
+      { codex: { responses: 1 } },
+      { codex: { responses: 2 } },
+    ]);
+    expect(third.usage).toMatchObject({ inputTokens: 2000, outputTokens: 10 });
+  });
+
+  test("counts a response whose tool call is abandoned as unreported (#820)", async () => {
+    const { fake, model } = setup();
+    fake.onTurnStart = (threadId) => {
+      if (fake.count("thread/start") === 1) fake.toolCall(threadId, "call-1", "read_file", { path: "a.txt" });
+      else {
+        fake.text(threadId, "m", "Done.");
+        fake.usage(threadId, 500, 0, 5);
+        fake.complete(threadId);
+      }
+    };
+    await model.doGenerate({ prompt: userPrompt, tools: READ_TOOL });
+    // The next request moves past the tool call without its result (an image cannot ride in it).
+    const next = await model.doGenerate({
+      prompt: [
+        ...userPrompt,
+        {
+          role: "assistant",
+          content: [{ type: "tool-call", toolCallId: "call-1", toolName: "read_file", input: { path: "a.txt" } }],
+        },
+        { role: "user", content: [{ type: "text", text: "Never mind, say done." }] },
+      ],
+      tools: READ_TOOL,
+    });
+    expect(fake.count("thread/start")).toBe(2);
+    expect(fake.responses.at(0)).toMatchObject({ error: "baked abandoned this tool call" });
+    expect(next.providerMetadata).toEqual({ codex: { responses: 1, unreportedResponses: 1 } });
+  });
+
   test("waits for a usage report that arrives after turn/completed", async () => {
     const { fake, model } = setup();
     fake.onTurnStart = (threadId) => {

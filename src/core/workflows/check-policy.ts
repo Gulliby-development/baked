@@ -79,6 +79,16 @@ export const isWholeUnitCheck = (check: Check): boolean =>
   WHOLE_UNIT_COMMAND.test([check.id, check.executable, ...check.args].join(" "));
 
 /**
+ * Whole-unit formatters (`cargo fmt`, `rustfmt`). Before integration they report every other
+ * task's unformatted files, and the checks stage applies their fixer to the run's files after
+ * integration, so a planned task's own run of one only adds a failing check and its output to the
+ * agent's context (bench round 13, mdrefs: 9 of 15 fmt runs failed on other tasks' files, #842).
+ */
+export const isWholeUnitFormatter = (check: Check): boolean =>
+  isWholeUnitCheck(check) &&
+  /\b(?:rustfmt|fmt|format)\b/i.test([check.id, check.executable, ...check.args].join(" "));
+
+/**
  * The checks that run for a task: the task-scope ones it names and the file-local static feature
  * ones covering its code. Whole-unit checks are left to the checks stage.
  */

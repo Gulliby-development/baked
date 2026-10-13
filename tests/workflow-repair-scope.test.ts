@@ -244,3 +244,38 @@ describe("a correction gets the planned files its fix needs", () => {
     expect(isTestOf("tests/cli.test.ts", "tests/cli.test.ts")).toBe(false);
   });
 });
+
+// #765: a correction whose finding carries a repro starts by running it.
+describe("a correction of a finding with a repro", () => {
+  const finding = (repro?: Review["findings"][number]["repro"]) =>
+    ({
+      id: "R9",
+      kind: "correctness",
+      severity: "high",
+      requirementIds: ["FR-001"],
+      criterionIds: ["AC-001"],
+      file: "src/lib.rs",
+      symbol: null,
+      evidenceIds: [],
+      claim: "The parser drops the last value",
+      impact: "Wrong report",
+      suggestedFix: "Keep the last value",
+      ...(repro ? { repro } : {}),
+    }) as Review["findings"][number];
+  const correct = (f: Review["findings"][number]) => {
+    const state = stateOf();
+    state.repairPredecessors[f.id] = "T001";
+    appendCorrections(store, "run", state, policy, [f], "repair");
+    return ((state.graph?.tasks ?? []).at(-1) as Task).description;
+  };
+
+  test("is told to run the repro before editing and after the fix", () => {
+    const description = correct(finding({ executable: "cargo", args: ["run", "--", "a,b"], expected: "2", actual: "1" }));
+    expect(description).toContain('Reproduce first: run "cargo" "run" "--" "a,b" with run_probe before editing.');
+    expect(description).toContain('print "1" where the spec needs "2"');
+  });
+
+  test("without a repro the description is unchanged", () => {
+    expect(correct(finding())).not.toContain("Reproduce first");
+  });
+});

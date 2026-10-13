@@ -43,6 +43,7 @@ import {
   fixerCommand,
   fixerTiers,
   isWholeUnitFixer,
+  isWholeUnitFormatter,
   wholeUnitFixerCommand,
   writtenCodePaths,
 } from "./check-policy.js";
@@ -461,6 +462,14 @@ export class NativeAgentExecutor implements AgentExecutor {
               affected?.id === checkId ? affected : policy.checks.find((c) => c.id === checkId);
             if (!check || (check !== affected && !task?.checkIds.includes(checkId)))
               throw new WorkflowFault("CAPABILITY_DENIED", "Check ID is outside the task scope");
+            // A planned task runs before integration, where a whole-unit formatter only reports the
+            // other tasks' files; the checks stage formats the integrated change (#842).
+            if (task?.origin === "planned" && isWholeUnitFormatter(check))
+              return {
+                checkId: check.id,
+                status: "deferred",
+                note: `${check.id} formats the whole project, so it runs in the checks stage after the tasks are integrated, where the host applies its fixer to the files this run writes. It is not run for a single task and is not a failure: do not run it or reformat files by hand for it.`,
+              };
             const scope = new ProcessScope();
             try {
               const result = await new CheckRunner(this.store, scope).run(

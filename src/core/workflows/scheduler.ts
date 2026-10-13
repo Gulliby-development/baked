@@ -41,11 +41,13 @@ import {
   convergenceStop,
   earlierFindings,
   grantRound,
+  noteInconclusiveReview,
   noteUnverifiedCriteria,
   passesWithNotes,
   REPEAT_NOTE,
   requiredChecksPass,
 } from "../verification/convergence-stop.js";
+import { type DocExampleResult, isDocFile, runDocExamples } from "../verification/doc-examples.js";
 import {
   currentEvidence,
   evidenceHandle,
@@ -119,6 +121,7 @@ import {
   fixerTiers,
   isCodePath,
   isWholeUnitCheck,
+  isWholeUnitFormatter,
   taskCheckList,
   validateChecks,
   withCoveringChecks,
@@ -225,7 +228,12 @@ import {
   runMutants,
   scoreMutants,
 } from "./quality/mutation.js";
-import { detectMutationTool, runMutationTool, type ToolShell } from "./quality/mutation-tools.js";
+import {
+  detectMutationTool,
+  runMutationTool,
+  type ToolShell,
+  toolPath,
+} from "./quality/mutation-tools.js";
 import {
   checkPropertyTests,
   propertyClaim,
@@ -259,7 +267,12 @@ import {
   retryAfterMs,
   retryDelay,
 } from "./retry.js";
-import { buildReviewBundle, REVIEW_BUNDLE_PATH, taskChangedFiles } from "./review-bundle.js";
+import {
+  buildReviewBundle,
+  journaledBaseHashes,
+  REVIEW_BUNDLE_PATH,
+  taskChangedFiles,
+} from "./review-bundle.js";
 import {
   capturePreImage,
   createdByRunLineage,
@@ -534,6 +547,12 @@ function readSummary(content: string): { tool: string; targets: string[]; bytes:
  * leaves out the spec, plan and check output, about 15k tokens instead of 45k.
  */
 const DIFF_REVIEW = "diffReview";
+/**
+ * Model steps of one review attempt; one that ends unsubmitted gets one retry with 1.5 times as
+ * many, the reviewers' former cap. The host runs the README examples, so a review reads the
+ * patch, tries a few repros and submits (#750: an 11-step attempt cost 236k tokens).
+ */
+const REVIEW_ATTEMPT_STEPS = 16;
 /** Errors of the task-end check one submission gets back; the checks stage reports the rest. */
 const TASK_END_ERRORS = 20;
 
@@ -2143,7 +2162,10 @@ export class WorkflowScheduler {
     policy: RunPolicy,
     task: Task,
   ): ((root: string, signal: AbortSignal) => Promise<string[]>) | undefined {
-    const checks = policy.checks.filter((c) => c.scope === "feature" && isWholeUnitCheck(c));
+    // A formatter reports no type errors to keep, so it would only cost a run (#842).
+    const checks = policy.checks.filter(
+      (c) => c.scope === "feature" && isWholeUnitCheck(c) && !isWholeUnitFormatter(c),
+    );
     const written = writtenCodePaths(task);
     if (!checks.length || !written.length) return undefined;
     return async (root, signal) => {
@@ -6800,7 +6822,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const scratch = join(tmpdir(), "baked-mutation", runId);
     mkdirSync(scratch, { recursive: true });
     const sandbox = runSandbox(policy, root);
-    const absolute = (path: string) => (isAbsolute(path) ? path : workspacePath(root, path));
+    const absolute = (path: string) => (isAbsolute(path) ? path : toolPath(root, path));
     return {
       root,
       scratch: scratch.replaceAll("\\", "/"),
@@ -7497,6 +7519,47 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       return false;
     });
   }
+  /**
+   * The command examples of the documents the run changed, run by the host in a copy of the
+   * workspace with the output each printed, kept per snapshot so a resumed review does not run
+   * them again (#750).
+   */
+  private async documentedExamples(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    executables: string[],
+    signal: AbortSignal,
+  ): Promise<DocExampleResult[]> {
+    if (!state.snapshotId || !state.expectedFiles || !executables.length) return [];
+    const logicalPath = `reviews/examples-${state.snapshotId}.json`;
+    const kept = this.store.latestArtifact(runId, logicalPath);
+    if (kept)
+      return (
+        JSON.parse(this.store.readArtifact(runId, kept.id)) as { examples: DocExampleResult[] }
+      ).examples;
+    const root = runRoot(this.store.workspace, state);
+    const docs = [...journaledBaseHashes(this.store, runId).keys()]
+      .filter(isDocFile)
+      .flatMap((path) => {
+        const absolute = workspacePath(root, path);
+        return existsSync(absolute) ? [{ path, text: readFileSync(absolute, "utf8") }] : [];
+      });
+    if (!docs.length) return [];
+    const examples = await runDocExamples(this.processes, docs, {
+      root,
+      files: Object.keys(state.expectedFiles),
+      executables,
+      signal,
+      sandbox: (dir) => runSandbox(policy, dir),
+    });
+    // Documents without command examples run nothing, so there is nothing to keep.
+    if (!examples.length) return [];
+    this.store.transaction(() =>
+      this.store.artifact(runId, "diagnostic", logicalPath, canonical({ examples })),
+    );
+    return examples;
+  }
   private async review(
     runId: string,
     stepId: string,
@@ -7529,6 +7592,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     // The workspace the run started from had no source code: the reviewers judge the whole program.
     const greenfield = this.baselineScaffold(runId, state);
     const references = state.graph ? fileReferences(state.graph) : {};
+    const examples = reviewers.some((r) => r.dimension === "correctness")
+      ? await this.documentedExamples(runId, state, policy, executables, signal)
+      : [];
     const runReviewer = async (reviewer: Reviewer) => {
       // A review of this very snapshot that an earlier, interrupted round finished is kept.
       const kept = state.reviews[reviewer.key];
@@ -7593,6 +7659,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
               ...(reviewer.dimension === "correctness" && Object.keys(references).length
                 ? { references }
                 : {}),
+              ...(reviewer.dimension === "correctness" && examples.length
+                ? { documentedExamples: examples }
+                : {}),
               ...extra,
             },
             signal,
@@ -7615,7 +7684,10 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
               if (advice.length) reproAdvised = true;
               return advice;
             },
-            undefined,
+            {
+              maxSteps: Math.min(profile.maxSteps, policy.maxAgentSteps, REVIEW_ATTEMPT_STEPS),
+              maxTokens: undefined,
+            },
             canRepro ? () => ({ run_repro: reproTool(executables, repro) }) : undefined,
           ),
         );
@@ -7665,13 +7737,29 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         // a test or declared check as a convergence task; without such a stage, or when the
         // verdict has no criterion behind it, the run blocks as before.
         const gaps = result.coverage.filter((c) => c.verdict === "inconclusive");
-        if (!routeGaps || !gaps.length)
+        if (!gaps.length)
           throw new WorkflowFault("OUTPUT_INVALID", `${reviewer.dimension} review inconclusive`);
-        state.reviewGaps[reviewer.key] = gaps.map((c) => ({
-          criterionId: c.criterionId,
-          explanation: c.explanation,
-        }));
-        result.verdict = result.findings.length ? "changes_requested" : "pass";
+        if (routeGaps) {
+          state.reviewGaps[reviewer.key] = gaps.map((c) => ({
+            criterionId: c.criterionId,
+            explanation: c.explanation,
+          }));
+          result.verdict = result.findings.length ? "changes_requested" : "pass";
+        } else {
+          // Without a converge stage (`quick`), a review with no finding has no defect to repair:
+          // when the required checks pass, its open criteria become known limitations instead of
+          // blocking the run on a verdict word (envguard-update f67dcde0, 445k tokens, #841).
+          if (result.findings.length || !requiredChecksPass(this.store, runId, state, policy))
+            throw new WorkflowFault("OUTPUT_INVALID", `${reviewer.dimension} review inconclusive`);
+          noteInconclusiveReview(
+            state,
+            reviewer.dimension,
+            gaps,
+            this.store.run(runId).convergence_rounds,
+          );
+          result.verdict = "pass";
+          delete state.reviewGaps[reviewer.key];
+        }
       } else delete state.reviewGaps[reviewer.key];
       this.store.transaction(() => this.store.finishStep(runId, child, "completed"));
       return { reviewer, result };

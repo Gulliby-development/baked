@@ -14,6 +14,7 @@ import {
 } from "../core/chat/diff-stats.js";
 import { readImageFiles, userContent } from "../core/chat/images.js";
 import { expandChatInput, hasInputReferences } from "../core/chat/input-expansion.js";
+import { toolResultOf } from "../core/chat/tool-result.js";
 import { expandCustomCommandInput } from "../core/commands/custom.js";
 import { ContextManager } from "../core/context/manager.js";
 import { getCwd } from "../core/cwd.js";
@@ -31,6 +32,7 @@ import type {
   ImageAttachment,
   InputContextItem,
   InteractiveCallbacks,
+  ToolCall,
 } from "../types/index.js";
 import { DIM, EXIT_ABORT, EXIT_ERROR, EXIT_OK, EXIT_TIMEOUT, PURPLE, RST } from "./constants.js";
 import {
@@ -45,6 +47,14 @@ import {
   writeMarkdown,
 } from "./output.js";
 import { followProgress } from "./progress.js";
+import {
+  beginHeadlessTurn,
+  endHeadlessTurn,
+  type HeadlessSession,
+  newHeadlessSession,
+  openHeadlessSession,
+  saveHeadlessSession,
+} from "./saved-session.js";
 import type { HeadlessChatOptions, HeadlessEvent, HeadlessRunOptions } from "./types.js";
 import { watchPromptSource } from "./watch.js";
 
@@ -233,6 +243,8 @@ interface TurnResult {
   steps: number;
   tokens: { input: number; output: number; cacheRead: number };
   toolCalls: string[];
+  /** The turn's tool calls with their input and result, as the saved session records them. */
+  calls: ToolCall[];
   filesEdited: string[];
   error?: string;
   exitCode: number;
@@ -320,6 +332,7 @@ export async function streamTurn(
     lastStepCacheRead: 0,
   };
   const toolCalls: string[] = [];
+  const calls = new Map<string, ToolCall>();
   const filesEdited = new Set<string>();
   let error: string | undefined;
   let exitCode = EXIT_OK;
@@ -376,8 +389,27 @@ export async function streamTurn(
           process.stderr.write(`${DIM}  ▸ ${part.toolName}${RST}\n`);
         }
         for (const path of toolCallEditPaths(part.toolName, partInput.input)) filesEdited.add(path);
-      } else if (part.type === "tool-result") {
-        if (reporting.events) {
+        const id = partInput.toolCallId ?? crypto.randomUUID();
+        calls.set(id, { id, name: part.toolName, args: partInput.input ?? {} });
+      } else if (part.type === "tool-result" || part.type === "tool-error") {
+        const ended = part as {
+          toolCallId?: string;
+          toolName: string;
+          input?: Record<string, unknown>;
+          output?: unknown;
+          error?: unknown;
+        };
+        const id = ended.toolCallId ?? crypto.randomUUID();
+        calls.set(id, {
+          id,
+          name: ended.toolName,
+          args: calls.get(id)?.args ?? ended.input ?? {},
+          result:
+            part.type === "tool-error"
+              ? { success: false, output: "", error: streamErrorText(ended.error) }
+              : toolResultOf(ended.output),
+        });
+        if (part.type === "tool-result" && reporting.events) {
           const summary = resultSummary(part.output);
           emit({
             type: "tool-result",
@@ -427,51 +459,48 @@ export async function streamTurn(
     if (reporting.events) emit({ type: "error", error });
   }
 
-  return { output, steps, tokens, toolCalls, filesEdited: [...filesEdited], error, exitCode };
+  return {
+    output,
+    steps,
+    tokens,
+    toolCalls,
+    calls: [...calls.values()],
+    filesEdited: [...filesEdited],
+    error,
+    exitCode,
+  };
 }
 
-async function saveSession(
+/** The assistant message a turn adds to the saved conversation, with its tool calls; exported for tests. */
+export function assistantMessage(turn: TurnResult): ChatMessage {
+  return {
+    id: crypto.randomUUID(),
+    role: "assistant",
+    content: turn.output,
+    timestamp: Date.now(),
+    ...(turn.calls.length > 0 ? { toolCalls: turn.calls } : {}),
+  };
+}
+
+/** Saves the conversation under the session's id and reports where it went. */
+async function saveRun(
   env: AgentEnv,
-  chatMessages: ChatMessage[],
+  session: HeadlessSession,
+  messages: ChatMessage[],
   tokens: { input: number; output: number; cacheRead: number },
-  showProgress: boolean,
-  isEvents: boolean,
+  report: { showProgress: boolean; emit?: (event: HeadlessEvent) => void },
 ): Promise<string> {
-  const sessionId = crypto.randomUUID();
-  await env.sessionManager.saveSession(
-    {
-      id: sessionId,
-      title: SessionManager.deriveTitle(chatMessages),
-      cwd: env.cwd,
-      startedAt: chatMessages[0]?.timestamp ?? Date.now(),
-      updatedAt: Date.now(),
-      activeTabId: "headless",
-      bakeMode: env.mode,
-      tabs: [
-        {
-          id: "headless",
-          label: "Headless",
-          activeModel: env.modelId,
-          sessionId,
-          planMode: false,
-          planRequest: null,
-          coAuthorCommits: false,
-          ...(env.effort !== "default" ? { effort: env.effort } : {}),
-          tokenUsage: {
-            prompt: tokens.input,
-            completion: tokens.output,
-            total: tokens.input + tokens.output,
-            cacheRead: tokens.cacheRead,
-          },
-          messageRange: { startLine: 0, endLine: chatMessages.length },
-        },
-      ],
-    },
-    new Map([["headless", chatMessages]]),
-  );
-  if (showProgress) stderrDim(`Session saved: ${sessionId.slice(0, 8)}`);
-  if (isEvents) writeEvent({ type: "session-saved", sessionId });
-  return sessionId;
+  await saveHeadlessSession(env.sessionManager, session, {
+    messages,
+    tokens,
+    cwd: env.cwd,
+    modelId: env.modelId,
+    mode: env.mode,
+    effort: env.effort,
+  });
+  if (report.showProgress) stderrDim(`Session saved: ${session.id.slice(0, 8)}`);
+  report.emit?.({ type: "session-saved", sessionId: session.id });
+  return session.id;
 }
 
 export async function runPrompt(opts: HeadlessRunOptions, merged: AppConfig): Promise<void> {
@@ -482,32 +511,29 @@ export async function runPrompt(opts: HeadlessRunOptions, merged: AppConfig): Pr
   const env = await setupAgent(opts, merged);
   const startTime = Date.now();
 
-  // Session resume
-  let priorMessages: ModelMessage[] = [];
-  let priorChatMessages: ChatMessage[] = [];
-  // routing. Resumed runs reuse the original id; fresh runs mint one.
+  // Session resume: the run continues the saved session and saves back to the same id.
+  let session = newHeadlessSession();
+  // Routing id sent upstream. Resumed runs reuse the original id; fresh runs mint one.
   let routingSessionId: string = crypto.randomUUID();
 
   if (opts.sessionId) {
-    const fullId = env.sessionManager.findByPrefix(opts.sessionId);
-    if (!fullId) {
+    const resumed = openHeadlessSession(env.sessionManager, opts.sessionId);
+    if (!resumed) {
       stderrError(`Session "${opts.sessionId}" not found`);
       env.contextManager.dispose();
       await disposeMCPManager();
       process.exit(EXIT_ERROR);
     }
-    const data = env.sessionManager.loadSessionMessages(fullId);
-    if (data) {
-      priorMessages = data.coreMessages;
-      priorChatMessages = data.messages;
-      routingSessionId = fullId;
-      if (showProgress) {
-        stderrDim(
-          `Resumed session ${fullId.slice(0, 8)} (${String(data.messages.length)} messages)`,
-        );
-      }
+    session = resumed;
+    routingSessionId = resumed.id;
+    if (showProgress) {
+      stderrDim(
+        `Resumed session ${resumed.id.slice(0, 8)} (${String(resumed.messages.length)} messages)`,
+      );
     }
   }
+  const priorMessages = session.core;
+  const priorChatMessages = session.messages;
 
   // Custom slash commands from .baked/commands; headless has no built-in slash commands.
   let prompt = expandHeadlessPrompt(opts.prompt, env.cwd, showProgress);
@@ -602,6 +628,9 @@ export async function runPrompt(opts: HeadlessRunOptions, merged: AppConfig): Pr
     ...priorMessages,
     { role: "user" as const, content: userContent(prompt, images) },
   ];
+  // A saved run snapshots the workspace like the other front ends, so `baked session undo`
+  // can restore the files the turn edits.
+  if (opts.saveSession) await beginHeadlessTurn(session, env.cwd, priorChatMessages);
 
   const turn = await streamTurn(env.agent, messages, prompt, abortController.signal, {
     json: opts.json,
@@ -637,9 +666,15 @@ export async function runPrompt(opts: HeadlessRunOptions, merged: AppConfig): Pr
         ...(images ? { images } : {}),
         ...(references.items.length > 0 ? { inputContext: references.items } : {}),
       },
-      { id: crypto.randomUUID(), role: "assistant", content: turn.output, timestamp: Date.now() },
+      assistantMessage(turn),
     ];
-    const savedId = await saveSession(env, chatMessages, turn.tokens, showProgress, isEvents);
+    await endHeadlessTurn(session, env.cwd, chatMessages, typedPrompt);
+    const savedId = await saveRun(env, session, chatMessages, turn.tokens, {
+      showProgress,
+      ...(isEvents
+        ? { emit: (event) => writeEvent(event as unknown as Record<string, unknown>) }
+        : {}),
+    });
     if (showProgress) {
       const shortId = savedId.slice(0, 8);
       process.stderr.write(
@@ -848,20 +883,20 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
   // Conversation id sent upstream (x-session-id / x-session-affinity) to pin
   // provider routing. Resume reuses the original id; otherwise the caller's
   let routingSessionId: string = opts.sessionId ?? crypto.randomUUID();
+  // The saved session the chat continues and saves back to; a new one when there is none.
+  let session = newHeadlessSession();
 
   if (opts.sessionId) {
-    const fullId = env.sessionManager.findByPrefix(opts.sessionId);
-    if (fullId) {
-      routingSessionId = fullId;
-      const data = env.sessionManager.loadSessionMessages(fullId);
-      if (data) {
-        history = data.coreMessages;
-        chatHistory = data.messages;
-        if (showProgress) {
-          stderrDim(
-            `Resumed session ${fullId.slice(0, 8)} (${String(data.messages.length)} messages)`,
-          );
-        }
+    const resumed = openHeadlessSession(env.sessionManager, opts.sessionId);
+    if (resumed) {
+      session = resumed;
+      routingSessionId = resumed.id;
+      history = [...resumed.core];
+      chatHistory = [...resumed.messages];
+      if (showProgress) {
+        stderrDim(
+          `Resumed session ${resumed.id.slice(0, 8)} (${String(resumed.messages.length)} messages)`,
+        );
       }
     }
   }
@@ -907,7 +942,10 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
   async function cleanupAndExit(code: number): Promise<void> {
     let savedId: string | undefined;
     if (chatHistory.length > 0) {
-      savedId = await saveSession(env, chatHistory, totalTokens, showProgress, isEvents);
+      savedId = await saveRun(env, session, chatHistory, totalTokens, {
+        showProgress,
+        ...(isEvents ? { emit } : {}),
+      });
     }
 
     if (isEvents) {
@@ -1007,6 +1045,7 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
     turns++;
     const turnStart = Date.now();
 
+    await beginHeadlessTurn(session, env.cwd, chatHistory);
     history.push({ role: "user" as const, content: prompt });
     chatHistory.push({
       id: crypto.randomUUID(),
@@ -1038,15 +1077,9 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
     });
 
     // Even partial output is valuable — save it
-    if (turn.output) {
-      history.push({ role: "assistant" as const, content: turn.output });
-      chatHistory.push({
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: turn.output,
-        timestamp: Date.now(),
-      });
-    }
+    if (turn.output) history.push({ role: "assistant" as const, content: turn.output });
+    if (turn.output || turn.calls.length > 0) chatHistory.push(assistantMessage(turn));
+    await endHeadlessTurn(session, env.cwd, chatHistory, typed);
 
     for (const path of turn.filesEdited) chatEdited.add(path);
     const diffStats = await sessionDiffStats(env.cwd, [...chatEdited]);

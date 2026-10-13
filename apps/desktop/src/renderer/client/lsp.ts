@@ -48,7 +48,8 @@ export interface LspActionView extends LspView {
   restarted: string[];
   /** Restart found nothing running and started the project's servers instead. */
   startedNow?: boolean;
-  installed?: { server: string; package: string };
+  /** `warning` says why the installed server did not start when it was started once. */
+  installed?: { server: string; package: string; warning?: string };
   log?: string[];
 }
 
