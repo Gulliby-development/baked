@@ -11,6 +11,7 @@ export const PLAN_CONSISTENCY_CHECKS = [
   "every read hint exists or is created by the task or an earlier task",
   "every task reference exists or is created by an earlier task",
   "a task that writes a module index (lib.rs, main.rs, mod.rs, __init__.py, index.ts) runs after the tasks that create the module files beside it",
+  "code created after a task creates the entry point (main, cli, app, server, program) is wired in by a task that writes the entry point and runs after it",
 ];
 
 /** A file that declares or re-exports the modules next to it. */
@@ -181,6 +182,63 @@ function ancestorsOf(graph: TaskGraph, id: string): Set<string> {
   return ancestors;
 }
 
+/** A file a program starts from, which has to construct or register the components it runs. */
+const ENTRY_POINT =
+  /(?:^|\/)(?:main|cli|app|server|program)\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|cs|rb|php|swift)$/i;
+const isTestFile = (path: string): boolean =>
+  /(?:^|\/)(?:tests?|__tests__|spec)\/|[._-](?:test|spec)\.\w+$|_test\.go$|(?:^|\/)test_[^/]+$/i.test(
+    path,
+  ) || /[a-z]Tests?\.\w+$/.test(path);
+const extensionOf = (path: string): string => path.slice(path.lastIndexOf(".")).toLowerCase();
+
+/**
+ * Entry points that code created after them never reaches. A task that creates the entry point
+ * early (a CLI delegating to a handler interface) and later tasks that create the components,
+ * with no task writing the entry point after them, leave the shipped command unable to run
+ * them; the first review finds it (linehunk f0b66451: `Cli.run` delegated to a `CommandHandler`
+ * that no task installed, about 470k tokens of review and correction).
+ */
+export function unwiredEntryPoints(graph: TaskGraph): string[] {
+  const ancestors = new Map(graph.tasks.map((t) => [t.id, ancestorsOf(graph, t.id)]));
+  const problems: string[] = [];
+  for (const entry of graph.tasks)
+    for (const write of entry.writes) {
+      if (write.action !== "create" || !ENTRY_POINT.test(write.path) || isTestFile(write.path))
+        continue;
+      const extension = extensionOf(write.path);
+      // A later write to any file the entry task created (the entry point, a registry it imports)
+      // can wire the new code in.
+      const seam = new Set(
+        entry.writes
+          .filter(
+            (w) =>
+              w.action === "create" && !isTestFile(w.path) && extensionOf(w.path) === extension,
+          )
+          .map((w) => w.path),
+      );
+      const writers = graph.tasks.filter(
+        (t) => t.id !== entry.id && t.writes.some((w) => seam.has(w.path) && w.action !== "delete"),
+      );
+      const unwired = graph.tasks.filter(
+        (task) =>
+          ancestors.get(task.id)?.has(entry.id) &&
+          task.writes.some(
+            (w) =>
+              w.action === "create" &&
+              !seam.has(w.path) &&
+              !isTestFile(w.path) &&
+              extensionOf(w.path) === extension,
+          ) &&
+          !writers.some((w) => w.id === task.id || ancestors.get(w.id)?.has(task.id)),
+      );
+      if (unwired.length)
+        problems.push(
+          `${entry.id} creates the entry point ${write.path}, but ${unwired.map((t) => t.id).join(", ")} create code after it and no task that writes ${write.path} (or another file ${entry.id} creates) runs after them, so nothing wires that code into it. Add ${write.path} as a modify write to a task that depends on them, or let ${entry.id} depend on them.`,
+        );
+    }
+  return problems;
+}
+
 export function planConsistencyProblems(
   workspace: string,
   spec: Spec,
@@ -248,5 +306,6 @@ export function planConsistencyProblems(
             `${task.id} and ${other.id} both write ${shared.path} without a dependency between them`,
           );
       }
+  problems.push(...unwiredEntryPoints(graph));
   return problems;
 }
