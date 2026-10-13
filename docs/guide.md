@@ -114,7 +114,7 @@ Tabs coordinate through file claims. The first edit of a file claims it for that
 
 ## Git
 
-`Ctrl+G` opens the Git menu: `c` commit (with a generated message), `p` push, `u` pull, `s` stash, `o` stash pop, `l` log. The same actions are slash commands: `/git commit`, `/git push`, `/git pull`, `/git status`, `/git diff`, `/git log`, `/git branch`, `/git stash`. `/git co-author` toggles the co-author trailer. The menu also offers Force push (`git push --force-with-lease`) and Reset hard, each after a confirmation. The desktop app's Git section runs the same actions through `baked serve` (see [the desktop API](desktop/api.md#git)).
+`Ctrl+G` opens the Git menu: `c` commit (with a generated message), `p` push, `u` pull, `s` stash, `o` stash pop, `l` log, `g` graph. The same actions are slash commands: `/git commit`, `/git push`, `/git pull`, `/git status`, `/git diff`, `/git log`, `/git graph`, `/git branch`, `/git stash`. `/git graph` draws the latest 60 commits of every local branch in lanes (`●` a commit, `│` a branch passing, `╮`/`╯` a merge or fork), with branch and tag names, coloured by kind: the base branch, `feature/`, `bugfix/`, BAKED run branches (`baked/`) and the rest. `/git co-author` toggles the co-author trailer. The menu also offers Force push (`git push --force-with-lease`) and Reset hard, each after a confirmation. The desktop app's Git section runs the same actions through `baked serve` (see [the desktop API](desktop/api.md#git)).
 
 ## Changed files
 

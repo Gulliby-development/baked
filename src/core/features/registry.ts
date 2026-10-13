@@ -1255,12 +1255,13 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "git",
     group: "Projects and setup",
-    title: "Git menu: status, diff, commit, push, pull, branch, stash",
+    title: "Git menu: status, diff, commit graph, commit, push, pull, branch, stash",
     tui: [
       "/git",
       "/git status",
       "/git diff",
       "/git log",
+      "/git graph",
       "/git commit",
       "/git push",
       "/git pull",
@@ -1271,7 +1272,7 @@ export const FEATURES: readonly Feature[] = [
       "/git co-author",
     ],
     cli: notNeeded("scripts call git"),
-    api: ["/v1/git", "/v1/git/actions"],
+    api: ["/v1/git", "/v1/git/graph", "/v1/git/actions"],
     desktop: ["project/git"],
   },
   {

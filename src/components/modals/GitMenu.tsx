@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { graphText, readGitGraph } from "../../core/git/graph.js";
 import { type GitMenuAction, runGitMenuAction } from "../../core/git/menu.js";
 import { getGitLog } from "../../core/git/status.js";
 import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
@@ -31,6 +32,7 @@ const MENU_ITEMS: MenuItem[] = [
     action: "stash-pop",
   },
   { id: "log", keyHint: "l", label: "Log", meta: "show recent commits", action: "log" },
+  { id: "graph", keyHint: "g", label: "Graph", meta: "branches and merges", action: "graph" },
   {
     id: "force-push",
     keyHint: "f",
@@ -103,6 +105,22 @@ export function GitMenu({ visible, cwd, onClose, onCommit, onSystemMessage, onRe
         if (entries.length === 0) onSystemMessage("No commits found.");
         else {
           onSystemMessage(entries.map((e) => `${e.hash} ${e.subject} (${e.date})`).join("\n"));
+        }
+        return;
+      }
+      case "graph": {
+        onClose();
+        const graph = await readGitGraph(cwd, 40);
+        if (graph.commits.length === 0) onSystemMessage("No commits found.");
+        else {
+          onSystemMessage(
+            graph.commits
+              .map((c) => {
+                const refs = c.refs.filter((r) => r.kind !== "head").map((r) => `[${r.name}]`);
+                return `${graphText(c, graph.lanes)}  ${c.short} ${[...refs, c.subject].join(" ")}`;
+              })
+              .join("\n"),
+          );
         }
         return;
       }

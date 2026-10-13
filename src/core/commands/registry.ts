@@ -397,6 +397,13 @@ const COMMAND_DEFS: CommandDef[] = [
   },
   { cmd: "/git log", ic: "git", desc: "Show recent commits", category: "Git", tags: ["history"] },
   {
+    cmd: "/git graph",
+    ic: "git",
+    desc: "Show the commit graph of all branches",
+    category: "Git",
+    tags: ["history", "branches", "tree"],
+  },
+  {
     cmd: "/git pull",
     ic: "git",
     desc: "Pull from remote",

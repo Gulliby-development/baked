@@ -181,7 +181,7 @@ bun test tests/feature-parity.test.ts
 | Local API server, health and capabilities | Not needed: the TUI runs the core in process | `baked serve` | `/v1/health` | `projects` |
 | Prerequisite check and first-run wizard | `/setup`, `/wizard` | `baked self-check`, `--wizard` | `/v1/workflow/doctor` | `project/overview` |
 | Settings hub and raw config | `/settings` | Not needed: scripts edit config.json | `/v1/config` | `settings/app`, `settings/providers` |
-| Git menu: status, diff, commit, push, pull, branch, stash | `/git`, `/git status`, `/git diff` +9 | Not needed: scripts call git | `/v1/git`, `/v1/git/actions` | `project/git` |
+| Git menu: status, diff, commit graph, commit, push, pull, branch, stash | `/git`, `/git status`, `/git diff` +10 | Not needed: scripts call git | `/v1/git`, `/v1/git/graph`, `/v1/git/actions` | `project/git` |
 | Storage cleanup, model events and the error log | `/storage`, `/model-events`, `/errors` | Not needed: scripts read the log files | `/v1/diagnostics/storage`, `/v1/diagnostics/storage/cleanup`, `/v1/diagnostics/model-events` +1 | `project/diagnostics` |
 | Tool, edit diagnostics and watchdog timeouts, context-window overrides | `/timeouts` | `--timeout` | `/v1/settings` | `settings/chat` |
 | Telemetry switch | `/telemetry` | `baked telemetry` | `/v1/config` | `settings/telemetry` |

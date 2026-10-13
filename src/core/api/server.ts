@@ -178,6 +178,7 @@ export const CAPABILITIES = [
   "custom-commands",
   "settings",
   "git",
+  "git-graph",
   "hooks",
   "provider-switch",
   "chat-export",

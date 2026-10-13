@@ -1,12 +1,13 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useMemo, useState } from "react";
 import { type GitAction, type GitOverview, git } from "../../client/git.js";
+import { Icon } from "../../components/Icon.js";
 import { Alert } from "../../components/ui/alert.js";
-import { Badge } from "../../components/ui/badge.js";
 import { Button } from "../../components/ui/button.js";
 import { ConfirmDialog } from "../../components/ui/confirm-dialog.js";
 import { Empty } from "../../components/ui/empty.js";
 import { Textarea } from "../../components/ui/textarea.js";
 import { cn } from "../../lib/cn.js";
+import { useNow } from "../../lib/now.js";
 import { LABEL, LEDE, PANEL } from "../../lib/styles.js";
 import { useDesktop } from "../../store.js";
 import type { SectionProps } from "../sections.js";
@@ -26,27 +27,44 @@ import {
   useLoad,
   WRAP,
 } from "../setup/shared.js";
-import { CONFIRMS, type Confirmable, changeGroups, isBranchChange } from "./logic.js";
+import { BranchList } from "./BranchList.js";
+import { CommitGraph } from "./CommitGraph.js";
+import {
+  CONFIRMS,
+  type Confirmable,
+  changeGroups,
+  isBranchChange,
+  KIND_BG,
+  lineage,
+  plainBranches,
+} from "./logic.js";
 
 const COMMIT_MAX = 10_000;
 const NAME_MAX = 200;
+const GRAPH_PAGE = 150;
 
 /**
- * The terminal Git menu for one project: status, commit, push and pull, branches, stashes and the
- * two destructive steps. Push, force push and hard reset ask first; the backend refuses the
+ * The terminal Git menu for one project: status, commit, push and pull, the commit graph beside the
+ * branches, stashes and the two destructive steps. Push, force push and hard reset ask first; the backend refuses the
  * destructive ones without that confirmation and while a workflow run holds the workspace.
  */
 export function GitSection({ project }: SectionProps) {
   const key = project.key;
   const { refresh } = useDesktop();
   const [loaded, reload, setOverview] = useLoad(() => git.overview(key), [key, "git-overview"]);
+  const [limit, setLimit] = useState(GRAPH_PAGE);
+  const [graphLoaded, reloadGraph] = useLoad(
+    () => git.graph(key, limit),
+    [key, "git-graph", limit],
+  );
+  const [focus, setFocus] = useState<string | null>(null);
+  const now = useNow(60_000);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string; output: string } | null>(
     null,
   );
   const [message, setMessage] = useState("");
   const [stageAll, setStageAll] = useState(false);
-  const [branchName, setBranchName] = useState("");
   const [stashMessage, setStashMessage] = useState("");
   const [asking, setAsking] = useState<Confirmable | null>(null);
   const [confirmError, setConfirmError] = useState<string | null>(null);
@@ -58,6 +76,7 @@ export function GitSection({ project }: SectionProps) {
       const answer = await git.run(key, action);
       setOverview(answer.overview);
       setResult({ ok: answer.ok, message: answer.message, output: answer.output });
+      if (answer.ok) reloadGraph();
       // The project list shows the branch; read it again after a branch change.
       if (answer.ok && isBranchChange(action)) void refresh();
       return answer;
@@ -90,11 +109,10 @@ export function GitSection({ project }: SectionProps) {
       setStageAll(false);
     }
   };
-  const createBranch = async (event: FormEvent): Promise<void> => {
-    event.preventDefault();
-    const name = branchName.trim();
-    if (name && (await act({ action: "create-branch", name })).ok) setBranchName("");
-  };
+  const createBranch = async (name: string): Promise<boolean> =>
+    (await act({ action: "create-branch", name })).ok;
+  const graph = graphLoaded.state === "ready" ? graphLoaded.data : null;
+  const lit = useMemo(() => (graph ? lineage(graph, focus) : null), [graph, focus]);
   const stash = async (event: FormEvent): Promise<void> => {
     event.preventDefault();
     const text = stashMessage.trim();
@@ -113,6 +131,11 @@ export function GitSection({ project }: SectionProps) {
     );
   const locked = busy || view.busy;
   const groups = changeGroups(view);
+  const changed = new Set(groups.flatMap((group) => group.files)).size;
+  const currentKind =
+    graph?.branches.find((branch) => branch.current)?.kind ??
+    plainBranches(view).find((branch) => branch.current)?.kind ??
+    "other";
   const dialog = asking ? CONFIRMS[asking] : null;
 
   return (
@@ -127,14 +150,41 @@ export function GitSection({ project }: SectionProps) {
         </Alert>
       )}
 
-      <div className={ROW}>
-        <Badge tone="info" className="normal-case tracking-normal" title="Current branch">
-          {view.branch ?? "detached HEAD"}
-        </Badge>
-        <span className={cn(NOTE, "font-mono text-dim-foreground")}>
-          {view.upstream
-            ? `${view.upstream} · ${view.ahead} ahead · ${view.behind} behind`
-            : "no upstream branch"}
+      <div className={cn(PANEL, ROW, "gap-x-4 py-3")}>
+        <span
+          className={cn(
+            "grid size-11 shrink-0 place-items-center rounded-base border-2 border-border text-main-foreground shadow-sm-hard",
+            KIND_BG[currentKind],
+          )}
+        >
+          <Icon name="git" size={20} />
+        </span>
+        <span className="flex min-w-0 flex-col gap-1">
+          <span
+            className="truncate font-mono text-[18px] font-bold text-foreground"
+            title="Current branch"
+          >
+            {view.branch ?? "detached HEAD"}
+          </span>
+          <span className="flex flex-wrap items-center gap-1.5">
+            {view.upstream ? (
+              <>
+                <span className={cn(NOTE, "font-mono text-dim-foreground")}>{view.upstream}</span>
+                <SyncChip count={view.ahead} label="to push" arrow="↑" tone="bg-fill-ok" />
+                <SyncChip count={view.behind} label="to pull" arrow="↓" tone="bg-fill-warn" />
+              </>
+            ) : (
+              <span className={cn(NOTE, "font-mono text-dim-foreground")}>no upstream branch</span>
+            )}
+            <span
+              className={cn(
+                "rounded-full border-2 border-border px-2 font-mono text-[11px] font-bold",
+                changed > 0 ? "bg-fill-info text-main-foreground" : "text-dim-foreground",
+              )}
+            >
+              {changed > 0 ? `${changed} changed` : "clean"}
+            </span>
+          </span>
         </span>
         <span className={cn(ACTIONS, "ml-auto")}>
           <Button
@@ -148,7 +198,15 @@ export function GitSection({ project }: SectionProps) {
           <Button variant="primary" size="md" disabled={locked} onClick={() => setAsking("push")}>
             Push
           </Button>
-          <Button variant="secondary" size="md" disabled={busy} onClick={reload}>
+          <Button
+            variant="secondary"
+            size="md"
+            disabled={busy}
+            onClick={() => {
+              reload();
+              reloadGraph();
+            }}
+          >
             Refresh
           </Button>
         </span>
@@ -222,45 +280,36 @@ export function GitSection({ project }: SectionProps) {
         </form>
       </section>
 
-      <section aria-label="Branches" className={STACK}>
-        <h2 className={LABEL}>Branches</h2>
-        <form className={ADD} onSubmit={(e) => void createBranch(e)}>
-          <label htmlFor="git-branch" className="sr-only">
-            New branch
-          </label>
-          <input
-            id="git-branch"
-            type="text"
-            placeholder="New branch from here, e.g. feature/pricing"
-            value={branchName}
-            maxLength={NAME_MAX}
-            onChange={(e) => setBranchName(e.target.value)}
-            disabled={locked}
-          />
-          <Button type="submit" variant="primary" size="md" disabled={locked || !branchName.trim()}>
-            Create and switch
-          </Button>
-        </form>
-        <ul className={cn(PANEL, LIST, "p-0")}>
-          {view.branches.map((branch) => (
-            <li key={branch} className={LINE}>
-              <span className={cn(GROW, WRAP, "font-mono")}>{branch}</span>
-              {branch === view.branch ? (
-                <Tag>current</Tag>
-              ) : (
-                <Button
-                  variant="secondary"
-                  size="md"
-                  disabled={locked}
-                  onClick={() => void act({ action: "switch-branch", name: branch })}
-                >
-                  Switch
-                </Button>
-              )}
-            </li>
-          ))}
-        </ul>
-      </section>
+      <div className="grid items-start gap-5 xl:grid-cols-[minmax(300px,380px)_minmax(0,1fr)]">
+        <BranchList
+          branches={graph?.branches ?? plainBranches(view)}
+          base={graph?.base ?? null}
+          focus={focus}
+          onFocus={setFocus}
+          locked={locked}
+          now={now}
+          onSwitch={(name) => void act({ action: "switch-branch", name })}
+          onCreate={createBranch}
+        />
+        <section aria-label="History" className={cn(STACK, "gap-3")}>
+          <h2 className={cn(LABEL, "flex min-h-[34px] items-center")}>History</h2>
+          {graph ? (
+            <CommitGraph
+              graph={graph}
+              focus={focus}
+              lit={lit}
+              onFocus={setFocus}
+              now={now}
+              loadingMore={graph.commits.length < limit && graph.truncated}
+              onMore={() => setLimit((n) => n + GRAPH_PAGE)}
+            />
+          ) : graphLoaded.state === "loading" ? (
+            <LoadState value={graphLoaded} what="the commit graph" />
+          ) : (
+            <RecentCommits view={view} />
+          )}
+        </section>
+      </div>
 
       <section aria-label="Stashes" className={STACK}>
         <h2 className={LABEL}>Stashes</h2>
@@ -294,23 +343,6 @@ export function GitSection({ project }: SectionProps) {
             {view.stashes.map((line) => (
               <li key={line} className={LINE}>
                 <span className={cn(GROW, WRAP, "font-mono")}>{line}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <section aria-label="Recent commits" className={STACK}>
-        <h2 className={LABEL}>Recent commits</h2>
-        {view.log.length === 0 ? (
-          <span className={cn(NOTE, "text-dim-foreground")}>No commits yet.</span>
-        ) : (
-          <ul className={cn(PANEL, LIST, "p-0")}>
-            {view.log.map((entry) => (
-              <li key={entry.hash} className={LINE}>
-                <span className="font-mono text-dim-foreground">{entry.hash}</span>
-                <span className={cn(GROW, WRAP)}>{entry.subject}</span>
-                <span className={cn(NOTE, "text-dim-foreground")}>{entry.date}</span>
               </li>
             ))}
           </ul>
@@ -357,5 +389,47 @@ export function GitSection({ project }: SectionProps) {
         </ConfirmDialog>
       )}
     </div>
+  );
+}
+
+function SyncChip({
+  count,
+  label,
+  arrow,
+  tone,
+}: {
+  count: number;
+  label: string;
+  arrow: string;
+  tone: string;
+}) {
+  return (
+    <span
+      className={cn(
+        "rounded-full border-2 border-border px-2 font-mono text-[11px] font-bold",
+        count > 0 ? cn(tone, "text-main-foreground") : "text-dim-foreground",
+      )}
+      title={`${count} commit${count === 1 ? "" : "s"} ${label}`}
+    >
+      {arrow}
+      {count} {label}
+    </span>
+  );
+}
+
+/** The latest commits as a list, for a backend without the commit graph. */
+function RecentCommits({ view }: { view: GitOverview }) {
+  if (view.log.length === 0)
+    return <span className={cn(NOTE, "text-dim-foreground")}>No commits yet.</span>;
+  return (
+    <ul className={cn(PANEL, LIST, "p-0")}>
+      {view.log.map((entry) => (
+        <li key={entry.hash} className={LINE}>
+          <span className="font-mono text-dim-foreground">{entry.hash}</span>
+          <span className={cn(GROW, WRAP)}>{entry.subject}</span>
+          <span className={cn(NOTE, "text-dim-foreground")}>{entry.date}</span>
+        </li>
+      ))}
+    </ul>
   );
 }

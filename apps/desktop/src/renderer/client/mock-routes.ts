@@ -7,6 +7,7 @@ import { MOCK_CHAT_ROUTES, MOCK_CHAT_STREAMS } from "./mock-chat.js";
 import { diagnosticsRoutes } from "./mock-diagnostics.js";
 import { editorRoutes } from "./mock-editor.js";
 import { gitRoutes } from "./mock-git.js";
+import { gitGraphRoutes } from "./mock-git-graph.js";
 import { graphRoutes, progressRoutes } from "./mock-graph.js";
 import { INSIGHTS_ROUTES } from "./mock-insights.js";
 import { lspRoutes } from "./mock-lsp.js";
@@ -120,6 +121,7 @@ export const MOCK_ROUTES: MockRoute[] = [
   lspRoutes,
   editorRoutes,
   gitRoutes,
+  gitGraphRoutes,
   diagnosticsRoutes,
   artifactRoutes,
   packageRoutes,
