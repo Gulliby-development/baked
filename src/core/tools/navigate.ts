@@ -1,5 +1,5 @@
 import { stat as statAsync } from "node:fs/promises";
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import type { ToolResult } from "../../types/index.js";
 import { getCwd } from "../cwd.js";
 import { getIntelligenceClient, getIntelligenceRouter } from "../intelligence/index.js";
@@ -104,6 +104,22 @@ function buildDefinitionPattern(symbol: string): string {
   return `(?:${alts})${escaped}\\b`;
 }
 
+const DEPENDENCY_DIR =
+  /(^|[\\/])(node_modules|vendor|\.venv|site-packages|target|bin|obj)([\\/]|$)/;
+
+/**
+ * Language servers report workspace symbols from the toolchain and dependencies too (gopls lists
+ * GOROOT, jdtls the JDK), which made a project symbol look ambiguous. Project files outside
+ * dependency folders win; the others count only when the project has no candidate.
+ */
+export function preferProjectFiles(files: string[], root: string): string[] {
+  const own = files.filter((f) => {
+    const rel = relative(root, f);
+    return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel) && !DEPENDENCY_DIR.test(rel);
+  });
+  return own.length > 0 ? own : files;
+}
+
 async function autoResolveFile(
   client: IntelligenceClient | null,
   symbol: string,
@@ -146,7 +162,7 @@ async function autoResolveFile(
       } catch {}
     }
 
-    const unique = [...new Set(validFiles)];
+    const unique = preferProjectFiles([...new Set(validFiles)], getCwd());
     if (unique.length === 1) return { resolved: unique[0] as string };
     if (unique.length > 1) return { candidates: unique };
   }

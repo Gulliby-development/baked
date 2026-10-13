@@ -7,7 +7,9 @@ import {
   installAction,
   type PackageKind,
   type PackagePlan,
+  type PackResult,
   packages,
+  packSummary,
 } from "../../client/packages.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
@@ -21,11 +23,15 @@ import {
   ACTIONS,
   ADD,
   errorText,
+  FIELD_HALF,
+  FL,
+  FORM,
   GROW,
   LINE,
   LIST,
   LoadState,
   NOTE,
+  PAIR,
   SETUP,
   STACK,
   Tag,
@@ -176,9 +182,156 @@ function Installed({
 }
 
 /**
+ * For package authors: writes the `baked-package.json` of a package folder with every file's
+ * hash, after the checks an install runs (`baked packages pack`). Check reports without writing;
+ * empty name, version and description keep the existing manifest's.
+ */
+export function ManifestWriter({ projectKey }: { projectKey: string }) {
+  const [form, setForm] = useState({ path: "", name: "", version: "", description: "" });
+  const [result, setResult] = useState<{ value: PackResult; check: boolean } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const set =
+    (field: keyof typeof form) =>
+    (e: { target: { value: string } }): void =>
+      setForm((f) => ({ ...f, [field]: e.target.value }));
+  const run = async (check: boolean): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    try {
+      const value = await packages.pack(
+        projectKey,
+        {
+          path: form.path.trim(),
+          name: form.name.trim(),
+          version: form.version.trim(),
+          description: form.description.trim(),
+        },
+        check,
+      );
+      setResult({ value, check });
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const browse = async (): Promise<void> => {
+    const picked = await bridge.pickFolder();
+    if (picked) setForm((f) => ({ ...f, path: picked }));
+  };
+  const ready = !busy && form.path.trim() !== "";
+  return (
+    <section aria-label="Write manifest" className={STACK}>
+      <h2 className={LABEL}>Write manifest</h2>
+      <p className={NOTE}>
+        For package authors: lists every file of a package folder with its SHA-256 in its{" "}
+        <span className="font-mono">baked-package.json</span>, after the same layout and definition
+        checks an install runs. Empty fields keep the existing manifest's values. Nothing is
+        installed.
+      </p>
+      <form
+        className={FORM}
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (ready) void run(false);
+        }}
+      >
+        <div className={ADD}>
+          <Input
+            aria-label="Package folder to write"
+            placeholder="Package folder"
+            value={form.path}
+            onChange={set("path")}
+            disabled={busy}
+          />
+          <Button
+            type="button"
+            variant="secondary"
+            size="md"
+            disabled={busy}
+            onClick={() => void browse()}
+          >
+            Choose folder…
+          </Button>
+        </div>
+        <div className={PAIR}>
+          <div className={FIELD_HALF}>
+            <label htmlFor="pack-name">Name</label>
+            <Input
+              id="pack-name"
+              className="font-mono"
+              placeholder="acme-review"
+              value={form.name}
+              onChange={set("name")}
+              disabled={busy}
+            />
+          </div>
+          <div className={FIELD_HALF}>
+            <label htmlFor="pack-version">Version</label>
+            <Input
+              id="pack-version"
+              className="font-mono"
+              placeholder="1.0.0"
+              value={form.version}
+              onChange={set("version")}
+              disabled={busy}
+            />
+          </div>
+        </div>
+        <div className={FL}>
+          <label htmlFor="pack-description">Description (optional)</label>
+          <Input
+            id="pack-description"
+            value={form.description}
+            onChange={set("description")}
+            disabled={busy}
+          />
+        </div>
+        <div className={ACTIONS}>
+          <Button
+            type="button"
+            variant="secondary"
+            size="md"
+            disabled={!ready}
+            onClick={() => void run(true)}
+          >
+            Check
+          </Button>
+          <Button type="submit" variant="primary" size="md" disabled={!ready}>
+            Write
+          </Button>
+        </div>
+      </form>
+      {error && <Alert tone="error">{error}</Alert>}
+      {result && (
+        <div className={STACK}>
+          <p role="status" className={NOTE}>
+            {packSummary(result.value, result.check)}
+          </p>
+          {result.value.problems.length > 0 && (
+            <Alert tone="error">
+              <span className="block">Fix these, then write again:</span>
+              <ul className="m-0 pl-4">
+                {result.value.problems.map((p) => (
+                  <li key={p} className={WRAP}>
+                    {p}
+                  </li>
+                ))}
+              </ul>
+            </Alert>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/**
  * BAKED packages: pick a local package folder, read what it would write into the project's
  * `baked/` folders, install it with an explicit button, and remove installed packages. The same
- * as `baked add` and `/packages` (docs/packages.md).
+ * as `baked add` and `/packages` (docs/packages.md). Authors write a package's manifest below.
  */
 export function PackagesSection({ project }: SectionProps) {
   const [list, refresh] = useLoad(() => packages.list(project.key), ["packages", project.key]);
@@ -292,6 +445,7 @@ export function PackagesSection({ project }: SectionProps) {
           </ul>
         )}
       </section>
+      <ManifestWriter projectKey={project.key} />
       <ConfirmDialog
         open={removing !== null}
         title={`Remove ${removing?.name ?? ""}?`}

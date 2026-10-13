@@ -7,6 +7,7 @@ baked add ../acme-review            # show the plan, then ask before installing
 baked add ../acme-review --yes      # install without the prompt (scripts, CI)
 baked packages list                 # installed packages and files edited since
 baked packages remove acme-review   # delete its unchanged files
+baked packages pack ../acme-review --name acme-review --version 1.0.0   # author: write the manifest
 ```
 
 The same is `/packages` in the terminal UI, the Packages page under the project's setup in the desktop app, and `/v1/packages*` in the [local API](desktop/api.md#packages).
@@ -65,7 +66,29 @@ Paths are relative and `/`-separated. Each name uses letters, digits, `.`, `_` a
 
 Limits: 2 MiB per file, 20 MiB per package. Hashes are over the bytes as stored, so keep a package's line endings fixed (for example with `* -text` in its `.gitattributes`) when it travels through Git on Windows.
 
-Compute a hash with `sha256sum FILE` (Linux), `shasum -a 256 FILE` (macOS) or `Get-FileHash -Algorithm SHA256 FILE` (PowerShell, lowercase the result).
+## Author a package
+
+Put the files in a folder with the layout above and let BAKED write the manifest:
+
+```sh
+baked packages pack ../acme-review --name acme-review --version 1.0.0 --description "Acme's review kit"
+baked packages pack ../acme-review                    # after editing files: refresh the hashes
+baked packages pack ../acme-review --version 1.1.0    # a new version
+baked packages pack ../acme-review --check            # exit 1 when the manifest is out of date (CI)
+```
+
+`baked packages pack PATH` (the folder or its `baked-package.json`, relative to the project or absolute) lists every file below the folder, except a top-level `.git` folder and the manifest itself, with its SHA-256, sorted by path, and writes `baked-package.json` (2-space JSON with a trailing newline) through a temp file renamed into place. Without `--name`, `--version` or `--description`, the values of the existing manifest are kept, so `pack PATH` alone refreshes the hashes; `--description ""` removes the description. A folder with no manifest needs `--name` and `--version`.
+
+Before it writes, it runs the checks an install runs, and writes nothing when one fails, naming every problem:
+
+- each path follows the layout and naming rules above, and no two differ only in case;
+- the folder holds no symbolic link or special file, and each skill folder has a `SKILL.md`;
+- the limits: 1 to 500 files, 2 MiB per file, 20 MiB in all;
+- every definition loads: profiles, workflows and gates as in the install table, checked against the package's own content. A profile's skills must ship in the package, and workflows see the package's gates plus the built-in and configured policy gates, not your own `~/.baked/gates` or a project's `baked/gates`. A package that passes is self-contained.
+
+`--check` writes nothing; it exits 0 when the manifest on disk lists the same name, version, description and hashes (the order of `files` and the formatting do not matter) and 1 when it is missing or out of date. `--json` prints `{root, manifestPath, name, version, description, files, contents, problems, manifest, existing, upToDate, written}`. Packing never installs anything and never touches a project's `baked/` folders; install the result with `baked add` as anyone else would. The same is `/packages pack PATH [--name NAME] [--version VER] [--description "TEXT"] [--check]` in the terminal UI, Write manifest on the desktop's Packages page, and [`POST /v1/packages/pack`](desktop/api.md#packages).
+
+To write the manifest by hand instead, compute each hash with `sha256sum FILE` (Linux), `shasum -a 256 FILE` (macOS) or `Get-FileHash -Algorithm SHA256 FILE` (PowerShell, lowercase the result), and check the package with `baked add PATH` in a scratch project.
 
 ## Install
 
@@ -96,4 +119,4 @@ Installing a newer version of an installed package updates its files, deletes th
 
 ## Exit codes
 
-`baked add` and `baked packages` exit 0 when done, 1 when the install is refused or not approved, and 2 for bad arguments, a path that does not exist or an unknown package. `--json` prints the plan and the result (`{plan, installed, result}`), the installed packages (`{packages}`) or the removal (`{name, version, removed, kept, missing}`).
+`baked add` and `baked packages` exit 0 when done, 1 when the install is refused or not approved, and 2 for bad arguments, a path that does not exist or an unknown package. `baked packages pack` exits 0 when it wrote the manifest or found it up to date, 1 when it refused (or, with `--check`, when the manifest is missing or out of date), and 2 for bad arguments, a missing name or version, or a path that does not exist. `--json` prints the plan and the result (`{plan, installed, result}`), the installed packages (`{packages}`) or the removal (`{name, version, removed, kept, missing}`).

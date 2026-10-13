@@ -92,6 +92,8 @@ export interface InitiativeView {
   featureAutoApproval?: TieredApproval | null;
   /** The model feature runs start with; null uses the default model. Absent on older backends. */
   model?: string | null;
+  /** Feature runs that execute at once: above 1 when features run in worktrees. Absent on older backends. */
+  parallelRuns?: number;
   goals: string[];
   features: InitiativeFeature[];
   pendingDecisions: PendingDecision[];

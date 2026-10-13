@@ -329,6 +329,8 @@ export interface PlannedStage {
   type: string;
   /** Distinct models; tokens are split evenly between them. Empty for stages without agents. */
   models: string[];
+  /** Best-of-N candidates per task of a tasks stage (#642); absent means 1. */
+  candidates?: number;
 }
 export interface ModelPrice {
   /** USD per million tokens. */
@@ -431,7 +433,12 @@ export function estimatePreRun(input: {
             high: Math.max(1, Math.ceil(counts.range.high)),
           }
         : DEFAULT_TASK_COUNT;
-      const range = scale(perTask?.range ?? DEFAULT_TASK_RANGE, count);
+      // Runs of the same workflow already paid for their candidates; other prices are for one.
+      const candidates = perTask?.basis === "workflow-history" ? 1 : (stage.candidates ?? 1);
+      const range = scale(
+        scale(perTask?.range ?? DEFAULT_TASK_RANGE, { low: candidates, high: candidates }),
+        count,
+      );
       return {
         range: { low: Math.round(range.low), high: Math.round(range.high) },
         basis: perTask?.basis ?? "defaults",
@@ -523,6 +530,11 @@ export function estimatePreRun(input: {
     const approx = models.filter((m) => m.price === "approximate").map((m) => m.model);
     if (approx.length) notes.push(`Approximate prices: ${approx.join(", ")}.`);
   }
+  const contested = input.stages.find((s) => s.type === "tasks" && (s.candidates ?? 1) > 1);
+  if (contested)
+    notes.push(
+      `Each planned task runs as ${String(contested.candidates)} candidates (best-of-N); the tasks stage is priced for all of them.`,
+    );
   const unknown = models.filter((m) => m.price === "unknown").map((m) => m.model);
   if (unknown.length)
     notes.push(`No price known for ${unknown.join(", ")}; the cost leaves them out.`);

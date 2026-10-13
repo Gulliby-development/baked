@@ -313,6 +313,9 @@ export async function executeWorkflowCommand(
         ...(typeof args.flags.writers === "string"
           ? { maxConcurrentWriters: Number(args.flags.writers) }
           : {}),
+        ...(typeof args.flags.candidates === "string"
+          ? { candidates: Number(args.flags.candidates) }
+          : {}),
         ...(args.flags.clarification === "ask" || args.flags.clarification === "assume"
           ? { clarification: args.flags.clarification }
           : {}),

@@ -193,9 +193,26 @@ function collect(store: WorkflowStore, runId: string) {
     const latestArtifacts = new Map<string, ArtifactRow>();
     const taskDiffs = new Map<string, ArtifactRow>();
     const critiques: CritiqueRecord[] = [];
+    const selections: SelectionRecord[] = [];
+    const candidates: CandidateRecord[] = [];
     // What the host's run of each finding's repro showed, by finding id.
     const reproOutcomes = new Map<string, string>();
+    const readQuietly = (id: string): string | null => {
+      try {
+        return store.readArtifact(runId, id);
+      } catch {
+        return null;
+      }
+    };
     for (const artifact of store.artifacts(runId)) {
+      if (/^tasks\/[^/]+\/selection\.json$/.test(artifact.logical_path)) {
+        const record = parse<SelectionRecord | null>(readQuietly(artifact.id), null);
+        if (record) selections.push(record);
+      }
+      if (/^tasks\/[^/]+\/candidates\/\d+\.json$/.test(artifact.logical_path)) {
+        const record = parse<CandidateRecord | null>(readQuietly(artifact.id), null);
+        if (record) candidates.push(record);
+      }
       if (/^tasks\/[^/]+\/critique\.json$/.test(artifact.logical_path))
         critiques.push(
           parse<CritiqueRecord>(
@@ -303,6 +320,8 @@ function collect(store: WorkflowStore, runId: string) {
       requests: store.requests(runId),
       routing: readRoutingSummary(store, runId),
       critiques,
+      selections,
+      candidates,
       outcomes: store.criticOutcomes(runId),
       usage: stagesInRunOrder(store, runUsage(store, runId)),
       artifacts: [...latestArtifacts.values()].filter((a) => !internalArtifact(a.logical_path)),
@@ -319,6 +338,61 @@ interface CritiqueRecord {
   attempt: number;
   critique?: Critique;
   error?: string;
+}
+
+/** A stored `tasks/TASK/selection.json` of a best-of-N task (#642). */
+interface SelectionRecord {
+  taskId: string;
+  candidates: number;
+  winner: number | null;
+  method: string;
+  reason: string;
+  oracle: boolean;
+  selectedPassed: boolean;
+}
+/** A stored `tasks/TASK/candidates/N.json`. */
+interface CandidateRecord {
+  taskId: string;
+  index: number;
+  outcome: string;
+  failedChecks: string[];
+  changedLines: number;
+  score: number | null;
+  selected: boolean;
+  error?: string;
+}
+
+/** Best-of-N (#642): each candidate's result, the choice and the oracle and selected rates. */
+function candidatesSection(facts: Facts, cap: number): string[] {
+  const selections = facts.selections;
+  const oracle = selections.filter((s) => s.oracle).length;
+  const selected = selections.filter((s) => s.selectedPassed).length;
+  const of = String(selections.length);
+  return [
+    `${of} task(s) ran as several candidates. Oracle rate ${String(oracle)}/${of} (some candidate passed its required checks); selected rate ${String(selected)}/${of} (the selected candidate passed them).`,
+    "",
+    ...table(
+      ["Task", "Candidate", "Result", "Failed checks", "Lines", "Score", "Selected"],
+      [...facts.candidates]
+        .sort((a, b) => a.taskId.localeCompare(b.taskId) || a.index - b.index)
+        .map((c) => [
+          c.taskId,
+          c.index,
+          c.error ? `${c.outcome}: ${c.error}` : c.outcome,
+          c.failedChecks.join(", ") || null,
+          c.changedLines,
+          c.score === null ? null : c.score.toFixed(2),
+          c.selected ? "yes" : null,
+        ]),
+      cap,
+    ),
+    "",
+    ...list(
+      selections.map((s) => `- ${s.taskId} (${s.method}): ${s.reason}`),
+      cap,
+    ),
+    "",
+  ];
 }
 
 /** Which models and vendors reviewed the change and which implemented it (#635). */
@@ -617,6 +691,8 @@ function render(facts: Facts, cap: number): string {
       "",
     );
   }
+
+  if (facts.selections.length) out.push("## Best-of-N", "", ...candidatesSection(facts, cap));
 
   out.push("## Checks", "");
   if (facts.checks.length)

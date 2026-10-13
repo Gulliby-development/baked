@@ -166,6 +166,8 @@ export const RuntimeStateSchema = z
     requestText: z.string().default(""),
     /** Whether the request-coverage finding was raised; it is raised once per run. */
     coverageRaised: z.boolean().default(false),
+    /** Criteria the planner could not cover that already sent the run back to specify once (#780). */
+    uncoveredReturned: z.array(z.string()).default([]),
     /** Tasks the host added by splitting oversized test tasks; they do not count against the auto-approval task limit. */
     hostSplitTasks: z.number().int().nonnegative().default(0),
     /**
@@ -366,6 +368,15 @@ export const RuntimeStateSchema = z
       )
       .default({}),
     issue: IssueSourceSchema.nullable().default(null),
+    /**
+     * The commit a worktree run's branch starts from instead of HEAD: for an initiative feature,
+     * HEAD merged with the accepted results of its upstream features.
+     */
+    worktreeBase: z
+      .string()
+      .regex(/^[0-9a-f]{40,64}$/)
+      .nullable()
+      .default(null),
     /**
      * Tests first: the test files the tests-first tasks wrote, once they all failed for the right
      * reason, the digest a person approves, and whether they did. Null until then.

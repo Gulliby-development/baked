@@ -149,6 +149,7 @@ export function clarificationResumeIndex(
       return askingIndex + 1;
     case "specify":
       return askingIndex;
+    case "plan":
     case "analyze": {
       const findings =
         body && typeof body === "object" && "findings" in body && Array.isArray(body.findings)

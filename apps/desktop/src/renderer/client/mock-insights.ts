@@ -54,6 +54,7 @@ function initiative(
     workflowId: "sdd",
     featureAutoApproval: null,
     model: null,
+    parallelRuns: status === "active" ? 2 : 1,
     goals,
     features,
     pendingDecisions:

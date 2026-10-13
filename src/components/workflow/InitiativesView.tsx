@@ -556,7 +556,7 @@ export function InitiativeDetail({
       </text>
       <text fg={t.textMuted}>
         {clip(
-          `Plan ${plan} · ${view.workflowId} · ${view.model ?? "default model"}${view.featureAutoApproval ? " · tiered approval" : ""}`,
+          `Plan ${plan} · ${view.workflowId} · ${view.model ?? "default model"}${view.featureAutoApproval ? " · tiered approval" : ""}${view.parallelRuns > 1 ? ` · up to ${view.parallelRuns} features at once` : ""}`,
           width,
         )}
       </text>

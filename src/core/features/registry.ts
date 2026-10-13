@@ -66,6 +66,7 @@ export const GROUPS = [
 
 const gap = (issue: number, note?: string): Gap =>
   note === undefined ? { status: "gap", issue } : { status: "gap", issue, note };
+
 const partial = (reach: string[], issue: number, note: string): Partial => ({
   status: "partial",
   reach,
@@ -530,6 +531,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/packages"],
   },
   {
+    id: "packages-pack",
+    group: "Tools and code intelligence",
+    title: "Packages: write a package's manifest with every file's hash after the install checks",
+    tui: ["/packages pack"],
+    cli: ["baked packages pack: --check exits 1 when out of date"],
+    api: ["/v1/packages/pack"],
+    desktop: ["project/packages: Write manifest"],
+  },
+  {
     id: "baked-help",
     group: "Tools and code intelligence",
     title: "Ask the agent about BAKED itself (bundled docs, baked_help tool)",
@@ -664,6 +674,21 @@ export const FEATURES: readonly Feature[] = [
     cli: ["baked workflow outcomes"],
     api: ["/v1/workflow/critic", "/v1/workflow/runs/:id/report: Critic section"],
     desktop: ["settings/routing: Critic calibration", "project/runs: Report tab, Critic section"],
+  },
+  {
+    id: "best-of-n",
+    group: "Workflow runs",
+    title: "Best-of-N: implement each planned task several times and keep the best candidate",
+    tui: ["/workflow: new-run form, best-of-n workflow; run report, Best-of-N section"],
+    cli: ["baked workflow run: best-of-n workflow, or --worktree --candidates N"],
+    api: [
+      "/v1/workflow/runs: workflow best-of-n or candidates",
+      "/v1/workflow/runs/:id/report: Best-of-N section",
+    ],
+    desktop: [
+      "project/overview: New run, best-of-n workflow",
+      "project/runs: Report tab, Best-of-N section",
+    ],
   },
   {
     id: "progress-watcher",
@@ -921,7 +946,7 @@ export const FEATURES: readonly Feature[] = [
     id: "run-gates",
     group: "Workflow runs",
     title: "Gates on the run's line: what each does, blocks or advises, last result",
-    tui: gap(533, "gate results only in the activity lines"),
+    tui: ["/workflow: run overview, gates of the current stage under the stage line"],
     cli: ["baked workflow definitions", "baked workflow status"],
     api: ["/v1/workflow/definitions", "/v1/workflow/runs/:id/events"],
     desktop: ["project/runs: conveyor gate marks and station gates"],
@@ -1048,6 +1073,15 @@ export const FEATURES: readonly Feature[] = [
       "/v1/initiatives/:id/extend",
     ],
     desktop: ["project/initiatives"],
+  },
+  {
+    id: "initiative-parallel-features",
+    group: "Initiatives",
+    title: "Independent features run side by side in worktrees",
+    tui: ["/workflow: initiatives, the detail line shows up to N features at once"],
+    cli: ["baked workflow initiative drive", "baked workflow initiative show"],
+    api: ["/v1/initiatives/:id"],
+    desktop: ["project/initiatives: the shared budget line shows up to N features at once"],
   },
 
   // Projects and setup

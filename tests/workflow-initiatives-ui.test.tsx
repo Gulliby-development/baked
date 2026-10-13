@@ -60,7 +60,7 @@ function initiatives(): InitiativeView[] {
     next: { kind: "await_split_approval", featureId: null, runId: null, message: "Approve the split (plan revision 2) or edit it." },
   });
   const active = initiativeView({
-    initiativeId: "search", title: "Full-text search across projects",
+    initiativeId: "search", title: "Full-text search across projects", parallelRuns: 2,
     features: [
       featureView("index", { state: "accepted", runId: "run-index", runStatus: "completed", contractHash: "c".repeat(64) }),
       featureView("query", { state: "needs_decision", dependsOn: ["index"], runId: "run-query", runStatus: "waiting", pendingRequests: [{ scope: "feature", featureId: "query", runId: "run-query", requestId: "q1", kind: "approval", digest: "f".repeat(64) }] }),
@@ -117,6 +117,7 @@ for (const [width, height] of SIZES) {
       }
       expect(text).toContain("index");
       expect(text).toContain("Plan revision 1 (approved)");
+      if (width >= 100) expect(text).toContain("up to 2 features at once");
       expect(text).toContain("Next: Feature query waits");
       expect(text).toContain("ranking: checks failed");
       if (width >= 80) expect(text).toContain("run run-index");

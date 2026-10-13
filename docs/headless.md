@@ -152,9 +152,11 @@ baked add ../acme-review           # show the plan; install after a yes at the p
 baked add ../acme-review --yes     # install without the prompt
 baked packages list --json         # installed packages and files edited since
 baked packages remove acme-review  # delete the package's unchanged files
+baked packages pack ../acme-review --name acme-review --version 1.0.0   # write a package's manifest
+baked packages pack ../acme-review --check   # exit 1 when the manifest is out of date
 ```
 
-`baked add PATH` installs a [package](packages.md): a local folder with a `baked-package.json` that lists agent profiles, skills, workflow definitions and gates with their SHA-256 hashes. It checks the hashes and definitions, prints what it would write into `baked/`, and installs after a yes at the prompt; without a terminal (or with `--json`) it installs only with `--yes`. `--overwrite` replaces project files that differ. `baked packages list` and `remove NAME` manage installed packages; `remove` keeps files edited since the install. Installed gates still need `baked workflow gates confirm`. Exit codes: 0 done, 1 refused or not approved, 2 bad arguments, an unknown path or package.
+`baked add PATH` installs a [package](packages.md): a local folder with a `baked-package.json` that lists agent profiles, skills, workflow definitions and gates with their SHA-256 hashes. It checks the hashes and definitions, prints what it would write into `baked/`, and installs after a yes at the prompt; without a terminal (or with `--json`) it installs only with `--yes`. `--overwrite` replaces project files that differ. `baked packages list` and `remove NAME` manage installed packages; `remove` keeps files edited since the install. Installed gates still need `baked workflow gates confirm`. `baked packages pack PATH` writes the `baked-package.json` of a package folder you author, after the checks an install runs ([author a package](packages.md#author-a-package)); `--check` writes nothing. Exit codes: 0 done (with `--check`: up to date), 1 refused, not approved or (with `--check`) out of date, 2 bad arguments, an unknown path or package.
 
 ## Approvals
 

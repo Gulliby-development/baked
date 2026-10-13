@@ -65,7 +65,7 @@ Implemented on 2026-10-12 for the project coordinator (#148). Several runs of on
 - `workflows.maxParallelRuns` (1..8, default 2) caps the runs executing in the workspace at once, inline and worktree runs together. The cap is checked in the same transaction that takes the execution lease and counts only leases whose owner may be alive. A drive over the cap is refused with `WORKSPACE_BUSY`, as a busy workspace was before. The default of 2 keeps the request rate near what one run with its read agents and writers already produces; `1` restores one executing run per workspace.
 - One service drives several runs through drive lanes: the first drive uses the service's scheduler, and a drive that starts while it is busy gets its own leases, scheduler and executor (sharing the root context). Each holds the state of one drive: its leases, its lost-lease signal and its queued requests.
 - Each run keeps its worktree, branch and delivery. Runs started from the same HEAD do not see each other's changes until they are delivered.
-- Initiatives still run one feature at a time: a downstream feature needs its upstream feature's code, which in worktree mode lives on the upstream run's branch.
+- Initiatives in worktree mode run independent features side by side (#558). A downstream feature needs its upstream feature's code, which lives on the upstream run's branch, so its worktree starts from HEAD merged with the accepted commits of its upstream features (`worktreeBase` in the run state, made with `git merge-tree` and `git commit-tree`); see [initiatives](runtime.md#initiatives).
 
 ## Invariants
 

@@ -212,6 +212,7 @@ export class WorkflowToolPolicy {
     run: (deadlineHit: (hit: boolean) => void) => Promise<unknown>,
   ): Promise<unknown> {
     const started = Date.now();
+    let resultBytes: number | undefined;
     const journal = (
       type: "tool.started" | "tool.finished",
       status?: "ok" | "error" | "deadline",
@@ -229,6 +230,7 @@ export class WorkflowToolPolicy {
                     tool: name,
                     status: status ?? "ok",
                     durationMs: Date.now() - started,
+                    ...(resultBytes !== undefined ? { resultBytes } : {}),
                   },
                 },
           ),
@@ -241,9 +243,11 @@ export class WorkflowToolPolicy {
     toolStarted(this.runId);
     let status: "ok" | "error" | "deadline" = "ok";
     try {
-      return await run((hit) => {
+      const result = await run((hit) => {
         if (hit) status = "deadline";
       });
+      resultBytes = jsonBytes(result);
+      return result;
     } catch (error) {
       status = error instanceof ToolDeadlineError ? "deadline" : "error";
       throw error;
@@ -303,5 +307,15 @@ export class WorkflowToolPolicy {
       this.store.transaction(() => this.store.effectStatus(this.runId, effectId, "unknown"));
       throw error;
     }
+  }
+}
+
+function jsonBytes(value: unknown): number | undefined {
+  try {
+    const text = JSON.stringify(value);
+    return text === undefined ? undefined : Buffer.byteLength(text);
+  } catch {
+    // A result that cannot be serialized is still returned; its size is just not journaled.
+    return undefined;
   }
 }

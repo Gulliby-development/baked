@@ -34,9 +34,9 @@ import {
 import { gateDirectories, loadGateLibrary, readConfirmations } from "../workflows/v2/library.js";
 import { upgradeWorkflowV1 } from "../workflows/v2/upgrade.js";
 import {
-  type LoadedPackage,
   PACKAGE_KINDS,
   PackageError,
+  type PackageFile,
   type PackageKind,
   PackageName,
   pathProblem,
@@ -197,10 +197,15 @@ const message = (error: unknown): string =>
       ? error.message
       : String(error);
 
-/** Validates each definition with the checks its loader runs; returns problems and IDs by kind. */
-function validateContents(
-  pkg: LoadedPackage,
-  workspace: string,
+/**
+ * Validates each definition with the checks its loader runs; returns problems and IDs by kind.
+ * With a workspace, a profile's skills may come from the project and workflows see the project's
+ * and the user's gates; with null (writing a package's manifest), only the package's own content
+ * and the built-in and policy gates count.
+ */
+export function validatePackageContents(
+  pkgFiles: readonly PackageFile[],
+  workspace: string | null,
   options: InspectOptions,
 ): { problems: string[]; contents: Record<PackageKind, string[]>; gates: Gate[] } {
   const problems: string[] = [];
@@ -211,7 +216,7 @@ function validateContents(
     gates: [],
   };
   const gates: Gate[] = [];
-  const byPath = new Map(pkg.files.map((f) => [f.path, f]));
+  const byPath = new Map(pkgFiles.map((f) => [f.path, f]));
   const json = (bytes: Uint8Array): unknown => {
     try {
       return JSON.parse(text(bytes));
@@ -221,7 +226,7 @@ function validateContents(
   };
   const policy = options.policy ?? defaultWorkflowPolicy;
 
-  for (const file of pkg.files) {
+  for (const file of pkgFiles) {
     const isDefinition = file.path.split("/").length === 2 && file.path.endsWith(".json");
     if (file.kind === "skills") {
       const id = file.path.split("/")[1] ?? "";
@@ -239,10 +244,14 @@ function validateContents(
           const shipped = byPath.get(`skills/${skill.id}/SKILL.md`);
           const hash = shipped
             ? shipped.sha256
-            : currentHash(workspace, `baked/skills/${skill.id}/SKILL.md`);
+            : workspace === null
+              ? null
+              : currentHash(workspace, `baked/skills/${skill.id}/SKILL.md`);
           if (hash !== skill.hash)
             problems.push(
-              `${file.path}: needs skill ${skill.id} with hash ${skill.hash.slice(0, 12)}, which neither the package nor the project has`,
+              workspace === null
+                ? `${file.path}: needs skill ${skill.id} with hash ${skill.hash.slice(0, 12)}, which the package does not ship`
+                : `${file.path}: needs skill ${skill.id} with hash ${skill.hash.slice(0, 12)}, which neither the package nor the project has`,
             );
         }
         contents.agents.push(profile.id);
@@ -260,14 +269,13 @@ function validateContents(
   }
 
   // Workflows are checked against the gates the project will have after the install.
-  const library = loadGateLibrary(
-    workspace,
-    policy,
-    options.gateDirectories ?? gateDirectories(workspace),
-  );
+  const library =
+    workspace === null
+      ? loadGateLibrary("", policy, null)
+      : loadGateLibrary(workspace, policy, options.gateDirectories ?? gateDirectories(workspace));
   const allGates = new Map(library.gates);
   for (const gate of gates) allGates.set(gate.id, gate);
-  for (const file of pkg.files) {
+  for (const file of pkgFiles) {
     if (file.kind !== "workflows") continue;
     const fileId = file.path.slice("workflows/".length, -".json".length);
     try {
@@ -299,7 +307,7 @@ export function inspectPackage(
 ): PackagePlan {
   const pkg = readPackage(resolve(workspace, path));
   const { manifest } = pkg;
-  const { problems, contents, gates } = validateContents(pkg, workspace, options);
+  const { problems, contents, gates } = validatePackageContents(pkg.files, workspace, options);
   const lock = readLock(workspace);
   const owners = new Map<string, string>();
   for (const entry of lock)

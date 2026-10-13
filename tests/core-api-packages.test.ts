@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startApiServer } from "../src/core/api/server.js";
+import type { PackResult } from "../src/core/packages/pack.js";
 import type { InstallResult, PackageListEntry, PackagePlan, RemoveResult } from "../src/core/packages/packages.js";
 import { readConfirmations } from "../src/core/workflows/v2/library.js";
 import { writePackage } from "./helpers/package-fixture.js";
@@ -76,5 +77,55 @@ describe("packages over the local API", () => {
     expect((await post("/v1/packages/inspect", { path: dir, extra: 1 })).status).toBe(400);
     expect((await call("/v1/packages", { method: "POST", body: "{}" })).status).toBe(405);
     expect((await call("/v1/packages/inspect")).status).toBe(405);
+  });
+  test("writes and checks a package's manifest", async () => {
+    const fixture = workflowFixture();
+    const configDir = mkdtempSync(join(tmpdir(), "baked-api-config-"));
+    const server = await startApiServer({ service: fixture.service, pollMs: 20, configDir, log: () => {} });
+    const dir = writePackage();
+    cleanups.push(async () => {
+      await server.stop();
+      await fixture.dispose();
+      await removeTempDir(configDir);
+      await removeTempDir(dir);
+    });
+    const post = (path: string, body: unknown) =>
+      fetch(`${server.url}${path}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${server.token}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    const manifest = join(dir, "baked-package.json");
+    rmSync(manifest);
+
+    // Without a manifest, a name and a version are needed.
+    const missing = await post("/v1/packages/pack", { path: dir });
+    expect(missing.status).toBe(400);
+    expect(((await missing.json()) as { error: { code: string } }).error.code).toBe("INVALID_ARGUMENT");
+
+    const checked = await post("/v1/packages/pack", { path: dir, name: "acme-review", version: "1.0.0", check: true });
+    expect(checked.status).toBe(200);
+    expect((await checked.json()) as PackResult).toMatchObject({ written: false, upToDate: false, existing: false, problems: [] });
+    expect(existsSync(manifest)).toBe(false);
+
+    const written = await post("/v1/packages/pack", { path: dir, name: "acme-review", version: "1.0.0" });
+    expect(written.status).toBe(201);
+    const result = (await written.json()) as PackResult;
+    expect(result.written).toBe(true);
+    expect(JSON.parse(readFileSync(manifest, "utf8")).files).toEqual(result.manifest?.files);
+    // The workspace is untouched.
+    expect(existsSync(join(fixture.service.workspace, "baked", "packages.json"))).toBe(false);
+
+    const fresh = await post("/v1/packages/pack", { path: dir, check: true });
+    expect(((await fresh.json()) as PackResult).upToDate).toBe(true);
+
+    writeFileSync(join(dir, "notes.txt"), "x");
+    const refused = (await (await post("/v1/packages/pack", { path: dir })).json()) as PackResult;
+    expect(refused.written).toBe(false);
+    expect(refused.problems.join("\n")).toContain("notes.txt");
+
+    expect((await post("/v1/packages/pack", { path: join(dir, "missing"), name: "a", version: "1.0.0" })).status).toBe(404);
+    expect((await post("/v1/packages/pack", { path: dir, extra: 1 })).status).toBe(400);
+    expect((await fetch(`${server.url}/v1/packages/pack`, { headers: { Authorization: `Bearer ${server.token}` } })).status).toBe(405);
   });
 });

@@ -100,6 +100,15 @@ import {
 } from "./auto-approval.js";
 import { budgetUsage, raiseToStartEstimate, reserveTokens } from "./budget.js";
 import {
+  type CandidateResult,
+  type CandidateSelection,
+  candidateCount,
+  candidatesToJudge,
+  changedLineCount,
+  normalizedFingerprint,
+  selectCandidate,
+} from "./candidates.js";
+import {
   fixerCommand,
   fixerTiers,
   isCodePath,
@@ -277,6 +286,12 @@ import {
   type TaskGraph,
   WorkflowSchema,
 } from "./schemas.js";
+import {
+  UNCOVERED_SUBMISSIONS,
+  uncoveredCriterion,
+  uncoveredFindings,
+  uncoveredSpecNote,
+} from "./uncovered.js";
 
 type Implementation = ReturnType<typeof ImplementationSchema.parse>;
 
@@ -760,6 +775,10 @@ export class WorkflowScheduler {
               const approvalLimits = plannerApprovalLimits(policy);
               // Scope advice is given once; a plan that keeps the writes is approved by a person.
               let scopeAdvised = false;
+              // A criterion left uncovered again by a plan that names it is one the planner cannot
+              // cover; it stops being a submission error and goes back to the spec (#780).
+              const uncoveredSubmissions = new Map<string, number>();
+              const cannotCover = new Set<string>();
               const plan = PlanSchema.parse(
                 await this.call(
                   runId,
@@ -812,7 +831,16 @@ export class WorkflowScheduler {
                       ...testWriteProblems(parsed.data.taskGraph, policy),
                       ...testsFirstProblems(spec, parsed.data.taskGraph, policy),
                     ];
-                    if (scopeAdvised) return problems;
+                    const open = problems.filter((problem) => {
+                      const id = uncoveredCriterion(problem);
+                      if (!id) return true;
+                      const count = (uncoveredSubmissions.get(id) ?? 0) + 1;
+                      uncoveredSubmissions.set(id, count);
+                      if (count >= UNCOVERED_SUBMISSIONS && parsed.data.markdown.includes(id))
+                        cannotCover.add(id);
+                      return !cannotCover.has(id);
+                    });
+                    if (scopeAdvised) return open;
                     const advice = planScopeAdvice(
                       policy,
                       parsed.data.taskGraph,
@@ -820,13 +848,41 @@ export class WorkflowScheduler {
                       this.baselineScaffold(runId, state),
                     );
                     if (advice.length) scopeAdvised = true;
-                    return [...problems, ...advice];
+                    return [...open, ...advice];
                   },
                   scope ? { maxSteps: scope.maxSteps, maxTokens: scope.maxTokens } : undefined,
                 ),
               );
               state.plan = plan.markdown;
               const problems = this.planProblems(runId, spec, plan, policy, profiles);
+              const uncovered = problems.map(uncoveredCriterion);
+              if (
+                problems.length &&
+                uncovered.every((id): id is string => id !== null && cannotCover.has(id))
+              ) {
+                const ids = [...new Set(uncovered)] as string[];
+                const stages = this.stageKinds(runId, v2);
+                const specify = stages.findIndex((s) => s.kind === "specify");
+                // The spec author gets the planner's reason once; a criterion it keeps goes to a person.
+                if (
+                  specify >= 0 &&
+                  ids.some((id) => !state.uncoveredReturned.includes(id)) &&
+                  this.moveTo(state, stages, specify, v2)
+                ) {
+                  state.uncoveredReturned.push(
+                    ...ids.filter((id) => !state.uncoveredReturned.includes(id)),
+                  );
+                  state.prompt += `\n${uncoveredSpecNote(spec, ids, plan.markdown)}`;
+                  advance = false;
+                  rerouted = v2 !== null;
+                  break;
+                }
+                this.wait("clarification", state, {
+                  findings: uncoveredFindings(spec, ids, plan.markdown),
+                });
+                advance = false;
+                break;
+              }
               if (problems.length)
                 throw new WorkflowFault("INVALID_REFERENCE", problems.join("\n"));
               const planned = planGraph(spec, plan, policy, profiles);
@@ -1273,7 +1329,7 @@ export class WorkflowScheduler {
                 break;
               }
               await this.recordCheckBaseline(runId, state, policy, signal);
-              if (policy.maxConcurrentWriters > 1 && state.worktree)
+              if ((policy.maxConcurrentWriters > 1 || candidateCount(policy) > 1) && state.worktree)
                 await this.implementParallel(runId, stepId, state, policy, profiles, signal);
               else await this.implement(runId, stepId, state, policy, profiles, signal);
               // A task that reported a spec conflict waits for a person's answer.
@@ -3510,6 +3566,15 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         if (this.queued.length) return;
         continue;
       }
+      const contested = this.contestedTask(runId, state, policy, ready);
+      if (contested) {
+        await this.implementCandidates(runId, stepId, state, policy, profiles, signal, contested, {
+          worktree,
+          checks,
+          lost,
+        });
+        continue;
+      }
       if (!ready.length) {
         if (this.releaseDeferred(state)) continue;
         break;
@@ -3556,44 +3621,19 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         const fatal = outcomes.find((outcome) => outcome.kind === "fatal");
         if (fatal) failure = fatal.error;
         for (const outcome of outcomes) {
-          const { entry } = outcome;
           if (outcome.kind === "fatal") continue;
-          if (outcome.kind === "conflict")
-            this.specConflict(runId, state, entry.child, entry.task, outcome.result);
-          else if (outcome.kind === "done") {
-            if (!fatal) await this.integrateTask(runId, state, policy, profiles, outcome, signal);
-            delete state.taskCarry[entry.task.id];
-          } else if (outcome.kind === "interrupted") {
-            const restart = !fatal && this.restartLostTask(runId, state, outcome);
-            if (restart && outcome.edits) this.carryEdits(runId, state, entry, outcome.edits);
-            if (!restart) lost.set(entry.task.id, outcome.reason);
-            this.store.transaction(() => {
-              this.store.taskStatus(runId, entry.task.id, "interrupted");
-              this.store.finishStep(runId, entry.child, "interrupted");
-            });
-          } else if (outcome.kind === "rejected") {
-            const again =
-              (outcome.edits !== undefined &&
-                this.continueAtCap(runId, state, entry.child, entry.task)) ||
-              (outcome.restart !== undefined &&
-                this.restartOnce(
-                  runId,
-                  state,
-                  entry.child,
-                  entry.task.id,
-                  outcome.restart.reason,
-                  outcome.edits?.changed ?? [],
-                  outcome.restart.account,
-                ));
-            if (again && outcome.edits) this.carryEdits(runId, state, entry, outcome.edits);
-            if (!again) failure ??= outcome.error;
-            this.store.transaction(() => {
-              this.store.taskStatus(runId, entry.task.id, again ? "interrupted" : "blocked");
-              this.store.finishStep(runId, entry.child, "failed");
-              if (again) this.store.saveState(runId, state);
-            });
-          }
-          await this.releaseTaskWorktree(runId, entry);
+          const error = await this.settleOutcome(
+            runId,
+            state,
+            policy,
+            profiles,
+            outcome,
+            !!fatal,
+            lost,
+            signal,
+          );
+          failure ??= error;
+          await this.releaseTaskWorktree(runId, outcome.entry);
         }
       } finally {
         for (const entry of batch) await this.releaseTaskWorktree(runId, entry);
@@ -3619,6 +3659,350 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       throw new WorkflowFault("OUTPUT_INVALID", "Task dependencies remain blocked", {
         reason: "dependency_failed",
       });
+  }
+  /**
+   * The ready task best-of-N runs next (#642): a planned task with files to write that has no
+   * selection yet and no edits carried from an earlier attempt. A restart or a repair of a task
+   * runs once. Undefined when the run has one candidate per task.
+   */
+  private contestedTask(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    ready: Task[],
+  ): Task | undefined {
+    if (candidateCount(policy) < 2) return undefined;
+    return ready.find(
+      (t) =>
+        t.origin === "planned" &&
+        t.writes.length > 0 &&
+        !state.taskCarry[t.id] &&
+        (state.taskRestarts[t.id] ?? 0) === 0 &&
+        !this.store.latestArtifact(runId, `tasks/${t.id}/selection.json`),
+    );
+  }
+  /**
+   * Best-of-N (#642): implements one planned task as several candidates, each in its own worktree
+   * from the same base and with the task's checks, selects one (candidates.ts) and integrates
+   * only that one. Each candidate is kept as `tasks/TASK/candidates/N.json` with its patch and
+   * `tasks/TASK/selection.json` records the choice and why. When no candidate finished, the first
+   * one's ending is handled as a single task's would be.
+   */
+  private async implementCandidates(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    profiles: AgentProfile[],
+    signal: AbortSignal,
+    task: Task,
+    batchContext: {
+      worktree: NonNullable<RuntimeState["worktree"]>;
+      checks: Semaphore;
+      lost: Map<string, string>;
+    },
+  ): Promise<void> {
+    const { worktree, checks, lost } = batchContext;
+    const mainRoot = join(this.store.workspace, worktree.path);
+    const batch = this.reserveBatch(
+      runId,
+      stepId,
+      state,
+      policy,
+      profiles,
+      Array.from({ length: candidateCount(policy) }, () => task),
+    );
+    const base = await runContentCommit(this.store, runId, worktree);
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "batch",
+        `tasks/batches/${newId()}.json`,
+        canonical({
+          base,
+          tasks: [task.id],
+          candidates: batch.length,
+          deferredByOverlap: [],
+          deferredByBudget: [],
+        }),
+      ),
+    );
+    let failure: unknown = null;
+    try {
+      for (const [i, entry] of batch.entries()) {
+        entry.path = await createTaskWorktree(
+          this.store,
+          runId,
+          `${task.id}-c${String(i + 1)}`,
+          base,
+          task.writes.map((w) => w.path),
+        );
+        this.leases.acquire(entry.lease(), runId, { isolated: true });
+      }
+      const outcomes = await Promise.all(
+        batch.map((entry) => this.runTaskWorker(runId, state, policy, entry, checks, signal)),
+      );
+      const fatal = outcomes.find((outcome) => outcome.kind === "fatal");
+      if (fatal) failure = fatal.error;
+      else {
+        const results = await Promise.all(
+          outcomes.map((outcome, i) => this.candidateResult(outcome, i + 1, mainRoot)),
+        );
+        const criticDecides =
+          policy.critic === "select" && this.criticCalibration(runId).calibrated;
+        const critic = this.criticOf(runId, policy, profiles);
+        if (critic)
+          for (const index of candidatesToJudge(
+            results.map((r) => r.result),
+            criticDecides,
+          )) {
+            const candidate = results[index - 1];
+            const entry = batch[index - 1];
+            if (!candidate || !entry) continue;
+            candidate.result.score = await this.scoreCandidate(
+              runId,
+              entry.child,
+              state,
+              policy,
+              critic,
+              task,
+              candidate.patch,
+              signal,
+            );
+          }
+        const selection = selectCandidate(
+          results.map((r) => r.result),
+          criticDecides,
+        );
+        this.recordSelection(runId, task, batch, results, selection);
+        const chosen =
+          selection.winner !== null
+            ? outcomes[selection.winner - 1]
+            : outcomes.find((outcome) => outcome.kind !== "fatal");
+        for (const outcome of outcomes) {
+          if (outcome === chosen || outcome.kind === "fatal") continue;
+          this.store.transaction(() =>
+            this.store.finishStep(
+              runId,
+              outcome.entry.child,
+              outcome.kind === "done"
+                ? "completed"
+                : outcome.kind === "interrupted"
+                  ? "interrupted"
+                  : "failed",
+            ),
+          );
+          await this.releaseTaskWorktree(runId, outcome.entry);
+        }
+        if (chosen && chosen.kind !== "fatal") {
+          failure = await this.settleOutcome(
+            runId,
+            state,
+            policy,
+            profiles,
+            chosen,
+            false,
+            lost,
+            signal,
+          );
+          await this.releaseTaskWorktree(runId, chosen.entry);
+        }
+      }
+    } finally {
+      for (const entry of batch) await this.releaseTaskWorktree(runId, entry);
+    }
+    if (failure) throw failure;
+  }
+  /** What the selection sees of one candidate, with its patch against the run worktree. */
+  private async candidateResult(
+    outcome: WorkerOutcome,
+    index: number,
+    mainRoot: string,
+  ): Promise<{ result: CandidateResult; patch: string; changed: string[] }> {
+    const error =
+      outcome.kind === "done"
+        ? undefined
+        : outcome.kind === "interrupted"
+          ? outcome.reason
+          : outcome.kind === "conflict"
+            ? `Spec conflict: ${outcome.result.summary}`
+            : outcome.error instanceof Error
+              ? outcome.error.message
+              : String(outcome.error);
+    if (outcome.kind !== "done")
+      return {
+        result: {
+          index,
+          outcome: outcome.kind === "interrupted" ? "interrupted" : "rejected",
+          failedChecks: [],
+          fingerprint: null,
+          changedLines: 0,
+          score: null,
+          ...(error ? { error } : {}),
+        },
+        patch: "",
+        changed: outcome.kind === "rejected" ? (outcome.edits?.changed ?? []) : [],
+      };
+    const root = join(this.store.workspace, outcome.entry.path);
+    const read = (from: string, path: string): Buffer | null => {
+      const absolute = workspacePath(from, path);
+      return existsSync(absolute) ? readFileSync(absolute) : null;
+    };
+    const parts: string[] = [];
+    for (const path of outcome.changed)
+      parts.push(await unifiedDiff(path, read(mainRoot, path), read(root, path)));
+    const patch = parts.filter(Boolean).join("\n");
+    return {
+      result: {
+        index,
+        outcome: "done",
+        failedChecks: outcome.checks
+          .filter(({ check, checked }) => check.required && checked.status !== "passed")
+          .map(({ check }) => check.id),
+        fingerprint: normalizedFingerprint(
+          outcome.changed.map((path) => [path, read(root, path)?.toString("utf8") ?? null]),
+        ),
+        changedLines: changedLineCount(patch),
+        score: null,
+      },
+      patch:
+        patch.length > MAX_PATCH_CHARS
+          ? `${patch.slice(0, MAX_PATCH_CHARS)}\n... patch cut at ${MAX_PATCH_CHARS} characters`
+          : patch,
+      changed: outcome.changed,
+    };
+  }
+  /**
+   * The critic's score of one candidate, which breaks a tie in the vote or, calibrated in
+   * `select` mode, picks among the passing candidates. A critic that fails leaves it unscored.
+   */
+  private async scoreCandidate(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    critic: AgentProfile,
+    task: Task,
+    patch: string,
+    signal: AbortSignal,
+  ): Promise<number | null> {
+    const child = this.store.transaction(() => this.store.beginStep(runId, "critic", stepId));
+    try {
+      const output = CritiqueSchema.parse(
+        await this.call(
+          runId,
+          child,
+          state,
+          policy,
+          critic,
+          { task, patch, failedChecks: [] },
+          signal,
+        ),
+      );
+      this.store.transaction(() => this.store.finishStep(runId, child, "completed"));
+      return output.score;
+    } catch (error) {
+      if (signal.aborted) throw error;
+      if (
+        error instanceof WorkflowFault &&
+        ["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code)
+      )
+        throw error;
+      this.store.transaction(() => this.store.finishStep(runId, child, "failed"));
+      return null;
+    }
+  }
+  /** Keeps every candidate of a task and the selection, with what decided it. */
+  private recordSelection(
+    runId: string,
+    task: Task,
+    batch: BatchEntry[],
+    results: { result: CandidateResult; patch: string; changed: string[] }[],
+    selection: CandidateSelection,
+  ): void {
+    this.store.transaction(() => {
+      for (const { result, patch, changed } of results)
+        this.store.artifact(
+          runId,
+          "candidate",
+          `tasks/${task.id}/candidates/${String(result.index)}.json`,
+          canonical({
+            taskId: task.id,
+            ...result,
+            selected: result.index === selection.winner,
+            model: batch[result.index - 1]?.profile.model ?? null,
+            changed,
+            patch,
+          }),
+        );
+      this.store.artifact(
+        runId,
+        "candidate-selection",
+        `tasks/${task.id}/selection.json`,
+        canonical({
+          taskId: task.id,
+          candidates: results.length,
+          ...selection,
+          // The oracle rate's numerator: some candidate passed; the selected rate's: the winner did.
+          oracle: selection.passing.length > 0,
+          selectedPassed: selection.winner !== null && selection.passing.includes(selection.winner),
+        }),
+      );
+    });
+  }
+  /**
+   * Records how one task worker of a batch ended: a finished task is integrated (unless another
+   * worker of the batch stopped the run), a lost one may restart, a rejected one may continue or
+   * restart once. Returns the error that stops the run, or null.
+   */
+  private async settleOutcome(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    profiles: AgentProfile[],
+    outcome: Exclude<WorkerOutcome, { kind: "fatal" }>,
+    fatal: boolean,
+    lost: Map<string, string>,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    const { entry } = outcome;
+    let failure: unknown = null;
+    if (outcome.kind === "conflict")
+      this.specConflict(runId, state, entry.child, entry.task, outcome.result);
+    else if (outcome.kind === "done") {
+      if (!fatal) await this.integrateTask(runId, state, policy, profiles, outcome, signal);
+      delete state.taskCarry[entry.task.id];
+    } else if (outcome.kind === "interrupted") {
+      const restart = !fatal && this.restartLostTask(runId, state, outcome);
+      if (restart && outcome.edits) this.carryEdits(runId, state, entry, outcome.edits);
+      if (!restart) lost.set(entry.task.id, outcome.reason);
+      this.store.transaction(() => {
+        this.store.taskStatus(runId, entry.task.id, "interrupted");
+        this.store.finishStep(runId, entry.child, "interrupted");
+      });
+    } else if (outcome.kind === "rejected") {
+      const again =
+        (outcome.edits !== undefined &&
+          this.continueAtCap(runId, state, entry.child, entry.task)) ||
+        (outcome.restart !== undefined &&
+          this.restartOnce(
+            runId,
+            state,
+            entry.child,
+            entry.task.id,
+            outcome.restart.reason,
+            outcome.edits?.changed ?? [],
+            outcome.restart.account,
+          ));
+      if (again && outcome.edits) this.carryEdits(runId, state, entry, outcome.edits);
+      if (!again) failure ??= outcome.error;
+      this.store.transaction(() => {
+        this.store.taskStatus(runId, entry.task.id, again ? "interrupted" : "blocked");
+        this.store.finishStep(runId, entry.child, "failed");
+        if (again) this.store.saveState(runId, state);
+      });
+    }
+    return failure;
   }
   /**
    * Decides whether a task whose worker was lost runs again in this drive, from the run worktree's

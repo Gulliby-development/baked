@@ -200,6 +200,11 @@ describe("workflow view model", () => {
     expect(view.events.map((e) => e.type)).toEqual(["run.created", "artifact.committed", "artifact.committed"]);
     expect(view.estimate.saved).toMatchObject({ basis: "defaults" });
     expect("state" in view).toBe(false);
+    // The run's own definition as a line: its review gates, none of them run yet.
+    expect(view.gates.review?.map((g) => [g.id, g.mode, g.last])).toEqual([
+      ["correctness-review", "required", null],
+      ["security-review", "required", null],
+    ]);
     expect(readWorkflowViewIfChanged(service, run.runId, view.stamp)).toBeNull();
     const step = service.store.beginStep(run.runId, "research");
     const changed = readWorkflowViewIfChanged(service, run.runId, view.stamp);

@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { afterEach, describe, expect, test } from "bun:test";
 import type { LanguageModelV3, LanguageModelV3GenerateResult } from "@ai-sdk/provider";
 import { MockLanguageModelV3 } from "ai/test";
@@ -249,6 +250,43 @@ describe("repair probes", () => {
       .filter((e) => e.type === "tool.finished")
       .map((e) => e.payload as { tool: string; status: string });
     expect(tools).toContainEqual(expect.objectContaining({ tool: "run_probe", status: "ok" }));
+  });
+});
+
+describe("host tools", () => {
+  // R10: a reviewer's run_repro calls were missing from the journal, so review cost had no owner.
+  test("a host tool call is journaled with its attempt and result size", async () => {
+    scriptModel([
+      step(1000, 50, { name: "run_repro", input: { value: 1 } }),
+      () => {
+        throw new Error("provider unavailable");
+      },
+    ]);
+    const { store, run, attemptId, executor, request } = await nativeAttempt();
+    const answer = { status: "reproduced", output: "actual" };
+    await expect(
+      executor.execute({
+        ...request,
+        profile: { ...request.profile, allowedTools: [...request.profile.allowedTools, "run_repro"] },
+        hostTools: {
+          run_repro: {
+            description: "Run a repro",
+            inputSchema: z.object({ value: z.number() }),
+            execute: async () => answer,
+          },
+        },
+      }),
+    ).rejects.toThrow("provider unavailable");
+    const events = store.events(run.runId).filter((e) => e.type === "tool.started" || e.type === "tool.finished");
+    expect(events.map((e) => [e.type, (e.payload as { tool: string }).tool])).toEqual([
+      ["tool.started", "run_repro"],
+      ["tool.finished", "run_repro"],
+    ]);
+    expect(events[1]?.payload).toMatchObject({
+      attemptId,
+      status: "ok",
+      resultBytes: Buffer.byteLength(JSON.stringify(answer)),
+    });
   });
 });
 

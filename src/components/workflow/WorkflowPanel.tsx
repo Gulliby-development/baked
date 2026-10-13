@@ -722,6 +722,7 @@ export function WorkflowPanel({
                 tasks={tasks}
                 findings={findings}
                 checks={checks}
+                gates={service.store.gates(runId)}
                 driving={driving}
                 driveError={driveError}
                 width={contentW}
