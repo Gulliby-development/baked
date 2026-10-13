@@ -180,6 +180,9 @@ export const AutoApprovalSchema = z
   .strict()
   .refine((value) => value.renewal || value.limits !== null, "Auto approval requires limits");
 
+/** The review confidence a finding needs to start a correction when the policy does not say. */
+export const DEFAULT_REVIEW_MIN_CONFIDENCE = 0.8;
+
 /** Upper bound of `maxConcurrentWriters`. */
 export const MAX_CONCURRENT_WRITERS = 4;
 
@@ -214,6 +217,13 @@ export const PolicySchema = z
       .strict(),
     skepticProfileId: SafeId,
     forceSecurityReview: z.boolean(),
+    /**
+     * What an edit that introduces errors in the edited file or a file importing it does during
+     * the run: `feedback` returns the errors, `reject` also restores the file. Absent means
+     * `feedback`, so stored policies keep their hash; a run takes `reject` from the project's
+     * `editDiagnostics` setting when the policy does not name it (start.ts).
+     */
+    editDiagnostics: z.enum(["feedback", "reject"]).optional(),
     allowedTools: UniqueStrings,
     network: z.enum(["deny", "ask", "allow"]),
     checks: z.array(CheckSchema),
@@ -231,6 +241,18 @@ export const PolicySchema = z
      * Absent means on, so stored policies keep their hash.
      */
     projectMemory: z.boolean().optional(),
+    /**
+     * Review findings whose confidence is below this are notes and start no correction. Absent
+     * means 0.8 (`DEFAULT_REVIEW_MIN_CONFIDENCE`), so stored policies keep their hash; a run start
+     * copies `modelRouting.reviewMinConfidence` here when it is set.
+     */
+    reviewMinConfidence: z.number().min(0).max(1).optional(),
+    /**
+     * The critic that scores every task attempt with a rubric (#646): `advise` shows the score
+     * and decides nothing, `off` skips it. Absent means `advise` when the critic's model is of
+     * another vendor than the implementation's, else off, so stored policies keep their hash.
+     */
+    critic: z.enum(["off", "advise"]).optional(),
     /**
      * `false` leaves out learned code rules (#643): rules proposed from findings that recurred in
      * earlier runs and activated by recurrence or a person. Absent means on, so stored policies
@@ -250,6 +272,30 @@ export const PolicySchema = z
      * their hash. `ratchet` makes them blocking findings; `off` skips the measurement.
      */
     duplication: z.enum(["off", "warn", "ratchet"]).optional(),
+    /**
+     * Semgrep on the run's diff (quality/sast.ts). Absent means `auto`: it runs when Semgrep is
+     * installed, so stored policies keep their hash. `sastConfig` is the Semgrep `--config`
+     * (absent: `p/default`).
+     */
+    sast: z.enum(["auto", "off"]).optional(),
+    sastConfig: z.string().min(1).max(512).optional(),
+    /**
+     * `false` keeps the dependency check (quality/dependencies.ts) from looking packages up in
+     * their registries; every new dependency is then inconclusive. Absent means lookups.
+     */
+    registryLookups: z.literal(false).optional(),
+    /**
+     * The mutation gate (quality/mutation.ts): `advisory` notes the mutants the run's tests do
+     * not kill, `required` makes them blocking findings, `off` skips the gate. Absent means the
+     * default of the workflow's preset (`advisory` for `full`, `off` for the others), so stored
+     * policies keep their hash. `mutationThresholds` lowers the killed share a file needs under
+     * `required` (path or glob to percent, default 100); `mutationBudgetMs` caps the gate's time.
+     */
+    mutation: z.enum(["off", "advisory", "required"]).optional(),
+    mutationThresholds: z
+      .record(z.string().min(1).max(512), z.number().int().min(0).max(100))
+      .optional(),
+    mutationBudgetMs: z.number().int().min(10_000).max(3_600_000).optional(),
     /**
      * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
      * rules turned off, severities changed and ast-grep rule files added. Absent means the
@@ -367,6 +413,7 @@ export const ProfileSchema = z
       "acceptance",
       "acceptance-draft",
       "initiativePlan",
+      "critique",
     ]),
     maxSteps: z.number().int().min(1).max(100),
     maxOutputTokens: z.number().int().min(256).max(65536),
@@ -519,6 +566,11 @@ export const ReviewSchema = z
              */
             basis: z.enum(["spec", "inferred"]).optional(),
             /**
+             * How sure the reviewer is that the finding is real and introduced by this change, 0
+             * to 1. Below the run's `reviewMinConfidence` the finding is a note. Absent counts as 1.
+             */
+            confidence: z.number().min(0).max(1).optional(),
+            /**
              * A command that shows the claimed behavior: it prints `actual` on a line of its
              * output where the spec requires `expected`. The runtime runs it before the finding
              * starts a correction; a finding whose repro does not print `actual` is a note.
@@ -550,6 +602,35 @@ export const ReviewSchema = z
       .max(100),
   })
   .strict();
+
+/**
+ * One item of the rubric a critic scores a task attempt on (#646): 0 is bad, 1 good. The items:
+ * the attempt understood the intent, followed the instructions, stayed in scope, did not game the
+ * tests, and implemented the task completely.
+ */
+const RubricItem = z.object({ score: z.number().min(0).max(1), note: Text }).strict();
+/**
+ * A critic's score of one task attempt: advice shown in the run, not a gate. `score` is the
+ * critic's estimate that the attempt is correct and will be kept as it is.
+ */
+export const CritiqueSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    taskId: TaskId,
+    score: z.number().min(0).max(1),
+    rubric: z
+      .object({
+        intent: RubricItem,
+        instructions: RubricItem,
+        scope: RubricItem,
+        testIntegrity: RubricItem,
+        completeness: RubricItem,
+      })
+      .strict(),
+    summary: Text,
+  })
+  .strict();
+export type Critique = z.infer<typeof CritiqueSchema>;
 
 export const ImplementationSchema = z
   .object({
@@ -683,6 +764,8 @@ export const WorkflowConfigSchema = z
         stepStallMs: z.number().int().min(10_000).max(14_400_000).optional(),
         maxToolTimeouts: z.number().int().min(1).max(50).optional(),
         autoResumes: z.number().int().min(0).max(20).optional(),
+        providerResumes: z.number().int().min(0).max(20).optional(),
+        providerWaitMs: z.number().int().min(0).max(3_600_000).optional(),
       })
       .strict()
       .optional(),
@@ -1104,6 +1187,11 @@ export interface RunSnapshot {
    * the owner is alive and its work is not advancing.
    */
   stalled?: { silentMs: number; lastEventAt: string | null };
+  /**
+   * Present while a run blocked with `provider_unavailable` waits for its automatic resume
+   * (`workflows.stall.providerResumes`): when it retries, and which resume that is.
+   */
+  autoRetry?: { at: string; attempt: number; of: number };
   pendingRequestIds: string[];
   /** The project of the run's workspace when it was created. */
   projectId?: string;
@@ -1148,6 +1236,10 @@ export interface StartRequest {
   clarification?: ClarificationMode;
   /** The duplication ratchet of this run (CLI `--duplication MODE`); it overrides the policy. */
   duplication?: "off" | "warn" | "ratchet";
+  /** Semgrep on the run's diff (CLI `--sast MODE`); it overrides the policy. */
+  sast?: "auto" | "off";
+  /** The mutation gate of this run (CLI `--mutation MODE`); it overrides the policy. */
+  mutation?: "off" | "advisory" | "required";
   /**
    * Stage-level model routes for this run (CLI `--route STAGE=MODEL`); they win over
    * `modelRouting.workflows.<id>.stages`. A value starting with `$` names a model class.
@@ -1155,6 +1247,8 @@ export interface StartRequest {
   routes?: Record<string, string>;
   /** The GitHub issue the request comes from (CLI `--issue`); the delivery pull request closes it. */
   issue?: { repository: string; number: number; url: string; title: string };
+  /** The proposal of `--auto-preset` and the workflow the run took (`PresetChoice`). */
+  presetChoice?: import("./preset-router.js").PresetChoice;
 }
 export type Decision =
   | {

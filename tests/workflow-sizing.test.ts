@@ -227,6 +227,18 @@ describe("plan-time sizing", () => {
     expect(report.budgetAfter).toBe(300_000 + 542_170 + 210_000 + 225_651);
   });
 
+  test("a budget already at the ceiling is not reported as growing to itself (#747)", () => {
+    const report = sizePlan({
+      graph: graph(task("T001", ["src/core/workflows/store.ts"])),
+      policy: policy({ maxRunTokens: 4_000_000 }, 4_000_000),
+      samples: [],
+      spent: 3_900_000,
+    });
+    expect(report.budgetAfter).toBe(4_000_000);
+    expect(report.reasons.join(" ")).not.toContain("grows from 4000000 to 4000000");
+    expect(report.reasons.join(" ")).toContain("stays at 4000000 tokens, the policy's ceiling");
+  });
+
   // cronsay 15eb3204: eight tasks were priced at the sum of their upper bounds, 4.0M of tasks for a
   // run that comparable apps finished with 0.6-1.0M, so the plan went above the 4M ceiling.
   test("many tasks are priced near their midpoints, and one task at its upper bound", () => {

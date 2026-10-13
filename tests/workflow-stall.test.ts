@@ -7,6 +7,7 @@ import { settleInterruptedEdits } from "../src/core/workflows/recovery.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import {
   DEFAULT_STALL_SETTINGS,
+  providerResumeWaitMs,
   stalledFault,
   stallSettings,
   ToolDeadlineError,
@@ -121,6 +122,89 @@ describe("tool deadlines", () => {
     expect(thrown).toBeInstanceOf(ToolDeadlineError);
     const effect = fixture.service.store.effects(runId).find((e) => e.kind === "file_patch");
     expect(effect?.status).toBe("failed");
+  });
+});
+
+describe("a provider outage", () => {
+  const outage = () =>
+    new WorkflowFault("OUTPUT_INVALID", "fetch failed: socket hang up", {
+      reason: "provider_unavailable",
+    });
+
+  test("waits 1, 3 and 9 minutes by default", () => {
+    const settings = stallSettings({});
+    expect([1, 2, 3].map((n) => providerResumeWaitMs(settings, n))).toEqual([
+      60_000, 180_000, 540_000,
+    ]);
+  });
+
+  test("blocks the run with provider_unavailable and the service resumes it by itself", async () => {
+    const fixture = stallFixture(
+      (_, calls) => {
+        if (calls === 0) throw outage();
+      },
+      { providerWaitMs: 0 },
+    );
+    const { runId, snapshot } = await completed(fixture);
+    expect(snapshot.status).toBe("completed");
+    expect(fixture.service.store.state(runId).providerResumes).toBe(1);
+    const resume = fixture.service.store.latestArtifact(runId, "provider/resume-1.json");
+    expect(JSON.parse(fixture.service.store.readArtifact(runId, resume?.id ?? ""))).toMatchObject({
+      attempt: 1,
+      of: 3,
+      waitMs: 0,
+    });
+  });
+
+  test("stays blocked once the automatic resumes are spent", async () => {
+    const fixture = stallFixture(
+      () => {
+        throw outage();
+      },
+      { providerWaitMs: 0, providerResumes: 2 },
+    );
+    const { runId, snapshot } = await completed(fixture);
+    expect(snapshot.status).toBe("blocked");
+    expect(snapshot.reason).toBe("provider_unavailable");
+    expect(snapshot.autoRetry).toBeUndefined();
+    expect(fixture.service.store.state(runId).providerResumes).toBe(2);
+  });
+
+  test("shows the pending retry in the snapshot and stops waiting when the drive is aborted", async () => {
+    const fixture = stallFixture(
+      () => {
+        throw outage();
+      },
+      { providerWaitMs: 600_000 },
+    );
+    const run = await fixture.start();
+    await fixture.service.drive(run.runId, signal());
+    await fixture.approve(run.runId);
+    const controller = new AbortController();
+    const driving = fixture.service.drive(run.runId, controller.signal);
+    let snapshot = await fixture.service.get(run.runId);
+    for (let i = 0; i < 200 && !snapshot.autoRetry; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      snapshot = await fixture.service.get(run.runId);
+    }
+    expect(snapshot.reason).toBe("provider_unavailable");
+    expect(snapshot.autoRetry).toMatchObject({ attempt: 1, of: 3 });
+    expect(Date.parse(snapshot.autoRetry?.at ?? "")).toBeGreaterThan(Date.now() + 500_000);
+    controller.abort();
+    const stopped = await driving;
+    expect(stopped.status).toBe("blocked");
+  });
+
+  test("does not resume when providerResumes is 0", async () => {
+    const fixture = stallFixture(
+      () => {
+        throw outage();
+      },
+      { providerResumes: 0 },
+    );
+    const { runId, snapshot } = await completed(fixture);
+    expect(snapshot.reason).toBe("provider_unavailable");
+    expect(fixture.service.store.state(runId).providerResumes).toBe(0);
   });
 });
 

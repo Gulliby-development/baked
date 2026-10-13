@@ -65,7 +65,9 @@ export function workflowFixture<E extends FixtureExecutor = FixtureExecutor>(
   const root = mkdtempSync(join(tmpdir(), "baked-workflow-"));
   const executor = options.executor ? options.executor(root) : (new FixtureExecutor(root, options.tokensPerCall) as E);
   const policy = options.policy ?? fixturePolicy;
-  const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } };
+  // A blocked provider_unavailable run would otherwise wait a minute for its automatic resume;
+  // tests of that resume set `workflows.stall` themselves.
+  const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy, stall: { providerResumes: 0 } as Record<string, number> } };
   const service = new NativeWorkflowService(root, config, executor);
   return {
     root, executor, service, config, policy,
