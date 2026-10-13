@@ -131,6 +131,7 @@ import {
   withReadDependencies,
 } from "./plan-consistency.js";
 import { ProcessScope } from "./process-scope.js";
+import { type LearnedRule, rulesFor } from "./project-memory.js";
 import {
   compareWithBaseline,
   duplicationOf,
@@ -2317,8 +2318,24 @@ export class WorkflowScheduler {
         ? this.store.latestArtifact(runId, "assumptions/analysis.json")
         : null;
     const risks = assumed ? knownRisks(this.store.readArtifact(runId, assumed.id)) : null;
+    // Learned rules go to the agents that write and judge code: an implementer gets the rules of
+    // its task's paths, reviewers every rule with its scope (#643).
+    const task = (extra as { task?: Task } | null)?.task;
+    const rules =
+      state.learnedRules &&
+      (profile.context === "implementation" ||
+        profile.context === "review" ||
+        profile.context === "convergence")
+        ? rulesFor(
+            JSON.parse(
+              this.store.readArtifact(runId, state.learnedRules.artifactId),
+            ) as LearnedRule[],
+            profile.context === "implementation" && task ? task.writes.map((w) => w.path) : null,
+          )
+        : null;
     return buildWorkflowContext(state, profile, {
       ...(extra && typeof extra === "object" ? extra : { input: extra }),
+      ...(rules ? { learnedRules: rules } : {}),
       ...(workingSet ? { projectWorkingSet: workingSet } : {}),
       ...(memory ? { projectMemory: memory } : {}),
       ...(risks ? { knownRisks: risks } : {}),
