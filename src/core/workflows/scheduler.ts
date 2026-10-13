@@ -1,7 +1,6 @@
 import {
   existsSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -9,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import {
   ROUTING_ARTIFACT,
   type RouteEffort,
@@ -21,7 +20,7 @@ import { runSandbox } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { renderSpec, renderTasks } from "../specs/render.js";
-import { readablePath, validatePackage, workspacePath } from "../specs/validate.js";
+import { validatePackage, workspacePath } from "../specs/validate.js";
 import {
   assertAcceptance,
   assertAcceptanceV2,
@@ -235,9 +234,15 @@ import {
   runMutants,
   scoreMutants,
 } from "./quality/mutation.js";
-import { detectMutationTool, runMutationTool, type ToolShell } from "./quality/mutation-tools.js";
+import {
+  detectMutationTool,
+  runMutationTool,
+  type ToolShell,
+  toolShellFiles,
+} from "./quality/mutation-tools.js";
 import {
   checkPropertyTests,
+  libraryFiles,
   propertyClaim,
   propertyLibraries,
   propertyTestsNote,
@@ -2390,9 +2395,11 @@ export class WorkflowScheduler {
       const profile =
         profiles.find((p) => p.id === named) ?? profiles.find((p) => p.id === "implementer");
       if (!profile) return null;
-      const stage = WorkflowSchema.parse(JSON.parse(run.definition_json)).stages.find(
-        (s) => s.kind === "task-graph",
-      )?.id;
+      const parsed = parseRunDefinition(run.definition_json);
+      const stage =
+        parsed.schemaVersion === 1
+          ? parsed.definition.stages.find((s) => s.kind === "task-graph")?.id
+          : parsed.definition.stages.find((s) => stageKind(s) === "task-graph")?.id;
       return this.stageRoute(runId, stage, profile).models[0] ?? profile.model;
     } catch {
       return null;
@@ -6333,6 +6340,24 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           definitionHash: hashJson(task),
           evidenceIds: checkEvidence,
         };
+        // The task checks a corrective task was created for passed: the host's finding that they
+        // failed no longer holds. A run without a review stage has nothing else to close it (#866).
+        const passed = new Set(
+          this.store
+            .checks(runId)
+            .filter((c) => checkEvidence.includes(c.evidence_id))
+            .map((c) => c.check_id),
+        );
+        for (const finding of this.store.findings(runId)) {
+          const failed = taskCheckOfClaim(JSON.parse(finding.body_json).claim);
+          if (
+            task.findingIds.includes(finding.id) &&
+            ["open", "confirmed"].includes(finding.status) &&
+            failed &&
+            passed.has(failed)
+          )
+            this.store.findingStatus(runId, finding.id, "resolved");
+        }
         // Restore the whole repair chain atomically with the successful check gate.
         const restored = new Set<string>();
         const completed = [task];
@@ -6762,29 +6787,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     if (kept) return JSON.parse(this.store.readArtifact(runId, kept.id)) as Record<string, boolean>;
     const root = runRoot(this.store.workspace, state);
     const libraries = propertyLibraries({
-      read: (path) => {
-        try {
-          return readFileSync(readablePath(root, path), "utf8");
-        } catch {
-          return null;
-        }
-      },
-      exists: (path) => {
-        try {
-          return existsSync(readablePath(root, path));
-        } catch {
-          return false;
-        }
-      },
-      list: (directory) => {
-        try {
-          return readdirSync(directory ? readablePath(root, directory) : root).map((name) =>
-            directory ? `${directory}/${name}` : name,
-          );
-        } catch {
-          return [];
-        }
-      },
+      ...libraryFiles(root),
       pythonImports: (module) => {
         const python =
           process.platform === "win32"
@@ -7110,7 +7113,6 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const scratch = join(tmpdir(), "baked-mutation", runId);
     mkdirSync(scratch, { recursive: true });
     const sandbox = runSandbox(policy, root);
-    const absolute = (path: string) => (isAbsolute(path) ? path : readablePath(root, path));
     return {
       root,
       scratch: scratch.replaceAll("\\", "/"),
@@ -7126,14 +7128,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         });
         return { exitCode: outcome.exitCode, output: outcome.output, timedOut: outcome.timedOut };
       },
-      read: (path) => {
-        try {
-          return readFileSync(absolute(path), "utf8");
-        } catch {
-          return null;
-        }
-      },
-      exists: (path) => existsSync(absolute(path)),
+      ...toolShellFiles(root),
       remove: (path) => rmSync(workspacePath(root, path), { recursive: true, force: true }),
       which: (command) => Bun.which(command),
       now: () => Date.now(),
@@ -9041,9 +9036,11 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
   ): void {
     this.store.transaction(() => {
       appendCorrections(this.store, runId, state, policy, findings, kind, scope);
-      state.stageIndex = WorkflowSchema.parse(
-        JSON.parse(this.store.run(runId).definition_json),
-      ).stages.findIndex((s) => s.kind === "task-graph");
+      // A v2 run keeps its position: a task's repair runs in the tasks stage it is in, and a
+      // stage's failure goes back along the definition's repair transition (#853).
+      const parsed = parseRunDefinition(this.store.run(runId).definition_json);
+      if (parsed.schemaVersion === 1)
+        state.stageIndex = parsed.definition.stages.findIndex((s) => s.kind === "task-graph");
     });
   }
   private async accept(
@@ -9174,6 +9171,14 @@ function taskSize(
 
 /** The checks run after a task, in policy order: its task-scope checks and the static ones covering its code. */
 const taskChecks = (policy: RunPolicy, task: Task): Check[] => taskCheckList(policy, task);
+/** The check a host finding says a task failed (`applyTaskCheck`), or null for another claim. */
+const taskCheckOfClaim = (claim: unknown): string | null =>
+  typeof claim === "string"
+    ? (/^Task \S+ (?:required check (\S+) failed$|broke existing tests: check (\S+) passed )/
+        .exec(claim)
+        ?.slice(1)
+        .find(Boolean) ?? null)
+    : null;
 /** Every check a task declares, whatever its scope. */
 const declaredChecks = (policy: RunPolicy, task: Task): Check[] =>
   policy.checks.filter((check) => task.checkIds.includes(check.id));
