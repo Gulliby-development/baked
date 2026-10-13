@@ -46,6 +46,11 @@ export const QUALITY_BASELINE_FILES = "quality/baseline-files.json";
 /** Whether a finding's claim is one the rule pack made, so a clean check closes it. */
 export const ruleClaim = (claim: unknown): boolean =>
   typeof claim === "string" && /^Rule [\w.-]+: /.test(claim);
+/** The claim a rule finding is reported with; `ruleClaimKey` reads it back. */
+export const ruleClaimText = (
+  finding: Pick<RuleFinding, "rule" | "message" | "file" | "line" | "text">,
+): string =>
+  `Rule ${finding.rule}: ${finding.message} (${finding.file}:${finding.line}: ${finding.text})`;
 /** The rule, file and matched text of a rule finding's claim; the line may move between rounds. */
 export const ruleClaimKey = (claim: unknown): string | null => {
   const match =

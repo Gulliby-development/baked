@@ -182,6 +182,32 @@ describe("attempt usage of a failing native attempt", () => {
   });
 });
 
+describe("an attempt at its token cap", () => {
+  test("that ends without submitting stops with the attempt_cap reason and its numbers (#935)", async () => {
+    // 70,000 of the 100,000-token run are held elsewhere, so the attempt's cap is the 30,000 left:
+    // after the first step comes the finalizing step, which reaches the cap with text instead of
+    // a result.
+    const policy = { ...fixturePolicy, maxTotalTokens: 100_000 };
+    scriptModel([
+      step(9_900, 100, { name: "unknown_tool", input: {} }),
+      step(19_900, 100),
+    ]);
+    const { store, run, executor, request, usageRecord } = await nativeAttempt(policy);
+    const other = store.beginStep(run.runId, "other");
+    store.reserve(run.runId, other, "openai/fixture-model", 70_000, policy);
+    const error = await executor.execute(request).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(usageRecord()).toMatchObject({ stopReason: "tokens", maxTokens: 30_000, totalTokens: 30_000 });
+    expect(error).toMatchObject({
+      code: "BUDGET_EXHAUSTED",
+      details: { reason: "attempt_cap", cap: 30_000 },
+    });
+    expect(String(error)).toContain("used 30000 tokens without submitting a result (attempt cap 30000)");
+  });
+});
+
 describe("attempts whose provider reports no tokens", () => {
   const result = {
     schemaVersion: 1,

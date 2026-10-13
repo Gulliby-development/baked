@@ -6,6 +6,7 @@
 
 import { ApprovalRulesStore } from "../chat/approval-rules.js";
 import { BriefError, BriefStore } from "../chat/coordinator.js";
+import { requestSummary } from "../chat/coordinator-summary.js";
 import {
   acceptImages,
   type ImageInput,
@@ -91,6 +92,12 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
     const session = await chat.coordinator(false);
     if (!session) ctx.fail(404, "NOT_FOUND", "This project has no coordinator yet");
     return ctx.json(200, { launched: chat.launched(session.id) });
+  }
+  if (path === "/v1/coordinator/summary") {
+    only("POST");
+    const session = await chat.coordinator(false);
+    if (!session) ctx.fail(404, "NOT_FOUND", "This project has no coordinator yet");
+    return ctx.json(202, requestSummary(session));
   }
   if (path === "/v1/coordinator/brief") {
     only("GET", "PUT");

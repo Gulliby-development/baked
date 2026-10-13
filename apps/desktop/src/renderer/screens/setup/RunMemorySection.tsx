@@ -191,6 +191,8 @@ export function RunMemorySection({ project }: SectionProps) {
       <p className={LEDE}>
         What earlier workflow runs of this project learned, and notes of your own. A run reads it
         when it starts; changes apply to runs started afterwards, and started runs keep their copy.
+        With Share with runs on in Chat, runs also read this project's settled chat memories, and
+        chats recall what runs learned.
       </p>
       {!view.enabled && (
         <Alert>

@@ -39,6 +39,8 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | `/project waiting` | Run requests and blocked runs that wait for you, in this project and in your pinned and recent projects; Enter opens the run here or switches to its project |
 | `/coordinator` | The [project coordinator](coordinator.md#terminal-ui): its conversation, launched work and split cards over the current tab; `Ctrl+Y` approves, `Ctrl+N` rejects, `Ctrl+E` rejects a split and starts a message to change it, `Esc` stops a running turn or goes back |
 | `/coordinator rules` | The coordinator's [approval rules](coordinator.md#approval-rules): no argument shows them; `on`, `off`, `add web-search`, `add pages HOST...`, `add plans N`, `add runs TOKENS [GLOB...]` and `remove ID` change them |
+| `/coordinator` | The [project coordinator](coordinator.md#terminal-ui): its conversation, launched work and split cards over the current tab; `Ctrl+Y` approves, `Ctrl+N` rejects, `Ctrl+E` rejects a split and starts a message to change it, `Esc` stops a running turn or goes back; `Ctrl+S` asks what's happening |
+| `/coordinator summary` | Opens the [project coordinator](coordinator.md#terminal-ui) and asks it what is running, what waits for you, what finished since its last summary and what is still open |
 | `/projects` | Switch project: known folders, pin, forget, open folder (Alt+O) |
 | `/workflow` | Spec-driven workflows, approvals and verification |
 | `/editor` | Compose a message in $EDITOR and send it (Ctrl+X E) |

@@ -211,6 +211,13 @@ const COMMAND_DEFS: CommandDef[] = [
     tags: ["approvals", "auto", "rules", "allow", "coordinator"],
   },
   {
+    cmd: "/coordinator summary",
+    ic: "dispatch",
+    desc: "Ask the coordinator what is running, what waits for you, what finished and what is open",
+    category: "Session",
+    tags: ["project", "status", "digest", "overview", "happening", "runs"],
+  },
+  {
     cmd: "/projects",
     ic: "folder",
     desc: "Switch project: known folders, pin, forget, open folder (Alt+O)",
