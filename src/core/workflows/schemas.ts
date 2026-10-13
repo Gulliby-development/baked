@@ -659,6 +659,7 @@ export const EventType = z.enum([
   "snapshot.invalidated",
   "transition.taken",
   "gate.finished",
+  "wait.progress",
   "acceptance.phase",
   "tool.started",
   "tool.finished",
@@ -906,6 +907,23 @@ export const EventSchema = z.discriminatedUnion("type", [
           attempts: z.number().int().nonnegative(),
           flaky: z.boolean(),
           evidenceId: SafeId.nullable(),
+        })
+        .strict(),
+    })
+    .strict(),
+  // A wait stage polls its gates: emitted when it starts or resumes and when the gates it still
+  // waits for change, not on every poll.
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("wait.progress"),
+      payload: z
+        .object({
+          stageId: SafeId,
+          deadline: z.iso.datetime(),
+          intervalSeconds: z.number().int().positive(),
+          pending: z.array(SafeId),
+          polls: z.number().int().nonnegative(),
         })
         .strict(),
     })

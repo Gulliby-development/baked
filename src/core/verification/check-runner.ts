@@ -94,6 +94,30 @@ export class CheckRunner {
       output: message,
     };
   }
+  /**
+   * Runs a check's command once and records nothing: the polls of a wait stage. Only the run that
+   * decides the stage goes through `run`, so hours of polling leave one evidence per gate.
+   */
+  async probe(
+    check: Check,
+    signal: AbortSignal,
+    root: string,
+    timeoutMs: number,
+  ): Promise<"passed" | "failed" | "inconclusive"> {
+    try {
+      const executable = check.executable === "bun" ? process.execPath : check.executable;
+      const result = await executeCheckCommand(this.processes, executable, check.args, {
+        cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+        env: buildCheckEnv(check),
+        timeoutMs: Math.min(check.timeoutMs, timeoutMs),
+        signal,
+      });
+      if (result.timedOut || result.cancelled || result.exitCode === null) return "inconclusive";
+      return result.exitCode === 0 ? "passed" : "failed";
+    } catch {
+      return "inconclusive";
+    }
+  }
   async run(
     runId: string,
     attemptId: string,
