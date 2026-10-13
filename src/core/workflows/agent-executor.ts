@@ -25,6 +25,7 @@ import {
 } from "../llm/provider-options.js";
 import { canonical } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
+import { withEditDiagnosticsMode } from "../tools/edit-diagnostics.js";
 import { buildTools } from "../tools/index.js";
 import { deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
 import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
@@ -284,26 +285,29 @@ export class NativeAgentExecutor implements AgentExecutor {
                       ? { ...f, path: workspacePath(root, guard.path(f.path)) }
                       : f,
                 );
-              const result = await guard.execute(name, args, async () => {
-                if (name !== "read" || !Array.isArray(normalized.files))
-                  return execute(normalized, options);
-                const { files, outlines } = await outlineLargeReads(
-                  normalized.files,
-                  (request.task?.writes ?? []).map((w) => workspacePath(root, w.path)),
-                );
-                // The read tool refuses a fourth range read of a file as "already in your
-                // context"; after an outline the agent reads several spans of one file.
-                const fresh = files.length > 0 && files.every(isTargetedRead);
-                const input = { ...normalized, files, ...(fresh ? { fresh: true } : {}) };
-                if (outlines.length === 0) return execute(input, options);
-                const read = files.length
-                  ? ((await execute(input, options)) as { output?: unknown })
-                  : null;
-                const output = [typeof read?.output === "string" ? read.output : "", ...outlines]
-                  .filter(Boolean)
-                  .join("\n\n");
-                return { ...(read ?? {}), success: true, output };
-              });
+              const editMode = policy.editDiagnostics ?? "feedback";
+              const result = await withEditDiagnosticsMode(editMode, () =>
+                guard.execute(name, args, async () => {
+                  if (name !== "read" || !Array.isArray(normalized.files))
+                    return execute(normalized, options);
+                  const { files, outlines } = await outlineLargeReads(
+                    normalized.files,
+                    (request.task?.writes ?? []).map((w) => workspacePath(root, w.path)),
+                  );
+                  // The read tool refuses a fourth range read of a file as "already in your
+                  // context"; after an outline the agent reads several spans of one file.
+                  const fresh = files.length > 0 && files.every(isTargetedRead);
+                  const input = { ...normalized, files, ...(fresh ? { fresh: true } : {}) };
+                  if (outlines.length === 0) return execute(input, options);
+                  const read = files.length
+                    ? ((await execute(input, options)) as { output?: unknown })
+                    : null;
+                  const output = [typeof read?.output === "string" ? read.output : "", ...outlines]
+                    .filter(Boolean)
+                    .join("\n\n");
+                  return { ...(read ?? {}), success: true, output };
+                }),
+              );
               if (!["edit_file", "multi_edit"].includes(name)) {
                 const files = await sourceManifest(root, generatedPaths(policy), request.signal);
                 const evidenceId = this.store.transaction(() => {

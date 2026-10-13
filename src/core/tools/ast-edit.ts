@@ -172,7 +172,7 @@ export const astEditTool = {
           await mkdir(dirname(filePath), { recursive: true });
           const beforeMetrics = analyzeFile("");
           const afterMetrics = analyzeFile(content);
-          const diagsPromise = startPreEditDiagnostics(filePath);
+          const diags = await startPreEditDiagnostics(filePath, { newFile: true });
 
           pushEdit(filePath, "", content, args.tabId);
           await writeFile(filePath, content, "utf-8");
@@ -186,7 +186,7 @@ export const astEditTool = {
           let output = `Created ${displayPath(filePath)} (${String(content.split("\n").length)} lines)`;
           if (deltas.length > 0) output += ` (${deltas.join(", ")})`;
           output = await appendAutoFormatResult(filePath, content, output, args.tabId);
-          output = await appendPostEditDiagnostics(diagsPromise, filePath, output);
+          output = (await appendPostEditDiagnostics(diags, filePath, output)).output;
           const cwdHint = getCwd();
           const relHint = filePath.startsWith(`${cwdHint}/`)
             ? filePath.slice(cwdHint.length + 1)
@@ -252,7 +252,7 @@ export const astEditTool = {
       // Write with full undo + diagnostics pipeline
       const beforeMetrics = analyzeFile(before);
       const afterMetrics = analyzeFile(updated);
-      const diagsPromise = startPreEditDiagnostics(filePath);
+      const diags = await startPreEditDiagnostics(filePath);
 
       pushEdit(filePath, before, updated, args.tabId);
       await writeFile(filePath, updated, "utf-8");
@@ -272,7 +272,18 @@ export const astEditTool = {
       if (deltas.length > 0) output += ` (${deltas.join(", ")})`;
 
       output = await appendAutoFormatResult(filePath, updated, output, args.tabId);
-      output = await appendPostEditDiagnostics(diagsPromise, filePath, output);
+      const checked = await appendPostEditDiagnostics(diags, filePath, output, {
+        before,
+        after: updated,
+        tabId: args.tabId,
+      });
+      if (checked.rejected)
+        return {
+          success: false,
+          output: checked.output,
+          error: "edit rejected: it introduced errors",
+        };
+      output = checked.output;
       output = await appendCloneHints(filePath, output);
 
       // Consume any pending nudge (no-op after first fire per session)

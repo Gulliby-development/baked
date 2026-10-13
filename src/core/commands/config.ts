@@ -1,8 +1,9 @@
 import type { ConfigScope } from "../../components/layout/shared.js";
-import { loadConfig } from "../../config/index.js";
+import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../../config/index.js";
 import { existingWorkflowSession, reloadWorkflowSession } from "../../hooks/useWorkflow.js";
 import { useUIStore } from "../../stores/ui.js";
 import type { AgentFeatures, AppConfig, ChatEffort } from "../../types/index.js";
+import { getCwd } from "../cwd.js";
 import { icon } from "../icons.js";
 import { CHAT_EFFORTS, getModelEffortLevels } from "../llm/provider-options.js";
 import {
@@ -12,9 +13,10 @@ import {
   parseNotificationsArgs,
   parseOnOff,
 } from "../notification-settings.js";
-import { SETTINGS } from "../settings/schema.js";
+import { SETTINGS, settingById } from "../settings/schema.js";
 import { telemetryStatus } from "../telemetry.js";
 import { applyTheme, getThemeTokens, listThemes, useThemeStore } from "../theme/index.js";
+import { diagnosticsTimeoutMs } from "../tools/edit-diagnostics.js";
 import { getMotion, type MotionMode, setMotion } from "../utils/motion.js";
 import type { CommandContext, CommandHandler } from "./types.js";
 import { sysMsg } from "./utils.js";
@@ -225,8 +227,28 @@ function handleTimeouts(_input: string, ctx: CommandContext): void {
   const wdTool = `wd-tool:${wdToolSec}`;
   const wdForce = `wd-force:${wdForceSec}`;
 
+  const diagSec = diagnosticsTimeoutMs(cfg.diagnostics?.timeoutMs) / 1000;
+
   // Lookup table: category → picker config
   const timeoutPickers: Record<string, CommandHandler> = {
+    "edit-diagnostics": (_input: string, ctx: CommandContext) => {
+      ctx.openCommandPicker({
+        title: "Edit Diagnostics Wait",
+        icon: icon("clock"),
+        currentValue: `diag:${String(diagSec)}`,
+        scopeEnabled: false,
+        options: [1, 2.5, 5, 10, 20].map((sec) => ({
+          value: `diag:${String(sec)}`,
+          label: `${String(sec)}s`,
+          ...(sec === 2.5 ? { description: "default" } : {}),
+        })),
+        onSelect: (value) => {
+          const sec = Number(value.split(":")[1]);
+          ctx.saveToScope({ diagnostics: { timeoutMs: sec * 1000 } }, "global");
+          sysMsg(ctx, `Edit diagnostics wait → ${String(sec)}s (global)`);
+        },
+      });
+    },
     "tool-timeout": (_input: string, ctx: CommandContext) => {
       ctx.openCommandPicker({
         title: "Tool Timeout",
@@ -369,6 +391,7 @@ function handleTimeouts(_input: string, ctx: CommandContext): void {
         label: "Tool Timeout",
         description: currentToolTimeout === 0 ? "none" : `${currentToolTimeout}m`,
       },
+      { value: "edit-diagnostics", label: "Edit Diagnostics Wait", description: `${diagSec}s` },
       { value: "watchdog-toggle", label: "Watchdog", description: watchdogEnabled ? "On" : "Off" },
       { value: "wd-first", label: "First Chunk Timeout", description: `${wdFirstSec}s` },
       { value: "wd-chunk", label: "Chunk Timeout", description: `${wdChunkSec}s` },
@@ -489,27 +512,43 @@ function handleCompaction(_input: string, ctx: CommandContext): void {
   });
 }
 
+const EDIT_DIAGNOSTICS = "edit-diagnostics";
+
 function handleAgentFeatures(_input: string, ctx: CommandContext): void {
   // Labels, help and defaults come from the shared settings schema, as on the desktop page.
-  const features = SETTINGS.filter((setting) => setting.page === "agent-features").map(
-    (setting) => ({
-      key: setting.id.replace(/^agentFeatures\./, ""),
-      label: setting.label,
-      help: setting.help,
-      defaultOn: setting.default === true,
-    }),
-  );
+  const features = SETTINGS.filter(
+    (setting) => setting.page === "agent-features" && setting.type === "boolean",
+  ).map((setting) => ({
+    key: setting.id.replace(/^agentFeatures\./, ""),
+    label: setting.label,
+    help: setting.help,
+    defaultOn: setting.default === true,
+  }));
+  const editSetting = settingById("editDiagnostics");
+  const editOptions = editSetting?.type === "enum" ? editSetting.options : [];
+  let editMode =
+    mergeConfigs(loadConfig(), loadEffectiveProjectConfig(getCwd())).editDiagnostics ?? "feedback";
   const isOn = (key: string, state: Record<string, unknown>) =>
     features.find((feature) => feature.key === key)?.defaultOn
       ? state[key] !== false
       : state[key] === true;
   const localState = { ...ctx.agentFeatures };
-  const buildOptions = () =>
-    features.map(({ key, label, help }) => ({
+  const buildOptions = () => [
+    ...features.map(({ key, label, help }) => ({
       value: key,
       label: `${label}: ${isOn(key, localState as Record<string, unknown>) ? "on" : "off"}`,
       description: help,
-    }));
+    })),
+    ...(editSetting
+      ? [
+          {
+            value: EDIT_DIAGNOSTICS,
+            label: `${editSetting.label}: ${editMode}`,
+            description: editOptions.find((o) => o.value === editMode)?.help ?? editSetting.help,
+          },
+        ]
+      : []),
+  ];
   ctx.openCommandPicker({
     title: "Agent Features",
     icon: icon("system"),
@@ -519,6 +558,13 @@ function handleAgentFeatures(_input: string, ctx: CommandContext): void {
     scopeEnabled: true,
     initialScope: ctx.detectScope("agentFeatures"),
     onSelect: (value, scope) => {
+      if (value === EDIT_DIAGNOSTICS) {
+        editMode = editMode === "reject" ? "feedback" : "reject";
+        ctx.saveToScope({ editDiagnostics: editMode }, scope ?? "project");
+        sysMsg(ctx, `Edits that add errors: ${editMode} (${scope ?? "project"})`);
+        useUIStore.getState().updatePickerOptions(buildOptions());
+        return;
+      }
       const key = value as keyof AgentFeatures;
       const current = isOn(key, localState as Record<string, unknown>);
       (localState as Record<string, unknown>)[key] = !current;
@@ -530,6 +576,10 @@ function handleAgentFeatures(_input: string, ctx: CommandContext): void {
       useUIStore.getState().updatePickerOptions(buildOptions());
     },
     onScopeMove: (value, from, to) => {
+      if (value === EDIT_DIAGNOSTICS) {
+        ctx.saveToScope({ editDiagnostics: editMode }, to, from);
+        return;
+      }
       const key = value as keyof AgentFeatures;
       const current = isOn(key, localState as Record<string, unknown>);
       ctx.saveToScope({ agentFeatures: { [key]: current } }, to, from);
