@@ -24,6 +24,7 @@ import {
   type PullRequest,
   PullRequestError,
   type PullRequestProvider,
+  type ReviewThread,
 } from "./delivery-provider.js";
 import { fileHash } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
@@ -39,7 +40,7 @@ import {
 import { type EffectRow, newId, type RequestRow, type WorkflowStore } from "./store.js";
 import { removeRunWorktree } from "./worktree.js";
 
-export type DeliveryOperation = "commit" | "push" | "pull_request";
+export type DeliveryOperation = "commit" | "push" | "pull_request" | "review_replies";
 export interface DeliveryFile {
   path: string;
   action: "add" | "modify" | "delete";
@@ -84,6 +85,11 @@ export interface DeliveryPlan {
    * `base.branch` stays the pull request's base branch. Absent for a delivery to a new branch.
    */
   followUp?: FollowUp;
+  /**
+   * Review threads of the followed pull request that get a reply after the follow-up push, and
+   * are resolved when `resolve` is set. `{commit}` in the body is the pushed commit.
+   */
+  reviewReplies?: ReviewReplies;
   diff: { artifactId: string; hash: string; lines: number; truncated: boolean };
   commitMessage: string;
   pullRequest: {
@@ -106,6 +112,14 @@ export interface FollowUp {
   runId: string;
   planId: string;
   pullRequest: (PullRequest & { recordedBy: "provider" | "user" }) | null;
+}
+export interface ReviewReplies {
+  provider: string;
+  repository: string;
+  pullRequest: number;
+  threads: { id: string; path: string; url: string }[];
+  resolve: boolean;
+  body: string;
 }
 export interface PreparedDelivery {
   planId: string;
@@ -363,6 +377,11 @@ export interface PrepareDeliveryOptions {
    * shows the new commit.
    */
   followUp?: string;
+  /**
+   * Review threads of the followed pull request to answer once the follow-up commit is pushed;
+   * `resolve` also resolves them. Needs `followUp`.
+   */
+  answer?: { threads: string[]; resolve?: boolean };
   /** Seconds since the epoch for the plan and commit dates; defaults to now. */
   now?: number;
 }
@@ -412,6 +431,7 @@ export async function prepareDelivery(
       "HEAD is detached. Check out the branch the delivery should be based on.",
     );
   const earlier = options.followUp ? followedDelivery(store, runId, options.followUp) : null;
+  if (options.answer?.threads.length && !earlier) throw answerWithoutFollowUp();
   const remoteName = options.remote ?? earlier?.result.remote.name ?? "origin";
   const url = await remoteUrl(workspace, remoteName);
   if (earlier && url !== earlier.result.remote.url)
@@ -577,6 +597,10 @@ export async function prepareDelivery(
     pullRequestTarget = { provider, repository };
   }
 
+  const reviewReplies = options.answer?.threads.length
+    ? await plannedReplies(config, earlier, url, options.answer, options.provider)
+    : null;
+
   const planId = newId();
   const userChanges = statusPaths(
     (await git(workspace, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])).stdout,
@@ -604,6 +628,7 @@ export async function prepareDelivery(
       "commit",
       "push",
       ...(pullRequestTarget ? (["pull_request"] as const) : []),
+      ...(reviewReplies ? (["review_replies"] as const) : []),
     ] as DeliveryOperation[],
     remote: { name: remoteName, url },
     branch,
@@ -626,6 +651,7 @@ export async function prepareDelivery(
           },
         }
       : {}),
+    ...(reviewReplies ? { reviewReplies } : {}),
     evidence,
   };
   const body = pullRequestTarget ? pullRequestBody(store, core) : "";
@@ -690,6 +716,15 @@ export async function prepareDelivery(
             },
           }
         : {}),
+      ...(plan.reviewReplies
+        ? {
+            reviewReplies: {
+              threads: plan.reviewReplies.threads,
+              resolve: plan.reviewReplies.resolve,
+              body: plan.reviewReplies.body,
+            },
+          }
+        : {}),
       pullRequest: plan.pullRequest
         ? {
             repository: plan.pullRequest.repository,
@@ -709,6 +744,68 @@ export async function prepareDelivery(
       diff: diff.text,
     };
   });
+}
+
+const REPLY_BODY = "Addressed in {commit}.";
+const answerWithoutFollowUp = () =>
+  refuse(
+    "INVALID_DEFINITION",
+    "answer_without_follow_up",
+    "Review threads are answered only by a follow-up delivery to their pull request; add --follow-up.",
+  );
+/** The marker in a reply that shows which delivery plan wrote it, so a retry never replies twice. */
+export const replyMarker = (planId: string) => `<!-- baked-delivery:${planId} -->`;
+
+/**
+ * The review threads a follow-up delivery answers: each must be an unresolved thread of the
+ * followed run's pull request, read now from the host.
+ */
+async function plannedReplies(
+  config: AppConfig,
+  earlier: { result: DeliveryResult } | null,
+  url: string,
+  answer: NonNullable<PrepareDeliveryOptions["answer"]>,
+  configured: PullRequestProvider | null | undefined,
+): Promise<ReviewReplies> {
+  if (!earlier) throw answerWithoutFollowUp();
+  const pull = earlier.result.pullRequest;
+  if (!pull?.number)
+    throw refuse(
+      "NOT_FOUND",
+      "no_pull_request",
+      `Run ${earlier.result.runId} opened no pull request, so there are no review threads to answer.`,
+    );
+  const provider = configured === undefined ? configuredPullRequests(config) : configured;
+  const repository = provider?.repository(url) ?? null;
+  if (!provider?.reviews || !provider.answerThread || !repository)
+    throw refuse(
+      "CAPABILITY_DENIED",
+      "unsupported_remote",
+      `Review threads on ${url} cannot be answered; that needs a GitHub remote.`,
+    );
+  const unavailable = provider.unavailable();
+  if (unavailable) throw refuse("CAPABILITY_DENIED", "missing_auth", unavailable);
+  const threads = (await provider.reviews(repository, pull.number)).threads;
+  const wanted = [...new Set(answer.threads)];
+  const missing = wanted.filter((id) => !threads.some((t) => t.id === id && !t.resolved));
+  if (missing.length)
+    throw refuse(
+      "INPUT_CHANGED",
+      "thread_not_open",
+      `No unresolved review thread ${missing.join(", ")} on ${pull.url}.`,
+      { threads: missing },
+    );
+  return {
+    provider: provider.name,
+    repository,
+    pullRequest: pull.number,
+    threads: wanted.map((id) => {
+      const thread = threads.find((t) => t.id === id) as ReviewThread;
+      return { id, path: thread.path, url: thread.comments[0]?.url ?? pull.url };
+    }),
+    resolve: answer.resolve === true,
+    body: REPLY_BODY,
+  };
 }
 
 /** A run's latest delivery that pushed a commit, with its plan; null when it has none. */
@@ -1029,12 +1126,13 @@ export async function executeDelivery(
       "abandoned",
       "This delivery was abandoned by a recovery decision.",
     );
-  const provider = plan.pullRequest
-    ? options.provider === undefined
-      ? configuredPullRequests(config)
-      : options.provider
-    : null;
-  if (plan.pullRequest) {
+  const provider =
+    plan.pullRequest || plan.reviewReplies
+      ? options.provider === undefined
+        ? configuredPullRequests(config)
+        : options.provider
+      : null;
+  if (plan.pullRequest || plan.reviewReplies) {
     const unavailable = provider
       ? provider.unavailable()
       : "No pull request provider is configured";
@@ -1140,6 +1238,7 @@ class DeliveryExecution {
       }
       if (operation === "commit") await this.doCommit();
       else if (operation === "push") await this.doPush();
+      else if (operation === "review_replies") await this.doReviewReplies();
       else await this.doPullRequest();
     }
     const result: DeliveryResult = {
@@ -1212,6 +1311,16 @@ class DeliveryExecution {
     }
     if (!this.provider || !intent.repository)
       return { outcome: "error", message: "No pull request provider to check with" };
+    if (intent.operation === "review_replies") {
+      try {
+        return (await this.unanswered()).length ? { outcome: "absent" } : { outcome: "present" };
+      } catch (error) {
+        return {
+          outcome: "error",
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
     try {
       const found = await this.provider.findByHead(intent.repository, intent.branch);
       return found ? { outcome: "present", pullRequest: found } : { outcome: "absent" };
@@ -1578,6 +1687,64 @@ class DeliveryExecution {
                   ? "pull_request_rejected"
                   : "pull_request_failed",
               `Pull request was not created: ${text}`,
+            ),
+          };
+        }
+      },
+    );
+  }
+  /**
+   * The approved threads that still need this plan's reply or resolution. A reply carries the
+   * plan's marker, so what an earlier attempt already posted is seen and not posted again.
+   */
+  private async unanswered(): Promise<{ id: string; reply: boolean; resolve: boolean }[]> {
+    const replies = this.plan.reviewReplies;
+    const provider = this.provider;
+    if (!replies || !provider?.reviews) throw new Error("No provider can read the review threads");
+    const marker = replyMarker(this.plan.planId);
+    const current = (await provider.reviews(replies.repository, replies.pullRequest)).threads;
+    return replies.threads
+      .map(({ id }) => {
+        const thread = current.find((t) => t.id === id);
+        const replied = thread?.comments.some((c) => c.body.includes(marker)) ?? false;
+        return {
+          id,
+          reply: !replied,
+          resolve: replies.resolve && thread !== undefined && !thread.resolved,
+        };
+      })
+      .filter((t) => t.reply || t.resolve);
+  }
+  private async doReviewReplies(): Promise<void> {
+    const replies = this.plan.reviewReplies;
+    const provider = this.provider;
+    if (!replies || !provider?.answerThread)
+      throw refuse("CAPABILITY_DENIED", "missing_auth", "No provider can answer review threads");
+    const commit = this.commit ?? this.latest("commit")?.intent.commit ?? "";
+    const body = `${replies.body.replaceAll("{commit}", commit)}\n\n${replyMarker(this.plan.planId)}`;
+    await this.attempt(
+      {
+        planId: this.plan.planId,
+        operation: "review_replies",
+        branch: this.plan.branch,
+        repository: replies.repository,
+        commit,
+      },
+      async () => {
+        try {
+          for (const thread of await this.unanswered()) {
+            await provider.answerThread?.(thread.id, thread.reply ? body : null, thread.resolve);
+          }
+          return { ok: true };
+        } catch (error) {
+          const failure = error instanceof PullRequestError ? error.failure : "unknown";
+          return {
+            ok: false,
+            definite: failure === "auth",
+            fault: refuse(
+              "CAPABILITY_DENIED",
+              failure === "auth" ? "missing_auth" : "review_replies_failed",
+              `Review threads were not all answered: ${error instanceof Error ? error.message : String(error)}`,
             ),
           };
         }

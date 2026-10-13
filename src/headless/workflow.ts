@@ -24,6 +24,8 @@ import {
   fixChecksRequest,
   followPullRequest,
   pullRequestChecks,
+  pullRequestReviews,
+  repairReviewsRequest,
 } from "../core/workflows/follow.js";
 import { issueStart } from "../core/workflows/issue-source.js";
 import { describeProposal, presetChoice } from "../core/workflows/preset-router.js";
@@ -646,6 +648,17 @@ export async function executeWorkflowCommand(
         ...(typeof args.flags["follow-up"] === "string"
           ? { followUp: args.flags["follow-up"] }
           : {}),
+        ...(typeof args.flags["answer-threads"] === "string"
+          ? {
+              answer: {
+                threads: args.flags["answer-threads"]
+                  .split(",")
+                  .map((id) => id.trim())
+                  .filter(Boolean),
+                resolve: args.flags.resolve === true,
+              },
+            }
+          : {}),
         draft: args.flags.draft === true,
         pullRequest: args.flags["no-pr"] !== true,
         ...(args.flags["with-specs"] ? { specs: true } : {}),
@@ -676,7 +689,41 @@ export async function executeWorkflowCommand(
             signal,
             ...provider,
           });
-      if (read.state !== "failed") return read;
+      if (read.state !== "failed") {
+        if (!args.flags.reviews) return read;
+        // Reviews are read once no check failed: a failing check is fixed first.
+        const reviews = await pullRequestReviews(
+          service.store,
+          service.config,
+          runId,
+          ...(options.pullRequests === undefined ? [] : [options.pullRequests]),
+        );
+        if (reviews.state !== "changes") return { ...read, reviews };
+        const repair = repairReviewsRequest(service.store, reviews);
+        const answer = `--answer-threads ${repair.threads.join(",")}`;
+        if (!args.flags.fix) return { ...read, reviews, repair };
+        const repairRun = (await executeWorkflowCommand(
+          service,
+          {
+            command: "run",
+            positional: [],
+            flags: {
+              workflow: repair.workflowId,
+              feature: repair.featureId,
+              prompt: repair.prompt,
+            },
+          },
+          signal,
+          onDrive,
+          options,
+        )) as { runId?: string };
+        return {
+          ...read,
+          reviews,
+          repairRun,
+          next: `baked workflow deliver ${repairRun.runId ?? "FIX_RUN_ID"} --follow-up ${runId}${repair.threads.length ? ` ${answer}` : ""}`,
+        };
+      }
       const fix = fixChecksRequest(service.store, read);
       // Without --fix the request of the fix run is returned for the caller to start.
       if (!args.flags.fix) return { ...read, fix };

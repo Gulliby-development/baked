@@ -75,7 +75,7 @@ The chat settings that the terminal pickers edit (provider options, chat router 
 | `theme`, `diffStyle`, `chatStyle`, `collapseDiffs`, `showReasoning`, `verbose` | | Display; `/theme`, `/diff-style`, `/chat-style`, `/reasoning`, `/verbose` |
 | `motion` | `"full"` | Brand animations; `"reduced"` shows still frames (`/motion`, or `BAKED_REDUCED_MOTION=1`) ([guide](guide.md#motion)) |
 | `coAuthorCommits` | `true` | Co-author trailer on commits made through BAKED |
-| `defaultBakeMode` | `"default"` | Mode of new sessions; the earlier name `defaultForgeMode` is still read |
+| `defaultBakeMode` | `"default"` | Mode of new sessions |
 | `telemetry`, `telemetryUrl` | `true`, unset | Local usage events and an optional receiver; `/telemetry` or `baked telemetry on\|off` switches `telemetry` ([privacy](privacy.md)) |
 | `notifications` | `system: true`, no webhook | Announce a workflow run that waits for a person: a native notification and an optional webhook; `/notifications` edits them ([runtime guide](workflows/runtime.md#notifications-when-a-run-waits)) |
 

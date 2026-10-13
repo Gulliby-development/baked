@@ -10,14 +10,13 @@ import { UsageSection } from "./insights/UsageSection.js";
 import { RunsView } from "./runs/RunsView.js";
 import { AgentContextSection } from "./setup/AgentContextSection.js";
 import { ArtifactsSection } from "./setup/ArtifactsSection.js";
-import { ChatMemorySection } from "./setup/ChatMemorySection.js";
 import { DiagnosticsSection } from "./setup/DiagnosticsSection.js";
 import { GatesSection } from "./setup/GatesSection.js";
 import { HooksSection } from "./setup/HooksSection.js";
 import { LspSection } from "./setup/LspSection.js";
 import { McpSection } from "./setup/McpSection.js";
+import { MemorySection } from "./setup/MemorySection.js";
 import { PackagesSection } from "./setup/PackagesSection.js";
-import { RunMemorySection } from "./setup/RunMemorySection.js";
 import { SkillsSection } from "./setup/SkillsSection.js";
 import { WorkflowsSection } from "./setup/WorkflowsSection.js";
 import { ProjectHome } from "./start/index.js";
@@ -37,8 +36,7 @@ export const SECTION_VIEWS: Partial<Record<ProjectSection, ComponentType<Section
   gates: GatesSection,
   workflows: WorkflowsSection,
   context: AgentContextSection,
-  "run-memory": RunMemorySection,
-  "chat-memory": ChatMemorySection,
+  memory: MemorySection,
   skills: SkillsSection,
   packages: PackagesSection,
   hooks: HooksSection,

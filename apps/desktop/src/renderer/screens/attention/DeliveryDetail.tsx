@@ -34,6 +34,7 @@ const OPERATION: Record<string, string> = {
   commit: "commit",
   push: "push",
   pull_request: "pull request",
+  review_replies: "review replies",
 };
 
 export function operationsLine(operations: string[] | undefined): string {
@@ -95,6 +96,20 @@ export function DeliveryDetail({ item, onDone }: DetailProps) {
                 )}
               </Fact>
             </div>
+            {plan.reviewReplies && (
+              <section className={LIST} aria-label="Review threads answered">
+                <span className={LABEL}>
+                  Review threads answered after the push
+                  {plan.reviewReplies.resolve ? " and resolved" : ""}
+                </span>
+                {plan.reviewReplies.threads.map((thread) => (
+                  <div key={thread.id} className={ROW}>
+                    <span className="font-mono">{thread.path || thread.id}</span>
+                    <span className="text-dim-foreground">{plan.reviewReplies?.body}</span>
+                  </div>
+                ))}
+              </section>
+            )}
             <section className={LIST} aria-label="Files in the commit">
               <span className={LABEL}>Files in the commit</span>
               {(plan.files ?? []).map((line) => {
