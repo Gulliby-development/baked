@@ -3863,14 +3863,16 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     for (const index of finalists) {
       const entry = batch[index - 1];
       if (!entry) continue;
+      const root = join(this.store.workspace, entry.path);
       const outcome = await runProbe(
         this.processes,
         { executable: test.executable, args: test.args },
         {
-          root: join(this.store.workspace, entry.path),
+          root,
           executables,
           generated: generatedPaths(policy),
           signal,
+          sandbox: runSandbox(policy, root),
         },
       );
       runs.push({
