@@ -1243,6 +1243,38 @@ ${c.then}`),
     .map((c) => c.id);
 }
 
+const OPERATING_SYSTEMS = [/\bwindows\b/i, /\bmac\s?os\b|\bos x\b|\bdarwin\b/i, /\blinux\b/i];
+const BROWSERS = [
+  /\bchrom(?:e|ium)\b/i,
+  /\bfirefox\b/i,
+  /\bsafari\b/i,
+  /\bedge browser\b|\bmicrosoft edge\b/i,
+];
+const EVERY_HOST =
+  /\bcross[- ](?:platform|browser|os)\b|\b(?:all|every|each) (?:supported )?(?:operating systems?|platforms?|os(?:es)?|browsers?)\b|\b(?:real|physical) (?:device|phone|hardware)s?\b|\bon (?:an? )?(?:iphone|ipad|android (?:phone|device|tablet))s?\b/i;
+// A CI matrix file or a simulated platform is evidence one host can read or run.
+const HOST_EVIDENCE =
+  /\bmatrix\b|\bruns-on\b|\.github\/workflows|\bci workflow\b|\bworkflow file\b|\bpath\.(?:win32|posix)\b|\bsimulat|\bemulat|\bmock/i;
+
+/**
+ * Automated criteria that claim behavior on several operating systems, browsers or real devices.
+ * A run checks on one host, so no declared check can prove them and convergence can only answer
+ * inconclusive (propdrift eea2e0e9 AC-008: "behavior is confirmed on Windows, macOS, and Linux",
+ * two convergence calls and a block). A criterion about a CI matrix file or a simulated platform
+ * is checkable here and stays.
+ */
+export function hostBoundCriteria(spec: Spec): string[] {
+  return spec.criteria
+    .filter((c) => {
+      if (c.method !== "automated") return false;
+      const text = `${c.given}\n${c.when}\n${c.then}`;
+      if (HOST_EVIDENCE.test(text)) return false;
+      const count = (patterns: RegExp[]) => patterns.filter((p) => p.test(text)).length;
+      return count(OPERATING_SYSTEMS) >= 2 || count(BROWSERS) >= 2 || EVERY_HOST.test(text);
+    })
+    .map((c) => c.id);
+}
+
 /** The spec defects as corrections for the spec author, who can add or relink criteria. */
 export function specCoverageProblems(spec: Spec): string[] {
   return [
@@ -1254,6 +1286,10 @@ export function specCoverageProblems(spec: Spec): string[] {
     ...manualRepositoryCriteria(spec).map(
       (id) =>
         `criterion ${id} is about a file in the repository but has method manual: use method automated (a command check or the reviewer reading the file), because a person can add nothing a reviewer cannot read there. Keep manual for behavior only a person can observe.`,
+    ),
+    ...hostBoundCriteria(spec).map(
+      (id) =>
+        `criterion ${id} is automated but claims behavior on other operating systems, browsers or devices, and the run checks on one host, so nothing can prove it. Rewrite it as what this host can check (platform-neutral path, line-ending and process APIs; the tests pass here). When the request asks for proof on other platforms, add a criterion that a CI workflow file runs the checks on a matrix of those platforms (for example ubuntu-latest, macos-latest, windows-latest), which the reviewer verifies by reading the file. Use post-release only for a claim that needs a release or a real device.`,
     ),
   ];
 }
