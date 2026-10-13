@@ -7,6 +7,7 @@ import { hashBytes } from "../src/core/specs/hash.js";
 import { executeDelivery, prepareDelivery, type PreparedDelivery } from "../src/core/workflows/delivery.js";
 import { classifyRemoteFailure, internalPath, looksSecret } from "../src/core/workflows/delivery-git.js";
 import {
+  type CommitCheck,
   githubPullRequests,
   type PullRequest,
   PullRequestError,
@@ -15,6 +16,7 @@ import {
   repositoryOnHost,
 } from "../src/core/workflows/delivery-provider.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
+import { fixChecksRequest, followPullRequest, pullRequestChecks } from "../src/core/workflows/follow.js";
 import { migration001 } from "../src/core/workflows/migrations/001.js";
 import { migration002 } from "../src/core/workflows/migrations/002.js";
 import { newId, WorkflowStore } from "../src/core/workflows/store.js";
@@ -37,6 +39,9 @@ function git(cwd: string, ...args: string[]): string {
 class FakePullRequests implements PullRequestProvider {
   readonly name = "fake";
   pulls: (PullRequest & PullRequestDraft)[] = [];
+  /** What each read of the checks answers, in order; the last one repeats. */
+  checkReads: CommitCheck[][] = [];
+  checkedCommits: string[] = [];
   creates = 0;
   token = true;
   loseNextResponse = false;
@@ -64,6 +69,10 @@ class FakePullRequests implements PullRequestProvider {
       throw new PullRequestError("unknown", "socket hang up");
     }
     return { number, url: pull.url };
+  }
+  async checks(_repository: string, commit: string): Promise<CommitCheck[]> {
+    this.checkedCommits.push(commit);
+    return (this.checkReads.length > 1 ? this.checkReads.shift() : this.checkReads[0]) ?? [];
   }
 }
 
@@ -546,50 +555,51 @@ class ValueExecutor extends FixtureExecutor {
   }
 }
 
-describe("Follow-up delivery", () => {
-  const followPolicy = {
-    ...fixturePolicy,
-    checks: fixturePolicy.checks.map((c) => ({ ...c, args: ["-e", "if (!(await Bun.file('value.txt').text()).startsWith('ready')) process.exit(1)"] })),
+const followPolicy = {
+  ...fixturePolicy,
+  checks: fixturePolicy.checks.map((c) => ({ ...c, args: ["-e", "if (!(await Bun.file('value.txt').text()).startsWith('ready')) process.exit(1)"] })),
+};
+/** Run A delivered with a pull request, then run B, which changes value.txt again on top of it. */
+async function followUpScenario() {
+  const fx = workflowFixture({ policy: followPolicy, executor: (root) => new ValueExecutor(root) });
+  const remote = mkdtempSync(join(tmpdir(), "baked-delivery-remote-"));
+  cleanups.push(async () => {
+    await fx.dispose();
+    rmSync(remote, { recursive: true, force: true });
+  });
+  const root = fx.root;
+  git(remote, "init", "--bare", "-q", "-b", "main");
+  git(root, "init", "-q", "-b", "main");
+  git(root, "config", "user.name", "Test User");
+  git(root, "config", "user.email", "test@example.test");
+  git(root, "config", "commit.gpgsign", "false");
+  writeFileSync(join(root, ".gitignore"), ".baked/\n");
+  writeFileSync(join(root, "README.md"), "# Project\n");
+  git(root, "add", ".");
+  git(root, "commit", "-q", "-m", "Initial");
+  git(root, "remote", "add", "origin", remote);
+  git(root, "push", "-q", "origin", "main");
+  const complete = async () => {
+    const run = await fx.service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy: followPolicy });
+    const planned = await fx.service.drive(run.runId, new AbortController().signal);
+    if (planned.status !== "waiting") throw new Error(`Fixture run stopped ${planned.status} ${JSON.stringify(planned)}`.slice(0, 600));
+    await fx.approve(run.runId);
+    const done = await fx.service.drive(run.runId, new AbortController().signal);
+    if (done.status !== "completed") throw new Error(`Fixture run ended ${done.status}`);
+    return run.runId;
   };
-  /** Run A delivered with a pull request, then run B, which changes value.txt again on top of it. */
-  async function followUpScenario() {
-    const fx = workflowFixture({ policy: followPolicy, executor: (root) => new ValueExecutor(root) });
-    const remote = mkdtempSync(join(tmpdir(), "baked-delivery-remote-"));
-    cleanups.push(async () => {
-      await fx.dispose();
-      rmSync(remote, { recursive: true, force: true });
-    });
-    const root = fx.root;
-    git(remote, "init", "--bare", "-q", "-b", "main");
-    git(root, "init", "-q", "-b", "main");
-    git(root, "config", "user.name", "Test User");
-    git(root, "config", "user.email", "test@example.test");
-    git(root, "config", "commit.gpgsign", "false");
-    writeFileSync(join(root, ".gitignore"), ".baked/\n");
-    writeFileSync(join(root, "README.md"), "# Project\n");
-    git(root, "add", ".");
-    git(root, "commit", "-q", "-m", "Initial");
-    git(root, "remote", "add", "origin", remote);
-    git(root, "push", "-q", "origin", "main");
-    const complete = async () => {
-      const run = await fx.service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy: followPolicy });
-      const planned = await fx.service.drive(run.runId, new AbortController().signal);
-      if (planned.status !== "waiting") throw new Error(`Fixture run stopped ${planned.status} ${JSON.stringify(planned)}`.slice(0, 600));
-      await fx.approve(run.runId);
-      const done = await fx.service.drive(run.runId, new AbortController().signal);
-      if (done.status !== "completed") throw new Error(`Fixture run ended ${done.status}`);
-      return run.runId;
-    };
-    const provider = new FakePullRequests();
-    const first: Scenario = { fx, root, remote, runId: await complete(), provider };
-    const prepared = await prepare(first);
-    await approve(first, prepared);
-    const delivered = await execute(first);
-    fx.executor.value = "ready, fixed";
-    const second: Scenario = { ...first, runId: await complete() };
-    return { first, second, delivered, branch: prepared.plan.branch };
-  }
+  const provider = new FakePullRequests();
+  const first: Scenario = { fx, root, remote, runId: await complete(), provider };
+  const prepared = await prepare(first);
+  await approve(first, prepared);
+  const delivered = await execute(first);
+  fx.executor.value = "ready, fixed";
+  const second: Scenario = { ...first, runId: await complete() };
+  return { first, second, delivered, branch: prepared.plan.branch };
+}
 
+
+describe("Follow-up delivery", () => {
   test("commits a later run on top of the delivered branch and keeps its pull request", async () => {
     const { first, second, delivered, branch } = await followUpScenario();
     // Without --follow-up the second run's change cannot be separated from the first run's.
@@ -653,6 +663,64 @@ describe("Follow-up delivery", () => {
   }, TWO_EXECUTES_TIMEOUT);
 });
 
+describe("Following a delivered pull request", () => {
+  const fail = { name: "test (windows)", state: "failed" as const, detail: "1 failed: EBUSY", url: "https://ci/9" };
+  const pass = { name: "lint", state: "passed" as const, detail: "", url: null };
+  const pending = { name: "test (windows)", state: "pending" as const, detail: "", url: null };
+
+  test("waits without a model until a check fails, then proposes a fix-ci run delivered as a follow-up", async () => {
+    const { first, delivered } = await followUpScenario();
+    first.provider.checkReads = [[], [pass, pending], [pass, fail]];
+    const slept: number[] = [];
+    const calls = first.fx.executor.calls.length;
+    const read = await followPullRequest(first.fx.service.store, first.fx.config, first.runId, {
+      provider: first.provider,
+      intervalSeconds: 5,
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+    });
+    expect(read).toMatchObject({ outcome: "failed", state: "failed", commit: delivered.commit, pullRequest: { number: 1 } });
+    expect(slept).toEqual([5000, 5000]);
+    expect(first.provider.checkedCommits).toEqual([delivered.commit, delivered.commit, delivered.commit]);
+    expect(first.fx.executor.calls.length).toBe(calls);
+    const fix = fixChecksRequest(first.fx.service.store, read);
+    expect(fix).toMatchObject({ workflowId: "fix-ci", featureId: "fixture-ci", followUp: first.runId });
+    expect(fix.prompt).toContain("https://example.test/acme/widget/pull/1");
+    expect(fix.prompt).toContain("- test (windows): 1 failed: EBUSY (https://ci/9)");
+    expect(fix.prompt).not.toContain("lint");
+  }, TWO_EXECUTES_TIMEOUT);
+
+  test("passes, times out, refuses an undelivered run, and the CLI reads once with the fix", async () => {
+    const { first, second } = await followUpScenario();
+    const store = first.fx.service.store;
+    first.provider.checkReads = [[pass]];
+    expect((await followPullRequest(store, first.fx.config, first.runId, { provider: first.provider, sleep: async () => {} })).outcome).toBe("passed");
+    first.provider.checkReads = [[pending]];
+    let clock = 0;
+    const timedOut = await followPullRequest(store, first.fx.config, first.runId, {
+      provider: first.provider,
+      intervalSeconds: 60,
+      timeoutMinutes: 2,
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+      },
+    });
+    expect(timedOut).toMatchObject({ outcome: "timeout", state: "pending" });
+    const fault = await refusal(pullRequestChecks(store, first.fx.config, second.runId, first.provider));
+    expect(fault.details.reason).toBe("not_delivered");
+    first.provider.checkReads = [[fail]];
+    const cli = (argv: string[]) => executeWorkflowCommand(first.fx.service, parseWorkflowArgs(argv), new AbortController().signal, undefined, { pullRequests: first.provider });
+    const once = (await cli(["follow", first.runId, "--once"])) as { state: string; fix: { featureId: string; followUp: string } };
+    expect(once.state).toBe("failed");
+    expect(once.fix).toMatchObject({ featureId: "fixture-ci", followUp: first.runId });
+    expect(() => parseWorkflowArgs(["follow", first.runId, "--interval", "2"])).toThrow("--interval accepts 5 to 3600");
+    expect(() => parseWorkflowArgs(["follow", first.runId, "--once", "--timeout", "5"])).toThrow("--once");
+    expect(workflowHelp).toContain("follow RUN_ID [--interval 60]");
+  }, TWO_EXECUTES_TIMEOUT);
+});
+
 describe("delivery building blocks", () => {
   test("GitHub provider calls the REST API with the token and classifies failures", async () => {
     const calls: { url: string; init: RequestInit }[] = [];
@@ -678,6 +746,34 @@ describe("delivery building blocks", () => {
     const missing = githubPullRequests({ token: undefined, tokenEnv: "MY_TOKEN", apiUrl: "https://api.github.com", fetch: fetcher });
     expect(missing.unavailable()).toContain("MY_TOKEN");
     expect(repositoryOnHost("ssh://git@ghe.example.test:2222/team/app.git", "ghe.example.test")).toBe("team/app");
+  });
+
+  test("GitHub provider reads check runs and commit statuses of a commit", async () => {
+    const answers = [
+      { check_runs: [
+        { name: "test", status: "completed", conclusion: "failure", html_url: "https://ci/1", output: { title: "2 failed", summary: "expected 1" } },
+        { name: "lint", status: "completed", conclusion: "skipped" },
+        { name: "build", status: "in_progress", conclusion: null },
+      ] },
+      { statuses: [{ context: "deploy", state: "success", description: "ok", target_url: null }] },
+    ];
+    const urls: string[] = [];
+    const fetcher = (async (url: string | URL | Request) => {
+      urls.push(String(url));
+      return new Response(JSON.stringify(answers.shift()), { status: 200 });
+    }) as typeof fetch;
+    const provider = githubPullRequests({ token: "t0k", tokenEnv: "GITHUB_TOKEN", apiUrl: "https://api.github.com", fetch: fetcher });
+    const checks = await provider.checks?.("acme/widget", "abc123");
+    expect(urls).toEqual([
+      "https://api.github.com/repos/acme/widget/commits/abc123/check-runs?per_page=100",
+      "https://api.github.com/repos/acme/widget/commits/abc123/status",
+    ]);
+    expect(checks).toEqual([
+      { name: "test", state: "failed", detail: "2 failed: expected 1", url: "https://ci/1" },
+      { name: "lint", state: "passed", detail: "", url: null },
+      { name: "build", state: "pending", detail: "", url: null },
+      { name: "deploy", state: "passed", detail: "ok", url: null },
+    ]);
   });
 
   test("remote failures are classified from Git's messages", () => {

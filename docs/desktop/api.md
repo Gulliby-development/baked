@@ -279,6 +279,7 @@ B adds the remaining `baked workflow` commands the screens need. Each takes `com
 | `POST /v1/workflow/runs/RUN_ID/discard-worktree` | | `discard-worktree` |
 | `POST /v1/workflow/runs/RUN_ID/deliver` | `remote?`, `branch?`, `draft?`, `pullRequest?` (default true), `followUp?` (a delivered run whose branch and pull request get this run's commit, as `--follow-up`; not with `branch`, `draft` or `pullRequest`); no revision | `deliver` (prepares the plan and its approval request; a follow-up plan's request body has `followUp: {runId, pullRequest}`) |
 | `POST /v1/workflow/runs/RUN_ID/deliver/execute` | `expectedRevision`, `requestId?`; no `commandId` | `deliver --execute`, after the plan was approved |
+| `GET /v1/workflow/runs/RUN_ID/checks` | | `follow --once`: the checks GitHub reports on the commit the run's latest delivery pushed (`{runId, repository, branch, commit, pullRequest, state, checks[], checkedAt}`, `state` `none`, `pending`, `passed` or `failed`; each check `{name, state, detail, url}`), and with a failed check `fix: {workflowId, featureId, prompt, followUp}`, the fix-ci run to start with `POST /v1/workflow/runs`. 404 for a run without a pushed delivery |
 | `GET /v1/workflow/runs/RUN_ID/progress` | | `export-progress` |
 | `POST /v1/workflow/runs/RUN_ID/export` | `destination?` (a new directory, relative to the workspace); no `commandId` | `export`: writes `manifest.json` and returns `{path, manifestHash}`. Without `destination` it is `.baked/exports/RUN_ID-STAMP`; a directory outside the workspace is refused with 403 `CAPABILITY_DENIED`, one that exists with 409 |
 | `POST /v1/workflow/runs/RUN_ID/redact` | `artifactId`, `reason` (required); no `commandId` | `redact`: `{redacted: true}` |
@@ -659,6 +660,7 @@ The [artifacts](../artifacts.md) of the user, the same for every project's serve
 | Initiatives | `/v1/initiatives/*` |
 | Usage | `GET /v1/workflow/runs/RUN_ID/usage`, `GET /v1/usage` |
 | Run report tab | `GET /v1/workflow/runs/RUN_ID/report` |
+| Workflow run: Pull request (completed runs) | `GET /v1/workflow/runs/RUN_ID/checks`; Fix failed checks starts its `fix` with `POST /v1/workflow/runs` |
 | Run list: Compare | `GET /v1/workflow/compare` |
 | Settings: chat settings pages | `GET|PATCH /v1/settings`, `GET /v1/models` |
 | Settings: model routing, providers | `GET|PATCH /v1/config`, `GET|PATCH /v1/workflow/routing`, `GET /v1/workflow/critic`, `GET /v1/providers`, `PUT|DELETE /v1/providers/ID/key`, `GET|POST|DELETE /v1/providers/ID/login`, `POST /v1/providers/ID/logout`, `POST /v1/providers/ID/switch`, `GET /v1/models` |

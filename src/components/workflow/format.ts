@@ -173,7 +173,8 @@ export interface RunAction {
     | "decide"
     | "extend"
     | "undo"
-    | "reroute";
+    | "reroute"
+    | "checks";
 }
 /** The limits one "raise" decision would set, from the numbers the run screen already has. */
 export function extensionFor(budget: BudgetView): BudgetLimits | null {
@@ -234,6 +235,8 @@ export function runActions(
   if (switchTo && (s === "created" || s === "paused" || s === "blocked" || s === "waiting"))
     actions.push({ key: "M", label: "switch model", action: "reroute" });
   if (s === "blocked" || isTerminal(s)) actions.push({ key: "F", label: "fork", action: "fork" });
+  // A delivered run's pull request checks; the read says when the run was not delivered.
+  if (s === "completed") actions.push({ key: "K", label: "PR checks", action: "checks" });
   if (worktree && isTerminal(s))
     actions.push({ key: "D", label: "discard worktree", action: "discard-worktree" });
   // Undo needs the run's leases, so it is offered only while nothing executes the run.

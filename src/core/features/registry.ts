@@ -800,6 +800,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs", "attention"],
   },
   {
+    id: "pr-follow",
+    group: "Workflow runs",
+    title: "Follow a delivered pull request's checks and start a fix-ci run for failures",
+    tui: ["/workflow: run view, K (PR checks)"],
+    cli: ["baked workflow follow"],
+    api: ["/v1/workflow/runs/:id/checks"],
+    desktop: ["project/runs: Pull request panel"],
+  },
+  {
     id: "run-revise",
     group: "Workflow runs",
     title: "Revise a run after its instructions change",

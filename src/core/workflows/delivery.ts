@@ -711,7 +711,26 @@ export async function prepareDelivery(
   });
 }
 
-/** The latest completed delivery of the run a follow-up delivery continues, and its plan. */
+/** A run's latest delivery that pushed a commit, with its plan; null when it has none. */
+export function latestPushedDelivery(
+  store: WorkflowStore,
+  runId: string,
+): { result: DeliveryResult; plan: DeliveryPlan } | null {
+  const delivered = store
+    .artifacts(runId)
+    .filter((a) => a.kind === "delivery" && /^delivery\/[^/]+\/result\.json$/.test(a.logical_path))
+    .map((a) => JSON.parse(store.readArtifact(runId, a.id)) as DeliveryResult)
+    .filter((r) => r.commit && r.operations.some((o) => o.operation === "push"))
+    .at(-1);
+  const plan = delivered && store.latestArtifact(runId, `delivery/${delivered.planId}/plan.json`);
+  if (!delivered || !plan) return null;
+  return {
+    result: delivered,
+    plan: JSON.parse(store.readArtifact(runId, plan.id)) as DeliveryPlan,
+  };
+}
+
+/** The latest pushed delivery of the run a follow-up delivery continues, and its plan. */
 function followedDelivery(
   store: WorkflowStore,
   runId: string,
@@ -724,24 +743,14 @@ function followedDelivery(
       "A follow-up delivery continues another run's branch; this run is the one being delivered.",
     );
   store.run(followed);
-  const delivered = store
-    .artifacts(followed)
-    .filter((a) => a.kind === "delivery" && /^delivery\/[^/]+\/result\.json$/.test(a.logical_path))
-    .map((a) => JSON.parse(store.readArtifact(followed, a.id)) as DeliveryResult)
-    .filter((r) => r.commit && r.operations.some((o) => o.operation === "push"))
-    .at(-1);
-  const plan =
-    delivered && store.latestArtifact(followed, `delivery/${delivered.planId}/plan.json`);
-  if (!delivered || !plan)
+  const delivered = latestPushedDelivery(store, followed);
+  if (!delivered)
     throw refuse(
       "INPUT_CHANGED",
       "not_delivered",
       `Run ${followed} has no pushed delivery to follow up. Deliver it first with \`baked workflow deliver ${followed}\`.`,
     );
-  return {
-    result: delivered,
-    plan: JSON.parse(store.readArtifact(followed, plan.id)) as DeliveryPlan,
-  };
+  return delivered;
 }
 
 /**
