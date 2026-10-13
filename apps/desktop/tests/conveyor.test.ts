@@ -130,6 +130,7 @@ describe("stage icons", () => {
     expect(stageIconOf("spec")).toBe("spec");
     expect(stageIconOf("implement")).toBe("implement");
     expect(stageIconOf("verify")).toBe("checks");
+    expect(stageIconOf("wait-ci")).toBe("waiting");
   });
 });
 

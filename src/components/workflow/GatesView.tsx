@@ -61,6 +61,7 @@ const FIELDS = [
   "timeout",
   "required",
   "scope",
+  "result",
   "env",
   "writes",
   "save",
@@ -73,6 +74,7 @@ const LABELS: Record<FieldId, string> = {
   timeout: "Timeout (s)",
   required: "Required",
   scope: "Scope",
+  result: "Result",
   env: "Env names",
   writes: "Writes",
   save: "",
@@ -91,7 +93,7 @@ export function describeGateRun(result: GateRunResult): string {
   return `${how}${exit} · ${formatDuration(result.durationMs)}`;
 }
 const gateLine = (check: Check): string =>
-  `${check.required ? "required" : "advisory"} · ${check.scope} · ${Math.round(check.timeoutMs / 1000)}s`;
+  `${check.required ? "required" : "advisory"} · ${check.scope}${check.report === "json" ? " · JSON report" : ""} · ${Math.round(check.timeoutMs / 1000)}s`;
 
 export function GatesView({
   active,
@@ -233,6 +235,12 @@ export function GatesView({
       ) {
         evt.preventDefault();
         setDraft((d) => ({ ...d, scope: d.scope === "feature" ? "task" : "feature" }));
+      } else if (
+        focus === "result" &&
+        (key === "left" || key === "right" || key === "space" || key === " ")
+      ) {
+        evt.preventDefault();
+        setDraft((d) => ({ ...d, jsonReport: !d.jsonReport }));
       } else if (key === "return") {
         evt.preventDefault();
         if (focus === "save") void submitForm();
@@ -381,7 +389,9 @@ export function GatesView({
                 <text fg={focused ? t.brand : t.textPrimary}>
                   {field === "required"
                     ? `‹ ${draft.required ? "required: the run cannot finish without it" : "advisory: result is shown only"} ›`
-                    : `‹ ${draft.scope === "feature" ? "feature: once per run, on the whole result" : "task: after each task"} ›`}
+                    : field === "result"
+                      ? `‹ ${draft.jsonReport ? "JSON report: its last JSON line decides" : "exit code: 0 passes"} ›`
+                      : `‹ ${draft.scope === "feature" ? "feature: once per run, on the whole result" : "task: after each task"} ›`}
                 </text>
               )}
             </box>
