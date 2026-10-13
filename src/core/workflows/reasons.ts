@@ -12,6 +12,8 @@ const REASONS: Record<string, string> = {
   checkpoint: "the run reached a token checkpoint and waits for you to continue",
   no_progress: "repairs stopped making progress",
   verification_failed: "checks or reviews did not pass",
+  check_unavailable:
+    "a required check cannot be started (its executable is missing or not runnable)",
   provider_unavailable: "the model provider is unavailable",
   provider_account:
     "the model provider refused the account: add credits, fix the API key or switch the run to another model",
