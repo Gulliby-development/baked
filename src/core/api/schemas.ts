@@ -4,6 +4,7 @@ import { MAX_IMAGES_PER_MESSAGE } from "../chat/images.js";
 import { CHAT_MODES, PLAN_ACTIONS } from "../chat/sessions.js";
 import { CHAT_EFFORTS } from "../llm/provider-options.js";
 import { BUDGET_PRESETS } from "../workflows/budget.js";
+import { MAX_CANDIDATES } from "../workflows/candidates.js";
 import { MAX_CONCURRENT_WRITERS, RunStatus, SafeId } from "../workflows/schemas.js";
 import { USAGE_DIMENSIONS } from "../workflows/usage.js";
 
@@ -33,6 +34,8 @@ export const StartBody = z
     confirmAutoApproval: z.string().min(1).optional(),
     worktree: z.boolean().optional(),
     writers: z.number().int().min(1).max(MAX_CONCURRENT_WRITERS).optional(),
+    /** Best-of-N candidates per planned task, as `--candidates`; needs a worktree run. */
+    candidates: z.number().int().min(1).max(MAX_CANDIDATES).optional(),
     /** What blocking spec questions do, as `--clarification`; omitted, the policy decides. */
     clarification: z.enum(["ask", "assume"]).optional(),
     /** The duplication ratchet of the run, as `--duplication`; omitted, the policy decides. */
@@ -94,6 +97,7 @@ export const PreRunQuery = z.strictObject({
   modelStrict: z.enum(["true", "false"]).optional(),
   worktree: z.enum(["true", "false"]).optional(),
   writers: z.string().regex(/^\d+$/).optional(),
+  candidates: z.string().regex(/^\d+$/).optional(),
   confirmAutoApproval: z.string().min(1).optional(),
 });
 export const ListQuery = z.strictObject({

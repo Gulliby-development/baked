@@ -423,6 +423,7 @@ function startArgs(raw: unknown): WorkflowArgs {
   if (body.confirmAutoApproval) flags["confirm-auto-approval"] = body.confirmAutoApproval;
   if (body.worktree) flags.worktree = true;
   if (body.writers !== undefined) flags.writers = String(body.writers);
+  if (body.candidates !== undefined) flags.candidates = String(body.candidates);
   if (body.clarification) flags.clarification = body.clarification;
   if (body.duplication) flags.duplication = body.duplication;
   if (body.sast) flags.sast = body.sast;
@@ -1123,6 +1124,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       if (query.modelStrict === "true") flags["model-strict"] = true;
       if (query.worktree === "true") flags.worktree = true;
       if (query.writers) flags.writers = query.writers;
+      if (query.candidates) flags.candidates = query.candidates;
       if (query.confirmAutoApproval) flags["confirm-auto-approval"] = query.confirmAutoApproval;
       const command = path.endsWith("doctor") ? "doctor" : "estimate";
       return json(

@@ -173,6 +173,12 @@ const DEFINITIONS: DefinitionSummary[] = [
     "review",
     "converge",
   ]),
+  definition(
+    "best-of-n",
+    "Standard, with each planned task implemented three times in separate worktrees and the best candidate kept.",
+    ["research", "specify", "plan", "analyze", "approve", "implement", "checks", "review"],
+    { execution: "worktree" },
+  ),
   definition("spike", "Research and a written answer, no changes", ["research", "report"], {
     worktreeRefusal: "A spike writes nothing, so it runs in place.",
   }),

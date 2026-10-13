@@ -112,6 +112,7 @@ bun test tests/feature-parity.test.ts
 | Propose the workflow and budget from the request | `/workflow` | `baked workflow propose`, `baked workflow run`, `auto-preset` | `/v1/workflow/propose` | `project/overview` |
 | Run list, detail, report, artifacts and usage | `/workflow` | `baked workflow list`, `baked workflow status`, `baked workflow report` +2 | `/v1/workflow/runs`, `/v1/workflow/runs/:id`, `/v1/workflow/runs/:id/events` +3 | `project/runs` |
 | Critic outcome log and calibration: scores with checks, acceptance, delivery, survival | `/workflow` | `baked workflow outcomes` | `/v1/workflow/critic`, `/v1/workflow/runs/:id/report` | `settings/routing`, `project/runs` |
+| Best-of-N: implement each planned task several times and keep the best candidate | `/workflow` | `baked workflow run` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `project/overview`, `project/runs` |
 | Progress watcher: steer, then stop, a stuck agent attempt | `/workflow` | `baked workflow run`, `baked workflow resume` | `/v1/workflow/runs/:id/events` | `project/runs` |
 | Approve, reject, answer, give evidence, continue, accept a stopped convergence | `/workflow` | `baked workflow approve`, `baked workflow reject`, `baked workflow answer` +3 | `/v1/workflow/runs/:id/approve`, `/v1/workflow/runs/:id/reject`, `/v1/workflow/runs/:id/answer` +3 | `project/runs`, `attention` |
 | Acceptance: criteria that need a person's evidence | `/workflow` | `baked workflow evidence` | `/v1/workflow/runs/:id/evidence` | `project/runs`, `attention` |

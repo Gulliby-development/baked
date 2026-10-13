@@ -619,6 +619,21 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/routing: Critic calibration", "project/runs: Report tab, Critic section"],
   },
   {
+    id: "best-of-n",
+    group: "Workflow runs",
+    title: "Best-of-N: implement each planned task several times and keep the best candidate",
+    tui: ["/workflow: new-run form, best-of-n workflow; run report, Best-of-N section"],
+    cli: ["baked workflow run: best-of-n workflow, or --worktree --candidates N"],
+    api: [
+      "/v1/workflow/runs: workflow best-of-n or candidates",
+      "/v1/workflow/runs/:id/report: Best-of-N section",
+    ],
+    desktop: [
+      "project/overview: New run, best-of-n workflow",
+      "project/runs: Report tab, Best-of-N section",
+    ],
+  },
+  {
     id: "progress-watcher",
     group: "Workflow runs",
     title: "Progress watcher: steer, then stop, a stuck agent attempt",

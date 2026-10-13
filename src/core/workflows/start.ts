@@ -104,6 +104,7 @@ export async function prepareStart(
     | "autoApprovalConfirmation"
     | "executionMode"
     | "maxConcurrentWriters"
+    | "candidates"
     | "clarification"
     | "duplication"
     | "sast"
@@ -215,6 +216,7 @@ export async function prepareStart(
     propertyTests: policyPropertyTests,
     allowOverlappingWrites,
     editDiagnostics: _editDiagnostics,
+    candidates: policyCandidates,
     ...rest
   } = policy;
   // The project's chat setting is the default; `feedback` leaves the field out of the hash.
@@ -246,6 +248,20 @@ export async function prepareStart(
     policyPropertyTests ??
     (config.quality?.propertyTests === "preset" ? undefined : config.quality?.propertyTests) ??
     presetPropertyTests(preset);
+  // Best-of-N: the run flag, then the definition's tasks stage, then the policy; 1 leaves the
+  // field out, so the policy hash stays what it was before candidates existed.
+  const stageCandidates =
+    loaded.schemaVersion === 2
+      ? Math.max(
+          1,
+          ...loaded.definition.stages.map((s) => (s.type === "tasks" ? (s.candidates ?? 1) : 1)),
+        )
+      : 1;
+  const candidates =
+    request.candidates ??
+    (stageCandidates > 1 ? stageCandidates : undefined) ??
+    policyCandidates ??
+    1;
   // Overlapping writes are kept only when permitted, so a policy that leaves them off keeps the
   // hash it had before the field existed; the requested writer count overrides the policy.
   policy = PolicySchema.parse({
@@ -266,6 +282,7 @@ export async function prepareStart(
     ...(request.maxConcurrentWriters !== undefined
       ? { maxConcurrentWriters: request.maxConcurrentWriters }
       : {}),
+    ...(candidates > 1 ? { candidates } : {}),
   });
   const writers = writerPolicyProblem(policy);
   if (writers) throw new WorkflowFault("INVALID_DEFINITION", writers);

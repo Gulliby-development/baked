@@ -121,7 +121,17 @@ function quick(id: string): MockDefinition {
   };
 }
 
-const PRESETS = ["sdd", "quick", "quick-fix", "standard", "full", "spike", "review-only", "fix-ci"];
+const PRESETS = [
+  "sdd",
+  "quick",
+  "quick-fix",
+  "standard",
+  "full",
+  "best-of-n",
+  "spike",
+  "review-only",
+  "fix-ci",
+];
 /** Copies saved in this window, by ID. */
 const saved = new Map<string, MockDefinition>();
 

@@ -1,5 +1,6 @@
 /** Workflow v1 contracts. */
 import { z } from "zod";
+import { DEFAULT_MAX_CANDIDATES, MAX_CANDIDATES } from "./candidates.js";
 
 export const SafeId = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/);
 export const Hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -260,6 +261,15 @@ export const PolicySchema = z
      */
     critic: z.enum(["off", "advise", "select", "earlyStop"]).optional(),
     /**
+     * Best-of-N (#642): how many times each planned task that writes files is implemented, each
+     * candidate in its own worktree, before one is selected and integrated (candidates.ts). Needs
+     * `executionMode: "worktree"`. Absent means 1, so stored policies keep their hash; a run start
+     * takes it from the request, else from the definition's tasks stage.
+     */
+    candidates: z.number().int().min(1).max(MAX_CANDIDATES).optional(),
+    /** The most candidates a run may ask for; absent means `DEFAULT_MAX_CANDIDATES` (4). */
+    maxCandidates: z.number().int().min(1).max(MAX_CANDIDATES).optional(),
+    /**
      * `false` leaves out learned code rules (#643): rules proposed from findings that recurred in
      * earlier runs and activated by recurrence or a person. Absent means on, so stored policies
      * keep their hash.
@@ -379,10 +389,17 @@ export function writerPolicyProblem(policy: {
   executionMode?: ExecutionMode | undefined;
   maxConcurrentWriters: number;
   allowOverlappingWrites?: boolean | undefined;
+  candidates?: number | undefined;
+  maxCandidates?: number | undefined;
 }): string | null {
+  const most = policy.maxCandidates ?? DEFAULT_MAX_CANDIDATES;
+  if ((policy.candidates ?? 1) > most)
+    return `candidates ${String(policy.candidates)} is above maxCandidates ${String(most)}`;
   if (executionModeOf(policy) === "worktree") return null;
   if (policy.maxConcurrentWriters > 1)
     return "maxConcurrentWriters above 1 needs worktree execution (workflow run --worktree)";
+  if ((policy.candidates ?? 1) > 1)
+    return "candidates above 1 needs worktree execution (workflow run --worktree)";
   if (policy.allowOverlappingWrites)
     return "allowOverlappingWrites needs worktree execution (workflow run --worktree)";
   return null;
@@ -1244,6 +1261,11 @@ export interface StartRequest {
   executionMode?: ExecutionMode;
   /** Concurrent writers requested for this run (CLI `--writers N`); it overrides the policy. */
   maxConcurrentWriters?: number;
+  /**
+   * Best-of-N candidates per planned task for this run (CLI `--candidates N`); it overrides the
+   * definition's tasks stage and the policy.
+   */
+  candidates?: number;
   /**
    * The run model overrides the configured model routes for this run (CLI `--model-strict`);
    * without it only the `active` class follows the run model.
