@@ -1,5 +1,6 @@
 import { hashJson } from "../specs/hash.js";
 import { pathsInOutput } from "../verification/convergence.js";
+import { writtenCodePaths } from "./check-policy.js";
 import type { TaskGraph } from "./schemas.js";
 import type { TaskRow } from "./store.js";
 import type { RuntimeState, Task } from "./types.js";
@@ -102,6 +103,32 @@ function sameApartFromAddedCriteria(before: Task, after: Task): boolean {
   return hashJson(rest) === hashJson(next) && was.every((id) => now.includes(id));
 }
 
+/**
+ * Code files that the graph's other tasks will still write: tasks that are neither verified nor
+ * implemented with a current gate. A task-end check does not hold the task to their contents.
+ */
+export function pendingCodePaths(
+  graph: TaskGraph | null | undefined,
+  rows: TaskRow[],
+  gates: RuntimeState["taskGates"],
+  task: Task,
+): string[] {
+  const done = (id: string): boolean =>
+    rows.some(
+      (r) =>
+        r.id === id &&
+        (r.status === "verified" || (r.status === "implemented" && hasTaskGate(r, gates))),
+    );
+  const own = new Set(task.writes.map((w) => w.path));
+  return [
+    ...new Set(
+      (graph?.tasks ?? [])
+        .filter((t) => t.id !== task.id && !done(t.id))
+        .flatMap((t) => writtenCodePaths(t))
+        .filter((path) => !own.has(path)),
+    ),
+  ];
+}
 /**
  * The tasks still to run that the failure of a task check waits for, or none when the failure is
  * the task's own. They are the owners of every planned file the output names, and the owners of

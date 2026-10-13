@@ -358,6 +358,12 @@ export interface ExecutionRequest {
    * a corrected result in the same conversation, a bounded number of times.
    */
   validate?: (output: unknown) => string[];
+  /**
+   * The task-end whole-unit check (#673): run once, on the first submission that reports the task
+   * implemented, in the attempt's directory. The errors it attributes to the task go back to the
+   * agent once; the next submission is accepted without running it again.
+   */
+  taskEndCheck?: (root: string, signal: AbortSignal) => Promise<string[]>;
   /** Directory the agent reads, edits and checks in; defaults to the run's workspace. */
   root?: string;
   /**

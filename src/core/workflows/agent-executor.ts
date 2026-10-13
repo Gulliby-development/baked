@@ -571,6 +571,7 @@ export class NativeAgentExecutor implements AgentExecutor {
       const schema = withHostConstants(request.profile.output, resultSchema);
       let submitted: unknown;
       let rejected = 0;
+      let taskEndChecked = false;
       const submitResult = tool({
         description:
           "Submit the final typed result. Evidence IDs must come from the host context or tools.",
@@ -598,6 +599,22 @@ export class NativeAgentExecutor implements AgentExecutor {
               instruction:
                 "The result was not accepted. Fix every listed problem and call submit_result again with the complete corrected result.",
             };
+          }
+          if (
+            !errors.length &&
+            request.taskEndCheck &&
+            !taskEndChecked &&
+            (parsed as { outcome?: unknown }).outcome === "implemented"
+          ) {
+            taskEndChecked = true;
+            const typeErrors = await request.taskEndCheck(root, request.signal);
+            if (typeErrors.length)
+              return {
+                accepted: false,
+                errors: typeErrors,
+                instruction:
+                  "The project's type check reports these errors in the files this task writes. Fix them, then call submit_result again with the complete result. This check runs once; the next submission is accepted.",
+              };
           }
           submitted = parsed;
           return { accepted: true };
