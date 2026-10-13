@@ -67,6 +67,10 @@ export interface PreparedStart {
   instructionHashes: ReturnType<typeof frozenInstructions>["hashes"];
 }
 
+/** Why a shipped preset with a check stage cannot start in a project without feature checks. */
+export const missingFeatureChecks = (workflowId: string): string =>
+  `Workflow ${workflowId} needs at least one feature check in the workflow policy (workflows.policy.checks); /workflow gates adds them`;
+
 /**
  * The validation half of a run start. It reads the workspace but writes nothing, so `workflow
  * doctor` runs it to report exactly the refusals a start would make.
@@ -153,6 +157,12 @@ export async function prepareStart(
           `Profile output does not match stage ${stage.id}`,
         );
   } else {
+    // A shipped preset bound to a project without feature checks has a check stage with no gates;
+    // refuse here so every front end reports it instead of a run that blocks at once.
+    if (!loaded.path && loaded.definition.stages.some((s) => s.type === "check" && !s.gates.length))
+      throw new WorkflowFault("INVALID_DEFINITION", missingFeatureChecks(request.workflowId), {
+        missingFeatureChecks: true,
+      });
     const bound = bindDefinition(
       workspace,
       loaded.definition,
