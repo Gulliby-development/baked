@@ -423,6 +423,7 @@ function startArgs(raw: unknown): WorkflowArgs {
   if (body.writers !== undefined) flags.writers = String(body.writers);
   if (body.clarification) flags.clarification = body.clarification;
   if (body.duplication) flags.duplication = body.duplication;
+  if (body.sast) flags.sast = body.sast;
   if (body.modelStrict) flags["model-strict"] = true;
   if (body.sandbox) flags.sandbox = body.sandbox;
   if (body.policy !== undefined) flags.policy = true;

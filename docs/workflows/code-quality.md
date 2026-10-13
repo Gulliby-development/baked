@@ -6,15 +6,17 @@ Quality gates of workflow runs measure the code a run writes beyond what its che
 | --- | --- | --- | --- |
 | [Duplication and dead-code ratchet](#duplication-and-dead-code-ratchet) | `duplication` | `off`, `warn`, `ratchet` | `warn` |
 | [Anti-slop rule pack](#anti-slop-rule-pack) | `qualityRules` | rules turned off, severities, ast-grep rule files | every built-in rule on |
+| [Dependency check](#dependency-check) | `registryLookups` | `false` turns lookups off | on |
+| [Semgrep](#semgrep) | `sast`, `sastConfig` | `auto`, `off`; a Semgrep `--config` | `auto`, `p/default` |
 
 Where the defaults are set:
 
 - terminal UI: `/code-quality` (or **Code Quality** in `/settings`), saved to the project or the global config;
 - desktop: Settings, Chat settings, **Code quality** page;
-- local API: `PATCH /v1/settings` with `quality.duplication` and `quality.disabledRules` ([chat settings](../desktop/api.md#chat-settings));
+- local API: `PATCH /v1/settings` with `quality.duplication`, `quality.disabledRules`, `quality.registryLookups` and `quality.sast` ([chat settings](../desktop/api.md#chat-settings));
 - config file: `quality` in `.baked/config.json` or `~/.baked/config.json`.
 
-A run can override the default at start: `baked workflow run --duplication off|warn|ratchet`, or `duplication` in `POST /v1/workflow/runs`. The order is the run flag, then the policy's own field (`--policy FILE` or `workflows.policy`), then the `quality` setting, then the built-in default.
+A run can override the default at start: `baked workflow run --duplication off|warn|ratchet` and `--sast auto|off`, or `duplication` and `sast` in `POST /v1/workflow/runs`. The order is the run flag, then the policy's own field (`--policy FILE` or `workflows.policy`), then the `quality` setting, then the built-in default.
 
 ## Duplication and dead-code ratchet
 
@@ -78,3 +80,34 @@ A project shapes the pack in the `quality` block of `.baked/config.json` (or `~/
 Each run freezes these choices in its policy as `qualityRules` (`disabled`, `severity`, `files`) at start. A `qualityRules` field in `--policy FILE` or `workflows.policy` replaces the configured choices. The run report lists the matches under **Code quality** with the rule, severity, place and line, the rules turned off, and whether the project's ast-grep rules ran.
 
 The chat's own de-sloppify pass (`agentFeatures.desloppify`, `/agent-features`) stays a chat setting. In workflow runs this rule pack does that job, and it is on by default.
+
+## Dependency check
+
+Models invent package names, and attackers register the names they invent. The dependency check is always on and runs at the start of each checks stage, before any command check can install or run what the run added. It reads the changes since the baseline:
+
+- **Declared dependencies**: entries added to `package.json`, `requirements*.txt`, `pyproject.toml` (PEP 621 and Poetry), `Cargo.toml`, `go.mod`, `*.csproj`/`*.fsproj`/`*.vbproj` and `pom.xml`. Workspace, file, path and git dependencies are not from a registry and are skipped. A manifest whose baseline is not known declares nothing new.
+- **Imported packages**: bare `import`, `require` and `import()` specifiers on the JS/TS lines the run added that no `package.json` declares. Relative paths, Node, Bun and protocol specifiers and the `paths` aliases of `tsconfig.json` are not packages.
+
+Each new package is looked up in its public registry (npm with its weekly downloads, PyPI, crates.io, the Go module proxy, NuGet, Maven Central), without credentials and with an 8-second timeout. The verdicts:
+
+| Verdict | Meaning | Blocks |
+| --- | --- | --- |
+| `missing` | the registry does not know the name; it may be made up | yes |
+| `typosquat` | one or two edits from a popular package and rarely downloaded (under 10,000 a week) or less than a year old | yes |
+| `new-package` | first published less than 14 days ago | yes |
+| `undeclared` | imported but not declared in `package.json` | no |
+| `rare` | under 100 downloads a week | no |
+| `unknown` | the lookup failed (offline, registry down) or lookups are off | no |
+| `ok` | a new dependency that passed | no |
+
+A blocking verdict is a `security` finding (`Dependency left-padx: npm package left-padx does not exist in the registry; the name may be made up (src/pad.ts:1)`), and the stage stops before its commands run. The run corrects it like a failed check; the finding closes when a later check finds nothing blocking. The result is kept as `quality/dependencies.json`.
+
+Every new dependency, blocking or not, is listed in the run report under **Code quality** with its ecosystem, verdict and place. The report is the delivery pull request's body, so whoever approves the pull request approves each new dependency there. `quality.registryLookups: false` (or `registryLookups: false` in the policy) stops the lookups, for example on a machine without network access; new dependencies are then listed as `unknown` and nothing blocks. The lookups do not depend on the run's `network` policy, which governs the commands the run executes.
+
+The implementer is told to add a dependency only when the task needs one and only under a well-known name it is sure of.
+
+## Semgrep
+
+When [Semgrep](https://semgrep.dev/) is installed, each checks stage, after the command checks pass, runs `semgrep scan --json --metrics=off --quiet --config CONFIG` on the code files the run changed and keeps the matches on lines the run added (`quality/sast.json`). An `ERROR` match is a blocking `security` finding (`SAST RULE: MESSAGE (FILE:LINE)`) when the file's baseline is known; `WARNING` and `INFO` matches are notes. Without Semgrep, or when it fails, the report says `Semgrep: not run (REASON).` and nothing blocks. BAKED does not install Semgrep.
+
+`CONFIG` is `p/default` unless `quality.sastConfig` in the config file (or `sastConfig` in the policy) names another registry ruleset or a local rule file. `quality.sast: off`, `--sast off` or `sast: off` in the start request skips Semgrep.
