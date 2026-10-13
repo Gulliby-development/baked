@@ -660,6 +660,11 @@ export class ChatSession {
     return this.submit({ text: turn.prompt, display: watchTurnDisplay(turn), verbatim: true });
   }
 
+  /** Sends a prompt the app wrote, shown as `display`, as a turn of its own behind the running one. */
+  sendRequest(text: string, display: string): { turnId: string; queued: boolean } {
+    return this.submit({ text, display, verbatim: true });
+  }
+
   emitWatch(watch: WatchStatus): void {
     this.emit({ type: "watch", watch });
   }

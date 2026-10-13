@@ -238,7 +238,7 @@ describe("terminal coordinator view model", () => {
       "edit",
       "back",
     ]);
-    expect(keyHints(undefined, false).map((h) => h.label)).toEqual(["send", "back"]);
+    expect(keyHints(undefined, false).map((h) => h.label)).toEqual(["send", "what's happening", "back"]);
     expect(keyHints(undefined, true).map((h) => h.label)).toEqual(["send", "stop"]);
   });
 

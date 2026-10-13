@@ -160,6 +160,15 @@ export const FEATURES: readonly Feature[] = [
     ],
   },
   {
+    id: "coordinator-summary",
+    group: "Chat and sessions",
+    title: "One-click coordinator digest: running, waiting, finished and open questions",
+    tui: ["/coordinator summary", "/coordinator: Ctrl+S"],
+    cli: notNeeded("scripts read the same state with baked session coordinator and --json runs"),
+    api: ["/v1/coordinator/summary"],
+    desktop: ["project/coordinator: What's happening in the header"],
+  },
+  {
     id: "session-diagnostics",
     group: "Chat and sessions",
     title: "Diagnostic export and API request dumps",

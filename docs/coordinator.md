@@ -18,6 +18,7 @@ The project coordinator is one long-lived chat per project. You come back to it 
   - When you name issues yourself ("run #120 and #121 in parallel"), the coordinator proposes a split whose flows name them; one issue goes straight to `start_run`, which also takes `issue`.
   - The brief records the decision with the first 12 characters of the digest, and one `launched` entry per run or initiative, which the coordinator then follows like any launch. The launch limits below count every flow of a split in runs mode, and a split that would pass them is refused before the card is shown.
 - **Following it.** Every launch is added to the brief's launched work with its id, why and task (the issue `owner/name#N` with its URL and state, or a local task). The server checks launched items every two seconds and updates their status in the brief. When an item finishes, fails, is cancelled or waits for a person, a note such as "Launched run ID: waiting: approval (why)" is added to the coordinator's chat as a `notice` event. The model does not see these notes as messages; it reads the updated status in the brief on its next turn. An initiative started from a split gets one launched entry for the initiative and one per feature with an issue (`feature` names it); a feature entry's status follows the feature, and an accepted feature reads `completed`. Once a run or feature whose task is an open issue has completed, the server also reads the issue: when its pull request has merged and GitHub closed it, the note "task owner/name#N closed: the pull request of run ID merged" is added and the task is marked closed.
+- **What's happening.** One action asks the coordinator for a digest: it starts a short turn, shown in the conversation as "What's happening?", in which the coordinator checks `project_state` and its launched work and answers in four fixed sections: **Running**, **Waits for you**, **Finished since the last summary** (since its previous summary in the conversation) and **Open questions** (from the brief), with "Nothing." under an empty one. It launches nothing in that turn. Asked while a turn runs, the summary is queued as a turn of its own. It is `POST /v1/coordinator/summary`, **What's happening** in the desktop coordinator's header, and `/coordinator summary` or `Ctrl+S` in the terminal UI.
 - **Limits.** A launch is refused while `coordinator.maxActive` launched items (3 by default) are still active, or once everything launched has used `coordinator.maxTokens` tokens (20,000,000 by default) ([configuration](configuration.md#common-settings)).
 - **Self-compaction.** After a turn that leaves the context fuller than `compaction.triggerThreshold` (0.7 by default, the same setting as the terminal chat), the coordinator compacts its older messages on its own. The brief is not part of the conversation, so compaction and server restarts keep it whole.
 
@@ -25,10 +26,10 @@ The project coordinator is one long-lived chat per project. You come back to it 
 
 | Surface | How |
 | --- | --- |
-| Local API | `GET/POST /v1/coordinator`, `GET/PUT /v1/coordinator/brief`, `GET /v1/coordinator/launched`, then the usual `/v1/sessions/ID/...` endpoints ([contract](desktop/api.md#project-coordinator)) |
+| Local API | `GET/POST /v1/coordinator`, `GET/PUT /v1/coordinator/brief`, `GET /v1/coordinator/launched`, `POST /v1/coordinator/summary`, then the usual `/v1/sessions/ID/...` endpoints ([contract](desktop/api.md#project-coordinator)) |
 | Headless CLI | `baked session coordinator [--json]` prints the session id and the brief |
-| Desktop app | the Coordinator section of each project, and Hand to coordinator in the chat menu ([desktop app](desktop/app.md#screens)) |
-| Terminal UI | `/coordinator` ([below](#terminal-ui)) |
+| Desktop app | the Coordinator section of each project with What's happening in its header, and Hand to coordinator in the chat menu ([desktop app](desktop/app.md#screens)) |
+| Terminal UI | `/coordinator` and `/coordinator summary` ([below](#terminal-ui)) |
 
 ## Terminal UI
 
@@ -36,6 +37,7 @@ The project coordinator is one long-lived chat per project. You come back to it 
 
 - **Conversation.** The view shows what the coordinator launched (kind, id, status, tokens, task and why), then the tail of the conversation and the text the running turn streams. Type a message and press `Enter` to send it; a message sent while a turn runs is queued.
 - **Prompts.** A split card lists its flows with their tasks, paths and dependencies. `Ctrl+Y` approves it, `Ctrl+N` rejects it, and `Ctrl+E` rejects it and starts a "Change the split: " message. Approval prompts (`launch_session` in an editing mode) take `Ctrl+Y` to allow and `Ctrl+N` to deny. A question takes an option's number or text and `Enter`.
+- **What's happening.** `Ctrl+S`, while no turn runs and no prompt waits, asks for the [digest](#what-exists-now). `/coordinator summary` opens the view and asks for it at once.
 - **Launching.** Runs start through the terminal UI's workflow worker, as `/workflow run` does, with the model of the current tab and owner `Coordinator`; the run shows in `/workflow` like any other. Project state is read from `.baked/workflows.sqlite` without writing to it.
 - **Leaving.** `Esc` stops a running turn; when nothing runs it closes the view. The coordinator keeps following launched work while the terminal UI runs and stops when it exits.
 

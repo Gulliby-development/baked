@@ -303,6 +303,30 @@ export interface WatchControl {
   disabled: boolean;
 }
 
+/** What's happening in the coordinator header; `disabled` says why it cannot run, if it cannot. */
+export interface SummaryControl {
+  run: () => void;
+  disabled: string | null;
+}
+
+function SummaryChip({ summary }: { summary: SummaryControl }) {
+  return (
+    <button
+      type="button"
+      className={REWIND_CHIP}
+      disabled={summary.disabled !== null}
+      title={
+        summary.disabled ??
+        "Ask the coordinator what is running, what waits for you, what finished and what is open"
+      }
+      onClick={summary.run}
+    >
+      <Icon name="overview" size={13} />
+      What's happening
+    </button>
+  );
+}
+
 function WatchChip({ watch }: { watch: WatchControl }) {
   return (
     <button
@@ -604,6 +628,7 @@ export function ChatHeader({
   compact,
   rewind,
   watch,
+  summary,
   manage,
   coordinator = false,
 }: {
@@ -621,6 +646,8 @@ export function ChatHeader({
   compact?: CompactControl;
   rewind?: RewindControl;
   watch?: WatchControl;
+  /** The coordinator's one-click digest; absent elsewhere and on older servers. */
+  summary?: SummaryControl;
   manage?: ChatManageControl;
 }) {
   return (
@@ -641,6 +668,7 @@ export function ChatHeader({
         <SessionMenu project={project} title={title} currentId={sessionId} manage={manage} />
       )}
       <div className="ml-auto flex flex-wrap gap-[6px] [@media(max-width:720px)]:ml-0">
+        {summary && <SummaryChip summary={summary} />}
         {usage && (
           <ContextChip
             context={context ?? null}
