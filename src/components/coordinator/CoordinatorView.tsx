@@ -16,6 +16,7 @@ import { PopupViewport } from "../ui/PopupViewport.js";
 import {
   keyHints,
   type LineTone,
+  launchedHeading,
   launchedLines,
   messageLines,
   openLaunched,
@@ -281,7 +282,7 @@ function CoordinatorBody({
       {shownLaunched.length > 0 && (
         <box flexDirection="column" flexShrink={0}>
           <text fg={t.textMuted} attributes={1}>
-            Launched
+            {launchedHeading(view?.rulesOn ?? 0)}
           </text>
           {keyed(shownLaunched, "l").map((line) => (
             <text key={line.key} fg={toneColor(t, line.tone)} wrapMode="none" truncate>

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ApprovalRulesContentSchema } from "../chat/approval-rules.js";
 import { BriefContentSchema } from "../chat/coordinator.js";
 import { LaunchedRefSchema } from "../chat/coordinator-control.js";
 import { MAX_IMAGES_PER_MESSAGE } from "../chat/images.js";
@@ -8,6 +9,7 @@ import { BUDGET_PRESETS } from "../workflows/budget.js";
 import { MAX_CANDIDATES } from "../workflows/candidates.js";
 import { MAX_CONCURRENT_WRITERS, RunStatus, SafeId } from "../workflows/schemas.js";
 import { USAGE_DIMENSIONS } from "../workflows/usage.js";
+import { MAX_LOOP_ROUNDS } from "../workflows/v2/definition.js";
 
 /** Every mutation names a client-chosen command ID; a retry with the same ID returns the first result. */
 const Command = z.object({
@@ -163,6 +165,9 @@ export const LaunchedCloseBody = LaunchedRefSchema.extend({ reopen: z.boolean().
 export const BriefBody = BriefContentSchema.extend({
   expectedRevision: z.number().int().min(0),
 });
+export const ApprovalRulesBody = ApprovalRulesContentSchema.extend({
+  expectedRevision: z.number().int().min(0),
+});
 export const UpdateSessionBody = z
   .strictObject({
     title: Title.optional(),
@@ -274,7 +279,7 @@ export const EditorOpBody = z.discriminatedUnion("op", [
     from: SafeId,
     to: z.string().min(1).max(100),
     on: z.enum(["passed", "failed", "changes_requested"]),
-    loop: z.number().int().min(1).max(5).nullable(),
+    loop: z.number().int().min(1).max(MAX_LOOP_ROUNDS).nullable(),
   }),
   z.strictObject({ op: z.literal("removeTransition"), id: z.string().min(1).max(200) }),
   z.strictObject({ op: z.literal("addWaitStage"), after: SafeId }),
@@ -284,6 +289,11 @@ export const EditorOpBody = z.discriminatedUnion("op", [
     stageId: SafeId,
     key: z.string().min(1).max(200),
     delta: Delta,
+  }),
+  z.strictObject({
+    op: z.literal("setLoop"),
+    id: z.string().min(1).max(200),
+    rounds: z.number().int().min(1).max(MAX_LOOP_ROUNDS),
   }),
   z.strictObject({ op: z.literal("duplicate") }),
 ]);

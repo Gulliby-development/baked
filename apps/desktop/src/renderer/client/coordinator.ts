@@ -57,6 +57,35 @@ export interface LaunchedView extends LaunchedEntry {
   tokens: number;
 }
 
+/** A rule the coordinator answers routine approvals of what it launched by (`approval-rules.ts`). */
+export type ApprovalRule =
+  | { id: string; kind: "run-approval"; maxTokens: number; paths?: string[] }
+  | { id: string; kind: "web-search" }
+  | { id: string; kind: "fetch-page"; hosts: string[] }
+  | { id: string; kind: "plan-review"; maxSteps: number };
+export type ApprovalRuleKind = ApprovalRule["kind"];
+
+/** One approval the coordinator answered by a rule. */
+export interface AutoAnswer {
+  at: number;
+  ruleId: string;
+  /** The rule as it read when it answered. */
+  rule: string;
+  kind: "session" | "run";
+  id: string;
+  title?: string;
+  what: string;
+}
+
+/** The rules: off by default; `log` holds the latest answers, newest last. */
+export interface ApprovalRules {
+  revision: number;
+  updatedAt: number;
+  enabled: boolean;
+  rules: ApprovalRule[];
+  log: AutoAnswer[];
+}
+
 export const coordinator = {
   /** The project's coordinator session, created on first use. */
   open: (key: string) => call<SessionDetail>(key, "POST", "/v1/coordinator", {}),
@@ -92,5 +121,17 @@ export const coordinator = {
     call<{ launched: LaunchedView[] }>(key, "POST", "/v1/coordinator/launched/close", {
       ...refOf(item),
       ...(reopen ? { reopen: true } : {}),
+    }),
+  approvalRules: (key: string) => call<ApprovalRules>(key, "GET", "/v1/coordinator/approval-rules"),
+  /** Saves the switch and the rules; a 409 `STALE_REVISION` means they changed meanwhile. */
+  saveApprovalRules: (
+    key: string,
+    rules: Pick<ApprovalRules, "enabled" | "rules">,
+    expectedRevision: number,
+  ) =>
+    call<ApprovalRules>(key, "PUT", "/v1/coordinator/approval-rules", {
+      enabled: rules.enabled,
+      rules: rules.rules,
+      expectedRevision,
     }),
 };

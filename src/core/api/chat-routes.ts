@@ -4,6 +4,7 @@
  * `ChatService`.
  */
 
+import { ApprovalRulesStore } from "../chat/approval-rules.js";
 import { BriefError, BriefStore } from "../chat/coordinator.js";
 import { requestSummary } from "../chat/coordinator-summary.js";
 import {
@@ -17,6 +18,7 @@ import { loadModelCatalog } from "../llm/model-catalog.js";
 import { chatExportFileName, renderChatExport } from "../sessions/export.js";
 import type { RouteContext } from "./route-context.js";
 import {
+  ApprovalRulesBody,
   BriefBody,
   CompactBody,
   CoordinatorBody,
@@ -119,6 +121,21 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
     const store = new BriefStore(chat.workspace, session.id);
     if (method === "GET") return ctx.json(200, store.read());
     const { expectedRevision, ...content } = BriefBody.parse(await ctx.readJson());
+    try {
+      return ctx.json(200, store.write(content, expectedRevision));
+    } catch (err) {
+      if (err instanceof BriefError)
+        ctx.fail(err.code === "STALE_REVISION" ? 409 : 400, err.code, err.message);
+      throw err;
+    }
+  }
+  if (path === "/v1/coordinator/approval-rules") {
+    only("GET", "PUT");
+    const session = await chat.coordinator(false);
+    if (!session) ctx.fail(404, "NOT_FOUND", "This project has no coordinator yet");
+    const store = new ApprovalRulesStore(chat.workspace, session.id);
+    if (method === "GET") return ctx.json(200, store.read());
+    const { expectedRevision, ...content } = ApprovalRulesBody.parse(await ctx.readJson());
     try {
       return ctx.json(200, store.write(content, expectedRevision));
     } catch (err) {

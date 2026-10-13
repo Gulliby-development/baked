@@ -75,6 +75,7 @@ Implemented on 2026-10-12 for the project coordinator (#148). Several runs of on
 - A worktree is deleted only for a terminal run after its branch has been delivered or explicitly discarded by the user.
 
 - Task worktrees are byte-exact copies of the run worktree: the content commit and the checkout run with `core.autocrlf=false`, so a Windows repository without `.gitattributes` does not turn LF files into CRLF. After the checkout, each file the task may write is compared with the run worktree and replaced by a byte copy when it differs; the edit hash check also ignores a pure line-ending difference.
+- Edits of one file that an attempt sends in parallel (several `edit_file`, `multi_edit` or `delete_file` calls on the same path in one model step) run one after another, so each sees the effect its predecessor journaled and the hash check does not refuse the attempt's own write. Calls on different paths still run in parallel.
 - A blocked implementer outcome that follows an edit refused by the hash check is reported as an infrastructure fault (reason `input_changed`, with the refused paths), not as a disagreement with the task.
 ## Checks
 

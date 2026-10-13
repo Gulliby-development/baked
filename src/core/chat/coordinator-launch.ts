@@ -24,6 +24,7 @@ import {
   issueTarget,
 } from "../workflows/issue-source.js";
 import { terminalStates } from "../workflows/state-machine.js";
+import type { RunApprover } from "./approval-rules.js";
 import { BriefStore, type LaunchedEntry } from "./coordinator.js";
 import type { ProjectStateSource } from "./project-state.js";
 import type { ChatMode, ChatService, ChatSession } from "./sessions.js";
@@ -85,6 +86,8 @@ export interface ProjectLauncher {
   cancelRun?(runId: string): Promise<void>;
   /** Pauses an initiative and its running feature runs; an initiative has no cancel. */
   pauseInitiative?(initiativeId: string): Promise<void>;
+  /** Approves a run's plan and continues it; the approval rules use it (`approval-rules.ts`). */
+  approveRun?: RunApprover["approveRun"];
 }
 
 /** Tasks as GitHub issues, read and created with `workflows.delivery.tokenEnv`. */
