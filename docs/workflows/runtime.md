@@ -746,6 +746,21 @@ The critic (`critic` profile, role `reviewer`, model `$review`) scores every tas
 
 `critic` is `advise` (always score) or `off` (never). Without a setting the critic runs only when its model is of another vendor than the implementation's, so a setup with one provider spends nothing on it. Set it in `modelRouting.critic` (global or project layer, on the routing screen, with `baked workflow routing critic advise|off|unset`, `PATCH /v1/workflow/routing` or the desktop's Model routing page) or directly as `workflows.policy.critic`; a start copies the routing value into the run's policy.
 
+#### Critic outcome log
+
+Every critic score is also kept in the project's `.baked/workflows.sqlite` (table `critic_outcomes`, one row per scored attempt), with the outcomes that later show whether the critic was right. The data stays local, like telemetry, and is what calibration of the critic will learn from.
+
+- `task_result` is `passed` when the attempt's task checks passed, or `repaired` when they failed and a repair task followed.
+- `acceptance` is `accepted` when the run completed, or `rejected` when it failed or was cancelled.
+- `delivery` applies to a run with a [delivery](#delivery). It is `merged` once the base branch contains the delivered commit, `reverted` once a commit on that branch reverts it, and otherwise `open`. It is read from the local Git repository, so fetch first to see merges made on the server.
+- `survival` is the share of the non-blank lines the attempt added that the project's files still hold. It is updated until 30 days after the run completed and is then final.
+
+The delivery and survival labels are refreshed before a run starts, at most once a day per process. `baked workflow outcomes [RUN_ID] [--refresh] [--json]` (or `/workflow outcomes` in the terminal UI) shows the log:
+- a summary (attempts whose checks passed or were repaired, with the mean score of each; accepted and rejected runs; merged and reverted deliveries; mean final survival);
+- one line per scored attempt.
+
+`--refresh` updates the labels from Git first, and `--json` gives the rows for the bench loop to aggregate across projects. The run report's Critic section adds an Outcome column with the labels of each attempt.
+
 Warnings are stored in `routing.json` under `warnings` and printed by `workflow route` as `warning:` lines.
 
 ### Switching a run to another model

@@ -28,6 +28,7 @@ const commands = [
   "candidate",
   "usage",
   "report",
+  "outcomes",
   "memory",
   "extend",
   "reroute",
@@ -66,6 +67,7 @@ export interface WorkflowArgs {
   inline?: Record<string, unknown>;
 }
 const flags = new Set([
+  "refresh",
   "model-strict",
   "feature",
   "workflow",
@@ -134,6 +136,7 @@ const flags = new Set([
   "budget",
 ]);
 const booleanFlags = new Set([
+  "refresh",
   "all",
   "save",
   "from-criteria",
@@ -236,6 +239,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
   usage: ["model", "stage", "top", "format", "output"],
   report: ["output"],
+  outcomes: ["refresh"],
   memory: ["text"],
   extend: [
     "tokens",
@@ -547,6 +551,10 @@ usage RUN_ID [--model ID] [--stage NAME] [--top N] [--format md] [--output FILE]
 report RUN_ID [--output FILE] [--json]
   One Markdown report of the run: summary, changes, tasks, checks, criteria, findings, decisions,
   tokens by stage and model, artifacts. Printed, or written to FILE; deliver uses it as the PR body.
+outcomes [RUN_ID] [--refresh] [--json]
+  The critic outcome log: each critic score with whether the task's checks passed, how the run
+  ended, the delivered commit's fate and the share of its lines that survive (final after 30 days).
+  --refresh updates delivery and survival from Git first.
 gc --before ISO_DATE [--dry-run]          redact RUN_ID --file ARTIFACT_ID --reason TEXT
 deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr]
   Prepare Git delivery of a completed, verified run: one commit of the run's files on a new

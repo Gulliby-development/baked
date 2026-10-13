@@ -4,6 +4,7 @@ import { parseWorkflowArgs, workflowHelp } from "../../headless/workflow-parse.j
 import { workflowSession } from "../../hooks/useWorkflow.js";
 import { useUIStore } from "../../stores/ui.js";
 import { useWorkflowStore } from "../../stores/workflow.js";
+import { type CriticOutcomes, formatCriticOutcomes } from "../workflows/critic-outcomes.js";
 import type { RunSnapshot } from "../workflows/schemas.js";
 import { QUICK_WORKFLOW_ID } from "../workflows/v2/definitions.js";
 import type { CommandHandler } from "./types.js";
@@ -43,6 +44,8 @@ export function formatWorkflowResult(result: unknown): string {
     return `Workflow ${result.featureId}: ${result.status}${reason}.${waiting}\nRun ${result.runId} · /workflow opens the panel.`;
   }
   if (isReport(result)) return result.markdown;
+  if (result && typeof result === "object" && "criticOutcomes" in result)
+    return formatCriticOutcomes(result as CriticOutcomes);
   if (isWrittenReport(result))
     return `${result.usage ? "Run usage" : "Run report"} written to ${result.path}.`;
   return JSON.stringify(result, null, 2);
@@ -57,6 +60,7 @@ const SHORT_HELP = `
 /workflow usage      Tokens and cost of every run over 7, 30 or 90 days, by model, stage or day
 /workflow report ID  The run's report in Markdown (--output FILE writes it)
 /workflow usage ID --format md  The run's tokens and cost in Markdown (--output FILE)
+/workflow outcomes   Critic scores with how each attempt turned out (--refresh reads Git)
 /workflow help       All commands (run, status, approve, recover, export…)`.trim();
 
 /** The definition a quick task starts with in this project. */
