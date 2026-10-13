@@ -409,6 +409,8 @@ export interface AppConfig {
   defaultBakeMode?: BakeMode;
   /** Enable/disable Baked map (AST index). Disabling saves ~4-8k prompt tokens. Default: true. Toggle via /repo-map → 'e'. */
   repoMap?: boolean;
+  /** Keep the Baked map index current in the background: at startup, after file changes, chat turns, runs and git checkouts or pulls. Default: true. */
+  repoMapBackgroundRefresh?: boolean;
   /** Semantic summary mode: "off", "ast" (docstrings only), "synthetic" (ast + name-derived, free), "llm" (ast + AI-generated), "full" (ast + llm + synthetic). Boolean compat: true → "synthetic", false → "off". "on" is legacy alias for "full". */
   semanticSummaries?: "off" | "ast" | "synthetic" | "llm" | "full" | "on" | boolean;
   /** Max symbols to summarize with LLM (default 300). Controls API cost for llm/full modes. PageRank-ranked — top N most connected symbols get LLM summaries. */
@@ -426,6 +428,12 @@ export interface AppConfig {
    * the errors with the original text. Workflow runs take it from their policy.
    */
   editDiagnostics?: "feedback" | "reject";
+  /**
+   * The BAKED kit (docs/kit.md): `auto` (default) tells the agent to style web UI with it in
+   * projects with no styles of their own, `always` in every project, `off` never. Artifacts without
+   * styles get it inlined unless this is `off`.
+   */
+  designKit?: "auto" | "off" | "always";
   /**
    * Where workflow implementers get docs for the locked versions of the libraries a task uses: a
    * directory of `<name>@<version>.md` files or an MCP tool. A project value replaces the global one.

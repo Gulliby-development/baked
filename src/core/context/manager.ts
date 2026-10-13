@@ -10,6 +10,7 @@ import { logBackgroundError } from "../diagnostics/errors.js";
 import { recordModelCall } from "../diagnostics/model-events.js";
 import { getIntelligenceClient, setIntelligenceClient } from "../intelligence/instance.js";
 import type { SymbolForSummary } from "../intelligence/repo-map.js";
+import { kitGuidanceFor } from "../kit/guidance.js";
 import { cacheTtlToMs, supportsPromptCache } from "../llm/cache-support.js";
 import { resolveModel } from "../llm/provider.js";
 import { EPHEMERAL_CACHE, supportsTemperature } from "../llm/provider-options.js";
@@ -36,6 +37,8 @@ import {
 import { onFileEdited, onFileRead } from "../tools/file-events.js";
 import { IntelligenceClient } from "../workers/intelligence-client.js";
 import { dotnetFiles } from "../workflows/language.js";
+import { runMemoryForChat } from "../workflows/project-memory.js";
+import { WorkflowStore } from "../workflows/store.js";
 import { BakeMapSnapshot } from "./bake-map-snapshot.js";
 // extractConversationTerms removed — FTS boosting was noisy
 import { walkDir } from "./file-tree.js";
@@ -78,6 +81,8 @@ export class ContextManager {
   private recallEditEpoch = 0;
   /** Memory ids surfaced earlier in this turn-stream — skipped on subsequent recall to avoid duplicate <recalled_memories> blocks. Cleared on cache reset (compaction, /clear, session restore). */
   private surfacedMemoryIds = new Set<string>();
+  /** Whether this session already read run memory (shared once per session, #818). */
+  private runMemorySurfaced = false;
   private bakeMode: BakeMode = "default";
   private fileTreeCache: { tree: string; at: number } | null = null;
   private projectInfoCache: { info: string | null; at: number } | null = null;
@@ -85,6 +90,8 @@ export class ContextManager {
   private repoMapReady = false;
   private repoMapEnabled = process.env.BAKED_NO_REPOMAP !== "1";
   private repoMapGeneration = 0;
+  /** The scan in flight, initial or background. */
+  private repoMapScan: Promise<void> | null = null;
   private editedFiles = new Set<string>();
   private mentionedFiles = new Set<string>();
   // conversationTerms removed — FTS boosting was noisy, PageRank handles ranking
@@ -118,6 +125,8 @@ export class ContextManager {
   private ownsIntelligence = true;
   private projectInstructions = "";
   private projectInstructionsVersion = 0;
+  /** Kit guidance for the instructions version it was computed for; files are read once per version. */
+  private designGuidance: { version: number; text: string } | null = null;
   /** The project working set captured for this session; undefined until first needed. */
   private workingSet: string | null | undefined = undefined;
   private workingSetVersion = 0;
@@ -243,7 +252,8 @@ export class ContextManager {
     const memGen = this.memoryManager.generation;
     const readScope = this.memoryManager.scopeConfig.readScope;
     if (readScope === "none") return null;
-    const cacheKey = `${memGen}|${this.recallEditEpoch}|${readScope}|${lastUserMessage}|${editedPaths.join(",")}`;
+    const sharing = this.memoryManager.scopeConfig.shareWithRuns === true;
+    const cacheKey = `${memGen}|${this.recallEditEpoch}|${readScope}|${sharing}|${lastUserMessage}|${editedPaths.join(",")}`;
     if (this.recallCache && this.recallCache.key === cacheKey) {
       return this.recallCache.pair;
     }
@@ -267,7 +277,12 @@ export class ContextManager {
     );
 
     const fresh = results.filter((r) => !this.surfacedMemoryIds.has(r.record.id));
-    if (fresh.length === 0) {
+    let runMemory: string | null = null;
+    if (sharing && !this.runMemorySurfaced) {
+      runMemory = this.readRunMemory();
+      this.runMemorySurfaced = true;
+    }
+    if (fresh.length === 0 && !runMemory) {
       this.recallCache = { key: cacheKey, pair: null };
       return null;
     }
@@ -292,16 +307,39 @@ export class ContextManager {
     if (anyHasDetails) {
       lines.push("(call memory(action:'get', id:<8-char prefix>) to read full details)");
     }
+    // Run memory rides inside the same envelope so compaction skips it like any recall.
+    if (runMemory) {
+      lines.push(
+        "<run_memory>",
+        "What workflow runs in this project learned (shared by the memory settings; people edit it under Memory > Runs). Background: the user's words take precedence.",
+        runMemory,
+        "</run_memory>",
+      );
+    }
     lines.push("</recalled_memories>");
 
     const userMessage = lines.join("\n");
-    const assistantAck = MEMORY_RECALL_ACK(surfacedIds.length);
+    const assistantAck = MEMORY_RECALL_ACK(surfacedIds.length + (runMemory ? 1 : 0));
     const pair: [{ role: "user"; content: string }, { role: "assistant"; content: string }] = [
       { role: "user" as const, content: userMessage },
       { role: "assistant" as const, content: assistantAck },
     ];
     this.recallCache = { key: cacheKey, pair };
     return pair;
+  }
+
+  /** Run memory for the chat agent, or null when the project has no runs or nothing to share. */
+  private readRunMemory(): string | null {
+    if (!existsSync(join(this.cwd, ".baked", "workflows.sqlite"))) return null;
+    let store: WorkflowStore | null = null;
+    try {
+      store = new WorkflowStore(this.cwd, true);
+      return runMemoryForChat(store);
+    } catch {
+      return null;
+    } finally {
+      store?.close();
+    }
   }
 
   /** Provider options for the memory recall message pair — cached ephemerally. */
@@ -361,7 +399,37 @@ export class ContextManager {
   private startRepoMapScan(): void {
     if (!this.ownsIntelligence) return;
     this.syncRepoMapStore("scanning");
-    this.repoMap.scan().catch((err: unknown) => this.handleScanError(err));
+    this.trackScan();
+  }
+
+  private trackScan(): Promise<void> {
+    const scan = this.repoMap
+      .scan()
+      .catch((err: unknown) => this.handleScanError(err))
+      .finally(() => {
+        if (this.repoMapScan === scan) this.repoMapScan = null;
+      });
+    this.repoMapScan = scan;
+    return scan;
+  }
+
+  /** True while this root's index scan runs, the first one or a background update. */
+  isRepoMapScanning(): boolean {
+    if (!this.repoMapEnabled) return false;
+    if (this.isChild) return this.shared?.parent?.isRepoMapScanning() ?? false;
+    return this.repoMapScan !== null;
+  }
+
+  /**
+   * Brings the index up to date without taking it offline: the map stays readable while the
+   * scan re-indexes only files whose time or size changed. Waits for a scan already in flight,
+   * then scans once more so changes made during it are seen.
+   */
+  async updateRepoMapInBackground(): Promise<void> {
+    if (!this.repoMapEnabled || !this.ownsIntelligence || this.isChild) return;
+    if (this.repoMapScan) await this.repoMapScan;
+    if (this.repoMapScan) return this.repoMapScan;
+    await this.trackScan();
   }
 
   /** Tracks readiness of a borrowed worker; its owner scans and generates summaries. */
@@ -619,6 +687,7 @@ export class ContextManager {
   resetConversationTracking(): void {
     this.editedFiles.clear();
     this.surfacedMemoryIds.clear();
+    this.runMemorySurfaced = false;
     resetSurfacedHints(this.tabId ?? undefined);
     this.recallCache = null;
     this.mentionedFiles.clear();
@@ -1146,7 +1215,7 @@ export class ContextManager {
     this.bakeMapSnapshot = null;
     this.syncRepoMapStore("scanning");
     useRepoMapStore.getState().setScanError("");
-    await this.repoMap.scan().catch((err: unknown) => this.handleScanError(err));
+    await this.trackScan();
   }
 
   async clearRepoMap(): Promise<void> {
@@ -1282,6 +1351,19 @@ export class ContextManager {
     return cleared;
   }
 
+  /**
+   * The BAKED kit guidance for this project. Decided once per instructions version, so files the
+   * agent creates mid-session do not change the cached system prompt.
+   */
+  private getDesignGuidance(): string {
+    if (this.designGuidance?.version !== this.projectInstructionsVersion)
+      this.designGuidance = {
+        version: this.projectInstructionsVersion,
+        text: kitGuidanceFor(this.cwd, this.projectInstructions),
+      };
+    return this.designGuidance.text;
+  }
+
   /** Build a system prompt with project context, scaled to context window. */
   buildSystemPrompt(modelIdOverride?: string): string {
     if (this.hasGhCli === null) {
@@ -1302,6 +1384,7 @@ export class ContextManager {
       hasSymbols: this.isRepoMapReady() && this.repoMap.getStatsCached().symbols > 0,
       bakeMode: this.bakeMode,
       projectInstructions: this.projectInstructions || null,
+      designGuidance: this.getDesignGuidance() || null,
       cwd: this.cwd,
       hasGhCli: this.hasGhCli,
     };

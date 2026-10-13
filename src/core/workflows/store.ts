@@ -20,6 +20,7 @@ import { migration009 } from "./migrations/009.js";
 import { migration010 } from "./migrations/010.js";
 import { migration011 } from "./migrations/011.js";
 import { migration012 } from "./migrations/012.js";
+import { migration013 } from "./migrations/013.js";
 import {
   type AgentProfile,
   type CommandIdentity,
@@ -57,6 +58,8 @@ export interface RunRow {
   policy_json: string;
   input_manifest_json: string;
   repair_rounds: number;
+  /** Repair rounds started by review passes; they have their own `maxRepairRounds` budget (#928). */
+  review_rounds: number;
   convergence_rounds: number;
   corrective_tasks: number;
   agent_calls: number;
@@ -232,6 +235,7 @@ const MIGRATIONS = [
   { version: 10, sql: migration010 },
   { version: 11, sql: migration011 },
   { version: 12, sql: migration012 },
+  { version: 13, sql: migration013 },
 ] as const;
 
 /** What the runs of one workflow database spent, per stage and per task, newest 200 first. */
@@ -1379,8 +1383,13 @@ export class WorkflowStore {
   addCorrectiveTasks(runId: string, count: number): void {
     this.db.run("UPDATE runs SET corrective_tasks=corrective_tasks+? WHERE id=?", [count, runId]);
   }
-  addRound(runId: string, kind: "repair" | "convergence", count: number): void {
-    const column = kind === "repair" ? "repair_rounds" : "convergence_rounds";
+  addRound(runId: string, kind: "repair" | "review" | "convergence", count: number): void {
+    const column =
+      kind === "repair"
+        ? "repair_rounds"
+        : kind === "review"
+          ? "review_rounds"
+          : "convergence_rounds";
     this.db.run(
       `UPDATE runs SET ${column}=${column}+1,corrective_tasks=corrective_tasks+? WHERE id=?`,
       [count, runId],

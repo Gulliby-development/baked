@@ -40,7 +40,14 @@ import type { ContextManager } from "../core/context/manager.js";
 import { getWorkspaceCoordinator } from "../core/coordination/WorkspaceCoordinator.js";
 import { getCwd } from "../core/cwd.js";
 import { setCoAuthorEnabled } from "../core/git/status.js";
-import { hasToolHooks, runHooks } from "../core/hooks/index.js";
+import {
+  notificationHooks,
+  runHooks,
+  startSessionHooks,
+  takeHookContext,
+  userPromptHooks,
+  withHookContext,
+} from "../core/hooks/index.js";
 import {
   getModelContextInfo,
   getModelContextInfoSync,
@@ -481,6 +488,16 @@ export function useChat({
   const [pendingQuestion, setPendingQuestion] = useState<PendingQuestion | null>(null);
   const pendingQuestionRef = useRef(pendingQuestion);
   pendingQuestionRef.current = pendingQuestion;
+  // A Notification hook hears about every prompt that waits for the user, as in Claude Code.
+  useEffect(() => {
+    if (!pendingQuestion) return;
+    void notificationHooks({
+      sessionId: sessionIdRef.current,
+      cwd,
+      type: pendingQuestion.isPermission ? "permission_prompt" : "question",
+      message: pendingQuestion.question,
+    }).catch(() => {});
+  }, [pendingQuestion, cwd]);
   const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([]);
   const messageQueueRef = useRef<QueuedMessage[]>([]);
   messageQueueRef.current = messageQueue;
@@ -1196,6 +1213,8 @@ export function useChat({
         });
         // ── PostCompact hook ──
         runHooks({ event: "PostCompact", sessionId: sessionIdRef.current, cwd }).catch(() => {});
+        // As in Claude Code, a compacted session starts again with the source `compact`.
+        startSessionHooks(sessionIdRef.current, cwd, "compact").catch(() => {});
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logBackgroundError("compact", msg);
@@ -1486,26 +1505,19 @@ export function useChat({
         return;
       }
 
-      // ── UserPromptSubmit hook ──
-      if (hasToolHooks(cwd)) {
-        const hookResult = await runHooks({
-          event: "UserPromptSubmit",
-          toolInput: { prompt: input },
-          sessionId: sessionIdRef.current,
-          cwd,
-        });
-        if (hookResult.blocked) {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: crypto.randomUUID(),
-              role: "system",
-              content: `[Hook blocked] ${hookResult.reason ?? "Prompt blocked by hook"}`,
-              timestamp: Date.now(),
-            },
-          ]);
-          return;
-        }
+      // ── UserPromptSubmit hook ── (whenever the event has hooks)
+      const hookResult = await userPromptHooks(sessionIdRef.current, cwd, input);
+      if (hookResult.blocked) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: "system",
+            content: `[Hook blocked] ${hookResult.reason ?? "Prompt blocked by hook"}`,
+            timestamp: Date.now(),
+          },
+        ]);
+        return;
       }
 
       // `@` mentions and a leading `!command` expand into context for the model; the chat shows
@@ -1567,6 +1579,12 @@ export function useChat({
         return allMsgs;
       });
 
+      // Context that SessionStart and UserPromptSubmit hooks returned goes to the model only.
+      modelInput = withHookContext(
+        modelInput,
+        takeHookContext(sessionIdRef.current),
+        hookResult.additionalContext,
+      );
       const currentCoreMessages = coreMessagesRef.current;
       // Build user content: text + optional image parts for multimodal models
       let userContent: string | Array<TextPart | ImagePart>;

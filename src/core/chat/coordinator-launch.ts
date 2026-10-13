@@ -192,8 +192,21 @@ function liveState(
   }
 }
 
-/** A launched entry with its live status, whether it still runs, and the tokens it used. */
-export type LaunchedView = LaunchedEntry & { active: boolean; tokens: number };
+/**
+ * A launched entry with its live status, whether it still runs, and the tokens it used; a working
+ * session also says which tool it is in.
+ */
+export type LaunchedView = LaunchedEntry & { active: boolean; tokens: number; activity?: string };
+
+/** The tool a launched session's turn is in now. */
+function activityOf(chat: ChatService, entry: LaunchedEntry): string | null {
+  if (entry.kind !== "session") return null;
+  try {
+    return chat.get(entry.id).activity;
+  } catch {
+    return null;
+  }
+}
 
 /** The entry's title, or for a session recorded without one, the session's own title. */
 function titleOf(chat: ChatService, entry: LaunchedEntry): string | undefined {
@@ -261,7 +274,13 @@ export function launchedView(
 ): LaunchedView[] {
   return new BriefStore(chat.workspace, coordinatorId).read().launched.map((entry) => {
     const title = titleOf(chat, entry);
-    return { ...entry, ...(title ? { title } : {}), ...liveState(chat, state, entry) };
+    const activity = activityOf(chat, entry);
+    return {
+      ...entry,
+      ...(title ? { title } : {}),
+      ...liveState(chat, state, entry),
+      ...(activity ? { activity } : {}),
+    };
   });
 }
 
@@ -534,7 +553,11 @@ export function launchTools(
             ))
           )
             throw new Error("The user declined to start a session that can edit files");
-          const session = await chat.create({ title, mode: mode as ChatMode });
+          const session = await chat.create({
+            title,
+            mode: mode as ChatMode,
+            parentId: coordinator.id,
+          });
           session.send(brief);
           return { kind: "session", id: session.id, title, status: "working" };
         }, why),
