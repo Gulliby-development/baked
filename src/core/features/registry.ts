@@ -483,7 +483,7 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "agent-features",
     group: "Tools and code intelligence",
-    title: "Agent features: de-sloppify, verify edits, tier routing",
+    title: "Agent features: de-sloppify, verify edits, tier routing, edits that add errors",
     tui: ["/agent-features"],
     cli: notNeeded("set in config.json"),
     api: ["/v1/settings: agent-features page"],
@@ -506,6 +506,16 @@ export const FEATURES: readonly Feature[] = [
     cli: notNeeded("`bunx skills add` installs from scripts"),
     api: ["/v1/skills", "/v1/skills/catalog", "/v1/skills/project/:id", "/v1/skills/global/:id"],
     desktop: ["project/skills"],
+  },
+  {
+    id: "packages",
+    group: "Tools and code intelligence",
+    title:
+      "Packages: install agent profiles, skills, workflows and gates from a local folder with per-file hashes",
+    tui: ["/packages", "/packages add: asks before it installs", "/packages remove"],
+    cli: ["baked add: --yes or a prompt", "baked packages"],
+    api: ["/v1/packages", "/v1/packages/inspect", "/v1/packages/install", "/v1/packages/:id"],
+    desktop: ["project/packages"],
   },
   {
     id: "baked-help",
@@ -753,6 +763,15 @@ export const FEATURES: readonly Feature[] = [
       "rule choices and ast-grep files live in quality of config.json; baked workflow report shows the findings",
     ),
     api: ["/v1/settings: code-quality page", "/v1/workflow/runs/:id/report"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
+    id: "dependency-check-sast",
+    group: "Workflow runs",
+    title: "New dependencies looked up before checks; Semgrep on the run's diff",
+    tui: ["/code-quality", "/workflow: run report"],
+    cli: ["baked workflow run: --sast auto|off", "baked workflow report"],
+    api: ["/v1/settings: code-quality page", "/v1/workflow/runs", "/v1/workflow/runs/:id/report"],
     desktop: ["settings/chat: Code quality page"],
   },
   {
@@ -1032,7 +1051,7 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "timeouts",
     group: "Projects and setup",
-    title: "Tool and watchdog timeouts, context-window overrides",
+    title: "Tool, edit diagnostics and watchdog timeouts, context-window overrides",
     tui: ["/timeouts"],
     cli: ["--timeout"],
     api: ["/v1/settings: limits page"],

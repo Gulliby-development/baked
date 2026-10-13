@@ -123,6 +123,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "model-strict",
     "clarification",
     "duplication",
+    "sast",
     "issue",
     "budget",
     "approval-review",
@@ -415,6 +416,12 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     !["off", "warn", "ratchet"].includes(String(result.flags.duplication))
   )
     throw new WorkflowFault("INVALID_DEFINITION", "--duplication accepts off, warn or ratchet");
+  if (
+    !result.flags.help &&
+    "sast" in result.flags &&
+    !["auto", "off"].includes(String(result.flags.sast))
+  )
+    throw new WorkflowFault("INVALID_DEFINITION", "--sast accepts auto or off");
   if (!result.flags.help && ["run", "doctor", "estimate"].includes(result.command)) {
     if ("writers" in result.flags) {
       const writers = String(result.flags.writers);
@@ -440,7 +447,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--duplication off|warn|ratchet] [--budget PRESET] [--approval-review]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--duplication off|warn|ratchet] [--sast auto|off] [--budget PRESET] [--approval-review]
 run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --prompt-file FILE] [other run options]
   --issue takes the request from a GitHub issue (its title and body; --prompt adds instructions)
   and names the feature issue-N-TITLE unless --feature is given; the delivery pull request says
@@ -460,6 +467,8 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   --duplication ratchet blocks code the run copies and code it adds that nothing uses; warn (the
   default) reports them in the run report; off skips the measurement. Default: the policy's
   duplication, then the quality.duplication setting, otherwise warn
+  --sast off skips Semgrep on the run's diff; auto (the default) runs it when it is installed.
+  Default: the policy's sast, then the quality.sast setting, otherwise auto
   --budget quick|standard|extended|checkpoints scales the policy (--policy, the config's
   workflows.policy, or the built-in default): quick halves the limits, extended doubles them,
   checkpoints drops the token cap and pauses for your go-ahead. Default: standard

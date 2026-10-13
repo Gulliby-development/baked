@@ -299,6 +299,12 @@ export interface QualityConfig {
   ruleSeverity?: Record<string, "error" | "warning">;
   /** The project's ast-grep rule files, relative to the workspace; they run when ast-grep is installed. */
   ruleFiles?: string[];
+  /** Semgrep on the run's diff: `auto` (default) runs it when installed, `off` never. */
+  sast?: "auto" | "off";
+  /** Semgrep `--config` for `sast`; default `p/default`. */
+  sastConfig?: string;
+  /** Look new dependencies up in their public registries (default true). */
+  registryLookups?: boolean;
 }
 
 export interface AppConfig {
@@ -382,6 +388,17 @@ export interface AppConfig {
   /** LSP servers to disable (by Mason package name). Scoped: project overrides global. */
   disabledLspServers?: string[];
   agentFeatures?: AgentFeatures;
+  /**
+   * What an edit that introduces errors (in the edited file or a file importing it) does:
+   * `feedback` (default) keeps it and returns the errors, `reject` restores the file and returns
+   * the errors with the original text. Workflow runs take it from their policy.
+   */
+  editDiagnostics?: "feedback" | "reject";
+  /** Diagnostics around edits. Global only. */
+  diagnostics?: {
+    /** Wait for diagnostics before and after an edit, each, in ms. Default 2500. */
+    timeoutMs?: number;
+  };
   /** Tools disabled by the user. Persisted across sessions. */
   disabledTools?: string[];
   /** Instruction files to load into system prompt. Default: ["baked"] (baked.md only). */

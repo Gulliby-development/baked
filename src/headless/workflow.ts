@@ -310,6 +310,9 @@ export async function executeWorkflowCommand(
         args.flags.duplication === "ratchet"
           ? { duplication: args.flags.duplication }
           : {}),
+        ...(args.flags.sast === "auto" || args.flags.sast === "off"
+          ? { sast: args.flags.sast }
+          : {}),
       });
       // The run's record keeps these warnings; the operator sees them before the run goes on.
       for (const warning of readRoutingSummary(service.store, run.runId)?.warnings ?? [])

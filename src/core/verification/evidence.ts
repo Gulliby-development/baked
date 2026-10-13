@@ -49,19 +49,21 @@ export function validEvidenceNote(current: readonly EvidenceRow[]): string {
     : "There is no current evidence for this snapshot.";
 }
 
+/** Each cited id must be current evidence of the snapshot, or of one of the snapshots, given. */
 export function validateEvidence(
   store: WorkflowStore,
   runId: string,
-  snapshotId: string,
+  snapshotId: string | readonly string[],
   ids: string[],
   required = true,
 ): void {
   if (required && ids.length === 0)
     throw new WorkflowFault("OUTPUT_INVALID", "A conclusion requires host evidence");
   const evidence = store.evidence(runId);
+  const snapshots: readonly string[] = typeof snapshotId === "string" ? [snapshotId] : snapshotId;
   for (const id of ids) {
     const entry = evidence.find((e) => e.id === id);
-    if (!entry || entry.snapshot_id !== snapshotId || entry.validity !== "current")
+    if (!entry || !snapshots.includes(entry.snapshot_id) || entry.validity !== "current")
       throw new WorkflowFault("OUTPUT_INVALID", `Unknown or stale evidence ${id}`);
     store.readArtifact(runId, entry.artifact_id);
   }
