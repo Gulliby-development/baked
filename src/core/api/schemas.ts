@@ -37,6 +37,8 @@ export const StartBody = z
     clarification: z.enum(["ask", "assume"]).optional(),
     /** What the test-integrity guard does, as `--test-integrity`; omitted, the policy decides. */
     testIntegrity: z.enum(["block", "warn"]).optional(),
+    /** The duplication ratchet of the run, as `--duplication`; omitted, the policy decides. */
+    duplication: z.enum(["off", "warn", "ratchet"]).optional(),
     /** The run model overrides configured model routes, as `--model-strict`. */
     modelStrict: z.boolean().optional(),
   })

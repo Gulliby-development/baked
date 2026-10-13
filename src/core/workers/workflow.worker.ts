@@ -111,6 +111,7 @@ const StartInput = z
     maxConcurrentWriters: z.number().int().min(1).max(MAX_CONCURRENT_WRITERS).optional(),
     clarification: z.enum(["ask", "assume"]).optional(),
     testIntegrity: z.enum(["block", "warn"]).optional(),
+    modelStrict: z.boolean().optional(),
   })
   .strict();
 const ctx = createWorkerHandler(
@@ -215,6 +216,7 @@ const ctx = createWorkerHandler(
           : {}),
         ...(request.clarification ? { clarification: request.clarification } : {}),
         ...(request.testIntegrity ? { testIntegrity: request.testIntegrity } : {}),
+        ...(request.modelStrict ? { modelStrict: true } : {}),
       });
       const controller = new AbortController();
       controllers.set(id, controller);

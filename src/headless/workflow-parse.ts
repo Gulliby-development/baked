@@ -123,6 +123,7 @@ const flags = new Set([
   "no-resume",
   "clarification",
   "test-integrity",
+  "duplication",
   "issue",
   "output",
   "text",
@@ -184,6 +185,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "model-strict",
     "clarification",
     "test-integrity",
+    "duplication",
     "issue",
     "budget",
   ],
@@ -436,6 +438,10 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     !["block", "warn"].includes(String(result.flags["test-integrity"]))
   )
     throw new WorkflowFault("INVALID_DEFINITION", "--test-integrity accepts block or warn");
+    "duplication" in result.flags &&
+    !["off", "warn", "ratchet"].includes(String(result.flags.duplication))
+  )
+    throw new WorkflowFault("INVALID_DEFINITION", "--duplication accepts off, warn or ratchet");
   if (!result.flags.help && ["run", "doctor", "estimate"].includes(result.command)) {
     if ("writers" in result.flags) {
       const writers = String(result.flags.writers);
@@ -461,7 +467,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--test-integrity block|warn] [--budget PRESET]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--test-integrity block|warn] [--duplication off|warn|ratchet] [--budget PRESET]
 run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --prompt-file FILE] [other run options]
   --issue takes the request from a GitHub issue (its title and body; --prompt adds instructions)
   and names the feature issue-N-TITLE unless --feature is given; the delivery pull request says
@@ -478,6 +484,9 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   --test-integrity warn records test gaming in a task's diff (deleted, skipped or weakened tests,
   suppressions, special cases for test inputs) instead of sending it to a repair. Default: the
   policy's testIntegrity, otherwise block
+  --duplication ratchet blocks code the run copies and code it adds that nothing uses; warn (the
+  default) reports them in the run report; off skips the measurement. Default: the policy's
+  duplication, then the quality.duplication setting, otherwise warn
   --budget quick|standard|extended|checkpoints scales the policy (--policy, the config's
   workflows.policy, or the built-in default): quick halves the limits, extended doubles them,
   checkpoints drops the token cap and pauses for your go-ahead. Default: standard

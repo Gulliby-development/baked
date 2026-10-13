@@ -419,6 +419,7 @@ function startArgs(raw: unknown): WorkflowArgs {
   if (body.writers !== undefined) flags.writers = String(body.writers);
   if (body.clarification) flags.clarification = body.clarification;
   if (body.testIntegrity) flags["test-integrity"] = body.testIntegrity;
+  if (body.duplication) flags.duplication = body.duplication;
   if (body.modelStrict) flags["model-strict"] = true;
   if (body.policy !== undefined) flags.policy = true;
   if (body.budget) flags.budget = body.budget;
