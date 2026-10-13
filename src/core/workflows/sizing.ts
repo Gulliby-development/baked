@@ -405,10 +405,12 @@ export function sizePlan(input: {
       );
   }
   if (runTokens + repairReserve > budgetBefore && maxRunTokens !== null) {
-    budgetAfter = Math.min(maxRunTokens, runTokens + repairReserve);
+    budgetAfter = Math.max(budgetBefore, Math.min(maxRunTokens, runTokens + repairReserve));
     if (decision === "fits") decision = "raise-budget";
     reasons.push(
-      `The run budget grows from ${budgetBefore} to ${budgetAfter} tokens (${repairReserve} of it held for repair and convergence)`,
+      budgetAfter > budgetBefore
+        ? `The run budget grows from ${budgetBefore} to ${budgetAfter} tokens (${repairReserve} of it held for repair and convergence)`
+        : `The run budget stays at ${budgetBefore} tokens, the policy's ceiling; the plan and its repair reserve of ${repairReserve} need about ${runTokens + repairReserve}`,
     );
   }
   return {

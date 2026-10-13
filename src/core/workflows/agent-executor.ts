@@ -25,6 +25,7 @@ import {
 } from "../llm/provider-options.js";
 import { canonical } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
+import { withEditDiagnosticsMode } from "../tools/edit-diagnostics.js";
 import { buildTools } from "../tools/index.js";
 import { deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
 import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
@@ -35,6 +36,7 @@ import {
   writesDocumentation,
 } from "../verification/repro.js";
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
+import { assertAttemptFits } from "./budget.js";
 import { fixerCommand, fixerTiers } from "./check-policy.js";
 import { fileHash, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
@@ -313,26 +315,29 @@ export class NativeAgentExecutor implements AgentExecutor {
                       ? { ...f, path: workspacePath(root, guard.path(f.path)) }
                       : f,
                 );
-              let result = await guard.execute(name, args, async () => {
-                if (name !== "read" || !Array.isArray(normalized.files))
-                  return execute(normalized, options);
-                const { files, outlines } = await outlineLargeReads(
-                  normalized.files,
-                  (request.task?.writes ?? []).map((w) => workspacePath(root, w.path)),
-                );
-                // The read tool refuses a fourth range read of a file as "already in your
-                // context"; after an outline the agent reads several spans of one file.
-                const fresh = files.length > 0 && files.every(isTargetedRead);
-                const input = { ...normalized, files, ...(fresh ? { fresh: true } : {}) };
-                if (outlines.length === 0) return execute(input, options);
-                const read = files.length
-                  ? ((await execute(input, options)) as { output?: unknown })
-                  : null;
-                const output = [typeof read?.output === "string" ? read.output : "", ...outlines]
-                  .filter(Boolean)
-                  .join("\n\n");
-                return { ...(read ?? {}), success: true, output };
-              });
+              const editMode = policy.editDiagnostics ?? "feedback";
+              let result = await withEditDiagnosticsMode(editMode, () =>
+                guard.execute(name, args, async () => {
+                  if (name !== "read" || !Array.isArray(normalized.files))
+                    return execute(normalized, options);
+                  const { files, outlines } = await outlineLargeReads(
+                    normalized.files,
+                    (request.task?.writes ?? []).map((w) => workspacePath(root, w.path)),
+                  );
+                  // The read tool refuses a fourth range read of a file as "already in your
+                  // context"; after an outline the agent reads several spans of one file.
+                  const fresh = files.length > 0 && files.every(isTargetedRead);
+                  const input = { ...normalized, files, ...(fresh ? { fresh: true } : {}) };
+                  if (outlines.length === 0) return execute(input, options);
+                  const read = files.length
+                    ? ((await execute(input, options)) as { output?: unknown })
+                    : null;
+                  const output = [typeof read?.output === "string" ? read.output : "", ...outlines]
+                    .filter(Boolean)
+                    .join("\n\n");
+                  return { ...(read ?? {}), success: true, output };
+                }),
+              );
               // A worktree's own edits are not in the project's index.
               if (rootPath && indexTools.has(name))
                 result = markStaleIndexResult(
@@ -602,16 +607,18 @@ export class NativeAgentExecutor implements AgentExecutor {
       const submitTools = ["submit_result", "submit_artifact", "submit_review"].filter(
         (name) => name in available,
       );
+      const attemptCap = Math.min(
+        request.maxTokens ?? Number.POSITIVE_INFINITY,
+        request.attemptTokens ?? policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS,
+      );
+      // An attempt starts only when the run budget, grown if it may, still covers its cap.
+      assertAttemptFits(this.store, request.runId, request.attemptId, policy, attemptCap);
       // The attempt cap never exceeds what the run budget still allows, so an attempt started
       // close to the run limit finalizes and submits instead of failing on the run cap mid-loop.
       const remaining = this.store.remainingTokens(request.runId, policy, request.attemptId);
       const budget = new AttemptStepController({
         maxSteps: request.maxSteps,
-        maxTokens: Math.min(
-          request.maxTokens ?? Number.POSITIVE_INFINITY,
-          request.attemptTokens ?? policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS,
-          remaining,
-        ),
+        maxTokens: Math.min(attemptCap, remaining),
         // Token caps come from history on whatever provider produced it; each attempt may still
         // take a minimum number of steps at its own step cost, within what the run allows.
         minSteps: Math.min(request.maxSteps, MIN_ATTEMPT_STEPS),

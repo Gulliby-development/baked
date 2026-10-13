@@ -54,6 +54,8 @@ The router screen also holds the per-model fallback chains (see [providers](prov
 | `verifyEdits` | off | Adversarial review agent after code agents |
 | `onDemandTools` | off | Starts with core tools only; the agent loads others with `request_tools` |
 
+The same picker switches **Edits that add errors** (`editDiagnostics`) between `feedback` and `reject`; see [diagnostics after edits](tools.md#diagnostics-after-edits).
+
 ## Modes and plan mode
 
 `Ctrl+D` cycles modes, or `/mode <name>`:

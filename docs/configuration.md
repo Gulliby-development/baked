@@ -43,7 +43,7 @@ The chat settings that the terminal pickers edit (provider options, chat router 
 | `thinking.mode` | `"auto"` | `off`, `auto`/`adaptive` or `enabled`; `thinking.budgetTokens` (at least 1024) with `enabled` |
 | `performance` | unset | Effort, speed, OpenAI reasoning effort, service tier and verbosity; set through `/provider-settings`. A chat's own [reasoning effort](providers.md#reasoning-effort-per-chat) replaces the effort settings for that chat |
 | `agentFeatures` | see [guide](guide.md#agent-features) | Agent behavior toggles |
-| `quality` | `duplication: "warn"` | Defaults of the [code quality gates](workflows/code-quality.md) of new workflow runs: `duplication`, and `disabledRules`, `ruleSeverity`, `ruleFiles` of the anti-slop rule pack; `/code-quality` |
+| `quality` | `duplication: "warn"` | Defaults of the [code quality gates](workflows/code-quality.md) of new workflow runs: `duplication`; `disabledRules`, `ruleSeverity`, `ruleFiles` of the anti-slop rule pack; `registryLookups` (dependency check, default `true`); `sast` (`auto` or `off`) and `sastConfig` (Semgrep `--config`, default `p/default`); `/code-quality` |
 | `disabledTools` | `[]` | Tools turned off with `/tools` |
 | `webSearch` | `true` | Web search tool (asks before each search) |
 | `artifactDeploy` | `false` | Allow deploying [artifacts](artifacts.md) to your Vercel account (asks before each deploy) |
@@ -61,6 +61,8 @@ The chat settings that the terminal pickers edit (provider options, chat router 
 | `retry` | `maxTransientRetries: 3`, `maxStallRetries: 3`, `baseDelayMs` 1000 (chat) / 2000 (agents) | Retries on 429, 5xx, overload and stalled streams; the delay doubles each attempt |
 | `watchdog`, `watchdogTimeouts` | `false` | Retry stalled streams; `/watchdog` and `/timeouts` |
 | `toolTimeout` | `2` | Minutes before a shell, project or agent tool call times out; `0` disables |
+| `editDiagnostics` | `"feedback"` | What an edit that adds errors in its file or an importing file does: `feedback` returns them, `reject` also restores the file ([tools](tools.md#diagnostics-after-edits)) |
+| `diagnostics.timeoutMs` | `2500` | Global only. Wait for diagnostics before and after an edit, each; a check that does not finish in time is reported as not checked |
 | `cache.ttl` | `"5m"` | Anthropic prompt cache lifetime: `5m` or `1h` |
 | `memory.embeddingModel` | unset | Embedding model for memory recall; unset uses the offline embedder |
 | `mcpServers` | `[]` | MCP servers ([extensions](extensions.md#mcp-servers)) |
