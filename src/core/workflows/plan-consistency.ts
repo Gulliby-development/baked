@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { workspacePath } from "../specs/validate.js";
 import type { AgentProfile, Spec, TaskGraph } from "./schemas.js";
+import type { Task } from "./types.js";
 
 /** Cross-artifact checks that analysis would otherwise spend model rounds on. */
 export const PLAN_CONSISTENCY_CHECKS = [
@@ -8,6 +9,7 @@ export const PLAN_CONSISTENCY_CHECKS = [
   "no task creates a file that already exists unless an earlier task deletes it",
   "tasks that write the same path are ordered by dependencies",
   "every read hint exists or is created by the task or an earlier task",
+  "every task reference exists or is created by an earlier task",
   "a task that writes a module index (lib.rs, main.rs, mod.rs, __init__.py, index.ts) runs after the tasks that create the module files beside it",
 ];
 
@@ -68,8 +70,26 @@ export function withModuleDependencies(graph: TaskGraph): TaskGraph {
   };
 }
 
+/** The files a task reads before it writes: its read hints and its reference. */
+const readsOf = (task: Pick<Task, "readHints" | "reference">): string[] =>
+  task.reference ? [...task.readHints, task.reference] : task.readHints;
+
 /**
- * A task waits for the tasks that write a file it reads (`readHints`). Planners left such tasks
+ * Each file a task with a reference writes, mapped to that reference, for the correctness review.
+ * A file written by several tasks keeps the reference of the last one.
+ */
+export function fileReferences(graph: Pick<TaskGraph, "tasks">): Record<string, string> {
+  const references: Record<string, string> = {};
+  for (const task of graph.tasks)
+    if (task.reference)
+      for (const write of task.writes)
+        if (write.action !== "delete" && write.path !== task.reference)
+          references[write.path] = task.reference;
+  return references;
+}
+
+/**
+ * A task waits for the tasks that write a file it reads (`readHints` and `reference`). Planners left such tasks
  * without a dependency, so both ran in the same wave and the reader's checks failed on the file
  * its sibling had not written yet (zoneslot-update c941a83a: 208k of repair; contrastgrid 14%).
  * A file the task writes itself adds nothing, and a dependency that would close a cycle is not
@@ -84,7 +104,7 @@ export function withReadDependencies(graph: TaskGraph): TaskGraph {
     return (deps.get(from) ?? []).some((id) => reaches(id, to, seen));
   };
   for (const task of graph.tasks) {
-    const reads = task.readHints.filter((path) => !task.writes.some((w) => w.path === path));
+    const reads = readsOf(task).filter((path) => !task.writes.some((w) => w.path === path));
     if (!reads.length) continue;
     for (const other of graph.tasks) {
       if (other.id === task.id || reaches(task.id, other.id) || reaches(other.id, task.id))
@@ -206,6 +226,14 @@ export function planConsistencyProblems(
       )
         problems.push(`${task.id} read hint ${hint} does not exist and no earlier task creates it`);
     }
+    if (
+      task.reference &&
+      !exists(task.reference) &&
+      !earlier.some((t) => t.writes.some((w) => w.path === task.reference && w.action === "create"))
+    )
+      problems.push(
+        `${task.id} reference ${task.reference} does not exist and no earlier task creates it; name an existing file that shows the pattern, or leave reference out`,
+      );
   }
   if (!overlappingWrites)
     for (const [index, task] of graph.tasks.entries())

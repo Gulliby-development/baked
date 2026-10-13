@@ -12,6 +12,7 @@ import {
   metricDeltas,
   QUALITY_DUPLICATION,
 } from "./quality/duplication.js";
+import { QUALITY_MUTATION_BASELINE } from "./quality/harden.js";
 import { type MutationResult, QUALITY_MUTATION } from "./quality/mutation.js";
 import { type PropertiesResult, QUALITY_PROPERTIES } from "./quality/properties.js";
 import { QUALITY_RULES, type RulesResult } from "./quality/rules.js";
@@ -258,6 +259,7 @@ function collect(store: WorkflowStore, runId: string) {
         sast: readJson<SastResult>(QUALITY_SAST),
         properties: readJson<PropertiesResult>(QUALITY_PROPERTIES),
         mutation: readJson<MutationResult>(QUALITY_MUTATION),
+        mutationBefore: readJson<MutationResult>(QUALITY_MUTATION_BASELINE),
       },
       workflowId: definition,
       policy: parse<Partial<RunPolicy>>(run.policy_json, {}),
@@ -340,6 +342,8 @@ interface QualityFacts {
   sast: SastResult | null;
   properties: PropertiesResult | null;
   mutation: MutationResult | null;
+  /** A harden run's score of the module's tests at approval. */
+  mutationBefore: MutationResult | null;
 }
 
 /**
@@ -353,7 +357,7 @@ function qualitySection(quality: QualityFacts, cap: number): string[] {
     ...(quality.dependencies ? dependenciesSection(quality.dependencies, cap) : []),
     ...(quality.sast ? sastSection(quality.sast, cap) : []),
     ...(quality.properties ? propertiesSection(quality.properties, cap) : []),
-    ...(quality.mutation ? mutationSection(quality.mutation, cap) : []),
+    ...(quality.mutation ? mutationSection(quality.mutation, cap, quality.mutationBefore) : []),
   ];
 }
 
@@ -404,7 +408,11 @@ function propertiesSection(result: PropertiesResult, cap: number): string[] {
   ];
 }
 
-function mutationSection(result: MutationResult, cap: number): string[] {
+function mutationSection(
+  result: MutationResult,
+  cap: number,
+  before: MutationResult | null = null,
+): string[] {
   const count = (status: string) => result.mutants.filter((m) => m.status === status).length;
   const killed = count("killed");
   const ran = killed + count("survived");
@@ -418,6 +426,11 @@ function mutationSection(result: MutationResult, cap: number): string[] {
     `Mutation gate (\`${result.mode}\`): ${score} (${killed} of ${ran} mutants killed${extra.length ? `, ${extra.join(", ")}` : ""})${blocking ? `, ${blocking} blocking` : ""}${result.tests.length ? `; tests: ${result.tests.map(code).join(", ")}` : ""}${result.note ? `; ${result.note}` : ""}.`,
     "",
   ];
+  if (before)
+    out.push(
+      `Mutation score before the run: ${before.score === null ? "none" : `${before.score}%`} -> after: ${result.score === null ? "none" : `${result.score}%`}.`,
+      "",
+    );
   const survivors = result.mutants.filter((m) => m.status === "survived");
   if (survivors.length)
     out.push(
