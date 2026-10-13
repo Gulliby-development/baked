@@ -1,4 +1,5 @@
 /** Sample answers of `GET|PATCH /v1/settings` for the preview, from the real schema. */
+
 import {
   readSettingPath,
   SETTING_PAGES,
@@ -6,6 +7,7 @@ import {
   type SettingDefinition,
   writeSettingPath,
 } from "../../../../../src/core/settings/schema.js";
+import { qualityRuleCatalog } from "../../../../../src/core/workflows/quality/builtin-rules.js";
 import { type MockRoute, response } from "./mock-routes.js";
 import type { SettingsView, SettingValue } from "./settings.js";
 
@@ -55,7 +57,10 @@ function view(key: string): SettingsView {
     pages: [...SETTING_PAGES],
     settings: [...SETTINGS],
     values,
-    catalogs: { tools: TOOLS.map(([name, description]) => ({ name, description })) },
+    catalogs: {
+      tools: TOOLS.map(([name, description]) => ({ name, description })),
+      "quality-rules": qualityRuleCatalog(),
+    },
   };
 }
 

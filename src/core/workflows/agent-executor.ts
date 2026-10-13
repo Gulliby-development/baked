@@ -34,6 +34,11 @@ import { fixerCommand, fixerTiers } from "./check-policy.js";
 import { fileHash, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { withHostConstants } from "./host-constants.js";
+import {
+  accountIdentityMessage,
+  findAccountIdentity,
+  foreignAccountIdentities,
+} from "./host-identity.js";
 import { InitiativePlanSchema } from "./initiatives/plan.js";
 import type { WorkspaceLeases } from "./leases.js";
 import { grantedMcpServers, isMcpToolName, toolListAllows } from "./mcp-grants.js";
@@ -62,6 +67,7 @@ import {
   MIN_ATTEMPT_STEPS,
   type StepLike,
   stepTokens,
+  type ToolBackendCount,
 } from "./step-budget.js";
 import type { WorkflowStore } from "./store.js";
 import { pureWorkflowTools, WorkflowToolPolicy } from "./tool-policy.js";
@@ -256,6 +262,8 @@ export class NativeAgentExecutor implements AgentExecutor {
         },
       );
       const available: ToolSet = {};
+      // Which code intelligence backend (and language server) answered each tool, for usage.
+      const backends = new Map<string, ToolBackendCount>();
       // A tool call is progress while it runs (it has its own deadline); the last one names a stall.
       const track = async <T>(name: string, call: () => Promise<T>): Promise<T> => {
         watch.tools++;
@@ -324,6 +332,19 @@ export class NativeAgentExecutor implements AgentExecutor {
                   result,
                   writtenInRoot(this.store.effects(request.runId), rootPath),
                 );
+              const answered = result as { backend?: unknown; server?: unknown } | null;
+              if (answered && typeof answered.backend === "string") {
+                const server = typeof answered.server === "string" ? answered.server : null;
+                const key = JSON.stringify([name, answered.backend, server]);
+                const count = backends.get(key) ?? {
+                  tool: name,
+                  backend: answered.backend,
+                  server,
+                  calls: 0,
+                };
+                count.calls++;
+                backends.set(key, count);
+              }
               if (!["edit_file", "multi_edit"].includes(name)) {
                 const files = await sourceManifest(root, generatedPaths(policy), request.signal);
                 const evidenceId = this.store.transaction(() => {
@@ -541,7 +562,9 @@ export class NativeAgentExecutor implements AgentExecutor {
         inputSchema: schema,
         execute: async (value) => {
           const parsed = schema.parse(value);
-          const errors = request.validate?.(parsed) ?? [];
+          const errors = [...(request.validate?.(parsed) ?? [])];
+          if (findAccountIdentity(canonical(parsed), foreignAccountIdentities(root)))
+            errors.push(accountIdentityMessage("The result"));
           // After the bounded corrections the scheduler rejects the result with these errors.
           if (errors.length && rejected < MAX_SEMANTIC_CORRECTIONS) {
             rejected++;
@@ -616,7 +639,7 @@ export class NativeAgentExecutor implements AgentExecutor {
             request.runId,
             "usage",
             `attempts/${request.attemptId}/usage.json`,
-            canonical(usage),
+            canonical(backends.size ? { ...usage, toolBackends: [...backends.values()] } : usage),
           ),
         );
       // Usage is persisted as each step finishes, so a loop that throws keeps its real spend.

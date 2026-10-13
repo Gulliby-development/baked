@@ -1107,6 +1107,15 @@ describe("passesWithNotes", () => {
       expect(passesWithNotes({ ...medium, file }, coverage, true)).toBe(false);
     expect(passesWithNotes({ ...medium, severity: "high", file: "README.md" }, coverage, true)).toBe(false);
   });
+  test("a missing test or documentation gap passes like a partial one", () => {
+    for (const severity of ["low", "medium"] as const)
+      for (const file of ["tests/app.test.ts", "README.md"])
+        expect(passesWithNotes({ ...finding, kind: "missing", severity, file }, coverage, true)).toBe(true);
+    for (const file of [null, "src/app.ts"])
+      expect(passesWithNotes({ ...finding, kind: "missing", file }, coverage, true)).toBe(false);
+    expect(passesWithNotes({ ...finding, kind: "missing", file: "README.md" }, coverage, false)).toBe(false);
+    expect(passesWithNotes({ ...finding, kind: "missing", file: "README.md", criterionIds: [] }, coverage, true)).toBe(false);
+  });
 });
 
 describe("project gates and protected definitions", () => {
@@ -1275,7 +1284,10 @@ describe("wait stage", () => {
   }, 30000);
 
   test("time asleep between polls does not count against the active time limit", async () => {
-    const { start, drive, service, define, gate, root } = setup({}, { ...policy, maxActiveMs: 1000 });
+    // The limit leaves room for the gate's process starts on a slow runner (a 1000 ms limit
+    // failed on Windows CI, #729); the sleep alone is still above it.
+    const limit = 3000;
+    const { start, drive, service, define, gate, root } = setup({}, { ...policy, maxActiveMs: limit });
     const ready = passesOn(root, 2);
     gate(ready.gate);
     define(waitDefinition());
@@ -1284,13 +1296,13 @@ describe("wait stage", () => {
       now: () => now,
       sleep: async (ms, signal) => {
         now += ms;
-        await new Promise((resolve) => setTimeout(resolve, 1500));
+        await new Promise((resolve) => setTimeout(resolve, limit + 500));
         signal.throwIfAborted();
       },
     };
     const run = await start("wait-only");
     expect((await drive(run.runId)).status).toBe("completed");
-    expect(service.store.run(run.runId).active_ms).toBeLessThan(1000);
+    expect(service.store.run(run.runId).active_ms).toBeLessThan(limit);
   }, 30000);
 
   test("a resumed wait keeps its deadline, and a cancel stops it at once", async () => {
