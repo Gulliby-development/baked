@@ -190,11 +190,11 @@ function Card({
           <a
             href={href}
             className={LINK_BUTTON}
-            aria-label={`Open ${definition.id} in the graph`}
+            aria-label={`Edit ${definition.id}`}
             onClick={() => onOpen("graph")}
           >
-            <Icon name="graph" size={14} />
-            Graph
+            <Icon name="edit" size={14} />
+            Edit
           </a>
         </div>
       </div>

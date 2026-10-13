@@ -7,6 +7,7 @@ import type {
   AgentFeatures,
   AppConfig,
   BakeMode,
+  ChatContextSize,
   ChatEffort,
   ChatStyle,
   PermissionMode,
@@ -37,6 +38,8 @@ export interface CommandContext {
   /** Sets the active tab's permission mode (manual, auto, full) and the header chip. */
   setPermissionMode: (mode: PermissionMode) => void;
   currentPermissionMode: PermissionMode;
+  /** Sets the active tab's context size and the header chip. */
+  setContextSize: (size: ChatContextSize) => void;
   currentMode: BakeMode;
   currentModeLabel: string;
   contextManager: ContextManager;

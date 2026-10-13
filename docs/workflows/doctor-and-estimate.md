@@ -15,8 +15,8 @@ Depends on R1 model routing (`src/core/llm/model-routing.ts`, `src/core/workflow
   JSON report.
 
 Non-goals: enforcing anything at run start (R2 owns the start-time key preflight and `independentReview`;
-it reuses the model check described here), the TUI form (R3), a dollar cap (`maxCostUsd` stays disabled
-until R4 verifies pricing).
+it reuses the model check described here), the TUI form (R3), and the dollar cap (`maxCostUsd` is enforced at run time on measured cost, see
+[Cost cap](runtime.md#cost-cap); the start refuses models without a price).
 
 ## Shared request
 
@@ -212,7 +212,7 @@ unknown fields). `compareWithActual` is unchanged.
 
 - The doctor never runs check commands; it resolves them.
 - Budget overruns are warnings, never failures.
-- Dollar figures are labelled approximate and stay advisory; `maxCostUsd` stays disabled.
+- Dollar figures are labelled approximate and stay advisory; `maxCostUsd` is enforced by the run, not by the estimate.
 - No tool-calling capability check until the model catalog has a reliable flag.
 
 ## Tests

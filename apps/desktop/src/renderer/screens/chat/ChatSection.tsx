@@ -461,6 +461,7 @@ export function SessionView({
     mode?: ChatMode;
     effort?: ChatEffort;
     permissions?: PermissionMode;
+    contextSize?: number;
   }): void => {
     if (draft) {
       if (changes.model) setDraftModel(changes.model);
@@ -711,6 +712,15 @@ export function SessionView({
                   ? (draftPermissions ?? "auto")
                   : (session?.permissions ?? "auto"),
                 onPermissions: (permissions: PermissionMode) => update({ permissions }),
+              }
+            : {})}
+          {...(!draft && session?.contextSizes && session.contextSizes.length > 1
+            ? {
+                contextSize: {
+                  sizes: session.contextSizes,
+                  tokens: session.contextTokens ?? null,
+                  onPick: (contextSize: number) => update({ contextSize }),
+                },
               }
             : {})}
           modes={modes}

@@ -4,7 +4,7 @@ import type { UsageDimension, UsageSummary } from "../../core/workflows/usage.js
 import { useKeyboard } from "../../hooks/useTerminalEvents.js";
 import { PremiumPopup } from "../ui/index.js";
 import { Table, type TableColumn } from "../ui/Table.js";
-import { formatTokens } from "./format.js";
+import { formatTokens, usd } from "./format.js";
 
 /** The periods the screen offers, in days; ←→ steps through them. */
 export const USAGE_PERIODS = [7, 30, 90] as const;
@@ -14,9 +14,7 @@ export const USAGE_GROUPS: UsageDimension[] = ["model", "stage", "day"];
 /** Reads the usage of every run over the last `days` days, grouped by one dimension. */
 export type UsageLoader = (days: number, groupBy: UsageDimension) => UsageSummary;
 
-export function usd(value: number): string {
-  return value >= 100 ? `$${value.toFixed(0)}` : `$${value.toFixed(2)}`;
-}
+export { usd };
 
 /** One line of totals: runs, attempts, tokens and cost, and the tokens no price covers. */
 export function usageTotalsLine(summary: UsageSummary): string {

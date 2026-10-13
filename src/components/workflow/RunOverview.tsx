@@ -18,6 +18,7 @@ import {
   stageText,
 } from "./format.js";
 import { StageGates } from "./StageGates.js";
+import { usd } from "./UsageView.js";
 
 const ACTIVITY_ROWS = 8;
 
@@ -145,6 +146,11 @@ export function RunOverview({
             )}
             value={`${formatTokens(budget.tokens)} used${budget.heldTokens ? ` + ${formatTokens(budget.heldTokens)} held` : ""}${budget.inFlightTokens ? ` + ${formatTokens(budget.inFlightTokens)} in flight` : ""} / ${budget.nextCheckpoint ? `next checkpoint ${formatTokens(budget.nextCheckpoint)}` : formatTokens(budget.maxTokens)}`}
           />
+          {snapshot.estimatedCostUsd !== null ? (
+            <text fg={t.textMuted}>
+              {`${"Cost".padEnd(12)}about ${usd(snapshot.estimatedCostUsd)}${budget.cost ? ` of the ${usd(budget.cost.maxCostUsd)} cap` : ""} (cache reads and writes at their own prices)`}
+            </text>
+          ) : null}
           {budget.heldTokens ? (
             <Hint>
               Held: a failed or interrupted agent call has unknown usage, so its reservation still

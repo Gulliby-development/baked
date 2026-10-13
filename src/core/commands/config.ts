@@ -2,9 +2,17 @@ import type { ConfigScope } from "../../components/layout/shared.js";
 import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../../config/index.js";
 import { existingWorkflowSession, reloadWorkflowSession } from "../../hooks/useWorkflow.js";
 import { useUIStore } from "../../stores/ui.js";
-import type { AgentFeatures, AppConfig, ChatEffort, PermissionMode } from "../../types/index.js";
+import type {
+  AgentFeatures,
+  AppConfig,
+  ChatContextSize,
+  ChatEffort,
+  PermissionMode,
+} from "../../types/index.js";
 import { getCwd } from "../cwd.js";
 import { icon } from "../icons.js";
+import { chatContextTokens, getModelContextSizes, parseContextSize } from "../llm/context-sizes.js";
+import { formatContext } from "../llm/model-choices.js";
 import { CHAT_EFFORTS, getModelEffortLevels } from "../llm/provider-options.js";
 import {
   applyNotificationsChange,
@@ -276,6 +284,60 @@ function handleEffort(input: string, ctx: CommandContext): void {
       description: EFFORT_DESCRIPTIONS[value],
     })),
     onSelect: (value) => apply(value as ChatEffort),
+  });
+}
+
+/** `/context-size [size]`: the context window of this tab's turns, when the model offers several. */
+function handleContextSize(input: string, ctx: CommandContext): void {
+  const arg = input.trim().slice("/context-size".length).trim();
+  const model = ctx.chat.activeModel;
+  const sizes = getModelContextSizes(model);
+  const label = (size: ChatContextSize): string =>
+    size === "default" || size === "max" ? size : (formatContext(size) ?? String(size));
+  const apply = (size: ChatContextSize) => {
+    ctx.setContextSize(size);
+    const tokens = chatContextTokens(model, size);
+    sysMsg(
+      ctx,
+      tokens === null
+        ? `Context size for this chat: ${label(size)}. ${model} has one context window, so it runs as is`
+        : `Context size for this chat: ${label(size)} (${formatContext(tokens)} with ${model})`,
+    );
+  };
+  if (arg) {
+    const parsed = parseContextSize(arg);
+    if (parsed !== null) apply(parsed);
+    else
+      sysMsg(
+        ctx,
+        `Unknown context size: ${arg}. Use default, max or a size such as ${sizes.map((t) => formatContext(t)).join(", ") || "200k"}`,
+      );
+    return;
+  }
+  const current = ctx.chat.contextSize;
+  if (sizes.length === 0) {
+    sysMsg(ctx, `${model} has one context window; there is no size to pick.`);
+    return;
+  }
+  const currentTokens = chatContextTokens(model, current);
+  ctx.openCommandPicker({
+    title: "Context Size",
+    icon: icon("ai"),
+    currentValue: current === "default" ? "default" : String(currentTokens),
+    options: [
+      {
+        value: "default",
+        label: "Default",
+        description: `the model's own window (${formatContext(chatContextTokens(model, "default") ?? undefined)})`,
+      },
+      ...sizes.map((tokens) => ({
+        value: String(tokens),
+        label: formatContext(tokens) ?? String(tokens),
+        description:
+          tokens === sizes.at(-1) ? "the largest window, more tokens per turn" : "smaller window",
+      })),
+    ],
+    onSelect: (value) => apply(value === "default" ? "default" : Number(value)),
   });
 }
 
@@ -1446,6 +1508,7 @@ export function register(map: Map<string, CommandHandler>): void {
   map.set("/mode", handleMode);
   map.set("/effort", handleEffort);
   map.set("/permissions", handlePermissions);
+  map.set("/context-size", handleContextSize);
   map.set("/verbose", handleVerbose);
   map.set("/reasoning", handleReasoning);
   map.set("/motion", handleMotion);
@@ -1473,6 +1536,7 @@ export function matchConfigPrefix(cmd: string): CommandHandler | null {
   if (cmd === "/mode" || cmd.startsWith("/mode ")) return handleMode;
   if (cmd.startsWith("/effort ")) return handleEffort;
   if (cmd.startsWith("/permissions ")) return handlePermissions;
+  if (cmd.startsWith("/context-size ")) return handleContextSize;
   if (cmd === "/theme" || cmd.startsWith("/theme ")) return handleTheme;
   if (cmd.startsWith("/telemetry ")) return handleTelemetry;
   if (cmd.startsWith("/sandbox ")) return handleSandbox;

@@ -123,6 +123,8 @@ export const outputSchemas: Record<string, z.ZodType> = {
   distinction: DistinctionSchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;
+/** Refusals of one path by the file-hash check after which an attempt stops (#954). */
+const MAX_HASH_REFUSALS = 3;
 
 /** Workspace paths an attempt's applied file edits wrote, in first-write order. */
 export function appliedPaths(effects: readonly EffectRow[], attemptId: string): string[] {
@@ -312,6 +314,18 @@ export class NativeAgentExecutor implements AgentExecutor {
             watch.abort(
               stalledFault(
                 `${String(watch.deadlines)} tool calls of attempt ${request.attemptId} hit their deadline (last: ${tool})`,
+              ),
+            );
+        },
+        (path, count) => {
+          // A file that differs from the run's record stays different however often the agent
+          // reads and retries: stop the attempt rather than spend its cap on refusals (#954).
+          if (count >= MAX_HASH_REFUSALS)
+            watch.abort(
+              new WorkflowFault(
+                "INPUT_CHANGED",
+                `Edits to ${path} were refused ${String(count)} times in attempt ${request.attemptId}: File changed outside this attempt`,
+                { path, refusals: count },
               ),
             );
         },

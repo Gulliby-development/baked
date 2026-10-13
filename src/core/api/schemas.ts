@@ -10,6 +10,7 @@ import { MAX_CANDIDATES } from "../workflows/candidates.js";
 import { MAX_CONCURRENT_WRITERS, RunStatus, SafeId } from "../workflows/schemas.js";
 import { USAGE_DIMENSIONS } from "../workflows/usage.js";
 import { MAX_LOOP_ROUNDS } from "../workflows/v2/definition.js";
+import { INSERTABLE_STAGES } from "../workflows/v2/editor.js";
 
 /** Every mutation names a client-chosen command ID; a retry with the same ID returns the first result. */
 const Command = z.object({
@@ -88,6 +89,8 @@ export const ExtendBody = Command.extend({
   tokens: PositiveInt.optional(),
   calls: PositiveInt.optional(),
   timeMs: PositiveInt.optional(),
+  /** A new cost cap in USD, for a run started with one. */
+  costUsd: z.number().positive().optional(),
 }).strict();
 
 /** A new run model and/or stage routes (stage ID to model or `$class`), as `workflow reroute`. */
@@ -136,6 +139,11 @@ export const WorkingSetBody = z
 const ChatModeSchema = z.enum(CHAT_MODES);
 const ChatEffortSchema = z.enum(CHAT_EFFORTS);
 const PermissionModeSchema = z.enum(PERMISSION_MODES);
+/** `default`, `max`, or a window in tokens; a size the model lacks picks the nearest smaller. */
+const ChatContextSizeSchema = z.union([
+  z.enum(["default", "max"]),
+  z.number().int().min(1_000).max(100_000_000),
+]);
 const ModelId = z
   .string()
   .min(3)
@@ -158,6 +166,7 @@ export const CreateSessionBody = z.strictObject({
   mode: ChatModeSchema.optional(),
   effort: ChatEffortSchema.optional(),
   permissions: PermissionModeSchema.optional(),
+  contextSize: ChatContextSizeSchema.optional(),
   text: Text.optional(),
   images: Images.optional(),
 });
@@ -175,6 +184,7 @@ export const UpdateSessionBody = z
     mode: ChatModeSchema.optional(),
     effort: ChatEffortSchema.optional(),
     permissions: PermissionModeSchema.optional(),
+    contextSize: ChatContextSizeSchema.optional(),
   })
   .refine((body) => Object.keys(body).length > 0, { message: "Name a field to change" });
 export const ForkSessionBody = z.strictObject({
@@ -285,6 +295,12 @@ export const EditorOpBody = z.discriminatedUnion("op", [
   z.strictObject({ op: z.literal("removeTransition"), id: z.string().min(1).max(200) }),
   z.strictObject({ op: z.literal("addWaitStage"), after: SafeId }),
   z.strictObject({ op: z.literal("removeWaitStage"), stageId: SafeId }),
+  z.strictObject({
+    op: z.literal("addStage"),
+    stageType: z.enum(INSERTABLE_STAGES),
+    transition: z.string().min(1).max(200),
+  }),
+  z.strictObject({ op: z.literal("removeStage"), stageId: SafeId }),
   z.strictObject({
     op: z.literal("changeField"),
     stageId: SafeId,

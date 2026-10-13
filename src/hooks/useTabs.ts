@@ -357,6 +357,7 @@ export function useTabs(onTabClosed?: (survivingIds: Set<string>) => void): UseT
           bakeMode: tm.bakeMode ?? "default",
           ...(tm.effort ? { effort: tm.effort } : {}),
           ...(tm.permissionMode ? { permissionMode: tm.permissionMode } : {}),
+          ...(tm.contextSize !== undefined ? { contextSize: tm.contextSize } : {}),
         };
         initialStates.current.set(tm.id, state);
       }

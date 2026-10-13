@@ -12,6 +12,7 @@ import type { CommandEntry } from "../../client/setup.js";
 import { Icon } from "../../components/Icon.js";
 import { cn } from "../../lib/cn.js";
 import { LABEL } from "../../lib/styles.js";
+import { type ContextSizeControl, ContextSizePicker } from "./ContextSizeMenu.js";
 import { matchCommands, slashAtCaret } from "./commands.js";
 import { type Attachment, dataUrl, MAX_IMAGES, pickImages, readAttachment } from "./images.js";
 import { PermissionChip } from "./PermissionChip.js";
@@ -235,6 +236,7 @@ export function Composer({
   onEffort,
   permissions = "auto",
   onPermissions,
+  contextSize,
   modes = BASE_MODES,
   models,
   loadMentions,
@@ -263,6 +265,8 @@ export function Composer({
   permissions?: PermissionMode;
   /** Changes the permission mode; without it the composer shows no permissions chip. */
   onPermissions?: (permissions: PermissionMode) => void;
+  /** Context window of the chat; shown only when the model offers more than one. */
+  contextSize?: ContextSizeControl;
   /** Read from the window's cache, so the model and effort menus open on it at once. */
   models: ModelList;
   /** `@` completions; without it the composer offers none. */
@@ -733,6 +737,7 @@ export function Composer({
         {onPermissions && (
           <PermissionChip permissions={permissions} onPermissions={onPermissions} />
         )}
+        {contextSize && <ContextSizePicker control={contextSize} />}
         {modes.length > 1 && (
           <Popover
             label="Mode"

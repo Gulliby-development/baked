@@ -17,6 +17,11 @@ export type PermissionMode = "manual" | "auto" | "full";
 export const PERMISSION_MODES: readonly PermissionMode[] = ["manual", "auto", "full"];
 /** A chat's reasoning effort; `default` follows the global setting. */
 export type ChatEffort = "default" | "low" | "medium" | "high" | "xhigh" | "max";
+/**
+ * A chat's context window when its model offers several: tokens, `max`, or `default` (the largest
+ * for the coordinator, the model's own size elsewhere).
+ */
+export type ChatContextSize = "default" | "max" | number;
 /** How a plan review is answered; `revise` sends feedback with it. */
 export type PlanAction = "execute" | "clear-execute" | "revise" | "cancel";
 
@@ -45,6 +50,12 @@ export interface SessionSummary {
   effort?: ChatEffort;
   /** Permission mode; servers without the `permission-modes` capability leave it out. */
   permissions?: PermissionMode;
+  /** The chat's context size; older servers leave it out. */
+  contextSize?: ChatContextSize;
+  /** Context windows in tokens the model offers, smallest first; empty or absent for one. */
+  contextSizes?: number[];
+  /** The window the next turn runs with when the model offers several, else null. */
+  contextTokens?: number | null;
   /** True while a manual compaction runs; older servers leave it out. */
   compacting?: boolean;
   /** The session that launched this one, such as the project coordinator. */
@@ -295,7 +306,14 @@ export interface ModelProvider {
   name: string;
   configured: boolean;
   /** `efforts`: the levels a chat can pick for the model, lowest first; absent when it takes none. */
-  models: { id: string; name: string; contextWindow?: number; efforts?: ChatEffort[] }[];
+  /** `contextSizes`: the windows a chat can pick, smallest first; absent when the model has one. */
+  models: {
+    id: string;
+    name: string;
+    contextWindow?: number;
+    efforts?: ChatEffort[];
+    contextSizes?: number[];
+  }[];
   error?: string;
 }
 
@@ -332,6 +350,7 @@ export const chat = {
       mode?: ChatMode;
       effort?: ChatEffort;
       permissions?: PermissionMode;
+      contextSize?: ChatContextSize;
       text?: string;
       images?: ImageUpload[];
     } = {},
@@ -346,6 +365,7 @@ export const chat = {
       mode?: ChatMode;
       effort?: ChatEffort;
       permissions?: PermissionMode;
+      contextSize?: ChatContextSize;
     },
   ) => call<SessionSummary>(key, "PATCH", sessionPath(id), body),
   /** Deletes a saved session; the server refuses one with a running turn. */

@@ -9,6 +9,7 @@ import type {
   EditorOp,
   EditorView,
   GateTarget,
+  InsertableStage,
   Outcome,
   ProblemGroup,
   SaveReview,
@@ -365,32 +366,17 @@ function apply(d: MockDefinition, op: EditorOp): string | null {
       const edge = out[0];
       if (!edge || out.length > 1)
         return `${op.after} needs exactly one passed transition to insert a wait stage after it`;
-      let id = "wait";
-      for (let n = 2; d.stages.some((s) => s.id === id); n++) id = `wait-${n}`;
-      const at = d.stages.findIndex((s) => s.id === op.after) + 1;
-      d.stages.splice(at, 0, {
-        id,
-        type: "wait",
-        produces: "gates",
-        gates: [],
-        intervalSeconds: 30,
-        timeoutMinutes: 30,
-      });
-      d.transitions.push({ id: `${id}-passed`, from: id, to: edge.to, on: "passed", gates: [] });
-      edge.to = id;
-      return null;
+      return addStage(d, edge.id, "wait");
     }
+    case "addStage":
+      return addStage(d, op.transition, op.stageType);
     case "removeWaitStage": {
       const stage = d.stages.find((s) => s.id === op.stageId);
       if (stage?.type !== "wait") return "Only a wait stage can be removed here";
-      const onward = d.transitions.find((t) => t.from === op.stageId && t.on === "passed");
-      if (!onward) return `${op.stageId} has no passed transition to reconnect`;
-      d.stages = d.stages.filter((s) => s.id !== op.stageId);
-      d.transitions = d.transitions
-        .filter((t) => t.from !== op.stageId)
-        .map((t) => (t.to === op.stageId ? { ...t, to: onward.to } : t));
-      return null;
+      return removeStage(d, op.stageId);
     }
+    case "removeStage":
+      return removeStage(d, op.stageId);
     case "changeField": {
       const stage = d.stages.find((s) => s.id === op.stageId);
       if (op.key === "decision" && stage?.decision) {
@@ -424,6 +410,53 @@ function apply(d: MockDefinition, op: EditorOp): string | null {
     case "duplicate":
       return null;
   }
+}
+
+const INSERT_ID: Record<InsertableStage, string> = {
+  check: "check",
+  review: "review",
+  approval: "approve",
+  wait: "wait",
+};
+
+function addStage(d: MockDefinition, transition: string, type: InsertableStage): string | null {
+  const edge = d.transitions.find((t) => t.id === transition);
+  if (!edge) return `Unknown transition ${transition}`;
+  if (edge.loop) return "A station goes on a forward arrow, not on a loop";
+  if (type === "approval" && !d.stages.some((s) => s.type === "tasks"))
+    return "An approval authorizes a stage that writes files, and this workflow has none";
+  const taken = new Set([...d.stages.map((s) => s.id), ...d.transitions.map((t) => t.id)]);
+  const base = INSERT_ID[type];
+  let id = base;
+  for (let n = 2; taken.has(id) || taken.has(`${id}-passed`); n++) id = `${base}-${n}`;
+  const produces = { check: "gates", wait: "gates", review: "review", approval: "decision" }[type];
+  const stage: MockStage =
+    type === "wait"
+      ? { id, type, produces, gates: [], intervalSeconds: 30, timeoutMinutes: 30 }
+      : type === "approval"
+        ? { id, type, produces, decision: "human" }
+        : { id, type, produces, gates: [] };
+  const at = d.stages.findIndex((s) => s.id === edge.from) + 1;
+  d.stages.splice(at, 0, stage);
+  d.transitions.push({ id: `${id}-passed`, from: id, to: edge.to, on: "passed", gates: [] });
+  edge.to = id;
+  return null;
+}
+
+function removeStage(d: MockDefinition, stageId: string): string | null {
+  if (!d.stages.some((s) => s.id === stageId)) return `Unknown stage ${stageId}`;
+  if (d.stages.length === 1) return `${stageId} is the only stage`;
+  const onward = d.transitions.find((t) => t.from === stageId && t.on === "passed");
+  if (!onward) return `${stageId} has no passed transition to reconnect`;
+  if (d.entry === stageId && onward.to === "done")
+    return `${stageId} is the only stage on the way to done`;
+  if (d.entry === stageId) d.entry = onward.to;
+  d.stages = d.stages.filter((s) => s.id !== stageId);
+  d.transitions = d.transitions
+    .filter((t) => t.from !== stageId)
+    .map((t) => (t.to === stageId ? { ...t, to: onward.to } : t))
+    .filter((t) => t.from !== t.to);
+  return null;
 }
 
 function setLoop(t: MockDefinition["transitions"][number], rounds: number): string | null {

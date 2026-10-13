@@ -12,6 +12,7 @@ import {
   stricterSandboxMode,
 } from "../security/sandbox.js";
 import { hashBytes, hashJson } from "../specs/hash.js";
+import { assertCostCapPriced } from "./budget.js";
 import { validateChecks } from "./check-policy.js";
 import { frozenInstructions } from "./context.js";
 import { WorkflowFault } from "./errors.js";
@@ -136,11 +137,6 @@ export async function prepareStart(
       reviewProfiles: { ...policy.reviewProfiles, language: languageProfile },
     });
   validateChecks(workspace, policy);
-  if (policy.maxCostUsd !== null)
-    throw new WorkflowFault(
-      "INVALID_DEFINITION",
-      "A dollar cap requires verified model pricing; use the token/time limits with maxCostUsd=null",
-    );
   const registry = routedProfiles(workspace, config, model);
   let loaded: LoadedDefinition;
   try {
@@ -354,6 +350,7 @@ export async function prepareStart(
       `${independence.warnings.join("\n")}\nmodelRouting.independentReview is "require"; route the reviewers to another model`,
     );
   routing = independence.record;
+  assertCostCapPriced(policy, routing);
   const notes = [...independence.moved, ...independence.warnings];
   if (notes.length) routing.warnings = [...(routing.warnings ?? []), ...notes];
   // Review settings of modelRouting join the policy, so the approval digest covers them; a

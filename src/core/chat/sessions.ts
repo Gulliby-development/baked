@@ -31,6 +31,7 @@ import type { ModelMessage } from "ai";
 import type {
   AppConfig,
   BakeMode,
+  ChatContextSize,
   ChatEffort,
   ChatMessage,
   ImageAttachment,
@@ -81,6 +82,7 @@ import {
   watchSubagentHooks,
   withHookContext,
 } from "../hooks/lifecycle.js";
+import { chatContextTokens, getModelContextSizes, withContextSize } from "../llm/context-sizes.js";
 import {
   DEFAULT_PERMISSION_MODE,
   isPermissionMode,
@@ -191,6 +193,15 @@ export interface SessionSummary {
   effort: ChatEffort;
   /** How much the chat runs without asking: manual, auto or full. */
   permissions: PermissionMode;
+  /**
+   * Context window of this chat's turns when its model offers several: `default` is the largest
+   * for the coordinator and the model's own size elsewhere.
+   */
+  contextSize: ChatContextSize;
+  /** Context windows in tokens the model offers, smallest first; empty when it offers one. */
+  contextSizes: number[];
+  /** The window the chat runs with when the model offers several, else null. */
+  contextTokens: number | null;
   /** True while a manual compaction runs; the state is then `working`. */
   compacting: boolean;
   /** `coordinator` for the project's coordinator chat (see `src/core/chat/coordinator.ts`). */
@@ -524,6 +535,7 @@ export class ChatSession {
   private mode: ChatMode;
   private effort: ChatEffort;
   private permissions: PermissionMode;
+  private contextSize: ChatContextSize;
   private usage: Usage;
   private context: SessionDetail["context"] = null;
   private turn: TurnState | null = null;
@@ -565,6 +577,7 @@ export class ChatSession {
     this.mode = modes.mode;
     this.permissions = modes.permissions;
     this.effort = tab.effort ?? "default";
+    this.contextSize = tab.contextSize ?? "default";
     this.usage = {
       input: tab.tokenUsage.prompt,
       output: tab.tokenUsage.completion,
@@ -655,6 +668,11 @@ export class ChatSession {
       mode: this.mode,
       effort: this.effort,
       permissions: this.permissions,
+      contextSize: this.contextSize,
+      contextSizes: this.model ? getModelContextSizes(this.model) : [],
+      contextTokens: this.model
+        ? chatContextTokens(this.model, this.contextSize, this.sizeOptions)
+        : null,
       compacting: this.compaction !== null,
       ...(this.isCoordinator ? { kind: "coordinator" as const } : {}),
       ...(this.meta.parentId ? { parentId: this.meta.parentId } : {}),
@@ -668,6 +686,15 @@ export class ChatSession {
 
   get isCoordinator(): boolean {
     return this.meta.kind === "coordinator";
+  }
+
+  private get sizeOptions(): { coordinator: boolean } {
+    return { coordinator: this.isCoordinator };
+  }
+
+  /** The model ID turns and compactions run with: the chosen model at the chat's context size. */
+  private runModel(model: string): string {
+    return withContextSize(model, this.contextSize, this.sizeOptions);
   }
 
   detail(): SessionDetail {
@@ -734,6 +761,7 @@ export class ChatSession {
     mode?: ChatMode;
     effort?: ChatEffort;
     permissions?: PermissionMode;
+    contextSize?: ChatContextSize;
   }): SessionSummary {
     if (changes.title !== undefined) this.meta = { ...this.meta, customTitle: changes.title };
     if (changes.model !== undefined) this.model = changes.model;
@@ -746,6 +774,7 @@ export class ChatSession {
       this.permissions = modes.permissions;
     } else if (changes.permissions !== undefined) this.permissions = changes.permissions;
     if (changes.effort !== undefined) this.effort = changes.effort;
+    if (changes.contextSize !== undefined) this.contextSize = changes.contextSize;
     this.emitSession();
     void this.owner.persist(this);
     return this.summary();
@@ -908,9 +937,12 @@ export class ChatSession {
     this.compaction = compaction;
     this.emit({ type: "compaction-start", compactionId: compaction.id });
     this.emitSession();
-    this.turnDone = this.runCompaction(compaction, model, host.compact.bind(host), trigger).catch(
-      () => {},
-    );
+    this.turnDone = this.runCompaction(
+      compaction,
+      this.runModel(model),
+      host.compact.bind(host),
+      trigger,
+    ).catch(() => {});
     return { compactionId: compaction.id };
   }
 
@@ -1323,9 +1355,9 @@ export class ChatSession {
         this.checkpointTags,
       );
       if (base) this.addCheckpointTag(base);
-      const model = this.model;
-      if (!model) throw new Error("No model configured");
+      if (!this.model) throw new Error("No model configured");
       if (blockedBy) throw new Error(`A UserPromptSubmit hook blocked the prompt: ${blockedBy}`);
+      const model = this.runModel(this.model);
       // A `!` command that did not run leaves nothing to answer.
       if (!send) throw new SkipTurn();
       const { agent, contextWindow } = await this.owner.host.agent({
@@ -1626,6 +1658,7 @@ export class ChatSession {
       bakeMode: this.mode,
       effort: this.effort,
       permissionMode: this.permissions,
+      contextSize: this.contextSize === "default" ? undefined : this.contextSize,
       planMode: this.mode === "plan",
       tokenUsage: {
         ...this.tab.tokenUsage,
@@ -1821,6 +1854,9 @@ export class ChatService {
         mode: "default",
         effort: "default",
         permissions: this.defaultPermissions,
+        contextSize: "default",
+        contextSizes: [],
+        contextTokens: null,
         compacting: false,
       });
     }
@@ -1855,6 +1891,7 @@ export class ChatService {
     mode?: ChatMode;
     effort?: ChatEffort;
     permissions?: PermissionMode;
+    contextSize?: ChatContextSize;
     messages?: ChatMessage[];
     core?: ModelMessage[];
     kind?: "coordinator";
@@ -1887,6 +1924,9 @@ export class ChatService {
           bakeMode: input.mode ?? "default",
           ...(input.effort ? { effort: input.effort } : {}),
           ...(input.permissions ? { permissionMode: input.permissions } : {}),
+          ...(input.contextSize && input.contextSize !== "default"
+            ? { contextSize: input.contextSize }
+            : {}),
           tokenUsage: { prompt: 0, completion: 0, total: 0, cacheRead: 0 },
           messageRange: { startLine: 0, endLine: messages.length },
         },
@@ -1943,6 +1983,7 @@ export class ChatService {
       mode: summary.mode,
       effort: summary.effort,
       permissions: summary.permissions,
+      contextSize: summary.contextSize,
       messages: point.messages.map((m) => ({ ...m })),
     });
     session.startSource = "fork";

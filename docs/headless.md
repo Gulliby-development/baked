@@ -19,6 +19,7 @@ baked --headless --watch                          # turns from baked! / baked? c
 | `--mode <mode>` | `default`, `architect` or `plan`; `auto` is `default` with `--permissions full` |
 | `--permissions <mode>` | [Permission mode](guide.md#permission-modes): `manual` denies every edit, command and git change (nobody can allow them), `auto` (default) denies destructive commands and writes outside the project, `full` allows everything |
 | `--effort <level>` | Reasoning effort: `default` (the configured one), `low`, `medium`, `high`, `xhigh` or `max`; see [reasoning effort per chat](providers.md#reasoning-effort-per-chat) |
+| `--context <size>` | Context window when the model offers several: `default`, `max`, or a size such as `200k` or `1m`; see [context size per chat](providers.md#context-size-per-chat) |
 | `--max-steps <n>` | Stop after N agent steps |
 | `--timeout <ms>` | Abort after N milliseconds |
 | `--cwd <dir>` | Work in another folder |

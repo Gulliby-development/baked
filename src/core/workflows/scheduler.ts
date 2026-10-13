@@ -92,6 +92,7 @@ import {
   isHostEdgeNit,
   isHostSplitNit,
   knownRisks,
+  namesRequestSide,
   persistentDefect,
   REQUEST_NOTE,
   restrictsRequest,
@@ -2879,7 +2880,11 @@ export class WorkflowScheduler {
         throw new WorkflowFault(
           "OUTPUT_INVALID",
           error instanceof Error ? error.message : String(error),
-          { reason: "provider_unavailable" },
+          {
+            reason: "provider_unavailable",
+            // Where it was thrown, so a defect in BAKED's own code is not hidden as a lost worker (#929).
+            ...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
+          },
         );
       throw error;
     }
@@ -2938,6 +2943,7 @@ export class WorkflowScheduler {
       propertyTestsOf(
         policy,
         presetOf(parseRunDefinition(this.store.run(runId).definition_json)),
+        state.requestText || state.prompt,
       ) === "auto"
         ? propertyTestsNote(profile.output, this.propertyLibraries(runId, state))
         : null;
@@ -3794,7 +3800,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         }),
       );
       if (result.outcome === "spec_conflict" && result.taskId === task.id) {
-        this.specConflict(runId, state, child, task, result);
+        this.specConflict(runId, state, policy, child, task, result);
         return;
       }
       if (result.outcome === "implemented")
@@ -4550,7 +4556,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const { entry } = outcome;
     let failure: unknown = null;
     if (outcome.kind === "conflict")
-      this.specConflict(runId, state, entry.child, entry.task, outcome.result);
+      this.specConflict(runId, state, policy, entry.child, entry.task, outcome.result);
     else if (outcome.kind === "done") {
       if (!fatal) await this.integrateTask(runId, state, policy, profiles, outcome, signal);
       delete state.taskCarry[entry.task.id];
@@ -4562,6 +4568,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         this.store.taskStatus(runId, entry.task.id, "interrupted", null, {
           cause: outcome.cause,
           detail: outcome.reason,
+          ...(outcome.stack ? { stack: outcome.stack } : {}),
         });
         this.store.finishStep(runId, entry.child, "interrupted");
       });
@@ -4934,6 +4941,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           ...(!leaseLost && before
             ? await this.lostWorkerEdits(runId, policy, entry, known, before)
             : {}),
+          // An error of BAKED's own code is journaled with its stack, so its caller is known (#929).
+          ...(thrownStack(error) ? { stack: thrownStack(error) } : {}),
           reason:
             leaseSignal.aborted && !(error instanceof Error && error.message)
               ? "its worktree lease was lost"
@@ -6033,16 +6042,25 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
    * A task reported that the spec and the tests cannot both hold. It stops without fitting the
    * tests: it is ready again, and the run asks a person which one is right. The answer joins the
    * request the task's next attempt reads. Under `clarification: assume` too, since every default
-   * here would be to fit the tests or to drop a requirement.
+   * here would be to fit the tests or to drop a requirement, unless one side of the conflict is what
+   * the request states: then the request wins once per task, as a person answered "defer to the
+   * brief" in bench round 15 (envguard 8b8b7022, structpad 6c8758ed), and the decision is recorded.
    */
   private specConflict(
     runId: string,
     state: RuntimeState,
+    policy: RunPolicy,
     child: string,
     task: Task,
     result: Implementation,
   ): void {
     const account = { taskId: task.id, summary: result.summary, unresolved: result.unresolved };
+    const report = [result.summary, ...result.unresolved].join(" ");
+    const assumedPath = `assumptions/conflicts/${task.id}.json`;
+    const assume =
+      policy.clarification === "assume" &&
+      namesRequestSide(report) &&
+      !this.store.latestArtifact(runId, assumedPath);
     this.store.transaction(() => {
       this.store.artifact(
         runId,
@@ -6050,9 +6068,20 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         `tasks/conflicts/${task.id}.json`,
         canonical(account),
       );
+      if (assume)
+        this.store.artifact(
+          runId,
+          "assumption",
+          assumedPath,
+          canonical({ ...account, assumed: "The request is authoritative" }),
+        );
       this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
       this.store.finishStep(runId, child, "failed");
     });
+    if (assume) {
+      state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the spec or its tests contradict the request: ${report.slice(0, 1500)} The request is authoritative: follow what it states. Where a criterion, a requirement or a test says otherwise, the request wins; a test that contradicts the request is changed to what the request states, and no other test is weakened.`;
+      return;
+    }
     this.wait("clarification", state, {
       questions: [
         {
@@ -6978,6 +7007,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const mode = propertyTestsOf(
       policy,
       presetOf(parseRunDefinition(this.store.run(runId).definition_json)),
+      state.requestText || state.prompt,
     );
     const criteria = state.spec?.criteria ?? [];
     if (mode === "off" || !state.snapshotId || !criteria.some((c) => c.property)) return [];
@@ -9433,6 +9463,8 @@ type WorkerOutcome =
       /** Why the worker stopped: a restart it asked for, or a lost worker or worktree lease. */
       cause: InterruptCause;
       reason: string;
+      /** The stack of an error thrown by BAKED's own code rather than a workflow fault. */
+      stack?: string;
       /** Another owner took the task worktree's lease, so the worktree is not this run's to reuse. */
       leaseLost: boolean;
       /** What the worker said when it ended without a complete implementation, for the restart. */
@@ -9442,3 +9474,12 @@ type WorkerOutcome =
     }
   /** The whole run stops: it was aborted or its budget is used up. */
   | { kind: "fatal"; entry: BatchEntry; error: unknown };
+
+/**
+ * The stack of an error that is not a workflow fault of its own: thrown directly, or wrapped as
+ * `provider_unavailable` by the agent call.
+ */
+function thrownStack(error: unknown): string | undefined {
+  if (!(error instanceof WorkflowFault)) return error instanceof Error ? error.stack : undefined;
+  return typeof error.details.stack === "string" ? error.details.stack : undefined;
+}

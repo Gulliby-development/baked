@@ -1153,6 +1153,7 @@ export const EventSchema = z.discriminatedUnion("type", [
           generation: z.number().int().nonnegative(),
           cause: InterruptCause.optional(),
           detail: z.string().max(500).optional(),
+          stack: z.string().max(2000).optional(),
         })
         .strict(),
     })
@@ -1397,6 +1398,8 @@ export interface RunSnapshot {
   tokenUsage: number;
   activeMs: number;
   estimatedCostUsd: number | null;
+  /** The run's dollar cap (`policy.maxCostUsd`); present only when the run has one. */
+  maxCostUsd?: number;
   verificationState: "not_verified" | "current" | "stale" | "invalid";
   /**
    * Findings the run is accepted with (known limitations): a completed run with any is not
@@ -1584,7 +1587,7 @@ export interface WorkflowService {
   extendBudget(
     runId: string,
     command: CommandIdentity,
-    limits?: Partial<import("./budget.js").BudgetLimits>,
+    limits?: Partial<import("./budget.js").BudgetLimits> & { maxCostUsd?: number },
   ): Promise<RunSnapshot>;
   /** Moves a stopped run to other models from where it stopped; the run keeps its status. */
   reroute(
