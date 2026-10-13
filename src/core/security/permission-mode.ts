@@ -86,8 +86,9 @@ function str(value: unknown): string | undefined {
 export function manualApprovalRequest(
   toolName: string,
   input: unknown,
-  cwd: string,
+  workspace: string,
 ): { prompt: string; detail?: ApprovalDetail } | null {
+  const cwd = resolve(workspace);
   const args = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   if (toolName === "shell") {
     const command = str(args.command);

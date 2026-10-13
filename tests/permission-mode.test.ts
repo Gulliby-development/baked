@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { ModelMessage } from "ai";
 import { type ChatAgentHost, ChatService, type TurnAgentRequest } from "../src/core/chat/sessions.js";
 import { parseHeadlessArgs } from "../src/headless/parse.js";
@@ -23,7 +23,8 @@ const tool = (name: string) => ({
 });
 
 describe("manual permission mode", () => {
-  const cwd = "/work/project";
+  // Resolved, so the expected paths carry a drive letter on Windows.
+  const cwd = resolve("/work/project");
 
   test("asks before edits, commands, mutating git and project actions, not before reads", () => {
     expect(manualApprovalRequest("edit_file", { path: "src/a.ts" }, cwd)?.prompt).toBe(
