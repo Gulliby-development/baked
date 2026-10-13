@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { MAX_EXTENDED_MS } from "./budget.js";
 import { DEFAULT_STAGE_RANGES, historyStorePaths, rangeOf, type TokenRange } from "./estimate.js";
 import type { RunPolicy, TaskGraph } from "./schemas.js";
 import { DEFAULT_MAX_ATTEMPT_TOKENS } from "./step-budget.js";
@@ -79,6 +80,18 @@ export const REPAIR_RESERVE = 0.3;
 export const MIN_LOOP_RUNS = 3;
 /** The calibrated reserve stays within these shares of the priced work. */
 export const RESERVE_BOUNDS = { min: REPAIR_RESERVE, max: 3 } as const;
+/**
+ * Tokens a run spends per active minute until enough runs are in history. Kept below the observed
+ * rates (cfgtrace 2ad7c3e4 spent 81-104k a minute) so the time estimate errs long (#933).
+ */
+export const DEFAULT_TOKENS_PER_MINUTE = 60_000;
+/** Runs in history needed before their rate replaces the default. */
+export const MIN_RATE_RUNS = 3;
+/** Runs shorter than this, or below `MIN_RATE_TOKENS`, say little about a run's pace. */
+const MIN_RATE_MS = 5 * 60_000;
+const MIN_RATE_TOKENS = 100_000;
+/** The active-time cap holds the estimated time plus this share. */
+export const ACTIVE_TIME_MARGIN = 0.25;
 
 const TEST_PATH = /(^|\/)(tests?|__tests__|spec)\/|\.(test|spec)\.[cm]?[jt]sx?$/i;
 const DOCS_EXTENSION = /\.(md|mdx|markdown|rst|adoc)$/i;
@@ -411,6 +424,18 @@ export interface SizingReport {
   budgetAfter: number;
   maxAttemptTokens: number;
   maxRunTokens: number | null;
+  /**
+   * The active time the sized budget needs at the observed token rate, and the active-time cap
+   * before and after sizing. The cap grows with the budget, under the same ceiling (#933).
+   */
+  activeTime: {
+    tokensPerMinute: number;
+    basis: "history" | "default";
+    runs: number;
+    estimatedMs: number;
+    before: number;
+    after: number;
+  };
   decision: "fits" | "raise-budget" | "split-tasks" | "split-feature";
   reasons: string[];
 }
@@ -467,6 +492,8 @@ export function sizePlan(input: {
   model?: string | null;
   /** Loop shares of finished runs (`loopHistory`); they set the repair reserve once enough. */
   loopShares?: readonly number[];
+  /** Tokens per active minute of earlier runs (`rateHistory`); they set the time estimate. */
+  tokenRates?: readonly number[];
 }): SizingReport {
   const rates = perFileRates(input.samples, input.model ?? null);
   const maxAttemptTokens = input.policy.sizing?.maxAttemptTokens ?? DEFAULT_MAX_SIZED_ATTEMPT;
@@ -522,6 +549,32 @@ export function sizePlan(input: {
         : `The run budget stays at ${budgetBefore} tokens, the policy's ceiling; the plan and its repair reserve of ${repairReserve} need about ${runTokens + repairReserve}`,
     );
   }
+  const rate = tokensPerMinute(input.tokenRates ?? []);
+  const needed = Math.min(runTokens + repairReserve, budgetAfter);
+  const estimatedMs = Math.round((needed / rate.tokensPerMinute) * 60_000);
+  const timeBefore = input.policy.maxActiveMs;
+  const timeAfter =
+    maxRunTokens !== null && estimatedMs * (1 + ACTIVE_TIME_MARGIN) > timeBefore
+      ? Math.max(
+          timeBefore,
+          Math.min(
+            MAX_EXTENDED_MS,
+            Math.ceil((estimatedMs * (1 + ACTIVE_TIME_MARGIN)) / 60_000) * 60_000,
+          ),
+        )
+      : timeBefore;
+  if (estimatedMs > timeBefore || timeAfter > timeBefore) {
+    if (timeAfter > timeBefore && decision === "fits") decision = "raise-budget";
+    reasons.push(
+      `Estimated active time at ${rate.tokensPerMinute} tokens per minute (${rateNote(rate)}): ${minutes(estimatedMs)} min against maxActiveMs ${minutes(timeBefore)} min; ${
+        timeAfter > timeBefore
+          ? `the active-time cap grows to ${minutes(timeAfter)} min`
+          : maxRunTokens === null
+            ? "the cap stays, as the policy sets no maxRunTokens ceiling"
+            : "the cap stays at its ceiling"
+      }`,
+    );
+  }
   return {
     schemaVersion: 3,
     model: input.model ?? null,
@@ -535,9 +588,63 @@ export function sizePlan(input: {
     budgetAfter,
     maxAttemptTokens,
     maxRunTokens,
+    activeTime: { ...rate, estimatedMs, before: timeBefore, after: timeAfter },
     decision,
     reasons,
   };
+}
+
+const minutes = (ms: number): number => Math.round(ms / 60_000);
+
+const rateNote = (rate: { basis: "history" | "default"; runs: number }) =>
+  rate.basis === "history"
+    ? `the median of ${rate.runs} earlier runs`
+    : `the default until ${MIN_RATE_RUNS} runs are in history`;
+
+/** The median tokens per active minute of at least `MIN_RATE_RUNS` runs, or the default. */
+export function tokensPerMinute(rates: readonly number[]): {
+  tokensPerMinute: number;
+  basis: "history" | "default";
+  runs: number;
+} {
+  const usable = rates.filter((rate) => Number.isFinite(rate) && rate > 0);
+  if (usable.length < MIN_RATE_RUNS)
+    return { tokensPerMinute: DEFAULT_TOKENS_PER_MINUTE, basis: "default", runs: usable.length };
+  const sorted = [...usable].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const median =
+    sorted.length % 2 ? (sorted[mid] ?? 0) : ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2;
+  return { tokensPerMinute: Math.round(median), basis: "history", runs: usable.length };
+}
+
+/**
+ * Tokens per active minute of the runs in a workflow store that ran long enough to show a pace:
+ * every run that is not created or still running, with at least five active minutes.
+ */
+export function tokenRatesFrom(databasePath: string): number[] {
+  if (!existsSync(databasePath)) return [];
+  let db: Database | null = null;
+  try {
+    db = new Database(databasePath, { readonly: true });
+    return db
+      .query<{ tokens: number; ms: number }, [number, number]>(
+        "SELECT token_usage AS tokens, active_ms AS ms FROM runs WHERE status NOT IN ('created','running') AND active_ms>=? AND token_usage>=?",
+      )
+      .all(MIN_RATE_MS, MIN_RATE_TOKENS)
+      .map((run) => run.tokens / (run.ms / 60_000));
+  } catch {
+    return [];
+  } finally {
+    db?.close();
+  }
+}
+
+/** Token rates of this project's store and the extra stores the policy names. */
+export function rateHistory(workspace: string, policy: RunPolicy): number[] {
+  return [
+    join(workspace, ".baked", "workflows.sqlite"),
+    ...historyStorePaths(workspace, policy),
+  ].flatMap((path) => tokenRatesFrom(path));
 }
 
 /** How many code files one attempt covers, and what the planner is told before it plans. */
@@ -670,4 +777,18 @@ export function splitTestTasks(graph: TaskGraph, report: SizingReport): TaskGrap
 /** The note that sends an oversized plan back to the planner once. */
 export function splitNote(report: SizingReport, maxCodeFilesPerTask: number): string {
   return `Sizing: the plan is too large for its attempts. ${report.reasons.join(". ")}. Re-plan with smaller tasks: tests in tasks of their own, at most ${maxCodeFilesPerTask} code files per task, disjoint writes and no dependency between tasks where possible, so they run in parallel.`;
+}
+
+/** The approval's line for the sized active time against the active-time cap (#933). */
+export function activeTimeText(time: SizingReport["activeTime"]): string {
+  const rate = `${Math.round(time.tokensPerMinute / 1000)}k tokens per minute, ${
+    time.basis === "history" ? `the median of ${time.runs} runs` : "the default rate"
+  }`;
+  const cap =
+    time.after > time.before
+      ? `; sizing raised the cap to ${minutes(time.after)} min`
+      : time.estimatedMs > time.before
+        ? "; the run may stop at the cap"
+        : "";
+  return `Estimated active time at the observed rate (${rate}): ${minutes(time.estimatedMs)} min against maxActiveMs ${minutes(time.before)} min${cap}`;
 }

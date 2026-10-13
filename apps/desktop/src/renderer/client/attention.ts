@@ -1,4 +1,5 @@
 import type { RunSnapshot } from "../../shared/api.js";
+import type { ActiveTime } from "../lib/active-time.js";
 import { call } from "./api.js";
 import { workflow } from "./workflow.js";
 
@@ -27,6 +28,8 @@ export interface ApprovalBody {
   deferredCriteria?: string[];
   /** Defaults the agents chose instead of asking (`clarification: "assume"`). */
   assumptions?: string[];
+  /** Plan-time sizing's active-time estimate against the active-time cap. */
+  activeTime?: ActiveTime;
   /** Each deliverable of the request and the requirements, or the request's exclusion, covering it. */
   requestCoverage?: {
     deliverable: string;

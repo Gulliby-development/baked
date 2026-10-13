@@ -6,8 +6,11 @@ import { join } from "node:path";
 import { hostSplitParts, isHostSplitNit } from "../src/core/workflows/analysis-notes.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
+import { MAX_EXTENDED_MS } from "../src/core/workflows/budget.js";
 import {
+  activeTimeText,
   codeTaskCheckProblems,
+  DEFAULT_TOKENS_PER_MINUTE,
   DEFAULT_PER_FILE,
   MIN_HISTORY_SAMPLES,
   fileKind,
@@ -21,6 +24,8 @@ import {
   sizePlan,
   splitTestTasks,
   taskTotal,
+  tokenRatesFrom,
+  tokensPerMinute,
   withTestDependencies,
 } from "../src/core/workflows/sizing.js";
 
@@ -254,6 +259,69 @@ describe("plan-time sizing", () => {
     expect(calibrated.reserve).toEqual({ share: 2, basis: "history", runs: 3 });
     expect(calibrated.repairReserve).toBeGreaterThan(flat.repairReserve * 6);
     expect(calibrated.reasons.join(" ")).toContain("the median loop of 3 finished runs");
+  });
+
+  // cfgtrace 2ad7c3e4 spent 81-104k tokens a minute; sizing raised its budget but its one-hour
+  // active-time cap stopped it at 61% of the sized tokens (#933).
+  test("the active-time cap grows with the budget to the time it needs at the observed rate", () => {
+    const tests = Array.from({ length: 8 }, (_, i) => task(`T00${i}`, [`src/m${i}.ts`, `tests/m${i}.test.ts`]));
+    const sized = (sizing: RunPolicy["sizing"], tokenRates?: number[], maxActiveMs = 3_600_000) =>
+      sizePlan({
+        graph: graph(...tests),
+        policy: { ...policy(sizing, 800_000), maxActiveMs },
+        samples: [],
+        spent: 1_000_000,
+        tokenRates,
+      });
+    const flat = sized({ maxRunTokens: 9_000_000 });
+    expect(flat.activeTime.basis).toBe("default");
+    expect(flat.activeTime.tokensPerMinute).toBe(DEFAULT_TOKENS_PER_MINUTE);
+    const needed = Math.min(flat.runTokens + flat.repairReserve, flat.budgetAfter);
+    expect(flat.activeTime.estimatedMs).toBe(Math.round((needed / DEFAULT_TOKENS_PER_MINUTE) * 60_000));
+    expect(flat.activeTime.estimatedMs).toBeGreaterThan(3_600_000);
+    expect(flat.activeTime.after).toBeGreaterThanOrEqual(flat.activeTime.estimatedMs * 1.25);
+    expect(flat.decision).toBe("raise-budget");
+    expect(flat.reasons.join(" ")).toContain("against maxActiveMs 60 min; the active-time cap grows to");
+    // A faster observed pace needs less time for the same tokens.
+    const fast = sized({ maxRunTokens: 9_000_000 }, [90_000, 104_000, 81_000]);
+    expect(fast.activeTime).toMatchObject({ basis: "history", runs: 3, tokensPerMinute: 90_000 });
+    expect(fast.activeTime.after).toBeLessThan(flat.activeTime.after);
+    // No ceiling: neither tokens nor time grow, and the estimate still says the cap is short.
+    const open = sized({}, undefined, 600_000);
+    expect(open.activeTime.estimatedMs).toBe(800_000);
+    expect(open.activeTime.after).toBe(600_000);
+    expect(open.reasons.join(" ")).toContain("the cap stays, as the policy sets no maxRunTokens ceiling");
+    // A cap that already covers the estimate stays, and the plan still fits.
+    const roomy = sized({ maxRunTokens: 9_000_000 }, undefined, 20 * 3_600_000);
+    expect(roomy.activeTime.after).toBe(20 * 3_600_000);
+    // Never past the extension ceiling.
+    expect(sized({ maxRunTokens: 9_000_000 }, [1_000, 1_000, 1_000]).activeTime.after).toBe(MAX_EXTENDED_MS);
+    expect(activeTimeText(flat.activeTime)).toMatch(
+      /^Estimated active time at the observed rate \(60k tokens per minute, the default rate\): \d+ min against maxActiveMs 60 min; sizing raised the cap to \d+ min$/,
+    );
+  });
+
+  test("the token rate is the median of runs long enough to show a pace", () => {
+    expect(tokensPerMinute([90_000, 80_000])).toEqual({
+      tokensPerMinute: DEFAULT_TOKENS_PER_MINUTE,
+      basis: "default",
+      runs: 2,
+    });
+    expect(tokensPerMinute([90_000, 80_000, 100_000, 70_000])).toEqual({
+      tokensPerMinute: 85_000,
+      basis: "history",
+      runs: 4,
+    });
+    const dir = mkdtempSync(join(tmpdir(), "baked-sizing-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const path = join(dir, "workflows.sqlite");
+    const db = new Database(path);
+    db.exec(`CREATE TABLE runs (id TEXT, status TEXT, token_usage INTEGER, active_ms INTEGER);
+      INSERT INTO runs VALUES ('long','blocked',5400000,3600000),('done','completed',1200000,600000),
+        ('short','completed',500000,60000),('small','completed',50000,900000),('live','running',9000000,600000);`);
+    db.close();
+    expect(tokenRatesFrom(path)).toEqual([90_000, 120_000]);
+    expect(tokenRatesFrom(join(dir, "missing.sqlite"))).toEqual([]);
   });
 
   // cronsay 15eb3204: eight tasks were priced at the sum of their upper bounds, 4.0M of tasks for a

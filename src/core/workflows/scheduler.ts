@@ -339,6 +339,7 @@ import {
   codeTaskCheckProblems,
   loopHistory,
   plannerSizing,
+  rateHistory,
   type SizingReport,
   sizePlan,
   sizingHistory,
@@ -609,6 +610,8 @@ export class WorkflowScheduler {
   };
   /** Runs a sleep that does not count as active time; set while a run is driven. */
   private idle: <T>(sleep: () => Promise<T>) => Promise<T> = (sleep) => sleep();
+  /** Re-arms the active-time deadline after the policy's cap changed; set while a run is driven. */
+  private rearmDeadline: () => void = () => {};
   /**
    * Requests for a person raised by the current step. They become durable only together with the
    * state they were raised on (see `flushWaits`), so a decision never sees a request whose state
@@ -666,6 +669,10 @@ export class WorkflowScheduler {
         Math.max(1, policy.maxActiveMs - activeBefore - (performance.now() - started - idleMs)),
       );
     let timeout = arm();
+    this.rearmDeadline = () => {
+      clearTimeout(timeout);
+      timeout = arm();
+    };
     // A wait stage sleeps between polls; that time is not active time.
     this.idle = async <T>(sleep: () => Promise<T>): Promise<T> => {
       clearTimeout(timeout);
@@ -1343,6 +1350,7 @@ export class WorkflowScheduler {
                     .map((c) => c.id),
                   // Defaults the agents chose instead of asking; approving accepts them.
                   assumptions: state.spec.assumptions,
+                  ...(state.activeTime ? { activeTime: state.activeTime } : {}),
                   ...(state.spec.deliverables
                     ? { requestCoverage: requestCoverage(state.spec, coverageRequest(state)) }
                     : {}),
@@ -1949,6 +1957,7 @@ export class WorkflowScheduler {
       clearInterval(poll);
       clearTimeout(timeout);
       this.idle = (sleep) => sleep();
+      this.rearmDeadline = () => {};
       outerSignal.removeEventListener("abort", abort);
       leaseSignal.removeEventListener("abort", leaseLost);
       await this.processes.stop();
@@ -3004,6 +3013,7 @@ export class WorkflowScheduler {
       spent: this.store.run(runId).token_usage,
       model,
       loopShares: loopHistory(this.store.workspace, policy),
+      tokenRates: rateHistory(this.store.workspace, policy),
     });
     this.store.transaction(() =>
       this.store.artifact(
@@ -3078,11 +3088,13 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     state.taskBudgets = Object.fromEntries(
       report.tasks.map((task) => [task.taskId, task.attemptTokens]),
     );
+    state.activeTime = report.activeTime;
     this.raiseBudget(runId, state, policy, report);
     return "continue";
   }
   /**
-   * Grows the run budget to the sized price, up to the policy's ceiling. A plan sent back to be
+   * Grows the run budget to the sized price, up to the policy's ceiling, and the active-time cap
+   * to the time that budget needs at the observed rate. A plan sent back to be
    * split is raised too: the price only grows with the re-plan, and a run on a provider with a
    * high per-step cost otherwise ran out before its plan was accepted (expenses-py-r4).
    */
@@ -3092,29 +3104,38 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     policy: RunPolicy,
     report: SizingReport,
   ): void {
-    if (report.budgetAfter > policy.maxTotalTokens) {
-      const before = hashJson(policy);
-      const after = PolicySchema.parse({ ...policy, maxTotalTokens: report.budgetAfter });
-      this.store.transaction(() => {
-        this.store.artifact(
-          runId,
-          "policy-revision",
-          `policy-revisions/sizing-${String(state.sizingReplans)}.json`,
-          canonical({
-            kind: "sizing",
-            approvedBy: "sizing",
-            previousPolicyHash: before,
-            policyHash: hashJson(after),
-            previous: { maxTotalTokens: policy.maxTotalTokens },
-            next: { maxTotalTokens: after.maxTotalTokens },
-          }),
-        );
-        this.store.setPolicy(runId, after);
-      });
-      // The drive keeps this policy object; the rest of the run sees the sized budget.
-      policy.maxTotalTokens = after.maxTotalTokens;
-      state.manifest.policyHash = hashJson(after);
-    }
+    const tokens = report.budgetAfter > policy.maxTotalTokens;
+    const time = report.activeTime.after > policy.maxActiveMs;
+    if (!tokens && !time) return;
+    const before = hashJson(policy);
+    const changed = {
+      ...(tokens ? { maxTotalTokens: report.budgetAfter } : {}),
+      ...(time ? { maxActiveMs: report.activeTime.after } : {}),
+    };
+    const after = PolicySchema.parse({ ...policy, ...changed });
+    this.store.transaction(() => {
+      this.store.artifact(
+        runId,
+        "policy-revision",
+        `policy-revisions/sizing-${String(state.sizingReplans)}.json`,
+        canonical({
+          kind: "sizing",
+          approvedBy: "sizing",
+          previousPolicyHash: before,
+          policyHash: hashJson(after),
+          previous: Object.fromEntries(
+            Object.keys(changed).map((key) => [key, policy[key as keyof typeof changed]]),
+          ),
+          next: changed,
+        }),
+      );
+      this.store.setPolicy(runId, after);
+    });
+    // The drive keeps this policy object; the rest of the run sees the sized limits.
+    policy.maxTotalTokens = after.maxTotalTokens;
+    policy.maxActiveMs = after.maxActiveMs;
+    state.manifest.policyHash = hashJson(after);
+    if (time) this.rearmDeadline();
   }
   /**
    * Convergence is about to start another correction round. When its limits are used up, the same
