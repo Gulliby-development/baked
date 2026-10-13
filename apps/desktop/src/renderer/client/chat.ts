@@ -78,6 +78,12 @@ export interface ChatMessage {
   launch?: LaunchNote;
 }
 
+/** A session's own Git worktree (absolute path) and branch. */
+export interface SessionWorktree {
+  path: string;
+  branch: string;
+}
+
 /** What a coordinator notice says about one item it launched (`src/types/index.ts`). */
 export interface LaunchNote {
   kind: "session" | "run" | "initiative";
@@ -87,6 +93,8 @@ export interface LaunchNote {
   status: string;
   why: string;
   task?: { ref: string; url?: string; state: "open" | "closed" | "local" };
+  /** A session's own worktree and branch, when it has one. */
+  worktree?: SessionWorktree;
   /** `status`: the item's status changed; `task-closed`: its task's pull request merged. */
   event: "status" | "task-closed";
 }

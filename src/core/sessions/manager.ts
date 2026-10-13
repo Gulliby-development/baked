@@ -29,6 +29,7 @@ export interface SessionListEntry {
   sizeBytes: number;
   projectId?: string;
   kind?: "coordinator";
+  worktree?: { path: string; branch: string };
 }
 
 function withProjectId(projectId: string | null | undefined): { projectId?: string } {
@@ -297,6 +298,9 @@ export class SessionManager {
             sizeBytes: this.sessionDirSize(fullPath),
             ...(meta.projectId ? { projectId: meta.projectId } : {}),
             ...(meta.kind === "coordinator" ? { kind: meta.kind } : {}),
+            ...(meta.worktree
+              ? { worktree: { path: meta.worktree.path, branch: meta.worktree.branch } }
+              : {}),
           });
         } catch {
           // Skip corrupted entries

@@ -90,6 +90,7 @@ import {
   STATE_TOOL,
   stateTool,
 } from "./project-state.js";
+import { createSessionWorktree, type SessionWorktree } from "./session-worktree.js";
 import { toolResultOf } from "./tool-result.js";
 
 export const CHAT_MODES = ["default", "architect", "plan", "auto"] as const;
@@ -170,6 +171,8 @@ export interface SessionSummary {
   compacting: boolean;
   /** `coordinator` for the project's coordinator chat (see `src/core/chat/coordinator.ts`). */
   kind?: "coordinator";
+  /** The session's own Git worktree and branch, when it has one (#897). */
+  worktree?: { path: string; branch: string };
 }
 
 /** Watch mode of the project as one session sees it (`/v1/sessions/:id/watch`). */
@@ -275,6 +278,8 @@ export interface TurnAgent {
 
 export interface TurnAgentRequest {
   sessionId: string;
+  /** Where the session's agent works: the project folder, or the session's own worktree. */
+  cwd: string;
   modelId: string;
   mode: ChatMode;
   /** The chat's reasoning effort; `default` keeps the configuration's. */
@@ -293,6 +298,7 @@ export interface TurnAgentRequest {
 
 export interface InputExpansionRequest {
   sessionId: string;
+  cwd: string;
   mode: ChatMode;
   text: string;
   onApproveDestructive: (description: string) => Promise<boolean>;
@@ -576,11 +582,19 @@ export class ChatSession {
       effort: this.effort,
       compacting: this.compaction !== null,
       ...(this.isCoordinator ? { kind: "coordinator" as const } : {}),
+      ...(this.meta.worktree
+        ? { worktree: { path: this.meta.worktree.path, branch: this.meta.worktree.branch } }
+        : {}),
     };
   }
 
   get isCoordinator(): boolean {
     return this.meta.kind === "coordinator";
+  }
+
+  /** Where this session's agent reads and writes: its own worktree, or the project folder. */
+  get cwd(): string {
+    return this.meta.worktree?.path ?? this.owner.workspace;
   }
 
   detail(): SessionDetail {
@@ -745,7 +759,7 @@ export class ChatSession {
     this.rewinding = true;
     try {
       const result = await run({
-        cwd: this.owner.workspace,
+        cwd: this.cwd,
         tags: this.checkpointTags,
         backupTag: `baked/${action}-backup-${crypto.randomUUID().slice(0, 8)}`,
       });
@@ -777,7 +791,7 @@ export class ChatSession {
 
   /** Line counts of the files this session edited, against the repository's last commit. */
   diffStats(): Promise<SessionDiffStats> {
-    return sessionDiffStats(this.owner.workspace, editedFiles(this.messages));
+    return sessionDiffStats(this.cwd, editedFiles(this.messages));
   }
 
   /**
@@ -1019,9 +1033,7 @@ export class ChatSession {
       return "cancel";
     }
     // The plan file may have been edited during the review; carry out what it says now.
-    const latest = await readFile(join(this.owner.workspace, planFile), "utf-8").catch(
-      () => content,
-    );
+    const latest = await readFile(join(this.cwd, planFile), "utf-8").catch(() => content);
     this.planFollowUp = { action: value.action, plan, content: latest };
     // The plan runs in a turn of its own, outside plan mode, so this one stops here.
     this.turn?.abort.abort();
@@ -1030,7 +1042,7 @@ export class ChatSession {
 
   private approvalCallbacks(): Omit<
     TurnAgentRequest,
-    "sessionId" | "modelId" | "mode" | "effort" | "planExecution"
+    "sessionId" | "cwd" | "modelId" | "mode" | "effort" | "planExecution"
   > {
     const approve = async (body: PromptBody): Promise<boolean> => (await this.ask(body)) === true;
     const callbacks: InteractiveCallbacks = {
@@ -1100,6 +1112,7 @@ export class ChatSession {
       try {
         const expanded = await host.expandInput({
           sessionId: this.meta.id,
+          cwd: this.cwd,
           mode: this.mode,
           text,
           onApproveDestructive: this.approvalCallbacks().onApproveDestructive,
@@ -1162,14 +1175,9 @@ export class ChatSession {
     try {
       if (staleRedo)
         this.setTab({
-          checkpointTags: await dropRedoTags(this.owner.workspace, before, this.checkpointTags),
+          checkpointTags: await dropRedoTags(this.cwd, before, this.checkpointTags),
         });
-      const base = await ensureBaseSnapshot(
-        this.owner.workspace,
-        this.tagOwner,
-        before,
-        this.checkpointTags,
-      );
+      const base = await ensureBaseSnapshot(this.cwd, this.tagOwner, before, this.checkpointTags);
       if (base) this.addCheckpointTag(base);
       const model = this.model;
       if (!model) throw new Error("No model configured");
@@ -1177,6 +1185,7 @@ export class ChatSession {
       if (!send) throw new SkipTurn();
       const { agent, contextWindow } = await this.owner.host.agent({
         sessionId: this.meta.id,
+        cwd: this.cwd,
         modelId: model,
         mode: this.mode,
         effort: this.effort,
@@ -1345,7 +1354,7 @@ export class ChatSession {
         : null;
     if (assistant) this.messages = [...this.messages, assistant];
     if (assistant && extractFilesFromToolCalls(assistant).edited.length > 0) {
-      const tag = await snapshotTurnEnd(this.owner.workspace, this.tagOwner, this.messages, text);
+      const tag = await snapshotTurnEnd(this.cwd, this.tagOwner, this.messages, text);
       if (tag) this.addCheckpointTag(tag);
     }
     this.usage = {
@@ -1640,6 +1649,7 @@ export class ChatService {
         mode: "default",
         effort: "default",
         compacting: false,
+        ...(entry.worktree ? { worktree: entry.worktree } : {}),
       });
     }
     for (const session of this.live.values())
@@ -1675,9 +1685,18 @@ export class ChatService {
     messages?: ChatMessage[];
     core?: ModelMessage[];
     kind?: "coordinator";
+    /** Work in a Git worktree of its own; refused with the reason when the project has none. */
+    worktree?: boolean;
   }): Promise<ChatSession> {
     if (this.closed) throw new ChatError("SESSION_BUSY", "The server is shutting down");
     const id = crypto.randomUUID();
+    let worktree: SessionWorktree | null = null;
+    if (input.worktree) {
+      const created = await createSessionWorktree(this.options.workspace, id);
+      if ("unavailable" in created)
+        throw new ChatError("NOT_SUPPORTED", `No worktree for the session: ${created.unavailable}`);
+      worktree = created;
+    }
     const now = Date.now();
     const messages = input.messages ?? [];
     const meta: SessionMeta = {
@@ -1686,6 +1705,7 @@ export class ChatService {
       ...(input.title ? { customTitle: input.title } : {}),
       ...(input.kind ? { kind: input.kind } : {}),
       cwd: this.options.workspace,
+      ...(worktree ? { worktree } : {}),
       startedAt: now,
       updatedAt: now,
       activeTabId: API_TAB,

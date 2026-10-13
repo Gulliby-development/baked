@@ -55,13 +55,14 @@ export class BakeChatHost implements ChatAgentHost {
     return this.root.get();
   }
 
-  private async resources(sessionId: string): Promise<SessionResources> {
+  /** A session's context and file cache; `cwd` is its own worktree, or the project folder. */
+  private async resources(sessionId: string, cwd = this.workspace): Promise<SessionResources> {
     const existing = this.sessions.get(sessionId);
     if (existing) return existing;
     const parent = await this.parentContext();
-    const context = new ContextManager(this.workspace, parent.getSharedResources());
+    const context = new ContextManager(cwd, parent.getSharedResources());
     context.setTabId(sessionId);
-    const { ref, dispose } = createSharedCacheRef(this.workspace);
+    const { ref, dispose } = createSharedCacheRef(cwd);
     const created = { context, cache: ref, disposeCache: dispose };
     this.sessions.set(sessionId, created);
     return created;
@@ -76,7 +77,7 @@ export class BakeChatHost implements ChatAgentHost {
       const { getMCPManager } = await import("../mcp/index.js");
       await getMCPManager().connectAll(this.config.mcpServers);
     }
-    const resources = await this.resources(request.sessionId);
+    const resources = await this.resources(request.sessionId, request.cwd);
     const { context, cache } = resources;
     context.setContextWindow(provider.contextWindow);
     const instructions = buildInstructionPrompt(
@@ -96,7 +97,7 @@ export class BakeChatHost implements ChatAgentHost {
     context.maybeReseedExpiredCache(this.config.cache?.ttl === "1h" ? 3_540_000 : 270_000);
     const agent = createChatAgent({
       config,
-      cwd: this.workspace,
+      cwd: request.cwd,
       modelId: request.modelId,
       model,
       mode: request.mode,
@@ -174,9 +175,9 @@ export class BakeChatHost implements ChatAgentHost {
   }
 
   async expandInput(request: InputExpansionRequest): Promise<ExpandedChatInput> {
-    const { context } = await this.resources(request.sessionId);
+    const { context } = await this.resources(request.sessionId, request.cwd);
     const expanded = await expandChatInput(request.text, {
-      cwd: this.workspace,
+      cwd: request.cwd,
       mode: request.mode,
       ...(context.isRepoMapReady() ? { repoMap: context.getRepoMap() } : {}),
       onApproveDestructive: request.onApproveDestructive,
