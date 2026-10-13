@@ -35,6 +35,7 @@ import {
   writesDocumentation,
 } from "../verification/repro.js";
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
+import { assertAttemptFits } from "./budget.js";
 import { fixerCommand, fixerTiers } from "./check-policy.js";
 import { fileHash, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
@@ -602,16 +603,18 @@ export class NativeAgentExecutor implements AgentExecutor {
       const submitTools = ["submit_result", "submit_artifact", "submit_review"].filter(
         (name) => name in available,
       );
+      const attemptCap = Math.min(
+        request.maxTokens ?? Number.POSITIVE_INFINITY,
+        request.attemptTokens ?? policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS,
+      );
+      // An attempt starts only when the run budget, grown if it may, still covers its cap.
+      assertAttemptFits(this.store, request.runId, request.attemptId, policy, attemptCap);
       // The attempt cap never exceeds what the run budget still allows, so an attempt started
       // close to the run limit finalizes and submits instead of failing on the run cap mid-loop.
       const remaining = this.store.remainingTokens(request.runId, policy, request.attemptId);
       const budget = new AttemptStepController({
         maxSteps: request.maxSteps,
-        maxTokens: Math.min(
-          request.maxTokens ?? Number.POSITIVE_INFINITY,
-          request.attemptTokens ?? policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS,
-          remaining,
-        ),
+        maxTokens: Math.min(attemptCap, remaining),
         // Token caps come from history on whatever provider produced it; each attempt may still
         // take a minimum number of steps at its own step cost, within what the run allows.
         minSteps: Math.min(request.maxSteps, MIN_ATTEMPT_STEPS),
