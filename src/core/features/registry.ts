@@ -415,6 +415,27 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/lsp", "project/overview: Doctor language-server line"],
   },
   {
+    id: "artifacts",
+    group: "Tools and code intelligence",
+    title: "Artifacts: HTML pages shared by every project, deployed to the user's Vercel",
+    tui: ["/artifacts", "/artifacts open", "/artifacts deploy"],
+    cli: [
+      "baked artifacts list",
+      "baked artifacts show",
+      "baked artifacts save",
+      "baked artifacts deploy",
+      "baked artifacts remove",
+    ],
+    api: [
+      "/v1/artifacts",
+      "/v1/artifacts/:id",
+      "/v1/artifacts/:id/page",
+      "/v1/artifacts/:id/open",
+      "/v1/artifacts/:id/deploy",
+    ],
+    desktop: ["project/artifacts"],
+  },
+  {
     id: "diagnose",
     group: "Tools and code intelligence",
     title: "Diagnose LSP, tree-sitter and index health",
@@ -704,6 +725,16 @@ export const FEATURES: readonly Feature[] = [
     cli: ["baked workflow gates"],
     api: ["/v1/workflow/gates", "/v1/workflow/gates/confirm"],
     desktop: ["project/gates"],
+  },
+  {
+    id: "custom-gates",
+    group: "Workflow runs",
+    title:
+      "Custom gates: a script or container that reports its result as JSON (command.report json)",
+    tui: ["/workflow: gates (Result: JSON report)"],
+    cli: ["baked workflow gates", "baked workflow validate"],
+    api: ["/v1/workflow/checks", "/v1/workflow/checks/:id/run"],
+    desktop: ["project/gates: Result toggle"],
   },
   {
     id: "gate-drafts",
