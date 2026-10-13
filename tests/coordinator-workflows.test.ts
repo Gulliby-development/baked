@@ -7,6 +7,7 @@ import {
   renderWorkflows,
   resolveControl,
   type WorkflowCatalog,
+  wakeLine,
   wakePrompt,
   workflowCard,
 } from "../src/core/chat/coordinator-launch.js";
@@ -309,5 +310,20 @@ describe("workflow choice", () => {
     expect(text).toContain("BAKED sent this, not the user");
     expect(text).toContain("- run r1: completed (Ship)\n- session s1: done (Survey)");
     expect(text).toContain("use control_run only after they say yes");
+  });
+
+  test("a wake line gives the id, why and a session's answer", () => {
+    const note = {
+      kind: "session" as const,
+      id: "s1",
+      title: "Survey",
+      status: "done",
+      why: "Map the auth code",
+      event: "status" as const,
+    };
+    expect(wakeLine(note)).toEndWith("[session id s1; why: Map the auth code]");
+    expect(wakeLine({ ...note, result: "Auth lives in src/auth." })).toEndWith(
+      "[session id s1; why: Map the auth code]\nAnswer: Auth lives in src/auth.",
+    );
   });
 });

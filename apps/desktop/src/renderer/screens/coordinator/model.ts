@@ -131,3 +131,11 @@ export function stageLine(progress: RunProgress): string {
     ? `${where} · tasks ${progress.tasks.done}/${progress.tasks.total}`
     : where;
 }
+
+/** The prefix the coordinator's `message_session` puts before what it sends a launched session. */
+const COORDINATOR_PREFIX = "Message from the project coordinator:\n\n";
+
+/** The text of a message the coordinator sent this session, or null for the person's own. */
+export function fromCoordinator(content: string): string | null {
+  return content.startsWith(COORDINATOR_PREFIX) ? content.slice(COORDINATOR_PREFIX.length) : null;
+}

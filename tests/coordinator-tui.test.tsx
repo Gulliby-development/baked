@@ -268,6 +268,40 @@ describe("terminal coordinator view model", () => {
     ]);
   });
 
+  test("a launched session's answer shows under its note, cut to a few lines", () => {
+    const lines = messageLines(
+      [
+        {
+          id: "n",
+          role: "system",
+          content: "fallback",
+          timestamp: 0,
+          launch: {
+            kind: "session",
+            id: "s1",
+            title: "Survey",
+            status: "done",
+            why: "Survey",
+            result: Array.from({ length: 9 }, (_, i) => `line ${i + 1}`).join("\n"),
+            event: "status",
+          },
+        },
+      ],
+      "",
+      80,
+    ).map((l) => l.text);
+    expect(lines.slice(0, 8)).toEqual([
+      '  ◆ Session "Survey": done',
+      "    │ line 1",
+      "    │ line 2",
+      "    │ line 3",
+      "    │ line 4",
+      "    │ line 5",
+      "    │ line 6",
+      "    │ … 3 more lines",
+    ]);
+  });
+
   test("messages label the speaker and list tool calls", () => {
     const lines = messageLines(
       [

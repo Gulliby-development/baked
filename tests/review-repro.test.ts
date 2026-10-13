@@ -229,3 +229,60 @@ describe("a correctness finding without a repro", () => {
     expect(second).toEqual([]);
   });
 });
+
+// linehunk f0b66451 (#528): one finding came back in four review rounds with the same noRepro.
+test("a repeated finding keeps the earlier noRepro and is not asked again", async () => {
+  const checks = fixturePolicy.checks.map((c) => ({
+    ...c,
+    args: ["-e", "if ((await Bun.file('value.txt').text()).trim() !== 'ready') process.exit(1)"],
+  }));
+  const fixture = workflowFixture({ policy: { ...fixturePolicy, checks } });
+  cleanups.push(fixture.dispose);
+  const { executor, service } = fixture;
+  const advice: string[][] = [];
+  const original = executor.execute.bind(executor);
+  executor.execute = async (request: ExecutionRequest) => {
+    if (request.profile.output === "refutation") {
+      const extra = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}").extra;
+      return {
+        output: { schemaVersion: 1, findingId: extra.finding.id, decision: "confirmed", evidenceIds: extra.evidence.map((e: { id: string }) => e.id), explanation: "Holds" },
+        inputTokens: 20,
+        outputTokens: 30,
+      };
+    }
+    const result = await original(request);
+    if (request.task?.id === "T002") writeFileSync(join(fixture.root, "value.txt"), "ready\n");
+    if (request.profile.output !== "review") return result;
+    const extra = (JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as {
+      extra: { dimension: string; evidence: { id: string }[]; previousRound?: unknown };
+    }).extra;
+    if (extra.dimension !== "correctness") return result;
+    const evidenceIds = extra.evidence.map((e) => e.id);
+    const output = result.output as Review;
+    const traversal = { severity: "low", evidenceIds, file: "value.txt", claim: "A traversal IO failure is swallowed" } as const;
+    if (!extra.previousRound) {
+      output.verdict = "changes_requested";
+      output.findings = [
+        finding({ id: "M1", kind: "missing", file: "value.txt", evidenceIds, claim: "The value lacks a newline" }),
+        finding({ ...traversal, id: "C1", noRepro: "Needs an unreadable directory" }),
+      ];
+    } else {
+      output.verdict = "pass";
+      output.findings = [finding({ ...traversal, id: "C2", repeatOf: "C1" })];
+    }
+    advice.push(request.validate?.(output) ?? []);
+    return result;
+  };
+  const run = await fixture.start();
+  await service.drive(run.runId, new AbortController().signal);
+  await fixture.approve(run.runId);
+  const final = await service.drive(run.runId, new AbortController().signal);
+  expect(final.status).toBe("completed");
+  expect(advice).toEqual([[], []]);
+  const repeated = service.store
+    .artifacts(run.runId)
+    .filter((a) => a.logical_path.startsWith("reviews/"))
+    .flatMap((a) => (JSON.parse(service.store.readArtifact(run.runId, a.id)) as Review).findings ?? [])
+    .find((f) => f.repeatOf === "C1");
+  expect(repeated?.noRepro).toBe("Needs an unreadable directory");
+}, 30000);

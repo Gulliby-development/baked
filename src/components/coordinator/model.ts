@@ -106,6 +106,9 @@ export function launchedLines(launched: LaunchedView[], width: number): ViewLine
   });
 }
 
+/** At most this many lines of a launched session's answer show under its note. */
+const RESULT_ROWS = 6;
+
 /** A coordinator's notice about launched work: a marked headline in its status tone, then why. */
 function launchNoteLines(note: LaunchNote, width: number): ViewLine[] {
   const closed = note.event === "task-closed";
@@ -117,6 +120,15 @@ function launchNoteLines(note: LaunchNote, width: number): ViewLine[] {
   );
   const why = closed ? "" : whyBesides(note.why, note.title);
   if (why) lines.push(...labelled("    ", why, width, "muted"));
+  if (note.result) {
+    const bar = "    │ ";
+    const result = wrap(note.result, width - bar.length).map(
+      (line): ViewLine => ({ text: `${bar}${line}`, tone: "assistant" }),
+    );
+    lines.push(...result.slice(0, RESULT_ROWS));
+    if (result.length > RESULT_ROWS)
+      lines.push({ text: `    │ … ${result.length - RESULT_ROWS} more lines`, tone: "muted" });
+  }
   return lines;
 }
 
