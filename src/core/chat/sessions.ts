@@ -36,6 +36,7 @@ import type {
   ImageAttachment,
   InputContextItem,
   InteractiveCallbacks,
+  LaunchNote,
   MessageSegment,
   Plan,
   PlanReviewAction,
@@ -79,6 +80,7 @@ import {
   type ProjectLauncher,
   syncLaunched,
   type WorkflowCatalog,
+  wakeLine,
   wakePrompt,
 } from "./coordinator-launch.js";
 import { editedFiles, type SessionDiffStats, sessionDiffStats } from "./diff-stats.js";
@@ -997,13 +999,14 @@ export class ChatSession {
   }
 
   /** Adds a note to the transcript that the model does not see, such as a launched run's news. */
-  async addNotice(content: string): Promise<ChatMessage> {
+  async addNotice(content: string, launch?: LaunchNote): Promise<ChatMessage> {
     const message: ChatMessage = {
       id: crypto.randomUUID(),
       role: "system",
       content,
       timestamp: Date.now(),
       showInChat: true,
+      ...(launch ? { launch } : {}),
     };
     this.messages = [...this.messages, message];
     this.emit({ type: "notice", message });
@@ -1633,9 +1636,11 @@ export class ChatService {
         coordinator,
         this.projectState,
         this.launcher?.tasks ?? null,
+        (notes) => {
+          if (this.options.config.coordinator?.wake !== false)
+            coordinator.wake(notes.map(wakeLine));
+        },
       );
-      if (notices.length && this.options.config.coordinator?.wake !== false)
-        coordinator.wake(notices);
       const launched = this.launched(coordinator.id);
       const sent = JSON.stringify(launched);
       if (sent !== this.launchedSent) {

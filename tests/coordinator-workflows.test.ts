@@ -162,14 +162,16 @@ describe("coordinator workflows", () => {
       () => chat.syncLaunched(),
       (n) => n.length > 0,
     );
-    expect(notices).toEqual([`run ${runId}: waiting: approval (Ship the value)`]);
+    expect(notices).toEqual(['Run "Create ready value": waiting: approval']);
     await until(
       () => coordinator.messages.filter((m) => m.role === "assistant").length,
       (n) => n >= 2,
     );
     await coordinator.settled();
     const wake = coordinator.messages.find((m) => m.role === "user" && m.showInChat === false);
-    expect(wake?.content).toContain(`- run ${runId}: waiting: approval (Ship the value)`);
+    expect(wake?.content).toContain(
+      `- Run "Create ready value": waiting: approval [run id ${runId}; why: Ship the value]`,
+    );
     expect(wake?.content).toContain("Take control back");
     expect(coordinator.messages.at(-1)?.content).toBe(
       "The sdd run waits for your approval of its plan. Shall I approve it?",

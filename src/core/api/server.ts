@@ -117,6 +117,7 @@ import {
   EvidenceBody,
   ExportBody,
   ExtendBody,
+  ForkBody,
   GatesConfirmBody,
   GcBody,
   ImportBody,
@@ -330,9 +331,15 @@ function mutationArgs(action: Mutation, runId: string, raw: unknown): WorkflowAr
     case "pause":
     case "resume":
     case "cancel":
-    case "fork":
     case "discard-worktree":
       return args(identity(CommandBody.parse(raw)));
+    case "fork": {
+      const body = ForkBody.parse(raw);
+      return args({
+        ...identity(body),
+        ...(body.fromStage ? { "from-stage": body.fromStage } : {}),
+      });
+    }
     case "continue":
     case "accept": {
       const body = ContinueBody.parse(raw);

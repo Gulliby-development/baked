@@ -11,6 +11,7 @@ import {
   type ProjectBrief,
 } from "../../client/coordinator.js";
 import { Alert } from "../../components/ui/alert.js";
+import { Badge } from "../../components/ui/badge.js";
 import { Button } from "../../components/ui/button.js";
 import { Dot } from "../../components/ui/dot.js";
 import { Skeleton } from "../../components/ui/skeleton.js";
@@ -26,6 +27,9 @@ import {
   BRIEF_TITLES,
   launchedHref,
   launchedTone,
+  launchKind,
+  launchName,
+  launchWhy,
   stageLine,
   stageLooks,
   taskLabel,
@@ -41,29 +45,38 @@ const REFRESH_MS = 30_000;
 const message = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
-const CARD = "flex flex-col gap-1 rounded-base border-2 border-border bg-background px-3 py-2";
+const CARD =
+  "flex flex-col gap-1 rounded-base border-2 border-border bg-background px-3 py-2.5 shadow-sm-hard animate-rise motion-reduce:animate-none";
+
+const BADGE = { ok: "ok", warn: "warn", err: "err", busy: "info", "": "neutral" } as const;
 
 function LaunchedCard({ project, item }: { project: DesktopProject; item: LaunchedView }) {
+  const tone = launchedTone(item);
+  const why = launchWhy(item);
   const progress = item.progress?.stages.length ? item.progress : null;
   const done = progress?.stages.filter((s) => s.status === "completed").length ?? 0;
   return (
-    <li className={cn(CARD, "animate-rise motion-reduce:animate-none")}>
-      <a
-        className="flex items-center gap-2 text-[13px] font-semibold text-foreground no-underline hover:underline"
-        href={launchedHref(project.key, item)}
-      >
-        <Dot tone={launchedTone(item)} />
-        <span className="capitalize">{item.feature ? "Feature" : item.kind}</span>
+    <li className={CARD}>
+      <div className="flex min-w-0 items-center gap-2">
+        <Dot tone={tone} />
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-dim-foreground">
+          {launchKind(item)}
+        </span>
         {item.workflow && (
-          <span className="flex-none rounded-base border-2 border-border bg-main px-1.5 font-mono text-[11px] text-main-foreground">
+          <span className="flex-none rounded-base border-2 border-border bg-main px-1.5 font-mono text-[11px] font-bold text-main-foreground">
             {item.workflow}
           </span>
         )}
-        <span className="min-w-0 truncate font-mono text-[12px] text-dim-foreground">
-          {item.feature ? `${item.feature} of ${item.id}` : item.id}
-        </span>
+        <Badge tone={BADGE[tone]}>{item.status}</Badge>
+      </div>
+      <a
+        className="truncate text-[14px] font-semibold text-foreground no-underline hover:underline"
+        href={launchedHref(project.key, item)}
+        title={item.id}
+      >
+        {launchName(item)}
       </a>
-      <p className="m-0 text-[13px] text-soft-foreground">{item.why}</p>
+      {why && <p className="m-0 line-clamp-3 text-[13px] text-soft-foreground">{why}</p>}
       {progress && (
         <div className="flex flex-col gap-1.5 pt-0.5">
           <div
@@ -82,18 +95,19 @@ function LaunchedCard({ project, item }: { project: DesktopProject; item: Launch
           <p className="m-0 text-[12px] text-dim-foreground">{stageLine(progress)}</p>
         </div>
       )}
-      <p className="m-0 flex flex-wrap gap-x-3 font-mono text-[12px] text-dim-foreground">
-        <span>{item.status}</span>
-        {item.tokens > 0 && <span>{tokens(item.tokens)} tokens</span>}
-        {item.task &&
-          (item.task.url ? (
-            <a href={item.task.url} target="_blank" rel="noreferrer">
-              {taskLabel(item.task)}
-            </a>
-          ) : (
-            <span>{taskLabel(item.task)}</span>
-          ))}
-      </p>
+      {(item.tokens > 0 || item.task) && (
+        <p className="m-0 flex flex-wrap gap-x-3 font-mono text-[12px] text-dim-foreground">
+          {item.tokens > 0 && <span>{tokens(item.tokens)} tokens</span>}
+          {item.task &&
+            (item.task.url ? (
+              <a href={item.task.url} target="_blank" rel="noreferrer">
+                {taskLabel(item.task)}
+              </a>
+            ) : (
+              <span>{taskLabel(item.task)}</span>
+            ))}
+        </p>
+      )}
     </li>
   );
 }

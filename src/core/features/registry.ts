@@ -688,6 +688,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs"],
   },
   {
+    id: "model-call-recording",
+    group: "Workflow runs",
+    title: "Record a run's model calls and replay them without the provider",
+    tui: notNeeded("a debugging aid for BAKED itself"),
+    cli: ["baked workflow run: --record-model-calls, --replay", "baked workflow recording"],
+    api: notNeeded("a debugging aid for BAKED itself"),
+    desktop: notNeeded("a debugging aid for BAKED itself"),
+  },
+  {
     id: "critic-outcomes",
     group: "Workflow runs",
     title: "Critic outcome log and calibration: scores with checks, acceptance, delivery, survival",

@@ -8,7 +8,7 @@
  */
 import { tool } from "ai";
 import { z } from "zod";
-import type { AppConfig } from "../../types/index.js";
+import type { AppConfig, LaunchNote } from "../../types/index.js";
 import { hashJson } from "../specs/hash.js";
 import {
   InitiativeFeatureSchema,
@@ -237,15 +237,45 @@ export type LaunchedView = LaunchedEntry & {
   progress?: RunProgress;
 };
 
+/** The entry's title, or for a session recorded without one, the session's own title. */
+function titleOf(chat: ChatService, entry: LaunchedEntry): string | undefined {
+  if (entry.title || entry.kind !== "session") return entry.title;
+  try {
+    return chat.get(entry.id).summary().title;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A session's id is a UUID nobody reads; its first block is enough to tell two apart. */
+const shortId = (id: string): string =>
+  /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(id) ? id.slice(0, 8) : id;
+
+/** How a notice names a launched item: its title when it has one, its kind and id otherwise. */
+export function launchLabel(note: Pick<LaunchNote, "kind" | "id" | "feature" | "title">): string {
+  const kind = note.kind[0]?.toUpperCase() + note.kind.slice(1);
+  if (note.feature) return `Feature "${note.title ?? note.feature}" of initiative ${note.id}`;
+  return note.title ? `${kind} "${note.title}"` : `${kind} ${shortId(note.id)}`;
+}
+
+/** The notice's text, for front ends that do not draw the launch card. */
+export function launchNoteText(note: LaunchNote): string {
+  const task = note.task && note.task.state !== "local" ? ` (${note.task.ref})` : "";
+  return note.event === "task-closed"
+    ? `Task ${note.task?.ref ?? ""} closed: the pull request of ${launchLabel(note)} merged`
+    : `${launchLabel(note)}${task}: ${note.status}`;
+}
+
 /** What the coordinator launched, as it is now; `GET /v1/coordinator/launched`. */
 export function launchedView(
   chat: ChatService,
   coordinatorId: string,
   state: ProjectStateSource | null,
 ): LaunchedView[] {
-  return new BriefStore(chat.workspace, coordinatorId)
-    .read()
-    .launched.map((entry) => ({ ...entry, ...liveState(chat, state, entry) }));
+  return new BriefStore(chat.workspace, coordinatorId).read().launched.map((entry) => {
+    const title = titleOf(chat, entry);
+    return { ...entry, ...(title ? { title } : {}), ...liveState(chat, state, entry) };
+  });
 }
 
 /**
@@ -257,26 +287,38 @@ export async function syncLaunched(
   coordinator: ChatSession,
   state: ProjectStateSource | null,
   tasks: TaskTracker | null = null,
+  /** Gets the notes added, for a wake-up that names each item's id. */
+  onNotes?: (notes: LaunchNote[]) => void,
 ): Promise<string[]> {
   const store = new BriefStore(chat.workspace, coordinator.id);
   const brief = store.read();
-  const notices: string[] = [];
+  const notices: LaunchNote[] = [];
   let changed = false;
   const launched: LaunchedEntry[] = [];
   for (const entry of brief.launched) {
     const { status } = liveState(chat, state, entry);
-    const label = `${entry.feature ? `feature ${entry.feature} of ` : ""}${entry.kind} ${entry.id}${entry.task ? ` (${entry.task.ref})` : ""}`;
+    const title = titleOf(chat, entry);
+    const note = (next: LaunchedEntry, event: LaunchNote["event"]): LaunchNote => ({
+      kind: next.kind,
+      id: next.id,
+      ...(next.feature ? { feature: next.feature } : {}),
+      ...(title ? { title } : {}),
+      status: next.status,
+      why: next.why,
+      ...(next.task ? { task: next.task } : {}),
+      event,
+    });
     let next = entry;
     if (status !== entry.status) {
-      if (NOTEWORTHY.test(status)) notices.push(`${label}: ${status} (${entry.why})`);
       next = { ...next, status };
+      if (NOTEWORTHY.test(status)) notices.push(note(next, "status"));
     }
     // A completed run's pull request closes its issue when it merges.
     if (tasks && next.task?.state === "open" && status === "completed") {
       const closed = await tasks.closed(next.task.ref).catch(() => null);
       if (closed) {
-        notices.push(`task ${next.task.ref} closed: the pull request of ${label} merged`);
         next = { ...next, task: { ...next.task, state: "closed" } };
+        notices.push(note(next, "task-closed"));
       }
     }
     if (next !== entry) changed = true;
@@ -288,8 +330,18 @@ export async function syncLaunched(
   } catch {
     return [];
   }
-  for (const notice of notices) await coordinator.addNotice(`Launched ${notice}`);
-  return notices;
+  const texts = notices.map(launchNoteText);
+  for (const [i, notice] of notices.entries()) await coordinator.addNotice(texts[i] ?? "", notice);
+  if (notices.length) onNotes?.(notices);
+  return texts;
+}
+
+/** A notice as the coordinator's wake-up lists it: the text, then the id and why it needs. */
+export function wakeLine(note: LaunchNote): string {
+  const id = note.feature
+    ? `feature ${note.feature} of initiative ${note.id}`
+    : `${note.kind} id ${note.id}`;
+  return `${launchNoteText(note)} [${id}; why: ${note.why.replace(/\s+/g, " ")}]`;
 }
 
 /**
@@ -323,6 +375,12 @@ function overLimit(
   if (tokens >= limits.maxTokens)
     return `Launched work has used ${tokens} tokens (limit ${limits.maxTokens}); ask the user to raise coordinator.maxTokens`;
   return null;
+}
+
+/** A launched item's title from its request: the first line, cut to the brief's limit. */
+function requestTitle(text: string): string {
+  const line = text.trim().split("\n")[0]?.trim() ?? "";
+  return line.length > 120 ? `${line.slice(0, 119)}…` : line || "Untitled";
 }
 
 const Why = z.string().trim().min(1).max(300).describe("One line on why, kept in the brief");
@@ -510,7 +568,7 @@ export function launchTools(
             throw new Error("The user declined to start a session that can edit files");
           const session = await chat.create({ title, mode: mode as ChatMode });
           session.send(brief);
-          return { kind: "session", id: session.id, status: "working" };
+          return { kind: "session", id: session.id, title, status: "working" };
         }, why),
     }),
     list_workflows: tool({
@@ -578,6 +636,7 @@ export function launchTools(
           return {
             kind: "run",
             id: runId,
+            title: requestTitle(prompt),
             status: "started",
             ...(chosen.id ? { workflow: chosen.id } : {}),
             ...(task ? { task } : {}),
@@ -633,7 +692,12 @@ export function launchTools(
         if (!launcher) return failed("This server cannot start initiatives");
         return launch(async () => {
           const { initiativeId } = await launcher.startInitiative({ initiativeId: id, prompt });
-          return { kind: "initiative", id: initiativeId, status: "started" };
+          return {
+            kind: "initiative",
+            id: initiativeId,
+            title: requestTitle(prompt),
+            status: "started",
+          };
         }, why);
       },
     }),
@@ -729,6 +793,7 @@ export function launchTools(
             entries.push({
               kind: "initiative",
               id: initiativeId,
+              title: requestTitle(split.title),
               status: "started",
               why: `${split.why}; tasks ${tasks.map((t) => t.ref).join(", ")}`.slice(0, 1000),
             });
@@ -740,6 +805,7 @@ export function launchTools(
                   kind: "initiative",
                   id: initiativeId,
                   feature: flow.id,
+                  title: requestTitle(flow.title),
                   status: "started",
                   why: `${flow.title} (${split.id})`,
                   task,
@@ -762,6 +828,7 @@ export function launchTools(
               entries.push({
                 kind: "run",
                 id: runId,
+                title: requestTitle(flow.title),
                 status: "started",
                 why: `${flow.title} (${split.id})`,
                 ...(task ? { task } : {}),
