@@ -16,6 +16,7 @@ import {
   type EditorState,
   type EditResult,
   estimateDefinition,
+  insertWaitStage,
   markSaved,
   moveCursor,
   moveGate,
@@ -27,6 +28,7 @@ import {
   problemCount,
   removeGate,
   removeTransition,
+  removeWaitStage,
   type SaveReview,
   selectedStage,
   selectedTarget,
@@ -73,6 +75,7 @@ export const EDITOR_HINTS: Record<EditorMode, { key: string; label: string }[]> 
     { key: "M", label: "mode" },
     { key: "J/K", label: "move" },
     { key: "N", label: "transition" },
+    { key: "W", label: "wait stage" },
     { key: "E", label: "options" },
     { key: "C", label: "duplicate" },
     { key: "Ctrl+S", label: "save" },
@@ -111,6 +114,7 @@ const GLYPH: Record<Stage["type"], string> = {
   agent: "◇",
   tasks: "✎",
   check: "✓",
+  wait: "⧗",
   approval: "⚑",
   review: "◎",
   reflection: "↺",
@@ -378,7 +382,9 @@ export function WorkflowEditor({
       if (gatesPane && target) apply(removeGate(state, target, state.gate));
       else if (state.pane === "transitions" && target?.kind === "transition")
         apply(removeTransition(state, target.id));
-      else notify("info", "Select a gate or a transition to remove.");
+      else if (state.pane === "stages" && stage?.type === "wait")
+        apply(removeWaitStage(state, stage.id));
+      else notify("info", "Select a gate, a transition or a wait stage to remove.");
     } else if (key === "m") {
       evt.preventDefault();
       if (gatesPane && target) apply(toggleMode(state, target, state.gate));
@@ -391,6 +397,9 @@ export function WorkflowEditor({
         setField(0);
         setMode("transition");
       }
+    } else if (key === "w" && stage) {
+      evt.preventDefault();
+      apply(insertWaitStage(state, stage.id));
     } else if (key === "e" && stage) {
       evt.preventDefault();
       if (state.readOnly) notify("info", state.readOnly);
