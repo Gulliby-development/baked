@@ -373,6 +373,17 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
                     {tokens(feature.usage.tokens)}
                   </span>
                 )}
+                {feature.issue && (
+                  <a
+                    className="font-mono text-[12px]"
+                    href={feature.issue.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label={`Issue of ${feature.title}`}
+                  >
+                    {`${feature.issue.repository}#${feature.issue.number}`}
+                  </a>
+                )}
                 {row.link && feature.runId && (
                   <a
                     className="text-[13px]"
