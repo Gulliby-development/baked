@@ -2280,7 +2280,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       "tasks.md": renderTasks(state.graph),
     };
     for (const [name, content] of Object.entries(files)) {
-      const relative = `specs/${state.spec.featureId}/${name}`;
+      const relative = specPublicationPath(state.spec.featureId, name);
       const path = workspacePath(root, relative);
       const current = fileHash(path);
       const expected =
@@ -5198,6 +5198,10 @@ function taskSize(
 /** The checks run after a task, in policy order: its task-scope checks and the static ones covering its code. */
 const taskChecks = (policy: RunPolicy, task: Task): Check[] => taskCheckList(policy, task);
 
+/** The documents a run publishes under `specs/<featureId>/` once its plan is ready. */
+export const SPEC_PUBLICATION_FILES = ["spec.json", "spec.md", "plan.md", "tasks.json", "tasks.md"];
+export const specPublicationPath = (featureId: string, name: string): string =>
+  `specs/${featureId}/${name}`;
 /** Logical path of the gates a v2 run froze when it started. */
 export const GATES_ARTIFACT = "definition/gates.json";
 
