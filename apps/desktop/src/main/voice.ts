@@ -23,6 +23,13 @@ export interface VoiceLocation {
   appPath: string;
 }
 
+/** What to do about a missing or damaged engine, worded for where the app runs from. */
+export function voiceFix(location: Pick<VoiceLocation, "override" | "packaged">): string {
+  if (location.override) return "Check the copy that BAKED_VOICE_DIR points at.";
+  if (location.packaged) return "Reinstall BAKED to restore it.";
+  return 'Run "bun run stage:voice" in apps/desktop ("bun run dev" does it on start), then restart the app.';
+}
+
 export function resolveVoiceDir(location: VoiceLocation): string {
   if (location.override) return location.override;
   if (location.packaged) return join(location.resourcesPath, "voice");
@@ -58,7 +65,11 @@ const MODEL_FILE = "whistle.cact";
 export class VoiceEngine {
   private whistle: Promise<Whistle> | null = null;
 
-  constructor(private readonly dir: string) {}
+  constructor(
+    private readonly dir: string,
+    /** Appended to every "unavailable" reason; see voiceFix. */
+    private readonly fix = "",
+  ) {}
 
   private get packageDir(): string {
     return join(this.dir, "cactus-needle");
@@ -70,22 +81,22 @@ export class VoiceEngine {
 
   /** Whether transcription can run here, and why not; reads only file metadata. */
   status(): VoiceStatus {
-    const entry = join(this.packageDir, "dist", "index.js");
-    if (!existsSync(entry)) {
-      return { available: false, reason: `The speech engine is not installed (no ${entry}).` };
+    const problem = this.problem();
+    if (problem === null) return { available: true, model: "whistle" };
+    return { available: false, reason: this.fix ? `${problem} ${this.fix}` : problem };
+  }
+
+  private problem(): string | null {
+    if (!existsSync(join(this.packageDir, "dist", "index.js"))) {
+      return "The speech engine is not installed.";
     }
-    if (!existsSync(this.modelPath)) {
-      return { available: false, reason: `The speech model is missing (no ${this.modelPath}).` };
-    }
+    if (!existsSync(this.modelPath)) return "The speech model is missing.";
     const expected = this.expectedModelSize();
     const size = statSync(this.modelPath).size;
     if (expected !== null && size !== expected) {
-      return {
-        available: false,
-        reason: `The speech model at ${this.modelPath} is ${size} bytes, expected ${expected}; reinstall the app.`,
-      };
+      return `The speech model is damaged (${size} bytes, expected ${expected}).`;
     }
-    return { available: true, model: "whistle" };
+    return null;
   }
 
   /** Transcribes 16 kHz mono samples in [-1, 1]; loads the model on the first call. */

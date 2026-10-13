@@ -10,7 +10,8 @@ export type Scenario =
   | "start-failure"
   | "older"
   | "uninitialized"
-  | "mic-denied";
+  | "mic-denied"
+  | "no-voice";
 
 export const test = base.extend<{ app: (hash: string, scenario?: Scenario) => Promise<Page> }>({
   page: async ({ page }, use) => {
