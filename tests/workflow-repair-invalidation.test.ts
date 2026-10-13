@@ -100,7 +100,7 @@ describe("readsChangedFile", () => {
 // jsondelta 9fbc18e7: a repair of one function in src/diff.ts restored T001 and invalidated T002,
 // T003 and T004, whose reruns cost 494k of 1.94M tokens.
 describe("a repair task restoring its predecessor", () => {
-  async function scenario(changed: string[] | null, withChecks = false, dependents: Task[] = []) {
+  async function scenario(changed: string[] | null, withChecks = false, dependents: Task[] = [], checks: RunPolicy["checks"] = []) {
     const fixture = workflowFixture();
     cleanups.push(fixture.dispose);
     const { service, root } = fixture;
@@ -140,6 +140,7 @@ describe("a repair task restoring its predecessor", () => {
       settleTask(...args: unknown[]): void;
     };
     const policy = JSON.parse(store.run(run.runId).policy_json) as RunPolicy;
+    policy.checks = [...policy.checks, ...checks];
     if (withChecks)
       policy.checks = [...policy.checks, { id: "unit", executable: "bun", args: ["-e", "0"], cwd: ".", timeoutMs: 10000, required: true, scope: "task", envNames: [], writes: [] }];
     scheduler.settleTask(run.runId, state, policy, t4, child, [], ["E1"]);
@@ -171,6 +172,15 @@ describe("a repair task restoring its predecessor", () => {
     const { store, runId, state } = await scenario(["src/diff.ts"], true, [owner]);
     expect(statuses(store, runId)).toMatchObject({ T005: "implemented" });
     expect(state.taskGates.T005).toBeUndefined();
+  });
+
+  // R9 propdrift 90c09da7: a test task whose only check is the feature-scope `verify` reran with
+  // its agent (114k) after a repair rewrote its one file.
+  test("a dependent whose only declared check is feature-scope is superseded too", async () => {
+    const owner = task("T005", ["src/diff.ts"], { dependsOn: ["T001"], checkIds: ["verify"] });
+    const verify = { id: "verify", executable: "mvn", args: ["verify"], cwd: ".", timeoutMs: 10000, required: true, scope: "feature" as const, envNames: [], writes: [] };
+    const { store, runId } = await scenario(["src/diff.ts"], false, [owner], [verify]);
+    expect(statuses(store, runId)).toMatchObject({ T005: "implemented" });
   });
 
   test("a dependent that writes more than the repair rewrote is still invalidated", async () => {

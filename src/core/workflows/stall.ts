@@ -16,6 +16,13 @@ export interface StallSettings {
   maxToolTimeouts: number;
   /** Times a run that stopped on a stall resumes by itself; 0 turns the automatic resume off. */
   autoResumes: number;
+  /**
+   * Times a run that blocked with `provider_unavailable` (the provider stayed down or the
+   * connection kept dropping after the in-call retries) resumes by itself; 0 turns it off.
+   */
+  providerResumes: number;
+  /** Wait before the first provider resume; each later wait is three times the previous one. */
+  providerWaitMs: number;
 }
 
 export const DEFAULT_STALL_SETTINGS: StallSettings = {
@@ -26,7 +33,15 @@ export const DEFAULT_STALL_SETTINGS: StallSettings = {
   stepStallMs: 20 * 60_000,
   maxToolTimeouts: 3,
   autoResumes: 3,
+  // 1, 3 and 9 minutes: long enough for a dropped connection or a capacity spike to pass.
+  providerResumes: 3,
+  providerWaitMs: 60_000,
 };
+
+/** The wait before provider resume number `attempt` (1-based). */
+export function providerResumeWaitMs(settings: StallSettings, attempt: number): number {
+  return settings.providerWaitMs * 3 ** Math.max(0, attempt - 1);
+}
 
 export function stallSettings(config?: {
   workflows?: { stall?: Partial<StallSettings> | undefined } | undefined;

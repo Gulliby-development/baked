@@ -212,6 +212,13 @@ export const PolicySchema = z
       .strict(),
     skepticProfileId: SafeId,
     forceSecurityReview: z.boolean(),
+    /**
+     * What an edit that introduces errors in the edited file or a file importing it does during
+     * the run: `feedback` returns the errors, `reject` also restores the file. Absent means
+     * `feedback`, so stored policies keep their hash; a run takes `reject` from the project's
+     * `editDiagnostics` setting when the policy does not name it (start.ts).
+     */
+    editDiagnostics: z.enum(["feedback", "reject"]).optional(),
     allowedTools: UniqueStrings,
     network: z.enum(["deny", "ask", "allow"]),
     checks: z.array(CheckSchema),
@@ -265,6 +272,18 @@ export const PolicySchema = z
      * rules turned off, severities changed and ast-grep rule files added. Absent means the
      * built-in pack as shipped, so stored policies keep their hash.
      */
+    /**
+     * Semgrep on the run's diff (quality/sast.ts). Absent means `auto`: it runs when Semgrep is
+     * installed, so stored policies keep their hash. `sastConfig` is the Semgrep `--config`
+     * (absent: `p/default`).
+     */
+    sast: z.enum(["auto", "off"]).optional(),
+    sastConfig: z.string().min(1).max(512).optional(),
+    /**
+     * `false` keeps the dependency check (quality/dependencies.ts) from looking packages up in
+     * their registries; every new dependency is then inconclusive. Absent means lookups.
+     */
+    registryLookups: z.literal(false).optional(),
     qualityRules: z
       .object({
         disabled: z.array(z.string().min(1).max(128)).max(200).optional(),
@@ -728,6 +747,8 @@ export const WorkflowConfigSchema = z
         stepStallMs: z.number().int().min(10_000).max(14_400_000).optional(),
         maxToolTimeouts: z.number().int().min(1).max(50).optional(),
         autoResumes: z.number().int().min(0).max(20).optional(),
+        providerResumes: z.number().int().min(0).max(20).optional(),
+        providerWaitMs: z.number().int().min(0).max(3_600_000).optional(),
       })
       .strict()
       .optional(),
@@ -1149,6 +1170,11 @@ export interface RunSnapshot {
    * the owner is alive and its work is not advancing.
    */
   stalled?: { silentMs: number; lastEventAt: string | null };
+  /**
+   * Present while a run blocked with `provider_unavailable` waits for its automatic resume
+   * (`workflows.stall.providerResumes`): when it retries, and which resume that is.
+   */
+  autoRetry?: { at: string; attempt: number; of: number };
   pendingRequestIds: string[];
   /** The project of the run's workspace when it was created. */
   projectId?: string;
@@ -1193,6 +1219,8 @@ export interface StartRequest {
   clarification?: ClarificationMode;
   /** The duplication ratchet of this run (CLI `--duplication MODE`); it overrides the policy. */
   duplication?: "off" | "warn" | "ratchet";
+  /** Semgrep on the run's diff (CLI `--sast MODE`); it overrides the policy. */
+  sast?: "auto" | "off";
   /**
    * Stage-level model routes for this run (CLI `--route STAGE=MODEL`); they win over
    * `modelRouting.workflows.<id>.stages`. A value starting with `$` names a model class.

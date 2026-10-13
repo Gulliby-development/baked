@@ -186,7 +186,7 @@ async function applyEdit(
   const updated = withLineEnding(updatedLf, disk.eol);
   const normalized = minorityLineCount(disk.raw);
 
-  const diagsPromise = startPreEditDiagnostics(filePath);
+  const diags = await startPreEditDiagnostics(filePath);
 
   // CAS: verify file hasn't been modified since we read it (prevents concurrent edit races).
   // When ifHash is supplied we trust the caller's last-read hash against `content` and
@@ -224,7 +224,14 @@ async function applyEdit(
   }
 
   output = await appendAutoFormatResult(filePath, updated, output, tabId);
-  output = await appendPostEditDiagnostics(diagsPromise, filePath, output);
+  const checked = await appendPostEditDiagnostics(diags, filePath, output, {
+    before: disk.raw,
+    after: updated,
+    tabId,
+  });
+  if (checked.rejected)
+    return { success: false, output: checked.output, error: "edit rejected: it introduced errors" };
+  output = checked.output;
   output = await appendCloneHints(filePath, output);
 
   const nudge = await consumeAstEditNudge(filePath);

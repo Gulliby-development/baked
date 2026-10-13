@@ -104,10 +104,11 @@ export function isTestCodePath(path: string): boolean {
 export async function readCodeFiles(
   root: string,
   paths: string[],
+  include: (path: string) => boolean = isCodePath,
 ): Promise<{ files: Map<string, string>; skipped?: string }> {
   const files = new Map<string, string>();
   let total = 0;
-  for (const path of paths.filter(isCodePath).sort()) {
+  for (const path of paths.filter(include).sort()) {
     const absolute = workspacePath(root, path);
     try {
       const info = await stat(absolute);

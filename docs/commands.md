@@ -128,7 +128,7 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 | Command | Does |
 | --- | --- |
 | `/agent-features` | Toggle agent features (de-sloppify, tier routing) |
-| `/code-quality` | Quality gates of workflow runs (duplication ratchet, anti-slop rules) |
+| `/code-quality` | Quality gates of workflow runs (duplication ratchet, anti-slop rules, dependency check, Semgrep) |
 | `/chat-style` | Toggle chat layout style |
 | `/diff-style` | Change diff display style |
 | `/instructions` | Toggle instruction files (baked.md, CLAUDE.md, etc.) |
