@@ -150,6 +150,8 @@ export interface PreRunInput {
   model?: string;
   worktree?: boolean;
   writers?: number;
+  /** The run's OS sandbox (`--sandbox`); omitted, the policy and the sandbox setting decide. */
+  sandbox?: "off" | "auto" | "required";
 }
 
 /** `POST /v1/workflow/runs` (`StartBody` in `src/core/api/schemas.ts`). */
@@ -170,6 +172,10 @@ export interface StartBody {
   writers?: number;
   /** What blocking spec questions do (`--clarification`); omitted, the policy decides. */
   clarification?: "ask" | "assume";
+  /** What the test-integrity guard does (`--test-integrity`); omitted, the policy decides. */
+  testIntegrity?: "block" | "warn";
+  /** The run's OS sandbox (`--sandbox`); omitted, the policy and the sandbox setting decide. */
+  sandbox?: "off" | "auto" | "required";
   /** The run model overrides every configured route (`--model-strict`). */
   modelStrict?: boolean;
   /** The run records the proposal of `POST /v1/workflow/propose` and the workflow kept. */

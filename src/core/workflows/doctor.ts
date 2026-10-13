@@ -3,11 +3,14 @@ import { isAbsolute, join, resolve } from "node:path";
 import type { AppConfig } from "../../types/index.js";
 import type { LspStatusView } from "../intelligence/lsp-service.js";
 import { getProvider } from "../llm/providers/index.js";
+import { detectSandbox, type SandboxDetection } from "../platform/sandbox.js";
 import { getProviderApiKey } from "../secrets.js";
+import { type SandboxMode, sandboxSettings } from "../security/sandbox.js";
 import { defaultWorkflowPolicy } from "./defaults.js";
 import { WorkflowFault } from "./errors.js";
 import { estimateHistory, type PreRunEstimate } from "./estimate.js";
 import { commandMayBeRunning, isExecutionLease, leaseOwnerAlive } from "./leases.js";
+import { docsDirectory, type LibraryDocsSource } from "./library-docs.js";
 import { unmatchedMcpGrants } from "./mcp-grants.js";
 import { estimatePrepared, type ModelUse, plannedStages } from "./pre-run.js";
 import { reachableModels } from "./routing.js";
@@ -55,6 +58,8 @@ export interface PreRunRequest {
   policy?: unknown;
   worktree?: boolean;
   writers?: number;
+  /** The run's OS sandbox, as `--sandbox`. */
+  sandbox?: SandboxMode;
   autoApprovalConfirmation?: string;
 }
 
@@ -73,6 +78,8 @@ export interface DoctorDeps {
   git(args: string[], cwd: string): Promise<{ code: number; stdout: string }>;
   /** The project's language servers; without it the doctor skips that line. */
   languageServers?(workspace: string): Promise<LspStatusView>;
+  /** The OS sandbox backend; without it the doctor skips that line. */
+  sandbox?(): SandboxDetection;
 }
 
 const PROBE_TIMEOUT_MS = 5000;
@@ -110,6 +117,7 @@ export const defaultDoctorDeps: DoctorDeps = {
     }
     return Bun.which(command, { cwd }) ?? null;
   },
+  sandbox: detectSandbox,
   async languageServers(workspace) {
     const { lspStatus } = await import("../intelligence/lsp-service.js");
     return lspStatus({ workspace });
@@ -248,6 +256,38 @@ function startRequest(config: AppConfig, request: PreRunRequest) {
       : {}),
     ...(request.worktree ? { executionMode: "worktree" as const } : {}),
     ...(request.writers !== undefined ? { maxConcurrentWriters: request.writers } : {}),
+    ...(request.sandbox ? { sandbox: request.sandbox } : {}),
+  };
+}
+
+/** The doctor line of the run's OS sandbox mode and the backend it needs. */
+export function sandboxCheck(mode: SandboxMode, detection: SandboxDetection): DoctorCheck {
+  if (mode === "off")
+    return {
+      id: "sandbox",
+      status: "ok",
+      title: "OS sandbox is off",
+      detail: "Checks, fixes and acceptance apps run without OS sandbox (see docs/sandbox.md).",
+    };
+  if (detection.available)
+    return {
+      id: "sandbox",
+      status: "ok",
+      title: `OS sandbox ${mode}: ${detection.backend}`,
+      subject: detection.path ?? undefined,
+    };
+  return {
+    id: "sandbox",
+    status: mode === "required" ? "fail" : "warn",
+    title:
+      mode === "required"
+        ? "OS sandbox is required but unavailable"
+        : "OS sandbox is auto but unavailable: commands run without OS sandbox",
+    detail: detection.reason ?? "no backend",
+    fix:
+      detection.backend === "bwrap"
+        ? "Install bubblewrap (apt install bubblewrap) and allow user namespaces"
+        : "Set sandbox to auto or off, or run on Linux or macOS",
   };
 }
 
@@ -340,6 +380,50 @@ function commandChecks(
           subject: command.id,
         };
   });
+}
+
+/**
+ * Whether the configured library docs source can be reached: its directory exists, or its MCP
+ * server is configured and enabled. A run without it continues without docs, so this only warns.
+ */
+export function libraryDocsCheck(
+  workspace: string,
+  source: LibraryDocsSource,
+  servers: readonly { name: string; disabled?: boolean }[],
+): DoctorCheck {
+  if ("dir" in source) {
+    const dir = docsDirectory(workspace, source.dir);
+    return existsSync(dir)
+      ? {
+          id: "libraryDocs.source",
+          status: "ok",
+          title: "Library docs directory found",
+          detail: dir,
+        }
+      : {
+          id: "libraryDocs.source",
+          status: "warn",
+          title: "Library docs directory does not exist",
+          detail: `${dir}; implementers get no library docs`,
+          fix: "Create the directory or change libraryDocs.dir",
+          subject: source.dir,
+        };
+  }
+  const server = servers.find((s) => s.name === source.mcp.server);
+  return server && !server.disabled
+    ? {
+        id: "libraryDocs.source",
+        status: "ok",
+        title: `Library docs come from ${source.mcp.server}/${source.mcp.tool}`,
+      }
+    : {
+        id: "libraryDocs.source",
+        status: "warn",
+        title: `Library docs server ${source.mcp.server} is ${server ? "disabled" : "not configured"}`,
+        detail: "Implementers get no library docs",
+        fix: "Add or enable the server in mcpServers, or change libraryDocs.mcp.server",
+        subject: source.mcp.server,
+      };
 }
 
 async function gitChecks(
@@ -550,6 +634,10 @@ export async function runDoctor(
           fix: "Add the server to mcpServers, enable it, or remove the grant",
           subject: profileId,
         });
+      if (prepared.policy.libraryDocs)
+        checks.push(
+          libraryDocsCheck(workspace, prepared.policy.libraryDocs, config.mcpServers ?? []),
+        );
       try {
         estimate = estimatePrepared(
           prepared,
@@ -579,6 +667,12 @@ export async function runDoctor(
     if (deps.languageServers) {
       const status = await deps.languageServers(workspace).catch(() => null);
       if (status) checks.push(...languageServerChecks(status));
+    }
+    if (deps.sandbox) {
+      const mode: SandboxMode = prepared
+        ? (prepared.policy.sandbox ?? "off")
+        : (request.sandbox ?? sandboxSettings(workspace).effective);
+      checks.push(sandboxCheck(mode, deps.sandbox()));
     }
     checks.push(...(await gitChecks(workspace, prepared?.mode ?? null, deps.git)));
     if (store) checks.push(leaseCheck(store));

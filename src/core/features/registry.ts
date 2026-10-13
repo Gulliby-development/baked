@@ -66,6 +66,7 @@ export const GROUPS = [
 
 const gap = (issue: number, note?: string): Gap =>
   note === undefined ? { status: "gap", issue } : { status: "gap", issue, note };
+
 const partial = (reach: string[], issue: number, note: string): Partial => ({
   status: "partial",
   reach,
@@ -490,6 +491,18 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/chat: Agent features page"],
   },
   {
+    id: "chat-approval-review",
+    group: "Tools and code intelligence",
+    title: "Approval reviewer for chat tool approvals: a model decides low-risk cleanup first",
+    tui: ["/agent-features: Approval reviewer; the approval prompt shows its verdict"],
+    cli: ["--approval-review"],
+    api: ["/v1/settings: agent-features page"],
+    desktop: [
+      "settings/chat: Agent features page",
+      "project/chat: approval card shows the verdict",
+    ],
+  },
+  {
     id: "hooks",
     group: "Tools and code intelligence",
     title: "Hooks: view and switch off",
@@ -554,6 +567,23 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/chat-memory"],
   },
   {
+    id: "os-sandbox",
+    group: "Tools and code intelligence",
+    title: "OS sandbox for shell commands, checks and acceptance apps",
+    tui: ["/sandbox"],
+    cli: ["baked sandbox status", "--sandbox", "baked workflow run --sandbox", "baked self-check"],
+    api: [
+      "/v1/diagnostics/sandbox",
+      "/v1/settings: Tools page",
+      "/v1/workflow/runs: sandbox in the start body",
+    ],
+    desktop: [
+      "settings/chat: Tools page",
+      "project/diagnostics: Sandbox panel",
+      "project/overview: New run sandbox",
+    ],
+  },
+  {
     id: "run-memory",
     group: "Tools and code intelligence",
     title: "Run memory: view and edit what runs learned",
@@ -577,6 +607,24 @@ export const FEATURES: readonly Feature[] = [
     ],
     api: ["/v1/workflow/runs", "/v1/workflow/definitions", "/v1/workflow/profiles"],
     desktop: ["project/overview: New run, Quick task"],
+  },
+  {
+    id: "test-integrity",
+    group: "Workflow runs",
+    title: "Test-integrity guard: block or warn on test gaming, spec conflicts",
+    tui: ["/workflow: new run, Tests field; spec conflicts in the decision view"],
+    cli: ["baked workflow run: --test-integrity", "baked workflow answer"],
+    api: ["/v1/workflow/runs: testIntegrity", "/v1/workflow/runs/:id/answer"],
+    desktop: ["project/overview: New run, Test integrity", "attention"],
+  },
+  {
+    id: "tests-first",
+    group: "Workflow runs",
+    title: "Tests first: failing tests approved before the code, tdd preset",
+    tui: ["/workflow: new run, tdd workflow; tests approval in the decision view"],
+    cli: ["baked workflow run", "baked workflow approve", "baked workflow reject"],
+    api: ["/v1/workflow/runs", "/v1/workflow/runs/:id/approve", "/v1/workflow/runs/:id/reject"],
+    desktop: ["project/overview: New run", "attention"],
   },
   {
     id: "preset-proposal",
@@ -612,19 +660,11 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "critic-outcomes",
     group: "Workflow runs",
-    title: "Critic outcome log: scores with checks, acceptance, delivery and line survival",
+    title: "Critic outcome log and calibration: scores with checks, acceptance, delivery, survival",
     tui: ["/workflow: outcomes, and the Critic section of report"],
     cli: ["baked workflow outcomes"],
-    api: partial(
-      ["/v1/workflow/runs/:id/report: Critic section"],
-      646,
-      "the log across runs comes with calibration",
-    ),
-    desktop: partial(
-      ["project/runs: Report tab, Critic section"],
-      646,
-      "the log across runs comes with calibration",
-    ),
+    api: ["/v1/workflow/critic", "/v1/workflow/runs/:id/report: Critic section"],
+    desktop: ["settings/routing: Critic calibration", "project/runs: Report tab, Critic section"],
   },
   {
     id: "progress-watcher",
@@ -718,6 +758,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs"],
   },
   {
+    id: "run-worktrees",
+    group: "Workflow runs",
+    title: "Worktree sizes and cleanup",
+    tui: ["/workflow: typed command"],
+    cli: ["baked workflow worktrees"],
+    api: ["/v1/workflow/worktrees", "/v1/workflow/worktrees/clean"],
+    desktop: ["project/runs: Worktrees"],
+  },
+  {
     id: "run-deliver",
     group: "Workflow runs",
     title: "Deliver a run (commit, pull request)",
@@ -734,6 +783,15 @@ export const FEATURES: readonly Feature[] = [
     cli: ["baked workflow candidate", "baked workflow revise"],
     api: ["/v1/workflow/runs/:id/candidate", "/v1/workflow/runs/:id/revise"],
     desktop: ["project/runs"],
+  },
+  {
+    id: "approval-review",
+    group: "Workflow runs",
+    title: "Approval reviewer: a model decides low-risk plans outside the auto approval limits",
+    tui: ["/workflow: approval prompt shows the reviewer's verdict"],
+    cli: ["baked workflow run", "baked quick", "approval-review"],
+    api: ["/v1/workflow/runs"],
+    desktop: ["project/runs: approval card shows the reviewer's verdict"],
   },
   {
     id: "checks",
@@ -783,13 +841,49 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/chat: Code quality page"],
   },
   {
+    id: "library-docs",
+    group: "Workflow runs",
+    title: "Docs for the locked library versions a task uses",
+    tui: gap(763),
+    cli: ["baked workflow doctor: libraryDocs in config.json"],
+    api: gap(763),
+    desktop: gap(763),
+  },
+  {
+    id: "profile-effort-compaction",
+    group: "Workflow runs",
+    title: "Per-profile effort and compaction threshold (set in agent profile files)",
+    tui: ["/workflow: routing view, profile rows show the effort"],
+    cli: ["baked workflow profiles", "baked workflow route"],
+    api: ["/v1/workflow/profiles", "/v1/workflow/route"],
+    desktop: ["settings/routing: profile rows show the effort"],
+  },
+  {
     id: "mutation-gate",
     group: "Workflow runs",
-    title: "Mutation gate on the lines a run added",
+    title: "Mutation gate on the lines a run added, with installed mutation tools",
     tui: ["/code-quality", "/workflow: run report"],
     cli: ["baked workflow run: --mutation off|advisory|required", "baked workflow report"],
     api: ["/v1/settings: code-quality page", "/v1/workflow/runs", "/v1/workflow/runs/:id/report"],
     desktop: ["settings/chat: Code quality page"],
+  },
+  {
+    id: "property-tests",
+    group: "Workflow runs",
+    title: "Property-based tests from marked acceptance criteria",
+    tui: ["/code-quality", "/workflow: run report"],
+    cli: ["baked workflow run: --property-tests auto|off", "baked workflow report"],
+    api: ["/v1/settings: code-quality page", "/v1/workflow/runs", "/v1/workflow/runs/:id/report"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
+    id: "harden-preset",
+    group: "Workflow runs",
+    title: "Harden preset: strengthen the tests of existing code",
+    tui: ["/workflow"],
+    cli: ["baked workflow run: --workflow harden"],
+    api: ["/v1/workflow/runs", "/v1/workflow/definitions"],
+    desktop: ["project/overview: New run"],
   },
   {
     id: "custom-gates",
@@ -819,7 +913,7 @@ export const FEATURES: readonly Feature[] = [
     id: "run-gates",
     group: "Workflow runs",
     title: "Gates on the run's line: what each does, blocks or advises, last result",
-    tui: gap(533, "gate results only in the activity lines"),
+    tui: ["/workflow: run overview, gates of the current stage under the stage line"],
     cli: ["baked workflow definitions", "baked workflow status"],
     api: ["/v1/workflow/definitions", "/v1/workflow/runs/:id/events"],
     desktop: ["project/runs: conveyor gate marks and station gates"],

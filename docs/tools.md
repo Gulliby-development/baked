@@ -69,11 +69,19 @@ The authoritative whole-project typecheck stays in the workflow checks stage and
 
 | Tool | Does |
 | --- | --- |
-| `shell` | Runs a command; destructive commands ask for approval |
+| `shell` | Runs a command; destructive commands ask for approval (or the [approval reviewer](#approval-reviewer) decides) |
 | `project` | Detects the toolchain from config and lock files and runs `lint`, `typecheck`, `test`, `build`, `run` or `list` (monorepo packages) for about 20 ecosystems |
 | `git` | Status, diff, log, commit, branch, stash, push and pull |
 
+With the `sandbox` setting on, `shell` and `project` commands (and the commit checks below) run in an OS sandbox: they write only inside the project, temp and package caches, and cannot read SSH keys, cloud credentials or token files. See [OS sandbox](sandbox.md).
+
 A `git commit` run by the agent first runs the project's native checks (for example `biome check` and `tsc --noEmit`, `cargo clippy` and `cargo check`, `ruff` and `pyright`); a failure blocks the commit and returns the errors. The checks come from config files, never from `package.json` scripts.
+
+### Approval reviewer
+
+With `agentFeatures.approvalReview` on (the Agent features page: `/agent-features`, the desktop settings, `/v1/settings`; `--approval-review` in headless mode), a chat approval the host lets a model decide goes to the chat's own model first. It sees the call and your recent messages and answers approve or escalate with a risk. A low-risk approval runs the call without asking, and the tool result starts with the reviewer's verdict. An escalation, a medium or high risk, a malformed answer or no answer within 30 seconds asks you as before, with the verdict or the failure in the prompt (in headless mode, where nobody is asked, it is denied). It is off by default and never changes the call.
+
+The reviewer may decide only these: `rm` of paths inside the project (not the project itself, `.git`, a bare glob or anything with `..`, `~` or variables), `git branch -D`, `git rebase`, `kill` of process IDs, and edits of sensitive files that hold no secrets (CI files, Dockerfiles, compose files). A command that chains, substitutes or redirects (`;`, `&&`, `|`, `$(...)`, `>`), runs while other tabs are editing, or is anything else on the destructive list (force push, `reset --hard`, `git clean`, `git checkout --`, database drops, `killall`, piped scripts, `chmod 777`), an edit of `.env`, key, credential or registry-token files, and every write outside the project always ask you. The rules are in `src/core/security/approval-review.ts`.
 
 ## Agent bookkeeping
 

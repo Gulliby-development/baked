@@ -43,6 +43,7 @@ const commands = [
   "gate",
   "deliver",
   "discard-worktree",
+  "worktrees",
   "route",
   "models",
   "doctor",
@@ -71,7 +72,9 @@ export interface WorkflowArgs {
 /** Options every workflow command takes. */
 const globalFlags = ["json", "cwd", "help"];
 const booleanFlags = new Set([
+  "approval-review",
   "refresh",
+  "clean",
   "auto-preset",
   "all",
   "save",
@@ -101,6 +104,7 @@ const preRunFlags = [
   "policy",
   "worktree",
   "writers",
+  "sandbox",
   "confirm-auto-approval",
   "json",
 ];
@@ -123,11 +127,15 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "route",
     "model-strict",
     "clarification",
+    "test-integrity",
+    "sandbox",
     "duplication",
     "sast",
     "mutation",
+    "property-tests",
     "issue",
     "budget",
+    "approval-review",
     "auto-preset",
   ],
   quick: [
@@ -144,6 +152,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "worktree",
     "route",
     "model-strict",
+    "approval-review",
   ],
   status: [],
   list: ["feature", "limit", "cursor", "status"],
@@ -215,6 +224,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "expected-revision",
   ],
   "discard-worktree": ["expected-revision", "command-id"],
+  worktrees: ["clean", "dry-run"],
   route: ["workflow", "model", "route", "json"],
   models: ["model", "provider", "json"],
   doctor: preRunFlags,
@@ -331,7 +341,9 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     result.command !== "propose"
   ) {
     const count =
-      ["list", "profiles", "models", "import", "gc", "definitions"].includes(result.command) ||
+      ["list", "profiles", "models", "import", "gc", "definitions", "worktrees"].includes(
+        result.command,
+      ) ||
       (result.command === "validate" && result.flags.file)
         ? 0
         : result.command === "compare"
@@ -413,6 +425,18 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     throw new WorkflowFault("INVALID_DEFINITION", "--clarification accepts ask or assume");
   if (
     !result.flags.help &&
+    "test-integrity" in result.flags &&
+    !["block", "warn"].includes(String(result.flags["test-integrity"]))
+  )
+    throw new WorkflowFault("INVALID_DEFINITION", "--test-integrity accepts block or warn");
+  if (
+    !result.flags.help &&
+    "sandbox" in result.flags &&
+    !["off", "auto", "required"].includes(String(result.flags.sandbox))
+  )
+    throw new WorkflowFault("INVALID_DEFINITION", "--sandbox accepts off, auto or required");
+  if (
+    !result.flags.help &&
     "duplication" in result.flags &&
     !["off", "warn", "ratchet"].includes(String(result.flags.duplication))
   )
@@ -429,6 +453,12 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     !["off", "advisory", "required"].includes(String(result.flags.mutation))
   )
     throw new WorkflowFault("INVALID_DEFINITION", "--mutation accepts off, advisory or required");
+  if (
+    !result.flags.help &&
+    "property-tests" in result.flags &&
+    !["auto", "off"].includes(String(result.flags["property-tests"]))
+  )
+    throw new WorkflowFault("INVALID_DEFINITION", "--property-tests accepts auto or off");
   if (!result.flags.help && ["run", "doctor", "estimate"].includes(result.command)) {
     if ("writers" in result.flags) {
       const writers = String(result.flags.writers);
@@ -454,7 +484,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--duplication off|warn|ratchet] [--sast auto|off] [--mutation off|advisory|required] [--budget PRESET]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--sandbox off|auto|required] [--duplication off|warn|ratchet] [--sast auto|off] [--mutation off|advisory|required] [--property-tests auto|off] [--budget PRESET] [--approval-review]
 run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --prompt-file FILE] [other run options]
   --issue takes the request from a GitHub issue (its title and body; --prompt adds instructions)
   and names the feature issue-N-TITLE unless --feature is given; the delivery pull request says
@@ -468,6 +498,15 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   --clarification assume lets research, spec and analysis settle blocking questions with recorded
   assumptions, shown at approval; only questions without a safe default wait for you. Default: the
   policy's clarification, otherwise ask
+  --test-integrity warn records test gaming in a task's diff (deleted, skipped or weakened tests,
+  suppressions, special cases for test inputs) instead of sending it to a repair. Default: the
+  policy's testIntegrity, otherwise block
+  --sandbox runs the run's checks, fixes, probes and acceptance apps in the OS sandbox (see
+  docs/sandbox.md); required refuses to start without a backend. Default: the stricter of the
+  policy's sandbox and the sandbox setting
+  --approval-review lets the approval reviewer (a model) approve a low-risk plan that leaves the
+  auto approval limits only by its task count, file count or paths; it needs autoApproval.limits.
+  Always-human paths, deletions and the token limit still wait for you
   --duplication ratchet blocks code the run copies and code it adds that nothing uses; warn (the
   default) reports them in the run report; off skips the measurement. Default: the policy's
   duplication, then the quality.duplication setting, otherwise warn
@@ -476,6 +515,9 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   --mutation required makes the mutants of the added lines that the test checks do not kill
   blocking findings; advisory lists them in the run report; off skips the gate. Default: the
   policy's mutation, then the quality.mutation setting, then the preset (advisory for sdd/full)
+  --property-tests auto has the spec mark criteria that hold over an input domain and blocks
+  until each has a property-based test; off skips it. Default: the policy's propertyTests, then
+  the quality.propertyTests setting, then the preset (auto for sdd/full and standard)
   --budget quick|standard|extended|checkpoints scales the policy (--policy, the config's
   workflows.policy, or the built-in default): quick halves the limits, extended doubles them,
   checkpoints drops the token cap and pauses for your go-ahead. Default: standard
@@ -485,7 +527,7 @@ propose TEXT... | --prompt TEXT | --prompt-file FILE [--json]
   The workflow and budget --auto-preset would pick for a request, with the reason: a review of
   existing changes (review-only), research without a change (spike), a failing check (fix-ci),
   a docs-only or small change (quick, quick budget), a large change (default, extended budget)
-quick TEXT... | --prompt-file FILE [--feature ID] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--budget PRESET] [--events] [--worktree] [--confirm-auto-approval HASH]
+quick TEXT... | --prompt-file FILE [--feature ID] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--budget PRESET] [--events] [--worktree] [--confirm-auto-approval HASH] [--approval-review]
   A small task without specification: one agent finds the files and plans, then approval,
   implementation, the policy checks and one correctness review. The feature ID is derived from
   the text. Runs workflows.quickWorkflow when set, otherwise the quick preset. Also: baked quick
@@ -550,7 +592,7 @@ models [--model ID] [--provider ID] [--json]
   list what a route, --route, --model or a fallback can name: the model names ($active, $fast,
   ...) with the model each resolves to, then the models of each provider; providers without a key
   or login are listed with that reason
-doctor [WORKFLOW] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--worktree [--writers N]] [--confirm-auto-approval HASH] [--json]
+doctor [WORKFLOW] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--worktree [--writers N]] [--sandbox MODE] [--confirm-auto-approval HASH] [--json]
   check before a run: start refusals, provider keys of every routed model, check commands, Git,
   a busy workspace and the budget; exit 1 when something must be fixed (also: baked doctor)
 estimate [WORKFLOW] (same options as doctor)
@@ -581,6 +623,9 @@ deliver RUN_ID --execute --expected-revision N [--request ID]
   A worktree run is delivered from its branch; its worktree is removed afterwards, the branch stays.
 discard-worktree RUN_ID --expected-revision N
   Remove the worktree and delete the branch of a completed, failed or cancelled worktree run.
+worktrees [--clean [--dry-run]]
+  Run and task worktrees under .baked/worktrees, largest first, with size and run status.
+  --clean removes those of completed, failed, cancelled and unknown runs (branches stay).
 initiative <command> ...   split a large request into 3..12 features run in dependency order
   start, show, list, events, merge, split, remove, rename, approve, reject, drive, resume, pause,
   replan, extend, reroute; see baked workflow initiative --help

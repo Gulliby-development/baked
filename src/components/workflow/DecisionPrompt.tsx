@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTheme } from "../../core/theme/index.js";
-import type { Decision } from "../../core/workflows/schemas.js";
+import { approvalReviewText } from "../../core/workflows/auto-approval.js";
+import type { ApprovalReview, Decision } from "../../core/workflows/schemas.js";
 import type { RequestRow } from "../../core/workflows/store.js";
 import type { Check } from "../../core/workflows/types.js";
 import type { RunDetails } from "../../core/workflows/view.js";
@@ -17,9 +18,10 @@ interface ApprovalBody {
   assumptions?: string[];
   requestCoverage?: RequestCoverageRow[];
   executionMode?: "inline" | "worktree";
+  sandbox?: "auto" | "required";
   worktree?: { path: string; branch: string; baseHead: string; userChangesInScope: string[] };
-  /** Why auto approval left this plan to a person. */
-  autoApproval?: { declined?: string[] };
+  /** Why auto approval left the package to you, with the approval reviewer's verdict. */
+  autoApproval?: { declined?: string[]; review?: ApprovalReview; reviewError?: string };
 }
 /** A deliverable of the request and what in the spec covers it (`request-coverage.ts`). */
 interface RequestCoverageRow {
@@ -104,6 +106,18 @@ interface AcceptanceBody {
     assertions: { assertionId: string; expectationId: string; description: string }[];
     commandGateId: string;
     stableRuns: number;
+  };
+}
+interface TestsFirstBody {
+  testsFirst?: {
+    mode: string;
+    criteria: { id: string; text: string }[];
+    tests: {
+      taskId: string;
+      title: string;
+      criterionIds: string[];
+      files: { path: string; content: string }[];
+    }[];
   };
 }
 interface RecoveryBody {
@@ -427,6 +441,61 @@ export function DecisionPrompt({
       </box>
     );
   }
+  const testsFirst =
+    request.kind === "approval" ? parse<TestsFirstBody>(request.body_json).testsFirst : undefined;
+  if (testsFirst) {
+    const files = testsFirst.tests.flatMap((test) => test.files);
+    return (
+      <box flexDirection="column">
+        <Section
+          title="Approve the tests written first"
+          description="These tests fail on the current code. Approving makes them read-only and lets the agents write the code until they pass."
+        >
+          <text fg={t.textSecondary} attributes={1}>
+            {`Criteria (${testsFirst.criteria.length})`}
+          </text>
+          {testsFirst.criteria.map((c) => (
+            <text key={c.id} fg={t.textMuted}>{`  ${c.id} ${flatten(c.text)}`}</text>
+          ))}
+          {testsFirst.tests.map((test) => (
+            <text key={test.taskId} fg={t.textPrimary}>
+              {`${test.taskId} ${flatten(test.title)} · ${test.criterionIds.join(", ")}`}
+            </text>
+          ))}
+          {files.map((file) => {
+            const lines = file.content.split("\n");
+            return (
+              <box key={file.path} flexDirection="column">
+                <text fg={t.textSecondary} attributes={1}>
+                  {`${file.path} (${lines.length} lines)`}
+                </text>
+                {lines.slice(0, 60).map((line, i) => (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: lines of a fixed text
+                  <text key={i} fg={t.textFaint}>{`  ${line}`}</text>
+                ))}
+              </box>
+            );
+          })}
+        </Section>
+        {rejecting ? (
+          input(
+            "What should the tests check instead? Enter to write them again (Esc keeps the request)",
+          )
+        ) : (
+          <text>
+            <span fg={t.success} attributes={1}>
+              {" A "}
+            </span>
+            <span fg={t.textMuted}>approve the tests </span>
+            <span fg={t.error} attributes={1}>
+              {" X "}
+            </span>
+            <span fg={t.textMuted}>write them again with a note </span>
+          </text>
+        )}
+      </box>
+    );
+  }
   if (request.kind === "approval") {
     const body = parse<ApprovalBody>(request.body_json);
     const writes = body.writes ?? [];
@@ -452,6 +521,14 @@ export function DecisionPrompt({
               {`  ${c.id} [${c.method}] ${c.text}`}
             </text>
           ))}
+          {body.autoApproval?.declined?.length ? (
+            <text fg={t.textMuted}>
+              {`Auto approval left this to you: ${body.autoApproval.declined.join("; ")}`}
+            </text>
+          ) : null}
+          {body.autoApproval && approvalReviewText(body.autoApproval) ? (
+            <text fg={t.warning}>{approvalReviewText(body.autoApproval)}</text>
+          ) : null}
           {body.requestCoverage?.length ? (
             <>
               <text
@@ -523,6 +600,11 @@ export function DecisionPrompt({
               fg={t.warning}
             >{`  Deferred to post-release: ${body.deferredCriteria.join(", ")}`}</text>
           ) : null}
+          <text fg={t.textMuted}>
+            {body.sandbox
+              ? `  Checks, fixes and acceptance apps run in the OS sandbox (${body.sandbox}).`
+              : "  Checks, fixes and acceptance apps run without OS sandbox."}
+          </text>
           {body.worktree ? (
             <text fg={t.textMuted}>
               {`  Runs in worktree ${body.worktree.path} on branch ${body.worktree.branch}; your working copy is not changed.`}

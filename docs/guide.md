@@ -53,6 +53,7 @@ The router screen also holds the per-model fallback chains (see [providers](prov
 | `desloppify` | off | Cleanup agent after code agents (needs the `desloppify` slot) |
 | `verifyEdits` | off | Adversarial review agent after code agents |
 | `onDemandTools` | off | Starts with core tools only; the agent loads others with `request_tools` |
+| `approvalReview` | off | The chat model decides low-risk cleanup commands and CI or Docker file edits before asking you; see [approval reviewer](tools.md#approval-reviewer) |
 
 The same picker switches **Edits that add errors** (`editDiagnostics`) between `feedback` and `reject`; see [diagnostics after edits](tools.md#diagnostics-after-edits).
 

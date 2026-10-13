@@ -1,5 +1,6 @@
 import { canonical, hashJson } from "../specs/hash.js";
 import { WorkflowFault } from "../workflows/errors.js";
+import { counterexampleOf } from "../workflows/quality/properties.js";
 import {
   CorrectionSchema,
   DEFAULT_FRESH_RESTART_AFTER,
@@ -27,27 +28,62 @@ function relatedRootTasks(task: Pick<Task, "profileId" | "criterionIds">, root: 
 }
 
 /**
- * What a correction of `base` may write: its own files and those of the related planned tasks,
- * once each; a file the plan created is modified from then on.
+ * One write per path for a correction. The action follows the file, not the order of the merged
+ * writes: a path a planned task creates is modified once the integrated change has it and created
+ * while it does not. A correction that ran before the creating task got the later task's `modify`
+ * and the tool policy refused every attempt (bench round 11, mdrefs T011: 1.44M tokens).
  */
-export function correctionWrites(
-  base: Task,
-  root: TaskGraph,
+export function mergeCorrectionWrites(
+  writes: Task["writes"],
   expectedFiles: Record<string, string> | null | undefined,
 ): Task["writes"] {
-  return [
-    ...new Map(
-      [base, ...relatedRootTasks(base, root)]
-        .flatMap((task) => task.writes)
-        .map((write) => [write.path, write] as const),
-    ).values(),
-  ].map((write) => ({
+  const byPath = new Map<string, Task["writes"][number]>();
+  for (const write of writes) {
+    const created =
+      write.action === "create" ||
+      (write.action === "modify" && byPath.get(write.path)?.action === "create");
+    byPath.set(write.path, created ? { ...write, action: "create" } : write);
+  }
+  return [...byPath.values()].map((write) => ({
     ...write,
     action:
       write.action === "create" && expectedFiles?.[write.path] !== undefined
         ? ("modify" as const)
         : write.action,
   }));
+}
+
+const fileStem = (path: string): string =>
+  path
+    .slice(path.lastIndexOf("/") + 1)
+    .replace(/\.[^.]+$/, "")
+    .toLowerCase();
+const TEST_DIR = /(^|\/)(tests?|__tests__|spec)\//;
+/** The stem a test file is named after (`cli_test.go`, `test_cli.py`, `cli.test.ts`, `CliTest.java`), or null for a non-test file. */
+function testedStem(path: string): string | null {
+  const name = path.slice(path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
+  const stripped = name.replace(/^test_/i, "").replace(/(?:[._-](?:test|spec)|Tests?)$/, "");
+  if (stripped === name && !TEST_DIR.test(path)) return null;
+  return stripped.toLowerCase();
+}
+/** Whether `test` is a test file of the source file `source`, by name. */
+export function isTestOf(test: string, source: string): boolean {
+  return testedStem(source) === null && testedStem(test) === fileStem(source);
+}
+
+/**
+ * What a correction of `base` may write: its own files and those of the related planned tasks,
+ * once each (see `mergeCorrectionWrites`).
+ */
+export function correctionWrites(
+  base: Task,
+  root: TaskGraph,
+  expectedFiles: Record<string, string> | null | undefined,
+): Task["writes"] {
+  return mergeCorrectionWrites(
+    [base, ...relatedRootTasks(base, root)].flatMap((task) => task.writes),
+    expectedFiles,
+  );
 }
 
 /**
@@ -151,12 +187,12 @@ export function failedCheckFindings(
     symbol: null,
     evidenceIds: [evidenceId],
     claim: `Required check ${check.id} failed`,
-    impact: signature
-      ? `Implementation cannot be accepted. Failing: ${signature}`
-      : "Implementation cannot be accepted",
+    impact: `${signature ? `Implementation cannot be accepted. Failing: ${signature}` : "Implementation cannot be accepted"}${counterexample ? `. Property counterexample: ${counterexample}` : ""}`,
     suggestedFix,
   });
   const signature = failureSignature(output);
+  // A failing property's shrunk input is the reproduction the correction starts from (#637).
+  const counterexample = counterexampleOf(output);
   const owners = new Map<string, { task: Task; file: string }>();
   for (const path of pathsInOutput(output, tasks)) {
     const task = tasks.find((t) => t.writes.some((w) => w.path === path));
@@ -312,33 +348,46 @@ export function appendCorrections(
     groups.set(key, group);
   }
   const root = state.rootGraph;
-  // A failure that names files of other tasks of the same profile: their owners join the group,
-  // so the correction may write them and the acceptance rule still finds them related.
-  for (const group of groups.values())
-    for (const finding of group.findings)
-      for (const path of state.repairScope?.[finding.id] ?? []) {
-        const owner = root.tasks.find(
-          (t) => t.profileId === group.base.profileId && t.writes.some((w) => w.path === path),
-        );
-        if (!owner || group.bases.some((b) => b.id === owner.id)) continue;
-        group.bases.push(owner);
-        group.base = {
-          ...group.base,
-          criterionIds: unique([...group.base.criterionIds, ...owner.criterionIds]),
-          requirementIds: unique([...group.base.requirementIds, ...owner.requirementIds]),
-        };
-      }
+  // A planned file the correction needs: its owner of the same profile joins the group, so the
+  // correction may write it and the acceptance rule still finds it related.
+  const writable = (group: { bases: Task[] }): string[] =>
+    group.bases.flatMap((b) => correctionWrites(b, root, null)).map((w) => w.path);
+  const join = (group: { base: Task; bases: Task[] }, path: string): void => {
+    if (writable(group).includes(path)) return;
+    const owner = root.tasks.find(
+      (t) => t.profileId === group.base.profileId && t.writes.some((w) => w.path === path),
+    );
+    if (!owner || group.bases.some((b) => b.id === owner.id)) return;
+    group.bases.push(owner);
+    group.base = {
+      ...group.base,
+      criterionIds: unique([...group.base.criterionIds, ...owner.criterionIds]),
+      requirementIds: unique([...group.base.requirementIds, ...owner.requirementIds]),
+    };
+  };
+  const planned = unique(root.tasks.flatMap((t) => t.writes.map((w) => w.path)));
+  for (const group of groups.values()) {
+    // The files a failing check names, and the planned files the findings name in their claim or
+    // fix (expenses-py 1363445a: "update tests/test_cli.py" from a task that could not write it).
+    for (const finding of group.findings) {
+      for (const path of state.repairScope?.[finding.id] ?? []) join(group, path);
+      for (const path of pathsInOutput(`${finding.claim}\n${finding.suggestedFix}`, root.tasks))
+        join(group, path);
+    }
+    // The planned tests of the files the correction writes: a fix often needs its regression
+    // assertion there (junitdigest 3e5be74b T014 could not add one to internal/cli/cli_test.go).
+    const written = writable(group);
+    for (const path of planned)
+      if (written.some((source) => isTestOf(path, source))) join(group, path);
+  }
   const additions = [...groups.values()].map(({ base, bases, findings: grouped }) => {
     const ids = grouped.map((f) => f.id);
     return {
       ...base,
-      writes: [
-        ...new Map(
-          bases
-            .flatMap((b) => correctionWrites(b, root, state.expectedFiles))
-            .map((write) => [write.path, write] as const),
-        ).values(),
-      ],
+      writes: mergeCorrectionWrites(
+        bases.flatMap((b) => correctionWrites(b, root, state.expectedFiles)),
+        state.expectedFiles,
+      ),
       checkIds: unique(bases.flatMap((b) => correctionChecks(b, root))),
       id: `T${String(next++).padStart(3, "0")}`,
       title: `Correct ${ids.join(", ")}`,

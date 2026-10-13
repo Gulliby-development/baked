@@ -6,6 +6,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { workspacePath } from "../specs/validate.js";
+import { type CriticCalibration, calibrateCritic } from "./critic-calibration.js";
 import { git } from "./delivery-git.js";
 import type { CriticOutcomeRow, WorkflowStore } from "./store.js";
 
@@ -170,6 +171,8 @@ export interface CriticOutcomes {
     /** Mean final survival of the attempts whose survival is final. */
     meanSurvival: number | null;
   };
+  /** Whether `select` and `earlyStop` may decide, from the whole log. */
+  calibration: CriticCalibration;
   criticOutcomes: CriticOutcomeView[];
 }
 
@@ -197,6 +200,7 @@ export function criticOutcomesView(store: WorkflowStore, runId?: string): Critic
         rows.filter((r) => r.survival_final && r.survival !== null).map((r) => r.survival ?? 0),
       ),
     },
+    calibration: calibrateCritic(runId ? store.criticOutcomes() : rows),
     criticOutcomes: rows.map((r) => ({
       runId: r.run_id,
       taskId: r.task_id,
@@ -222,6 +226,12 @@ export function formatCriticOutcomes(view: CriticOutcomes, limit = 30): string {
     `Task checks passed: ${s.passed.count} (mean score ${fixed(s.passed.meanScore)}); repaired: ${s.repaired.count} (mean score ${fixed(s.repaired.meanScore)}).`,
     `Runs accepted: ${s.accepted}, rejected: ${s.rejected}; delivered and merged: ${s.merged}, reverted: ${s.reverted}; mean ${SURVIVAL_DAYS}-day line survival: ${s.meanSurvival === null ? "-" : `${Math.round(s.meanSurvival * 100)}%`}.`,
   ];
+  const c = view.calibration;
+  lines.push(
+    c.calibrated
+      ? `Calibrated on ${c.samples} labelled attempts (AUC ${(c.auc ?? 0).toFixed(2)}): select and earlyStop decide at score ${fixed(c.threshold)}.`
+      : `Not calibrated (${c.reason}): select and earlyStop act like advise.`,
+  );
   const rows = view.criticOutcomes.slice(-limit);
   if (rows.length)
     lines.push("", "RUN       TASK  #  SCORE  CHECKS    RUN END   DELIVERY  SURVIVAL");

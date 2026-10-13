@@ -24,6 +24,7 @@ import privacyMd from "../../../docs/privacy.md" with { type: "text" };
 import projectsMd from "../../../docs/projects.md" with { type: "text" };
 import providersMd from "../../../docs/providers.md" with { type: "text" };
 import readmeMd from "../../../docs/README.md" with { type: "text" };
+import sandboxMd from "../../../docs/sandbox.md" with { type: "text" };
 import toolsMd from "../../../docs/tools.md" with { type: "text" };
 import troubleshootingMd from "../../../docs/troubleshooting.md" with { type: "text" };
 import watchMd from "../../../docs/watch.md" with { type: "text" };
@@ -33,6 +34,7 @@ import workflowsDoctorAndEstimateMd from "../../../docs/workflows/doctor-and-est
   type: "text",
 };
 import workflowsFixCiMd from "../../../docs/workflows/fix-ci.md" with { type: "text" };
+import workflowsHardenMd from "../../../docs/workflows/harden.md" with { type: "text" };
 import workflowsParallelWorktreesMd from "../../../docs/workflows/parallel-worktrees.md" with {
   type: "text",
 };
@@ -61,6 +63,7 @@ export const BUNDLED_DOCS: ReadonlyArray<readonly [path: string, text: string]> 
   ["parity.md", parityMd],
   ["privacy.md", privacyMd],
   ["projects.md", projectsMd],
+  ["sandbox.md", sandboxMd],
   ["providers.md", providersMd],
   ["tools.md", toolsMd],
   ["troubleshooting.md", troubleshootingMd],
@@ -70,6 +73,7 @@ export const BUNDLED_DOCS: ReadonlyArray<readonly [path: string, text: string]> 
   ["workflows/code-quality.md", workflowsCodeQualityMd],
   ["workflows/doctor-and-estimate.md", workflowsDoctorAndEstimateMd],
   ["workflows/fix-ci.md", workflowsFixCiMd],
+  ["workflows/harden.md", workflowsHardenMd],
   ["workflows/parallel-worktrees.md", workflowsParallelWorktreesMd],
   ["workflows/quick.md", workflowsQuickMd],
   ["workflows/runtime.md", workflowsRuntimeMd],

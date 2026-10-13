@@ -2,6 +2,7 @@ import { useTheme } from "../../core/theme/index.js";
 import type { RoutingSummary } from "../../core/workflows/routing.js";
 import type { RunSnapshot, WorkflowEvent } from "../../core/workflows/schemas.js";
 import type { FindingRow, TaskRow } from "../../core/workflows/store.js";
+import type { RunGate } from "../../core/workflows/v2/line.js";
 import type { BudgetView, EstimateView, RunDetails, StageView } from "../../core/workflows/view.js";
 import { Hint, ProgressBar } from "../ui/index.js";
 import {
@@ -16,6 +17,7 @@ import {
   stageGlyph,
   stageText,
 } from "./format.js";
+import { StageGates } from "./StageGates.js";
 
 const ACTIVITY_ROWS = 8;
 
@@ -66,6 +68,7 @@ export function RunOverview({
   tasks,
   findings,
   checks,
+  gates = {},
   driving,
   driveError,
   width,
@@ -80,6 +83,8 @@ export function RunOverview({
   tasks: TaskRow[];
   findings: FindingRow[];
   checks: { check_id: string; status: string; validity: string }[];
+  /** The gates of each stage with their last results, by stage ID. */
+  gates?: Readonly<Record<string, RunGate[]>>;
   driving: boolean;
   driveError: string | null;
   width: number;
@@ -126,6 +131,7 @@ export function RunOverview({
       ) : null}
       <box height={1} />
       <StagePipeline stages={stages} current={snapshot.stageId} status={snapshot.status} />
+      <StageGates stages={stages} current={snapshot.stageId} gates={gates} width={width} />
       <box height={1} />
       {budget ? (
         <>
@@ -176,6 +182,7 @@ export function RunOverview({
           ...(snapshot.limitations.count
             ? [`Limitations ${snapshot.limitations.count} accepted`]
             : []),
+          ...(snapshot.reviewNotes.count ? [`Review notes ${snapshot.reviewNotes.count}`] : []),
           ...(snapshot.stalled
             ? [`Stalled: no event for ${formatDuration(snapshot.stalled.silentMs)}`]
             : []),

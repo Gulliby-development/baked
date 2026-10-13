@@ -5,9 +5,24 @@ import type {
   ModelAggregate,
   ModelCallEvent,
   ModelEventsView,
+  SandboxStatus,
   StorageView,
 } from "./diagnostics.js";
 import { type MockRoute, response } from "./mock-routes.js";
+
+/** A Linux backend with bubblewrap and the sandbox left at its default. */
+const MOCK_SANDBOX: SandboxStatus = {
+  mode: "off",
+  project: null,
+  effectiveMode: "off",
+  source: "config",
+  backend: "bwrap",
+  available: true,
+  path: "/usr/bin/bwrap",
+  reason: null,
+  network: "allow",
+  active: false,
+};
 
 const KB = 1024;
 const MB = 1024 * KB;
@@ -221,6 +236,8 @@ export const diagnosticsRoutes: MockRoute = ({ key, method, path, body }) => {
     }
     case "GET /v1/diagnostics/errors":
       return response(200, { errors: s.errors });
+    case "GET /v1/diagnostics/sandbox":
+      return response(200, MOCK_SANDBOX);
     default:
       return fail(404, "NOT_FOUND", `No endpoint ${path}`);
   }

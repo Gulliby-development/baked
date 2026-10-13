@@ -60,6 +60,10 @@ Windows Terminal's bracketed paste sends an empty sequence for image clipboards,
 
 The checkout predates `.gitattributes` and has CRLF line endings; see [CONTRIBUTING.md](../CONTRIBUTING.md#verification).
 
+## Sandbox: bwrap missing or user namespaces blocked
+
+`baked sandbox status` (or `/sandbox status`) names the problem. `bwrap is not installed`: install bubblewrap (`sudo apt install bubblewrap`). `user namespaces are blocked (container or AppArmor)`: on Ubuntu 24.04 run `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` or give `bwrap` an AppArmor profile; inside a container allow user namespaces. Until then set `sandbox` to `auto` (commands run unsandboxed with a note) or `off`; `required` refuses them. Windows has no backend yet. See [OS sandbox](sandbox.md#troubleshooting).
+
 ## The .baked folder is large
 
 `/storage` (or **Diagnostics → Storage** in the desktop app) shows what takes the space. The code map rebuilds itself after Clear; chat sessions, plans and prompt history do not come back. Compact databases reclaims the space SQLite keeps after deleted rows without deleting anything. The desktop app refuses to clear sessions or the code map while a chat turn or a workflow run of that project is working.

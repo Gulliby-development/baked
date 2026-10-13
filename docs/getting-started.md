@@ -13,7 +13,7 @@ gh release download --repo Gulliby-development/baked --pattern '*linux-x64.tar.g
 - **Linux and macOS**: `tar xzf baked-<version>-<platform>-<arch>.tar.gz && cd baked-<version>-<platform>-<arch> && ./install.sh`. This installs to `~/.baked/bin`.
 - **Windows**: run `baked-setup-<version>-x64.exe`, or extract `baked-<version>-windows-x64.zip` and run `baked.exe`. Keep the `deps/` folder next to `baked.exe`.
 
-Each release lists `SHA256SUMS.txt` for the archives. `baked self-check` loads the native libraries, worker bundles, tree-sitter grammars and SQLite without a terminal or provider key, and exits non-zero when one is missing.
+Each release lists `SHA256SUMS.txt` for the archives. `baked self-check` loads the native libraries, worker bundles, tree-sitter grammars and SQLite without a terminal or provider key, reports the OS sandbox mode and backend, and exits non-zero when one is missing.
 
 ### Desktop app
 

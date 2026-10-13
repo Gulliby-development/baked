@@ -75,6 +75,10 @@ const VERIFICATION_FACTOR = 1.5;
  * price does not include. In round 03 they were 30% of all tokens (md-site 34%, zoneslot 50%).
  */
 export const REPAIR_RESERVE = 0.3;
+/** Finished runs in history needed before their loop cost replaces the flat reserve. */
+export const MIN_LOOP_RUNS = 3;
+/** The calibrated reserve stays within these shares of the priced work. */
+export const RESERVE_BOUNDS = { min: REPAIR_RESERVE, max: 3 } as const;
 
 const TEST_PATH = /(^|\/)(tests?|__tests__|spec)\/|\.(test|spec)\.[cm]?[jt]sx?$/i;
 const DOCS_EXTENSION = /\.(md|mdx|markdown|rst|adoc)$/i;
@@ -182,6 +186,106 @@ export function samplesFrom(
   } finally {
     db?.close();
   }
+}
+
+/**
+ * The review and repair loop of each finished run in a workflow store, as a share of its first
+ * pass. The first pass is the first generation of every planned task and of the review and
+ * converge stages (with their dimension and skeptic steps); the loop is everything those stages
+ * ran again after it plus every corrective task. junitdigest 3e5be74b spent 5.0M after a first
+ * pass of 1.9M, while the flat reserve held 0.77M (#747).
+ */
+export function loopSharesFrom(databasePath: string): number[] {
+  if (!existsSync(databasePath)) return [];
+  let db: Database | null = null;
+  try {
+    db = new Database(databasePath, { readonly: true });
+    const runs = db
+      .query<{ id: string; definition_json: string }, []>(
+        "SELECT id, definition_json FROM runs WHERE status='completed'",
+      )
+      .all();
+    const shares: number[] = [];
+    for (const run of runs) {
+      const stages = (
+        JSON.parse(run.definition_json) as { stages?: { id: string; kind: string }[] }
+      ).stages;
+      const verification = new Set(
+        (stages ?? []).filter((s) => s.kind === "review" || s.kind === "converge").map((s) => s.id),
+      );
+      const planned = new Set(
+        db
+          .query<{ id: string; definition_json: string }, [string]>(
+            "SELECT id, definition_json FROM tasks WHERE run_id=?",
+          )
+          .all(run.id)
+          .filter(
+            (t) => (JSON.parse(t.definition_json) as Pick<Task, "origin">).origin === "planned",
+          )
+          .map((t) => t.id),
+      );
+      const rows = db
+        .query<{ stage: string; generation: number; tokens: number | null }, [string]>(
+          `SELECT s.stage_id AS stage, s.generation AS generation, SUM(COALESCE(a.used_tokens,0)) AS tokens
+           FROM attempts a JOIN steps s ON s.run_id=a.run_id AND s.id=a.step_id
+           WHERE a.run_id=? GROUP BY s.stage_id, s.generation`,
+        )
+        .all(run.id);
+      let first = 0;
+      let loop = 0;
+      for (const row of rows) {
+        const tokens = row.tokens ?? 0;
+        const task = row.stage.startsWith("task-") ? row.stage.slice(5) : null;
+        const verifying =
+          verification.has(row.stage) ||
+          row.stage.startsWith("dimension-") ||
+          row.stage.startsWith("skeptic-");
+        if (task !== null && !planned.has(task)) loop += tokens;
+        else if (task !== null || verifying) {
+          if (row.generation === 0) first += tokens;
+          else loop += tokens;
+        }
+      }
+      if (first > 0) shares.push(loop / first);
+    }
+    return shares;
+  } catch {
+    return [];
+  } finally {
+    db?.close();
+  }
+}
+
+/** Loop shares of this project's store and the extra stores the policy names. */
+export function loopHistory(workspace: string, policy: RunPolicy): number[] {
+  return [
+    join(workspace, ".baked", "workflows.sqlite"),
+    ...historyStorePaths(workspace, policy),
+  ].flatMap((path) => loopSharesFrom(path));
+}
+
+const reserveNote = (reserve: { share: number; basis: "history" | "default"; runs: number }) =>
+  reserve.basis === "history"
+    ? `${Math.round(reserve.share * 100)}% of the priced work, the median loop of ${reserve.runs} finished runs`
+    : `the flat ${Math.round(reserve.share * 100)}% until ${MIN_LOOP_RUNS} finished runs are in history`;
+
+/**
+ * The share of the priced work held for repair and convergence: the median loop share of at
+ * least `MIN_LOOP_RUNS` finished runs, within `RESERVE_BOUNDS`, or the flat `REPAIR_RESERVE`.
+ */
+export function repairReserveShare(loopShares: readonly number[]): {
+  share: number;
+  basis: "history" | "default";
+  runs: number;
+} {
+  if (loopShares.length < MIN_LOOP_RUNS)
+    return { share: REPAIR_RESERVE, basis: "default", runs: loopShares.length };
+  const sorted = [...loopShares].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const median =
+    sorted.length % 2 ? (sorted[mid] ?? 0) : ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2;
+  const share = Math.min(RESERVE_BOUNDS.max, Math.max(RESERVE_BOUNDS.min, median));
+  return { share: Math.round(share * 100) / 100, basis: "history", runs: loopShares.length };
 }
 
 /**
@@ -301,6 +405,8 @@ export interface SizingReport {
   taskTokens: { low: number; expected: number; high: number };
   /** Tokens held on top of the price for repair and convergence tasks. */
   repairReserve: number;
+  /** The reserve's share of the priced work and where it came from (`repairReserveShare`). */
+  reserve: { share: number; basis: "history" | "default"; runs: number };
   budgetBefore: number;
   budgetAfter: number;
   maxAttemptTokens: number;
@@ -359,6 +465,8 @@ export function sizePlan(input: {
   spent: number;
   /** The model the tasks will run on; its own history prices them once it has enough. */
   model?: string | null;
+  /** Loop shares of finished runs (`loopHistory`); they set the repair reserve once enough. */
+  loopShares?: readonly number[];
 }): SizingReport {
   const rates = perFileRates(input.samples, input.model ?? null);
   const maxAttemptTokens = input.policy.sizing?.maxAttemptTokens ?? DEFAULT_MAX_SIZED_ATTEMPT;
@@ -386,7 +494,8 @@ export function sizePlan(input: {
   const taskTokens = taskTotal(tasks.map((task) => task.estimate));
   const priced = taskTokens.price + verification;
   const runTokens = Math.round(input.spent + priced);
-  const repairReserve = Math.round(priced * REPAIR_RESERVE);
+  const reserve = repairReserveShare(input.loopShares ?? []);
+  const repairReserve = Math.round(priced * reserve.share);
   const budgetBefore = input.policy.maxTotalTokens;
   const reasons: string[] = [];
   let decision: SizingReport["decision"] = "fits";
@@ -409,7 +518,7 @@ export function sizePlan(input: {
     if (decision === "fits") decision = "raise-budget";
     reasons.push(
       budgetAfter > budgetBefore
-        ? `The run budget grows from ${budgetBefore} to ${budgetAfter} tokens (${repairReserve} of it held for repair and convergence)`
+        ? `The run budget grows from ${budgetBefore} to ${budgetAfter} tokens (${repairReserve} of it held for repair and convergence, ${reserveNote(reserve)})`
         : `The run budget stays at ${budgetBefore} tokens, the policy's ceiling; the plan and its repair reserve of ${repairReserve} need about ${runTokens + repairReserve}`,
     );
   }
@@ -421,6 +530,7 @@ export function sizePlan(input: {
     runTokens,
     taskTokens: { low: taskTokens.low, expected: taskTokens.expected, high: taskTokens.high },
     repairReserve,
+    reserve,
     budgetBefore,
     budgetAfter,
     maxAttemptTokens,

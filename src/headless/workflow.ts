@@ -5,6 +5,7 @@ import { getCwd } from "../core/cwd.js";
 import { loadModelCatalog } from "../core/llm/model-catalog.js";
 import { parseRouteOverrides } from "../core/llm/model-routing.js";
 import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
+import { withModelReview } from "../core/workflows/auto-approval.js";
 import { type BudgetLimits, type BudgetPresetId, presetPolicy } from "../core/workflows/budget.js";
 import { compareRuns, comparisonMarkdown } from "../core/workflows/compare.js";
 import {
@@ -276,11 +277,12 @@ export async function executeWorkflowCommand(
       const workflowId = named ?? proposal?.workflowId ?? defaultWorkflow;
       const choice = proposal ? presetChoice(proposal, workflowId) : null;
       // The proposed budget applies to the proposed workflow unless --budget names one.
-      const policy = startPolicy(
+      const base = startPolicy(
         choice && !choice.overridden && typeof args.flags.budget !== "string"
           ? { ...args, flags: { ...args.flags, budget: choice.budget } }
           : args,
       );
+      const policy = args.flags["approval-review"] === true ? withModelReview(base) : base;
       if (proposal)
         process.stderr.write(
           `preset: ${describeProposal(proposal)}${choice?.overridden ? `; running ${workflowId} as asked` : ""}\n`,
@@ -309,6 +311,14 @@ export async function executeWorkflowCommand(
         ...(args.flags.clarification === "ask" || args.flags.clarification === "assume"
           ? { clarification: args.flags.clarification }
           : {}),
+        ...(args.flags["test-integrity"] === "block" || args.flags["test-integrity"] === "warn"
+          ? { testIntegrity: args.flags["test-integrity"] }
+          : {}),
+        ...(args.flags.sandbox === "off" ||
+        args.flags.sandbox === "auto" ||
+        args.flags.sandbox === "required"
+          ? { sandbox: args.flags.sandbox }
+          : {}),
         ...(args.flags.duplication === "off" ||
         args.flags.duplication === "warn" ||
         args.flags.duplication === "ratchet"
@@ -321,6 +331,9 @@ export async function executeWorkflowCommand(
         args.flags.mutation === "advisory" ||
         args.flags.mutation === "required"
           ? { mutation: args.flags.mutation }
+          : {}),
+        ...(args.flags["property-tests"] === "auto" || args.flags["property-tests"] === "off"
+          ? { propertyTests: args.flags["property-tests"] }
           : {}),
       });
       // The run's record keeps these warnings; the operator sees them before the run goes on.
@@ -603,6 +616,9 @@ export async function executeWorkflowCommand(
       const changed = editProjectMemory(service.store, edit);
       return { id: changed, ...projectMemoryView(service.store, policy) };
     }
+    case "worktrees":
+      if (args.flags.clean) return service.cleanWorktrees(args.flags["dry-run"] === true);
+      return service.worktrees();
     case "gc":
       return artifacts.gc({
         before: stringFlag(args, "before"),

@@ -284,6 +284,8 @@ export interface AgentFeatures {
   agentSkills?: boolean;
   /** Only expose core tools initially; deferred tools loaded via request_tools. Default: false — all tools active to avoid roundtrips. */
   onDemandTools?: boolean;
+  /** Let the approval reviewer (the chat model) decide low-risk chat approvals before asking. Default: false */
+  approvalReview?: boolean;
 }
 
 /** Doppelganger (spark) = inherits parent conversation, same model, cache hits. Diverge (ember) = fresh context, can use cheaper model. */
@@ -311,6 +313,10 @@ export interface QualityConfig {
   mutationThresholds?: Record<string, number>;
   /** Time the mutation gate may spend per checks stage, in milliseconds (default 300000). */
   mutationBudgetMs?: number;
+  /** `built-in` keeps the mutation gate on its own operators when an ecosystem tool is installed; `auto` (default) uses the tool. */
+  mutationEngine?: "auto" | "built-in";
+  /** Property-based tests from marked criteria: `preset` or absent follows the workflow preset. */
+  propertyTests?: "preset" | "auto" | "off";
 }
 
 export interface AppConfig {
@@ -400,6 +406,13 @@ export interface AppConfig {
    * the errors with the original text. Workflow runs take it from their policy.
    */
   editDiagnostics?: "feedback" | "reject";
+  /**
+   * Where workflow implementers get docs for the locked versions of the libraries a task uses: a
+   * directory of `<name>@<version>.md` files or an MCP tool. A project value replaces the global one.
+   */
+  libraryDocs?: import("zod").infer<
+    typeof import("../core/workflows/library-docs.js").LibraryDocsSchema
+  >;
   /** Diagnostics around edits. Global only. */
   diagnostics?: {
     /** Wait for diagnostics before and after an edit, each, in ms. Default 2500. */
@@ -421,6 +434,13 @@ export interface AppConfig {
   watchdogTimeouts?: WatchdogTimeouts;
   /** Tool call timeout in minutes. Applies to shell, project, and agent tools. Default: 2 */
   toolTimeout?: number;
+  /**
+   * OS sandbox for shell, project and check commands. Default "off". Only the global config sets
+   * it; a project config can only raise it. See docs/sandbox.md.
+   */
+  sandbox?: "off" | "auto" | "required";
+  /** Network inside the chat sandbox; workflow runs follow their policy's `network`. Default "allow". */
+  sandboxNetwork?: "allow" | "deny";
   /** Retry behavior for transient provider errors (429, 529, 503, timeouts, overloaded). */
   retry?: RetryConfig;
   /** Memory subsystem config. embeddingModel: AI SDK model id (e.g. "openai/text-embedding-3-small"). null/undefined falls back to hashbag-v2. */

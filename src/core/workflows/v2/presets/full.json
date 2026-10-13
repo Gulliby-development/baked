@@ -257,5 +257,6 @@
   "limits": {
     "maxStageVisits": 40
   },
-  "autoApproval": null
+  "autoApproval": null,
+  "testsFirst": "criteria"
 }

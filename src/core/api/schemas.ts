@@ -35,14 +35,22 @@ export const StartBody = z
     writers: z.number().int().min(1).max(MAX_CONCURRENT_WRITERS).optional(),
     /** What blocking spec questions do, as `--clarification`; omitted, the policy decides. */
     clarification: z.enum(["ask", "assume"]).optional(),
+    /** What the test-integrity guard does, as `--test-integrity`; omitted, the policy decides. */
+    testIntegrity: z.enum(["block", "warn"]).optional(),
     /** The duplication ratchet of the run, as `--duplication`; omitted, the policy decides. */
     duplication: z.enum(["off", "warn", "ratchet"]).optional(),
     /** Semgrep on the run's diff, as `--sast`; omitted, the policy decides. */
     sast: z.enum(["auto", "off"]).optional(),
     /** The mutation gate of the run, as `--mutation`; omitted, the policy or preset decides. */
     mutation: z.enum(["off", "advisory", "required"]).optional(),
+    /** Property-based tests of the run, as `--property-tests`; omitted, the policy or preset decides. */
+    propertyTests: z.enum(["auto", "off"]).optional(),
     /** The run model overrides configured model routes, as `--model-strict`. */
     modelStrict: z.boolean().optional(),
+    /** The run's OS sandbox, as `--sandbox`; omitted, the policy and the sandbox setting decide. */
+    sandbox: z.enum(["off", "auto", "required"]).optional(),
+    /** The approval reviewer may approve low-risk plans outside the limits, as `--approval-review`. */
+    approvalReview: z.boolean().optional(),
     /**
      * Propose the workflow and budget from the request, as `--auto-preset`; with `workflow` the
      * person's pick runs and both are recorded.
@@ -92,6 +100,7 @@ export const PreRunQuery = z.strictObject({
   modelStrict: z.enum(["true", "false"]).optional(),
   worktree: z.enum(["true", "false"]).optional(),
   writers: z.string().regex(/^\d+$/).optional(),
+  sandbox: z.enum(["off", "auto", "required"]).optional(),
   confirmAutoApproval: z.string().min(1).optional(),
 });
 export const ListQuery = z.strictObject({
@@ -300,6 +309,7 @@ export const RedactBody = z.strictObject({
   artifactId: SafeId,
   reason: z.string().trim().min(1).max(500),
 });
+export const WorktreeCleanBody = z.strictObject({ dryRun: z.boolean().optional() });
 export const GcBody = z.strictObject({
   before: z.string().refine((value) => Number.isFinite(Date.parse(value)), {
     message: "Expected an ISO date",

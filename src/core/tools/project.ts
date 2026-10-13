@@ -3,8 +3,10 @@ import { access, readdir, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { ToolResult } from "../../types/index.js";
 import { getCwd } from "../cwd.js";
+import { logBackgroundError } from "../diagnostics/errors.js";
 import { bunShellArgs, IS_WIN } from "../platform/index.js";
 import { realPath } from "../projects/paths.js";
+import { chatSandbox, SandboxUnavailableError, sandboxNotice } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { executeCheckCommand } from "../verification/check-runner.js";
 import { assertWorkspaceMutationAllowed } from "../workflows/leases.js";
@@ -902,12 +904,18 @@ export const projectTool = {
           env: { ...buildSafeEnv(), FORCE_COLOR: "0", NO_COLOR: "1", ...args.env },
           timeoutMs: args.timeout ?? getToolTimeoutMs(),
           signal: new AbortController().signal,
+          sandbox: chatSandbox(getCwd(), [cwd]),
         });
+        const notice = sandboxNotice(result.sandbox, "chat");
+        if (notice) logBackgroundError("sandbox", notice);
         return {
           stdout: result.stdout ?? result.output,
-          stderr: result.stderr ?? "",
+          stderr: [result.stderr ?? "", notice ?? ""].filter(Boolean).join("\n"),
           exitCode: result.timedOut ? null : result.exitCode,
         };
+      } catch (error) {
+        if (!(error instanceof SandboxUnavailableError)) throw error;
+        return { stdout: "", stderr: error.message, exitCode: null };
       } finally {
         await scope.stop();
       }
