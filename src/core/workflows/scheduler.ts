@@ -1677,8 +1677,8 @@ export class WorkflowScheduler {
     return repairChangedFiles(this.store, runId, done);
   }
   /**
-   * Before the agent runs a planned task again (a repair or correction invalidated it), its task
-   * checks run in the host: when they pass on the current files and the task's earlier
+   * Before the agent runs a planned task again (a repair or correction invalidated it), its declared
+   * checks (any scope) run in the host: when they pass on the current files and the task's earlier
    * implementation, which passed them under the same definition, is in place, the task is implemented by supersession, with an empty diff and
    * no tokens, and the gate check below it runs as for any implemented task. A rerun that ended
    * with an empty diff in round 6 cost 3.08M tokens of 17.5M. Returns whether any task changed.
@@ -1695,7 +1695,7 @@ export class WorkflowScheduler {
     for (const task of ready) {
       const row = this.store.tasks(runId).find((entry) => entry.id === task.id);
       const path = `tasks/${task.id}/host-first-${String(row?.generation ?? 0)}.json`;
-      const checks = taskChecks(policy, task);
+      const checks = declaredChecks(policy, task);
       const root = runRoot(this.store.workspace, state);
       if (
         !row ||
@@ -4481,10 +4481,12 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             // A task whose every written file a corrective task rewrote is superseded there: its
             // agent would start from its original description and overwrite the correction
             // (md-site a586cde0 T003 ran three times, T006 four). Its checks decide instead.
+            // Any declared check counts: a test task whose only check is a feature-scope build or
+            // test command (Java `verify`) is protected by it too (propdrift 90c09da7 T006, 114k).
             const superseded =
               reach === "named" &&
               rewritten !== null &&
-              taskChecks(policy, candidate).length > 0 &&
+              declaredChecks(policy, candidate).length > 0 &&
               ownsOnly(candidate, rewritten);
             if (
               reach === "none" ||
@@ -6154,6 +6156,9 @@ function taskSize(
 
 /** The checks run after a task, in policy order: its task-scope checks and the static ones covering its code. */
 const taskChecks = (policy: RunPolicy, task: Task): Check[] => taskCheckList(policy, task);
+/** Every check a task declares, whatever its scope. */
+const declaredChecks = (policy: RunPolicy, task: Task): Check[] =>
+  policy.checks.filter((check) => task.checkIds.includes(check.id));
 
 /** The documents a run publishes under `specs/<featureId>/` once its plan is ready. */
 export const SPEC_PUBLICATION_FILES = ["spec.json", "spec.md", "plan.md", "tasks.json", "tasks.md"];
