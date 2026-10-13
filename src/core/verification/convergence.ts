@@ -132,6 +132,23 @@ export function pathsInOutput(output: string, tasks: Task[]): string[] {
   );
 }
 
+/**
+ * Planned files a check's output reports a failure in: the paths that start an unindented line,
+ * as a compiler error (`tests/cli.test.ts(258,45): error TS2769`, `src/a.go:3:1: ...`), a test
+ * runner's file header (`tests/cli.test.ts:`) or a `FAILED`/`FAIL` line. Indented lines (related
+ * information, stack frames, code excerpts) only explain a failure located elsewhere.
+ */
+export function failingPathsInOutput(output: string, tasks: Task[]): string[] {
+  const text = output.replaceAll("\\", "/");
+  const paths = unique(tasks.flatMap((t) => t.writes.map((w) => w.path)));
+  return paths.filter((path) =>
+    new RegExp(
+      `^(?:(?:FAILED|FAIL|ERROR|error)[:\\s]\\s*)?(?:[A-Za-z]:)?(?:[^\\s:()]*/)?${escapeRegExp(path)}(?:[:(]|\\s|$)`,
+      "m",
+    ).test(text),
+  );
+}
+
 /** Lines of a check's output that name what fails: test names and assertion messages. */
 const FAILURE_LINE =
   /^\s*(?:\(fail\)|✗|✘|×|✖|FAIL|not ok|error:|AssertionError|Expected|Received|E\s{2,}|---\s*FAIL)/i;
