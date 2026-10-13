@@ -1,5 +1,14 @@
-import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import {
   ROUTING_ARTIFACT,
   type RouteEffort,
@@ -7,6 +16,7 @@ import {
   RoutingRecordSchema,
 } from "../llm/model-routing.js";
 import { modelVendor } from "../llm/model-vendor.js";
+import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { renderSpec, renderTasks } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
@@ -163,17 +173,27 @@ import {
 } from "./quality/harden.js";
 import { isManifestPath, manifestDependencies } from "./quality/manifests.js";
 import {
+  DEFAULT_MUTATION_BUDGET_MS,
   generateMutants,
   isTestCheck,
+  MAX_EQUIVALENCE_CHECKS,
+  MAX_MUTANTS,
+  type Mutant,
   type MutationMode,
   type MutationResult,
   mutationClaim,
   mutationOf,
   presetOf,
+  proposalFiles,
+  proposedMutants,
   QUALITY_MUTATION,
+  QUALITY_MUTATION_EQUIVALENCE,
   QUALITY_MUTATION_PENDING,
+  QUALITY_MUTATION_PROPOSALS,
   runMutants,
+  scoreMutants,
 } from "./quality/mutation.js";
+import { detectMutationTool, runMutationTool, type ToolShell } from "./quality/mutation-tools.js";
 import {
   checkPropertyTests,
   propertyClaim,
@@ -222,6 +242,8 @@ import {
   executionModeOf,
   generatedPaths,
   ImplementationSchema,
+  type MutantProposal,
+  MutantProposalSchema,
   PlanSchema,
   PolicySchema,
   ProfileSchema,
@@ -4818,7 +4840,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         reason: "verification_failed",
       });
     if (!failures.length)
-      failures.push(...(await this.qualityFindings(runId, state, policy, signal)));
+      failures.push(...(await this.qualityFindings(runId, stepId, state, policy, signal)));
     if (failures.length)
       return this.recordFindings(runId, {
         schemaVersion: 1,
@@ -5031,6 +5053,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
    */
   private async qualityFindings(
     runId: string,
+    stepId: string,
     state: RuntimeState,
     policy: RunPolicy,
     signal: AbortSignal,
@@ -5043,7 +5066,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     blocking.push(...this.propertyFindings(runId, state, policy));
     // Mutants run the tests many times; code that is about to change again is not worth it.
     if (!blocking.length)
-      blocking.push(...(await this.mutationFindings(runId, state, policy, signal)));
+      blocking.push(...(await this.mutationFindings(runId, stepId, state, policy, signal)));
     return blocking.slice(0, 100);
   }
   /**
@@ -5103,12 +5126,15 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
   }
   /**
    * The mutation gate (#636): plants small faults in the lines the run added, one at a time,
-   * and runs the policy's required test checks against each. Surviving mutants are blocking
-   * findings under `required`, owned by the task that writes a related test file so the
-   * correction adds a test that kills them; under `advisory` they are notes in the run report.
+   * and runs the policy's required test checks against each, or lets an installed ecosystem tool
+   * do it (#702). Surviving mutants are blocking findings under `required`, owned by the task
+   * that writes a related test file so the correction adds a test that kills them; a survivor
+   * the equivalence check finds cannot change behavior is dropped first. Under `advisory` they
+   * are notes in the run report.
    */
   private async mutationFindings(
     runId: string,
+    stepId: string,
     state: RuntimeState,
     policy: RunPolicy,
     signal: AbortSignal,
@@ -5117,21 +5143,53 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const mode = mutationOf(policy, preset);
     if (mode === "off" || !state.snapshotId) return [];
     // A harden run changes no code: its mutants go into the module its tasks test.
-    const files =
-      preset === HARDEN_PRESET
-        ? await this.hardenModule(state)
-        : await this.changedFiles(runId, state, isCodePath);
-    const result = await this.mutate(runId, state, policy, mode, files, signal);
-    const evidenceId = this.store.transaction(() => {
-      const artifact = this.store.artifact(runId, "quality", QUALITY_MUTATION, canonical(result));
-      return this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
+    const harden = preset === HARDEN_PRESET;
+    const files = harden
+      ? await this.hardenModule(state)
+      : await this.changedFiles(runId, state, isCodePath);
+    // A harden run compares its score with the module's before it, so both use the same mutants.
+    let result = await this.mutate(runId, state, policy, mode, files, signal, {
+      ...(mode === "required" && !harden ? { proposeIn: stepId } : {}),
     });
+    const record = (value: MutationResult) =>
+      this.store.transaction(() => {
+        const artifact = this.store.artifact(runId, "quality", QUALITY_MUTATION, canonical(value));
+        return this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
+      });
+    let evidenceId = record(result);
+    if (result.mutants.some((m) => m.blocking)) {
+      const judged = await this.equivalentMutants(
+        runId,
+        stepId,
+        state,
+        policy,
+        result,
+        files,
+        evidenceId,
+        signal,
+      );
+      if (judged.equivalent.size || judged.note) {
+        result = scoreMutants(
+          {
+            ...result,
+            mutants: result.mutants.map((m) => {
+              const why = judged.equivalent.get(m.id);
+              return why ? { ...m, status: "equivalent" as const, equivalence: why } : m;
+            }),
+            ...(judged.note ? { note: [result.note, judged.note].filter(Boolean).join("; ") } : {}),
+          },
+          files,
+          policy.mutationThresholds,
+        );
+        evidenceId = record(result);
+      }
+    }
     const blocking = result.mutants.filter((m) => m.blocking);
     if (!blocking.length) {
       this.resolveClaims(runId, mutationClaim);
       return [];
     }
-    return this.mutantFindings(state, blocking, evidenceId);
+    return this.mutantFindings(state, blocking.slice(0, MAX_MUTANTS), evidenceId, result.engine);
   }
   /** The module a harden run tests, read whole: every line of it may take a mutant. */
   private async hardenModule(state: RuntimeState): Promise<ChangedFile[]> {
@@ -5140,8 +5198,10 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     return [...code.files].map(([path, content]) => ({ path, content, before: "" }));
   }
   /**
-   * Plants each mutant of `files` in turn, runs the policy's required test checks against it and
-   * restores the file byte for byte, also from `quality/mutation-pending.json` after a crash.
+   * Mutates `files` with the ecosystem tool the project has installed, or else plants each
+   * built-in mutant in turn (with the agent's proposed ones when `proposeIn` names the step that
+   * may call it), runs the policy's required test checks against it and restores the file byte
+   * for byte, also from `quality/mutation-pending.json` after a crash.
    */
   private async mutate(
     runId: string,
@@ -5150,14 +5210,15 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     mode: MutationMode,
     changed: ChangedFile[],
     signal: AbortSignal,
+    options: { proposeIn?: string } = {},
   ): Promise<MutationResult> {
     const root = runRoot(this.store.workspace, state);
     const tests = policy.checks.filter((check) => check.required && isTestCheck(check));
-    const mutants = tests.length ? generateMutants(changed) : [];
-    const originals = new Map<string, Buffer>();
-    for (const mutant of mutants)
-      if (!originals.has(mutant.file))
-        originals.set(mutant.file, readFileSync(workspacePath(root, mutant.file)));
+    const scope = new ProcessScope();
+    const toolScope = new ProcessScope();
+    const shell = this.toolShell(runId, root, toolScope, tests[0], signal);
+    const tool = policy.mutationEngine === "built-in" ? null : detectMutationTool(changed, shell);
+    let fallback: string | null = null;
     // Kept until the gate restores the files, so a host that stops mid-mutant restores them on the next drive.
     const pending = (files: Map<string, Buffer>) =>
       this.store.transaction(() =>
@@ -5173,7 +5234,63 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           }),
         ),
       );
-    const scope = new ProcessScope();
+    const read = (paths: string[]) =>
+      new Map(paths.map((path) => [path, readFileSync(workspacePath(root, path))]));
+    if (tool) {
+      // Some tools (go-mutesting) write each mutant into the file itself.
+      const originals = read(tool.files.map((f) => f.path));
+      pending(originals);
+      try {
+        const run = await runMutationTool(
+          tool.tool,
+          tool.files,
+          shell,
+          policy.mutationBudgetMs ?? DEFAULT_MUTATION_BUDGET_MS,
+        );
+        if ("mutants" in run)
+          return scoreMutants(
+            {
+              schemaVersion: 1,
+              mode,
+              engine: run.tool,
+              tests: [run.tool],
+              mutants: run.mutants.map((m, i) => ({ ...m, id: `M${i + 1}`, blocking: false })),
+              score: null,
+              ...(run.note
+                ? { note: run.note }
+                : !run.mutants.length
+                  ? { note: `${run.tool} made no mutant on the added lines` }
+                  : {}),
+            },
+            changed,
+            policy.mutationThresholds,
+          );
+        fallback = `${run.tool} failed (${run.failure.slice(0, 300)}); the built-in engine ran instead`;
+      } finally {
+        await toolScope.stop();
+        for (const [path, bytes] of originals) {
+          const target = workspacePath(root, path);
+          if (!existsSync(target) || !readFileSync(target).equals(bytes))
+            writeFileSync(target, bytes);
+        }
+        pending(new Map());
+      }
+    }
+    const operators = tests.length ? generateMutants(changed) : [];
+    const proposed =
+      tests.length && options.proposeIn
+        ? await this.proposeMutants(
+            runId,
+            options.proposeIn,
+            state,
+            policy,
+            changed,
+            operators,
+            signal,
+          )
+        : { mutants: [] };
+    const mutants = [...operators, ...proposed.mutants];
+    const originals = read([...new Set(mutants.map((m) => m.file))]);
     let result: MutationResult;
     if (originals.size) pending(originals);
     try {
@@ -5218,6 +5335,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         : {
             schemaVersion: 1,
             mode,
+            engine: "built-in",
             tests: [],
             mutants: [],
             score: null,
@@ -5227,15 +5345,262 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       await scope.stop();
       if (originals.size) pending(new Map());
     }
-    return result;
+    const notes = [result.note, proposed.note, fallback].filter(Boolean);
+    return notes.length ? { ...result, note: notes.join("; ") } : result;
+  }
+  /**
+   * The machine as a mutation tool sees it: commands run in the run's root with the environment
+   * of the policy's first test check, and the tool's incremental state stays outside the
+   * workspace, in the system's temporary directory.
+   */
+  private toolShell(
+    runId: string,
+    root: string,
+    scope: ProcessScope,
+    test: RunPolicy["checks"][number] | undefined,
+    signal: AbortSignal,
+  ): ToolShell {
+    const scratch = join(tmpdir(), "baked-mutation", runId);
+    mkdirSync(scratch, { recursive: true });
+    const absolute = (path: string) => (isAbsolute(path) ? path : workspacePath(root, path));
+    return {
+      root,
+      scratch: scratch.replaceAll("\\", "/"),
+      platform: process.platform,
+      run: async (executable, args, timeoutMs) => {
+        const outcome = await executeCheckCommand(scope, executable, args, {
+          cwd: root,
+          env: test ? buildCheckEnv(test) : buildSafeEnv(),
+          timeoutMs: Math.max(1000, timeoutMs),
+          signal,
+        });
+        return { exitCode: outcome.exitCode, output: outcome.output, timedOut: outcome.timedOut };
+      },
+      read: (path) => {
+        try {
+          return readFileSync(absolute(path), "utf8");
+        } catch {
+          return null;
+        }
+      },
+      exists: (path) => existsSync(absolute(path)),
+      remove: (path) => rmSync(workspacePath(root, path), { recursive: true, force: true }),
+      which: (command) => Bun.which(command),
+      now: () => Date.now(),
+    };
+  }
+  /**
+   * Mutants the `mutant-author` profile proposes for the spec's criteria on the lines the run added,
+   * checked against the files; kept while the code stays the same, so a later gate does not ask
+   * again. An agent that fails is noted and the gate goes on with the operator mutants.
+   */
+  private async proposeMutants(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    files: ChangedFile[],
+    existing: Mutant[],
+    signal: AbortSignal,
+  ): Promise<{ mutants: Mutant[]; note?: string }> {
+    const profiles = ProfileSchema.array().parse(JSON.parse(this.store.run(runId).profiles_json));
+    const author = profiles.find((p) => p.output === "mutants");
+    const criteria = (state.spec?.criteria ?? []).filter((c) => c.method === "automated");
+    const listed = proposalFiles(files);
+    if (!author || !criteria.length || !listed.length) return { mutants: [] };
+    const key = hashJson(listed);
+    const kept = this.store.latestArtifact(runId, QUALITY_MUTATION_PROPOSALS);
+    if (kept) {
+      const earlier = JSON.parse(this.store.readArtifact(runId, kept.id)) as {
+        key: string;
+        proposals: MutantProposal["mutants"];
+      };
+      if (earlier.key === key)
+        return { mutants: proposedMutants(earlier.proposals, files, existing) };
+    }
+    const child = this.store.transaction(() => this.store.beginStep(runId, "mutants", stepId));
+    try {
+      const output = MutantProposalSchema.parse(
+        await this.call(
+          runId,
+          child,
+          state,
+          policy,
+          author,
+          {
+            // A criterion is shown as one sentence: its Given/When/Then contract stays in the spec.
+            criteria: criteria.map((c) => ({
+              id: c.id,
+              text: `Given ${c.given}, when ${c.when}, then ${c.then}`,
+            })),
+            files: listed,
+          },
+          signal,
+        ),
+      );
+      this.store.transaction(() => {
+        this.store.artifact(
+          runId,
+          "quality",
+          QUALITY_MUTATION_PROPOSALS,
+          canonical({ key, proposals: output.mutants }),
+        );
+        this.store.finishStep(runId, child, "completed");
+      });
+      return { mutants: proposedMutants(output.mutants, files, existing) };
+    } catch (error) {
+      if (signal.aborted) throw error;
+      if (
+        error instanceof WorkflowFault &&
+        ["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code)
+      )
+        throw error;
+      this.store.transaction(() => this.store.finishStep(runId, child, "failed"));
+      return {
+        mutants: [],
+        note: `no agent mutants (${(error instanceof Error ? error.message : String(error)).slice(0, 200)})`,
+      };
+    }
+  }
+  /**
+   * The blocking survivors the policy's skeptic judges equivalent (no input makes the mutated
+   * line behave differently), with its explanation. Verdicts are kept by mutant and file content,
+   * so a later gate asks only about new survivors, at most `MAX_EQUIVALENCE_CHECKS` per gate. A
+   * check that fails keeps the survivor and is noted.
+   */
+  private async equivalentMutants(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    result: MutationResult,
+    files: ChangedFile[],
+    evidenceId: string,
+    signal: AbortSignal,
+  ): Promise<{ equivalent: Map<string, string>; note?: string }> {
+    const profiles = ProfileSchema.array().parse(JSON.parse(this.store.run(runId).profiles_json));
+    const skeptic = profiles.find(
+      (p) => p.id === policy.skepticProfileId && p.output === "refutation",
+    );
+    const row = this.store.latestArtifact(runId, QUALITY_MUTATION_EQUIVALENCE);
+    const verdicts: Record<string, { equivalent: boolean; explanation: string }> = row
+      ? JSON.parse(this.store.readArtifact(runId, row.id))
+      : {};
+    const content = new Map(files.map((f) => [f.path, hashBytes(f.content)]));
+    const equivalent = new Map<string, string>();
+    let asked = 0;
+    let failed = 0;
+    for (const mutant of result.mutants.filter((m) => m.blocking)) {
+      const key = hashJson({
+        file: mutant.file,
+        line: mutant.line,
+        mutated: mutant.mutated,
+        description: mutant.description ?? null,
+        content: content.get(mutant.file) ?? null,
+      });
+      if (!verdicts[key] && skeptic && asked < MAX_EQUIVALENCE_CHECKS) {
+        asked++;
+        const verdict = await this.judgeMutant(
+          runId,
+          stepId,
+          state,
+          policy,
+          skeptic,
+          mutant,
+          evidenceId,
+          signal,
+        );
+        if (verdict) verdicts[key] = verdict;
+        else failed++;
+      }
+      const verdict = verdicts[key];
+      if (verdict?.equivalent) equivalent.set(mutant.id, verdict.explanation);
+    }
+    if (asked)
+      this.store.transaction(() =>
+        this.store.artifact(runId, "quality", QUALITY_MUTATION_EQUIVALENCE, canonical(verdicts)),
+      );
+    return {
+      equivalent,
+      ...(failed ? { note: `the equivalence check failed for ${failed} survivor(s)` } : {}),
+    };
+  }
+  /** The skeptic's verdict on one surviving mutant, or null when the check failed. */
+  private async judgeMutant(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    skeptic: AgentProfile,
+    mutant: MutationResult["mutants"][number],
+    evidenceId: string,
+    signal: AbortSignal,
+  ): Promise<{ equivalent: boolean; explanation: string } | null> {
+    const finding = this.mutantFindings(state, [mutant], evidenceId, undefined)[0];
+    if (!finding) return null;
+    const child = this.store.transaction(() =>
+      this.store.beginStep(runId, "mutant-equivalence", stepId),
+    );
+    try {
+      const output = RefutationSchema.parse(
+        await this.call(
+          runId,
+          child,
+          state,
+          policy,
+          skeptic,
+          {
+            finding,
+            mutant: {
+              file: mutant.file,
+              line: mutant.line,
+              original: mutant.original,
+              mutated: mutant.mutated,
+              ...(mutant.description ? { description: mutant.description } : {}),
+            },
+            question:
+              "Is this mutant equivalent? Refute the finding when no input can make the mutated line behave differently from the original; confirm it when some input would.",
+            // The gate's result is the evidence; the skeptic reads the code it needs itself.
+            evidence: this.evidenceContext(runId, state, {
+              reads: false,
+              only: new Set([evidenceId]),
+            }),
+          },
+          signal,
+        ),
+      );
+      if (output.findingId !== finding.id)
+        throw new WorkflowFault("OUTPUT_INVALID", "Skeptic returned another finding ID");
+      const snapshotId = state.snapshotId ?? "";
+      validateEvidence(
+        this.store,
+        runId,
+        snapshotId,
+        resolveEvidenceIds(currentEvidence(this.store, runId, snapshotId), output.evidenceIds),
+        output.decision !== "inconclusive",
+      );
+      this.store.transaction(() => this.store.finishStep(runId, child, "completed"));
+      return { equivalent: output.decision === "refuted", explanation: output.explanation };
+    } catch (error) {
+      if (signal.aborted) throw error;
+      if (
+        error instanceof WorkflowFault &&
+        ["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code)
+      )
+        throw error;
+      this.store.transaction(() => this.store.finishStep(runId, child, "failed"));
+      return null;
+    }
   }
   /** Blocking findings for surviving mutants, each on a test file the correction may write. */
   private mutantFindings(
     state: RuntimeState,
     blocking: MutationResult["mutants"],
     evidenceId: string,
+    engine: MutationResult["engine"],
   ): Review["findings"] {
     const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [];
+    const by = engine && engine !== "built-in" ? ` (${engine})` : "";
     return blocking.map((m) => {
       // The task that writes the mutated file, or in a harden run the one that tests it.
       const owner =
@@ -5251,11 +5616,14 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         )
         .flatMap((t) => t.writes.map((w) => w.path))
         .find((path) => isTestCodePath(path) && isCodePath(path));
+      const change = m.description
+        ? `mutated${by} (${m.description.slice(0, 160)}) at \`${m.original.trim().slice(0, 160)}\``
+        : `changed${by} from \`${m.original.trim().slice(0, 160)}\` to \`${m.mutated.trim().slice(0, 160)}\``;
       return this.qualityFinding(state, {
         kind: "correctness",
         file: testFile ?? m.file,
         evidenceId,
-        claim: `Surviving mutant ${m.id}: ${m.file}:${m.line} changed from \`${m.original.trim().slice(0, 160)}\` to \`${m.mutated.trim().slice(0, 160)}\` and every test check still passed`,
+        claim: `Surviving mutant ${m.id}: ${m.file}:${m.line} ${change} and every test check still passed${m.criterionId ? ` (it breaks ${m.criterionId})` : ""}`,
         impact:
           "The tests do not check the behavior of this line: a wrong change to it would go unnoticed.",
         suggestedFix: `Add or strengthen a test${testFile ? ` in ${testFile}` : ""} that passes on the code as it is and fails on the mutant (${m.file}:${m.line}). Do not change ${m.file} to get rid of the mutant.`,
@@ -6159,7 +6527,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         reason: "verification_failed",
       });
     if (!failures.length)
-      failures.push(...(await this.qualityFindings(runId, state, policy, signal)));
+      failures.push(...(await this.qualityFindings(runId, stepId, state, policy, signal)));
     if (!failures.length) {
       // Without a review stage nothing else closes the findings of an earlier failed run of
       // these gates; the passing gates close them.

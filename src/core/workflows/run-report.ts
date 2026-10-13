@@ -420,10 +420,12 @@ function mutationSection(
   const extra = [
     ...(count("timeout") ? [`${count("timeout")} timed out`] : []),
     ...(count("not-run") ? [`${count("not-run")} not run`] : []),
+    ...(count("equivalent") ? [`${count("equivalent")} judged equivalent`] : []),
   ];
   const score = result.score === null ? "no score" : `score ${result.score}%`;
+  const engine = result.engine && result.engine !== "built-in" ? `, ${result.engine}` : "";
   const out = [
-    `Mutation gate (\`${result.mode}\`): ${score} (${killed} of ${ran} mutants killed${extra.length ? `, ${extra.join(", ")}` : ""})${blocking ? `, ${blocking} blocking` : ""}${result.tests.length ? `; tests: ${result.tests.map(code).join(", ")}` : ""}${result.note ? `; ${result.note}` : ""}.`,
+    `Mutation gate (\`${result.mode}\`${engine}): ${score} (${killed} of ${ran} mutants killed${extra.length ? `, ${extra.join(", ")}` : ""})${blocking ? `, ${blocking} blocking` : ""}${result.tests.length ? `; tests: ${result.tests.map(code).join(", ")}` : ""}${result.note ? `; ${result.note}` : ""}.`,
     "",
   ];
   if (before)
@@ -431,7 +433,9 @@ function mutationSection(
       `Mutation score before the run: ${before.score === null ? "none" : `${before.score}%`} -> after: ${result.score === null ? "none" : `${result.score}%`}.`,
       "",
     );
-  const survivors = result.mutants.filter((m) => m.status === "survived");
+  const survivors = result.mutants.filter(
+    (m) => m.status === "survived" || m.status === "equivalent",
+  );
   if (survivors.length)
     out.push(
       ...table(
@@ -439,8 +443,12 @@ function mutationSection(
         survivors.map((m) => [
           m.id,
           code(`${m.file}:${m.line}`),
-          code(m.mutated.trim()),
-          m.blocking ? "survived, blocking" : "survived",
+          m.description ? m.description : code(m.mutated.trim()),
+          m.status === "equivalent"
+            ? `equivalent: ${(m.equivalence ?? "").slice(0, 200)}`.trim()
+            : m.blocking
+              ? "survived, blocking"
+              : "survived",
         ]),
         cap,
       ),

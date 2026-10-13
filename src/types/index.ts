@@ -311,6 +311,8 @@ export interface QualityConfig {
   mutationThresholds?: Record<string, number>;
   /** Time the mutation gate may spend per checks stage, in milliseconds (default 300000). */
   mutationBudgetMs?: number;
+  /** `built-in` keeps the mutation gate on its own operators when an ecosystem tool is installed; `auto` (default) uses the tool. */
+  mutationEngine?: "auto" | "built-in";
   /** Property-based tests from marked criteria: `preset` or absent follows the workflow preset. */
   propertyTests?: "preset" | "auto" | "off";
 }
