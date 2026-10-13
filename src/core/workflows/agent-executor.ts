@@ -37,6 +37,7 @@ import {
   writesDocumentation,
 } from "../verification/repro.js";
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
+import { affectedTestsFor } from "./affected-tests.js";
 import { assertAttemptFits } from "./budget.js";
 import { fixerCommand, fixerTiers } from "./check-policy.js";
 import { fileHash, rootField } from "./effects.js";
@@ -60,6 +61,7 @@ import {
   CritiqueSchema,
   generatedPaths,
   ImplementationSchema,
+  MutantProposalSchema,
   PlanSchema,
   RefutationSchema,
   ReportSchema,
@@ -99,6 +101,7 @@ export const outputSchemas: Record<string, z.ZodType> = {
   initiativePlan: InitiativePlanSchema,
   "approval-review": ApprovalReviewSchema,
   critique: CritiqueSchema,
+  mutants: MutantProposalSchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;
 /** Read-only steps in a row before an implementer is told to edit. */
@@ -436,8 +439,15 @@ export class NativeAgentExecutor implements AgentExecutor {
           description: "Run an approved check by ID and return host evidence.",
           inputSchema: z.object({ checkId: z.string() }).strict(),
           execute: async ({ checkId }) => {
-            const check = policy.checks.find((c) => c.id === checkId);
-            if (!check || !request.task?.checkIds.includes(checkId))
+            const task = request.task;
+            // The affected-tests check (#634) runs only the tests that reach the task's files.
+            const affected =
+              task && checkId.endsWith("-affected")
+                ? affectedTestsFor(root, policy.checks, task.writes).check
+                : null;
+            const check =
+              affected?.id === checkId ? affected : policy.checks.find((c) => c.id === checkId);
+            if (!check || (check !== affected && !task?.checkIds.includes(checkId)))
               throw new WorkflowFault("CAPABILITY_DENIED", "Check ID is outside the task scope");
             const scope = new ProcessScope();
             try {
@@ -473,7 +483,7 @@ export class NativeAgentExecutor implements AgentExecutor {
               executables: probeable,
               generated: generatedPaths(policy),
               signal: request.signal,
-              sandbox: runSandbox(policy, root),
+              sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
             });
             // Each probe is evidence of how the repair went, so it is journaled with the attempt (#454).
             try {
@@ -543,7 +553,9 @@ export class NativeAgentExecutor implements AgentExecutor {
                       env: buildCheckEnv(check),
                       timeoutMs: check.timeoutMs,
                       signal: request.signal,
-                      sandbox: runSandbox(policy, root),
+                      sandbox: runSandbox(policy, root, {
+                        gitWrite: root !== this.store.workspace,
+                      }),
                     });
                     outputs.push(`${path}: exit ${String(result.exitCode)}`);
                   });
@@ -649,6 +661,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         fallbackStepTokens:
           request.profile.maxOutputTokens + Math.ceil(Buffer.byteLength(request.prompt) / 2),
         maxOutputTokens: request.profile.maxOutputTokens,
+        ...(request.profile.compaction ? { compaction: request.profile.compaction } : {}),
         ...(request.profile.role === "implementer" && request.task?.writes.length
           ? { editNudgeAfterReads: EDIT_NUDGE_AFTER_READS }
           : {}),

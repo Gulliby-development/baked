@@ -108,7 +108,15 @@ export class CheckRunner {
     timeoutMs: number,
   ): Promise<"passed" | "failed" | "inconclusive"> {
     const policy = JSON.parse(this.store.run(runId).policy_json) as RunPolicy;
-    return (await this.measure(check, signal, root, runSandbox(policy, root), timeoutMs)).status;
+    return (
+      await this.measure(
+        check,
+        signal,
+        root,
+        runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
+        timeoutMs,
+      )
+    ).status;
   }
   /** Like `probe`, and also returns the output: a baseline count records no evidence either. */
   async measure(
@@ -184,7 +192,7 @@ export class CheckRunner {
         signal,
         onSpawn: (pid, scope) =>
           this.store.transaction(() => this.store.recordProcess(runId, effectId, pid, scope)),
-        sandbox: runSandbox(policy, root),
+        sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
       });
     } catch (error) {
       reason = error instanceof SandboxUnavailableError ? "sandbox_unavailable" : "spawn_error";

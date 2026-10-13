@@ -283,6 +283,35 @@ export interface GcResult {
   bytes: number;
 }
 
+/** One run's directory under `.baked/worktrees` (`GET /v1/workflow/worktrees`). */
+export interface RunWorktreeUsage {
+  runId: string;
+  path: string;
+  bytes: number;
+  worktrees: { name: string; bytes: number }[];
+  status: string;
+  featureId: string | null;
+  removable: boolean;
+  kept?: string;
+}
+
+export interface WorktreeReport {
+  worktrees: RunWorktreeUsage[];
+  bytes: number;
+  trashBytes: number;
+}
+
+/** `POST /v1/workflow/worktrees/clean`: the runs whose worktrees a cleanup removes, or removed. */
+export interface WorktreeCleanup {
+  runIds: string[];
+  bytes: number;
+  dryRun: boolean;
+  warnings: string[];
+}
+
+/** Worktree sizes and cleanup (`worktrees` capability). */
+export const WORKTREES_CAPABILITY = "worktrees";
+
 /** `POST /v1/workflow/import`: a candidate under `.baked/workflow-imports/HASH`. */
 export interface ImportResult {
   candidateHash: string;
@@ -305,6 +334,11 @@ export const runMaintenance = {
   /** Ended runs older than 30 days and `before`; `dryRun` only lists them. */
   gc: (key: string, before: string, dryRun: boolean) =>
     call<GcResult>(key, "POST", "/v1/workflow/gc", { before, dryRun }),
+  /** Run and task worktrees on disk, largest first. */
+  worktrees: (key: string) => call<WorktreeReport>(key, "GET", "/v1/workflow/worktrees"),
+  /** Removes the worktrees of ended and unknown runs; branches stay. */
+  cleanWorktrees: (key: string, dryRun: boolean) =>
+    call<WorktreeCleanup>(key, "POST", "/v1/workflow/worktrees/clean", { dryRun }),
   /** Reads a local Spec Kit, ECC or Markdown directory into an inert candidate. */
   importCandidate: (
     key: string,

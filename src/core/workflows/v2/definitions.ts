@@ -21,11 +21,12 @@ import quickFix from "./presets/quick-fix.json" with { type: "json" };
 import reviewOnly from "./presets/review-only.json" with { type: "json" };
 import spike from "./presets/spike.json" with { type: "json" };
 import standard from "./presets/standard.json" with { type: "json" };
+import tdd from "./presets/tdd.json" with { type: "json" };
 import { upgradeWorkflowV1 } from "./upgrade.js";
 
 /** The presets shipped with BAKED, read only. "Duplicate as custom" copies one into baked/workflows. */
 export const builtinPresets: ReadonlyMap<string, WorkflowV2> = new Map(
-  [quick, quickFix, standard, full, spike, reviewOnly, fixCi, harden].map((raw) => {
+  [quick, quickFix, standard, full, spike, reviewOnly, fixCi, harden, tdd].map((raw) => {
     const preset = WorkflowV2Schema.parse(raw);
     return [preset.id, preset] as const;
   }),

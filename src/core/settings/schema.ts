@@ -571,6 +571,16 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "agentFeatures.approvalReview",
+    page: "agent-features",
+    section: "Approvals",
+    label: "Approval reviewer",
+    help: "Before asking you, the chat model reviews project-local cleanup commands (rm inside the project, git rebase, git branch -D, kill of a process) and edits of CI or Docker files, and runs them only at low risk. Force pushes, hard resets, database drops, piped scripts, secrets and anything outside the project always ask.",
+    scopes: BOTH,
+    type: "boolean",
+    default: false,
+  },
+  {
     id: "agentFeatures.desloppify",
     page: "agent-features",
     section: "After code agents",
@@ -923,6 +933,20 @@ export const SETTINGS: readonly SettingDefinition[] = [
       { value: "off", label: "off", help: "Do not run the gate." },
       { value: "advisory", label: "advisory", help: "Report surviving mutants." },
       { value: "required", label: "required", help: "Block until a test kills them." },
+    ],
+  },
+  {
+    id: "quality.mutationEngine",
+    page: "code-quality",
+    section: "Tests",
+    label: "Mutation engine",
+    help: "Which engine makes the mutation gate's mutants. auto runs the project's own mutation tool when it is already installed (Stryker, mutmut, cargo-mutants, PIT, go-mutesting) and the built-in operators otherwise; built-in always uses the operators. BAKED never installs a tool.",
+    scopes: BOTH,
+    type: "enum",
+    default: "auto",
+    options: [
+      { value: "auto", label: "auto", help: "Use an installed tool, else the built-in operators." },
+      { value: "built-in", label: "built-in", help: "Always use the built-in operators." },
     ],
   },
   {

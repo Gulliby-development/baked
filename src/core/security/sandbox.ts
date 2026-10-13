@@ -4,12 +4,12 @@
  * builders are in `src/core/platform/sandbox.ts`. See docs/sandbox.md.
  */
 
-import { existsSync, mkdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync } from "node:fs";
 import { loadConfig, loadProjectConfig } from "../../config/index.js";
 import {
   currentSandboxHost,
   detectSandbox,
+  pathsFor,
   SANDBOX_UNSET_ENV,
   type SandboxApplied,
   type SandboxDetection,
@@ -20,6 +20,7 @@ import {
   sandboxArgv,
   sandboxGap,
   sandboxProfile,
+  workspaceGit,
 } from "../platform/sandbox.js";
 
 export type {
@@ -114,19 +115,24 @@ export function chatSandbox(
   };
 }
 
-/** The sandbox of a workflow process from the run's frozen policy, or null when the run has none. */
+/**
+ * The sandbox of a workflow process from the run's frozen policy, or null when the run has none.
+ * `gitWrite` is set for a run root that is the run's own worktree, so Git commands of a check
+ * can write the worktree's Git state; it has no effect on a root that is not a worktree.
+ */
 export function runSandbox(
   policy: { sandbox?: "auto" | "required"; network: "deny" | "ask" | "allow" },
   root: string,
-  surface: SandboxSurface = "workflow",
+  options: { surface?: SandboxSurface; gitWrite?: boolean } = {},
 ): SandboxRequest | null {
   if (!policy.sandbox) return null;
   return {
     mode: policy.sandbox,
-    surface,
+    surface: options.surface ?? "workflow",
     writable: [root],
     workspaces: [root],
     protectDefinitions: true,
+    ...(options.gitWrite ? { gitWrite: true } : {}),
     // "ask" cannot prompt from inside a process, so only "allow" grants the network.
     network: policy.network === "allow",
   };
@@ -224,7 +230,7 @@ export function sandboxLaunch(
       },
     };
   }
-  if (host.platform !== "darwin") ensureHooksDir(request.workspaces);
+  if (host.platform !== "darwin") ensureHooksDirs(request, host);
   const profile = sandboxProfile(request, cwd, host);
   const argv = sandboxArgv(detection, profile, executable, args, options);
   const gap = sandboxGap(detection, request);
@@ -244,16 +250,25 @@ export function sandboxLaunch(
 }
 
 /**
- * A bind mount or an integrity label needs an existing path, so a missing `.git/hooks` is created
- * (as `git init` would) before it is made read-only; otherwise the sandbox could create it with a hook.
+ * A bind mount needs an existing path, so a missing `hooks` directory of the workspace's Git
+ * directories is created (as `git init` would) before it is mounted read-only; otherwise the
+ * sandbox could create it with a hook.
  */
-function ensureHooksDir(workspaces: string[]): void {
-  for (const root of workspaces) {
-    const git = join(root, ".git");
+function ensureHooksDirs(request: SandboxRequest, host: SandboxHost): void {
+  for (const root of request.workspaces) {
+    let gitDirs: string[];
     try {
-      if (statSync(git).isDirectory() && !existsSync(join(git, "hooks")))
-        mkdirSync(join(git, "hooks"));
-    } catch {}
+      gitDirs = workspaceGit(host, host.realpath(root), request.gitWrite).gitDirs;
+    } catch {
+      continue;
+    }
+    for (const dir of gitDirs) {
+      const hooks = pathsFor(host.platform).join(dir, "hooks");
+      if (!host.isDirectory(dir) || host.exists(hooks)) continue;
+      try {
+        mkdirSync(hooks);
+      } catch {}
+    }
   }
 }
 

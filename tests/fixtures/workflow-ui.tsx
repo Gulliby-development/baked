@@ -54,6 +54,7 @@ const service = {
     runModel: () => "fixture/model",
     worktree: () => null,
     routing: () => null,
+    gates: () => ({}),
     changes: () => [{ path: "src/example.ts", source: "code", action: "modified", edits: 2, status: "applied", drifted: false }, { path: "specs/x/spec.md", source: "spec", action: "created", edits: 1, status: "applied", drifted: false }],
   },
 };

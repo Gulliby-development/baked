@@ -16,6 +16,7 @@ import {
   isDestructiveCommand,
   isSensitiveFile,
 } from "../security/approval-gates.js";
+import type { ApprovalDetail, ApproveDestructive } from "../security/approval-review.js";
 import { needsOutsideConfirm } from "../security/outside-cwd.js";
 import type { IntelligenceClient } from "../workers/intelligence-client.js";
 import { guardWorkspaceTools } from "../workflows/mutation-guard.js";
@@ -327,10 +328,12 @@ function buildCrossTabDestructiveWarning(tabId?: string): string | null {
 
 /** What gates a shell command outside the tool loop shares with the agent's `shell` tool. */
 export interface ShellGates {
-  onApproveDestructive?: (description: string) => Promise<boolean>;
+  onApproveDestructive?: ApproveDestructive;
   tabId?: string;
   tabLabel?: string;
   repoMap?: IntelligenceClient;
+  /** The project root; relative command directories resolve against it. */
+  projectRoot?: string;
 }
 
 /**
@@ -356,19 +359,28 @@ export async function runGatedShell(
       };
     }
   }
+  let approvedBy: string | undefined;
   if (gates.onApproveDestructive && isDestructiveCommand(args.command)) {
     const desc = describeDestructiveCommand(args.command);
     const crossTabWarning = buildCrossTabDestructiveWarning(gates.tabId);
     const prompt = crossTabWarning
       ? `Shell: ${desc}\n\n\`${args.command}\`\n\n${crossTabWarning}`
       : `Shell: ${desc}\n\n\`${args.command}\``;
-    const approved = await gates.onApproveDestructive(prompt);
+    const detail: ApprovalDetail = {
+      kind: "shell",
+      command: args.command,
+      cwd: resolve(gates.projectRoot ?? process.cwd(), args.cwd ?? "."),
+      ...(crossTabWarning ? { crossTab: true } : {}),
+    };
+    const approved = await gates.onApproveDestructive(prompt, detail);
     if (!approved) {
       const msg = `Denied: ${desc}`;
       return { success: false, output: msg, error: msg };
     }
+    approvedBy = detail.approvedBy;
   }
   const result = await shellTool.execute(args, abortSignal);
+  if (approvedBy) result.output = `${approvedBy}\n\n${result.output}`;
   if (result.success && gates.repoMap?.isReady) {
     gates.repoMap.recheckModifiedFiles();
   }
@@ -439,7 +451,7 @@ export function buildTools(
     repoMap?: IntelligenceClient;
     onApproveFetchPage?: (url: string) => Promise<boolean>;
     onApproveOutsideCwd?: (toolName: string, path: string) => Promise<boolean>;
-    onApproveDestructive?: (description: string) => Promise<boolean>;
+    onApproveDestructive?: ApproveDestructive;
     /** Asked before every artifact deploy; without it the artifact tool refuses deploys. */
     onApproveArtifactDeploy?: (question: string) => Promise<boolean>;
     tabId?: string;
@@ -448,6 +460,18 @@ export function buildTools(
   },
 ) {
   const effectiveCwd = cwd ?? process.cwd();
+  /** Asks before an edit of a sensitive file; `note` names the approval reviewer when it approved. */
+  const approveSensitiveEdit = async (
+    path: string,
+  ): Promise<{ denied?: ToolResult; note?: string }> => {
+    if (!opts?.onApproveDestructive || !isSensitiveFile(path)) return {};
+    const detail: ApprovalDetail = { kind: "edit", path, cwd: effectiveCwd };
+    if (!(await opts.onApproveDestructive(`Edit sensitive file: \`${path}\``, detail))) {
+      const msg = `Denied: edit to sensitive file ${path}`;
+      return { denied: { success: false, output: msg, error: msg } };
+    }
+    return detail.approvedBy ? { note: detail.approvedBy } : {};
+  };
   const mm = resolveMemoryManager(opts, effectiveCwd);
   const memoryTool = createMemoryTool({
     manager: mm,
@@ -654,13 +678,8 @@ export function buildTools(
       execute: deferExecute(async (args) => {
         const gate = await gateOutsideCwd("edit_file", resolve(args.path));
         if (gate.blocked) return gate.result;
-        if (opts?.onApproveDestructive && isSensitiveFile(args.path)) {
-          const approved = await opts.onApproveDestructive(`Edit sensitive file: \`${args.path}\``);
-          if (!approved) {
-            const msg = `Denied: edit to sensitive file ${args.path}`;
-            return { success: false, output: msg, error: msg };
-          }
-        }
+        const approval = await approveSensitiveEdit(args.path);
+        if (approval.denied) return approval.denied;
         const warning = checkAndClaim(opts?.tabId, opts?.tabLabel, resolve(args.path));
         const result = await editFileTool.execute({ ...args, tabId: opts?.tabId });
         if (!result.success && result.error === "old_string not found" && warning) {
@@ -671,6 +690,7 @@ export function buildTools(
           };
         }
         await enrichWithBlastRadius(result, args.path, effectiveCwd, opts?.repoMap);
+        if (approval.note) result.output = `${approval.note}\n\n${result.output}`;
         return result;
       }),
     }),
@@ -722,13 +742,8 @@ export function buildTools(
       execute: deferExecute(async (args) => {
         const gate = await gateOutsideCwd("multi_edit", resolve(args.path));
         if (gate.blocked) return gate.result;
-        if (opts?.onApproveDestructive && isSensitiveFile(args.path)) {
-          const approved = await opts.onApproveDestructive(`Edit sensitive file: \`${args.path}\``);
-          if (!approved) {
-            const msg = `Denied: edit to sensitive file ${args.path}`;
-            return { success: false, output: msg, error: msg };
-          }
-        }
+        const approval = await approveSensitiveEdit(args.path);
+        if (approval.denied) return approval.denied;
         const warning = checkAndClaim(opts?.tabId, opts?.tabLabel, resolve(args.path));
         const result = await multiEditTool.execute({ ...args, tabId: opts?.tabId });
         if (!result.success && result.error?.includes("not found") && warning) {
@@ -739,6 +754,7 @@ export function buildTools(
           };
         }
         await enrichWithBlastRadius(result, args.path, effectiveCwd, opts?.repoMap);
+        if (approval.note) result.output = `${approval.note}\n\n${result.output}`;
         return result;
       }),
     }),
@@ -839,15 +855,11 @@ export function buildTools(
       execute: deferExecute(async (args) => {
         const gate = await gateOutsideCwd("ast_edit", resolve(args.path));
         if (gate.blocked) return gate.result;
-        if (opts?.onApproveDestructive && isSensitiveFile(args.path)) {
-          const approved = await opts.onApproveDestructive(`Edit sensitive file: \`${args.path}\``);
-          if (!approved) {
-            const msg = `Denied: edit to sensitive file ${args.path}`;
-            return { success: false, output: msg, error: msg };
-          }
-        }
+        const approval = await approveSensitiveEdit(args.path);
+        if (approval.denied) return approval.denied;
         const result = await astEditTool.execute({ ...args, tabId: opts?.tabId });
         await enrichWithBlastRadius(result, args.path, effectiveCwd, opts?.repoMap);
+        if (approval.note) result.output = `${approval.note}\n\n${result.output}`;
         return result;
       }),
     }),
@@ -1129,7 +1141,7 @@ export function buildTools(
           const gate = await gateOutsideCwd("shell", resolve(args.cwd));
           if (gate.blocked) return gate.result;
         }
-        return runGatedShell(args, opts ?? {}, abortSignal);
+        return runGatedShell(args, { ...opts, projectRoot: effectiveCwd }, abortSignal);
       },
     }),
 

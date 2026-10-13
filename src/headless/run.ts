@@ -90,6 +90,8 @@ async function setupAgent(
     callbacks?: InteractiveCallbacks;
     onApproveOutsideCwd?: (toolName: string, path: string) => Promise<boolean>;
     onApproveDestructive?: (description: string) => Promise<boolean>;
+    /** `--approval-review`: the approval reviewer decides low-risk approvals first. */
+    approvalReview?: boolean;
   },
   merged: AppConfig,
 ): Promise<AgentEnv> {
@@ -106,7 +108,10 @@ async function setupAgent(
 
   // `--effort` replaces the configured reasoning effort for this run.
   const effort = opts.effort ?? "default";
-  const config = withChatEffort(modelId, merged, effort);
+  const configured = withChatEffort(modelId, merged, effort);
+  const config: AppConfig = opts.approvalReview
+    ? { ...configured, agentFeatures: { ...configured.agentFeatures, approvalReview: true } }
+    : configured;
   let model: LanguageModel;
   try {
     model = resolveModel(modelId, config);

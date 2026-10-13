@@ -1,5 +1,6 @@
 /** Workflow v1 contracts. */
 import { z } from "zod";
+import { RouteEffort } from "../llm/model-routing.js";
 import { LibraryDocsSchema } from "./library-docs.js";
 
 export const SafeId = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/);
@@ -103,7 +104,18 @@ export const TaskSchema = z
     dependsOn: z.array(TaskId),
     profileId: SafeId,
     writes: z.array(
-      z.object({ path: RelativePath, action: z.enum(["create", "modify", "delete"]) }).strict(),
+      z
+        .object({
+          path: RelativePath,
+          action: z.enum(["create", "modify", "delete"]),
+          /**
+           * Why the task changes or deletes a test file that existed before the run. Without it
+           * the test-integrity guard keeps such a file read-only for the implementer. Absent on
+           * every other write, so stored graphs keep their hash.
+           */
+          reason: Text.optional(),
+        })
+        .strict(),
     ),
     readHints: z.array(RelativePath),
     /**
@@ -276,6 +288,19 @@ export const PolicySchema = z
      */
     projectMemory: z.boolean().optional(),
     /**
+     * What the test-integrity guard does with what it finds in a task's diff (test-integrity.ts):
+     * `block` makes each finding a repair, `warn` records it only. Absent means `block`; only
+     * `warn` is stored, so stored policies keep their hash.
+     */
+    testIntegrity: z.enum(["block", "warn"]).optional(),
+    /**
+     * Tests first (tests-first.ts): `criteria` writes a failing test task for every automated
+     * criterion before any code, `all` for every criterion; a person approves the tests and the
+     * code is implemented until they pass. Absent means `off`, so stored policies keep their hash;
+     * a definition's `testsFirst` (the `tdd` and `full` presets) overrides it at start.
+     */
+    testsFirst: z.enum(["off", "criteria", "all"]).optional(),
+    /**
      * Review findings whose confidence is below this are notes and start no correction. Absent
      * means 0.8 (`DEFAULT_REVIEW_MIN_CONFIDENCE`), so stored policies keep their hash; a run start
      * copies `modelRouting.reviewMinConfidence` here when it is set.
@@ -340,6 +365,12 @@ export const PolicySchema = z
       .record(z.string().min(1).max(512), z.number().int().min(0).max(100))
       .optional(),
     mutationBudgetMs: z.number().int().min(10_000).max(3_600_000).optional(),
+    /**
+     * `built-in` keeps the mutation gate on its own operators even when the project has an
+     * ecosystem tool (quality/mutation-tools.ts); `auto` runs the installed tool. Absent means
+     * `auto`, so stored policies keep their hash.
+     */
+    mutationEngine: z.enum(["auto", "built-in"]).optional(),
     /**
      * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
      * rules turned off, severities changed and ast-grep rule files added. Absent means the
@@ -426,6 +457,23 @@ export function writerPolicyProblem(policy: {
   return null;
 }
 
+/**
+ * Per-profile compaction of replayed tool output. `keepRecent` tool-result messages stay verbatim;
+ * compaction starts once the attempt has spent `startAtTokens`, or `startAtShare` of its token
+ * cap, and stays on for the rest of the attempt. Without a start it runs from the first step.
+ */
+export const ProfileCompactionSchema = z
+  .object({
+    keepRecent: z.number().int().min(1).max(20).optional(),
+    startAtTokens: z.number().int().min(1000).max(10_000_000).optional(),
+    startAtShare: z.number().gt(0).max(1).optional(),
+  })
+  .strict()
+  .refine((value) => value.startAtTokens === undefined || value.startAtShare === undefined, {
+    message: "Set startAtTokens or startAtShare, not both",
+  });
+export type ProfileCompaction = z.infer<typeof ProfileCompactionSchema>;
+
 export const ProfileSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -470,9 +518,14 @@ export const ProfileSchema = z
       "initiativePlan",
       "approval-review",
       "critique",
+      "mutants",
     ]),
     maxSteps: z.number().int().min(1).max(100),
     maxOutputTokens: z.number().int().min(256).max(65536),
+    /** Reasoning effort when the profile's model route sets none (#334). */
+    effort: RouteEffort.optional(),
+    /** When an attempt starts compacting older tool output (#334); unset keeps the runtime default. */
+    compaction: ProfileCompactionSchema.optional(),
   })
   .strict();
 
@@ -687,12 +740,40 @@ export const CritiqueSchema = z
   })
   .strict();
 export type Critique = z.infer<typeof CritiqueSchema>;
+/**
+ * Mutants an agent proposes for the mutation gate (#702): each changes one line the run added
+ * so that the criterion it targets would break. The host checks each one against the file.
+ */
+export const MutantProposalSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    mutants: z
+      .array(
+        z
+          .object({
+            criterionId: CriterionId,
+            file: z.string().min(1).max(512),
+            line: z.number().int().min(1),
+            original: z.string().min(1).max(2000),
+            mutated: z.string().max(2000),
+            rationale: Text,
+          })
+          .strict(),
+      )
+      .max(24),
+  })
+  .strict();
+export type MutantProposal = z.infer<typeof MutantProposalSchema>;
 
 export const ImplementationSchema = z
   .object({
     schemaVersion: z.literal(1),
     taskId: TaskId,
-    outcome: z.enum(["implemented", "already_satisfied", "blocked", "failed"]),
+    /**
+     * `spec_conflict`: the spec and the tests (or the criteria) cannot both hold. The task stops
+     * without fitting the tests and the run asks a person which one is right.
+     */
+    outcome: z.enum(["implemented", "already_satisfied", "blocked", "failed", "spec_conflict"]),
     summary: Text,
     evidenceIds: z.array(SafeId),
     unresolved: z.array(Text),
@@ -1300,6 +1381,8 @@ export interface StartRequest {
   modelStrict?: boolean;
   /** What blocking questions do in this run (CLI `--clarification MODE`); it overrides the policy. */
   clarification?: ClarificationMode;
+  /** What the test-integrity guard does in this run (CLI `--test-integrity MODE`); it overrides the policy. */
+  testIntegrity?: "block" | "warn";
   /** The duplication ratchet of this run (CLI `--duplication MODE`); it overrides the policy. */
   duplication?: "off" | "warn" | "ratchet";
   /** Semgrep on the run's diff (CLI `--sast MODE`); it overrides the policy. */
@@ -1552,8 +1635,33 @@ export function hostBoundCriteria(spec: Spec): string[] {
     .map((c) => c.id);
 }
 
-/** The spec defects as corrections for the spec author, who can add or relink criteria. */
-export function specCoverageProblems(spec: Spec): string[] {
+// A criterion that the project's build succeeds, or a build command named outright.
+const BUILD_CLAIM =
+  /\b(?:production|release|project|package|app(?:lication)?|the) build (?:succeeds|passes|completes|works|runs)\b|\bbuilds? (?:successfully|cleanly|without (?:errors?|warnings?))\b|\b(?:npm|bun|pnpm|yarn) run build\b|\b(?:cargo|go|dotnet|gradlew?) build\b|\bmvn (?:package|install|verify)\b/i;
+/** What a check runs, for the spec checks that compare criteria with the execution contract. */
+type CheckCommand = { id: string; executable: string; args: readonly string[] };
+// A declared check that builds the project.
+const BUILD_CHECK =
+  /\b(?:build|bundle|assemble|compile|package)\b|\bmvn\b.*\b(?:verify|install)\b/i;
+
+/**
+ * Automated criteria that need a build while no declared check builds the project. Convergence
+ * proves a criterion only with the checks of the execution contract, so such a criterion ends
+ * inconclusive however the build goes (zoneslot-update fc3e9c49 AC-010: "production build
+ * succeeds", the contract had typecheck, lint and tests, and the run noted a false alarm).
+ */
+export function uncontractedBuildCriteria(spec: Spec, checks: readonly CheckCommand[]): string[] {
+  if (checks.some((c) => BUILD_CHECK.test([c.id, c.executable, ...c.args].join(" ")))) return [];
+  return spec.criteria
+    .filter((c) => c.method === "automated" && BUILD_CLAIM.test(`${c.given}\n${c.when}\n${c.then}`))
+    .map((c) => c.id);
+}
+
+/**
+ * The spec defects as corrections for the spec author, who can add or relink criteria. With the
+ * run's checks, a criterion that needs a check the execution contract lacks is one too.
+ */
+export function specCoverageProblems(spec: Spec, checks?: readonly CheckCommand[]): string[] {
   return [
     ...validateSpecCoverage(spec).map((error) =>
       /^(requirement without criterion|engineering requirement deferred) /.test(error)
@@ -1567,6 +1675,10 @@ export function specCoverageProblems(spec: Spec): string[] {
     ...hostBoundCriteria(spec).map(
       (id) =>
         `criterion ${id} is automated but claims behavior on other operating systems, browsers or devices, and the run checks on one host, so nothing can prove it. Rewrite it as what this host can check (platform-neutral path, line-ending and process APIs; the tests pass here). When the request asks for proof on other platforms, add a criterion that a CI workflow file runs the checks on a matrix of those platforms (for example ubuntu-latest, macos-latest, windows-latest), which the reviewer verifies by reading the file. Use post-release only for a claim that needs a release or a real device.`,
+    ),
+    ...(checks ? uncontractedBuildCriteria(spec, checks) : []).map(
+      (id) =>
+        `criterion ${id} is automated but needs a build, and no check of executionContract.checks (${checks?.map((c) => c.id).join(", ") || "none"}) builds the project, so convergence cannot prove it. Rewrite it as what those checks prove (the tests or the type check pass) or what the reviewer can read in a file, or use method post-release when the request needs the build itself checked outside this run.`,
     ),
   ];
 }

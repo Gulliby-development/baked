@@ -192,6 +192,7 @@ export function NewRunScreen({ project }: SectionProps) {
   const [writers, setWriters] = useState(1);
   // Null follows the configured policy; the checkbox overrides it for this run.
   const [assumeOverride, setAssume] = useState<boolean | null>(null);
+  const [warnOverride, setWarn] = useState<boolean | null>(null);
   // Empty follows the policy and the sandbox setting; a choice overrides them for this run.
   const [sandbox, setSandbox] = useState<"" | "off" | "auto" | "required">("");
   const [strict, setStrict] = useState(false);
@@ -221,6 +222,7 @@ export function NewRunScreen({ project }: SectionProps) {
   const route = useRoute(key, workflow, model);
   const launcher = useStartRun(key);
   const assume = assumeOverride ?? policy.policy?.clarification === "assume";
+  const warnTests = warnOverride ?? policy.policy?.testIntegrity === "warn";
 
   const definition = useMemo(
     () => definitions.value?.find((d) => d.id === workflow) ?? null,
@@ -300,6 +302,7 @@ export function NewRunScreen({ project }: SectionProps) {
       ...(writers > 1 ? { writers } : {}),
       // Sent only when changed here, so a backend without the field still starts the run.
       ...(assumeOverride !== null ? { clarification: assume ? "assume" : "ask" } : {}),
+      ...(warnOverride !== null ? { testIntegrity: warnTests ? "warn" : "block" } : {}),
       ...(sandbox ? { sandbox } : {}),
       ...(proposal ? { autoPreset: true } : {}),
       ...(strict ? { modelStrict: true } : {}),
@@ -313,6 +316,7 @@ export function NewRunScreen({ project }: SectionProps) {
     `${budget} budget`,
     writers > 1 ? `${writers} writers` : worktree ? "in a worktree" : "in place",
     assume ? "assumptions on" : "questions wait for you",
+    ...(warnTests ? ["test guard warns only"] : []),
     model || "default model",
     ...(strict ? ["run model overrides routes"] : []),
   ].join(" · ");
@@ -507,6 +511,22 @@ export function NewRunScreen({ project }: SectionProps) {
                 {assume
                   ? "The agents pick conventional defaults and list them at approval; only questions without a safe default wait for you."
                   : "The run waits for your answers to blocking questions."}
+              </span>
+            </fieldset>
+            <fieldset className={FIELDSET}>
+              <legend className={LEGEND}>Test integrity</legend>
+              <label className={CHECK}>
+                <input
+                  type="checkbox"
+                  checked={warnTests}
+                  onChange={(e) => setWarn(e.target.checked)}
+                />
+                Only warn about test gaming
+              </label>
+              <span className={HINT}>
+                {warnTests
+                  ? "Deleted, skipped or weakened tests and new suppressions in a task are recorded, not repaired."
+                  : "Deleted, skipped or weakened tests and new suppressions in a task are sent back for repair."}
               </span>
             </fieldset>
             <div className={FIELD}>

@@ -3,8 +3,9 @@
  * the project's test checks run against each. A mutant the tests do not notice ("survived") means
  * the new tests assert too little. Under `required` a surviving mutant is a blocking finding the
  * run corrects with a test that kills it; under `advisory` survivors are notes in the run report.
- * The engine is built in and needs no tool on the machine. A gate that runs out of its time
- * budget is inconclusive for the mutants it did not run, never a failure.
+ * The built-in engine needs no tool on the machine; an ecosystem tool the project has installed
+ * (`mutation-tools.ts`) runs instead and its report maps to the same result. A gate that runs out
+ * of its time budget is inconclusive for the mutants it did not run, never a failure.
  */
 import { isTestCodePath } from "./duplication.js";
 import { addedLines, type ChangedFile } from "./rules.js";
@@ -47,19 +48,37 @@ export interface Mutant {
   operator: string;
   original: string;
   mutated: string;
+  /** What changed, when the mutated text is not one line (a tool's mutant of a block or bytecode). */
+  description?: string;
+  /** The acceptance criterion an agent-proposed mutant targets. */
+  criterionId?: string;
 }
 
 export interface MutantOutcome extends Mutant {
-  status: "killed" | "survived" | "timeout" | "not-run";
+  /** `equivalent`: a survivor the equivalence check found cannot change behavior; it is not scored. */
+  status: "killed" | "survived" | "timeout" | "not-run" | "equivalent";
   /** The test check that failed on the mutant, for a killed one. */
   killedBy?: string;
   /** Whether a survivor blocks: the mode is `required`, the baseline is known, the file is under its threshold. */
   blocking: boolean;
+  /** Why the equivalence check judged the survivor equivalent. */
+  equivalence?: string;
 }
+
+/** What made the mutants: the built-in operators or an installed ecosystem tool. */
+export type MutationEngine =
+  | "built-in"
+  | "stryker"
+  | "mutmut"
+  | "cargo-mutants"
+  | "pit"
+  | "go-mutesting";
 
 export interface MutationResult {
   schemaVersion: 1;
   mode: MutationMode;
+  /** Absent in results written before tools were supported: the built-in engine. */
+  engine?: MutationEngine;
   /** The checks run against each mutant. */
   tests: string[];
   mutants: MutantOutcome[];
@@ -276,31 +295,136 @@ export async function runMutants(
       blocking: false,
     });
   }
-  // A survivor blocks while its file's score is under the file's threshold.
-  for (const outcome of outcomes) {
-    if (outcome.status !== "survived" || mode !== "required") continue;
-    if (content.get(outcome.file)?.before === undefined) continue;
-    const ran = outcomes.filter(
-      (o) => o.file === outcome.file && (o.status === "killed" || o.status === "survived"),
-    );
-    const killed = ran.filter((o) => o.status === "killed").length;
-    outcome.blocking = (killed / ran.length) * 100 < thresholdFor(outcome.file, options.thresholds);
-  }
-  const ran = outcomes.filter((o) => o.status === "killed" || o.status === "survived");
   const notes = [
     ...(outOfTime
       ? [`time budget of ${Math.round(budget / 1000)}s reached; the remaining mutants did not run`]
       : []),
     ...(!mutants.length ? ["no mutable line was added"] : []),
   ];
+  return scoreMutants(
+    {
+      schemaVersion: 1,
+      mode,
+      engine: "built-in",
+      tests,
+      mutants: outcomes,
+      score: null,
+      ...(notes.length ? { note: notes.join("; ") } : {}),
+    },
+    files,
+    options.thresholds,
+  );
+}
+
+/**
+ * The result with its score and blocking survivors set from its mutants' statuses: a survivor
+ * blocks while its file's score is under the file's threshold. Equivalent mutants are not scored.
+ */
+export function scoreMutants(
+  result: MutationResult,
+  files: ChangedFile[],
+  thresholds: Record<string, number> | undefined,
+): MutationResult {
+  const known = new Map(files.map((f) => [f.path, f.before !== undefined]));
+  const ran = (o: MutantOutcome) => o.status === "killed" || o.status === "survived";
+  const mutants = result.mutants.map((outcome) => {
+    if (outcome.status !== "survived" || result.mode !== "required" || !known.get(outcome.file))
+      return { ...outcome, blocking: false };
+    const inFile = result.mutants.filter((o) => o.file === outcome.file && ran(o));
+    const killed = inFile.filter((o) => o.status === "killed").length;
+    return {
+      ...outcome,
+      blocking: (killed / inFile.length) * 100 < thresholdFor(outcome.file, thresholds),
+    };
+  });
+  const scored = mutants.filter(ran);
   return {
-    schemaVersion: 1,
-    mode,
-    tests,
-    mutants: outcomes,
-    score: ran.length
-      ? Math.round((ran.filter((o) => o.status === "killed").length / ran.length) * 100)
+    ...result,
+    mutants,
+    score: scored.length
+      ? Math.round((scored.filter((o) => o.status === "killed").length / scored.length) * 100)
       : null,
-    ...(notes.length ? { note: notes.join("; ") } : {}),
   };
+}
+
+/** Survivors the equivalence check judges per gate; the others stay findings until a later gate. */
+export const MAX_EQUIVALENCE_CHECKS = 8;
+/** Verdicts of the equivalence check, by mutant and file content, so a later gate asks again only for new mutants. */
+export const QUALITY_MUTATION_EQUIVALENCE = "quality/mutation-equivalence.json";
+/** The agent's mutants of the run's latest code, kept until the code changes. */
+export const QUALITY_MUTATION_PROPOSALS = "quality/mutation-proposals.json";
+/** Agent-proposed mutants per criterion and per gate. */
+const MAX_PROPOSED_PER_CRITERION = 3;
+const MAX_PROPOSED = 12;
+/** Text of the added lines an agent is shown to propose mutants on. */
+const MAX_PROPOSAL_INPUT_CHARS = 24_000;
+
+/** The lines each changed non-test code file gained, numbered, for the agent that proposes mutants. */
+export function proposalFiles(files: ChangedFile[]): { path: string; lines: string[] }[] {
+  let left = MAX_PROPOSAL_INPUT_CHARS;
+  const out: { path: string; lines: string[] }[] = [];
+  for (const file of files) {
+    if (isTestCodePath(file.path)) continue;
+    const text = file.content.split("\n");
+    const lines: string[] = [];
+    for (const index of [...addedLines(file.before, file.content)].sort((a, b) => a - b)) {
+      const line = text[index] ?? "";
+      if (!line.trim() || SKIP_LINE.test(line)) continue;
+      const entry = `${index + 1}: ${line}`;
+      if (entry.length > left) break;
+      left -= entry.length;
+      lines.push(entry);
+    }
+    if (lines.length) out.push({ path: file.path, lines });
+  }
+  return out;
+}
+
+/**
+ * The proposals that change one line the run added, as it is in the file, into a different line;
+ * at most three per criterion, numbered after the operator mutants. Indentation is the file's.
+ */
+export function proposedMutants(
+  proposals: {
+    criterionId: string;
+    file: string;
+    line: number;
+    original: string;
+    mutated: string;
+  }[],
+  files: ChangedFile[],
+  existing: Mutant[],
+): Mutant[] {
+  const byPath = new Map(files.map((f) => [f.path, f]));
+  const perCriterion = new Map<string, number>();
+  const seen = new Set(existing.map((m) => `${m.file}:${m.line}:${m.mutated.trim()}`));
+  const out: Mutant[] = [];
+  for (const proposal of proposals) {
+    const file = byPath.get(proposal.file);
+    if (!file || isTestCodePath(file.path) || out.length >= MAX_PROPOSED) continue;
+    if (!addedLines(file.before, file.content).has(proposal.line - 1)) continue;
+    const original = file.content.split("\n")[proposal.line - 1] ?? "";
+    const mutated = proposal.mutated.trim();
+    if (original.trim() !== proposal.original.trim() || mutated === original.trim()) continue;
+    if (
+      mutated.includes("\n") ||
+      (perCriterion.get(proposal.criterionId) ?? 0) >= MAX_PROPOSED_PER_CRITERION
+    )
+      continue;
+    const indented = (/^\s*/.exec(original)?.[0] ?? "") + mutated;
+    const key = `${file.path}:${proposal.line}:${mutated}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    perCriterion.set(proposal.criterionId, (perCriterion.get(proposal.criterionId) ?? 0) + 1);
+    out.push({
+      id: `M${existing.length + out.length + 1}`,
+      file: file.path,
+      line: proposal.line,
+      operator: "agent",
+      original,
+      mutated: indented,
+      criterionId: proposal.criterionId,
+    });
+  }
+  return out;
 }

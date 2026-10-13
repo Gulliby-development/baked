@@ -311,6 +311,9 @@ export async function executeWorkflowCommand(
         ...(args.flags.clarification === "ask" || args.flags.clarification === "assume"
           ? { clarification: args.flags.clarification }
           : {}),
+        ...(args.flags["test-integrity"] === "block" || args.flags["test-integrity"] === "warn"
+          ? { testIntegrity: args.flags["test-integrity"] }
+          : {}),
         ...(args.flags.sandbox === "off" ||
         args.flags.sandbox === "auto" ||
         args.flags.sandbox === "required"
@@ -613,6 +616,9 @@ export async function executeWorkflowCommand(
       const changed = editProjectMemory(service.store, edit);
       return { id: changed, ...projectMemoryView(service.store, policy) };
     }
+    case "worktrees":
+      if (args.flags.clean) return service.cleanWorktrees(args.flags["dry-run"] === true);
+      return service.worktrees();
     case "gc":
       return artifacts.gc({
         before: stringFlag(args, "before"),

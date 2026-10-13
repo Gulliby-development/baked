@@ -435,6 +435,43 @@ describe("workflow worktree execution", () => {
     expect(worktreeView(fx.root, store.state(inline.runId))).toBeNull();
   });
 
+  test("worktrees lists run worktrees with size and cleans only ended and unknown runs", async () => {
+    const fx = setup();
+    const run = await fx.start("worktree");
+    await fx.drive(run.runId);
+    const store = fx.service.store;
+    const worktree = store.state(run.runId).worktree;
+    const tree = join(fx.root, worktree?.path ?? "missing");
+    const orphan = join(fx.root, ".baked", "worktrees", "gone-run", "T001");
+    mkdirSync(orphan, { recursive: true });
+    writeFileSync(join(orphan, "big.txt"), "x".repeat(4096));
+    const listed = await fx.service.worktrees();
+    const own = listed.worktrees.find((w) => w.runId === run.runId);
+    expect(own?.removable).toBe(false);
+    expect(own?.kept).toMatch(/^run is /);
+    expect(own?.worktrees.map((w) => w.name)).toContain("main");
+    expect(own?.bytes).toBeGreaterThan(0);
+    const gone = listed.worktrees.find((w) => w.runId === "gone-run");
+    expect(gone).toMatchObject({ status: "orphan", removable: true, featureId: null });
+    expect(gone?.bytes).toBeGreaterThanOrEqual(4096);
+    // A dry run removes nothing; a cleanup keeps the waiting run and removes the orphan.
+    expect((await fx.service.cleanWorktrees(true)).runIds).toEqual(["gone-run"]);
+    expect(existsSync(orphan)).toBe(true);
+    expect((await fx.service.cleanWorktrees(false)).runIds).toEqual(["gone-run"]);
+    expect(existsSync(join(fx.root, ".baked", "worktrees", "gone-run"))).toBe(false);
+    expect(existsSync(tree)).toBe(true);
+    // Once the run ended, its worktree goes and its branch stays.
+    await fx.service.cancel(run.runId, { commandId: newId(), expectedRevision: store.run(run.runId).revision });
+    const cleaned = await fx.service.cleanWorktrees(false);
+    expect(cleaned.runIds).toEqual([run.runId]);
+    expect(cleaned.warnings).toEqual([]);
+    expect(existsSync(join(fx.root, ".baked", "worktrees", run.runId))).toBe(false);
+    expect(git(fx.root, "branch", "--list", `baked/wf/${run.runId}`)).toContain(`baked/wf/${run.runId}`);
+    expect(store.artifacts(run.runId).some((a) => a.logical_path === "worktree/cleaned.json")).toBe(true);
+    expect((await fx.service.worktrees()).worktrees).toEqual([]);
+    expect(parseWorkflowArgs(["worktrees", "--clean", "--dry-run"]).flags).toMatchObject({ clean: true, "dry-run": true });
+    expect(() => parseWorkflowArgs(["worktrees", "extra"])).toThrow();
+  });
   test("the CLI requests worktree execution, the exclusion choice and discard", () => {
     expect(parseWorkflowArgs(["run", "--feature", "f", "--prompt", "p", "--worktree"]).flags.worktree).toBe(true);
     expect(

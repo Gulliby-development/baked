@@ -132,6 +132,7 @@ import {
   UndoBody,
   UsageQuery,
   WorkingSetBody,
+  WorktreeCleanBody,
 } from "./schemas.js";
 import { type SettingsSecretStore, settingsRoute } from "./settings-routes.js";
 import { setupRoute } from "./setup-routes.js";
@@ -165,6 +166,7 @@ export const CAPABILITIES = [
   "mcp",
   "lsp",
   "run-maintenance",
+  "worktrees",
   "lsp-diagnose",
   "workflow-editor",
   "custom-commands",
@@ -425,6 +427,7 @@ function startArgs(raw: unknown): WorkflowArgs {
   if (body.worktree) flags.worktree = true;
   if (body.writers !== undefined) flags.writers = String(body.writers);
   if (body.clarification) flags.clarification = body.clarification;
+  if (body.testIntegrity) flags["test-integrity"] = body.testIntegrity;
   if (body.duplication) flags.duplication = body.duplication;
   if (body.sast) flags.sast = body.sast;
   if (body.mutation) flags.mutation = body.mutation;
@@ -1160,6 +1163,23 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
           command: "gc",
           positional: [],
           flags: { before: body.before, ...(body.dryRun ? { "dry-run": true } : {}) },
+        }),
+        origin,
+      );
+    }
+    if (path === "/v1/workflow/worktrees") {
+      only("GET");
+      return json(200, await execute({ command: "worktrees", positional: [], flags: {} }), origin);
+    }
+    if (path === "/v1/workflow/worktrees/clean") {
+      only("POST");
+      const body = WorktreeCleanBody.parse(await readJson(req));
+      return json(
+        200,
+        await execute({
+          command: "worktrees",
+          positional: [],
+          flags: { clean: true, ...(body.dryRun ? { "dry-run": true } : {}) },
         }),
         origin,
       );

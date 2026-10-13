@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   codeOnly,
@@ -107,10 +107,51 @@ describe("mutants", () => {
 describe("mutation gate in a run", () => {
   class SignExecutor extends FixtureExecutor {
     implementations = 0;
-    constructor(private readonly dir: string) {
+    constructor(
+      private readonly dir: string,
+      /** The skeptic's answer on a surviving mutant; `strengthen` makes the correction kill it. */
+      private readonly options: { equivalence?: "confirmed" | "refuted"; strengthen?: boolean } = {},
+    ) {
       super(dir);
     }
     override async execute(request: ExecutionRequest) {
+      const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as {
+        extra: { finding?: { id: string }; evidence?: { id: string }[] };
+      };
+      if (request.profile.output === "mutants" || request.profile.output === "refutation") {
+        this.calls.push(request.profile.output);
+        (this.prompts[request.profile.output] ??= []).push(request.prompt);
+      }
+      if (request.profile.output === "mutants")
+        return {
+          output: {
+            schemaVersion: 1,
+            mutants: [
+              {
+                criterionId: "AC-001",
+                file: "src/sign.ts",
+                line: 1,
+                original: "export const sign = (n: number) => (n < 0 ? -1 : 1);",
+                mutated: "export const sign = (n: number) => (n < 0 ? -1 : -1);",
+                rationale: "Positive numbers would get the negative sign",
+              },
+            ],
+          },
+          inputTokens: 10,
+          outputTokens: 10,
+        };
+      if (request.profile.output === "refutation")
+        return {
+          output: {
+            schemaVersion: 1,
+            findingId: data.extra.finding?.id,
+            decision: this.options.equivalence ?? "confirmed",
+            evidenceIds: (data.extra.evidence ?? []).map((e) => e.id).slice(0, 1),
+            explanation: "The changed boundary is never reached",
+          },
+          inputTokens: 10,
+          outputTokens: 10,
+        };
       if (request.profile.output === "plan") {
         const result = await super.execute(request);
         const plan = result.output as { taskGraph: { tasks: { writes: { path: string; action: string }[] }[] } };
@@ -124,7 +165,7 @@ describe("mutation gate in a run", () => {
         mkdirSync(join(this.dir, "src"), { recursive: true });
         mkdirSync(join(this.dir, "tests"), { recursive: true });
         writeFileSync(join(this.dir, "src/sign.ts"), "export const sign = (n: number) => (n < 0 ? -1 : 1);\n");
-        const strong = this.implementations++ > 0;
+        const strong = this.implementations++ > 0 && this.options.strengthen !== false;
         writeFileSync(
           join(this.dir, "tests/sign.test.ts"),
           [
@@ -164,12 +205,96 @@ describe("mutation gate in a run", () => {
       expect(mutant?.body.claim).toContain("src/sign.ts:1");
       expect(mutant?.body.file).toBe("tests/sign.test.ts");
       expect(mutant?.status).toBe("resolved");
+      // The agent's mutant for the criterion survived the weak test too.
+      expect(findings.some((f) => String(f.body.claim).endsWith("(it breaks AC-001)"))).toBe(true);
       // Every mutant was taken out again.
       expect(readFileSync(join(fixture.root, "src/sign.ts"), "utf8")).toBe(
         "export const sign = (n: number) => (n < 0 ? -1 : 1);\n",
       );
       const report = runReport(service.store, run.runId);
       expect(report).toContain("Mutation gate (`required`): score 100%");
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  const requiredPolicy = () => {
+    const first = fixturePolicy.checks[0] as (typeof fixturePolicy.checks)[number];
+    return {
+      ...fixturePolicy,
+      mutation: "required" as const,
+      checks: [...fixturePolicy.checks, { ...first, id: "unit", args: ["test", "tests/"] }],
+    };
+  };
+
+  test("a survivor the equivalence check judges equivalent is not a finding", async () => {
+    const fixture = workflowFixture({
+      policy: requiredPolicy(),
+      executor: (root) => new SignExecutor(root, { equivalence: "refuted", strengthen: false }),
+    });
+    try {
+      const { service, executor } = fixture;
+      const run = await fixture.start();
+      await service.drive(run.runId, new AbortController().signal);
+      await fixture.approve(run.runId);
+      const done = await service.drive(run.runId, new AbortController().signal);
+      expect(done.status).toBe("completed");
+      expect(executor.calls).toContain("refutation");
+      expect(executor.prompts.refutation?.[0]).toContain("Is this mutant equivalent?");
+      const claims = service.store.findings(run.runId).map((f) => String(JSON.parse(f.body_json).claim));
+      expect(claims.some((c) => c.startsWith("Surviving mutant "))).toBe(false);
+      const report = runReport(service.store, run.runId);
+      expect(report).toMatch(/Mutation gate \(`required`\): no score \(0 of 0 mutants killed, \d+ judged equivalent\)/);
+      expect(report).toContain("equivalent: The changed boundary is never reached");
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  test("with Stryker installed the gate reports Stryker's mutants instead of its own", async () => {
+    const fixture = workflowFixture({
+      policy: requiredPolicy(),
+      executor: (root) => {
+        // A stand-in for Stryker: the mutant on line 1 survives until the test checks sign(0).
+        const bin = join(root, "node_modules/@stryker-mutator/core/bin");
+        mkdirSync(bin, { recursive: true });
+        writeFileSync(
+          join(bin, "stryker.js"),
+          [
+            'const { mkdirSync, readFileSync, writeFileSync } = require("node:fs");',
+            "const args = process.argv.slice(2);",
+            'const files = args[args.indexOf("--mutate") + 1].split(",");',
+            'const strong = readFileSync("tests/sign.test.ts", "utf8").includes("sign(0)");',
+            'mkdirSync("reports/mutation", { recursive: true });',
+            "const location = { start: { line: 1, column: 37 }, end: { line: 1, column: 42 } };",
+            "const mutants = [",
+            '  { id: "0", mutatorName: "EqualityOperator", replacement: "n <= 0", status: strong ? "Killed" : "Survived", location },',
+            '  { id: "1", mutatorName: "EqualityOperator", replacement: "n >= 0", status: "Killed", location },',
+            "];",
+            'writeFileSync("reports/mutation/mutation.json", JSON.stringify({ schemaVersion: "1.0", files: Object.fromEntries(files.map((f) => [f, { mutants }])) }));',
+            "",
+          ].join("\n"),
+        );
+        return new SignExecutor(root);
+      },
+    });
+    try {
+      const { service } = fixture;
+      const run = await fixture.start();
+      await service.drive(run.runId, new AbortController().signal);
+      await fixture.approve(run.runId);
+      const done = await service.drive(run.runId, new AbortController().signal);
+      expect(done.status).toBe("completed");
+      const findings = service.store.findings(run.runId).map((f) => ({ status: f.status, body: JSON.parse(f.body_json) }));
+      const mutant = findings.find((f) => String(f.body.claim).startsWith("Surviving mutant "));
+      expect(mutant?.body.claim).toBe(
+        "Surviving mutant M1: src/sign.ts:1 changed (stryker) from `export const sign = (n: number) => (n < 0 ? -1 : 1);` to `export const sign = (n: number) => (n <= 0 ? -1 : 1);` and every test check still passed",
+      );
+      expect(mutant?.status).toBe("resolved");
+      const report = runReport(service.store, run.runId);
+      expect(report).toContain("Mutation gate (`required`, stryker): score 100% (2 of 2 mutants killed); tests: `stryker`.");
+      // The report Stryker wrote into the working copy is gone again.
+      expect(existsSync(join(fixture.root, "reports"))).toBe(false);
     } finally {
       await fixture.dispose();
     }

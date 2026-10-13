@@ -23,4 +23,4 @@ The preset has the stages of `standard`: research, specify, plan, analyze, appro
 
 The run report's **Code quality** section shows `Mutation score before the run: 25% -> after: 100%.`, the surviving mutants if any remain, and the criteria with their property tests. The delivery pull request carries the same report.
 
-`quality.mutation`, `quality.mutationThresholds`, `quality.mutationBudgetMs` and `--mutation` apply as in other runs; `--mutation advisory` reports survivors without blocking.
+`quality.mutation`, `quality.mutationThresholds`, `quality.mutationBudgetMs`, `quality.mutationEngine` and `--mutation` apply as in other runs; `--mutation advisory` reports survivors without blocking. An installed [mutation tool](code-quality.md#ecosystem-tools) mutates the whole module, and the [equivalence check](code-quality.md#mutation-gate) drops survivors that cannot change behavior; agent mutants are not used, so the score before and after compares the same mutants.

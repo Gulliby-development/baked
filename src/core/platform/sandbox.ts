@@ -9,13 +9,13 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { posix, win32 } from "node:path";
 import { findOnPath, userHome } from "./index.js";
 import { encodeSpec, WINDOWS_NETWORK_GAP, windowsLauncher } from "./windows-sandbox.js";
 
 /** Path functions of the host a profile is built for, whatever machine builds it. */
-const pathsFor = (platform: NodeJS.Platform) => (platform === "win32" ? win32 : posix);
+export const pathsFor = (platform: NodeJS.Platform) => (platform === "win32" ? win32 : posix);
 
 export type SandboxMode = "off" | "auto" | "required";
 export type SandboxBackend = "bwrap" | "seatbelt" | "restricted-token" | "none";
@@ -29,12 +29,19 @@ export interface SandboxRequest {
   /** Directories the process may write, besides temp and package caches. */
   writable: string[];
   /**
-   * Roots whose `.git/hooks`, `.git/config` and `.baked` stay read-only even when writable.
-   * BAKED runs Git unsandboxed, so a hook or `core.fsmonitor` written here would run on the host.
+   * Roots whose Git state (`config` and `hooks` of the repository, its submodules and, for a
+   * worktree, its common directory) and `.baked` stay read-only even when writable. BAKED runs
+   * Git unsandboxed, so a hook or `core.fsmonitor` written here would run on the host.
    */
   workspaces: string[];
   /** Also keep `<workspace>/baked` (workflow definitions) read-only. */
   protectDefinitions?: boolean;
+  /**
+   * A workspace that is a Git worktree may write its Git state: its gitdir and the common
+   * directory (objects, refs) become writable, while their config and hooks stay protected.
+   * Set by the workflow runtime for runs in a task worktree only.
+   */
+  gitWrite?: boolean;
   network: boolean;
 }
 
@@ -66,6 +73,10 @@ export interface SandboxHost {
   exists(path: string): boolean;
   isDirectory(path: string): boolean;
   realpath(path: string): string;
+  /** A small text file's content, or null when it cannot be read. */
+  readFile(path: string): string | null;
+  /** The entry names of a directory; empty when it cannot be read. */
+  list(path: string): string[];
 }
 
 export function currentSandboxHost(): SandboxHost {
@@ -82,6 +93,20 @@ export function currentSandboxHost(): SandboxHost {
       }
     },
     realpath: (path) => realpathSync(path),
+    readFile: (path) => {
+      try {
+        return readFileSync(path, "utf8");
+      } catch {
+        return null;
+      }
+    },
+    list: (path) => {
+      try {
+        return readdirSync(path);
+      } catch {
+        return [];
+      }
+    },
   };
 }
 
@@ -189,6 +214,86 @@ function existingWithReal(host: SandboxHost, paths: string[]): string[] {
   return out;
 }
 
+/** The repository a `.git` file (a worktree or submodule checkout) names with `gitdir:`. */
+function gitFileTarget(host: SandboxHost, dotGit: string): string | null {
+  const { dirname, resolve } = pathsFor(host.platform);
+  const target = host.readFile(dotGit)?.match(/^gitdir:\s*(.+?)\s*$/m)?.[1];
+  return target ? canonicalPath(host, resolve(dirname(dotGit), target)) : null;
+}
+
+/** The common directory a worktree's gitdir names in its `commondir` file. */
+function commonDirOf(host: SandboxHost, gitDir: string): string | null {
+  const { join, resolve } = pathsFor(host.platform);
+  const target = host.readFile(join(gitDir, "commondir"))?.trim();
+  return target ? canonicalPath(host, resolve(gitDir, target)) : null;
+}
+
+const MODULE_DEPTH = 8;
+
+/** Git directories of the submodules under `<gitDir>/modules`, nested submodules included. */
+function submoduleGitDirs(host: SandboxHost, gitDir: string): string[] {
+  const { join } = pathsFor(host.platform);
+  const found: string[] = [];
+  const walk = (dir: string, depth: number): void => {
+    if (depth > MODULE_DEPTH) return;
+    for (const name of host.list(dir).sort()) {
+      const path = join(dir, name);
+      if (!host.isDirectory(path)) continue;
+      if (host.exists(join(path, "HEAD"))) {
+        found.push(path);
+        walk(join(path, "modules"), depth + 1);
+      } else walk(path, depth + 1); // a submodule name with a slash nests directories
+    }
+  };
+  walk(join(gitDir, "modules"), 0);
+  return found;
+}
+
+/** Where a workspace keeps its Git state. */
+export interface WorkspaceGit {
+  /** Git directories whose `config` and `hooks` stay read-only, submodules included. */
+  gitDirs: string[];
+  /** Further files that stay read-only, such as the `.git` file of a worktree. */
+  files: string[];
+  /** The directories `gitWrite` makes writable: a worktree's gitdir and its common directory. */
+  writable: string[];
+}
+
+export function workspaceGit(host: SandboxHost, root: string, gitWrite = false): WorkspaceGit {
+  const { join } = pathsFor(host.platform);
+  const dotGit = join(root, ".git");
+  const roots: string[] = [];
+  const files: string[] = [];
+  const writable: string[] = [];
+  if (host.exists(dotGit) && !host.isDirectory(dotGit)) {
+    // Rewriting the `.git` file would point host Git at a repository the command wrote.
+    files.push(dotGit);
+    const gitDir = gitFileTarget(host, dotGit);
+    if (gitDir) {
+      roots.push(gitDir);
+      const common = commonDirOf(host, gitDir);
+      if (common && common !== gitDir) roots.push(common);
+      if (gitWrite && host.isDirectory(gitDir)) {
+        const top = common && host.isDirectory(common) ? common : gitDir;
+        writable.push(top);
+        if (!inside(host, gitDir, top)) writable.push(gitDir);
+        // With the common directory writable, the files that send a worktree's Git elsewhere,
+        // and the main checkout's HEAD and index, stay as they are.
+        const worktrees = join(top, "worktrees");
+        for (const name of host.list(worktrees).sort())
+          for (const file of ["commondir", "gitdir", "config.worktree"])
+            files.push(join(worktrees, name, file));
+        if (top !== gitDir) files.push(join(top, "HEAD"), join(top, "index"));
+      }
+    }
+  } else roots.push(dotGit);
+  const gitDirs: string[] = [];
+  for (const dir of roots)
+    for (const each of [dir, ...submoduleGitDirs(host, dir)])
+      if (!gitDirs.includes(each)) gitDirs.push(each);
+  return { gitDirs, files, writable };
+}
+
 export function sandboxProfile(
   request: SandboxRequest,
   cwd: string,
@@ -199,22 +304,31 @@ export function sandboxProfile(
   const { join } = pathsFor(host.platform);
   const home = host.home;
   const writable: string[] = [];
-  for (const path of request.writable) {
-    if (!host.exists(path)) continue;
+  const addWritable = (path: string): void => {
+    if (!host.exists(path)) return;
     const real = canonicalPath(host, path);
     if (!writable.includes(real)) writable.push(real);
-  }
+  };
+  for (const path of request.writable) addWritable(path);
   const protectDirs: string[] = [];
   const protectFiles: string[] = [];
+  // Seatbelt rules hold for paths that do not exist yet; a bind mount needs an existing source.
+  const protect = (list: string[], path: string): void => {
+    if ((darwin || host.exists(path)) && !list.includes(path)) list.push(path);
+  };
   for (const root of request.workspaces) {
     const real = canonicalPath(host, root);
-    const dirs = [join(real, ".git", "hooks"), join(real, ".baked")];
-    if (request.protectDefinitions) dirs.push(join(real, "baked"));
-    // Seatbelt rules hold for paths that do not exist yet; a bind mount or a label needs the path.
-    for (const dir of dirs)
-      if ((darwin || host.exists(dir)) && !protectDirs.includes(dir)) protectDirs.push(dir);
-    const config = join(real, ".git", "config");
-    if (host.exists(config) && !protectFiles.includes(config)) protectFiles.push(config);
+    const git = workspaceGit(host, real, request.gitWrite);
+    for (const dir of git.writable) addWritable(dir);
+    for (const dir of git.gitDirs) protect(protectDirs, join(dir, "hooks"));
+    protect(protectDirs, join(real, ".baked"));
+    if (request.protectDefinitions) protect(protectDirs, join(real, "baked"));
+    for (const dir of git.gitDirs) {
+      protect(protectFiles, join(dir, "config"));
+      if (host.exists(join(dir, "config.worktree")))
+        protect(protectFiles, join(dir, "config.worktree"));
+    }
+    for (const file of git.files) if (host.exists(file)) protect(protectFiles, file);
   }
   const fromHome = (paths: string[]): string[] => paths.map((p) => join(home, p));
   const cacheCandidates = fromHome(CACHES);
@@ -315,6 +429,9 @@ export function seatbeltProfile(profile: SandboxProfile): {
   if (hidden.length) lines.push(`(deny file-read* file-write* ${hidden.join(" ")})`);
   if (!profile.network)
     lines.push(
+      // The keychain daemon reads keychain files outside the sandbox, so hiding them is not enough
+      // for the `security` tool. TLS of some tools needs the daemon too: it is cut with the network.
+      '(deny mach-lookup (global-name "com.apple.SecurityServer"))',
       "(deny network*)",
       // Outbound is matched on the remote end only: with a `local ip` filter on the outbound
       // rule, connections to other hosts got through on the macOS CI runner.
