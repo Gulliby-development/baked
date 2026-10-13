@@ -41,6 +41,7 @@ import {
 } from "../verification/evidence.js";
 import { findingBlocks, fingerprint, requiresSecurityReview } from "../verification/findings.js";
 import {
+  missingReproAdvice,
   type ReproOutcome,
   reproAllows,
   reproExecutables,
@@ -4329,6 +4330,8 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         this.store.beginStep(runId, `dimension-${reviewer.key}`, stepId),
       );
       const profile = this.requireProfile(profiles.find((p) => p.id === reviewer.profileId));
+      const canRepro = executables.length > 0 && profile.allowedTools.includes("run_repro");
+      let reproAdvised = false;
       const ask = async (extra: Record<string, unknown>): Promise<Review> => {
         const answer = ReviewSchema.parse(
           await this.call(
@@ -4345,21 +4348,24 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
             signal,
             undefined,
             0,
-            (output) =>
-              ReviewSchema.safeParse(output).success
-                ? reviewProblems(
-                    this.store,
-                    runId,
-                    reviewSnapshotId,
-                    reviewSnapshotHash,
-                    reviewSpec,
-                    output as Review,
-                  )
-                : [],
+            (output) => {
+              if (!ReviewSchema.safeParse(output).success) return [];
+              const problems = reviewProblems(
+                this.store,
+                runId,
+                reviewSnapshotId,
+                reviewSnapshotHash,
+                reviewSpec,
+                output as Review,
+              );
+              // Asked once: a reviewer that still has no repro after the advice is not blocked.
+              if (problems.length || reproAdvised || !canRepro) return problems;
+              const advice = missingReproAdvice(output as Review);
+              if (advice.length) reproAdvised = true;
+              return advice;
+            },
             undefined,
-            executables.length && profile.allowedTools.includes("run_repro")
-              ? () => ({ run_repro: reproTool(executables, repro) })
-              : undefined,
+            canRepro ? () => ({ run_repro: reproTool(executables, repro) }) : undefined,
           ),
         );
         // The host owns the snapshot hash and the evidence ids; omitted criteria are listed as
