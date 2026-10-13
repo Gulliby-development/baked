@@ -29,6 +29,8 @@ import type { Server } from "bun";
 import { ZodError, type z } from "zod";
 import { executeWorkflowCommand } from "../../headless/workflow.js";
 import { validateWorkflowArgs, type WorkflowArgs } from "../../headless/workflow-parse.js";
+import { ArtifactStore } from "../artifacts/store.js";
+import type { VercelOptions } from "../artifacts/vercel.js";
 import { githubTasks, type TaskTracker } from "../chat/coordinator-launch.js";
 import { BakeChatHost } from "../chat/host.js";
 import { serviceStateSource } from "../chat/project-state.js";
@@ -76,6 +78,7 @@ import {
   saveEditor,
 } from "../workflows/v2/editor-service.js";
 import type { DraftModel } from "../workflows/v2/gate-draft.js";
+import { artifactRoute } from "./artifact-routes.js";
 import {
   bearerMatches,
   generateApiToken,
@@ -173,6 +176,8 @@ export const CAPABILITIES = [
   "progress",
   "coordinator",
   "watch",
+  "artifacts",
+  "run-compare",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -208,6 +213,12 @@ export interface ApiServerOptions {
   tasks?: TaskTracker;
   /** Drafts gates from a sentence; tests pass a scripted model. */
   gateDraftModel?: DraftModel;
+  /** The user's artifacts; tests pass a store in a temporary folder. */
+  artifacts?: ArtifactStore;
+  /** Replaces the Vercel endpoint and token of artifact deploys in tests. */
+  vercel?: Partial<VercelOptions>;
+  /** Opens an artifact's page in the browser; tests pass a fake. */
+  openArtifact?: (path: string) => boolean;
   /** Receives one line per background drive failure. Defaults to stderr. */
   log?: (line: string) => void;
 }
@@ -466,6 +477,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         new BakeChatHost(service.workspace, service.config, service.rootContext),
       ...(options.homeDir ? { homeDir: options.homeDir } : {}),
     });
+  const artifacts = options.artifacts ?? new ArtifactStore();
   const initiatives = new InitiativeService(service);
   chat.setProjectState(
     serviceStateSource(service, initiatives, () => attention()),
@@ -490,10 +502,15 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
             ...(worktree ? { worktree: true } : {}),
           }),
         ),
-      startInitiative: async ({ initiativeId, prompt, plan, approveSplit }) => {
+      startInitiative: async ({ initiativeId, prompt, plan, approveSplit, featureIssues }) => {
         let view = await initiatives.start(
           initiativeStartRequest(
-            { initiativeId, prompt, ...(plan ? { plan } : {}) },
+            {
+              initiativeId,
+              prompt,
+              ...(plan ? { plan } : {}),
+              ...(featureIssues ? { featureIssues } : {}),
+            },
             service.config,
             {
               commandId: crypto.randomUUID(),
@@ -878,6 +895,14 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       })) ??
       (await chatMemoryRoute({ ...ctx, workspace: service.workspace, memory: chatMemory })) ??
       (await hooksRoute({ ...ctx, workspace: service.workspace })) ??
+      (await artifactRoute({
+        ...ctx,
+        store: artifacts,
+        workspace: service.workspace,
+        config: () => service.config,
+        ...(options.vercel ? { vercel: options.vercel } : {}),
+        ...(options.openArtifact ? { open: options.openArtifact } : {}),
+      })) ??
       (await gateRoute({
         ...ctx,
         workspace: service.workspace,
@@ -974,6 +999,16 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         );
       }
       return json(200, projects.summary(), origin);
+    }
+    if (path === "/v1/workflow/compare") {
+      only("GET");
+      const a = SafeId.parse(url.searchParams.get("a"));
+      const b = SafeId.parse(url.searchParams.get("b"));
+      return json(
+        200,
+        await execute({ command: "compare", positional: [a, b], flags: {} }),
+        origin,
+      );
     }
     if (path === "/v1/workflow/definitions" || path === "/v1/workflow/profiles") {
       only("GET");

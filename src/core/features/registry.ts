@@ -415,6 +415,27 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/lsp", "project/overview: Doctor language-server line"],
   },
   {
+    id: "artifacts",
+    group: "Tools and code intelligence",
+    title: "Artifacts: HTML pages shared by every project, deployed to the user's Vercel",
+    tui: ["/artifacts", "/artifacts open", "/artifacts deploy"],
+    cli: [
+      "baked artifacts list",
+      "baked artifacts show",
+      "baked artifacts save",
+      "baked artifacts deploy",
+      "baked artifacts remove",
+    ],
+    api: [
+      "/v1/artifacts",
+      "/v1/artifacts/:id",
+      "/v1/artifacts/:id/page",
+      "/v1/artifacts/:id/open",
+      "/v1/artifacts/:id/deploy",
+    ],
+    desktop: ["project/artifacts"],
+  },
+  {
     id: "diagnose",
     group: "Tools and code intelligence",
     title: "Diagnose LSP, tree-sitter and index health",
@@ -568,6 +589,15 @@ export const FEATURES: readonly Feature[] = [
       "/v1/workflow/runs/:id/usage",
     ],
     desktop: ["project/runs"],
+  },
+  {
+    id: "progress-watcher",
+    group: "Workflow runs",
+    title: "Progress watcher: steer, then stop, a stuck agent attempt",
+    tui: ["/workflow: activity feed of the run view"],
+    cli: ["baked workflow run: --events stream", "baked workflow resume: --events stream"],
+    api: ["/v1/workflow/runs/:id/events"],
+    desktop: ["project/runs: activity feed"],
   },
   {
     id: "run-decisions",
@@ -726,10 +756,20 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/chat: Code quality page"],
   },
   {
+    id: "custom-gates",
+    group: "Workflow runs",
+    title:
+      "Custom gates: a script or container that reports its result as JSON (command.report json)",
+    tui: ["/workflow: gates (Result: JSON report)"],
+    cli: ["baked workflow gates", "baked workflow validate"],
+    api: ["/v1/workflow/checks", "/v1/workflow/checks/:id/run"],
+    desktop: ["project/gates: Result toggle"],
+  },
+  {
     id: "gate-drafts",
     group: "Workflow runs",
     title: "Gates from a plain-language sentence",
-    tui: gap(372, "create a gate from text in the workflow editor"),
+    tui: ["/workflow: editor, G new gate from a sentence"],
     cli: ["baked workflow gate"],
     api: [
       "/v1/workflow/gates/draft",
@@ -749,6 +789,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs: conveyor gate marks and station gates"],
   },
   {
+    id: "run-compare",
+    group: "Workflow runs",
+    title: "Compare two runs side by side (A/B of routing maps)",
+    tui: ["/workflow: compare RUN_A RUN_B"],
+    cli: ["baked workflow compare"],
+    api: ["/v1/workflow/compare"],
+    desktop: ["project/runs: tick two runs, Compare"],
+  },
+  {
     id: "workflow-editor",
     group: "Workflow runs",
     title: "Workflow definition editor",
@@ -761,6 +810,15 @@ export const FEATURES: readonly Feature[] = [
       "/v1/workflow/editor/save",
     ],
     desktop: ["project/workflows"],
+  },
+  {
+    id: "wait-stage",
+    group: "Workflow runs",
+    title: "Wait stage: poll command gates until they pass or time out, with no model calls",
+    tui: ["/workflow: definition editor (W adds a wait stage), run activity"],
+    cli: ["baked workflow validate", "baked workflow run"],
+    api: ["/v1/workflow/editor", "/v1/workflow/runs/:id/events"],
+    desktop: ["project/workflows: Wait after", "project/runs: activity feed"],
   },
   {
     id: "doctor-estimate",

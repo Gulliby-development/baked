@@ -487,6 +487,27 @@ export const SETTINGS: readonly SettingDefinition[] = [
     default: null,
     envVar: "JINA_API_KEY",
   },
+  {
+    id: "artifactDeploy",
+    page: "tools",
+    section: "Artifacts",
+    label: "Deploy artifacts to Vercel",
+    help: "Let any chat publish a saved artifact to your own Vercel account. Each deploy asks first and is scanned for secrets.",
+    scopes: GLOBAL,
+    type: "boolean",
+    default: false,
+  },
+  {
+    id: "vercel-token",
+    page: "tools",
+    section: "Artifacts",
+    label: "Vercel token",
+    help: "A token from Vercel > Account Settings > Tokens, best limited to one team and with an expiry.",
+    scopes: GLOBAL,
+    type: "secret",
+    default: null,
+    envVar: "VERCEL_TOKEN",
+  },
 
   // Agent features
   {

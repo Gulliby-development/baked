@@ -23,6 +23,8 @@ export interface ToolResult {
   error?: string;
   /** Which intelligence backend handled this (ts-morph, lsp, tree-sitter, regex) */
   backend?: string;
+  /** The language server that answered, when `backend` is lsp (rust-analyzer, jdtls). */
+  server?: string;
   /** True when read returned only an outline (large file) — tracker should not cache this as a full read */
   outlineOnly?: boolean;
   /** Files edited by dispatch tool — used by /changes panel to track per-tab edits */
@@ -361,6 +363,10 @@ export interface AppConfig {
   anthropicTextEditor?: boolean;
   /** Enable web search tool for all LLMs. Always prompts for approval before searching. Default: true */
   webSearch?: boolean;
+  /** Allow deploying artifacts to the user's Vercel account. Each deploy still asks. Default: false */
+  artifactDeploy?: boolean;
+  /** The Vercel team artifacts deploy to; unset (or VERCEL_TEAM_ID unset) is the personal account. */
+  vercelTeamId?: string;
   /** Show verbose tool output (plan updates, etc.) in chat. Default: false */
   verbose?: boolean;
   /** Diff display style: "default" | "sidebyside" | "compact". Default: "default" */

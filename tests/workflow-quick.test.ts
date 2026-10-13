@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { builtinProfiles } from "../src/core/agents/profiles/builtin.js";
 import { resolveProfileModel } from "../src/core/llm/model-routing.js";
+import { humanApprovalReason } from "../src/core/workflows/auto-approval.js";
 import { scopedPlanBudget } from "../src/core/workflows/clarification.js";
+import { runDoctor } from "../src/core/workflows/doctor.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { uniqueFeatureId } from "../src/core/workflows/feature-id.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
@@ -55,6 +57,16 @@ describe("quick workflow", () => {
     expect(service.store.artifacts(run.runId).map((a) => a.logical_path)).toEqual(
       expect.arrayContaining(["plan.md", "tasks.json"]),
     );
+  }, 30000);
+
+  test("the plan approval says why it waits for a person and how to approve automatically", async () => {
+    const { start, service } = quickFixture();
+    const run = await start("quick");
+    await service.drive(run.runId, new AbortController().signal);
+    const approval = service.store.requests(run.runId).find((r) => r.kind === "approval");
+    const body = JSON.parse(approval?.body_json ?? "{}") as { autoApproval?: { declined?: string[] } };
+    expect(body.autoApproval?.declined).toEqual([humanApprovalReason("quick", "approve")]);
+    expect(body.autoApproval?.declined?.[0]).toContain("baked workflow define ID --from quick");
   }, 30000);
 
   test("a definition without the publish field still writes its documents to specs/", async () => {
@@ -143,8 +155,25 @@ describe("baked quick", () => {
     disposals.push(async () => service.close());
     await expect(
       executeWorkflowCommand(service, parseWorkflowArgs(["quick", "fix"]), new AbortController().signal),
-    ).rejects.toThrow("A quick task needs at least one feature check");
+    ).rejects.toThrow("Workflow quick needs at least one feature check in the workflow policy");
+    // The local API starts a quick task as a run of the quick workflow; it refuses the same way.
+    await expect(
+      executeWorkflowCommand(
+        service,
+        parseWorkflowArgs(["run", "--workflow", "quick", "--feature", "f", "--prompt", "fix"]),
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow("Workflow quick needs at least one feature check in the workflow policy");
     expect(service.store.list(10).items).toEqual([]);
+    const report = await runDoctor(root, config, { workflowId: "quick" }, {
+      providerReady: async () => ({ known: true, ready: true }),
+      which: (command) => `/usr/bin/${command}`,
+      git: async () => ({ code: 0, stdout: "" }),
+    });
+    expect(report.ready).toBe(false);
+    const start = report.checks.find((c) => c.id === "start");
+    expect(start?.status).toBe("fail");
+    expect(start?.fix).toContain("/workflow gates");
   });
 
   test("feature IDs get a numeric suffix while taken", () => {

@@ -363,6 +363,24 @@ describe("workflow v2 scheduler", () => {
     expect(service.store.checks(run.runId).map((c) => `${c.check_id}:${c.status}`)).toEqual(["check:passed"]);
   }, 30000);
 
+  test("rejecting an approval with a note sends the resumed run back to specify with the note", async () => {
+    const { start, drive, service, executor, pending } = setup();
+    const run = await start("standard");
+    expect((await drive(run.runId)).reason).toBe("approval");
+    const first = pending(run.runId, "approval");
+    if (!first) throw new Error("No pending approval");
+    const waiting = await service.get(run.runId);
+    const paused = await service.decide(run.runId, { commandId: newId(), expectedRevision: waiting.revision }, { kind: "reject", requestId: first.id, explanation: "Implementing the CLI and its tests is in scope" });
+    expect(paused.status).toBe("paused");
+    await service.resume(run.runId, { commandId: newId(), expectedRevision: paused.revision });
+    expect((await drive(run.runId)).reason).toBe("approval");
+    expect(executor.calls).toEqual(["research", "spec", "plan", "analysis", "spec", "plan", "analysis"]);
+    expect(executor.prompts[4]).toContain("Implementing the CLI and its tests is in scope");
+    expect(service.store.state(run.runId).revisedRejections).toEqual([first.id]);
+    const approvals = service.store.requests(run.runId).filter((r) => r.kind === "approval");
+    expect(approvals.map((r) => r.status)).toEqual(["rejected", "pending"]);
+  }, 30000);
+
   test("a plan finding from analysis goes back to the plan stage once before a person", async () => {
     const { start, drive, service, executor } = setup({ analysisFindings: 1 });
     const run = await start("standard");
@@ -1089,6 +1107,15 @@ describe("passesWithNotes", () => {
       expect(passesWithNotes({ ...medium, file }, coverage, true)).toBe(false);
     expect(passesWithNotes({ ...medium, severity: "high", file: "README.md" }, coverage, true)).toBe(false);
   });
+  test("a missing test or documentation gap passes like a partial one", () => {
+    for (const severity of ["low", "medium"] as const)
+      for (const file of ["tests/app.test.ts", "README.md"])
+        expect(passesWithNotes({ ...finding, kind: "missing", severity, file }, coverage, true)).toBe(true);
+    for (const file of [null, "src/app.ts"])
+      expect(passesWithNotes({ ...finding, kind: "missing", file }, coverage, true)).toBe(false);
+    expect(passesWithNotes({ ...finding, kind: "missing", file: "README.md" }, coverage, false)).toBe(false);
+    expect(passesWithNotes({ ...finding, kind: "missing", file: "README.md", criterionIds: [] }, coverage, true)).toBe(false);
+  });
 });
 
 describe("project gates and protected definitions", () => {
@@ -1184,5 +1211,135 @@ describe("workflow v2 auto approval", () => {
     expect(JSON.parse(fixture.service.store.run(run.runId).policy_json).autoApproval).toBeNull();
     expect((await fixture.drive(run.runId)).status).toBe("waiting");
     expect(fixture.pending(run.runId, "approval")).toBeDefined();
+  }, 30000);
+});
+
+describe("wait stage", () => {
+  const waitDefinition = (failedEdge = true, timeoutMinutes = 1): WorkflowV2 => ({
+    schemaVersion: 2, id: "wait-only", version: "1.0.0", description: "Wait until ready", preset: "custom",
+    inputs: ["request"], entry: "wait-ready",
+    stages: [{ id: "wait-ready", type: "wait", consumes: [], produces: "gates", effects: "none", gates: [{ gateId: "ready" }], intervalSeconds: 5, timeoutMinutes }],
+    transitions: [
+      { id: "wait-done", from: "wait-ready", to: "done", on: "passed", carries: "gates", gates: [] },
+      ...(failedEdge ? [{ id: "wait-timeout", from: "wait-ready", to: "done", on: "failed" as const, carries: "gates" as const, gates: [] }] : []),
+    ],
+    limits: { maxStageVisits: 1 }, autoApproval: null,
+  });
+  /** A gate that passes from its `n`th run on; it counts its runs in a file next to the workspace. */
+  const passesOn = (root: string, n: number) => {
+    const counter = join(root, "..", `${basename(root)}-ready`);
+    cleanups.push(() => rmSync(counter, { force: true }));
+    return { counter, gate: commandGate("ready", ["-e", `const f=${JSON.stringify(counter)};const n=Number(await Bun.file(f).text().catch(()=>"0"))+1;await Bun.write(f,String(n));process.exit(n>=${n}?0:1)`]) };
+  };
+  const fakeClock = (service: NativeWorkflowService, onSleep?: () => Promise<void> | void) => {
+    const clock = { now: Date.parse("2026-01-01T00:00:00Z"), sleeps: 0 };
+    service.scheduler.waitClock = {
+      now: () => clock.now,
+      sleep: async (ms, signal) => {
+        signal.throwIfAborted();
+        clock.sleeps++;
+        clock.now += ms;
+        await onSleep?.();
+      },
+    };
+    return clock;
+  };
+
+  test("polls its gates without a model call until they pass, and records each gate once", async () => {
+    const { start, drive, service, define, gate, root, executor } = setup();
+    const ready = passesOn(root, 3);
+    gate(ready.gate);
+    define(waitDefinition());
+    const clock = fakeClock(service);
+    const run = await start("wait-only");
+    expect((await drive(run.runId)).status).toBe("completed");
+    expect(executor.calls).toEqual([]);
+    expect(service.store.run(run.runId).token_usage).toBe(0);
+    expect(clock.sleeps).toBe(2);
+    expect(service.store.checks(run.runId).map((c) => `${c.check_id}:${c.status}`)).toEqual(["ready:passed"]);
+    const list = events(service, run.runId);
+    expect(ofType(list, "transition.taken").map((e) => e.payload.transitionId)).toEqual(["wait-done"]);
+    const progress = ofType(list, "wait.progress").map((e) => e.payload);
+    expect(progress[0]).toMatchObject({ stageId: "wait-ready", pending: ["ready"], polls: 0, intervalSeconds: 5 });
+    expect(progress.at(-1)?.pending).toEqual([]);
+  }, 30000);
+
+  test("a wait that times out takes its failed edge, and without one blocks the run", async () => {
+    const fixture = setup();
+    fixture.gate(commandGate("ready", ["-e", "process.exit(1)"]));
+    fixture.define(waitDefinition());
+    fakeClock(fixture.service);
+    const run = await fixture.start("wait-only");
+    expect((await fixture.drive(run.runId)).status).toBe("completed");
+    expect(ofType(events(fixture.service, run.runId), "transition.taken").map((e) => e.payload.transitionId)).toEqual(["wait-timeout"]);
+    expect(fixture.service.store.checks(run.runId).map((c) => `${c.check_id}:${c.status}`)).toEqual(["ready:failed"]);
+
+    const strict = setup();
+    strict.gate(commandGate("ready", ["-e", "process.exit(1)"]));
+    strict.define(waitDefinition(false));
+    fakeClock(strict.service);
+    const blocked = await strict.start("wait-only");
+    expect((await strict.drive(blocked.runId)).status).toBe("blocked");
+    expect(strict.service.store.run(blocked.runId).reason).toBe("verification_failed");
+  }, 30000);
+
+  test("time asleep between polls does not count against the active time limit", async () => {
+    // The limit leaves room for the gate's process starts on a slow runner (a 1000 ms limit
+    // failed on Windows CI, #729); the sleep alone is still above it.
+    const limit = 3000;
+    const { start, drive, service, define, gate, root } = setup({}, { ...policy, maxActiveMs: limit });
+    const ready = passesOn(root, 2);
+    gate(ready.gate);
+    define(waitDefinition());
+    let now = Date.parse("2026-01-01T00:00:00Z");
+    service.scheduler.waitClock = {
+      now: () => now,
+      sleep: async (ms, signal) => {
+        now += ms;
+        await new Promise((resolve) => setTimeout(resolve, limit + 500));
+        signal.throwIfAborted();
+      },
+    };
+    const run = await start("wait-only");
+    expect((await drive(run.runId)).status).toBe("completed");
+    expect(service.store.run(run.runId).active_ms).toBeLessThan(limit);
+  }, 30000);
+
+  test("a resumed wait keeps its deadline, and a cancel stops it at once", async () => {
+    const { start, drive, service, define, gate } = setup();
+    gate(commandGate("ready", ["-e", "process.exit(1)"]));
+    define(waitDefinition(true, 10));
+    const { runId } = await start("wait-only");
+    const clock = fakeClock(service);
+    let stopping: Promise<unknown> | undefined;
+    /** Stops the run from inside the wait, as another window would; the owner aborts the sleep. */
+    const stopDuring = (action: "pause" | "cancel") => {
+      service.scheduler.waitClock = {
+        now: () => clock.now,
+        sleep: async (ms, signal) => {
+          clock.now += ms;
+          const run = await service.get(runId);
+          stopping ??= service[action](runId, { commandId: newId(), expectedRevision: run.revision });
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          signal.throwIfAborted();
+        },
+      };
+    };
+    stopDuring("pause");
+    expect((await drive(runId)).status).toBe("paused");
+    await stopping;
+    const position = () => service.store.state(runId).position;
+    const deadline = position()?.wait?.deadlineAt;
+    expect(deadline).toBe(Date.parse("2026-01-01T00:10:00Z"));
+    clock.now += 60_000;
+    const paused = await service.get(runId);
+    await service.resume(runId, { commandId: newId(), expectedRevision: paused.revision });
+    stopping = undefined;
+    stopDuring("cancel");
+    const started = performance.now();
+    expect((await drive(runId)).status).toBe("cancelled");
+    await stopping;
+    expect(performance.now() - started).toBeLessThan(5000);
+    expect(position()?.wait?.deadlineAt).toBe(deadline);
   }, 30000);
 });

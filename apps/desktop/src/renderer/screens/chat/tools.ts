@@ -90,6 +90,34 @@ export function toolIcon(name: string): IconName {
   return TOOL_ICON[name] ?? "model";
 }
 
+/** Past-tense first words of tool titles and their form while the call has no result yet. */
+const UNFINISHED: Record<string, string> = {
+  Ran: "Running",
+  Read: "Reading",
+  Edited: "Editing",
+  Created: "Creating",
+  Wrote: "Writing",
+  Made: "Making",
+  Searched: "Searching",
+  Listed: "Listing",
+  Found: "Finding",
+  Fetched: "Fetching",
+  Looked: "Looking",
+  Renamed: "Renaming",
+  Undid: "Undoing",
+  Updated: "Updating",
+};
+
+/**
+ * A title's verb for a call still waiting for its result (running, or waiting for approval), so
+ * "Ran rm -rf tmp" does not read as done while its approval card asks.
+ */
+export function unfinishedVerb(verb: string): string {
+  const [first = "", ...rest] = verb.split(" ");
+  const present = UNFINISHED[first];
+  return present ? [present, ...rest].join(" ") : verb;
+}
+
 /** A one-line title for a tool call from its name and input. */
 export function toolTitle(name: string, args: Args): ToolTitle {
   const path = str(args.path);

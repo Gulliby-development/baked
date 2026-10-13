@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { workspacePath } from "../specs/validate.js";
-import type { Spec, TaskGraph } from "./schemas.js";
+import type { AgentProfile, Spec, TaskGraph } from "./schemas.js";
 
 /** Cross-artifact checks that analysis would otherwise spend model rounds on. */
 export const PLAN_CONSISTENCY_CHECKS = [
@@ -65,6 +65,62 @@ export function withModuleDependencies(graph: TaskGraph): TaskGraph {
       const next = deps.get(task.id) ?? task.dependsOn;
       return next.length === task.dependsOn.length ? task : { ...task, dependsOn: next };
     }),
+  };
+}
+
+/**
+ * A task waits for the tasks that write a file it reads (`readHints`). Planners left such tasks
+ * without a dependency, so both ran in the same wave and the reader's checks failed on the file
+ * its sibling had not written yet (zoneslot-update c941a83a: 208k of repair; contrastgrid 14%).
+ * A file the task writes itself adds nothing, and a dependency that would close a cycle is not
+ * added: of two tasks that read each other's files, the first in the plan waits.
+ */
+export function withReadDependencies(graph: TaskGraph): TaskGraph {
+  const deps = new Map(graph.tasks.map((task) => [task.id, [...task.dependsOn]]));
+  const reaches = (from: string, to: string, seen = new Set<string>()): boolean => {
+    if (from === to) return true;
+    if (seen.has(from)) return false;
+    seen.add(from);
+    return (deps.get(from) ?? []).some((id) => reaches(id, to, seen));
+  };
+  for (const task of graph.tasks) {
+    const reads = task.readHints.filter((path) => !task.writes.some((w) => w.path === path));
+    if (!reads.length) continue;
+    for (const other of graph.tasks) {
+      if (other.id === task.id || reaches(task.id, other.id) || reaches(other.id, task.id))
+        continue;
+      if (other.writes.some((w) => w.action !== "delete" && reads.includes(w.path)))
+        deps.get(task.id)?.push(other.id);
+    }
+  }
+  return {
+    ...graph,
+    tasks: graph.tasks.map((task) => {
+      const next = deps.get(task.id) ?? task.dependsOn;
+      return next.length === task.dependsOn.length ? task : { ...task, dependsOn: next };
+    }),
+  };
+}
+
+/**
+ * A task names an implementation profile. A planner that wrote its own role or another unknown
+ * profile on its tasks had the whole plan rejected and planned again (bench round 09, commitbump
+ * dde8747e: `"profileId": "planner"` on all 7 tasks, 4 plan attempts); the host now gives such a
+ * task the default implementer: `implementer` when it is an implementation profile, else the
+ * first one. Without any implementation profile the graph is left for validation to reject.
+ */
+export function withImplementationProfiles(
+  graph: TaskGraph,
+  profiles: readonly Pick<AgentProfile, "id" | "output">[],
+): TaskGraph {
+  const implementers = profiles.filter((p) => p.output === "implementation").map((p) => p.id);
+  const fallback = implementers.includes("implementer") ? "implementer" : implementers[0];
+  if (!fallback || graph.tasks.every((task) => implementers.includes(task.profileId))) return graph;
+  return {
+    ...graph,
+    tasks: graph.tasks.map((task) =>
+      implementers.includes(task.profileId) ? task : { ...task, profileId: fallback },
+    ),
   };
 }
 

@@ -110,6 +110,8 @@ export interface Check {
   scope: "task" | "feature";
   envNames: string[];
   writes: string[];
+  /** `json`: a custom gate whose last JSON line (`{"status":"passed"}`) decides the result. */
+  report?: "exit" | "json";
 }
 
 export type CheckRunStatus = "passed" | "failed" | "timeout" | "cancelled" | "error";
@@ -402,7 +404,7 @@ export async function withCapability<T>(
 
 // --- Run memory (`run-memory` capability) -------------------------------------------------------
 
-export type MemoryEntryKind = "note" | "answer" | "assumption" | "check";
+export type MemoryEntryKind = "note" | "answer" | "assumption" | "check" | "rule";
 /** An entry of project memory (`MemoryEntry` in src/core/workflows/project-memory.ts). */
 export interface MemoryEntry {
   id: string;
@@ -413,6 +415,10 @@ export interface MemoryEntry {
   runs?: number;
   /** What runs recorded, when a person reworded the entry. */
   recorded?: string;
+  /** A learned rule's paths (`**` or `DIR/**`), status and source findings (`RUN/FINDING`). */
+  scope?: string;
+  status?: "proposed" | "active";
+  findings?: string[];
   hidden: boolean;
 }
 export interface RunMemoryView {
@@ -425,6 +431,7 @@ export interface RunMemoryView {
 export type RunMemoryEdit =
   | { action: "add"; text: string }
   | { action: "edit"; id: string; text: string }
+  | { action: "accept"; id: string }
   | { action: "forget"; id: string }
   | { action: "restore"; id: string };
 

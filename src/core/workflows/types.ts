@@ -116,6 +116,11 @@ export const RuntimeStateSchema = z
      * the correction of that finding may also write them, through the tasks that own them.
      */
     repairScope: z.record(z.string(), z.array(z.string())).default({}),
+    /**
+     * Corrective tasks that start from a clean context after repeated identical failures, by task
+     * ID: the artifact with the host's account of the earlier attempts.
+     */
+    freshTasks: z.record(z.string(), z.string()).default({}),
     /** Attempt token cap per planned task, set by plan-time sizing; corrections use their base's. */
     taskBudgets: z.record(z.string(), z.number().int().positive()).default({}),
     /** Step cap per planned task from plan-time sizing (test tasks); corrections use their base's. */
@@ -161,6 +166,8 @@ export const RuntimeStateSchema = z
         ),
       )
       .default({}),
+    /** Rejected approval requests whose explanation already sent the run back to revise. */
+    revisedRejections: z.array(z.string()).default([]),
     /** Times analyze sent plan-only findings back to the planner instead of a person; once. */
     analysisReplans: z.number().int().nonnegative().default(0),
     taskGates: z
@@ -192,6 +199,16 @@ export const RuntimeStateSchema = z
         /** Findings of the decided outcome; they become corrective tasks when the target writes. */
         findings: z.array(z.string()),
         repairKind: z.enum(["repair", "convergence"]).nullable(),
+        /** The deadline of the current wait stage visit (epoch ms); a resumed visit keeps it. */
+        wait: z
+          .object({
+            stageId: z.string(),
+            visit: z.number().int().nonnegative(),
+            startedAt: z.number().int(),
+            deadlineAt: z.number().int(),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .nullable()
@@ -229,6 +246,15 @@ export const RuntimeStateSchema = z
      * of the workspace learned. Research, specification and planning read it. Null when empty.
      */
     projectMemory: z
+      .object({ artifactId: z.string(), hash: z.string() })
+      .strict()
+      .nullable()
+      .default(null),
+    /**
+     * Active learned code rules captured at run creation (artifact `project/learned-rules.json`),
+     * given to implementers for the paths of their task and to reviewers (#643). Null when none.
+     */
+    learnedRules: z
       .object({ artifactId: z.string(), hash: z.string() })
       .strict()
       .nullable()
@@ -335,6 +361,11 @@ export interface ExecutionResponse {
   output: unknown;
   inputTokens: number | null;
   outputTokens: number | null;
+  /**
+   * False when the provider reported no tokens for model steps that ran, so the spend is
+   * unknown: the attempt keeps its reservation instead of being counted as free.
+   */
+  usageComplete?: boolean;
 }
 export interface AgentExecutor {
   execute(request: ExecutionRequest): Promise<ExecutionResponse>;
