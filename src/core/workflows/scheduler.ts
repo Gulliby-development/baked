@@ -6015,7 +6015,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         findings: taskFailures,
       });
       for (const finding of recorded) state.repairPredecessors[finding.id] = task.id;
-      this.repair(runId, state, policy, recorded, "repair");
+      this.repair(runId, state, policy, recorded, "repair", "task");
       this.store.transaction(() => this.store.saveState(runId, state));
     } else {
       this.store.transaction(() => {
@@ -8625,9 +8625,10 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     policy: RunPolicy,
     findings: Review["findings"],
     kind: "repair" | "convergence",
+    scope: "round" | "task" = "round",
   ): void {
     this.store.transaction(() => {
-      appendCorrections(this.store, runId, state, policy, findings, kind);
+      appendCorrections(this.store, runId, state, policy, findings, kind, scope);
       state.stageIndex = WorkflowSchema.parse(
         JSON.parse(this.store.run(runId).definition_json),
       ).stages.findIndex((s) => s.kind === "task-graph");

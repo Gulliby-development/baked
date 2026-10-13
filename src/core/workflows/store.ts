@@ -1345,6 +1345,10 @@ export class WorkflowStore {
       runId,
     ]);
   }
+  /** Counts corrective tasks that spend no round: a task's own failed checks (#839). */
+  addCorrectiveTasks(runId: string, count: number): void {
+    this.db.run("UPDATE runs SET corrective_tasks=corrective_tasks+? WHERE id=?", [count, runId]);
+  }
   addRound(runId: string, kind: "repair" | "convergence", count: number): void {
     const column = kind === "repair" ? "repair_rounds" : "convergence_rounds";
     this.db.run(
