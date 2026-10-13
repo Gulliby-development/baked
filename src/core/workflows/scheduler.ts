@@ -62,6 +62,7 @@ import { completeReview, reviewProblems, validateReview } from "../verification/
 import { addReviewNotes, noteReason } from "../verification/review-notes.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
 import { baselineKeys, taskErrors } from "../verification/task-end-check.js";
+import { affectedTestCheck, affectedTestsFor } from "./affected-tests.js";
 import { outputSchemas } from "./agent-executor.js";
 import {
   assumable,
@@ -3116,6 +3117,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       });
     } else if (!checking) {
       const root = runRoot(this.store.workspace, state);
+      if (await this.affectedBaseline(runId, child, state, policy, task, signal, root))
+        this.store.transaction(() => this.store.saveState(runId, state));
       const before = await sourceManifest(root, generatedPaths(policy), signal);
       const knownEffects = new Set(this.store.effects(runId).map((e) => e.id));
       // Edits of earlier attempts of this task that are still in place (a revision, a recovery
@@ -3206,6 +3209,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
                   },
                 }
               : {}),
+            ...this.affectedTestsContext(root, state, policy, task),
             ...(inherited.length
               ? {
                   earlierEdits: {
@@ -3331,7 +3335,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     let inconclusive: string | undefined;
     const taskRoot = runRoot(this.store.workspace, state);
     const taskResults: WorkerCheck[] = [];
-    for (const check of taskChecks(policy, task)) {
+    for (const check of this.gatedChecks(state, policy, task, taskRoot)) {
       const checked = await this.runTaskCheck(runId, child, check, policy, signal, taskRoot);
       taskResults.push({ check, checked });
     }
@@ -3675,6 +3679,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     let before: Record<string, string> | undefined;
     try {
       before = await sourceManifest(root, generatedPaths(policy), signal);
+      await this.affectedBaseline(runId, entry.child, state, policy, task, signal, root);
       const earlierEdits = await this.applyCarry(runId, state, entry, root);
       const currentChanges = async (): Promise<{
         after: Record<string, string>;
@@ -3697,6 +3702,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
                 ...(await this.correctionContext(runId, state, root, task)),
                 ...(await this.libraryDocsContext(runId, policy, root, task)),
                 ...(earlierEdits ? { earlierEdits } : {}),
+                ...this.affectedTestsContext(root, state, policy, task),
               }
             : entry.extra,
           signal,
@@ -3783,7 +3789,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       if (result.outcome === "already_satisfied")
         this.validateSatisfiedEvidence(runId, state, after, result);
       const results: WorkerCheck[] = [];
-      for (const check of taskChecks(policy, task)) {
+      for (const check of this.gatedChecks(state, policy, task, root)) {
         const checked = await checks.run(() =>
           this.runTaskCheck(runId, entry.child, check, policy, signal, root),
         );
@@ -3968,7 +3974,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     });
     // A resolved conflict changed what the task's checks saw: they run again on the result.
     const results = conflicts.length
-      ? await this.recheck(runId, entry, policy, signal, mainRoot)
+      ? await this.recheck(runId, state, entry, policy, signal, mainRoot)
       : outcome.checks;
     const failures: Review["findings"] = [];
     const evidence: string[] = [];
@@ -4045,13 +4051,14 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
   }
   private async recheck(
     runId: string,
+    state: RuntimeState,
     entry: BatchEntry,
     policy: RunPolicy,
     signal: AbortSignal,
     root: string,
   ): Promise<WorkerCheck[]> {
     const results: WorkerCheck[] = [];
-    for (const check of taskChecks(policy, entry.task)) {
+    for (const check of this.gatedChecks(state, policy, entry.task, root)) {
       const checked = await this.runTaskCheck(runId, entry.child, check, policy, signal, root);
       results.push({ check, checked });
     }
@@ -4383,9 +4390,14 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         .map((f) => /^Required check (\S+) failed$/.exec(JSON.parse(f.body_json).claim)?.[1])
         .filter((id): id is string => Boolean(id)),
     );
-    const checks = policy.checks.filter(
-      (c) => c.required && (named.has(c.id) || taskChecks(policy, task).some((t) => t.id === c.id)),
-    );
+    const regression = this.affectedRecord(state, task)?.checkId;
+    const checks = [
+      ...policy.checks.filter(
+        (c) =>
+          c.required && (named.has(c.id) || taskChecks(policy, task).some((t) => t.id === c.id)),
+      ),
+      ...this.gatedChecks(state, policy, task, root).filter((c) => c.id === regression),
+    ];
     if (!checks.length) return false;
     for (const check of checks) {
       const checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
@@ -4436,6 +4448,88 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         note: "The findings this task corrects point at these files and symbols. Start the fix there and read the other written files only when the fix needs them.",
       },
     };
+  }
+  /**
+   * The existing tests that reach the task's files (#634), for the implementer's context, with
+   * the check that runs only them when a test check of the policy takes test files.
+   */
+  private affectedTestsContext(
+    root: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ): { affectedTests?: { paths: string[]; checkId: string | null; note: string } } {
+    if (!task.writes.length) return {};
+    const record = this.affectedRecord(state, task);
+    const found = record ? null : affectedTestsFor(root, policy.checks, task.writes);
+    const paths = record?.paths ?? found?.tests.map((t) => t.path) ?? [];
+    const checkId = record ? record.checkId : (found?.check?.id ?? null);
+    if (!paths.length) return {};
+    const intro = "Existing tests that exercise the files this task changes, nearest first.";
+    let note = checkId
+      ? `${intro} Keep them passing: run them with request_check ${checkId} after your edits and fix what your change broke before submitting.`
+      : `${intro} Keep them passing: read the ones that cover the code you change before editing it.`;
+    if (record?.baseline === "passed")
+      note += ` They passed before this task, so ${checkId ?? "their check"} is required after it.`;
+    else if (record?.baseline === "failed")
+      note += ` They already failed before this task (evidence ${record.evidenceId ?? "none"}); do not take those failures for yours.`;
+    return { affectedTests: { paths, checkId, note } };
+  }
+  /** The affected-test record of a task, or of the task a corrective task repairs. */
+  private affectedRecord(
+    state: RuntimeState,
+    task: Task,
+  ): RuntimeState["affectedTests"][string] | undefined {
+    const own = state.affectedTests[task.id];
+    if (own) return own;
+    for (const findingId of task.findingIds) {
+      const base = state.repairPredecessors[findingId];
+      const inherited = base ? state.affectedTests[base] : undefined;
+      if (inherited) return inherited;
+    }
+    return undefined;
+  }
+  /**
+   * Before a task's first attempt, records the existing tests that reach its files and runs the
+   * check that runs only them, so a failure after the task can be told from one it found (#634).
+   */
+  private async affectedBaseline(
+    runId: string,
+    child: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    signal: AbortSignal,
+    root: string,
+  ): Promise<boolean> {
+    if (!task.writes.length || this.affectedRecord(state, task)) return false;
+    const { tests, check } = affectedTestsFor(root, policy.checks, task.writes);
+    const checked = check
+      ? await this.runTaskCheck(runId, child, check, policy, signal, root)
+      : null;
+    state.affectedTests[task.id] = {
+      paths: tests.map((t) => t.path),
+      checkId: check?.id ?? null,
+      baseline: checked?.status ?? null,
+      evidenceId: checked?.evidenceId ?? null,
+    };
+    return true;
+  }
+  /**
+   * The task checks run after a task: its own, and the affected-test check, required, when it
+   * passed before the task's first attempt and the task's checks do not already run that suite.
+   */
+  private gatedChecks(state: RuntimeState, policy: RunPolicy, task: Task, root: string): Check[] {
+    const own = taskChecks(policy, task);
+    const record = this.affectedRecord(state, task);
+    if (record?.baseline !== "passed" || !record.checkId) return own;
+    const suite = record.checkId.replace(/-affected$/, "");
+    if (own.some((c) => c.id === suite)) return own;
+    const gate = affectedTestCheck(
+      policy.checks,
+      record.paths.filter((path) => existsSync(workspacePath(root, path))),
+    );
+    return gate ? [...own, { ...gate, required: true }] : own;
   }
   /**
    * Docs for the locked versions of the libraries a task uses, from the run's `libraryDocs`
@@ -4537,6 +4631,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       this.store.taskStatus(runId, task.id, "blocked", state.snapshotId),
     );
     if (checked.status === "inconclusive") return check.id;
+    // The existing tests that reach the task's files passed before it: the task's change broke
+    // them, so its repair fixes that change even when the failing tests are files it may not write.
+    const regression = check.id === this.affectedRecord(state, task)?.checkId;
     // Files the output names that this task may not write: a repair of the task gets the ones
     // the run's other tasks own (commitbump cd842f0f: fmt of tests/docs.rs failed on src/*.rs).
     const rootTasks = (state.rootGraph ?? state.graph)?.tasks ?? [];
@@ -4549,7 +4646,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     );
     // Every file the output names is one this task cannot get write access to: a repair would
     // end "outside this task's approved write scope" after attempts that change nothing.
-    if (named.length && outside.length === named.length && !owned.length)
+    if (!regression && named.length && outside.length === named.length && !owned.length)
       throw new WorkflowFault(
         "RECOVERY_REQUIRED",
         `out_of_scope_failure: check ${check.id} fails on ${outside.slice(0, 5).join(", ")}, which ${task.id} may not write and no task of its profile owns (evidence ${checked.evidenceId}). Fix those files or revise the plan, then resume.`,
@@ -4566,11 +4663,15 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       file: null,
       symbol: null,
       evidenceIds: [checked.evidenceId],
-      claim: `Task ${task.id} required check ${check.id} failed`,
+      claim: regression
+        ? `Task ${task.id} broke existing tests: check ${check.id} passed before the task and fails after it`
+        : `Task ${task.id} required check ${check.id} failed`,
       impact: "Dependent tasks cannot run",
-      suggestedFix: owned.length
-        ? `Fix ${task.id} and the files the check output names (${owned.slice(0, 5).join(", ")}) and repeat ${check.id}.`
-        : `Fix ${task.id} within its approved paths and repeat ${check.id}.`,
+      suggestedFix: regression
+        ? `Fix the change ${task.id} made so the existing tests pass again and repeat ${check.id}; change a test only when the task's requirements change the behavior it expects.`
+        : owned.length
+          ? `Fix ${task.id} and the files the check output names (${owned.slice(0, 5).join(", ")}) and repeat ${check.id}.`
+          : `Fix ${task.id} within its approved paths and repeat ${check.id}.`,
     });
     return undefined;
   }
