@@ -131,7 +131,8 @@ so doctor and start report the same problem in the same words.
 - **Follows the definition.** Only the definition's stages count, read through `asV2` so v1 and v2
   definitions look the same. History is keyed by stage ID, so a stage with history uses it whatever its
   type (check stages run `ai-acceptance` agents and record their attempts there). Without history, the
-  stage type picks the fallback: `tasks` is price per task times task count; `agent`, `reflection` and
+  stage type picks the fallback: `tasks` is price per task times task count (without history 90k–450k
+  per task, one code file and one test file created at the sizing defaults, times 2–6 tasks); `agent`, `reflection` and
   `review` use the default range for that ID, else a generic 15k–60k; `approval`, `check` and `learn`
   are zero. Tasks stages are recognized by type, not by the ID `implement`, so a renamed tasks stage is
   not counted twice.

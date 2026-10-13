@@ -202,12 +202,12 @@ describe("pre-run estimate", () => {
         { id: "implement", type: "tasks", models: ["a/m"] },
         { id: "checks", type: "check", models: [] },
       ],
-      maxTotalTokens: 2_000_000,
+      maxTotalTokens: 3_000_000,
       price: () => price,
     });
     expect(estimate.stages.map((s) => s.stageId)).toEqual(["plan", "approve", "implement", "checks"]);
     expect(estimate.stages[1]?.tokens).toEqual({ low: 0, high: 0 });
-    expect(estimate.stages[2]?.tokens).toEqual({ low: 30_000, high: 480_000 });
+    expect(estimate.stages[2]?.tokens).toEqual({ low: 180_000, high: 2_700_000 });
     expect(estimate.basis).toBe("defaults");
     expect(estimate.budget.fits).toBe("yes");
     expect(estimate.costComplete).toBe(true);
