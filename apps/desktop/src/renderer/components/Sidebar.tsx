@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useState } from "react";
 import type { DesktopProject } from "../../shared/api.js";
 import type { SessionState } from "../client/chat.js";
+import { useChatModels } from "../client/chat-models.js";
 import { useChatSessions } from "../client/chat-sessions.js";
 import { type RunRow, runs } from "../client/runs.js";
 import { backendLabel, initial, projectLine } from "../format.js";
@@ -140,7 +141,10 @@ function SelectedProject({
   section: ProjectSection;
   id: string | null;
 }) {
-  const chats = useChatSessions(project.key, project.backend.kind === "running", COUNTED_CHATS);
+  const running = project.backend.kind === "running";
+  const chats = useChatSessions(project.key, running, COUNTED_CHATS);
+  // Fetched once the backend runs, so the composer's model and effort menus open on it at once.
+  useChatModels(running ? project.key : null);
   const chatCount = chats ? chats.length : project.overview.sessions;
   const chatId = section === "chat" ? routeId : null;
   const runId = section === "runs" && routeId && !RUN_PAGES.has(routeId) ? routeId : null;

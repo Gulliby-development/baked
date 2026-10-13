@@ -32,6 +32,7 @@ import {
   type SessionDiffStats,
   type WatchStatus,
 } from "../../client/chat.js";
+import { useChatModels } from "../../client/chat-models.js";
 import { chatSessionsChanged } from "../../client/chat-sessions.js";
 import { coordinator as coordinatorApi } from "../../client/coordinator.js";
 import { setup } from "../../client/setup.js";
@@ -498,7 +499,7 @@ export function SessionView({
         }
       : undefined;
 
-  const loadModels = useCallback(() => chat.models(key).then((result) => result.providers), [key]);
+  const models = useChatModels(key);
   const loadCommands = useCallback(
     () => setup.commands(key).then((result) => result.commands),
     [key],
@@ -645,7 +646,7 @@ export function SessionView({
           onMode={(mode) => update({ mode })}
           {...(hasEffort ? { onEffort: (effort: ChatEffort) => update({ effort }) } : {})}
           modes={modes}
-          loadModels={loadModels}
+          models={models}
           loadMentions={loadMentions}
           {...(expandsCommands ? { loadCommands } : {})}
           acceptsImages={acceptsImages}

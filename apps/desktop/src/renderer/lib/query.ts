@@ -19,6 +19,8 @@ export interface Query<T> extends QuerySnapshot<T> {
   loading: boolean;
   /** Fetches again now; the current data stays on screen until the answer arrives. */
   refresh: () => void;
+  /** Fetches again only when the cached answer is stale, e.g. when a menu showing it opens. */
+  revalidate: () => void;
   /** Replaces the cached answer, e.g. with the view a write returned. */
   set: (data: T) => void;
 }
@@ -79,6 +81,10 @@ export function useQuery<T>(
     const current = keyRef.current;
     if (current) void fetchQuery(current, () => fetcherRef.current());
   }, []);
+  const revalidate = useCallback(() => {
+    const current = keyRef.current;
+    if (current) revalidateQuery(current, () => fetcherRef.current(), staleMs);
+  }, [staleMs]);
   const set = useCallback((data: T) => {
     const current = keyRef.current;
     if (current) setQueryData(current, data);
@@ -88,6 +94,7 @@ export function useQuery<T>(
     ...snapshot,
     loading: id !== null && !snapshot.hasData && (snapshot.fetching || snapshot.error === null),
     refresh,
+    revalidate,
     set,
   };
 }

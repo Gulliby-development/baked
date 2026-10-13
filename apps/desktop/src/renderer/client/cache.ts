@@ -26,6 +26,8 @@ const MAX_IDLE_ENTRIES = 200;
 
 interface Entry {
   project: string;
+  /** The name of the read, the second part of its key. */
+  name: string;
   snapshot: QuerySnapshot<unknown>;
   listeners: Set<() => void>;
   inflight: Promise<void> | null;
@@ -60,6 +62,7 @@ function entry(key: QueryKey): Entry {
   if (!found) {
     found = {
       project: key[0],
+      name: key[1],
       snapshot: EMPTY,
       listeners: new Set(),
       inflight: null,
@@ -158,6 +161,19 @@ export function setQueryData<T>(key: QueryKey, data: T): void {
  */
 export function invalidateProject(project: string): void {
   for (const target of entries.values()) if (target.project === project) target.generation += 1;
+}
+
+/**
+ * Marks one read stale in every project, for a change outside any one project such as a provider
+ * sign-in, and refreshes it at once where a screen shows it.
+ */
+export function invalidateRead(name: string): void {
+  for (const [id, target] of entries) {
+    if (target.name !== name) continue;
+    target.generation += 1;
+    if (target.listeners.size > 0 && target.fetcher)
+      void fetchQuery(JSON.parse(id) as QueryKey, target.fetcher);
+  }
 }
 
 /** Refreshes the stale entries that a mounted screen shows, e.g. when the window regains focus. */

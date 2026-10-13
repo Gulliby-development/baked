@@ -1,12 +1,7 @@
 import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from "react";
 import type { MicrophoneAccess } from "../../../shared/api.js";
-import type {
-  ChatEffort,
-  ChatMode,
-  ImageUpload,
-  MentionSuggestion,
-  ModelProvider,
-} from "../../client/chat.js";
+import type { ChatEffort, ChatMode, ImageUpload, MentionSuggestion } from "../../client/chat.js";
+import type { ChatModels } from "../../client/chat-models.js";
 import type { CommandEntry } from "../../client/setup.js";
 import { Icon } from "../../components/Icon.js";
 import { cn } from "../../lib/cn.js";
@@ -111,33 +106,21 @@ export const EFFORT_LABELS: Record<ChatEffort, string> = {
 function EffortMenu({
   model,
   effort,
-  loadModels,
+  models,
   onEffort,
   close,
 }: {
   model: string | null;
   effort: ChatEffort;
-  loadModels: () => Promise<ModelProvider[]>;
+  models: ChatModels;
   onEffort: (effort: ChatEffort) => void;
   close: () => void;
 }) {
-  const [levels, setLevels] = useState<ChatEffort[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    let live = true;
-    loadModels().then(
-      (providers) => {
-        const found = providers.flatMap((p) => p.models).find((m) => m.id === model);
-        if (live) setLevels(found?.efforts ?? []);
-      },
-      (e: unknown) => live && setError(e instanceof Error ? e.message : String(e)),
-    );
-    return () => {
-      live = false;
-    };
-  }, [loadModels, model]);
-  if (error) return <p className={MENU_NOTE}>{error}</p>;
-  if (!levels) return <p className={MENU_NOTE}>Loading efforts…</p>;
+  const { providers, error, revalidate } = models;
+  useEffect(() => revalidate(), [revalidate]);
+  if (!providers && error) return <p className={MENU_NOTE}>{error}</p>;
+  if (!providers) return <p className={MENU_NOTE}>Loading efforts…</p>;
+  const levels = providers.flatMap((p) => p.models).find((m) => m.id === model)?.efforts ?? [];
   const choices: ChatEffort[] = ["default", ...levels];
   if (!choices.includes(effort)) choices.push(effort);
   return (
@@ -179,28 +162,18 @@ export function shortModel(model: string | null): string {
 
 function ModelMenu({
   model,
-  loadModels,
+  models,
   onModel,
   close,
 }: {
   model: string | null;
-  loadModels: () => Promise<ModelProvider[]>;
+  models: ChatModels;
   onModel: (model: string) => void;
   close: () => void;
 }) {
-  const [providers, setProviders] = useState<ModelProvider[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    let live = true;
-    loadModels().then(
-      (list) => live && setProviders(list),
-      (e: unknown) => live && setError(e instanceof Error ? e.message : String(e)),
-    );
-    return () => {
-      live = false;
-    };
-  }, [loadModels]);
-  if (error) return <p className={MENU_NOTE}>{error}</p>;
+  const { providers, error, revalidate } = models;
+  useEffect(() => revalidate(), [revalidate]);
+  if (!providers && error) return <p className={MENU_NOTE}>{error}</p>;
   if (!providers) return <p className={MENU_NOTE}>Loading models…</p>;
   const usable = providers.filter((p) => p.configured && p.models.length > 0);
   if (usable.length === 0)
@@ -249,7 +222,7 @@ export function Composer({
   onMode,
   onEffort,
   modes = BASE_MODES,
-  loadModels,
+  models,
   loadMentions,
   loadCommands,
   acceptsImages = false,
@@ -272,7 +245,8 @@ export function Composer({
   onMode: (mode: ChatMode) => void;
   /** Reasoning effort of the chat; without it the composer shows no effort control. */
   onEffort?: (effort: ChatEffort) => void;
-  loadModels: () => Promise<ModelProvider[]>;
+  /** The model list of the project, which the model and effort menus open on. */
+  models: ChatModels;
   /** `@` completions; without it the composer offers none. */
   loadMentions?: (query: string) => Promise<MentionSuggestion[]>;
   /** Custom slash commands offered when a message starts with `/`; without it the composer offers none. */
@@ -718,9 +692,7 @@ export function Composer({
             </span>
           }
         >
-          {(close) => (
-            <ModelMenu model={model} loadModels={loadModels} onModel={onModel} close={close} />
-          )}
+          {(close) => <ModelMenu model={model} models={models} onModel={onModel} close={close} />}
         </Popover>
         {onEffort && (
           <Popover
@@ -733,7 +705,7 @@ export function Composer({
               <EffortMenu
                 model={model}
                 effort={effort}
-                loadModels={loadModels}
+                models={models}
                 onEffort={onEffort}
                 close={close}
               />

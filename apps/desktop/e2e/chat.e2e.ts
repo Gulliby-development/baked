@@ -90,3 +90,21 @@ test("Undo asks in the app before it drops the last turn", async ({ app }) => {
   await dialog.getByRole("button", { name: "Undo" }).click();
   await expect(conversation.getByText("Clear the router cache and test")).toBeHidden();
 });
+
+test("the model and effort menus open on the project's model list", async ({ app }) => {
+  const page = await app("#/p/baked/chat");
+  await page.getByRole("button", { name: /^Model: / }).click();
+  await expect(page.getByText("Loading models…")).toBeHidden();
+  await page.getByRole("button", { name: "Claude Opus 5.5" }).click();
+  await expect(page.getByRole("button", { name: "Model: claude-opus-5-5" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Model: claude-opus-5-5" }).click();
+  await expect(page.getByRole("button", { name: "Claude Opus 5.5" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: /^Reasoning effort: / }).click();
+  await expect(page.getByText("Loading efforts…")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^High/ })).toBeVisible();
+});
