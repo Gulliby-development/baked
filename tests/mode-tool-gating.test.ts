@@ -72,6 +72,26 @@ describe("mode tool gating", () => {
     expect(result.output).toContain("architect");
   });
 
+  test("a repeated write attempt in plan mode gets a firmer refusal", async () => {
+    const agent = createBakeAgent({
+      model: mockModel("anthropic/claude-sonnet-4-6"),
+      contextManager: context(),
+      bakeMode: "plan",
+    }) as unknown as Agent;
+    const first = (await agent.tools.shell!.execute!({ command: "touch a.txt" }, {})) as {
+      output: string;
+    };
+    expect(first.output).toContain("do not try another one");
+    expect(first.output).toContain("call plan");
+    const second = (await agent.tools.edit_file!.execute!(
+      { path: "a.txt", oldString: "a", newString: "b" },
+      {},
+    )) as { error?: string; output: string };
+    expect(second.error).toBe("mode_restricted");
+    expect(second.output).toContain("2 refusals this turn");
+    expect(second.output).toContain("call plan with the changes you intended now");
+  });
+
   test("allowed tool (read) is NOT deny-stubbed in architect mode", () => {
     const archRead = makeAgent("architect").tools.read;
     expect(typeof archRead?.execute).toBe("function");
