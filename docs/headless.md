@@ -54,6 +54,8 @@ baked --headless --save-session "analyze the auth module, find all issues"
 baked --headless --session <id> --save-session "now fix them"
 ```
 
+`--session ID` continues the active conversation of the saved session `ID` (an id or a unique prefix; a session made in the terminal UI or the desktop app works too), and `--save-session` saves it back under the same id, keeping the session's other tabs, its title and its token count so far. In `--chat` the conversation is saved when the chat ends. A saved headless turn records its tool calls with the conversation and snapshots the workspace in Git like a turn in the terminal UI, so `baked session undo` can restore the files it edited ([undoing a turn](#undoing-a-turn)).
+
 `baked session list` prints the saved sessions of the project, most recently updated first (`--limit N`, default 50); `--json` prints `{sessions: [{id, title, messageCount, startedAt, updatedAt, sizeBytes, projectId?}]}`. `baked session delete ID` deletes one, by its id or a prefix that matches only that session, together with the checkpoint tags it made; the workspace files stay as they are. It exits 1 when no session or more than one matches. The terminal UI and the desktop app list the same sessions, so do not delete one they have open. `baked session export ID` writes the conversation of the session's active tab as Markdown (or `--format json`) to `--output FILE`, or to `.baked/exports/` as `/session export` does in the terminal UI; `--json` prints `{sessionId, path, messageCount, format}`. The [project coordinator](coordinator.md) is not listed; `baked session coordinator` prints its session id and project brief (`--json`: `{sessionId, brief}`) and exits 1 when the project has none.
 
 ## Usage and attention
@@ -92,7 +94,7 @@ baked --headless --session <new-id> "try the other approach"
 
 `baked session fork ID` saves a new session with the active conversation of session `ID` and prints its id. `--at MESSAGE_ID` keeps the messages up to and including that message, `--checkpoint N` up to the end of checkpoint (turn) N; without either the whole conversation is copied. `--rollback-files` also restores the files the agent edited after that point to their state there, with the same safeguards as `/checkpoint fork` in the terminal UI ([forking a checkpoint](guide.md#forking-a-checkpoint)): a backup tag first, and files changed since the agent last touched them are left as they are unless `--force`. `--json` prints `{sessionId, title, messageCount, checkpoint, rollback}`, where `rollback` is the report described in the [local API](desktop/api.md). The command exits 1 when the session, message or checkpoint does not exist, or when files need restoring and the project is not a Git repository.
 
-Headless runs do not snapshot the workspace, so a session made only with `--save-session` can be forked but its files cannot be rolled back.
+A headless run without `--save-session` takes no snapshot; `--save-session` and `--chat` snapshot each turn that edits files.
 
 ## Undoing a turn
 
@@ -103,7 +105,7 @@ baked session undo <id> --to 1     # keep only checkpoint 1
 baked session redo <id>            # put the oldest undone turn back
 ```
 
-`baked session undo ID` drops the last turn of the active conversation of session `ID` (with `--to N`, every turn after checkpoint N; `--to 0` drops them all) and restores the files those turns edited, with the safeguards of `/undo` in the terminal UI ([checkpoints](guide.md#checkpoints)): a backup tag first, and files changed since the agent last wrote them are left as they are unless `--force`. The undone turns are saved with the session; `baked session redo ID` puts back the oldest one and restores the files it edited. After a new message in the session they can no longer be put back. `--json` prints `{sessionId, action, checkpoint, messageCount, redoCount, rollback}`. The command exits 1 when the session does not exist or there is nothing to undo or redo.
+`baked session undo ID` drops the last turn of the active conversation of session `ID` (with `--to N`, every turn after checkpoint N; `--to 0` drops them all) and restores the files those turns edited, with the safeguards of `/undo` in the terminal UI ([checkpoints](guide.md#checkpoints)): a backup tag first, and files changed since the agent last wrote them are left as they are unless `--force`. The undone turns are saved with the session; `baked session redo ID` puts back the oldest one and restores the files it edited. After a new message in the session they can no longer be put back. When the undone turns recorded no file edits (a session saved by a headless run before turns recorded their tool calls, or turns that only answered), the conversation is rewound and the command says that the files were left as they are. `--json` prints `{sessionId, action, checkpoint, messageCount, redoCount, rollback}`. The command exits 1 when the session does not exist or there is nothing to undo or redo.
 
 `baked session checkpoints ID` lists the turns of the active conversation, one per line: the checkpoint number to pass to `--to`, `snapshot` when the files of that turn can be restored, how many files it edited and the first line of its prompt; undone turns follow, marked `undone`. `--json` prints `{sessionId, checkpoints, redo}` as `GET /v1/sessions/ID/checkpoints` does.
 
