@@ -20,6 +20,7 @@ import {
   estimateDefinition,
   type GateTarget,
   gateSummary,
+  insertWaitStage,
   moveGate,
   openEditor,
   type ProblemGroup,
@@ -28,6 +29,7 @@ import {
   readEditorSource,
   removeGate,
   removeTransition,
+  removeWaitStage,
   type SaveReview,
   type StageField,
   stageFields,
@@ -47,6 +49,8 @@ export type EditorOp =
   | { op: "toggleMode"; target: GateTarget; index: number }
   | { op: "addTransition"; from: string; to: string; on: Outcome; loop: number | null }
   | { op: "removeTransition"; id: string }
+  | { op: "addWaitStage"; after: string }
+  | { op: "removeWaitStage"; stageId: string }
   | { op: "changeField"; stageId: string; key: string; delta: -1 | 1 }
   | { op: "duplicate" };
 
@@ -188,6 +192,10 @@ export function applyEditorOp(state: EditorState, op: EditorOp): EditResult {
       return addTransition(state, op.from, { to: op.to, on: op.on, loop: op.loop });
     case "removeTransition":
       return removeTransition(state, op.id);
+    case "addWaitStage":
+      return insertWaitStage(state, op.after);
+    case "removeWaitStage":
+      return removeWaitStage(state, op.stageId);
     case "changeField":
       return changeStageField(state, op.stageId, op.key, op.delta);
     case "duplicate":

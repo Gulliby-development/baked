@@ -735,6 +735,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/workflows"],
   },
   {
+    id: "wait-stage",
+    group: "Workflow runs",
+    title: "Wait stage: poll command gates until they pass or time out, with no model calls",
+    tui: ["/workflow: definition editor (W adds a wait stage), run activity"],
+    cli: ["baked workflow validate", "baked workflow run"],
+    api: ["/v1/workflow/editor", "/v1/workflow/runs/:id/events"],
+    desktop: ["project/workflows: Wait after", "project/runs: activity feed"],
+  },
+  {
     id: "doctor-estimate",
     group: "Workflow runs",
     title: "Doctor and estimate before a run",

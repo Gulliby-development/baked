@@ -320,6 +320,32 @@ function StageCard({
           <Tag>{stage.type}</Tag>
           <span className={cn("font-mono text-dim-foreground", NOTE)}>makes {stage.produces}</span>
         </span>
+        {!readOnly && (
+          <span className={ACTIONS}>
+            {stage.type === "wait" ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={busy}
+                aria-label={`Remove wait stage ${stage.id}`}
+                onClick={() => onEdit({ op: "removeWaitStage", stageId: stage.id })}
+              >
+                Remove
+              </Button>
+            ) : (
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={busy}
+                title="Insert a stage that runs command gates every interval until they pass, with no model calls"
+                aria-label={`Add a wait stage after ${stage.id}`}
+                onClick={() => onEdit({ op: "addWaitStage", after: stage.id })}
+              >
+                Wait after
+              </Button>
+            )}
+          </span>
+        )}
       </div>
       {problems.length > 0 && (
         <ul className="m-0 flex list-none flex-col gap-1 p-0 text-[12px] text-[var(--warn)]">
