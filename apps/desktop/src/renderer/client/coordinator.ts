@@ -20,6 +20,8 @@ export interface LaunchedEntry {
   id: string;
   why: string;
   status: string;
+  /** For a feature of the initiative `id`: the feature, tracked on its own task. */
+  feature?: string;
   task?: FlowTask;
 }
 
