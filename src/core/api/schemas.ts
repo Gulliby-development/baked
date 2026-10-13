@@ -35,6 +35,8 @@ export const StartBody = z
     writers: z.number().int().min(1).max(MAX_CONCURRENT_WRITERS).optional(),
     /** What blocking spec questions do, as `--clarification`; omitted, the policy decides. */
     clarification: z.enum(["ask", "assume"]).optional(),
+    /** What the test-integrity guard does, as `--test-integrity`; omitted, the policy decides. */
+    testIntegrity: z.enum(["block", "warn"]).optional(),
     /** The duplication ratchet of the run, as `--duplication`; omitted, the policy decides. */
     duplication: z.enum(["off", "warn", "ratchet"]).optional(),
     /** Semgrep on the run's diff, as `--sast`; omitted, the policy decides. */

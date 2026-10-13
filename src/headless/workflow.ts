@@ -311,6 +311,9 @@ export async function executeWorkflowCommand(
         ...(args.flags.clarification === "ask" || args.flags.clarification === "assume"
           ? { clarification: args.flags.clarification }
           : {}),
+        ...(args.flags["test-integrity"] === "block" || args.flags["test-integrity"] === "warn"
+          ? { testIntegrity: args.flags["test-integrity"] }
+          : {}),
         ...(args.flags.sandbox === "off" ||
         args.flags.sandbox === "auto" ||
         args.flags.sandbox === "required"

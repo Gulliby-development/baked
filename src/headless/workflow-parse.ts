@@ -127,6 +127,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "route",
     "model-strict",
     "clarification",
+    "test-integrity",
     "sandbox",
     "duplication",
     "sast",
@@ -424,6 +425,12 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     throw new WorkflowFault("INVALID_DEFINITION", "--clarification accepts ask or assume");
   if (
     !result.flags.help &&
+    "test-integrity" in result.flags &&
+    !["block", "warn"].includes(String(result.flags["test-integrity"]))
+  )
+    throw new WorkflowFault("INVALID_DEFINITION", "--test-integrity accepts block or warn");
+  if (
+    !result.flags.help &&
     "sandbox" in result.flags &&
     !["off", "auto", "required"].includes(String(result.flags.sandbox))
   )
@@ -491,6 +498,9 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   --clarification assume lets research, spec and analysis settle blocking questions with recorded
   assumptions, shown at approval; only questions without a safe default wait for you. Default: the
   policy's clarification, otherwise ask
+  --test-integrity warn records test gaming in a task's diff (deleted, skipped or weakened tests,
+  suppressions, special cases for test inputs) instead of sending it to a repair. Default: the
+  policy's testIntegrity, otherwise block
   --sandbox runs the run's checks, fixes, probes and acceptance apps in the OS sandbox (see
   docs/sandbox.md); required refuses to start without a backend. Default: the stricter of the
   policy's sandbox and the sandbox setting

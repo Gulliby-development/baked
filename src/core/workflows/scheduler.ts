@@ -273,6 +273,13 @@ import { forgetProgress } from "./stall.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
 import { hasTaskGate, pendingCodePaths, pendingOwners, readyTasks } from "./task-graph.js";
+import {
+  integrityFix,
+  isTestPath,
+  scanTestIntegrity,
+  testIntegrityOf,
+  testWriteProblems,
+} from "./test-integrity.js";
 import { takeHashRefusals } from "./tool-policy.js";
 import type { AgentExecutor, Check, HostTool, RuntimeState, Task } from "./types.js";
 import { acceptanceGrants, blocksRun } from "./v2/acceptance.js";
@@ -414,6 +421,8 @@ const refusedReason = (paths: string[]): string =>
     : "";
 /** Characters of a task's unified diff kept in its diff evidence. */
 const MAX_PATCH_CHARS = 48_000;
+/** Files above this size are not scanned by the test-integrity guard. */
+const MAX_INTEGRITY_BYTES = 1024 * 1024;
 /** Lines of a failed check's output handed to a stage that does not write, such as research. */
 const HANDOFF_OUTPUT_LINES = 120;
 
@@ -758,6 +767,7 @@ export class WorkflowScheduler {
                     const problems = [
                       ...this.planProblems(runId, spec, parsed.data, policy, profiles),
                       ...codeTaskCheckProblems(parsed.data.taskGraph, policy),
+                      ...testWriteProblems(parsed.data.taskGraph, policy),
                     ];
                     if (scopeAdvised) return problems;
                     const advice = planScopeAdvice(
@@ -1223,6 +1233,8 @@ export class WorkflowScheduler {
               if (policy.maxConcurrentWriters > 1 && state.worktree)
                 await this.implementParallel(runId, stepId, state, policy, profiles, signal);
               else await this.implement(runId, stepId, state, policy, profiles, signal);
+              // A task that reported a spec conflict waits for a person's answer.
+              if (this.queued.length) advance = false;
               break;
             }
             case "wait": {
@@ -1236,9 +1248,12 @@ export class WorkflowScheduler {
               break;
             }
             case "checks": {
-              const failed = v2
-                ? await this.runCheckStage(runId, stepId, state, policy, v2, signal)
-                : await this.runChecks(runId, stepId, state, policy, signal);
+              const failed = [
+                ...(v2
+                  ? await this.runCheckStage(runId, stepId, state, policy, v2, signal)
+                  : await this.runChecks(runId, stepId, state, policy, signal)),
+                ...this.runIntegrityFailures(runId, state, policy),
+              ];
               if (failed.length) {
                 repairFindings = { findings: failed, kind: "repair" };
                 advance = false;
@@ -3043,6 +3058,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       }
       signal.throwIfAborted();
       await this.implementTask(runId, stepId, state, policy, profiles, signal, task, !!checking);
+      if (this.queued.length) return;
     }
     if (
       this.store
@@ -3107,6 +3123,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       if (!checking) this.store.taskStatus(runId, task.id, "running");
       return this.store.beginStep(runId, `task-${task.id}`, stepId);
     });
+    let integrity: Review["findings"] = [];
     if (!checking && task.writes.length === 0) {
       // A task that may not write has nothing for a model to do: its task checks decide it,
       // and the checks stage covers the rest.
@@ -3237,6 +3254,10 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           );
         }),
       );
+      if (result.outcome === "spec_conflict" && result.taskId === task.id) {
+        this.specConflict(runId, state, child, task, result);
+        return;
+      }
       if (result.outcome === "implemented")
         await this.fixTaskFiles(runId, child, root, policy, task, signal);
       const { after, changed } = await currentChanges();
@@ -3329,8 +3350,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         this.store.taskStatus(runId, task.id, "implemented", state.snapshotId);
         this.store.saveState(runId, state);
       });
+      integrity = this.integrityFailures(runId, state, policy, task, root, beforeHashes, changed);
     }
-    const taskFailures: Review["findings"] = [];
+    const taskFailures: Review["findings"] = [...integrity];
     const checkEvidence: string[] = [];
     let inconclusive: string | undefined;
     const taskRoot = runRoot(this.store.workspace, state);
@@ -3415,6 +3437,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           single,
           single === checking,
         );
+        if (this.queued.length) return;
         continue;
       }
       if (!ready.length) {
@@ -3465,7 +3488,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         for (const outcome of outcomes) {
           const { entry } = outcome;
           if (outcome.kind === "fatal") continue;
-          if (outcome.kind === "done") {
+          if (outcome.kind === "conflict")
+            this.specConflict(runId, state, entry.child, entry.task, outcome.result);
+          else if (outcome.kind === "done") {
             if (!fatal) await this.integrateTask(runId, state, policy, profiles, outcome, signal);
             delete state.taskCarry[entry.task.id];
           } else if (outcome.kind === "interrupted") {
@@ -3504,6 +3529,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         for (const entry of batch) await this.releaseTaskWorktree(runId, entry);
       }
       if (failure) throw failure;
+      if (this.queued.length) return;
     }
     if (lost.size)
       throw new WorkflowFault(
@@ -3727,6 +3753,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           );
         }),
       );
+      if (result.outcome === "spec_conflict" && result.taskId === task.id)
+        return { kind: "conflict", entry, result };
       if (result.outcome === "implemented")
         await this.fixTaskFiles(runId, entry.child, root, policy, task, signal);
       const { after, changed } = await currentChanges();
@@ -3976,7 +4004,15 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const results = conflicts.length
       ? await this.recheck(runId, state, entry, policy, signal, mainRoot)
       : outcome.checks;
-    const failures: Review["findings"] = [];
+    const failures: Review["findings"] = this.integrityFailures(
+      runId,
+      state,
+      policy,
+      task,
+      mainRoot,
+      Object.fromEntries(outcome.changed.map((p) => [p, outcome.before[p] ?? null])),
+      outcome.changed,
+    );
     const evidence: string[] = [];
     let inconclusive: string | undefined;
     for (const { check, checked } of await this.fixFailedTaskChecks(
@@ -4107,10 +4143,14 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     }
     const scoped: Task = {
       ...task,
-      writes: conflicts.map((path) => ({
-        path,
-        action: existsSync(workspacePath(mainRoot, path)) ? "modify" : "create",
-      })),
+      writes: conflicts.map((path) => {
+        const reason = task.writes.find((w) => w.path === path)?.reason;
+        return {
+          path,
+          action: existsSync(workspacePath(mainRoot, path)) ? "modify" : "create",
+          ...(reason ? { reason } : {}),
+        };
+      }),
     };
     const writers = (state.graph?.tasks ?? []).filter((candidate) =>
       candidate.writes.some((w) => conflicts.includes(w.path)),
@@ -4161,7 +4201,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       );
     if (
       result.taskId !== task.id ||
-      ["blocked", "failed"].includes(result.outcome) ||
+      ["blocked", "failed", "spec_conflict"].includes(result.outcome) ||
       result.unresolved.length > 0
     ) {
       this.store.transaction(() => this.store.taskStatus(runId, task.id, "blocked"));
@@ -4597,6 +4637,200 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
    * and becomes a finding, and a required inconclusive result blocks the task and returns the
    * check's id: it stops the run unless another check failed (see `inconclusiveTaskCheck`).
    */
+  /**
+   * The test-integrity findings of a task's changes (#631). Each is recorded in
+   * `tasks/TASK_ID/integrity.json`; under `testIntegrity: "block"` (the default) each becomes a
+   * task failure that a repair must undo, under `warn` it stays a record.
+   */
+  private integrityFailures(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    root: string,
+    before: Record<string, string | null>,
+    changed: string[],
+  ): Review["findings"] {
+    const read = (path: string): string | null => {
+      const absolute = workspacePath(root, path);
+      if (!existsSync(absolute)) return null;
+      const bytes = readFileSync(absolute);
+      return bytes.length > MAX_INTEGRITY_BYTES ? null : bytes.toString("utf8");
+    };
+    const changes = changed.map((path) => {
+      const hash = before[path] ?? null;
+      // Earlier content that was not kept still existed: a deletion is reported, counts are not.
+      const kept = hash === null ? null : readKept(this.store, runId, hash)?.toString("utf8");
+      return { path, before: kept, after: read(path) };
+    });
+    const testSources = task.readHints
+      .filter((path) => isTestPath(path) && !changed.includes(path))
+      .slice(0, 20)
+      .flatMap((path) => read(path) ?? []);
+    const found = scanTestIntegrity(changes, {
+      reasoned: new Set(task.writes.filter((w) => w.reason).map((w) => w.path)),
+      testSources,
+      specText: `${state.spec ? canonical(state.spec) : ""}\n${state.plan ?? ""}`,
+    });
+    if (!found.length) return [];
+    const mode = testIntegrityOf(policy);
+    const evidenceId = this.store.transaction(() => {
+      const artifact = this.store.artifact(
+        runId,
+        "diagnostic",
+        `tasks/${task.id}/integrity.json`,
+        canonical({ taskId: task.id, mode, findings: found }),
+      );
+      return this.store.addEvidence(runId, "diff", state.snapshotId ?? "", artifact.id);
+    });
+    if (mode === "warn") return [];
+    return found.map((finding) => ({
+      id: newId(),
+      kind: "correctness" as const,
+      severity: "high" as const,
+      requirementIds: task.requirementIds,
+      criterionIds: task.criterionIds,
+      file: finding.path,
+      symbol: null,
+      evidenceIds: [evidenceId],
+      claim: `Test integrity (${finding.rule}): task ${task.id} ${finding.detail} in ${finding.path}`,
+      impact: "The tests no longer verify the behavior the spec requires",
+      suggestedFix: integrityFix(finding),
+    }));
+  }
+  /**
+   * The test-integrity scan at feature scope: every file the run changed, from its content before
+   * the run to now, so a problem a repair left in place or one spread over several tasks is still
+   * found. Recorded in `integrity/run.json`; under `block` the findings are recorded and repaired
+   * like failed checks.
+   */
+  private runIntegrityFailures(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+  ): Review["findings"] {
+    const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [];
+    if (!tasks.length) return [];
+    const root = runRoot(this.store.workspace, state);
+    const rootId = rootField(this.store.workspace, root).root ?? "";
+    const baseline = new Map<string, string | null>();
+    for (const effect of this.store.effects(runId)) {
+      if (
+        effect.kind !== "file_patch" ||
+        !["applied", "reconciled"].includes(effect.status) ||
+        intentRoot(effect.intent_json) !== rootId
+      )
+        continue;
+      const path = (JSON.parse(effect.intent_json) as { path: string }).path;
+      if (!baseline.has(path)) baseline.set(path, effect.before_hash);
+    }
+    // A change the journal did not see (a check fixer, a tool outside it) is in the task diffs.
+    for (const artifact of this.store.artifacts(runId)) {
+      if (!/^tasks\/[^/]+\/diff\.json$/.test(artifact.logical_path)) continue;
+      const diff = JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+        before?: Record<string, string | null>;
+      };
+      for (const [path, hash] of Object.entries(diff.before ?? {}))
+        if (!baseline.has(path)) baseline.set(path, hash);
+    }
+    const changed = [...baseline.keys()].filter(
+      (path) => fileHash(workspacePath(root, path)) !== baseline.get(path),
+    );
+    if (!changed.length) return [];
+    const read = (path: string): string | null => {
+      const absolute = workspacePath(root, path);
+      if (!existsSync(absolute)) return null;
+      const bytes = readFileSync(absolute);
+      return bytes.length > MAX_INTEGRITY_BYTES ? null : bytes.toString("utf8");
+    };
+    const found = scanTestIntegrity(
+      changed.map((path) => {
+        const hash = baseline.get(path) ?? null;
+        const kept = hash === null ? null : readKept(this.store, runId, hash)?.toString("utf8");
+        return { path, before: kept, after: read(path) };
+      }),
+      {
+        reasoned: new Set(
+          tasks.flatMap((t) => t.writes.filter((w) => w.reason).map((w) => w.path)),
+        ),
+        specText: `${state.spec ? canonical(state.spec) : ""}\n${state.plan ?? ""}`,
+      },
+    );
+    if (!found.length) return [];
+    const mode = testIntegrityOf(policy);
+    const evidenceId = this.store.transaction(() => {
+      const artifact = this.store.artifact(
+        runId,
+        "diagnostic",
+        "integrity/run.json",
+        canonical({ mode, findings: found }),
+      );
+      return this.store.addEvidence(runId, "diff", state.snapshotId ?? "", artifact.id);
+    });
+    if (mode === "warn") return [];
+    const failures = found.flatMap((finding) => {
+      const owner = tasks.findLast((t) => t.writes.some((w) => w.path === finding.path));
+      if (!owner) return [];
+      return [
+        {
+          id: newId(),
+          kind: "correctness" as const,
+          severity: "high" as const,
+          requirementIds: owner.requirementIds,
+          criterionIds: owner.criterionIds,
+          file: finding.path,
+          symbol: null,
+          evidenceIds: [evidenceId],
+          claim: `Test integrity (${finding.rule}): the run ${finding.detail} in ${finding.path}`,
+          impact: "The tests no longer verify the behavior the spec requires",
+          suggestedFix: integrityFix(finding),
+        },
+      ];
+    });
+    if (!failures.length) return [];
+    return this.recordFindings(runId, {
+      schemaVersion: 1,
+      snapshotHash: state.workspaceHash ?? "",
+      verdict: "changes_requested",
+      coverage: [],
+      findings: failures,
+    });
+  }
+  /**
+   * A task reported that the spec and the tests cannot both hold. It stops without fitting the
+   * tests: it is ready again, and the run asks a person which one is right. The answer joins the
+   * request the task's next attempt reads. Under `clarification: assume` too, since every default
+   * here would be to fit the tests or to drop a requirement.
+   */
+  private specConflict(
+    runId: string,
+    state: RuntimeState,
+    child: string,
+    task: Task,
+    result: Implementation,
+  ): void {
+    const account = { taskId: task.id, summary: result.summary, unresolved: result.unresolved };
+    this.store.transaction(() => {
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `tasks/conflicts/${task.id}.json`,
+        canonical(account),
+      );
+      this.store.taskStatus(runId, task.id, "interrupted");
+      this.store.finishStep(runId, child, "failed");
+    });
+    this.wait("clarification", state, {
+      questions: [
+        {
+          id: `SPEC-CONFLICT-${task.id}`,
+          question: `Task ${task.id} (${task.title}) reports that the spec and the tests cannot both hold: ${result.summary}${result.unresolved.length ? ` ${result.unresolved.join(" ")}` : ""} Which one is right? The task runs again with your answer; it may not weaken the tests to fit.`,
+          blocking: true,
+        },
+      ],
+      specConflict: account,
+    });
+  }
   private applyTaskCheck(
     runId: string,
     state: RuntimeState,
@@ -7264,6 +7498,8 @@ type WorkerOutcome =
       /** The files the attempt changed in its worktree, with the manifest before it. */
       edits?: { before: Record<string, string>; changed: string[] };
     }
+  /** The task's worker reported that the spec and the tests cannot both hold. */
+  | { kind: "conflict"; entry: BatchEntry; result: Implementation }
   /** The task's worker or worktree lease was lost; only this task stops. */
   | {
       kind: "interrupted";

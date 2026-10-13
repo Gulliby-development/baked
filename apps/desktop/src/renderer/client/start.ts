@@ -172,6 +172,8 @@ export interface StartBody {
   writers?: number;
   /** What blocking spec questions do (`--clarification`); omitted, the policy decides. */
   clarification?: "ask" | "assume";
+  /** What the test-integrity guard does (`--test-integrity`); omitted, the policy decides. */
+  testIntegrity?: "block" | "warn";
   /** The run's OS sandbox (`--sandbox`); omitted, the policy and the sandbox setting decide. */
   sandbox?: "off" | "auto" | "required";
   /** The run model overrides every configured route (`--model-strict`). */

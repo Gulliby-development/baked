@@ -427,6 +427,7 @@ function startArgs(raw: unknown): WorkflowArgs {
   if (body.worktree) flags.worktree = true;
   if (body.writers !== undefined) flags.writers = String(body.writers);
   if (body.clarification) flags.clarification = body.clarification;
+  if (body.testIntegrity) flags["test-integrity"] = body.testIntegrity;
   if (body.duplication) flags.duplication = body.duplication;
   if (body.sast) flags.sast = body.sast;
   if (body.mutation) flags.mutation = body.mutation;

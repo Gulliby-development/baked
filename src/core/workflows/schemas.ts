@@ -104,7 +104,18 @@ export const TaskSchema = z
     dependsOn: z.array(TaskId),
     profileId: SafeId,
     writes: z.array(
-      z.object({ path: RelativePath, action: z.enum(["create", "modify", "delete"]) }).strict(),
+      z
+        .object({
+          path: RelativePath,
+          action: z.enum(["create", "modify", "delete"]),
+          /**
+           * Why the task changes or deletes a test file that existed before the run. Without it
+           * the test-integrity guard keeps such a file read-only for the implementer. Absent on
+           * every other write, so stored graphs keep their hash.
+           */
+          reason: Text.optional(),
+        })
+        .strict(),
     ),
     readHints: z.array(RelativePath),
     /**
@@ -276,6 +287,12 @@ export const PolicySchema = z
      * Absent means on, so stored policies keep their hash.
      */
     projectMemory: z.boolean().optional(),
+    /**
+     * What the test-integrity guard does with what it finds in a task's diff (test-integrity.ts):
+     * `block` makes each finding a repair, `warn` records it only. Absent means `block`; only
+     * `warn` is stored, so stored policies keep their hash.
+     */
+    testIntegrity: z.enum(["block", "warn"]).optional(),
     /**
      * Review findings whose confidence is below this are notes and start no correction. Absent
      * means 0.8 (`DEFAULT_REVIEW_MIN_CONFIDENCE`), so stored policies keep their hash; a run start
@@ -714,7 +731,11 @@ export const ImplementationSchema = z
   .object({
     schemaVersion: z.literal(1),
     taskId: TaskId,
-    outcome: z.enum(["implemented", "already_satisfied", "blocked", "failed"]),
+    /**
+     * `spec_conflict`: the spec and the tests (or the criteria) cannot both hold. The task stops
+     * without fitting the tests and the run asks a person which one is right.
+     */
+    outcome: z.enum(["implemented", "already_satisfied", "blocked", "failed", "spec_conflict"]),
     summary: Text,
     evidenceIds: z.array(SafeId),
     unresolved: z.array(Text),
@@ -1322,6 +1343,8 @@ export interface StartRequest {
   modelStrict?: boolean;
   /** What blocking questions do in this run (CLI `--clarification MODE`); it overrides the policy. */
   clarification?: ClarificationMode;
+  /** What the test-integrity guard does in this run (CLI `--test-integrity MODE`); it overrides the policy. */
+  testIntegrity?: "block" | "warn";
   /** The duplication ratchet of this run (CLI `--duplication MODE`); it overrides the policy. */
   duplication?: "off" | "warn" | "ratchet";
   /** Semgrep on the run's diff (CLI `--sast MODE`); it overrides the policy. */

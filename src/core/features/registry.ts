@@ -596,6 +596,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/overview: New run, Quick task"],
   },
   {
+    id: "test-integrity",
+    group: "Workflow runs",
+    title: "Test-integrity guard: block or warn on test gaming, spec conflicts",
+    tui: ["/workflow: new run, Tests field; spec conflicts in the decision view"],
+    cli: ["baked workflow run: --test-integrity", "baked workflow answer"],
+    api: ["/v1/workflow/runs: testIntegrity", "/v1/workflow/runs/:id/answer"],
+    desktop: ["project/overview: New run, Test integrity", "attention"],
+  },
+  {
     id: "preset-proposal",
     group: "Workflow runs",
     title: "Propose the workflow and budget from the request",
