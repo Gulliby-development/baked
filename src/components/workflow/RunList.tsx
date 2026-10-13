@@ -28,6 +28,23 @@ function progressText(run: RunSummary): string {
   return tasks.total ? `${step} · tasks ${tasks.done}/${tasks.total}` : step;
 }
 
+/**
+ * The run's progress and token figure in `width` columns. A long reason is cut so the figure
+ * shows whole; what a waiting run needs from the user (`keepDetail`) wins over the figure.
+ */
+export function fitDetail(
+  detail: string,
+  tokens: string,
+  width: number,
+  keepDetail = false,
+): string {
+  const room = width - tokens.length;
+  if (room < 4 || (keepDetail && detail.length > room))
+    return `${detail}${tokens}`.slice(0, width).padEnd(width);
+  const cut = detail.length > room ? `${detail.slice(0, room - 1)}…` : detail;
+  return `${cut}${tokens}`.padEnd(width);
+}
+
 export function RunList({
   runs,
   cursor,
@@ -119,7 +136,7 @@ export function RunList({
               {` ${run.snapshot.status.padEnd(statusW)}`}
             </text>
             <text bg={bg} fg={run.pendingKind ? t.warning : t.textMuted}>
-              {`${detail}${tokens}`.slice(0, detailW).padEnd(detailW)}
+              {fitDetail(detail, tokens, detailW, run.pendingKind !== null)}
             </text>
             <text bg={bg} fg={t.textFaint}>
               {relativeTime(run.updatedAt).padStart(ageW)}

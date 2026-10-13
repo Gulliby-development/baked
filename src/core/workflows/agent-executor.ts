@@ -31,7 +31,7 @@ import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification
 import { probeTool, reproExecutables, runProbe } from "../verification/repro.js";
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
 import { fixerCommand } from "./check-policy.js";
-import { fileHash } from "./effects.js";
+import { fileHash, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { withHostConstants } from "./host-constants.js";
 import { InitiativePlanSchema } from "./initiatives/plan.js";
@@ -53,6 +53,7 @@ import {
   type RunPolicy,
   SpecSchema,
 } from "./schemas.js";
+import { indexTools, markStaleIndexResult, writtenInRoot } from "./stale-index.js";
 import { type StallSettings, stalledFault, stallSettings, touchProgress } from "./stall.js";
 import {
   AttemptStepController,
@@ -189,6 +190,7 @@ export class NativeAgentExecutor implements AgentExecutor {
       );
     const policy = JSON.parse(this.store.run(request.runId).policy_json) as RunPolicy;
     const root = request.root ?? this.store.workspace;
+    const rootPath = rootField(this.store.workspace, root).root ?? "";
     const parent = await this.rootContext.get();
     const context = new ContextManager(root, parent.getSharedResources());
     try {
@@ -284,7 +286,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                       ? { ...f, path: workspacePath(root, guard.path(f.path)) }
                       : f,
                 );
-              const result = await guard.execute(name, args, async () => {
+              let result = await guard.execute(name, args, async () => {
                 if (name !== "read" || !Array.isArray(normalized.files))
                   return execute(normalized, options);
                 const { files, outlines } = await outlineLargeReads(
@@ -304,6 +306,12 @@ export class NativeAgentExecutor implements AgentExecutor {
                   .join("\n\n");
                 return { ...(read ?? {}), success: true, output };
               });
+              // A worktree's own edits are not in the project's index.
+              if (rootPath && indexTools.has(name))
+                result = markStaleIndexResult(
+                  result,
+                  writtenInRoot(this.store.effects(request.runId), rootPath),
+                );
               if (!["edit_file", "multi_edit"].includes(name)) {
                 const files = await sourceManifest(root, generatedPaths(policy), request.signal);
                 const evidenceId = this.store.transaction(() => {

@@ -18,6 +18,8 @@ test("a chat turn streams text and tool cards, and waits for an approval", async
 
   const approval = conversation.getByRole("region", { name: "Run a destructive command?" });
   await expect(approval).toContainText("rm -rf .cache/router");
+  // The command has not run while its approval waits.
+  await expect(conversation.getByRole("button", { name: /Running rm -rf \.cache\/router/ })).toBeVisible();
   await approval.getByRole("button", { name: "Allow" }).click();
   await expect(approval).toBeHidden();
   await expect(conversation.getByText(/All 13 tests pass/)).toBeVisible();
@@ -64,4 +66,27 @@ test("Rewind to here drops the later turns and Redo brings them back", async ({ 
 
   await page.getByRole("button", { name: "Redo" }).click();
   await expect(conversation.getByText("Clear the router cache and test")).toBeVisible();
+});
+
+test("Undo asks in the app before it drops the last turn", async ({ app }) => {
+  const page = await app("#/p/baked/chat");
+  const conversation = page.getByRole("region", { name: "Conversation" });
+  await page.getByRole("textbox", { name: "Message BAKED" }).fill("Clear the router cache and test");
+  await page.getByRole("textbox", { name: "Message BAKED" }).press("Enter");
+  await conversation
+    .getByRole("region", { name: "Run a destructive command?" })
+    .getByRole("button", { name: "Deny" })
+    .click();
+  await conversation.getByRole("button", { name: "Skip" }).click();
+  await expect(page.getByRole("button", { name: "Send" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Undo", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Undo the last turn?" });
+  await dialog.getByRole("button", { name: "Keep" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(conversation.getByText("Clear the router cache and test")).toBeVisible();
+
+  await page.getByRole("button", { name: "Undo", exact: true }).click();
+  await dialog.getByRole("button", { name: "Undo" }).click();
+  await expect(conversation.getByText("Clear the router cache and test")).toBeHidden();
 });

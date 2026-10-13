@@ -19,6 +19,7 @@ The agent picks tools itself; this page lists what they do. `/tools` turns tools
 | `bake_vision` | Shows an image or video file inline in the chat, for example a screenshot path given in the prompt |
 | `web_search`, `fetch_page` | Web search and page reading (asks before each search) |
 | `baked_help` | Searches and reads BAKED's own documentation, bundled with the build; see [Asking about BAKED](#asking-about-baked) |
+| `artifact` | Saves, reads and lists the [artifacts](artifacts.md) every project shares, and deploys one to your Vercel; a deploy asks every time, in every approval mode |
 
 ## Asking about BAKED
 
