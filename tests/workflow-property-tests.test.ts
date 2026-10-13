@@ -120,6 +120,25 @@ describe("property tests without a library (#796)", () => {
     expect(plan).not.toContain("development dependency");
     expect(propertyTestsNote("implementation", { "JS/TS": true }) ?? "").toContain("fast-check (JS/TS)");
   });
+
+  test("Python is started only for a project with Python in it", () => {
+    const asked: string[] = [];
+    const probe = (entries: string[]) =>
+      propertyLibraries({
+        read: () => null,
+        exists: (path) => entries.includes(path),
+        list: (dir) => (dir === "" ? entries : []),
+        pythonImports: (module) => {
+          asked.push(module);
+          return true;
+        },
+      }).Python;
+    expect(probe(["package.json", "src"])).toBe(false);
+    expect(asked).toEqual([]);
+    expect(probe(["pyproject.toml"])).toBe(true);
+    expect(probe(["main.py"])).toBe(true);
+    expect(asked).toEqual(["hypothesis", "hypothesis"]);
+  });
 });
 
 describe("property tests in a run", () => {

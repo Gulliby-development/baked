@@ -6184,14 +6184,17 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         }
       },
       pythonImports: (module) => {
-        const python = Bun.which("python3") ?? Bun.which("python");
+        const python =
+          process.platform === "win32"
+            ? (Bun.which("python") ?? Bun.which("py"))
+            : (Bun.which("python3") ?? Bun.which("python"));
         if (!python) return null;
         const probe = Bun.spawnSync([python, "-c", `import ${module}`], {
           cwd: root,
           env: buildSafeEnv(),
           stdout: "ignore",
           stderr: "ignore",
-          timeout: 15_000,
+          timeout: 5_000,
         });
         return probe.exitCode === 0;
       },

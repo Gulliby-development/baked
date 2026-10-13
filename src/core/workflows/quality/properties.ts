@@ -152,9 +152,15 @@ export function propertyLibraries(probe: LibraryProbe): Record<string, boolean> 
       probe.exists(`${dir}/Lib/site-packages/hypothesis`) ||
       probe.list(`${dir}/lib`).some((lib) => probe.exists(`${lib}/site-packages/hypothesis`)),
   );
+  const python =
+    ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile"].some((file) =>
+      probe.exists(file),
+    ) || probe.list("").some((path) => path.endsWith(".py"));
   return {
     "JS/TS": probe.exists("node_modules/fast-check/package.json"),
-    Python: venv || probe.pythonImports("hypothesis") === true,
+    // Starting Python is slow (and on Windows `python3` can be the Store alias), so only a
+    // project with Python in it is asked.
+    Python: venv || (python && probe.pythonImports("hypothesis") === true),
     Rust: mentions(["Cargo.toml"], /^\s*(?:proptest|quickcheck)\s*=/m),
     "Java/Kotlin": mentions(["pom.xml", "build.gradle", "build.gradle.kts"], /\bjqwik\b/),
     Go: true,
