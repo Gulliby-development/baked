@@ -6,6 +6,7 @@ import {
   type RoutingRecord,
   RoutingRecordSchema,
 } from "../llm/model-routing.js";
+import { modelVendor } from "../llm/model-vendor.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { renderSpec, renderTasks } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
@@ -176,6 +177,8 @@ import {
 import {
   type AgentProfile,
   AnalysisSchema,
+  type Critique,
+  CritiqueSchema,
   DEFAULT_MAX_PARALLEL_RUNS,
   executionModeOf,
   generatedPaths,
@@ -1914,6 +1917,20 @@ export class WorkflowScheduler {
     stage: string | null | undefined,
     profile: AgentProfile,
   ): { models: string[]; effort?: RouteEffort } {
+    const routing = this.routingRecord(runId);
+    if (!routing) return { models: [profile.model] };
+    // The critic judges the task stage's work, so the stage's route does not apply to it.
+    const staged = stage && profile.output !== "critique" ? routing.stages[stage] : undefined;
+    const own = routing.profiles[profile.id];
+    const entry = staged ?? own;
+    // The frozen profile keeps its start model; a reroute changes only the record.
+    return {
+      models: [staged?.model ?? own?.model ?? profile.model, ...(entry?.fallback ?? [])],
+      ...(entry?.effort ? { effort: entry.effort } : {}),
+    };
+  }
+  /** The run's frozen routing record, cached; null for runs started before routing. */
+  private routingRecord(runId: string): RoutingRecord | null {
     let routing = this.routing.get(runId);
     if (routing === undefined) {
       const row = this.store.latestArtifact(runId, ROUTING_ARTIFACT);
@@ -1922,15 +1939,7 @@ export class WorkflowScheduler {
         : null;
       this.routing.set(runId, routing);
     }
-    if (!routing) return { models: [profile.model] };
-    const staged = stage ? routing.stages[stage] : undefined;
-    const own = routing.profiles[profile.id];
-    const entry = staged ?? own;
-    // The frozen profile keeps its start model; a reroute changes only the record.
-    return {
-      models: [staged?.model ?? own?.model ?? profile.model, ...(entry?.fallback ?? [])],
-      ...(entry?.effort ? { effort: entry.effort } : {}),
-    };
+    return routing;
   }
   /** The profile running on the model at `index` of its route's chain. */
   private routed(runId: string, stepId: string, profile: AgentProfile, index = 0): AgentProfile {
@@ -3100,6 +3109,17 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         checkEvidence,
       );
     this.inconclusiveTaskCheck(inconclusive, taskFailures);
+    await this.critique(
+      runId,
+      child,
+      state,
+      policy,
+      profiles,
+      task,
+      taskRoot,
+      taskFailures,
+      signal,
+    );
     this.settleTask(runId, state, policy, task, child, taskFailures, checkEvidence);
   }
   /**
@@ -3718,6 +3738,17 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     ))
       inconclusive ??= this.applyTaskCheck(runId, state, task, check, checked, failures, evidence);
     this.inconclusiveTaskCheck(inconclusive, failures);
+    await this.critique(
+      runId,
+      entry.child,
+      state,
+      policy,
+      profiles,
+      task,
+      mainRoot,
+      failures,
+      signal,
+    );
     this.settleTask(runId, state, policy, task, entry.child, failures, evidence);
   }
   /**
@@ -4241,6 +4272,103 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       throw new WorkflowFault("OUTPUT_INVALID", `Task check ${checkId} is inconclusive`, {
         reason: "verification_failed",
       });
+  }
+  /**
+   * The critic of a run (#646), or null when it does not run: `critic: "off"` turns it off and
+   * `"advise"` on; without the field it runs only on a vendor other than the implementation's
+   * (see model-vendor.ts), so a one-provider setup spends nothing on a judge that shares the
+   * implementer's blind spots.
+   */
+  private criticOf(
+    runId: string,
+    policy: RunPolicy,
+    profiles: AgentProfile[],
+  ): AgentProfile | null {
+    if (policy.critic === "off") return null;
+    const critic = profiles.find((p) => p.output === "critique");
+    if (!critic) return null;
+    if (policy.critic === "advise") return critic;
+    const routing = this.routingRecord(runId);
+    const modelOf = (profile: AgentProfile) =>
+      routing?.profiles[profile.id]?.model ?? profile.model;
+    const implementation = profiles
+      .filter((p) => p.output === "implementation")
+      .map((p) => modelVendor(modelOf(p)));
+    return implementation.includes(modelVendor(modelOf(critic))) ? null : critic;
+  }
+  /**
+   * Scores a finished task attempt with the critic and stores the critique as
+   * `tasks/TASK/critique.json`. Advice only: it changes no status, and a critic that fails is
+   * recorded and skipped. An attempt already scored (same diff) is not scored again on resume.
+   * Returns the critique, or null when no critic runs or it failed.
+   */
+  private async critique(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    profiles: AgentProfile[],
+    task: Task,
+    root: string,
+    failures: Review["findings"],
+    signal: AbortSignal,
+  ): Promise<Critique | null> {
+    const critic = this.criticOf(runId, policy, profiles);
+    const diffRow = this.store.latestArtifact(runId, `tasks/${task.id}/diff.json`);
+    if (!critic || !diffRow) return null;
+    const path = `tasks/${task.id}/critique.json`;
+    const kept = this.store.latestArtifact(runId, path);
+    if (kept) {
+      const earlier = JSON.parse(this.store.readArtifact(runId, kept.id)) as { diffId?: string };
+      if (earlier.diffId === diffRow.id) return null;
+    }
+    const diff = JSON.parse(this.store.readArtifact(runId, diffRow.id)) as {
+      patch?: string;
+      before?: Record<string, string | null>;
+    };
+    const patch = diff.patch ?? (await this.taskPatch(runId, root, diff.before ?? {}));
+    const attempt = this.store.artifacts(runId).filter((a) => a.logical_path === path).length + 1;
+    const child = this.store.transaction(() => this.store.beginStep(runId, "critic", stepId));
+    const record = (body: Record<string, unknown>) =>
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "critique",
+          path,
+          canonical({ taskId: task.id, attempt, diffId: diffRow.id, model: critic.model, ...body }),
+        ),
+      );
+    try {
+      const output = CritiqueSchema.parse(
+        await this.call(
+          runId,
+          child,
+          state,
+          policy,
+          critic,
+          {
+            task,
+            patch,
+            failedChecks: failures.map((f) => f.claim),
+          },
+          signal,
+        ),
+      );
+      const critique = { ...output, taskId: task.id };
+      record({ critique });
+      this.store.transaction(() => this.store.finishStep(runId, child, "completed"));
+      return critique;
+    } catch (error) {
+      if (signal.aborted) throw error;
+      if (
+        error instanceof WorkflowFault &&
+        ["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code)
+      )
+        throw error;
+      record({ error: error instanceof Error ? error.message : String(error) });
+      this.store.transaction(() => this.store.finishStep(runId, child, "failed"));
+      return null;
+    }
   }
   /**
    * Closes a task after its checks: failures become corrective tasks; otherwise the task gets its
