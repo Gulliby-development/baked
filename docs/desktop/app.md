@@ -90,7 +90,7 @@ The app uses the existing endpoints as they are:
 | All projects, sidebar | `baked projects list --json` before any backend; `GET /v1/projects` after; the recent runs under Runs from `GET /v1/workflow/runs?limit=5` |
 | Project home | `GET /v1/projects/current`, `GET /v1/workflow/runs`, `GET /v1/workflow/doctor` |
 | Needs you | `GET /v1/attention` (SSE) per project; decisions via `POST /v1/workflow/runs/:id/{approve,reject,answer}` then `resume` |
-| Runs, writers | `GET /v1/workflow/runs/:id`, `/events` (SSE), `/usage`, `/artifacts`; `POST …/{pause,resume,cancel,extend,reroute,undo,export,redact}`; `POST /v1/workflow/gc`, `/v1/workflow/import` |
+| Runs, writers | `GET /v1/workflow/runs/:id`, `/events` (SSE), `/usage`, `/artifacts`; `POST …/{pause,resume,cancel,extend,reroute,undo,export,redact}`; `POST /v1/workflow/gc`, `/v1/workflow/import`; `GET /v1/workflow/compare` (Compare in the run list) |
 | New run, quick task | `GET /v1/workflow/{definitions,profiles,estimate}`, `GET /v1/workflow/route` (with the `routing` capability), `POST /v1/workflow/runs` |
 | Working set | `GET`/`POST /v1/projects/current/working-set` |
 | Run memory | `GET`/`POST /v1/workflow/memory` |

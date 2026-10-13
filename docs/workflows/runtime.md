@@ -663,6 +663,24 @@ One Markdown file for a run, at any status, read from the run's database without
 
 The report is the pull request body of a [delivery](#delivery). In the TUI, `/workflow report RUN_ID` shows it in the chat (`--output FILE` writes it). The desktop app shows it in the run's Report tab with Copy and Save buttons, and `GET /v1/workflow/runs/RUN_ID/report` returns it.
 
+## Comparing two runs
+
+```sh
+baked workflow run sdd --feature totals-a --prompt-file request.md --worktree --route implement=MODEL_A
+baked workflow run sdd --feature totals-b --prompt-file request.md --worktree --route implement=MODEL_B
+baked workflow compare RUN_A RUN_B                 # prints Markdown
+baked workflow compare RUN_A RUN_B --output ab.md  # writes ab.md in the project
+baked workflow compare RUN_A RUN_B --json          # the comparison and its markdown
+```
+
+An A/B of routing maps runs one request twice with different `--route` maps (or `--model`), each in its own worktree so the two runs do not touch the same files, then puts the two runs side by side. `compare` reads both runs from the database without changing them, at any status:
+
+- the routing targets whose model differs between the runs (from each run's latest `routing.json`), or a note that both used the same models;
+- status with its reason, tokens, estimated cost, active time and agent calls, each with B minus A; repair rounds, the latest result of each check (passed and failed counts), review findings by severity with how many stayed open, and accepted limitations;
+- tokens per stage on both sides, in the order the stages first ran.
+
+A note says when the two runs are different features or ran different workflows. In the TUI, `/workflow compare RUN_A RUN_B` shows the Markdown in the chat. In the desktop run list, tick two runs and press Compare: the same tables, with the better side of each row marked and Copy as Markdown. The local API answers `GET /v1/workflow/compare?a=RUN_A&b=RUN_B` (capability `run-compare`).
+
 ## Usage reports
 
 ```sh

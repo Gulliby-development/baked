@@ -104,6 +104,7 @@ const FULL_CAPABILITIES = [
   "diagnostics",
   "sandbox",
   "gate-drafts",
+  "run-compare",
   "coordinator",
   "artifacts",
 ];
