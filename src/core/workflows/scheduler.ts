@@ -246,6 +246,7 @@ type Implementation = ReturnType<typeof ImplementationSchema.parse>;
 
 import {
   codeTaskCheckProblems,
+  loopHistory,
   plannerSizing,
   type SizingReport,
   sizePlan,
@@ -2566,6 +2567,7 @@ export class WorkflowScheduler {
       samples,
       spent: this.store.run(runId).token_usage,
       model,
+      loopShares: loopHistory(this.store.workspace, policy),
     });
     this.store.transaction(() =>
       this.store.artifact(
