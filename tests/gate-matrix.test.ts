@@ -61,9 +61,7 @@ type Stack = "bun" | "npm" | "python" | "go" | "rust" | "maven" | "dotnet";
 const STACKS: Stack[] = ["bun", "npm", "python", "go", "rust", "maven", "dotnet"];
 
 /** Cells known to be wrong today: `<stack>:<cell>` -> issue. */
-const KNOWN: Record<string, string> = {
-  "python:rule-pack: placeholder-body": "#937",
-};
+const KNOWN: Record<string, string> = {};
 
 interface Fixture {
   /** Files that make the gate detector see the stack, as the bench loop's scaffolds write them. */
@@ -379,7 +377,8 @@ const STUBS: Record<Stack, { path: string; placeholder: string; ordinary: string
   },
   python: {
     path: "fixture/sum.py",
-    placeholder: "    raise NotImplementedError",
+    // A Python stub is only a placeholder as a function's whole body (#937).
+    placeholder: "def total(values):\n    raise NotImplementedError",
     ordinary: '    raise KeyError("Todo 3 does not exist")',
   },
   go: {
