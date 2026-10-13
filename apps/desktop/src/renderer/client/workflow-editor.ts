@@ -78,6 +78,14 @@ export interface EditorView {
   estimate: string;
 }
 
+/** The most rounds a loop may run, and the most the editor recommends. */
+/** The stations a custom workflow can insert into an arrow (core INSERTABLE_STAGES). */
+export const INSERTABLE_STAGES = ["check", "review", "approval", "wait"] as const;
+export type InsertableStage = (typeof INSERTABLE_STAGES)[number];
+
+export const MAX_LOOP_ROUNDS = 50;
+export const RECOMMENDED_LOOP_ROUNDS = 5;
+
 export type EditorOp =
   | { op: "addGate"; target: GateTarget; gateId: string }
   | { op: "removeGate"; target: GateTarget; index: number }
@@ -87,7 +95,10 @@ export type EditorOp =
   | { op: "removeTransition"; id: string }
   | { op: "addWaitStage"; after: string }
   | { op: "removeWaitStage"; stageId: string }
+  | { op: "addStage"; stageType: InsertableStage; transition: string }
+  | { op: "removeStage"; stageId: string }
   | { op: "changeField"; stageId: string; key: string; delta: -1 | 1 }
+  | { op: "setLoop"; id: string; rounds: number }
   | { op: "duplicate" };
 
 export type SaveReview =

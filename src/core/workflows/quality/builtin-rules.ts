@@ -53,6 +53,71 @@ function catchBlock(body: RegExp | null) {
   };
 }
 
+const indentOf = (line: string): number => (/^\s*/.exec(line)?.[0] ?? "").length;
+const PY_RAISE_NOT_IMPLEMENTED = /^\s*raise\s+NotImplementedError\b(?:\s*\(.*\))?\s*$/;
+const PY_BLOCK_OPENER = /:\s*(?:#.*)?$/;
+const PY_ABSTRACT_DECORATOR =
+  /^\s*@\s*(?:abc\s*\.\s*)?abstract(?:method|property|classmethod|staticmethod)\b/;
+const PY_ABSTRACT_CLASS = /\b(?:ABC|ABCMeta|Protocol)\b/;
+
+/**
+ * A Python `raise NotImplementedError` that is the whole body of a `def` (after an optional
+ * docstring, `pass` or `...`), unless the function is abstract: decorated with `@abstractmethod`,
+ * or a method of a class based on `ABC`, `Protocol` or `metaclass=ABCMeta`, where the raise is
+ * the interface contract (#937).
+ */
+function pythonPlaceholder(lines: readonly string[], index: number): number[] | null {
+  const raise = lines[index] ?? "";
+  if (!PY_RAISE_NOT_IMPLEMENTED.test(raise)) return null;
+  const indent = indentOf(raise);
+  const after = nextCode(lines, index);
+  if (after >= 0 && indentOf(lines[after] ?? "") >= indent) return null;
+  // Walk back over comments, stub statements and a docstring to the line that opens the body.
+  let header = index - 1;
+  for (; header >= 0; header--) {
+    const text = (lines[header] ?? "").trim();
+    if (!text || text.startsWith("#") || text === "pass" || text === "...") continue;
+    const quote = /("""|''')$/.exec(text)?.[1];
+    if (!quote) break;
+    if (text.length >= 6 && new RegExp(`^[rRuUbBfF]*${quote}`).test(text)) continue;
+    let open = header - 1;
+    while (open >= 0 && !(lines[open] ?? "").includes(quote)) open--;
+    if (open < 0) return null;
+    header = open;
+  }
+  if (header < 0 || !PY_BLOCK_OPENER.test(lines[header] ?? "")) return null;
+  // The `def` header may span lines; no other block may open between it and the body.
+  let def = header;
+  while (def >= 0 && !/^\s*(?:async\s+)?def\s/.test(lines[def] ?? "")) {
+    if (def < header && PY_BLOCK_OPENER.test(lines[def] ?? "")) return null;
+    def--;
+  }
+  const defIndent = indentOf(lines[def] ?? "");
+  if (def < 0 || defIndent >= indent) return null;
+  for (let i = def - 1; i >= 0; i--) {
+    const line = lines[i] ?? "";
+    if (!line.trim()) continue;
+    if (indentOf(line) !== defIndent || !/^\s*@/.test(line)) break;
+    if (PY_ABSTRACT_DECORATOR.test(line)) return null;
+  }
+  for (let i = def - 1; i >= 0; i--) {
+    const line = lines[i] ?? "";
+    if (!line.trim() || line.trim().startsWith("#") || indentOf(line) >= defIndent) continue;
+    if (!/^\s*class\s/.test(line)) break;
+    let bases = line;
+    for (let j = i + 1; j < def && !PY_BLOCK_OPENER.test(bases); j++) bases += lines[j] ?? "";
+    if (PY_ABSTRACT_CLASS.test(bases)) return null;
+    break;
+  }
+  return [index];
+}
+
+const placeholderLine = lineRule(
+  // "todo" counts only as the whole message or before ":", "!", "." or "-": "Todo with id 3
+  // does not exist" is an ordinary error of a todo app (#845).
+  /(?:throw\s+new\s+\w*Error\(\s*["'`](?:(?:not\s+(?:yet\s+)?implemented|unimplemented)\b|todo\s*(?:["'`]|[:!.-]))|\btodo!\(|\bunimplemented!\(|panic\(\s*"(?:not\s+implemented\b|todo\s*(?:"|[:!.-]))|throw\s+new\s+(?:NotImplementedException|UnsupportedOperationException)\(\s*\))/i,
+);
+
 const DEFAULT_VALUE = /^return(?:\s+(?:null|undefined|\[\]|\{\}|""|''|``|false|0|-1|None))?\s*;?$/;
 
 export const BUILTIN_RULES: readonly QualityRule[] = [
@@ -191,11 +256,7 @@ export const BUILTIN_RULES: readonly QualityRule[] = [
     inTests: false,
     message: "The body is a placeholder, not an implementation",
     fix: "Implement the behavior, or leave the function out until a task implements it.",
-    match: lineRule(
-      // "todo" counts only as the whole message or before ":", "!", "." or "-": "Todo with id 3
-      // does not exist" is an ordinary error of a todo app (#845).
-      /(?:throw\s+new\s+\w*Error\(\s*["'`](?:(?:not\s+(?:yet\s+)?implemented|unimplemented)\b|todo\s*(?:["'`]|[:!.-]))|\btodo!\(|\bunimplemented!\(|panic\(\s*"(?:not\s+implemented\b|todo\s*(?:"|[:!.-]))|throw\s+new\s+(?:NotImplementedException|UnsupportedOperationException)\(\s*\))/i,
-    ),
+    match: (lines, index) => pythonPlaceholder(lines, index) ?? placeholderLine(lines, index),
   },
   {
     id: "todo-comment",

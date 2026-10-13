@@ -6,6 +6,7 @@ import {
   isCountNit,
   isHostEdgeNit,
   knownRisks,
+  persistentDefect,
   restrictsRequest,
   supersedeResearch,
 } from "../src/core/workflows/analysis-notes.js";
@@ -190,6 +191,15 @@ describe("a scope finding that adds a restriction the request lacks", () => {
     ])
       expect(restrictsRequest({ ...base, description })).toBe(true);
     expect(restrictsRequest({ ...base, description: "The spec omits the --json flag; the request does not mention a default" })).toBe(false);
+  });
+  test("is recognised for an inconsistency whose one side is the request", () => {
+    const finding = { ...base, kind: "inconsistency" };
+    expect(restrictsRequest({ ...finding, description: "A spec assumption excludes tests/**, while the request allows changes under tests/" })).toBe(true);
+    expect(restrictsRequest({ ...finding, description: "AC-004 conflicts with the brief's explicit ban on property-based tests" })).toBe(true);
+    expect(persistentDefect({ ...finding, description: "A spec assumption excludes tests/**, the request allows it" })).toBe(false);
+    // Two generated files mapping to one path is a defect between artifacts, not the request's call.
+    expect(restrictsRequest({ ...finding, description: "T002 and T003 both write dist/index.html" })).toBe(false);
+    expect(persistentDefect({ ...finding, description: "T002 and T003 both write dist/index.html" })).toBe(true);
   });
   test("is not recognised for a dropped clause, the host coverage finding or another kind", () => {
     expect(restrictsRequest({ ...base, description: "The spec omits the --json flag the request asks for" })).toBe(false);

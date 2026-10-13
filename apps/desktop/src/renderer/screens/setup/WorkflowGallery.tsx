@@ -25,7 +25,7 @@ import {
  * it, and links to watch it run or open it in the graph editor.
  */
 
-export type EditorTab = "flow" | "graph" | "stages";
+export type EditorTab = "flow" | "graph";
 
 const FAMILY_FILL: Record<Family, string> = {
   full: "bg-main",
@@ -190,11 +190,11 @@ function Card({
           <a
             href={href}
             className={LINK_BUTTON}
-            aria-label={`Open ${definition.id} in the graph`}
+            aria-label={`Edit ${definition.id}`}
             onClick={() => onOpen("graph")}
           >
-            <Icon name="graph" size={14} />
-            Graph
+            <Icon name="edit" size={14} />
+            Edit
           </a>
         </div>
       </div>

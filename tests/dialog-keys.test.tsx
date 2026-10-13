@@ -75,7 +75,7 @@ test("an open dialog takes every key; the screen beneath gets none until it clos
 test("a run row with a long reason keeps its whole token figure", async () => {
   const run = (id: string, reason: string, status: string) =>
     ({
-      snapshot: { runId: id, featureId: id, status, reason, tokenUsage: 45_000 },
+      snapshot: { runId: id, featureId: id, status, reason, tokenUsage: 45_000, estimatedCostUsd: null },
       title: null,
       stage: { index: 0, total: 0, id: null },
       tasks: { done: 0, total: 0 },

@@ -5,6 +5,7 @@ import {
   baselineRegression,
   CHECK_BASELINE_PATH,
   commandKey,
+  failureSignature,
   diagnosticCount,
   outputCounts,
   testCount,
@@ -117,7 +118,7 @@ describe("baseline comparison in update runs", () => {
     expect(findings.some((f) => f.claim === "Required check check failed")).toBe(false);
   });
 
-  test("a scaffold run measures no baseline and passes on exit codes", async () => {
+  test("a scaffold run measures no baseline counts and passes on exit codes", async () => {
     const fixture = workflowFixture({ policy });
     cleanups.push(fixture.dispose);
     writeFileSync(join(fixture.root, "README.md"), "# App\n");
@@ -127,7 +128,40 @@ describe("baseline comparison in update runs", () => {
       await fixture.service.drive(run.runId, signal());
     }
 
-    expect(baseline(fixture, run.runId)).toBeNull();
+    // Only which required checks fail before any change is recorded (#934).
+    expect(baseline(fixture, run.runId)).toMatchObject({ counts: {}, diagnostics: {} });
     expect((await fixture.service.get(run.runId)).status).toBe("completed");
+  });
+
+  // #934, md-site 00ae0ac0: a Bun CLI scaffold kept a `vite build` check that cannot pass on any
+  // plan; a corrective task spent four attempts on it before the run blocked.
+  test("a required check that fails the same way before any change stops the run without a correction", async () => {
+    const stale = {
+      ...lint,
+      id: "build",
+      args: ["-e", "console.error('Could not resolve entry module \"index.html\".'); process.exit(1)"],
+    };
+    const fixture = workflowFixture({ policy: { ...fixturePolicy, checks: [...fixturePolicy.checks, stale] } });
+    cleanups.push(fixture.dispose);
+    writeFileSync(join(fixture.root, "README.md"), "# App\n");
+    const run = await driveToChecks(fixture);
+
+    expect(baseline(fixture, run.runId)?.failures).toMatchObject({
+      [commandKey(stale)]: 'Could not resolve entry module "index.html".',
+    });
+    const status = await fixture.service.get(run.runId);
+    expect(status.status).toBe("blocked");
+    expect(status.reason).toBe("no_progress");
+    const errors = fixture.service.store
+      .artifacts(run.runId)
+      .filter((a) => a.logical_path.startsWith("errors/"))
+      .map((a) => fixture.service.store.readArtifact(run.runId, a.id));
+    expect(errors.join("\n")).toContain("baseline_failure: required check build failed before any change");
+    const tasks = fixture.service.store.tasks(run.runId).map((t) => JSON.parse(t.definition_json) as { origin: string });
+    expect(tasks.every((t) => t.origin === "planned")).toBe(true);
+  });
+
+  test("a failure signature leaves out colours, durations and the workspace path", () => {
+    expect(failureSignature("\u001b[31merror\u001b[0m in 12ms at /work/app/a.ts", "/work/app")).toBe("error in <duration> at <root>/a.ts");
   });
 });

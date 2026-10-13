@@ -43,6 +43,8 @@ export function takeHashRefusals(root: string): string[] {
 }
 
 export class WorkflowToolPolicy {
+  /** The last queued call per workspace path; see `serialized`. */
+  private pathQueues = new Map<string, Promise<unknown>>();
   constructor(
     private store: WorkflowStore,
     private leases: WorkspaceLeases,
@@ -142,9 +144,17 @@ export class WorkflowToolPolicy {
           JSON.parse(effect.intent_json).path === path &&
           intentRoot(effect.intent_json) === root,
       );
+    const inherited = this.earlierAttemptEffect(writes);
+    // A task restarted after `invalidated` can get a rebuilt worktree without the file its earlier
+    // attempt wrote. When the file is back to how it was before the task first wrote it, the carried
+    // write is gone, so the path counts as untouched by this task (#927).
+    const reverted =
+      inherited !== undefined &&
+      existing !== inherited.after_hash &&
+      existing === this.beforeLineage(writes, inherited)?.before_hash;
     const ownEffect =
       writes.filter((effect) => effect.attempt_id === this.attemptId).at(-1) ??
-      this.earlierAttemptEffect(writes);
+      (reverted ? undefined : inherited);
     const baseline = this.store.state(this.runId).expectedFiles;
     // The baseline lists the files the snapshot can see. A file that exists but is not listed is
     // git-ignored and untracked (for example a docs directory in .gitignore): the snapshot has no
@@ -154,6 +164,7 @@ export class WorkflowToolPolicy {
     if (
       baseline &&
       !unseen &&
+      !(reverted && !ownEffect) &&
       existing !== (ownEffect ? ownEffect.after_hash : (baseline[path] ?? null)) &&
       !sameContentIgnoringEol(
         workspacePath(this.root, path),
@@ -188,6 +199,21 @@ export class WorkflowToolPolicy {
     );
     return lineage.has(last.id) ? last : undefined;
   }
+  /** The first write of the task's uncommitted lineage that `last` ends: the file before the task. */
+  private beforeLineage(writes: EffectRow[], last: EffectRow): EffectRow | undefined {
+    if (!this.task) return undefined;
+    const lineage = new Set(
+      uncommittedEdits(this.store, this.runId, this.task.id).map((e) => e.id),
+    );
+    const upTo = writes.slice(0, writes.indexOf(last) + 1);
+    let first = last;
+    for (let i = upTo.length - 1; i >= 0; i--) {
+      const effect = upTo[i];
+      if (!effect || !lineage.has(effect.id)) break;
+      first = effect;
+    }
+    return first;
+  }
   /**
    * Runs a tool call under its deadline and journals it (`tool.started`, `tool.finished`), so a
    * run that stops advancing names the call it is in. A call that does not return in time is
@@ -198,7 +224,38 @@ export class WorkflowToolPolicy {
     args: Record<string, unknown>,
     action: () => Promise<unknown>,
   ): Promise<unknown> {
-    return this.journaled(name, (deadlineHit) => this.guarded(name, args, action, deadlineHit));
+    return this.serialized(this.queueKey(name, args), () =>
+      this.journaled(name, (deadlineHit) => this.guarded(name, args, action, deadlineHit)),
+    );
+  }
+  /** The path a mutating call writes, which orders it after the attempt's other calls on it. */
+  private queueKey(name: string, args: Record<string, unknown>): string | null {
+    if (!["edit_file", "multi_edit", "delete_file"].includes(name) || typeof args.path !== "string")
+      return null;
+    try {
+      return this.path(args.path);
+    } catch {
+      // The guard refuses the call with the reason; it writes nothing to wait for.
+      return null;
+    }
+  }
+  /**
+   * Runs the attempt's edits of one path one after another. A model may send several edits of a
+   * file in one step; run together, the second sees the first one's write on disk before its
+   * effect is journaled and is refused as a change made outside the attempt (#955, depwave
+   * db4612f3). A call starts after the previous one ended, whether it succeeded or failed (the
+   * queue holds a promise that never rejects).
+   */
+  private async serialized(key: string | null, run: () => Promise<unknown>): Promise<unknown> {
+    if (key === null) return run();
+    const current = (this.pathQueues.get(key) ?? Promise.resolve()).then(run);
+    const tail = current.catch(() => undefined);
+    this.pathQueues.set(key, tail);
+    try {
+      return await current;
+    } finally {
+      if (this.pathQueues.get(key) === tail) this.pathQueues.delete(key);
+    }
   }
   /**
    * Runs a host tool the executor already granted, such as `run_probe`, under its deadline and

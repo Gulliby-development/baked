@@ -60,11 +60,13 @@ import {
   baselineRegression,
   CHECK_BASELINE_PATH,
   commandKey,
+  failureSignature,
   outputCounts,
   TEST_FILE,
 } from "../verification/output-counts.js";
 import {
   carryNoRepro,
+  convergenceReproGated,
   missingReproAdvice,
   outputShows,
   type ReproOutcome,
@@ -90,6 +92,7 @@ import {
   isHostEdgeNit,
   isHostSplitNit,
   knownRisks,
+  namesRequestSide,
   persistentDefect,
   REQUEST_NOTE,
   restrictsRequest,
@@ -1519,15 +1522,36 @@ export class WorkflowScheduler {
               if (!state.spec || !state.snapshotId || !state.workspaceHash)
                 throw new WorkflowFault("ARTIFACT_MISSING", "Missing convergence context");
               const earlier = earlierFindings(this.store, runId);
+              // The walker tries a correctness claim with the run's own runner, as the review
+              // dimensions do: a static claim it cannot show starts no correction (#930).
+              const auditor = this.requireProfile(profile);
+              const executables = reproExecutables(policy.checks);
+              const canRepro = executables.length > 0 && auditor.allowedTools.includes("run_repro");
+              const converged = state.snapshotId;
+              const repro = (r: Repro) =>
+                runRepro(this.processes, r, {
+                  root: runRoot(this.store.workspace, state),
+                  executables,
+                  generated: generatedPaths(policy),
+                  signal,
+                  sandbox: runSandbox(policy, runRoot(this.store.workspace, state), {
+                    gitWrite: Boolean(state.worktree),
+                  }),
+                });
+              const previous = state.convergence ?? undefined;
+              let reproAdvised = false;
               const review = ReviewSchema.parse(
                 await this.call(
                   runId,
                   stepId,
                   state,
                   policy,
-                  this.requireProfile(profile),
+                  auditor,
                   {
                     evidence: this.evidenceContext(runId, state),
+                    ...(canRepro
+                      ? { reproTool: { name: "run_repro", programs: executables } }
+                      : {}),
                     ...(earlier.length ? { earlierFindings: earlier, repeatOf: REPEAT_NOTE } : {}),
                     ...(Object.keys(state.reviewGaps).length
                       ? {
@@ -1543,19 +1567,27 @@ export class WorkflowScheduler {
                   0,
                   (output) => {
                     const parsed = ReviewSchema.safeParse(output);
-                    if (!parsed.success || !state.spec || !state.snapshotId) return [];
-                    return reviewProblems(
+                    if (!parsed.success || !state.spec || !converged) return [];
+                    const problems = reviewProblems(
                       this.store,
                       runId,
-                      state.snapshotId,
+                      converged,
                       state.workspaceHash ?? "",
                       state.spec,
                       output as Review,
                       false,
                     );
+                    // Asked once: a walker that still has no repro after the advice is not blocked.
+                    if (problems.length || reproAdvised || !canRepro) return problems;
+                    const advice = missingReproAdvice(output as Review, executables, previous);
+                    if (advice.length) reproAdvised = true;
+                    return advice;
                   },
+                  undefined,
+                  canRepro ? () => ({ run_repro: reproTool(executables, repro) }) : undefined,
                 ),
               );
+              carryNoRepro(review, previous);
               completeReview(
                 this.store,
                 runId,
@@ -1639,9 +1671,39 @@ export class WorkflowScheduler {
                   .filter((f) => passesWithNotes(f, review.coverage, checksPass))
                   .map((f) => f.id),
               );
+              // Below high severity, a correctness claim the host does not reproduce, and any claim
+              // its repro refutes, is a note: cfgtrace2 e88a14dd spent about 1.1M on two corrective
+              // tasks for static medium claims the walker could not run (#930).
+              const outcomes = new Map<string, ReproOutcome>();
+              for (const finding of review.findings)
+                if (convergenceReproGated(finding) && finding.repro && executables.length)
+                  outcomes.set(finding.id, await repro(finding.repro));
+              if (outcomes.size)
+                this.store.transaction(() =>
+                  this.store.artifact(
+                    runId,
+                    "repro",
+                    `convergence/repro-${newId()}.json`,
+                    canonical({ outcomes: Object.fromEntries(outcomes) }),
+                  ),
+                );
+              const unreproduced = new Set(
+                canRepro
+                  ? review.findings
+                      .filter(
+                        (f) =>
+                          convergenceReproGated(f) &&
+                          !notes.has(f.id) &&
+                          !reproAllows(f, outcomes.get(f.id)?.status, true),
+                      )
+                      .map((f) => f.id)
+                  : [],
+              );
               const noteOnly = (id: string): boolean => {
                 const named = review.findings.filter((f) => f.criterionIds.includes(id));
-                return named.length > 0 && named.every((f) => notes.has(f.id));
+                return (
+                  named.length > 0 && named.every((f) => notes.has(f.id) || unreproduced.has(f.id))
+                );
               };
               const repairing = (f: Review["findings"][number]): boolean =>
                 (severities.includes(f.severity) && findingBlocks(f, policy.reviewMinConfidence)) ||
@@ -1654,17 +1716,27 @@ export class WorkflowScheduler {
                   acceptResidual(this.store, runId, state, { findings: recorded }, "notes"),
                 );
               }
+              // An unreproduced claim that would have repaired is a known limitation, so the criterion
+              // it fails is accepted with it and the run report names the claim.
+              const unshown = review.findings.filter((f) => unreproduced.has(f.id) && repairing(f));
+              if (unshown.length) {
+                const recorded = this.recordFindings(runId, review, unshown);
+                this.store.transaction(() =>
+                  acceptResidual(this.store, runId, state, { findings: recorded }, "repro"),
+                );
+              }
               // Below the severity floor a finding still repairs when it is why a criterion fails:
               // acceptance needs every automated criterion to pass.
               const repair = review.findings.filter(
                 (f) =>
                   !notes.has(f.id) &&
+                  !unreproduced.has(f.id) &&
                   ((severities.includes(f.severity) &&
                     findingBlocks(f, policy.reviewMinConfidence)) ||
                     f.criterionIds.some((id) => failing.has(id))),
               );
               const findings = this.recordFindings(runId, review, repair);
-              const kept = new Set([...repair, ...noted].map((f) => f.id));
+              const kept = new Set([...repair, ...noted, ...unshown].map((f) => f.id));
               addReviewNotes(
                 state.reviewNotes,
                 "convergence",
@@ -1673,7 +1745,9 @@ export class WorkflowScheduler {
                   .filter((f) => !kept.has(f.id))
                   .map((finding) => ({
                     finding,
-                    reason: noteReason(finding, severities, policy.reviewMinConfidence),
+                    reason: unreproduced.has(finding.id)
+                      ? "repro"
+                      : noteReason(finding, severities, policy.reviewMinConfidence),
                   })),
               );
               if (findings.length) {
@@ -2114,12 +2188,18 @@ export class WorkflowScheduler {
     signal: AbortSignal,
   ): Promise<void> {
     if (this.store.latestArtifact(runId, CHECK_BASELINE_PATH)) return;
-    const feature = policy.checks.filter((check) => check.scope === "feature");
-    if (!feature.length || this.baselineScaffold(runId, state)) return;
+    const scaffold = this.baselineScaffold(runId, state);
+    // On a scaffold only the required checks run, to learn which already fail (#934).
+    const feature = policy.checks.filter(
+      (check) => check.scope === "feature" && (!scaffold || check.required),
+    );
+    if (!feature.length) return;
     const fresh = this.store.tasks(runId).every((task) => task.status === "pending");
     const counts: Record<string, BaselineCount[]> = {};
     // The errors a whole-unit check already reports, so the task-end check does not feed them back.
     const diagnostics: Record<string, string[]> = {};
+    // The output of each required check that fails before any change, by command key.
+    const failures: Record<string, string> = {};
     if (fresh)
       for (const check of feature) {
         const root = runRoot(this.store.workspace, state);
@@ -2129,6 +2209,9 @@ export class WorkflowScheduler {
           root,
           runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
         );
+        if (result.status === "failed" && check.required && !result.truncated)
+          failures[commandKey(check)] = failureSignature(result.output, root);
+        if (scaffold) continue;
         if (result.status === "failed" && isWholeUnitCheck(check))
           diagnostics[commandKey(check)] = baselineKeys(result.output, root);
         if (result.truncated || result.status === "inconclusive") continue;
@@ -2140,8 +2223,36 @@ export class WorkflowScheduler {
         runId,
         "facts",
         CHECK_BASELINE_PATH,
-        canonical({ schemaVersion: 1, measured: fresh, counts, diagnostics }),
+        canonical({ schemaVersion: 1, measured: fresh, counts, diagnostics, failures }),
       ),
+    );
+  }
+  /**
+   * Stops the run when a required check fails exactly as it did before any change (#934): the
+   * plan changes nothing the failure depends on (md-site 00ae0ac0: `vite build` of a Bun CLI
+   * with no index.html), so a corrective task could only spend attempts on it.
+   */
+  private assertNotBaselineFailure(
+    runId: string,
+    state: RuntimeState,
+    check: Check,
+    output: string,
+    evidenceId: string,
+  ): void {
+    const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
+    if (!artifact) return;
+    const before = (
+      JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+        failures?: Record<string, string>;
+      }
+    ).failures?.[commandKey(check)];
+    const root = runRoot(this.store.workspace, state);
+    // A failure without output tells nothing about its cause, so it is never matched.
+    if (!before || before !== failureSignature(output, root)) return;
+    throw new WorkflowFault(
+      "RECOVERY_REQUIRED",
+      `baseline_failure: required check ${check.id} failed before any change and fails the same way now (evidence ${evidenceId}); nothing the run changed affects it. Fix the check or the project setup, or revise the plan, then resume.`,
+      { reason: "no_progress", checkId: check.id },
     );
   }
   /** The diagnostics each whole-unit check reported before the run, by command key. */
@@ -2828,6 +2939,7 @@ export class WorkflowScheduler {
       propertyTestsOf(
         policy,
         presetOf(parseRunDefinition(this.store.run(runId).definition_json)),
+        state.requestText || state.prompt,
       ) === "auto"
         ? propertyTestsNote(profile.output, this.propertyLibraries(runId, state))
         : null;
@@ -3684,7 +3796,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         }),
       );
       if (result.outcome === "spec_conflict" && result.taskId === task.id) {
-        this.specConflict(runId, state, child, task, result);
+        this.specConflict(runId, state, policy, child, task, result);
         return;
       }
       if (result.outcome === "implemented")
@@ -4440,7 +4552,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const { entry } = outcome;
     let failure: unknown = null;
     if (outcome.kind === "conflict")
-      this.specConflict(runId, state, entry.child, entry.task, outcome.result);
+      this.specConflict(runId, state, policy, entry.child, entry.task, outcome.result);
     else if (outcome.kind === "done") {
       if (!fatal) await this.integrateTask(runId, state, policy, profiles, outcome, signal);
       delete state.taskCarry[entry.task.id];
@@ -5923,16 +6035,25 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
    * A task reported that the spec and the tests cannot both hold. It stops without fitting the
    * tests: it is ready again, and the run asks a person which one is right. The answer joins the
    * request the task's next attempt reads. Under `clarification: assume` too, since every default
-   * here would be to fit the tests or to drop a requirement.
+   * here would be to fit the tests or to drop a requirement, unless one side of the conflict is what
+   * the request states: then the request wins once per task, as a person answered "defer to the
+   * brief" in bench round 15 (envguard 8b8b7022, structpad 6c8758ed), and the decision is recorded.
    */
   private specConflict(
     runId: string,
     state: RuntimeState,
+    policy: RunPolicy,
     child: string,
     task: Task,
     result: Implementation,
   ): void {
     const account = { taskId: task.id, summary: result.summary, unresolved: result.unresolved };
+    const report = [result.summary, ...result.unresolved].join(" ");
+    const assumedPath = `assumptions/conflicts/${task.id}.json`;
+    const assume =
+      policy.clarification === "assume" &&
+      namesRequestSide(report) &&
+      !this.store.latestArtifact(runId, assumedPath);
     this.store.transaction(() => {
       this.store.artifact(
         runId,
@@ -5940,9 +6061,20 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         `tasks/conflicts/${task.id}.json`,
         canonical(account),
       );
+      if (assume)
+        this.store.artifact(
+          runId,
+          "assumption",
+          assumedPath,
+          canonical({ ...account, assumed: "The request is authoritative" }),
+        );
       this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
       this.store.finishStep(runId, child, "failed");
     });
+    if (assume) {
+      state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the spec or its tests contradict the request: ${report.slice(0, 1500)} The request is authoritative: follow what it states. Where a criterion, a requirement or a test says otherwise, the request wins; a test that contradicts the request is changed to what the request states, and no other test is weakened.`;
+      return;
+    }
     this.wait("clarification", state, {
       questions: [
         {
@@ -6551,6 +6683,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       if (result.status === "passed" && !regression) passedIds.push(check.id);
       if (result.status === "inconclusive" && check.required) inconclusive ??= check.id;
       if ((result.status === "failed" || regression) && check.required) {
+        if (!regression)
+          this.assertNotBaselineFailure(runId, state, check, result.output, result.evidenceId);
         failedIds.push(check.id);
         const task =
           state.graph?.tasks.find((t) => t.checkIds.includes(check.id)) ?? state.graph?.tasks[0];
@@ -6866,6 +7000,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const mode = propertyTestsOf(
       policy,
       presetOf(parseRunDefinition(this.store.run(runId).definition_json)),
+      state.requestText || state.prompt,
     );
     const criteria = state.spec?.criteria ?? [];
     if (mode === "off" || !state.snapshotId || !criteria.some((c) => c.property)) return [];
@@ -8470,6 +8605,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         inconclusive ??= check.id;
         continue;
       }
+      if (!result.reason && !regression)
+        this.assertNotBaselineFailure(runId, state, check, result.output ?? "", result.evidenceId);
       if (!result.reason) failedIds.push(check.id);
       const task =
         state.graph?.tasks.find((t) => t.checkIds.includes(check.id)) ?? state.graph?.tasks[0];
