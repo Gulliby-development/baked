@@ -2,9 +2,13 @@
  * Lines of the terminal coordinator view, kept free of React so tests can check them directly.
  * Every line is already wrapped to the view's width, so the view shows the tail that fits.
  */
-import type { LaunchedView } from "../../core/chat/coordinator-launch.js";
+import {
+  type LaunchedView,
+  launchLabel,
+  launchNoteText,
+} from "../../core/chat/coordinator-launch.js";
 import type { ChatPrompt } from "../../core/chat/sessions.js";
-import type { ChatMessage } from "../../types/index.js";
+import type { ChatMessage, LaunchNote } from "../../types/index.js";
 
 export type LineTone = "user" | "assistant" | "muted" | "tool" | "accent" | "warning" | "error";
 
@@ -52,18 +56,46 @@ function tokens(n: number): string {
   return `${n} tokens`;
 }
 
-/** One line per launched item: kind, id, status, tokens, task and why. */
+/** The tone of a launched item's status: waiting for a person, failed, or otherwise. */
+function statusTone(status: string, fallback: LineTone): LineTone {
+  if (/^waiting/.test(status)) return "warning";
+  if (/^(failed|cancelled|deleted|blocked)/.test(status)) return "error";
+  return fallback;
+}
+
+/** The why of a launched item, unless it only repeats the title. */
+const whyBesides = (why: string, title: string | undefined): string =>
+  title && why.startsWith(title) ? "" : why;
+
+/** One line per launched item: its title (or kind and id), status, tokens, task and why. */
 export function launchedLines(launched: LaunchedView[], width: number): ViewLine[] {
   return launched.flatMap((entry) => {
     const task = entry.task
       ? ` · ${entry.task.state === "local" ? "local task" : entry.task.ref}`
       : "";
-    const what = entry.feature
-      ? `feature ${entry.feature} of ${entry.id}`
-      : `${entry.kind} ${entry.id}`;
-    const head = `${entry.active ? "●" : "○"} ${what}: ${entry.status} · ${tokens(entry.tokens)}${task}`;
-    return labelled("", `${head} · ${entry.why}`, width, entry.active ? "accent" : "muted");
+    const head = `${entry.active ? "●" : "○"} ${launchLabel(entry)}: ${entry.status} · ${tokens(entry.tokens)}${task}`;
+    const why = whyBesides(entry.why, entry.title);
+    return labelled(
+      "",
+      why ? `${head} · ${why}` : head,
+      width,
+      statusTone(entry.status, entry.active ? "accent" : "muted"),
+    );
   });
+}
+
+/** A coordinator's notice about launched work: a marked headline in its status tone, then why. */
+function launchNoteLines(note: LaunchNote, width: number): ViewLine[] {
+  const closed = note.event === "task-closed";
+  const lines = labelled(
+    closed ? "  ✓ " : "  ◆ ",
+    launchNoteText(note),
+    width,
+    closed ? "accent" : statusTone(note.status, "accent"),
+  );
+  const why = closed ? "" : whyBesides(note.why, note.title);
+  if (why) lines.push(...labelled("    ", why, width, "muted"));
+  return lines;
 }
 
 /** The conversation, then the text the running turn has streamed so far. */
@@ -77,6 +109,8 @@ export function messageLines(messages: ChatMessage[], live: string, width: numbe
         lines.push(...labelled("  ↳ ", call.name, width, "tool"));
       if (message.content.trim())
         lines.push(...labelled("     ", message.content, width, "assistant"));
+    } else if (message.launch) {
+      lines.push(...launchNoteLines(message.launch, width));
     } else if (message.showInChat !== false) {
       lines.push(...labelled("  · ", message.content, width, "muted"));
     }
