@@ -36,6 +36,21 @@ function entryOf(store: BriefStore, ref: LaunchedRef): LaunchedEntry {
 const label = (ref: LaunchedRef): string =>
   ref.feature ? `feature ${ref.feature} of initiative ${ref.id}` : `${ref.kind} ${ref.id}`;
 
+const PAUSED = /^paused/;
+
+/**
+ * What a front end offers for a launched item: stop while it runs, close once it is finished or
+ * paused (a paused run or initiative holds nothing), nothing once it is closed.
+ */
+export function launchControl(item: {
+  status: string;
+  active: boolean;
+  closed?: true;
+}): "stop" | "close" | null {
+  if (item.closed) return null;
+  return item.active && !PAUSED.test(item.status) ? "stop" : "close";
+}
+
 /** What stopping the item does, for the coordinator's confirmation and the front ends. */
 export function stopEffect(ref: LaunchedRef): string {
   if (ref.kind === "session") return `Stop the running turn of session ${ref.id}`;
@@ -92,7 +107,7 @@ export async function closeLaunched(
   if (!reopen) {
     const live = liveState(chat, state, entry);
     // A paused run or initiative holds nothing until someone resumes it, so it may be closed.
-    if (live.active && !/^paused/.test(live.status))
+    if (live.active && !PAUSED.test(live.status))
       throw new ChatError(
         "INVALID_REQUEST",
         `${label(ref)} is still ${live.status}; stop it before closing it`,

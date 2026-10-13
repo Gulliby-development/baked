@@ -180,10 +180,13 @@ export function SessionView({
   project,
   sessionId,
   coordinator = false,
+  launchActions,
 }: {
   project: DesktopProject;
   sessionId: string;
   coordinator?: boolean;
+  /** Stop or Close on the coordinator's launch cards. */
+  launchActions?: (note: LaunchNote) => ReactNode;
 }) {
   const key = project.key;
   const draft = sessionId === NEW;
@@ -616,6 +619,7 @@ export function SessionView({
               ? {
                   onEditSplit: editSplit,
                   launchHref: (note: LaunchNote) => launchedHref(key, note),
+                  ...(launchActions ? { launchActions } : {}),
                 }
               : {})}
             {...(canRewindTo && !draft && !rewinding
