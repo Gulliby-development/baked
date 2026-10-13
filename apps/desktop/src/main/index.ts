@@ -6,7 +6,9 @@ import {
   dialog,
   type IpcMainInvokeEvent,
   ipcMain,
+  type NativeImage,
   Notification,
+  nativeImage,
   session,
   shell,
   systemPreferences,
@@ -366,6 +368,11 @@ function registerIpc(): void {
   );
 }
 
+/** The app icon, shipped next to the tray icons (electron-builder.yml). */
+function windowIcon(): NativeImage {
+  return nativeImage.createFromPath(join(app.getAppPath(), "build", "icon.png"));
+}
+
 function createWindow(): void {
   window = new BrowserWindow({
     width: 1440,
@@ -374,6 +381,10 @@ function createWindow(): void {
     minHeight: 600,
     backgroundColor: "#191410",
     title: "BAKED",
+    // Windows and Linux take the taskbar icon from the window. Without one, Windows falls back to
+    // the icon of the shortcut registered for the app user model ID, which can be a stale cached
+    // Electron icon, and Linux shows a generic one.
+    ...(process.platform === "darwin" ? {} : { icon: windowIcon() }),
     show: false,
     // The app draws its own title bar: macOS keeps its traffic lights inset in it, Windows and
     // Linux get the app's own window buttons (TitleBar.tsx).
