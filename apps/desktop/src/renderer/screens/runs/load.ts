@@ -14,6 +14,7 @@ import type { WorkflowLine } from "../../client/start.js";
 import type { AcceptanceGate, WalkRecord } from "./acceptance.js";
 import {
   latestByPath,
+  type PipelineStage,
   pipeline,
   type Review,
   type RunTrace,
@@ -294,6 +295,8 @@ export function useRun(key: string, runId: string): LiveRun {
 export interface RunBrief {
   title: string | null;
   stage: { index: number; total: number };
+  /** The run's stages in order with their state, for the line on the run list. */
+  pipeline: PipelineStage[];
   tasks: TaskCount;
   updatedAt: string | null;
   hasAcceptance: boolean;
@@ -315,6 +318,7 @@ export function runBrief(key: string, run: RunRow): Promise<RunBrief> {
       return {
         title: artifacts.spec?.title ?? null,
         stage: stageProgress(stages, run.stageId),
+        pipeline: stages,
         tasks: taskCount(artifacts.graph, trace),
         updatedAt: trace.lastAt,
         hasAcceptance:
