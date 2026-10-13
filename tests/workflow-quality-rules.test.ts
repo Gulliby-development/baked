@@ -66,6 +66,40 @@ describe("anti-slop rule pack", () => {
     expect(rulesOf([created("main.go", 'panic("todo")\npanic("Todo list is empty")\n')])).toEqual(["placeholder-body:1:block"]);
   });
 
+  test("a Python function whose body only raises NotImplementedError is a placeholder (#937)", () => {
+    const stubs: Array<[string, number]> = [
+      ["def parse(text):\n    raise NotImplementedError\n", 2],
+      ['def parse(text: str) -> int:\n    raise NotImplementedError("todo")\n', 2],
+      [
+        'class Parser:\n    def parse(self, text):\n        """Parse the text."""\n        raise NotImplementedError()\n\n    def other(self):\n        return 1\n',
+        4,
+      ],
+      [
+        'async def load(\n    path: str,\n) -> bytes:\n    """Load the file.\n\n    Reads all of it.\n    """\n    raise NotImplementedError\n',
+        8,
+      ],
+      ["def stub():\n    pass\n    raise NotImplementedError\n", 3],
+    ];
+    for (const [content, line] of stubs) {
+      expect(rulesOf([created("app/parse.py", content)])).toEqual([`placeholder-body:${line}:block`]);
+    }
+  });
+
+  test("abstract methods and conditional NotImplementedError are not placeholders (#937)", () => {
+    const allowed = [
+      "from abc import abstractmethod\n\nclass Base:\n    @abstractmethod\n    def parse(self, text):\n        raise NotImplementedError\n",
+      "import abc\n\nclass Base:\n    @property\n    @abc.abstractmethod\n    def name(self):\n        raise NotImplementedError()\n",
+      'from abc import ABC\n\nclass Base(ABC):\n    def parse(self, text):\n        """Parse it."""\n        raise NotImplementedError\n',
+      "import abc\n\nclass Base(abc.ABC):\n    def parse(self, text):\n        raise NotImplementedError\n",
+      "from typing import Protocol\n\nclass Reader(Protocol):\n    def read(self) -> bytes:\n        raise NotImplementedError\n",
+      "import typing\n\nclass Reader(typing.Protocol):\n    def read(self) -> bytes:\n        raise NotImplementedError\n",
+      "from abc import ABCMeta\n\nclass Base(metaclass=ABCMeta):\n    def parse(self, text):\n        raise NotImplementedError\n",
+      'def convert(value, kind):\n    if kind == "int":\n        return int(value)\n    if kind == "float":\n        raise NotImplementedError("float")\n    raise NotImplementedError\n',
+      "def convert(value):\n    result = int(value)\n    raise NotImplementedError\n",
+    ];
+    for (const content of allowed) expect(rulesOf([created("app/base.py", content)])).toEqual([]);
+  });
+
   test("only the lines the run added count", () => {
     const before = "try { go(); } catch {}\nexport const a = 1;\n";
     const after = `${before}export const b = 2;\n`;

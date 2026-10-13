@@ -200,6 +200,13 @@ const COMMAND_DEFS: CommandDef[] = [
     tags: ["project", "status", "digest", "overview", "happening", "runs"],
   },
   {
+    cmd: "/coordinator rules",
+    ic: "dispatch",
+    desc: "Rules the coordinator answers routine approvals by: on, off, add, remove",
+    category: "Session",
+    tags: ["approvals", "auto", "rules", "allow", "coordinator"],
+  },
+  {
     cmd: "/project",
     ic: "folder",
     desc: "This project: sessions, workflow runs, what waits for you",

@@ -39,7 +39,8 @@ export interface RunDetail {
   summary: RunSummary;
   stages: { id: string; status: string }[];
   tasks: { id: string; title: string; status: string }[];
-  pendingRequests: { id: string; kind: string }[];
+  /** `digest` and the parsed `body` let the coordinator's approval rules read a plan approval. */
+  pendingRequests: { id: string; kind: string; digest?: string; body?: unknown }[];
   changedFiles: number;
 }
 
@@ -281,7 +282,7 @@ export function serviceStateSource(
           .map((t) => ({ id: t.id, title: taskTitle(t.definition_json, t.id), status: t.status })),
         pendingRequests: view.requests
           .filter((r) => r.status === "pending")
-          .map((r) => ({ id: r.id, kind: r.kind })),
+          .map((r) => ({ id: r.id, kind: r.kind, digest: r.digest, body: parseBody(r.body_json) })),
         changedFiles: view.changes.length,
       };
     },
@@ -290,6 +291,14 @@ export function serviceStateSource(
     attention,
     usage: (days) => usageSummary(service.store, { days, groupBy: ["model", "stage"] }),
   };
+}
+
+function parseBody(json: string): unknown {
+  try {
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
 }
 
 function taskTitle(definition: string, fallback: string): string {
