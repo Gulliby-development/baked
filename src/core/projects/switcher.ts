@@ -65,7 +65,7 @@ export async function waitingElsewhere(
   return result;
 }
 
-const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? "" : "s"}`;
+export const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 /** The badge text, or null when nothing waits elsewhere. */
 export function waitingBadgeText(w: WaitingElsewhere): string | null {
