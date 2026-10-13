@@ -159,8 +159,10 @@ import {
   ruleClaim,
 } from "./quality/rules.js";
 import { DEFAULT_SAST_CONFIG, QUALITY_SAST, runSast, sastClaim, sastOf } from "./quality/sast.js";
+import { carriesOver, changedSince, previousRound } from "./re-review.js";
 import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery.js";
+import { deliverableProblems, requestCoverage } from "./request-coverage.js";
 import {
   abortableDelay,
   accountRefusal,
@@ -305,11 +307,17 @@ interface QueuedRequest {
   body: unknown;
 }
 
-/** A provider asking to wait longer than this is not waited for once a route has fallback models. */
+/**
+ * The request a spec's deliverables are checked against. A feature of an initiative has its
+ * boundary approved with the split, not the request, so it is checked against nothing.
+ */
+const coverageRequest = (state: RuntimeState): string =>
+  state.hostDependencies ? "" : state.requestText;
 /** How often rejected approvals may send one run back to revise before a rejection only pauses it. */
 const MAX_REJECTION_REVISIONS = 3;
 const REJECTION_NOTE =
   "A person rejected the approval of the previous spec and plan with this explanation. Revise the spec, the plan and the tasks so they follow it; where it contradicts an assumption, the explanation wins.";
+/** A provider asking to wait longer than this is not waited for once a route has fallback models. */
 const LONG_RETRY_AFTER_MS = 30_000;
 /** The implementer's own list of what it left unfinished, for the blocked task's message. */
 /**
@@ -596,6 +604,7 @@ export class WorkflowScheduler {
                     const questions = parsed.data.openQuestions;
                     return [
                       ...specCoverageProblems(parsed.data),
+                      ...deliverableProblems(parsed.data, coverageRequest(state)),
                       ...assumeProblems(
                         policy,
                         questions,
@@ -1002,6 +1011,7 @@ export class WorkflowScheduler {
                           this.store.readArtifact(runId, artifact.id),
                         ),
                         {
+                          request: coverageRequest(state),
                           hostSplitTasks: state.hostSplitTasks,
                           scaffold: this.baselineScaffold(runId, state),
                           exists: (path) =>
@@ -1030,6 +1040,9 @@ export class WorkflowScheduler {
                     .map((c) => c.id),
                   // Defaults the agents chose instead of asking; approving accepts them.
                   assumptions: state.spec.assumptions,
+                  ...(state.spec.deliverables
+                    ? { requestCoverage: requestCoverage(state.spec, coverageRequest(state)) }
+                    : {}),
                   boundedCorrection: true,
                   // Granted walk-through capabilities are shown to the person; the frozen gates
                   // that hold them are part of the manifest the digest covers.
@@ -1321,7 +1334,7 @@ export class WorkflowScheduler {
                 return named.length > 0 && named.every((f) => notes.has(f.id));
               };
               const repairing = (f: Review["findings"][number]): boolean =>
-                (severities.includes(f.severity) && findingBlocks(f)) ||
+                (severities.includes(f.severity) && findingBlocks(f, policy.reviewMinConfidence)) ||
                 f.criterionIds.some((id) => failing.has(id));
               const noted = review.findings.filter((f) => notes.has(f.id) && repairing(f));
               for (const id of [...failing]) if (noteOnly(id)) failing.delete(id);
@@ -1339,7 +1352,8 @@ export class WorkflowScheduler {
                 review.findings.filter(
                   (f) =>
                     !notes.has(f.id) &&
-                    ((severities.includes(f.severity) && findingBlocks(f)) ||
+                    ((severities.includes(f.severity) &&
+                      findingBlocks(f, policy.reviewMinConfidence)) ||
                       f.criterionIds.some((id) => failing.has(id))),
                 ),
               );
@@ -5083,6 +5097,36 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       const kept = state.reviews[reviewer.key];
       if (kept && kept.snapshotHash === reviewSnapshotHash && kept.verdict !== "inconclusive")
         return { reviewer, result: kept };
+      // After a correction, a dimension that passed and whose files did not change keeps its
+      // review; one that runs again is told what it found and what changed (#713).
+      const prior = state.priorReviews[reviewer.key];
+      const changed =
+        prior && state.expectedFiles ? changedSince(prior.files, state.expectedFiles) : null;
+      if (prior && changed && carriesOver(reviewer.dimension, prior.review, changed)) {
+        this.store.transaction(() =>
+          this.store.artifact(
+            runId,
+            "diagnostic",
+            `reviews/carried-${reviewer.key}-${reviewSnapshotId}.json`,
+            canonical({
+              key: reviewer.key,
+              dimension: reviewer.dimension,
+              reviewedSnapshotHash: prior.review.snapshotHash,
+              changedSince: changed,
+            }),
+          ),
+        );
+        return { reviewer, result: prior.review };
+      }
+      const rerun =
+        prior && changed
+          ? {
+              previousRound: await previousRound(this.store, runId, prior, changed, (path) => {
+                const absolute = workspacePath(runRoot(this.store.workspace, state), path);
+                return existsSync(absolute) ? readFileSync(absolute) : null;
+              }),
+            }
+          : {};
       const child = this.store.transaction(() =>
         this.store.beginStep(runId, `dimension-${reviewer.key}`, stepId),
       );
@@ -5100,6 +5144,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             {
               dimension: reviewer.dimension,
               evidence: this.evidenceContext(runId, state),
+              ...rerun,
               ...(greenfield ? { baseline: { greenfield } } : {}),
               ...extra,
             },
@@ -5198,7 +5243,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
               (f) =>
                 reviewer.blocking.includes(f.severity) &&
                 severities.includes(f.severity) &&
-                findingBlocks(f),
+                findingBlocks(f, policy.reviewMinConfidence),
             )
           : [];
         // A claim starts a correction only when its repro shows it (#155).

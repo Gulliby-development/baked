@@ -2,7 +2,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AppConfig } from "../../types/index.js";
 import type { ProfileRegistry } from "../agents/profiles/registry.js";
-import type { RoutingRecord } from "../llm/model-routing.js";
+import { parseModelRouting, type RoutingRecord } from "../llm/model-routing.js";
+import { checkProviders, getCachedProviderStatuses } from "../llm/provider.js";
+import { availableVendorModels } from "../llm/vendor-models.js";
 import { hashBytes, hashJson } from "../specs/hash.js";
 import { validateChecks } from "./check-policy.js";
 import { frozenInstructions } from "./context.js";
@@ -12,8 +14,8 @@ import { DEFAULT_DUPLICATION } from "./quality/duplication.js";
 import { configuredRules } from "./quality/rules.js";
 import { DEFAULT_SAST_CONFIG } from "./quality/sast.js";
 import {
-  independenceWarnings,
   independentReviewMode,
+  reviewIndependence,
   routedProfiles,
   routingRecord,
   shadowedModelWarnings,
@@ -69,6 +71,17 @@ export interface PreparedStart {
   instructionHashes: ReturnType<typeof frozenInstructions>["hashes"];
 }
 
+export interface StartDeps {
+  /** Models of available providers a cross-provider review may move to; tests replace it. */
+  availableModels?: () => Promise<string[]>;
+}
+
+/** Models of the providers that are signed in, from the last provider check or a new one. */
+async function availableModels(): Promise<string[]> {
+  const statuses = getCachedProviderStatuses() ?? (await checkProviders());
+  return availableVendorModels(statuses.filter((s) => s.available).map((s) => s.id));
+}
+
 /** Why a shipped preset with a check stage cannot start in a project without feature checks. */
 export const missingFeatureChecks = (workflowId: string): string =>
   `Workflow ${workflowId} needs at least one feature check in the workflow policy (workflows.policy.checks); /workflow gates adds them`;
@@ -94,6 +107,7 @@ export async function prepareStart(
     | "sast"
     | "modelStrict"
   >,
+  deps: StartDeps = {},
 ): Promise<PreparedStart> {
   const config = request.modelStrict ? strictRoutingConfig(configured) : configured;
   const model = request.model ?? config.defaultModel;
@@ -125,7 +139,7 @@ export async function prepareStart(
       error instanceof Error ? error.message : String(error),
     );
   }
-  const routing = routingRecord(
+  let routing = routingRecord(
     config,
     registry,
     model,
@@ -238,22 +252,28 @@ export async function prepareStart(
       );
   if (registry.get(policy.skepticProfileId).output !== "refutation")
     throw new WorkflowFault("INVALID_DEFINITION", "Skeptic must return RefutationSchema");
-  const independence = independentReviewMode(config);
-  if (independence !== "off") {
-    const warnings = independenceWarnings(
-      routing,
-      loaded.definition,
-      policy,
-      loadGateLibrary(workspace, policy).gates,
-      profiles,
+  const independence = reviewIndependence(
+    config,
+    routing,
+    loaded.definition,
+    policy,
+    loadGateLibrary(workspace, policy).gates,
+    profiles,
+    independentReviewMode(config) === "provider"
+      ? await (deps.availableModels ?? availableModels)()
+      : [],
+  );
+  if (independence.refuse)
+    throw new WorkflowFault(
+      "INVALID_DEFINITION",
+      `${independence.warnings.join("\n")}\nmodelRouting.independentReview is "require"; route the reviewers to another model`,
     );
-    if (warnings.length && independence === "require")
-      throw new WorkflowFault(
-        "INVALID_DEFINITION",
-        `${warnings.join("\n")}\nmodelRouting.independentReview is "require"; route the reviewers to another model`,
-      );
-    if (warnings.length) routing.warnings = [...(routing.warnings ?? []), ...warnings];
-  }
+  routing = independence.record;
+  const notes = [...independence.moved, ...independence.warnings];
+  if (notes.length) routing.warnings = [...(routing.warnings ?? []), ...notes];
+  const minConfidence = parseModelRouting(config.modelRouting)?.reviewMinConfidence;
+  if (minConfidence !== undefined && policy.reviewMinConfidence === undefined)
+    policy = PolicySchema.parse({ ...policy, reviewMinConfidence: minConfidence });
   const instructions = frozenInstructions(workspace, config.instructionFiles);
   const skillHashes: Record<string, string> = {};
   for (const profile of profiles)

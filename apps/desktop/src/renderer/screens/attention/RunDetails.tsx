@@ -118,6 +118,23 @@ export function ApprovalDetail({ item, onDone }: DetailProps) {
                 </div>
               ))}
             </section>
+            {body.requestCoverage?.length ? (
+              <section className={LIST} aria-label="Request coverage">
+                <span className={LABEL}>What the request asks for and what covers it</span>
+                {body.requestCoverage.map((row) => (
+                  <div key={row.deliverable} className={ROW}>
+                    <span>{row.deliverable}</span>
+                    <span className={row.mapped ? "text-dim-foreground" : "font-semibold"}>
+                      {row.requirementIds.length
+                        ? [...row.requirementIds, ...row.criterionIds].join(", ")
+                        : row.outOfScope
+                          ? `out of scope: ${row.outOfScope}`
+                          : "not covered"}
+                    </span>
+                  </div>
+                ))}
+              </section>
+            ) : null}
             {body.assumptions?.length ? (
               <section className={LIST} aria-label="Assumptions">
                 <span className={LABEL}>Assumptions the agents made instead of asking</span>
