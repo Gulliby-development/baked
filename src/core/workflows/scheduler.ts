@@ -417,8 +417,14 @@ const SERIOUS: readonly Severity[] = ["critical", "high"];
  * low findings are recorded in the review artifact but no longer start another round: runs
  * de6cf1ab and 2fa658c0 spent their rounds on ever deeper medium findings while every check passed.
  */
-const repairSeverities = (run: { repair_rounds: number; convergence_rounds: number }) =>
-  run.repair_rounds + run.convergence_rounds > 0 ? SERIOUS : ALL_SEVERITIES;
+const repairSeverities = (run: {
+  repair_rounds: number;
+  review_rounds?: number;
+  convergence_rounds: number;
+}) =>
+  run.repair_rounds + (run.review_rounds ?? 0) + run.convergence_rounds > 0
+    ? SERIOUS
+    : ALL_SEVERITIES;
 
 /**
  * A finding the severity floor does not demote once the host reproduces it: it is based on the
@@ -1742,7 +1748,14 @@ export class WorkflowScheduler {
                 ? this.haltConvergence(runId, state, policy, repairFindings.findings)
                 : "go";
             if (halt === "go")
-              this.repair(runId, state, policy, repairFindings.findings, repairFindings.kind);
+              this.repair(
+                runId,
+                state,
+                policy,
+                repairFindings.findings,
+                repairFindings.kind,
+                stage.kind === "review" ? "review" : "round",
+              );
             else if (halt === "accepted") {
               advance = true;
               repairFindings = null;
@@ -8792,6 +8805,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           policy,
           findings,
           position.repairKind ?? "repair",
+          // A review's corrections count review rounds, not the checks stage's repair rounds.
+          stageKind(v2.stage) === "review" ? "review" : "round",
         );
       else if (findings.length) {
         // A loop to a stage that does not write hands the findings to that stage as input; a
@@ -9057,7 +9072,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     policy: RunPolicy,
     findings: Review["findings"],
     kind: "repair" | "convergence",
-    scope: "round" | "task" = "round",
+    scope: "round" | "task" | "review" = "round",
   ): void {
     this.store.transaction(() => {
       appendCorrections(this.store, runId, state, policy, findings, kind, scope);
