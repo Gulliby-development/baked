@@ -23,5 +23,7 @@ const REASONS: Record<string, string> = {
   host_state: "the host's own state was stale or incomplete (not a model's output)",
   interrupted_effect: "an interrupted command needs recovery",
   dependency_failed: "a dependency did not complete",
+  replay_diverged:
+    "a replayed run sent a model request the recording does not have; the run's diagnostic names where",
 };
 export const reasonText = (reason: string): string => REASONS[reason] ?? reason;

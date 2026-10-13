@@ -48,6 +48,12 @@ export const BASE_MODES: readonly ChatMode[] = ["default", "architect", "auto"];
 const MAX_TEXTAREA_PX = 240;
 
 /** Voice input for the composer; the chat passes it when the setting is on. */
+/** The project's model list as the composer shows it; `providers` is null before the first answer. */
+export interface ModelList {
+  providers: ModelProvider[] | null;
+  error: string | null;
+}
+
 export interface VoiceInput {
   /** Why the microphone button is disabled, or null when voice input works here. */
   unavailable: string | null;
@@ -109,36 +115,22 @@ export const EFFORT_LABELS: Record<ChatEffort, string> = {
  * Reasoning effort of the chat: `Default` and the levels the current model takes, which the
  * model list reports. A model without effort leaves only `Default`, with a note why.
  */
-function EffortMenu({
+export function EffortMenu({
   model,
   effort,
-  loadModels,
+  models,
   onEffort,
   close,
 }: {
   model: string | null;
   effort: ChatEffort;
-  loadModels: () => Promise<ModelProvider[]>;
+  models: ModelList;
   onEffort: (effort: ChatEffort) => void;
   close: () => void;
 }) {
-  const [levels, setLevels] = useState<ChatEffort[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    let live = true;
-    loadModels().then(
-      (providers) => {
-        const found = providers.flatMap((p) => p.models).find((m) => m.id === model);
-        if (live) setLevels(found?.efforts ?? []);
-      },
-      (e: unknown) => live && setError(e instanceof Error ? e.message : String(e)),
-    );
-    return () => {
-      live = false;
-    };
-  }, [loadModels, model]);
-  if (error) return <p className={MENU_NOTE}>{error}</p>;
-  if (!levels) return <p className={MENU_NOTE}>Loading efforts…</p>;
+  if (!models.providers) return <p className={MENU_NOTE}>{models.error ?? "Loading efforts…"}</p>;
+  const found = models.providers.flatMap((p) => p.models).find((m) => m.id === model);
+  const levels = found?.efforts ?? [];
   const choices: ChatEffort[] = ["default", ...levels];
   if (!choices.includes(effort)) choices.push(effort);
   return (
@@ -178,31 +170,19 @@ export function shortModel(model: string | null): string {
   return model.slice(model.indexOf("/") + 1);
 }
 
-function ModelMenu({
+export function ModelMenu({
   model,
-  loadModels,
+  models,
   onModel,
   close,
 }: {
   model: string | null;
-  loadModels: () => Promise<ModelProvider[]>;
+  models: ModelList;
   onModel: (model: string) => void;
   close: () => void;
 }) {
-  const [providers, setProviders] = useState<ModelProvider[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    let live = true;
-    loadModels().then(
-      (list) => live && setProviders(list),
-      (e: unknown) => live && setError(e instanceof Error ? e.message : String(e)),
-    );
-    return () => {
-      live = false;
-    };
-  }, [loadModels]);
-  if (error) return <p className={MENU_NOTE}>{error}</p>;
-  if (!providers) return <p className={MENU_NOTE}>Loading models…</p>;
+  const { providers } = models;
+  if (!providers) return <p className={MENU_NOTE}>{models.error ?? "Loading models…"}</p>;
   const usable = providers.filter((p) => p.configured && p.models.length > 0);
   if (usable.length === 0)
     return <p className={MENU_NOTE}>No provider is configured. Add a key in Settings.</p>;
@@ -251,7 +231,7 @@ export function Composer({
   onEffort,
   contextSize,
   modes = BASE_MODES,
-  loadModels,
+  models,
   loadMentions,
   loadCommands,
   acceptsImages = false,
@@ -276,7 +256,8 @@ export function Composer({
   onEffort?: (effort: ChatEffort) => void;
   /** Context window of the chat; shown only when the model offers more than one. */
   contextSize?: ContextSizeControl;
-  loadModels: () => Promise<ModelProvider[]>;
+  /** Read from the window's cache, so the model and effort menus open on it at once. */
+  models: ModelList;
   /** `@` completions; without it the composer offers none. */
   loadMentions?: (query: string) => Promise<MentionSuggestion[]>;
   /** Custom slash commands offered when a message starts with `/`; without it the composer offers none. */
@@ -722,9 +703,7 @@ export function Composer({
             </span>
           }
         >
-          {(close) => (
-            <ModelMenu model={model} loadModels={loadModels} onModel={onModel} close={close} />
-          )}
+          {(close) => <ModelMenu model={model} models={models} onModel={onModel} close={close} />}
         </Popover>
         {onEffort && (
           <Popover
@@ -737,7 +716,7 @@ export function Composer({
               <EffortMenu
                 model={model}
                 effort={effort}
-                loadModels={loadModels}
+                models={models}
                 onEffort={onEffort}
                 close={close}
               />

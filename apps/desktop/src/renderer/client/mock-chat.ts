@@ -540,26 +540,29 @@ async function coordinatorScript(session: MockSession, turn: MockTurn, text: str
     );
     return;
   }
+  const api = {
+    kind: "run" as const,
+    id: nextId("run"),
+    title: "API endpoint",
+    why: "API endpoint (split)",
+    status: "started",
+    task: {
+      ref: "acme/baked#231",
+      url: "https://github.com/acme/baked/issues/231",
+      state: "open" as const,
+    },
+  };
   entry.brief = {
     ...entry.brief,
     revision: entry.brief.revision + 1,
     updatedAt: Date.now(),
     launched: [
       ...entry.brief.launched,
+      api,
       {
         kind: "run",
         id: nextId("run"),
-        why: "API endpoint (split)",
-        status: "started",
-        task: {
-          ref: "acme/baked#231",
-          url: "https://github.com/acme/baked/issues/231",
-          state: "open",
-        },
-      },
-      {
-        kind: "run",
-        id: nextId("run"),
+        title: "Desktop screen",
         why: "Desktop screen (split)",
         status: "started",
         task: {
@@ -574,6 +577,22 @@ async function coordinatorScript(session: MockSession, turn: MockTurn, text: str
     session,
     turn,
     "Started both runs, for #231 (new) and #120. Each stops at its own approval.",
+  );
+  // The server's follow-up after the turn: the first run now waits at its approval.
+  const status = "waiting: approval";
+  setTimeout(
+    () =>
+      emit(session, {
+        type: "notice",
+        message: {
+          id: nextId("m"),
+          role: "system",
+          content: `Run "${api.title}" (${api.task.ref}): ${status}`,
+          timestamp: Date.now(),
+          launch: { ...api, status, event: "status" },
+        },
+      }),
+    600,
   );
 }
 

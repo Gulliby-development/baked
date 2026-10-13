@@ -46,6 +46,14 @@ export const QUALITY_BASELINE_FILES = "quality/baseline-files.json";
 /** Whether a finding's claim is one the rule pack made, so a clean check closes it. */
 export const ruleClaim = (claim: unknown): boolean =>
   typeof claim === "string" && /^Rule [\w.-]+: /.test(claim);
+/** The rule, file and matched text of a rule finding's claim; the line may move between rounds. */
+export const ruleClaimKey = (claim: unknown): string | null => {
+  const match =
+    typeof claim === "string" ? /^Rule ([\w.-]+): .* \((.+):\d+: (.*)\)$/s.exec(claim) : null;
+  return match ? `${match[1]}\u0000${match[2]}\u0000${match[3]}` : null;
+};
+export const ruleFindingKey = (finding: Pick<RuleFinding, "rule" | "file" | "text">): string =>
+  `${finding.rule}\u0000${finding.file}\u0000${finding.text}`;
 
 /** The project's choices, as frozen in the run policy. */
 export interface RuleSettings {
@@ -68,6 +76,11 @@ export interface RuleFinding {
   fix: string;
   /** Whether it blocks: an `error` on lines the run added to a file whose baseline is known. */
   blocking: boolean;
+  /**
+   * The same rule matched the same text after a correction for it: it is reported as a known
+   * limitation instead of asking for another correction the rule cannot tell apart (#845).
+   */
+  kept?: true;
   source: "builtin" | "ast-grep";
 }
 

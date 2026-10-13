@@ -29,6 +29,7 @@ import {
   chat,
   type ImageUpload,
   isMissingChatApi,
+  type LaunchNote,
   type SessionDiffStats,
   type WatchStatus,
 } from "../../client/chat.js";
@@ -42,8 +43,9 @@ import { ConfirmDialog } from "../../components/ui/confirm-dialog.js";
 import { emptyClass } from "../../components/ui/empty.js";
 import { Skeleton } from "../../components/ui/skeleton.js";
 import { cn } from "../../lib/cn.js";
+import { useChatModels } from "../../lib/models.js";
 import { projectHref } from "../../router.js";
-import { handOffText, SPLIT_EDIT_PREFIX } from "../coordinator/model.js";
+import { handOffText, launchedHref, SPLIT_EDIT_PREFIX } from "../coordinator/model.js";
 import type { SectionProps } from "../sections.js";
 import { peekDraft, takeDraft } from "../start/drafts.js";
 import { BASE_MODES, Composer } from "./Composer.js";
@@ -503,7 +505,7 @@ export function SessionView({
         }
       : undefined;
 
-  const loadModels = useCallback(() => chat.models(key).then((result) => result.providers), [key]);
+  const models = useChatModels(key);
   const loadCommands = useCallback(
     () => setup.commands(key).then((result) => result.commands),
     [key],
@@ -615,7 +617,12 @@ export function SessionView({
             deciding={deciding}
             forking={forking}
             {...(draft || coordinator ? {} : { onFork: fork })}
-            {...(coordinator ? { onEditSplit: editSplit } : {})}
+            {...(coordinator
+              ? {
+                  onEditSplit: editSplit,
+                  launchHref: (note: LaunchNote) => launchedHref(key, note),
+                }
+              : {})}
             {...(canRewindTo && !draft && !rewinding
               ? { onRewind: (checkpoint: number) => rewind("undo", checkpoint) }
               : {})}
@@ -659,7 +666,7 @@ export function SessionView({
               }
             : {})}
           modes={modes}
-          loadModels={loadModels}
+          models={models}
           loadMentions={loadMentions}
           {...(expandsCommands ? { loadCommands } : {})}
           acceptsImages={acceptsImages}

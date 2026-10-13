@@ -81,6 +81,7 @@ function Controls({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
+  const [forkStage, setForkStage] = useState("");
   const act = async (work: () => Promise<unknown>): Promise<void> => {
     setBusy(true);
     setError(null);
@@ -172,15 +173,31 @@ function Controls({
         {...dialog("fork")}
         title={`Fork ${run.featureId}?`}
         confirmLabel="Fork run"
+        extra={
+          (run.forkStages?.length ?? 0) > 0 && (
+            <SegmentGroup aria-label="Start the fork at">
+              {["", ...(run.forkStages ?? [])].map((stage) => (
+                <Segment
+                  key={stage || "start"}
+                  aria-pressed={forkStage === stage}
+                  onClick={() => setForkStage(stage)}
+                >
+                  {stage || "From the start"}
+                </Segment>
+              ))}
+            </SegmentGroup>
+          )
+        }
         onConfirm={() =>
           void act(async () => {
-            const forked = await runs.fork(projectKey, run);
+            const forked = await runs.fork(projectKey, run, forkStage || undefined);
             window.location.hash = projectHref(projectKey, "runs", forked.runId);
           })
         }
       >
-        Starts a new run with this run's spec and plan. It needs a new approval and runs its checks
-        again; nothing executes until you resume it. This run stays as it is.
+        {forkStage
+          ? `Starts a new run at the ${forkStage} stage with this run's approval and changes. Nothing executes until you resume it. This run stays as it is.`
+          : "Starts a new run with this run's spec and plan. It needs a new approval and runs its checks again; nothing executes until you resume it. This run stays as it is."}
       </ConfirmDialog>
       <ConfirmDialog
         {...dialog("discard")}

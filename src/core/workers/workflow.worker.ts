@@ -272,6 +272,10 @@ const ctx = createWorkerHandler(
       if (input === "pause") return runtime.pause(id, command);
       if (input === "cancel") return runtime.cancel(id, command);
       if (input === "fork") return runtime.fork(id, command);
+      if (typeof input === "object" && input !== null && "fork" in input)
+        return runtime.fork(id, command, {
+          fromStage: SafeId.parse((input as { fork: unknown }).fork),
+        });
       if (input === "discard-worktree") return runtime.discardWorktree(id, command);
       if (typeof input === "object" && input !== null && "reroute" in input) {
         // One user decision: switch the run model, then continue from where the run stopped.
