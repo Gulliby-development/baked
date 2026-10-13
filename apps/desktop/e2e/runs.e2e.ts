@@ -26,6 +26,7 @@ test("a full run starts from the project home and opens its detail", async ({ ap
   await expect(
     page
       .getByRole("region", { name: "Workflow runs" })
+      .getByRole("table")
       .getByRole("link", { name: "add-a-json-flag-to" }),
   ).toBeVisible();
 });
@@ -92,4 +93,12 @@ test("a blocked run says why it stopped", async ({ app }) => {
   await expect(why).toContainText("The run is blocked: the token, call or time budget is used up.");
   await expect(why).toContainText("Run token budget of 600000 would be exceeded");
   await expect(page.getByText(/^The run is blocked\. Why it stopped is shown above/)).toBeVisible();
+});
+
+test("active runs ride their conveyor above the list", async ({ app }) => {
+  const page = await app("#/p/baked/runs");
+  const live = page.getByRole("region", { name: "On the line now" });
+  await expect(live.getByRole("article").first()).toBeVisible();
+  await expect(live.locator("[data-station]").first()).toBeVisible();
+  await expect(page.getByRole("table").getByRole("img", { name: /^Stages: / }).first()).toBeVisible();
 });
