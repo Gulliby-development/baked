@@ -7,6 +7,7 @@ import {
   launchLabel,
   launchNoteText,
 } from "../../core/chat/coordinator-launch.js";
+import { parsePeerMessage } from "../../core/chat/peer-messages.js";
 import type { ChatPrompt } from "../../core/chat/sessions.js";
 import type { ChatMessage, LaunchNote } from "../../types/index.js";
 
@@ -73,7 +74,8 @@ export function launchedLines(launched: LaunchedView[], width: number): ViewLine
     const task = entry.task
       ? ` · ${entry.task.state === "local" ? "local task" : entry.task.ref}`
       : "";
-    const head = `${entry.active ? "●" : "○"} ${launchLabel(entry)}: ${entry.status} · ${tokens(entry.tokens)}${task}`;
+    const status = entry.activity ? `${entry.status} (${entry.activity})` : entry.status;
+    const head = `${entry.active ? "●" : "○"} ${launchLabel(entry)}: ${status} · ${tokens(entry.tokens)}${task}`;
     const why = whyBesides(entry.why, entry.title);
     return labelled(
       "",
@@ -115,7 +117,10 @@ export function messageLines(messages: ChatMessage[], live: string, width: numbe
   const lines: ViewLine[] = [];
   for (const message of messages) {
     if (message.role === "user") {
-      lines.push(...labelled("you  ", message.content, width, "user"));
+      // A thread's message to the coordinator is labelled as the thread's, not the person's.
+      const peer = parsePeerMessage(message.content);
+      if (peer) lines.push(...labelled("from ", `"${peer.title}": ${peer.text}`, width, "accent"));
+      else lines.push(...labelled("you  ", message.content, width, "user"));
     } else if (message.role === "assistant") {
       for (const call of message.toolCalls ?? [])
         lines.push(...labelled("  ↳ ", call.name, width, "tool"));

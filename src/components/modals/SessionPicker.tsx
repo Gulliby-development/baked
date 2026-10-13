@@ -58,7 +58,8 @@ function formatSize(bytes: number): string {
 function toRow(e: SessionListEntry): SessionRow {
   return {
     id: e.id,
-    title: e.title.replace(/[\n\r]+/g, " "),
+    // A session the coordinator launched reads as one of its threads.
+    title: `${e.parentId ? "↳ coordinator: " : ""}${e.title.replace(/[\n\r]+/g, " ")}`,
     msgs: e.messageCount,
     size: e.sizeBytes,
     sizeLabel: formatSize(e.sizeBytes),

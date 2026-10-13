@@ -59,14 +59,14 @@ describe("hooks editing", () => {
 });
 
 describe("hooks timeline and form", () => {
-  test("groups events by phase and shows unfired events only with hooks", async () => {
+  test("groups events by phase, every event BAKED fires included", async () => {
     const view = await setup.hooks("baked");
     const { phases } = timeline(view);
     const names = phases.flatMap((p) => p.events.map((e) => e.info.event));
     expect(names[0]).toBe("SessionStart");
     expect(names).toContain("PreToolUse");
-    expect(names).not.toContain("SessionEnd");
-    expect(names).not.toContain("Notification");
+    expect(names).toContain("SessionEnd");
+    expect(names).toContain("Notification");
   });
 
   test("turns a form into a request body and the JSON it saves", () => {

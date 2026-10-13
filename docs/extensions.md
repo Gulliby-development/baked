@@ -70,17 +70,17 @@ A hook in a file is addressed by its position and a hash of its content, so a ch
 | --- | --- | --- |
 | `PreToolUse` | Before a tool runs | Tool name |
 | `PostToolUse`, `PostToolUseFailure` | After a tool succeeds or fails | Tool name |
-| `UserPromptSubmit` | On a user message | |
-| `Stop`, `StopFailure` | When a turn ends | |
-| `SessionStart`, `SessionEnd` | Claude Code only: BAKED does not fire them yet | |
+| `UserPromptSubmit` | Before a typed message goes to the model; exit code `2` drops the message and shows the reason | |
+| `Stop`, `StopFailure` | When a turn completes or fails (not when it is interrupted) | |
+| `SessionStart`, `SessionEnd` | When a chat session starts, resumes, is cleared or compacted, and when it ends | `SessionStart`: `startup`, `resume`, `clear`, `compact` |
 | `PreCompact`, `PostCompact` | Around compaction | |
 | `SubagentStart`, `SubagentStop` | When a dispatched agent starts or ends | |
-| `Notification` | Claude Code only: BAKED does not fire it yet | |
+| `Notification` | When BAKED asks for a permission or a question, and when a workflow run starts waiting | `permission_prompt`, `question`, `run_attention` |
 | `RunAttention` | When a workflow run starts waiting for a person ([runtime guide](workflows/runtime.md#notifications-when-a-run-waits)) | Request kind or blocked reason |
 
 Tool names follow Claude Code (`Bash`, `Edit`, `Write`, `Read`, `Grep`, `Glob`, `WebSearch`, `Agent`); BAKED maps its own tools to them. A hook entry may set `async`, `timeout` (seconds, default 10), `once` (once per session) and `if` (a glob on the first string argument, such as `Edit(*.ts)`).
 
-A hook receives JSON on stdin (`session_id`, `cwd`, `hook_event_name`, `tool_name`, `tool_input`; `run_attention` for `RunAttention`). Exit code `0` is success, `2` blocks the call, anything else logs a warning. On stdout, a `PreToolUse` hook may return `hookSpecificOutput` with `permissionDecision: "deny"`, an `updatedInput` or `additionalContext`; a `PostToolUse` hook may return `additionalContext`. Hooks are stopped with the agent on `Ctrl+X`.
+A hook receives JSON on stdin (`session_id`, `cwd`, `hook_event_name`, `tool_name`, `tool_input`; `prompt` for `UserPromptSubmit`, `source` for `SessionStart`, `reason` for `SessionEnd`, `message`, `title` and `notification_type` for `Notification`, `run_attention` for `RunAttention`). Exit code `0` is success, `2` blocks the call, anything else logs a warning. On stdout, a `PreToolUse` hook may return `hookSpecificOutput` with `permissionDecision: "deny"`, an `updatedInput` or `additionalContext`; a `PostToolUse` hook may return `additionalContext`. `additionalContext` from `SessionStart` and `UserPromptSubmit` hooks is sent to the model ahead of the next message, in the terminal app, the headless CLI and desktop chats alike. Hooks are stopped with the agent on `Ctrl+X`.
 
 ## Skills
 
