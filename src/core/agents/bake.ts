@@ -28,6 +28,12 @@ import {
 import { getMCPManager } from "../mcp/index.js";
 import { resolveRetrySettings } from "../retry/settings.js";
 import {
+  type ApproveDestructive,
+  chatReviewModel,
+  recentUserTexts,
+  withApprovalReview,
+} from "../security/approval-review.js";
+import {
   buildInteractiveTools,
   buildTools,
   CORE_TOOL_NAMES,
@@ -651,7 +657,7 @@ interface BakeAgentOptions {
   onApproveWebSearch?: (query: string) => Promise<boolean>;
   onApproveFetchPage?: (url: string) => Promise<boolean>;
   onApproveOutsideCwd?: (toolName: string, path: string) => Promise<boolean>;
-  onApproveDestructive?: (description: string) => Promise<boolean>;
+  onApproveDestructive?: ApproveDestructive;
   providerOptions?: ProviderOptions;
   headers?: Record<string, string>;
   codeExecution?: boolean;
@@ -711,7 +717,24 @@ export function createBakeAgent({
   const effectiveApproveFetchPage = bakeMode === "auto" ? autoApprove : onApproveFetchPage;
   const effectiveApproveOutsideCwd =
     bakeMode === "auto" ? (autoApprove as typeof onApproveOutsideCwd) : onApproveOutsideCwd;
-  const effectiveApproveDestructive = bakeMode === "auto" ? autoApprove : onApproveDestructive;
+  // The opt-in approval reviewer (#599) decides the calls the host lets it decide before the
+  // person is asked; it reads the person's recent messages from the conversation.
+  const effectiveApproveDestructive =
+    bakeMode === "auto"
+      ? autoApprove
+      : agentFeatures?.approvalReview && onApproveDestructive
+        ? withApprovalReview(
+            onApproveDestructive,
+            chatReviewModel(model, { providerOptions, headers }),
+            () =>
+              recentUserTexts(
+                (parentMessagesRef.current ?? [])
+                  .filter((message) => message.role === "user")
+                  .map(extractText)
+                  .filter(Boolean),
+              ),
+          )
+        : onApproveDestructive;
 
   const modelId =
     typeof model === "object" && model !== null && "modelId" in model

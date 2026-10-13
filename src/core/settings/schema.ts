@@ -571,6 +571,16 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "agentFeatures.approvalReview",
+    page: "agent-features",
+    section: "Approvals",
+    label: "Approval reviewer",
+    help: "Before asking you, the chat model reviews project-local cleanup commands (rm inside the project, git rebase, git branch -D, kill of a process) and edits of CI or Docker files, and runs them only at low risk. Force pushes, hard resets, database drops, piped scripts, secrets and anything outside the project always ask.",
+    scopes: BOTH,
+    type: "boolean",
+    default: false,
+  },
+  {
     id: "agentFeatures.desloppify",
     page: "agent-features",
     section: "After code agents",
