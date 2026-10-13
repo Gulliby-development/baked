@@ -312,7 +312,7 @@ All numbers are estimates and are labeled as such. The new-run form shows a rang
 
 `baked workflow estimate [WORKFLOW]` prints the estimate before a run, stage by stage and model by model, with the options of `workflow run` that change it (`--model`, `--route`, `--policy`, `--worktree`, `--writers`, `--json`):
 
-- Only the definition's stages count. A stage uses earlier runs of the same workflow when they reached it, then runs of other workflows, then a generic range by stage type (tasks stages: task cost times task count; approval, check and learn stages without history: zero).
+- Only the definition's stages count. History is this project's runs plus those of the stores in `sizing.historyStores`, and the basis line says how many came from other projects. A stage uses earlier runs of the same workflow when they reached it, then runs of other workflows, then a generic range by stage type (tasks stages: task cost times task count; approval, check and learn stages without history: zero).
 - Each stage carries the models routing gives it: the stage route, else its profile's model; tasks stages use `implementer`, review stages their review profiles, and their tokens are split evenly.
 - The cost in USD prices 60% uncached input, 30% cache reads and 10% output at the prices in `src/core/llm/pricing.ts`. The estimate leaves cache writes out, so Anthropic costs read low. Family guesses and Copilot request prices are marked approximate; a model without a price is left out and the cost is marked partial. The cost is advice only: `maxCostUsd` stays disabled.
 
