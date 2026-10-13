@@ -1,4 +1,4 @@
-import type { Selection } from "@opentui/core";
+import type { KeyEvent, Selection } from "@opentui/core";
 import { type MutableRefObject, useRef } from "react";
 import { requestInputEditor } from "../core/chat/external-editor.js";
 import { useCheckpointStore } from "../stores/checkpoints.js";
@@ -35,7 +35,7 @@ export function useGlobalKeyboard({
 }: GlobalKeyboardParams): void {
   // Time of an idle Ctrl+X, which waits for a second key (E opens the input in $EDITOR).
   const leaderAt = useRef<number | null>(null);
-  useKeyboard((evt) => {
+  const onKey = (evt: KeyEvent) => {
     if (shutdownPhase >= 0) return;
     const uiModals = useUIStore.getState().modals;
     if (selectIsAnyModalOpen(useUIStore.getState())) {
@@ -194,5 +194,7 @@ export function useGlobalKeyboard({
           store.setViewing(tid, null); // go to live
         }
       });
-  });
+  };
+  // Global shortcuts decide for themselves what a dialog blocks.
+  useKeyboard(onKey, { underDialog: true });
 }

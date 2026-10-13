@@ -197,6 +197,12 @@ describe("gate drafts", () => {
     expect(result).toEqual({ ok: true, check: gate({ args: ["run", "test", "--silent"], timeoutMs: 90000, envNames: ["CI", "NODE_ENV"], writes: ["coverage"] }) });
     if (result.ok) expect(checkFromDraft(draftFromCheck(result.check), root, [])).toEqual(result);
   });
+  test("the JSON report setting survives a round trip", () => {
+    const root = workspace();
+    const result = checkFromDraft({ ...emptyGateDraft(), id: "audit", command: "docker run --rm audit", jsonReport: true }, root, []);
+    expect(result.ok && result.check.report).toBe("json");
+    if (result.ok) expect(draftFromCheck(result.check).jsonReport).toBe(true);
+  });
   test("each invalid field is reported in words", () => {
     const root = workspace();
     const base = { ...emptyGateDraft(), id: "unit", command: "bun test" };
@@ -284,6 +290,19 @@ describe("running a gate on demand", () => {
     const pending = run(workspace(), script("setInterval(() => {}, 1000)", { timeoutMs: 60000 }), controller.signal);
     setTimeout(() => controller.abort(), 300);
     expect((await pending).status).toBe("cancelled");
+  });
+  test("a custom gate reports through its last JSON line", async () => {
+    const report = (value: object, exit = 0) => script(`console.log('noise'); console.log(${JSON.stringify(JSON.stringify(value))}); process.exit(${exit})`, { report: "json" });
+    expect((await run(workspace(), report({ status: "passed" }))).status).toBe("passed");
+    // A pass that exits nonzero contradicts itself.
+    expect((await run(workspace(), report({ status: "passed" }, 1))).status).toBe("error");
+    const failed = await run(workspace(), report({ status: "failed", findings: [{ severity: "low", message: "slow page", path: "web/a.html" }] }));
+    expect(failed.status).toBe("failed");
+    expect(failed.outputTail).toContain("- [low] web/a.html slow page");
+    expect((await run(workspace(), report({ status: "inconclusive" }))).status).toBe("error");
+    const missing = await run(workspace(), script("console.log(JSON.stringify({ status: 'maybe' }))", { report: "json" }));
+    expect(missing.status).toBe("error");
+    expect(missing.outputTail).toContain("Gate report: missing");
   });
   test("a missing command is an error with a plain message, not a crash", async () => {
     const result = await run(workspace(), gate({ executable: "baked-no-such-tool-xyz", args: [] }));

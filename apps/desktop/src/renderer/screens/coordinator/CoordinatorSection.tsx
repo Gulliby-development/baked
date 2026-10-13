@@ -39,9 +39,9 @@ function LaunchedCard({ project, item }: { project: DesktopProject; item: Launch
         href={launchedHref(project.key, item)}
       >
         <Dot tone={launchedTone(item)} />
-        <span className="capitalize">{item.kind}</span>
+        <span className="capitalize">{item.feature ? "Feature" : item.kind}</span>
         <span className="min-w-0 truncate font-mono text-[12px] text-dim-foreground">
-          {item.id}
+          {item.feature ? `${item.feature} of ${item.id}` : item.id}
         </span>
       </a>
       <p className="m-0 text-[13px] text-soft-foreground">{item.why}</p>
@@ -177,7 +177,11 @@ function CoordinatorPanel({ project }: { project: DesktopProject }) {
         ) : (
           <ul className="m-0 flex list-none flex-col gap-2 p-0">
             {items.map((item) => (
-              <LaunchedCard key={`${item.kind}-${item.id}`} project={project} item={item} />
+              <LaunchedCard
+                key={`${item.kind}-${item.id}-${item.feature ?? ""}`}
+                project={project}
+                item={item}
+              />
             ))}
           </ul>
         )}
