@@ -27,6 +27,7 @@ import { cn } from "../../lib/cn.js";
 import { LABEL, LEDE, PANEL, TABLE } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
+import { AgentsNudge } from "./AgentsSection.js";
 import {
   ACTIONS,
   errorText,
@@ -57,6 +58,7 @@ function WorkflowList({ project }: Pick<SectionProps, "project">) {
         gates, transitions and stage options. The same editor as{" "}
         <span className="font-mono">/workflow</span> in the terminal.
       </p>
+      <AgentsNudge projectKey={project.key} />
       <div className="overflow-x-auto">
         <table className={TABLE}>
           <thead>

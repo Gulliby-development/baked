@@ -1,5 +1,6 @@
 import type { ApiResponse, RunSnapshot, StreamEvent } from "../../shared/api.js";
 import type { HttpMethod } from "../../shared/bridge.js";
+import { agentRoutes } from "./mock-agents.js";
 import { artifactRoutes } from "./mock-artifacts.js";
 import { attentionRoutes } from "./mock-attention.js";
 import { MOCK_CHAT_ROUTES, MOCK_CHAT_STREAMS } from "./mock-chat.js";
@@ -122,6 +123,7 @@ export const MOCK_ROUTES: MockRoute[] = [
   diagnosticsRoutes,
   artifactRoutes,
   packageRoutes,
+  agentRoutes,
 ];
 
 /** Sample event streams per feature; screens add theirs here. */
