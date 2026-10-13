@@ -8,7 +8,7 @@
 import type { BakeMode } from "../../../types/index.js";
 
 const READ_ONLY =
-  "Read-only mode. Edit/shell/git tools stay visible but are disabled here — calling one returns a denial, not an action. Don't attempt them; investigate or plan instead.";
+  "Read-only mode. Edit/shell/git tools stay visible but are disabled here — calling one returns a denial, not an action. Don't attempt them, not even once to check: when the user asks to create or change a file, the answer in this mode is the plan or design for that change, not the edit.";
 
 const PLAN_FULL = `PLAN MODE — research then plan. No implementation tools.
 ${READ_ONLY}
