@@ -873,6 +873,15 @@ export const FEATURES: readonly Feature[] = [
     ],
     desktop: ["project/initiatives"],
   },
+  {
+    id: "initiative-parallel-features",
+    group: "Initiatives",
+    title: "Independent features run side by side in worktrees",
+    tui: ["/workflow: initiatives, the detail line shows up to N features at once"],
+    cli: ["baked workflow initiative drive", "baked workflow initiative show"],
+    api: ["/v1/initiatives/:id"],
+    desktop: ["project/initiatives: the shared budget line shows up to N features at once"],
+  },
 
   // Projects and setup
   {

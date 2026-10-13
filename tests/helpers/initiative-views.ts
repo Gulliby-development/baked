@@ -14,7 +14,7 @@ export function initiativeView(extra: Partial<InitiativeView> = {}): InitiativeV
   return {
     initiativeId: "big", title: "A big request", status: "active", reason: "", revision: 3, eventSeq: 9, planRevision: 1,
     approvedPlanRevision: 1, approvalDigest: "d".repeat(64), planDigest: "d".repeat(64), goals: [], completionCriteria: [],
-    workflowId: "sdd", model: null, featureAutoApproval: null, decompose: null, features: [featureView("core")], pendingDecisions: [],
+    workflowId: "sdd", model: null, featureAutoApproval: null, parallelRuns: 1, decompose: null, features: [featureView("core")], pendingDecisions: [],
     budget: {
       limits: { maxTotalTokens: 400000, maxAgentCalls: 80, maxActiveMs: 3600000 }, used: { tokens: 12000, calls: 3, activeMs: 60000 },
       reserved: { tokens: 0, calls: 0, activeMs: 0 }, remaining: { tokens: 388000, calls: 77, activeMs: 3540000 },

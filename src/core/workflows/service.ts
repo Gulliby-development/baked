@@ -328,6 +328,7 @@ export class NativeWorkflowService implements WorkflowService {
       gateResults: {},
       acceptance: {},
       issue: request.issue ?? null,
+      worktreeBase: request.baseCommit ?? null,
     };
     return this.store.transaction(() => {
       const duplicate = this.store.previousCommand(request.commandId, request);
@@ -1419,7 +1420,12 @@ export class NativeWorkflowService implements WorkflowService {
   async rebase(
     runId: string,
     command: CommandIdentity,
-    rebase: { dependencies: { featureId: string; contractHash: string }[]; policy?: RunPolicy },
+    rebase: {
+      dependencies: { featureId: string; contractHash: string }[];
+      policy?: RunPolicy;
+      /** The new worktree base: the feature's upstream results merged onto HEAD. */
+      baseCommit?: string;
+    },
   ): Promise<RunSnapshot> {
     this.enabled();
     const dependencies = rebase.dependencies.map(({ featureId, contractHash }) => ({
@@ -1427,18 +1433,30 @@ export class NativeWorkflowService implements WorkflowService {
       contractHash: Hash.parse(contractHash),
     }));
     const policy = rebase.policy ? PolicySchema.parse(rebase.policy) : undefined;
+    const baseCommit = rebase.baseCommit;
     return this.forkRun(
       runId,
       command,
-      { runId, ...command, action: "rebase", dependencies, policy: policy ?? null },
-      { dependencies, policy },
+      {
+        runId,
+        ...command,
+        action: "rebase",
+        dependencies,
+        policy: policy ?? null,
+        ...(baseCommit ? { baseCommit } : {}),
+      },
+      { dependencies, policy, ...(baseCommit ? { baseCommit } : {}) },
     );
   }
   private forkRun(
     runId: string,
     command: CommandIdentity,
     body: Record<string, unknown>,
-    rebase?: { dependencies: { featureId: string; contractHash: string }[]; policy?: RunPolicy },
+    rebase?: {
+      dependencies: { featureId: string; contractHash: string }[];
+      policy?: RunPolicy;
+      baseCommit?: string;
+    },
   ): RunSnapshot {
     return this.store.transaction(() => {
       const old = this.store.previousCommand(command.commandId, body);
@@ -1483,6 +1501,7 @@ export class NativeWorkflowService implements WorkflowService {
       const policy = rebase?.policy ?? PolicySchema.parse(JSON.parse(run.policy_json));
       if (rebase) {
         state.hostDependencies = rebase.dependencies;
+        if (rebase.baseCommit) state.worktreeBase = rebase.baseCommit;
         state.manifest.policyHash = hashJson(policy);
         state.manifest.dependencyContracts = [];
         if (state.spec) {

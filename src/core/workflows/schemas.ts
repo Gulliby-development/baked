@@ -1105,6 +1105,11 @@ export interface StartRequest {
   routes?: Record<string, string>;
   /** The GitHub issue the request comes from (CLI `--issue`); the delivery pull request closes it. */
   issue?: { repository: string; number: number; url: string; title: string };
+  /**
+   * The commit a worktree run's branch starts from instead of HEAD (an initiative feature starts
+   * from its upstream features' accepted results). Ignored by an inline run.
+   */
+  baseCommit?: string;
 }
 export type Decision =
   | {

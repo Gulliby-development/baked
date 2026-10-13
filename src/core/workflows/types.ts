@@ -295,6 +295,15 @@ export const RuntimeStateSchema = z
       )
       .default({}),
     issue: IssueSourceSchema.nullable().default(null),
+    /**
+     * The commit a worktree run's branch starts from instead of HEAD: for an initiative feature,
+     * HEAD merged with the accepted results of its upstream features.
+     */
+    worktreeBase: z
+      .string()
+      .regex(/^[0-9a-f]{40,64}$/)
+      .nullable()
+      .default(null),
   })
   .strict();
 export type RuntimeState = z.infer<typeof RuntimeStateSchema>;

@@ -404,6 +404,7 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
         <p className="m-0 text-[12px] text-dim-foreground">
           Shared budget: {tokens(view.budget.used.tokens)} of{" "}
           {tokens(view.budget.limits.maxTotalTokens)} tokens · plan revision {view.planRevision}
+          {(view.parallelRuns ?? 1) > 1 && ` · up to ${view.parallelRuns} features at once`}
           {view.next.message && ` · ${view.next.message}`}
         </p>
         {canExtendBudget(view) && (
