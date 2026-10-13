@@ -126,7 +126,9 @@ Once a tab's agent edits files, a line above the input lists them: new and modif
 
 ## Repository graph
 
-On startup BAKED indexes files, symbols and imports with tree-sitter, ranks files with PageRank, and puts the top of that graph in the system prompt. Files you edit or mention are boosted for the next turn, and edits re-index immediately. `/repo-map` configures it; `--no-repomap` or `BAKED_NO_REPOMAP=1` skips the scan for one run. See [tools and code intelligence](tools.md).
+On startup BAKED indexes files, symbols and imports with tree-sitter, ranks files with PageRank, and puts the top of that graph in the system prompt. Files you edit or mention are boosted for the next turn, and edits re-index immediately. `/repo-map` configures it; `--no-repomap` or `BAKED_NO_REPOMAP=1` skips the scan for one run.
+
+The index stays current in the background while BAKED runs, so `/graph`, the desktop's Code graph and the prompt's map are ready when used. An update starts when a source file changes on disk (the project's ignore rules apply, and `.git`, `node_modules`, build output and `.baked` are skipped), after the agent edits a file, after a workflow run ends, and when Git moves `HEAD` (checkout, pull, merge, reset, commit). Updates wait 1.5 s after the last change, start at most every 10 s, and re-index only files whose time or size changed; they run in the intelligence worker, so chats and runs never wait on them. `baked serve` opens the index 3 s after it starts instead of on the first chat, run or graph request. Where the platform cannot watch the folder recursively, only the edit, run and Git triggers apply. `repoMapBackgroundRefresh: false` turns background updates off; the index is then updated when the project opens and as the agent edits files. See [tools and code intelligence](tools.md).
 
 ## Memory
 

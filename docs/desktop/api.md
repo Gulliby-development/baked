@@ -497,11 +497,11 @@ A `library-docs` setting (`libraryDocs`) takes the whole [library docs source](.
 
 ## Code graph
 
-The graph the repository map builds (`.baked/repomap.db`), grouped for drawing. The server reads the database read-only, so a scan in progress never waits on it, and rebuilds its grouped copy when the database changes. The first request starts indexing when no chat or run has started it yet. The grouping is in `src/core/intelligence/code-graph-model.ts`; the terminal `/graph` view uses the same.
+The graph the repository map builds (`.baked/repomap.db`), grouped for drawing. The server reads the database read-only, so a scan in progress never waits on it, and rebuilds its grouped copy when the database changes. `baked serve` opens the index 3 s after it starts and keeps it current in the background after file changes, agent edits, ended runs and Git `HEAD` moves ([repository graph](../guide.md#repository-graph)); with `repoMapBackgroundRefresh: false` the first request starts indexing when no chat or run has started it yet. The grouping is in `src/core/intelligence/code-graph-model.ts`; the terminal `/graph` view uses the same.
 
 | Method and path | Body or query | Result |
 | --- | --- | --- |
-| `POST /v1/graph` | `{expanded?: string[], tests?: boolean, typeEdges?: boolean, reveal?: path}` | `{state: "ready", indexing, view: GraphView}`; without an index `{state: "indexing" \| "empty", indexing}`, and `{state: "disabled"}` when `repoMap` is off. `indexing` is true while the index is still being built or refreshed, so clients poll |
+| `POST /v1/graph` | `{expanded?: string[], tests?: boolean, typeEdges?: boolean, reveal?: path}` | `{state: "ready", indexing, view: GraphView}`; without an index `{state: "indexing" \| "empty", indexing}`, and `{state: "disabled"}` when `repoMap` is off. `indexing` is true while the index is still being built or a background update runs, so clients poll; the view is the last index meanwhile |
 | `GET /v1/graph/file` | `?path=` | `{path, lines, symbols, exported, rank, key, test, usedBy, imports, usedByCount, importsCount, packages}`: the strongest links each way (`{path, weight, names}`, at most 8) and the external packages the file imports; 404 for a file that is not indexed |
 | `GET /v1/graph/link` | `?from=&to=` | `{from, to, weight, typeOnly, names, calls, callSites: [{caller, callee, line}], cochanges, mutual}`: why `from` depends on `to`; every imported name, up to 5 call sites, how often Git changed both together and whether `to` also depends on `from`. 404 when `from` does not import `to` |
 | `GET /v1/graph/search` | `?q=&limit=` | `{paths}`: indexed files whose path contains `q` (2 characters at least), best match first |

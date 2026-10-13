@@ -477,6 +477,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/graph"],
   },
   {
+    id: "index-background-refresh",
+    group: "Tools and code intelligence",
+    title: "Background index updates after file changes, edits, runs and Git checkouts",
+    tui: ["/graph: updating note; updates run while the terminal UI is open"],
+    cli: notNeeded("a one-shot run indexes once when it starts"),
+    api: ["/v1/graph: indexing while baked serve updates", "/v1/settings: baked-map page"],
+    desktop: ["project/graph: Updating chip", "settings/chat: Baked map page"],
+  },
+  {
     id: "work-progress",
     group: "Tools and code intelligence",
     title: "Progress of long waits: opening the project, indexing, starting a run",
