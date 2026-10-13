@@ -12,6 +12,7 @@ import { matchGitPrefix, register as registerGit } from "./git.js";
 import { register as registerGraph } from "./graph.js";
 import { register as registerHooks } from "./hooks.js";
 import { matchNavPrefix, register as registerNavigation } from "./navigation.js";
+import { register as registerPackages } from "./packages.js";
 import { register as registerProjects } from "./projects.js";
 import { matchSessionPrefix, register as registerSession } from "./session.js";
 import { register as registerStorage } from "./storage.js";
@@ -39,6 +40,7 @@ registerWorkflow(commandMap);
 registerProjects(commandMap);
 registerWatch(commandMap);
 registerArtifacts(commandMap);
+registerPackages(commandMap);
 commandMap.set("/commands", handleListCustomCommands);
 
 const prefixMatchers = [
@@ -659,6 +661,29 @@ const COMMAND_DEFS: CommandDef[] = [
     desc: "Browse & install skills",
     category: "Intelligence",
     tags: ["plugins", "extensions"],
+  },
+  {
+    cmd: "/packages",
+    ic: "skills",
+    desc: "Packages: install profiles, skills, workflows and gates from a local package into baked/",
+    category: "Intelligence",
+    tags: ["package", "install", "add", "profiles", "workflows", "gates"],
+  },
+  {
+    cmd: "/packages add",
+    ic: "skills",
+    desc: "Show a local package's plan and install it (asks first)",
+    category: "Intelligence",
+    tags: ["package", "install"],
+    hidden: true,
+  },
+  {
+    cmd: "/packages remove",
+    ic: "skills",
+    desc: "Remove an installed package's unchanged files (asks first)",
+    category: "Intelligence",
+    tags: ["package", "uninstall"],
+    hidden: true,
   },
   {
     cmd: "/tools",
