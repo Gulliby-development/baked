@@ -4,6 +4,7 @@
  * transitions. Definitions are data; nothing here runs a command or a model.
  */
 import { z } from "zod";
+import { MAX_CANDIDATES } from "../candidates.js";
 import { RelativePath, SafeId } from "../schemas.js";
 
 const Text = z.string().min(1).max(16000);
@@ -294,6 +295,11 @@ export const StageSchema = z.discriminatedUnion("type", [
       consumes: z.array(ContractId),
       produces: ContractId,
       effects: z.literal("workspace-write"),
+      /**
+       * Best-of-N (#642): each planned task is implemented this many times in separate worktrees
+       * and one candidate is selected. A run's `--candidates` overrides it; needs worktree execution.
+       */
+      candidates: z.number().int().min(2).max(MAX_CANDIDATES).optional(),
     })
     .strict(),
   z
@@ -404,6 +410,7 @@ export const PRESETS = [
   "quick-fix",
   "standard",
   "full",
+  "best-of-n",
   "spike",
   "review-only",
   "fix-ci",

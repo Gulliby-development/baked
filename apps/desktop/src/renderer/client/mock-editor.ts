@@ -127,6 +127,7 @@ const PRESETS = [
   "quick-fix",
   "standard",
   "full",
+  "best-of-n",
   "spike",
   "review-only",
   "fix-ci",

@@ -58,6 +58,8 @@ export interface PreRunRequest {
   policy?: unknown;
   worktree?: boolean;
   writers?: number;
+  /** Best-of-N candidates per planned task, as `--candidates`. */
+  candidates?: number;
   /** The run's OS sandbox, as `--sandbox`. */
   sandbox?: SandboxMode;
   autoApprovalConfirmation?: string;
@@ -256,6 +258,7 @@ function startRequest(config: AppConfig, request: PreRunRequest) {
       : {}),
     ...(request.worktree ? { executionMode: "worktree" as const } : {}),
     ...(request.writers !== undefined ? { maxConcurrentWriters: request.writers } : {}),
+    ...(request.candidates !== undefined ? { candidates: request.candidates } : {}),
     ...(request.sandbox ? { sandbox: request.sandbox } : {}),
   };
 }

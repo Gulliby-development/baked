@@ -57,7 +57,7 @@ The v1 stage kinds become seven stage types, each an existing v1 mechanism with 
 | Type | What it does | Produces | Effects | Outcomes | v1 kinds |
 | --- | --- | --- | --- | --- | --- |
 | `agent` | A read-only agent submits one typed result | the contract it names | none | passed | research, specify, plan, analyze |
-| `tasks` | Runs the approved task graph; the only stage that edits files | `implementation` | `workspace-write` | passed | task-graph |
+| `tasks` | Runs the approved task graph; the only stage that edits files. Optional `candidates` (2..8) runs each planned task as [best-of-N candidates](runtime.md#best-of-n-candidates) | `implementation` | `workspace-write` | passed | task-graph |
 | `check` | Runs its command gates on a frozen snapshot, no model | `gates` | none | passed, failed | checks |
 | `wait` | Runs its command gates every `intervalSeconds` until they pass or `timeoutMinutes` pass, no model | `gates` | none | passed, failed | (new) |
 | `approval` | A decision bound to the digest of the contracts it covers | `decision` | none | passed | approve |
@@ -134,6 +134,7 @@ Each preset is a file in `src/core/workflows/v2/presets/` and is checked: valid 
 | Quick fix | plan, approve, implement, checks | yes, after approval | task tests on implement, then typecheck, lint, tests | A small, well understood change |
 | Standard | research, specify, plan, analyze, approve, implement, checks, review | yes, after approval | as Quick fix, plus correctness review | The normal feature |
 | Full | the current SDD: Standard plus tests first, security review, convergence on every criterion and learn | yes, after approval | as Standard, security review when triggered | Large or risky changes |
+| Best-of-N | as Standard, in a worktree; the tasks stage has `candidates: 3` | yes, after approval | as Standard | Tasks where picking among several attempts pays for them ([best-of-N](runtime.md#best-of-n-candidates)) |
 | TDD | as Standard, with the test tasks run, checked red and approved before the code | yes, after approval | as Standard; the approved tests are read-only for code tasks | Correctness first ([tests first](runtime.md#tests-first)) |
 | Spike | research, report | never | none | Learn something and write it down |
 | Review only | review of an existing diff | never | correctness and security review | Check a diff against criteria |

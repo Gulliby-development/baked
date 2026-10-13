@@ -13,6 +13,7 @@ import {
 } from "./definition.js";
 import { type GateLibrary, loadGateLibrary } from "./library.js";
 import { type WorkflowLine, workflowLine } from "./line.js";
+import bestOfN from "./presets/best-of-n.json" with { type: "json" };
 import fixCi from "./presets/fix-ci.json" with { type: "json" };
 import full from "./presets/full.json" with { type: "json" };
 import harden from "./presets/harden.json" with { type: "json" };
@@ -26,7 +27,7 @@ import { upgradeWorkflowV1 } from "./upgrade.js";
 
 /** The presets shipped with BAKED, read only. "Duplicate as custom" copies one into baked/workflows. */
 export const builtinPresets: ReadonlyMap<string, WorkflowV2> = new Map(
-  [quick, quickFix, standard, full, spike, reviewOnly, fixCi, harden, tdd].map((raw) => {
+  [quick, quickFix, standard, full, bestOfN, spike, reviewOnly, fixCi, harden, tdd].map((raw) => {
     const preset = WorkflowV2Schema.parse(raw);
     return [preset.id, preset] as const;
   }),

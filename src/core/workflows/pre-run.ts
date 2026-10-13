@@ -62,7 +62,8 @@ export function plannedStages(prepared: PreparedStart): PlannedStage[] {
             profiles.map((id) => profileModel(prepared, id)).filter((m): m is string => m !== null),
           ),
         ];
-    return { id: stage.id, type: stage.type, models };
+    const candidates = stage.type === "tasks" ? (prepared.policy.candidates ?? 1) : 1;
+    return { id: stage.id, type: stage.type, models, ...(candidates > 1 ? { candidates } : {}) };
   });
 }
 
