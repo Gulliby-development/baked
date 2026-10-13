@@ -60,6 +60,7 @@ import {
   baselineRegression,
   CHECK_BASELINE_PATH,
   commandKey,
+  failureSignature,
   outputCounts,
   TEST_FILE,
 } from "../verification/output-counts.js";
@@ -2098,12 +2099,18 @@ export class WorkflowScheduler {
     signal: AbortSignal,
   ): Promise<void> {
     if (this.store.latestArtifact(runId, CHECK_BASELINE_PATH)) return;
-    const feature = policy.checks.filter((check) => check.scope === "feature");
-    if (!feature.length || this.baselineScaffold(runId, state)) return;
+    const scaffold = this.baselineScaffold(runId, state);
+    // On a scaffold only the required checks run, to learn which already fail (#934).
+    const feature = policy.checks.filter(
+      (check) => check.scope === "feature" && (!scaffold || check.required),
+    );
+    if (!feature.length) return;
     const fresh = this.store.tasks(runId).every((task) => task.status === "pending");
     const counts: Record<string, BaselineCount[]> = {};
     // The errors a whole-unit check already reports, so the task-end check does not feed them back.
     const diagnostics: Record<string, string[]> = {};
+    // The output of each required check that fails before any change, by command key.
+    const failures: Record<string, string> = {};
     if (fresh)
       for (const check of feature) {
         const root = runRoot(this.store.workspace, state);
@@ -2113,6 +2120,9 @@ export class WorkflowScheduler {
           root,
           runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
         );
+        if (result.status === "failed" && check.required && !result.truncated)
+          failures[commandKey(check)] = failureSignature(result.output, root);
+        if (scaffold) continue;
         if (result.status === "failed" && isWholeUnitCheck(check))
           diagnostics[commandKey(check)] = baselineKeys(result.output, root);
         if (result.truncated || result.status === "inconclusive") continue;
@@ -2124,8 +2134,36 @@ export class WorkflowScheduler {
         runId,
         "facts",
         CHECK_BASELINE_PATH,
-        canonical({ schemaVersion: 1, measured: fresh, counts, diagnostics }),
+        canonical({ schemaVersion: 1, measured: fresh, counts, diagnostics, failures }),
       ),
+    );
+  }
+  /**
+   * Stops the run when a required check fails exactly as it did before any change (#934): the
+   * plan changes nothing the failure depends on (md-site 00ae0ac0: `vite build` of a Bun CLI
+   * with no index.html), so a corrective task could only spend attempts on it.
+   */
+  private assertNotBaselineFailure(
+    runId: string,
+    state: RuntimeState,
+    check: Check,
+    output: string,
+    evidenceId: string,
+  ): void {
+    const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
+    if (!artifact) return;
+    const before = (
+      JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+        failures?: Record<string, string>;
+      }
+    ).failures?.[commandKey(check)];
+    const root = runRoot(this.store.workspace, state);
+    // A failure without output tells nothing about its cause, so it is never matched.
+    if (!before || before !== failureSignature(output, root)) return;
+    throw new WorkflowFault(
+      "RECOVERY_REQUIRED",
+      `baseline_failure: required check ${check.id} failed before any change and fails the same way now (evidence ${evidenceId}); nothing the run changed affects it. Fix the check or the project setup, or revise the plan, then resume.`,
+      { reason: "no_progress", checkId: check.id },
     );
   }
   /** The diagnostics each whole-unit check reported before the run, by command key. */
@@ -6507,6 +6545,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       if (result.status === "passed" && !regression) passedIds.push(check.id);
       if (result.status === "inconclusive" && check.required) inconclusive ??= check.id;
       if ((result.status === "failed" || regression) && check.required) {
+        if (!regression)
+          this.assertNotBaselineFailure(runId, state, check, result.output, result.evidenceId);
         failedIds.push(check.id);
         const task =
           state.graph?.tasks.find((t) => t.checkIds.includes(check.id)) ?? state.graph?.tasks[0];
@@ -8426,6 +8466,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         inconclusive ??= check.id;
         continue;
       }
+      if (!result.reason && !regression)
+        this.assertNotBaselineFailure(runId, state, check, result.output ?? "", result.evidenceId);
       if (!result.reason) failedIds.push(check.id);
       const task =
         state.graph?.tasks.find((t) => t.checkIds.includes(check.id)) ?? state.graph?.tasks[0];
