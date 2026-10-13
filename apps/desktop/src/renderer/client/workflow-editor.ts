@@ -78,6 +78,10 @@ export interface EditorView {
   estimate: string;
 }
 
+/** The most rounds a loop may run, and the most the editor recommends. */
+export const MAX_LOOP_ROUNDS = 50;
+export const RECOMMENDED_LOOP_ROUNDS = 5;
+
 export type EditorOp =
   | { op: "addGate"; target: GateTarget; gateId: string }
   | { op: "removeGate"; target: GateTarget; index: number }
@@ -88,6 +92,7 @@ export type EditorOp =
   | { op: "addWaitStage"; after: string }
   | { op: "removeWaitStage"; stageId: string }
   | { op: "changeField"; stageId: string; key: string; delta: -1 | 1 }
+  | { op: "setLoop"; id: string; rounds: number }
   | { op: "duplicate" };
 
 export type SaveReview =

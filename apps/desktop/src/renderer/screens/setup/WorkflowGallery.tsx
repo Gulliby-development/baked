@@ -25,7 +25,7 @@ import {
  * it, and links to watch it run or open it in the graph editor.
  */
 
-export type EditorTab = "flow" | "graph" | "stages";
+export type EditorTab = "flow" | "graph";
 
 const FAMILY_FILL: Record<Family, string> = {
   full: "bg-main",
