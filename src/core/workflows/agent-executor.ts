@@ -31,7 +31,12 @@ import { workspacePath } from "../specs/validate.js";
 import { withEditDiagnosticsMode } from "../tools/edit-diagnostics.js";
 import { buildTools } from "../tools/index.js";
 import { contentHash, deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
-import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
+import {
+  buildCheckEnv,
+  CheckRunner,
+  executeCheckCommand,
+  modelCheckOutput,
+} from "../verification/check-runner.js";
 import {
   probeTool,
   reproExecutables,
@@ -616,9 +621,11 @@ export class NativeAgentExecutor implements AgentExecutor {
                 result.status === "failed"
                   ? (request.attributeCheck?.(check, result.output) ?? null)
                   : null;
-              if (!own) return result;
+              // The full output stays in the evidence; the model gets a bounded view (#993).
+              const shown = { ...result, ...modelCheckOutput(result.output, result.evidenceId) };
+              if (!own) return shown;
               return {
-                ...result,
+                ...shown,
                 taskErrors: own,
                 note: `${check.id} analyzes the whole project and runs in the checks stage after the tasks are integrated; in this task's directory it also fails on files other tasks have not written yet. ${own.length ? "Only the errors in taskErrors are in this task's files: fix those and ignore the rest." : "None of its errors is in this task's files, so there is nothing to fix for it here."}`,
               };
@@ -771,7 +778,7 @@ export class NativeAgentExecutor implements AgentExecutor {
               );
               return {
                 fixed: outputs,
-                check: checked,
+                check: { ...checked, ...modelCheckOutput(checked.output, checked.evidenceId) },
                 ...(reverted.length
                   ? {
                       reverted,
