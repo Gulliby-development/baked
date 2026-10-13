@@ -17,6 +17,8 @@ test("a saved baked! comment starts a turn in the chat that watches the files", 
   const project = workspace.project("delta");
   const { page } = await launch({ script });
   await page.getByRole("article", { name: "delta" }).getByRole("button", { name: "Open" }).click();
+  // The project opens on its coordinator; start the chat once it has loaded.
+  await expect(page.getByRole("complementary", { name: "Coordinator brief" })).toBeVisible();
   await page
     .getByRole("navigation", { name: "Main" })
     .getByRole("link", { name: "New chat" })
