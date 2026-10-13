@@ -28,6 +28,7 @@ import {
   repairReviewsRequest,
 } from "../core/workflows/follow.js";
 import { issueStart } from "../core/workflows/issue-source.js";
+import { runRecording, withModelCalls } from "../core/workflows/model-recording.js";
 import { describeProposal, presetChoice } from "../core/workflows/preset-router.js";
 import {
   editProjectMemory,
@@ -289,7 +290,14 @@ export async function executeWorkflowCommand(
           ? { ...args, flags: { ...args.flags, budget: choice.budget } }
           : args,
       );
-      const policy = args.flags["approval-review"] === true ? withModelReview(base) : base;
+      const reviewed = args.flags["approval-review"] === true ? withModelReview(base) : base;
+      const policy = withModelCalls(reviewed, {
+        record: args.flags["record-model-calls"] === true,
+        replay:
+          typeof args.flags.replay === "string"
+            ? resolve(service.store.workspace, args.flags.replay)
+            : undefined,
+      });
       if (proposal)
         process.stderr.write(
           `preset: ${describeProposal(proposal)}${choice?.overridden ? `; running ${workflowId} as asked` : ""}\n`,
@@ -587,6 +595,15 @@ export async function executeWorkflowCommand(
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, text);
       return { runId, path, bytes: Buffer.byteLength(text), usage: true };
+    }
+    case "recording": {
+      const recording = runRecording(service.store, runId);
+      if (typeof args.flags.output !== "string")
+        return { runId, calls: recording.calls.length, recording };
+      const path = resolve(service.store.workspace, args.flags.output);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, `${JSON.stringify(recording)}\n`);
+      return { runId, path, calls: recording.calls.length };
     }
     case "report": {
       const markdown = runReport(service.store, runId);
