@@ -37,6 +37,8 @@ export interface ApprovalBody {
   }[];
   executionMode?: "inline" | "worktree";
   worktree?: { branch: string; userChangesInScope?: string[] };
+  /** Why auto approval left this plan to a person. */
+  autoApproval?: { declined?: string[] };
 }
 
 export interface ClarificationBody {

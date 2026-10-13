@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hashBytes } from "../src/core/specs/hash.js";
 import { newId } from "../src/core/workflows/store.js";
@@ -59,7 +59,7 @@ test("a rerun replaces spec files a finished run published and nobody edited", a
   expect(readFileSync(planPath(f.root), "utf-8")).toContain("Revised: none for fixture");
 });
 
-test("a rerun still stops when the user edited a published spec file", async () => {
+test("a rerun is refused at start when the user edited a published spec file", async () => {
   const f = fixture();
   const first = await f.start();
   await untilApproval(f, first.runId);
@@ -67,29 +67,35 @@ test("a rerun still stops when the user edited a published spec file", async () 
   writeFileSync(planPath(f.root), `${readFileSync(planPath(f.root), "utf-8")}\nMy own note\n`);
 
   f.control.revised = true;
-  const second = await f.start();
-  expect(await untilApproval(f, second.runId)).toMatchObject({ status: "blocked", reason: "input_changed" });
+  await expect(f.start()).rejects.toThrow(
+    "specs/fixture/ already holds specs/fixture/plan.md, which no finished run published",
+  );
   expect(readFileSync(planPath(f.root), "utf-8")).toContain("My own note");
-  const diagnostics = f.service.store
-    .artifacts(second.runId)
-    .filter((a) => a.kind === "diagnostic")
-    .map((a) => f.service.store.readArtifact(second.runId, a.id));
-  expect(diagnostics.join("\n")).toContain("File changed before publication: specs/fixture/plan.md");
 });
 
-test("a rerun does not take spec files from a run that is still open", async () => {
+test("a rerun is refused at start while another run owns the spec files", async () => {
   const f = fixture();
   const first = await f.start();
   await untilApproval(f, first.runId);
 
   f.control.revised = true;
-  const second = await f.start();
-  const blocked = await untilApproval(f, second.runId);
-  expect(blocked).toMatchObject({ status: "blocked", reason: "input_changed" });
-  const diagnostics = f.service.store
-    .artifacts(second.runId)
-    .filter((a) => a.kind === "diagnostic")
-    .map((a) => f.service.store.readArtifact(second.runId, a.id));
-  expect(diagnostics.join("\n")).toContain(`belongs to open run ${first.runId}`);
+  await expect(f.start()).rejects.toThrow(`specs/fixture/ belongs to open run ${first.runId}`);
   expect(readFileSync(planPath(f.root), "utf-8")).toContain("None for fixture");
+});
+
+test("a feature id whose specs folder already exists is refused before any model call", async () => {
+  const f = fixture();
+  mkdirSync(join(f.root, "specs", "fixture"), { recursive: true });
+  writeFileSync(join(f.root, "specs", "fixture", "spec.json"), "{}\n");
+  let calls = 0;
+  const execute = f.executor.execute.bind(f.executor);
+  f.executor.execute = async (request: ExecutionRequest) => {
+    calls++;
+    return execute(request);
+  };
+  await expect(f.start()).rejects.toMatchObject({
+    code: "INPUT_CHANGED",
+    details: { reason: "feature_id_taken", files: ["specs/fixture/spec.json"] },
+  });
+  expect(calls).toBe(0);
 });

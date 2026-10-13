@@ -80,6 +80,17 @@ The generic `planner` keeps its limits everywhere, so `quick-fix` and custom def
 - TUI: `/workflow quick [text]` opens the new-run form with the text and the `quick` workflow preselected. The form already lists presets, so `quick` is also selectable there.
 - Config: `workflows.quickWorkflow` (optional, a definition ID) lets a project point `baked quick` at its own copy, for example one with auto approval.
 
+### 7. Auto approval for quick
+
+The project policy's `workflows.policy.autoApproval` applies only to schema 1 workflows such as `sdd`. `quick` is a v2 preset with a human approval stage, so a quick run waits for a person even when the policy approves `sdd` plans automatically. Its approval request says so: `autoApproval.declined` holds the reason and the steps below. The TUI and desktop approval views show it under "Why this waits for you", and `baked workflow status RUN_ID` prints it with the request. To let quick tasks approve themselves:
+
+1. `baked workflow define quick-auto --from quick` writes `baked/workflows/quick-auto.json`.
+2. Set its `approve` stage to `"decision": "auto"` and add the `autoApproval` limits. In the workflow editor (`/workflow edit quick-auto`, or the desktop workflows screen), switching the stage to auto adds the default limits: 3 tasks, 5 files under `src/**`, `tests/**` and `docs/**`, no deletions, no new dependencies, 200,000 tokens. Saving the limits asks you to type the start of their hash.
+3. Set `workflows.quickWorkflow` to `quick-auto` in `.baked/config.json`, so `baked quick` runs the copy.
+4. Start with `baked quick TEXT --confirm-auto-approval HASH`. Without the hash, the start is refused, and the refusal names the limits and the hash.
+
+A plan outside the limits still waits for a person.
+
 ## Expected effect
 
 On the trial feature the run drops research (140k), specify, analyze (part of 28k) and converge (127k), and replaces the planner with a scoped quick planner. Implementation and review are unchanged in this design; their cost is the router's and the implementer budget's job. The trial ran the v1 `sdd` flow, which has converge; `standard` does not. The expected total for the same feature is roughly 400k against 664k, which is the default `maxTotalTokens`, so a run on the default policy may stop on its budget and need `extend`. This is an estimate; a measured run with `baked quick` on a small task is the acceptance for the cost goal.
