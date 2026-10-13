@@ -2807,10 +2807,11 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             Object.fromEntries(inherited.map((path) => [path, earlier.get(path) ?? null])),
           )
         : "";
+      const focus = correctionFocus(this.store, runId, state, task);
       const preloaded = await preloadTaskFiles(
         root,
-        task.writes,
-        `${task.title}\n${task.description}`,
+        focus.files.length ? focusFirst(task.writes, focus.files) : task.writes,
+        `${task.title}\n${task.description}\n${focus.symbols.join(" ")}`,
       );
       // The source manifest cannot see git-ignored files (a docs directory in .gitignore), but the
       // effect journal recorded every file this task changed, so it counts as well.
@@ -2863,6 +2864,15 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
               : {}),
             unresolvedMeans: UNRESOLVED_MEANING,
             ...this.previousAttempt(runId, task.id),
+            ...(focus.files.length
+              ? {
+                  correctionFocus: {
+                    files: focus.files,
+                    symbols: focus.symbols,
+                    note: "The findings this task corrects point at these files and symbols; they come first in taskFiles. Start the fix there and read the other written files only when the fix needs them.",
+                  },
+                }
+              : {}),
             ...(inherited.length
               ? {
                   earlierEdits: {
@@ -3337,8 +3347,12 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           state,
           policy,
           entry.profile,
-          earlierEdits && entry.extra && typeof entry.extra === "object"
-            ? { ...entry.extra, earlierEdits }
+          entry.extra && typeof entry.extra === "object"
+            ? {
+                ...entry.extra,
+                ...(await this.correctionContext(runId, state, root, task)),
+                ...(earlierEdits ? { earlierEdits } : {}),
+              }
             : entry.extra,
           signal,
           task,
@@ -4011,6 +4025,39 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       return false;
     }
     return true;
+  }
+  /**
+   * A corrective task in its own worktree gets the files its findings point at, preloaded in
+   * its worktree, as a single-writer run gives them; planned tasks of a batch are unchanged.
+   */
+  private async correctionContext(
+    runId: string,
+    state: RuntimeState,
+    root: string,
+    task: Task,
+  ): Promise<Record<string, unknown>> {
+    const focus = correctionFocus(this.store, runId, state, task);
+    if (!focus.files.length) return {};
+    const preloaded = await preloadTaskFiles(
+      root,
+      focusFirst(task.writes, focus.files).filter((w) => focus.files.includes(w.path)),
+      `${task.title}\n${task.description}\n${focus.symbols.join(" ")}`,
+    );
+    return {
+      ...(preloaded
+        ? {
+            taskFiles: {
+              content: preloaded,
+              note: "The files the findings this task corrects point at, as the read tool shows them. Edit them directly; read the other written files only when the fix needs them.",
+            },
+          }
+        : {}),
+      correctionFocus: {
+        files: focus.files,
+        symbols: focus.symbols,
+        note: "The findings this task corrects point at these files and symbols. Start the fix there and read the other written files only when the fix needs them.",
+      },
+    };
   }
   private async runTaskCheck(
     runId: string,
@@ -5671,6 +5718,49 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       this.store.transition(runId, "completed");
     });
   }
+}
+
+/**
+ * Where a corrective task's findings point (#714): the files they name (the finding's file, the
+ * files a failing check's output names, paths in the claim or fix) and their symbols. A
+ * correction may write every file of the tasks it corrects, and read them all again from
+ * scratch when nothing says which one the finding is about.
+ */
+export function correctionFocus(
+  store: WorkflowStore,
+  runId: string,
+  state: RuntimeState,
+  task: Task,
+): { files: string[]; symbols: string[] } {
+  if (task.origin === "planned" || !task.findingIds.length) return { files: [], symbols: [] };
+  const files: string[] = [];
+  const symbols: string[] = [];
+  const add = (list: string[], value: string | null | undefined): void => {
+    if (value && !list.includes(value)) list.push(value);
+  };
+  for (const finding of store.findings(runId)) {
+    if (!task.findingIds.includes(finding.id)) continue;
+    const body = JSON.parse(finding.body_json) as {
+      file?: string | null;
+      symbol?: string | null;
+      claim?: string;
+      suggestedFix?: string;
+    };
+    add(files, body.file);
+    add(symbols, body.symbol);
+    for (const path of state.repairScope?.[finding.id] ?? []) add(files, path);
+    for (const path of pathsInOutput(`${body.claim ?? ""}\n${body.suggestedFix ?? ""}`, [task]))
+      add(files, path);
+  }
+  return { files: files.filter((path) => task.writes.some((w) => w.path === path)), symbols };
+}
+/** The writes with the given paths first, in their order, then the rest in plan order. */
+export function focusFirst<T extends { path: string }>(writes: readonly T[], first: string[]): T[] {
+  const rank = (path: string): number => {
+    const index = first.indexOf(path);
+    return index === -1 ? first.length : index;
+  };
+  return [...writes].sort((a, b) => rank(a.path) - rank(b.path));
 }
 
 /** The sized attempt cap of a task; a correction uses the cap of the task it corrects. */
