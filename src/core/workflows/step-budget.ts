@@ -207,6 +207,8 @@ export interface AttemptStepUsage {
   cacheWriteTokens?: number | null;
   toolCalls: number;
   compactedBytes: number;
+  /** Model requests behind the step, when the provider reports them (Codex app-server). */
+  modelRequests?: number;
 }
 
 export interface AttemptUsageRecord {
@@ -219,6 +221,8 @@ export interface AttemptUsageRecord {
   stopReason: "submitted" | "steps" | "tokens" | "no_submission" | "error" | "aborted";
   finalizedBy: FinalizeReason | null;
   totalTokens: number;
+  /** Sum of the steps' model requests; absent when the provider reports none. */
+  modelRequests?: number;
   steps: AttemptStepUsage[];
 }
 
@@ -226,6 +230,14 @@ export interface StepLike {
   usage: StepUsageLike;
   finishReason?: string;
   toolCalls: readonly unknown[];
+  providerMetadata?: unknown;
+}
+
+/** Model requests a step cost, when the provider reports them (Codex app-server `responses`). */
+export function stepModelRequests(step: Pick<StepLike, "providerMetadata">): number | undefined {
+  const requests = (step.providerMetadata as { codex?: { responses?: unknown } } | undefined)?.codex
+    ?.responses;
+  return typeof requests === "number" ? requests : undefined;
 }
 
 /**
@@ -410,6 +422,8 @@ export class AttemptStepController {
   ): AttemptUsageRecord {
     const totalTokens = this.consumed(steps);
     const maxTokens = this.tokenCap(steps);
+    const requests = steps.map(stepModelRequests);
+    const reported = requests.filter((r): r is number => r !== undefined);
     return {
       schemaVersion: 1,
       profileId: meta.profileId,
@@ -427,6 +441,7 @@ export class AttemptStepController {
               : "no_submission",
       finalizedBy: this.finalizedBy,
       totalTokens,
+      ...(reported.length ? { modelRequests: reported.reduce((a, b) => a + b, 0) } : {}),
       steps: steps.map((step, index) => ({
         inputTokens: step.usage.inputTokens ?? null,
         outputTokens: step.usage.outputTokens ?? null,
@@ -434,6 +449,7 @@ export class AttemptStepController {
         cacheWriteTokens: step.usage.inputTokenDetails?.cacheWriteTokens ?? null,
         toolCalls: step.toolCalls.length,
         compactedBytes: this.compactedBytes[index] ?? 0,
+        ...(requests[index] !== undefined ? { modelRequests: requests[index] } : {}),
       })),
     };
   }
