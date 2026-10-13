@@ -34,7 +34,7 @@ The bench loop tunes BAKED by building small, useful apps with it, round after r
 
   Installing a server needs its toolchain (`go`, `cargo`, `npm`, `pip3`) on `PATH`; the launch script adds the toolchain directories.
 - **Lanes.** `round.maxConcurrentRuns` in `config.json` is 3 from round 7 (it was 2). If builds or tests time out because the PC is saturated, the next round goes back to 2.
-- **Difficulty.** A round without BAKED-side problems (no blocked runs, no operator actions beyond infrastructure resumes, no new P1 findings) raises the difficulty by one for the next round; a round with problems keeps it.
+- **Difficulty.** A round without BAKED-side problems (no blocked runs, no operator actions beyond infrastructure resumes, no new P1 findings) raises the difficulty by one for the next round; a round with problems keeps it. The levels run from 1 (a single-purpose tool, about 6 planned tasks) to 5 (a small service built as an initiative of several runs, about 30 tasks); the loop never goes above level 5. The ladder with sizes and expected token costs is in `bench/loop/roles/ideator.md`.
 - **Publishing.** CI templates in `bench/loop/templates/ci/`: `bun`, `vite`, `python`, `go`, `dotnet`, `rust`, `java`, all on `ubuntu-latest`, `windows-latest` and `macos-latest`.
 
 - **Model noise.** When no other experiment is planned, one new app per round runs its review stages on another vendor's model (`review.rotateReviewer`), so a single reviewer's habits do not pass for BAKED behavior. Cross-model re-runs are capped by `confirm.maxTokensPerRound` (3M) and count toward the round budget.

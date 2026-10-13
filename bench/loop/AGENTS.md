@@ -182,7 +182,7 @@ A key missing from the loop root's `config.json` (the file is copied once and ne
 - `runs.referenceModel` is the model every control-app run uses, every round (`provider/model`). `null` means "the default model configured on the PC at loop start"; phase 0 resolves it once and writes it here, and it changes only by the owner's edit.
 - `runs.rotateNewAppProviders`: new apps cycle through the other configured providers (one provider per app, recorded per run), so BAKED keeps being tested on more than one provider. Estimates must stay provider-agnostic; a provider that costs much more is a finding, not a reason to tune constants to it.
 - `round.maxConcurrentRuns` is the number of build lanes: runs of apps (new, update, control) that execute at the same time. It is 3 from round 7 (2 before). If builds or tests start timing out because the PC is saturated, drop back to 2 for the next round and say so in the report; the owner changes the default in `config.json`, the orchestrator never edits it.
-- `round.difficulty` is the ideator's starting difficulty level (1-4). The current level lives in `state.json` (`difficulty`); the orchestrator raises it there under the [difficulty rule](#difficulty-rule) and [Stop conditions](#stop-conditions) and says so in the round report. The orchestrator never edits `config.json`.
+- `round.difficulty` is the ideator's starting difficulty level (1-5). The current level lives in `state.json` (`difficulty`); the orchestrator raises it there under the [difficulty rule](#difficulty-rule) and [Stop conditions](#stop-conditions) and says so in the round report. The orchestrator never edits `config.json`.
 - `confirm.crossModel` is the model that re-runs a run from its approved plan to tell a BAKED problem from a model's habit (see [Findings and model noise](#findings-and-model-noise)). `null` means "the configured model of another vendor than the run's own": a run on `codex/...` confirms on `claude-code/opus`, a run on `claude-code/...` confirms on the codex model. `confirm.maxTokensPerRound` caps these re-runs; they count toward `roundRunTokens`.
 - `review.rotateReviewer`: when no other experiment is planned, the round's experiment is one new app on the round's default provider whose review stages run on another vendor's model (see [Findings and model noise](#findings-and-model-noise)).
 - `retro.everyRounds` and `retro.maxChangesPerRetro` set how often phase 11 runs and how many changes one retro may make (see [Improving the loop itself](#improving-the-loop-itself)).
@@ -275,7 +275,7 @@ Until round 6 the loop built only Python and TypeScript (Bun) projects. From rou
 
 ## Difficulty rule
 
-The orchestrator keeps the current difficulty in `state.json`. After each round it applies this standing rule (owner's decision, round 6): a round without BAKED-side problems raises `state.difficulty` by one for the next round (at most 4); a round with problems keeps it. A round has BAKED-side problems when any of these holds: a run ended `blocked`, an operator action beyond infrastructure resumes was needed (an extension, an answer, a recovery, a reroute, a manual approval outside auto-approval, a cancel), or the analysts filed a new P1 (or P0) finding. Infrastructure resumes (a provider outage, a reboot, a rate limit) do not count. The report states the verdict and the new level. This rule is in addition to `stop.maxRoundsWithoutProgress` below.
+The orchestrator keeps the current difficulty in `state.json`. After each round it applies this standing rule (owner's decision, round 6): a round without BAKED-side problems raises `state.difficulty` by one for the next round (at most 5; the loop never goes above level 5, owner's decision of 2026-10-13); a round with problems keeps it. A round has BAKED-side problems when any of these holds: a run ended `blocked`, an operator action beyond infrastructure resumes was needed (an extension, an answer, a recovery, a reroute, a manual approval outside auto-approval, a cancel), or the analysts filed a new P1 (or P0) finding. Infrastructure resumes (a provider outage, a reboot, a rate limit) do not count. The report states the verdict and the new level. This rule is in addition to `stop.maxRoundsWithoutProgress` below.
 
 ## Updates to existing projects
 
@@ -361,7 +361,7 @@ In `approve-per-round` mode the publish gate never blocks the loop: a batch wait
 - A finding is a security issue in BAKED itself (report it privately to the owner; don't file a public detail if the repo becomes public).
 
 **Change course instead of stopping:**
-- The [difficulty rule](#difficulty-rule) after every round, and `maxRoundsWithoutProgress` rounds in a row without improvement (no new P0/P1 findings, control metrics flat within ±10%, every new app passing): raise difficulty for the next round (see the ideator's difficulty ladder) and say so in the report. Easy rounds teach nothing.
+- The [difficulty rule](#difficulty-rule) after every round, and `maxRoundsWithoutProgress` rounds in a row without improvement (no new P0/P1 findings, control metrics flat within ±10%, every new app passing): raise difficulty for the next round, never above level 5 (see the ideator's difficulty ladder) and say so in the report. Easy rounds teach nothing.
 
 ## Reporting to the owner
 
