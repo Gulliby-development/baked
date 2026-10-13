@@ -286,6 +286,10 @@ interface QueuedRequest {
 }
 
 /** A provider asking to wait longer than this is not waited for once a route has fallback models. */
+/** How often rejected approvals may send one run back to revise before a rejection only pauses it. */
+const MAX_REJECTION_REVISIONS = 3;
+const REJECTION_NOTE =
+  "A person rejected the approval of the previous spec and plan with this explanation. Revise the spec, the plan and the tasks so they follow it; where it contradicts an assumption, the explanation wins.";
 const LONG_RETRY_AFTER_MS = 30_000;
 /** The implementer's own list of what it left unfinished, for the blocked task's message. */
 /**
@@ -896,6 +900,11 @@ export class WorkflowScheduler {
               break;
             }
             case "approve": {
+              if (!state.approvalRoot && this.reviseAfterRejection(runId, state, v2)) {
+                advance = false;
+                rerouted = v2 !== null;
+                break;
+              }
               const analyzed =
                 state.analysisPassed || (v2 !== null && !produces(v2.definition, "analysis"));
               if (!analyzed || !state.spec || !state.graph || !state.plan)
@@ -5505,6 +5514,38 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     return v2
       ? v2.definition.stages.map((s) => ({ id: s.id, kind: stageKind(s) ?? s.type }))
       : WorkflowSchema.parse(JSON.parse(this.store.run(runId).definition_json)).stages;
+  }
+  /**
+   * A person rejected the last approval with an explanation (envguard 45495079: "implementing the
+   * CLI and its tests is in scope"). Resuming must not request the same package again: the run goes
+   * back to specify, or to plan when the definition has no specify stage, with the explanation as
+   * correction input, and the later stages run again. Each rejection is used once, at most
+   * MAX_REJECTION_REVISIONS times per run; a v2 run also stays within its stage visit limit.
+   */
+  private reviseAfterRejection(
+    runId: string,
+    state: RuntimeState,
+    v2: { definition: WorkflowV2 } | null,
+  ): boolean {
+    const last = this.store
+      .requests(runId)
+      .filter((r) => r.kind === "approval")
+      .at(-1);
+    if (last?.status !== "rejected" || state.revisedRejections.includes(last.id)) return false;
+    if (state.revisedRejections.length >= MAX_REJECTION_REVISIONS) return false;
+    const answer = last.answer_json
+      ? (JSON.parse(last.answer_json) as { explanation?: unknown })
+      : {};
+    const explanation = typeof answer.explanation === "string" ? answer.explanation.trim() : "";
+    if (!explanation) return false;
+    const stages = this.stageKinds(runId, v2);
+    let target = stages.findIndex((s) => s.kind === "specify");
+    if (target < 0) target = stages.findIndex((s) => s.kind === "plan");
+    if (target < 0 || !this.moveTo(state, stages, target, v2)) return false;
+    state.revisedRejections.push(last.id);
+    state.analysisPassed = false;
+    state.prompt += `\n${REJECTION_NOTE}\n${canonical({ explanation })}`;
+    return true;
   }
   /**
    * Sends the run back to an earlier stage outside the definition's transitions. A v2 run counts
