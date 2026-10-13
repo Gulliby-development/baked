@@ -646,7 +646,9 @@ export class NativeAgentExecutor implements AgentExecutor {
                       const result = await runFixer(wholeUnitFixerCommand(fix, codePaths));
                       outputs.push(`${codePaths.join(", ")}: exit ${String(result.exitCode)}`);
                     };
-                    await codePaths.reduceRight<() => Promise<unknown>>(
+                    // Distinct paths: calls on one path wait for each other, so a nested
+                    // second call on the same path would wait for itself.
+                    await [...new Set(codePaths)].reduceRight<() => Promise<unknown>>(
                       (inner, path) => () => guard.execute("edit_file", { path }, inner),
                       once,
                     )();

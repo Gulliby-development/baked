@@ -376,6 +376,10 @@ export type Stage = z.infer<typeof StageSchema>;
 /** The gate bindings a stage runs itself: check, review and wait stages. */
 export const stageGates = (stage: Stage): GateBinding[] => ("gates" in stage ? stage.gates : []);
 
+/** The most rounds a loop may run; the editor recommends RECOMMENDED_LOOP_ROUNDS or fewer. */
+export const MAX_LOOP_ROUNDS = 50;
+export const RECOMMENDED_LOOP_ROUNDS = 5;
+
 export const TransitionSchema = z
   .object({
     id: SafeId,
@@ -390,7 +394,7 @@ export const TransitionSchema = z
     gates: z.array(GateBinding).max(12),
     /** Marks a back edge. Every cycle must contain one. */
     loop: z
-      .object({ maxIterations: z.number().int().min(1).max(5) })
+      .object({ maxIterations: z.number().int().min(1).max(MAX_LOOP_ROUNDS) })
       .strict()
       .optional(),
   })
