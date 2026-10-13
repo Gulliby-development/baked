@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,6 +36,10 @@ describe.skipIf(!detection.available || process.platform === "win32")("OS sandbo
     workspace = mkdtempSync(join(tmpdir(), "baked-sandbox-ws-"));
     mkdirSync(join(workspace, ".git", "hooks"), { recursive: true });
     writeFileSync(join(workspace, ".git", "config"), "[core]\n");
+    const submodule = join(workspace, ".git", "modules", "x");
+    mkdirSync(join(submodule, "hooks"), { recursive: true });
+    writeFileSync(join(submodule, "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(submodule, "config"), "[core]\n");
     // Outside every temp directory, so neither backend's temp allowance covers it.
     mkdirSync(join(root, "node_modules"), { recursive: true });
     outside = mkdtempSync(join(root, "node_modules", ".baked-sandbox-test-"));
@@ -101,6 +106,61 @@ describe.skipIf(!detection.available || process.platform === "win32")("OS sandbo
     expect(existsSync(join(workspace, ".git", "hooks", "pre-commit"))).toBe(false);
   });
 
+  test("keeps submodule Git config and hooks read-only", async () => {
+    const config = await run("sh", ["-c", "echo '[core] fsmonitor = evil' >> .git/modules/x/config"]);
+    expect(config.exitCode).not.toBe(0);
+    expect(readFileSync(join(workspace, ".git", "modules", "x", "config"), "utf8")).toBe("[core]\n");
+    const hook = await run("sh", ["-c", "echo evil > .git/modules/x/hooks/post-checkout"]);
+    expect(hook.exitCode).not.toBe(0);
+    expect(existsSync(join(workspace, ".git", "modules", "x", "hooks", "post-checkout"))).toBe(false);
+  });
+
+  test("a worktree with gitWrite commits, but its Git config, hooks and .git file stay read-only", async () => {
+    const base = mkdtempSync(join(tmpdir(), "baked-sandbox-git-"));
+    try {
+      const repo = join(base, "repo");
+      const tree = join(base, "tree");
+      const git = (cwd: string, ...args: string[]) => {
+        const result = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], {
+          cwd,
+          encoding: "utf8",
+        });
+        if (result.status !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
+        return result.stdout.trim();
+      };
+      mkdirSync(repo);
+      git(repo, "init", "-q");
+      git(repo, "commit", "-q", "--allow-empty", "-m", "base");
+      git(repo, "worktree", "add", "-q", "-b", "task", tree);
+      const common = join(repo, ".git");
+      const commit = ["-c", "git -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m sandboxed"];
+      const over = { writable: [tree], workspaces: [tree] };
+      // Without gitWrite the common directory is read-only (on macOS the temp directory is
+      // writable by design, so this holds on Linux only).
+      if (process.platform === "linux") {
+        const refused = await run("sh", commit, over, tree);
+        expect(refused.exitCode).not.toBe(0);
+      }
+      const committed = await run("sh", commit, { ...over, gitWrite: true }, tree);
+      expect(committed.output).toBe("");
+      expect(committed.exitCode).toBe(0);
+      expect(git(tree, "log", "-1", "--format=%s")).toBe("sandboxed");
+      const hook = await run("sh", ["-c", `echo evil > '${join(common, "hooks", "x")}'`], { ...over, gitWrite: true }, tree);
+      expect(hook.exitCode).not.toBe(0);
+      expect(existsSync(join(common, "hooks", "x"))).toBe(false);
+      const configBefore = readFileSync(join(common, "config"), "utf8");
+      const config = await run("sh", ["-c", `echo '[core] fsmonitor = evil' >> '${join(common, "config")}'`], { ...over, gitWrite: true }, tree);
+      expect(config.exitCode).not.toBe(0);
+      expect(readFileSync(join(common, "config"), "utf8")).toBe(configBefore);
+      const gitFile = readFileSync(join(tree, ".git"), "utf8");
+      const redirect = await run("sh", ["-c", "echo 'gitdir: /tmp/evil' > .git"], { ...over, gitWrite: true }, tree);
+      expect(redirect.exitCode).not.toBe(0);
+      expect(readFileSync(join(tree, ".git"), "utf8")).toBe(gitFile);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   test("hides credential stores even when the home directory is writable", async () => {
     const over = { writable: [home], workspaces: [] };
     const visible = await run("cat", ["visible.txt"], over, home);
@@ -143,5 +203,41 @@ describe.skipIf(!detection.available || process.platform === "win32")("OS sandbo
       left = scopedProcesses(marker);
     }
     expect(left ?? []).toEqual([]);
+  });
+
+  // The `security` tool asks the keychain daemon, which reads the keychain outside the sandbox.
+  describe.skipIf(process.platform !== "darwin")("macOS keychain", () => {
+    const service = `baked-sandbox-test-${process.pid}`;
+    const find = ["find-generic-password", "-s", service, "-w"];
+    let stored = false;
+
+    beforeAll(() => {
+      const env = { ...process.env, HOME: previousHome };
+      stored =
+        spawnSync("security", ["add-generic-password", "-s", service, "-a", "baked", "-w", "s3cret-value"], { env, timeout: 10_000 }).status === 0 &&
+        spawnSync("security", find, { env: buildSafeEnv(), timeout: 10_000 }).status === 0;
+    });
+
+    afterAll(() => {
+      spawnSync("security", ["delete-generic-password", "-s", service], {
+        env: { ...process.env, HOME: previousHome },
+        timeout: 10_000,
+      });
+    });
+
+    test("the security tool cannot read the keychain without network", async () => {
+      // The item must be readable outside the sandbox first, or the denial proves nothing.
+      if (!stored) return;
+      const result = await run("security", find);
+      expect(result.exitCode).not.toBe(0);
+      expect(result.output).not.toContain("s3cret-value");
+    });
+
+    test("TLS still works when the network is allowed", async () => {
+      const reachable = spawnSync("curl", ["-sI", "--max-time", "10", "https://example.com"]).status === 0;
+      if (!reachable) return;
+      const result = await run("curl", ["-sI", "--max-time", "10", "https://example.com"], { network: true });
+      expect(result.exitCode).toBe(0);
+    });
   });
 });

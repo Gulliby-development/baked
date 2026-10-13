@@ -473,7 +473,7 @@ export class NativeAgentExecutor implements AgentExecutor {
               executables: probeable,
               generated: generatedPaths(policy),
               signal: request.signal,
-              sandbox: runSandbox(policy, root),
+              sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
             });
             // Each probe is evidence of how the repair went, so it is journaled with the attempt (#454).
             try {
@@ -543,7 +543,9 @@ export class NativeAgentExecutor implements AgentExecutor {
                       env: buildCheckEnv(check),
                       timeoutMs: check.timeoutMs,
                       signal: request.signal,
-                      sandbox: runSandbox(policy, root),
+                      sandbox: runSandbox(policy, root, {
+                        gitWrite: root !== this.store.workspace,
+                      }),
                     });
                     outputs.push(`${path}: exit ${String(result.exitCode)}`);
                   });

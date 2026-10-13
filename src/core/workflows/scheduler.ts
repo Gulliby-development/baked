@@ -1925,7 +1925,12 @@ export class WorkflowScheduler {
     if (fresh)
       for (const check of feature) {
         const root = runRoot(this.store.workspace, state);
-        const result = await this.checks.measure(check, signal, root, runSandbox(policy, root));
+        const result = await this.checks.measure(
+          check,
+          signal,
+          root,
+          runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
+        );
         if (result.status === "failed" && isWholeUnitCheck(check))
           diagnostics[commandKey(check)] = baselineKeys(result.output, root);
         if (result.truncated || result.status === "inconclusive") continue;
@@ -1974,7 +1979,12 @@ export class WorkflowScheduler {
       const errors: string[] = [];
       const results: { checkId: string; status: string; errors: string[] }[] = [];
       for (const check of checks) {
-        const result = await this.checks.measure(check, signal, root, runSandbox(policy, root));
+        const result = await this.checks.measure(
+          check,
+          signal,
+          root,
+          runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
+        );
         const found =
           result.status === "failed"
             ? taskErrors(result.output, {
@@ -5111,7 +5121,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
                   env: buildCheckEnv(check),
                   timeoutMs: check.timeoutMs,
                   signal,
-                  sandbox: runSandbox(policy, root),
+                  sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
                 },
               );
               const after = fileHash(target);
@@ -5373,7 +5383,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
                       env: buildCheckEnv(check),
                       timeoutMs: Math.max(1000, Math.min(check.timeoutMs, timeLeftMs)),
                       signal,
-                      sandbox: runSandbox(policy, root),
+                      sandbox: runSandbox(policy, root, {
+                        gitWrite: root !== this.store.workspace,
+                      }),
                     },
                   );
                   if (outcome.timedOut) return { status: "timeout" };
@@ -5873,7 +5885,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         executables,
         generated: generatedPaths(policy),
         signal,
-        sandbox: runSandbox(policy, runRoot(this.store.workspace, state)),
+        sandbox: runSandbox(policy, runRoot(this.store.workspace, state), {
+          gitWrite: Boolean(state.worktree),
+        }),
       });
     // The workspace the run started from had no source code: the reviewers judge the whole program.
     const greenfield = this.baselineScaffold(runId, state);

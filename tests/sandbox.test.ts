@@ -36,27 +36,40 @@ import { parseWorkflowArgs } from "../src/headless/workflow-parse.js";
 
 const HOME = "/home/u";
 
-/** A host whose file system holds `paths`; `links` maps a symlink to its real path. */
+/**
+ * A host whose file system holds the directories `paths` and the regular `files` with their
+ * content; `links` maps a symlink to its real path.
+ */
 function host(
   platform: NodeJS.Platform,
   paths: string[],
   links: Record<string, string> = {},
   env: Record<string, string | undefined> = {},
   home = HOME,
+  files: Record<string, string> = {},
 ): SandboxHost {
   const present = new Set(paths);
+  const isFile = (path: string) => Object.hasOwn(files, path);
   return {
     platform,
     home,
     env,
-    exists: (path) => present.has(path) || path in links,
+    exists: (path) => present.has(path) || path in links || isFile(path),
     isDirectory: (path) => present.has(path),
     realpath: (path) => {
       const linked = links[path];
       if (linked) return linked;
-      if (present.has(path)) return path;
+      if (present.has(path) || isFile(path)) return path;
       throw new Error(`ENOENT: ${path}`);
     },
+    readFile: (path) => files[path] ?? null,
+    list: (dir) => [
+      ...new Set(
+        [...present, ...Object.keys(files)]
+          .filter((path) => path.startsWith(`${dir}/`))
+          .map((path) => path.slice(dir.length + 1).split("/")[0] ?? ""),
+      ),
+    ],
   };
 }
 
@@ -168,6 +181,157 @@ describe("sandbox profile", () => {
   });
 });
 
+describe("Git state", () => {
+  const submodules = (platform: NodeJS.Platform) =>
+    host(
+      platform,
+      [
+        "/w",
+        "/w/.git",
+        "/w/.git/hooks",
+        "/w/.git/modules",
+        "/w/.git/modules/lib",
+        "/w/.git/modules/lib/hooks",
+        "/w/.git/modules/lib/modules",
+        "/w/.git/modules/lib/modules/inner",
+        "/w/.git/modules/lib/modules/inner/hooks",
+        "/w/.git/modules/vendor",
+        "/w/.git/modules/vendor/ui",
+      ],
+      {},
+      {},
+      HOME,
+      {
+        "/w/.git/config": "",
+        "/w/.git/modules/lib/HEAD": "",
+        "/w/.git/modules/lib/config": "",
+        "/w/.git/modules/lib/modules/inner/HEAD": "",
+        "/w/.git/modules/lib/modules/inner/config": "",
+        "/w/.git/modules/vendor/ui/HEAD": "",
+        "/w/.git/modules/vendor/ui/config": "",
+      },
+    );
+
+  test("submodule configs and hooks stay read-only, nested and slashed names included", () => {
+    const linux = sandboxProfile(request(), "/w", submodules("linux"));
+    expect(linux.protectDirs).toEqual([
+      "/w/.git/hooks",
+      "/w/.git/modules/lib/hooks",
+      "/w/.git/modules/lib/modules/inner/hooks",
+    ]);
+    expect(linux.protectFiles).toEqual([
+      "/w/.git/config",
+      "/w/.git/modules/lib/config",
+      "/w/.git/modules/lib/modules/inner/config",
+      "/w/.git/modules/vendor/ui/config",
+    ]);
+    // Seatbelt also denies the hooks directory a submodule does not have yet.
+    const mac = sandboxProfile(request(), "/w", submodules("darwin"));
+    expect(mac.protectDirs).toContain("/w/.git/modules/vendor/ui/hooks");
+    expect(mac.protectDirs.at(-1)).toBe("/w/.baked");
+  });
+
+  const worktree = (platform: NodeJS.Platform) =>
+    host(
+      platform,
+      [
+        "/r",
+        "/r/.git",
+        "/r/.git/hooks",
+        "/r/.git/modules",
+        "/r/.git/modules/lib",
+        "/r/.git/worktrees",
+        "/r/.git/worktrees/t1",
+        "/r/.git/worktrees/other",
+        "/wt",
+      ],
+      {},
+      {},
+      HOME,
+      {
+        "/wt/.git": "gitdir: ../r/.git/worktrees/t1\n",
+        "/r/.git/config": "",
+        "/r/.git/HEAD": "",
+        "/r/.git/index": "",
+        "/r/.git/modules/lib/HEAD": "",
+        "/r/.git/modules/lib/config": "",
+        "/r/.git/worktrees/t1/HEAD": "",
+        "/r/.git/worktrees/t1/commondir": "../..\n",
+        "/r/.git/worktrees/t1/gitdir": "/wt/.git\n",
+        "/r/.git/worktrees/other/commondir": "../..\n",
+      },
+    );
+  const inWorktree = (over: Partial<SandboxRequest> = {}) =>
+    request({ writable: ["/wt"], workspaces: ["/wt"], ...over });
+
+  test("a worktree protects its .git file and the common directory's config and hooks", () => {
+    const profile = sandboxProfile(inWorktree(), "/wt", worktree("linux"));
+    expect(profile.writable).toEqual(["/wt"]);
+    expect(profile.protectDirs).toEqual(["/r/.git/hooks"]);
+    expect(profile.protectFiles).toEqual([
+      "/r/.git/config",
+      "/r/.git/modules/lib/config",
+      "/wt/.git",
+    ]);
+  });
+
+  test("gitWrite makes the common directory writable and keeps its config, hooks and links", () => {
+    const profile = sandboxProfile(inWorktree({ gitWrite: true }), "/wt", worktree("linux"));
+    expect(profile.writable).toEqual(["/wt", "/r/.git"]);
+    expect(profile.protectDirs).toEqual(["/r/.git/hooks"]);
+    expect(profile.protectFiles).toEqual([
+      "/r/.git/config",
+      "/r/.git/modules/lib/config",
+      "/wt/.git",
+      "/r/.git/worktrees/other/commondir",
+      "/r/.git/worktrees/t1/commondir",
+      "/r/.git/worktrees/t1/gitdir",
+      "/r/.git/HEAD",
+      "/r/.git/index",
+    ]);
+    // Later mounts win: every protection comes after the writable bind of the common directory.
+    const argv = bwrapArgv("/usr/bin/bwrap", profile, "git", ["commit"]);
+    const bind = argv.findIndex((arg, i) => arg === "--bind" && argv[i + 1] === "/r/.git");
+    const firstProtection = argv.findIndex((arg, i) => arg === "--ro-bind" && i > 6);
+    expect(bind).toBeGreaterThan(0);
+    expect(firstProtection).toBeGreaterThan(bind);
+    expect(argv.slice(firstProtection, firstProtection + 3)).toEqual([
+      "--ro-bind",
+      "/r/.git/hooks",
+      "/r/.git/hooks",
+    ]);
+  });
+
+  test("seatbelt denies the common directory's Git state after allowing it", () => {
+    const profile = sandboxProfile(inWorktree({ gitWrite: true }), "/wt", worktree("darwin"));
+    const built = seatbeltProfile(profile);
+    expect(built.params.W1).toBe("/r/.git");
+    expect(Object.entries(built.params).filter(([key]) => key.startsWith("P"))).toEqual([
+      ["P0", "/r/.git/worktrees/t1/hooks"],
+      ["P1", "/r/.git/hooks"],
+      ["P2", "/r/.git/modules/lib/hooks"],
+      ["P3", "/wt/.baked"],
+    ]);
+    expect(built.params.Q0).toBe("/r/.git/worktrees/t1/config");
+    const lines = built.profile.split("\n");
+    const allow = lines.findIndex((line) => line.startsWith("(allow file-write*"));
+    const deny = lines.findIndex((line) => line.startsWith("(deny file-write* (subpath"));
+    expect(lines[allow]).toContain('(subpath (param "W1"))');
+    expect(deny).toBeGreaterThan(allow);
+  });
+
+  test("gitWrite has no effect on a workspace whose .git is a directory", () => {
+    const profile = sandboxProfile(request({ gitWrite: true }), "/w", submodules("linux"));
+    expect(profile.writable).toEqual(["/w"]);
+  });
+
+  test("a workflow run asks for Git writes only in its worktree", () => {
+    const policy = { sandbox: "auto" as const, network: "deny" as const };
+    expect(runSandbox(policy, "/wt", { gitWrite: true })?.gitWrite).toBe(true);
+    expect(runSandbox(policy, "/w")).not.toHaveProperty("gitWrite");
+  });
+});
+
 describe("bubblewrap argv", () => {
   test("mounts in order: host read-only, private /tmp, binds, protections, then masks", () => {
     const profile = sandboxProfile(request(), "/w", linuxHost);
@@ -239,6 +403,7 @@ describe("seatbelt profile", () => {
       C0: `${HOME}/.npm`,
       P0: "/private/w/.git/hooks",
       P1: "/private/w/.baked",
+      Q0: "/private/w/.git/config",
       H0: `${HOME}/.ssh`,
       F0: `${HOME}/.netrc`,
     });
@@ -248,8 +413,9 @@ describe("seatbelt profile", () => {
         "(allow default)",
         "(deny file-write*)",
         '(allow file-write* (subpath (param "W0")) (subpath "/private/tmp") (subpath "/private/var/folders") (literal "/dev/null") (literal "/dev/tty") (regex #"^/dev/fd/") (subpath (param "C0")))',
-        '(deny file-write* (subpath (param "P0")) (subpath (param "P1")))',
+        '(deny file-write* (subpath (param "P0")) (subpath (param "P1")) (literal (param "Q0")))',
         '(deny file-read* file-write* (subpath (param "H0")) (literal (param "F0")))',
+        '(deny mach-lookup (global-name "com.apple.SecurityServer"))',
         "(deny network*)",
         '(allow network-bind network-inbound (local ip "localhost:*"))',
         '(allow network-outbound (remote ip "localhost:*") (remote unix-socket))',
@@ -263,6 +429,8 @@ describe("seatbelt profile", () => {
     const argv = seatbeltArgv("/usr/bin/sandbox-exec", profile, "/bin/sh", ["-c", "true"]);
     expect(argv.slice(0, 2)).toEqual(["/usr/bin/sandbox-exec", "-p"]);
     expect(argv[2]).not.toContain("deny network");
+    // The keychain daemon is cut only together with the network: some TLS stacks need it.
+    expect(argv[2]).not.toContain("SecurityServer");
     expect(argv.slice(3)).toEqual([
       "-D",
       "W0=/private/w",
@@ -272,6 +440,8 @@ describe("seatbelt profile", () => {
       "P0=/private/w/.git/hooks",
       "-D",
       "P1=/private/w/.baked",
+      "-D",
+      "Q0=/private/w/.git/config",
       "-D",
       `H0=${HOME}/.ssh`,
       "-D",
