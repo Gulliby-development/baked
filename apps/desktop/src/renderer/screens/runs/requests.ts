@@ -6,9 +6,36 @@ export interface ApprovalBody {
   checks?: { id: string }[];
   /** Defaults the agents chose instead of asking (`clarification: "assume"`). */
   assumptions?: string[];
+  /** Each deliverable of the request and what covers it (`request-coverage.ts` in the core). */
+  requestCoverage?: {
+    deliverable: string;
+    requirementIds: string[];
+    criterionIds: string[];
+    outOfScope: string | null;
+    mapped: boolean;
+  }[];
   executionMode?: "inline" | "worktree";
   worktree?: { path: string; branch: string; userChangesInScope: string[] };
   acceptance?: unknown;
+  /** Why auto approval left the package to a person, with the approval reviewer's verdict. */
+  autoApproval?: {
+    declined?: string[];
+    review?: {
+      verdict: "approve" | "escalate";
+      risk: "low" | "medium" | "high";
+      reasons: string[];
+    };
+    reviewError?: string;
+  };
+}
+
+/** The approval reviewer's verdict in one line (`approvalReviewText` in the core). */
+export function approvalReviewText(auto: NonNullable<ApprovalBody["autoApproval"]>): string | null {
+  if (auto.reviewError)
+    return `The approval reviewer could not decide (${auto.reviewError}), so it waits for you.`;
+  const review = auto.review;
+  if (!review) return null;
+  return `The approval reviewer ${review.verdict === "approve" ? "would approve" : "escalated"} at ${review.risk} risk: ${review.reasons.join(" ")}`;
 }
 /** An effect of unknown outcome after an interruption (`recoverRun`, or a delivery step). */
 export interface RecoveryBody {

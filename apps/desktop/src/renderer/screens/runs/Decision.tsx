@@ -19,6 +19,7 @@ import { stageLabel } from "./model.js";
 import {
   type ApprovalBody,
   answersOf,
+  approvalReviewText,
   type ClarificationBody,
   type ConvergenceBody,
   parse,
@@ -196,6 +197,38 @@ function Approval({
           : "Approving lets the run continue."}{" "}
         Rejecting sends your note back to the agents.
       </p>
+      {body.autoApproval?.declined?.length ? (
+        <div>
+          <span className={FIELD_LABEL}>Why auto approval left this to you</span>
+          <ul className="m-[4px_0_0] pl-[18px] leading-[1.6] text-soft-foreground">
+            {body.autoApproval.declined.map((reason) => (
+              <li key={reason}>{reason}</li>
+            ))}
+          </ul>
+          {approvalReviewText(body.autoApproval) && (
+            <p className="m-[6px_0_0] text-soft-foreground">
+              {approvalReviewText(body.autoApproval)}
+            </p>
+          )}
+        </div>
+      ) : null}
+      {body.requestCoverage?.length ? (
+        <div>
+          <span className={FIELD_LABEL}>What the request asks for and what covers it</span>
+          <ul className="m-[4px_0_0] pl-[18px] leading-[1.6] text-soft-foreground">
+            {body.requestCoverage.map((row) => (
+              <li key={row.deliverable} className={row.mapped ? undefined : "font-semibold"}>
+                {row.deliverable}:{" "}
+                {row.requirementIds.length
+                  ? [...row.requirementIds, ...row.criterionIds].join(", ")
+                  : row.outOfScope
+                    ? `out of scope ("${row.outOfScope}")`
+                    : "not covered by the spec"}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       {body.assumptions?.length ? (
         <div>
           <span className={FIELD_LABEL}>Assumptions the agents made instead of asking</span>

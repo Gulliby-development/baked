@@ -28,6 +28,7 @@ const TITLES: Record<ProjectSection, string> = {
   "run-memory": "Run memory",
   "chat-memory": "Chat memory",
   skills: "Skills",
+  packages: "Packages",
   hooks: "Hooks",
   mcp: "MCP servers",
   lsp: "Language servers",

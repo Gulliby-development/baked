@@ -23,6 +23,8 @@ export interface ToolResult {
   error?: string;
   /** Which intelligence backend handled this (ts-morph, lsp, tree-sitter, regex) */
   backend?: string;
+  /** The language server that answered, when `backend` is lsp (rust-analyzer, jdtls). */
+  server?: string;
   /** True when read returned only an outline (large file) — tracker should not cache this as a full read */
   outlineOnly?: boolean;
   /** Files edited by dispatch tool — used by /changes panel to track per-tab edits */
@@ -291,6 +293,26 @@ export type TaskTier = "spark" | "ember";
 export interface QualityConfig {
   /** Duplication and dead-code ratchet: `warn` (default) reports, `ratchet` blocks, `off` skips. */
   duplication?: "off" | "warn" | "ratchet";
+  /** Rules of the anti-slop pack that do not run (built-in or ast-grep rule IDs). */
+  disabledRules?: string[];
+  /** Severity per rule ID: `error` blocks the run, `warning` is a note. */
+  ruleSeverity?: Record<string, "error" | "warning">;
+  /** The project's ast-grep rule files, relative to the workspace; they run when ast-grep is installed. */
+  ruleFiles?: string[];
+  /** Semgrep on the run's diff: `auto` (default) runs it when installed, `off` never. */
+  sast?: "auto" | "off";
+  /** Semgrep `--config` for `sast`; default `p/default`. */
+  sastConfig?: string;
+  /** Look new dependencies up in their public registries (default true). */
+  registryLookups?: boolean;
+  /** Mutation gate: `advisory` notes surviving mutants, `required` blocks; `preset` or absent follows the workflow preset. */
+  mutation?: "preset" | "off" | "advisory" | "required";
+  /** Killed share in percent a file needs under `required`, by path or glob (default 100). */
+  mutationThresholds?: Record<string, number>;
+  /** Time the mutation gate may spend per checks stage, in milliseconds (default 300000). */
+  mutationBudgetMs?: number;
+  /** Property-based tests from marked criteria: `preset` or absent follows the workflow preset. */
+  propertyTests?: "preset" | "auto" | "off";
 }
 
 export interface AppConfig {
@@ -374,6 +396,24 @@ export interface AppConfig {
   /** LSP servers to disable (by Mason package name). Scoped: project overrides global. */
   disabledLspServers?: string[];
   agentFeatures?: AgentFeatures;
+  /**
+   * What an edit that introduces errors (in the edited file or a file importing it) does:
+   * `feedback` (default) keeps it and returns the errors, `reject` restores the file and returns
+   * the errors with the original text. Workflow runs take it from their policy.
+   */
+  editDiagnostics?: "feedback" | "reject";
+  /**
+   * Where workflow implementers get docs for the locked versions of the libraries a task uses: a
+   * directory of `<name>@<version>.md` files or an MCP tool. A project value replaces the global one.
+   */
+  libraryDocs?: import("zod").infer<
+    typeof import("../core/workflows/library-docs.js").LibraryDocsSchema
+  >;
+  /** Diagnostics around edits. Global only. */
+  diagnostics?: {
+    /** Wait for diagnostics before and after an edit, each, in ms. Default 2500. */
+    timeoutMs?: number;
+  };
   /** Tools disabled by the user. Persisted across sessions. */
   disabledTools?: string[];
   /** Instruction files to load into system prompt. Default: ["baked"] (baked.md only). */
@@ -390,6 +430,13 @@ export interface AppConfig {
   watchdogTimeouts?: WatchdogTimeouts;
   /** Tool call timeout in minutes. Applies to shell, project, and agent tools. Default: 2 */
   toolTimeout?: number;
+  /**
+   * OS sandbox for shell, project and check commands. Default "off". Only the global config sets
+   * it; a project config can only raise it. See docs/sandbox.md.
+   */
+  sandbox?: "off" | "auto" | "required";
+  /** Network inside the chat sandbox; workflow runs follow their policy's `network`. Default "allow". */
+  sandboxNetwork?: "allow" | "deny";
   /** Retry behavior for transient provider errors (429, 529, 503, timeouts, overloaded). */
   retry?: RetryConfig;
   /** Memory subsystem config. embeddingModel: AI SDK model id (e.g. "openai/text-embedding-3-small"). null/undefined falls back to hashbag-v2. */

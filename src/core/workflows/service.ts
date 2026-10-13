@@ -32,8 +32,15 @@ import {
   proposeExtension,
 } from "./budget.js";
 import { validateChecks } from "./check-policy.js";
+import {
+  CHECK_PREFLIGHT_ARTIFACT,
+  type CheckSmoke,
+  smokeChecks,
+  smokeLine,
+} from "./check-preflight.js";
 import { answerInvalidatesAnalysis, clarificationResumeIndex } from "./clarification.js";
 import { assertFrozenInputs } from "./context.js";
+import { refreshCriticOutcomes } from "./critic-outcomes.js";
 import { decideDelivery, isDeliveryRequest } from "./delivery.js";
 import {
   checkLine,
@@ -42,6 +49,7 @@ import {
   type DoctorDeps,
   defaultDoctorDeps,
 } from "./doctor.js";
+import { fileHash } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { estimateHistory, type SavedEstimate } from "./estimate.js";
 import { replayEvents } from "./events.js";
@@ -56,6 +64,7 @@ import {
 import { estimatePrepared } from "./pre-run.js";
 import {
   collectProjectMemory,
+  LEARNED_RULES_ARTIFACT,
   PROJECT_MEMORY_ARTIFACT,
   renderProjectMemory,
 } from "./project-memory.js";
@@ -69,7 +78,12 @@ import {
   rerouteRecord,
   routeChanges,
 } from "./routing.js";
-import { GATES_ARTIFACT, WorkflowScheduler } from "./scheduler.js";
+import {
+  GATES_ARTIFACT,
+  SPEC_PUBLICATION_FILES,
+  specPublicationPath,
+  WorkflowScheduler,
+} from "./scheduler.js";
 import {
   type CommandIdentity,
   DEFAULT_MAX_PARALLEL_RUNS,
@@ -88,7 +102,7 @@ import {
   workflowsEnabled,
   writerPolicyProblem,
 } from "./schemas.js";
-import { stallSettings } from "./stall.js";
+import { providerResumeWaitMs, stallSettings } from "./stall.js";
 import { bindDefinition, type PreparedStart, prepareStart } from "./start.js";
 import { assertMutable } from "./state-machine.js";
 import { newId, WorkflowStore } from "./store.js";
@@ -134,6 +148,9 @@ function rerouteBody(runId: string, command: CommandIdentity, request: RerouteRe
     routes: request.routes ?? {},
   };
 }
+
+const INVALID_OUTPUT_NOTE =
+  "The previous attempt of this stage was rejected as invalid output with the diagnostic below. Correct what it names in this attempt.";
 
 export class NativeWorkflowService implements WorkflowService {
   readonly store: WorkflowStore;
@@ -186,6 +203,17 @@ export class NativeWorkflowService implements WorkflowService {
         "Workflows are turned off by workflows.enabled: false in the configuration.",
       );
   }
+  private outcomesRefreshedAt = 0;
+  /**
+   * Updates the late labels of the critic outcome log (delivery, line survival) at most once a
+   * day per process, before a run starts. Collection only: a failure is ignored.
+   */
+  private async refreshOutcomes(): Promise<void> {
+    const now = Date.now();
+    if (now - this.outcomesRefreshedAt < 24 * 60 * 60 * 1000) return;
+    this.outcomesRefreshedAt = now;
+    await refreshCriticOutcomes(this.store, now).catch(() => undefined);
+  }
   async start(request: StartRequest): Promise<RunSnapshot> {
     this.enabled();
     SafeId.parse(request.featureId);
@@ -195,8 +223,9 @@ export class NativeWorkflowService implements WorkflowService {
       throw new WorkflowFault("INVALID_DEFINITION", "Workflow prompt is required");
     const previous = this.store.previousCommand(request.commandId, request);
     if (previous) return previous;
+    await this.refreshOutcomes();
     const prepared = await prepareStart(this.workspace, this.config, request);
-    await this.preflight(prepared);
+    const smoke = await this.preflight(prepared);
     const {
       policy,
       registry,
@@ -210,6 +239,8 @@ export class NativeWorkflowService implements WorkflowService {
       instructionHashes,
     } = prepared;
     const v2 = loaded.schemaVersion === 2 ? loaded.definition : null;
+    if (!v2 || (v2.publish !== false && produces(v2, "plan")))
+      this.refuseTakenFeatureId(request.featureId);
     // A definition without a spec stage works on the request stated as one requirement.
     const hostDependencies = request.dependencies
       ? request.dependencies.map(({ featureId, contractHash }) => ({
@@ -237,12 +268,15 @@ export class NativeWorkflowService implements WorkflowService {
       ? renderWorkingSet(project.id, resolveWorkingSet(project), { cwd: this.workspace })
       : null;
     if (workingSet) instructionHashes.push({ source: WORKING_SET_ARTIFACT, hash: workingSet.hash });
-    const memory =
-      policy.projectMemory === false
-        ? null
-        : renderProjectMemory(collectProjectMemory(this.store), policy);
+    const remembered = collectProjectMemory(this.store, undefined, {
+      rules: policy.learnedRules !== false,
+    });
+    const memory = policy.projectMemory === false ? null : renderProjectMemory(remembered, policy);
     if (memory)
       instructionHashes.push({ source: PROJECT_MEMORY_ARTIFACT, hash: hashBytes(memory) });
+    // Learned rules reach implementers and reviewers even when project memory is off.
+    const rules = remembered.rules?.length ? canonical(remembered.rules) : null;
+    if (rules) instructionHashes.push({ source: LEARNED_RULES_ARTIFACT, hash: hashBytes(rules) });
     const state: RuntimeState = {
       prompt: request.prompt,
       requestText: request.prompt,
@@ -276,6 +310,7 @@ export class NativeWorkflowService implements WorkflowService {
       workspaceHash: null,
       expectedFiles: null,
       reviews: {},
+      priorReviews: {},
       reviewGaps: {},
       convergence: null,
       approvalRoot: null,
@@ -290,21 +325,25 @@ export class NativeWorkflowService implements WorkflowService {
       decidedFindings: [],
       autoExtensions: 0,
       limitations: [],
+      reviewNotes: [],
       verificationState: "not_verified",
       instructionText: instructions.text,
       frozenFiles: instructions.files,
       repairPredecessors: {},
       repairScope: {},
+      freshTasks: {},
       taskBudgets: {},
       taskSteps: {},
       sizingReplans: 0,
       hostSplitTasks: 0,
       deferredChecks: {},
       analysisReplans: 0,
+      revisedRejections: [],
       taskContinuations: {},
       taskRestarts: {},
       ownerLostResumes: 0,
       stallResumes: 0,
+      providerResumes: 0,
       taskCarry: {},
       taskGates: {},
       position: v2 ? initialPosition(v2) : null,
@@ -314,11 +353,13 @@ export class NativeWorkflowService implements WorkflowService {
       diff: null,
       workingSet: null,
       projectMemory: null,
+      learnedRules: null,
       worktree: null,
       gateResults: {},
       acceptance: {},
       issue: request.issue ?? null,
       testsFirst: null,
+      presetChoice: request.presetChoice ?? null,
     };
     return this.store.transaction(() => {
       const duplicate = this.store.previousCommand(request.commandId, request);
@@ -335,6 +376,13 @@ export class NativeWorkflowService implements WorkflowService {
         project?.id ?? null,
       );
       this.store.artifact(id, "routing", ROUTING_ARTIFACT, canonical(routing));
+      if (smoke?.length)
+        this.store.artifact(
+          id,
+          "preflight",
+          CHECK_PREFLIGHT_ARTIFACT,
+          canonical({ checks: smoke }),
+        );
       if (gates.length) this.store.artifact(id, "gates", GATES_ARTIFACT, canonical(gates));
       if (workingSet) {
         const artifact = this.store.artifact(id, "context", WORKING_SET_ARTIFACT, workingSet.text);
@@ -348,6 +396,11 @@ export class NativeWorkflowService implements WorkflowService {
       if (memory) {
         const artifact = this.store.artifact(id, "context", PROJECT_MEMORY_ARTIFACT, memory);
         state.projectMemory = { artifactId: artifact.id, hash: artifact.content_hash };
+        this.store.saveState(id, state);
+      }
+      if (rules) {
+        const artifact = this.store.artifact(id, "context", LEARNED_RULES_ARTIFACT, rules);
+        state.learnedRules = { artifactId: artifact.id, hash: artifact.content_hash };
         this.store.saveState(id, state);
       }
       if (diff) {
@@ -368,8 +421,8 @@ export class NativeWorkflowService implements WorkflowService {
    * Its warnings (fallback models, unbound profiles, unknown providers, an unanswered probe) are
    * recorded with the routing.
    */
-  private async preflight(prepared: PreparedStart): Promise<void> {
-    if (!this.providerReady) return;
+  private async preflight(prepared: PreparedStart): Promise<CheckSmoke[] | null> {
+    if (!this.providerReady) return null;
     const checks = await checkStartModels(this.workspace, prepared, this.providerReady);
     const refusals = checks.filter((check) => check.status === "fail").map(checkLine);
     if (refusals.length)
@@ -381,6 +434,51 @@ export class NativeWorkflowService implements WorkflowService {
     const warnings = checks.filter((check) => check.status === "warn").map(checkLine);
     if (warnings.length)
       prepared.routing.warnings = [...(prepared.routing.warnings ?? []), ...warnings];
+    return this.smokeChecks(prepared);
+  }
+  /**
+   * Starts every declared check once before the run spends a token: a required check that is not
+   * on its PATH or cannot be spawned refuses the start, an advisory one becomes a routing warning.
+   */
+  private async smokeChecks(prepared: PreparedStart): Promise<CheckSmoke[]> {
+    const smoke = await smokeChecks(prepared.policy.checks, this.workspace);
+    const failed = smoke.filter((s) => s.status === "not_found" || s.status === "cannot_start");
+    const missing = failed.filter((s) => s.required);
+    if (missing.length)
+      throw new WorkflowFault(
+        "CAPABILITY_DENIED",
+        `These required checks cannot start:\n${missing.map(smokeLine).join("\n")}`,
+        { reason: "check_unavailable", problems: missing },
+      );
+    if (failed.length)
+      prepared.routing.warnings = [...(prepared.routing.warnings ?? []), ...failed.map(smokeLine)];
+    return smoke;
+  }
+  /**
+   * Publication refuses to overwrite `specs/<featureId>/` files that no finished run published
+   * as they are, but only after research, specify and plan have run. The same check at start
+   * costs no model call.
+   */
+  private refuseTakenFeatureId(featureId: string): void {
+    const taken: { path: string; openRun: string | null }[] = [];
+    for (const name of SPEC_PUBLICATION_FILES) {
+      const path = specPublicationPath(featureId, name);
+      const current = fileHash(join(this.workspace, path));
+      if (current === null) continue;
+      const last = this.store.lastPublication(path);
+      const published = last !== null && last.afterHash === current;
+      if (published && ["completed", "failed", "cancelled"].includes(last.status)) continue;
+      taken.push({ path, openRun: published ? last.runId : null });
+    }
+    if (!taken.length) return;
+    const open = taken.find((t) => t.openRun)?.openRun;
+    throw new WorkflowFault(
+      "INPUT_CHANGED",
+      open
+        ? `specs/${featureId}/ belongs to open run ${open}; continue or cancel that run, or start with another feature id`
+        : `specs/${featureId}/ already holds ${taken.map((t) => t.path).join(", ")}, which no finished run published; start with another feature id, or move that folder first`,
+      { reason: "feature_id_taken", files: taken.map((t) => t.path) },
+    );
   }
   private saveEstimate(runId: string, prepared: PreparedStart, workflowId: string): void {
     try {
@@ -417,6 +515,7 @@ export class NativeWorkflowService implements WorkflowService {
       const snapshot = await this.driveOnce(runId, signal);
       if (await this.resumeOwnerLost(runId, signal)) continue;
       if (await this.resumeStalled(runId, signal)) continue;
+      if (await this.resumeProviderOutage(runId, signal)) continue;
       return snapshot;
     }
   }
@@ -495,6 +594,53 @@ export class NativeWorkflowService implements WorkflowService {
     }
     return true;
   }
+  /**
+   * A run that blocked with `provider_unavailable` (the provider stayed down, was at capacity, or
+   * the connection kept dropping through the in-call retries and the route's fallbacks) resumes by
+   * itself after a growing wait, at most `workflows.stall.providerResumes` times. The failed call
+   * changed no files, so a person would only have resumed it. The wait is journaled first, with the
+   * time of the retry, so `workflow status` and the desktop run view can show when it comes back.
+   */
+  private async resumeProviderOutage(runId: string, signal: AbortSignal): Promise<boolean> {
+    if (signal.aborted) return false;
+    const run = this.store.run(runId);
+    if (run.status !== "blocked" || run.reason !== "provider_unavailable") return false;
+    const state = this.store.state(runId);
+    const settings = stallSettings(this.config);
+    if (state.providerResumes >= settings.providerResumes) return false;
+    if (this.store.requests(runId).some(blocksRun)) return false;
+    const attempt = state.providerResumes + 1;
+    const wait = providerResumeWaitMs(settings, attempt);
+    this.store.transaction(() => {
+      state.providerResumes = attempt;
+      this.store.artifact(
+        runId,
+        "recovery",
+        `provider/resume-${attempt}.json`,
+        canonical({
+          attempt,
+          of: settings.providerResumes,
+          waitMs: wait,
+          retryAt: new Date(Date.now() + wait).toISOString(),
+        }),
+      );
+      this.store.saveState(runId, state);
+    });
+    try {
+      await abortableDelay(wait, signal);
+    } catch {
+      return false;
+    }
+    // A person may have resumed, paused or cancelled the run during the wait.
+    const current = this.store.run(runId);
+    if (current.status !== "blocked" || current.reason !== "provider_unavailable") return false;
+    try {
+      await this.resume(runId, { commandId: newId(), expectedRevision: current.revision });
+    } catch {
+      return false;
+    }
+    return true;
+  }
   private async driveOnce(runId: string, signal: AbortSignal): Promise<RunSnapshot> {
     this.enabled();
     assertMutable(this.store.run(runId).status);
@@ -537,6 +683,8 @@ export class NativeWorkflowService implements WorkflowService {
         new NativeAgentExecutor(this.store, leases, this.config, this.rootContext),
     );
     lane.browserDriver = this.scheduler.browserDriver;
+    lane.registryFetch = this.scheduler.registryFetch;
+    lane.semgrep = this.scheduler.semgrep;
     lane.waitClock = this.scheduler.waitClock;
     return lane;
   }
@@ -587,6 +735,9 @@ export class NativeWorkflowService implements WorkflowService {
           return;
         }
       }
+      const blocked = this.store.run(runId);
+      if (blocked.status === "blocked" && blocked.reason === "invalid_output")
+        this.noteInvalidOutput(runId);
       // Resuming is the operator's decision to try again: a task whose implementation did not
       // complete (no snapshot) goes back to pending and continues on the edits already in place.
       for (const task of this.store.tasks(runId))
@@ -594,6 +745,25 @@ export class NativeWorkflowService implements WorkflowService {
           this.store.taskStatus(runId, task.id, "pending");
       this.store.transition(runId, "paused", "none");
     });
+  }
+  /**
+   * Resuming a run that blocked on invalid output repeats the stage that produced it. The agent
+   * gets the diagnostic as a correction note, so the retry is not the same attempt again; a
+   * diagnostic already noted is not added twice.
+   */
+  private noteInvalidOutput(runId: string): void {
+    const latest = this.store
+      .artifacts(runId)
+      .filter((a) => a.logical_path.startsWith("errors/"))
+      .at(-1);
+    if (!latest) return;
+    const diagnostic = this.store.readArtifact(runId, latest.id).trim().slice(0, 2000);
+    if (!diagnostic) return;
+    const state = this.store.state(runId);
+    const note = `\n${INVALID_OUTPUT_NOTE}\n${canonical({ diagnostic })}`;
+    if (state.prompt.includes(note)) return;
+    state.prompt += note;
+    this.store.saveState(runId, state);
   }
   /**
    * "Accept" on a stopped convergence: the remaining findings become known limitations, and the
@@ -1092,6 +1262,7 @@ export class NativeWorkflowService implements WorkflowService {
         state.position = restartPosition(this.store.run(runId).definition_json, true);
         state.analysisPassed = false;
         state.reviews = {};
+        state.priorReviews = {};
         state.convergence = null;
         state.manualCriteria = {};
         state.correctionHashes = [];
@@ -1104,6 +1275,7 @@ export class NativeWorkflowService implements WorkflowService {
         state.decidedFindings = [];
         state.autoExtensions = 0;
         state.limitations = [];
+        state.reviewNotes = [];
         state.manifest.correctionHashes = [];
         state.rootGraph = structuredClone(state.graph);
         state.manifest.rootGraphHash = hashJson(state.graph);
@@ -1314,6 +1486,8 @@ export class NativeWorkflowService implements WorkflowService {
         policy,
         loadGateLibrary(this.workspace, policy).gates,
         profiles,
+        // A reroute names its models, so `provider` only warns about a shared vendor.
+        independence === "provider" ? "provider" : "model",
       );
       if (found.length && independence === "require")
         throw new WorkflowFault(
@@ -1427,6 +1601,7 @@ export class NativeWorkflowService implements WorkflowService {
       state.workspaceHash = null;
       state.expectedFiles = null;
       state.reviews = {};
+      state.priorReviews = {};
       state.convergence = null;
       state.manualCriteria = {};
       state.correctionHashes = [];
@@ -1445,6 +1620,7 @@ export class NativeWorkflowService implements WorkflowService {
       state.decidedFindings = [];
       state.autoExtensions = 0;
       state.limitations = [];
+      state.reviewNotes = [];
       const policy = rebase?.policy ?? PolicySchema.parse(JSON.parse(run.policy_json));
       if (rebase) {
         state.hostDependencies = rebase.dependencies;
@@ -1520,6 +1696,16 @@ export class NativeWorkflowService implements WorkflowService {
           this.store.readArtifact(runId, state.projectMemory.artifactId),
         );
         state.projectMemory = { ...state.projectMemory, artifactId: copy.id };
+        this.store.saveState(id, state);
+      }
+      if (state.learnedRules) {
+        const copy = this.store.artifact(
+          id,
+          "context",
+          LEARNED_RULES_ARTIFACT,
+          this.store.readArtifact(runId, state.learnedRules.artifactId),
+        );
+        state.learnedRules = { ...state.learnedRules, artifactId: copy.id };
         this.store.saveState(id, state);
       }
       const result = this.store.snapshot(id);

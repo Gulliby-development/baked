@@ -363,6 +363,24 @@ describe("workflow v2 scheduler", () => {
     expect(service.store.checks(run.runId).map((c) => `${c.check_id}:${c.status}`)).toEqual(["check:passed"]);
   }, 30000);
 
+  test("rejecting an approval with a note sends the resumed run back to specify with the note", async () => {
+    const { start, drive, service, executor, pending } = setup();
+    const run = await start("standard");
+    expect((await drive(run.runId)).reason).toBe("approval");
+    const first = pending(run.runId, "approval");
+    if (!first) throw new Error("No pending approval");
+    const waiting = await service.get(run.runId);
+    const paused = await service.decide(run.runId, { commandId: newId(), expectedRevision: waiting.revision }, { kind: "reject", requestId: first.id, explanation: "Implementing the CLI and its tests is in scope" });
+    expect(paused.status).toBe("paused");
+    await service.resume(run.runId, { commandId: newId(), expectedRevision: paused.revision });
+    expect((await drive(run.runId)).reason).toBe("approval");
+    expect(executor.calls).toEqual(["research", "spec", "plan", "analysis", "spec", "plan", "analysis"]);
+    expect(executor.prompts[4]).toContain("Implementing the CLI and its tests is in scope");
+    expect(service.store.state(run.runId).revisedRejections).toEqual([first.id]);
+    const approvals = service.store.requests(run.runId).filter((r) => r.kind === "approval");
+    expect(approvals.map((r) => r.status)).toEqual(["rejected", "pending"]);
+  }, 30000);
+
   test("a plan finding from analysis goes back to the plan stage once before a person", async () => {
     const { start, drive, service, executor } = setup({ analysisFindings: 1 });
     const run = await start("standard");
@@ -492,6 +510,14 @@ describe("workflow v2 scheduler", () => {
     expect(executor.calls.filter((c) => c === "review")).toHaveLength(1);
     expect(service.store.run(run.runId).repair_rounds).toBe(0);
     expect(service.store.findings(run.runId)).toHaveLength(0);
+    // The note is kept for the report instead of being lost (#715).
+    const notes = service.store.state(run.runId).reviewNotes;
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toMatchObject({ source: "correctness", basis: "inferred", reason: "inferred", repeatOf: null });
+    expect(service.store.snapshot(run.runId).reviewNotes).toEqual({ count: 1, ids: [notes[0].findingId] });
+    const report = runReport(service.store, run.runId);
+    expect(report).toContain("## Review notes");
+    expect(report).toContain("inferred edge case");
   }, 30000);
 
   // Run 5b703388 corrected a regex claim that holds in Python but not in JavaScript (#155).
@@ -509,6 +535,7 @@ describe("workflow v2 scheduler", () => {
     expect(service.store.findings(run.runId)).toHaveLength(0);
     const record = service.store.artifacts(run.runId).find((a) => a.kind === "repro");
     expect(service.store.readArtifact(run.runId, record?.id ?? "")).toContain('"status":"refuted"');
+    expect(service.store.state(run.runId).reviewNotes.map((n) => n.reason)).toEqual(["repro"]);
   }, 30000);
 
   test("a correctness finding without a repro is a note", async () => {
@@ -1077,7 +1104,7 @@ describe("passesWithNotes", () => {
     expect(passesWithNotes(finding, coverage, true)).toBe(true);
     expect(passesWithNotes(finding, coverage, false)).toBe(false);
     expect(passesWithNotes({ ...finding, severity: "medium" }, coverage, true)).toBe(false);
-    expect(passesWithNotes({ ...finding, kind: "correctness" }, coverage, true)).toBe(false);
+    expect(passesWithNotes({ ...finding, kind: "security" }, coverage, true)).toBe(false);
     expect(passesWithNotes({ ...finding, criterionIds: [] }, coverage, true)).toBe(false);
     expect(passesWithNotes(finding, [{ ...coverage[0]!, evidenceIds: [] }], true)).toBe(false);
   });
@@ -1088,6 +1115,24 @@ describe("passesWithNotes", () => {
     for (const file of [null, "src/store.ts", "src/latest.ts"])
       expect(passesWithNotes({ ...medium, file }, coverage, true)).toBe(false);
     expect(passesWithNotes({ ...medium, severity: "high", file: "README.md" }, coverage, true)).toBe(false);
+  });
+  test("a low correctness or contradicts finding passes when the checks do (#744)", () => {
+    for (const kind of ["correctness", "contradicts"] as const) {
+      expect(passesWithNotes({ ...finding, kind, file: "src/app.go" }, coverage, true)).toBe(true);
+      expect(passesWithNotes({ ...finding, kind }, coverage, false)).toBe(false);
+      expect(passesWithNotes({ ...finding, kind, severity: "medium", file: "tests/app_test.go" }, coverage, true)).toBe(false);
+      expect(passesWithNotes({ ...finding, kind, criterionIds: [] }, coverage, true)).toBe(false);
+    }
+    expect(passesWithNotes({ ...finding, kind: "unrequested" }, coverage, true)).toBe(false);
+  });
+  test("a missing test or documentation gap passes like a partial one", () => {
+    for (const severity of ["low", "medium"] as const)
+      for (const file of ["tests/app.test.ts", "README.md"])
+        expect(passesWithNotes({ ...finding, kind: "missing", severity, file }, coverage, true)).toBe(true);
+    for (const file of [null, "src/app.ts"])
+      expect(passesWithNotes({ ...finding, kind: "missing", file }, coverage, true)).toBe(false);
+    expect(passesWithNotes({ ...finding, kind: "missing", file: "README.md" }, coverage, false)).toBe(false);
+    expect(passesWithNotes({ ...finding, kind: "missing", file: "README.md", criterionIds: [] }, coverage, true)).toBe(false);
   });
 });
 
@@ -1257,7 +1302,10 @@ describe("wait stage", () => {
   }, 30000);
 
   test("time asleep between polls does not count against the active time limit", async () => {
-    const { start, drive, service, define, gate, root } = setup({}, { ...policy, maxActiveMs: 1000 });
+    // The limit leaves room for the gate's process starts on a slow runner (a 1000 ms limit
+    // failed on Windows CI, #729); the sleep alone is still above it.
+    const limit = 3000;
+    const { start, drive, service, define, gate, root } = setup({}, { ...policy, maxActiveMs: limit });
     const ready = passesOn(root, 2);
     gate(ready.gate);
     define(waitDefinition());
@@ -1266,13 +1314,13 @@ describe("wait stage", () => {
       now: () => now,
       sleep: async (ms, signal) => {
         now += ms;
-        await new Promise((resolve) => setTimeout(resolve, 1500));
+        await new Promise((resolve) => setTimeout(resolve, limit + 500));
         signal.throwIfAborted();
       },
     };
     const run = await start("wait-only");
     expect((await drive(run.runId)).status).toBe("completed");
-    expect(service.store.run(run.runId).active_ms).toBeLessThan(1000);
+    expect(service.store.run(run.runId).active_ms).toBeLessThan(limit);
   }, 30000);
 
   test("a resumed wait keeps its deadline, and a cancel stops it at once", async () => {

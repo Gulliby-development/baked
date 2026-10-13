@@ -4,6 +4,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { canonical, hashJson } from "../src/core/specs/hash.js";
 import { WorkflowArtifacts } from "../src/core/workflows/artifacts.js";
 import {
+  approvalReviewText,
   evaluateAutoApproval,
   planScopeAdvice,
   plannerApprovalLimits,
@@ -182,6 +183,13 @@ describe("auto approval", () => {
     const deferred = { ...spec, criteria: spec.criteria.map((c) => ({ ...c, method: "post-release" as const })) };
     expect(evaluateAutoApproval(limited, manifest, deferred, graph([modify("src/a.ts")]), []).approval).toBeNull();
   });
+  test("under clarification assume post-release criteria are deferred without a person", () => {
+    const deferred = { ...spec, criteria: spec.criteria.map((c) => ({ ...c, method: "post-release" as const })) };
+    const assume = { ...limited, clarification: "assume" as const };
+    expect(evaluateAutoApproval(assume, manifest, deferred, graph([modify("src/a.ts")]), []).approval?.mode).toBe("limits");
+    // Paths that always need a person still do.
+    expect(evaluateAutoApproval(assume, manifest, deferred, graph([modify(".github/ci.yml")]), []).approval).toBeNull();
+  });
   test("renews within the last human approval", () => {
     const previous = approved(renewing, [modify("src/a.ts"), modify("src/b.ts")]);
     const result = evaluateAutoApproval(renewing, manifest, spec, graph([modify("src/a.ts")]), [previous]);
@@ -246,6 +254,19 @@ describe("renewal after operator policy decisions", () => {
     expect(evaluateAutoApproval(renewing, manifest, spec, graph(scope), [reviewed], decided(renewing)).reasons).toContain("Renewal: forced security review was turned off");
     const narrower = { ...renewing, allowedTools: renewing.allowedTools.slice(1) };
     expect(evaluateAutoApproval(narrower, manifest, spec, graph(scope), [previous], decided(narrower)).approval?.mode).toBe("renewal");
+  });
+  test("a weaker OS sandbox needs a person, a stricter one renews", () => {
+    const strict = approved({ ...renewing, sandbox: "required" }, scope);
+    for (const [policy, reason] of [
+      [{ ...renewing, sandbox: "auto" as const }, "sandbox weakened from required to auto"],
+      [renewing, "sandbox weakened from required to off"],
+    ] as const) {
+      const result = evaluateAutoApproval(policy, manifest, spec, graph(scope), [strict], decided(policy));
+      expect(result.approval).toBeNull();
+      expect(result.reasons.join("\n")).toContain(reason);
+    }
+    const stricter = { ...renewing, sandbox: "required" as const };
+    expect(evaluateAutoApproval(stricter, manifest, spec, graph(scope), [previous], decided(stricter)).approval?.mode).toBe("renewal");
   });
   test("a change that no operator decision names still needs a person", () => {
     const changed = { ...renewing, checks: [lint] };
@@ -394,5 +415,92 @@ describe("planner scope advice in a run", () => {
     expect((await fixture.service.get(runId)).status).toBe("waiting");
     const pending = fixture.service.store.requests(runId).find((r) => r.status === "pending");
     expect(JSON.parse(pending!.body_json).autoApproval.declined).toContain("Limits: store.ts is outside the allowed paths");
+  });
+});
+
+describe("approval reviewer", () => {
+  const reviewed: RunPolicy = { ...limited, autoApproval: { renewal: false, limits, modelReview: true } };
+  test("the schema needs limits for model review", () => {
+    expect(PolicySchema.safeParse({ ...defaultWorkflowPolicy, autoApproval: { renewal: true, limits: null, modelReview: true } }).success).toBe(false);
+    expect(PolicySchema.safeParse(reviewed).success).toBe(true);
+  });
+  test("only size and path problems may go to the reviewer", () => {
+    const decide = (policy: RunPolicy, g: TaskGraph) => evaluateAutoApproval(policy, manifest, spec, g, []);
+    const many = graph([modify("src/a.ts")], [modify("src/b.ts")], [modify("src/c.ts")]);
+    expect(decide(reviewed, many)).toMatchObject({ approval: null, reviewable: true });
+    expect(decide(reviewed, many).limitsHash).toHaveLength(64);
+    expect(decide(reviewed, graph([modify("scripts/run.ts")])).reviewable).toBe(true);
+    expect(decide(limited, many).reviewable).toBeUndefined();
+    expect(decide(reviewed, graph([{ path: "src/a.ts", action: "delete" }])).reviewable).toBeUndefined();
+    expect(decide({ ...reviewed, maxTotalTokens: limits.maxTotalTokens + 1 }, graph([modify("src/a.ts")])).reviewable).toBeUndefined();
+    const anywhere: RunPolicy = { ...reviewed, autoApproval: { renewal: false, limits: { ...limits, allowedPaths: ["**"] }, modelReview: true } };
+    expect(decide(anywhere, graph([modify(".github/workflows/ci.yml")])).reviewable).toBeUndefined();
+  });
+  test("the verdict reads as one line", () => {
+    expect(approvalReviewText({})).toBeNull();
+    expect(approvalReviewText({ review: { verdict: "escalate", risk: "high", reasons: ["It changes auth."] } })).toBe("The approval reviewer escalated at high risk: It changes auth.");
+    expect(approvalReviewText({ reviewError: "boom" })).toContain("could not decide (boom)");
+  });
+});
+
+describe("approval reviewer in a run", () => {
+  const cleanups: (() => void | Promise<void>)[] = [];
+  afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
+  const policy: RunPolicy = {
+    ...fixturePolicy,
+    autoApproval: { renewal: false, limits: { ...limits, allowedPaths: ["value.txt"], maxTotalTokens: fixturePolicy.maxTotalTokens }, modelReview: true },
+  };
+  /** Plans an extra file outside the limits and answers the reviewer with `verdict`, or fails. */
+  class Reviewed extends FixtureExecutor {
+    seen: unknown[] = [];
+    constructor(root: string, private verdict: { verdict: string; risk: string } | null) { super(root); }
+    override async execute(request: ExecutionRequest) {
+      if (request.profile.output === "approval-review") {
+        this.seen.push(JSON.parse(request.prompt.split("\n").at(-1) ?? "{}").extra);
+        if (!this.verdict) throw new Error("reviewer unavailable");
+        return { output: { ...this.verdict, reasons: ["store.ts holds the value the spec asks for."] }, inputTokens: 10, outputTokens: 10 };
+      }
+      const result = await super.execute(request);
+      if (request.profile.output !== "plan") return result;
+      const plan = result.output as { taskGraph: TaskGraph };
+      const [task] = plan.taskGraph.tasks;
+      return { ...result, output: { ...plan, taskGraph: { ...plan.taskGraph, tasks: [{ ...task!, writes: [...task!.writes, { path: "store.ts", action: "modify" as const }] }] } } };
+    }
+  }
+  async function run(verdict: { verdict: string; risk: string } | null) {
+    const fixture = workflowFixture({ policy, executor: (root) => new Reviewed(root, verdict) });
+    cleanups.push(fixture.dispose);
+    writeFileSync(join(fixture.root, "store.ts"), "export {};\n");
+    const started = await fixture.start();
+    for (let i = 0; i < 12; i++) {
+      const current = await fixture.service.get(started.runId);
+      if (["waiting", "completed", "blocked", "failed"].includes(current.status)) break;
+      if (current.status === "paused" || current.status === "created") await fixture.resume(started.runId);
+      await fixture.service.drive(started.runId, new AbortController().signal);
+    }
+    const approvals = fixture.service.store.requests(started.runId).filter((r) => r.kind === "approval");
+    return { fixture, runId: started.runId, approval: approvals[0]! };
+  }
+
+  test("a low-risk approve approves the package without a person", async () => {
+    const { fixture, approval } = await run({ verdict: "approve", risk: "low" });
+    expect(approval.status).toBe("accepted");
+    expect(approval.actor).toBe("auto-approval");
+    expect(JSON.parse(approval.answer_json ?? "{}").autoApproval).toMatchObject({ mode: "model-review", review: { verdict: "approve", risk: "low" } });
+    const extra = fixture.executor.seen[0] as { approval: { declined: string[]; tasks: { writes: unknown[] }[] } };
+    expect(extra.approval.declined).toContain("Limits: store.ts is outside the allowed paths");
+    expect(extra.approval.tasks[0]?.writes).toHaveLength(2);
+  });
+  test("an escalation or a medium risk waits for a person with the verdict", async () => {
+    for (const verdict of [{ verdict: "escalate", risk: "low" }, { verdict: "approve", risk: "medium" }]) {
+      const { approval } = await run(verdict);
+      expect(approval.status).toBe("pending");
+      expect(JSON.parse(approval.body_json).autoApproval.review).toMatchObject(verdict);
+    }
+  });
+  test("a reviewer that fails leaves the package with a person", async () => {
+    const { approval } = await run(null);
+    expect(approval.status).toBe("pending");
+    expect(JSON.parse(approval.body_json).autoApproval.reviewError).toContain("reviewer unavailable");
   });
 });

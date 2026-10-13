@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { type DefinitionSummary, MAX_WRITERS, start } from "../../client/start.js";
+import {
+  type DefinitionSummary,
+  MAX_WRITERS,
+  start,
+  type WorkflowProposal,
+} from "../../client/start.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
 import { Skeleton } from "../../components/ui/skeleton.js";
@@ -34,6 +39,7 @@ import {
   featureSlug,
   fitOf,
   isFeatureId,
+  proposalText,
   rangeText,
   stageLabel,
 } from "./logic.js";
@@ -187,10 +193,16 @@ export function NewRunScreen({ project }: SectionProps) {
   // Null follows the configured policy; the checkbox overrides it for this run.
   const [assumeOverride, setAssume] = useState<boolean | null>(null);
   const [warnOverride, setWarn] = useState<boolean | null>(null);
+  // Empty follows the policy and the sandbox setting; a choice overrides them for this run.
+  const [sandbox, setSandbox] = useState<"" | "off" | "auto" | "required">("");
   const [strict, setStrict] = useState(false);
   const [model, setModel] = useState("");
   const [showReadiness, setShowReadiness] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // The proposal from the request picks the recipe and budget until the person picks one.
+  const [proposal, setProposal] = useState<WorkflowProposal | null>(null);
+  const [workflowPicked, setWorkflowPicked] = useState(false);
+  const [budgetPicked, setBudgetPicked] = useState(false);
 
   const definitions = useLoad(key, "definitions", start.definitions);
   const models = useLoad(key, "profile-models", loadModels);
@@ -200,6 +212,7 @@ export function NewRunScreen({ project }: SectionProps) {
     ...(model ? { model } : {}),
     worktree,
     writers,
+    ...(sandbox ? { sandbox } : {}),
   });
   const limits = presetLimits(
     budget,
@@ -227,7 +240,39 @@ export function NewRunScreen({ project }: SectionProps) {
     if (featureWrong) setSettingsOpen(true);
   }, [featureWrong]);
 
+  // A backend without `preset-proposal` answers 404; the form then works as before.
+  useEffect(() => {
+    const text = prompt.trim();
+    if (!text || fromIssue) {
+      setProposal(null);
+      return;
+    }
+    let live = true;
+    const timer = setTimeout(() => {
+      start.propose(key, text).then(
+        (next) => live && setProposal(next),
+        () => live && setProposal(null),
+      );
+    }, 400);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [key, prompt, fromIssue]);
+  // applyWorkflow only sets state; the proposal and the pick flags decide when this runs.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: applyWorkflow is recreated each render
+  useEffect(() => {
+    if (!proposal) return;
+    const proposed = definitions.value?.find((d) => d.id === proposal.workflowId);
+    if (!workflowPicked && proposed) applyWorkflow(proposed);
+    if (!budgetPicked) setBudget(proposal.budget);
+  }, [proposal, definitions.value, workflowPicked, budgetPicked]);
+
   const pickWorkflow = (next: DefinitionSummary): void => {
+    setWorkflowPicked(true);
+    applyWorkflow(next);
+  };
+  const applyWorkflow = (next: DefinitionSummary): void => {
     setWorkflow(next.id);
     if (next.worktreeRefusal) {
       setWorktree(false);
@@ -258,6 +303,8 @@ export function NewRunScreen({ project }: SectionProps) {
       // Sent only when changed here, so a backend without the field still starts the run.
       ...(assumeOverride !== null ? { clarification: assume ? "assume" : "ask" } : {}),
       ...(warnOverride !== null ? { testIntegrity: warnTests ? "warn" : "block" } : {}),
+      ...(sandbox ? { sandbox } : {}),
+      ...(proposal ? { autoPreset: true } : {}),
       ...(strict ? { modelStrict: true } : {}),
     });
   };
@@ -324,7 +371,14 @@ export function NewRunScreen({ project }: SectionProps) {
         {definitions.error ? (
           <Alert tone="error">Workflows: {message(definitions.error)}</Alert>
         ) : definitions.value ? (
-          <RecipeChoice definitions={definitions.value} value={workflow} onChange={pickWorkflow} />
+          <>
+            <RecipeChoice
+              definitions={definitions.value}
+              value={workflow}
+              onChange={pickWorkflow}
+            />
+            {proposal && <span className={HINT}>{proposalText(proposal, workflow)}</span>}
+          </>
         ) : (
           <Skeleton lines={2} label="Loading workflows" />
         )}
@@ -399,7 +453,15 @@ export function NewRunScreen({ project }: SectionProps) {
             <span className="text-[12px] font-normal text-muted-foreground">{settingsLine}</span>
           </summary>
           <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-6 px-3 pt-1 pb-4">
-            <BudgetPicker value={budget} onChange={setBudget} policy={policy} base={limits.base} />
+            <BudgetPicker
+              value={budget}
+              onChange={(next) => {
+                setBudgetPicked(true);
+                setBudget(next);
+              }}
+              policy={policy}
+              base={limits.base}
+            />
             <fieldset className={FIELDSET}>
               <legend className={LEGEND}>Mode and writers</legend>
               <label className={CHECK}>
@@ -485,6 +547,25 @@ export function NewRunScreen({ project }: SectionProps) {
                 {feature !== "" && !featureValid
                   ? "Letters, digits, - and _; starts with a letter or digit; at most 96 characters."
                   : "Names the run and its folder under specs/."}
+              </span>
+            </div>
+            <div className={FIELD}>
+              <label htmlFor="new-run-sandbox" className={LEGEND}>
+                OS sandbox
+              </label>
+              <select
+                id="new-run-sandbox"
+                value={sandbox}
+                aria-describedby="new-run-sandbox-hint"
+                onChange={(e) => setSandbox(e.target.value as typeof sandbox)}
+              >
+                <option value="">Policy and sandbox setting</option>
+                <option value="off">Off</option>
+                <option value="auto">Auto: sandbox when a backend is available</option>
+                <option value="required">Required: refuse to start without a backend</option>
+              </select>
+              <span id="new-run-sandbox-hint" className={HINT}>
+                Checks, fixes and acceptance apps of the run; the doctor reports the backend.
               </span>
             </div>
             <div className={FIELD}>

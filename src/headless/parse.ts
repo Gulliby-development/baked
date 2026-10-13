@@ -1,5 +1,6 @@
 import { CHAT_EFFORTS } from "../core/llm/provider-options.js";
 import { getAllProviders } from "../core/llm/providers/index.js";
+import { isSandboxMode, type SandboxMode } from "../core/security/sandbox.js";
 import type { BakeMode, ChatEffort } from "../types/index.js";
 import { BOLD, EXIT_ERROR, EXIT_OK, RED, RST, VALID_MODES } from "./constants.js";
 import type { HeadlessAction } from "./types.js";
@@ -21,6 +22,7 @@ ${BOLD}Usage:${RST}
   baked --headless --include <file> <prompt>         Pre-load file into context
   baked --headless --image <file> <prompt>           Attach an image (PNG, JPEG, GIF, WebP)
   baked --headless --no-repomap <prompt>             Skip repo map scan
+  baked --headless --sandbox off|auto|required ...   OS sandbox for shell and project commands
   baked --headless --diff <prompt>                   Show files changed after run
   baked --headless --session <id> <prompt>           Resume a previous session
   baked --headless --save-session <prompt>           Save session after completion
@@ -47,6 +49,9 @@ ${BOLD}Automation:${RST}
   baked session undo|redo <id>                       Undo or redo a turn of a saved session
   baked session checkpoints <id>                     List the turns undo --to can go back to
   baked serve [--port N] [--allow-origin ORIGIN]     Local workflow API on 127.0.0.1
+  baked sandbox status [--json]                      OS sandbox mode and backend
+  baked add <path> [--yes] [--overwrite]             Install a package into baked/ (see --help)
+  baked packages list|remove <name>                  Installed packages of this project
 
 ${BOLD}Exit codes:${RST} 0=success, 1=error, 2=timeout, 130=abort
 `;
@@ -110,6 +115,7 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
   let saveSession = false;
   let system: string | undefined;
   let noRepomap = false;
+  let sandbox: SandboxMode | undefined;
   let diff = false;
   let render = process.stdout.isTTY ?? false;
   const include: string[] = [];
@@ -164,6 +170,13 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
       system = argv[++i];
     } else if (arg === "--no-repomap") {
       noRepomap = true;
+    } else if (arg === "--sandbox" && argv[i + 1]) {
+      const value = argv[++i];
+      if (!isSandboxMode(value)) {
+        process.stderr.write(`${RED()}Error:${RST} --sandbox accepts off, auto or required\n`);
+        process.exit(EXIT_ERROR);
+      }
+      sandbox = value;
     } else if (arg === "--include" && argv[i + 1]) {
       include.push(argv[++i] as string);
     } else if (arg === "--image" && argv[i + 1]) {
@@ -204,6 +217,7 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
         sessionId,
         system,
         noRepomap,
+        ...(sandbox ? { sandbox } : {}),
         ...(watch ? { watch, watchPoll } : {}),
       },
     };
@@ -238,6 +252,7 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
       saveSession,
       system,
       noRepomap,
+      ...(sandbox ? { sandbox } : {}),
       include: include.length > 0 ? include : undefined,
       images: images.length > 0 ? images : undefined,
       diff,

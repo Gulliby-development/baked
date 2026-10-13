@@ -94,13 +94,15 @@ bun test tests/feature-parity.test.ts
 | Code graph | `/graph` | Not needed: a picture; scripts query the API | `/v1/graph`, `/v1/graph/file`, `/v1/graph/link` +1 | `project/graph` |
 | Progress of long waits: opening the project, indexing, starting a run | `/repo-map` | `--headless`, `baked workflow run` | `/v1/progress` | `project/graph` |
 | Enable or disable tools | `/tools` | Not needed: set disabledTools in config.json | `/v1/settings` | `settings/chat` |
-| Agent features: de-sloppify, verify edits, tier routing | `/agent-features` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
+| Agent features: de-sloppify, verify edits, tier routing, edits that add errors | `/agent-features` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
 | Hooks: view and switch off | `/hooks` | Not needed: hooks are files scripts edit directly | `/v1/hooks`, `/v1/hooks/session` | `project/hooks` |
 | Skills: browse, install, remove | `/skills` | Not needed: `bunx skills add` installs from scripts | `/v1/skills`, `/v1/skills/catalog`, `/v1/skills/project/:id` +1 | `project/skills` |
+| Packages: install agent profiles, skills, workflows and gates from a local folder with per-file hashes | `/packages`, `/packages add`, `/packages remove` | `baked add`, `baked packages` | `/v1/packages`, `/v1/packages/inspect`, `/v1/packages/install` +1 | `project/packages` |
 | Ask the agent about BAKED itself (bundled docs, baked_help tool) | `key Enter` | `--headless`, `--chat` | `/v1/sessions/:id/messages` | `project/chat` |
 | Instruction files: view and edit content | `/instructions show`, `/instructions edit` | Partial [#407](https://github.com/Gulliby-development/baked/issues/407): read-only | `/v1/projects/current/instructions` | `project/instructions` |
 | Instruction files: switch on or off | `/instructions`, `/instructions files` | Not needed: set instructionFiles in config.json | `/v1/projects/current/instructions/sources` | `project/instructions` |
 | Long-term chat memory: browse, pin, reword, hide, cleanup, scopes | `/memory` | Not needed: one-shot runs read memory, people curate it | `/v1/memory`, `/v1/memory/cleanup`, `/v1/memory/settings` | `project/chat-memory` |
+| OS sandbox for shell commands, checks and acceptance apps | `/sandbox` | `baked sandbox status`, `--sandbox`, `baked workflow run --sandbox` | `/v1/diagnostics/sandbox`, `/v1/settings`, `/v1/workflow/runs` | `settings/chat`, `project/diagnostics`, `project/overview` |
 | Run memory: view and edit what runs learned | `/workflow` | `baked workflow memory` | `/v1/workflow/memory` | `project/run-memory` |
 
 ### Workflow runs
@@ -110,7 +112,9 @@ bun test tests/feature-parity.test.ts
 | Start a full run or a quick task | `/workflow` | `baked workflow run`, `baked quick`, `baked workflow definitions` +1 | `/v1/workflow/runs`, `/v1/workflow/definitions`, `/v1/workflow/profiles` | `project/overview` |
 | Test-integrity guard: block or warn on test gaming, spec conflicts | `/workflow` | `baked workflow run`, `baked workflow answer` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/answer` | `project/overview`, `attention` |
 | Tests first: failing tests approved before the code, tdd preset | `/workflow` | `baked workflow run`, `baked workflow approve`, `baked workflow reject` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/approve`, `/v1/workflow/runs/:id/reject` | `project/overview`, `attention` |
+| Propose the workflow and budget from the request | `/workflow` | `baked workflow propose`, `baked workflow run`, `auto-preset` | `/v1/workflow/propose` | `project/overview` |
 | Run list, detail, report, artifacts and usage | `/workflow` | `baked workflow list`, `baked workflow status`, `baked workflow report` +2 | `/v1/workflow/runs`, `/v1/workflow/runs/:id`, `/v1/workflow/runs/:id/events` +3 | `project/runs` |
+| Critic outcome log and calibration: scores with checks, acceptance, delivery, survival | `/workflow` | `baked workflow outcomes` | `/v1/workflow/critic`, `/v1/workflow/runs/:id/report` | `settings/routing`, `project/runs` |
 | Progress watcher: steer, then stop, a stuck agent attempt | `/workflow` | `baked workflow run`, `baked workflow resume` | `/v1/workflow/runs/:id/events` | `project/runs` |
 | Approve, reject, answer, give evidence, continue, accept a stopped convergence | `/workflow` | `baked workflow approve`, `baked workflow reject`, `baked workflow answer` +3 | `/v1/workflow/runs/:id/approve`, `/v1/workflow/runs/:id/reject`, `/v1/workflow/runs/:id/answer` +3 | `project/runs`, `attention` |
 | Acceptance: criteria that need a person's evidence | `/workflow` | `baked workflow evidence` | `/v1/workflow/runs/:id/evidence` | `project/runs`, `attention` |
@@ -120,12 +124,20 @@ bun test tests/feature-parity.test.ts
 | Discard a run's worktree | `/workflow` | `baked workflow discard-worktree` | `/v1/workflow/runs/:id/discard-worktree` | `project/runs` |
 | Deliver a run (commit, pull request) | `/workflow` | `baked workflow deliver` | `/v1/workflow/runs/:id/deliver`, `/v1/workflow/runs/:id/deliver/execute` | `project/runs`, `attention` |
 | Revise a run after its instructions change | `/workflow` | `baked workflow candidate`, `baked workflow revise` | `/v1/workflow/runs/:id/candidate`, `/v1/workflow/runs/:id/revise` | `project/runs` |
+| Approval reviewer: a model decides low-risk plans outside the auto approval limits | `/workflow` | `baked workflow run`, `baked quick`, `approval-review` | `/v1/workflow/runs` | `project/runs` |
 | Checks: list, edit, run now, suggestions | `/workflow` | `baked doctor` | `/v1/workflow/checks`, `/v1/workflow/checks/suggestions`, `/v1/workflow/checks/:id/run` | `project/gates` |
 | Gates: list and confirm | `/workflow` | `baked workflow gates` | `/v1/workflow/gates`, `/v1/workflow/gates/confirm` | `project/gates` |
 | Duplication and dead-code ratchet | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
+| Anti-slop rule pack on the lines a run adds | `/code-quality`, `/workflow` | Not needed: rule choices and ast-grep files live in quality of config.json; baked workflow report shows the findings | `/v1/settings`, `/v1/workflow/runs/:id/report` | `settings/chat` |
+| New dependencies looked up before checks; Semgrep on the run's diff | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
+| Docs for the locked library versions a task uses | **Gap** [#763](https://github.com/Gulliby-development/baked/issues/763) | `baked workflow doctor` | **Gap** [#763](https://github.com/Gulliby-development/baked/issues/763) | **Gap** [#763](https://github.com/Gulliby-development/baked/issues/763) |
+| Mutation gate on the lines a run added | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
+| Property-based tests from marked acceptance criteria | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
+| Harden preset: strengthen the tests of existing code | `/workflow` | `baked workflow run` | `/v1/workflow/runs`, `/v1/workflow/definitions` | `project/overview` |
 | Custom gates: a script or container that reports its result as JSON (command.report json) | `/workflow` | `baked workflow gates`, `baked workflow validate` | `/v1/workflow/checks`, `/v1/workflow/checks/:id/run` | `project/gates` |
-| Gates from a plain-language sentence | **Gap** [#372](https://github.com/Gulliby-development/baked/issues/372): create a gate from text in the workflow editor | `baked workflow gate` | `/v1/workflow/gates/draft`, `/v1/workflow/gates/:id`, `/v1/workflow/gates/:id/places` +1 | `project/gates` |
+| Gates from a plain-language sentence | `/workflow` | `baked workflow gate` | `/v1/workflow/gates/draft`, `/v1/workflow/gates/:id`, `/v1/workflow/gates/:id/places` +1 | `project/gates` |
 | Gates on the run's line: what each does, blocks or advises, last result | **Gap** [#533](https://github.com/Gulliby-development/baked/issues/533): gate results only in the activity lines | `baked workflow definitions`, `baked workflow status` | `/v1/workflow/definitions`, `/v1/workflow/runs/:id/events` | `project/runs` |
+| Compare two runs side by side (A/B of routing maps) | `/workflow` | `baked workflow compare` | `/v1/workflow/compare` | `project/runs` |
 | Workflow definition editor | `/workflow` | `baked workflow define`, `baked workflow validate` | `/v1/workflow/definitions`, `/v1/workflow/editor`, `/v1/workflow/editor/review` +1 | `project/workflows` |
 | Wait stage: poll command gates until they pass or time out, with no model calls | `/workflow` | `baked workflow validate`, `baked workflow run` | `/v1/workflow/editor`, `/v1/workflow/runs/:id/events` | `project/workflows`, `project/runs` |
 | Doctor and estimate before a run | `/workflow` | `baked doctor`, `baked workflow estimate` | `/v1/workflow/doctor`, `/v1/workflow/estimate` | `project/overview` |
@@ -155,7 +167,7 @@ bun test tests/feature-parity.test.ts
 | Settings hub and raw config | `/settings` | Not needed: scripts edit config.json | `/v1/config` | `settings/app`, `settings/providers` |
 | Git menu: status, diff, commit, push, pull, branch, stash | `/git`, `/git status`, `/git diff` +9 | Not needed: scripts call git | `/v1/git`, `/v1/git/actions` | `project/git` |
 | Storage cleanup, model events and the error log | `/storage`, `/model-events`, `/errors` | Not needed: scripts read the log files | `/v1/diagnostics/storage`, `/v1/diagnostics/storage/cleanup`, `/v1/diagnostics/model-events` +1 | `project/diagnostics` |
-| Tool and watchdog timeouts, context-window overrides | `/timeouts` | `--timeout` | `/v1/settings` | `settings/chat` |
+| Tool, edit diagnostics and watchdog timeouts, context-window overrides | `/timeouts` | `--timeout` | `/v1/settings` | `settings/chat` |
 | Telemetry switch | `/telemetry` | `baked telemetry` | `/v1/config` | `settings/telemetry` |
 | Notifications: system and webhook | `/notifications` | Not needed: scripts read the exit code and output | `/v1/config` | `settings/notifications` |
 
@@ -169,8 +181,8 @@ bun test tests/feature-parity.test.ts
 
 ### Open gaps by issue
 
-- [#372](https://github.com/Gulliby-development/baked/issues/372): Gates from a plain-language sentence
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
 - [#533](https://github.com/Gulliby-development/baked/issues/533): Gates on the run's line: what each does, blocks or advises, last result
+- [#763](https://github.com/Gulliby-development/baked/issues/763): Docs for the locked library versions a task uses
 
 <!-- parity:end -->

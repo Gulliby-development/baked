@@ -37,6 +37,10 @@ const RouteOptions = {
 const Route = z.union([RouteRef, z.object({ model: RouteRef, ...RouteOptions }).strict()]);
 export type Route = z.infer<typeof Route>;
 /** What a class names: a model, or a model with effort and fallback models. */
+export const INDEPENDENT_REVIEW_MODES = ["off", "warn", "require", "provider"] as const;
+export const CRITIC_MODES = ["off", "advise", "select", "earlyStop"] as const;
+export type CriticMode = (typeof CRITIC_MODES)[number];
+export type IndependentReview = (typeof INDEPENDENT_REVIEW_MODES)[number];
 const ClassRoute = z.union([ModelId, z.object({ model: ModelId, ...RouteOptions }).strict()]);
 const Role = z.enum([
   "researcher",
@@ -63,9 +67,23 @@ export const ModelRoutingSchema = z
       .optional(),
     /**
      * Whether a reviewer may use a model the implementation also uses: `warn` records a warning,
-     * `require` refuses the start. Without it, `warn` applies once `modelRouting` is configured.
+     * `require` refuses the start, `provider` moves the reviewers to a model of another vendor
+     * (Codex reviews Claude Code output and the other way round) and warns when none is
+     * available. Without it, `provider` applies when the configuration names models of two
+     * vendors, else `warn` once `modelRouting` is configured.
      */
-    independentReview: z.enum(["off", "warn", "require"]).optional(),
+    independentReview: z.enum(INDEPENDENT_REVIEW_MODES).optional(),
+    /**
+     * Review findings with a confidence below this start no correction; they stay notes. A run
+     * freezes it into its policy (`reviewMinConfidence`); the default is 0.8.
+     */
+    reviewMinConfidence: z.number().min(0).max(1).optional(),
+    /**
+     * The task-attempt critic (#646): `advise` scores every attempt, `off` skips it. Without it
+     * the critic runs only on a vendor other than the implementation's. A run freezes it into its
+     * policy (`critic`).
+     */
+    critic: z.enum(CRITIC_MODES).optional(),
   })
   .strict();
 export type ModelRouting = z.infer<typeof ModelRoutingSchema>;
@@ -229,12 +247,16 @@ export function mergeModelRouting(
   for (const [id, entry] of Object.entries(layer.workflows ?? {}))
     workflows[id] = { stages: { ...workflows[id]?.stages, ...entry.stages } };
   const independentReview = layer.independentReview ?? base.independentReview;
+  const reviewMinConfidence = layer.reviewMinConfidence ?? base.reviewMinConfidence;
+  const critic = layer.critic ?? base.critic;
   return {
     classes: { ...base.classes, ...layer.classes },
     roles: { ...base.roles, ...layer.roles },
     profiles: { ...base.profiles, ...layer.profiles },
     workflows,
     ...(independentReview ? { independentReview } : {}),
+    ...(reviewMinConfidence !== undefined ? { reviewMinConfidence } : {}),
+    ...(critic ? { critic } : {}),
   };
 }
 

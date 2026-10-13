@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { extractArchive } from "../../../platform/archive.js";
+import { extractArchive, tarCommand } from "../../../platform/archive.js";
 import {
   CMD_EXT,
   commandExists,
@@ -202,7 +202,7 @@ export async function downloadRegistry(signal?: AbortSignal): Promise<MasonPacka
 
     await new Promise<void>((resolve, reject) => {
       execFile(
-        IS_WIN ? "tar" : "unzip",
+        IS_WIN ? tarCommand() : "unzip",
         IS_WIN ? ["-xf", tmpZip, "-C", configDir()] : ["-o", tmpZip, "-d", configDir()],
         { windowsHide: true, timeout: 30_000, signal: requestSignal },
         (error) => (error ? reject(error) : resolve()),

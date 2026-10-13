@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { scopedProcesses } from "../../platform/index.js";
+import { acceptanceSandbox, type SandboxRequest } from "../../security/sandbox.js";
 import { buildSafeEnv } from "../../spawn.js";
 import { canonical, hashBytes, hashJson } from "../../specs/hash.js";
 import { workspacePath } from "../../specs/validate.js";
@@ -109,6 +110,24 @@ function appEnv(names: readonly string[], ports: readonly number[] = []): NodeJS
 const resolveExecutable = (executable: string): string =>
   executable === "bun" ? process.execPath : executable;
 
+/** The gate's write paths are created first: a sandbox can only bind directories that exist. */
+function gateAcceptanceSandbox(
+  policy: RunPolicy,
+  gate: AcceptanceGateDefinition,
+  workspace: string,
+): SandboxRequest | null {
+  const { capabilities } = gate.acceptance;
+  if (!policy.sandbox) return null;
+  const writable = capabilities.writePaths.map((path) => workspacePath(workspace, path));
+  for (const path of writable) mkdirSync(path, { recursive: true });
+  return acceptanceSandbox(
+    policy,
+    workspace,
+    writable,
+    capabilities.listenPorts.length > 0 || capabilities.outboundHosts.length > 0,
+  );
+}
+
 /** Logical path of the steps an attempt recorded. */
 export const stepPrefix = (gateId: string, attemptId: string): string =>
   `acceptance/${gateId}/${attemptId}/steps/`;
@@ -175,6 +194,11 @@ export class WalkSession {
   ) {}
   get stepIds(): Set<string> {
     return new Set(this.recorded);
+  }
+  /** The OS sandbox of the gate's application and commands, from the run's frozen policy. */
+  private sandbox(): SandboxRequest | null {
+    const policy = PolicySchema.parse(JSON.parse(this.store.run(this.runId).policy_json));
+    return gateAcceptanceSandbox(policy, this.gate, this.workspace);
   }
   /** What the proxy allowed and refused during this attempt (browser driver). */
   network(): { allowed: string[]; refused: ProxyDecision[] } | null {
@@ -428,6 +452,7 @@ export class WalkSession {
       env: appEnv(start.envNames, capabilities.listenPorts),
       onSpawn: (pid, scope) =>
         this.store.transaction(() => this.store.recordProcess(this.runId, effectId, pid, scope)),
+      sandbox: this.sandbox(),
     });
     this.app = app;
     try {
@@ -473,6 +498,7 @@ export class WalkSession {
       env: appEnv(start.envNames, capabilities.listenPorts),
       onSpawn: (pid, scope) =>
         this.store.transaction(() => this.store.recordProcess(this.runId, effectId, pid, scope)),
+      sandbox: this.sandbox(),
     });
     try {
       try {
@@ -727,6 +753,7 @@ async function runTest(
       env,
       timeoutMs: gate.timeoutMs,
       signal,
+      sandbox: gateAcceptanceSandbox(policy, gate, workspace),
       onSpawn: (pid, marker) => {
         let reading = false;
         monitor = setInterval(() => {

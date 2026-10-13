@@ -48,6 +48,21 @@ const past = (over: Partial<PastRun>): PastRun => ({
 const price = { input: 2, cacheRead: 0.5, output: 10, match: "table" as const };
 
 describe("doctor", () => {
+  test("reports the run's OS sandbox against the backend", async () => {
+    const { root, config } = fixture();
+    const missing = () => ({ backend: "bwrap" as const, available: false, path: null, reason: "bwrap is not installed" });
+    const working = () => ({ backend: "bwrap" as const, available: true, path: "/usr/bin/bwrap", reason: null });
+    const line = (report: Awaited<ReturnType<typeof runDoctor>>) => report.checks.find((c) => c.id === "sandbox");
+    expect(line(await runDoctor(root, config, {}, healthy()))).toBeUndefined();
+    expect(line(await runDoctor(root, config, {}, healthy({ sandbox: missing })))).toMatchObject({ status: "ok", title: "OS sandbox is off" });
+    expect(line(await runDoctor(root, config, { sandbox: "auto" }, healthy({ sandbox: working })))).toMatchObject({ status: "ok", subject: "/usr/bin/bwrap" });
+    const auto = await runDoctor(root, config, { sandbox: "auto" }, healthy({ sandbox: missing }));
+    expect(line(auto)).toMatchObject({ status: "warn", detail: "bwrap is not installed" });
+    // The start itself probes the real backend; either way the sandbox line fails and the run is not ready.
+    const required = await runDoctor(root, config, { sandbox: "required" }, healthy({ sandbox: missing }));
+    expect(line(required)?.status).toBe("fail");
+    expect(required.ready).toBe(false);
+  });
   test("a valid workspace with keys and commands is ready, with an estimate", async () => {
     const { root, config } = fixture();
     const report = await runDoctor(root, config, {}, healthy());
@@ -202,12 +217,12 @@ describe("pre-run estimate", () => {
         { id: "implement", type: "tasks", models: ["a/m"] },
         { id: "checks", type: "check", models: [] },
       ],
-      maxTotalTokens: 2_000_000,
+      maxTotalTokens: 3_000_000,
       price: () => price,
     });
     expect(estimate.stages.map((s) => s.stageId)).toEqual(["plan", "approve", "implement", "checks"]);
     expect(estimate.stages[1]?.tokens).toEqual({ low: 0, high: 0 });
-    expect(estimate.stages[2]?.tokens).toEqual({ low: 30_000, high: 480_000 });
+    expect(estimate.stages[2]?.tokens).toEqual({ low: 180_000, high: 2_700_000 });
     expect(estimate.basis).toBe("defaults");
     expect(estimate.budget.fits).toBe("yes");
     expect(estimate.costComplete).toBe(true);

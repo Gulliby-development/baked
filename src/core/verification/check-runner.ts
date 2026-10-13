@@ -1,3 +1,4 @@
+import { runSandbox, type SandboxRequest, SandboxUnavailableError } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
@@ -100,11 +101,23 @@ export class CheckRunner {
    * decides the stage goes through `run`, so hours of polling leave one evidence per gate.
    */
   async probe(
+    runId: string,
     check: Check,
     signal: AbortSignal,
     root: string,
     timeoutMs: number,
   ): Promise<"passed" | "failed" | "inconclusive"> {
+    const policy = JSON.parse(this.store.run(runId).policy_json) as RunPolicy;
+    return (await this.measure(check, signal, root, runSandbox(policy, root), timeoutMs)).status;
+  }
+  /** Like `probe`, and also returns the output: a baseline count records no evidence either. */
+  async measure(
+    check: Check,
+    signal: AbortSignal,
+    root: string,
+    sandbox: SandboxRequest | null,
+    timeoutMs: number = check.timeoutMs,
+  ): Promise<{ status: "passed" | "failed" | "inconclusive"; output: string; truncated: boolean }> {
     try {
       const executable = check.executable === "bun" ? process.execPath : check.executable;
       const result = await executeCheckCommand(this.processes, executable, check.args, {
@@ -112,11 +125,17 @@ export class CheckRunner {
         env: buildCheckEnv(check),
         timeoutMs: Math.min(check.timeoutMs, timeoutMs),
         signal,
+        sandbox,
       });
-      if (result.timedOut || result.cancelled || result.exitCode === null) return "inconclusive";
-      return result.exitCode === 0 ? "passed" : "failed";
+      const status =
+        result.timedOut || result.cancelled || result.exitCode === null
+          ? "inconclusive"
+          : result.exitCode === 0
+            ? "passed"
+            : "failed";
+      return { status, output: result.output, truncated: result.truncated };
     } catch {
-      return "inconclusive";
+      return { status: "inconclusive", output: "", truncated: false };
     }
   }
   async run(
@@ -130,8 +149,11 @@ export class CheckRunner {
     evidenceId: string;
     snapshotId: string;
     output: string;
+    /** Why the status is what it is: `exit`, `spawn_error`, `timeout`, `cancelled`, `source_changed`. */
+    reason: string;
   }> {
-    const generated = generatedPaths(JSON.parse(this.store.run(runId).policy_json) as RunPolicy);
+    const policy = JSON.parse(this.store.run(runId).policy_json) as RunPolicy;
+    const generated = generatedPaths(policy);
     for (const path of check.writes) workspacePath(root, path);
     const before = await sourceManifest(root, generated, signal);
     const snapshot = this.store.transaction(() => this.store.putSnapshot(runId, before));
@@ -162,9 +184,10 @@ export class CheckRunner {
         signal,
         onSpawn: (pid, scope) =>
           this.store.transaction(() => this.store.recordProcess(runId, effectId, pid, scope)),
+        sandbox: runSandbox(policy, root),
       });
     } catch (error) {
-      reason = "spawn_error";
+      reason = error instanceof SandboxUnavailableError ? "sandbox_unavailable" : "spawn_error";
       result = {
         exitCode: null,
         signal: null,
@@ -173,6 +196,16 @@ export class CheckRunner {
         cancelled: signal.aborted,
         truncated: false,
         durationMs: 0,
+        ...(error instanceof SandboxUnavailableError && policy.sandbox
+          ? {
+              sandbox: {
+                backend: "none" as const,
+                mode: policy.sandbox,
+                network: false,
+                reason: error.reason,
+              },
+            }
+          : {}),
       };
     }
     const note = passedOutputNote(result.output, result.exitCode);
@@ -233,6 +266,6 @@ export class CheckRunner {
       if (unstable) this.store.invalidateEvidence(runId, snapshot.id, "source_changed");
       return evidence;
     });
-    return { status, evidenceId, snapshotId: snapshot.id, output: result.output };
+    return { status, evidenceId, snapshotId: snapshot.id, output: result.output, reason };
   }
 }

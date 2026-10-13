@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { RouteEffort } from "../llm/model-routing.js";
+import { PresetChoiceSchema } from "./preset-router.js";
 import {
   type AgentProfile,
   Hash,
@@ -57,12 +58,35 @@ export const LimitationSchema = z
      * Who accepted it: a person, the `assume` rule when the checks passed, or the notes rule (a
      * low `partial` finding behind verified behavior, accepted without a decision).
      */
-    decidedBy: z.enum(["user", "assume", "notes"]),
+    decidedBy: z.enum(["user", "assume", "notes", "critic"]),
     /** Convergence rounds the run had used when the finding was accepted. */
     round: z.number().int().nonnegative(),
   })
   .strict();
 export type Limitation = z.infer<typeof LimitationSchema>;
+/** A review or convergence finding that starts no correction, kept so the run report shows it. */
+export const ReviewNoteSchema = z
+  .object({
+    findingId: z.string(),
+    /** The review dimension that raised it, or `convergence`. */
+    source: z.string(),
+    severity: z.enum(["critical", "high", "medium", "low"]),
+    kind: z.string(),
+    basis: z.enum(["spec", "inferred"]).nullable(),
+    file: z.string().nullable(),
+    symbol: z.string().nullable(),
+    claim: z.string(),
+    /**
+     * Why it starts no correction: an `inferred` edge case, a severity below the blocking ones,
+     * an advisory reviewer, or a repro that did not show it.
+     */
+    reason: z.enum(["inferred", "confidence", "severity", "advisory", "repro"]),
+    /** The earlier note on the same kind, file and symbol from an earlier snapshot, if any. */
+    repeatOf: z.string().nullable(),
+    snapshotId: z.string().nullable(),
+  })
+  .strict();
+export type ReviewNote = z.infer<typeof ReviewNoteSchema>;
 export const RuntimeStateSchema = z
   .object({
     prompt: z.string(),
@@ -79,6 +103,17 @@ export const RuntimeStateSchema = z
     workspaceHash: z.string().nullable(),
     expectedFiles: z.record(z.string(), z.string()).nullable(),
     reviews: z.record(z.string(), ReviewSchema),
+    /**
+     * The reviews of the round before the last correction, by reviewer key, with the source
+     * manifest they reviewed: a later round skips a dimension that passed and whose files did not
+     * change, and tells a rerun reviewer what it found and what changed since.
+     */
+    priorReviews: z
+      .record(
+        z.string(),
+        z.object({ review: ReviewSchema, files: z.record(z.string(), z.string()) }),
+      )
+      .default({}),
     /**
      * Criteria a required reviewer could not establish after its one re-prompt, by reviewer key:
      * the converge stage gets them as evidence gaps and settles them with a test or a check.
@@ -107,6 +142,8 @@ export const RuntimeStateSchema = z
     decidedFindings: z.array(z.string()).default([]),
     /** Findings the run is accepted with (known limitations). */
     limitations: z.array(LimitationSchema).default([]),
+    /** Review and convergence findings that started no correction, for the run report. */
+    reviewNotes: z.array(ReviewNoteSchema).default([]),
     verificationState: z.enum(["not_verified", "current", "stale", "invalid"]),
     instructionText: z.string(),
     frozenFiles: z.record(z.string(), z.string()),
@@ -116,6 +153,11 @@ export const RuntimeStateSchema = z
      * the correction of that finding may also write them, through the tasks that own them.
      */
     repairScope: z.record(z.string(), z.array(z.string())).default({}),
+    /**
+     * Corrective tasks that start from a clean context after repeated identical failures, by task
+     * ID: the artifact with the host's account of the earlier attempts.
+     */
+    freshTasks: z.record(z.string(), z.string()).default({}),
     /** Attempt token cap per planned task, set by plan-time sizing; corrections use their base's. */
     taskBudgets: z.record(z.string(), z.number().int().positive()).default({}),
     /** Step cap per planned task from plan-time sizing (test tasks); corrections use their base's. */
@@ -147,6 +189,8 @@ export const RuntimeStateSchema = z
     ownerLostResumes: z.number().int().nonnegative().default(0),
     /** Times a run blocked with `step_stalled` resumed by itself (`workflows.stall.autoResumes`). */
     stallResumes: z.number().int().nonnegative().default(0),
+    /** Times a run blocked with `provider_unavailable` resumed by itself (`workflows.stall.providerResumes`). */
+    providerResumes: z.number().int().nonnegative().default(0),
     /**
      * Edits a batch task's attempt left in its worktree when it continues at its cap or restarts after a lost worker, by task and
      * path: the hash before and after (null for absent). The worktree is removed, so the next
@@ -161,6 +205,8 @@ export const RuntimeStateSchema = z
         ),
       )
       .default({}),
+    /** Rejected approval requests whose explanation already sent the run back to revise. */
+    revisedRejections: z.array(z.string()).default([]),
     /** Times analyze sent plan-only findings back to the planner instead of a person; once. */
     analysisReplans: z.number().int().nonnegative().default(0),
     taskGates: z
@@ -244,6 +290,15 @@ export const RuntimeStateSchema = z
       .nullable()
       .default(null),
     /**
+     * Active learned code rules captured at run creation (artifact `project/learned-rules.json`),
+     * given to implementers for the paths of their task and to reviewers (#643). Null when none.
+     */
+    learnedRules: z
+      .object({ artifactId: z.string(), hash: z.string() })
+      .strict()
+      .nullable()
+      .default(null),
+    /**
      * The run's own Git worktree once it exists (worktree execution mode). From then on the run
      * reads, edits, checks and snapshots there; the project working copy is never written.
      */
@@ -308,6 +363,8 @@ export const RuntimeStateSchema = z
       .strict()
       .nullable()
       .default(null),
+    /** Set on a run started with `--auto-preset`: what was proposed, why, and what ran. */
+    presetChoice: PresetChoiceSchema.nullable().default(null),
   })
   .strict();
 export type RuntimeState = z.infer<typeof RuntimeStateSchema>;
@@ -339,6 +396,12 @@ export interface ExecutionRequest {
    * a corrected result in the same conversation, a bounded number of times.
    */
   validate?: (output: unknown) => string[];
+  /**
+   * The task-end whole-unit check (#673): run once, on the first submission that reports the task
+   * implemented, in the attempt's directory. The errors it attributes to the task go back to the
+   * agent once; the next submission is accepted without running it again.
+   */
+  taskEndCheck?: (root: string, signal: AbortSignal) => Promise<string[]>;
   /** Directory the agent reads, edits and checks in; defaults to the run's workspace. */
   root?: string;
   /**

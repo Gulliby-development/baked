@@ -10,6 +10,7 @@ import { ApiError, call } from "./api.js";
 import {
   CHAT_MEMORY_CAPABILITY,
   CHECKS_CAPABILITY,
+  CRITIC_OUTCOMES_CAPABILITY,
   GATE_DRAFTS_CAPABILITY,
   HOOKS_CAPABILITY,
   LIBRARY_CAPABILITY,
@@ -226,7 +227,8 @@ export type Effort = "default" | "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORTS: readonly Effort[] = ["default", "low", "medium", "high", "xhigh", "max"];
 
 export type Route = string | { model: string; effort?: Effort; fallback?: string[] };
-export type IndependentReview = "off" | "warn" | "require";
+export type IndependentReview = "off" | "warn" | "require" | "provider";
+export type CriticMode = "off" | "advise" | "select" | "earlyStop";
 
 export interface ModelRouting {
   classes?: Record<string, Route>;
@@ -234,6 +236,8 @@ export interface ModelRouting {
   profiles?: Record<string, Route>;
   workflows?: Record<string, { stages?: Record<string, Route> }>;
   independentReview?: IndependentReview;
+  reviewMinConfidence?: number;
+  critic?: CriticMode;
 }
 
 /** The config keys the setup screens read; the files hold many more, kept as they are. */
@@ -359,6 +363,14 @@ export interface RoutingOverview {
     project: IndependentReview | null;
     effective: IndependentReview;
   };
+  /** Review findings below this confidence are notes; `effective` is 0.8 when no layer sets it. */
+  reviewMinConfidence?: { global: number | null; project: number | null; effective: number };
+  /** The task-attempt critic; `effective` null means it runs only on another vendor. */
+  critic?: {
+    global: CriticMode | null;
+    project: CriticMode | null;
+    effective: CriticMode | null;
+  };
   warnings: string[];
   error: string | null;
 }
@@ -372,7 +384,9 @@ export interface RouteDraft {
 
 export type RoutingChange =
   | { target: RoutingTarget; route: RouteDraft | null; create?: boolean }
-  | { independentReview: IndependentReview | null };
+  | { independentReview: IndependentReview | null }
+  | { reviewMinConfidence: number | null }
+  | { critic: CriticMode | null };
 
 // --- Calls --------------------------------------------------------------------------------------
 
@@ -402,9 +416,28 @@ export async function withCapability<T>(
   return request();
 }
 
+// --- Critic outcomes (`critic-outcomes` capability) ----------------------------------------------
+
+/** Whether the critic's scores may decide (`select`, `earlyStop`), from the project's outcome log. */
+export interface CriticCalibration {
+  samples: number;
+  good: number;
+  bad: number;
+  auc: number | null;
+  threshold: number | null;
+  calibrated: boolean;
+  reason: string | null;
+}
+
+/** `GET /v1/workflow/critic`: the outcome log summary and calibration (rows are left out here). */
+export interface CriticOutcomesView {
+  summary: { scored: number };
+  calibration: CriticCalibration;
+}
+
 // --- Run memory (`run-memory` capability) -------------------------------------------------------
 
-export type MemoryEntryKind = "note" | "answer" | "assumption" | "check";
+export type MemoryEntryKind = "note" | "answer" | "assumption" | "check" | "rule";
 /** An entry of project memory (`MemoryEntry` in src/core/workflows/project-memory.ts). */
 export interface MemoryEntry {
   id: string;
@@ -415,6 +448,10 @@ export interface MemoryEntry {
   runs?: number;
   /** What runs recorded, when a person reworded the entry. */
   recorded?: string;
+  /** A learned rule's paths (`**` or `DIR/**`), status and source findings (`RUN/FINDING`). */
+  scope?: string;
+  status?: "proposed" | "active";
+  findings?: string[];
   hidden: boolean;
 }
 export interface RunMemoryView {
@@ -427,6 +464,7 @@ export interface RunMemoryView {
 export type RunMemoryEdit =
   | { action: "add"; text: string }
   | { action: "edit"; id: string; text: string }
+  | { action: "accept"; id: string }
   | { action: "forget"; id: string }
   | { action: "restore"; id: string };
 
@@ -540,6 +578,12 @@ export const setup = {
   project: (key: string) => call<ProjectSummary>(key, "GET", "/v1/projects/current"),
   changeWorkingSet: (key: string, change: { add?: string[]; remove?: string[] }) =>
     call<ProjectSummary>(key, "POST", "/v1/projects/current/working-set", change),
+
+  /** The critic's outcome log across the project's runs and whether it is calibrated. */
+  criticOutcomes: (key: string) =>
+    withCapability(key, CRITIC_OUTCOMES_CAPABILITY, () =>
+      call<CriticOutcomesView>(key, "GET", "/v1/workflow/critic"),
+    ),
 
   /** Project memory new runs read: notes, earlier answers, approved assumptions, passing checks. */
   runMemory: (key: string) =>

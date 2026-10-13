@@ -119,6 +119,7 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 | `/memory` | Manage memory scopes, view & clear; the Runs tab shows and edits what workflow runs remember |
 | `/repo-map` | Baked map settings (AST index) |
 | `/skills` | Browse & install skills |
+| `/packages` | [Packages](packages.md) installed in the project; `/packages add PATH` shows a local package's plan and installs it after you pick Install, `/packages remove NAME` deletes its unchanged files (both ask first) |
 | `/tools` | Enable/disable tools for the agent |
 | `/artifacts` | [Artifacts](artifacts.md) shared by every project: pick one to open it in the browser; `/artifacts open ID` opens one, `/artifacts deploy ID [prod]` asks the agent to deploy it (it asks before it deploys) |
 | `/watch` | Watch files: saved baked! and baked? comments start the agent; `/watch on` starts it in this tab, `/watch off` stops it, `/watch status` shows it ([watch mode](watch.md)) |
@@ -128,7 +129,7 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 | Command | Does |
 | --- | --- |
 | `/agent-features` | Toggle agent features (de-sloppify, tier routing) |
-| `/code-quality` | Quality gates of workflow runs (duplication ratchet) |
+| `/code-quality` | Quality gates of workflow runs (duplication ratchet, anti-slop rules, dependency check, Semgrep, property-based tests, mutation gate) |
 | `/chat-style` | Toggle chat layout style |
 | `/diff-style` | Change diff display style |
 | `/instructions` | Toggle instruction files (baked.md, CLAUDE.md, etc.) |
@@ -139,6 +140,7 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 | `/motion` | Full or reduced animation |
 | `/notifications` | System notifications and the webhook for runs that wait for you; `/notifications system on\|off`, `/notifications webhook URL\|off`, `/notifications blocking-only on\|off` ([runtime guide](workflows/runtime.md#notifications-when-a-run-waits)) |
 | `/reasoning` | Show or hide reasoning content |
+| `/sandbox` | OS sandbox of shell, project and check commands; `/sandbox off\|auto\|required` saves it globally, `/sandbox status` shows mode and backend ([OS sandbox](sandbox.md)) |
 | `/settings` | Settings hub — all options in one place |
 | `/telemetry` | Turn anonymous usage telemetry on or off; `/telemetry on\|off` ([privacy](privacy.md)) |
 | `/theme` | Switch color theme (live preview) |
@@ -197,4 +199,5 @@ Markdown files in `<project>/.baked/commands/` and `~/.baked/commands/` become s
 | `baked session undo ID [--to N] [--force] [--json]`, `baked session redo ID [--force] [--json]` | Undo the last turn of a saved session with its file edits, or put the oldest undone turn back ([undoing a turn](headless.md#undoing-a-turn)) |
 | `baked projects ...`, `baked project ...` | Known projects and the project manifest ([projects](projects.md)) |
 | `baked telemetry [--json]`, `baked telemetry on\|off` | The locally recorded usage events, or turn recording on or off in the global config ([privacy](privacy.md)) |
+| `baked sandbox status [--json]` | OS sandbox mode, its source and the backend of this machine; exit 1 when the sandbox is required but unavailable ([OS sandbox](sandbox.md)) |
 | `baked self-check` | Loads native libraries, bundles and SQLite; non-zero exit on a failure |

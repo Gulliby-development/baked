@@ -1,5 +1,6 @@
 /** Workflow v1 contracts. */
 import { z } from "zod";
+import { LibraryDocsSchema } from "./library-docs.js";
 
 export const SafeId = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/);
 export const Hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -61,11 +62,34 @@ export const SpecSchema = z
             // biome-ignore lint/suspicious/noThenProperty: Given/When/Then is the versioned acceptance-criterion contract.
             then: Text,
             method: z.enum(["automated", "manual", "post-release"]),
+            /**
+             * The input domain over which the behavior must hold, for a property-based test
+             * (quality/properties.ts); absent for an example criterion.
+             */
+            property: z
+              .enum(["numbers", "strings", "parsing", "round-trip", "invariant"])
+              .optional(),
           })
           .strict(),
       )
       .min(1),
     dependencies: z.array(z.object({ featureId: SafeId, contractHash: Hash }).strict()),
+    /**
+     * The request's deliverables in its own words, each covered by requirements or left out by
+     * the request's own words (see request-coverage.ts). Optional, so specs stored before it keep
+     * their hashes.
+     */
+    deliverables: z
+      .array(
+        z
+          .object({
+            quote: Text,
+            requirementIds: z.array(RequirementId),
+            outOfScope: Text.optional(),
+          })
+          .strict(),
+      )
+      .optional(),
   })
   .strict();
 
@@ -93,6 +117,11 @@ export const TaskSchema = z
         .strict(),
     ),
     readHints: z.array(RelativePath),
+    /**
+     * An existing file that shows the pattern the task's code should follow (structure, naming,
+     * error handling, test style). The implementer reads it first; reviewers may cite divergence.
+     */
+    reference: RelativePath.optional(),
     checkIds: z.array(SafeId),
     origin: z.enum(["planned", "repair", "convergence"]),
     findingIds: z.array(SafeId),
@@ -166,13 +195,38 @@ export const AutoApprovalSchema = z
       })
       .strict()
       .nullable(),
+    /**
+     * Opt-in: a package that leaves the limits only by its task count, file count or paths goes
+     * to the `approval-reviewer` profile, which may approve a low-risk one. Everything else, and
+     * any reviewer failure, still waits for a person.
+     */
+    modelReview: z.boolean().optional(),
   })
   .strict()
-  .refine((value) => value.renewal || value.limits !== null, "Auto approval requires limits");
+  .refine((value) => value.renewal || value.limits !== null, "Auto approval requires limits")
+  .refine(
+    (value) => !value.modelReview || value.limits !== null,
+    "Model review of approvals requires limits",
+  );
+
+/** What the `approval-reviewer` profile returns for a package auto approval declined. */
+export const ApprovalReviewSchema = z
+  .object({
+    verdict: z.enum(["approve", "escalate"]),
+    risk: z.enum(["low", "medium", "high"]),
+    reasons: z.array(z.string().min(1).max(2000)).min(1).max(10),
+  })
+  .strict();
+export type ApprovalReview = z.infer<typeof ApprovalReviewSchema>;
+
+/** The review confidence a finding needs to start a correction when the policy does not say. */
+export const DEFAULT_REVIEW_MIN_CONFIDENCE = 0.8;
 
 /** Upper bound of `maxConcurrentWriters`. */
 export const MAX_CONCURRENT_WRITERS = 4;
 
+/** Repair rounds that repeat the same failures before a fresh-context correction (see the policy). */
+export const DEFAULT_FRESH_RESTART_AFTER = 2;
 export const PolicySchema = z
   .object({
     maxConcurrentReadAgents: z.number().int().min(1).max(8),
@@ -202,6 +256,19 @@ export const PolicySchema = z
       .strict(),
     skepticProfileId: SafeId,
     forceSecurityReview: z.boolean(),
+    /**
+     * What an edit that introduces errors in the edited file or a file importing it does during
+     * the run: `feedback` returns the errors, `reject` also restores the file. Absent means
+     * `feedback`, so stored policies keep their hash; a run takes `reject` from the project's
+     * `editDiagnostics` setting when the policy does not name it (start.ts).
+     */
+    editDiagnostics: z.enum(["feedback", "reject"]).optional(),
+    /**
+     * Where implementers get docs for the locked versions of the libraries a task uses (#741):
+     * the configured `libraryDocs` source, frozen at start. Absent means no docs, so stored
+     * policies keep their hash.
+     */
+    libraryDocs: LibraryDocsSchema.optional(),
     allowedTools: UniqueStrings,
     network: z.enum(["deny", "ask", "allow"]),
     checks: z.array(CheckSchema),
@@ -233,11 +300,83 @@ export const PolicySchema = z
      */
     testsFirst: z.enum(["off", "criteria", "all"]).optional(),
     /**
+     * Review findings whose confidence is below this are notes and start no correction. Absent
+     * means 0.8 (`DEFAULT_REVIEW_MIN_CONFIDENCE`), so stored policies keep their hash; a run start
+     * copies `modelRouting.reviewMinConfidence` here when it is set.
+     */
+    reviewMinConfidence: z.number().min(0).max(1).optional(),
+    /**
+     * The critic that scores every task attempt with a rubric (#646): `advise` shows the score
+     * and decides nothing, `off` skips it. `select` and `earlyStop` score like `advise` and also
+     * decide once the project's outcome log calibrates the critic (critic-calibration.ts):
+     * `select` keeps the best-scored attempt of a task, `earlyStop` accepts the remaining
+     * convergence findings instead of another repair when every task scores at the threshold and
+     * the checks pass. Absent means `advise` when the critic's model is of another vendor than the
+     * implementation's, else off, so stored policies keep their hash.
+     */
+    critic: z.enum(["off", "advise", "select", "earlyStop"]).optional(),
+    /**
+     * `false` leaves out learned code rules (#643): rules proposed from findings that recurred in
+     * earlier runs and activated by recurrence or a person. Absent means on, so stored policies
+     * keep their hash.
+     */
+    learnedRules: z.boolean().optional(),
+    /**
+     * How many repair rounds in a row may leave the same failures before the next correction
+     * starts from a clean context: the spec, the task, the current files and a host-written account
+     * of what was tried, without the earlier attempts' evidence. If that attempt fails the same way
+     * the run stops. Absent means `DEFAULT_FRESH_RESTART_AFTER`, so stored policies keep their hash.
+     */
+    freshRestartAfter: z.number().int().min(1).max(5).optional(),
+    /**
      * The duplication and dead-code ratchet (quality/duplication.ts). Absent means `warn`: copies
      * and unused declarations the run adds are reported, never blocking, so stored policies keep
      * their hash. `ratchet` makes them blocking findings; `off` skips the measurement.
      */
     duplication: z.enum(["off", "warn", "ratchet"]).optional(),
+    /**
+     * Semgrep on the run's diff (quality/sast.ts). Absent means `auto`: it runs when Semgrep is
+     * installed, so stored policies keep their hash. `sastConfig` is the Semgrep `--config`
+     * (absent: `p/default`).
+     */
+    sast: z.enum(["auto", "off"]).optional(),
+    sastConfig: z.string().min(1).max(512).optional(),
+    /**
+     * `false` keeps the dependency check (quality/dependencies.ts) from looking packages up in
+     * their registries; every new dependency is then inconclusive. Absent means lookups.
+     */
+    registryLookups: z.literal(false).optional(),
+    /**
+     * The mutation gate (quality/mutation.ts): `advisory` notes the mutants the run's tests do
+     * not kill, `required` makes them blocking findings, `off` skips the gate. Absent means the
+     * default of the workflow's preset (`advisory` for `full`, `off` for the others), so stored
+     * policies keep their hash. `mutationThresholds` lowers the killed share a file needs under
+     * `required` (path or glob to percent, default 100); `mutationBudgetMs` caps the gate's time.
+     */
+    mutation: z.enum(["off", "advisory", "required"]).optional(),
+    /**
+     * Property-based tests from criteria the spec marks with `property` (quality/properties.ts):
+     * `auto` asks the agents for them and checks each marked criterion has one; `off` does
+     * neither. Absent means the preset's default (`auto` for `standard` and `full`).
+     */
+    propertyTests: z.enum(["auto", "off"]).optional(),
+    mutationThresholds: z
+      .record(z.string().min(1).max(512), z.number().int().min(0).max(100))
+      .optional(),
+    mutationBudgetMs: z.number().int().min(10_000).max(3_600_000).optional(),
+    /**
+     * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
+     * rules turned off, severities changed and ast-grep rule files added. Absent means the
+     * built-in pack as shipped, so stored policies keep their hash.
+     */
+    qualityRules: z
+      .object({
+        disabled: z.array(z.string().min(1).max(128)).max(200).optional(),
+        severity: z.record(z.string().min(1).max(128), z.enum(["error", "warning"])).optional(),
+        files: z.array(RelativePath).max(32).optional(),
+      })
+      .strict()
+      .optional(),
     /**
      * Directories the applications of the run's AI acceptance gates may write. Like the outputs
      * of checks they are left out of source snapshots. Absent when no such gate grants writes.
@@ -250,6 +389,12 @@ export const PolicySchema = z
      * so the approval digest covers it.
      */
     executionMode: z.enum(["inline", "worktree"]).optional(),
+    /**
+     * OS sandbox of the run's check, fixer, probe, repro and acceptance processes. Absent means
+     * off, so stored policies keep their hash. Network inside it follows `network`: only `allow`
+     * grants it. See docs/sandbox.md.
+     */
+    sandbox: z.enum(["auto", "required"]).optional(),
     /**
      * Lets independent tasks of one batch write the same path; their results are integrated
      * through an integrator task. Absent means false, so stored policies keep their hash.
@@ -268,6 +413,11 @@ export const PolicySchema = z
       .object({
         maxAttemptTokens: z.number().int().min(10_000).optional(),
         maxRunTokens: z.number().int().min(10_000).nullable().optional(),
+        /**
+         * Hard ceiling above `maxRunTokens` that a run under `clarification: "assume"` may grow
+         * to without a person while it still makes progress (see `extendUnderAssume`).
+         */
+        extendToTokens: z.number().int().min(10_000).optional(),
         historyStores: z.array(z.string().min(1)).max(32).optional(),
         testTaskSteps: z.number().int().min(1).max(100).optional(),
       })
@@ -342,6 +492,8 @@ export const ProfileSchema = z
       "acceptance",
       "acceptance-draft",
       "initiativePlan",
+      "approval-review",
+      "critique",
     ]),
     maxSteps: z.number().int().min(1).max(100),
     maxOutputTokens: z.number().int().min(256).max(65536),
@@ -426,6 +578,7 @@ export const ReasonCode = z.enum([
   "checkpoint",
   "no_progress",
   "verification_failed",
+  "check_unavailable",
   "provider_unavailable",
   "provider_account",
   "tool_denied",
@@ -493,6 +646,11 @@ export const ReviewSchema = z
              */
             basis: z.enum(["spec", "inferred"]).optional(),
             /**
+             * How sure the reviewer is that the finding is real and introduced by this change, 0
+             * to 1. Below the run's `reviewMinConfidence` the finding is a note. Absent counts as 1.
+             */
+            confidence: z.number().min(0).max(1).optional(),
+            /**
              * A command that shows the claimed behavior: it prints `actual` on a line of its
              * output where the spec requires `expected`. The runtime runs it before the finding
              * starts a correction; a finding whose repro does not print `actual` is a note.
@@ -524,6 +682,35 @@ export const ReviewSchema = z
       .max(100),
   })
   .strict();
+
+/**
+ * One item of the rubric a critic scores a task attempt on (#646): 0 is bad, 1 good. The items:
+ * the attempt understood the intent, followed the instructions, stayed in scope, did not game the
+ * tests, and implemented the task completely.
+ */
+const RubricItem = z.object({ score: z.number().min(0).max(1), note: Text }).strict();
+/**
+ * A critic's score of one task attempt: advice shown in the run, not a gate. `score` is the
+ * critic's estimate that the attempt is correct and will be kept as it is.
+ */
+export const CritiqueSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    taskId: TaskId,
+    score: z.number().min(0).max(1),
+    rubric: z
+      .object({
+        intent: RubricItem,
+        instructions: RubricItem,
+        scope: RubricItem,
+        testIntegrity: RubricItem,
+        completeness: RubricItem,
+      })
+      .strict(),
+    summary: Text,
+  })
+  .strict();
+export type Critique = z.infer<typeof CritiqueSchema>;
 
 export const ImplementationSchema = z
   .object({
@@ -661,6 +848,8 @@ export const WorkflowConfigSchema = z
         stepStallMs: z.number().int().min(10_000).max(14_400_000).optional(),
         maxToolTimeouts: z.number().int().min(1).max(50).optional(),
         autoResumes: z.number().int().min(0).max(20).optional(),
+        providerResumes: z.number().int().min(0).max(20).optional(),
+        providerWaitMs: z.number().int().min(0).max(3_600_000).optional(),
       })
       .strict()
       .optional(),
@@ -1078,10 +1267,20 @@ export interface RunSnapshot {
    */
   limitations: { count: number; ids: string[] };
   /**
+   * Review and convergence findings that started no correction (inferred edge cases, findings
+   * below the blocking severities, advisory reviews, refuted repros); the run report lists them.
+   */
+  reviewNotes: { count: number; ids: string[] };
+  /**
    * Present while a run is `running` but has journaled nothing for longer than the stall limit:
    * the owner is alive and its work is not advancing.
    */
   stalled?: { silentMs: number; lastEventAt: string | null };
+  /**
+   * Present while a run blocked with `provider_unavailable` waits for its automatic resume
+   * (`workflows.stall.providerResumes`): when it retries, and which resume that is.
+   */
+  autoRetry?: { at: string; attempt: number; of: number };
   pendingRequestIds: string[];
   /** The project of the run's workspace when it was created. */
   projectId?: string;
@@ -1115,6 +1314,11 @@ export interface StartRequest {
    * definition; omitted, the definition's `execution`, then the policy's `executionMode` apply.
    */
   executionMode?: ExecutionMode;
+  /**
+   * OS sandbox requested for this run (CLI `--sandbox MODE`). It overrides the configured mode and
+   * the policy; omitted, the stricter of the policy and the configuration applies.
+   */
+  sandbox?: "off" | "auto" | "required";
   /** Concurrent writers requested for this run (CLI `--writers N`); it overrides the policy. */
   maxConcurrentWriters?: number;
   /**
@@ -1128,6 +1332,12 @@ export interface StartRequest {
   testIntegrity?: "block" | "warn";
   /** The duplication ratchet of this run (CLI `--duplication MODE`); it overrides the policy. */
   duplication?: "off" | "warn" | "ratchet";
+  /** Semgrep on the run's diff (CLI `--sast MODE`); it overrides the policy. */
+  sast?: "auto" | "off";
+  /** The mutation gate of this run (CLI `--mutation MODE`); it overrides the policy. */
+  mutation?: "off" | "advisory" | "required";
+  /** Property-based tests of this run (CLI `--property-tests MODE`); it overrides the policy. */
+  propertyTests?: "auto" | "off";
   /**
    * Stage-level model routes for this run (CLI `--route STAGE=MODEL`); they win over
    * `modelRouting.workflows.<id>.stages`. A value starting with `$` names a model class.
@@ -1135,6 +1345,8 @@ export interface StartRequest {
   routes?: Record<string, string>;
   /** The GitHub issue the request comes from (CLI `--issue`); the delivery pull request closes it. */
   issue?: { repository: string; number: number; url: string; title: string };
+  /** The proposal of `--auto-preset` and the workflow the run took (`PresetChoice`). */
+  presetChoice?: import("./preset-router.js").PresetChoice;
 }
 export type Decision =
   | {
@@ -1317,21 +1529,56 @@ export function validateSpecCoverage(spec: Spec): string[] {
 const REPOSITORY_FILE =
   /\b(?:readme|changelog|license|contributing|dockerfile|makefile)(?:\.\w+)?\b|(?:^|[\s\x60'"(])[\w./-]*\.(?:md|mdx|txt|rst|json|jsonc|ya?ml|toml|ini|cfg|env|lock|[cm]?[jt]sx?|py|go|rs|rb|java|kt|cs|php|sh|css|html)\b/im;
 
+// A property of the code ("input is iterated line by line", when "a reviewer inspects it").
+const CODE_PROPERTY =
+  /\b(?:reviewers?|code review|source code|the code|implementation|(?:inspects?|reads?) the (?:source|module|function|class))\b/i;
+
 /**
  * Criteria about a file of the repository (README text, docs, configuration, source) whose method
  * is manual. A reviewer reads the file and the checks can grep it; only a person can answer a
  * manual request, so the run would wait for someone who just reads the same file (run 2fbac09c,
- * AC-003: 12 hours).
+ * AC-003: 12 hours). A property of the code is the same case: a reviewer passed logslice 242ff843
+ * AC-021 three times and converge still asked a person.
  */
 export function manualRepositoryCriteria(spec: Spec): string[] {
   return spec.criteria
-    .filter(
-      (c) =>
-        c.method === "manual" &&
-        REPOSITORY_FILE.test(`${c.given}
-${c.when}
-${c.then}`),
-    )
+    .filter((c) => {
+      if (c.method !== "manual") return false;
+      const text = `${c.given}\n${c.when}\n${c.then}`;
+      return REPOSITORY_FILE.test(text) || CODE_PROPERTY.test(text);
+    })
+    .map((c) => c.id);
+}
+
+const OPERATING_SYSTEMS = [/\bwindows\b/i, /\bmac\s?os\b|\bos x\b|\bdarwin\b/i, /\blinux\b/i];
+const BROWSERS = [
+  /\bchrom(?:e|ium)\b/i,
+  /\bfirefox\b/i,
+  /\bsafari\b/i,
+  /\bedge browser\b|\bmicrosoft edge\b/i,
+];
+const EVERY_HOST =
+  /\bcross[- ](?:platform|browser|os)\b|\b(?:all|every|each) (?:supported )?(?:operating systems?|platforms?|os(?:es)?|browsers?)\b|\b(?:real|physical) (?:device|phone|hardware)s?\b|\bon (?:an? )?(?:iphone|ipad|android (?:phone|device|tablet))s?\b/i;
+// A CI matrix file or a simulated platform is evidence one host can read or run.
+const HOST_EVIDENCE =
+  /\bmatrix\b|\bruns-on\b|\.github\/workflows|\bci workflow\b|\bworkflow file\b|\bpath\.(?:win32|posix)\b|\bsimulat|\bemulat|\bmock/i;
+
+/**
+ * Automated criteria that claim behavior on several operating systems, browsers or real devices.
+ * A run checks on one host, so no declared check can prove them and convergence can only answer
+ * inconclusive (propdrift eea2e0e9 AC-008: "behavior is confirmed on Windows, macOS, and Linux",
+ * two convergence calls and a block). A criterion about a CI matrix file or a simulated platform
+ * is checkable here and stays.
+ */
+export function hostBoundCriteria(spec: Spec): string[] {
+  return spec.criteria
+    .filter((c) => {
+      if (c.method !== "automated") return false;
+      const text = `${c.given}\n${c.when}\n${c.then}`;
+      if (HOST_EVIDENCE.test(text)) return false;
+      const count = (patterns: RegExp[]) => patterns.filter((p) => p.test(text)).length;
+      return count(OPERATING_SYSTEMS) >= 2 || count(BROWSERS) >= 2 || EVERY_HOST.test(text);
+    })
     .map((c) => c.id);
 }
 
@@ -1345,7 +1592,11 @@ export function specCoverageProblems(spec: Spec): string[] {
     ),
     ...manualRepositoryCriteria(spec).map(
       (id) =>
-        `criterion ${id} is about a file in the repository but has method manual: use method automated (a command check or the reviewer reading the file), because a person can add nothing a reviewer cannot read there. Keep manual for behavior only a person can observe.`,
+        `criterion ${id} is about a file in the repository or a property of its code but has method manual: use method automated (a test, a command check, or the reviewer reading the file or code), because a person can add nothing a reviewer cannot read there. Keep manual for behavior only a person can observe.`,
+    ),
+    ...hostBoundCriteria(spec).map(
+      (id) =>
+        `criterion ${id} is automated but claims behavior on other operating systems, browsers or devices, and the run checks on one host, so nothing can prove it. Rewrite it as what this host can check (platform-neutral path, line-ending and process APIs; the tests pass here). When the request asks for proof on other platforms, add a criterion that a CI workflow file runs the checks on a matrix of those platforms (for example ubuntu-latest, macos-latest, windows-latest), which the reviewer verifies by reading the file. Use post-release only for a claim that needs a release or a real device.`,
     ),
   ];
 }

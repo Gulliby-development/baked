@@ -1,5 +1,6 @@
 import { hashJson } from "../specs/hash.js";
 import { pathsInOutput } from "../verification/convergence.js";
+import { writtenCodePaths } from "./check-policy.js";
 import type { TaskGraph } from "./schemas.js";
 import type { TaskRow } from "./store.js";
 import type { RuntimeState, Task } from "./types.js";
@@ -103,9 +104,39 @@ function sameApartFromAddedCriteria(before: Task, after: Task): boolean {
 }
 
 /**
- * The tasks still to run that own every planned file a failed task check names, or none when the
- * failure is the task's own: the output names a file the task may write, names no planned file, or
- * an owner cannot run before the task (it depends on it, so waiting would never end).
+ * Code files that the graph's other tasks will still write: tasks that are neither verified nor
+ * implemented with a current gate. A task-end check does not hold the task to their contents.
+ */
+export function pendingCodePaths(
+  graph: TaskGraph | null | undefined,
+  rows: TaskRow[],
+  gates: RuntimeState["taskGates"],
+  task: Task,
+): string[] {
+  const done = (id: string): boolean =>
+    rows.some(
+      (r) =>
+        r.id === id &&
+        (r.status === "verified" || (r.status === "implemented" && hasTaskGate(r, gates))),
+    );
+  const own = new Set(task.writes.map((w) => w.path));
+  return [
+    ...new Set(
+      (graph?.tasks ?? [])
+        .filter((t) => t.id !== task.id && !done(t.id))
+        .flatMap((t) => writtenCodePaths(t))
+        .filter((path) => !own.has(path)),
+    ),
+  ];
+}
+/**
+ * The tasks still to run that the failure of a task check waits for, or none when the failure is
+ * the task's own. They are the owners of every planned file the output names, and the owners of
+ * the files the task reads (`readHints`) that another task writes: a TypeScript import error names
+ * the importing file, which is the task's own (zoneslot-update c941a83a: App.tsx read overlap.ts
+ * of a task in the same wave). The failure is the task's own when nothing it reads is pending and
+ * the output names a file the task may write, names no planned file, or an owner cannot run
+ * before the task (it depends on it, so waiting would never end).
  */
 export function pendingOwners(
   graph: TaskGraph | null | undefined,
@@ -115,8 +146,6 @@ export function pendingOwners(
   output: string,
 ): string[] {
   if (!graph) return [];
-  const named = pathsInOutput(output, graph.tasks);
-  if (!named.length || named.some((path) => task.writes.some((w) => w.path === path))) return [];
   const done = (id: string): boolean =>
     rows.some(
       (r) =>
@@ -132,12 +161,29 @@ export function pendingOwners(
     }
     return false;
   };
-  const owners = new Set<string>();
+  const writers = (path: string) =>
+    graph.tasks.filter(
+      (t) =>
+        t.id !== task.id &&
+        t.writes.some((w) => w.path === path && w.action !== "delete") &&
+        !done(t.id),
+    );
+  const own = (path: string) => task.writes.some((w) => w.path === path);
+  const read = new Set(
+    task.readHints
+      .filter((path) => !own(path))
+      .flatMap(writers)
+      .filter((t) => !dependsOn(t.id, task.id))
+      .map((t) => t.id),
+  );
+  const named = pathsInOutput(output, graph.tasks);
+  if (!named.length || named.some(own)) return [...read];
+  const owners = new Set(read);
   for (const path of named) {
     const pending = graph.tasks.filter(
       (t) => t.id !== task.id && t.writes.some((w) => w.path === path) && !done(t.id),
     );
-    if (!pending.length || pending.some((t) => dependsOn(t.id, task.id))) return [];
+    if (!pending.length || pending.some((t) => dependsOn(t.id, task.id))) return [...read];
     for (const t of pending) owners.add(t.id);
   }
   return [...owners];

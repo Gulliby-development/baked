@@ -407,6 +407,7 @@ export const PRESETS = [
   "spike",
   "review-only",
   "fix-ci",
+  "harden",
   "tdd",
 ] as const;
 export const WorkflowV2Schema = z

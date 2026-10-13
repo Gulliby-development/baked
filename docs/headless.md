@@ -25,6 +25,7 @@ baked --headless --watch                          # turns from baked! / baked? c
 | `--include <file>` | Load a file into context first (repeatable) |
 | `--image <file>` | Attach a PNG, JPEG, GIF or WebP image to the prompt (repeatable, at most 4); see [Images](#images) |
 | `--no-repomap` | Skip the repository scan |
+| `--sandbox <mode>` | OS sandbox of shell and project commands for this process: `off`, `auto` or `required`; replaces the global setting, a project config can still raise it ([OS sandbox](sandbox.md)) |
 | `--diff` | List the files the session changed, with the lines each adds and removes |
 | `--save-session` | Save the conversation for a later `--session` |
 | `--session <id>` | Resume a saved session (an ID prefix is enough) |
@@ -126,17 +127,38 @@ baked lsp disable biome            # keep baked from starting a server
 baked diagnose --json              # probe every code intelligence backend, as /diagnose does
 ```
 
-`baked lsp` shows and changes the [language servers](configuration.md#language-servers) code intelligence uses, through the same code as `/lsp` in the terminal UI and the desktop app's Language servers page. `status` lists the servers for the languages found in the project (`--all` for every server baked knows) with whether each is installed (and where: PATH, baked's own directory or Mason's), turned off, and how to install it; `--json` prints the shape of the local API's [`GET /v1/lsp`](desktop/api.md#language-servers), where `uncovered` names the detected languages no enabled, installed server covers. `install ID` installs from the Mason registry into baked's own directory (the registry is downloaded on first use); `ID` is a server command (`gopls`), a Mason package (`pyright`) or a language (`go`, which picks the first server for it whose toolchain is on PATH, or reports one that is already installed). It needs no prompt and exits 1 when the install fails or the toolchain (`go`, `cargo`, `pip3`, or `python3` for generic packages with a Python launcher such as `jdtls`, which also needs Java 21+) is missing. `check [ID]` starts the project's servers in this process, waits up to a minute for them and prints the status; it exits 1 when an enabled, installed server of a detected language did not start (its error is printed) or a detected language has no server. `restart` is the same as `check`: a headless process keeps no servers between commands. `enable` and `disable` take `--scope global|project`; without it, `disable` writes the project file when it has its own `disabledLspServers` (which replaces the global list) and the global file otherwise, and `enable` removes the server from every list that names it. A running terminal UI or `baked serve` applies them when the server restarts. Unknown servers and bad arguments exit 2.
+`baked lsp` shows and changes the [language servers](configuration.md#language-servers) code intelligence uses, through the same code as `/lsp` in the terminal UI and the desktop app's Language servers page. `status` lists the servers for the languages found in the project (`--all` for every server baked knows) with whether each is installed (and where: PATH, baked's own directory or Mason's), turned off, and how to install it; `--json` prints the shape of the local API's [`GET /v1/lsp`](desktop/api.md#language-servers), where `uncovered` names the detected languages no enabled, installed server covers. `install ID` installs from the Mason registry into baked's own directory (the registry is downloaded on first use; on Windows archives are unpacked with the system `tar.exe`, so a GNU tar that Git Bash or MSYS2 puts first on `PATH` does not break it); `ID` is a server command (`gopls`), a Mason package (`pyright`) or a language (`go`, which picks the first server for it whose toolchain is on PATH, or reports one that is already installed). It needs no prompt and exits 1 when the install fails or the toolchain (`go`, `cargo`, `pip3`, or `python3` for generic packages with a Python launcher such as `jdtls`, which also needs Java 21+) is missing. `check [ID]` starts the project's servers in this process, waits up to a minute for them and prints the status; it exits 1 when an enabled, installed server of a detected language did not start (its error is printed) or a detected language has no server. `restart` is the same as `check`: a headless process keeps no servers between commands. `enable` and `disable` take `--scope global|project`; without it, `disable` writes the project file when it has its own `disabledLspServers` (which replaces the global list) and the global file otherwise, and `enable` removes the server from every list that names it. A running terminal UI or `baked serve` applies them when the server restarts. Unknown servers and bad arguments exit 2.
 
 `baked diagnose` runs the code intelligence health check of `/diagnose` in the terminal UI: it starts the project's servers in this process, then probes every backend (language server, ts-morph, tree-sitter, regex) with the key operations against a file of the project's main language and prints each probe's result and time. `--json` prints the shape of [`POST /v1/lsp/diagnose`](desktop/api.md#language-servers). It exits 1 when a backend that supports the language failed to start or a probe errored or timed out (`failing` names them), and 2 on an unknown argument.
+
+## OS sandbox
+
+```sh
+baked sandbox status               # mode, where it comes from, backend, chat network
+baked sandbox status --json        # the shape of GET /v1/diagnostics/sandbox
+baked --headless --sandbox required "run the tests"
+```
+
+`baked sandbox status` prints the effective [OS sandbox](sandbox.md) mode (the global `sandbox` setting, raised by the project config), the backend of this machine (`bwrap` on Linux, `seatbelt` on macOS, none on Windows) or why it is unavailable, and the network of sandboxed chat commands. It exits 1 when the mode is `required` and no backend works, so CI can check the sandbox before it runs anything. `--sandbox MODE` on a headless run replaces the global mode for that process; with `required` and no backend, shell and project commands are refused.
 
 ## Artifacts
 
 `baked artifacts list|show|save|deploy|remove` manages the [artifacts](artifacts.md) shared by every project: HTML pages kept in the BAKED data folder. `deploy ID` prints what it would send to your Vercel account and deploys only with `--yes` (`--prod` for production).
 
+## Packages
+
+```sh
+baked add ../acme-review           # show the plan; install after a yes at the prompt
+baked add ../acme-review --yes     # install without the prompt
+baked packages list --json         # installed packages and files edited since
+baked packages remove acme-review  # delete the package's unchanged files
+```
+
+`baked add PATH` installs a [package](packages.md): a local folder with a `baked-package.json` that lists agent profiles, skills, workflow definitions and gates with their SHA-256 hashes. It checks the hashes and definitions, prints what it would write into `baked/`, and installs after a yes at the prompt; without a terminal (or with `--json`) it installs only with `--yes`. `--overwrite` replaces project files that differ. `baked packages list` and `remove NAME` manage installed packages; `remove` keeps files edited since the install. Installed gates still need `baked workflow gates confirm`. Exit codes: 0 done, 1 refused or not approved, 2 bad arguments, an unknown path or package.
+
 ## Approvals
 
-There is no one to ask in headless mode: actions that would ask for approval in the terminal UI (writes outside the project, destructive shell commands) are not prompted. Cap runs with `--max-steps` and `--timeout`, keep API keys in CI secrets, and run untrusted prompts in a disposable checkout.
+There is no one to ask in headless mode: actions that would ask for approval in the terminal UI (writes outside the project, destructive shell commands) are not prompted. Cap runs with `--max-steps` and `--timeout`, keep API keys in CI secrets, and run untrusted prompts in a disposable checkout or with `--sandbox required`.
 
 ## Custom commands and workflows
 

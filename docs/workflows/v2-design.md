@@ -15,7 +15,7 @@ Goals:
 5. Gates are a library: command, human, AI review and AI acceptance gates are defined once in `baked/gates/*.json` and attached to transitions in an editor window.
 6. An AI acceptance gate can walk a finished feature like a user would, but a model's claim never closes a required gate: the walk-through becomes a deterministic test first.
 
-Not in this document: initiatives and decomposition (section 3 of the plan), Git delivery (section 4) and parallel worktrees ([separate design](parallel-worktrees.md)). Section 12 states what they need from v2. Also out of scope: several writers in one workspace, a daemon, remote workers, executable plugins, arbitrary scripting in conditions, an OS sandbox.
+Not in this document: initiatives and decomposition (section 3 of the plan), Git delivery (section 4) and parallel worktrees ([separate design](parallel-worktrees.md)). Section 12 states what they need from v2. Also out of scope: several writers in one workspace, a daemon, remote workers, executable plugins, arbitrary scripting in conditions, a per-gate OS sandbox (the run-wide OS sandbox is in [OS sandbox](../sandbox.md)).
 
 ## 2. What v1 gives, and what v2 must not change
 
@@ -228,7 +228,7 @@ Workflow editor: standard 1.0.0 (custom copy)
 ```
 
 - Three panes: stages (with the type glyph and `effects`), the outgoing transitions of the selected stage, and the ordered gates of the selected transition. A strip below shows validation results, updated on every change, and the spend estimate for the whole definition.
-- A adds a gate from the library through a picker with search and a one line summary (type, required, scope, timeout). Gates that cannot be bound there (a task gate after a non-task stage, a command gate in a review stage) are shown disabled with the reason. J and K reorder, M toggles required or advisory for this workflow only, D removes the binding. N adds a transition; E edits a stage option (profile, `covers`, loop bound).
+- A adds a gate from the library through a picker with search and a one line summary (type, required, scope, timeout). Gates that cannot be bound there (a task gate after a non-task stage, a command gate in a review stage) are shown disabled with the reason. J and K reorder, M toggles required or advisory for this workflow only, D removes the binding. N adds a transition; E edits a stage option (profile, `covers`, loop bound). G drafts a new gate from a sentence (section 9.1), saves it after the person read it and binds it to the selected list.
 - Ctrl+S validates with the same function as the run start. With problems it refuses and lists them with the transition or stage they belong to. Without problems it shows the diff against the saved file and the effective gates, and writes `baked/workflows/ID.json` through a temp file and a rename. The first save of a definition with `autoApproval` asks for the typed confirmation of section 5.2.
 - Built in presets are read only; "duplicate as custom" copies one. A saved definition affects runs created afterwards; started runs keep their frozen copy and a banner says so.
 - The window is a TUI popup with the same frame tests as the other workflow views at 120x40, 80x24 and 50x20; at the narrow size the panes become one list with a pane switcher. All logic (validation, effective modes, estimate) is in core modules, not in React.
@@ -305,7 +305,7 @@ All default to denied and each appears in the approval digest when granted.
 
 The model gets no shell, no generic file tool and no web tools during the walk-through. Its tools are `app_start` and `app_stop` (for the declared command only), the driver actions (for a browser: snapshot, click, type, key; for a terminal: send and read), and `record_step`, which stores the action, the observation and the expectation it concerns.
 
-Honest limit: BAKED has no operating system sandbox. The grants above are enforced where the host controls the path (which processes start, which sockets the process tree listens on, which hosts the driver browser reaches, what changed on disk). The application process itself can still open outbound connections the host does not see. Users who need that closed run the gate in a container or a network namespace; the design leaves a place for a `sandbox` field and does not claim isolation it cannot provide.
+Honest limit: the grants above are enforced where the host controls the path (which processes start, which sockets the process tree listens on, which hosts the driver browser reaches, what changed on disk). A run with the OS sandbox on ([OS sandbox](../sandbox.md)) also enforces `writePaths` at the file system level: the application gets only those directories writable. Its network is isolated only when the gate grants neither ports nor hosts, since the host browser and proxy must reach it; otherwise the application process can still open outbound connections the host does not see. Users who need that closed run the gate in a container or a network namespace. A per-gate `sandbox` field stays reserved.
 
 ### 9.3 Lifecycle
 

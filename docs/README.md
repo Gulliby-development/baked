@@ -11,8 +11,10 @@ This folder describes BAKED as it works now. It is the only place for long-lived
 - [Configuration](configuration.md): config files, settings, key storage, instruction files and environment variables.
 - [Providers](providers.md): Claude, OpenAI, Codex, GitHub Copilot and GitHub Models, and model fallback.
 - [Tools and code intelligence](tools.md): what the agent can do and how it reads code.
+- [OS sandbox](sandbox.md): shell, check and acceptance commands in bubblewrap or seatbelt, credentials hidden.
 - [Extensions](extensions.md): MCP servers, hooks and skills.
 - [Custom commands](custom-commands.md): Markdown files that become slash commands.
+- [Packages](packages.md): agent profiles, skills, workflows and gates installed from a local package folder with per-file hashes (`baked add`).
 - [Watch mode](watch.md): `baked!` and `baked?` comments written in any editor start the agent.
 - [Artifacts](artifacts.md): HTML pages shared by every project and chat, deployed to your own Vercel account.
 - [Projects](projects.md): the project manifest, working set and known-projects list.

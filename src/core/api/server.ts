@@ -98,7 +98,8 @@ import { hooksRoute } from "./hooks-routes.js";
 import { initiativeRoute } from "./initiative-routes.js";
 import { type LspRouteContext, lspRoute } from "./lsp-routes.js";
 import { mcpRoute } from "./mcp-routes.js";
-import { memoryRoute } from "./memory-routes.js";
+import { criticOutcomesRoute, memoryRoute } from "./memory-routes.js";
+import { packageRoute } from "./package-routes.js";
 import { progressRoute } from "./progress-routes.js";
 import type { RouteContext } from "./route-context.js";
 import {
@@ -120,6 +121,7 @@ import {
   ImportBody,
   ListQuery,
   PreRunQuery,
+  ProposeBody,
   RecoverBody,
   RedactBody,
   RejectBody,
@@ -155,6 +157,7 @@ export const CAPABILITIES = [
   "chat-undo",
   "checkpoints",
   "run-memory",
+  "critic-outcomes",
   "chat-memory",
   "images",
   "code-graph",
@@ -176,7 +179,11 @@ export const CAPABILITIES = [
   "progress",
   "coordinator",
   "watch",
+  "sandbox",
   "artifacts",
+  "run-compare",
+  "preset-proposal",
+  "packages",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -420,9 +427,15 @@ function startArgs(raw: unknown): WorkflowArgs {
   if (body.clarification) flags.clarification = body.clarification;
   if (body.testIntegrity) flags["test-integrity"] = body.testIntegrity;
   if (body.duplication) flags.duplication = body.duplication;
+  if (body.sast) flags.sast = body.sast;
+  if (body.mutation) flags.mutation = body.mutation;
+  if (body.propertyTests) flags["property-tests"] = body.propertyTests;
   if (body.modelStrict) flags["model-strict"] = true;
+  if (body.sandbox) flags.sandbox = body.sandbox;
   if (body.policy !== undefined) flags.policy = true;
   if (body.budget) flags.budget = body.budget;
+  if (body.approvalReview) flags["approval-review"] = true;
+  if (body.autoPreset) flags["auto-preset"] = true;
   return validateWorkflowArgs({
     command: "run",
     positional: [],
@@ -877,6 +890,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       (await chatRoute({ ...ctx, chat })) ??
       (await initiativeRoute({ ...ctx, initiatives, launch: driveInitiative })) ??
       (await memoryRoute({ ...ctx, config: service.config, store: service.store })) ??
+      criticOutcomesRoute({ ...ctx, config: service.config, store: service.store }) ??
       (await mcpRoute({
         ...ctx,
         workspace: service.workspace,
@@ -900,6 +914,12 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         config: () => service.config,
         ...(options.vercel ? { vercel: options.vercel } : {}),
         ...(options.openArtifact ? { open: options.openArtifact } : {}),
+      })) ??
+      (await packageRoute({
+        ...ctx,
+        workspace: service.workspace,
+        config: service.config,
+        ...(options.configDir ? { configDir: options.configDir } : {}),
       })) ??
       (await gateRoute({
         ...ctx,
@@ -948,6 +968,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       (await diagnosticsRoute({
         ...ctx,
         dirs: storageDirs(service.workspace, options.configDir ?? defaultConfigDir()),
+        workspace: service.workspace,
         clearSessions: () => chat.clearAll(),
         clearRepoMap: async () => {
           if (drives.size > 0)
@@ -997,6 +1018,16 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         );
       }
       return json(200, projects.summary(), origin);
+    }
+    if (path === "/v1/workflow/compare") {
+      only("GET");
+      const a = SafeId.parse(url.searchParams.get("a"));
+      const b = SafeId.parse(url.searchParams.get("b"));
+      return json(
+        200,
+        await execute({ command: "compare", positional: [a, b], flags: {} }),
+        origin,
+      );
     }
     if (path === "/v1/workflow/definitions" || path === "/v1/workflow/profiles") {
       only("GET");
@@ -1078,6 +1109,15 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         origin,
       );
     }
+    if (path === "/v1/workflow/propose") {
+      only("POST");
+      const body = ProposeBody.parse(await readJson(req));
+      return json(
+        200,
+        await execute({ command: "propose", positional: [], flags: { prompt: body.prompt } }),
+        origin,
+      );
+    }
     if (path === "/v1/workflow/doctor" || path === "/v1/workflow/estimate") {
       only("GET");
       const query = queryOf(url, PreRunQuery);
@@ -1088,6 +1128,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       if (query.modelStrict === "true") flags["model-strict"] = true;
       if (query.worktree === "true") flags.worktree = true;
       if (query.writers) flags.writers = query.writers;
+      if (query.sandbox) flags.sandbox = query.sandbox;
       if (query.confirmAutoApproval) flags["confirm-auto-approval"] = query.confirmAutoApproval;
       const command = path.endsWith("doctor") ? "doctor" : "estimate";
       return json(

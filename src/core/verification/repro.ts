@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import type { SandboxRequest } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import type { ProcessScope } from "../workflows/process-scope.js";
 import { ProbeSchema, type Repro, ReproSchema, type Review } from "../workflows/schemas.js";
@@ -71,6 +72,8 @@ export async function runRepro(
     executables: readonly string[];
     generated: string[];
     signal: AbortSignal;
+    /** The run's OS sandbox (see runSandbox), or null. */
+    sandbox: SandboxRequest | null;
   },
 ): Promise<ReproOutcome> {
   if (!options.executables.includes(repro.executable))
@@ -89,6 +92,7 @@ export async function runRepro(
       env: reproEnv(options.root),
       timeoutMs: REPRO_TIMEOUT_MS,
       signal: options.signal,
+      sandbox: options.sandbox,
     });
   } catch (error) {
     options.signal.throwIfAborted();
@@ -208,6 +212,8 @@ export async function runProbe(
     executables: readonly string[];
     generated: string[];
     signal: AbortSignal;
+    /** The run's OS sandbox (see runSandbox), or null. */
+    sandbox: SandboxRequest | null;
   },
 ): Promise<ProbeOutcome> {
   if (!options.executables.includes(probe.executable))
@@ -225,6 +231,7 @@ export async function runProbe(
       env: reproEnv(options.root),
       timeoutMs: REPRO_TIMEOUT_MS,
       signal: options.signal,
+      sandbox: options.sandbox,
     });
   } catch (error) {
     options.signal.throwIfAborted();
@@ -250,13 +257,24 @@ export async function runProbe(
 }
 
 /** The host tool a repair task isolates a failure with before it edits again. */
+/** README, Markdown and reStructuredText files: where a task writes command examples. */
+const DOCUMENT = /(^|\/)readme(\.[^/]*)?$|\.(md|mdx|rst)$/i;
+
+/**
+ * Whether a task writes documentation. Such a task gets `run_probe` even when it is planned, so
+ * the examples it writes come from a real invocation of the program, not from the spec (#716).
+ */
+export function writesDocumentation(writes: readonly { path: string; action: string }[]): boolean {
+  return writes.some((w) => w.action !== "delete" && DOCUMENT.test(w.path.replaceAll("\\", "/")));
+}
+
 export function probeTool(
   executables: readonly string[],
   run: (probe: { executable: string; args: string[] }) => Promise<ProbeOutcome>,
 ): HostTool {
   let tries = 0;
   return {
-    description: `Run a program (one of ${executables.join(", ")}) with arguments, without a shell, in the workspace root, for up to ${REPRO_TIMEOUT_MS / 1000} s, and read its output and exit code. Use it to isolate a failing check (one test alone, a few lines that call the library the code relies on) and to confirm what the runtime or a library does before editing again. It must not change any file. At most ${PROBE_TRIES} runs.`,
+    description: `Run a program (one of ${executables.join(", ")}) with arguments, without a shell, in the workspace root, for up to ${REPRO_TIMEOUT_MS / 1000} s, and read its output and exit code. Use it to isolate a failing check (one test alone, a few lines that call the library the code relies on), to confirm what the runtime or a library does before editing again, and to capture what a command prints before you document it. It must not change any file. At most ${PROBE_TRIES} runs.`,
     inputSchema: ProbeSchema,
     execute: async (input) => {
       if (++tries > PROBE_TRIES)

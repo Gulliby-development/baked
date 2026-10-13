@@ -97,16 +97,21 @@ calls it with a placeholder feature and prompt and reports a thrown fault as one
    (`Bun.which` from the command's cwd, or an existing path) and the cwd exists. Fail for a required check
    or gate, warn for an optional one. Commands are not executed: a full suite can take minutes and may have
    side effects.
-6. **git.** Not a Git repository: warn for inline runs (worktree mode already fails in `prepareStart` via
+6. **sandbox.** The run's OS sandbox mode (the frozen policy's `sandbox`, or the `--sandbox` flag and the
+   `sandbox` setting when the start failed) against the backend of this machine
+   ([OS sandbox](../sandbox.md)): `ok` when off or when the backend works; `auto` without a backend is warn
+   (commands run without OS sandbox); `required` without one is fail, and `prepareStart` refuses the start
+   with the same reason, so it also shows as `start`.
+7. **git.** Not a Git repository: warn for inline runs (worktree mode already fails in `prepareStart` via
    `worktreeBase`; delivery needs Git too). Uncommitted changes: warn with up to ten paths; in worktree mode
    approved tasks that touch them ask the user to exclude them. Prunable entries in `git worktree list`
    under `.baked/worktrees`: warn, fix `git worktree prune`.
-7. **workspace.busy.** The execution leases: the workspace-wide one of an inline run, and
+8. **workspace.busy.** The execution leases: the workspace-wide one of an inline run, and
    `execution:RUN_ID` of each worktree run. Worktree runs that execute are `ok` (the working copy is
    free). For the inline lease, owner alive or unknown is fail (`drive` would refuse with `WORKSPACE_BUSY`); owner dead while its
    command may still be running is fail with fix `baked workflow recover RUN_ID`; owner dead otherwise is
    warn (released on the next drive).
-8. **budget.** With the estimate available: `fits: "maybe"` or `"no"` is warn, never fail, since estimates
+9. **budget.** With the estimate available: `fits: "maybe"` or `"no"` is warn, never fail, since estimates
    are not measurements. Fix: raise `maxTotalTokens` in the policy.
 
 The store is opened read-only when it exists. No database skips the lease check and uses default
@@ -131,7 +136,8 @@ so doctor and start report the same problem in the same words.
 - **Follows the definition.** Only the definition's stages count, read through `asV2` so v1 and v2
   definitions look the same. History is keyed by stage ID, so a stage with history uses it whatever its
   type (check stages run `ai-acceptance` agents and record their attempts there). Without history, the
-  stage type picks the fallback: `tasks` is price per task times task count; `agent`, `reflection` and
+  stage type picks the fallback: `tasks` is price per task times task count (without history 90k–450k
+  per task, one code file and one test file created at the sizing defaults, times 2–6 tasks); `agent`, `reflection` and
   `review` use the default range for that ID, else a generic 15k–60k; `approval`, `check` and `learn`
   are zero. Tasks stages are recognized by type, not by the ID `implement`, so a renamed tasks stage is
   not counted twice.
@@ -194,7 +200,7 @@ unknown fields). `compareWithActual` is unchanged.
 ## Surfaces
 
 - CLI: `baked workflow doctor [WORKFLOW] [--model ID] [--route ...] [--policy FILE] [--worktree]
-  [--writers N] [--json]` and `baked workflow estimate [WORKFLOW]` with the same flags. `baked doctor` is an
+  [--writers N] [--sandbox MODE] [--json]` and `baked workflow estimate [WORKFLOW]` with the same flags. `baked doctor` is an
   alias of `baked workflow doctor`. Both run without opening the run database for writing, like
   `workflow route`, and the doctor works when workflows are disabled (that is its first finding).
 - Local core API (follow-up once `feature/core-api` is on main): `GET /v1/workflow/doctor` and `GET /v1/workflow/estimate` with query parameters

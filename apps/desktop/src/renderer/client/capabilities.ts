@@ -25,6 +25,8 @@ export const CHECKPOINTS_CAPABILITY = "checkpoints";
 export const COORDINATOR_CAPABILITY = "coordinator";
 /** `GET|POST /v1/workflow/memory` (the Run memory section). */
 export const RUN_MEMORY_CAPABILITY = "run-memory";
+/** `GET /v1/workflow/critic` (the critic's outcome log and calibration in Model routing). */
+export const CRITIC_OUTCOMES_CAPABILITY = "critic-outcomes";
 /** `/v1/memory*` (the Chat memory section). */
 export const CHAT_MEMORY_CAPABILITY = "chat-memory";
 /** `images` on chat messages (paste and drop in the composer). */
@@ -56,6 +58,9 @@ export const GIT_CAPABILITY = "git";
 /** `/v1/diagnostics/*` (the Diagnostics section: storage, model events, error log). */
 export const DIAGNOSTICS_CAPABILITY = "diagnostics";
 
+/** `GET /v1/diagnostics/sandbox` (the Sandbox panel of the Diagnostics section). */
+export const SANDBOX_CAPABILITY = "sandbox";
+
 /** `GET /v1/hooks` and `POST /v1/hooks/session` (the Hooks section). */
 export const HOOKS_CAPABILITY = "hooks";
 
@@ -84,3 +89,6 @@ export const LSP_DIAGNOSE_CAPABILITY = "lsp-diagnose";
 
 /** `/v1/artifacts*` (the Artifacts section: HTML pages shared by every project, Vercel deploys). */
 export const ARTIFACTS_CAPABILITY = "artifacts";
+
+/** `/v1/packages*` (the Packages section: install local packages into the project's baked/ folders). */
+export const PACKAGES_CAPABILITY = "packages";

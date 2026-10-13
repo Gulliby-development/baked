@@ -70,6 +70,8 @@ test("the scan leaves planned changes, existing code and spec literals alone", (
         // A literal the spec names is a requirement, and a command name is not test data.
         { path: "src/b.ts", before: "", after: 'if (s === "hello world") run();\nif (cmd === "add-item") add();\n' },
         { path: "tests/b.test.ts", before: null, after: 'it("b", () => { expect(f("hello world", "add-item")).toBe(1); });\n' },
+        // An earlier version the run did not keep cannot be compared, so its counts are not reported.
+        { path: "src/c.ts", before: undefined, after: "// eslint-disable-next-line no-console\nexport const c = 1;\n" },
         // Documentation may name a suppression.
         { path: "docs/lint.md", before: "", after: "Use `// eslint-disable-next-line` sparingly.\n" },
       ],

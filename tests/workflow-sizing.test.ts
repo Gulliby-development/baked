@@ -3,18 +3,24 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { hostSplitParts, isHostSplitNit } from "../src/core/workflows/analysis-notes.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
 import {
   codeTaskCheckProblems,
   DEFAULT_PER_FILE,
+  MIN_HISTORY_SAMPLES,
   fileKind,
   perFileRates,
   plannerSizing,
+  REPAIR_RESERVE,
+  RESERVE_BOUNDS,
+  repairReserveShare,
   type SizingSample,
   samplesFrom,
   sizePlan,
   splitTestTasks,
+  taskTotal,
   withTestDependencies,
 } from "../src/core/workflows/sizing.js";
 
@@ -217,8 +223,58 @@ describe("plan-time sizing", () => {
     expect(tests?.estimate).toEqual({ low: 400_000, high: 480_000 });
     expect(tests?.attemptTokens).toBe(480_000);
     expect(report.decision).toBe("raise-budget");
-    expect(report.repairReserve).toBe(231_000);
-    expect(report.budgetAfter).toBe(300_000 + 80_000 + 480_000 + 210_000 + 231_000);
+    // Midpoints 55k + 440k, plus the root of 25k^2 + 40k^2 (47,170), not the sum of the highs.
+    expect(report.taskTokens).toEqual({ low: 430_000, expected: 495_000, high: 560_000 });
+    expect(report.runTokens).toBe(300_000 + 542_170 + 210_000);
+    expect(report.repairReserve).toBe(225_651);
+    expect(report.budgetAfter).toBe(300_000 + 542_170 + 210_000 + 225_651);
+  });
+
+  test("a budget already at the ceiling is not reported as growing to itself (#747)", () => {
+    const report = sizePlan({
+      graph: graph(task("T001", ["src/core/workflows/store.ts"])),
+      policy: policy({ maxRunTokens: 4_000_000 }, 4_000_000),
+      samples: [],
+      spent: 3_900_000,
+    });
+    expect(report.budgetAfter).toBe(4_000_000);
+    expect(report.reasons.join(" ")).not.toContain("grows from 4000000 to 4000000");
+    expect(report.reasons.join(" ")).toContain("stays at 4000000 tokens, the policy's ceiling");
+  });
+
+  test("the repair reserve follows the median loop of finished runs once there are enough (#747)", () => {
+    expect(repairReserveShare([2.6])).toEqual({ share: REPAIR_RESERVE, basis: "default", runs: 1 });
+    expect(repairReserveShare([0.4, 2.6, 0.9])).toEqual({ share: 0.9, basis: "history", runs: 3 });
+    expect(repairReserveShare([0.05, 0.1, 0.1]).share).toBe(RESERVE_BOUNDS.min);
+    expect(repairReserveShare([5, 6, 7]).share).toBe(RESERVE_BOUNDS.max);
+    const sized = (loopShares: number[]) =>
+      sizePlan({ graph: graph(task("T001", ["src/a.ts"])), policy: policy({ maxRunTokens: 9_000_000 }), samples: [], spent: 0, loopShares });
+    const flat = sized([]);
+    const calibrated = sized([1, 2, 3]);
+    expect(calibrated.reserve).toEqual({ share: 2, basis: "history", runs: 3 });
+    expect(calibrated.repairReserve).toBeGreaterThan(flat.repairReserve * 6);
+    expect(calibrated.reasons.join(" ")).toContain("the median loop of 3 finished runs");
+  });
+
+  // cronsay 15eb3204: eight tasks were priced at the sum of their upper bounds, 4.0M of tasks for a
+  // run that comparable apps finished with 0.6-1.0M, so the plan went above the 4M ceiling.
+  test("many tasks are priced near their midpoints, and one task at its upper bound", () => {
+    const tests = Array.from({ length: 8 }, (_, i) => task(`T00${i + 1}`, [`tests/t${i}.test.ts`]));
+    const report = sizePlan({ graph: graph(...tests), policy: policy({ maxRunTokens: 4_000_000 }), samples: [], spent: 0 });
+    const { low, high } = DEFAULT_PER_FILE.test.modify;
+    expect(report.taskTokens.high).toBe(8 * high);
+    expect(report.runTokens - 210_000).toBe(Math.round(8 * ((low + high) / 2) + Math.sqrt(8) * ((high - low) / 2)));
+    expect(report.runTokens - 210_000).toBeLessThan(0.85 * 8 * high);
+    expect(taskTotal([{ low: 100, high: 300 }]).price).toBe(300);
+  });
+
+  test("with enough samples of a kind, history's own upper bound replaces the default's", () => {
+    const few = Array.from({ length: MIN_HISTORY_SAMPLES - 1 }, (_, i) => sample("test", 60_000 + i * 1000, 1, { source: "shared" }));
+    expect(perFileRates(few).test.modify.perFile.high).toBe(DEFAULT_PER_FILE.test.modify.high);
+    const enough = [...few, sample("test", 70_000, 1, { source: "shared" })];
+    const rate = perFileRates(enough).test.modify;
+    expect(rate.basis).toBe("history");
+    expect(rate.perFile.high).toBeLessThan(80_000);
   });
 
   test("only a task with several files is split; a plan above the ceiling asks to split the feature", () => {
@@ -320,6 +376,20 @@ describe("runtime split of test tasks", () => {
     expect(split?.tasks[2]?.criterionIds).toEqual(["AC-001"]);
     expect(split?.tasks[2]?.description).toContain("write only tests/test_report.py");
     expect(split && sized(split).decision).not.toBe("split-tasks");
+  });
+  // cronsay 15eb3204: analysis read the added part as missing from plan.md and as a duplicate of
+  // its sibling, and sent the run back to plan four times.
+  test("analysis findings about the added parts are notes", () => {
+    const tests = { ...task("T002", ["tests/test_parser.py", "tests/test_report.py"]), dependsOn: ["T001"] };
+    const g = graph(task("T001", ["src/report.py"]), tests);
+    const split = splitTestTasks(g, sized(g));
+    const parts = hostSplitParts(split as TaskGraph);
+    expect(parts).toEqual({ T002: ["T002", "T003"] });
+    expect(isHostSplitNit({ refs: ["tasks.json"], description: "T003 is not listed in plan.md" }, parts)).toBe(true);
+    expect(isHostSplitNit({ refs: ["T002", "T003"], description: "T002 and T003 check the same thing" }, parts)).toBe(true);
+    expect(isHostSplitNit({ refs: ["T001", "T003"], description: "T003 tests code T001 never writes" }, parts)).toBe(false);
+    expect(isHostSplitNit({ refs: ["T002"], description: "T002 has no test file" }, parts)).toBe(false);
+    expect(hostSplitParts(g)).toEqual({});
   });
   test("code tasks and test tasks within one attempt are left to the planner", () => {
     const g = graph(task("T001", ["src/a.ts", "src/b.ts"]), task("T002", ["tests/a.test.ts"]));
