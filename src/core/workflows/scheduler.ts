@@ -289,6 +289,16 @@ import {
   testIntegrityOf,
   testWriteProblems,
 } from "./test-integrity.js";
+import {
+  isTestTask,
+  redProblem,
+  testsDigest,
+  testsFirstCriteria,
+  testsFirstNote,
+  testsFirstOf,
+  testsFirstProblems,
+  withTestsFirstOrder,
+} from "./tests-first.js";
 import { takeHashRefusals } from "./tool-policy.js";
 import type { AgentExecutor, Check, HostTool, RuntimeState, Task } from "./types.js";
 import { acceptanceGrants, blocksRun } from "./v2/acceptance.js";
@@ -351,18 +361,18 @@ function planGraph(
   policy: RunPolicy,
   profiles: AgentProfile[],
 ): TaskGraph {
-  return withCoveringChecks(
-    withTestDependencies(
-      withReadDependencies(
-        withModuleDependencies(
-          withDerivedRequirements(spec, {
-            ...withImplementationProfiles(plan.taskGraph, profiles),
-            specHash: hashJson(spec),
-            planHash: hashBytes(plan.markdown),
-          }),
-        ),
-      ),
+  const graph = withReadDependencies(
+    withModuleDependencies(
+      withDerivedRequirements(spec, {
+        ...withImplementationProfiles(plan.taskGraph, profiles),
+        specHash: hashJson(spec),
+        planHash: hashBytes(plan.markdown),
+      }),
     ),
+  );
+  // Tests first runs the test tasks before the code; otherwise a test task waits for its code.
+  return withCoveringChecks(
+    testsFirstOf(policy) === "off" ? withTestDependencies(graph) : withTestsFirstOrder(graph),
     policy,
   );
 }
@@ -430,6 +440,8 @@ const refusedReason = (paths: string[]): string =>
     : "";
 /** Characters of a task's unified diff kept in its diff evidence. */
 const MAX_PATCH_CHARS = 48_000;
+/** Characters of each test file the tests-first approval shows. */
+const MAX_TEST_CHARS = 20_000;
 /** Files above this size are not scanned by the test-integrity guard. */
 const MAX_INTEGRITY_BYTES = 1024 * 1024;
 /** Lines of a failed check's output handed to a stage that does not write, such as research. */
@@ -695,7 +707,7 @@ export class WorkflowScheduler {
                     if (!parsed.success) return [];
                     const questions = parsed.data.openQuestions;
                     return [
-                      ...specCoverageProblems(parsed.data),
+                      ...specCoverageProblems(parsed.data, policy.checks),
                       ...deliverableProblems(parsed.data, coverageRequest(state)),
                       ...assumeProblems(
                         policy,
@@ -748,6 +760,14 @@ export class WorkflowScheduler {
                     profiles: profiles.filter((p) => p.output !== "approval-review"),
                     workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
                     ...(approvalLimits ? { approvalLimits } : {}),
+                    ...(testsFirstOf(policy) !== "off"
+                      ? {
+                          testsFirst: testsFirstNote(
+                            testsFirstOf(policy),
+                            testsFirstCriteria(spec, testsFirstOf(policy)),
+                          ),
+                        }
+                      : {}),
                     ...(policy.sizing
                       ? {
                           sizing: plannerSizing(
@@ -777,6 +797,7 @@ export class WorkflowScheduler {
                       ...this.planProblems(runId, spec, parsed.data, policy, profiles),
                       ...codeTaskCheckProblems(parsed.data.taskGraph, policy),
                       ...testWriteProblems(parsed.data.taskGraph, policy),
+                      ...testsFirstProblems(spec, parsed.data.taskGraph, policy),
                     ];
                     if (scopeAdvised) return problems;
                     const advice = planScopeAdvice(
@@ -3059,7 +3080,17 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         ))
       )
         continue;
-      const task = checking ?? readyTasks(state.graph, rows, state.taskGates)[0];
+      const ready = checking
+        ? []
+        : this.testsFirstReady(
+            runId,
+            state,
+            policy,
+            readyTasks(state.graph, rows, state.taskGates),
+          );
+      // The tests are put to a person; the code tasks wait for the approval.
+      if (ready === null) return;
+      const task = checking ?? ready[0];
       if (!task) {
         // Owners that cannot run leave their waiting tasks checked as they are, and repaired if they fail.
         if (this.releaseDeferred(state)) continue;
@@ -3370,6 +3401,10 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       const checked = await this.runTaskCheck(runId, child, check, policy, signal, taskRoot);
       taskResults.push({ check, checked });
     }
+    if (this.testsPending(state, policy) && isTestTask(task)) {
+      this.settleRed(runId, state, policy, task, child, taskResults, taskFailures);
+      return;
+    }
     for (const { check, checked } of await this.fixFailedTaskChecks(
       runId,
       child,
@@ -3430,7 +3465,10 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       const rows = this.store.tasks(runId);
       const current = state.graph ?? graph;
       const checking = this.checkableTask(current, rows, state);
-      const ready = readyTasks(current, rows, state.taskGates).filter((t) => !lost.has(t.id));
+      const all = readyTasks(current, rows, state.taskGates).filter((t) => !lost.has(t.id));
+      const runnable = checking ? all : this.testsFirstReady(runId, state, policy, all);
+      if (runnable === null) return;
+      const ready = runnable;
       if (!checking && (await this.hostFirstReruns(runId, stepId, state, policy, signal, ready)))
         continue;
       const single = checking ?? ready.find((t) => t.writes.length === 0);
@@ -4350,6 +4388,10 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       Object.fromEntries(outcome.changed.map((p) => [p, outcome.before[p] ?? null])),
       outcome.changed,
     );
+    if (this.testsPending(state, policy) && isTestTask(task)) {
+      this.settleRed(runId, state, policy, task, entry.child, results, failures);
+      return;
+    }
     const evidence: string[] = [];
     let inconclusive: string | undefined;
     for (const { check, checked } of await this.fixFailedTaskChecks(
@@ -4970,11 +5012,6 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     return checked;
   }
   /**
-   * Applies one task check result: a pass is gate evidence, a required failure blocks the task
-   * and becomes a finding, and a required inconclusive result blocks the task and returns the
-   * check's id: it stops the run unless another check failed (see `inconclusiveTaskCheck`).
-   */
-  /**
    * The test-integrity findings of a task's changes (#631). Each is recorded in
    * `tasks/TASK_ID/integrity.json`; under `testIntegrity: "block"` (the default) each becomes a
    * task failure that a repair must undo, under `warn` it stays a record.
@@ -5034,6 +5071,145 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       impact: "The tests no longer verify the behavior the spec requires",
       suggestedFix: integrityFix(finding),
     }));
+  }
+  /** Tests first is on and a person has not approved the tests yet. */
+  private testsPending(state: RuntimeState, policy: RunPolicy): boolean {
+    return testsFirstOf(policy) !== "off" && state.testsFirst?.approved !== true;
+  }
+  /**
+   * The tasks that may run under tests first: only test tasks until a person approved the tests.
+   * Once every test task has failed for the right reason and none is left, the tests are put to a
+   * person and null is returned: the caller stops and the run waits. Auto-approved runs approve
+   * the tests the same way.
+   */
+  private testsFirstReady(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    ready: Task[],
+  ): Task[] | null {
+    if (!this.testsPending(state, policy) || !state.graph) return ready;
+    const tests = ready.filter(isTestTask);
+    if (tests.length) return tests;
+    const rows = this.store.tasks(runId);
+    const all = state.graph.tasks.filter(isTestTask);
+    const done = all.every((t) =>
+      rows.some(
+        (r) =>
+          r.id === t.id &&
+          ["implemented", "verified"].includes(r.status) &&
+          hasTaskGate(r, state.taskGates),
+      ),
+    );
+    if (!done) return [];
+    const root = runRoot(this.store.workspace, state);
+    const entries = all.map((task) => ({
+      taskId: task.id,
+      title: task.title,
+      criterionIds: task.criterionIds,
+      files: task.writes
+        .filter((w) => w.action !== "delete")
+        .map((w) => {
+          const absolute = workspacePath(root, w.path);
+          const content = existsSync(absolute) ? readFileSync(absolute, "utf8") : "";
+          return { path: w.path, content: content.slice(0, MAX_TEST_CHARS) };
+        }),
+    }));
+    const files = [...new Set(entries.flatMap((t) => t.files.map((f) => f.path)))];
+    const digest = testsDigest(entries.flatMap((t) => t.files));
+    const criteria = new Set(entries.flatMap((t) => t.criterionIds));
+    const body = {
+      testsFirst: {
+        mode: testsFirstOf(policy),
+        criteria: (state.spec?.criteria ?? [])
+          .filter((c) => criteria.has(c.id))
+          .map((c) => ({ id: c.id, text: `Given ${c.given}, when ${c.when}, then ${c.then}` })),
+        tests: entries,
+      },
+    };
+    const auto = this.store
+      .requests(runId)
+      .some(
+        (r) =>
+          r.kind === "approval" &&
+          r.status === "accepted" &&
+          r.actor === "auto-approval" &&
+          !r.body_json.includes('"testsFirst"'),
+      );
+    state.testsFirst = { files, digest, approved: auto };
+    if (auto) {
+      this.store.transaction(() => {
+        const id = this.store.request(runId, "approval", digest, body);
+        this.store.decideRequest(runId, id, "accepted", { digest }, true);
+        this.store.saveState(runId, state);
+      });
+      return ready;
+    }
+    this.queued.push({ kind: "approval", digest, body });
+    return null;
+  }
+  /**
+   * Settles a test task under tests first: its checks must show the new tests failing for the
+   * right reason on the code as it is (tests-first.ts). Then the task gets its gate; otherwise the
+   * reason becomes a finding that a correction of the tests must fix.
+   */
+  private settleRed(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    child: string,
+    results: WorkerCheck[],
+    failures: Review["findings"],
+  ): void {
+    const runs = results.map(({ check, checked }) => ({
+      checkId: check.id,
+      status: checked.status,
+      ...(checked.output ? { output: checked.output } : {}),
+    }));
+    const problem = redProblem(task, runs);
+    const evidenceId = this.store.transaction(() => {
+      const artifact = this.store.artifact(
+        runId,
+        "diagnostic",
+        `tests-first/${task.id}.json`,
+        canonical({
+          taskId: task.id,
+          red: problem === null,
+          problem,
+          checks: runs.map((r) => ({ ...r, output: r.output?.slice(-4000) ?? null })),
+        }),
+      );
+      return this.store.addEvidence(runId, "command", state.snapshotId ?? "", artifact.id);
+    });
+    const all = [...failures];
+    if (problem)
+      all.push({
+        id: newId(),
+        kind: "correctness",
+        severity: "high",
+        requirementIds: task.requirementIds,
+        criterionIds: task.criterionIds,
+        file: task.writes.find((w) => w.action !== "delete")?.path ?? null,
+        symbol: null,
+        evidenceIds: [evidenceId],
+        claim: `Tests first: ${problem}`,
+        impact: "The code would be written against tests that do not check the missing behavior",
+        suggestedFix: `Rewrite the tests of ${task.id} so that they fail on the current code because the behavior of ${task.criterionIds.join(", ")} is missing, and pass once it is implemented.`,
+      });
+    if (all.length)
+      this.store.transaction(() =>
+        this.store.taskStatus(runId, task.id, "blocked", state.snapshotId),
+      );
+    this.settleTask(
+      runId,
+      state,
+      policy,
+      task,
+      child,
+      all,
+      all.length ? [] : [evidenceId, ...results.map(({ checked }) => checked.evidenceId)],
+    );
   }
   /**
    * The test-integrity scan at feature scope: every file the run changed, from its content before
@@ -5168,6 +5344,11 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       specConflict: account,
     });
   }
+  /**
+   * Applies one task check result: a pass is gate evidence, a required failure blocks the task
+   * and becomes a finding, and a required inconclusive result blocks the task and returns the
+   * check's id: it stops the run unless another check failed (see `inconclusiveTaskCheck`).
+   */
   private applyTaskCheck(
     runId: string,
     state: RuntimeState,

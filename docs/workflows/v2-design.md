@@ -133,8 +133,9 @@ Each preset is a file in `src/core/workflows/v2/presets/` and is checked: valid 
 | --- | --- | --- | --- | --- |
 | Quick fix | plan, approve, implement, checks | yes, after approval | task tests on implement, then typecheck, lint, tests | A small, well understood change |
 | Standard | research, specify, plan, analyze, approve, implement, checks, review | yes, after approval | as Quick fix, plus correctness review | The normal feature |
-| Full | the current SDD: Standard plus security review, convergence on every criterion and learn | yes, after approval | as Standard, security review when triggered | Large or risky changes |
+| Full | the current SDD: Standard plus tests first, security review, convergence on every criterion and learn | yes, after approval | as Standard, security review when triggered | Large or risky changes |
 | Best-of-N | as Standard, in a worktree; the tasks stage has `candidates: 3` | yes, after approval | as Standard | Tasks where picking among several attempts pays for them ([best-of-N](runtime.md#best-of-n-candidates)) |
+| TDD | as Standard, with the test tasks run, checked red and approved before the code | yes, after approval | as Standard; the approved tests are read-only for code tasks | Correctness first ([tests first](runtime.md#tests-first)) |
 | Spike | research, report | never | none | Learn something and write it down |
 | Review only | review of an existing diff | never | correctness and security review | Check a diff against criteria |
 | Fix CI | reproduce, research, plan, approve, implement, verify | yes, after approval | typecheck, lint, tests in reproduce and verify, task tests on implement | Make failing checks pass ([Fix CI](fix-ci.md)) |

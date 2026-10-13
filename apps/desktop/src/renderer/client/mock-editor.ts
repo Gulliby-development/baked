@@ -131,6 +131,7 @@ const PRESETS = [
   "spike",
   "review-only",
   "fix-ci",
+  "tdd",
 ];
 /** Copies saved in this window, by ID. */
 const saved = new Map<string, MockDefinition>();

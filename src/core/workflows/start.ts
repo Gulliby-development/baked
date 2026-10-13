@@ -216,6 +216,7 @@ export async function prepareStart(
     sandbox: policySandbox,
     clarification: _clarification,
     testIntegrity: _testIntegrity,
+    testsFirst: _testsFirst,
     duplication: _duplication,
     qualityRules: requestRules,
     sast: policySast,
@@ -239,6 +240,11 @@ export async function prepareStart(
   const clarification = request.clarification ?? clarificationOf(policy);
   // `block` is the default and is left out, so the policy hash of a guarded run is what it was.
   const testIntegrity = request.testIntegrity ?? testIntegrityOf(policy);
+  // The definition (the tdd preset) overrides the policy; `off` is left out of the policy.
+  const testsFirst =
+    (loaded.schemaVersion === 2 ? loaded.definition.testsFirst : undefined) ??
+    policy.testsFirst ??
+    "off";
   // The run flag overrides the policy, which overrides the configured default; `warn` is the
   // default and leaves the field out, so the policy hash stays what it was before the ratchet.
   const duplication =
@@ -296,6 +302,7 @@ export async function prepareStart(
     ...(allowOverlappingWrites ? { allowOverlappingWrites } : {}),
     ...(clarification === "assume" ? { clarification } : {}),
     ...(testIntegrity === "warn" ? { testIntegrity } : {}),
+    ...(testsFirst !== "off" ? { testsFirst } : {}),
     ...(editDiagnostics === "reject" ? { editDiagnostics } : {}),
     ...(libraryDocs ? { libraryDocs } : {}),
     ...(duplication !== DEFAULT_DUPLICATION ? { duplication } : {}),

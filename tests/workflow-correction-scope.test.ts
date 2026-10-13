@@ -88,6 +88,36 @@ describe("correction scope", () => {
     expect(correctionWrites(created, graph, { "src/new.ts": "hash" })[0]?.action).toBe("modify");
   });
 
+  // Bench round 11, mdrefs T011: T004 creates src/md/scan.rs and T008 modifies it; a correction
+  // that ran before T004 kept T008's modify and the tool policy refused all four attempts.
+  test("a file a pending task creates stays create when a later task modifies it", () => {
+    const skeleton = task("T001", ["src/lib.rs"], ["AC-001"]);
+    const scan = task("T004", [], ["AC-001"], { writes: [{ path: "src/md/scan.rs", action: "create" }] });
+    const later = task("T008", ["src/md/scan.rs"], ["AC-001"], { dependsOn: ["T004"] });
+    const graph = { ...root, tasks: [skeleton, scan, later] };
+    const action = (files: Record<string, string> | null) =>
+      correctionWrites(skeleton, graph, files).find((w) => w.path === "src/md/scan.rs")?.action;
+    expect(action({})).toBe("create");
+    expect(action(null)).toBe("create");
+    expect(action({ "src/md/scan.rs": "hash" })).toBe("modify");
+    const reversed = { ...graph, tasks: [skeleton, later, scan] };
+    expect(correctionWrites(skeleton, reversed, {}).find((w) => w.path === "src/md/scan.rs")?.action).toBe(
+      "create",
+    );
+    const correction = task("T011", [], ["AC-001"], {
+      origin: "repair",
+      writes: correctionWrites(skeleton, graph, {}),
+    });
+    expect(correctionAuthorized(correction, graph)).toBe(true);
+  });
+
+  test("a delete after a create keeps the delete", () => {
+    const made = task("T001", [], ["AC-001"], { writes: [{ path: "src/tmp.ts", action: "create" }] });
+    const removed = task("T002", [], ["AC-001"], { writes: [{ path: "src/tmp.ts", action: "delete" }] });
+    const graph = { ...root, tasks: [made, removed] };
+    expect(correctionWrites(made, graph, {})[0]?.action).toBe("delete");
+  });
+
   // Run 1185f909: a review finding on src/store.ts broke AC-004, which the plan gave to the CLI and
   // test tasks, while the store task covered AC-007 only; no task had both and the run blocked.
   test("a finding whose file and criterion belong to different tasks is corrected from the file's task", () => {
