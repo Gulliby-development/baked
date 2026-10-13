@@ -210,6 +210,12 @@ export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 /** A chat's reasoning effort: `default` follows the global `performance` settings. */
 export type ChatEffort = EffortLevel | "default";
 
+/**
+ * A chat's context window when its model offers more than one: a size in tokens, `max` for the
+ * largest, or `default` (the largest for the coordinator, the model's own size elsewhere).
+ */
+export type ChatContextSize = "default" | "max" | number;
+
 type OpenAIReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 type ServiceTier = "auto" | "flex" | "priority" | "default";
 export type CompatReasoningEffort = "off" | "low" | "medium" | "high" | "xhigh";

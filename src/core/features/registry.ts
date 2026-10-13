@@ -283,6 +283,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/chat: effort picker"],
   },
   {
+    id: "context-size",
+    group: "Chat and sessions",
+    title: "Context window size per chat; the coordinator defaults to the largest",
+    tui: ["/context-size: per tab, shown in the header"],
+    cli: ["--context"],
+    api: ["/v1/sessions/:id: contextSize, contextSizes", "/v1/models: contextSizes"],
+    desktop: ["project/chat: context size picker", "project/coordinator: context size picker"],
+  },
+  {
     id: "context-dashboard",
     group: "Chat and sessions",
     title: "Context and cost dashboard for a chat",

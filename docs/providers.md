@@ -11,7 +11,7 @@ Pick a provider and model with `Ctrl+L` or `/models`. Models are named `provider
 | GitHub Copilot | `copilot` | An existing Copilot sign-in in VS Code, JetBrains or Neovim is found automatically; or `COPILOT_API_KEY`, `/keys`, `--set-key copilot`, see below |
 | GitHub Models | `github-models` | `GITHUB_MODELS_API_KEY` or `/keys`; otherwise `GITHUB_TOKEN`, `GH_TOKEN` or the GitHub CLI's login (`gh auth login`), see below |
 
-Keys are stored outside project configuration ([configuration](configuration.md#provider-keys)). `/provider-settings` sets thinking, effort, speed and context options; a chat can choose its own [reasoning effort](#reasoning-effort-per-chat). From a shell:
+Keys are stored outside project configuration ([configuration](configuration.md#provider-keys)). `/provider-settings` sets thinking, effort, speed and context options; a chat can choose its own [reasoning effort](#reasoning-effort-per-chat) and [context size](#context-size-per-chat). From a shell:
 
 ```sh
 baked --list-providers
@@ -37,6 +37,17 @@ The levels offered are the ones BAKED sends to the chat's model, which `GET /v1/
 | GitHub Copilot, GitHub Models | `reasoning_effort` in the request body | `low` to `xhigh` on reasoning models; none for Claude models |
 
 A level the model does not support sends the next lower one it does; a model with no levels runs at its provider's default. Since this change, `performance.effort` also reaches Codex and Claude Code, which ignored it before. Workflow routes set effort per agent instead ([runtime guide](workflows/runtime.md#effort-and-fallback-models)).
+
+## Context size per chat
+
+Some providers offer more than one context window for a model. A chat then has a context size: `default`, `max` or a window in tokens. `default` runs the model as chosen, except in the [project coordinator](coordinator.md), which takes the largest window its model offers. A larger window keeps more of the conversation before compaction and costs more per turn. A model with one window runs as chosen whatever the size says, and the pickers hide.
+
+| Provider | Windows | How the size is sent |
+| --- | --- | --- |
+| Claude Code | 200k and 1M for `opus`, `sonnet`, Opus 4.6 and later, Sonnet 4 and later (not Haiku or Fable) | the `[1m]` model ID (`opus[1m]`) for 1M |
+| Anthropic, Codex, OpenAI, GitHub Copilot, GitHub Models | one window per model | nothing to pick |
+
+The terminal sets it per tab with `/context-size` (a picker, or `/context-size 1m`) and shows a chosen size after the model in the header; the desktop composer has a context size chip next to the effort chip when the model offers several windows, in chats and in the coordinator; headless runs take `--context` ([headless](headless.md#options)); the local API takes `contextSize` on `POST` and `PATCH /v1/sessions` and lists `contextSizes` in `GET /v1/models` ([API](desktop/api.md)). A size the model lacks takes the largest window below it, or the smallest. Choosing a `[1m]` model ID directly also works and stays as chosen under `default`. `/context-window` is separate: it overrides how many tokens BAKED budgets for a model, not which window the provider runs.
 
 ## Claude Code
 

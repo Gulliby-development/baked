@@ -34,6 +34,7 @@ A session is a chat conversation stored in `.baked/sessions/ID/` of the project,
 ```ts
 type Mode = "default" | "architect" | "plan" | "auto";   // "plan" needs the plan-mode capability
 type Effort = "default" | "low" | "medium" | "high" | "xhigh" | "max";  // needs the chat-effort capability
+type ContextSize = "default" | "max" | number;  // a window in tokens; "default" is the largest for the coordinator
 type SessionState = "idle" | "working" | "waiting";        // waiting: a prompt waits for a person
 
 interface SessionSummary {
@@ -47,6 +48,9 @@ interface SessionSummary {
   model: string | null;   // provider/model of the next turn; null when nothing is configured
   mode: Mode;
   effort: Effort;         // reasoning effort of the next turn; "default" follows the configuration
+  contextSize: ContextSize;      // context size of the next turn (older servers leave it out)
+  contextSizes: number[];        // windows in tokens the model offers, smallest first; [] when it has one
+  contextTokens: number | null;  // the window the next turn runs with when the model offers several
   compacting: boolean;    // a manual compaction runs; state is then "working"
 }
 
@@ -120,9 +124,9 @@ In `plan` mode the agent works as in the terminal UI's [plan mode](../guide.md#m
 | Method and path | Body or query | Result |
 | --- | --- | --- |
 | `GET /v1/sessions` | `?limit=` (default 50) | `{sessions: SessionSummary[]}`, most recently updated first |
-| `POST /v1/sessions` | `{title?, model?, mode?, effort?, text?, images?}` | 201 `SessionDetail`; with `text` or `images` the first turn starts at once |
+| `POST /v1/sessions` | `{title?, model?, mode?, effort?, contextSize?, text?, images?}` | 201 `SessionDetail`; with `text` or `images` the first turn starts at once |
 | `GET /v1/sessions/ID` | | `SessionDetail` |
-| `PATCH /v1/sessions/ID` | `{title?, model?, mode?, effort?}` | `SessionSummary`; `model`, `mode` and `effort` apply from the next turn |
+| `PATCH /v1/sessions/ID` | `{title?, model?, mode?, effort?, contextSize?}` | `SessionSummary`; `model`, `mode`, `effort` and `contextSize` apply from the next turn ([context size per chat](../providers.md#context-size-per-chat)) |
 | `DELETE /v1/sessions/ID` | | 204; 409 `SESSION_BUSY` while a turn runs |
 | `POST /v1/sessions/ID/fork` | `{atMessageId?, rollbackFiles?, force?}` | 201 `SessionDetail` of a new session with the messages up to and including `atMessageId` (all when absent); with `rollbackFiles`, plus `rollback` (below). 409 `SESSION_BUSY` with `rollbackFiles` while any turn runs, 409 `ROLLBACK_UNAVAILABLE` when files need restoring and the workspace is not a Git repository or cannot be backed up |
 | `GET /v1/sessions/ID/checkpoints` | | `{checkpoints: [Checkpoint], redo: [RedoEntry]}` ([below](#checkpoints)): one entry per turn of the conversation, and the undone turns a redo puts back, oldest first |
@@ -137,7 +141,7 @@ In `plan` mode the agent works as in the terminal UI's [plan mode](../guide.md#m
 | `POST /v1/sessions/ID/watch` | `{on: boolean}` | `WatchStatus`. `on: true` makes this session receive the watch turns, moving the watch from another session; `on: false` turns it off when this session watches and changes nothing otherwise |
 | `GET /v1/sessions/ID/export?format=markdown\|json` | | 200 with the chat as a file: `text/markdown` (default) or `application/json`, and `Content-Disposition: attachment; filename="TITLE-TIMESTAMP.md"` (or `.json`). Markdown is what the terminal UI's `/session export` writes (title, time range, messages with tool calls, reasoning and plans); JSON is the session's `messages` array. 400 for another format |
 | `GET /v1/sessions/ID/events` | `?after=SEQ`, or `Last-Event-ID` | SSE stream below |
-| `GET /v1/models` | `?provider=` | `{providers: [{id, name, configured, models: [{id, name, contextWindow?, efforts?}], error?}]}`; `configured` is whether a key or login is available, `models` is empty for a provider that is not configured, `id` is the `provider/model` id to send as `model`; `efforts` lists the reasoning efforts BAKED sends to that model, lowest first, and is absent when it takes none ([reasoning effort per chat](../providers.md#reasoning-effort-per-chat)) |
+| `GET /v1/models` | `?provider=` | `{providers: [{id, name, configured, models: [{id, name, contextWindow?, efforts?, contextSizes?}], error?}]}`; `configured` is whether a key or login is available, `models` is empty for a provider that is not configured, `id` is the `provider/model` id to send as `model`; `efforts` lists the reasoning efforts BAKED sends to that model, lowest first, and is absent when it takes none ([reasoning effort per chat](../providers.md#reasoning-effort-per-chat)); `contextSizes` lists the context windows a chat can pick, smallest first, and is absent when the model has one ([context size per chat](../providers.md#context-size-per-chat)) |
 | `GET /v1/mentions` | `?q=&limit=` (default 20, at most 50) | `{mentions: [{kind: "file" \| "directory" \| "symbol", insert, label, detail, indices}]}`: `@` completions for the composer; `insert` is the text after `@`, `indices` the matched characters of `label` |
 
 `ID` accepts a unique prefix of a session id, like `--session` on the command line.
@@ -227,7 +231,7 @@ Every event is `id: SEQ`, `event: TYPE`, `data: {seq, type, at, ...}`. Sequences
 | `turn-done` | `turnId`, `status` (`completed`, `interrupted`, `failed`), `error?`, `message` (the assistant `ChatMessage`, null when nothing was produced), `usage`, `durationMs` |
 | `compaction-start` | `compactionId` |
 | `compaction-done` | `compactionId`, `status` (`compacted`, `skipped`, `failed`, `interrupted`), `message` (the `system` `ChatMessage` added to the transcript, null when failed or interrupted), `compacted` (model messages summarized), `error?`, `context` |
-| `session` | `session` (`SessionSummary`) after a state, title, model, mode or effort change |
+| `session` | `session` (`SessionSummary`) after a state, title, model, mode, effort or context size change |
 | `watch` | `watch` (`WatchStatus`) when the watch starts, stops or moves to another session, finds its method, sends a turn or hits an error; a session that loses the watch gets one too |
 | `reset` | the requested sequence is no longer buffered or belongs to an earlier server start: fetch `GET /v1/sessions/ID` and continue from its `lastSeq` |
 

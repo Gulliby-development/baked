@@ -420,7 +420,12 @@ export function SessionView({
     window.location.assign(projectHref(key, "coordinator"));
   };
 
-  const update = (changes: { model?: string; mode?: ChatMode; effort?: ChatEffort }): void => {
+  const update = (changes: {
+    model?: string;
+    mode?: ChatMode;
+    effort?: ChatEffort;
+    contextSize?: number;
+  }): void => {
     if (draft) {
       if (changes.model) setDraftModel(changes.model);
       if (changes.mode) setDraftMode(changes.mode);
@@ -644,6 +649,15 @@ export function SessionView({
           onModel={(model) => update({ model })}
           onMode={(mode) => update({ mode })}
           {...(hasEffort ? { onEffort: (effort: ChatEffort) => update({ effort }) } : {})}
+          {...(!draft && session?.contextSizes && session.contextSizes.length > 1
+            ? {
+                contextSize: {
+                  sizes: session.contextSizes,
+                  tokens: session.contextTokens ?? null,
+                  onPick: (contextSize: number) => update({ contextSize }),
+                },
+              }
+            : {})}
           modes={modes}
           loadModels={loadModels}
           loadMentions={loadMentions}
