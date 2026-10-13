@@ -77,7 +77,7 @@ Each operation tries the best backend and falls back:
 3. **tree-sitter**: outlines and imports for about 40 languages.
 4. **regex**: the last resort.
 
-`/lsp status` shows attached servers; `/lsp install` installs servers from the Mason registry into the BAKED data directory (`lsp-servers/`), through npm, pip, cargo, go or GitHub releases. Servers already on `PATH` are found automatically. `/diagnose` checks LSP, tree-sitter and semantic indexing.
+`/lsp status` shows attached servers; `/lsp install` installs servers from the Mason registry into the BAKED data directory (`lsp-servers/`), through npm, pip, cargo, go or GitHub releases. Generic Mason packages such as `jdtls` are downloaded and unpacked into `lsp-servers/packages/<name>/` with their layout kept, and a launcher for each command goes into `lsp-servers/bin/`; a package whose command is a Python script needs `python3` (`python` on Windows) on `PATH`, and `jdtls` also needs Java 21 or newer. Servers already on `PATH` are found automatically. `/diagnose` checks LSP, tree-sitter and semantic indexing.
 
 Chat and workflow runs in one BAKED process share the same language servers: the terminal UI and `baked serve` each start one set per project, not one for chat and another for runs ([architecture](architecture.md#code-intelligence)).
 
