@@ -166,7 +166,7 @@ export class CodeIntelligenceRouter {
     language: Language,
     operation: keyof IntelligenceBackend,
     fn: (backend: IntelligenceBackend) => Promise<T | null>,
-  ): Promise<{ value: T; backend: string } | null> {
+  ): Promise<{ value: T; backend: string; server?: string } | null> {
     const preference = this.config.backend ?? "auto";
 
     const candidates =
@@ -189,13 +189,21 @@ export class CodeIntelligenceRouter {
           fn(backend),
           new Promise<null>((resolve) => setTimeout(resolve, timeoutMs, null)),
         ]);
-        if (result !== null) return { value: result, backend: backend.name };
+        if (result !== null) {
+          const server = backend.name === "lsp" ? this.lspServerFor(language) : undefined;
+          return { value: result, backend: backend.name, ...(server ? { server } : {}) };
+        }
       } catch {
         // Fall through to next backend
       }
     }
 
     return null;
+  }
+
+  /** The command of the running language server for a language, as a usage report names it. */
+  private lspServerFor(language: Language): string | undefined {
+    return this.getStatus().lspServers.find((server) => server.language === language)?.command;
   }
 
   /** Get status of all initialized backends, including active LSP servers */

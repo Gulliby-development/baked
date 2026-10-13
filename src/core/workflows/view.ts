@@ -3,6 +3,7 @@ import { ROUTING_ARTIFACT, RoutingRecordSchema } from "../llm/model-routing.js";
 import { renderSpec } from "../specs/render.js";
 import { workspacePath } from "../specs/validate.js";
 import { BUDGET_PRESETS, type BudgetPresetId, budgetUsage } from "./budget.js";
+import { CHECK_PREFLIGHT_ARTIFACT, type CheckSmoke } from "./check-preflight.js";
 import { fileHash } from "./effects.js";
 import {
   compareWithActual,
@@ -421,6 +422,17 @@ export function readRoutingSummary(store: WorkflowStore, runId: string): Routing
   }
 }
 
+/** The start-time check smoke of a run; null for a run started without one (an injected executor, an older run). */
+export function readCheckPreflight(store: WorkflowStore, runId: string): CheckSmoke[] | null {
+  const row = store.latestArtifact(runId, CHECK_PREFLIGHT_ARTIFACT);
+  if (!row) return null;
+  try {
+    return (JSON.parse(store.readArtifact(runId, row.id)) as { checks: CheckSmoke[] }).checks;
+  } catch {
+    return null;
+  }
+}
+
 export function readWorkflowView(service: NativeWorkflowService, runId: string) {
   const store = service.store;
   return store.readTransaction(() => {
@@ -444,6 +456,7 @@ export function readWorkflowView(service: NativeWorkflowService, runId: string) 
       runModel: runModelOf(store, runId),
       worktree: worktreeView(service.workspace, store.state(runId)),
       routing: readRoutingSummary(store, runId),
+      preflight: readCheckPreflight(store, runId),
     };
   });
 }
