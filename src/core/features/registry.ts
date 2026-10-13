@@ -547,7 +547,7 @@ export const FEATURES: readonly Feature[] = [
     tui: ["/packages pack"],
     cli: ["baked packages pack: --check exits 1 when out of date"],
     api: ["/v1/packages/pack"],
-    desktop: ["project/packages: Write manifest"],
+    desktop: ["project/packages: Create package"],
   },
   {
     id: "baked-help",
@@ -675,6 +675,15 @@ export const FEATURES: readonly Feature[] = [
       "/v1/workflow/runs/:id/usage",
     ],
     desktop: ["project/runs"],
+  },
+  {
+    id: "model-call-recording",
+    group: "Workflow runs",
+    title: "Record a run's model calls and replay them without the provider",
+    tui: notNeeded("a debugging aid for BAKED itself"),
+    cli: ["baked workflow run: --record-model-calls, --replay", "baked workflow recording"],
+    api: notNeeded("a debugging aid for BAKED itself"),
+    desktop: notNeeded("a debugging aid for BAKED itself"),
   },
   {
     id: "critic-outcomes",

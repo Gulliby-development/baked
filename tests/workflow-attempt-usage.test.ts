@@ -290,6 +290,36 @@ describe("host tools", () => {
   });
 });
 
+describe("a failed tool call", () => {
+  // R13, mdrefs T010: an apply_fix call failed after 8 ms and the journal did not say why.
+  test("is journaled with its error message", async () => {
+    scriptModel([
+      step(1000, 50, { name: "run_repro", input: { value: 1 } }),
+      () => {
+        throw new Error("provider unavailable");
+      },
+    ]);
+    const { store, run, executor, request } = await nativeAttempt();
+    await expect(
+      executor.execute({
+        ...request,
+        profile: { ...request.profile, allowedTools: [...request.profile.allowedTools, "run_repro"] },
+        hostTools: {
+          run_repro: {
+            description: "Run a repro",
+            inputSchema: z.object({ value: z.number() }),
+            execute: async () => {
+              throw new Error("the repro command is missing");
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow("provider unavailable");
+    const finished = store.events(run.runId).find((e) => e.type === "tool.finished");
+    expect(finished?.payload).toMatchObject({ tool: "run_repro", status: "error", error: "the repro command is missing" });
+  });
+});
+
 describe("documentation probes", () => {
   const planned = (path: string): Task => ({
     id: "T004",
@@ -369,6 +399,37 @@ describe("task-end check", () => {
     });
     expect(runs).toBe(1);
     expect(response.output).toMatchObject({ summary: "fixed" });
+  });
+
+  test("a blocked result after applied edits goes back once with the written files (#846)", async () => {
+    const blocked = {
+      ...implemented("Unable to edit value.txt: blocked by read-only sandbox settings. No changes were made."),
+      outcome: "blocked",
+      unresolved: ["value.txt"],
+    };
+    scriptModel([
+      step(1000, 50, { name: "submit_result", input: blocked }),
+      step(1000, 50, { name: "submit_result", input: implemented("value.txt is parsed") }),
+    ]);
+    const { store, run, attemptId, executor, request } = await nativeAttempt(
+      fixturePolicy,
+      "implementation",
+      codeTask,
+    );
+    store.transaction(() => {
+      const id = store.prepareEffect(run.runId, attemptId, "file_patch", { path: "value.txt", tool: "edit_file" }, null, null);
+      store.finishFileEffect(run.runId, id, "a".repeat(64));
+    });
+    const response = await executor.execute(request);
+    expect(response.output).toMatchObject({ outcome: "implemented", summary: "value.txt is parsed" });
+  });
+
+  test("a blocked result without applied edits is accepted as it is", async () => {
+    const blocked = { ...implemented("The spec is missing a format."), outcome: "blocked", unresolved: ["format"] };
+    scriptModel([step(1000, 50, { name: "submit_result", input: blocked })]);
+    const { executor, request } = await nativeAttempt(fixturePolicy, "implementation", codeTask);
+    const response = await executor.execute(request);
+    expect(response.output).toMatchObject({ outcome: "blocked" });
   });
 
   test("a clean check accepts the first submission", async () => {

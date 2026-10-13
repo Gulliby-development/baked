@@ -95,6 +95,8 @@ export interface LaunchNote {
   task?: { ref: string; url?: string; state: "open" | "closed" | "local" };
   /** A session's own worktree and branch, when it has one. */
   worktree?: SessionWorktree;
+  /** For a session whose turn ended: its last answer, shortened. */
+  result?: string;
   /** `status`: the item's status changed; `task-closed`: its task's pull request merged. */
   event: "status" | "task-closed";
 }

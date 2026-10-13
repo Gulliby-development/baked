@@ -88,3 +88,11 @@ export function launchName(item: Pick<LaunchNote, "id" | "feature" | "title">): 
 export function launchWhy(item: Pick<LaunchNote, "why" | "title">): string {
   return item.title && item.why.startsWith(item.title) ? "" : item.why;
 }
+
+/** The prefix the coordinator's `message_session` puts before what it sends a launched session. */
+const COORDINATOR_PREFIX = "Message from the project coordinator:\n\n";
+
+/** The text of a message the coordinator sent this session, or null for the person's own. */
+export function fromCoordinator(content: string): string | null {
+  return content.startsWith(COORDINATOR_PREFIX) ? content.slice(COORDINATOR_PREFIX.length) : null;
+}

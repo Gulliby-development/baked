@@ -79,6 +79,14 @@ export const RESTRICTED_TOOL_NAMES: string[] = [
   "update_plan_step",
 ];
 
+/**
+ * Tools that restricted modes allow for some actions only: the read-only actions of a tool that
+ * can also write. Its other actions get the same refusal as a disallowed tool.
+ */
+export const RESTRICTED_TOOL_ACTIONS: Readonly<Record<string, readonly string[]>> = {
+  artifact: ["list", "read"],
+};
+
 /** Tools available during plan execution.
  *  Executor gets edit/shell/project + read (fallback if edit fails) + update_plan_step.
  *  No dispatch, explore, discover_pattern, web_search — the plan already contains everything. */
