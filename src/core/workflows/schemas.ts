@@ -322,6 +322,11 @@ export const PolicySchema = z
       .object({
         maxAttemptTokens: z.number().int().min(10_000).optional(),
         maxRunTokens: z.number().int().min(10_000).nullable().optional(),
+        /**
+         * Hard ceiling above `maxRunTokens` that a run under `clarification: "assume"` may grow
+         * to without a person while it still makes progress (see `extendUnderAssume`).
+         */
+        extendToTokens: z.number().int().min(10_000).optional(),
         historyStores: z.array(z.string().min(1)).max(32).optional(),
         testTaskSteps: z.number().int().min(1).max(100).optional(),
       })
