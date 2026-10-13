@@ -43,7 +43,7 @@ export const bakeFindTool = {
 
       const enriched = repoMap?.isReady
         ? await enrichWithSymbols(repoMap, fileResults, cwd)
-        : fileResults.map((f: string) => `  ${relative(cwd, resolve(cwd, f))}`).join("\n");
+        : fileResults.map((f: string) => `  ${toPosix(relative(cwd, resolve(cwd, f)))}`).join("\n");
 
       return {
         success: true,
@@ -68,7 +68,7 @@ async function searchIntelligenceClient(
   limit: number,
 ): Promise<RankedFile[]> {
   // Relative path of an indexed file, and its absolute path under the searched root.
-  const relOf = (indexed: string) => relative(index.indexRoot, indexed);
+  const relOf = (indexed: string) => toPosix(relative(index.indexRoot, indexed));
   const atRoot = (rel: string) => resolve(index.root, rel);
   const fileMap = new Map<string, RankedFile>();
   const words = query.split(/\s+/).filter((w: string) => w.length >= 2);
@@ -383,6 +383,9 @@ const TYPE_GLOBS: Record<string, string[]> = {
   style: ["*.css", "*.scss", "*.less", "*.sass", "*.styled.*"],
 };
 
+/** Paths in results use `/` on every OS, as agents pass them back to the file tools. */
+const toPosix = (path: string) => path.replaceAll("\\", "/");
+
 const EXCLUDED_DIRS = [
   "node_modules",
   ".git",
@@ -490,7 +493,7 @@ async function enrichWithSymbols(
 ): Promise<string> {
   const results: string[] = [];
   for (const f of files) {
-    const rel = relative(cwd, resolve(cwd, f));
+    const rel = toPosix(relative(cwd, resolve(cwd, f)));
     const syms = await repoMap.getFileSymbols(rel);
     const symStr =
       syms.length > 0
