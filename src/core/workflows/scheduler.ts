@@ -4701,6 +4701,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         generated: generatedPaths(policy),
         signal,
       });
+    // The workspace the run started from had no source code: the reviewers judge the whole program.
+    const greenfield = this.baselineScaffold(runId, state);
     const runReviewer = async (reviewer: Reviewer) => {
       // A review of this very snapshot that an earlier, interrupted round finished is kept.
       const kept = state.reviews[reviewer.key];
@@ -4723,6 +4725,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             {
               dimension: reviewer.dimension,
               evidence: this.evidenceContext(runId, state),
+              ...(greenfield ? { baseline: { greenfield } } : {}),
               ...extra,
             },
             signal,
