@@ -70,6 +70,7 @@ const sample = (
   source: "project",
   files,
   tokens,
+  model: null,
   ...more,
 });
 
@@ -131,15 +132,16 @@ describe("plan-time sizing", () => {
       sample("test", 471_000),
       sample("mixed", 900_000, 5),
     ]);
-    expect(rates.code.modify).toEqual({ perFile: { low: 28_000, high: 82_000 }, samples: 2, basis: "project" });
+    expect(rates.code.modify).toEqual({ perFile: { low: 28_000, high: 82_000 }, samples: 2, basis: "project", model: null });
     expect(rates.test.modify.samples).toBe(1);
     // Created code files have no sample of their own: modified ones stand in, with the default's room.
     expect(rates.code.create).toEqual({
       perFile: { low: 28_000, high: DEFAULT_PER_FILE.code.create.high },
       samples: 2,
       basis: "history",
+      model: null,
     });
-    expect(perFileRates([]).docs.modify).toEqual({ perFile: DEFAULT_PER_FILE.docs.modify, samples: 0, basis: "defaults" });
+    expect(perFileRates([]).docs.modify).toEqual({ perFile: DEFAULT_PER_FILE.docs.modify, samples: 0, basis: "defaults", model: null });
   });
 
   test("this project's history decides alone once it has enough tasks; other projects only widen", () => {
@@ -149,12 +151,35 @@ describe("plan-time sizing", () => {
       perFile: { low: 55_000, high: 59_000 },
       samples: 2,
       basis: "project",
+      model: null,
     });
     const oneOwn = perFileRates([...shared, sample("test", 55_000)]).test.modify;
     expect(oneOwn.basis).toBe("history");
     expect(oneOwn.samples).toBe(3);
     const low = perFileRates([sample("code", 20_000, 1, { source: "shared" })]).code.modify;
     expect(low.perFile.high).toBe(DEFAULT_PER_FILE.code.modify.high);
+  });
+
+  test("the planned model's own tasks set the rate once it ran enough of the kind; else every model's", () => {
+    const codex = [sample("test", 300_000, 1, { model: "codex" }), sample("test", 320_000, 1, { model: "codex" })];
+    const claude = [sample("test", 450_000, 1, { model: "sonnet" }), sample("test", 480_000, 1, { model: "sonnet" })];
+    const mixed = [...codex, ...claude];
+    expect(perFileRates(mixed, "sonnet").test.modify).toEqual({
+      perFile: { low: 450_000, high: 480_000 },
+      samples: 2,
+      basis: "project",
+      model: "sonnet",
+    });
+    expect(perFileRates(mixed, "codex").test.modify.perFile).toEqual({ low: 300_000, high: 320_000 });
+    // One sample of the model is too few: every model's tasks price it, and the rate says so.
+    const few = perFileRates([...codex, claude[0]!], "sonnet").test.modify;
+    expect(few.model).toBeNull();
+    expect(few.samples).toBe(3);
+    // Without a model, all of history counts as before.
+    expect(perFileRates(mixed).test.modify.samples).toBe(4);
+    const report = sizePlan({ graph: graph(task("T001", ["tests/a.test.ts"])), policy: policy(), samples: mixed, spent: 0, model: "sonnet" });
+    expect(report.model).toBe("sonnet");
+    expect(report.tasks[0]?.estimate.high).toBe(480_000);
   });
 
   test("a task is priced per file by its kind and by whether it creates or modifies it", () => {
@@ -272,7 +297,7 @@ describe("plan-time sizing", () => {
       CREATE TABLE attempts (run_id TEXT, step_id TEXT, model_id TEXT, used_tokens INTEGER);
       INSERT INTO runs VALUES ('done','completed'),('open','blocked');
       INSERT INTO steps VALUES ('done','s1','task-T001'),('done','s2','task-T002'),('done','s3','task-T003'),('done','s4','review'),('open','s5','task-T001');
-      INSERT INTO attempts VALUES ('done','s1','m',28000),('done','s2','m',240000),('done','s3','m',231000),('done','s4','m',50000),('open','s5','m',999999);`);
+      INSERT INTO attempts VALUES ('done','s1','m',28000),('done','s2','m',140000),('done','s2','n',100000),('done','s2','o',90000),('done','s3','m',231000),('done','s4','m',50000),('open','s5','m',999999);`);
     const insert = db.query("INSERT INTO tasks VALUES (?,?,?,?)");
     insert.run("done", "T001", JSON.stringify(task("T001", ["src/store.ts"])), "verified");
     insert.run("done", "T002", JSON.stringify(task("T002", ["tests/u.test.ts"])), "verified");
@@ -280,8 +305,9 @@ describe("plan-time sizing", () => {
     insert.run("open", "T001", JSON.stringify(task("T001", ["src/store.ts"])), "verified");
     db.close();
     expect(samplesFrom(path)).toEqual([
-      { runId: "done", taskId: "T001", kind: "code", action: "modify", source: "project", files: 1, tokens: 28_000 },
-      { runId: "done", taskId: "T002", kind: "test", action: "modify", source: "project", files: 1, tokens: 471_000 },
+      { runId: "done", taskId: "T001", kind: "code", action: "modify", source: "project", files: 1, tokens: 28_000, model: "m" },
+      // The model that spent most of the task's own tokens names the sample.
+      { runId: "done", taskId: "T002", kind: "test", action: "modify", source: "project", files: 1, tokens: 561_000, model: "m" },
     ]);
     expect(samplesFrom(path, "shared").every((s) => s.source === "shared")).toBe(true);
   });

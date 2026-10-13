@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { DEFAULT_STAGE_RANGES, rangeOf, type TokenRange } from "./estimate.js";
+import { DEFAULT_STAGE_RANGES, historyStorePaths, rangeOf, type TokenRange } from "./estimate.js";
 import type { RunPolicy, TaskGraph } from "./schemas.js";
 import { DEFAULT_MAX_ATTEMPT_TOKENS } from "./step-budget.js";
 import type { Task } from "./types.js";
@@ -35,6 +35,8 @@ export interface SizingSample {
   files: number;
   /** Tokens of the task's attempts and of the corrective tasks that wrote the same files. */
   tokens: number;
+  /** The model that spent most of the task's own tokens; null in history without attempts. */
+  model: string | null;
 }
 
 /**
@@ -56,6 +58,12 @@ export const MIN_PROJECT_SAMPLES = 2;
  * against a measured 72k-ish median).
  */
 export const MIN_HISTORY_SAMPLES = 6;
+/**
+ * Samples of a kind that the planned model ran, needed before other models' are left out. Models
+ * spend differently on the same task: claude-code runs cost 1.3-1.5x the tokens per task of codex
+ * runs (R04), so a switch of provider was priced with the other provider's rates.
+ */
+export const MIN_MODEL_SAMPLES = 2;
 /** Steps of a test task attempt when the policy names none; test tasks ran out at 20. */
 export const DEFAULT_TEST_TASK_STEPS = 32;
 /** Without a configured ceiling, a task attempt may grow to this. */
@@ -123,17 +131,22 @@ export function samplesFrom(
           id: row.id,
           ...(JSON.parse(row.definition_json) as Pick<Task, "writes" | "origin">),
         }));
-      const spent = new Map(
-        db
-          .query<{ stage: string; tokens: number | null }, [string]>(
-            `SELECT s.stage_id AS stage, SUM(COALESCE(a.used_tokens,0)) AS tokens FROM attempts a
-             JOIN steps s ON s.run_id=a.run_id AND s.id=a.step_id
-             WHERE a.run_id=? AND s.stage_id LIKE 'task-%' AND a.model_id IS NOT NULL
-             GROUP BY s.stage_id`,
-          )
-          .all(id)
-          .map((row) => [row.stage, row.tokens ?? 0]),
-      );
+      const byModel = db
+        .query<{ stage: string; model: string; tokens: number | null }, [string]>(
+          `SELECT s.stage_id AS stage, a.model_id AS model, SUM(COALESCE(a.used_tokens,0)) AS tokens
+           FROM attempts a JOIN steps s ON s.run_id=a.run_id AND s.id=a.step_id
+           WHERE a.run_id=? AND s.stage_id LIKE 'task-%' AND a.model_id IS NOT NULL
+           GROUP BY s.stage_id, a.model_id`,
+        )
+        .all(id);
+      const spent = new Map<string, number>();
+      const modelOf = new Map<string, { model: string; tokens: number }>();
+      for (const row of byModel) {
+        const tokens = row.tokens ?? 0;
+        spent.set(row.stage, (spent.get(row.stage) ?? 0) + tokens);
+        const top = modelOf.get(row.stage);
+        if (!top || tokens > top.tokens) modelOf.set(row.stage, { model: row.model, tokens });
+      }
       const planned = tasks.filter((task) => task.origin === "planned");
       const totals = new Map(planned.map((task) => [task.id, spent.get(`task-${task.id}`) ?? 0]));
       for (const correction of tasks.filter((task) => task.origin !== "planned")) {
@@ -159,6 +172,7 @@ export function samplesFrom(
             source,
             files,
             tokens,
+            model: modelOf.get(`task-${task.id}`)?.model ?? null,
           });
       }
     }
@@ -176,9 +190,7 @@ export function samplesFrom(
  */
 export function sizingHistory(workspace: string, policy: RunPolicy): SizingSample[] {
   const own = join(workspace, ".baked", "workflows.sqlite");
-  const shared = (policy.sizing?.historyStores ?? [])
-    .map((path) => (path.endsWith(".sqlite") ? path : join(path, ".baked", "workflows.sqlite")))
-    .filter((path) => path !== own);
+  const shared = historyStorePaths(workspace, policy);
   const seen = new Set<string>();
   return [samplesFrom(own, "project"), ...shared.map((path) => samplesFrom(path, "shared"))]
     .flat()
@@ -197,6 +209,11 @@ export interface KindRate {
    * is at least the default's. `defaults`: no task of the kind.
    */
   basis: "project" | "history" | "defaults";
+  /**
+   * The model whose tasks alone set the rate, or null when the rate is from every model: no model
+   * was asked for, or it ran fewer than `MIN_MODEL_SAMPLES` tasks of the kind.
+   */
+  model: string | null;
 }
 export type Rates = Record<FileKind, Record<WriteAction, KindRate>>;
 
@@ -207,9 +224,13 @@ export type Rates = Record<FileKind, Record<WriteAction, KindRate>>;
  * since a rate from elsewhere is a guess: it keeps at least the default upper bound, so a task it
  * underprices still gets the default's room.
  */
-export function perFileRates(samples: SizingSample[]): Rates {
+export function perFileRates(samples: SizingSample[], model: string | null = null): Rates {
   const perFile = (list: SizingSample[]) => rangeOf(list.map((s) => s.tokens / s.files));
-  const rate = (kind: FileKind, action: WriteAction): KindRate => {
+  const rateOf = (
+    samples: SizingSample[],
+    kind: FileKind,
+    action: WriteAction,
+  ): Omit<KindRate, "model"> => {
     const fallback = DEFAULT_PER_FILE[kind][action];
     const ofKind = samples.filter((sample) => sample.kind === kind);
     const exact = ofKind.filter((sample) => sample.action === action);
@@ -230,11 +251,19 @@ export function perFileRates(samples: SizingSample[]): Rates {
         }
       : { perFile: fallback, samples: 0, basis: "defaults" };
   };
-  const byAction = (kind: FileKind) =>
-    Object.fromEntries(WRITE_ACTIONS.map((action) => [action, rate(kind, action)])) as Record<
-      WriteAction,
-      KindRate
-    >;
+  const byAction = (kind: FileKind) => {
+    // Only the planned model's tasks once it ran enough of the kind; else every model's.
+    const own = model
+      ? samples.filter((sample) => sample.kind === kind && sample.model === model)
+      : [];
+    const ofModel = own.length >= MIN_MODEL_SAMPLES ? model : null;
+    return Object.fromEntries(
+      WRITE_ACTIONS.map((action) => [
+        action,
+        { ...rateOf(ofModel ? own : samples, kind, action), model: ofModel },
+      ]),
+    ) as Record<WriteAction, KindRate>;
+  };
   return { code: byAction("code"), test: byAction("test"), docs: byAction("docs") };
 }
 
@@ -258,6 +287,8 @@ export interface TaskSize {
 
 export interface SizingReport {
   schemaVersion: 3;
+  /** The model the tasks were priced for; null when none was known. */
+  model: string | null;
   rates: Rates;
   tasks: TaskSize[];
   /**
@@ -326,8 +357,10 @@ export function sizePlan(input: {
   policy: RunPolicy;
   samples: SizingSample[];
   spent: number;
+  /** The model the tasks will run on; its own history prices them once it has enough. */
+  model?: string | null;
 }): SizingReport {
-  const rates = perFileRates(input.samples);
+  const rates = perFileRates(input.samples, input.model ?? null);
   const maxAttemptTokens = input.policy.sizing?.maxAttemptTokens ?? DEFAULT_MAX_SIZED_ATTEMPT;
   const maxRunTokens = input.policy.sizing?.maxRunTokens ?? null;
   const floor = input.policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS;
@@ -380,6 +413,7 @@ export function sizePlan(input: {
   }
   return {
     schemaVersion: 3,
+    model: input.model ?? null,
     rates,
     tasks,
     runTokens,
@@ -398,8 +432,9 @@ export function sizePlan(input: {
 export function plannerSizing(
   policy: RunPolicy,
   samples: SizingSample[],
+  model: string | null = null,
 ): { maxCodeFilesPerTask: number; note: string } {
-  const rates = perFileRates(samples);
+  const rates = perFileRates(samples, model);
   const maxAttemptTokens = policy.sizing?.maxAttemptTokens ?? DEFAULT_MAX_SIZED_ATTEMPT;
   const maxCodeFilesPerTask = Math.max(1, Math.floor(maxAttemptTokens / highest(rates, "code")));
   const k = (kind: FileKind) => `${Math.round(highest(rates, kind) / 1000)}k`;
