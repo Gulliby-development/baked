@@ -1,4 +1,5 @@
 import { canonical, hashJson } from "../specs/hash.js";
+import { unmappedDeliverables } from "./request-coverage.js";
 import type { InputManifest, RunPolicy, Spec, TaskGraph } from "./schemas.js";
 import type { ArtifactRow, RequestRow } from "./store.js";
 import { isAcceptanceRequest } from "./v2/acceptance.js";
@@ -57,6 +58,8 @@ export interface ApprovalContext {
   hostSplitTasks?: number;
   /** The run's baseline holds no source files (empty or scaffold only). */
   scaffold?: boolean;
+  /** The user's request; a spec that leaves one of its deliverables unmapped needs a person. */
+  request?: string;
 }
 
 /** Budget limits a renewal may keep or lower, never raise, unless the operator raised them. */
@@ -103,6 +106,8 @@ export function evaluateAutoApproval(
       common.push(`${write.path} always needs a person`);
   if (spec.criteria.some((criterion) => criterion.method === "post-release"))
     common.push("Deferring post-release criteria needs a person");
+  for (const deliverable of unmappedDeliverables(spec, context.request ?? ""))
+    common.push(`Request deliverable not covered by the spec: ${deliverable}`);
   const limitsHash = hashJson({ policy: policyBounds(policy) });
   const reasons: string[] = [...common];
   if (config.renewal) {

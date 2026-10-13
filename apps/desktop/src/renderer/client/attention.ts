@@ -27,6 +27,14 @@ export interface ApprovalBody {
   deferredCriteria?: string[];
   /** Defaults the agents chose instead of asking (`clarification: "assume"`). */
   assumptions?: string[];
+  /** Each deliverable of the request and the requirements, or the request's exclusion, covering it. */
+  requestCoverage?: {
+    deliverable: string;
+    requirementIds: string[];
+    criterionIds: string[];
+    outOfScope: string | null;
+    mapped: boolean;
+  }[];
   executionMode?: "inline" | "worktree";
   worktree?: { branch: string; userChangesInScope?: string[] };
 }

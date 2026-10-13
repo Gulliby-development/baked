@@ -113,6 +113,7 @@ import {
 import { ProcessScope } from "./process-scope.js";
 import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery.js";
+import { deliverableProblems, requestCoverage } from "./request-coverage.js";
 import {
   abortableDelay,
   accountRefusal,
@@ -255,6 +256,12 @@ interface QueuedRequest {
 }
 
 /** A provider asking to wait longer than this is not waited for once a route has fallback models. */
+/**
+ * The request a spec's deliverables are checked against. A feature of an initiative has its
+ * boundary approved with the split, not the request, so it is checked against nothing.
+ */
+const coverageRequest = (state: RuntimeState): string =>
+  state.hostDependencies ? "" : state.requestText;
 const LONG_RETRY_AFTER_MS = 30_000;
 /** The implementer's own list of what it left unfinished, for the blocked task's message. */
 /** A SQLite failure is a host fault, never a model's invalid output. */
@@ -524,6 +531,7 @@ export class WorkflowScheduler {
                     const questions = parsed.data.openQuestions;
                     return [
                       ...specCoverageProblems(parsed.data),
+                      ...deliverableProblems(parsed.data, coverageRequest(state)),
                       ...assumeProblems(
                         policy,
                         questions,
@@ -898,6 +906,7 @@ export class WorkflowScheduler {
                           this.store.readArtifact(runId, artifact.id),
                         ),
                         {
+                          request: coverageRequest(state),
                           hostSplitTasks: state.hostSplitTasks,
                           scaffold: this.baselineScaffold(runId, state),
                           exists: (path) =>
@@ -926,6 +935,9 @@ export class WorkflowScheduler {
                     .map((c) => c.id),
                   // Defaults the agents chose instead of asking; approving accepts them.
                   assumptions: state.spec.assumptions,
+                  ...(state.spec.deliverables
+                    ? { requestCoverage: requestCoverage(state.spec, coverageRequest(state)) }
+                    : {}),
                   boundedCorrection: true,
                   // Granted walk-through capabilities are shown to the person; the frozen gates
                   // that hold them are part of the manifest the digest covers.
