@@ -99,6 +99,7 @@ import {
   plannerApprovalLimits,
   planScopeAdvice,
   policyDecisions,
+  withoutApprovalRemarks,
 } from "./auto-approval.js";
 import { budgetUsage, raiseToStartEstimate, reserveTokens } from "./budget.js";
 import {
@@ -407,7 +408,7 @@ function planGraph(
   const graph = withReadDependencies(
     withModuleDependencies(
       withDerivedRequirements(spec, {
-        ...withImplementationProfiles(plan.taskGraph, profiles),
+        ...withImplementationProfiles(withoutApprovalRemarks(plan.taskGraph), profiles),
         specHash: hashJson(spec),
         planHash: hashBytes(plan.markdown),
       }),
