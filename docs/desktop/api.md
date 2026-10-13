@@ -256,6 +256,10 @@ Exists: `GET /v1/workflow/definitions` (each summary has `stages` and `line`: `s
 
 `POST /v1/workflow/runs` and the `GET /v1/workflow/doctor` and `/estimate` queries take `sandbox` (`off`, `auto` or `required`, as `--sandbox`): the run's [OS sandbox](../sandbox.md), frozen in its policy; omitted, the stricter of the policy's `sandbox` and the configured `sandbox` setting applies, and `required` without a backend is refused with 400 `INVALID_DEFINITION`.
 
+`POST /v1/workflow/runs` takes `approvalReview: true` (as `--approval-review`): the [approval reviewer](../workflows/runtime.md#auto-approval) may approve a low-risk plan outside the auto approval limits. It is refused without `autoApproval.limits`, and a pending approval's body then carries `autoApproval.review` or `autoApproval.reviewError`.
+
+The run snapshot also has `reviewNotes`: `{count, ids}` of the review and convergence findings that started no correction (the [run report](../workflows/runtime.md#run-report) lists them; absent from older servers).
+
 A run snapshot also has `autoRetry`: `{at, attempt, of}` only while a run blocked with `provider_unavailable` waits for its [automatic resume](../workflows/runtime.md#stalls-deadlines-and-automatic-resume).
 
 The `body_json` of an `approval` request lists `writes`, `checks`, `profiles`, `deferredCriteria` and `assumptions`, and, when the spec lists the request's deliverables, `requestCoverage[]`: `{deliverable, requirementIds, criterionIds, outOfScope, mapped}` per deliverable, where `deliverable` and `outOfScope` quote the request and `mapped` is false for a deliverable nothing covers (see [request coverage](../workflows/runtime.md#request-coverage)).

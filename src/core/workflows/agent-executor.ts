@@ -56,6 +56,7 @@ import { settleInterruptedEdits } from "./recovery.js";
 import { isTransient } from "./retry.js";
 import {
   AnalysisSchema,
+  ApprovalReviewSchema,
   CritiqueSchema,
   generatedPaths,
   ImplementationSchema,
@@ -96,6 +97,7 @@ export const outputSchemas: Record<string, z.ZodType> = {
   acceptance: AcceptanceWalkSchema,
   "acceptance-draft": AcceptanceDraftSchema,
   initiativePlan: InitiativePlanSchema,
+  "approval-review": ApprovalReviewSchema,
   critique: CritiqueSchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;

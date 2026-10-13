@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTheme } from "../../core/theme/index.js";
-import type { Decision } from "../../core/workflows/schemas.js";
+import { approvalReviewText } from "../../core/workflows/auto-approval.js";
+import type { ApprovalReview, Decision } from "../../core/workflows/schemas.js";
 import type { RequestRow } from "../../core/workflows/store.js";
 import type { Check } from "../../core/workflows/types.js";
 import type { RunDetails } from "../../core/workflows/view.js";
@@ -19,8 +20,8 @@ interface ApprovalBody {
   executionMode?: "inline" | "worktree";
   sandbox?: "auto" | "required";
   worktree?: { path: string; branch: string; baseHead: string; userChangesInScope: string[] };
-  /** Why auto approval left this plan to a person. */
-  autoApproval?: { declined?: string[] };
+  /** Why auto approval left the package to you, with the approval reviewer's verdict. */
+  autoApproval?: { declined?: string[]; review?: ApprovalReview; reviewError?: string };
 }
 /** A deliverable of the request and what in the spec covers it (`request-coverage.ts`). */
 interface RequestCoverageRow {
@@ -453,6 +454,14 @@ export function DecisionPrompt({
               {`  ${c.id} [${c.method}] ${c.text}`}
             </text>
           ))}
+          {body.autoApproval?.declined?.length ? (
+            <text fg={t.textMuted}>
+              {`Auto approval left this to you: ${body.autoApproval.declined.join("; ")}`}
+            </text>
+          ) : null}
+          {body.autoApproval && approvalReviewText(body.autoApproval) ? (
+            <text fg={t.warning}>{approvalReviewText(body.autoApproval)}</text>
+          ) : null}
           {body.requestCoverage?.length ? (
             <>
               <text

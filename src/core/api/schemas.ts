@@ -47,6 +47,8 @@ export const StartBody = z
     modelStrict: z.boolean().optional(),
     /** The run's OS sandbox, as `--sandbox`; omitted, the policy and the sandbox setting decide. */
     sandbox: z.enum(["off", "auto", "required"]).optional(),
+    /** The approval reviewer may approve low-risk plans outside the limits, as `--approval-review`. */
+    approvalReview: z.boolean().optional(),
     /**
      * Propose the workflow and budget from the request, as `--auto-preset`; with `workflow` the
      * person's pick runs and both are recorded.
