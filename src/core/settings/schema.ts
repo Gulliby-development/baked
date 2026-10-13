@@ -576,6 +576,25 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "designKit",
+    page: "agent-features",
+    section: "Design",
+    label: "BAKED kit",
+    help: "Default styles for web pages the agent builds. Auto offers the BAKED kit only to web projects with no styles of their own whose instruction files say nothing about design. Artifacts without styles get the kit and a small Made with BAKED mark.",
+    scopes: BOTH,
+    type: "enum",
+    default: "auto",
+    options: [
+      {
+        value: "auto",
+        label: "Auto",
+        help: "Use the kit in web projects that have no styles. Default.",
+      },
+      { value: "always", label: "Always", help: "Prefer the kit for new UI in every project." },
+      { value: "off", label: "Off", help: "Never suggest the kit or add it to artifacts." },
+    ],
+  },
+  {
     id: "agentFeatures.approvalReview",
     page: "agent-features",
     section: "Approvals",
@@ -646,6 +665,17 @@ export const SETTINGS: readonly SettingDefinition[] = [
     scopes: BOTH,
     type: "boolean",
     default: true,
+  },
+  {
+    id: "repoMapBackgroundRefresh",
+    page: "baked-map",
+    section: "Map",
+    label: "Background updates",
+    help: "Keep the index current while BAKED runs: at startup, after file changes, chat turns, runs and git checkouts or pulls. Off updates it only when the map or code graph is used.",
+    scopes: BOTH,
+    type: "boolean",
+    default: true,
+    enabledWhen: { id: "repoMap", values: [true] },
   },
   {
     id: "repoMapTokenBudget",

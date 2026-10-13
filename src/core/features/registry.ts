@@ -160,6 +160,15 @@ export const FEATURES: readonly Feature[] = [
     ],
   },
   {
+    id: "coordinator-summary",
+    group: "Chat and sessions",
+    title: "One-click coordinator digest: running, waiting, finished and open questions",
+    tui: ["/coordinator summary", "/coordinator: Ctrl+S"],
+    cli: notNeeded("scripts read the same state with baked session coordinator and --json runs"),
+    api: ["/v1/coordinator/summary"],
+    desktop: ["project/coordinator: What's happening in the header"],
+  },
+  {
     id: "session-diagnostics",
     group: "Chat and sessions",
     title: "Diagnostic export and API request dumps",
@@ -417,6 +426,18 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/lsp", "project/overview: Doctor language-server line"],
   },
   {
+    id: "design-kit",
+    group: "Tools and code intelligence",
+    title: "BAKED kit: default styles for web projects and artifacts that have none",
+    tui: ["/agent-features: BAKED kit"],
+    cli: [
+      "--headless: the agent gets the kit guidance",
+      "baked workflow run: in frozen instructions",
+    ],
+    api: ["/v1/settings: agent-features page"],
+    desktop: ["settings/chat: Agent features page"],
+  },
+  {
     id: "artifacts",
     group: "Tools and code intelligence",
     title: "Artifacts: HTML pages shared by every project, deployed to the user's Vercel",
@@ -463,6 +484,15 @@ export const FEATURES: readonly Feature[] = [
     cli: notNeeded("a picture; scripts query the API"),
     api: ["/v1/graph", "/v1/graph/file", "/v1/graph/link", "/v1/graph/search"],
     desktop: ["project/graph"],
+  },
+  {
+    id: "index-background-refresh",
+    group: "Tools and code intelligence",
+    title: "Background index updates after file changes, edits, runs and Git checkouts",
+    tui: ["/graph: updating note; updates run while the terminal UI is open"],
+    cli: notNeeded("a one-shot run indexes once when it starts"),
+    api: ["/v1/graph: indexing while baked serve updates", "/v1/settings: baked-map page"],
+    desktop: ["project/graph: Updating chip", "settings/chat: Baked map page"],
   },
   {
     id: "work-progress",
@@ -570,7 +600,7 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "chat-memory",
     group: "Tools and code intelligence",
-    title: "Long-term chat memory: browse, pin, reword, hide, cleanup, scopes",
+    title: "Long-term chat memory: browse, pin, reword, hide, cleanup, scopes, sharing with runs",
     tui: ["/memory: Chat tab"],
     cli: notNeeded("one-shot runs read memory, people curate it"),
     api: ["/v1/memory", "/v1/memory/cleanup", "/v1/memory/settings"],

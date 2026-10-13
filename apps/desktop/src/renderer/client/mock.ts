@@ -111,6 +111,7 @@ const FULL_CAPABILITIES = [
   "gate-drafts",
   "run-compare",
   "coordinator",
+  "coordinator-summary",
   "artifacts",
   "packages",
   "project-agents",
