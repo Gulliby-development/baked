@@ -229,6 +229,8 @@ export const MAX_CONCURRENT_WRITERS = 4;
 
 /** Repair rounds that repeat the same failures before a fresh-context correction (see the policy). */
 export const DEFAULT_FRESH_RESTART_AFTER = 2;
+/** Corrections in a row a task's own failed checks may start before the run stops (#839). */
+export const DEFAULT_MAX_TASK_REPAIRS = 2;
 export const PolicySchema = z
   .object({
     maxConcurrentReadAgents: z.number().int().min(1).max(8),
@@ -344,6 +346,14 @@ export const PolicySchema = z
      * the run stops. Absent means `DEFAULT_FRESH_RESTART_AFTER`, so stored policies keep their hash.
      */
     freshRestartAfter: z.number().int().min(1).max(5).optional(),
+    /**
+     * How many corrections in a row a task's own failed checks (a task check, a lint or
+     * test-integrity finding during the implement stage) may start: a task and the corrections of
+     * its corrections. They are not repair rounds, which count checks-stage and review passes
+     * (`maxRepairRounds`). Absent means `DEFAULT_MAX_TASK_REPAIRS`, so stored policies keep their
+     * hash.
+     */
+    maxTaskRepairs: z.number().int().min(0).max(5).optional(),
     /**
      * The duplication and dead-code ratchet (quality/duplication.ts). Absent means `warn`: copies
      * and unused declarations the run adds are reported, never blocking, so stored policies keep
