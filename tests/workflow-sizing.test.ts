@@ -9,6 +9,7 @@ import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
 import {
   codeTaskCheckProblems,
   DEFAULT_PER_FILE,
+  MIN_HISTORY_SAMPLES,
   fileKind,
   perFileRates,
   plannerSizing,
@@ -16,6 +17,7 @@ import {
   samplesFrom,
   sizePlan,
   splitTestTasks,
+  taskTotal,
   withTestDependencies,
 } from "../src/core/workflows/sizing.js";
 
@@ -218,8 +220,44 @@ describe("plan-time sizing", () => {
     expect(tests?.estimate).toEqual({ low: 400_000, high: 480_000 });
     expect(tests?.attemptTokens).toBe(480_000);
     expect(report.decision).toBe("raise-budget");
-    expect(report.repairReserve).toBe(231_000);
-    expect(report.budgetAfter).toBe(300_000 + 80_000 + 480_000 + 210_000 + 231_000);
+    // Midpoints 55k + 440k, plus the root of 25k^2 + 40k^2 (47,170), not the sum of the highs.
+    expect(report.taskTokens).toEqual({ low: 430_000, expected: 495_000, high: 560_000 });
+    expect(report.runTokens).toBe(300_000 + 542_170 + 210_000);
+    expect(report.repairReserve).toBe(225_651);
+    expect(report.budgetAfter).toBe(300_000 + 542_170 + 210_000 + 225_651);
+  });
+
+  test("a budget already at the ceiling is not reported as growing to itself (#747)", () => {
+    const report = sizePlan({
+      graph: graph(task("T001", ["src/core/workflows/store.ts"])),
+      policy: policy({ maxRunTokens: 4_000_000 }, 4_000_000),
+      samples: [],
+      spent: 3_900_000,
+    });
+    expect(report.budgetAfter).toBe(4_000_000);
+    expect(report.reasons.join(" ")).not.toContain("grows from 4000000 to 4000000");
+    expect(report.reasons.join(" ")).toContain("stays at 4000000 tokens, the policy's ceiling");
+  });
+
+  // cronsay 15eb3204: eight tasks were priced at the sum of their upper bounds, 4.0M of tasks for a
+  // run that comparable apps finished with 0.6-1.0M, so the plan went above the 4M ceiling.
+  test("many tasks are priced near their midpoints, and one task at its upper bound", () => {
+    const tests = Array.from({ length: 8 }, (_, i) => task(`T00${i + 1}`, [`tests/t${i}.test.ts`]));
+    const report = sizePlan({ graph: graph(...tests), policy: policy({ maxRunTokens: 4_000_000 }), samples: [], spent: 0 });
+    const { low, high } = DEFAULT_PER_FILE.test.modify;
+    expect(report.taskTokens.high).toBe(8 * high);
+    expect(report.runTokens - 210_000).toBe(Math.round(8 * ((low + high) / 2) + Math.sqrt(8) * ((high - low) / 2)));
+    expect(report.runTokens - 210_000).toBeLessThan(0.85 * 8 * high);
+    expect(taskTotal([{ low: 100, high: 300 }]).price).toBe(300);
+  });
+
+  test("with enough samples of a kind, history's own upper bound replaces the default's", () => {
+    const few = Array.from({ length: MIN_HISTORY_SAMPLES - 1 }, (_, i) => sample("test", 60_000 + i * 1000, 1, { source: "shared" }));
+    expect(perFileRates(few).test.modify.perFile.high).toBe(DEFAULT_PER_FILE.test.modify.high);
+    const enough = [...few, sample("test", 70_000, 1, { source: "shared" })];
+    const rate = perFileRates(enough).test.modify;
+    expect(rate.basis).toBe("history");
+    expect(rate.perFile.high).toBeLessThan(80_000);
   });
 
   test("only a task with several files is split; a plan above the ceiling asks to split the feature", () => {

@@ -70,6 +70,12 @@ export class StandaloneLspClient {
   private static readonly MAX_OPEN_DOCUMENTS = 50;
   private openDocuments = new Map<string, { version: number; content: string }>();
   private diagnostics = new Map<string, LspDiagnostic[]>();
+  /**
+   * Open documents whose cached diagnostics predate the last change sent to the server. A change
+   * to one file can change the errors of every file that imports it, so a didChange marks all
+   * open documents until the server publishes for them again.
+   */
+  private staleDiagnostics = new Set<string>();
   private diagnosticWaiters = new Map<string, Array<() => void>>();
   private initialized = false;
   private rootUri: string;
@@ -212,6 +218,7 @@ export class StandaloneLspClient {
       } else if (isNotification(msg) && msg.method === "textDocument/publishDiagnostics") {
         const params = msg.params as { uri: string; diagnostics: LspDiagnostic[] };
         this.diagnostics.set(params.uri, params.diagnostics);
+        this.staleDiagnostics.delete(params.uri);
         // Snapshot and clear waiters before invoking to avoid splice-during-iteration (#8)
         const waiters = this.diagnosticWaiters.get(params.uri);
         if (waiters) {
@@ -240,6 +247,7 @@ export class StandaloneLspClient {
       if (existing.content !== text) {
         existing.version++;
         existing.content = text;
+        for (const open of this.openDocuments.keys()) this.staleDiagnostics.add(open);
         this.notify("textDocument/didChange", {
           textDocument: { uri, version: existing.version },
           contentChanges: [{ text }],
@@ -263,6 +271,7 @@ export class StandaloneLspClient {
       if (!oldest) break;
       this.openDocuments.delete(oldest);
       this.diagnostics.delete(oldest);
+      this.staleDiagnostics.delete(oldest);
       const waiters = this.diagnosticWaiters.get(oldest);
       if (waiters) {
         for (const w of waiters) w();
@@ -342,14 +351,17 @@ export class StandaloneLspClient {
     return result;
   }
 
-  /** Get diagnostics for a file, waiting up to 2s for them to arrive */
+  /**
+   * Get diagnostics for a file, waiting up to 2s for them to arrive. Diagnostics published before
+   * the last change are not returned while fresh ones may still come; after the wait the last
+   * published ones are.
+   */
   async getDiagnostics(filePath: string): Promise<LspDiagnostic[]> {
     await this.ensureDocumentOpen(filePath);
     const uri = filePathToUri(filePath);
 
-    // Check if we already have diagnostics
     const existing = this.diagnostics.get(uri);
-    if (existing) return existing;
+    if (existing && !this.staleDiagnostics.has(uri)) return existing;
 
     // Wait up to 2s for diagnostics to arrive
     return new Promise<LspDiagnostic[]>((resolve) => {

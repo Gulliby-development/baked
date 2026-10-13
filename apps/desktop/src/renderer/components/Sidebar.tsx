@@ -48,6 +48,7 @@ const SETUP: [ProjectSection, string, IconName][] = [
   ["run-memory", "Run memory", "run-memory"],
   ["chat-memory", "Chat memory", "chat-memory"],
   ["skills", "Skills", "skills"],
+  ["packages", "Packages", "packages"],
   ["hooks", "Hooks", "hooks"],
   ["mcp", "MCP servers", "mcp"],
   ["lsp", "Language servers", "lsp"],

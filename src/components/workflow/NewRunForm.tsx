@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTheme } from "../../core/theme/index.js";
 import { BUDGET_PRESETS } from "../../core/workflows/budget.js";
+import { proposeWorkflow } from "../../core/workflows/preset-router.js";
 import {
   type ClarificationMode,
   clarificationOf,
@@ -71,7 +72,8 @@ export function NewRunForm({
   const [feature, setFeature] = useState(initialPrompt ? featureSlug(initialPrompt) : "");
   const [featureTouched, setFeatureTouched] = useState(false);
   const [workflow, setWorkflow] = useState<string | null>(initialWorkflow);
-  const [budget, setBudget] = useState<BudgetPresetId>("standard");
+  // Null follows the proposal from the request until the person picks a budget.
+  const [budgetPick, setBudget] = useState<BudgetPresetId | null>(null);
   // Null follows the chosen workflow's own execution mode; a toggle overrides it.
   const [worktreeOverride, setWorktreeOverride] = useState<boolean | null>(null);
   const [writers, setWriters] = useState<number | null>(null);
@@ -82,7 +84,18 @@ export function NewRunForm({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const workflows = info?.workflows ?? ["sdd"];
-  const workflowId = workflow ?? info?.defaultWorkflow ?? "sdd";
+  const fromIssue = issue.trim() !== "";
+  // Proposed from the typed request (`--auto-preset`) until the person picks a workflow.
+  const proposal =
+    !fromIssue && prompt.trim()
+      ? proposeWorkflow(
+          prompt,
+          workflows.filter((id) => !info?.definitions?.[id]?.problems.length),
+          info?.defaultWorkflow ?? "sdd",
+        )
+      : null;
+  const workflowId = workflow ?? proposal?.workflowId ?? info?.defaultWorkflow ?? "sdd";
+  const budget = budgetPick ?? (workflow === null ? proposal?.budget : undefined) ?? "standard";
   const definition = info?.definitions?.[workflowId];
   const modelMissing = !model || model === "none";
   const checks = info?.policy.checks ?? [];
@@ -94,7 +107,6 @@ export function NewRunForm({
   };
   // The core's own refusal text; the start request would be refused with the same words.
   const worktreeRefusal = execution.worktree ? (definition?.worktreeRefusal ?? null) : null;
-  const fromIssue = issue.trim() !== "";
   // With an issue and no feature typed, the core names the feature after the issue.
   const sentFeature = fromIssue && !featureTouched ? "" : feature;
   const problems = [
@@ -130,6 +142,7 @@ export function NewRunForm({
         budget,
         ...executionRequest(execution),
         clarification,
+        ...(proposal ? { autoPreset: true } : {}),
         ...(strict ? { modelStrict: true } : {}),
       });
     } catch (err) {
@@ -268,6 +281,13 @@ export function NewRunForm({
             keyHint={onEdit ? "←/→ · E edit" : "←/→"}
           />
         </FocusTarget>
+        {proposal ? (
+          <Hint>
+            {workflow === null || workflow === proposal.workflowId
+              ? `Proposed from the request: ${proposal.reason}`
+              : `Proposed ${proposal.workflowId} (${proposal.reason}); your pick is kept`}
+          </Hint>
+        ) : null}
         {definition ? (
           <Field
             label="Stages"

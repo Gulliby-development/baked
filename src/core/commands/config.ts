@@ -3,6 +3,7 @@ import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../../conf
 import { existingWorkflowSession, reloadWorkflowSession } from "../../hooks/useWorkflow.js";
 import { useUIStore } from "../../stores/ui.js";
 import type { AgentFeatures, AppConfig, ChatEffort } from "../../types/index.js";
+import { getCwd } from "../cwd.js";
 import { icon } from "../icons.js";
 import { CHAT_EFFORTS, getModelEffortLevels } from "../llm/provider-options.js";
 import {
@@ -12,10 +13,12 @@ import {
   parseNotificationsArgs,
   parseOnOff,
 } from "../notification-settings.js";
-import { readSettingPath, SETTINGS, writeSettingPath } from "../settings/schema.js";
+import { readSettingPath, SETTINGS, settingById, writeSettingPath } from "../settings/schema.js";
 import { telemetryStatus } from "../telemetry.js";
 import { applyTheme, getThemeTokens, listThemes, useThemeStore } from "../theme/index.js";
+import { diagnosticsTimeoutMs } from "../tools/edit-diagnostics.js";
 import { getMotion, type MotionMode, setMotion } from "../utils/motion.js";
+import { qualityRuleCatalog } from "../workflows/quality/builtin-rules.js";
 import type { CommandContext, CommandHandler } from "./types.js";
 import { sysMsg } from "./utils.js";
 
@@ -225,8 +228,28 @@ function handleTimeouts(_input: string, ctx: CommandContext): void {
   const wdTool = `wd-tool:${wdToolSec}`;
   const wdForce = `wd-force:${wdForceSec}`;
 
+  const diagSec = diagnosticsTimeoutMs(cfg.diagnostics?.timeoutMs) / 1000;
+
   // Lookup table: category → picker config
   const timeoutPickers: Record<string, CommandHandler> = {
+    "edit-diagnostics": (_input: string, ctx: CommandContext) => {
+      ctx.openCommandPicker({
+        title: "Edit Diagnostics Wait",
+        icon: icon("clock"),
+        currentValue: `diag:${String(diagSec)}`,
+        scopeEnabled: false,
+        options: [1, 2.5, 5, 10, 20].map((sec) => ({
+          value: `diag:${String(sec)}`,
+          label: `${String(sec)}s`,
+          ...(sec === 2.5 ? { description: "default" } : {}),
+        })),
+        onSelect: (value) => {
+          const sec = Number(value.split(":")[1]);
+          ctx.saveToScope({ diagnostics: { timeoutMs: sec * 1000 } }, "global");
+          sysMsg(ctx, `Edit diagnostics wait → ${String(sec)}s (global)`);
+        },
+      });
+    },
     "tool-timeout": (_input: string, ctx: CommandContext) => {
       ctx.openCommandPicker({
         title: "Tool Timeout",
@@ -369,6 +392,7 @@ function handleTimeouts(_input: string, ctx: CommandContext): void {
         label: "Tool Timeout",
         description: currentToolTimeout === 0 ? "none" : `${currentToolTimeout}m`,
       },
+      { value: "edit-diagnostics", label: "Edit Diagnostics Wait", description: `${diagSec}s` },
       { value: "watchdog-toggle", label: "Watchdog", description: watchdogEnabled ? "On" : "Off" },
       { value: "wd-first", label: "First Chunk Timeout", description: `${wdFirstSec}s` },
       { value: "wd-chunk", label: "Chunk Timeout", description: `${wdChunkSec}s` },
@@ -489,27 +513,43 @@ function handleCompaction(_input: string, ctx: CommandContext): void {
   });
 }
 
+const EDIT_DIAGNOSTICS = "edit-diagnostics";
+
 function handleAgentFeatures(_input: string, ctx: CommandContext): void {
   // Labels, help and defaults come from the shared settings schema, as on the desktop page.
-  const features = SETTINGS.filter((setting) => setting.page === "agent-features").map(
-    (setting) => ({
-      key: setting.id.replace(/^agentFeatures\./, ""),
-      label: setting.label,
-      help: setting.help,
-      defaultOn: setting.default === true,
-    }),
-  );
+  const features = SETTINGS.filter(
+    (setting) => setting.page === "agent-features" && setting.type === "boolean",
+  ).map((setting) => ({
+    key: setting.id.replace(/^agentFeatures\./, ""),
+    label: setting.label,
+    help: setting.help,
+    defaultOn: setting.default === true,
+  }));
+  const editSetting = settingById("editDiagnostics");
+  const editOptions = editSetting?.type === "enum" ? editSetting.options : [];
+  let editMode =
+    mergeConfigs(loadConfig(), loadEffectiveProjectConfig(getCwd())).editDiagnostics ?? "feedback";
   const isOn = (key: string, state: Record<string, unknown>) =>
     features.find((feature) => feature.key === key)?.defaultOn
       ? state[key] !== false
       : state[key] === true;
   const localState = { ...ctx.agentFeatures };
-  const buildOptions = () =>
-    features.map(({ key, label, help }) => ({
+  const buildOptions = () => [
+    ...features.map(({ key, label, help }) => ({
       value: key,
       label: `${label}: ${isOn(key, localState as Record<string, unknown>) ? "on" : "off"}`,
       description: help,
-    }));
+    })),
+    ...(editSetting
+      ? [
+          {
+            value: EDIT_DIAGNOSTICS,
+            label: `${editSetting.label}: ${editMode}`,
+            description: editOptions.find((o) => o.value === editMode)?.help ?? editSetting.help,
+          },
+        ]
+      : []),
+  ];
   ctx.openCommandPicker({
     title: "Agent Features",
     icon: icon("system"),
@@ -519,6 +559,13 @@ function handleAgentFeatures(_input: string, ctx: CommandContext): void {
     scopeEnabled: true,
     initialScope: ctx.detectScope("agentFeatures"),
     onSelect: (value, scope) => {
+      if (value === EDIT_DIAGNOSTICS) {
+        editMode = editMode === "reject" ? "feedback" : "reject";
+        ctx.saveToScope({ editDiagnostics: editMode }, scope ?? "project");
+        sysMsg(ctx, `Edits that add errors: ${editMode} (${scope ?? "project"})`);
+        useUIStore.getState().updatePickerOptions(buildOptions());
+        return;
+      }
       const key = value as keyof AgentFeatures;
       const current = isOn(key, localState as Record<string, unknown>);
       (localState as Record<string, unknown>)[key] = !current;
@@ -530,6 +577,10 @@ function handleAgentFeatures(_input: string, ctx: CommandContext): void {
       useUIStore.getState().updatePickerOptions(buildOptions());
     },
     onScopeMove: (value, from, to) => {
+      if (value === EDIT_DIAGNOSTICS) {
+        ctx.saveToScope({ editDiagnostics: editMode }, to, from);
+        return;
+      }
       const key = value as keyof AgentFeatures;
       const current = isOn(key, localState as Record<string, unknown>);
       ctx.saveToScope({ agentFeatures: { [key]: current } }, to, from);
@@ -538,8 +589,9 @@ function handleAgentFeatures(_input: string, ctx: CommandContext): void {
 }
 
 /**
- * The Code quality page of the shared settings schema, as on the desktop: each choice setting
- * moves to its next value on Enter. New workflow runs freeze these defaults in their policy.
+ * The Code quality page of the shared settings schema, as on the desktop: a choice setting moves
+ * to its next value on Enter, and each rule of the anti-slop pack is a row that turns it on or
+ * off. New workflow runs freeze these defaults in their policy.
  */
 function handleCodeQuality(_input: string, ctx: CommandContext): void {
   const settings = SETTINGS.filter((setting) => setting.page === "code-quality");
@@ -547,23 +599,48 @@ function handleCodeQuality(_input: string, ctx: CommandContext): void {
     loadConfig(),
     loadEffectiveProjectConfig(process.cwd()),
   ) as unknown as Record<string, unknown>;
-  const currentValue = (id: string): string => {
+  const currentValue = (id: string): unknown => {
     const setting = settings.find((s) => s.id === id);
-    const value = readSettingPath(effective, id);
-    return String(value ?? setting?.default ?? "");
+    return readSettingPath(effective, id) ?? setting?.default;
   };
+  const offList = (id: string): string[] => {
+    const value = currentValue(id);
+    return Array.isArray(value) ? value.map(String) : [];
+  };
+  // A rule row is `SETTING_ID|RULE_ID`; other rows are the setting ID.
   const buildOptions = () =>
-    settings.map((setting) => ({
-      value: setting.id,
-      label: `${setting.label}: ${currentValue(setting.id)}`,
-      description: setting.help,
-    }));
-  const next = (id: string): string | boolean | null => {
+    settings.flatMap((setting) =>
+      setting.type === "string-list" && setting.catalog === "quality-rules"
+        ? qualityRuleCatalog().map((rule) => ({
+            value: `${setting.id}|${rule.name}`,
+            label: `Rule ${rule.name}: ${offList(setting.id).includes(rule.name) ? "off" : "on"}`,
+            description: rule.description,
+          }))
+        : [
+            {
+              value: setting.id,
+              label: `${setting.label}: ${String(currentValue(setting.id) ?? "")}`,
+              description: setting.help,
+            },
+          ],
+    );
+  const next = (row: string): { id: string; value: unknown } | null => {
+    const [id = "", rule] = row.split("|");
     const setting = settings.find((s) => s.id === id);
-    if (setting?.type === "boolean") return currentValue(id) !== "true";
+    if (rule) {
+      const off = offList(id);
+      return {
+        id,
+        value: off.includes(rule) ? off.filter((name) => name !== rule) : [...off, rule],
+      };
+    }
+    if (setting?.type === "boolean") return { id, value: currentValue(id) !== true };
     if (setting?.type !== "enum") return null;
     const values = setting.options.map((o) => o.value);
-    return values[(values.indexOf(currentValue(id)) + 1) % values.length] ?? null;
+    return {
+      id,
+      value: values[(values.indexOf(String(currentValue(id))) + 1) % values.length],
+    };
   };
   const patch = (id: string, value: unknown) =>
     writeSettingPath({}, id, value) as Partial<AppConfig>;
@@ -575,15 +652,19 @@ function handleCodeQuality(_input: string, ctx: CommandContext): void {
     options: buildOptions(),
     scopeEnabled: true,
     initialScope: ctx.detectScope("quality"),
-    onSelect: (id, scope) => {
-      const value = next(id);
-      if (value === null) return;
-      ctx.saveToScope(patch(id, value), scope ?? "project");
-      effective = writeSettingPath(effective, id, value);
-      sysMsg(ctx, `${id}: ${String(value)} (${scope ?? "project"}); new workflow runs use it`);
+    onSelect: (row, scope) => {
+      const change = next(row);
+      if (!change) return;
+      ctx.saveToScope(patch(change.id, change.value), scope ?? "project");
+      effective = writeSettingPath(effective, change.id, change.value);
+      const shown = Array.isArray(change.value)
+        ? `off: ${change.value.join(", ") || "none"}`
+        : String(change.value);
+      sysMsg(ctx, `${change.id} ${shown} (${scope ?? "project"}); new workflow runs use it`);
       useUIStore.getState().updatePickerOptions(buildOptions());
     },
-    onScopeMove: (id, from, to) => {
+    onScopeMove: (row, from, to) => {
+      const [id = ""] = row.split("|");
       ctx.saveToScope(patch(id, readSettingPath(effective, id)), to, from);
     },
   });

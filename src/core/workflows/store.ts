@@ -19,6 +19,7 @@ import { migration008 } from "./migrations/008.js";
 import { migration009 } from "./migrations/009.js";
 import { migration010 } from "./migrations/010.js";
 import { migration011 } from "./migrations/011.js";
+import { migration012 } from "./migrations/012.js";
 import {
   type AgentProfile,
   type CommandIdentity,
@@ -182,6 +183,22 @@ export interface StepRow {
   generation: number;
   status: StageState;
 }
+/** A critic score of a task attempt and the outcomes that label it (migration 012). */
+export interface CriticOutcomeRow {
+  run_id: string;
+  task_id: string;
+  attempt: number;
+  model: string | null;
+  score: number;
+  rubric_json: string;
+  task_result: "passed" | "repaired" | null;
+  acceptance: "accepted" | "rejected" | null;
+  delivery: "open" | "merged" | "reverted" | null;
+  survival: number | null;
+  survival_final: number;
+  created_at: number;
+  updated_at: number;
+}
 export interface AttemptRow {
   id: string;
   step_id: string;
@@ -212,6 +229,7 @@ const MIGRATIONS = [
   { version: 9, sql: migration009 },
   { version: 10, sql: migration010 },
   { version: 11, sql: migration011 },
+  { version: 12, sql: migration012 },
 ] as const;
 
 /** What the runs of one workflow database spent, per stage and per task, newest 200 first. */
@@ -464,6 +482,7 @@ export class WorkflowStore {
       verificationState: state.verificationState,
       limitations: { count: limitationIds.length, ids: limitationIds },
       ...this.stallOf(id, row.status),
+      ...this.autoRetryOf(id, row),
       pendingRequestIds: this.requests(id)
         .filter((r) => r.status === "pending")
         .map((r) => r.id),
@@ -483,6 +502,23 @@ export class WorkflowStore {
     return silent >= DEFAULT_STALL_SETTINGS.stepStallMs
       ? { stalled: { silentMs: silent, lastEventAt: new Date(last.at).toISOString() } }
       : {};
+  }
+  /**
+   * The pending automatic resume of a run blocked with `provider_unavailable`: the latest
+   * `provider/resume-N.json` the service journaled before its wait, while that wait is not over.
+   */
+  private autoRetryOf(id: string, row: RunRow): { autoRetry?: RunSnapshot["autoRetry"] } {
+    if (row.status !== "blocked" || row.reason !== "provider_unavailable") return {};
+    const attempt = this.state(id).providerResumes;
+    if (attempt < 1) return {};
+    const artifact = this.latestArtifact(id, `provider/resume-${attempt}.json`);
+    if (!artifact) return {};
+    const body = JSON.parse(this.readArtifact(id, artifact.id)) as {
+      retryAt?: string;
+      of?: number;
+    };
+    if (!body.retryAt || Date.parse(body.retryAt) <= Date.now()) return {};
+    return { autoRetry: { at: body.retryAt, attempt, of: body.of ?? attempt } };
   }
   /** The latest runs of a project, newest first; none in a database older than migration 007. */
   /** How many runs are in each state, for overviews that do not need the runs themselves. */
@@ -670,6 +706,75 @@ export class WorkflowStore {
       type: "run.state_changed",
       payload: { from: row.status, to: status, reason, revision: row.revision + 1 },
     });
+    // The run's end labels the critic scores of its attempts.
+    const acceptance =
+      status === "completed"
+        ? "accepted"
+        : status === "failed" || status === "cancelled"
+          ? "rejected"
+          : null;
+    if (acceptance)
+      this.db.run(
+        "UPDATE critic_outcomes SET acceptance=?,updated_at=? WHERE run_id=? AND acceptance IS NULL",
+        [acceptance, Date.now(), id],
+      );
+  }
+  /** Logs a critic score of a task attempt; the same attempt scored again replaces its row. */
+  recordCriticScore(
+    runId: string,
+    taskId: string,
+    attempt: number,
+    model: string | null,
+    score: number,
+    rubric: unknown,
+  ): void {
+    const now = Date.now();
+    this.db.run(
+      "INSERT OR REPLACE INTO critic_outcomes (run_id,task_id,attempt,model,score,rubric_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
+      [runId, taskId, attempt, model, score, canonical(rubric), now, now],
+    );
+  }
+  /** Labels the latest scored attempt of a task with whether its checks passed. */
+  criticTaskResult(runId: string, taskId: string, result: "passed" | "repaired"): void {
+    this.db.run(
+      "UPDATE critic_outcomes SET task_result=?,updated_at=? WHERE run_id=? AND task_id=? AND task_result IS NULL AND attempt=(SELECT MAX(attempt) FROM critic_outcomes WHERE run_id=? AND task_id=?)",
+      [result, Date.now(), runId, taskId, runId, taskId],
+    );
+  }
+  /** Sets the delivery and survival labels of a task's scored attempts. */
+  criticLateOutcome(
+    runId: string,
+    taskId: string | null,
+    fields: { delivery?: CriticOutcomeRow["delivery"]; survival?: number; final?: boolean },
+  ): void {
+    const sets: string[] = [];
+    const values: (string | number | null)[] = [];
+    if (fields.delivery !== undefined) {
+      sets.push("delivery=?");
+      values.push(fields.delivery);
+    }
+    if (fields.survival !== undefined) {
+      sets.push("survival=?", "survival_final=?");
+      values.push(fields.survival, fields.final ? 1 : 0);
+    }
+    if (!sets.length) return;
+    this.db.run(
+      `UPDATE critic_outcomes SET ${sets.join(",")},updated_at=? WHERE run_id=?${taskId === null ? "" : " AND task_id=?"} AND survival_final=0`,
+      [...values, Date.now(), runId, ...(taskId === null ? [] : [taskId])],
+    );
+  }
+  criticOutcomes(runId?: string): CriticOutcomeRow[] {
+    return runId
+      ? this.db
+          .query<CriticOutcomeRow, [string]>(
+            "SELECT * FROM critic_outcomes WHERE run_id=? ORDER BY created_at,task_id,attempt",
+          )
+          .all(runId)
+      : this.db
+          .query<CriticOutcomeRow, []>(
+            "SELECT * FROM critic_outcomes ORDER BY created_at,run_id,task_id,attempt",
+          )
+          .all();
   }
   setApproval(id: string, digest: string | null): void {
     this.db.run("UPDATE runs SET approval_digest=? WHERE id=?", [digest, id]);

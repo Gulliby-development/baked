@@ -19,6 +19,7 @@ import type {
   CommandEntry,
   ConfigFile,
   ConfigView,
+  CriticMode,
   Effort,
   GateDraft,
   GateDraftKind,
@@ -510,12 +511,16 @@ function mergeRouting(base?: ModelRouting, layer?: ModelRouting): ModelRouting |
   for (const [id, entry] of Object.entries(layer.workflows ?? {}))
     workflows[id] = { stages: { ...workflows[id]?.stages, ...entry.stages } };
   const independentReview = layer.independentReview ?? base.independentReview;
+  const reviewMinConfidence = layer.reviewMinConfidence ?? base.reviewMinConfidence;
+  const critic = layer.critic ?? base.critic;
   return {
     classes: { ...base.classes, ...layer.classes },
     roles: { ...base.roles, ...layer.roles },
     profiles: { ...base.profiles, ...layer.profiles },
     workflows,
     ...(independentReview ? { independentReview } : {}),
+    ...(reviewMinConfidence !== undefined ? { reviewMinConfidence } : {}),
+    ...(critic ? { critic } : {}),
   };
 }
 
@@ -911,6 +916,16 @@ function routingOverview(s: SetupState, workflow: string | null): RoutingOvervie
       project: project?.independentReview ?? null,
       effective: effective?.independentReview ?? (effective ? "warn" : "off"),
     },
+    reviewMinConfidence: {
+      global: global?.reviewMinConfidence ?? null,
+      project: project?.reviewMinConfidence ?? null,
+      effective: effective?.reviewMinConfidence ?? 0.8,
+    },
+    critic: {
+      global: global?.critic ?? null,
+      project: project?.critic ?? null,
+      effective: effective?.critic ?? null,
+    },
     warnings: route.warnings,
     error: null,
   };
@@ -1036,6 +1051,18 @@ function memoryState(key: string): RunMemoryView {
           hidden: false,
           sent: true,
         },
+        {
+          id: "r-2b8f4c61d0",
+          kind: "rule",
+          text: "Validate the locale argument before formatting and return a 400 for unknown ones.",
+          scope: "src/api/**",
+          status: "proposed",
+          runs: 2,
+          runId: "run-locale-validation",
+          findings: ["run-locale-validation/F2", "run-usage-totals/F1"],
+          hidden: false,
+          sent: false,
+        },
       ],
       hidden: [
         {
@@ -1075,7 +1102,11 @@ function editMemory(key: string, edit: Partial<RunMemoryEdit & { id: string; tex
     const [back] = m.hidden.splice(hiddenAt, 1);
     if (back) m.entries.push({ ...back, hidden: false, sent: true });
   } else if (!entry) return error(404, "NOT_FOUND", `No project memory entry ${edit.id ?? ""}`);
-  else if (edit.action === "forget") {
+  else if (edit.action === "accept") {
+    if (entry.kind !== "rule")
+      return error(400, "INVALID_DEFINITION", "Only a proposed rule can be accepted");
+    m.entries[at] = { ...entry, status: "active", sent: true };
+  } else if (edit.action === "forget") {
     m.entries.splice(at, 1);
     if (entry.kind !== "note") m.hidden.push({ ...entry, hidden: true });
   } else if (edit.action === "restore") {
@@ -1088,6 +1119,7 @@ function editMemory(key: string, edit: Partial<RunMemoryEdit & { id: string; tex
       ...entry,
       text,
       recorded: entry.kind === "note" ? undefined : (entry.recorded ?? entry.text),
+      ...(entry.kind === "rule" ? { status: "active" as const, sent: true } : {}),
     };
   }
   return response(200, { id: edit.id, ...memoryState(key) });
@@ -1656,6 +1688,8 @@ export const setupRoutes: MockRoute = (request) => {
           route: RouteDraft | null;
           create: boolean;
           independentReview: IndependentReview | null;
+          reviewMinConfidence: number | null;
+          critic: CriticMode | null;
         }
       >(request);
       const scope = edit.scope === "global" ? "global" : "project";
@@ -1667,6 +1701,15 @@ export const setupRoutes: MockRoute = (request) => {
         next = edit.independentReview
           ? { ...rest, independentReview: edit.independentReview }
           : rest;
+      } else if (edit.critic !== undefined) {
+        const { critic: _previous, ...rest } = current ?? {};
+        next = edit.critic === null ? rest : { ...rest, critic: edit.critic };
+      } else if (edit.reviewMinConfidence !== undefined) {
+        const { reviewMinConfidence: _previous, ...rest } = current ?? {};
+        next =
+          edit.reviewMinConfidence === null
+            ? rest
+            : { ...rest, reviewMinConfidence: edit.reviewMinConfidence };
       } else if (edit.target) {
         const draft = edit.route ?? null;
         const route: Route | null = draft
@@ -1697,7 +1740,12 @@ export const setupRoutes: MockRoute = (request) => {
             error: { code: "ROUTING_REFUSED", message: problems.join("; ") },
             problems,
           });
-      } else return error(400, "INVALID_REQUEST", "Name a target or independentReview");
+      } else
+        return error(
+          400,
+          "INVALID_REQUEST",
+          "Name a target, independentReview or reviewMinConfidence",
+        );
       if (scope === "global") globalConfig = { ...globalConfig, modelRouting: next };
       else s.project = { ...s.project, modelRouting: next };
       return response(200, routingOverview(s, edit.workflow ?? null));

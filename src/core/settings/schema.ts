@@ -49,8 +49,8 @@ export type SettingDefinition = SettingBase &
       }
     /** A model ID such as `anthropic/claude-sonnet-4-6`; null means unset. */
     | { type: "model"; default: string | null }
-    /** Names chosen from a catalog the server lists, e.g. the tool catalog. */
-    | { type: "string-list"; default: readonly string[]; catalog: "tools" }
+    /** Names turned off in a catalog the server lists: the tool catalog or the quality rules. */
+    | { type: "string-list"; default: readonly string[]; catalog: SettingCatalog }
     /** Model ID → ordered fallback model IDs. */
     | { type: "model-list-map"; default: Record<string, string[]> }
     /** Model ID → positive integer, e.g. a context-window override. */
@@ -59,6 +59,8 @@ export type SettingDefinition = SettingBase &
   );
 
 export type SettingType = SettingDefinition["type"];
+/** The catalogs `string-list` settings choose from (`SettingsView.catalogs`). */
+export type SettingCatalog = "tools" | "quality-rules";
 
 export type SettingPageId =
   | "chat-model"
@@ -509,6 +511,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
 
   // Agent features
   {
+    id: "editDiagnostics",
+    page: "agent-features",
+    section: "Edit diagnostics",
+    label: "Edits that add errors",
+    help: "After each edit, BAKED compares diagnostics of the file and of the files importing it. Feedback returns new errors to the agent; reject also restores the file. A workflow run keeps the mode it started with.",
+    scopes: BOTH,
+    type: "enum",
+    default: "feedback",
+    options: [
+      {
+        value: "feedback",
+        label: "Feedback",
+        help: "Keep the edit and return the errors. Default.",
+      },
+      {
+        value: "reject",
+        label: "Reject",
+        help: "Restore the file and return the errors with the original text.",
+      },
+    ],
+  },
+  {
     id: "agentFeatures.desloppify",
     page: "agent-features",
     section: "After code agents",
@@ -734,6 +758,21 @@ export const SETTINGS: readonly SettingDefinition[] = [
     display: { unit: "min", factor: 1 },
   },
   {
+    id: "diagnostics.timeoutMs",
+    page: "limits",
+    section: "Tools",
+    label: "Edit diagnostics wait",
+    help: "How long an edit waits for diagnostics, before and after it. A check that does not finish in time is reported as not checked.",
+    scopes: GLOBAL,
+    type: "number",
+    default: 2500,
+    min: 250,
+    max: 30_000,
+    step: 250,
+    integer: true,
+    display: { unit: "s", factor: 1000 },
+  },
+  {
     id: "watchdog",
     page: "limits",
     section: "Stream watchdog",
@@ -795,6 +834,57 @@ export const SETTINGS: readonly SettingDefinition[] = [
       { value: "off", label: "off", help: "Do not measure." },
       { value: "warn", label: "warn", help: "Report in the run report." },
       { value: "ratchet", label: "ratchet", help: "Block until the run reuses the code." },
+    ],
+  },
+  {
+    id: "quality.disabledRules",
+    page: "code-quality",
+    section: "Anti-slop rules",
+    label: "Rules",
+    help: "Patterns checked on the lines a run adds: empty catch blocks, silent fallbacks, new suppressions, placeholders. An error rule blocks the run until it is fixed; a warning is noted in the run report. Turn off a rule the project does not want.",
+    scopes: BOTH,
+    type: "string-list",
+    default: [],
+    catalog: "quality-rules",
+  },
+  {
+    id: "quality.registryLookups",
+    page: "code-quality",
+    section: "Dependencies",
+    label: "Look up new dependencies",
+    help: "Before a run's checks install anything, every package it adds is looked up in its registry (npm, PyPI, crates.io, Go proxy, NuGet, Maven Central). A package that does not exist, looks like a typosquat or was published days ago blocks the run; the others are listed in the run report. Off, new dependencies are only listed.",
+    scopes: BOTH,
+    type: "boolean",
+    default: true,
+  },
+  {
+    id: "quality.sast",
+    page: "code-quality",
+    section: "Dependencies",
+    label: "Semgrep",
+    help: "Runs Semgrep on the code files a run changed when it is installed. An ERROR match on a line the run added blocks the run; other matches are noted. BAKED does not install Semgrep.",
+    scopes: BOTH,
+    type: "enum",
+    default: "auto",
+    options: [
+      { value: "auto", label: "auto", help: "Run Semgrep when it is installed." },
+      { value: "off", label: "off", help: "Do not run Semgrep." },
+    ],
+  },
+  {
+    id: "quality.mutation",
+    page: "code-quality",
+    section: "Tests",
+    label: "Mutation gate",
+    help: "Plants small faults (a flipped condition, a shifted boundary, a changed constant) in the lines a run added and runs the required test checks against each. A fault the tests do not notice means they assert too little. advisory lists those in the run report; required makes them findings the run fixes with a test; preset follows the workflow (advisory for full runs, off for quick and standard).",
+    scopes: BOTH,
+    type: "enum",
+    default: "preset",
+    options: [
+      { value: "preset", label: "preset", help: "As the workflow preset says." },
+      { value: "off", label: "off", help: "Do not run the gate." },
+      { value: "advisory", label: "advisory", help: "Report surviving mutants." },
+      { value: "required", label: "required", help: "Block until a test kills them." },
     ],
   },
 ];

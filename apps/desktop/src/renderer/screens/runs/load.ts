@@ -36,6 +36,8 @@ export interface RunArtifacts {
   estimate: SavedEstimate | null;
   /** The latest routing record: the run model and the routed stages. */
   routing: RoutingRecord | null;
+  /** What starting each declared check found before the run began; null for a run without it. */
+  preflight: CheckSmoke[] | null;
   reviews: Review[];
   walks: WalkRecord[];
   gates: AcceptanceGate[];
@@ -62,6 +64,15 @@ async function readJson<T>(key: string, runId: string, entry: ArtifactEntry | un
   }
 }
 
+/** One entry of `preflight/checks.json`. */
+export interface CheckSmoke {
+  checkId: string;
+  executable: string;
+  required: boolean;
+  status: "started" | "not_found" | "cannot_start" | "not_probed";
+  detail?: string;
+}
+
 /** The parts of `routing.json` the run screen shows. */
 export interface RoutingRecord {
   runModel: string;
@@ -80,23 +91,25 @@ export async function loadArtifacts(
     /^acceptance\/[^/]+\/[^/]+\/walk\.json$/.test(a.path),
   );
   const reviewIds = [...new Set(findingArtifacts)];
-  const [spec, planText, graph, estimate, routing, gates, walks, reviews] = await Promise.all([
-    readJson<Spec>(key, runId, latest.get("spec.json")),
-    latest.has("plan.md")
-      ? read(key, runId, latest.get("plan.md")?.id ?? "").catch(() => null)
-      : Promise.resolve(null),
-    readJson<TaskGraph>(key, runId, latest.get("tasks.json")),
-    readJson<SavedEstimate>(key, runId, latest.get("estimates/start.json")),
-    readJson<RoutingRecord>(key, runId, latest.get("routing.json")),
-    readJson<AcceptanceGate[]>(key, runId, latest.get("definition/gates.json")),
-    Promise.all(walkEntries.map((e) => readJson<WalkRecord>(key, runId, e))),
-    Promise.all(
-      reviewIds.map(async (id) => {
-        const entry = list.find((a) => a.id === id);
-        return entry ? readJson<Review>(key, runId, entry) : null;
-      }),
-    ),
-  ]);
+  const [spec, planText, graph, estimate, routing, preflight, gates, walks, reviews] =
+    await Promise.all([
+      readJson<Spec>(key, runId, latest.get("spec.json")),
+      latest.has("plan.md")
+        ? read(key, runId, latest.get("plan.md")?.id ?? "").catch(() => null)
+        : Promise.resolve(null),
+      readJson<TaskGraph>(key, runId, latest.get("tasks.json")),
+      readJson<SavedEstimate>(key, runId, latest.get("estimates/start.json")),
+      readJson<RoutingRecord>(key, runId, latest.get("routing.json")),
+      readJson<{ checks: CheckSmoke[] }>(key, runId, latest.get("preflight/checks.json")),
+      readJson<AcceptanceGate[]>(key, runId, latest.get("definition/gates.json")),
+      Promise.all(walkEntries.map((e) => readJson<WalkRecord>(key, runId, e))),
+      Promise.all(
+        reviewIds.map(async (id) => {
+          const entry = list.find((a) => a.id === id);
+          return entry ? readJson<Review>(key, runId, entry) : null;
+        }),
+      ),
+    ]);
   return {
     list,
     spec,
@@ -104,6 +117,7 @@ export async function loadArtifacts(
     graph,
     estimate,
     routing: routing && typeof routing.runModel === "string" ? routing : null,
+    preflight: Array.isArray(preflight?.checks) ? preflight.checks : null,
     gates: Array.isArray(gates) ? gates : [],
     walks: walks.filter((w): w is WalkRecord => w !== null),
     reviews: reviews.filter((r): r is Review => r !== null && Array.isArray(r.findings)),

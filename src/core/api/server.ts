@@ -99,6 +99,7 @@ import { initiativeRoute } from "./initiative-routes.js";
 import { type LspRouteContext, lspRoute } from "./lsp-routes.js";
 import { mcpRoute } from "./mcp-routes.js";
 import { memoryRoute } from "./memory-routes.js";
+import { packageRoute } from "./package-routes.js";
 import { progressRoute } from "./progress-routes.js";
 import type { RouteContext } from "./route-context.js";
 import {
@@ -120,6 +121,7 @@ import {
   ImportBody,
   ListQuery,
   PreRunQuery,
+  ProposeBody,
   RecoverBody,
   RedactBody,
   RejectBody,
@@ -177,6 +179,9 @@ export const CAPABILITIES = [
   "coordinator",
   "watch",
   "artifacts",
+  "run-compare",
+  "preset-proposal",
+  "packages",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -419,9 +424,12 @@ function startArgs(raw: unknown): WorkflowArgs {
   if (body.writers !== undefined) flags.writers = String(body.writers);
   if (body.clarification) flags.clarification = body.clarification;
   if (body.duplication) flags.duplication = body.duplication;
+  if (body.sast) flags.sast = body.sast;
+  if (body.mutation) flags.mutation = body.mutation;
   if (body.modelStrict) flags["model-strict"] = true;
   if (body.policy !== undefined) flags.policy = true;
   if (body.budget) flags.budget = body.budget;
+  if (body.autoPreset) flags["auto-preset"] = true;
   return validateWorkflowArgs({
     command: "run",
     positional: [],
@@ -900,6 +908,12 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         ...(options.vercel ? { vercel: options.vercel } : {}),
         ...(options.openArtifact ? { open: options.openArtifact } : {}),
       })) ??
+      (await packageRoute({
+        ...ctx,
+        workspace: service.workspace,
+        config: service.config,
+        ...(options.configDir ? { configDir: options.configDir } : {}),
+      })) ??
       (await gateRoute({
         ...ctx,
         workspace: service.workspace,
@@ -997,6 +1011,16 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       }
       return json(200, projects.summary(), origin);
     }
+    if (path === "/v1/workflow/compare") {
+      only("GET");
+      const a = SafeId.parse(url.searchParams.get("a"));
+      const b = SafeId.parse(url.searchParams.get("b"));
+      return json(
+        200,
+        await execute({ command: "compare", positional: [a, b], flags: {} }),
+        origin,
+      );
+    }
     if (path === "/v1/workflow/definitions" || path === "/v1/workflow/profiles") {
       only("GET");
       const command = path.endsWith("definitions") ? "definitions" : "profiles";
@@ -1074,6 +1098,15 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       return json(
         200,
         { view: editorView(state, request, history), ...(error ? { error } : {}) },
+        origin,
+      );
+    }
+    if (path === "/v1/workflow/propose") {
+      only("POST");
+      const body = ProposeBody.parse(await readJson(req));
+      return json(
+        200,
+        await execute({ command: "propose", positional: [], flags: { prompt: body.prompt } }),
         origin,
       );
     }
