@@ -155,7 +155,11 @@ export const FEATURES: readonly Feature[] = [
       "/coordinator: first in the command palette",
       "/projects: a switched project opens on its coordinator",
     ],
-    cli: ["baked session coordinator: prints the brief"],
+    cli: [
+      "baked session coordinator: prints the brief",
+      "baked session coordinator send: a turn that answers its cards and follows launched work",
+      "baked session coordinator launched",
+    ],
     api: [
       "/v1/coordinator",
       "/v1/coordinator/brief",
