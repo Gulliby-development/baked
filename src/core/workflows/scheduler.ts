@@ -64,8 +64,10 @@ import {
   assumable,
   DEFECT_NOTE,
   hostCounts,
+  hostDependencyEdges,
   hostSplitParts,
   isCountNit,
+  isHostEdgeNit,
   isHostSplitNit,
   knownRisks,
   persistentDefect,
@@ -293,6 +295,17 @@ function planGraph(
     ),
     policy,
   );
+}
+
+/** What the analyzer is told the host verified, including the dependency edges the host owns. */
+function hostEdgesNote(graph: TaskGraph): string[] {
+  const edges = hostDependencyEdges(graph);
+  return edges.length
+    ? [
+        ...PLAN_CONSISTENCY_CHECKS,
+        `these dependsOn edges are added by the host after planning (module index, read hint, test after code) and are not defects, whether or not plan.md mentions them: ${edges.map((e) => `${e.task} after ${e.dependsOn}`).join(", ")}`,
+      ]
+    : PLAN_CONSISTENCY_CHECKS;
 }
 
 /** A request for a person that the current step raised and has not made durable yet. */
@@ -753,7 +766,7 @@ export class WorkflowScheduler {
                   policy,
                   this.requireProfile(profile),
                   {
-                    verifiedByRuntime: PLAN_CONSISTENCY_CHECKS,
+                    verifiedByRuntime: hostEdgesNote(graph),
                     workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
                     hostCounts: hostCounts(graph),
                     ...(Object.keys(hostSplitParts(graph)).length
@@ -810,6 +823,20 @@ export class WorkflowScheduler {
                 if (finding.blocking && isCountNit(finding.description)) {
                   finding.blocking = false;
                   finding.description = `Counts are computed by the host (${String(counts.tasks)} tasks, ${String(counts.files)} distinct files); kept as a note: ${finding.description}`;
+                }
+              }
+              // The host adds some dependsOn edges after planning; plan.md cannot mention them and the
+              // planner cannot remove them, so a finding about them is a note.
+              const hostEdges = hostDependencyEdges(graph);
+              const taskIds = graph.tasks.map((t) => t.id);
+              for (const finding of analysis.findings) {
+                if (
+                  finding.blocking &&
+                  finding.kind === "inconsistency" &&
+                  isHostEdgeNit(finding, hostEdges, taskIds)
+                ) {
+                  finding.blocking = false;
+                  finding.description = `About dependsOn edges the host adds after planning (${hostEdges.map((e) => `${e.task} after ${e.dependsOn}`).join(", ")}); kept as a note: ${finding.description}`;
                 }
               }
               // The host split oversized test tasks after planning; plan.md names only the original.
