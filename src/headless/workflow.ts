@@ -387,7 +387,10 @@ export async function executeWorkflowCommand(
         cursor: typeof args.flags.cursor === "string" ? args.flags.cursor : undefined,
       });
     case "resume":
-      await service.resume(runId, identity());
+      // Keeps the files a person changed in the run's workspace as its baseline (#971).
+      await service.resume(runId, identity(), {
+        acceptWorkspace: args.flags["accept-workspace"] === true,
+      });
       onDrive?.(runId);
       return service.drive(runId, signal);
     case "pause":

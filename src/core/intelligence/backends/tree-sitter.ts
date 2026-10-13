@@ -196,6 +196,8 @@ const GRAMMAR_FILES: Record<string, string> = {
   // NOTE: tree-sitter-typescript.wasm doesn't exist in tree-sitter-wasms.
   // The tsx grammar is a superset that handles both .ts and .tsx files.
   tsx: "tree-sitter-tsx.wasm",
+  // Only the syntax check loads it: .ts has no JSX, and the tsx grammar misreads `<T>(x) => x`.
+  typescript: "tree-sitter-typescript.wasm",
   javascript: "tree-sitter-javascript.wasm",
   python: "tree-sitter-python.wasm",
   go: "tree-sitter-go.wasm",
@@ -226,6 +228,13 @@ const GRAMMAR_FILES: Record<string, string> = {
   tlaplus: "tree-sitter-tlaplus.wasm",
   elisp: "tree-sitter-elisp.wasm",
 };
+
+/** A syntax error in parsed source: 1-based line and column. */
+export interface ParseError {
+  line: number;
+  column: number;
+  message: string;
+}
 
 // Dynamically import web-tree-sitter types
 type TSParser = import("web-tree-sitter-engine").Parser;
@@ -1379,6 +1388,54 @@ export class TreeSitterBackend implements IntelligenceBackend {
       }
 
       return results;
+    } finally {
+      tree.delete();
+    }
+  }
+
+  /**
+   * The ERROR and MISSING nodes of `content` parsed with `grammar`, at most `limit` of them; null
+   * when the grammar is unavailable or the parse did not finish. Nothing is cached.
+   */
+  async parseErrors(grammar: string, content: string, limit: number): Promise<ParseError[] | null> {
+    await this.initialize("");
+    if (!this.parser || content.length > TreeSitterBackend.MAX_FILE_BYTES) return null;
+    const lang = await this.loadLanguage(grammar);
+    if (!lang) return null;
+    this.parser.setLanguage(lang);
+    const deadline = performance.now() + TreeSitterBackend.PARSE_BUDGET_MS;
+    let tree: TSTree | null;
+    try {
+      tree = this.parser.parse(content, null, {
+        progressCallback: () => performance.now() > deadline,
+      });
+    } catch {
+      this.failedLanguages.add(grammar);
+      this.languages.delete(grammar);
+      return null;
+    }
+    if (!tree) return null;
+    try {
+      const errors: ParseError[] = [];
+      const visit = (node: TSNode): void => {
+        if (errors.length >= limit) return;
+        if (node.isMissing || node.isError) {
+          const text = node.text.split("\n")[0]?.trim().slice(0, 40) ?? "";
+          errors.push({
+            line: node.startPosition.row + 1,
+            column: node.startPosition.column + 1,
+            message: node.isMissing
+              ? `missing ${node.type}`
+              : text
+                ? `unexpected ${JSON.stringify(text)}`
+                : "syntax error",
+          });
+          return;
+        }
+        if (node.hasError) for (const child of node.children) if (child) visit(child);
+      };
+      visit(tree.rootNode);
+      return errors;
     } finally {
       tree.delete();
     }

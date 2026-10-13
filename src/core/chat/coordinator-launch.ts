@@ -8,7 +8,7 @@
  */
 import { tool } from "ai";
 import { z } from "zod";
-import type { AppConfig, ChatMessage, LaunchNote } from "../../types/index.js";
+import type { AppConfig, ChatMessage, LaunchNote, PermissionMode } from "../../types/index.js";
 import { hashJson } from "../specs/hash.js";
 import {
   InitiativeFeatureSchema,
@@ -574,7 +574,7 @@ export function launchTools(
   return {
     launch_session: tool({
       description:
-        "Start a background chat session with a brief. It runs on its own, shows in the session list, and reports back here when its turn ends or it asks something. architect mode only reads; default or auto mode can edit files and needs the user's yes first. An editing session works in its own Git worktree and branch, so it does not overwrite the user's or another session's files.",
+        "Start a background chat session with a brief. It runs on its own, shows in the session list, and reports back here when its turn ends or it asks something. architect mode only reads; default or auto mode can edit files and needs the user's yes first unless the user gave this chat full access. The session gets this chat's permission mode; auto mode gives it full access. An editing session works in its own Git worktree and branch, so it does not overwrite the user's or another session's files.",
       inputSchema: z.strictObject({
         title: z.string().trim().min(1).max(200),
         brief: z.string().trim().min(1).max(20_000).describe("The session's first message"),
@@ -589,8 +589,11 @@ export function launchTools(
       }),
       execute: async ({ title, brief, mode, worktree, why }) =>
         launch(async () => {
+          // A coordinator with full access starts editing sessions without asking.
+          const permissions = coordinator.permissionMode;
           if (
             mode !== "architect" &&
+            permissions !== "full" &&
             !(await coordinator.confirm(
               `Start a ${mode}-mode session that can edit files: "${title}"`,
             ))
@@ -599,6 +602,7 @@ export function launchTools(
           const { session, detail } = await createLaunched(chat, {
             title,
             mode: mode as ChatMode,
+            permissions,
             parentId: coordinator.id,
             worktree: mode !== "architect" && worktree !== false,
           });
@@ -863,21 +867,27 @@ export function issueOf(task: FlowTask | undefined, title: string): IssueSource 
  */
 async function createLaunched(
   chat: ChatService,
-  input: { title: string; mode: ChatMode; parentId: string; worktree: boolean },
+  input: {
+    title: string;
+    mode: ChatMode;
+    permissions: PermissionMode;
+    parentId: string;
+    worktree: boolean;
+  },
 ): Promise<{ session: ChatSession; detail: string }> {
-  const { title, mode, parentId } = input;
+  const { title, mode, permissions, parentId } = input;
   if (!input.worktree) {
     const shared = input.mode === "architect" ? "" : "It works in the shared project folder.";
-    return { session: await chat.create({ title, mode, parentId }), detail: shared };
+    return { session: await chat.create({ title, mode, permissions, parentId }), detail: shared };
   }
   try {
-    const session = await chat.create({ title, mode, parentId, worktree: true });
+    const session = await chat.create({ title, mode, permissions, parentId, worktree: true });
     const own = session.summary().worktree;
     return { session, detail: own ? `It works in ${own.path} on branch ${own.branch}.` : "" };
   } catch (err) {
     // A ChatError; checked by its code, as this module cannot import sessions.ts at run time.
     if ((err as { code?: unknown }).code !== "NOT_SUPPORTED") throw err;
-    const session = await chat.create({ title, mode, parentId });
+    const session = await chat.create({ title, mode, permissions, parentId });
     return { session, detail: `${(err as Error).message}; it works in the shared project folder.` };
   }
 }

@@ -74,12 +74,21 @@ Append each to `ledger/ideas.jsonl` as `{"round": N, "kind": "update", "repo": "
 
 ## Difficulty ladder
 
-The orchestrator tells you the level. Start at 1; it goes up when rounds stop producing findings.
+The orchestrator tells you the level (1-5). Start at 1; it goes up under the orchestrator's difficulty rule. Level 5 is the ceiling: never propose anything above it. The level is defined by the size of the work BAKED plans (tasks in its plan, source files), not by the domain; token figures are what rounds 1-15 measured on codex and grow roughly with the square of the task count.
 
-1. Single-purpose CLI or single-page web tool, 2–5 files.
-2. Two cooperating parts (CLI + library API, server + small UI), 5–8 files, persistence in files or SQLite.
-3. Changes to an existing codebase: the app is built in a first run and a second run adds a feature (like the control apps' B runs).
-4. Larger apps that BAKED should split itself (initiatives, several writers), 8–15 files.
+| Level | Typical shape | Size | Expected tokens per new app | What usually breaks |
+|---|---|---|---|---|
+| 1 | Single-purpose CLI or single-page web tool (envguard, mdtoc, cidrfold) | 2-5 source files, about 6 tasks | 0.6-1.8M | host validators and output formats, line endings, a missing `submit_result` |
+| 2 | Two cooperating parts: CLI + library API, core + console, server + small UI, worker pool (junitdigest, dirdrift, linehunk) | 5-8 source files, about 10 tasks; persistence in files or SQLite | 1.5-7M, median about 3M | evidence and restart bookkeeping, the review and convergence loop, run budget |
+| 3 | A larger single app with many modules and a broad test suite (cfgtrace), or a two-layer update of an existing codebase (a model change plus its CLI and output) | 8-12 source files, about 15 tasks, 100+ tests | 5-8M, median about 6.6M | active-time and repair-round limits, the 8M run ceiling |
+| 4 | A larger app that BAKED should split itself (initiatives, several writers) | 8-15 source files, about 22 tasks | about 14M at today's cost | parallel writers on one file, coordination between writers, the run budget |
+| 5 | A small service: API + CLI + SQLite schema with migrations + CI, always built as a BAKED initiative (3-12 features, one run per feature) | 15-30 source files, about 30 tasks across its feature runs | about 30M across its runs | the split, contracts between features, handing state between runs, the round budget |
+
+Every level-5 app is built as an initiative, never as one workflow run. The brief describes the whole product as a user would (parts, behavior, tests, README) and does not list features: BAKED's decomposer splits it into 3-12 features itself. Note in `ideas.md` the split you would expect, for the analyst to compare with BAKED's split; it is never given to BAKED.
+
+Above level 5 (a multi-service product: frontend, API, workers, auth; 100+ files) is out of scope for the loop: such work needs milestones over days, not runs, and is not proposed.
+
+At levels 4 and 5 the run or round budget in `config.json` may not fit one app at today's cost; say so in `ideas.md` instead of shrinking the idea, and the orchestrator decides whether to raise the budget (with the owner) or keep the level.
 
 ## Done
 

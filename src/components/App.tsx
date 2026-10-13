@@ -34,6 +34,7 @@ import { soleReadyModel } from "../core/llm/ready-model.js";
 import { disposeMCPManager, getMCPManager } from "../core/mcp/index.js";
 import { projectSwitchArgs } from "../core/restart.js";
 import { initForbidden } from "../core/security/forbidden.js";
+import { DEFAULT_PERMISSION_MODE } from "../core/security/permission-mode.js";
 import { SessionManager } from "../core/sessions/manager.js";
 import { getMissingRequired } from "../core/setup/prerequisites.js";
 import { useTheme } from "../core/theme/index.js";
@@ -76,6 +77,7 @@ import type {
   ChatContextSize,
   ChatEffort,
   ChatMessage,
+  PermissionMode,
   TaskRouter,
 } from "../types/index.js";
 import { copyOsc52, copyToClipboard as nativeCopyToClipboard } from "../utils/clipboard.js";
@@ -675,6 +677,7 @@ export function App({
                 coAuthorCommits: chat.coAuthorCommits,
                 bakeMode: chat.bakeMode,
                 effort: chat.effort,
+                permissionMode: chat.permissionMode,
                 contextSize: chat.contextSize,
                 tokenUsage: chat.tokenUsage,
                 messages: filtered,
@@ -790,6 +793,7 @@ export function App({
 
   const [activeModelForHeader, setActiveModelForHeader] = useState(effectiveConfig.defaultModel);
   const [effortHeader, setEffortHeader] = useState<ChatEffort>("default");
+  const [permissionHeader, setPermissionHeader] = useState<PermissionMode>(DEFAULT_PERMISSION_MODE);
   const [contextSizeHeader, setContextSizeHeader] = useState<ChatContextSize>("default");
   // A chosen context size shows next to the model when the model offers several.
   const contextSizeLabel =
@@ -812,6 +816,7 @@ export function App({
       setActiveModelForHeader(chat.activeModel);
       setBakeModeHeader(chat.bakeMode);
       setEffortHeader(chat.effort);
+      setPermissionHeader(chat.permissionMode);
       setContextSizeHeader(chat.contextSize);
       const hasContent = chat.messages.some(
         (m: ChatMessage) => m.role === "user" || m.role === "assistant",
@@ -910,6 +915,7 @@ export function App({
               coAuthorCommits: chat.coAuthorCommits,
               bakeMode: chat.bakeMode,
               effort: chat.effort,
+              permissionMode: chat.permissionMode,
               contextSize: chat.contextSize,
               tokenUsage: chat.tokenUsage,
               messages: filtered,
@@ -1033,6 +1039,7 @@ export function App({
             coAuthorCommits: chat.coAuthorCommits,
             bakeMode: chat.bakeMode,
             effort: chat.effort,
+            permissionMode: chat.permissionMode,
             contextSize: chat.contextSize,
             tokenUsage: chat.tokenUsage,
             messages: filtered,
@@ -1144,6 +1151,11 @@ export function App({
           chat.setEffort(effort);
           setEffortHeader(effort);
         },
+        setPermissionMode: (mode: PermissionMode) => {
+          chat.setPermissionMode(mode);
+          setPermissionHeader(mode);
+        },
+        currentPermissionMode: chat.permissionMode,
         setContextSize: (size: ChatContextSize) => {
           chat.setContextSize(size);
           setContextSizeHeader(size);
@@ -1312,6 +1324,14 @@ export function App({
           <text wrapMode="none" flexShrink={0}>
             <Chip label={modeLabel.toUpperCase()} fill={modeColor} />
           </text>
+          {permissionHeader !== "auto" && (
+            <text wrapMode="none" flexShrink={0}>
+              <Chip
+                label={permissionHeader === "full" ? "FULL ACCESS" : "MANUAL"}
+                fill={permissionHeader === "full" ? t.error : t.info}
+              />
+            </text>
+          )}
           {watching && (
             <text wrapMode="none" flexShrink={0}>
               <Chip label="WATCHING" fill={t.info} />

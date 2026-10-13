@@ -3,8 +3,9 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { MAX_EXTENDED_MS } from "./budget.js";
 import { DEFAULT_STAGE_RANGES, historyStorePaths, rangeOf, type TokenRange } from "./estimate.js";
-import type { RunPolicy, TaskGraph } from "./schemas.js";
+import { extendToOf, type RunPolicy, type TaskGraph } from "./schemas.js";
 import { DEFAULT_MAX_ATTEMPT_TOKENS } from "./step-budget.js";
+import type { WorkflowStore } from "./store.js";
 import type { Task } from "./types.js";
 
 /**
@@ -438,6 +439,20 @@ export interface SizingReport {
   };
   decision: "fits" | "raise-budget" | "split-tasks" | "split-feature";
   reasons: string[];
+  /**
+   * Present when the plan and its repair reserve need more than the budget can reach at the
+   * policy's ceiling: the line the approval shows, and how far the run is expected to get (#974).
+   */
+  overCeiling?: {
+    needTokens: number;
+    ceilingTokens: number;
+    /** Tasks, in plan order, whose midpoints fit what the ceiling leaves after verification. */
+    expectedTasks: number;
+    totalTasks: number;
+    /** How far the run may grow past the ceiling on progress (`extendToOf`); null when it may not. */
+    extendToTokens: number | null;
+    warning: string;
+  };
 }
 
 /** One task's price: the per-file rate of each file it writes, by its kind and action, summed. */
@@ -575,6 +590,32 @@ export function sizePlan(input: {
       }`,
     );
   }
+  const need = runTokens + repairReserve;
+  let overCeiling: SizingReport["overCeiling"];
+  if (maxRunTokens !== null && need > budgetAfter && budgetAfter >= maxRunTokens) {
+    let left = budgetAfter - input.spent - verification;
+    let expectedTasks = 0;
+    for (const task of tasks) {
+      left -= (task.estimate.low + task.estimate.high) / 2;
+      if (left < 0) break;
+      expectedTasks += 1;
+    }
+    const extendToTokens = extendToOf(input.policy);
+    const warning = `Plan and reserve need ${need} tokens, ceiling is ${budgetAfter}; the run is expected to stop at about ${expectedTasks} of ${tasks.length} tasks${
+      extendToTokens !== null && extendToTokens > budgetAfter
+        ? ` unless it grows on progress, up to ${extendToTokens}`
+        : ""
+    }`;
+    overCeiling = {
+      needTokens: need,
+      ceilingTokens: budgetAfter,
+      expectedTasks,
+      totalTasks: tasks.length,
+      extendToTokens,
+      warning,
+    };
+    reasons.push(warning);
+  }
   return {
     schemaVersion: 3,
     model: input.model ?? null,
@@ -591,6 +632,7 @@ export function sizePlan(input: {
     activeTime: { ...rate, estimatedMs, before: timeBefore, after: timeAfter },
     decision,
     reasons,
+    ...(overCeiling ? { overCeiling } : {}),
   };
 }
 
@@ -791,4 +833,21 @@ export function activeTimeText(time: SizingReport["activeTime"]): string {
         ? "; the run may stop at the cap"
         : "";
   return `Estimated active time at the observed rate (${rate}): ${minutes(time.estimatedMs)} min against maxActiveMs ${minutes(time.before)} min${cap}`;
+}
+
+/**
+ * The latest plan pricing's over-ceiling line as an approval body field, or nothing when the
+ * plan fits: approving a plan the ceiling cannot finish names where it should stop (#974).
+ */
+export function overCeilingOf(
+  store: Pick<WorkflowStore, "artifacts" | "readArtifact">,
+  runId: string,
+): { budgetWarning?: string } {
+  const latest = store
+    .artifacts(runId)
+    .filter((a) => a.kind === "sizing" && a.logical_path.startsWith("sizing/plan-"))
+    .at(-1);
+  if (!latest) return {};
+  const report = JSON.parse(store.readArtifact(runId, latest.id)) as Partial<SizingReport>;
+  return report.overCeiling ? { budgetWarning: report.overCeiling.warning } : {};
 }

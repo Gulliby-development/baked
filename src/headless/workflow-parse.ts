@@ -104,6 +104,7 @@ const booleanFlags = new Set([
   "exclude-user-changes",
   "resume",
   "no-resume",
+  "accept-workspace",
 ]);
 /** `doctor` and `estimate` take the `run` options that change whether and how a run starts. */
 const preRunFlags = [
@@ -170,7 +171,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   ],
   status: [],
   list: ["feature", "limit", "cursor", "status"],
-  resume: ["expected-revision", "command-id", "events", "after"],
+  resume: ["expected-revision", "command-id", "accept-workspace", "events", "after"],
   approve: [
     "request",
     "digest",
@@ -632,7 +633,7 @@ memory [list] [--json] | memory add --text TEXT | memory edit ID --text TEXT | m
   (retires a rule); restore brings an entry back as runs recorded it. Runs started afterwards read the result
 list [--feature ID] [--status STATUS] [--limit 20] [--cursor RUN_ID]
   --status accepts: ${RunStatus.options.join(", ")}
-resume RUN_ID --expected-revision N [--events]
+resume RUN_ID --expected-revision N [--accept-workspace] [--events]
 approve RUN_ID --request ID --digest SHA256 --expected-revision N [--exclude-user-changes] [--no-resume]
   --exclude-user-changes is required when a worktree run's approved files have uncommitted changes in your working copy
 answer RUN_ID --request ID --answers-file FILE --expected-revision N [--no-resume]

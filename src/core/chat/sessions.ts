@@ -39,6 +39,7 @@ import type {
   InteractiveCallbacks,
   LaunchNote,
   MessageSegment,
+  PermissionMode,
   Plan,
   PlanReviewAction,
   ToolCall,
@@ -82,6 +83,11 @@ import {
   withHookContext,
 } from "../hooks/lifecycle.js";
 import { chatContextTokens, getModelContextSizes, withContextSize } from "../llm/context-sizes.js";
+import {
+  DEFAULT_PERMISSION_MODE,
+  isPermissionMode,
+  splitLegacyMode,
+} from "../security/permission-mode.js";
 import { SessionManager } from "../sessions/manager.js";
 import { rebuildCoreMessages as rebuildCore } from "../sessions/rebuild.js";
 import type { SessionMeta, TabMeta } from "../sessions/types.js";
@@ -200,6 +206,8 @@ export interface SessionSummary {
   mode: ChatMode;
   /** Reasoning effort for this chat's turns; `default` follows the global setting. */
   effort: ChatEffort;
+  /** How much the chat runs without asking: manual, auto or full. */
+  permissions: PermissionMode;
   /**
    * Context window of this chat's turns when its model offers several: `default` is the largest
    * for the coordinator and the model's own size elsewhere.
@@ -330,6 +338,8 @@ export interface TurnAgentRequest {
   mode: ChatMode;
   /** The chat's reasoning effort; `default` keeps the configuration's. */
   effort: ChatEffort;
+  /** How much the turn runs without asking. */
+  permissions: PermissionMode;
   /** The turn carries out an accepted plan: the agent keeps to the plan's tools. */
   planExecution: boolean;
   /** The session is the project's coordinator: its prompt and brief tool apply. */
@@ -546,6 +556,7 @@ export class ChatSession {
   private model: string | null;
   private mode: ChatMode;
   private effort: ChatEffort;
+  private permissions: PermissionMode;
   private contextSize: ChatContextSize;
   private usage: Usage;
   private context: SessionDetail["context"] = null;
@@ -581,7 +592,12 @@ export class ChatSession {
     this.tabId = tab.id;
     this.model =
       tab.activeModel && tab.activeModel !== "none" ? tab.activeModel : owner.defaultModel;
-    this.mode = toChatMode(tab.bakeMode ?? meta.bakeMode);
+    const modes = splitLegacyMode(
+      toChatMode(tab.bakeMode ?? meta.bakeMode),
+      tab.permissionMode ?? owner.defaultPermissions,
+    );
+    this.mode = modes.mode;
+    this.permissions = modes.permissions;
     this.effort = tab.effort ?? "default";
     this.contextSize = tab.contextSize ?? "default";
     this.usage = {
@@ -673,6 +689,7 @@ export class ChatSession {
       model: this.model,
       mode: this.mode,
       effort: this.effort,
+      permissions: this.permissions,
       contextSize: this.contextSize,
       contextSizes: this.model ? getModelContextSizes(this.model) : [],
       contextTokens: this.model
@@ -695,6 +712,11 @@ export class ChatSession {
     this.meta = archived ? { ...meta, archived: true } : meta;
     this.emitSession();
     await this.owner.persist(this);
+  }
+
+  /** How much the session runs without asking. */
+  get permissionMode(): PermissionMode {
+    return this.permissions;
   }
 
   get isCoordinator(): boolean {
@@ -778,13 +800,19 @@ export class ChatSession {
     model?: string;
     mode?: ChatMode;
     effort?: ChatEffort;
+    permissions?: PermissionMode;
     contextSize?: ChatContextSize;
   }): SessionSummary {
     if (changes.title !== undefined) this.meta = { ...this.meta, customTitle: changes.title };
     if (changes.model !== undefined) this.model = changes.model;
     if (changes.mode !== undefined && this.isCoordinator && changes.mode !== COORDINATOR_MODE)
       throw new ChatError("INVALID_REQUEST", "The coordinator always runs in architect mode");
-    if (changes.mode !== undefined) this.mode = changes.mode;
+    if (changes.mode !== undefined) {
+      // The legacy `auto` mode is the default mode with full access.
+      const modes = splitLegacyMode(changes.mode, changes.permissions ?? this.permissions);
+      this.mode = modes.mode;
+      this.permissions = modes.permissions;
+    } else if (changes.permissions !== undefined) this.permissions = changes.permissions;
     if (changes.effort !== undefined) this.effort = changes.effort;
     if (changes.contextSize !== undefined) this.contextSize = changes.contextSize;
     this.emitSession();
@@ -1204,7 +1232,7 @@ export class ChatSession {
 
   private approvalCallbacks(): Omit<
     TurnAgentRequest,
-    "sessionId" | "cwd" | "modelId" | "mode" | "effort" | "planExecution"
+    "sessionId" | "cwd" | "modelId" | "mode" | "effort" | "permissions" | "planExecution"
   > {
     const approve = async (body: PromptBody): Promise<boolean> => (await this.ask(body)) === true;
     const callbacks: InteractiveCallbacks = {
@@ -1381,6 +1409,7 @@ export class ChatSession {
         modelId: model,
         mode: this.mode,
         effort: this.effort,
+        permissions: this.permissions,
         planExecution,
         ...(this.isCoordinator
           ? { coordinator: true, tools: this.owner.coordinatorTools(this) }
@@ -1672,6 +1701,7 @@ export class ChatSession {
       activeModel: this.model ?? "none",
       bakeMode: this.mode,
       effort: this.effort,
+      permissionMode: this.permissions,
       contextSize: this.contextSize === "default" ? undefined : this.contextSize,
       planMode: this.mode === "plan",
       tokenUsage: {
@@ -1888,6 +1918,12 @@ export class ChatService {
     return this.options.config.compaction?.keepRecent ?? DEFAULT_COMPACTION_CONFIG.keepRecent ?? 4;
   }
 
+  /** The permission mode of new sessions, from `defaultPermissionMode`. */
+  get defaultPermissions(): PermissionMode {
+    const configured = this.options.config.defaultPermissionMode;
+    return isPermissionMode(configured) ? configured : DEFAULT_PERMISSION_MODE;
+  }
+
   get defaultModel(): string | null {
     const model = this.options.config.defaultModel;
     return model && model !== "none" ? model : null;
@@ -1909,6 +1945,7 @@ export class ChatService {
         model: null,
         mode: "default",
         effort: "default",
+        permissions: this.defaultPermissions,
         contextSize: "default",
         contextSizes: [],
         contextTokens: null,
@@ -1949,6 +1986,7 @@ export class ChatService {
     model?: string;
     mode?: ChatMode;
     effort?: ChatEffort;
+    permissions?: PermissionMode;
     contextSize?: ChatContextSize;
     messages?: ChatMessage[];
     core?: ModelMessage[];
@@ -1991,6 +2029,7 @@ export class ChatService {
           coAuthorCommits: false,
           bakeMode: input.mode ?? "default",
           ...(input.effort ? { effort: input.effort } : {}),
+          ...(input.permissions ? { permissionMode: input.permissions } : {}),
           ...(input.contextSize && input.contextSize !== "default"
             ? { contextSize: input.contextSize }
             : {}),
@@ -2049,6 +2088,7 @@ export class ChatService {
       ...(summary.model ? { model: summary.model } : {}),
       mode: summary.mode,
       effort: summary.effort,
+      permissions: summary.permissions,
       contextSize: summary.contextSize,
       messages: point.messages.map((m) => ({ ...m })),
     });

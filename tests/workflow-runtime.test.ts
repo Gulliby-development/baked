@@ -741,16 +741,16 @@ describe("durable SDD runtime", () => {
     const result = { taskId: task.id, outcome: "implemented", unresolved: [] as string[] };
     const satisfied = async (outcome = result) => {
       const child = service.store.beginStep(run.runId, "implement-rerun");
-      return (service.scheduler as unknown as { correctionSatisfied: (...args: unknown[]) => Promise<boolean> })
+      return (service.scheduler as unknown as { correctionSatisfied: (...args: unknown[]) => Promise<true | string> })
         .correctionSatisfied(run.runId, service.store.state(run.runId), child, taskPolicy, task, outcome, new AbortController().signal, root);
     };
     // The first run of a planned task that changed nothing did not do its work.
-    expect(await satisfied()).toBe(false);
+    expect(await satisfied()).toBe("it reported implemented but changed none of its files");
     service.store.transaction(() => service.store.taskStatus(run.runId, task.id, "invalidated"));
-    expect(await satisfied({ ...result, unresolved: ["still open"] })).toBe(false);
+    expect(await satisfied({ ...result, unresolved: ["still open"] })).toBe("");
     expect(await satisfied()).toBe(true);
     writeFileSync(join(root, "value.txt"), "broken");
-    expect(await satisfied()).toBe(false);
+    expect(await satisfied()).toMatch(/^it changed none of its files and check check still fails/);
   });
   test("stale approval and manual source changes never execute implementation", async () => {
     const { service, root, executor } = setup(); const { run } = await start(service);

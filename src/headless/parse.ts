@@ -1,8 +1,9 @@
 import { parseContextSize } from "../core/llm/context-sizes.js";
 import { CHAT_EFFORTS } from "../core/llm/provider-options.js";
 import { getAllProviders } from "../core/llm/providers/index.js";
+import { isPermissionMode, PERMISSION_MODES } from "../core/security/permission-mode.js";
 import { isSandboxMode, type SandboxMode } from "../core/security/sandbox.js";
-import type { BakeMode, ChatContextSize, ChatEffort } from "../types/index.js";
+import type { BakeMode, ChatContextSize, ChatEffort, PermissionMode } from "../types/index.js";
 import { BOLD, EXIT_ERROR, EXIT_OK, RED, RST, VALID_MODES } from "./constants.js";
 import type { HeadlessAction } from "./types.js";
 
@@ -15,6 +16,7 @@ ${BOLD}Usage:${RST}
   baked --headless --model <provider/model> <prompt> Override model
   baked --headless --mode <mode> <prompt>            Set mode (default/architect/plan/auto)
   baked --headless --effort <level> <prompt>         Reasoning effort (default/low/medium/high/xhigh/max)
+  baked --headless --permissions <mode> <prompt>     Permission mode (manual/auto/full)
   baked --headless --context <size> <prompt>         Context window when the model offers several (default/max/200k/1m)
   baked --headless --max-steps <n> <prompt>          Limit agent steps
   baked --headless --timeout <ms> <prompt>           Abort after timeout
@@ -123,6 +125,7 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
   let sandbox: SandboxMode | undefined;
   let diff = false;
   let approvalReview = false;
+  let permissions: PermissionMode | undefined;
   let render = process.stdout.isTTY ?? false;
   const include: string[] = [];
   const images: string[] = [];
@@ -200,6 +203,14 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
       diff = true;
     } else if (arg === "--approval-review") {
       approvalReview = true;
+    } else if ((arg === "--permissions" && argv[i + 1]) || arg?.startsWith("--permissions=")) {
+      const value = arg === "--permissions" ? argv[++i] : arg.slice("--permissions=".length);
+      if (!isPermissionMode(value)) {
+        process.stderr.write(`${RED()}Error:${RST} Unknown permission mode "${value}"\n`);
+        process.stderr.write(`Valid: ${PERMISSION_MODES.join(", ")}\n`);
+        process.exit(EXIT_ERROR);
+      }
+      permissions = value;
     } else if (arg === "--render") {
       render = true;
     } else if (arg === "--no-render") {
@@ -238,6 +249,7 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
         ...(sandbox ? { sandbox } : {}),
         ...(watch ? { watch, watchPoll } : {}),
         ...(approvalReview ? { approvalReview } : {}),
+        ...(permissions ? { permissions } : {}),
       },
     };
   }
@@ -278,6 +290,7 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
       diff,
       render,
       ...(approvalReview ? { approvalReview } : {}),
+      ...(permissions ? { permissions } : {}),
     },
   };
 }

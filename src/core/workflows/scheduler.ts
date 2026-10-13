@@ -92,6 +92,7 @@ import {
   isHostEdgeNit,
   isHostSplitNit,
   knownRisks,
+  namesExampleRule,
   namesRequestSide,
   persistentDefect,
   REQUEST_NOTE,
@@ -145,6 +146,7 @@ import {
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
 import { coverageFinding } from "./coverage.js";
 import { type CriticCalibration, calibrateCritic, criticExamples } from "./critic-calibration.js";
+import { crossPlatformNote } from "./cross-platform.js";
 import { git } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
@@ -188,6 +190,7 @@ import {
   withImplementationProfiles,
   withModuleDependencies,
   withReadDependencies,
+  writesOnlyDocs,
 } from "./plan-consistency.js";
 import { ProcessScope } from "./process-scope.js";
 import { type LearnedRule, rulesFor } from "./project-memory.js";
@@ -338,6 +341,7 @@ type Implementation = ReturnType<typeof ImplementationSchema.parse>;
 import {
   codeTaskCheckProblems,
   loopHistory,
+  overCeilingOf,
   plannerSizing,
   rateHistory,
   type SizingReport,
@@ -356,6 +360,7 @@ import {
   namesPath,
   pendingCodePaths,
   pendingOwners,
+  pendingWriters,
   readyTasks,
   testUpdateOwners,
 } from "./task-graph.js";
@@ -467,6 +472,7 @@ function planGraph(
         }),
       ),
     ),
+    spec,
   );
   // Tests first runs the test tasks before the code; otherwise a test task waits for its code.
   return withCoveringChecks(
@@ -476,8 +482,8 @@ function planGraph(
 }
 
 /** What the analyzer is told the host verified, including the dependency edges the host owns. */
-function hostEdgesNote(graph: TaskGraph): string[] {
-  const edges = hostDependencyEdges(graph);
+function hostEdgesNote(graph: TaskGraph, spec?: Spec): string[] {
+  const edges = hostDependencyEdges(graph, spec);
   return edges.length
     ? [
         ...PLAN_CONSISTENCY_CHECKS,
@@ -527,6 +533,9 @@ function isStoreError(error: unknown): boolean {
 }
 const incompleteReason = (unresolved: string[]): string =>
   unresolved.length ? `: ${unresolved.slice(0, 3).join("; ").slice(0, 500)}` : "";
+/** Why a result that changed nothing was not accepted (#972: the message had no detail). */
+const correctionReason = (correction: true | string | WorkflowFault): string =>
+  typeof correction === "string" && correction ? `: ${correction}` : "";
 /**
  * Files whose edits the host's hash check refused during an attempt that then reported blocked:
  * an infrastructure fault (the worktree differs from the run's record), which the model cannot
@@ -1031,7 +1040,7 @@ export class WorkflowScheduler {
                   policy,
                   this.requireProfile(profile),
                   {
-                    verifiedByRuntime: hostEdgesNote(graph),
+                    verifiedByRuntime: hostEdgesNote(graph, spec),
                     workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
                     hostCounts: hostCounts(graph),
                     ...(Object.keys(hostSplitParts(graph)).length
@@ -1092,7 +1101,7 @@ export class WorkflowScheduler {
               }
               // The host adds some dependsOn edges after planning; plan.md cannot mention them and the
               // planner cannot remove them, so a finding about them is a note.
-              const hostEdges = hostDependencyEdges(graph);
+              const hostEdges = hostDependencyEdges(graph, spec);
               const taskIds = graph.tasks.map((t) => t.id);
               for (const finding of analysis.findings) {
                 if (
@@ -1351,6 +1360,8 @@ export class WorkflowScheduler {
                   // Defaults the agents chose instead of asking; approving accepts them.
                   assumptions: state.spec.assumptions,
                   ...(state.activeTime ? { activeTime: state.activeTime } : {}),
+                  // A plan priced above the ceiling is approved knowing where it should stop (#974).
+                  ...overCeilingOf(this.store, runId),
                   ...(state.spec.deliverables
                     ? { requestCoverage: requestCoverage(state.spec, coverageRequest(state)) }
                     : {}),
@@ -2593,9 +2604,14 @@ export class WorkflowScheduler {
         this.store.transaction(() =>
           this.store.invalidateEvidence(runId, state.snapshotId ?? "", "source_changed"),
         );
+      const outside = differing.filter(
+        (path) => runWrittenHash(this.store, runId, path) !== (files[path] ?? null),
+      );
+      const listed = `${outside.slice(0, 10).join(", ")}${outside.length > 10 ? `, and ${String(outside.length - 10)} more` : ""}`;
       throw new WorkflowFault(
         "INPUT_CHANGED",
-        "Sources changed outside the active task; revise or revalidate before continuing",
+        `Files changed outside the run: ${listed}. Keep the changes with \`baked workflow resume RUN_ID --accept-workspace\` (Accept changes in the terminal UI and the desktop app), or restore them and resume, or fork the run`,
+        { paths: outside },
       );
     }
   }
@@ -2956,6 +2972,10 @@ export class WorkflowScheduler {
       ) === "auto"
         ? propertyTestsNote(profile.output, this.propertyLibraries(runId, state))
         : null;
+    const crossPlatform =
+      profile.output === "spec"
+        ? crossPlatformNote(state.requestText || state.prompt, runRoot(this.store.workspace, state))
+        : null;
     const hardening =
       presetOf(parseRunDefinition(this.store.run(runId).definition_json)) === HARDEN_PRESET
         ? hardenNote(profile.output)
@@ -2969,6 +2989,7 @@ export class WorkflowScheduler {
       {
         ...input,
         ...(propertyNote ? { propertyTests: propertyNote } : {}),
+        ...(crossPlatform ? { crossPlatform } : {}),
         ...(hardening ? { hardening } : {}),
         ...(rules ? { learnedRules: rules } : {}),
         ...(workingSet ? { projectWorkingSet: workingSet } : {}),
@@ -3845,7 +3866,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
         result.unresolved.length > 0 ||
-        !correction
+        correction !== true
       ) {
         if (narrow) {
           // The fix may need another file of the correction's scope: the next attempt may write
@@ -3928,7 +3949,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         const refused = takeHashRefusals(root);
         throw new WorkflowFault(
           "OUTPUT_INVALID",
-          `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}${refusedReason(refused)}`,
+          `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}${correctionReason(correction)}${refusedReason(refused)}`,
           refused.length ? { reason: "input_changed", paths: refused } : {},
         );
       }
@@ -4904,7 +4925,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
         result.unresolved.length > 0 ||
-        !correction
+        correction !== true
       )
         return {
           kind: "rejected",
@@ -4913,7 +4934,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           ...(changed.length ? { edits: { before, changed } } : { blocked: result }),
           error: new WorkflowFault(
             "OUTPUT_INVALID",
-            `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}${refusedReason(refused)}`,
+            `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}${correctionReason(correction)}${refusedReason(refused)}`,
             refused.length ? { reason: "input_changed", paths: refused } : {},
           ),
         };
@@ -5532,7 +5553,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
    * run). The checks are the task's own and the ones its findings name. A planned task counts
    * only on a rerun (generation above 0): a repair invalidated it though it was already correct
    * (md-site 2707d602 T004 generation 3 blocked the run), while a first run that changed nothing
-   * did not do its work.
+   * did not do its work. Otherwise it returns why the result is not accepted, for the message.
    */
   private async correctionSatisfied(
     runId: string,
@@ -5543,15 +5564,17 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     result: { taskId: string; outcome: string; unresolved: string[] },
     signal: AbortSignal,
     root: string,
-  ): Promise<boolean | WorkflowFault> {
+  ): Promise<true | string | WorkflowFault> {
     const rerun = (this.store.tasks(runId).find((t) => t.id === task.id)?.generation ?? 0) > 0;
+    // An empty reason: the caller's message already says what the result left unfinished.
     if (
-      (task.origin === "planned" && !rerun) ||
       result.taskId !== task.id ||
       result.outcome !== "implemented" ||
       result.unresolved.length > 0
     )
-      return false;
+      return "";
+    if (task.origin === "planned" && !rerun)
+      return "it reported implemented but changed none of its files";
     const named = new Set(
       this.store
         .findings(runId)
@@ -5567,7 +5590,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       ),
       ...this.gatedChecks(state, policy, task, root).filter((c) => c.id === regression),
     ];
-    if (!checks.length) return false;
+    if (!checks.length)
+      return "it changed none of its files and no required check of it confirms the work is already done";
     for (const check of checks) {
       const checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
       if (checked.status === "passed") continue;
@@ -5581,7 +5605,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           `out_of_scope_failure: ${task.id} changed nothing and check ${check.id} still fails on ${outside.slice(0, 5).join(", ")}, which it may not write (evidence ${checked.evidenceId}). Fix those files or revise the plan, then resume.`,
           { reason: "no_progress", paths: outside },
         );
-      return false;
+      const named = checked.output ? pathsInOutput(checked.output, state.graph?.tasks ?? []) : [];
+      return `it changed none of its files and check ${check.id} still fails${named.length ? ` on ${named.slice(0, 5).join(", ")}` : ""} (evidence ${checked.evidenceId})`;
     }
     return true;
   }
@@ -6066,6 +6091,11 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
    * here would be to fit the tests or to drop a requirement, unless one side of the conflict is what
    * the request states: then the request wins once per task, as a person answered "defer to the
    * brief" in bench round 15 (envguard 8b8b7022, structpad 6c8758ed), and the decision is recorded.
+   * When the other side is a test an implemented test task of the plan wrote, the approved spec
+   * wins over that test, also once per task: the task may then write the test file and runs
+   * again (#967, cfgtrace 49dbf63b: correctives that could only change the source asked a person
+   * three times about tests that contradicted the spec). A documentation task whose report sets
+   * the rule for examples against the request's worked example copies that example (#992).
    */
   private specConflict(
     runId: string,
@@ -6078,10 +6108,13 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const account = { taskId: task.id, summary: result.summary, unresolved: result.unresolved };
     const report = [result.summary, ...result.unresolved].join(" ");
     const assumedPath = `assumptions/conflicts/${task.id}.json`;
-    const assume =
-      policy.clarification === "assume" &&
-      namesRequestSide(report) &&
-      !this.store.latestArtifact(runId, assumedPath);
+    const first =
+      policy.clarification === "assume" && !this.store.latestArtifact(runId, assumedPath);
+    // A documentation task torn between the rule for examples and the request's worked example
+    // copies the request's example (#992).
+    const example = first && writesOnlyDocs(task) && namesExampleRule(report);
+    const assume = first && (example || namesRequestSide(report));
+    const tests = first && !assume ? this.conflictingTests(runId, state, task, report) : [];
     this.store.transaction(() => {
       this.store.artifact(
         runId,
@@ -6094,13 +6127,66 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           runId,
           "assumption",
           assumedPath,
-          canonical({ ...account, assumed: "The request is authoritative" }),
+          canonical({
+            ...account,
+            assumed: example
+              ? "The request's worked example is authoritative: copy it verbatim"
+              : "The request is authoritative",
+          }),
         );
       this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
       this.store.finishStep(runId, child, "failed");
     });
+    if (example) {
+      state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the rule for documentation examples contradicts the request: ${report.slice(0, 1500)} The request is authoritative: copy every example output the request or the spec gives into the documentation exactly as given, even when its files are not in the workspace, and name the copied examples in the summary. Run probes only for examples the request does not give.`;
+      return;
+    }
     if (assume) {
       state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the spec or its tests contradict the request: ${report.slice(0, 1500)} The request is authoritative: follow what it states. Where a criterion, a requirement or a test says otherwise, the request wins; a test that contradicts the request is changed to what the request states, and no other test is weakened.`;
+      return;
+    }
+    if (tests.length) {
+      const paths = tests.map((t) => t.path);
+      const findings = this.recordFindings(runId, {
+        schemaVersion: 1,
+        snapshotHash: state.workspaceHash ?? "",
+        verdict: "changes_requested",
+        coverage: [],
+        findings: tests.map(({ path, owner }) => ({
+          id: newId(),
+          kind: "correctness" as const,
+          severity: "high" as const,
+          requirementIds: owner.requirementIds,
+          criterionIds: owner.criterionIds,
+          file: path,
+          symbol: null,
+          evidenceIds: [],
+          claim: `${path} contradicts the approved spec (reported by ${task.id}): ${report.slice(0, 1200)}`,
+          impact: `${task.id} cannot satisfy both the spec and this test`,
+          suggestedFix: `Change only the assertions in ${path} that contradict the approved spec to what the spec states. Keep every other assertion; weaken or remove none.`,
+        })),
+      });
+      this.store.transaction(() => {
+        this.store.artifact(
+          runId,
+          "assumption",
+          assumedPath,
+          canonical({
+            ...account,
+            assumed: `The approved spec wins over ${tests.map((t) => `${t.path} (written by ${t.owner.id})`).join(", ")}`,
+            tests: paths,
+          }),
+        );
+        const before = new Set(state.graph?.tasks.map((t) => t.id));
+        this.repair(runId, state, policy, findings, "repair", "task");
+        // The task runs again once the tests that contradicted the spec are corrected.
+        const correctives = (state.graph?.tasks ?? []).filter((t) => !before.has(t.id));
+        state.waitingFor[task.id] = [
+          ...(state.waitingFor[task.id] ?? []),
+          ...correctives.map((t) => t.id),
+        ];
+      });
+      state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that tests contradict the approved spec: ${report.slice(0, 1500)} The approved spec wins over ${paths.join(", ")}: a correction of the test task changes only the assertions that contradict the spec, and ${task.id} runs again after it.`;
       return;
     }
     this.wait("clarification", state, {
@@ -6112,6 +6198,37 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         },
       ],
       specConflict: account,
+    });
+  }
+  /**
+   * The test files a conflict report names that the task cannot write and that an implemented test
+   * task of the plan wrote. Tests written first and approved by a person stay a question.
+   */
+  private conflictingTests(
+    runId: string,
+    state: RuntimeState,
+    task: Task,
+    report: string,
+  ): { path: string; owner: Task }[] {
+    const root = state.rootGraph ?? state.graph;
+    if (!root) return [];
+    const implemented = new Set(
+      this.store
+        .tasks(runId)
+        .filter((t) => t.status === "implemented")
+        .map((t) => t.id),
+    );
+    return pathsInOutput(report, root.tasks).flatMap((path) => {
+      if (task.writes.some((w) => w.path === path) || state.testsFirst?.files.includes(path))
+        return [];
+      const owner = root.tasks.find(
+        (t) =>
+          t.id !== task.id &&
+          implemented.has(t.id) &&
+          isTestTask(t) &&
+          t.writes.some((w) => w.path === path && w.action !== "delete"),
+      );
+      return owner ? [{ path, owner }] : [];
     });
   }
   /**
@@ -6189,10 +6306,23 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const rootTasks = (state.rootGraph ?? state.graph)?.tasks ?? [];
     const named = checked.output ? pathsInOutput(checked.output, rootTasks) : [];
     const outside = named.filter((path) => !task.writes.some((w) => w.path === path));
-    const owned = outside.filter((path) =>
-      rootTasks.some(
-        (t) => t.profileId === task.profileId && t.writes.some((w) => w.path === path),
-      ),
+    // A regression's repair fixes the task's change, so it leaves alone the tests that planned
+    // tasks still to run update (#972).
+    const owned = outside.filter(
+      (path) =>
+        rootTasks.some(
+          (t) => t.profileId === task.profileId && t.writes.some((w) => w.path === path),
+        ) &&
+        !(
+          regression &&
+          pendingWriters(
+            state.rootGraph ?? state.graph,
+            this.store.tasks(runId),
+            state.taskGates,
+            task,
+            path,
+          ).length
+        ),
     );
     // Every file the output names is one this task cannot get write access to: a repair would
     // end "outside this task's approved write scope" after attempts that change nothing.
@@ -6422,7 +6552,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
    * later test task paid for the same failure (cfgtrace 276e4858: four test tasks, 1.94M tokens,
    * named env_source.py). When the account names a file an implemented task writes, the run's
    * required feature checks run once; the findings of a failing one on the named files become a
-   * corrective task of their owner, with the failing check as the repro. The account alone starts
+   * corrective task of their owner, with the failing check as the repro. A failing check with a
+   * fixer first runs it on the named files and runs again (#969). The account alone starts
    * nothing: without a failing check there is no evidence of a defect.
    */
   private async routeReportedDefect(
@@ -6454,10 +6585,34 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     ];
     if (!files.length) return;
     const findings: Review["findings"] = [];
-    const ran: { checkId: string; status: string; evidenceId: string }[] = [];
+    const ran: { checkId: string; status: string; evidenceId: string; fixed?: true }[] = [];
+    // Each named file belongs to the last implemented task that writes it, as in the checks stage.
+    const owners = new Map<string, string>();
+    for (const t of graph.tasks)
+      if (t.id !== task.id && done.has(t.id))
+        for (const write of t.writes)
+          if (files.includes(write.path) && write.action !== "delete") owners.set(write.path, t.id);
     for (const check of policy.checks.filter((c) => c.required && c.scope === "feature")) {
-      const checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
-      ran.push({ checkId: check.id, status: checked.status, evidenceId: checked.evidenceId });
+      let checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
+      // A failure the check's fixer settles (`cargo fmt` on the named files) is no defect to route:
+      // run the fixer as the checks stage does, journaled as `apply_fix`, and rerun the check
+      // once; only what remains becomes a corrective task (#969).
+      let fixed = false;
+      if (
+        checked.status === "failed" &&
+        check.fix &&
+        (await this.fixFiles(runId, child, root, policy, [check], owners, signal))
+      ) {
+        fixed = true;
+        await this.snapshot(runId, state, policy, signal);
+        checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
+      }
+      ran.push({
+        checkId: check.id,
+        status: checked.status,
+        evidenceId: checked.evidenceId,
+        ...(fixed ? { fixed: true as const } : {}),
+      });
       if (checked.status !== "failed") continue;
       const failed = failedCheckFindings(
         check,

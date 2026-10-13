@@ -132,6 +132,23 @@ export function pathsInOutput(output: string, tasks: Task[]): string[] {
   );
 }
 
+/**
+ * Planned files a check's output reports a failure in: the paths that start an unindented line,
+ * as a compiler error (`tests/cli.test.ts(258,45): error TS2769`, `src/a.go:3:1: ...`), a test
+ * runner's file header (`tests/cli.test.ts:`) or a `FAILED`/`FAIL` line. Indented lines (related
+ * information, stack frames, code excerpts) only explain a failure located elsewhere.
+ */
+export function failingPathsInOutput(output: string, tasks: Task[]): string[] {
+  const text = output.replaceAll("\\", "/");
+  const paths = unique(tasks.flatMap((t) => t.writes.map((w) => w.path)));
+  return paths.filter((path) =>
+    new RegExp(
+      `^(?:(?:FAILED|FAIL|ERROR|error)[:\\s]\\s*)?(?:[A-Za-z]:)?(?:[^\\s:()]*/)?${escapeRegExp(path)}(?:[:(]|\\s|$)`,
+      "m",
+    ).test(text),
+  );
+}
+
 /** Lines of a check's output that name what fails: test names and assertion messages. */
 const FAILURE_LINE =
   /^\s*(?:\(fail\)|✗|✘|×|✖|FAIL|not ok|error:|AssertionError|Expected|Received|E\s{2,}|---\s*FAIL)/i;
@@ -255,6 +272,8 @@ function reproStep(repro: Review["findings"][number]["repro"]): string {
  */
 const SIBLING_STEP =
   "\nThe review shows one case. Look for the same defect in sibling code paths (other commands, options, branches or callers that share the faulty pattern) and fix every case you find, checking each one as you checked the reported one.";
+
+const SEVERITY_ORDER = ["critical", "high", "medium", "low"];
 
 /** A finding of a failed check run: it names the check and cites that run's evidence. */
 const checkRunFinding = (finding: Pick<Review["findings"][number], "claim" | "evidenceIds">) =>
@@ -386,9 +405,20 @@ export function appendCorrections(
   // become one task that may write every implicated file: one run is one failure to fix, and a
   // task per file (md-site c0456d78, four tasks for one failing test run) paid for the same
   // reading four times and left the later tasks with nothing to change.
+  //
+  // Review findings on one file become one task too, whichever planned task each resolves to: a
+  // file that two planned tasks write (one creates it, a later one extends it) split md-site
+  // 23c03a8e's three findings in src/front-matter.ts into three tasks of 239k, 347k and 910k,
+  // each reading the same file and tests again (#994). A finding that names no file joins a task
+  // already correcting its planned task. The most severe findings come first in the task.
   const groups = new Map<string, { base: Task; bases: Task[]; findings: Review["findings"] }>();
   const runGroups = new Map<string, string>();
-  for (const finding of toCorrect) {
+  const ordered = [...toCorrect].sort(
+    (a, b) =>
+      Number(!a.file) - Number(!b.file) ||
+      SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity),
+  );
+  for (const finding of ordered) {
     const predecessor = state.repairPredecessors[finding.id];
     const base =
       (predecessor && state.graph?.tasks.find((t) => t.id === predecessor)) ||
@@ -399,7 +429,11 @@ export function appendCorrections(
         "Correction requires writes outside the approved task scope",
       );
     state.repairPredecessors[finding.id] = base.id;
-    const fileKey = `${base.id}\n${finding.file ?? ""}`;
+    const fileKey = finding.file
+      ? `${base.profileId}\n${finding.file}`
+      : ([...groups].find(
+          ([, g]) => g.base.profileId === base.profileId && g.bases.some((b) => b.id === base.id),
+        )?.[0] ?? `${base.id}\n`);
     let key = fileKey;
     if (checkRunFinding(finding)) {
       const run = `${finding.evidenceIds[0]}:${base.profileId}`;

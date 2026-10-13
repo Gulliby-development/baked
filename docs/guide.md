@@ -66,11 +66,24 @@ The same picker switches **Edits that add errors** (`editDiagnostics`) between `
 | `default` | Investigates, then implements |
 | `architect` | Design only: outlines and trade-offs, no edits |
 | `plan` | Research and a written plan, no edits until you approve |
-| `auto` | Works with as few interruptions as possible |
+
+`/mode auto`, the old auto mode, now switches to `default` with full access (see [permission modes](#permission-modes)).
 
 `/plan <task>` starts plan mode for one task: the agent researches, writes a structured plan, and asks you to approve, revise or cancel before it executes. The plan sidebar tracks progress.
 
 For durable, resumable work with budgets, checks and review, use [workflows](workflows/README.md) instead (`/workflow`, `baked workflow`).
+
+## Permission modes
+
+Every chat has a permission mode besides its mode. It says which actions wait for your Allow:
+
+| Permission mode | What asks first |
+| --- | --- |
+| `manual` | Every edit, shell command, git change (anything but status, diff, log, show and blame) and project command (test, build, lint, run…). Dispatched subagents only read, so every edit goes through the main chat |
+| `auto` (default) | Destructive commands, sensitive files (`.env`, keys, CI files), writes outside the project, web searches and page fetches; everything else runs |
+| `full` | Nothing |
+
+`/permissions` picks one for the current tab, or `/permissions manual|auto|full`; the header shows a **MANUAL** or **FULL ACCESS** chip when it is not `auto`. Switching to full access asks for a confirmation the first time after BAKED starts. The mode is saved with the session. `defaultPermissionMode` in the [configuration](configuration.md) sets it for new chats. In the desktop app the permissions chip in the composer does the same for each chat and for the coordinator (the first switch to Full access asks in a dialog), and the coordinator's permission mode passes to the sessions it launches: with full access it starts editing sessions without asking.
 
 ## Checkpoints
 

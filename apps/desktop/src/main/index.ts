@@ -6,7 +6,9 @@ import {
   dialog,
   type IpcMainInvokeEvent,
   ipcMain,
+  type NativeImage,
   Notification,
+  nativeImage,
   session,
   shell,
   systemPreferences,
@@ -27,7 +29,7 @@ import {
   type ProjectAction,
   type WindowAction,
 } from "../shared/bridge.js";
-import { APP_USER_MODEL_ID } from "./app-id.js";
+import { appUserModelId } from "./app-id.js";
 import { AttentionHub } from "./attention.js";
 import { Backend } from "./backend.js";
 import { resolveBackendCommand } from "./backend-command.js";
@@ -366,6 +368,11 @@ function registerIpc(): void {
   );
 }
 
+/** The app icon, shipped next to the tray icons (electron-builder.yml). */
+function windowIcon(): NativeImage {
+  return nativeImage.createFromPath(join(app.getAppPath(), "build", "icon.png"));
+}
+
 function createWindow(): void {
   window = new BrowserWindow({
     width: 1440,
@@ -374,6 +381,8 @@ function createWindow(): void {
     minHeight: 600,
     backgroundColor: "#191410",
     title: "BAKED",
+    // Linux shows a generic window icon without one; on Windows it also covers an unpackaged run.
+    ...(process.platform === "darwin" ? {} : { icon: windowIcon() }),
     show: false,
     // The app draws its own title bar: macOS keeps its traffic lights inset in it, Windows and
     // Linux get the app's own window buttons (TitleBar.tsx).
@@ -451,7 +460,7 @@ async function boot(): Promise<void> {
   }
 }
 
-if (process.platform === "win32") app.setAppUserModelId(APP_USER_MODEL_ID);
+if (process.platform === "win32") app.setAppUserModelId(appUserModelId(app.isPackaged));
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on("second-instance", () => showWindow());
