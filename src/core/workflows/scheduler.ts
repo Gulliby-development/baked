@@ -151,6 +151,7 @@ import {
   type RuleFinding,
   ruleClaim,
 } from "./quality/rules.js";
+import { carriesOver, changedSince, previousRound } from "./re-review.js";
 import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery.js";
 import {
@@ -4893,6 +4894,36 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       const kept = state.reviews[reviewer.key];
       if (kept && kept.snapshotHash === reviewSnapshotHash && kept.verdict !== "inconclusive")
         return { reviewer, result: kept };
+      // After a correction, a dimension that passed and whose files did not change keeps its
+      // review; one that runs again is told what it found and what changed (#713).
+      const prior = state.priorReviews[reviewer.key];
+      const changed =
+        prior && state.expectedFiles ? changedSince(prior.files, state.expectedFiles) : null;
+      if (prior && changed && carriesOver(reviewer.dimension, prior.review, changed)) {
+        this.store.transaction(() =>
+          this.store.artifact(
+            runId,
+            "diagnostic",
+            `reviews/carried-${reviewer.key}-${reviewSnapshotId}.json`,
+            canonical({
+              key: reviewer.key,
+              dimension: reviewer.dimension,
+              reviewedSnapshotHash: prior.review.snapshotHash,
+              changedSince: changed,
+            }),
+          ),
+        );
+        return { reviewer, result: prior.review };
+      }
+      const rerun =
+        prior && changed
+          ? {
+              previousRound: await previousRound(this.store, runId, prior, changed, (path) => {
+                const absolute = workspacePath(runRoot(this.store.workspace, state), path);
+                return existsSync(absolute) ? readFileSync(absolute) : null;
+              }),
+            }
+          : {};
       const child = this.store.transaction(() =>
         this.store.beginStep(runId, `dimension-${reviewer.key}`, stepId),
       );
@@ -4910,6 +4941,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             {
               dimension: reviewer.dimension,
               evidence: this.evidenceContext(runId, state),
+              ...rerun,
               ...(greenfield ? { baseline: { greenfield } } : {}),
               ...extra,
             },
