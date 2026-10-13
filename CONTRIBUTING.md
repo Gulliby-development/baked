@@ -55,6 +55,10 @@ Checkouts use LF line endings on every platform (`.gitattributes`). A Windows ch
 
 Every package must keep its `deps/` tree (OpenTUI native library, worker bundles, tree-sitter WASM) next to the binary or in the per-user data directory. `baked self-check` loads each of them plus SQLite without a terminal or provider key and exits non-zero on a failure. The `Builds` workflow runs it on every package that can execute on its runner: Linux on every pull request; Windows and macOS when a pull request changes packaging files, nightly, and on manual dispatch. Linux arm64 and Windows arm64 are cross-built and checked for contents only. Binaries are not code-signed or notarized.
 
+## Merging
+
+`main` is protected by a merge queue. Add a pull request to it with `gh pr merge <number> --merge --auto` (or "Merge when ready" on GitHub); it joins the queue once its own checks pass. The queue tests each pull request merged with the current `main` and the pull requests ahead of it, runs the same `CI`, `Builds` and `OS tests` workflows on that `merge_group` event, and merges it with a merge commit when they pass, so pull requests no longer need to be brought up to date with `main` by hand. A pull request that fails in the queue is removed from it. Direct pushes to `main` are rejected.
+
 ## Releases
 
 Versions follow semantic versioning and are tagged `vX.Y.Z`. From an up-to-date `main` with every change merged:
