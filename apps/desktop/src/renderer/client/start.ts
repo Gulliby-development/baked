@@ -170,6 +170,8 @@ export interface StartBody {
   writers?: number;
   /** What blocking spec questions do (`--clarification`); omitted, the policy decides. */
   clarification?: "ask" | "assume";
+  /** What the test-integrity guard does (`--test-integrity`); omitted, the policy decides. */
+  testIntegrity?: "block" | "warn";
 }
 
 /** The most tasks a run may implement at once (`MAX_CONCURRENT_WRITERS` in the core). */

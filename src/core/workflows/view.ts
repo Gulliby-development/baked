@@ -52,6 +52,8 @@ export interface StartRunInput {
   maxConcurrentWriters?: number;
   /** What blocking spec questions do, as `--clarification`; omitted, the policy decides. */
   clarification?: ClarificationMode;
+  /** What the test-integrity guard does, as `--test-integrity`; omitted, the policy decides. */
+  testIntegrity?: "block" | "warn";
 }
 
 /** The execution controls of the new-run form. */

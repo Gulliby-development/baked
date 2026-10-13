@@ -6,6 +6,7 @@ import {
   clarificationOf,
   MAX_CONCURRENT_WRITERS,
 } from "../../core/workflows/schemas.js";
+import { type TestIntegrityMode, testIntegrityOf } from "../../core/workflows/test-integrity.js";
 import {
   type BudgetPresetId,
   clampWriters,
@@ -35,6 +36,7 @@ const FIELDS = [
   "execution",
   "writers",
   "clarification",
+  "tests",
   "start",
 ] as const;
 type FieldId = (typeof FIELDS)[number];
@@ -76,6 +78,7 @@ export function NewRunForm({
   const [writers, setWriters] = useState<number | null>(null);
   // Null follows the policy; a toggle overrides it for this run.
   const [clarificationOverride, setClarification] = useState<ClarificationMode | null>(null);
+  const [testsOverride, setTests] = useState<TestIntegrityMode | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const workflows = info?.workflows ?? ["sdd"];
@@ -85,6 +88,7 @@ export function NewRunForm({
   const checks = info?.policy.checks ?? [];
   const initial = initialExecution(info, workflowId);
   const clarification = clarificationOverride ?? (info ? clarificationOf(info.policy) : "ask");
+  const testIntegrity = testsOverride ?? (info ? testIntegrityOf(info.policy) : "block");
   const execution = {
     worktree: worktreeOverride ?? initial.worktree,
     writers: writers ?? initial.writers,
@@ -127,6 +131,7 @@ export function NewRunForm({
         budget,
         ...executionRequest(execution),
         clarification,
+        testIntegrity,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -154,7 +159,7 @@ export function NewRunForm({
       move(evt.name === "up" || (evt.name === "tab" && evt.shift) ? -1 : 1);
       return;
     }
-    const toggle = focus === "execution" || focus === "clarification";
+    const toggle = focus === "execution" || focus === "clarification" || focus === "tests";
     const choice = focus === "workflow" || focus === "budget" || toggle;
     if (
       (choice || focus === "writers") &&
@@ -169,6 +174,7 @@ export function NewRunForm({
       else if (focus === "execution") setWorktreeOverride(!execution.worktree);
       else if (focus === "clarification")
         setClarification(clarification === "assume" ? "ask" : "assume");
+      else if (focus === "tests") setTests(testIntegrity === "warn" ? "block" : "warn");
       else setWriters(clampWriters(execution.writers + delta));
       return;
     }
@@ -316,6 +322,19 @@ export function NewRunForm({
               clarification === "assume"
                 ? "‹ assume ›  agents record defaults; you review them at approval"
                 : "‹ ask ›  the run waits for your answers"
+            }
+            keyHint="←/→"
+          />
+        </FocusTarget>
+        <FocusTarget active={focus === "tests"}>
+          <Field
+            label="Tests"
+            labelWidth={10}
+            focused={focus === "tests"}
+            value={
+              testIntegrity === "warn"
+                ? "‹ warn ›  test gaming in a task is only recorded"
+                : "‹ block ›  deleted, skipped or weakened tests are repaired"
             }
             keyHint="←/→"
           />

@@ -28,6 +28,7 @@ import {
   type WorkflowDefinition,
   writerPolicyProblem,
 } from "./schemas.js";
+import { testIntegrityOf } from "./test-integrity.js";
 import {
   type Gate,
   validateWorkflowV2,
@@ -83,6 +84,7 @@ export async function prepareStart(
     | "executionMode"
     | "maxConcurrentWriters"
     | "clarification"
+    | "testIntegrity"
     | "modelStrict"
   >,
 ): Promise<PreparedStart> {
@@ -171,11 +173,14 @@ export async function prepareStart(
   const {
     executionMode: _previous,
     clarification: _clarification,
+    testIntegrity: _testIntegrity,
     allowOverlappingWrites,
     ...rest
   } = policy;
   // `ask` leaves the field out, so the policy hash of an asking run is what it was before.
   const clarification = request.clarification ?? clarificationOf(policy);
+  // `block` is the default and is left out, so the policy hash of a guarded run is what it was.
+  const testIntegrity = request.testIntegrity ?? testIntegrityOf(policy);
   // Overlapping writes are kept only when permitted, so a policy that leaves them off keeps the
   // hash it had before the field existed; the requested writer count overrides the policy.
   policy = PolicySchema.parse({
@@ -183,6 +188,7 @@ export async function prepareStart(
     ...(mode === "worktree" ? { executionMode: mode } : {}),
     ...(allowOverlappingWrites ? { allowOverlappingWrites } : {}),
     ...(clarification === "assume" ? { clarification } : {}),
+    ...(testIntegrity === "warn" ? { testIntegrity } : {}),
     ...(request.maxConcurrentWriters !== undefined
       ? { maxConcurrentWriters: request.maxConcurrentWriters }
       : {}),

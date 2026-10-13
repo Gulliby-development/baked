@@ -272,6 +272,9 @@ export async function executeWorkflowCommand(
         ...(args.flags.clarification === "ask" || args.flags.clarification === "assume"
           ? { clarification: args.flags.clarification }
           : {}),
+        ...(args.flags["test-integrity"] === "block" || args.flags["test-integrity"] === "warn"
+          ? { testIntegrity: args.flags["test-integrity"] }
+          : {}),
       });
       // The run's record keeps these warnings; the operator sees them before the run goes on.
       for (const warning of readRoutingSummary(service.store, run.runId)?.warnings ?? [])

@@ -110,6 +110,7 @@ const StartInput = z
     executionMode: z.enum(["inline", "worktree"]).optional(),
     maxConcurrentWriters: z.number().int().min(1).max(MAX_CONCURRENT_WRITERS).optional(),
     clarification: z.enum(["ask", "assume"]).optional(),
+    testIntegrity: z.enum(["block", "warn"]).optional(),
   })
   .strict();
 const ctx = createWorkerHandler(
@@ -213,6 +214,7 @@ const ctx = createWorkerHandler(
           ? { maxConcurrentWriters: request.maxConcurrentWriters }
           : {}),
         ...(request.clarification ? { clarification: request.clarification } : {}),
+        ...(request.testIntegrity ? { testIntegrity: request.testIntegrity } : {}),
       });
       const controller = new AbortController();
       controllers.set(id, controller);

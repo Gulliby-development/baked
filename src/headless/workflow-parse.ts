@@ -122,6 +122,7 @@ const flags = new Set([
   "resume",
   "no-resume",
   "clarification",
+  "test-integrity",
   "issue",
   "output",
   "text",
@@ -182,6 +183,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "route",
     "model-strict",
     "clarification",
+    "test-integrity",
     "issue",
     "budget",
   ],
@@ -428,6 +430,12 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     !["ask", "assume"].includes(String(result.flags.clarification))
   )
     throw new WorkflowFault("INVALID_DEFINITION", "--clarification accepts ask or assume");
+  if (
+    !result.flags.help &&
+    "test-integrity" in result.flags &&
+    !["block", "warn"].includes(String(result.flags["test-integrity"]))
+  )
+    throw new WorkflowFault("INVALID_DEFINITION", "--test-integrity accepts block or warn");
   if (!result.flags.help && ["run", "doctor", "estimate"].includes(result.command)) {
     if ("writers" in result.flags) {
       const writers = String(result.flags.writers);
@@ -453,7 +461,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--budget PRESET]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--test-integrity block|warn] [--budget PRESET]
 run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --prompt-file FILE] [other run options]
   --issue takes the request from a GitHub issue (its title and body; --prompt adds instructions)
   and names the feature issue-N-TITLE unless --feature is given; the delivery pull request says
@@ -467,6 +475,9 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   --clarification assume lets research, spec and analysis settle blocking questions with recorded
   assumptions, shown at approval; only questions without a safe default wait for you. Default: the
   policy's clarification, otherwise ask
+  --test-integrity warn records test gaming in a task's diff (deleted, skipped or weakened tests,
+  suppressions, special cases for test inputs) instead of sending it to a repair. Default: the
+  policy's testIntegrity, otherwise block
   --budget quick|standard|extended|checkpoints scales the policy (--policy, the config's
   workflows.policy, or the built-in default): quick halves the limits, extended doubles them,
   checkpoints drops the token cap and pauses for your go-ahead. Default: standard

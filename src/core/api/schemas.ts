@@ -35,6 +35,8 @@ export const StartBody = z
     writers: z.number().int().min(1).max(MAX_CONCURRENT_WRITERS).optional(),
     /** What blocking spec questions do, as `--clarification`; omitted, the policy decides. */
     clarification: z.enum(["ask", "assume"]).optional(),
+    /** What the test-integrity guard does, as `--test-integrity`; omitted, the policy decides. */
+    testIntegrity: z.enum(["block", "warn"]).optional(),
     /** The run model overrides configured model routes, as `--model-strict`. */
     modelStrict: z.boolean().optional(),
   })
