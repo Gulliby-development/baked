@@ -41,5 +41,6 @@ test("workflow slash command uses the current tab model with an already cached w
 }, 35000);
 
 test("CLI and worker complete a feature through native provider transport with repair and independent review models", async () => {
-  expect(await fixture("workflow-provider.ts", 60000)).toContain('"providerTransport":"passed"');
-}, 65000);
+  // 18.7 s alone; the full Windows suite has pushed it past 60 s (#725).
+  expect(await fixture("workflow-provider.ts", 120000)).toContain('"providerTransport":"passed"');
+}, 125000);
