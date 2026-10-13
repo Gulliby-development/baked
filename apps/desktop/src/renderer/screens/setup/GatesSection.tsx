@@ -334,6 +334,26 @@ function CheckForm({
         </div>
       </div>
       <div className={FL}>
+        <span id="check-result">Result</span>
+        <SegmentGroup aria-labelledby="check-result">
+          {([false, true] as const).map((json) => (
+            <Segment
+              key={String(json)}
+              aria-pressed={draft.jsonReport === json}
+              onClick={() => set("jsonReport", json)}
+            >
+              {json ? "JSON report" : "exit code"}
+            </Segment>
+          ))}
+        </SegmentGroup>
+        {draft.jsonReport && (
+          <p className={NOTE}>
+            The command's last JSON line decides: {'{"status":"passed"}'}, failed or inconclusive,
+            with an optional summary and findings. Run a script or a container (docker run …).
+          </p>
+        )}
+      </div>
+      <div className={FL}>
         <label htmlFor="check-envNames">Env names passed through</label>
         <input {...field("envNames")} placeholder="none" />
       </div>

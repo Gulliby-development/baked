@@ -126,6 +126,7 @@ export function plainCheck(check: Check): Check {
     scope: check.scope,
     envNames: check.envNames,
     writes: check.writes,
+    ...(check.report ? { report: check.report } : {}),
   };
 }
 
@@ -248,6 +249,8 @@ export interface CheckDraft {
   scope: "task" | "feature";
   envNames: string;
   writes: string;
+  /** The command prints a JSON report that decides the result. */
+  jsonReport: boolean;
 }
 
 export function checkDraft(check: Check | null): CheckDraft {
@@ -260,6 +263,7 @@ export function checkDraft(check: Check | null): CheckDraft {
     scope: check?.scope ?? "feature",
     envNames: check?.envNames.join(", ") ?? "",
     writes: check?.writes.join(", ") ?? "",
+    jsonReport: check?.report === "json",
   };
 }
 
@@ -294,6 +298,7 @@ export function draftToCheck(draft: CheckDraft): { check: Check } | { error: str
       scope: draft.scope,
       envNames: splitList(draft.envNames),
       writes,
+      ...(draft.jsonReport ? { report: "json" as const } : {}),
     },
   };
 }

@@ -13,6 +13,7 @@ export type StageType =
   | "agent"
   | "tasks"
   | "check"
+  | "wait"
   | "approval"
   | "review"
   | "reflection"
@@ -84,6 +85,8 @@ export type EditorOp =
   | { op: "toggleMode"; target: GateTarget; index: number }
   | { op: "addTransition"; from: string; to: string; on: Outcome; loop: number | null }
   | { op: "removeTransition"; id: string }
+  | { op: "addWaitStage"; after: string }
+  | { op: "removeWaitStage"; stageId: string }
   | { op: "changeField"; stageId: string; key: string; delta: -1 | 1 }
   | { op: "duplicate" };
 
