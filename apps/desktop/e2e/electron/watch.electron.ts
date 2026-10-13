@@ -23,6 +23,9 @@ test("a saved baked! comment starts a turn in the chat that watches the files", 
     .getByRole("navigation", { name: "Main" })
     .getByRole("link", { name: "New chat" })
     .click();
+  // The coordinator has a composer too: type only once the new chat has replaced it.
+  await expect(page.getByRole("complementary", { name: "Coordinator brief" })).toBeHidden();
+  await expect(page).toHaveURL(/\/chat\/new$/);
   const composer = page.getByRole("textbox", { name: "Message BAKED" });
   await composer.fill("Hello");
   await composer.press("Enter");
