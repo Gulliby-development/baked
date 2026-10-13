@@ -42,7 +42,8 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
   try {
     const body = await request.json() as { model: string; tools: { name: string; input_schema: { properties: Record<string, unknown> } }[]; messages: { content: { type: string; text?: string; name?: string }[] }[] };
     models.add(body.model); requests++;
-    const context = body.messages.flatMap((m) => m.content).find((p) => p.type === "text" && p.text?.includes("Project content below"))?.text;
+    // The context arrives as the run-level part (with a cache breakpoint) and the attempt's own line.
+    const context = body.messages.map((m) => m.content.filter((p) => p.type === "text").map((p) => p.text).join("")).find((text) => text.includes("Project content below"));
     assert(context, "Workflow context missing from provider request");
     const [documents, attempt] = context.split("\n").slice(-2);
     const data = { ...JSON.parse(documents!), ...JSON.parse(attempt!) } as { request: string; inputHash: string; snapshotHash: string; extra: { task?: { id: string }; evidence?: { id: string }[] } };
