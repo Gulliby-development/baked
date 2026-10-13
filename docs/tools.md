@@ -10,7 +10,7 @@ The agent picks tools itself; this page lists what they do. `/tools` turns tools
 | `list_dir`, `glob`, `grep` | Directory listing, file patterns, text search |
 | `navigate` | Definitions, references, call and type hierarchy |
 | `analyze` | Type signatures, symbol outlines, diagnostics and quick-fix suggestions |
-| `bake_find` | Fuzzy file and symbol search ranked by importance |
+| `bake_find` | Fuzzy file and symbol search ranked by importance. In a workflow run it searches the attempt's worktree and never returns `.baked/` state |
 | `bake_grep` | Code search with per-file counts and symbol context from the repository graph |
 | `bake_query` | A pipeline of search, filter, dependency, outline and read stages in one call |
 | `bake_analyze` | Graph analysis: unused exports, duplication, call graph, top files, class members |

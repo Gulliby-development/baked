@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
-import { relative, resolve } from "node:path";
+import type { Dirent } from "node:fs";
+import { readdir } from "node:fs/promises";
+import { join, relative, resolve } from "node:path";
 import type { ToolResult } from "../../types";
 import { getCwd } from "../cwd.js";
 import { isForbidden } from "../security/forbidden.js";
@@ -16,14 +18,17 @@ export const bakeFindTool = {
   description:
     "[TIER-1] Fuzzy file and symbol search ranked by PageRank importance. Use when you don't know the exact name or file path. Supports multi-word queries.",
 
-  createExecute: (repoMap?: IntelligenceClient) => {
+  /** `root` is the directory to search (a workflow attempt's worktree); defaults to the project. */
+  createExecute: (repoMap?: IntelligenceClient, root?: string) => {
     return async (args: BakeFindArgs): Promise<ToolResult> => {
       const { query } = args;
       const limit = args.limit ?? 20;
-      const cwd = getCwd();
+      const cwd = resolve(root ?? getCwd());
+      // The repo map indexes the project checkout; its paths are mapped onto `cwd`.
+      const index = { indexRoot: getCwd(), root: cwd };
 
       const repoMapResults = repoMap?.isReady
-        ? await searchIntelligenceClient(repoMap, query, cwd, limit)
+        ? await searchIntelligenceClient(repoMap, query, index, limit)
         : null;
 
       if (repoMapResults && repoMapResults.length > 0) {
@@ -31,14 +36,14 @@ export const bakeFindTool = {
         return { success: true, output: symbolDetails };
       }
 
-      const fileResults = await fuzzyFileSearch(query, args.type, limit);
+      const fileResults = await fuzzyFileSearch(query, args.type, limit, cwd);
       if (!fileResults.length) {
         return { success: true, output: `No files matching "${query}".` };
       }
 
       const enriched = repoMap?.isReady
         ? await enrichWithSymbols(repoMap, fileResults, cwd)
-        : fileResults.map((f: string) => `  ${relative(cwd, resolve(f))}`).join("\n");
+        : fileResults.map((f: string) => `  ${toPosix(relative(cwd, resolve(cwd, f)))}`).join("\n");
 
       return {
         success: true,
@@ -59,29 +64,32 @@ interface RankedFile {
 async function searchIntelligenceClient(
   repoMap: IntelligenceClient,
   query: string,
-  cwd: string,
+  index: { indexRoot: string; root: string },
   limit: number,
 ): Promise<RankedFile[]> {
+  // Relative path of an indexed file, and its absolute path under the searched root.
+  const relOf = (indexed: string) => toPosix(relative(index.indexRoot, indexed));
+  const atRoot = (rel: string) => resolve(index.root, rel);
   const fileMap = new Map<string, RankedFile>();
   const words = query.split(/\s+/).filter((w: string) => w.length >= 2);
   const primaryWord = words[0] ?? query;
 
   const exactSymbols = await repoMap.findSymbols(primaryWord);
   for (const sym of exactSymbols) {
-    const rel = relative(cwd, sym.path);
-    upsertFile(fileMap, rel, sym.path, sym.pagerank + 10, { name: primaryWord, kind: sym.kind });
+    const rel = relOf(sym.path);
+    upsertFile(fileMap, rel, atRoot(rel), sym.pagerank + 10, { name: primaryWord, kind: sym.kind });
   }
 
   const substringSymbols = await repoMap.searchSymbolsSubstring(primaryWord, 30);
   for (const sym of substringSymbols) {
-    const rel = relative(cwd, sym.path);
-    upsertFile(fileMap, rel, sym.path, sym.pagerank + 3, { name: sym.name, kind: sym.kind });
+    const rel = relOf(sym.path);
+    upsertFile(fileMap, rel, atRoot(rel), sym.pagerank + 3, { name: sym.name, kind: sym.kind });
   }
 
   for (const word of words.slice(1)) {
     const extra = await repoMap.searchSymbolsSubstring(word, 15);
     for (const sym of extra) {
-      const rel = relative(cwd, sym.path);
+      const rel = relOf(sym.path);
       const existing = fileMap.get(rel);
       if (existing) {
         existing.score += sym.pagerank + 5;
@@ -95,7 +103,7 @@ async function searchIntelligenceClient(
   const safeQuery = query.replace(/%/g, "\\%").replace(/_/g, "\\_");
   const fileMatches = await repoMap.matchFiles(`%${safeQuery}%`, 30);
   for (const absPath of fileMatches) {
-    const rel = relative(cwd, absPath);
+    const rel = relOf(absPath);
     const nameScore = fuzzyScoreMultiWord(words, rel);
     const existing = fileMap.get(rel);
     if (existing) {
@@ -103,7 +111,7 @@ async function searchIntelligenceClient(
       existing.matchType = "both";
     } else {
       fileMap.set(rel, {
-        path: absPath,
+        path: atRoot(rel),
         relPath: rel,
         score: nameScore,
         matchType: "file",
@@ -117,10 +125,10 @@ async function searchIntelligenceClient(
       const wordSafe = word.replace(/%/g, "\\%").replace(/_/g, "\\_");
       const wordFiles = await repoMap.matchFiles(`%${wordSafe}%`, 15);
       for (const absPath of wordFiles) {
-        const rel = relative(cwd, absPath);
+        const rel = relOf(absPath);
         if (!fileMap.has(rel)) {
           fileMap.set(rel, {
-            path: absPath,
+            path: atRoot(rel),
             relPath: rel,
             score: fuzzyScore(word, rel),
             matchType: "file",
@@ -145,7 +153,7 @@ async function searchIntelligenceClient(
         existing.score += Math.min(co.count, 5);
       } else {
         fileMap.set(co.path, {
-          path: resolve(cwd, co.path),
+          path: atRoot(co.path),
           relPath: co.path,
           score: Math.min(co.count, 3),
           matchType: "file",
@@ -375,6 +383,9 @@ const TYPE_GLOBS: Record<string, string[]> = {
   style: ["*.css", "*.scss", "*.less", "*.sass", "*.styled.*"],
 };
 
+/** Paths in results use `/` on every OS, as agents pass them back to the file tools. */
+const toPosix = (path: string) => path.replaceAll("\\", "/");
+
 const EXCLUDED_DIRS = [
   "node_modules",
   ".git",
@@ -387,14 +398,17 @@ const EXCLUDED_DIRS = [
   "vendor",
   ".turbo",
   "coverage",
+  // BAKED's own state: workflow databases and run worktrees.
+  ".baked",
 ];
 
 async function fuzzyFileSearch(
   query: string,
   typeFilter: string | undefined,
   limit: number,
+  root: string,
 ): Promise<string[]> {
-  const files = await listFiles(typeFilter);
+  const files = await listFiles(typeFilter, root);
   if (files.length === 0) return [];
 
   const words = query.split(/\s+/).filter((w) => w.length >= 2);
@@ -408,7 +422,7 @@ async function fuzzyFileSearch(
   return scored.map((s) => s.file);
 }
 
-function listFiles(typeFilter: string | undefined): Promise<string[]> {
+function listFiles(typeFilter: string | undefined, root: string): Promise<string[]> {
   return new Promise((res) => {
     const args = ["--type", "f", "--max-depth", "8"];
 
@@ -418,48 +432,58 @@ function listFiles(typeFilter: string | undefined): Promise<string[]> {
       }
     }
 
+    for (const dir of EXCLUDED_DIRS) args.push("--exclude", dir);
     args.push("--max-results", "500");
     args.push(".");
 
-    const proc = spawn("fd", args, { cwd: getCwd(), timeout: 10_000 });
+    const proc = spawn("fd", args, { cwd: root, timeout: 10_000 });
     const chunks: string[] = [];
     proc.stdout.on("data", (d: Buffer) => chunks.push(d.toString()));
 
     proc.on("close", (code: number | null) => {
       if (code === 0) {
-        res(chunks.join("").split("\n").filter(Boolean));
+        res(
+          chunks
+            .join("")
+            .split(/\r?\n/)
+            .filter(Boolean)
+            .map((f) => f.replaceAll("\\", "/")),
+        );
       } else {
-        fallbackFind(typeFilter).then(res);
+        fallbackFind(typeFilter, root).then(res);
       }
     });
 
     proc.on("error", () => {
-      fallbackFind(typeFilter).then(res);
+      fallbackFind(typeFilter, root).then(res);
     });
   });
 }
 
-function fallbackFind(typeFilter: string | undefined): Promise<string[]> {
-  return new Promise((res) => {
-    const excludes = EXCLUDED_DIRS.flatMap((d) => ["-not", "-path", `*/${d}/*`]);
-    const args = [".", "-type", "f", "-maxdepth", "5", ...excludes];
-
-    if (typeFilter && TYPE_GLOBS[typeFilter]) {
-      const globs = TYPE_GLOBS[typeFilter];
-      const nameArgs = globs.flatMap((g, i) => (i === 0 ? ["-name", g] : ["-o", "-name", g]));
-      args.push("(", ...nameArgs, ")");
+/** Walks `root` when `fd` is missing; `find` is not portable (Windows has a text search by that name). */
+async function fallbackFind(typeFilter: string | undefined, root: string): Promise<string[]> {
+  const globs = (typeFilter && TYPE_GLOBS[typeFilter]?.map((g) => new Bun.Glob(g))) || null;
+  const excluded = new Set(EXCLUDED_DIRS);
+  const files: string[] = [];
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    let entries: Dirent[];
+    try {
+      entries = await readdir(join(root, dir), { withFileTypes: true });
+    } catch {
+      return;
     }
-
-    const proc = spawn("find", args, { cwd: getCwd(), timeout: 10_000 });
-    const chunks: string[] = [];
-    proc.stdout.on("data", (d: Buffer) => chunks.push(d.toString()));
-
-    proc.on("close", () => {
-      res(chunks.join("").split("\n").filter(Boolean).slice(0, 500));
-    });
-
-    proc.on("error", () => res([]));
-  });
+    for (const entry of entries) {
+      if (files.length >= 500) return;
+      const path = dir ? `${dir}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (depth < 5 && !excluded.has(entry.name)) await walk(path, depth + 1);
+      } else if (entry.isFile() && (!globs || globs.some((g) => g.match(entry.name)))) {
+        files.push(path);
+      }
+    }
+  };
+  await walk("", 1);
+  return files;
 }
 
 async function enrichWithSymbols(
@@ -469,7 +493,7 @@ async function enrichWithSymbols(
 ): Promise<string> {
   const results: string[] = [];
   for (const f of files) {
-    const rel = relative(cwd, resolve(f));
+    const rel = toPosix(relative(cwd, resolve(cwd, f)));
     const syms = await repoMap.getFileSymbols(rel);
     const symStr =
       syms.length > 0
