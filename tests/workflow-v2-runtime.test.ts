@@ -74,6 +74,9 @@ interface Behavior {
   /** A spec that names another feature than the run's. */
   renamedFeature?: boolean;
   reviewVerdict?: "pass" | "changes_requested";
+  /** Reviews report AC-001 inconclusive; with no finding unless `inconclusiveFinding`. */
+  reviewInconclusive?: boolean;
+  inconclusiveFinding?: boolean;
   /** Reviews that request changes before the review passes; every one when absent. */
   reviewRounds?: number;
   /** Fields that replace those of the medium correctness finding a review requesting changes reports. */
@@ -166,7 +169,13 @@ class V2Executor implements AgentExecutor {
         break;
       case "review":
         this.reviewTools.push(Object.keys(request.hostTools ?? {}));
-        output = this.behavior.reviewVerdict === "changes_requested" && ++this.reviews <= (this.behavior.reviewRounds ?? Infinity)
+        output = this.behavior.reviewInconclusive
+          ? {
+              schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "inconclusive",
+              coverage: [{ criterionId: "AC-001", verdict: "inconclusive", evidenceIds: [], explanation: "No proven correctness defects" }],
+              findings: this.behavior.inconclusiveFinding ? [{ id: "F1", kind: "partial", severity: "low", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "value.txt", symbol: null, evidenceIds: evidence, claim: "The value is not documented", impact: "A reader guesses", suggestedFix: "Document it" }] : [],
+            }
+          : this.behavior.reviewVerdict === "changes_requested" && ++this.reviews <= (this.behavior.reviewRounds ?? Infinity)
           ? {
               schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "changes_requested", coverage: [],
               // An undefined field in reviewFinding drops the default.
@@ -467,6 +476,28 @@ describe("workflow v2 scheduler", () => {
     expect(lastError(service, run.runId)).toBe("");
     expect(final.status).toBe("completed");
     expect(service.store.run(run.runId).repair_rounds).toBe(0);
+  }, 30000);
+
+  // R13 envguard-update f67dcde0 (`quick`): reviews with no finding left AC-001 inconclusive and the
+  // run blocked, since quick has no converge stage; a resume paid 205k for the word `pass` (#841).
+  test("in quick, a review with no finding and an inconclusive criterion passes with a limitation", async () => {
+    const { start, complete, service, executor } = setup({ reviewInconclusive: true });
+    const run = await start("quick");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(executor.calls.filter((c) => c === "review").length).toBeGreaterThan(0);
+    const limitations = service.store.state(run.runId).limitations;
+    expect(limitations.map((l) => [l.findingId, l.criterionIds, l.decidedBy])).toEqual([["review-inconclusive-correctness-AC-001", ["AC-001"], "notes"]]);
+    expect(limitations[0]?.claim).toContain("No proven correctness defects");
+  }, 30000);
+
+  test("in quick, an inconclusive review with a finding still blocks", async () => {
+    const { start, complete, service } = setup({ reviewInconclusive: true, inconclusiveFinding: true });
+    const run = await start("quick");
+    const final = await complete(run.runId);
+    expect(final.status).toBe("blocked");
+    expect(lastError(service, run.runId)).toContain("review inconclusive");
   }, 30000);
 
   // Run 936ddfa5 blocked on "Coverage is incomplete" after round 1: the only finding for the

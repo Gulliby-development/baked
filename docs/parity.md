@@ -143,8 +143,10 @@ bun test tests/feature-parity.test.ts
 | Custom gates: a script or container that reports its result as JSON (command.report json) | `/workflow` | `baked workflow gates`, `baked workflow validate` | `/v1/workflow/checks`, `/v1/workflow/checks/:id/run` | `project/gates` |
 | Gates from a plain-language sentence | `/workflow` | `baked workflow gate` | `/v1/workflow/gates/draft`, `/v1/workflow/gates/:id`, `/v1/workflow/gates/:id/places` +1 | `project/gates` |
 | Gates on the run's line: what each does, blocks or advises, last result | `/workflow` | `baked workflow definitions`, `baked workflow status` | `/v1/workflow/definitions`, `/v1/workflow/runs/:id/events` | `project/runs` |
+| Each workflow's family and line, and a step-through of a run along it | `/workflow` | `baked workflow definitions` | `/v1/workflow/definitions` | `project/workflows` |
 | Compare two runs side by side (A/B of routing maps) | `/workflow` | `baked workflow compare` | `/v1/workflow/compare` | `project/runs` |
 | Workflow definition editor | `/workflow` | `baked workflow define`, `baked workflow validate` | `/v1/workflow/definitions`, `/v1/workflow/editor`, `/v1/workflow/editor/review` +1 | `project/workflows` |
+| Agents a project brought from other tools: edit them and turn them into a workflow (shown only when the project has some) | `/agents` | `baked workflow agents` | `/v1/agents`, `/v1/agents/convert` | `project/agents`, `project/workflows` |
 | Wait stage: poll command gates until they pass or time out, with no model calls | `/workflow` | `baked workflow validate`, `baked workflow run` | `/v1/workflow/editor`, `/v1/workflow/runs/:id/events` | `project/workflows`, `project/runs` |
 | Doctor and estimate before a run | `/workflow` | `baked doctor`, `baked workflow estimate` | `/v1/workflow/doctor`, `/v1/workflow/estimate` | `project/overview` |
 | Usage across runs: days, by stage and model | `/workflow` | `baked usage`, `baked workflow usage` | `/v1/usage` | `project/usage` |

@@ -1,5 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import {
+  AGENT_STAGES,
+  type AgentStage,
+  convertAgents,
+  listAgents,
+  removeAgentFile,
+} from "../core/workflows/agent-import.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
 import {
   type RunPolicy,
@@ -18,7 +25,13 @@ import { copyAsCustom, writeDefinitionFile } from "../core/workflows/v2/editor.j
 import { confirmGates, loadGateLibrary, readConfirmations } from "../core/workflows/v2/library.js";
 import type { WorkflowArgs } from "./workflow-parse.js";
 
-export const DEFINITION_COMMANDS = ["definitions", "validate", "define", "gates"] as const;
+export const DEFINITION_COMMANDS = [
+  "definitions",
+  "validate",
+  "define",
+  "gates",
+  "agents",
+] as const;
 
 /** Problems of a v1 or v2 definition file, read without running anything. */
 function validateFile(workspace: string, path: string, policy: RunPolicy) {
@@ -134,7 +147,71 @@ export function executeDefinitionCommand(
       writeDefinitionFile(workspace, copy);
       return { result: { id, path: target, from }, exitCode: 0 };
     }
+    case "agents":
+      return agentsCommand(args, workspace, policy);
     default:
       throw new WorkflowFault("INVALID_DEFINITION", `${args.command} is not a definition command`);
   }
+}
+
+/** `--stages NAME=STAGE,...`: the stage each named agent fills; the others keep their suggestion. */
+function parseStages(value: string | true | undefined): Map<string, AgentStage> {
+  const stages = new Map<string, AgentStage>();
+  if (typeof value !== "string") return stages;
+  for (const pair of value.split(",").filter(Boolean)) {
+    const [name = "", stage = ""] = pair.split("=").map((s) => s.trim());
+    if (!(AGENT_STAGES as readonly string[]).includes(stage))
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        `${pair}: the stage is one of ${AGENT_STAGES.join(", ")}`,
+      );
+    stages.set(name, stage as AgentStage);
+  }
+  return stages;
+}
+
+/** `agents`, `agents convert ID` and `agents remove NAME` (#832). */
+function agentsCommand(
+  args: WorkflowArgs,
+  workspace: string,
+  policy: RunPolicy,
+): { result: unknown; exitCode: number } {
+  const [action = "list", target] = args.positional;
+  const found = listAgents(workspace);
+  const named = (name: string) =>
+    found.agents.find((a) => a.name === name || a.key === name || a.path === name);
+  if (action === "list")
+    return {
+      result: {
+        agents: found.agents.map(({ content: _content, instructions: _text, ...agent }) => agent),
+        problems: found.problems,
+      },
+      exitCode: 0,
+    };
+  if (action === "convert") {
+    const stages = parseStages(args.flags.stages);
+    for (const name of stages.keys())
+      if (!named(name)) throw new WorkflowFault("NOT_FOUND", `No agent ${name} in this project`);
+    const result = convertAgents(workspace, policy, {
+      workflowId: SafeId.parse(target),
+      ...(typeof args.flags.from === "string" ? { from: args.flags.from } : {}),
+      agents: found.agents.map((a) => ({
+        key: a.key,
+        stage: stages.get(a.name) ?? stages.get(a.key) ?? stages.get(a.path) ?? a.stage,
+      })),
+      removeOriginals: args.flags.remove === true,
+    });
+    return { result, exitCode: 0 };
+  }
+  if (action === "remove" && target) {
+    const agent = named(target);
+    if (!agent) throw new WorkflowFault("NOT_FOUND", `No agent ${target} in this project`);
+    const removed = removeAgentFile(workspace, agent.key, agent.hash);
+    if (removed.status !== "written") throw new WorkflowFault("INPUT_CHANGED", removed.message);
+    return { result: { removed: agent.key }, exitCode: 0 };
+  }
+  throw new WorkflowFault(
+    "INVALID_DEFINITION",
+    "Usage: agents | agents convert ID [--from PRESET] [--stages NAME=STAGE,...] [--remove] | agents remove NAME",
+  );
 }

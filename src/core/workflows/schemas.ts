@@ -229,6 +229,8 @@ export const MAX_CONCURRENT_WRITERS = 4;
 
 /** Repair rounds that repeat the same failures before a fresh-context correction (see the policy). */
 export const DEFAULT_FRESH_RESTART_AFTER = 2;
+/** Corrections in a row a task's own failed checks may start before the run stops (#839). */
+export const DEFAULT_MAX_TASK_REPAIRS = 2;
 export const PolicySchema = z
   .object({
     maxConcurrentReadAgents: z.number().int().min(1).max(8),
@@ -344,6 +346,14 @@ export const PolicySchema = z
      * the run stops. Absent means `DEFAULT_FRESH_RESTART_AFTER`, so stored policies keep their hash.
      */
     freshRestartAfter: z.number().int().min(1).max(5).optional(),
+    /**
+     * How many corrections in a row a task's own failed checks (a task check, a lint or
+     * test-integrity finding during the implement stage) may start: a task and the corrections of
+     * its corrections. They are not repair rounds, which count checks-stage and review passes
+     * (`maxRepairRounds`). Absent means `DEFAULT_MAX_TASK_REPAIRS`, so stored policies keep their
+     * hash.
+     */
+    maxTaskRepairs: z.number().int().min(0).max(5).optional(),
     /**
      * The duplication and dead-code ratchet (quality/duplication.ts). Absent means `warn`: copies
      * and unused declarations the run adds are reported, never blocking, so stored policies keep
@@ -606,6 +616,21 @@ export const StepStatus = z.enum([
   "skipped",
   "invalidated",
 ]);
+/**
+ * Why a task step ended `interrupted` (#843): a restart in a fresh session, a continuation at its
+ * step cap, a correction widened to its whole scope, a wait for a file a later task writes, a
+ * spec conflict, or a worker or worktree lease that was lost.
+ */
+export const InterruptCause = z.enum([
+  "restart",
+  "continue_at_cap",
+  "widened_correction",
+  "waits_for_artifact",
+  "spec_conflict",
+  "worker_lost",
+  "lease_lost",
+]);
+export type InterruptCause = z.infer<typeof InterruptCause>;
 export const TaskStatus = z.enum([
   "pending",
   "running",
@@ -1114,6 +1139,8 @@ export const EventSchema = z.discriminatedUnion("type", [
           from: TaskStatus,
           to: TaskStatus,
           generation: z.number().int().nonnegative(),
+          cause: InterruptCause.optional(),
+          detail: z.string().max(500).optional(),
         })
         .strict(),
     })

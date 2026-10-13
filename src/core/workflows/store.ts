@@ -24,6 +24,7 @@ import {
   type AgentProfile,
   type CommandIdentity,
   EventSchema,
+  type InterruptCause,
   type Reason,
   type RunPolicy,
   type RunSnapshot,
@@ -1074,6 +1075,8 @@ export class WorkflowStore {
     id: string,
     status: TaskRow["status"],
     snapshotId: string | null = null,
+    /** Why the task was interrupted, on the `task.state_changed` event (#843). */
+    interrupt?: { cause: InterruptCause; detail?: string },
   ): void {
     const row = this.tasks(runId).find((t) => t.id === id);
     if (!row) throw new WorkflowFault("NOT_FOUND", `Task ${id} missing`);
@@ -1084,7 +1087,18 @@ export class WorkflowStore {
     );
     this.emit(runId, {
       type: "task.state_changed",
-      payload: { taskId: id, from: row.status, to: status, generation },
+      payload: {
+        taskId: id,
+        from: row.status,
+        to: status,
+        generation,
+        ...(interrupt
+          ? {
+              cause: interrupt.cause,
+              ...(interrupt.detail ? { detail: interrupt.detail.slice(0, 500) } : {}),
+            }
+          : {}),
+      },
     });
   }
   /** The stage of a step's top-level ancestor: the definition stage a child step belongs to. */
@@ -1344,6 +1358,10 @@ export class WorkflowStore {
       Math.max(0, Math.ceil(ms)),
       runId,
     ]);
+  }
+  /** Counts corrective tasks that spend no round: a task's own failed checks (#839). */
+  addCorrectiveTasks(runId: string, count: number): void {
+    this.db.run("UPDATE runs SET corrective_tasks=corrective_tasks+? WHERE id=?", [count, runId]);
   }
   addRound(runId: string, kind: "repair" | "convergence", count: number): void {
     const column = kind === "repair" ? "repair_rounds" : "convergence_rounds";

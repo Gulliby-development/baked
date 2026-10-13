@@ -34,8 +34,8 @@ Success is measured on BAKED, not on app counts (see [Objective](#objective)): f
                                                │                            │
                                                └─ after the last app ───────┘
                                                         │
- 6 SCOUT ─► 7 BACKLOG ─► 8 FIX ─► 9 PUBLISH ─► 10 REPORT ─► next round (0)
-   scout      backlog     fixer    publisher    orchestrator
+ 6 SCOUT ─► 7 BACKLOG ─► 8 FIX ─► 9 PUBLISH ─► 10 REPORT ─► 11 RETRO ─► next round (0)
+   scout      backlog     fixer    publisher    orchestrator   retro (every 3rd round)
 ```
 
 | # | Phase | Role file | Runs | Output (in `rounds/RNN/`) |
@@ -51,6 +51,7 @@ Success is measured on BAKED, not on app counts (see [Objective](#objective)): f
 | 8 | Fix | `roles/fixer.md` | per selected issue | merged PRs in `Gulliby-development/baked` |
 | 9 | Publish | `roles/publisher.md` | per app, right after it passes verification (`publish.mode` auto); in `approve-per-round` once per round, behind the publish gate. Updates are pull requests to existing public repos | public repos and merged update PRs, `publish.md` (the round's publish record) |
 | 10 | Report | this file | once per round | `report.md`, row in `ledger/metrics.csv`, summary to the owner |
+| 11 | Retro | `roles/retro.md` | every `retro.everyRounds` rounds (default 3), after phase 10 | `retro.md`, lines in `ledger/loop-changes.jsonl`, a PR to `bench/loop/` for changes the loop may make itself (see [Improving the loop itself](#improving-the-loop-itself)) |
 
 Phases 3–5 are pipelined: while app N is analyzed, app N+1 builds. Phase 6 runs alongside phase 3. Phase 8 may start on issues filed early in the round, but its merges never change the runner pinned for the current round (see [Comparability](#comparability)).
 
@@ -74,7 +75,8 @@ baked-loop/
   controls/              # verbatim prompts of the 3 control apps (never edited)
   ledger/
     ideas.jsonl          # every idea ever proposed, accepted or rejected (dedupe)
-    findings.jsonl       # every finding, with its issue number
+    findings.jsonl       # every finding, with its kind, models seen on, confirmation and issue number
+    loop-changes.jsonl   # every change the retro made or proposed to the loop itself, with its expected effect and verdict
     published.jsonl      # every public repo the loop created or updated
     metrics.csv          # one row per run, all rounds
     workflow-map.md      # task type -> workflow preset and settings (scout + analyst keep it)
@@ -97,7 +99,7 @@ Never run apps inside a BAKED checkout (round 1 lesson: the app picked up BAKED'
 ```
 rounds/R07/
   round.json                 # runner commit, providers/models, language server check (`lsp`), config snapshot, phase timestamps, update picks and the random seed
-  ideas.md  review.md  scout.md  backlog.md  publish.md  report.md
+  ideas.md  review.md  scout.md  backlog.md  publish.md  report.md  retro.md (retro rounds only)
   apps/<app>/
     brief.md                 # the exact prompt BAKED got (apps/<repo>-update/ for updates)
     run.json                 # run ids, outcome, metrics (templates/run.json)
@@ -159,15 +161,31 @@ Defaults below. The owner may change any value; roles read it at the start of ea
   "stop": {
     "maxRoundsWithoutProgress": 3,
     "maxRoundsOverBudget": 2
+  },
+  "confirm": {
+    "crossModel": null,
+    "maxTokensPerRound": 3000000
+  },
+  "review": {
+    "rotateReviewer": true
+  },
+  "retro": {
+    "everyRounds": 3,
+    "maxChangesPerRetro": 2
   }
 }
 ```
+
+A key missing from the loop root's `config.json` (the file is copied once and never overwritten) takes the default shown here.
 
 - `round.newApps` new apps are kept out of `round.ideaCandidates` candidates; `round.updateApps` existing published repositories get a small feature each (see [Updates to existing projects](#updates-to-existing-projects)). A round therefore builds `newApps + updateApps` = 5 apps plus the control apps.
 - `runs.referenceModel` is the model every control-app run uses, every round (`provider/model`). `null` means "the default model configured on the PC at loop start"; phase 0 resolves it once and writes it here, and it changes only by the owner's edit.
 - `runs.rotateNewAppProviders`: new apps cycle through the other configured providers (one provider per app, recorded per run), so BAKED keeps being tested on more than one provider. Estimates must stay provider-agnostic; a provider that costs much more is a finding, not a reason to tune constants to it.
 - `round.maxConcurrentRuns` is the number of build lanes: runs of apps (new, update, control) that execute at the same time. It is 3 from round 7 (2 before). If builds or tests start timing out because the PC is saturated, drop back to 2 for the next round and say so in the report; the owner changes the default in `config.json`, the orchestrator never edits it.
 - `round.difficulty` is the ideator's starting difficulty level (1-4). The current level lives in `state.json` (`difficulty`); the orchestrator raises it there under the [difficulty rule](#difficulty-rule) and [Stop conditions](#stop-conditions) and says so in the round report. The orchestrator never edits `config.json`.
+- `confirm.crossModel` is the model that re-runs a run from its approved plan to tell a BAKED problem from a model's habit (see [Findings and model noise](#findings-and-model-noise)). `null` means "the configured model of another vendor than the run's own": a run on `codex/...` confirms on `claude-code/opus`, a run on `claude-code/...` confirms on the codex model. `confirm.maxTokensPerRound` caps these re-runs; they count toward `roundRunTokens`.
+- `review.rotateReviewer`: when no other experiment is planned, the round's experiment is one new app on the round's default provider whose review stages run on another vendor's model (see [Findings and model noise](#findings-and-model-noise)).
+- `retro.everyRounds` and `retro.maxChangesPerRetro` set how often phase 11 runs and how many changes one retro may make (see [Improving the loop itself](#improving-the-loop-itself)).
 - `publish.mode`: `auto` (default) publishes every app whose `verify.json` passes as a public MIT repository right after its verification, not at round end: create it private, push, wait for green CI on all three operating systems, then make it public; no approval is requested. `approve-per-round` is an optional mode the owner may switch on: it waits for the owner's typed approval ("yes", in any language) on the round's publish batch before any repository is created. Only the owner switches this; the orchestrator never changes it.
 
 ## state.json
@@ -209,7 +227,7 @@ Every later start (after a crash, a reboot or a new session): read `config.json`
 1. If `STOP` exists, stop (see [Stop conditions](#stop-conditions)).
 2. Close the previous round: make sure its `report.md` exists and its fix PRs are merged or recorded as left open.
 3. Update the runner: `git fetch origin && git checkout --detach origin/main` in `paths.runner`, `bun install`, `bun run build`. Record the commit in `round.json`. If the build fails, the fixer gets the failure as a P0 issue and the round waits for it (main must build).
-4. Refresh the spec: copy `AGENTS.md`, `roles/` and `templates/` from the runner's `bench/loop/` to the loop root, so spec changes merged to `main` take effect from the next round. Never overwrite `config.json`, `controls/*.md`, `ledger/`, `state.json` or round folders. Also check `.claude/settings.local.json` in the loop root: create it from `templates/claude-settings.local.json` if missing, never overwrite it. Then re-read this file.
+4. Refresh the spec: copy `AGENTS.md`, `roles/` and `templates/` from the runner's `bench/loop/` to the loop root, so spec changes merged to `main` take effect from the next round. Never overwrite `config.json`, `controls/*.md`, `ledger/`, `state.json` or round folders; only copy a `templates/ledger/*` file whose ledger file does not exist yet. Also check `.claude/settings.local.json` in the loop root: create it from `templates/claude-settings.local.json` if missing, never overwrite it. Then re-read this file.
 5. Check the toolchains (see [Stacks and toolchains](#stacks-and-toolchains)): `go version`, `dotnet --version`, `cargo --version`, `cargo fmt --version`, `cargo clippy --version`, `java -version` and `mvn -v`, with the PATH directories the loop's launch script adds. A missing toolchain is reported once and its language is left out of the round's mix; the loop does not install it or work around it.
 6. Check the language servers (see [Language servers](#language-servers)) for every language the round uses: `baked lsp status --json` (or `baked lsp check`) in the round's scratch repo, an install with `baked lsp install <language>` for each uncovered language, then the check again. Record the result in `round.json` `lsp`. An install that fails (exit 1, missing toolchain) is reported once; the round runs without that server.
 7. Run `baked doctor` in an empty scratch repo with the round's policy; any refusal is a P0 finding and stops the round until fixed.
@@ -281,6 +299,17 @@ Numbers across rounds mean something only if the inputs are fixed. These rules h
 - **Every metric row records** the BAKED commit, workflow, settings hash, provider and model per stage, and whether the run is a control, a new app, an update or an experiment. Runs on different providers or before/after a provider-changing PR are reported in separate groups, never averaged together.
 - **Interventions are counted strictly.** Any action a person would have had to take (resume, extend, answer, approve outside auto-approval, recover, reroute, cancel, evidence supplied after inspecting the code, manual file edit) is one intervention with a category, even when the implementer takes it on its own. The implementer never edits app files by hand to rescue a run.
 
+## Findings and model noise
+
+Most runs use one implementation model and one review model, so a habit of that pair can look like a BAKED problem. Every finding therefore says what kind it is and on which models it was seen, and a finding that may be a model habit is confirmed on another model before anyone fixes it.
+
+- **Kinds.** `invariant`: BAKED itself behaves wrongly whatever the model answered (wrong accounting, a throw where a route should be, a gate that does not know a toolchain, state left dirty). `recovery`: a model made an ordinary mistake (a bug, a test in the wrong task, a wrong verdict) and BAKED had no way to detect it or recover; it counts when any model can make that mistake. `model-behavior`: a habit of one model or provider (a cautious reviewer, a provider's own sandbox, a reread loop) that the others do not show. The test: if BAKED is wrong for every possible model answer, the finding is `invariant`.
+- **Seen on.** Each finding records `seenOn`: the provider/model of every role that took part (implementation, review, fix), from `routing.json` of the run.
+- **Cross-model confirmation.** For every `model-behavior` finding and every `blocked` run whose cause is not already an `invariant` finding, the analyst re-runs the run on `confirm.crossModel` from its approved plan: `baked workflow fork RUN` (a fork keeps the spec, graph and plan and restarts at implementation in a fresh worktree), then `baked workflow reroute FORK --model MODEL` (or `--route STAGE=MODEL` when only a review stage is in question) and `baked workflow resume FORK`. It never changes the original run. A fork repeats implementation, so a confirmation costs most of the original run; the analyst confirms the finding with the largest expected effect first. The result goes into the finding as `confirmation`: `reproduced` (the same problem on the other model: the finding is a BAKED problem, keep its kind or change it to `recovery`), `not-reproduced` (record `model-only`), or `skipped: reason` (budget, no other vendor configured). Forks count toward `confirm.maxTokensPerRound`; when it is spent, findings wait with `confirmation: pending` for the next round.
+- **Recurrence.** A `model-behavior` finding that is `model-only` or still `pending` is kept in `ledger/findings.jsonl` with `status: "watch"` and gets no issue until it is seen a second time (another app or another round) or confirmed. `invariant` and `recovery` findings are filed at once, as before. When a `model-only` problem still needs a fix (the provider is supported and users will hit it), the fix is a mechanism that detects and recovers from it, never prompt wording tuned to one model, and its issue says `model-only` and names the model.
+- **Rotating the reviewer.** With `review.rotateReviewer`, a round with no other experiment runs one new app on the round's default provider with its review stages routed to another vendor's model (`--route` for the review stages; `modelRouting.independentReview: "provider"` for that run). The report compares its review findings and verdicts with the same-provider reviews of the round (`baked workflow compare`). This is the round's one experiment.
+- **Cloud smoke runs.** A scheduled cloud session outside the loop runs short smoke rounds on `main` with a cheaper model (`quick`, difficulty 1, apps from `tools/scaffold.py`) after fixes merge. It files only `invariant` and `recovery` findings, as issues labelled `bench-loop` and `smoke` with the same body and marker rules as the backlog role (`<!-- bench-loop: smoke-YYYY-MM-DD/<finding-id> -->`). The backlog role treats those issues like its own: it dedupes against them and may put them in the fix set.
+
 ## Budgets
 
 | Budget | Default | On reaching it |
@@ -307,7 +336,8 @@ The loop is autonomous except at these points:
 | Merging a verified update PR into a published repository | none when `publish.mode` is `auto` and the repository's CI is green on all three operating systems (standing authorization of 2026-10-11, same as creating the repositories) |
 | Tags, releases, version bumps | never; the owner pushes tags |
 | Deleting or renaming any repository, branch on someone else's PR, or published file history | never |
-| Changing `config.json`, `AGENTS.md` of BAKED, provider keys, signing certificates, org settings | never; propose the change in the report |
+| Changing this spec (`bench/loop/AGENTS.md`, `roles/`, `templates/`) | only through phase 11 within the self tier, as a PR to BAKED `main` merged after green CI; everything else is proposed in the report (see [Improving the loop itself](#improving-the-loop-itself)) |
+| Changing `config.json`, BAKED's root `AGENTS.md`, provider keys, signing certificates, org settings | never; propose the change in the report |
 | Spending money (paid APIs, credits top-up) | never; report that credits ran out |
 
 **Standing authorization for public repositories.** gulliby gave standing authorization on 2026-10-11 to create public repositories in Gulliby-development for verified apps without asking; with publish.mode auto no approval is requested. The owner's words (2026-10-11): "I allow setting publish.mode auto and creating public repositories in Gulliby-development through gh", and earlier "don't ask me; always create the repositories when an app is ready and works". An agent harness with its own permission layer may still block `gh repo create ... --public` or `gh repo edit --visibility public`. Then the loop reports it once, does not work around it, and the owner adds an allow rule for the loop's session. The loop never changes permission settings itself.
@@ -350,7 +380,24 @@ No other messages. Progress goes into `state.json` and the round folder.
 1. Fill `rounds/RNN/report.md` from `templates/round-report.md`, BAKED-side metrics and the check of last round's fixes before the app tables: tables per group (control, new, update, experiment), comparisons with the previous round and with the first loop round, findings and issues, fixes merged with their expected effect, a Published table (repo links, CI results, logo outcome), budget use, open blockers.
 2. Append one row per run to `ledger/metrics.csv`.
 3. Send the round result message.
-4. Set `state.round += 1`, `state.phase = "prepare"`.
+4. If `state.round` is a multiple of `retro.everyRounds`, set `state.phase = "retro"` and run phase 11; its one-line summary and any owner-tier proposals go into the round message (sent after the retro in that case).
+5. Set `state.round += 1`, `state.phase = "prepare"`.
+
+## Improving the loop itself
+
+The loop improves BAKED, and every `retro.everyRounds` rounds it also improves itself. Phase 0 copies `AGENTS.md`, `roles/` and `templates/` from the runner's `bench/loop/` each round, so a change to the loop is an ordinary pull request to `bench/loop/` in BAKED and takes effect in the first round after it merges.
+
+Phase 11 runs `roles/retro.md`. The retro reads the round reports since the last retro, `ledger/metrics.csv`, `ledger/findings.jsonl`, `ledger/loop-changes.jsonl` and earlier `retro.md` files, and what others publish about evaluating coding agents. It computes the loop's own metrics and makes or proposes at most `retro.maxChangesPerRetro` changes, each a hypothesis with a metric, an expected movement and the round when it is judged.
+
+What the retro may change, by tier:
+
+| Tier | What | How |
+|---|---|---|
+| Self | Wording and checklists in `roles/*.md`, report and finding templates, ledger fields, triage and severity criteria, analysis commands, the order of steps inside a phase, new measurements | a PR to `bench/loop/` that the retro opens and merges after green CI, like a fixer PR |
+| Trial | A new step or phase in the loop (for example a smoke check or a stage re-run) | a PR that marks the step as a trial for one round; the next retro keeps it if its metric moved and removes it otherwise |
+| Owner | `config.json` values (budgets, providers, concurrency, publishing), control apps and the reference model, the [Objective](#objective) and every "never" rule in this file, the tiers in this table, anything that spends more tokens or money or touches keys | proposed in `retro.md` and in the round message, never changed by the loop |
+
+Every change is a line in `ledger/loop-changes.jsonl` with its PR. The next retro first judges the changes that are due (`kept`, `reverted`, `extended`) and reverts those that did not move their metric, before it proposes anything new. A retro never weakens a rule that limits the retro itself.
 
 ## Rules for every role
 

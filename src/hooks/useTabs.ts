@@ -2,6 +2,7 @@ import type { ModelMessage } from "ai";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { rebuildCoreMessages } from "../core/sessions/rebuild.js";
 import type { TabMeta } from "../core/sessions/types.js";
+import { useCheckpointStore } from "../stores/checkpoints.js";
 import { useUIStore } from "../stores/ui.js";
 import { useWorkflowStore } from "../stores/workflow.js";
 import type { ChatMessage } from "../types/index.js";
@@ -137,6 +138,8 @@ export function useTabs(onTabClosed?: (survivingIds: Set<string>) => void): UseT
     if (chat) chat.abort();
 
     chatRegistry.current.delete(targetId);
+    // The closed tab leaves the session, so its snapshot tags go when its view unmounts.
+    useCheckpointStore.getState().discardTags(targetId);
     autoLabeled.current.delete(targetId);
     setActivityMap((prev) => {
       const next = new Map(prev);

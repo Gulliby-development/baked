@@ -41,8 +41,11 @@ Stop reasons by count:
 <what changed, on which app, result vs the map's default>
 
 ## Findings
-| ID | Severity | Title | Issue | Apps |
-|---|---|---|---|---|
+| ID | Severity | Kind | Seen on | Confirmation | Title | Issue | Apps |
+|---|---|---|---|---|---|---|---|
+
+Watching (no issue yet): <finding ids with the models they were seen on, or none>
+Cross-model confirmations: <tokens used> / <confirm.maxTokensPerRound>
 
 ## Scout highlights
 <3 lines with links>
@@ -53,6 +56,9 @@ Stop reasons by count:
 
 ## Budget
 Run tokens: <used> / <roundRunTokens> · wall clock: <h> · fix PRs: <n>
+
+## Retro (retro rounds only)
+<one line: changes made with PR links, changes reverted, the owner proposal that matters most; link to `retro.md`>
 
 ## Waiting on the owner
 <`needs-gulliby` items, runs above 8M, blockers; publish batches only when `publish.mode` is `approve-per-round`>

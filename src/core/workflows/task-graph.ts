@@ -35,7 +35,7 @@ export function readyTasks(
 }
 
 /** Whether `text` names `path`: the path itself, or a module path's dotted form (`pkg.__main__`). */
-function namesPath(text: string, path: string): boolean {
+export function namesPath(text: string, path: string): boolean {
   if (text.includes(path)) return true;
   const stem = path.replace(/\.[^./]+$/, "");
   if (!stem.includes("/")) return false;

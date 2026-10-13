@@ -55,6 +55,7 @@ const SHORT_HELP = `
 /workflow new [text] Open the new-run form, optionally prefilled
 /workflow quick [text] The same form on the quick workflow for a small task
 /workflow gates      Add, edit, remove and try the checks every run uses
+/workflow definitions  Each workflow's family and line, and a step-through of a run along it
 /workflow edit ID    Edit a workflow definition: stages, transitions and their gates
 /workflow routing    Which model runs each class, role, stage and profile (modelRouting)
 /workflow usage      Tokens and cost of every run over 7, 30 or 90 days, by model, stage or day
@@ -82,6 +83,12 @@ export function register(map: Map<string, CommandHandler>): void {
     }
     if (tokens[0] === "gates") {
       ui.showGates();
+      useUIStore.getState().openModal("workflow");
+      return;
+    }
+    // The workflows screen; `baked workflow definitions` keeps the JSON listing.
+    if ((tokens[0] === "definitions" || tokens[0] === "workflows") && tokens.length === 1) {
+      ui.showWorkflows();
       useUIStore.getState().openModal("workflow");
       return;
     }

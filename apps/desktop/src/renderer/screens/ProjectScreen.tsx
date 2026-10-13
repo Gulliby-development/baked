@@ -23,6 +23,7 @@ const TITLES: Record<ProjectSection, string> = {
   artifacts: "Artifacts",
   gates: "Gates and checks",
   workflows: "Workflows",
+  agents: "Agents from other tools",
   instructions: "Instructions",
   "working-set": "Working set",
   memory: "Memory",

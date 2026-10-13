@@ -343,6 +343,11 @@ describe("workflow parallel writers", () => {
     expect(stopped.reason).toBe("owner_lost");
     expect(fx.status("T002", run.runId)).toBe("interrupted");
     expect(fx.status("T001", run.runId)).toBe("implemented");
+    expect(
+      fx.store
+        .events(run.runId, 0, 10000)
+        .some((e) => e.type === "task.state_changed" && e.payload.to === "interrupted" && e.payload.cause === "lease_lost"),
+    ).toBe(true);
     expect(readFileSync(join(fx.tree(run.runId), "a.txt"), "utf8")).toBe("A");
     expect(existsSync(join(fx.tree(run.runId), "b.txt"))).toBe(false);
     // The run's own leases are released; the lease the other owner took is its own.
@@ -369,9 +374,23 @@ describe("workflow parallel writers", () => {
     expect(restarted?.earlierEdits?.paths).toEqual(["b.txt"]);
     const record = fx.store.artifacts(run.runId).find((a) => a.logical_path === "tasks/restarts/T002.json");
     expect(record).toBeDefined();
-    const restart = JSON.parse(fx.store.readArtifact(run.runId, record?.id ?? "")) as { reason: string; carriedPaths: string[] };
+    const restart = JSON.parse(fx.store.readArtifact(run.runId, record?.id ?? "")) as {
+      reason: string;
+      carriedPaths: string[];
+      interruptedTokens: number;
+      carriedTokens: number;
+    };
     expect(restart.reason).toContain("worker process exited");
     expect(restart.carriedPaths).toEqual(["b.txt"]);
+    // #843: what the restart reuses of the attempt it replaces.
+    expect(typeof restart.interruptedTokens).toBe("number");
+    expect(restart.carriedTokens).toBe(restart.interruptedTokens);
+    const interrupted = fx.store
+      .events(run.runId, 0, 10000)
+      .flatMap((e) => (e.type === "task.state_changed" && e.payload.to === "interrupted" ? [e.payload] : []));
+    expect(interrupted).toEqual([
+      expect.objectContaining({ taskId: "T002", cause: "worker_lost", detail: expect.stringContaining("worker process exited") }),
+    ]);
     expect(fx.store.state(run.runId).taskRestarts).toEqual({ T002: 1 });
     expect(fx.store.leases()).toEqual([]);
   });
