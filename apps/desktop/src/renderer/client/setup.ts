@@ -110,6 +110,8 @@ export interface Check {
   scope: "task" | "feature";
   envNames: string[];
   writes: string[];
+  /** `json`: a custom gate whose last JSON line (`{"status":"passed"}`) decides the result. */
+  report?: "exit" | "json";
 }
 
 export type CheckRunStatus = "passed" | "failed" | "timeout" | "cancelled" | "error";

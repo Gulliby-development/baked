@@ -88,6 +88,7 @@ bun test tests/feature-parity.test.ts
 | Feature | TUI | Headless CLI | serve API | Desktop |
 | --- | --- | --- | --- | --- |
 | Language servers: status, install, enable, restart | `/lsp`, `/lsp install`, `/lsp restart` +1 | `baked lsp status`, `baked lsp install`, `baked lsp enable` +2 | `/v1/lsp`, `/v1/lsp/restart`, `/v1/lsp/:id/install` +3 | `project/lsp`, `project/overview` |
+| Artifacts: HTML pages shared by every project, deployed to the user's Vercel | `/artifacts`, `/artifacts open`, `/artifacts deploy` | `baked artifacts list`, `baked artifacts show`, `baked artifacts save` +2 | `/v1/artifacts`, `/v1/artifacts/:id`, `/v1/artifacts/:id/page` +2 | `project/artifacts` |
 | Diagnose LSP, tree-sitter and index health | `/diagnose` | `baked diagnose`, `baked lsp check` | `/v1/lsp/diagnose`, `/v1/lsp` | `project/lsp` |
 | Baked map settings: on and off, regenerate, summaries, budget | `/repo-map` | `--no-repomap` | `/v1/settings` | `settings/chat` |
 | Code graph | `/graph` | Not needed: a picture; scripts query the API | `/v1/graph`, `/v1/graph/file`, `/v1/graph/link` +1 | `project/graph` |
@@ -119,6 +120,7 @@ bun test tests/feature-parity.test.ts
 | Revise a run after its instructions change | `/workflow` | `baked workflow candidate`, `baked workflow revise` | `/v1/workflow/runs/:id/candidate`, `/v1/workflow/runs/:id/revise` | `project/runs` |
 | Checks: list, edit, run now, suggestions | `/workflow` | `baked doctor` | `/v1/workflow/checks`, `/v1/workflow/checks/suggestions`, `/v1/workflow/checks/:id/run` | `project/gates` |
 | Gates: list and confirm | `/workflow` | `baked workflow gates` | `/v1/workflow/gates`, `/v1/workflow/gates/confirm` | `project/gates` |
+| Custom gates: a script or container that reports its result as JSON (command.report json) | `/workflow` | `baked workflow gates`, `baked workflow validate` | `/v1/workflow/checks`, `/v1/workflow/checks/:id/run` | `project/gates` |
 | Gates from a plain-language sentence | **Gap** [#372](https://github.com/Gulliby-development/baked/issues/372): create a gate from text in the workflow editor | `baked workflow gate` | `/v1/workflow/gates/draft`, `/v1/workflow/gates/:id`, `/v1/workflow/gates/:id/places` +1 | `project/gates` |
 | Gates on the run's line: what each does, blocks or advises, last result | **Gap** [#533](https://github.com/Gulliby-development/baked/issues/533): gate results only in the activity lines | `baked workflow definitions`, `baked workflow status` | `/v1/workflow/definitions`, `/v1/workflow/runs/:id/events` | `project/runs` |
 | Workflow definition editor | `/workflow` | `baked workflow define`, `baked workflow validate` | `/v1/workflow/definitions`, `/v1/workflow/editor`, `/v1/workflow/editor/review` +1 | `project/workflows` |
