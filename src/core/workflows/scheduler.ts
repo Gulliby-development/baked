@@ -253,6 +253,12 @@ import {
   type TaskGraph,
   WorkflowSchema,
 } from "./schemas.js";
+import {
+  UNCOVERED_SUBMISSIONS,
+  uncoveredCriterion,
+  uncoveredFindings,
+  uncoveredSpecNote,
+} from "./uncovered.js";
 
 type Implementation = ReturnType<typeof ImplementationSchema.parse>;
 
@@ -715,6 +721,10 @@ export class WorkflowScheduler {
               const approvalLimits = plannerApprovalLimits(policy);
               // Scope advice is given once; a plan that keeps the writes is approved by a person.
               let scopeAdvised = false;
+              // A criterion left uncovered again by a plan that names it is one the planner cannot
+              // cover; it stops being a submission error and goes back to the spec (#780).
+              const uncoveredSubmissions = new Map<string, number>();
+              const cannotCover = new Set<string>();
               const plan = PlanSchema.parse(
                 await this.call(
                   runId,
@@ -756,7 +766,15 @@ export class WorkflowScheduler {
                     const problems = [
                       ...this.planProblems(runId, spec, parsed.data, policy, profiles),
                       ...codeTaskCheckProblems(parsed.data.taskGraph, policy),
-                    ];
+                    ].filter((problem) => {
+                      const id = uncoveredCriterion(problem);
+                      if (!id) return true;
+                      const count = (uncoveredSubmissions.get(id) ?? 0) + 1;
+                      uncoveredSubmissions.set(id, count);
+                      if (count >= UNCOVERED_SUBMISSIONS && parsed.data.markdown.includes(id))
+                        cannotCover.add(id);
+                      return !cannotCover.has(id);
+                    });
                     if (scopeAdvised) return problems;
                     const advice = planScopeAdvice(
                       policy,
@@ -772,6 +790,34 @@ export class WorkflowScheduler {
               );
               state.plan = plan.markdown;
               const problems = this.planProblems(runId, spec, plan, policy, profiles);
+              const uncovered = problems.map(uncoveredCriterion);
+              if (
+                problems.length &&
+                uncovered.every((id): id is string => id !== null && cannotCover.has(id))
+              ) {
+                const ids = [...new Set(uncovered)] as string[];
+                const stages = this.stageKinds(runId, v2);
+                const specify = stages.findIndex((s) => s.kind === "specify");
+                // The spec author gets the planner's reason once; a criterion it keeps goes to a person.
+                if (
+                  specify >= 0 &&
+                  ids.some((id) => !state.uncoveredReturned.includes(id)) &&
+                  this.moveTo(state, stages, specify, v2)
+                ) {
+                  state.uncoveredReturned.push(
+                    ...ids.filter((id) => !state.uncoveredReturned.includes(id)),
+                  );
+                  state.prompt += `\n${uncoveredSpecNote(spec, ids, plan.markdown)}`;
+                  advance = false;
+                  rerouted = v2 !== null;
+                  break;
+                }
+                this.wait("clarification", state, {
+                  findings: uncoveredFindings(spec, ids, plan.markdown),
+                });
+                advance = false;
+                break;
+              }
               if (problems.length)
                 throw new WorkflowFault("INVALID_REFERENCE", problems.join("\n"));
               const planned = planGraph(spec, plan, policy, profiles);

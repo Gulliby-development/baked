@@ -166,6 +166,8 @@ export const RuntimeStateSchema = z
     requestText: z.string().default(""),
     /** Whether the request-coverage finding was raised; it is raised once per run. */
     coverageRaised: z.boolean().default(false),
+    /** Criteria the planner could not cover that already sent the run back to specify once (#780). */
+    uncoveredReturned: z.array(z.string()).default([]),
     /** Tasks the host added by splitting oversized test tasks; they do not count against the auto-approval task limit. */
     hostSplitTasks: z.number().int().nonnegative().default(0),
     /**
