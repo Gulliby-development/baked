@@ -42,6 +42,7 @@ import { ConfirmDialog } from "../../components/ui/confirm-dialog.js";
 import { emptyClass } from "../../components/ui/empty.js";
 import { Skeleton } from "../../components/ui/skeleton.js";
 import { cn } from "../../lib/cn.js";
+import { useChatModels } from "../../lib/models.js";
 import { projectHref } from "../../router.js";
 import { handOffText, SPLIT_EDIT_PREFIX } from "../coordinator/model.js";
 import type { SectionProps } from "../sections.js";
@@ -498,7 +499,7 @@ export function SessionView({
         }
       : undefined;
 
-  const loadModels = useCallback(() => chat.models(key).then((result) => result.providers), [key]);
+  const models = useChatModels(key);
   const loadCommands = useCallback(
     () => setup.commands(key).then((result) => result.commands),
     [key],
@@ -645,7 +646,7 @@ export function SessionView({
           onMode={(mode) => update({ mode })}
           {...(hasEffort ? { onEffort: (effort: ChatEffort) => update({ effort }) } : {})}
           modes={modes}
-          loadModels={loadModels}
+          models={models}
           loadMentions={loadMentions}
           {...(expandsCommands ? { loadCommands } : {})}
           acceptsImages={acceptsImages}

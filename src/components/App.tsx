@@ -995,10 +995,6 @@ export function App({
         );
       }
     }
-    // Mark all tabs for skip-cleanup so git tags survive the restart
-    const cpStore = useCheckpointStore.getState();
-    const allTabs = tabMgrRef.current?.tabs ?? [];
-    for (const tab of allTabs) cpStore.skipCleanup(tab.id);
     restart();
   }, [cwd, sessionManager]);
 

@@ -157,8 +157,8 @@ export function useWorkflow(workspace: string, runId: string | null, visible: bo
     try {
       setError(null);
       const result = await service.action(runId, action);
-      if (action === "fork" && result.runId !== runId)
-        useWorkflowStore.getState().select(result.runId);
+      const forked = action === "fork" || (typeof action === "object" && "fork" in action);
+      if (forked && result.runId !== runId) useWorkflowStore.getState().select(result.runId);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
