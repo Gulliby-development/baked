@@ -353,6 +353,11 @@ export interface QualityConfig {
 export interface AppConfig {
   /** Code quality gate defaults for new workflow runs. */
   quality?: QualityConfig;
+  /**
+   * Limits of new workflow runs that the settings pages edit per key. `maxCostUsd` is the dollar
+   * cap a run gets when its policy sets none (`workflows.policy.maxCostUsd` wins).
+   */
+  runBudget?: { maxCostUsd?: number };
   workflows?: import("zod").infer<
     typeof import("../core/workflows/schemas.js").WorkflowConfigSchema
   >;

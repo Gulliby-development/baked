@@ -45,6 +45,8 @@ export type SettingDefinition = SettingBase &
         step?: number;
         integer?: boolean;
         nullable?: boolean;
+        /** What an unset nullable value is called; default `auto`. */
+        unsetLabel?: string;
         display?: SettingDisplay;
       }
     /** A model ID such as `anthropic/claude-sonnet-4-6`; null means unset. */
@@ -132,7 +134,8 @@ export const SETTING_PAGES: readonly SettingPage[] = [
   {
     id: "limits",
     title: "Timeouts and limits",
-    description: "Tool and stream timeouts, and context-window overrides per model.",
+    description:
+      "Tool and stream timeouts, context-window overrides per model, and the cost cap of workflow runs.",
     command: "/timeouts",
   },
   {
@@ -890,6 +893,22 @@ export const SETTINGS: readonly SettingDefinition[] = [
       enabledWhen: { id: "watchdog", values: [true] },
     }),
   ),
+  {
+    id: "runBudget.maxCostUsd",
+    page: "limits",
+    section: "Workflow runs",
+    label: "Cost cap",
+    help: "US dollars a workflow run may spend on models; the run stops for a decision before a step would pass it. Every model the run can call needs a known price. Empty means no cap: only the token budget applies. A policy that sets maxCostUsd itself keeps it, and the start forms can set a cap per run.",
+    scopes: BOTH,
+    type: "number",
+    default: null,
+    min: 0.01,
+    max: 100_000,
+    step: 1,
+    nullable: true,
+    unsetLabel: "none",
+    display: { unit: "USD", factor: 1 },
+  },
   {
     id: "contextWindowOverrides",
     page: "limits",

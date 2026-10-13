@@ -17,6 +17,7 @@ export function preRunRequest(args: WorkflowArgs, cwd: string): PreRunRequest {
   const route = text("route");
   const confirmation = text("confirm-auto-approval");
   const sandbox = text("sandbox");
+  const maxCost = text("max-cost-usd");
   return {
     ...(workflowId ? { workflowId } : {}),
     ...(text("model") ? { model: text("model") } : {}),
@@ -26,6 +27,7 @@ export function preRunRequest(args: WorkflowArgs, cwd: string): PreRunRequest {
     ...(args.flags["model-strict"] === true ? { modelStrict: true } : {}),
     ...(writers ? { writers: Number(writers) } : {}),
     ...(candidates ? { candidates: Number(candidates) } : {}),
+    ...(maxCost ? { maxCostUsd: Number(maxCost) } : {}),
     ...(sandbox === "off" || sandbox === "auto" || sandbox === "required" ? { sandbox } : {}),
     ...(confirmation ? { autoApprovalConfirmation: confirmation } : {}),
   };
@@ -71,8 +73,15 @@ export function formatEstimate(estimate: PreRunEstimate): string {
       estimate.budget.fits
     ]
   }`;
+  const cap = estimate.cost
+    ? `\nCost cap $${estimate.cost.maxCostUsd}: ${
+        { yes: "fits", maybe: "may be passed", no: "will very likely be passed" }[
+          estimate.cost.fits
+        ]
+      }`
+    : "";
   const notes = estimate.notes.map((n) => `${DIM}${n}${RST}`).join("\n");
-  return `${BOLD}${estimate.label}${RST}\n${budget}\n\n${stages}\n\n${models}\n${notes ? `\n${notes}\n` : ""}`;
+  return `${BOLD}${estimate.label}${RST}\n${budget}${cap}\n\n${stages}\n\n${models}\n${notes ? `\n${notes}\n` : ""}`;
 }
 
 export function formatDoctor(report: DoctorReport): string {

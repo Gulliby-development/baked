@@ -469,6 +469,7 @@ function startArgs(raw: unknown): WorkflowArgs {
   if (body.sandbox) flags.sandbox = body.sandbox;
   if (body.policy !== undefined) flags.policy = true;
   if (body.budget) flags.budget = body.budget;
+  if (body.maxCostUsd !== undefined) flags["max-cost-usd"] = String(body.maxCostUsd);
   if (body.approvalReview) flags["approval-review"] = true;
   if (body.autoPreset) flags["auto-preset"] = true;
   return validateWorkflowArgs({
@@ -1207,6 +1208,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       if (query.worktree === "true") flags.worktree = true;
       if (query.writers) flags.writers = query.writers;
       if (query.candidates) flags.candidates = query.candidates;
+      if (query.maxCostUsd) flags["max-cost-usd"] = query.maxCostUsd;
       if (query.sandbox) flags.sandbox = query.sandbox;
       if (query.confirmAutoApproval) flags["confirm-auto-approval"] = query.confirmAutoApproval;
       const command = path.endsWith("doctor") ? "doctor" : "estimate";

@@ -372,9 +372,41 @@ function handleTimeouts(_input: string, ctx: CommandContext): void {
   const wdForce = `wd-force:${wdForceSec}`;
 
   const diagSec = diagnosticsTimeoutMs(cfg.diagnostics?.timeoutMs) / 1000;
+  const costCap =
+    mergeConfigs(cfg, loadEffectiveProjectConfig(getCwd())).runBudget?.maxCostUsd ?? null;
 
   // Lookup table: category → picker config
   const timeoutPickers: Record<string, CommandHandler> = {
+    // The `runBudget.maxCostUsd` setting: the dollar cap of new workflow runs whose policy sets none.
+    "cost-cap": (_input: string, ctx: CommandContext) => {
+      const patch = (value: string): Partial<AppConfig> => {
+        const usd = Number(value.split(":")[1]);
+        return { runBudget: usd > 0 ? { maxCostUsd: usd } : undefined };
+      };
+      ctx.openCommandPicker({
+        title: "Workflow Cost Cap",
+        icon: icon("clock"),
+        currentValue: `cost:${String(costCap ?? 0)}`,
+        scopeEnabled: true,
+        initialScope: ctx.detectScope("runBudget"),
+        options: [
+          { value: "cost:0", label: "No cap", description: "only the token budget applies" },
+          ...[1, 2, 5, 10, 20, 50, 100].map((usd) => ({
+            value: `cost:${String(usd)}`,
+            label: `$${String(usd)}`,
+          })),
+        ],
+        onSelect: (value, scope) => {
+          ctx.saveToScope(patch(value), scope ?? "project");
+          const usd = Number(value.split(":")[1]);
+          sysMsg(
+            ctx,
+            `Workflow cost cap → ${usd > 0 ? `$${String(usd)}` : "none"} (${scope ?? "project"}); new runs use it`,
+          );
+        },
+        onScopeMove: (value, from, to) => ctx.saveToScope(patch(value), to, from),
+      });
+    },
     "edit-diagnostics": (_input: string, ctx: CommandContext) => {
       ctx.openCommandPicker({
         title: "Edit Diagnostics Wait",
@@ -541,6 +573,11 @@ function handleTimeouts(_input: string, ctx: CommandContext): void {
       { value: "wd-chunk", label: "Chunk Timeout", description: `${wdChunkSec}s` },
       { value: "wd-tool", label: "Tool Max Timeout", description: `${wdToolSec}s` },
       { value: "wd-force", label: "Force-Resolve Timeout", description: `${wdForceSec}s` },
+      {
+        value: "cost-cap",
+        label: "Workflow Cost Cap",
+        description: costCap === null ? "none" : `$${String(costCap)}`,
+      },
     ],
     onSelect: (value) => {
       const handler = timeoutPickers[value];

@@ -33,6 +33,8 @@ export const StartBody = z
     policy: z.unknown().optional(),
     /** A budget preset scaling the policy (or the configured or default one), as `--budget`. */
     budget: z.enum(BUDGET_PRESETS).optional(),
+    /** The run's dollar cap in US dollars, as `--max-cost-usd`; it overrides the policy's. */
+    maxCostUsd: z.number().positive().finite().optional(),
     model: z.string().min(1).optional(),
     owner: z.string().min(1).max(200).optional(),
     confirmAutoApproval: z.string().min(1).optional(),
@@ -114,6 +116,11 @@ export const PreRunQuery = z.strictObject({
   worktree: z.enum(["true", "false"]).optional(),
   writers: z.string().regex(/^\d+$/).optional(),
   candidates: z.string().regex(/^\d+$/).optional(),
+  /** The run's dollar cap, as `--max-cost-usd`; the doctor warns when the estimate passes it. */
+  maxCostUsd: z
+    .string()
+    .regex(/^\d+(\.\d+)?$/)
+    .optional(),
   sandbox: z.enum(["off", "auto", "required"]).optional(),
   confirmAutoApproval: z.string().min(1).optional(),
 });

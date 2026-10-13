@@ -113,6 +113,8 @@ export interface PreRunEstimate {
     costUsd: TokenRange | null;
   }[];
   budget: { maxTotalTokens: number; fits: Fit };
+  /** The run's dollar cap against the estimated cost; absent without a cap or a price. */
+  cost?: { maxCostUsd: number; fits: Fit };
   label: string;
 }
 
@@ -152,6 +154,8 @@ export interface PreRunInput {
   writers?: number;
   /** The run's OS sandbox (`--sandbox`); omitted, the policy and the sandbox setting decide. */
   sandbox?: "off" | "auto" | "required";
+  /** The run's dollar cap (`--max-cost-usd`); the doctor warns when the estimate passes it. */
+  maxCostUsd?: number;
 }
 
 /** `POST /v1/workflow/runs` (`StartBody` in `src/core/api/schemas.ts`). */
@@ -178,6 +182,8 @@ export interface StartBody {
   sandbox?: "off" | "auto" | "required";
   /** The run model overrides every configured route (`--model-strict`). */
   modelStrict?: boolean;
+  /** The run's dollar cap in US dollars (`--max-cost-usd`); omitted, the policy or setting applies. */
+  maxCostUsd?: number;
   /** The run records the proposal of `POST /v1/workflow/propose` and the workflow kept. */
   autoPreset?: boolean;
 }

@@ -385,6 +385,11 @@ export interface PreRunEstimate {
     price: "table" | "approximate" | "unknown";
   }[];
   budget: { maxTotalTokens: number; fits: "yes" | "maybe" | "no" };
+  /**
+   * The dollar cap (`maxCostUsd`) against the estimated cost, when the run has a cap and the
+   * estimate prices it; `fits` compares the cost range with the cap as `budget.fits` does tokens.
+   */
+  cost?: { maxCostUsd: number; fits: "yes" | "maybe" | "no" };
   label: string;
 }
 
@@ -402,6 +407,8 @@ export function estimatePreRun(input: {
   workflowId: string;
   stages: PlannedStage[];
   maxTotalTokens: number;
+  /** The run's dollar cap; null or omitted when it has none. */
+  maxCostUsd?: number | null;
   price: (model: string) => ModelPrice | null;
   mix?: TokenMix;
 }): PreRunEstimate {
@@ -541,12 +548,10 @@ export function estimatePreRun(input: {
   const unknown = models.filter((m) => m.price === "unknown").map((m) => m.model);
   if (unknown.length)
     notes.push(`No price known for ${unknown.join(", ")}; the cost leaves them out.`);
-  const fits =
-    tokens.high <= input.maxTotalTokens
-      ? "yes"
-      : tokens.low > input.maxTotalTokens
-        ? "no"
-        : "maybe";
+  const fitsIn = (range: TokenRange, limit: number): "yes" | "maybe" | "no" =>
+    range.high <= limit ? "yes" : range.low > limit ? "no" : "maybe";
+  const fits = fitsIn(tokens, input.maxTotalTokens);
+  const cap = input.maxCostUsd ?? null;
   const fromOthers = shared ? `, ${shared} of them from other projects` : "";
   const basisLabel =
     basis === "workflow-history"
@@ -567,6 +572,7 @@ export function estimatePreRun(input: {
     stages,
     models,
     budget: { maxTotalTokens: input.maxTotalTokens, fits },
+    ...(cap !== null && costUsd ? { cost: { maxCostUsd: cap, fits: fitsIn(costUsd, cap) } } : {}),
     label: `Estimate: ${rangeText(tokens)} tokens${costUsd ? `, about ${usdRangeText(costUsd)}${costComplete ? "" : " (partial)"}` : ""} (${basisLabel})`,
   };
 }

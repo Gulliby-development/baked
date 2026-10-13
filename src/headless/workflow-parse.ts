@@ -116,6 +116,7 @@ const preRunFlags = [
   "worktree",
   "writers",
   "candidates",
+  "max-cost-usd",
   "sandbox",
   "confirm-auto-approval",
   "json",
@@ -148,6 +149,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "property-tests",
     "issue",
     "budget",
+    "max-cost-usd",
     "approval-review",
     "auto-preset",
     "record-model-calls",
@@ -317,11 +319,12 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
         );
     }
   }
-  if ("cost-usd" in result.flags) {
-    const value = Number(result.flags["cost-usd"]);
-    if (!/^\d+(\.\d+)?$/.test(String(result.flags["cost-usd"])) || !(value > 0))
-      throw new WorkflowFault("INVALID_DEFINITION", "--cost-usd requires a positive number");
-  }
+  for (const name of ["cost-usd", "max-cost-usd"])
+    if (name in result.flags) {
+      const value = Number(result.flags[name]);
+      if (!/^\d+(\.\d+)?$/.test(String(result.flags[name])) || !(value > 0))
+        throw new WorkflowFault("INVALID_DEFINITION", `--${name} requires a positive number`);
+    }
   if ("format" in result.flags && result.flags.format !== "md")
     throw new WorkflowFault("INVALID_DEFINITION", "--format takes md");
   if (result.command === "usage" && "output" in result.flags && !("format" in result.flags))
@@ -572,7 +575,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--candidates N] [--clarification ask|assume] [--sandbox off|auto|required] [--duplication off|warn|ratchet] [--sast auto|off] [--mutation off|advisory|required] [--property-tests auto|off] [--budget PRESET] [--approval-review] [--record-model-calls] [--replay FILE]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--candidates N] [--clarification ask|assume] [--sandbox off|auto|required] [--duplication off|warn|ratchet] [--sast auto|off] [--mutation off|advisory|required] [--property-tests auto|off] [--budget PRESET] [--max-cost-usd N] [--approval-review] [--record-model-calls] [--replay FILE]
 run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --prompt-file FILE] [other run options]
   --issue takes the request from a GitHub issue (its title and body; --prompt adds instructions)
   and names the feature issue-N-TITLE unless --feature is given; the delivery pull request says
@@ -595,6 +598,8 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   --sandbox runs the run's checks, fixes, probes and acceptance apps in the OS sandbox (see
   docs/sandbox.md); required refuses to start without a backend. Default: the stricter of the
   policy's sandbox and the sandbox setting
+  --max-cost-usd N caps the run's model cost at N US dollars (the policy's maxCostUsd); every model
+  the run can call needs a known price. The token budget still applies
   --approval-review lets the approval reviewer (a model) approve a low-risk plan that leaves the
   auto approval limits only by its task count, file count or paths; it needs autoApproval.limits.
   Always-human paths, deletions and the token limit still wait for you
@@ -695,9 +700,9 @@ models [--model ID] [--provider ID] [--json]
   list what a route, --route, --model or a fallback can name: the model names ($active, $fast,
   ...) with the model each resolves to, then the models of each provider; providers without a key
   or login are listed with that reason
-doctor [WORKFLOW] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--worktree [--writers N]] [--candidates N] [--sandbox MODE] [--confirm-auto-approval HASH] [--json]
+doctor [WORKFLOW] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--worktree [--writers N]] [--candidates N] [--max-cost-usd N] [--sandbox MODE] [--confirm-auto-approval HASH] [--json]
   check before a run: start refusals, provider keys of every routed model, check commands, Git,
-  a busy workspace and the budget; exit 1 when something must be fixed (also: baked doctor)
+  a busy workspace, the budget and the cost cap; exit 1 when something must be fixed (also: baked doctor)
 estimate [WORKFLOW] (same options as doctor)
   tokens and approximate cost per stage and per model, from earlier runs of this project
 import --source spec-kit|ecc|markdown-edit --path DIRECTORY --feature ID
