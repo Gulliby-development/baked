@@ -117,6 +117,16 @@ import {
   withModuleDependencies,
 } from "./plan-consistency.js";
 import { ProcessScope } from "./process-scope.js";
+import {
+  compareWithBaseline,
+  duplicationOf,
+  measureBaseline,
+  QUALITY_BASELINE,
+  QUALITY_DUPLICATION,
+  type QualityBaseline,
+  qualityClaim,
+  readCodeFiles,
+} from "./quality/duplication.js";
 import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery.js";
 import {
@@ -896,6 +906,7 @@ export class WorkflowScheduler {
                   ),
                 );
                 state.manifest.baselineSnapshotId = snapshot.id;
+                await this.measureQualityBaseline(runId, state, policy, signal);
                 const digest = approvalDigest(state);
                 // A v2 approval stage marked human never approves on its own.
                 const human = v2?.stage.type === "approval" && v2.stage.decision === "human";
@@ -4168,6 +4179,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       throw new WorkflowFault("OUTPUT_INVALID", `Required check ${inconclusive} is inconclusive`, {
         reason: "verification_failed",
       });
+    if (!failures.length) failures.push(...(await this.duplicationFindings(runId, state, policy)));
     if (failures.length)
       return this.recordFindings(runId, {
         schemaVersion: 1,
@@ -4315,6 +4327,114 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     } finally {
       await scope.stop();
     }
+  }
+  /**
+   * Measures the code at approval, before any task edits it, as the baseline of the duplication
+   * ratchet (#638). Kept once per run: a revised plan compares with the same code.
+   */
+  private async measureQualityBaseline(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (duplicationOf(policy) === "off" || this.store.latestArtifact(runId, QUALITY_BASELINE))
+      return;
+    const code = await readCodeFiles(
+      runRoot(this.store.workspace, state),
+      Object.keys(state.expectedFiles ?? {}),
+    );
+    signal.throwIfAborted();
+    const baseline = measureBaseline(code.files, code.skipped);
+    this.store.transaction(() =>
+      this.store.artifact(runId, "quality", QUALITY_BASELINE, canonical(baseline)),
+    );
+  }
+  /**
+   * The duplication ratchet after the command checks pass: the run's code against the baseline
+   * measured at approval, recorded for the run report. Under `ratchet` every copy and unused
+   * declaration the run added is a blocking finding that names what to reuse; under `warn` they
+   * stay notes in the recorded result. Earlier ratchet findings close once nothing blocks.
+   */
+  private async duplicationFindings(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+  ): Promise<Review["findings"]> {
+    const mode = duplicationOf(policy);
+    const row = this.store.latestArtifact(runId, QUALITY_BASELINE);
+    if (mode === "off" || !row || !state.snapshotId) return [];
+    const baseline = JSON.parse(this.store.readArtifact(runId, row.id)) as QualityBaseline;
+    const files = state.expectedFiles ?? {};
+    const baselineId = state.manifest.baselineSnapshotId;
+    const before = (baselineId && this.store.snapshotFiles(runId, baselineId)) || {};
+    const code = await readCodeFiles(runRoot(this.store.workspace, state), Object.keys(files));
+    const result = compareWithBaseline(
+      mode,
+      baseline,
+      code.files,
+      new Set(changedPaths(before, files)),
+      code.skipped,
+    );
+    const evidenceId = this.store.transaction(() => {
+      const artifact = this.store.artifact(
+        runId,
+        "quality",
+        QUALITY_DUPLICATION,
+        canonical(result),
+      );
+      return this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
+    });
+    if (!result.blocking) {
+      this.store.transaction(() => {
+        for (const finding of this.store.findings(runId))
+          if (
+            ["open", "confirmed"].includes(finding.status) &&
+            qualityClaim(JSON.parse(finding.body_json).claim)
+          )
+            this.store.findingStatus(runId, finding.id, "resolved");
+      });
+      return [];
+    }
+    const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [];
+    const owner = (file: string) => {
+      const task = [...tasks].reverse().find((t) => t.writes.some((w) => w.path === file));
+      return {
+        requirementIds:
+          task?.requirementIds ?? state.spec?.requirements.map((r) => r.id).slice(0, 1) ?? [],
+        criterionIds: task?.criterionIds ?? [],
+      };
+    };
+    const where = (span: { file: string; startLine: number; endLine: number }) =>
+      `${span.file}:${span.startLine}-${span.endLine}`;
+    return [
+      ...result.clones.map((clone) => ({
+        id: newId(),
+        kind: "correctness" as const,
+        severity: "high" as const,
+        ...owner(clone.file),
+        file: clone.file,
+        symbol: null,
+        evidenceIds: [evidenceId],
+        claim: `Duplicated code: ${where(clone)} copies ${where(clone.original)}`,
+        impact:
+          "The run adds a copy of existing code, which the duplication ratchet of this run does not allow.",
+        suggestedFix: `Reuse the code at ${where(clone.original)} (import it, or extract a shared helper within approved scope) instead of copying it.`,
+      })),
+      ...result.unused.map((item) => ({
+        id: newId(),
+        kind: "correctness" as const,
+        severity: "high" as const,
+        ...owner(item.file),
+        file: item.file,
+        symbol: item.name,
+        evidenceIds: [evidenceId],
+        claim: `Unused code: ${item.name} at ${item.file}:${item.line} is used nowhere`,
+        impact:
+          "The run adds code nothing calls, which the duplication ratchet of this run does not allow.",
+        suggestedFix: `Call ${item.name} where the task needs it, or remove it.`,
+      })),
+    ].slice(0, 100);
   }
   /** Stores a review and registers the findings that block; the others stay in the artifact. */
   private recordFindings(
@@ -4793,6 +4913,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       throw new WorkflowFault("OUTPUT_INVALID", `Required check ${inconclusive} is inconclusive`, {
         reason: "verification_failed",
       });
+    if (!failures.length) failures.push(...(await this.duplicationFindings(runId, state, policy)));
     if (!failures.length) {
       // Without a review stage nothing else closes the findings of an earlier failed run of
       // these gates; the passing gates close them.
