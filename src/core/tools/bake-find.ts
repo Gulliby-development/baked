@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
-import { relative, resolve } from "node:path";
+import type { Dirent } from "node:fs";
+import { readdir } from "node:fs/promises";
+import { join, relative, resolve } from "node:path";
 import type { ToolResult } from "../../types";
 import { getCwd } from "../cwd.js";
 import { isForbidden } from "../security/forbidden.js";
@@ -437,7 +439,13 @@ function listFiles(typeFilter: string | undefined, root: string): Promise<string
 
     proc.on("close", (code: number | null) => {
       if (code === 0) {
-        res(chunks.join("").split("\n").filter(Boolean));
+        res(
+          chunks
+            .join("")
+            .split(/\r?\n/)
+            .filter(Boolean)
+            .map((f) => f.replaceAll("\\", "/")),
+        );
       } else {
         fallbackFind(typeFilter, root).then(res);
       }
@@ -449,27 +457,30 @@ function listFiles(typeFilter: string | undefined, root: string): Promise<string
   });
 }
 
-function fallbackFind(typeFilter: string | undefined, root: string): Promise<string[]> {
-  return new Promise((res) => {
-    const excludes = EXCLUDED_DIRS.flatMap((d) => ["-not", "-path", `*/${d}/*`]);
-    const args = [".", "-type", "f", "-maxdepth", "5", ...excludes];
-
-    if (typeFilter && TYPE_GLOBS[typeFilter]) {
-      const globs = TYPE_GLOBS[typeFilter];
-      const nameArgs = globs.flatMap((g, i) => (i === 0 ? ["-name", g] : ["-o", "-name", g]));
-      args.push("(", ...nameArgs, ")");
+/** Walks `root` when `fd` is missing; `find` is not portable (Windows has a text search by that name). */
+async function fallbackFind(typeFilter: string | undefined, root: string): Promise<string[]> {
+  const globs = (typeFilter && TYPE_GLOBS[typeFilter]?.map((g) => new Bun.Glob(g))) || null;
+  const excluded = new Set(EXCLUDED_DIRS);
+  const files: string[] = [];
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    let entries: Dirent[];
+    try {
+      entries = await readdir(join(root, dir), { withFileTypes: true });
+    } catch {
+      return;
     }
-
-    const proc = spawn("find", args, { cwd: root, timeout: 10_000 });
-    const chunks: string[] = [];
-    proc.stdout.on("data", (d: Buffer) => chunks.push(d.toString()));
-
-    proc.on("close", () => {
-      res(chunks.join("").split("\n").filter(Boolean).slice(0, 500));
-    });
-
-    proc.on("error", () => res([]));
-  });
+    for (const entry of entries) {
+      if (files.length >= 500) return;
+      const path = dir ? `${dir}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (depth < 5 && !excluded.has(entry.name)) await walk(path, depth + 1);
+      } else if (entry.isFile() && (!globs || globs.some((g) => g.match(entry.name)))) {
+        files.push(path);
+      }
+    }
+  };
+  await walk("", 1);
+  return files;
 }
 
 async function enrichWithSymbols(
