@@ -3,6 +3,7 @@ import type {
   ChatMessage,
   ChatPlan,
   InputContextItem,
+  LaunchNote,
   PlanAction,
   StoredImage,
   ToolCall,
@@ -11,6 +12,7 @@ import { Icon } from "../../components/Icon.js";
 import { SplitFlows } from "../../components/SplitFlows.js";
 import { Button } from "../../components/ui/button.js";
 import { cn } from "../../lib/cn.js";
+import { LaunchNoteCard } from "../coordinator/LaunchNote.js";
 import { storedImageUrl } from "./images.js";
 import { INLINE_CODE, Markdown } from "./Markdown.js";
 import { CHIP_SMALL } from "./Popover.js";
@@ -781,6 +783,7 @@ export function Conversation({
   forking,
   onFork,
   onRewind,
+  launchHref,
 }: {
   transcript: Transcript;
   deciding: ReadonlySet<string>;
@@ -795,6 +798,8 @@ export function Conversation({
   onFork?: (messageId: string, rollbackFiles: boolean) => void;
   /** Undoes the chat to checkpoint N; absent while the server cannot list checkpoints. */
   onRewind?: (checkpoint: number) => void;
+  /** Where a coordinator's launch notice opens the item; without it the card has no Open. */
+  launchHref?: (note: LaunchNote) => string;
 }) {
   const { messages, live, prompts, pending, notice, thoughtMs } = transcript;
   const running = transcript.turnId !== null;
@@ -830,6 +835,12 @@ export function Conversation({
               />
             )}
           </div>
+        ) : message.launch ? (
+          <LaunchNoteCard
+            key={message.id}
+            note={message.launch}
+            {...(launchHref ? { href: launchHref(message.launch) } : {})}
+          />
         ) : (
           <p
             key={message.id}

@@ -1,4 +1,4 @@
-import type { ChatMessage } from "../../client/chat.js";
+import type { ChatMessage, LaunchNote } from "../../client/chat.js";
 import type { BriefList, FlowTask, LaunchedEntry, ProjectBrief } from "../../client/coordinator.js";
 import { projectHref } from "../../router.js";
 
@@ -48,13 +48,43 @@ export function withList(
   };
 }
 
+export type LaunchTone = "ok" | "warn" | "err" | "busy" | "";
+
 /** The dot of a launched item: waiting for a person, running, failed or finished. */
-export function launchedTone(view: {
-  status: string;
-  active: boolean;
-}): "ok" | "warn" | "err" | "busy" | "" {
+export function launchedTone(view: { status: string; active: boolean }): LaunchTone {
   if (/^waiting/.test(view.status)) return "warn";
   if (/^(failed|cancelled|deleted|blocked)/.test(view.status)) return "err";
   if (view.active) return "busy";
   return /^(completed|done)/.test(view.status) ? "ok" : "";
+}
+
+/** The tone of a notice: a merged task and a finished item are good news, the rest by status. */
+export function noteTone(note: LaunchNote): LaunchTone {
+  if (note.event === "task-closed") return "ok";
+  return launchedTone({ status: note.status, active: !/^(completed|done)/.test(note.status) });
+}
+
+const KIND_LABELS: Record<LaunchNote["kind"], string> = {
+  session: "Session",
+  run: "Run",
+  initiative: "Initiative",
+};
+
+/** The small label above a launched item's name: its kind, or the feature's initiative. */
+export function launchKind(item: Pick<LaunchNote, "kind" | "id" | "feature">): string {
+  return item.feature ? `Feature of ${item.id}` : (KIND_LABELS[item.kind] ?? item.kind);
+}
+
+/** A session's id is a UUID nobody reads; its first block is enough to tell two apart. */
+const shortId = (id: string): string =>
+  /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(id) ? id.slice(0, 8) : id;
+
+/** A launched item's name: its title, the feature, or a short id when it has neither. */
+export function launchName(item: Pick<LaunchNote, "id" | "feature" | "title">): string {
+  return item.title ?? item.feature ?? shortId(item.id);
+}
+
+/** Why the item was launched, unless that only repeats its name. */
+export function launchWhy(item: Pick<LaunchNote, "why" | "title">): string {
+  return item.title && item.why.startsWith(item.title) ? "" : item.why;
 }

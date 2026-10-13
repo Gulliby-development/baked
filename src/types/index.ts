@@ -160,6 +160,24 @@ export interface ChatMessage {
   finalResponseCalled?: boolean;
   /** What the message's `@` mentions and `!` command added to the context. */
   inputContext?: InputContextItem[];
+  /** On a coordinator's notice: the launched item it is about, for front ends to draw as a card. */
+  launch?: LaunchNote;
+}
+
+/** What a coordinator notice says about one item it launched. */
+export interface LaunchNote {
+  kind: "session" | "run" | "initiative";
+  id: string;
+  /** For a feature of the initiative `id`. */
+  feature?: string;
+  /** A name a person reads instead of the id, when the item has one. */
+  title?: string;
+  /** The item's status word, such as `waiting for you`, `completed` or `waiting: approval`. */
+  status: string;
+  why: string;
+  task?: { ref: string; url?: string; state: "open" | "closed" | "local" };
+  /** `status`: the item's status changed; `task-closed`: its task's pull request merged. */
+  event: "status" | "task-closed";
 }
 
 /** One `@` mention or `!` command of a user message and what it attached. */
