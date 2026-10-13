@@ -69,6 +69,8 @@ export const StartBody = z
     message: "feature and prompt are required without issue",
   });
 export const CommandBody = Command.strict();
+/** `POST /v1/workflow/runs/RUN_ID/resume`: `acceptWorkspace` keeps a person's file changes (#971). */
+export const ResumeBody = Command.extend({ acceptWorkspace: z.boolean().optional() }).strict();
 /** `POST /v1/workflow/runs/RUN_ID/fork`: `fromStage` starts the fork at that stage (#855). */
 export const ForkBody = Command.extend({ fromStage: SafeId.optional() }).strict();
 /** `POST /v1/workflow/propose`: the request text a run would start with. */
