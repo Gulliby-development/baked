@@ -404,6 +404,13 @@ export interface AppConfig {
    * the errors with the original text. Workflow runs take it from their policy.
    */
   editDiagnostics?: "feedback" | "reject";
+  /**
+   * Where workflow implementers get docs for the locked versions of the libraries a task uses: a
+   * directory of `<name>@<version>.md` files or an MCP tool. A project value replaces the global one.
+   */
+  libraryDocs?: import("zod").infer<
+    typeof import("../core/workflows/library-docs.js").LibraryDocsSchema
+  >;
   /** Diagnostics around edits. Global only. */
   diagnostics?: {
     /** Wait for diagnostics before and after an edit, each, in ms. Default 2500. */

@@ -68,7 +68,9 @@ import {
   runRepro,
 } from "../verification/repro.js";
 import { completeReview, reviewProblems, validateReview } from "../verification/review.js";
+import { addReviewNotes, noteReason } from "../verification/review-notes.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
+import { baselineKeys, taskErrors } from "../verification/task-end-check.js";
 import { outputSchemas } from "./agent-executor.js";
 import {
   assumable,
@@ -87,6 +89,7 @@ import {
 import { approvalDigest } from "./approval.js";
 import { writeViaTemp } from "./atomic-write.js";
 import {
+  APPROVAL_REVIEWER,
   evaluateAutoApproval,
   humanApprovalReason,
   plannerApprovalLimits,
@@ -98,6 +101,7 @@ import {
   fixerCommand,
   fixerTiers,
   isCodePath,
+  isWholeUnitCheck,
   taskCheckList,
   validateChecks,
   withCoveringChecks,
@@ -136,6 +140,14 @@ import {
   type WorkspaceLeases,
   withinWorkflow,
 } from "./leases.js";
+import {
+  configuredMcpCall,
+  fetchLibraryDocs,
+  type LockedLibrary,
+  lockedLibraries,
+  type McpCall,
+  taskLibraries,
+} from "./library-docs.js";
 import { MAX_CONCURRENT_TASK_CHECKS, planBatch, Semaphore, unifiedDiff } from "./parallel.js";
 import {
   fileReferences,
@@ -236,6 +248,8 @@ import {
 import {
   type AgentProfile,
   AnalysisSchema,
+  type ApprovalReview,
+  ApprovalReviewSchema,
   type Critique,
   CritiqueSchema,
   DEFAULT_MAX_PARALLEL_RUNS,
@@ -266,6 +280,7 @@ type Implementation = ReturnType<typeof ImplementationSchema.parse>;
 
 import {
   codeTaskCheckProblems,
+  loopHistory,
   plannerSizing,
   type SizingReport,
   sizePlan,
@@ -277,7 +292,7 @@ import {
 import { forgetProgress } from "./stall.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
-import { hasTaskGate, pendingOwners, readyTasks } from "./task-graph.js";
+import { hasTaskGate, pendingCodePaths, pendingOwners, readyTasks } from "./task-graph.js";
 import { takeHashRefusals } from "./tool-policy.js";
 import type { AgentExecutor, Check, HostTool, RuntimeState, Task } from "./types.js";
 import { acceptanceGrants, blocksRun } from "./v2/acceptance.js";
@@ -452,6 +467,8 @@ function readSummary(content: string): { tool: string; targets: string[]; bytes:
  * leaves out the spec, plan and check output, about 15k tokens instead of 45k.
  */
 const DIFF_REVIEW = "diffReview";
+/** Errors of the task-end check one submission gets back; the checks stage reports the rest. */
+const TASK_END_ERRORS = 20;
 
 export class WorkflowScheduler {
   dispose(): void {
@@ -487,6 +504,9 @@ export class WorkflowScheduler {
   private queued: QueuedRequest[] = [];
   /** Frozen routing records by run; `null` for runs started before routing was recorded. */
   private routing = new Map<string, RoutingRecord | null>();
+  /** How a `libraryDocs` MCP source is called; tests replace it. */
+  mcpCall: McpCall = (server, tool, args) =>
+    configuredMcpCall(this.store.workspace, server, tool, args);
   constructor(
     private store: WorkflowStore,
     private leases: WorkspaceLeases,
@@ -726,7 +746,8 @@ export class WorkflowScheduler {
                   planner,
                   {
                     checks: policy.checks,
-                    profiles,
+                    // The approval reviewer decides approvals; no task can be assigned to it.
+                    profiles: profiles.filter((p) => p.output !== "approval-review"),
                     workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
                     ...(approvalLimits ? { approvalLimits } : {}),
                     ...(policy.sizing
@@ -1106,6 +1127,31 @@ export class WorkflowScheduler {
                             existsSync(join(runRoot(this.store.workspace, state), path)),
                         },
                       );
+                // A package that leaves the limits only by its size or paths may go to the
+                // approval reviewer (`autoApproval.modelReview`). It fails closed: any error or
+                // an answer other than a low-risk approve leaves the request with a person.
+                let review: { review: ApprovalReview } | { reviewError: string } | null = null;
+                if (!auto.approval && auto.reviewable && auto.limitsHash) {
+                  review = await this.reviewApproval(
+                    runId,
+                    stepId,
+                    state,
+                    policy,
+                    profiles,
+                    auto.reasons,
+                    signal,
+                  );
+                  if (
+                    "review" in review &&
+                    review.review.verdict === "approve" &&
+                    review.review.risk === "low"
+                  )
+                    auto.approval = {
+                      mode: "model-review",
+                      limitsHash: auto.limitsHash,
+                      review: review.review,
+                    };
+                }
                 const body = {
                   manifest: state.manifest,
                   writes,
@@ -1138,7 +1184,12 @@ export class WorkflowScheduler {
                     ? { acceptanceCapabilities: acceptanceGrants(v2.gates) }
                     : {}),
                   ...(policy.autoApproval || human
-                    ? { autoApproval: auto.approval ?? { declined: auto.reasons } }
+                    ? {
+                        autoApproval: auto.approval ?? {
+                          declined: auto.reasons,
+                          ...(review ?? {}),
+                        },
+                      }
                     : {}),
                 };
                 if (!auto.approval) {
@@ -1434,16 +1485,25 @@ export class WorkflowScheduler {
               }
               // Below the severity floor a finding still repairs when it is why a criterion fails:
               // acceptance needs every automated criterion to pass.
-              const findings = this.recordFindings(
-                runId,
-                review,
-                review.findings.filter(
-                  (f) =>
-                    !notes.has(f.id) &&
-                    ((severities.includes(f.severity) &&
-                      findingBlocks(f, policy.reviewMinConfidence)) ||
-                      f.criterionIds.some((id) => failing.has(id))),
-                ),
+              const repair = review.findings.filter(
+                (f) =>
+                  !notes.has(f.id) &&
+                  ((severities.includes(f.severity) &&
+                    findingBlocks(f, policy.reviewMinConfidence)) ||
+                    f.criterionIds.some((id) => failing.has(id))),
+              );
+              const findings = this.recordFindings(runId, review, repair);
+              const kept = new Set([...repair, ...noted].map((f) => f.id));
+              addReviewNotes(
+                state.reviewNotes,
+                "convergence",
+                state.snapshotId,
+                review.findings
+                  .filter((f) => !kept.has(f.id))
+                  .map((finding) => ({
+                    finding,
+                    reason: noteReason(finding, severities, policy.reviewMinConfidence),
+                  })),
               );
               if (findings.length) {
                 repairFindings = { findings, kind: "convergence" };
@@ -1880,13 +1940,14 @@ export class WorkflowScheduler {
     if (!feature.length || this.baselineScaffold(runId, state)) return;
     const fresh = this.store.tasks(runId).every((task) => task.status === "pending");
     const counts: Record<string, BaselineCount[]> = {};
+    // The errors a whole-unit check already reports, so the task-end check does not feed them back.
+    const diagnostics: Record<string, string[]> = {};
     if (fresh)
       for (const check of feature) {
-        const result = await this.checks.measure(
-          check,
-          signal,
-          runRoot(this.store.workspace, state),
-        );
+        const root = runRoot(this.store.workspace, state);
+        const result = await this.checks.measure(check, signal, root);
+        if (result.status === "failed" && isWholeUnitCheck(check))
+          diagnostics[commandKey(check)] = baselineKeys(result.output, root);
         if (result.truncated || result.status === "inconclusive") continue;
         const found = outputCounts(result.output, result.status === "passed");
         if (found.length) counts[commandKey(check)] = found;
@@ -1896,9 +1957,65 @@ export class WorkflowScheduler {
         runId,
         "facts",
         CHECK_BASELINE_PATH,
-        canonical({ schemaVersion: 1, measured: fresh, counts }),
+        canonical({ schemaVersion: 1, measured: fresh, counts, diagnostics }),
       ),
     );
+  }
+  /**
+   * The task-end whole-unit check of a task that writes code (#673): the run's feature-scope type
+   * checks, run once in the task's directory, keeping the errors in the task's own files that
+   * neither the baseline nor a pending sibling task explains. Advisory: the checks stage still
+   * runs these checks on the integrated change.
+   */
+  private taskEndCheck(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ): ((root: string, signal: AbortSignal) => Promise<string[]>) | undefined {
+    const checks = policy.checks.filter((c) => c.scope === "feature" && isWholeUnitCheck(c));
+    const written = writtenCodePaths(task);
+    if (!checks.length || !written.length) return undefined;
+    return async (root, signal) => {
+      const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
+      const baseline = artifact
+        ? ((
+            JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+              diagnostics?: Record<string, string[]>;
+            }
+          ).diagnostics ?? {})
+        : {};
+      const pending = pendingCodePaths(
+        state.rootGraph ?? state.graph,
+        this.store.tasks(runId),
+        state.taskGates,
+        task,
+      );
+      const errors: string[] = [];
+      const results: { checkId: string; status: string; errors: string[] }[] = [];
+      for (const check of checks) {
+        const result = await this.checks.measure(check, signal, root);
+        const found =
+          result.status === "failed"
+            ? taskErrors(result.output, {
+                written,
+                pending,
+                baseline: baseline[commandKey(check)] ?? [],
+              })
+            : [];
+        results.push({ checkId: check.id, status: result.status, errors: found });
+        errors.push(...found.map((line) => `${check.id}: ${line}`));
+      }
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "diagnostic",
+          `tasks/${task.id}/task-end-check-${newId()}.json`,
+          canonical({ taskId: task.id, pending, results }),
+        ),
+      );
+      return errors.slice(0, TASK_END_ERRORS);
+    };
   }
   /** What a passing required check fell behind the baseline by, as a failure reason; else null. */
   private checkRegression(
@@ -2165,6 +2282,10 @@ export class WorkflowScheduler {
         reserveTokens(prompt, profile, policy),
         policy,
       );
+    const taskEndCheck =
+      task && profile.output === "implementation"
+        ? this.taskEndCheck(runId, state, policy, task)
+        : undefined;
     try {
       const result = await this.executor.execute({
         runId,
@@ -2183,6 +2304,7 @@ export class WorkflowScheduler {
           ? { attemptTokens: taskSize(state, task, "taskBudgets") }
           : {}),
         ...(validate ? { validate } : {}),
+        ...(taskEndCheck ? { taskEndCheck } : {}),
         ...(this.formatHints(runId, state, profile.output, task)
           ? { formatHints: this.formatHints(runId, state, profile.output, task) }
           : {}),
@@ -2492,6 +2614,8 @@ export class WorkflowScheduler {
           profiles: ProfileSchema.array()
             .parse(JSON.parse(this.store.run(runId).profiles_json))
             .filter((p) => profile.context !== "implementation" || p.id === profile.id)
+            // The approval reviewer takes no part in a run's work, only in its approvals.
+            .filter((p) => p.output !== "approval-review" || p.id === profile.id)
             .map((p) => ({ id: p.id, role: p.role, allowedTools: p.allowedTools })),
           policy: { allowedTools: policy.allowedTools, network: policy.network },
         },
@@ -2522,6 +2646,7 @@ export class WorkflowScheduler {
       samples,
       spent: this.store.run(runId).token_usage,
       model,
+      loopShares: loopHistory(this.store.workspace, policy),
     });
     this.store.transaction(() =>
       this.store.artifact(
@@ -3088,6 +3213,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
                 }
               : {}),
             unresolvedMeans: UNRESOLVED_MEANING,
+            ...(await this.libraryDocsContext(runId, policy, root, task)),
             ...this.previousAttempt(runId, task.id),
             ...(focus.files.length
               ? {
@@ -3587,6 +3713,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             ? {
                 ...entry.extra,
                 ...(await this.correctionContext(runId, state, root, task)),
+                ...(await this.libraryDocsContext(runId, policy, root, task)),
                 ...(earlierEdits ? { earlierEdits } : {}),
               }
             : entry.extra,
@@ -4327,6 +4454,49 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         note: "The findings this task corrects point at these files and symbols. Start the fix there and read the other written files only when the fix needs them.",
       },
     };
+  }
+  /**
+   * Docs for the locked versions of the libraries a task uses, from the run's `libraryDocs`
+   * source (#741); nothing without a source or when the source has no docs for them. Each lookup
+   * is journaled with the task, found or not.
+   */
+  private async libraryDocsContext(
+    runId: string,
+    policy: RunPolicy,
+    root: string,
+    task: Task,
+  ): Promise<Record<string, unknown>> {
+    const source = policy.libraryDocs;
+    if (!source) return {};
+    const libraries = taskLibraries(root, task, lockedLibraries(root));
+    if (!libraries.length) return {};
+    const docs: (LockedLibrary & { docs: string })[] = [];
+    for (const library of libraries) {
+      const text = await fetchLibraryDocs(this.store.workspace, source, library, this.mcpCall);
+      if (text) docs.push({ ...library, docs: text });
+    }
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `tasks/${task.id}/library-docs-${newId()}.json`,
+        canonical({
+          taskId: task.id,
+          libraries: libraries.map((library) => ({
+            ...library,
+            found: docs.some((d) => d.ecosystem === library.ecosystem && d.name === library.name),
+          })),
+        }),
+      ),
+    );
+    return docs.length
+      ? {
+          libraryDocs: {
+            libraries: docs,
+            note: "Docs for the library versions the project's lockfile pins. Use the APIs they describe instead of what you remember from other versions.",
+          },
+        }
+      : {};
   }
   private async runTaskCheck(
     runId: string,
@@ -6263,6 +6433,24 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         const blocking = candidates.filter((f) =>
           reproAllows(f, outcomes.get(f.id)?.status, executables.length > 0),
         );
+        const repaired = new Set(blocking.map((f) => f.id));
+        addReviewNotes(
+          state.reviewNotes,
+          reviewer.dimension,
+          reviewSnapshotId,
+          result.findings
+            .filter((f) => !repaired.has(f.id))
+            .map((finding) => ({
+              finding,
+              reason: reviewer.required
+                ? noteReason(
+                    finding,
+                    severities.filter((s) => reviewer.blocking.includes(s)),
+                    policy.reviewMinConfidence,
+                  )
+                : "advisory",
+            })),
+        );
         for (const finding of this.recordFindings(runId, result, blocking)) {
           findings.push(finding);
           owners.set(finding.id, reviewer);
@@ -6370,6 +6558,59 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         },
       }),
     );
+  }
+  /**
+   * Asks the `approval-reviewer` profile about a package auto approval declined only for its
+   * size or paths. It sees the request, the spec and the writes; it cannot change any of them.
+   */
+  private async reviewApproval(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    profiles: AgentProfile[],
+    declined: string[],
+    signal: AbortSignal,
+  ): Promise<{ review: ApprovalReview } | { reviewError: string }> {
+    const profile = profiles.find((p) => p.id === APPROVAL_REVIEWER);
+    if (profile?.output !== "approval-review")
+      return { reviewError: `profile ${APPROVAL_REVIEWER} is not available` };
+    const spec = state.spec;
+    try {
+      const output = await this.call(
+        runId,
+        stepId,
+        state,
+        policy,
+        profile,
+        {
+          approval: {
+            request: state.requestText ?? state.prompt,
+            spec: spec
+              ? {
+                  title: spec.title,
+                  outcome: spec.outcome,
+                  inScope: spec.inScope,
+                  outOfScope: spec.outOfScope,
+                  requirements: spec.requirements.map((r) => ({ id: r.id, text: r.text })),
+                }
+              : null,
+            tasks: (state.graph?.tasks ?? []).map((t) => ({
+              id: t.id,
+              title: t.title,
+              writes: t.writes,
+            })),
+            declined,
+            limits: policy.autoApproval?.limits ?? null,
+          },
+        },
+        signal,
+      );
+      return { review: ApprovalReviewSchema.parse(output) };
+    } catch (error) {
+      if (signal.aborted) throw error;
+      return { reviewError: error instanceof Error ? error.message : String(error) };
+    }
   }
   /**
    * Runs one command gate with its retries. Every attempt is recorded as a check result; a pass
