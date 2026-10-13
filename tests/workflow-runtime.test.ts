@@ -643,7 +643,7 @@ describe("durable SDD runtime", () => {
     const satisfied = async (outcome = result) => {
       const child = service.store.beginStep(run.runId, "implement-rerun");
       return (service.scheduler as unknown as { correctionSatisfied: (...args: unknown[]) => Promise<boolean> })
-        .correctionSatisfied(run.runId, child, taskPolicy, task, outcome, new AbortController().signal, root);
+        .correctionSatisfied(run.runId, service.store.state(run.runId), child, taskPolicy, task, outcome, new AbortController().signal, root);
     };
     // The first run of a planned task that changed nothing did not do its work.
     expect(await satisfied()).toBe(false);

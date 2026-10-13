@@ -8,7 +8,9 @@ import {
   dotnetFiles,
   LANGUAGE_REVIEW_PROFILE,
   languageReviewProfile,
+  touchesLanguageFiles,
 } from "../src/core/workflows/language.js";
+import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 import { workspaceFacts } from "../src/core/workflows/workspace-facts.js";
 
 const dirs: string[] = [];
@@ -56,5 +58,46 @@ describe("project language", () => {
       "Program.cs": "",
     });
     expect(workspaceFacts(root).manifests).toEqual(["App.slnx", "global.json", "go.mod", "src/App/App.csproj"]);
+  });
+});
+
+describe("language review scope", () => {
+  test("language files are recognized by extension and manifest name", () => {
+    expect(touchesLanguageFiles(["cmd/main.go"])).toBe(true);
+    expect(touchesLanguageFiles(["src\\App\\Program.cs"])).toBe(true);
+    expect(touchesLanguageFiles(["Cargo.toml"])).toBe(true);
+    expect(touchesLanguageFiles(["service/pom.xml"])).toBe(true);
+    expect(touchesLanguageFiles(["README.md", "scripts/run.sh", "docs/go.md"])).toBe(false);
+  });
+
+  async function reviewDimensions(language: string) {
+    const policy = { ...fixturePolicy, reviewProfiles: { ...fixturePolicy.reviewProfiles, language } };
+    const fixture = workflowFixture({ policy });
+    try {
+      const run = await fixture.start();
+      for (let i = 0; i < 12; i++) {
+        const state = await fixture.service.get(run.runId);
+        if (state.status === "completed") break;
+        if (state.pendingRequestIds.length) await fixture.approve(run.runId);
+        else if (state.status === "paused" || state.status === "created") await fixture.resume(run.runId);
+        await fixture.service.drive(run.runId, new AbortController().signal);
+      }
+      expect((await fixture.service.get(run.runId)).status).toBe("completed");
+      return fixture.service.store
+        .steps(run.runId)
+        .map((step) => step.stage_id)
+        .filter((stage) => stage.startsWith("dimension-"));
+    } finally {
+      await fixture.dispose();
+    }
+  }
+
+  test("the host-added language reviewer skips a change with no language files", async () => {
+    // The fixture task writes value.txt only.
+    expect(await reviewDimensions(LANGUAGE_REVIEW_PROFILE)).not.toContain("dimension-language");
+  });
+
+  test("a language reviewer the policy names always runs", async () => {
+    expect(await reviewDimensions("reviewer")).toContain("dimension-language");
   });
 });

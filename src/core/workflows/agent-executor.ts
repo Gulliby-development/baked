@@ -91,6 +91,18 @@ const EDIT_NUDGE_AFTER_READS = 4;
 const SUBMIT_NOW_NOTICE =
   "You ended your turn without calling submit_result. Call submit_result now with the complete result for the work already done. If the task is not finished or something failed, submit outcome blocked (or the matching unfinished state) and list what is unresolved. Do not call any other tool.";
 
+/**
+ * Model steps ran but every one reported zero input and output tokens. Codex reports a response's
+ * usage only once its tool call is answered, so an attempt that ends at its only tool call (a
+ * submit) never hears its spend; that is unknown, not free (#364, #592).
+ */
+export function reportedNoTokens(steps: readonly StepLike[]): boolean {
+  return (
+    steps.length > 0 &&
+    steps.every((step) => step.usage.inputTokens === 0 && step.usage.outputTokens === 0)
+  );
+}
+
 function sumUsage(steps: readonly StepLike[]): Partial<LanguageModelUsage> {
   const add = (a: number | undefined, b: number | undefined) =>
     a === undefined ? b : b === undefined ? a : a + b;
@@ -581,6 +593,21 @@ export class NativeAgentExecutor implements AgentExecutor {
         ...(request.profile.role === "implementer" && request.task?.writes.length
           ? { editNudgeAfterReads: EDIT_NUDGE_AFTER_READS }
           : {}),
+        watch: {
+          mustEdit: request.profile.role === "implementer" && !!request.task?.writes.length,
+          onSignal: (finding, action) =>
+            this.store.transaction(() =>
+              this.store.emit(request.runId, {
+                type: "attempt.advisory",
+                payload: {
+                  attemptId: request.attemptId,
+                  signal: finding.signal,
+                  action,
+                  detail: finding.detail.slice(0, 500),
+                },
+              }),
+            ),
+        },
       });
       const meta = { profileId: request.profile.id, taskId: request.task?.id ?? null };
       const writeUsage = (usage: AttemptUsageRecord) =>
@@ -907,6 +934,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         output: submitted,
         inputTokens: result.usage.inputTokens ?? null,
         outputTokens: result.usage.outputTokens ?? null,
+        ...(reportedNoTokens(result.steps) ? { usageComplete: false } : {}),
       };
     } finally {
       context.dispose({ preserveSharedIO: true });

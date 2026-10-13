@@ -348,6 +348,8 @@ export function eventText(event: WorkflowEvent, stages: StageView[]): string | n
       return event.payload.modelId ? `Agent call on ${event.payload.modelId}` : null;
     case "attempt.finished":
       return event.payload.status === "completed" ? null : `Agent call ${event.payload.status}`;
+    case "attempt.advisory":
+      return `Progress watcher ${event.payload.action === "stopped" ? "stopped the agent call" : "warned the agent"}: ${event.payload.detail}`;
     case "task.state_changed":
       return `Task ${event.payload.taskId}: ${event.payload.from} → ${event.payload.to}`;
     case "check.finished":
