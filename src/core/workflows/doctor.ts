@@ -506,6 +506,9 @@ export async function runDoctor(
       status: "fail",
       title: `Workflow ${workflowId} would not start`,
       detail: error instanceof Error ? error.message : String(error),
+      ...(error instanceof WorkflowFault && error.details.missingFeatureChecks
+        ? { fix: "Add the project's checks with /workflow gates (desktop: Gates and checks)" }
+        : {}),
     });
   }
 

@@ -130,6 +130,10 @@ baked diagnose --json              # probe every code intelligence backend, as /
 
 `baked diagnose` runs the code intelligence health check of `/diagnose` in the terminal UI: it starts the project's servers in this process, then probes every backend (language server, ts-morph, tree-sitter, regex) with the key operations against a file of the project's main language and prints each probe's result and time. `--json` prints the shape of [`POST /v1/lsp/diagnose`](desktop/api.md#language-servers). It exits 1 when a backend that supports the language failed to start or a probe errored or timed out (`failing` names them), and 2 on an unknown argument.
 
+## Artifacts
+
+`baked artifacts list|show|save|deploy|remove` manages the [artifacts](artifacts.md) shared by every project: HTML pages kept in the BAKED data folder. `deploy ID` prints what it would send to your Vercel account and deploys only with `--yes` (`--prod` for production).
+
 ## Approvals
 
 There is no one to ask in headless mode: actions that would ask for approval in the terminal UI (writes outside the project, destructive shell commands) are not prompted. Cap runs with `--max-steps` and `--timeout`, keep API keys in CI secrets, and run untrusted prompts in a disposable checkout.
