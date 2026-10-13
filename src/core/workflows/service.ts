@@ -344,6 +344,7 @@ export class NativeWorkflowService implements WorkflowService {
       sizingReplans: 0,
       hostSplitTasks: 0,
       deferredChecks: {},
+      waitingFor: {},
       affectedTests: {},
       analysisReplans: 0,
       revisedRejections: [],

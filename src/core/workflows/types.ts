@@ -176,6 +176,11 @@ export const RuntimeStateSchema = z
      */
     deferredChecks: z.record(z.string(), z.array(z.string())).default({}),
     /**
+     * Tasks that reported `blocked` on a file an unfinished task writes, by the tasks they wait
+     * for. The task runs again once those are done (#807).
+     */
+    waitingFor: z.record(z.string(), z.array(z.string())).default({}),
+    /**
      * The existing tests that reach each task's files, from the code graph, and how the check that
      * runs only them ended before the task's first attempt (#634). When that baseline passed, the
      * check is required after the task: a test outside the task's files that it breaks blocks it.
