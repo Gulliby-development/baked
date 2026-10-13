@@ -248,6 +248,14 @@ function reproStep(repro: Review["findings"][number]["repro"]): string {
   return `\nReproduce first: run ${command} with run_probe before editing. The review saw it print ${JSON.stringify(repro.actual)} where the spec needs ${JSON.stringify(repro.expected)}. After the fix, run it again and confirm it prints the expected output.`;
 }
 
+/**
+ * The last step of a correction for a reviewer's finding (#943): the reviewer shows one case, and
+ * the same defect often sits in sibling code paths (todo-cli: `add --help` was repaired, then the
+ * re-review found `tag` and `untag`, and the run stopped). One repair should cover them all.
+ */
+const SIBLING_STEP =
+  "\nThe review shows one case. Look for the same defect in sibling code paths (other commands, options, branches or callers that share the faulty pattern) and fix every case you find, checking each one as you checked the reported one.";
+
 /** A finding of a failed check run: it names the check and cites that run's evidence. */
 const checkRunFinding = (finding: Pick<Review["findings"][number], "claim" | "evidenceIds">) =>
   /^Required check \S+ failed$/.test(finding.claim) && finding.evidenceIds.length > 0;
@@ -462,7 +470,7 @@ export function appendCorrections(
       description: grouped
         .map(
           (finding) =>
-            `${grouped.length > 1 ? `Finding ${finding.id}: ` : ""}${finding.claim}\nImpact: ${finding.impact}\nProposed fix: ${finding.suggestedFix}${reproStep(finding.repro)}`,
+            `${grouped.length > 1 ? `Finding ${finding.id}: ` : ""}${finding.claim}\nImpact: ${finding.impact}\nProposed fix: ${finding.suggestedFix}${reproStep(finding.repro)}${kind === "convergence" && !checkRunFinding(finding) ? SIBLING_STEP : ""}`,
         )
         .join("\n\n"),
       dependsOn: [],

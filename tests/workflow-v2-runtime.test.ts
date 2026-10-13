@@ -70,6 +70,8 @@ interface Behavior {
   gapRepeatOf?: (round: number) => string | null | undefined;
   /** The gaps carry a reproduction the host can run. */
   gapRepro?: boolean;
+  /** Each gap's reproduction runs another case (another command), as a sibling of the last. */
+  gapReproCase?: boolean;
   /** Convergence reports AC-001 inconclusive with no finding, as for a criterion only another operating system can prove. */
   unverifiable?: boolean;
   /** A spec that names another feature than the run's. */
@@ -197,7 +199,7 @@ class V2Executor implements AgentExecutor {
           ? {
               schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "changes_requested",
               coverage: [{ criterionId: "AC-001", verdict: "fail", evidenceIds: evidence, explanation: `Gap ${round}` }, ...this.passing(evidence, "Command checked the value").slice(1)],
-              findings: [{ id: `G${round}`, kind: this.behavior.gapKind ?? "missing", severity: this.behavior.gapSeverity ?? "high", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "value.txt", symbol: this.behavior.gapSymbols?.[round - 1] ?? this.behavior.gapSymbol ?? (this.behavior.gapSameLocation ? null : `symbol${round}`), ...(this.behavior.gapRepeatOf?.(round) !== undefined ? { repeatOf: this.behavior.gapRepeatOf(round) } : {}), ...(this.behavior.gapRepro ? { repro: oldValueRepro } : {}), evidenceIds: evidence, claim: `Gap number ${round} remains`, impact: "The criterion is not met", suggestedFix: `Close gap ${round}` }],
+              findings: [{ id: `G${round}`, kind: this.behavior.gapKind ?? "missing", severity: this.behavior.gapSeverity ?? "high", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "value.txt", symbol: this.behavior.gapSymbols?.[round - 1] ?? this.behavior.gapSymbol ?? (this.behavior.gapSameLocation ? null : `symbol${round}`), ...(this.behavior.gapRepeatOf?.(round) !== undefined ? { repeatOf: this.behavior.gapRepeatOf(round) } : {}), ...(this.behavior.gapRepro ? { repro: this.behavior.gapReproCase ? { ...oldValueRepro, args: [...oldValueRepro.args, `case${round}`] } : oldValueRepro } : {}), evidenceIds: evidence, claim: `Gap number ${round} remains`, impact: "The criterion is not met", suggestedFix: `Close gap ${round}` }],
             }
           : { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", coverage: this.passing(evidence, "Command checked the value"), findings: [] };
         break;
@@ -1044,6 +1046,27 @@ describe("a stopped convergence asks for a decision", () => {
     expect(waiting.status).toBe("completed");
     expect(service.store.requests(run.runId).filter((r) => r.kind === "convergence")).toHaveLength(0);
     expect(service.store.run(run.runId).convergence_rounds).toBe(2);
+  }, 60000);
+
+  test("a reproduced sibling case of a repaired finding is repaired, not a stop (#943)", async () => {
+    // todo-cli tdd 14b08673: `add --help` was repaired, then the re-review reproduced the same
+    // defect through `tag` and `untag`, named the earlier finding and the run stopped.
+    const { service, run, waiting } = await stopped("v2-sdd", { gaps: 2, gapSymbol: "parseValue", gapRepro: true, gapReproCase: true, gapRepeatOf: (round) => (round === 2 ? "G1" : undefined) });
+    expect(lastError(service, run.runId)).toBe("");
+    expect(waiting.status).toBe("completed");
+    expect(service.store.requests(run.runId).filter((r) => r.kind === "convergence")).toHaveLength(0);
+    expect(service.store.run(run.runId).convergence_rounds).toBe(2);
+    // Each correction of a reviewer's finding is told to look for the same defect next to it.
+    const corrections = service.store.state(run.runId).graph?.tasks.filter((t) => t.origin === "convergence") ?? [];
+    expect(corrections).toHaveLength(2);
+    for (const task of corrections) expect(task.description).toContain("Look for the same defect in sibling code paths");
+  }, 60000);
+
+  test("the same reproduction named as a repeat still stops the run", async () => {
+    const { service, run, waiting } = await stopped("sdd", { gaps: 2, gapSymbol: "parseValue", gapRepro: true, gapRepeatOf: (round) => (round === 2 ? "G1" : undefined) });
+    expect(waiting.status).toBe("waiting");
+    const body = JSON.parse(pendingConvergence(service, run.runId)?.body_json ?? "{}");
+    expect(body.contradictions[0]).toMatchObject({ findingId: "G2", earlierId: "G1", via: "repeatOf" });
   }, 60000);
 
   test("without repeatOf a symbol that shares a word still matches", async () => {
