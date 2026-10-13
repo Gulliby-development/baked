@@ -69,6 +69,28 @@ baked workflow artifacts RUN_ID
 baked workflow artifacts RUN_ID --file ARTIFACT_ID
 ```
 
+### Proposing the workflow from the request
+
+```sh
+baked workflow propose "Fix the typo in the README install section"
+baked workflow run --auto-preset --feature readme-typo --prompt "Fix the typo in the README install section"
+baked workflow run sdd --auto-preset --feature readme-typo --prompt-file request.txt
+```
+
+`baked workflow propose TEXT` (or `--prompt`, `--prompt-file`; `--json` for the whole proposal) prints the workflow and budget a run would take for the request, with the reason. `run --auto-preset` runs that proposal when no workflow is named, and prints it on stderr. The rules read the request text only, with no model call (`src/core/workflows/preset-router.ts`), in this order:
+
+| Request | Workflow | Budget |
+| --- | --- | --- |
+| A review or audit of existing changes (diff, pull request, branch, commits) and no change verb | `review-only` | standard |
+| Research (investigate, explore, evaluate, compare, "how could we") and no change verb | `spike` | standard |
+| A check, test, build or CI that fails, is red or broken | `fix-ci` | standard |
+| Docs only (README, docs, changelog, typo, comments) that names no code (API, command, flag, screen) and is at most 80 words | `quick` | quick |
+| A small change (rename, bump, tweak, label, message) of at most 30 words | `quick` | quick |
+| A large change (redesign, rewrite, migration, new service or module, several or multiple parts) or 150 words and more | the project default | extended |
+| Anything else | the project default | standard |
+
+Only a workflow that can start in this project is proposed: a preset with validation problems (for example `quick` or `fix-ci` without a feature check) falls back to `workflows.defaultWorkflow` (default `sdd`) with medium confidence and says so. A workflow named on the command line wins over the proposal, and `--budget` wins over the proposed budget; the proposed budget applies only when the proposed workflow runs. The run records the proposal in its state (`presetChoice`: `proposed`, `chosen`, `overridden`, `budget`, `kind`, `confidence`, `reason`), and the [run report](#run-report) says what was proposed and whether the person chose another workflow. The TUI new-run form and the desktop New run screen preselect the proposal while you type the request and show the reason under the workflow; picking another workflow or budget keeps your choice, and the run records both. A request taken from a GitHub issue is not proposed in the forms; `run --issue --auto-preset` reads the issue's text.
+
 ### Starting from a GitHub issue
 
 ```sh
