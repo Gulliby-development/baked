@@ -773,7 +773,7 @@ The new record goes through the same checks as a start: a bound model without cr
 A completed run whose verification is `current` can be delivered through Git: one commit of the run's files on a new branch, a push of that branch and a pull request. Every step needs a person's approval of the exact plan; delivery never runs inside auto approval.
 
 ```sh
-baked workflow deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr]
+baked workflow deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr] [--with-specs|--no-specs]
 baked workflow approve RUN_ID --request ID --digest SHA256 --expected-revision N
 baked workflow deliver RUN_ID --execute --expected-revision N [--request ID]
 ```
@@ -781,6 +781,8 @@ baked workflow deliver RUN_ID --execute --expected-revision N [--request ID]
 `deliver` prepares a plan and changes nothing in Git. It is stored as the immutable artifact `delivery/PLAN_ID/plan.json` with the reviewable diff in `delivery/PLAN_ID/diff.patch`, and a pending request of kind `delivery` carries the plan's digest. The plan names the operations (`commit`, `push`, `pull_request`), the remote and its URL, the branch (default `baked/FEATURE-` followed by the first 8 characters of the run ID), the base commit and branch (the current HEAD), the commit author, every file with its action, content hash and mode, the excluded files with a reason, the user's other uncommitted changes, the commit message, the pull request title, body, base and draft flag, and the check, criterion and review results. The command prints the `approve` command for that digest. A new `deliver` supersedes an older pending plan. Approving or rejecting a delivery request does not change the run's status; the run stays `completed`.
 
 Which files are delivered: the files of the run's effect journal (task edits and published spec artifacts) and the files that changed between the approval baseline snapshot and the final snapshot inside the tasks' declared writes. Other files in the workspace are never committed; they are listed under `userChanges` and left as they are. Excluded and reported: anything under `.baked/` or `.git/`, symbolic links, files ignored by Git, files with no net change from HEAD, and files that look like secrets (`.env*`, `.envrc`, `.netrc`, `.npmrc`, `.pypirc`, `.pgpass`, `.git-credentials`, `credentials.json`, SSH keys, `*.pem`, `*.key`, `*.crt`, `*.cer`, `*.der`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.kdbx`, `*.asc`, `*.gpg`, `*.ovpn`, or content with a private key header).
+
+The run's own `specs/FEATURE/` documents (spec, plan and task graph) are committed only when the base commit already tracks a `specs/` directory, so a pull request to a repository that does not keep specs carries just the code; they are listed as excluded with reason `specs` and stay in the run's artifacts, and the pull request body still carries the summary and criteria. `--with-specs` delivers them anyway, `--no-specs` leaves them out of a repository that keeps specs.
 
 Preparation refuses, with `details.reason` in the error:
 
