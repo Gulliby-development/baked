@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { LanguageModelV3, LanguageModelV3GenerateResult } from "@ai-sdk/provider";
 import { MockLanguageModelV3 } from "ai/test";
@@ -153,6 +153,46 @@ describe("apply_fix", () => {
     expect(result).toContain('"status":"passed"');
     expect(result).toContain("sibling.txt");
     expect(result).toContain("put back");
+  });
+
+  // Bench round 13, mdrefs T010: a later fixer call threw and the put-back after the loop never
+  // ran, so five sibling files stayed reformatted and the attempt was rejected `input_changed`.
+  test("files of other tasks are put back when a later fixer call fails", async () => {
+    const policy: RunPolicy = {
+      ...fixturePolicy,
+      checks: [
+        {
+          id: "fmt",
+          executable: "bun",
+          args: ["-e", "process.exit(0)"],
+          cwd: ".",
+          timeoutMs: 10000,
+          required: true,
+          scope: "task",
+          envNames: [],
+          writes: [],
+          fix: {
+            executable: "bun",
+            args: ["-e", "await Bun.write('sibling.txt', 'formatted')"],
+          },
+        },
+      ],
+    };
+    const { executor, request, root, seen } = await setup(policy, ["fmt"], [
+      step({ name: "apply_fix", input: { checkId: "fmt" } }),
+      () => {
+        throw new Error("stop after the fix");
+      },
+    ]);
+    writeFileSync(join(root, "sibling.txt"), "original");
+    mkdirSync(join(root, "tests"), { recursive: true });
+    writeFileSync(join(root, "tests", "value.test.ts"), "test('x', () => {});\n");
+    const task = request.task;
+    if (!task) throw new Error("task missing");
+    const writes = [...task.writes, { path: "tests/value.test.ts", action: "modify" as const }];
+    await expect(executor.execute({ ...request, task: { ...task, writes } })).rejects.toThrow("stop after the fix");
+    expect(readFileSync(join(root, "sibling.txt"), "utf8")).toBe("original");
+    expect(JSON.stringify(seen)).toContain("error");
   });
 });
 
