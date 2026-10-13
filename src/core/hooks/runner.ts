@@ -341,12 +341,18 @@ export interface RunHooksOptions {
   matchTarget?: string;
   /** The waiting run, for `RunAttention`. */
   runAttention?: HookInput["run_attention"];
+  /** The fields of a lifecycle event (`source`, `reason`, `prompt`, `message`, ...). */
+  fields?: Pick<
+    HookInput,
+    "source" | "reason" | "prompt" | "message" | "title" | "notification_type"
+  >;
 }
 
 /**
  * Run all matching hooks for an event.
  *
  * For PreToolUse: runs hooks sequentially. If any hook blocks, returns immediately.
+ * For UserPromptSubmit: same as PreToolUse — a block stops the prompt.
  * For PostToolUse: runs all hooks (blocking decisions are ignored — tool already ran).
  * For other events: runs all hooks sequentially.
  *
@@ -370,6 +376,7 @@ export async function runHooks(opts: RunHooksOptions): Promise<HookResult> {
     ...(opts.toolResponse !== undefined ? { tool_response: opts.toolResponse } : {}),
     ...(opts.toolCallId ? { tool_use_id: opts.toolCallId } : {}),
     ...(opts.runAttention ? { run_attention: opts.runAttention } : {}),
+    ...opts.fields,
   };
 
   const combinedContext: string[] = [];
@@ -412,8 +419,8 @@ export async function runHooks(opts: RunHooksOptions): Promise<HookResult> {
         combinedContext.push(result.additionalContext);
       }
 
-      // PreToolUse: if blocked, stop immediately
-      if (opts.event === "PreToolUse" && result.blocked) {
+      // PreToolUse and UserPromptSubmit: if blocked, stop immediately
+      if ((opts.event === "PreToolUse" || opts.event === "UserPromptSubmit") && result.blocked) {
         return {
           ...result,
           additionalContext: combinedContext.length > 0 ? combinedContext.join("\n") : undefined,

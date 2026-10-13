@@ -99,6 +99,18 @@ export interface HookInput {
   tool_response?: unknown;
   /** Tool call ID from the model. */
   tool_use_id?: string;
+  /** `SessionStart`: why the session started (`startup`, `resume`, `clear` or `compact`). */
+  source?: string;
+  /** `SessionEnd`: why the session ended (`clear`, `logout`, `prompt_input_exit` or `other`). */
+  reason?: string;
+  /** `UserPromptSubmit`: the prompt as the user typed it. */
+  prompt?: string;
+  /** `Notification`: the text of the notification. */
+  message?: string;
+  /** `Notification`: its title. */
+  title?: string;
+  /** `Notification`: its kind, which the matcher is tested against. */
+  notification_type?: string;
   /** What a `RunAttention` hook is told about the run that waits. */
   run_attention?: {
     run_id: string;
