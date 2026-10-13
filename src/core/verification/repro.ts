@@ -156,6 +156,14 @@ export function reproAllows(
 }
 
 /**
+ * Whether the convergence walker's finding passes the repro gate before it starts a correction:
+ * medium and low findings do, high and critical ones repair on the walker's word (#930).
+ */
+export function convergenceReproGated(finding: Review["findings"][number]): boolean {
+  return finding.severity === "medium" || finding.severity === "low";
+}
+
+/**
  * A `noRepro` reason that says the review had no way to run anything. Round 11 reviewers wrote
  * "No execution/reproduction tool is available in this session" while run_repro was offered.
  */
