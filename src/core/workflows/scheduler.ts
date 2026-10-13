@@ -2748,7 +2748,11 @@ export class WorkflowScheduler {
         throw new WorkflowFault(
           "OUTPUT_INVALID",
           error instanceof Error ? error.message : String(error),
-          { reason: "provider_unavailable" },
+          {
+            reason: "provider_unavailable",
+            // Where it was thrown, so a defect in BAKED's own code is not hidden as a lost worker (#929).
+            ...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
+          },
         );
       throw error;
     }
@@ -4431,6 +4435,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         this.store.taskStatus(runId, entry.task.id, "interrupted", null, {
           cause: outcome.cause,
           detail: outcome.reason,
+          ...(outcome.stack ? { stack: outcome.stack } : {}),
         });
         this.store.finishStep(runId, entry.child, "interrupted");
       });
@@ -4803,6 +4808,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           ...(!leaseLost && before
             ? await this.lostWorkerEdits(runId, policy, entry, known, before)
             : {}),
+          // An error of BAKED's own code is journaled with its stack, so its caller is known (#929).
+          ...(thrownStack(error) ? { stack: thrownStack(error) } : {}),
           reason:
             leaseSignal.aborted && !(error instanceof Error && error.message)
               ? "its worktree lease was lost"
@@ -9298,6 +9305,8 @@ type WorkerOutcome =
       /** Why the worker stopped: a restart it asked for, or a lost worker or worktree lease. */
       cause: InterruptCause;
       reason: string;
+      /** The stack of an error thrown by BAKED's own code rather than a workflow fault. */
+      stack?: string;
       /** Another owner took the task worktree's lease, so the worktree is not this run's to reuse. */
       leaseLost: boolean;
       /** What the worker said when it ended without a complete implementation, for the restart. */
@@ -9307,3 +9316,12 @@ type WorkerOutcome =
     }
   /** The whole run stops: it was aborted or its budget is used up. */
   | { kind: "fatal"; entry: BatchEntry; error: unknown };
+
+/**
+ * The stack of an error that is not a workflow fault of its own: thrown directly, or wrapped as
+ * `provider_unavailable` by the agent call.
+ */
+function thrownStack(error: unknown): string | undefined {
+  if (!(error instanceof WorkflowFault)) return error instanceof Error ? error.stack : undefined;
+  return typeof error.details.stack === "string" ? error.details.stack : undefined;
+}

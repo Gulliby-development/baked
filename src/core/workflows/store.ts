@@ -1076,7 +1076,7 @@ export class WorkflowStore {
     status: TaskRow["status"],
     snapshotId: string | null = null,
     /** Why the task was interrupted, on the `task.state_changed` event (#843). */
-    interrupt?: { cause: InterruptCause; detail?: string },
+    interrupt?: { cause: InterruptCause; detail?: string; stack?: string },
   ): void {
     const row = this.tasks(runId).find((t) => t.id === id);
     if (!row) throw new WorkflowFault("NOT_FOUND", `Task ${id} missing`);
@@ -1096,6 +1096,7 @@ export class WorkflowStore {
           ? {
               cause: interrupt.cause,
               ...(interrupt.detail ? { detail: interrupt.detail.slice(0, 500) } : {}),
+              ...(interrupt.stack ? { stack: interrupt.stack.slice(0, 2000) } : {}),
             }
           : {}),
       },

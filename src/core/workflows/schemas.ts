@@ -1152,6 +1152,7 @@ export const EventSchema = z.discriminatedUnion("type", [
           generation: z.number().int().nonnegative(),
           cause: InterruptCause.optional(),
           detail: z.string().max(500).optional(),
+          stack: z.string().max(2000).optional(),
         })
         .strict(),
     })
