@@ -53,7 +53,8 @@ function LaunchedCard({
 }: {
   project: DesktopProject;
   item: LaunchedView;
-  onChange: (launched: LaunchedView[]) => void;
+  /** Absent while the backend has no live view, which also means no Stop or Close. */
+  onChange?: (launched: LaunchedView[]) => void;
 }) {
   const tone = launchedTone(item);
   const why = launchWhy(item);
@@ -74,7 +75,7 @@ function LaunchedCard({
         >
           {launchName(item)}
         </a>
-        <LaunchActions projectKey={project.key} item={item} onChange={onChange} />
+        {onChange && <LaunchActions projectKey={project.key} item={item} onChange={onChange} />}
       </div>
       {why && <p className="m-0 line-clamp-3 text-[13px] text-soft-foreground">{why}</p>}
       {(item.tokens > 0 || item.task) && (
@@ -288,7 +289,7 @@ function CoordinatorPanel({
                 key={launchedKey(item)}
                 project={project}
                 item={item}
-                onChange={onLaunched}
+                {...(launched ? { onChange: onLaunched } : {})}
               />
             ))}
           </ul>
@@ -321,10 +322,10 @@ function CoordinatorPanel({
  */
 export function CoordinatorSection({ project }: SectionProps) {
   const key = project.key;
-  const launched = useLaunched(key);
   const [state, setState] = useState<"loading" | "missing" | { id: string } | { error: string }>(
     "loading",
   );
+  const launched = useLaunched(key, typeof state === "object" && "id" in state);
   useEffect(() => {
     let live = true;
     (async () => {

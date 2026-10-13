@@ -12,10 +12,11 @@ const message = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
 /**
- * What the coordinator launched, read now and every few seconds; null while an older backend
- * has no live view. `set` takes the list a Stop or Close answered with.
+ * What the coordinator launched, read every few seconds once the coordinator is `open`; null
+ * before that and from an older backend without the live view. `set` takes the list a Stop or
+ * Close answered with.
  */
-export function useLaunched(key: string) {
+export function useLaunched(key: string, open: boolean) {
   const [items, set] = useState<LaunchedView[] | null>(null);
   const reload = useCallback(() => {
     coordinator.launched(key).then(
@@ -24,10 +25,11 @@ export function useLaunched(key: string) {
     );
   }, [key]);
   useEffect(() => {
+    if (!open) return;
     reload();
     const timer = setInterval(reload, REFRESH_MS);
     return () => clearInterval(timer);
-  }, [reload]);
+  }, [reload, open]);
   return { items, set, reload };
 }
 
