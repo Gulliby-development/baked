@@ -18,6 +18,7 @@ baked --headless --watch                          # turns from baked! / baked? c
 | `--model <provider/model>` | Override the model |
 | `--mode <mode>` | `default`, `architect`, `plan` or `auto` |
 | `--effort <level>` | Reasoning effort: `default` (the configured one), `low`, `medium`, `high`, `xhigh` or `max`; see [reasoning effort per chat](providers.md#reasoning-effort-per-chat) |
+| `--context <size>` | Context window when the model offers several: `default`, `max`, or a size such as `200k` or `1m`; see [context size per chat](providers.md#context-size-per-chat) |
 | `--max-steps <n>` | Stop after N agent steps |
 | `--timeout <ms>` | Abort after N milliseconds |
 | `--cwd <dir>` | Work in another folder |

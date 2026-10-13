@@ -517,6 +517,13 @@ const COMMAND_DEFS: CommandDef[] = [
     tags: ["effort", "reasoning", "thinking"],
   },
   {
+    cmd: "/context-size",
+    ic: "system",
+    desc: "Context window of this chat when the model offers several (e.g. 200k or 1M)",
+    category: "Models",
+    tags: ["context", "window", "1m", "tokens"],
+  },
+  {
     cmd: "/provider-settings",
     ic: "system",
     desc: "Provider options — thinking, effort, speed, context",
