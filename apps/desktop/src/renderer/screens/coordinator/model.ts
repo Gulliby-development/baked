@@ -89,6 +89,40 @@ export function launchWhy(item: Pick<LaunchNote, "why" | "title">): string {
   return item.title && item.why.startsWith(item.title) ? "" : item.why;
 }
 
+/** One key per launched item: a session, run or initiative, or one feature of an initiative. */
+export const launchedKey = (item: Pick<LaunchedEntry, "kind" | "id" | "feature">): string =>
+  `${item.kind}:${item.id}:${item.feature ?? ""}`;
+
+/**
+ * What the item's card offers: Stop while it runs, Close once it is finished or paused, nothing
+ * once closed. A paused run or initiative holds nothing, so it may be closed as it is.
+ */
+export function launchControl(item: {
+  status: string;
+  active: boolean;
+  closed?: true;
+}): "stop" | "close" | null {
+  if (item.closed) return null;
+  return item.active && !/^paused/.test(item.status) ? "stop" : "close";
+}
+
+/** What Stop does to the item; runs and initiatives ask first. */
+export function stopEffect(item: Pick<LaunchedEntry, "kind" | "feature">): string {
+  if (item.kind === "session") return "Stops the session's running turn.";
+  if (item.kind === "run") return "Cancels the workflow run. A cancelled run cannot be resumed.";
+  return item.feature
+    ? "Pauses the whole initiative this feature belongs to, with its running feature runs."
+    : "Pauses the initiative and its running feature runs. You can resume it later.";
+}
+
+/** The ids of the newest launch notice about each item; only that card carries Stop or Close. */
+export function newestLaunchNotes(messages: readonly ChatMessage[]): Set<string> {
+  const newest = new Map<string, string>();
+  for (const message of messages)
+    if (message.launch) newest.set(launchedKey(message.launch), message.id);
+  return new Set(newest.values());
+}
+
 /** The prefix the coordinator's `message_session` puts before what it sends a launched session. */
 const COORDINATOR_PREFIX = "Message from the project coordinator:\n\n";
 

@@ -170,4 +170,44 @@ describe("coordinator screen model", () => {
     ).toBe('Take over this request from the chat "Retries":\n\nNow split the router work');
     expect(model.handOffText("Empty", [])).toBe('Take over the work of the chat "Empty".');
   });
+
+  test("offers Stop while an item runs and Close once it is finished or paused", () => {
+    expect(model.launchControl({ status: "working", active: true })).toBe("stop");
+    expect(model.launchControl({ status: "waiting: approval", active: true })).toBe("stop");
+    expect(model.launchControl({ status: "paused: user_pause", active: true })).toBe("close");
+    expect(model.launchControl({ status: "done", active: false })).toBe("close");
+    expect(model.launchControl({ status: "done", active: false, closed: true })).toBeNull();
+    expect(model.stopEffect({ kind: "run" })).toContain("cannot be resumed");
+  });
+
+  test("puts Stop and Close only on the newest notice about each item", () => {
+    const note = (id: string, item: string, status: string) => ({
+      id,
+      role: "system" as const,
+      content: status,
+      timestamp: 0,
+      launch: { kind: "run" as const, id: item, why: "w", status, event: "status" as const },
+    });
+    const newest = model.newestLaunchNotes([
+      note("m1", "r1", "waiting: approval"),
+      note("m2", "r2", "working"),
+      note("m3", "r1", "completed"),
+    ]);
+    expect([...newest].sort()).toEqual(["m2", "m3"]);
+  });
+
+  test("stops a launched run, closes it out of the open list and reopens it", async () => {
+    await coordinator.open("site");
+    const [run] = (await coordinator.launched("site")).launched;
+    if (!run) throw new Error("no launched run");
+    await expect(coordinator.close("site", run)).rejects.toMatchObject({ status: 400 });
+    const stopped = await coordinator.stop("site", run);
+    expect(stopped.message).toBe(`Cancelled run ${run.id}`);
+    expect(stopped.launched[0]).toMatchObject({ status: "cancelled", active: false });
+    const closed = await coordinator.close("site", run);
+    expect(closed.launched[0]?.closed).toBe(true);
+    await expect(coordinator.stop("site", run)).rejects.toMatchObject({ status: 400 });
+    const reopened = await coordinator.close("site", run, true);
+    expect(reopened.launched[0]?.closed).toBeUndefined();
+  });
 });

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import type { LaunchNote, SessionWorktree } from "../../client/chat.js";
 import { Icon, type IconName } from "../../components/Icon.js";
 import { Badge } from "../../components/ui/badge.js";
@@ -80,7 +80,16 @@ function LaunchResult({ text }: { text: string }) {
  * A coordinator's news about work it launched, as a card in its conversation: what the item is,
  * its new status, why it was started, and a way to open it. Replaces the plain notice line.
  */
-export function LaunchNoteCard({ note, href }: { note: LaunchNote; href?: string }) {
+export function LaunchNoteCard({
+  note,
+  href,
+  actions,
+}: {
+  note: LaunchNote;
+  href?: string;
+  /** Stop or Close for the item, on the newest card about it. */
+  actions?: ReactNode;
+}) {
   const tone = noteTone(note);
   const closed = note.event === "task-closed";
   const ruled = note.event === "auto-answered";
@@ -159,6 +168,7 @@ export function LaunchNoteCard({ note, href }: { note: LaunchNote; href?: string
         )}
         {note.result && <LaunchResult text={note.result} />}
       </div>
+      {actions}
       {href && (
         <a
           href={href}

@@ -25,7 +25,18 @@ export interface LaunchedEntry {
   /** For a feature of the initiative `id`: the feature, tracked on its own task. */
   feature?: string;
   task?: FlowTask;
+  /** Closed: no longer followed or counted; a closed session is archived out of the chat list. */
+  closed?: true;
 }
+
+/** Which launched item Stop or Close acts on. */
+export type LaunchedRef = Pick<LaunchedEntry, "kind" | "id" | "feature">;
+
+const refOf = (item: LaunchedRef): LaunchedRef => ({
+  kind: item.kind,
+  id: item.id,
+  ...(item.feature ? { feature: item.feature } : {}),
+});
 
 /** The brief's lists a person edits; `launched` comes from launches. */
 export const BRIEF_LISTS = ["decisions", "conventions", "openQuestions"] as const;
@@ -99,6 +110,20 @@ export const coordinator = {
     call<{ turnId: string; queued: boolean }>(key, "POST", "/v1/coordinator/summary", {}),
   launched: (key: string) =>
     call<{ launched: LaunchedView[] }>(key, "GET", "/v1/coordinator/launched"),
+  /** Stops a session's turn, cancels a run or pauses an initiative. */
+  stop: (key: string, item: LaunchedRef) =>
+    call<{ message: string; launched: LaunchedView[] }>(
+      key,
+      "POST",
+      "/v1/coordinator/launched/stop",
+      refOf(item),
+    ),
+  /** Closes a launched item that is no longer active, or with `reopen` brings it back. */
+  close: (key: string, item: LaunchedRef, reopen = false) =>
+    call<{ launched: LaunchedView[] }>(key, "POST", "/v1/coordinator/launched/close", {
+      ...refOf(item),
+      ...(reopen ? { reopen: true } : {}),
+    }),
   approvalRules: (key: string) => call<ApprovalRules>(key, "GET", "/v1/coordinator/approval-rules"),
   /** Saves the switch and the rules; a 409 `STALE_REVISION` means they changed meanwhile. */
   saveApprovalRules: (

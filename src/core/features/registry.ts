@@ -156,9 +156,15 @@ export const FEATURES: readonly Feature[] = [
       "/projects: a switched project opens on its coordinator",
     ],
     cli: ["baked session coordinator: prints the brief"],
-    api: ["/v1/coordinator", "/v1/coordinator/brief", "/v1/coordinator/launched"],
+    api: [
+      "/v1/coordinator",
+      "/v1/coordinator/brief",
+      "/v1/coordinator/launched",
+      "/v1/coordinator/launched/stop",
+      "/v1/coordinator/launched/close",
+    ],
     desktop: [
-      "project/coordinator: first project item and where a project opens; conversation, launched work and the editable brief",
+      "project/coordinator: first project item and where a project opens; conversation, launched work (Stop, Close) and the editable brief",
       "project/chat: Hand to coordinator in the chat menu",
     ],
   },

@@ -2,6 +2,7 @@
  * Lines of the terminal coordinator view, kept free of React so tests can check them directly.
  * Every line is already wrapped to the view's width, so the view shows the tail that fits.
  */
+import { launchControl } from "../../core/chat/coordinator-control.js";
 import {
   type LaunchedView,
   launchLabel,
@@ -68,9 +69,18 @@ function statusTone(status: string, fallback: LineTone): LineTone {
 const whyBesides = (why: string, title: string | undefined): string =>
   title && why.startsWith(title) ? "" : why;
 
-/** One line per launched item: its title (or kind and id), status, tokens, task and why. */
-export function launchedLines(launched: LaunchedView[], width: number): ViewLine[] {
-  return launched.flatMap((entry) => {
+/**
+ * One line per open launched item: its title (or kind and id), status, tokens, task and why. With
+ * `selected`, that item is marked for the stop and close keys. Closed items are counted at the end.
+ */
+export function launchedLines(
+  launched: LaunchedView[],
+  width: number,
+  selected?: number,
+): ViewLine[] {
+  const open = launched.filter((entry) => !entry.closed);
+  const closed = launched.length - open.length;
+  const lines = open.flatMap((entry, i) => {
     const task = entry.task
       ? ` · ${entry.task.state === "local" ? "local task" : entry.task.ref}`
       : "";
@@ -79,13 +89,19 @@ export function launchedLines(launched: LaunchedView[], width: number): ViewLine
     const head = `${entry.active ? "●" : "○"} ${launchLabel(entry)}: ${status} · ${tokens(entry.tokens)}${task}${branch}`;
     const why = whyBesides(entry.why, entry.title);
     return labelled(
-      "",
+      selected === undefined ? "" : i === selected ? "› " : "  ",
       why ? `${head} · ${why}` : head,
       width,
       statusTone(entry.status, entry.active ? "accent" : "muted"),
     );
   });
+  if (closed) lines.push({ text: `${closed} closed`, tone: "muted" });
+  return lines;
 }
+
+/** The launched items the stop and close keys move over: the open ones. */
+export const openLaunched = (launched: LaunchedView[]): LaunchedView[] =>
+  launched.filter((entry) => !entry.closed);
 
 /** At most this many lines of a launched session's answer show under its note. */
 const RESULT_ROWS = 6;
@@ -214,6 +230,7 @@ export function promptLines(prompt: ChatPrompt, width: number): ViewLine[] {
 export function keyHints(
   prompt: ChatPrompt | undefined,
   working: boolean,
+  item?: LaunchedView,
 ): { key: string; label: string }[] {
   const hints: { key: string; label: string }[] = [];
   if (prompt?.kind === "split")
@@ -230,6 +247,13 @@ export function keyHints(
       { key: "^N", label: prompt.kind === "plan-review" ? "cancel" : "deny" },
     );
   if (!prompt) hints.push({ key: "Enter", label: "send" });
+  if (!prompt && item) {
+    hints.push({ key: "Tab", label: "select launched" });
+    const control = launchControl(item);
+    if (control === "stop")
+      hints.push({ key: "^X", label: item.kind === "initiative" ? "pause it" : "stop it" });
+    else if (control === "close") hints.push({ key: "^R", label: "close it" });
+  }
   if (!prompt && !working) hints.push({ key: "^S", label: "what's happening" });
   hints.push({ key: "Esc", label: working ? "stop" : "back" });
   return hints;

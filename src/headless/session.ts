@@ -245,7 +245,7 @@ function list(rest: string[]): number {
   }
   const sessions = new SessionManager(getCwd())
     .listSessions()
-    .filter((s) => s.kind !== "coordinator")
+    .filter((s) => s.kind !== "coordinator" && !s.archived)
     .slice(0, limit);
   if (rest.includes("--json")) {
     process.stdout.write(`${JSON.stringify({ sessions }, null, 2)}\n`);

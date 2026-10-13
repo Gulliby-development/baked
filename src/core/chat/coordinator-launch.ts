@@ -82,6 +82,10 @@ export interface ProjectLauncher {
   }): Promise<{ initiativeId: string }>;
   /** Issues for flows; without it every flow gets a local task. */
   tasks?: TaskTracker;
+  /** Cancels a run, as `POST /v1/workflow/runs/:id/cancel` does. */
+  cancelRun?(runId: string): Promise<void>;
+  /** Pauses an initiative and its running feature runs; an initiative has no cancel. */
+  pauseInitiative?(initiativeId: string): Promise<void>;
   /** Approves a run's plan and continues it; the approval rules use it (`approval-rules.ts`). */
   approveRun?: RunApprover["approveRun"];
 }
@@ -120,7 +124,7 @@ export function coordinatorLimits(config: AppConfig): { maxActive: number; maxTo
 }
 
 /** A launched item as it is now: its status word, whether it still runs, and its tokens. */
-interface LiveState {
+export interface LiveState {
   status: string;
   active: boolean;
   tokens: number;
@@ -144,7 +148,8 @@ function sessionState(chat: ChatService, id: string): LiveState {
   return { status: messageCount > 1 ? "done" : "idle", active: false, tokens };
 }
 
-function liveState(
+/** The launched item's live status, read from its session, run or initiative. */
+export function liveState(
   chat: ChatService,
   state: ProjectStateSource | null,
   entry: LaunchedEntry,
@@ -323,6 +328,10 @@ export async function syncLaunched(
   let changed = false;
   const launched: LaunchedEntry[] = [];
   for (const entry of brief.launched) {
+    if (entry.closed) {
+      launched.push(entry);
+      continue;
+    }
     const { status } = liveState(chat, state, entry);
     const title = titleOf(chat, entry);
     const worktree = worktreeOf(chat, entry);
@@ -378,7 +387,7 @@ function overLimit(
   limits: { maxActive: number; maxTokens: number },
   adding = 1,
 ): string | null {
-  const live = launched.map((entry) => liveState(chat, state, entry));
+  const live = launched.filter((e) => !e.closed).map((entry) => liveState(chat, state, entry));
   const active = live.filter((l) => l.active).length;
   if (adding > 1 && active + adding > limits.maxActive)
     return `${active} launched items are still active and this adds ${adding} (limit ${limits.maxActive}); propose fewer flows or wait`;
