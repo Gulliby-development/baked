@@ -32,6 +32,11 @@ const GROUPS: [MemoryEntryKind, string, string][] = [
   ["answer", "Answers", "Answers people gave to research and spec questions; the newest wins."],
   ["assumption", "Assumptions", "Assumptions of specifications that completed runs approved."],
   ["check", "Checks", "Check commands that passed in completed runs."],
+  [
+    "rule",
+    "Learned rules",
+    "Fixes of findings that recurred in two or more runs. A rule reaches implementers and reviewers once it is active: after three runs, or when you accept or reword it.",
+  ],
 ];
 
 const NOTE_MAX = 600;
@@ -59,6 +64,9 @@ function EntryLine({
         <span className={cn(GROW, WRAP)}>
           {entry.question && <span className="text-dim-foreground">Q: {entry.question} · A: </span>}
           <span className={entry.kind === "check" ? "font-mono" : undefined}>{entry.text}</span>
+          {entry.scope && (
+            <span className={cn("font-mono text-dim-foreground", NOTE)}> {entry.scope}</span>
+          )}
           {entry.recorded && (
             <span className={cn("text-dim-foreground", NOTE)}>
               {" "}
@@ -94,9 +102,24 @@ function EntryLine({
         <span className="font-mono text-dim-foreground">{entry.runs}×</span>
       )}
       {entry.recorded && <Tag>edited</Tag>}
-      {!sent && <Tag tone="warn">not sent: the policy lists it</Tag>}
+      {entry.kind === "rule" && entry.status === "active" && <Tag>active</Tag>}
+      {!sent && (
+        <Tag tone="warn">
+          {entry.kind === "rule" ? "proposed: not sent yet" : "not sent: the policy lists it"}
+        </Tag>
+      )}
       {draft === null && (
         <span className={ACTIONS}>
+          {entry.kind === "rule" && entry.status !== "active" && (
+            <Button
+              variant="primary"
+              size="md"
+              disabled={busy}
+              onClick={() => void onEdit({ action: "accept", id: entry.id })}
+            >
+              Accept
+            </Button>
+          )}
           {entry.kind !== "check" && (
             <Button
               variant="secondary"

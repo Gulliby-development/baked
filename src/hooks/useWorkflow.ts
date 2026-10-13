@@ -25,7 +25,13 @@ import { PolicySchema, workflowsEnabled } from "../core/workflows/schemas.js";
 import { WorkflowStore } from "../core/workflows/store.js";
 import { usageSummary } from "../core/workflows/usage.js";
 import { listDefinitions } from "../core/workflows/v2/definitions.js";
-import { readEditorSource, writeDefinitionFile } from "../core/workflows/v2/editor.js";
+import {
+  libraryViews,
+  readEditorSource,
+  writeDefinitionFile,
+} from "../core/workflows/v2/editor.js";
+import { configuredDraftModel, draftGate, saveGateDraft } from "../core/workflows/v2/gate-draft.js";
+import { loadGateLibrary } from "../core/workflows/v2/library.js";
 import type { RunSummary, WorkflowInfo } from "../core/workflows/view.js";
 import { useWorkflowStore } from "../stores/workflow.js";
 
@@ -230,14 +236,21 @@ export function workflowGatesApi(workspace: string): GatesApi {
  */
 export function workflowEditorApi(workspace: string): WorkflowEditorApi {
   const config = () => mergeConfigs(loadConfig(), loadEffectiveProjectConfig(workspace));
+  const policy = () => PolicySchema.parse(config().workflows?.policy ?? defaultWorkflowPolicy);
   return {
-    open: (id) =>
-      readEditorSource(
-        workspace,
-        id,
-        PolicySchema.parse(config().workflows?.policy ?? defaultWorkflowPolicy),
-      ),
+    open: (id) => readEditorSource(workspace, id, policy()),
     save: (definition) => writeDefinitionFile(workspace, definition),
+    draftGate: (request) =>
+      draftGate(
+        workspace,
+        request,
+        configuredDraftModel(config()),
+        loadGateLibrary(workspace, policy()),
+      ),
+    saveGate: (draft) => {
+      saveGateDraft(workspace, draft, () => loadGateLibrary(workspace, policy()));
+      return libraryViews(workspace, policy());
+    },
     history: async () => {
       if (!workflowsEnabled(config()) && !existingWorkflowSession(workspace)) return null;
       try {

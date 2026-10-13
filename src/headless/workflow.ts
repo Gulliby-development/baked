@@ -35,7 +35,7 @@ import { runUsage } from "../core/workflows/usage.js";
 import { runUsageMarkdown } from "../core/workflows/usage-markdown.js";
 import { recordedSteps } from "../core/workflows/v2/acceptance-gate.js";
 import { QUICK_WORKFLOW_ID } from "../core/workflows/v2/definitions.js";
-import { readRoutingSummary } from "../core/workflows/view.js";
+import { readCheckPreflight, readRoutingSummary } from "../core/workflows/view.js";
 import { worktreeView } from "../core/workflows/worktree.js";
 import type { AppConfig } from "../types/index.js";
 import { followProgress } from "./progress.js";
@@ -140,14 +140,22 @@ export function formatRoute(route: RouteExplanation): string {
 }
 /** Project memory as `baked workflow memory` prints it: one entry per line with its ID. */
 export function formatProjectMemory(view: ProjectMemoryView & { id?: string }): string {
-  const KIND = { note: "note", answer: "answer", assumption: "assume", check: "check" } as const;
+  const KIND = {
+    note: "note",
+    answer: "answer",
+    assumption: "assume",
+    check: "check",
+    rule: "rule",
+  } as const;
   const line = (e: ProjectMemoryView["hidden"][number], extra = ""): string => {
     const source = e.runId ? ` (run ${e.runId.slice(0, 8)})` : "";
     const head = `${e.id}  ${KIND[e.kind].padEnd(6)}  `;
     const body =
       e.kind === "answer"
         ? `Q: ${e.question ?? ""}\n${" ".repeat(head.length)}A: ${e.text}`
-        : e.text;
+        : e.kind === "rule"
+          ? `${e.text} [${e.status ?? "proposed"}, ${e.scope ?? "**"}, ${String(e.runs ?? 0)} runs]`
+          : e.text;
     return `${head}${body}${source}${e.recorded ? " [edited]" : ""}${extra}`;
   };
   const out: string[] = [];
@@ -158,7 +166,16 @@ export function formatProjectMemory(view: ProjectMemoryView & { id?: string }): 
     view.entries.length
       ? `Project memory new runs read (${String(view.entries.length)}):`
       : "Project memory is empty: earlier runs recorded nothing and there are no notes.",
-    ...view.entries.map((e) => line(e, e.sent ? "" : " [not sent: the policy's own check]")),
+    ...view.entries.map((e) =>
+      line(
+        e,
+        e.sent
+          ? ""
+          : e.kind === "rule"
+            ? " [not sent: proposed; accept it to activate]"
+            : " [not sent: the policy's own check]",
+      ),
+    ),
   );
   if (view.hidden.length)
     out.push("", `Forgotten (${String(view.hidden.length)}):`, ...view.hidden.map((e) => line(e)));
@@ -287,6 +304,7 @@ export async function executeWorkflowCommand(
         requests: service.store.requests(runId),
         worktree: worktreeView(service.workspace, service.store.state(runId)),
         routing: readRoutingSummary(service.store, runId),
+        preflight: readCheckPreflight(service.store, runId),
         acceptance: walkThroughs(service.store, runId),
         stopDetail:
           snapshot.status === "blocked" || snapshot.status === "failed"

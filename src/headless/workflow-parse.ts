@@ -65,77 +65,8 @@ export interface WorkflowArgs {
    */
   inline?: Record<string, unknown>;
 }
-const flags = new Set([
-  "model-strict",
-  "feature",
-  "workflow",
-  "prompt",
-  "prompt-file",
-  "policy",
-  "owner",
-  "model",
-  "json",
-  "events",
-  "request",
-  "digest",
-  "expected-revision",
-  "command-id",
-  "answers-file",
-  "file",
-  "accept",
-  "reason",
-  "candidate",
-  "source",
-  "path",
-  "destination",
-  "before",
-  "dry-run",
-  "limit",
-  "cursor",
-  "status",
-  "stage",
-  "top",
-  "format",
-  "after",
-  "effect",
-  "resolution",
-  "tokens",
-  "calls",
-  "time-ms",
-  "spec",
-  "plan",
-  "tasks",
-  "cwd",
-  "from",
-  "all",
-  "confirm-auto-approval",
-  "help",
-  "remote",
-  "branch",
-  "draft",
-  "no-pr",
-  "with-specs",
-  "no-specs",
-  "execute",
-  "worktree",
-  "writers",
-  "exclude-user-changes",
-  "route",
-  "resume",
-  "no-resume",
-  "clarification",
-  "duplication",
-  "issue",
-  "output",
-  "text",
-  "provider",
-  "kind",
-  "id",
-  "save",
-  "from-criteria",
-  "at",
-  "budget",
-]);
+/** Options every workflow command takes. */
+const globalFlags = ["json", "cwd", "help"];
 const booleanFlags = new Set([
   "all",
   "save",
@@ -279,8 +210,10 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   doctor: preRunFlags,
   estimate: preRunFlags,
 };
+/** Every option the parser knows: derived from the command tables, so a flag cannot be missed. */
+const flags = new Set([...globalFlags, ...Object.values(commandFlags).flat()]);
 /** The flag tables the argv parser checks, exposed so tests can assert they agree. */
-export const workflowFlagTables = { flags, booleanFlags, commandFlags };
+export const workflowFlagTables = { flags, booleanFlags, commandFlags, globalFlags };
 export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
   const command = argv[0];
   if (!commands.includes(command as WorkflowCommand))
@@ -318,7 +251,7 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
 /** Checks option combinations and values of parsed or programmatically built workflow arguments. */
 export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
   for (const name of Object.keys(result.flags)) {
-    if (!["json", "cwd", "help", ...commandFlags[result.command]].includes(name))
+    if (!globalFlags.includes(name) && !commandFlags[result.command].includes(name))
       throw new WorkflowFault("INVALID_DEFINITION", `--${name} is not valid for ${result.command}`);
     if (name === "status" && !RunStatus.safeParse(result.flags[name]).success)
       throw new WorkflowFault(
@@ -352,6 +285,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
       list: [0, false],
       add: [0, true],
       edit: [1, true],
+      accept: [1, false],
       forget: [1, false],
       restore: [1, false],
     } as const;
@@ -359,7 +293,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     if (!rule)
       throw new WorkflowFault(
         "INVALID_DEFINITION",
-        "memory accepts list, add, edit, forget or restore",
+        "memory accepts list, add, edit, accept, forget or restore",
       );
     if (rest.length !== rule[0])
       throw new WorkflowFault(
@@ -507,10 +441,11 @@ quick TEXT... | --prompt-file FILE [--feature ID] [--model ID] [--route STAGE=MO
   implementation, the policy checks and one correctness review. The feature ID is derived from
   the text. Runs workflows.quickWorkflow when set, otherwise the quick preset. Also: baked quick
 status RUN_ID [--json]
-memory [list] [--json] | memory add --text TEXT | memory edit ID --text TEXT | memory forget|restore ID
-  What earlier runs taught new runs (answers, approved assumptions, passing checks) and your notes.
-  add writes a note; edit rewords a note, answer or assumption; forget deletes a note or hides an
-  entry; restore brings an entry back as runs recorded it. Runs started afterwards read the result
+memory [list] [--json] | memory add --text TEXT | memory edit ID --text TEXT | memory accept|forget|restore ID
+  What earlier runs taught new runs (answers, approved assumptions, passing checks, code rules
+  learned from recurring findings) and your notes. add writes a note; edit rewords a note, answer,
+  assumption or rule; accept activates a proposed rule; forget deletes a note or hides an entry
+  (retires a rule); restore brings an entry back as runs recorded it. Runs started afterwards read the result
 list [--feature ID] [--status STATUS] [--limit 20] [--cursor RUN_ID]
   --status accepts: ${RunStatus.options.join(", ")}
 resume RUN_ID --expected-revision N [--events]
