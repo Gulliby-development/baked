@@ -9,6 +9,8 @@ const REASONS: Record<string, string> = {
   input_changed: "instructions or configuration changed since approval",
   workspace_busy: "another run or edit holds the workspace",
   budget_exhausted: "the token, call or time budget is used up",
+  attempt_cap:
+    "an agent used its attempt's token cap without submitting a result; the run budget is not used up, and resuming continues the task with the edits already made",
   checkpoint: "the run reached a token checkpoint and waits for you to continue",
   no_progress: "repairs stopped making progress",
   verification_failed: "checks or reviews did not pass",

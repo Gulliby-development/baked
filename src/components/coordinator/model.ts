@@ -7,6 +7,7 @@ import {
   launchLabel,
   launchNoteText,
 } from "../../core/chat/coordinator-launch.js";
+import { parsePeerMessage } from "../../core/chat/peer-messages.js";
 import type { ChatPrompt } from "../../core/chat/sessions.js";
 import type { ChatMessage, LaunchNote } from "../../types/index.js";
 
@@ -121,7 +122,10 @@ export function messageLines(messages: ChatMessage[], live: string, width: numbe
   const lines: ViewLine[] = [];
   for (const message of messages) {
     if (message.role === "user") {
-      lines.push(...labelled("you  ", message.content, width, "user"));
+      // A thread's message to the coordinator is labelled as the thread's, not the person's.
+      const peer = parsePeerMessage(message.content);
+      if (peer) lines.push(...labelled("from ", `"${peer.title}": ${peer.text}`, width, "accent"));
+      else lines.push(...labelled("you  ", message.content, width, "user"));
     } else if (message.role === "assistant") {
       for (const call of message.toolCalls ?? [])
         lines.push(...labelled("  ↳ ", call.name, width, "tool"));
@@ -209,6 +213,7 @@ export function keyHints(
       { key: "^N", label: prompt.kind === "plan-review" ? "cancel" : "deny" },
     );
   if (!prompt) hints.push({ key: "Enter", label: "send" });
+  if (!prompt && !working) hints.push({ key: "^S", label: "what's happening" });
   hints.push({ key: "Esc", label: working ? "stop" : "back" });
   return hints;
 }

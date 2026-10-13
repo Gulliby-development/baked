@@ -411,6 +411,8 @@ export interface AppConfig {
   defaultBakeMode?: BakeMode;
   /** Enable/disable Baked map (AST index). Disabling saves ~4-8k prompt tokens. Default: true. Toggle via /repo-map → 'e'. */
   repoMap?: boolean;
+  /** Keep the Baked map index current in the background: at startup, after file changes, chat turns, runs and git checkouts or pulls. Default: true. */
+  repoMapBackgroundRefresh?: boolean;
   /** Semantic summary mode: "off", "ast" (docstrings only), "synthetic" (ast + name-derived, free), "llm" (ast + AI-generated), "full" (ast + llm + synthetic). Boolean compat: true → "synthetic", false → "off". "on" is legacy alias for "full". */
   semanticSummaries?: "off" | "ast" | "synthetic" | "llm" | "full" | "on" | boolean;
   /** Max symbols to summarize with LLM (default 300). Controls API cost for llm/full modes. PageRank-ranked — top N most connected symbols get LLM summaries. */

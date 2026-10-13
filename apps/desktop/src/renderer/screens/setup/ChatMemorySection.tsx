@@ -13,6 +13,7 @@ import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
 import { Empty } from "../../components/ui/empty.js";
 import { Segment, SegmentGroup } from "../../components/ui/segmented.js";
+import { Switch } from "../../components/ui/switch.js";
 import { Textarea } from "../../components/ui/textarea.js";
 import { ago } from "../../format.js";
 import { cn } from "../../lib/cn.js";
@@ -398,7 +399,7 @@ export function ChatMemorySection({ project }: SectionProps) {
   }, [view, query]);
 
   if (!view) return <LoadState value={memory} what="chat memory" />;
-  const { writeScope, readScope, settingsScope } = view.settings;
+  const { writeScope, readScope, shareWithRuns, settingsScope } = view.settings;
   const total = view.entries.length + view.hidden.length;
 
   return (
@@ -436,6 +437,23 @@ export function ChatMemorySection({ project }: SectionProps) {
           busy={busy}
           onPick={(v) => void settings({ readScope: v })}
         />
+        <div className={STACK}>
+          <span className={LABEL}>Share with runs</span>
+          <span className="flex items-center gap-2 text-[13px]">
+            <Switch
+              aria-label="Share memory between chats and runs"
+              checked={shareWithRuns}
+              disabled={busy}
+              onCheckedChange={(checked) => void settings({ shareWithRuns: checked })}
+            />
+            {shareWithRuns ? "On" : "Off"}
+          </span>
+          <span className={cn("text-dim-foreground", NOTE)}>
+            When on, chats also recall what runs learned (answers, approved assumptions, active
+            rules), and new runs read up to 10 of this project's pinned memories and decisions,
+            preferences and gotchas. Global, hidden and context memories stay in the chat.
+          </span>
+        </div>
         <Choice
           label="Keep these settings for"
           about="This project saves them in .baked; all projects in your BAKED folder."

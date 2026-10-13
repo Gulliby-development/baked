@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { confirm, openSelect, promptText } from "../../components/ui/dialogs/index.js";
 import { reasonText, statusGlyph } from "../../components/workflow/format.js";
+import { requestSummaryOnOpen } from "../../hooks/useCoordinator.js";
 import { drivingWorkflowRuns } from "../../hooks/useWorkflow.js";
 import { useDialogStore } from "../../stores/dialog.js";
 import { getAppSessionId } from "../../stores/session.js";
@@ -446,4 +447,8 @@ export function register(map: Map<string, CommandHandler>): void {
   map.set("/project rename", (input, ctx) => renameCurrentProject(input, ctx));
   map.set("/project waiting", (_input, ctx) => showWaitingAcrossProjects(ctx));
   map.set("/coordinator", () => useUIStore.getState().openModal("coordinator"));
+  map.set("/coordinator summary", () => {
+    requestSummaryOnOpen();
+    useUIStore.getState().openModal("coordinator");
+  });
 }
