@@ -279,6 +279,57 @@ describe("documentation probes", () => {
   });
 });
 
+describe("task-end check", () => {
+  const implemented = (summary: string) => ({
+    schemaVersion: 1,
+    taskId: "T004",
+    outcome: "implemented",
+    summary,
+    evidenceIds: [],
+    unresolved: [],
+  });
+  const codeTask: Task = {
+    id: "T004",
+    title: "Parse input",
+    description: "Parse the input",
+    requirementIds: ["FR-001"],
+    criterionIds: ["AC-001"],
+    dependsOn: [],
+    profileId: "implementer",
+    writes: [{ path: "value.txt", action: "modify" }],
+    readHints: [],
+    checkIds: ["check"],
+    origin: "planned",
+    findingIds: [],
+    rationale: "parse",
+  };
+
+  test("its errors go back once, and the next submission is accepted without running it again", async () => {
+    scriptModel([
+      step(1000, 50, { name: "submit_result", input: implemented("first") }),
+      step(1000, 50, { name: "submit_result", input: implemented("fixed") }),
+    ]);
+    const { executor, request } = await nativeAttempt(fixturePolicy, "implementation", codeTask);
+    let runs = 0;
+    const response = await executor.execute({
+      ...request,
+      taskEndCheck: async () => {
+        runs++;
+        return ["typecheck: src/app.ts: error TS2322: Type 'number' is not assignable to type 'string'."];
+      },
+    });
+    expect(runs).toBe(1);
+    expect(response.output).toMatchObject({ summary: "fixed" });
+  });
+
+  test("a clean check accepts the first submission", async () => {
+    scriptModel([step(1000, 50, { name: "submit_result", input: implemented("first") })]);
+    const { executor, request } = await nativeAttempt(fixturePolicy, "implementation", codeTask);
+    const response = await executor.execute({ ...request, taskEndCheck: async () => [] });
+    expect(response.output).toMatchObject({ summary: "first" });
+  });
+});
+
 describe("code intelligence backends in attempt usage", () => {
   test("each tool call is counted under the backend that answered it", async () => {
     scriptModel([

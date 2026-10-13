@@ -208,6 +208,15 @@ The listing marks a check the workspace policy already lists, and a proposed rul
 
 Implementers get the same [diagnostics after each edit](../tools.md#diagnostics-after-edits) as the chat: new errors in the edited file and in up to 8 files that import it, in the run's worktree when it has one. The policy field `editDiagnostics` sets what an edit that adds errors does during the run: `feedback` returns the errors with the tool result, `reject` also restores the file and fails the edit with the errors and the original lines. A run that starts without the field takes the project's `editDiagnostics` chat setting; only `reject` is stored in the run's policy, so the approval digest covers it and a run under `feedback` keeps the policy hash it had before the field existed. Set it for one run with `workflows.policy.editDiagnostics` in `.baked/config.json` or `--policy FILE`.
 
+**Task-end type check.** Whole-unit checks (`tsc`, `typecheck`, `cargo check`, `clippy`, `mypy`, `pyright`, `go vet`) do not run as task checks, since a task's worktree lacks the files its sibling tasks write. When the policy has such a feature-scope check and the task writes code, the host runs it once when the implementer first submits the task as implemented, in the task's directory, and keeps only the errors that:
+
+- are located in a code file the task writes;
+- do not name a code file that a sibling task not yet done will write;
+- are not an unresolved module or name while such a sibling is pending (`mod parse;` before `src/parse.rs` exists);
+- were not reported by the same check on the code the run started from. The baseline stores these errors as `diagnostics` in `facts/check-baseline.json`.
+
+Up to 20 remaining errors go back to the implementer with the rejected submission, and its next submission is accepted without running the check again. The check is advisory: the checks stage still runs it on the integrated change. Each run is journaled as `tasks/TASK/task-end-check-ID.json`.
+
 ### The run's own edits and undo
 
 A run keeps the edits it executed. A revision, a failed or interrupted task attempt and a fork leave the files as they are, and the runtime recognises content the run itself wrote by the effect journal:
