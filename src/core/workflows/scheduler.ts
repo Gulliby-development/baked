@@ -65,6 +65,7 @@ import {
   TEST_FILE,
 } from "../verification/output-counts.js";
 import {
+  carryNoRepro,
   missingReproAdvice,
   outputShows,
   type ReproOutcome,
@@ -7997,7 +7998,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
               );
               // Asked once: a reviewer that still has no repro after the advice is not blocked.
               if (problems.length || reproAdvised || !canRepro) return problems;
-              const advice = missingReproAdvice(output as Review, executables);
+              const advice = missingReproAdvice(output as Review, executables, prior?.review);
               if (advice.length) reproAdvised = true;
               return advice;
             },
@@ -8008,6 +8009,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             canRepro ? () => ({ run_repro: reproTool(executables, repro) }) : undefined,
           ),
         );
+        carryNoRepro(answer, prior?.review);
         // The host owns the snapshot hash and the evidence ids; omitted criteria are listed as
         // inconclusive, and the converge stage settles coverage.
         completeReview(
