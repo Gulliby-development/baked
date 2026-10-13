@@ -1,7 +1,8 @@
 import type { EventEmitter } from "node:events";
 import type { KeyEvent } from "@opentui/core";
 import { useAppContext, useRenderer } from "@opentui/react";
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { useDialogStore } from "../stores/dialog.js";
 
 /**
  * Drop-in replacements for `useKeyboard` and `useTerminalDimensions` from
@@ -83,7 +84,15 @@ function useLatest<T>(value: T): { current: T } {
 export interface UseKeyboardOptions {
   /** Also receive key release events. */
   release?: boolean;
+  /** Keep receiving keys while a dialog is open (the dialog host and global shortcuts). */
+  underDialog?: boolean;
 }
+
+/**
+ * True inside the dialog host. While a dialog is open it takes every key: handlers outside it
+ * are skipped, so typing into a dialog does not also drive the screen beneath.
+ */
+export const DialogKeyScope = createContext(false);
 
 export function useKeyboard(
   handler: (key: KeyEvent) => void,
@@ -92,16 +101,20 @@ export function useKeyboard(
   const { keyHandler } = useAppContext();
   const latest = useLatest(handler);
   const release = options.release === true;
+  const blockedByDialog = !useContext(DialogKeyScope) && options.underDialog !== true;
   useEffect(() => {
     if (!keyHandler) return;
-    const forward: Handler = (key) => latest.current(key as KeyEvent);
+    const forward: Handler = (key) => {
+      if (blockedByDialog && useDialogStore.getState().stack.length > 0) return;
+      latest.current(key as KeyEvent);
+    };
     const offPress = subscribeShared(keyHandler, "keypress", forward);
     const offRelease = release ? subscribeShared(keyHandler, "keyrelease", forward) : undefined;
     return () => {
       offPress();
       offRelease?.();
     };
-  }, [keyHandler, release, latest]);
+  }, [keyHandler, release, latest, blockedByDialog]);
 }
 
 export function useTerminalDimensions(): { width: number; height: number } {

@@ -117,6 +117,18 @@ export const taskCheckList = (policy: RunPolicy, task: Task): Check[] => {
  * red): `cargo fmt` takes file arguments only after `--`, `go fmt` takes packages (`gofmt -w`
  * takes files) and `dotnet format` takes a project and selects files with `--include`.
  */
+/**
+ * The fixers of a check in the order they run: the safe tier, then the unsafe tier (#395), which
+ * applies only beside a safe one.
+ */
+export function fixerTiers(check: {
+  fix?: { executable: string; args: string[] };
+  fixUnsafe?: { executable: string; args: string[] };
+}): { executable: string; args: string[] }[] {
+  if (!check.fix) return [];
+  return check.fixUnsafe ? [check.fix, check.fixUnsafe] : [check.fix];
+}
+
 export function fixerCommand(
   fix: { executable: string; args: string[] },
   path: string,
