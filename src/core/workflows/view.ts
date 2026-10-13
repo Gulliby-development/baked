@@ -499,6 +499,7 @@ export function readWorkflowView(service: NativeWorkflowService, runId: string) 
       routing: readRoutingSummary(store, runId),
       gates: gatesOf(service.workspace, store, row),
       preflight: readCheckPreflight(store, runId),
+      forkStages: service.forkStages(runId),
     };
   });
 }
