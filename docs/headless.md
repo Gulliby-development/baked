@@ -141,6 +141,10 @@ baked --headless --sandbox required "run the tests"
 
 `baked sandbox status` prints the effective [OS sandbox](sandbox.md) mode (the global `sandbox` setting, raised by the project config), the backend of this machine (`bwrap` on Linux, `seatbelt` on macOS, none on Windows) or why it is unavailable, and the network of sandboxed chat commands. It exits 1 when the mode is `required` and no backend works, so CI can check the sandbox before it runs anything. `--sandbox MODE` on a headless run replaces the global mode for that process; with `required` and no backend, shell and project commands are refused.
 
+## Artifacts
+
+`baked artifacts list|show|save|deploy|remove` manages the [artifacts](artifacts.md) shared by every project: HTML pages kept in the BAKED data folder. `deploy ID` prints what it would send to your Vercel account and deploys only with `--yes` (`--prod` for production).
+
 ## Approvals
 
 There is no one to ask in headless mode: actions that would ask for approval in the terminal UI (writes outside the project, destructive shell commands) are not prompted. Cap runs with `--max-steps` and `--timeout`, keep API keys in CI secrets, and run untrusted prompts in a disposable checkout or with `--sandbox required`.

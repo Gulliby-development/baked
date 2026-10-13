@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  missingReproAdvice,
   outputShows,
   REPRO_TRIES,
   reproAllows,
@@ -11,10 +12,12 @@ import {
 } from "../src/core/verification/repro.js";
 import { ProcessScope } from "../src/core/workflows/process-scope.js";
 import type { Review } from "../src/core/workflows/schemas.js";
+import type { ExecutionRequest } from "../src/core/workflows/types.js";
+import { FixtureExecutor, workflowFixture } from "./helpers/workflow-fixture.js";
 
-const cleanups: (() => void)[] = [];
-afterEach(() => {
-  for (const cleanup of cleanups.splice(0)) cleanup();
+const cleanups: (() => void | Promise<void>)[] = [];
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
 function workspace(): string {
@@ -123,5 +126,49 @@ describe("review finding repro", () => {
     expect(tool.description).toContain("bun");
     for (let i = 0; i <= REPRO_TRIES; i++) await tool.execute(regexRepro);
     expect(runs).toBe(REPRO_TRIES);
+  });
+});
+
+describe("a correctness finding without a repro", () => {
+  test("is advised once to attach one or say why none can show it", () => {
+    const review = (findings: Review["findings"]): Review => ({
+      schemaVersion: 1,
+      snapshotHash: "0".repeat(64),
+      verdict: "changes_requested",
+      coverage: [],
+      findings,
+    });
+    expect(missingReproAdvice(review([finding({})]))[0]).toContain("F1 have no repro");
+    expect(missingReproAdvice(review([finding({ repro: regexRepro })]))).toEqual([]);
+    expect(missingReproAdvice(review([finding({ noRepro: "Only a race shows it" })]))).toEqual([]);
+    expect(missingReproAdvice(review([finding({ kind: "missing" })]))).toEqual([]);
+  });
+
+  test("reviewers with run_repro get the advice once, then the review is accepted", async () => {
+    class AdvisedReviews extends FixtureExecutor {
+      checks: string[][][] = [];
+      override async execute(request: ExecutionRequest) {
+        const result = await super.execute(request);
+        if (request.profile.output !== "review" || !request.profile.allowedTools.includes("run_repro"))
+          return result;
+        const output = result.output as Review;
+        output.findings = [finding({ severity: "low", evidenceIds: output.coverage[0]?.evidenceIds ?? [] })];
+        if (!output.findings[0]?.evidenceIds.length) output.findings = [];
+        output.verdict = "pass";
+        this.checks.push([request.validate?.(output) ?? [], request.validate?.(output) ?? []]);
+        return result;
+      }
+    }
+    const fixture = workflowFixture({ executor: (root) => new AdvisedReviews(root) });
+    cleanups.push(fixture.dispose);
+    const run = await fixture.start();
+    await fixture.service.drive(run.runId, new AbortController().signal);
+    await fixture.approve(run.runId);
+    await fixture.service.drive(run.runId, new AbortController().signal);
+    const checks = fixture.executor.checks;
+    expect(checks.length).toBeGreaterThan(0);
+    const [first, second] = checks[0] ?? [];
+    expect(first?.join("\n")).toContain("have no repro");
+    expect(second).toEqual([]);
   });
 });

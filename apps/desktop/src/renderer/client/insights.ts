@@ -72,6 +72,8 @@ export interface InitiativeFeature {
   /** What the feature owns and the contract it provides; absent on older backends. */
   boundary?: { scope: string; paths: string[] };
   contract?: string;
+  /** The GitHub issue its runs start from and their delivery closes; absent on older backends. */
+  issue?: { repository: string; number: number; url: string; title: string } | null;
 }
 
 /** `GET /v1/initiatives/:id`, as `baked workflow initiative show` prints it. */
