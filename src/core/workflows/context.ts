@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { buildInstructionPrompt, loadInstructions } from "../instructions.js";
+import { kitGuidanceFor } from "../kit/guidance.js";
 import { canonical, hashBytes } from "../specs/hash.js";
 import { WorkflowFault } from "./errors.js";
 import type { AgentProfile } from "./schemas.js";
@@ -30,12 +31,15 @@ export function frozenInstructions(
     const path = join(workspace, relative);
     if (existsSync(path)) files[path] = hashBytes(readFileSync(path));
   }
+  const instructions = buildInstructionPrompt(loaded);
+  const constitution = existsSync(join(workspace, "baked/constitution.md"))
+    ? readFileSync(join(workspace, "baked/constitution.md"), "utf8")
+    : "";
   return {
     text: [
-      buildInstructionPrompt(loaded),
-      existsSync(join(workspace, "baked/constitution.md"))
-        ? readFileSync(join(workspace, "baked/constitution.md"), "utf8")
-        : "",
+      instructions,
+      constitution,
+      kitGuidanceFor(workspace, `${instructions}\n${constitution}`),
     ]
       .filter(Boolean)
       .join("\n\n"),

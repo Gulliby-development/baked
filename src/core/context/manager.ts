@@ -10,6 +10,7 @@ import { logBackgroundError } from "../diagnostics/errors.js";
 import { recordModelCall } from "../diagnostics/model-events.js";
 import { getIntelligenceClient, setIntelligenceClient } from "../intelligence/instance.js";
 import type { SymbolForSummary } from "../intelligence/repo-map.js";
+import { kitGuidanceFor } from "../kit/guidance.js";
 import { cacheTtlToMs, supportsPromptCache } from "../llm/cache-support.js";
 import { resolveModel } from "../llm/provider.js";
 import { EPHEMERAL_CACHE, supportsTemperature } from "../llm/provider-options.js";
@@ -118,6 +119,8 @@ export class ContextManager {
   private ownsIntelligence = true;
   private projectInstructions = "";
   private projectInstructionsVersion = 0;
+  /** Kit guidance for the instructions version it was computed for; files are read once per version. */
+  private designGuidance: { version: number; text: string } | null = null;
   /** The project working set captured for this session; undefined until first needed. */
   private workingSet: string | null | undefined = undefined;
   private workingSetVersion = 0;
@@ -1282,6 +1285,19 @@ export class ContextManager {
     return cleared;
   }
 
+  /**
+   * The BAKED kit guidance for this project. Decided once per instructions version, so files the
+   * agent creates mid-session do not change the cached system prompt.
+   */
+  private getDesignGuidance(): string {
+    if (this.designGuidance?.version !== this.projectInstructionsVersion)
+      this.designGuidance = {
+        version: this.projectInstructionsVersion,
+        text: kitGuidanceFor(this.cwd, this.projectInstructions),
+      };
+    return this.designGuidance.text;
+  }
+
   /** Build a system prompt with project context, scaled to context window. */
   buildSystemPrompt(modelIdOverride?: string): string {
     if (this.hasGhCli === null) {
@@ -1302,6 +1318,7 @@ export class ContextManager {
       hasSymbols: this.isRepoMapReady() && this.repoMap.getStatsCached().symbols > 0,
       bakeMode: this.bakeMode,
       projectInstructions: this.projectInstructions || null,
+      designGuidance: this.getDesignGuidance() || null,
       cwd: this.cwd,
       hasGhCli: this.hasGhCli,
     };

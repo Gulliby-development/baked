@@ -73,7 +73,8 @@ export function launchedLines(launched: LaunchedView[], width: number): ViewLine
     const task = entry.task
       ? ` · ${entry.task.state === "local" ? "local task" : entry.task.ref}`
       : "";
-    const head = `${entry.active ? "●" : "○"} ${launchLabel(entry)}: ${entry.status} · ${tokens(entry.tokens)}${task}`;
+    const status = entry.activity ? `${entry.status} (${entry.activity})` : entry.status;
+    const head = `${entry.active ? "●" : "○"} ${launchLabel(entry)}: ${status} · ${tokens(entry.tokens)}${task}`;
     const why = whyBesides(entry.why, entry.title);
     return labelled(
       "",
