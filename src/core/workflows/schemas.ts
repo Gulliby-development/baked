@@ -1478,6 +1478,8 @@ export interface StartRequest {
   sandbox?: "off" | "auto" | "required";
   /** Concurrent writers requested for this run (CLI `--writers N`); it overrides the policy. */
   maxConcurrentWriters?: number;
+  /** The run's dollar cap (CLI `--max-cost-usd N`); it overrides the policy's `maxCostUsd`. */
+  maxCostUsd?: number;
   /**
    * Best-of-N candidates per planned task for this run (CLI `--candidates N`); it overrides the
    * definition's tasks stage and the policy.

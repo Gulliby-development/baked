@@ -35,6 +35,7 @@ import {
 } from "./form.js";
 import {
   type BudgetPreset,
+  costCapInput,
   FIT_TEXT,
   featureSlug,
   fitOf,
@@ -42,6 +43,7 @@ import {
   proposalText,
   rangeText,
   stageLabel,
+  usdRange,
 } from "./logic.js";
 import {
   DoctorPanel,
@@ -196,6 +198,8 @@ export function NewRunScreen({ project }: SectionProps) {
   // Empty follows the policy and the sandbox setting; a choice overrides them for this run.
   const [sandbox, setSandbox] = useState<"" | "off" | "auto" | "required">("");
   const [strict, setStrict] = useState(false);
+  // Empty keeps the cap of the policy or the Cost cap setting; a number caps this run.
+  const [costText, setCostText] = useState("");
   const [model, setModel] = useState("");
   const [showReadiness, setShowReadiness] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -207,12 +211,14 @@ export function NewRunScreen({ project }: SectionProps) {
   const definitions = useLoad(key, "definitions", start.definitions);
   const models = useLoad(key, "profile-models", loadModels);
   const policy = usePolicy(key);
+  const costCap = costCapInput(costText);
   const preRun = usePreRun(key, {
     workflow,
     ...(model ? { model } : {}),
     worktree,
     writers,
     ...(sandbox ? { sandbox } : {}),
+    ...(typeof costCap === "number" ? { maxCostUsd: costCap } : {}),
   });
   const limits = presetLimits(
     budget,
@@ -233,9 +239,13 @@ export function NewRunScreen({ project }: SectionProps) {
   // With an issue and no feature typed, the core names the feature after the issue.
   const feature = featureEdit ?? (fromIssue ? "" : featureSlug(prompt));
   const featureValid = isFeatureId(feature) || (fromIssue && feature === "");
-  const canStart = (prompt.trim().length > 0 || fromIssue) && featureValid && !launcher.starting;
+  const canStart =
+    (prompt.trim().length > 0 || fromIssue) &&
+    featureValid &&
+    costCap !== null &&
+    !launcher.starting;
   // An invalid feature ID blocks the start, so the settings that hold it open.
-  const featureWrong = feature !== "" && !featureValid;
+  const featureWrong = (feature !== "" && !featureValid) || costCap === null;
   useEffect(() => {
     if (featureWrong) setSettingsOpen(true);
   }, [featureWrong]);
@@ -306,6 +316,7 @@ export function NewRunScreen({ project }: SectionProps) {
       ...(sandbox ? { sandbox } : {}),
       ...(proposal ? { autoPreset: true } : {}),
       ...(strict ? { modelStrict: true } : {}),
+      ...(typeof costCap === "number" ? { maxCostUsd: costCap } : {}),
     });
   };
 
@@ -319,7 +330,16 @@ export function NewRunScreen({ project }: SectionProps) {
     ...(warnTests ? ["test guard warns only"] : []),
     model || "default model",
     ...(strict ? ["run model overrides routes"] : []),
+    ...(typeof costCap === "number" ? [`cost cap $${costCap}`] : []),
   ].join(" · ");
+  const capEstimate = preRun.estimate ?? preRun.doctor?.estimate ?? null;
+  const capFit = capEstimate?.cost
+    ? {
+        yes: "fits the cap",
+        maybe: "may pass the cap",
+        no: "will very likely pass the cap",
+      }[capEstimate.cost.fits]
+    : null;
 
   return (
     <form className={`${FORM} max-w-[980px]`} onSubmit={submit} aria-labelledby="new-run-title">
@@ -566,6 +586,33 @@ export function NewRunScreen({ project }: SectionProps) {
               </select>
               <span id="new-run-sandbox-hint" className={HINT}>
                 Checks, fixes and acceptance apps of the run; the doctor reports the backend.
+              </span>
+            </div>
+            <div className={FIELD}>
+              <label htmlFor="new-run-cost" className={LEGEND}>
+                Cost cap (US dollars)
+              </label>
+              <input
+                id="new-run-cost"
+                type="text"
+                inputMode="decimal"
+                className="aria-[invalid=true]:border-[color:var(--err)]"
+                value={costText}
+                placeholder={
+                  capEstimate?.cost && costCap === undefined
+                    ? `$${capEstimate.cost.maxCostUsd} from the policy or Settings`
+                    : "none: only the token budget"
+                }
+                aria-invalid={costCap === null}
+                aria-describedby="new-run-cost-hint"
+                onChange={(e) => setCostText(e.target.value)}
+              />
+              <span id="new-run-cost-hint" className={HINT}>
+                {costCap === null
+                  ? "A positive number of US dollars, or empty."
+                  : capEstimate?.cost && capFit
+                    ? `Estimated ${usdRange(capEstimate.costUsd)}: ${capFit}. The token budget still applies.`
+                    : "The run stops for a decision before a step would pass it. Every routed model needs a known price."}
               </span>
             </div>
             <div className={FIELD}>

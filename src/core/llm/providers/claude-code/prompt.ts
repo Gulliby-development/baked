@@ -148,19 +148,71 @@ export function buildClaudeCodeSchema(tools: SerializedTool[]): JSONSchema7 {
   };
 }
 
+/** Whether provider options ask for a prompt-cache breakpoint after this message or part. */
+function cacheMarked(providerOptions: unknown): boolean {
+  const anthropic = (providerOptions as { anthropic?: Record<string, unknown> } | undefined)
+    ?.anthropic;
+  return Boolean(anthropic?.cacheControl ?? anthropic?.cache_control);
+}
+
+/**
+ * The opening of the transcript that the caller marked as cacheable: the leading SYSTEM messages
+ * with a cache breakpoint and, after them, the first user message's text parts up to its last
+ * marked one. Claude Code caches its system prompt, so this opening goes there; a run's attempts
+ * then read it from the cache, where inside the turn text it would be written again (#995).
+ */
+function stableOpening(prompt: LanguageModelV3CallOptions["prompt"]): {
+  messages: number;
+  userParts: number;
+} {
+  let messages = 0;
+  while (prompt[messages]?.role === "system" && cacheMarked(prompt[messages]?.providerOptions))
+    messages++;
+  const next = prompt[messages];
+  let userParts = 0;
+  if (messages > 0 && next?.role === "user" && typeof next.content !== "string") {
+    for (const [index, part] of next.content.entries()) {
+      if (part.type !== "text") break;
+      if (cacheMarked(part.providerOptions)) userParts = index + 1;
+    }
+  }
+  return { messages, userParts };
+}
+
 export function buildClaudeCodePromptParts(
   options: LanguageModelV3CallOptions,
 ): ClaudeCodePromptParts {
   const tools = getFunctionTools(options);
-  const messages = options.prompt.map((message, index) => {
-    const content =
-      typeof message.content === "string" ? message.content : renderContent(message.content);
-    const images = typeof message.content === "string" ? [] : promptImages([message]);
-    return {
-      role: message.role,
-      text: `${index + 1}. ${message.role.toUpperCase()}\n${content}`,
-      ...(images.length > 0 ? { images } : {}),
-    };
+  const stable = stableOpening(options.prompt);
+  const opening: string[] = [];
+  const messages = options.prompt.flatMap((message, index) => {
+    const label = `${index + 1}. ${message.role.toUpperCase()}`;
+    if (index < stable.messages) {
+      opening.push(
+        `${label}\n${typeof message.content === "string" ? message.content : renderContent(message.content)}`,
+      );
+      return [];
+    }
+    let parts = message.content;
+    let heading = label;
+    if (index === stable.messages && stable.userParts > 0 && typeof parts !== "string") {
+      opening.push(`${label}\n${renderContent(parts.slice(0, stable.userParts))}`);
+      parts = parts.slice(stable.userParts) as typeof parts;
+      if (parts.length === 0) return [];
+      heading = `${label} (continued)`;
+    }
+    const content = typeof parts === "string" ? parts : renderContent(parts);
+    const images =
+      typeof parts === "string"
+        ? []
+        : promptImages([{ ...message, content: parts } as PromptMessage]);
+    return [
+      {
+        role: message.role,
+        text: `${heading}\n${content}`,
+        ...(images.length > 0 ? { images } : {}),
+      },
+    ];
   });
 
   const toolBlock =
@@ -183,6 +235,15 @@ export function buildClaudeCodePromptParts(
     "",
     "AVAILABLE TOOLS",
     toolBlock,
+    ...(opening.length > 0
+      ? [
+          "",
+          "TRANSCRIPT START",
+          "The conversation transcript opens with these messages; the numbered messages of each turn continue it.",
+          "",
+          opening.join("\n\n"),
+        ]
+      : []),
   ].join("\n");
 
   const format =

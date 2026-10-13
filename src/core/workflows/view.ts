@@ -62,6 +62,19 @@ export interface StartRunInput {
   autoPreset?: boolean;
   /** The run model overrides the configured routes, as `--model-strict`. */
   modelStrict?: boolean;
+  /** The run's dollar cap, as `--max-cost-usd`; omitted, the policy's `maxCostUsd` applies. */
+  maxCostUsd?: number;
+}
+
+/**
+ * The cost cap a form field holds: undefined when empty (the policy's cap applies), the number
+ * of US dollars, or null when the text is not a positive number.
+ */
+export function costCapInput(text: string): number | undefined | null {
+  const trimmed = text.trim().replace(/^\$/, "");
+  if (!trimmed) return undefined;
+  const value = Number(trimmed);
+  return /^\d+(\.\d+)?$/.test(trimmed) && value > 0 && Number.isFinite(value) ? value : null;
 }
 
 /** The execution controls of the new-run form. */

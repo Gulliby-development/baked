@@ -8,7 +8,7 @@ import { getProviderApiKey } from "../secrets.js";
 import { type SandboxMode, sandboxSettings } from "../security/sandbox.js";
 import { defaultWorkflowPolicy } from "./defaults.js";
 import { WorkflowFault } from "./errors.js";
-import { estimateHistory, type PreRunEstimate } from "./estimate.js";
+import { estimateHistory, type PreRunEstimate, usdRangeText } from "./estimate.js";
 import { commandMayBeRunning, isExecutionLease, leaseOwnerAlive } from "./leases.js";
 import { libraryDocsCheck } from "./library-docs.js";
 import { unmatchedMcpGrants } from "./mcp-grants.js";
@@ -62,6 +62,8 @@ export interface PreRunRequest {
   writers?: number;
   /** Best-of-N candidates per planned task, as `--candidates`. */
   candidates?: number;
+  /** The run's dollar cap, as `--max-cost-usd`; it overrides the policy's `maxCostUsd`. */
+  maxCostUsd?: number;
   /** The run's OS sandbox, as `--sandbox`. */
   sandbox?: SandboxMode;
   autoApprovalConfirmation?: string;
@@ -261,6 +263,7 @@ function startRequest(config: AppConfig, request: PreRunRequest) {
     ...(request.worktree ? { executionMode: "worktree" as const } : {}),
     ...(request.writers !== undefined ? { maxConcurrentWriters: request.writers } : {}),
     ...(request.candidates !== undefined ? { candidates: request.candidates } : {}),
+    ...(request.maxCostUsd !== undefined ? { maxCostUsd: request.maxCostUsd } : {}),
     ...(request.sandbox ? { sandbox: request.sandbox } : {}),
   };
 }
@@ -620,6 +623,17 @@ export async function runDoctor(
               : "The run may exceed its token budget",
           detail: `${estimate.label}; budget ${estimate.budget.maxTotalTokens.toLocaleString("en-US")} tokens`,
           fix: "Raise maxTotalTokens in the policy, or extend the run when it stops",
+        });
+      if (estimate?.cost && estimate.cost.fits !== "yes" && estimate.costUsd)
+        checks.push({
+          id: "budget.cost",
+          status: "warn",
+          title:
+            estimate.cost.fits === "no"
+              ? "The run will very likely pass its cost cap"
+              : "The run may pass its cost cap",
+          detail: `Estimated cost about ${usdRangeText(estimate.costUsd)}; cap $${estimate.cost.maxCostUsd}`,
+          fix: "Raise maxCostUsd (--max-cost-usd), or extend the run when it stops",
         });
     } else
       checks.push({

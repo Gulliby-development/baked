@@ -9,7 +9,7 @@ import { ContextManager } from "../context/manager.js";
 import { SharedRootContext } from "../context/shared-root.js";
 import { setCwd } from "../cwd.js";
 import { installGlobalFetch } from "../llm/http-agent.js";
-import { presetPolicy, scaledPolicy } from "../workflows/budget.js";
+import { presetPolicy, scaledPolicy, startCostCap } from "../workflows/budget.js";
 import { defaultWorkflowPolicy } from "../workflows/defaults.js";
 import { estimateStart, readHistory } from "../workflows/estimate.js";
 import { assertWorkspaceFreeForGate, executeGate } from "../workflows/gates.js";
@@ -115,6 +115,7 @@ const StartInput = z
     testIntegrity: z.enum(["block", "warn"]).optional(),
     autoPreset: z.boolean().optional(),
     modelStrict: z.boolean().optional(),
+    maxCostUsd: z.number().positive().finite().optional(),
   })
   .strict();
 const ctx = createWorkerHandler(
@@ -167,7 +168,12 @@ const ctx = createWorkerHandler(
             .map((f) => f.slice(0, -5))
             .filter((id) => SafeId.safeParse(id).success && id !== "sdd")
         : [];
-      const policy = runtime.config.workflows?.policy ?? defaultWorkflowPolicy;
+      const configured = runtime.config.workflows?.policy ?? defaultWorkflowPolicy;
+      // The cap a run gets without one of its own, so the form shows the setting's cap too.
+      const policy = {
+        ...configured,
+        maxCostUsd: startCostCap(undefined, configured, runtime.config),
+      };
       return {
         estimate: estimateStart(readHistory(runtime.store)),
         enabled: workflowsEnabled(runtime.config),
@@ -229,6 +235,7 @@ const ctx = createWorkerHandler(
         ...(request.clarification ? { clarification: request.clarification } : {}),
         ...(request.testIntegrity ? { testIntegrity: request.testIntegrity } : {}),
         ...(request.modelStrict ? { modelStrict: true } : {}),
+        ...(request.maxCostUsd !== undefined ? { maxCostUsd: request.maxCostUsd } : {}),
       });
       const controller = new AbortController();
       controllers.set(id, controller);
