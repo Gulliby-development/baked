@@ -6516,7 +6516,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
    * later test task paid for the same failure (cfgtrace 276e4858: four test tasks, 1.94M tokens,
    * named env_source.py). When the account names a file an implemented task writes, the run's
    * required feature checks run once; the findings of a failing one on the named files become a
-   * corrective task of their owner, with the failing check as the repro. The account alone starts
+   * corrective task of their owner, with the failing check as the repro. A failing check with a
+   * fixer first runs it on the named files and runs again (#969). The account alone starts
    * nothing: without a failing check there is no evidence of a defect.
    */
   private async routeReportedDefect(
@@ -6548,10 +6549,34 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     ];
     if (!files.length) return;
     const findings: Review["findings"] = [];
-    const ran: { checkId: string; status: string; evidenceId: string }[] = [];
+    const ran: { checkId: string; status: string; evidenceId: string; fixed?: true }[] = [];
+    // Each named file belongs to the last implemented task that writes it, as in the checks stage.
+    const owners = new Map<string, string>();
+    for (const t of graph.tasks)
+      if (t.id !== task.id && done.has(t.id))
+        for (const write of t.writes)
+          if (files.includes(write.path) && write.action !== "delete") owners.set(write.path, t.id);
     for (const check of policy.checks.filter((c) => c.required && c.scope === "feature")) {
-      const checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
-      ran.push({ checkId: check.id, status: checked.status, evidenceId: checked.evidenceId });
+      let checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
+      // A failure the check's fixer settles (`cargo fmt` on the named files) is no defect to route:
+      // run the fixer as the checks stage does, journaled as `apply_fix`, and rerun the check
+      // once; only what remains becomes a corrective task (#969).
+      let fixed = false;
+      if (
+        checked.status === "failed" &&
+        check.fix &&
+        (await this.fixFiles(runId, child, root, policy, [check], owners, signal))
+      ) {
+        fixed = true;
+        await this.snapshot(runId, state, policy, signal);
+        checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
+      }
+      ran.push({
+        checkId: check.id,
+        status: checked.status,
+        evidenceId: checked.evidenceId,
+        ...(fixed ? { fixed: true as const } : {}),
+      });
       if (checked.status !== "failed") continue;
       const failed = failedCheckFindings(
         check,

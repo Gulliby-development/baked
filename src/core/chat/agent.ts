@@ -5,6 +5,7 @@ import type {
   BakeMode,
   ImageAttachment,
   InteractiveCallbacks,
+  PermissionMode,
 } from "../../types/index.js";
 import { normalizePath } from "../agents/agent-bus.js";
 import { createBakeAgent } from "../agents/index.js";
@@ -58,6 +59,8 @@ export interface ChatAgentOptions {
   modelId: string;
   model: LanguageModel;
   mode: BakeMode;
+  /** How much runs without asking; `auto` when left out. */
+  permissions?: PermissionMode;
   /** The turn carries out an accepted plan. */
   planExecution?: boolean;
   contextManager: ContextManager;
@@ -76,7 +79,8 @@ export interface ChatAgentOptions {
 /**
  * The main agent of a chat turn outside the terminal UI, with the subagent and web search models
  * of the task router. Without approval hooks, destructive commands and writes outside the
- * workspace are denied unless the mode is auto, which bypasses them in `createBakeAgent`.
+ * workspace are denied unless the session has full access, which bypasses them in
+ * `createBakeAgent`; in manual mode every gated call is denied.
  */
 export function createChatAgent(options: ChatAgentOptions): BakeAgent {
   const { config, mode, callbacks } = options;
@@ -97,20 +101,22 @@ export function createChatAgent(options: ChatAgentOptions): BakeAgent {
   const webSearchEnabled = config.webSearch !== false;
   const webSearchModel = webSearchEnabled ? tryResolve(tr?.webSearch ?? undefined) : undefined;
   const deny = async (): Promise<boolean> => false;
+  const fullAccess = mode === "auto" || options.permissions === "full";
   const disabledTools = new Set(config.disabledTools ?? DEFAULT_DISABLED_TOOLS);
   return createBakeAgent({
     model: options.model,
     fullModelId: options.modelId,
     contextManager: options.contextManager,
     bakeMode: mode,
+    ...(options.permissions ? { permissionMode: options.permissions } : {}),
     ...(options.planExecution ? { planExecution: true } : {}),
     interactive: callbacks,
     subagentModels,
     webSearchModel,
     onApproveWebSearch: webSearchEnabled ? callbacks?.onWebSearchApproval : undefined,
     onApproveFetchPage: callbacks?.onFetchPageApproval,
-    onApproveOutsideCwd: options.onApproveOutsideCwd ?? (mode === "auto" ? undefined : deny),
-    onApproveDestructive: options.onApproveDestructive ?? (mode === "auto" ? undefined : deny),
+    onApproveOutsideCwd: options.onApproveOutsideCwd ?? (fullAccess ? undefined : deny),
+    onApproveDestructive: options.onApproveDestructive ?? (fullAccess ? undefined : deny),
     providerOptions: options.providerOptions,
     headers: options.headers,
     codeExecution: config.codeExecution,
