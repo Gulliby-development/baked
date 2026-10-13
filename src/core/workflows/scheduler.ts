@@ -388,6 +388,14 @@ const SERIOUS: readonly Severity[] = ["critical", "high"];
 const repairSeverities = (run: { repair_rounds: number; convergence_rounds: number }) =>
   run.repair_rounds + run.convergence_rounds > 0 ? SERIOUS : ALL_SEVERITIES;
 
+/**
+ * A finding the severity floor does not demote once the host reproduces it: it is based on the
+ * spec and carries a repro. dirdrift-update 6b57dc61 completed with AC-005 failing because its
+ * confirmed medium finding arrived after the first repair round (#801).
+ */
+const confirmableSpecFinding = (f: Review["findings"][number]): boolean =>
+  (f.basis ?? "spec") === "spec" && f.repro !== undefined;
+
 /** The task graph as the scheduler stores it: hashes are bound to the accepted spec and plan. */
 function planGraph(
   spec: Spec,
@@ -7476,11 +7484,13 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         state.reviews[reviewer.key] = result;
         // Advisory reviewers, findings below the blocking severities and inferred notes are
         // recorded, not repaired.
+        // Below the severity floor, a spec-based finding with a repro still competes: it repairs
+        // when the host reproduces it (#801).
         const candidates = reviewer.required
           ? result.findings.filter(
               (f) =>
                 reviewer.blocking.includes(f.severity) &&
-                severities.includes(f.severity) &&
+                (severities.includes(f.severity) || confirmableSpecFinding(f)) &&
                 findingBlocks(f, policy.reviewMinConfidence),
             )
           : [];
@@ -7499,7 +7509,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             ),
           );
         const blocking = candidates.filter((f) =>
-          reproAllows(f, outcomes.get(f.id)?.status, executables.length > 0),
+          severities.includes(f.severity)
+            ? reproAllows(f, outcomes.get(f.id)?.status, executables.length > 0)
+            : outcomes.get(f.id)?.status === "reproduced",
         );
         const repaired = new Set(blocking.map((f) => f.id));
         addReviewNotes(

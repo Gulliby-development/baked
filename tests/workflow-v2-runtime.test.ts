@@ -74,6 +74,8 @@ interface Behavior {
   /** A spec that names another feature than the run's. */
   renamedFeature?: boolean;
   reviewVerdict?: "pass" | "changes_requested";
+  /** Reviews that request changes before the review passes; every one when absent. */
+  reviewRounds?: number;
   /** Fields that replace those of the medium correctness finding a review requesting changes reports. */
   reviewFinding?: {
     severity?: string;
@@ -96,6 +98,7 @@ class V2Executor implements AgentExecutor {
   maxTokens: number[] = [];
   implementations = 0;
   convergences = 0;
+  reviews = 0;
   /** Host tools each review attempt was offered. */
   reviewTools: string[][] = [];
   private spec: Spec;
@@ -161,7 +164,7 @@ class V2Executor implements AgentExecutor {
         break;
       case "review":
         this.reviewTools.push(Object.keys(request.hostTools ?? {}));
-        output = this.behavior.reviewVerdict === "changes_requested"
+        output = this.behavior.reviewVerdict === "changes_requested" && ++this.reviews <= (this.behavior.reviewRounds ?? Infinity)
           ? {
               schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "changes_requested", coverage: [],
               // An undefined field in reviewFinding drops the default.
@@ -434,13 +437,34 @@ describe("workflow v2 scheduler", () => {
   // Runs de6cf1ab and 2fa658c0 used up their repair rounds on ever deeper medium findings while
   // every check passed. A medium finding after the first round is recorded, not repaired.
   test("a medium review finding after the first repair round does not start another", async () => {
-    const { start, complete, service, executor } = setup({ reviewVerdict: "changes_requested" });
+    const { start, complete, service, executor } = setup({ reviewVerdict: "changes_requested", reviewFinding: { kind: "partial", repro: undefined } });
     const run = await start("standard");
     const final = await complete(run.runId);
     expect(lastError(service, run.runId)).toBe("");
     expect(final.status).toBe("completed");
     expect(executor.calls.filter((c) => c === "review")).toHaveLength(2);
     expect(service.store.run(run.runId).repair_rounds).toBe(1);
+  }, 30000);
+
+  // R12 dirdrift-update 6b57dc61 completed with AC-005 failing: its spec-based medium finding, which
+  // the reviewer's repro confirmed, arrived after the first round and became a note (#801).
+  test("a spec-based medium finding the host reproduces is repaired after the first round", async () => {
+    const { start, complete, service, executor } = setup({ reviewVerdict: "changes_requested", reviewRounds: 2 });
+    const run = await start("standard");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(executor.calls.filter((c) => c === "review")).toHaveLength(3);
+    expect(service.store.run(run.runId).repair_rounds).toBe(2);
+  }, 30000);
+
+  test("below the floor, an inferred finding stays a note even with a repro", async () => {
+    const { start, complete, service } = setup({ reviewVerdict: "changes_requested", reviewRounds: 2, reviewFinding: { kind: "partial", basis: "inferred" } });
+    const run = await start("standard");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(service.store.run(run.runId).repair_rounds).toBe(0);
   }, 30000);
 
   // Run 936ddfa5 blocked on "Coverage is incomplete" after round 1: the only finding for the
@@ -1110,8 +1134,12 @@ describe("passesWithNotes", () => {
   });
   test("a medium partial finding passes only on a test or documentation file", () => {
     const medium = { ...finding, severity: "medium" as const };
-    for (const file of ["tests/store.test.ts", "src/a.spec.ts", "test_cli.py", "README.md", "docs/usage.md"])
-      expect(passesWithNotes({ ...medium, file }, coverage, true)).toBe(true);
+    const met = [{ ...coverage[0]!, verdict: "pass" as const }];
+    for (const file of ["tests/store.test.ts", "src/a.spec.ts", "test_cli.py", "README.md", "docs/usage.md"]) {
+      expect(passesWithNotes({ ...medium, file }, met, true)).toBe(true);
+      // A criterion the review marks failing repairs (#801).
+      expect(passesWithNotes({ ...medium, file }, coverage, true)).toBe(false);
+    }
     for (const file of [null, "src/store.ts", "src/latest.ts"])
       expect(passesWithNotes({ ...medium, file }, coverage, true)).toBe(false);
     expect(passesWithNotes({ ...medium, severity: "high", file: "README.md" }, coverage, true)).toBe(false);
@@ -1126,9 +1154,13 @@ describe("passesWithNotes", () => {
     expect(passesWithNotes({ ...finding, kind: "unrequested" }, coverage, true)).toBe(false);
   });
   test("a missing test or documentation gap passes like a partial one", () => {
-    for (const severity of ["low", "medium"] as const)
-      for (const file of ["tests/app.test.ts", "README.md"])
-        expect(passesWithNotes({ ...finding, kind: "missing", severity, file }, coverage, true)).toBe(true);
+    const met = [{ ...coverage[0]!, verdict: "pass" as const }];
+    for (const file of ["tests/app.test.ts", "README.md"]) {
+      expect(passesWithNotes({ ...finding, kind: "missing", file }, coverage, true)).toBe(true);
+      expect(passesWithNotes({ ...finding, kind: "missing", severity: "medium", file }, met, true)).toBe(true);
+    }
+    // R12 dirdrift-update: a README example the brief orders, on a failing criterion (#801).
+    expect(passesWithNotes({ ...finding, kind: "missing", severity: "medium", file: "README.md" }, coverage, true)).toBe(false);
     for (const file of [null, "src/app.ts"])
       expect(passesWithNotes({ ...finding, kind: "missing", file }, coverage, true)).toBe(false);
     expect(passesWithNotes({ ...finding, kind: "missing", file: "README.md" }, coverage, false)).toBe(false);
