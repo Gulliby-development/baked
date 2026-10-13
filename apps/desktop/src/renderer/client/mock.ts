@@ -103,6 +103,7 @@ const FULL_CAPABILITIES = [
   "watch",
   "diagnostics",
   "gate-drafts",
+  "run-compare",
   "coordinator",
   "artifacts",
 ];

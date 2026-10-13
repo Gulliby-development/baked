@@ -178,6 +178,7 @@ export const CAPABILITIES = [
   "coordinator",
   "watch",
   "artifacts",
+  "run-compare",
   "preset-proposal",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
@@ -999,6 +1000,16 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         );
       }
       return json(200, projects.summary(), origin);
+    }
+    if (path === "/v1/workflow/compare") {
+      only("GET");
+      const a = SafeId.parse(url.searchParams.get("a"));
+      const b = SafeId.parse(url.searchParams.get("b"));
+      return json(
+        200,
+        await execute({ command: "compare", positional: [a, b], flags: {} }),
+        origin,
+      );
     }
     if (path === "/v1/workflow/definitions" || path === "/v1/workflow/profiles") {
       only("GET");

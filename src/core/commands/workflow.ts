@@ -57,6 +57,7 @@ const SHORT_HELP = `
 /workflow usage      Tokens and cost of every run over 7, 30 or 90 days, by model, stage or day
 /workflow report ID  The run's report in Markdown (--output FILE writes it)
 /workflow usage ID --format md  The run's tokens and cost in Markdown (--output FILE)
+/workflow compare A B  Two runs side by side: routes, tokens, cost, time, review (A/B)
 /workflow help       All commands (run, status, approve, recover, export…)`.trim();
 
 /** The definition a quick task starts with in this project. */

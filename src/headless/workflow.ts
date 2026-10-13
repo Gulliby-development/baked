@@ -6,6 +6,7 @@ import { loadModelCatalog } from "../core/llm/model-catalog.js";
 import { parseRouteOverrides } from "../core/llm/model-routing.js";
 import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
 import { type BudgetLimits, type BudgetPresetId, presetPolicy } from "../core/workflows/budget.js";
+import { compareRuns, comparisonMarkdown } from "../core/workflows/compare.js";
 import { defaultWorkflowPolicy } from "../core/workflows/defaults.js";
 import { executeDelivery, prepareDelivery } from "../core/workflows/delivery.js";
 import type { PullRequestProvider } from "../core/workflows/delivery-provider.js";
@@ -558,6 +559,17 @@ export async function executeWorkflowCommand(
       writeFileSync(path, markdown);
       return { runId, path, bytes: Buffer.byteLength(markdown) };
     }
+    case "compare": {
+      const [a, b] = args.positional;
+      if (!a || !b) throw new WorkflowFault("INVALID_DEFINITION", "compare needs two run IDs");
+      const comparison = compareRuns(service.store, a, b);
+      const markdown = comparisonMarkdown(comparison);
+      if (typeof args.flags.output !== "string") return { ...comparison, markdown };
+      const path = resolve(service.store.workspace, args.flags.output);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, markdown);
+      return { a: a, b: b, path, bytes: Buffer.byteLength(markdown) };
+    }
     case "memory": {
       const [action = "list", id = ""] = args.positional;
       const policy = PolicySchema.parse(service.config.workflows?.policy ?? defaultWorkflowPolicy);
@@ -696,6 +708,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
       "export-progress",
       "usage",
       "report",
+      "compare",
     ].includes(args.command);
     if (args.command === "profiles") {
       process.stdout.write(
@@ -797,7 +810,9 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     await Promise.all(streams);
     // The report prints as Markdown so it can be piped into a file or a pull request.
     if (
-      (args.command === "report" || (args.command === "usage" && args.flags.format === "md")) &&
+      (args.command === "report" ||
+        args.command === "compare" ||
+        (args.command === "usage" && args.flags.format === "md")) &&
       !args.flags.json &&
       !args.flags.output
     ) {

@@ -268,6 +268,11 @@ describe("local core API", () => {
     const report = (await (await call(`/v1/workflow/runs/${run.runId}/report`)).json()) as { runId: string; markdown: string };
     expect(report.runId).toBe(run.runId);
     expect(report.markdown).toContain("## Usage");
+    const compared = (await (await call(`/v1/workflow/compare?a=${run.runId}&b=${run.runId}`)).json()) as { a: { runId: string }; sameFeature: boolean; markdown: string };
+    expect(compared.a.runId).toBe(run.runId);
+    expect(compared.sameFeature).toBe(true);
+    expect(compared.markdown).toContain("# Run comparison");
+    expect((await call("/v1/workflow/compare?a=x")).status).toBe(400);
     expect(server.port).toBeGreaterThan(0);
   }, 60000);
 
