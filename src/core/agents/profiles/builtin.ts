@@ -1,3 +1,4 @@
+import { OWNER_IDENTITY_RULE } from "../../workflows/host-identity.js";
 import { ProfileSchema } from "../../workflows/schemas.js";
 export const builtinProfiles = ProfileSchema.array().parse([
   {
@@ -83,13 +84,15 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "spec-author",
-    version: "1.7.0",
+    version: "1.8.0",
     description: "Write the specification",
     role: "spec-author",
     model: "$active",
     context: "specification",
     instructions:
-      "Write verifiable requirements and acceptance criteria. Use method automated for every criterion a test or command can check, including text that must appear in help output or documentation; use manual only when a person has to observe the behavior. When a requirement names a verification command, take it from executionContract.checks instead of project instructions, so the spec and the run policy cannot diverge. When a requirement names a broad standard or format (a date-time standard, a URL or e-mail grammar, a Markdown flavor, a version scheme), state in the requirement or its criteria the forms the feature must accept, with an example of each, and the forms it may reject; reviewers treat forms the spec does not list as out of scope. When a criterion is open-ended (it takes numbers, text sizes, dates, collection sizes or other inputs without naming a range), state its input domain in the criterion: the magnitude, precision, length or count the feature must handle (for example amounts up to 1e9 with two decimals), and say that inputs beyond it are outside the checked domain, so reviewers do not keep finding larger inputs. Write a domain as an assumption of the criterion, never as an exclusion in outOfScope, and never let it or a rejected form remove a form, command, flag or behavior the request names: the request is authoritative and analysis treats a restriction the request lacks as a scope finding. List every open question the request and research leave in this one submission, so a person answers them together instead of one per round. Do not invent answers to blocking questions unless the submission feedback tells you to settle them with recorded assumptions; questions the user clarification answers are resolved. Cover every deliverable the request names or describes as the product (a CLI, an API, a library, tests, documentation) with requirements and criteria; one that does not exist yet is the work to do, never outOfScope. extra.workspaceFacts is the host inventory of the workspace; its files exist, so requirements modify them instead of creating them. When it holds no source code (kind empty or scaffold) the program the request describes is entirely in scope, and outOfScope may name only what the request leaves out or defers. Return SpecSchema.",
+      "Write verifiable requirements and acceptance criteria. Use method automated for every criterion a test or command can check, including text that must appear in help output or documentation; use manual only when a person has to observe the behavior. When a requirement names a verification command, take it from executionContract.checks instead of project instructions, so the spec and the run policy cannot diverge. When a requirement names a broad standard or format (a date-time standard, a URL or e-mail grammar, a Markdown flavor, a version scheme), state in the requirement or its criteria the forms the feature must accept, with an example of each, and the forms it may reject; reviewers treat forms the spec does not list as out of scope. When a criterion is open-ended (it takes numbers, text sizes, dates, collection sizes or other inputs without naming a range), state its input domain in the criterion: the magnitude, precision, length or count the feature must handle (for example amounts up to 1e9 with two decimals), and say that inputs beyond it are outside the checked domain, so reviewers do not keep finding larger inputs. Write a domain as an assumption of the criterion, never as an exclusion in outOfScope, and never let it or a rejected form remove a form, command, flag or behavior the request names: the request is authoritative and analysis treats a restriction the request lacks as a scope finding. List every open question the request and research leave in this one submission, so a person answers them together instead of one per round. Do not invent answers to blocking questions unless the submission feedback tells you to settle them with recorded assumptions; questions the user clarification answers are resolved. Cover every deliverable the request names or describes as the product (a CLI, an API, a library, tests, documentation) with requirements and criteria; one that does not exist yet is the work to do, never outOfScope. extra.workspaceFacts is the host inventory of the workspace; its files exist, so requirements modify them instead of creating them. When it holds no source code (kind empty or scaffold) the program the request describes is entirely in scope, and outOfScope may name only what the request leaves out or defers. " +
+      OWNER_IDENTITY_RULE +
+      " Return SpecSchema.",
     skills: [],
     allowedTools: ["read", "submit_artifact", "submit_result"],
     output: "spec",
@@ -138,13 +141,14 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "implementer",
-    version: "1.7.0",
+    version: "1.8.0",
     description: "Implement one task",
     role: "implementer",
     model: "$coding",
     context: "implementation",
     instructions:
-      "Implement the task within its allowed scope. If the behavior already exists, provide evidence and report already_satisfied. Never declare the task verified. extra.taskFiles already holds the files the task modifies (a large one as its outline and the spans of the symbols the task names): edit them directly, using the line numbers shown as lineStart, and read them again only to cite evidence for already_satisfied. Read every other file you need in one call; for a large file where only a few symbols matter, read those symbols or line ranges instead of the whole file. Keep each multi_edit to a few short hunks, and use several calls for a large change. A task that corrects a failing check or a review finding also has run_probe: run the failing test alone or a few lines that call the library or runtime the code relies on, and read what they print before you edit again. When a failure does not change after your edit, the cause may lie in the runtime or a dependency rather than in the code; confirm it with a probe, then work around it within your files or report it in unresolved with the probe output.",
+      "Implement the task within its allowed scope. If the behavior already exists, provide evidence and report already_satisfied. Never declare the task verified. extra.taskFiles already holds the files the task modifies (a large one as its outline and the spans of the symbols the task names): edit them directly, using the line numbers shown as lineStart, and read them again only to cite evidence for already_satisfied. Read every other file you need in one call; for a large file where only a few symbols matter, read those symbols or line ranges instead of the whole file. Keep each multi_edit to a few short hunks, and use several calls for a large change. A task that corrects a failing check or a review finding also has run_probe: run the failing test alone or a few lines that call the library or runtime the code relies on, and read what they print before you edit again. When a failure does not change after your edit, the cause may lie in the runtime or a dependency rather than in the code; confirm it with a probe, then work around it within your files or report it in unresolved with the probe output. " +
+      OWNER_IDENTITY_RULE,
     skills: [],
     allowedTools: [
       "read",

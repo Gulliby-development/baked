@@ -2,6 +2,11 @@ import { isAbsolute, relative } from "node:path";
 import { workspacePath } from "../specs/validate.js";
 import { fileHash, intentRoot, rootField, sameContentIgnoringEol } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
+import {
+  accountIdentityMessage,
+  findAccountIdentity,
+  foreignAccountIdentities,
+} from "./host-identity.js";
 import { mutationLeaseFor, type WorkspaceLeases } from "./leases.js";
 import { isMcpToolName, toolListAllows } from "./mcp-grants.js";
 import { capturePreImage, createdByRunLineage } from "./rollback.js";
@@ -98,6 +103,11 @@ export class WorkflowToolPolicy {
     const write = this.task.writes.find((w) => w.path === path);
     if (!write || (write.action === "delete") !== (name === "delete_file"))
       throw new WorkflowFault("CAPABILITY_DENIED", `Task ${this.task.id} cannot write ${path}`);
+    if (
+      name !== "delete_file" &&
+      findAccountIdentity(JSON.stringify(args), foreignAccountIdentities(this.root))
+    )
+      throw new WorkflowFault("CAPABILITY_DENIED", accountIdentityMessage(`The edit to ${path}`));
     const existing = fileHash(workspacePath(this.root, path));
     const ownEffect = this.store
       .effects(this.runId)
