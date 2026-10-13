@@ -9,7 +9,7 @@ import {
 } from "./host-identity.js";
 import { mutationLeaseFor, type WorkspaceLeases } from "./leases.js";
 import { isMcpToolName, toolListAllows } from "./mcp-grants.js";
-import { capturePreImage, createdByRunLineage } from "./rollback.js";
+import { capturePreImage, createdByRunLineage, uncommittedEdits } from "./rollback.js";
 import type { AgentProfile, RunPolicy } from "./schemas.js";
 import {
   DEFAULT_STALL_SETTINGS,
@@ -20,7 +20,7 @@ import {
   toolStarted,
   withDeadline,
 } from "./stall.js";
-import type { WorkflowStore } from "./store.js";
+import type { EffectRow, WorkflowStore } from "./store.js";
 import { preexistingTest, testIntegrityOf } from "./test-integrity.js";
 import type { Task } from "./types.js";
 
@@ -119,18 +119,19 @@ export class WorkflowToolPolicy {
     )
       throw new WorkflowFault("CAPABILITY_DENIED", accountIdentityMessage(`The edit to ${path}`));
     const existing = fileHash(workspacePath(this.root, path));
-    const ownEffect = this.store
+    const root = rootField(this.store.workspace, this.root).root ?? "";
+    const writes = this.store
       .effects(this.runId)
       .filter(
         (effect) =>
-          effect.attempt_id === this.attemptId &&
           effect.kind === "file_patch" &&
           ["applied", "reconciled"].includes(effect.status) &&
           JSON.parse(effect.intent_json).path === path &&
-          intentRoot(effect.intent_json) ===
-            (rootField(this.store.workspace, this.root).root ?? ""),
-      )
-      .at(-1);
+          intentRoot(effect.intent_json) === root,
+      );
+    const ownEffect =
+      writes.filter((effect) => effect.attempt_id === this.attemptId).at(-1) ??
+      this.earlierAttemptEffect(writes);
     const baseline = this.store.state(this.runId).expectedFiles;
     // The baseline lists the files the snapshot can see. A file that exists but is not listed is
     // git-ignored and untracked (for example a docs directory in .gitignore): the snapshot has no
@@ -160,6 +161,19 @@ export class WorkflowToolPolicy {
       throw new WorkflowFault("INPUT_CHANGED", `Modify target is missing: ${path}`);
     this.leases.assert(mutationLeaseFor(this.store.workspace, this.root));
     return path;
+  }
+  /**
+   * The last of these writes when an earlier attempt of this task made it and nothing wrote the
+   * path after it. A restart or continuation runs in a new attempt with an empty journal of its
+   * own, so the file it inherits from its predecessor counts as one it made (#745).
+   */
+  private earlierAttemptEffect(writes: EffectRow[]): EffectRow | undefined {
+    const last = writes.at(-1);
+    if (!last || !this.task) return undefined;
+    const lineage = new Set(
+      uncommittedEdits(this.store, this.runId, this.task.id).map((e) => e.id),
+    );
+    return lineage.has(last.id) ? last : undefined;
   }
   /**
    * Runs a tool call under its deadline and journals it (`tool.started`, `tool.finished`), so a

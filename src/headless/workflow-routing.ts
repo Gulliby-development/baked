@@ -160,7 +160,10 @@ export function runRoutingCli(argv: string[], configDir?: string): number {
     const [mode, ...rest] = args;
     const known = CRITIC_MODES.find((m) => m === mode);
     if (rest.length || !mode || (!known && mode !== "unset"))
-      throw new WorkflowFault("INVALID_DEFINITION", "critic takes off, advise or unset");
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        `critic takes ${CRITIC_MODES.join(", ")} or unset`,
+      );
     change = { critic: known ?? null };
   } else if (command === "confidence") {
     only(flags, ["scope", "json"]);

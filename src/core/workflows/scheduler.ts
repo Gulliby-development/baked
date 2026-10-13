@@ -107,6 +107,7 @@ import {
 } from "./clarification.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
 import { coverageFinding } from "./coverage.js";
+import { type CriticCalibration, calibrateCritic, criticExamples } from "./critic-calibration.js";
 import { git } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
@@ -2623,6 +2624,19 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     policy: RunPolicy,
     findings: Review["findings"],
   ): "go" | "wait" | "accepted" {
+    const early = this.criticEarlyStop(runId, state, policy, findings);
+    if (early) {
+      this.store.transaction(() => {
+        this.store.artifact(
+          runId,
+          "critic-early-stop",
+          `critic/early-stop-${String(this.store.run(runId).convergence_rounds)}.json`,
+          canonical({ ...early, findingIds: findings.map((f) => f.id) }),
+        );
+        acceptResidual(this.store, runId, state, { findings }, "critic");
+      });
+      return "accepted";
+    }
     const stop = convergenceStop(this.store, runId, state, policy, findings);
     if (!stop) return "go";
     const body = convergenceBody(this.store, runId, state, policy, stop, findings);
@@ -4616,7 +4630,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
   }
   /**
    * The critic of a run (#646), or null when it does not run: `critic: "off"` turns it off and
-   * `"advise"` on; without the field it runs only on a vendor other than the implementation's
+   * any other mode on; without the field it runs only on a vendor other than the implementation's
    * (see model-vendor.ts), so a one-provider setup spends nothing on a judge that shares the
    * implementer's blind spots.
    */
@@ -4628,7 +4642,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     if (policy.critic === "off") return null;
     const critic = profiles.find((p) => p.output === "critique");
     if (!critic) return null;
-    if (policy.critic === "advise") return critic;
+    if (policy.critic) return critic;
     const routing = this.routingRecord(runId);
     const modelOf = (profile: AgentProfile) =>
       routing?.profiles[profile.id]?.model ?? profile.model;
@@ -4636,6 +4650,70 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       .filter((p) => p.output === "implementation")
       .map((p) => modelVendor(modelOf(p)));
     return implementation.includes(modelVendor(modelOf(critic))) ? null : critic;
+  }
+  /**
+   * The run's critic calibration, computed once from the project's outcome log (earlier runs
+   * only) and frozen as `critic/calibration.json`, with the examples the critic is shown.
+   */
+  private criticCalibration(
+    runId: string,
+  ): CriticCalibration & { examples: ReturnType<typeof criticExamples> } {
+    const path = "critic/calibration.json";
+    const kept = this.store.latestArtifact(runId, path);
+    if (kept)
+      return JSON.parse(this.store.readArtifact(runId, kept.id)) as CriticCalibration & {
+        examples: ReturnType<typeof criticExamples>;
+      };
+    const rows = this.store.criticOutcomes().filter((r) => r.run_id !== runId);
+    const calibration = { ...calibrateCritic(rows), examples: criticExamples(rows) };
+    this.store.transaction(() =>
+      this.store.artifact(runId, "critic-calibration", path, canonical(calibration)),
+    );
+    return calibration;
+  }
+  /**
+   * Why `critic: earlyStop` accepts the remaining convergence findings instead of another repair,
+   * or null when it does not: the critic must be calibrated, every required check must pass, every
+   * scored task's latest attempt must score at the calibrated threshold, and no finding may be
+   * critical, a security finding or high with a reproduction the host ran.
+   */
+  private criticEarlyStop(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    findings: Review["findings"],
+  ): { threshold: number; scores: Record<string, number>; why: string } | null {
+    if (policy.critic !== "earlyStop" || !findings.length) return null;
+    const calibration = this.criticCalibration(runId);
+    if (!calibration.calibrated || calibration.threshold === null) return null;
+    if (!requiredChecksPass(this.store, runId, state, policy)) return null;
+    if (
+      findings.some(
+        (f) =>
+          f.severity === "critical" ||
+          f.kind === "security" ||
+          (f.severity === "high" && f.repro !== undefined),
+      )
+    )
+      return null;
+    const scores: Record<string, number> = {};
+    for (const task of state.graph?.tasks ?? []) {
+      const kept = this.store.latestArtifact(runId, `tasks/${task.id}/critique.json`);
+      if (!kept) continue;
+      const record = JSON.parse(this.store.readArtifact(runId, kept.id)) as {
+        critique?: { score: number };
+      };
+      if (!record.critique) return null;
+      scores[task.id] = record.critique.score;
+    }
+    const values = Object.values(scores);
+    const threshold = calibration.threshold;
+    if (!values.length || values.some((v) => v < threshold)) return null;
+    return {
+      threshold,
+      scores,
+      why: `Every required check passes and every task scores at least ${threshold.toFixed(2)} (calibrated on ${String(calibration.samples)} attempts, AUC ${(calibration.auc ?? 0).toFixed(2)}); ${String(findings.length)} finding(s) none critical, security or high with a reproduction are accepted instead of another repair.`,
+    };
   }
   /**
    * Scores a finished task attempt with the critic and stores the critique as
@@ -4669,6 +4747,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     };
     const patch = diff.patch ?? (await this.taskPatch(runId, root, diff.before ?? {}));
     const attempt = this.store.artifacts(runId).filter((a) => a.logical_path === path).length + 1;
+    const examples = policy.critic === "off" ? [] : this.criticCalibration(runId).examples;
     const child = this.store.transaction(() => this.store.beginStep(runId, "critic", stepId));
     const record = (body: Record<string, unknown>) =>
       this.store.transaction(() =>
@@ -4691,6 +4770,14 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             task,
             patch,
             failedChecks: failures.map((f) => f.claim),
+            ...(examples.length
+              ? {
+                  earlierAttempts: {
+                    examples,
+                    note: "Scored attempts of this project and how they turned out: held up (checks passed and the code stayed) or did not (repaired, rejected, reverted or mostly rewritten). Use them to judge what this project keeps.",
+                  },
+                }
+              : {}),
           },
           signal,
         ),
