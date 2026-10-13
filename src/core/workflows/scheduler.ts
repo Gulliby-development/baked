@@ -82,6 +82,7 @@ import {
 } from "./auto-approval.js";
 import { budgetUsage, raiseToStartEstimate, reserveTokens } from "./budget.js";
 import {
+  declaredChecks,
   fixerCommand,
   fixerTiers,
   taskCheckList,
@@ -1666,7 +1667,10 @@ export class WorkflowScheduler {
     for (const task of ready) {
       const row = this.store.tasks(runId).find((entry) => entry.id === task.id);
       const path = `tasks/${task.id}/host-first-${String(row?.generation ?? 0)}.json`;
-      const checks = taskChecks(policy, task);
+      // Its task checks, else every check it names: a project whose only check is a build or
+      // test command has no task-scope check.
+      const own = taskChecks(policy, task);
+      const checks = own.length ? own : declaredChecks(policy, task);
       const root = runRoot(this.store.workspace, state);
       if (
         !row ||
@@ -4310,11 +4314,13 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
               finished && changedFiles ? changeReach(root, candidate, changedFiles) : null;
             // A task whose every written file a corrective task rewrote is superseded there: its
             // agent would start from its original description and overwrite the correction
-            // (md-site a586cde0 T003 ran three times, T006 four). Its checks decide instead.
+            // (md-site a586cde0 T003 ran three times, T006 four). Its checks decide instead,
+            // whatever their scope: a Java task with only the feature `verify` reran with the agent
+            // for 114k (propdrift 90c09da7).
             const superseded =
               reach === "named" &&
               rewritten !== null &&
-              taskChecks(policy, candidate).length > 0 &&
+              declaredChecks(policy, candidate).length > 0 &&
               ownsOnly(candidate, rewritten);
             if (
               reach === "none" ||

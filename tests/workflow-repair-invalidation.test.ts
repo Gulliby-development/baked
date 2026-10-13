@@ -141,7 +141,11 @@ describe("a repair task restoring its predecessor", () => {
     };
     const policy = JSON.parse(store.run(run.runId).policy_json) as RunPolicy;
     if (withChecks)
-      policy.checks = [...policy.checks, { id: "unit", executable: "bun", args: ["-e", "0"], cwd: ".", timeoutMs: 10000, required: true, scope: "task", envNames: [], writes: [] }];
+      policy.checks = [
+        ...policy.checks,
+        { id: "unit", executable: "bun", args: ["-e", "0"], cwd: ".", timeoutMs: 10000, required: true, scope: "task", envNames: [], writes: [] },
+        { id: "verify", executable: "bun", args: ["-e", "0"], cwd: ".", timeoutMs: 10000, required: true, scope: "feature", envNames: [], writes: [] },
+      ];
     scheduler.settleTask(run.runId, state, policy, t4, child, [], ["E1"]);
     return { store, runId: run.runId, state };
   }
@@ -168,6 +172,15 @@ describe("a repair task restoring its predecessor", () => {
   // T003 ran again from its original description, three times in all.
   test("a dependent whose every written file the repair rewrote is superseded and only rechecked", async () => {
     const owner = task("T005", ["src/diff.ts"], { dependsOn: ["T001"], checkIds: ["unit"] });
+    const { store, runId, state } = await scenario(["src/diff.ts"], true, [owner]);
+    expect(statuses(store, runId)).toMatchObject({ T005: "implemented" });
+    expect(state.taskGates.T005).toBeUndefined();
+  });
+
+  // R09 propdrift 90c09da7 (Java): the only check was the feature-scope `verify`, so a test task
+  // whose file the repair rewrote reran with the agent for 114k.
+  test("a dependent that names only a feature-scope check is superseded too", async () => {
+    const owner = task("T005", ["src/diff.ts"], { dependsOn: ["T001"], checkIds: ["verify"] });
     const { store, runId, state } = await scenario(["src/diff.ts"], true, [owner]);
     expect(statuses(store, runId)).toMatchObject({ T005: "implemented" });
     expect(state.taskGates.T005).toBeUndefined();

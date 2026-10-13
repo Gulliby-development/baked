@@ -102,6 +102,14 @@ export function withCoveringChecks(graph: TaskGraph, policy: RunPolicy): TaskGra
 }
 
 /** The checks the host runs after a task: the task-scope checks it names, plus the covering static ones. */
+/**
+ * Every policy check a task names, whatever its scope. A project whose only check is a build or
+ * test command (Java `verify`) has no task-scope check, and such a task still has checks that
+ * decide whether its implementation holds (bench round 09, propdrift 90c09da7).
+ */
+export const declaredChecks = (policy: RunPolicy, task: Pick<Task, "checkIds">): Check[] =>
+  policy.checks.filter((c) => task.checkIds.includes(c.id));
+
 export const taskCheckList = (policy: RunPolicy, task: Task): Check[] => {
   const covering = new Set(coveringChecks(policy, task).map((c) => c.id));
   return policy.checks.filter(
