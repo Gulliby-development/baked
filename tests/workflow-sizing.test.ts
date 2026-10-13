@@ -13,6 +13,9 @@ import {
   fileKind,
   perFileRates,
   plannerSizing,
+  REPAIR_RESERVE,
+  RESERVE_BOUNDS,
+  repairReserveShare,
   type SizingSample,
   samplesFrom,
   sizePlan,
@@ -225,6 +228,32 @@ describe("plan-time sizing", () => {
     expect(report.runTokens).toBe(300_000 + 542_170 + 210_000);
     expect(report.repairReserve).toBe(225_651);
     expect(report.budgetAfter).toBe(300_000 + 542_170 + 210_000 + 225_651);
+  });
+
+  test("a budget already at the ceiling is not reported as growing to itself (#747)", () => {
+    const report = sizePlan({
+      graph: graph(task("T001", ["src/core/workflows/store.ts"])),
+      policy: policy({ maxRunTokens: 4_000_000 }, 4_000_000),
+      samples: [],
+      spent: 3_900_000,
+    });
+    expect(report.budgetAfter).toBe(4_000_000);
+    expect(report.reasons.join(" ")).not.toContain("grows from 4000000 to 4000000");
+    expect(report.reasons.join(" ")).toContain("stays at 4000000 tokens, the policy's ceiling");
+  });
+
+  test("the repair reserve follows the median loop of finished runs once there are enough (#747)", () => {
+    expect(repairReserveShare([2.6])).toEqual({ share: REPAIR_RESERVE, basis: "default", runs: 1 });
+    expect(repairReserveShare([0.4, 2.6, 0.9])).toEqual({ share: 0.9, basis: "history", runs: 3 });
+    expect(repairReserveShare([0.05, 0.1, 0.1]).share).toBe(RESERVE_BOUNDS.min);
+    expect(repairReserveShare([5, 6, 7]).share).toBe(RESERVE_BOUNDS.max);
+    const sized = (loopShares: number[]) =>
+      sizePlan({ graph: graph(task("T001", ["src/a.ts"])), policy: policy({ maxRunTokens: 9_000_000 }), samples: [], spent: 0, loopShares });
+    const flat = sized([]);
+    const calibrated = sized([1, 2, 3]);
+    expect(calibrated.reserve).toEqual({ share: 2, basis: "history", runs: 3 });
+    expect(calibrated.repairReserve).toBeGreaterThan(flat.repairReserve * 6);
+    expect(calibrated.reasons.join(" ")).toContain("the median loop of 3 finished runs");
   });
 
   // cronsay 15eb3204: eight tasks were priced at the sum of their upper bounds, 4.0M of tasks for a

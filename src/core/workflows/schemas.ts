@@ -1,5 +1,6 @@
 /** Workflow v1 contracts. */
 import { z } from "zod";
+import { LibraryDocsSchema } from "./library-docs.js";
 
 export const SafeId = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/);
 export const Hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -61,6 +62,13 @@ export const SpecSchema = z
             // biome-ignore lint/suspicious/noThenProperty: Given/When/Then is the versioned acceptance-criterion contract.
             then: Text,
             method: z.enum(["automated", "manual", "post-release"]),
+            /**
+             * The input domain over which the behavior must hold, for a property-based test
+             * (quality/properties.ts); absent for an example criterion.
+             */
+            property: z
+              .enum(["numbers", "strings", "parsing", "round-trip", "invariant"])
+              .optional(),
           })
           .strict(),
       )
@@ -98,6 +106,11 @@ export const TaskSchema = z
       z.object({ path: RelativePath, action: z.enum(["create", "modify", "delete"]) }).strict(),
     ),
     readHints: z.array(RelativePath),
+    /**
+     * An existing file that shows the pattern the task's code should follow (structure, naming,
+     * error handling, test style). The implementer reads it first; reviewers may cite divergence.
+     */
+    reference: RelativePath.optional(),
     checkIds: z.array(SafeId),
     origin: z.enum(["planned", "repair", "convergence"]),
     findingIds: z.array(SafeId),
@@ -171,9 +184,29 @@ export const AutoApprovalSchema = z
       })
       .strict()
       .nullable(),
+    /**
+     * Opt-in: a package that leaves the limits only by its task count, file count or paths goes
+     * to the `approval-reviewer` profile, which may approve a low-risk one. Everything else, and
+     * any reviewer failure, still waits for a person.
+     */
+    modelReview: z.boolean().optional(),
   })
   .strict()
-  .refine((value) => value.renewal || value.limits !== null, "Auto approval requires limits");
+  .refine((value) => value.renewal || value.limits !== null, "Auto approval requires limits")
+  .refine(
+    (value) => !value.modelReview || value.limits !== null,
+    "Model review of approvals requires limits",
+  );
+
+/** What the `approval-reviewer` profile returns for a package auto approval declined. */
+export const ApprovalReviewSchema = z
+  .object({
+    verdict: z.enum(["approve", "escalate"]),
+    risk: z.enum(["low", "medium", "high"]),
+    reasons: z.array(z.string().min(1).max(2000)).min(1).max(10),
+  })
+  .strict();
+export type ApprovalReview = z.infer<typeof ApprovalReviewSchema>;
 
 /** The review confidence a finding needs to start a correction when the policy does not say. */
 export const DEFAULT_REVIEW_MIN_CONFIDENCE = 0.8;
@@ -219,6 +252,12 @@ export const PolicySchema = z
      * `editDiagnostics` setting when the policy does not name it (start.ts).
      */
     editDiagnostics: z.enum(["feedback", "reject"]).optional(),
+    /**
+     * Where implementers get docs for the locked versions of the libraries a task uses (#741):
+     * the configured `libraryDocs` source, frozen at start. Absent means no docs, so stored
+     * policies keep their hash.
+     */
+    libraryDocs: LibraryDocsSchema.optional(),
     allowedTools: UniqueStrings,
     network: z.enum(["deny", "ask", "allow"]),
     checks: z.array(CheckSchema),
@@ -244,10 +283,14 @@ export const PolicySchema = z
     reviewMinConfidence: z.number().min(0).max(1).optional(),
     /**
      * The critic that scores every task attempt with a rubric (#646): `advise` shows the score
-     * and decides nothing, `off` skips it. Absent means `advise` when the critic's model is of
-     * another vendor than the implementation's, else off, so stored policies keep their hash.
+     * and decides nothing, `off` skips it. `select` and `earlyStop` score like `advise` and also
+     * decide once the project's outcome log calibrates the critic (critic-calibration.ts):
+     * `select` keeps the best-scored attempt of a task, `earlyStop` accepts the remaining
+     * convergence findings instead of another repair when every task scores at the threshold and
+     * the checks pass. Absent means `advise` when the critic's model is of another vendor than the
+     * implementation's, else off, so stored policies keep their hash.
      */
-    critic: z.enum(["off", "advise"]).optional(),
+    critic: z.enum(["off", "advise", "select", "earlyStop"]).optional(),
     /**
      * `false` leaves out learned code rules (#643): rules proposed from findings that recurred in
      * earlier runs and activated by recurrence or a person. Absent means on, so stored policies
@@ -268,11 +311,6 @@ export const PolicySchema = z
      */
     duplication: z.enum(["off", "warn", "ratchet"]).optional(),
     /**
-     * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
-     * rules turned off, severities changed and ast-grep rule files added. Absent means the
-     * built-in pack as shipped, so stored policies keep their hash.
-     */
-    /**
      * Semgrep on the run's diff (quality/sast.ts). Absent means `auto`: it runs when Semgrep is
      * installed, so stored policies keep their hash. `sastConfig` is the Semgrep `--config`
      * (absent: `p/default`).
@@ -284,6 +322,29 @@ export const PolicySchema = z
      * their registries; every new dependency is then inconclusive. Absent means lookups.
      */
     registryLookups: z.literal(false).optional(),
+    /**
+     * The mutation gate (quality/mutation.ts): `advisory` notes the mutants the run's tests do
+     * not kill, `required` makes them blocking findings, `off` skips the gate. Absent means the
+     * default of the workflow's preset (`advisory` for `full`, `off` for the others), so stored
+     * policies keep their hash. `mutationThresholds` lowers the killed share a file needs under
+     * `required` (path or glob to percent, default 100); `mutationBudgetMs` caps the gate's time.
+     */
+    mutation: z.enum(["off", "advisory", "required"]).optional(),
+    /**
+     * Property-based tests from criteria the spec marks with `property` (quality/properties.ts):
+     * `auto` asks the agents for them and checks each marked criterion has one; `off` does
+     * neither. Absent means the preset's default (`auto` for `standard` and `full`).
+     */
+    propertyTests: z.enum(["auto", "off"]).optional(),
+    mutationThresholds: z
+      .record(z.string().min(1).max(512), z.number().int().min(0).max(100))
+      .optional(),
+    mutationBudgetMs: z.number().int().min(10_000).max(3_600_000).optional(),
+    /**
+     * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
+     * rules turned off, severities changed and ast-grep rule files added. Absent means the
+     * built-in pack as shipped, so stored policies keep their hash.
+     */
     qualityRules: z
       .object({
         disabled: z.array(z.string().min(1).max(128)).max(200).optional(),
@@ -322,6 +383,11 @@ export const PolicySchema = z
       .object({
         maxAttemptTokens: z.number().int().min(10_000).optional(),
         maxRunTokens: z.number().int().min(10_000).nullable().optional(),
+        /**
+         * Hard ceiling above `maxRunTokens` that a run under `clarification: "assume"` may grow
+         * to without a person while it still makes progress (see `extendUnderAssume`).
+         */
+        extendToTokens: z.number().int().min(10_000).optional(),
         historyStores: z.array(z.string().min(1)).max(32).optional(),
         testTaskSteps: z.number().int().min(1).max(100).optional(),
       })
@@ -396,6 +462,7 @@ export const ProfileSchema = z
       "acceptance",
       "acceptance-draft",
       "initiativePlan",
+      "approval-review",
       "critique",
     ]),
     maxSteps: z.number().int().min(1).max(100),
@@ -1166,6 +1233,11 @@ export interface RunSnapshot {
    */
   limitations: { count: number; ids: string[] };
   /**
+   * Review and convergence findings that started no correction (inferred edge cases, findings
+   * below the blocking severities, advisory reviews, refuted repros); the run report lists them.
+   */
+  reviewNotes: { count: number; ids: string[] };
+  /**
    * Present while a run is `running` but has journaled nothing for longer than the stall limit:
    * the owner is alive and its work is not advancing.
    */
@@ -1221,6 +1293,10 @@ export interface StartRequest {
   duplication?: "off" | "warn" | "ratchet";
   /** Semgrep on the run's diff (CLI `--sast MODE`); it overrides the policy. */
   sast?: "auto" | "off";
+  /** The mutation gate of this run (CLI `--mutation MODE`); it overrides the policy. */
+  mutation?: "off" | "advisory" | "required";
+  /** Property-based tests of this run (CLI `--property-tests MODE`); it overrides the policy. */
+  propertyTests?: "auto" | "off";
   /**
    * Stage-level model routes for this run (CLI `--route STAGE=MODEL`); they win over
    * `modelRouting.workflows.<id>.stages`. A value starting with `$` names a model class.

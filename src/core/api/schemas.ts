@@ -39,8 +39,14 @@ export const StartBody = z
     duplication: z.enum(["off", "warn", "ratchet"]).optional(),
     /** Semgrep on the run's diff, as `--sast`; omitted, the policy decides. */
     sast: z.enum(["auto", "off"]).optional(),
+    /** The mutation gate of the run, as `--mutation`; omitted, the policy or preset decides. */
+    mutation: z.enum(["off", "advisory", "required"]).optional(),
+    /** Property-based tests of the run, as `--property-tests`; omitted, the policy or preset decides. */
+    propertyTests: z.enum(["auto", "off"]).optional(),
     /** The run model overrides configured model routes, as `--model-strict`. */
     modelStrict: z.boolean().optional(),
+    /** The approval reviewer may approve low-risk plans outside the limits, as `--approval-review`. */
+    approvalReview: z.boolean().optional(),
     /**
      * Propose the workflow and budget from the request, as `--auto-preset`; with `workflow` the
      * person's pick runs and both are recorded.
@@ -334,4 +340,16 @@ export const UsageQuery = z.strictObject({
   stage: z.string().min(1).optional(),
   /** `md` answers `{ markdown }`, the summary as a Markdown document to share. */
   format: z.literal("md").optional(),
+});
+/** `POST /v1/packages/inspect`: a package folder, relative to the workspace or absolute. */
+export const PackageInspectBody = z.strictObject({ path: z.string().min(1).max(1000) });
+/**
+ * `POST /v1/packages/install`: the `planHash` of the plan the person approved; the server plans
+ * again and refuses a different one, so an install never writes what was not shown.
+ */
+export const PackageInstallBody = z.strictObject({
+  path: z.string().min(1).max(1000),
+  planHash: z.string().regex(/^[0-9a-f]{64}$/),
+  overwrite: z.boolean().optional(),
+  commandId: SafeId.optional(),
 });

@@ -10,6 +10,7 @@ import { ApiError, call } from "./api.js";
 import {
   CHAT_MEMORY_CAPABILITY,
   CHECKS_CAPABILITY,
+  CRITIC_OUTCOMES_CAPABILITY,
   GATE_DRAFTS_CAPABILITY,
   HOOKS_CAPABILITY,
   LIBRARY_CAPABILITY,
@@ -227,7 +228,7 @@ export const EFFORTS: readonly Effort[] = ["default", "low", "medium", "high", "
 
 export type Route = string | { model: string; effort?: Effort; fallback?: string[] };
 export type IndependentReview = "off" | "warn" | "require" | "provider";
-export type CriticMode = "off" | "advise";
+export type CriticMode = "off" | "advise" | "select" | "earlyStop";
 
 export interface ModelRouting {
   classes?: Record<string, Route>;
@@ -415,6 +416,25 @@ export async function withCapability<T>(
   return request();
 }
 
+// --- Critic outcomes (`critic-outcomes` capability) ----------------------------------------------
+
+/** Whether the critic's scores may decide (`select`, `earlyStop`), from the project's outcome log. */
+export interface CriticCalibration {
+  samples: number;
+  good: number;
+  bad: number;
+  auc: number | null;
+  threshold: number | null;
+  calibrated: boolean;
+  reason: string | null;
+}
+
+/** `GET /v1/workflow/critic`: the outcome log summary and calibration (rows are left out here). */
+export interface CriticOutcomesView {
+  summary: { scored: number };
+  calibration: CriticCalibration;
+}
+
 // --- Run memory (`run-memory` capability) -------------------------------------------------------
 
 export type MemoryEntryKind = "note" | "answer" | "assumption" | "check" | "rule";
@@ -558,6 +578,12 @@ export const setup = {
   project: (key: string) => call<ProjectSummary>(key, "GET", "/v1/projects/current"),
   changeWorkingSet: (key: string, change: { add?: string[]; remove?: string[] }) =>
     call<ProjectSummary>(key, "POST", "/v1/projects/current/working-set", change),
+
+  /** The critic's outcome log across the project's runs and whether it is calibrated. */
+  criticOutcomes: (key: string) =>
+    withCapability(key, CRITIC_OUTCOMES_CAPABILITY, () =>
+      call<CriticOutcomesView>(key, "GET", "/v1/workflow/critic"),
+    ),
 
   /** Project memory new runs read: notes, earlier answers, approved assumptions, passing checks. */
   runMemory: (key: string) =>

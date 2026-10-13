@@ -98,7 +98,8 @@ import { hooksRoute } from "./hooks-routes.js";
 import { initiativeRoute } from "./initiative-routes.js";
 import { type LspRouteContext, lspRoute } from "./lsp-routes.js";
 import { mcpRoute } from "./mcp-routes.js";
-import { memoryRoute } from "./memory-routes.js";
+import { criticOutcomesRoute, memoryRoute } from "./memory-routes.js";
+import { packageRoute } from "./package-routes.js";
 import { progressRoute } from "./progress-routes.js";
 import type { RouteContext } from "./route-context.js";
 import {
@@ -156,6 +157,7 @@ export const CAPABILITIES = [
   "chat-undo",
   "checkpoints",
   "run-memory",
+  "critic-outcomes",
   "chat-memory",
   "images",
   "code-graph",
@@ -180,6 +182,7 @@ export const CAPABILITIES = [
   "artifacts",
   "run-compare",
   "preset-proposal",
+  "packages",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -423,9 +426,12 @@ function startArgs(raw: unknown): WorkflowArgs {
   if (body.clarification) flags.clarification = body.clarification;
   if (body.duplication) flags.duplication = body.duplication;
   if (body.sast) flags.sast = body.sast;
+  if (body.mutation) flags.mutation = body.mutation;
+  if (body.propertyTests) flags["property-tests"] = body.propertyTests;
   if (body.modelStrict) flags["model-strict"] = true;
   if (body.policy !== undefined) flags.policy = true;
   if (body.budget) flags.budget = body.budget;
+  if (body.approvalReview) flags["approval-review"] = true;
   if (body.autoPreset) flags["auto-preset"] = true;
   return validateWorkflowArgs({
     command: "run",
@@ -881,6 +887,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       (await chatRoute({ ...ctx, chat })) ??
       (await initiativeRoute({ ...ctx, initiatives, launch: driveInitiative })) ??
       (await memoryRoute({ ...ctx, config: service.config, store: service.store })) ??
+      criticOutcomesRoute({ ...ctx, config: service.config, store: service.store }) ??
       (await mcpRoute({
         ...ctx,
         workspace: service.workspace,
@@ -904,6 +911,12 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         config: () => service.config,
         ...(options.vercel ? { vercel: options.vercel } : {}),
         ...(options.openArtifact ? { open: options.openArtifact } : {}),
+      })) ??
+      (await packageRoute({
+        ...ctx,
+        workspace: service.workspace,
+        config: service.config,
+        ...(options.configDir ? { configDir: options.configDir } : {}),
       })) ??
       (await gateRoute({
         ...ctx,

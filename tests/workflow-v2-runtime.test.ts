@@ -510,6 +510,14 @@ describe("workflow v2 scheduler", () => {
     expect(executor.calls.filter((c) => c === "review")).toHaveLength(1);
     expect(service.store.run(run.runId).repair_rounds).toBe(0);
     expect(service.store.findings(run.runId)).toHaveLength(0);
+    // The note is kept for the report instead of being lost (#715).
+    const notes = service.store.state(run.runId).reviewNotes;
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toMatchObject({ source: "correctness", basis: "inferred", reason: "inferred", repeatOf: null });
+    expect(service.store.snapshot(run.runId).reviewNotes).toEqual({ count: 1, ids: [notes[0].findingId] });
+    const report = runReport(service.store, run.runId);
+    expect(report).toContain("## Review notes");
+    expect(report).toContain("inferred edge case");
   }, 30000);
 
   // Run 5b703388 corrected a regex claim that holds in Python but not in JavaScript (#155).
@@ -527,6 +535,7 @@ describe("workflow v2 scheduler", () => {
     expect(service.store.findings(run.runId)).toHaveLength(0);
     const record = service.store.artifacts(run.runId).find((a) => a.kind === "repro");
     expect(service.store.readArtifact(run.runId, record?.id ?? "")).toContain('"status":"refuted"');
+    expect(service.store.state(run.runId).reviewNotes.map((n) => n.reason)).toEqual(["repro"]);
   }, 30000);
 
   test("a correctness finding without a repro is a note", async () => {
@@ -1095,7 +1104,7 @@ describe("passesWithNotes", () => {
     expect(passesWithNotes(finding, coverage, true)).toBe(true);
     expect(passesWithNotes(finding, coverage, false)).toBe(false);
     expect(passesWithNotes({ ...finding, severity: "medium" }, coverage, true)).toBe(false);
-    expect(passesWithNotes({ ...finding, kind: "correctness" }, coverage, true)).toBe(false);
+    expect(passesWithNotes({ ...finding, kind: "security" }, coverage, true)).toBe(false);
     expect(passesWithNotes({ ...finding, criterionIds: [] }, coverage, true)).toBe(false);
     expect(passesWithNotes(finding, [{ ...coverage[0]!, evidenceIds: [] }], true)).toBe(false);
   });
@@ -1106,6 +1115,15 @@ describe("passesWithNotes", () => {
     for (const file of [null, "src/store.ts", "src/latest.ts"])
       expect(passesWithNotes({ ...medium, file }, coverage, true)).toBe(false);
     expect(passesWithNotes({ ...medium, severity: "high", file: "README.md" }, coverage, true)).toBe(false);
+  });
+  test("a low correctness or contradicts finding passes when the checks do (#744)", () => {
+    for (const kind of ["correctness", "contradicts"] as const) {
+      expect(passesWithNotes({ ...finding, kind, file: "src/app.go" }, coverage, true)).toBe(true);
+      expect(passesWithNotes({ ...finding, kind }, coverage, false)).toBe(false);
+      expect(passesWithNotes({ ...finding, kind, severity: "medium", file: "tests/app_test.go" }, coverage, true)).toBe(false);
+      expect(passesWithNotes({ ...finding, kind, criterionIds: [] }, coverage, true)).toBe(false);
+    }
+    expect(passesWithNotes({ ...finding, kind: "unrequested" }, coverage, true)).toBe(false);
   });
   test("a missing test or documentation gap passes like a partial one", () => {
     for (const severity of ["low", "medium"] as const)

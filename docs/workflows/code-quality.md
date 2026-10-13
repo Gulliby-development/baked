@@ -8,15 +8,17 @@ Quality gates of workflow runs measure the code a run writes beyond what its che
 | [Anti-slop rule pack](#anti-slop-rule-pack) | `qualityRules` | rules turned off, severities, ast-grep rule files | every built-in rule on |
 | [Dependency check](#dependency-check) | `registryLookups` | `false` turns lookups off | on |
 | [Semgrep](#semgrep) | `sast`, `sastConfig` | `auto`, `off`; a Semgrep `--config` | `auto`, `p/default` |
+| [Property-based tests](#property-based-tests) | `propertyTests` | `auto`, `off` | by preset: `auto` for `standard` and `full` (the `sdd` workflow), `off` otherwise |
+| [Mutation gate](#mutation-gate) | `mutation`, `mutationThresholds`, `mutationBudgetMs` | `off`, `advisory`, `required`; percent per path; time | by preset: `advisory` for `full` (the `sdd` workflow), `off` otherwise |
 
 Where the defaults are set:
 
 - terminal UI: `/code-quality` (or **Code Quality** in `/settings`), saved to the project or the global config;
 - desktop: Settings, Chat settings, **Code quality** page;
-- local API: `PATCH /v1/settings` with `quality.duplication`, `quality.disabledRules`, `quality.registryLookups` and `quality.sast` ([chat settings](../desktop/api.md#chat-settings));
+- local API: `PATCH /v1/settings` with `quality.duplication`, `quality.disabledRules`, `quality.registryLookups`, `quality.sast`, `quality.propertyTests` and `quality.mutation` ([chat settings](../desktop/api.md#chat-settings));
 - config file: `quality` in `.baked/config.json` or `~/.baked/config.json`.
 
-A run can override the default at start: `baked workflow run --duplication off|warn|ratchet` and `--sast auto|off`, or `duplication` and `sast` in `POST /v1/workflow/runs`. The order is the run flag, then the policy's own field (`--policy FILE` or `workflows.policy`), then the `quality` setting, then the built-in default.
+A run can override the default at start: `baked workflow run --duplication off|warn|ratchet`, `--sast auto|off`, `--property-tests auto|off` and `--mutation off|advisory|required`, or `duplication`, `sast`, `propertyTests` and `mutation` in `POST /v1/workflow/runs`. The order is the run flag, then the policy's own field (`--policy FILE` or `workflows.policy`), then the `quality` setting, then the built-in default.
 
 ## Duplication and dead-code ratchet
 
@@ -111,3 +113,40 @@ The implementer is told to add a dependency only when the task needs one and onl
 When [Semgrep](https://semgrep.dev/) is installed, each checks stage, after the command checks pass, runs `semgrep scan --json --metrics=off --quiet --config CONFIG` on the code files the run changed and keeps the matches on lines the run added (`quality/sast.json`). An `ERROR` match is a blocking `security` finding (`SAST RULE: MESSAGE (FILE:LINE)`) when the file's baseline is known; `WARNING` and `INFO` matches are notes. Without Semgrep, or when it fails, the report says `Semgrep: not run (REASON).` and nothing blocks. BAKED does not install Semgrep.
 
 `CONFIG` is `p/default` unless `quality.sastConfig` in the config file (or `sastConfig` in the policy) names another registry ruleset or a local rule file. `quality.sast: off`, `--sast off` or `sast: off` in the start request skips Semgrep.
+
+## Property-based tests
+
+Example tests miss edge inputs such as `-0`, an empty string or the largest value. With `propertyTests: auto`, criteria that must hold over a whole input domain get property-based tests:
+
+1. **Spec.** The spec author is told to mark such criteria with `property`, the input domain: `numbers`, `strings`, `parsing`, `round-trip` or `invariant`. `spec.md` shows the mark (`AC-001 (FR-001; automated; property over numbers)`), so the person approving the plan sees it.
+2. **Plan and tasks.** Once a criterion is marked, the planner gives it a test task that writes a property-based test with the ecosystem's library: fast-check (JS/TS), Hypothesis (Python), proptest (Rust), jqwik (Java/Kotlin), rapid (Go) or FsCheck (C#/F#). A library the project does not declare is added to its manifest as a development dependency, and the [dependency check](#dependency-check) lists it in the run report.
+3. **Check.** In each checks stage, after the command checks pass, the host looks in the test files of the tasks that cover each marked criterion for a use of a property library (`quality/properties.json`). A marked criterion without one is a blocking `missing` finding (`Property test missing for AC-001: ...`) filed on that test file, so the correction writes the property. The finding closes once the property exists.
+4. **Counterexamples.** When a check fails and its output holds a shrunk counterexample (fast-check `Counterexample:`, Hypothesis `Falsifying example:`, proptest `minimal failing input:`, jqwik, rapid, gopter and FsCheck output), the failed check's finding carries it (`Property counterexample: [-0]`). The correction starts from that reproduction and is told to fix the code, not the property, unless the property contradicts the spec. A conflict it cannot settle stops the run for a person, as any repeated finding does.
+
+The run report lists the marked criteria, their domain and the property tests found. The default follows the preset: `auto` for `standard` and `full` (what `sdd` runs), `off` for `quick` and the other presets; `quality.propertyTests: preset` (the setting's default) keeps that.
+
+## Mutation gate
+
+Coverage can be complete while the tests an agent wrote assert almost nothing. The mutation gate plants small faults in the lines the run added and checks that the tests notice them. It runs in each checks stage after the command checks and the other quality gates pass:
+
+1. **Mutants.** On each line the run added to a non-test code file (imports and type declarations aside), the built-in engine makes one change per operator: `===`/`!==`, `==`/`!=`, `<`/`<=`, `>`/`>=` (binary operators with spaces around them), `&&`/`||`, `and`/`or`, `+`/`-`, `*` to `/`, `true`/`false` (`True`/`False`), a dropped `!` or `not`, and a number literal plus one. Strings and comments are never changed. Up to 24 mutants per stage are taken, one per line before a second one on any line.
+2. **Tests.** The policy's required checks that run tests (their command names `test`, `pytest`, `vitest`, `jest`, `mocha` and similar) run against each mutant, one mutant at a time, in the run's working copy or worktree. A failing test kills the mutant; a mutant all tests pass on survived. Each mutated file is put back byte for byte before the next mutant, and a host that stops mid-mutant puts it back on the next drive (`quality/mutation-pending.json`). No tool needs to be installed.
+3. **Verdict.** The result is `quality/mutation.json` with each mutant, its status and the score (killed of the mutants that ran). Under `required` each surviving mutant is a blocking finding (`Surviving mutant M3: src/sign.ts:1 changed from ... to ... and every test check still passed`). The finding is filed on a test file of the task that wrote the code, or of a related task, so the correction adds a test that kills the mutant; it is told not to change the code to get rid of the mutant. Under `advisory` survivors are listed in the run report and never block.
+
+A mutant whose tests run out of time is `timeout` and never blocks. The gate stops after `mutationBudgetMs` (default 300 seconds); the remaining mutants are `not run`, which is inconclusive, never a failure. A policy without a required test check records that the gate had nothing to run. A survivor in a file whose baseline is not known is a note.
+
+`mutationThresholds` lowers the share of killed mutants a file needs under `required`, by path glob or directory, the longest match winning:
+
+```json
+{
+  "quality": {
+    "mutation": "required",
+    "mutationThresholds": { "src/auth/**": 70, "src/**": 50 },
+    "mutationBudgetMs": 600000
+  }
+}
+```
+
+Without a matching threshold every surviving mutant of a file blocks. The default follows the workflow's preset: `full`, which the `sdd` workflow runs, is `advisory`; `quick`, `standard` and the other presets are `off`. `quality.mutation: preset` (the setting's default) keeps that; another value, the policy's `mutation` or `--mutation` overrides it and is frozen in the run's policy. The implementer is told to write tests that fail when a condition, boundary or constant changes.
+
+The run report shows the mode, the score, how many mutants were killed, timed out or not run, and a table of the survivors. The [`harden` preset](harden.md) plants the mutants in the module under test instead of in added lines and reports the score before and after.

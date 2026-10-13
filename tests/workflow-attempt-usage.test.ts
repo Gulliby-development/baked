@@ -131,6 +131,17 @@ describe("attempt usage of a failing native attempt", () => {
     expect(store.attempts(run.runId).find((a) => a.id === attemptId)).toMatchObject({ used_tokens: 12_500, usage_complete: 1 });
   });
 
+  test("a sized run at its ceiling blocks before an attempt its budget cannot cover (#747)", async () => {
+    // 50,000 left of a 60,000 ceiling, below the default attempt cap: no model step runs.
+    const policy = { ...fixturePolicy, maxTotalTokens: 60_000, sizing: { maxRunTokens: 60_000 } };
+    scriptModel([step(12_000, 500, { name: "unknown_tool", input: {} })]);
+    const { store, run, attemptId, executor, request } = await nativeAttempt(policy);
+    const other = store.beginStep(run.runId, "other");
+    store.reserve(run.runId, other, "openai/fixture-model", 10_000, policy);
+    await expect(executor.execute(request)).rejects.toThrow("The next attempt needs more tokens than the run budget has left");
+    expect(store.recordedUsage(run.runId, attemptId)).toBe(0);
+  });
+
   test("an attempt that fails before any model step records zero tokens", async () => {
     scriptModel([
       () => {
@@ -276,6 +287,57 @@ describe("documentation probes", () => {
 
   test("a planned task that writes only code has no probe", async () => {
     expect(await probeOnce("value.txt")).toBeNull();
+  });
+});
+
+describe("task-end check", () => {
+  const implemented = (summary: string) => ({
+    schemaVersion: 1,
+    taskId: "T004",
+    outcome: "implemented",
+    summary,
+    evidenceIds: [],
+    unresolved: [],
+  });
+  const codeTask: Task = {
+    id: "T004",
+    title: "Parse input",
+    description: "Parse the input",
+    requirementIds: ["FR-001"],
+    criterionIds: ["AC-001"],
+    dependsOn: [],
+    profileId: "implementer",
+    writes: [{ path: "value.txt", action: "modify" }],
+    readHints: [],
+    checkIds: ["check"],
+    origin: "planned",
+    findingIds: [],
+    rationale: "parse",
+  };
+
+  test("its errors go back once, and the next submission is accepted without running it again", async () => {
+    scriptModel([
+      step(1000, 50, { name: "submit_result", input: implemented("first") }),
+      step(1000, 50, { name: "submit_result", input: implemented("fixed") }),
+    ]);
+    const { executor, request } = await nativeAttempt(fixturePolicy, "implementation", codeTask);
+    let runs = 0;
+    const response = await executor.execute({
+      ...request,
+      taskEndCheck: async () => {
+        runs++;
+        return ["typecheck: src/app.ts: error TS2322: Type 'number' is not assignable to type 'string'."];
+      },
+    });
+    expect(runs).toBe(1);
+    expect(response.output).toMatchObject({ summary: "fixed" });
+  });
+
+  test("a clean check accepts the first submission", async () => {
+    scriptModel([step(1000, 50, { name: "submit_result", input: implemented("first") })]);
+    const { executor, request } = await nativeAttempt(fixturePolicy, "implementation", codeTask);
+    const response = await executor.execute({ ...request, taskEndCheck: async () => [] });
+    expect(response.output).toMatchObject({ summary: "first" });
   });
 });
 

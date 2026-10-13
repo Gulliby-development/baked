@@ -1,5 +1,6 @@
 import { canonical, hashJson } from "../specs/hash.js";
 import { defaultWorkflowPolicy } from "./defaults.js";
+import { WorkflowFault } from "./errors.js";
 import { type AgentProfile, PolicySchema, type RunPolicy } from "./schemas.js";
 import type { RunRow, WorkflowStore } from "./store.js";
 export function reserveTokens(prompt: string, profile: AgentProfile, policy: RunPolicy): number {
@@ -134,7 +135,7 @@ function recordGrowth(
   runId: string,
   policy: RunPolicy,
   maxTotalTokens: number,
-  kind: "auto-growth" | "planning-floor",
+  kind: "auto-growth" | "planning-floor" | "auto-extend",
   detail: Record<string, unknown>,
 ): void {
   const before = hashJson(policy);
@@ -184,7 +185,7 @@ export function growBudgetOnProgress(
   const stored = PolicySchema.parse(JSON.parse(store.run(runId).policy_json));
   if (stored.maxTotalTokens > policy.maxTotalTokens) policy.maxTotalTokens = stored.maxTotalTokens;
   if (projected <= policy.maxTotalTokens) return true;
-  if (policy.maxTotalTokens >= ceiling) return false;
+  if (policy.maxTotalTokens >= ceiling) return extendUnderAssume(store, runId, policy, projected);
   const finished = store
     .tasks(runId)
     .filter((t) => t.status === "implemented" || t.status === "verified").length;
@@ -199,6 +200,108 @@ export function growBudgetOnProgress(
     finishedTasks: finished,
   });
   return projected <= policy.maxTotalTokens;
+}
+
+/** Share of the sizing ceiling one extension past it adds, at least: about one review round. */
+const EXTEND_STEP = 0.25;
+
+/** Tasks finished and findings resolved so far: what an extension past the ceiling must see grow. */
+function progressOf(store: WorkflowStore, runId: string) {
+  return {
+    finishedTasks: store
+      .tasks(runId)
+      .filter((t) => t.status === "implemented" || t.status === "verified").length,
+    resolvedFindings: store.findings(runId).filter((f) => f.status === "resolved").length,
+  };
+}
+
+/**
+ * A run at its sizing ceiling under `clarification: "assume"` grows past it, up to
+ * `sizing.extendToTokens`, without a person, while it still makes progress: since the last
+ * extension (or the start of the run) a task finished or a finding was resolved. Each extension
+ * covers the call and adds at least a quarter of the ceiling, about one review round, and is
+ * recorded as `kind: "auto-extend"`. junitdigest 3e5be74b stopped twice at the ceiling and was
+ * cleared both times by an operator `extend` with no other choice to make (#747).
+ */
+function extendUnderAssume(
+  store: WorkflowStore,
+  runId: string,
+  policy: RunPolicy,
+  projected: number,
+): boolean {
+  const hard = policy.sizing?.extendToTokens ?? null;
+  const ceiling = policy.sizing?.maxRunTokens ?? null;
+  if (hard === null || ceiling === null || policy.clarification !== "assume") return false;
+  if (policy.maxTotalTokens >= hard || projected > hard) return false;
+  const progress = progressOf(store, runId);
+  const last = store
+    .artifacts(runId)
+    .filter(
+      (a) => a.kind === "policy-revision" && a.logical_path.startsWith("policy-revisions/auto-"),
+    )
+    .map(
+      (a) =>
+        JSON.parse(store.readArtifact(runId, a.id)) as {
+          kind?: string;
+          finishedTasks?: number;
+          resolvedFindings?: number;
+        },
+    )
+    .filter((r) => r.kind === "auto-extend")
+    .at(-1);
+  const before = {
+    finishedTasks: last?.finishedTasks ?? 0,
+    resolvedFindings: last?.resolvedFindings ?? 0,
+  };
+  if (
+    progress.finishedTasks <= before.finishedTasks &&
+    progress.resolvedFindings <= before.resolvedFindings
+  )
+    return false;
+  const next = Math.min(
+    hard,
+    Math.max(projected, policy.maxTotalTokens + Math.ceil(ceiling * EXTEND_STEP)),
+  );
+  recordGrowth(store, runId, policy, next, "auto-extend", {
+    projectedTokens: projected,
+    hardCeiling: hard,
+    ...progress,
+  });
+  return projected <= policy.maxTotalTokens;
+}
+
+/**
+ * Checked before an attempt makes its first model call. An attempt whose cap the run budget no
+ * longer covers grows the budget first (as `growBudgetOnProgress` does). In a run with a sizing
+ * ceiling, whose attempt caps come from the priced plan, an attempt the budget still cannot cover
+ * blocks the run with `budget_exhausted` before it spends anything: junitdigest 3e5be74b started a
+ * task attempt and a converge attempt with less left than their caps and lost 46k and 149k to
+ * attempts that failed on the run cap mid-loop (#747). Without a ceiling the attempt starts and
+ * its cap shrinks to what is left, so it finalizes in time.
+ */
+export function assertAttemptFits(
+  store: WorkflowStore,
+  runId: string,
+  attemptId: string,
+  policy: RunPolicy,
+  attemptTokens: number,
+): void {
+  const remaining = store.remainingTokens(runId, policy, attemptId);
+  if (remaining >= attemptTokens) return;
+  const committed = policy.maxTotalTokens - remaining;
+  if (growBudgetOnProgress(store, runId, policy, committed + attemptTokens)) return;
+  if (policy.sizing?.maxRunTokens == null) return;
+  const left = store.remainingTokens(runId, policy, attemptId);
+  if (left >= attemptTokens) return;
+  throw new WorkflowFault(
+    "BUDGET_EXHAUSTED",
+    "The next attempt needs more tokens than the run budget has left",
+    {
+      remainingTokens: left,
+      attemptTokens,
+      maxTotalTokens: policy.maxTotalTokens,
+    },
+  );
 }
 
 /**

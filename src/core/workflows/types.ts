@@ -58,12 +58,35 @@ export const LimitationSchema = z
      * Who accepted it: a person, the `assume` rule when the checks passed, or the notes rule (a
      * low `partial` finding behind verified behavior, accepted without a decision).
      */
-    decidedBy: z.enum(["user", "assume", "notes"]),
+    decidedBy: z.enum(["user", "assume", "notes", "critic"]),
     /** Convergence rounds the run had used when the finding was accepted. */
     round: z.number().int().nonnegative(),
   })
   .strict();
 export type Limitation = z.infer<typeof LimitationSchema>;
+/** A review or convergence finding that starts no correction, kept so the run report shows it. */
+export const ReviewNoteSchema = z
+  .object({
+    findingId: z.string(),
+    /** The review dimension that raised it, or `convergence`. */
+    source: z.string(),
+    severity: z.enum(["critical", "high", "medium", "low"]),
+    kind: z.string(),
+    basis: z.enum(["spec", "inferred"]).nullable(),
+    file: z.string().nullable(),
+    symbol: z.string().nullable(),
+    claim: z.string(),
+    /**
+     * Why it starts no correction: an `inferred` edge case, a severity below the blocking ones,
+     * an advisory reviewer, or a repro that did not show it.
+     */
+    reason: z.enum(["inferred", "confidence", "severity", "advisory", "repro"]),
+    /** The earlier note on the same kind, file and symbol from an earlier snapshot, if any. */
+    repeatOf: z.string().nullable(),
+    snapshotId: z.string().nullable(),
+  })
+  .strict();
+export type ReviewNote = z.infer<typeof ReviewNoteSchema>;
 export const RuntimeStateSchema = z
   .object({
     prompt: z.string(),
@@ -119,6 +142,8 @@ export const RuntimeStateSchema = z
     decidedFindings: z.array(z.string()).default([]),
     /** Findings the run is accepted with (known limitations). */
     limitations: z.array(LimitationSchema).default([]),
+    /** Review and convergence findings that started no correction, for the run report. */
+    reviewNotes: z.array(ReviewNoteSchema).default([]),
     verificationState: z.enum(["not_verified", "current", "stale", "invalid"]),
     instructionText: z.string(),
     frozenFiles: z.record(z.string(), z.string()),
@@ -374,6 +399,12 @@ export interface ExecutionRequest {
    * a corrected result in the same conversation, a bounded number of times.
    */
   validate?: (output: unknown) => string[];
+  /**
+   * The task-end whole-unit check (#673): run once, on the first submission that reports the task
+   * implemented, in the attempt's directory. The errors it attributes to the task go back to the
+   * agent once; the next submission is accepted without running it again.
+   */
+  taskEndCheck?: (root: string, signal: AbortSignal) => Promise<string[]>;
   /** Directory the agent reads, edits and checks in; defaults to the run's workspace. */
   root?: string;
   /**

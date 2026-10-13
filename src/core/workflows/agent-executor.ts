@@ -37,6 +37,7 @@ import {
 } from "../verification/repro.js";
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
 import { affectedTestsFor } from "./affected-tests.js";
+import { assertAttemptFits } from "./budget.js";
 import { fixerCommand, fixerTiers } from "./check-policy.js";
 import { fileHash, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
@@ -55,6 +56,7 @@ import { settleInterruptedEdits } from "./recovery.js";
 import { isTransient } from "./retry.js";
 import {
   AnalysisSchema,
+  ApprovalReviewSchema,
   CritiqueSchema,
   generatedPaths,
   ImplementationSchema,
@@ -95,6 +97,7 @@ export const outputSchemas: Record<string, z.ZodType> = {
   acceptance: AcceptanceWalkSchema,
   "acceptance-draft": AcceptanceDraftSchema,
   initiativePlan: InitiativePlanSchema,
+  "approval-review": ApprovalReviewSchema,
   critique: CritiqueSchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;
@@ -575,6 +578,7 @@ export class NativeAgentExecutor implements AgentExecutor {
       const schema = withHostConstants(request.profile.output, resultSchema);
       let submitted: unknown;
       let rejected = 0;
+      let taskEndChecked = false;
       const submitResult = tool({
         description:
           "Submit the final typed result. Evidence IDs must come from the host context or tools.",
@@ -603,6 +607,22 @@ export class NativeAgentExecutor implements AgentExecutor {
                 "The result was not accepted. Fix every listed problem and call submit_result again with the complete corrected result.",
             };
           }
+          if (
+            !errors.length &&
+            request.taskEndCheck &&
+            !taskEndChecked &&
+            (parsed as { outcome?: unknown }).outcome === "implemented"
+          ) {
+            taskEndChecked = true;
+            const typeErrors = await request.taskEndCheck(root, request.signal);
+            if (typeErrors.length)
+              return {
+                accepted: false,
+                errors: typeErrors,
+                instruction:
+                  "The project's type check reports these errors in the files this task writes. Fix them, then call submit_result again with the complete result. This check runs once; the next submission is accepted.",
+              };
+          }
           submitted = parsed;
           return { accepted: true };
         },
@@ -614,16 +634,18 @@ export class NativeAgentExecutor implements AgentExecutor {
       const submitTools = ["submit_result", "submit_artifact", "submit_review"].filter(
         (name) => name in available,
       );
+      const attemptCap = Math.min(
+        request.maxTokens ?? Number.POSITIVE_INFINITY,
+        request.attemptTokens ?? policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS,
+      );
+      // An attempt starts only when the run budget, grown if it may, still covers its cap.
+      assertAttemptFits(this.store, request.runId, request.attemptId, policy, attemptCap);
       // The attempt cap never exceeds what the run budget still allows, so an attempt started
       // close to the run limit finalizes and submits instead of failing on the run cap mid-loop.
       const remaining = this.store.remainingTokens(request.runId, policy, request.attemptId);
       const budget = new AttemptStepController({
         maxSteps: request.maxSteps,
-        maxTokens: Math.min(
-          request.maxTokens ?? Number.POSITIVE_INFINITY,
-          request.attemptTokens ?? policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS,
-          remaining,
-        ),
+        maxTokens: Math.min(attemptCap, remaining),
         // Token caps come from history on whatever provider produced it; each attempt may still
         // take a minimum number of steps at its own step cost, within what the run allows.
         minSteps: Math.min(request.maxSteps, MIN_ATTEMPT_STEPS),
