@@ -99,6 +99,17 @@ describe("usage Markdown", () => {
     expect(md).toContain("| plan | 2 | 1,010 |");
     expect(md).toContain("| (host) | 1 | 10 |");
     expect(md.indexOf("| m1 |")).toBeLessThan(md.indexOf("| m2 |"));
+    expect(md).not.toContain("## By tool");
+    const withTools = runUsageMarkdown({
+      ...report,
+      tools: [
+        { tool: "run_repro", calls: 3, tokens: 12_000 },
+        { tool: "read", calls: 1, tokens: 900 },
+      ],
+    });
+    expect(withTools).toContain("## By tool");
+    expect(withTools).toContain("| run_repro | 3 | 12,000 |");
+    expect(withTools.indexOf("| run_repro |")).toBeLessThan(withTools.indexOf("| read |"));
   });
 });
 

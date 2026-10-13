@@ -27,6 +27,18 @@ export interface AttemptUsageRow {
   finalizedBy: AttemptUsageRecord["finalizedBy"];
   /** Tool calls by the code intelligence backend and language server that answered them. */
   toolBackends: ToolBackendCount[];
+  /** Model tool calls by tool, from per-step usage; empty in attempts recorded before tool names. */
+  tools: ToolStepTokens[];
+}
+
+/**
+ * Calls of one tool and the tokens of the model steps that made them. A step's tokens are split
+ * evenly between its calls, so the figures add up to the tokens of the steps that called a tool.
+ */
+export interface ToolStepTokens {
+  tool: string;
+  calls: number;
+  tokens: number;
 }
 
 export interface RunUsageReport {
@@ -44,6 +56,8 @@ export interface RunUsageReport {
   models: Array<{ model: string; attempts: number; tokens: number; steps: number | null }>;
   /** Tool calls of every attempt by backend and server, most calls first. */
   toolBackends: ToolBackendCount[];
+  /** Model tool calls of every attempt by tool, most tokens first. */
+  tools: ToolStepTokens[];
   attempts: AttemptUsageRow[];
 }
 
@@ -96,6 +110,7 @@ export function runUsage(
         stopReason: usage?.stopReason ?? null,
         finalizedBy: usage?.finalizedBy ?? null,
         toolBackends: usage?.toolBackends ?? [],
+        tools: usage ? stepToolTokens(usage.steps) : [],
       };
     });
   const byStage = new Map<string, RunUsageReport["stages"][number]>();
@@ -146,11 +161,49 @@ export function runUsage(
       (a, b) => b.tokens - a.tokens || a.model.localeCompare(b.model),
     ),
     toolBackends: mergeToolBackends(attempts.flatMap((attempt) => attempt.toolBackends)),
+    tools: mergeToolTokens(attempts.flatMap((attempt) => attempt.tools)),
     attempts:
       top === undefined
         ? attempts
         : [...attempts].sort((a, b) => (b.usedTokens ?? 0) - (a.usedTokens ?? 0)).slice(0, top),
   };
+}
+
+/** Calls and step tokens by tool for one attempt's steps; steps without tool names are skipped. */
+export function stepToolTokens(steps: AttemptUsageRecord["steps"]): ToolStepTokens[] {
+  const counts: ToolStepTokens[] = [];
+  for (const step of steps) {
+    if (!step.tools?.length) continue;
+    const share = ((step.inputTokens ?? 0) + (step.outputTokens ?? 0)) / step.tools.length;
+    for (const tool of step.tools) counts.push({ tool, calls: 1, tokens: share });
+  }
+  return mergeToolTokens(counts);
+}
+
+/** Adds up calls and tokens of the same tool, most tokens first; tokens are rounded once summed. */
+export function mergeToolTokens(counts: readonly ToolStepTokens[]): ToolStepTokens[] {
+  const merged = new Map<string, ToolStepTokens>();
+  for (const count of counts) {
+    const entry = merged.get(count.tool) ?? { tool: count.tool, calls: 0, tokens: 0 };
+    entry.calls += count.calls;
+    entry.tokens += count.tokens;
+    merged.set(count.tool, entry);
+  }
+  return [...merged.values()]
+    .map((entry) => ({ ...entry, tokens: Math.round(entry.tokens) }))
+    .sort((a, b) => b.tokens - a.tokens || a.tool.localeCompare(b.tool));
+}
+
+/** One line per run: `run_repro 9 calls 310,200 tokens, read 14 calls 120,000 tokens`. */
+export function toolTokensLine(counts: readonly ToolStepTokens[]): string | null {
+  return counts.length
+    ? counts
+        .map(
+          (c) =>
+            `${c.tool} ${c.calls} ${c.calls === 1 ? "call" : "calls"} ${c.tokens.toLocaleString("en-US")} tokens`,
+        )
+        .join(", ")
+    : null;
 }
 
 /** Adds up counts of the same tool, backend and server, most calls first. */
