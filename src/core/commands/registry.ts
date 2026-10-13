@@ -956,7 +956,7 @@ const COMMAND_DEFS: CommandDef[] = [
   {
     cmd: "/hooks",
     ic: "cog",
-    desc: "View active hooks (PreToolUse, PostToolUse, etc.)",
+    desc: "Add, edit or pause hooks on agent events",
     category: "System",
     tags: ["hooks", "claude", "lifecycle"],
   },

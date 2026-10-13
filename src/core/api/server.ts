@@ -179,6 +179,7 @@ export const CAPABILITIES = [
   "settings",
   "git",
   "hooks",
+  "hooks-edit",
   "provider-switch",
   "chat-export",
   "chat-effort",

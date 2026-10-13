@@ -173,7 +173,7 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 | `/errors` | Browse error log |
 | `/help` | Command palette (Ctrl+K) |
 | `/commands` | List custom commands from .baked/commands |
-| `/hooks` | View active hooks (PreToolUse, PostToolUse, etc.) |
+| `/hooks` | Add, edit or pause hooks on agent events |
 | `/quit` (`/q`) | Exit baked |
 | `/exit` (`/q`) | Exit baked |
 | `/restart` | Full restart |

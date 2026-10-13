@@ -554,7 +554,7 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "hooks",
     group: "Tools and code intelligence",
-    title: "Hooks: view and switch off",
+    title: "Hooks: view, add, edit, pause",
     tui: ["/hooks"],
     cli: notNeeded("hooks are files scripts edit directly"),
     api: ["/v1/hooks", "/v1/hooks/session"],
