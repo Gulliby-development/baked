@@ -527,8 +527,6 @@ function handleCompaction(_input: string, ctx: CommandContext): void {
   });
 }
 
-const EDIT_DIAGNOSTICS = "edit-diagnostics";
-
 function handleAgentFeatures(_input: string, ctx: CommandContext): void {
   // Labels, help and defaults come from the shared settings schema, as on the desktop page.
   const features = SETTINGS.filter(
@@ -539,10 +537,18 @@ function handleAgentFeatures(_input: string, ctx: CommandContext): void {
     help: setting.help,
     defaultOn: setting.default === true,
   }));
-  const editSetting = settingById("editDiagnostics");
-  const editOptions = editSetting?.type === "enum" ? editSetting.options : [];
-  let editMode =
-    mergeConfigs(loadConfig(), loadEffectiveProjectConfig(getCwd())).editDiagnostics ?? "feedback";
+  // Choice settings of the page (edits that add errors, the BAKED kit): Enter moves to the next value.
+  const choices = SETTINGS.flatMap((setting) =>
+    setting.page === "agent-features" && setting.type === "enum" ? [setting] : [],
+  );
+  const effective = mergeConfigs(
+    loadConfig(),
+    loadEffectiveProjectConfig(getCwd()),
+  ) as unknown as Record<string, unknown>;
+  const choiceValues = new Map(
+    choices.map((setting) => [setting.id, String(effective[setting.id] ?? setting.default)]),
+  );
+  const choiceRow = (id: string) => `choice:${id}`;
   const isOn = (key: string, state: Record<string, unknown>) =>
     features.find((feature) => feature.key === key)?.defaultOn
       ? state[key] !== false
@@ -554,15 +560,14 @@ function handleAgentFeatures(_input: string, ctx: CommandContext): void {
       label: `${label}: ${isOn(key, localState as Record<string, unknown>) ? "on" : "off"}`,
       description: help,
     })),
-    ...(editSetting
-      ? [
-          {
-            value: EDIT_DIAGNOSTICS,
-            label: `${editSetting.label}: ${editMode}`,
-            description: editOptions.find((o) => o.value === editMode)?.help ?? editSetting.help,
-          },
-        ]
-      : []),
+    ...choices.map((setting) => {
+      const value = choiceValues.get(setting.id) ?? setting.default;
+      return {
+        value: choiceRow(setting.id),
+        label: `${setting.label}: ${value}`,
+        description: setting.options.find((o) => o.value === value)?.help ?? setting.help,
+      };
+    }),
   ];
   ctx.openCommandPicker({
     title: "Agent Features",
@@ -573,10 +578,14 @@ function handleAgentFeatures(_input: string, ctx: CommandContext): void {
     scopeEnabled: true,
     initialScope: ctx.detectScope("agentFeatures"),
     onSelect: (value, scope) => {
-      if (value === EDIT_DIAGNOSTICS) {
-        editMode = editMode === "reject" ? "feedback" : "reject";
-        ctx.saveToScope({ editDiagnostics: editMode }, scope ?? "project");
-        sysMsg(ctx, `Edits that add errors: ${editMode} (${scope ?? "project"})`);
+      const choice = choices.find((setting) => choiceRow(setting.id) === value);
+      if (choice) {
+        const values = choice.options.map((o) => o.value);
+        const current = choiceValues.get(choice.id) ?? choice.default;
+        const next = values[(values.indexOf(current) + 1) % values.length] ?? choice.default;
+        choiceValues.set(choice.id, next);
+        ctx.saveToScope({ [choice.id]: next } as Partial<AppConfig>, scope ?? "project");
+        sysMsg(ctx, `${choice.label}: ${next} (${scope ?? "project"})`);
         useUIStore.getState().updatePickerOptions(buildOptions());
         return;
       }
@@ -591,8 +600,13 @@ function handleAgentFeatures(_input: string, ctx: CommandContext): void {
       useUIStore.getState().updatePickerOptions(buildOptions());
     },
     onScopeMove: (value, from, to) => {
-      if (value === EDIT_DIAGNOSTICS) {
-        ctx.saveToScope({ editDiagnostics: editMode }, to, from);
+      const choice = choices.find((setting) => choiceRow(setting.id) === value);
+      if (choice) {
+        ctx.saveToScope(
+          { [choice.id]: choiceValues.get(choice.id) ?? choice.default } as Partial<AppConfig>,
+          to,
+          from,
+        );
         return;
       }
       const key = value as keyof AgentFeatures;

@@ -64,6 +64,7 @@ The chat settings that the terminal pickers edit (provider options, chat router 
 | `sandbox` | `"off"` | OS sandbox of shell, project, check and acceptance commands: `off`, `auto` (sandbox when a backend works, else run without it) or `required` (refuse without a backend). Global; a project config can only raise it. `/sandbox`, Tools page ([OS sandbox](sandbox.md)) |
 | `sandboxNetwork` | `"allow"` | Network inside the chat sandbox: `allow` or `deny` (loopback only); workflow runs follow their policy's `network` |
 | `editDiagnostics` | `"feedback"` | What an edit that adds errors in its file or an importing file does: `feedback` returns them, `reject` also restores the file ([tools](tools.md#diagnostics-after-edits)) |
+| `designKit` | `"auto"` | Default styles for web UI ([BAKED kit](kit.md)): `auto` offers the kit to web projects with no styles of their own, `always` to every project, `off` never (artifacts included) |
 | `diagnostics.timeoutMs` | `2500` | Global only. Wait for diagnostics before and after an edit, each; a check that does not finish in time is reported as not checked |
 | `cache.ttl` | `"5m"` | Anthropic prompt cache lifetime: `5m` or `1h` |
 | `memory.embeddingModel` | unset | Embedding model for memory recall; unset uses the offline embedder |
