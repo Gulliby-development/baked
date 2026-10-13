@@ -186,6 +186,7 @@ export function NewRunScreen({ project }: SectionProps) {
   const [writers, setWriters] = useState(1);
   // Null follows the configured policy; the checkbox overrides it for this run.
   const [assumeOverride, setAssume] = useState<boolean | null>(null);
+  const [strict, setStrict] = useState(false);
   const [model, setModel] = useState("");
   const [showReadiness, setShowReadiness] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -254,6 +255,7 @@ export function NewRunScreen({ project }: SectionProps) {
       ...(writers > 1 ? { writers } : {}),
       // Sent only when changed here, so a backend without the field still starts the run.
       ...(assumeOverride !== null ? { clarification: assume ? "assume" : "ask" } : {}),
+      ...(strict ? { modelStrict: true } : {}),
     });
   };
 
@@ -265,6 +267,7 @@ export function NewRunScreen({ project }: SectionProps) {
     writers > 1 ? `${writers} writers` : worktree ? "in a worktree" : "in place",
     assume ? "assumptions on" : "questions wait for you",
     model || "default model",
+    ...(strict ? ["run model overrides routes"] : []),
   ].join(" · ");
 
   return (
@@ -478,6 +481,19 @@ export function NewRunScreen({ project }: SectionProps) {
                   </option>
                 ))}
               </select>
+              <label className={CHECK}>
+                <input
+                  type="checkbox"
+                  checked={strict}
+                  onChange={(e) => setStrict(e.target.checked)}
+                />
+                Run model overrides configured routes
+              </label>
+              <span className={HINT}>
+                {strict
+                  ? "Every role and stage uses the run model, whatever Model routing says."
+                  : "Roles and stages with a configured route keep it."}
+              </span>
             </div>
           </div>
         </details>
