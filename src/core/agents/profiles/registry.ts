@@ -12,6 +12,7 @@ import { WorkflowFault } from "../../workflows/errors.js";
 import { isMcpGrant } from "../../workflows/mcp-grants.js";
 import { builtinProfiles } from "./builtin.js";
 import { type AgentProfile, ProfileSchema } from "./schema.js";
+import { withTestIntegrityRules } from "./test-integrity-rules.js";
 
 export interface RegisteredProfile {
   profile: AgentProfile;
@@ -37,7 +38,8 @@ export class ProfileRegistry {
     models: ProfileModels,
     globalDirectory = join(homedir(), ".baked", "agents"),
   ) {
-    for (const profile of builtinProfiles) this.add(profile, "builtin", models);
+    for (const profile of withTestIntegrityRules(builtinProfiles))
+      this.add(profile, "builtin", models);
     for (const directory of [globalDirectory, join(workspace, "baked", "agents")]) {
       if (!existsSync(directory)) continue;
       for (const file of readdirSync(directory)
@@ -59,12 +61,14 @@ export class ProfileRegistry {
     });
     const resolved = { ...profile, model: routed.model };
     assertProfileCapabilities(resolved);
+    const route = recordEntry(routed);
     this.entries.set(profile.id, {
       profile: resolved,
       source,
       hash: hashJson(resolved),
       modelSource: routed.source,
-      route: recordEntry(routed),
+      // A routed effort wins; otherwise the profile's own effort (#334) is the route's.
+      route: route.effort || !profile.effort ? route : { ...route, effort: profile.effort },
     });
   }
   list(): RegisteredProfile[] {

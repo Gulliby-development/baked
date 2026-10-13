@@ -51,6 +51,7 @@ describe("batch scripts on Windows", () => {
         env: process.env,
         timeoutMs: 20000,
         signal: new AbortController().signal,
+        sandbox: null,
       });
       expect(result.exitCode).toBe(3);
       expect(result.output).toContain(`got:"one":"t w&o"`);
@@ -70,6 +71,7 @@ describe("batch scripts on Windows", () => {
           env: process.env,
           timeoutMs: 20000,
           signal: new AbortController().signal,
+          sandbox: null,
         }),
       ).rejects.toThrow(/Refusing/);
     } finally {

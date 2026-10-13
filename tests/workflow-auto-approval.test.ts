@@ -255,6 +255,19 @@ describe("renewal after operator policy decisions", () => {
     const narrower = { ...renewing, allowedTools: renewing.allowedTools.slice(1) };
     expect(evaluateAutoApproval(narrower, manifest, spec, graph(scope), [previous], decided(narrower)).approval?.mode).toBe("renewal");
   });
+  test("a weaker OS sandbox needs a person, a stricter one renews", () => {
+    const strict = approved({ ...renewing, sandbox: "required" }, scope);
+    for (const [policy, reason] of [
+      [{ ...renewing, sandbox: "auto" as const }, "sandbox weakened from required to auto"],
+      [renewing, "sandbox weakened from required to off"],
+    ] as const) {
+      const result = evaluateAutoApproval(policy, manifest, spec, graph(scope), [strict], decided(policy));
+      expect(result.approval).toBeNull();
+      expect(result.reasons.join("\n")).toContain(reason);
+    }
+    const stricter = { ...renewing, sandbox: "required" as const };
+    expect(evaluateAutoApproval(stricter, manifest, spec, graph(scope), [previous], decided(stricter)).approval?.mode).toBe("renewal");
+  });
   test("a change that no operator decision names still needs a person", () => {
     const changed = { ...renewing, checks: [lint] };
     // A decision for another policy, or a policy-revision record without a user approver, is not consent.
