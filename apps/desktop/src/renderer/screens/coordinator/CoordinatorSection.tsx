@@ -26,8 +26,8 @@ import { SessionView } from "../chat/ChatSection.js";
 import type { SectionProps } from "../sections.js";
 import { NeedsNewer } from "../setup/shared.js";
 import { ApprovalRulesSection } from "./ApprovalRules.js";
-import { WorktreeLabel } from "./LaunchNote.js";
 import { LaunchActions, useLaunched } from "./LaunchActions.js";
+import { WorktreeLabel } from "./LaunchNote.js";
 import {
   BRIEF_TITLES,
   launchedHref,
@@ -386,7 +386,9 @@ export function CoordinatorSection({ project }: SectionProps) {
       <CoordinatorPanel
         project={project}
         schedules={state.schedules}
-        launched={launched.items} onLaunched={launched.set} />
+        launched={launched.items}
+        onLaunched={launched.set}
+      />
     </div>
   );
 }

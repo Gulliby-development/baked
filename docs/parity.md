@@ -52,15 +52,9 @@ bun test tests/feature-parity.test.ts
 | Session list, resume and rename | `/session history`, `/session rename` | `--resume`, `--session`, `baked session list` | `/v1/sessions`, `/v1/sessions/:id` | `project/chat` |
 | Delete a session | `/session history` | `baked session delete` | `/v1/sessions/:id` | `project/chat` |
 | Export a chat (Markdown, JSON, clipboard) | `/session export`, `/session export json`, `/session export clipboard` | `baked session export` | `/v1/sessions/:id/export` | `project/chat` |
-<<<<<<< HEAD
 | Project coordinator chat with a durable project brief and read access to the project | `/coordinator`, `/projects` | `baked session coordinator` | `/v1/coordinator`, `/v1/coordinator/brief`, `/v1/coordinator/launched` +2 | `project/coordinator`, `project/chat` |
 | Editing sessions the coordinator launches work in their own Git worktree and branch | `/coordinator` | Not needed: the headless CLI does not launch coordinator sessions | `/v1/coordinator/launched`, `/v1/sessions` | `project/coordinator` |
-||||||| d4781e4c
-| Project coordinator chat with a durable project brief | `/coordinator` | `baked session coordinator` | `/v1/coordinator`, `/v1/coordinator/brief`, `/v1/coordinator/launched` | `project/coordinator`, `project/chat` |
-=======
-| Project coordinator chat with a durable project brief | `/coordinator` | `baked session coordinator` | `/v1/coordinator`, `/v1/coordinator/brief`, `/v1/coordinator/launched` | `project/coordinator`, `project/chat` |
 | Coordinator schedules: prompts that start a coordinator turn on their own | `/coordinator` | `baked session coordinator schedules`, `baked session coordinator schedule` | `/v1/coordinator/schedules` | `project/coordinator` |
->>>>>>> origin/feature/coordinator-schedules
 | Coordinator answers routine approvals by rules | `/coordinator rules` | `baked session coordinator rules` | `/v1/coordinator/approval-rules` | `project/coordinator` |
 | One-click coordinator digest: running, waiting, finished and open questions | `/coordinator summary`, `/coordinator` | Not needed: scripts read the same state with baked session coordinator and --json runs | `/v1/coordinator/summary` | `project/coordinator` |
 | Diagnostic export and API request dumps | `/session export all`, `/session export api` | `--events` | Not needed: a debugging aid for BAKED itself | Not needed: a debugging aid for BAKED itself |
