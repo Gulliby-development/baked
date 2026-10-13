@@ -278,6 +278,8 @@ Workspace facts list `go.mod`, `Cargo.toml`, `pom.xml`, `global.json` and any `.
 
 **Portable tests.** Checks run only on the host's operating system, so the profiles guard the tests a run writes against the usual cross-platform failures: the spec author adds a criterion that the product's tests pass on Windows, macOS and Linux when it has tests or CI; the implementer compares resolved paths (a macOS temp directory under `/var` is `/private/var`), builds paths with the path module, does not depend on one line ending and gives spawned processes generous timeouts; the correctness reviewer reports a test that would fail on another operating system as a correctness finding.
 
+**Layout criterion.** The sdd workflow does not render pages, so for a product with a graphical or web user interface the spec author adds a criterion that its pages fit a 1280 px wide viewport without horizontal scrolling, or names the region whose scrolling the request makes deliberate. The criterion gives the implementer and the reviewers a stated layout target; checking it in a browser is the v2 `ai-acceptance` gate.
+
 The same detection fills the checks written when E enables workflows on the runs screen; the build gate is not part of that set. Gates that are already configured (same ID or same command) are not offered again. Existing CI scripts are not read. On Windows, give the command name (`npm`, `pnpm`, `yarn`), not the shim file: Bun launches `npm` without a shell, but a name ending in `.cmd` fails with `EINVAL`. Only `npm` was tried on this host (npm 11.16); `pnpm` and `yarn` were not installed here.
 
 ### Token accounting and reservations
