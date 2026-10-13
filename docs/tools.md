@@ -73,6 +73,8 @@ The authoritative whole-project typecheck stays in the workflow checks stage and
 | `project` | Detects the toolchain from config and lock files and runs `lint`, `typecheck`, `test`, `build`, `run` or `list` (monorepo packages) for about 20 ecosystems |
 | `git` | Status, diff, log, commit, branch, stash, push and pull |
 
+With the `sandbox` setting on, `shell` and `project` commands (and the commit checks below) run in an OS sandbox: they write only inside the project, temp and package caches, and cannot read SSH keys, cloud credentials or token files. See [OS sandbox](sandbox.md).
+
 A `git commit` run by the agent first runs the project's native checks (for example `biome check` and `tsc --noEmit`, `cargo clippy` and `cargo check`, `ruff` and `pyright`); a failure blocks the commit and returns the errors. The checks come from config files, never from `package.json` scripts.
 
 ## Agent bookkeeping

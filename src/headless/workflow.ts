@@ -311,6 +311,11 @@ export async function executeWorkflowCommand(
         ...(args.flags.clarification === "ask" || args.flags.clarification === "assume"
           ? { clarification: args.flags.clarification }
           : {}),
+        ...(args.flags.sandbox === "off" ||
+        args.flags.sandbox === "auto" ||
+        args.flags.sandbox === "required"
+          ? { sandbox: args.flags.sandbox }
+          : {}),
         ...(args.flags.duplication === "off" ||
         args.flags.duplication === "warn" ||
         args.flags.duplication === "ratchet"

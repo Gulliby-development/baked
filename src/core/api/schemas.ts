@@ -45,6 +45,8 @@ export const StartBody = z
     propertyTests: z.enum(["auto", "off"]).optional(),
     /** The run model overrides configured model routes, as `--model-strict`. */
     modelStrict: z.boolean().optional(),
+    /** The run's OS sandbox, as `--sandbox`; omitted, the policy and the sandbox setting decide. */
+    sandbox: z.enum(["off", "auto", "required"]).optional(),
     /** The approval reviewer may approve low-risk plans outside the limits, as `--approval-review`. */
     approvalReview: z.boolean().optional(),
     /**
@@ -96,6 +98,7 @@ export const PreRunQuery = z.strictObject({
   modelStrict: z.enum(["true", "false"]).optional(),
   worktree: z.enum(["true", "false"]).optional(),
   writers: z.string().regex(/^\d+$/).optional(),
+  sandbox: z.enum(["off", "auto", "required"]).optional(),
   confirmAutoApproval: z.string().min(1).optional(),
 });
 export const ListQuery = z.strictObject({
