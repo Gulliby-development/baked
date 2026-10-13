@@ -571,10 +571,10 @@ export const FEATURES: readonly Feature[] = [
     id: "chat-memory",
     group: "Tools and code intelligence",
     title: "Long-term chat memory: browse, pin, reword, hide, cleanup, scopes",
-    tui: ["/memory"],
+    tui: ["/memory: Chat tab"],
     cli: notNeeded("one-shot runs read memory, people curate it"),
     api: ["/v1/memory", "/v1/memory/cleanup", "/v1/memory/settings"],
-    desktop: ["project/chat-memory"],
+    desktop: ["project/memory: Chat"],
   },
   {
     id: "os-sandbox",
@@ -597,10 +597,10 @@ export const FEATURES: readonly Feature[] = [
     id: "run-memory",
     group: "Tools and code intelligence",
     title: "Run memory: view and edit what runs learned",
-    tui: ["/workflow: run memory"],
+    tui: ["/memory: Runs tab"],
     cli: ["baked workflow memory"],
     api: ["/v1/workflow/memory"],
-    desktop: ["project/run-memory"],
+    desktop: ["project/memory: Runs"],
   },
 
   // Workflow runs

@@ -26,7 +26,9 @@ describe("run memory client", () => {
     await expect(setup.editRunMemory("baked", { action: "forget", id: "a-0000000000" })).rejects.toBeInstanceOf(ApiError);
   });
 
-  test("has its own project section", () => {
-    expect(parseRoute(projectHref("baked", "run-memory"))).toEqual({ name: "project", key: "baked", section: "run-memory", id: null });
+  test("is the Runs part of the Memory section", () => {
+    expect(parseRoute(projectHref("baked", "memory", "runs"))).toEqual({ name: "project", key: "baked", section: "memory", id: "runs" });
+    // The old section's links still open it.
+    expect(parseRoute("#/p/baked/run-memory")).toEqual({ name: "project", key: "baked", section: "memory", id: "runs" });
   });
 });

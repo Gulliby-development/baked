@@ -206,7 +206,7 @@ baked workflow memory accept r-5c1e0a9b27
 baked workflow memory restore s-0b7e55d1c4
 ```
 
-The listing marks a check the workspace policy already lists, and a proposed rule, as not sent; a rule shows its status, scope and how many runs had its finding, and `--json` returns `{enabled, entries, hidden, rendered}`, where `rendered` is the exact text the next run would receive (null when empty). In the TUI the **Runs** tab of `/memory` lists the same entries: Enter edits, Ctrl+N adds a note, Ctrl+A accepts a proposed rule, Ctrl+D forgets, Ctrl+R restores and typing filters. The desktop app has a **Run memory** section under the project's setup, and the local API serves `GET|POST /v1/workflow/memory`.
+The listing marks a check the workspace policy already lists, and a proposed rule, as not sent; a rule shows its status, scope and how many runs had its finding, and `--json` returns `{enabled, entries, hidden, rendered}`, where `rendered` is the exact text the next run would receive (null when empty). In the TUI the **Runs** tab of `/memory` lists the same entries: Enter edits, Ctrl+N adds a note, Ctrl+A accepts a proposed rule, Ctrl+D forgets, Ctrl+R restores and typing filters. The desktop app shows them in the **Runs** part of the project's **Memory** screen, and the local API serves `GET|POST /v1/workflow/memory`.
 
 ### Diagnostics after edits
 
