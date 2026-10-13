@@ -155,7 +155,11 @@ export const FEATURES: readonly Feature[] = [
       "/coordinator: first in the command palette",
       "/projects: a switched project opens on its coordinator",
     ],
-    cli: ["baked session coordinator: prints the brief"],
+    cli: [
+      "baked session coordinator: prints the brief",
+      "baked session coordinator stop",
+      "baked session coordinator close",
+    ],
     api: [
       "/v1/coordinator",
       "/v1/coordinator/brief",
@@ -742,6 +746,25 @@ export const FEATURES: readonly Feature[] = [
     cli: ["baked workflow run", "baked workflow approve", "baked workflow reject"],
     api: ["/v1/workflow/runs", "/v1/workflow/runs/:id/approve", "/v1/workflow/runs/:id/reject"],
     desktop: ["project/overview: New run", "attention"],
+  },
+  {
+    id: "run-cost-cap",
+    group: "Workflow runs",
+    title: "Cost cap of a run: per run, per project and in the doctor and estimate",
+    tui: ["/workflow: new run, Cost cap field", "/timeouts: Workflow Cost Cap"],
+    cli: [
+      "baked workflow run: --max-cost-usd",
+      "baked workflow doctor: --max-cost-usd",
+      "baked workflow estimate: --max-cost-usd",
+      "baked workflow extend: --cost-usd",
+    ],
+    api: [
+      "/v1/workflow/runs: maxCostUsd",
+      "/v1/workflow/doctor: maxCostUsd",
+      "/v1/workflow/estimate: maxCostUsd",
+      "/v1/settings: limits page, runBudget.maxCostUsd",
+    ],
+    desktop: ["project/overview: New run, Cost cap", "settings/chat: Timeouts and limits page"],
   },
   {
     id: "preset-proposal",

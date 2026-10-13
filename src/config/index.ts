@@ -183,6 +183,9 @@ export function mergeConfigs(global: AppConfig, project: Partial<AppConfig> | nu
       : merged.agentFeatures;
     const cache = layer.cache ? { ...merged.cache, ...layer.cache } : merged.cache;
     const quality = layer.quality ? { ...merged.quality, ...layer.quality } : merged.quality;
+    const runBudget = layer.runBudget
+      ? { ...merged.runBudget, ...layer.runBudget }
+      : merged.runBudget;
     const watchdogTimeouts = layer.watchdogTimeouts
       ? { ...merged.watchdogTimeouts, ...layer.watchdogTimeouts }
       : merged.watchdogTimeouts;
@@ -203,6 +206,7 @@ export function mergeConfigs(global: AppConfig, project: Partial<AppConfig> | nu
       agentFeatures,
       cache,
       ...(quality ? { quality } : {}),
+      ...(runBudget ? { runBudget } : {}),
       watchdogTimeouts,
       mcpServers,
     };

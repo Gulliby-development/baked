@@ -76,7 +76,7 @@ export function setInScope(value: SettingValue | undefined, scope: SettingScope)
 /** A number setting in its display unit: milliseconds as seconds, a fraction as a percentage. */
 export function displayNumber(setting: SettingDefinition, value: unknown): string {
   if (setting.type !== "number") return String(value);
-  if (value === null || value === undefined) return "auto";
+  if (value === null || value === undefined) return setting.unsetLabel ?? "auto";
   const factor = setting.display?.factor ?? 1;
   const shown = Math.round(((value as number) / factor) * 100) / 100;
   const unit = setting.display?.unit;

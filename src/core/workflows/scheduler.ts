@@ -278,6 +278,7 @@ import {
   accountRefusal,
   endedOnProse,
   isCapacityError,
+  isInputTooLarge,
   isTransient,
   reportsLostTool,
   retryAfterMs,
@@ -428,19 +429,28 @@ type Severity = Review["findings"][number]["severity"];
 const ALL_SEVERITIES: readonly Severity[] = ["critical", "high", "medium", "low"];
 const SERIOUS: readonly Severity[] = ["critical", "high"];
 
+const NOT_LOW: readonly Severity[] = ["critical", "high", "medium"];
+
 /**
  * The severities that start a correction. After the first repair or convergence round, medium and
  * low findings are recorded in the review artifact but no longer start another round: runs
  * de6cf1ab and 2fa658c0 spent their rounds on ever deeper medium findings while every check passed.
+ * With the policy's `lowFindings: "note"` low findings are notes from the first round on: a low
+ * README wording finding cost structpad 6d048155 663k tokens and an attempt cap stop (#1001).
  */
-const repairSeverities = (run: {
-  repair_rounds: number;
-  review_rounds?: number;
-  convergence_rounds: number;
-}) =>
+const repairSeverities = (
+  run: {
+    repair_rounds: number;
+    review_rounds?: number;
+    convergence_rounds: number;
+  },
+  policy: Pick<RunPolicy, "lowFindings">,
+) =>
   run.repair_rounds + (run.review_rounds ?? 0) + run.convergence_rounds > 0
     ? SERIOUS
-    : ALL_SEVERITIES;
+    : policy.lowFindings === "note"
+      ? NOT_LOW
+      : ALL_SEVERITIES;
 
 /**
  * A finding the severity floor does not demote once the host reproduces it: it is based on the
@@ -1669,7 +1679,7 @@ export class WorkflowScheduler {
                 for (const item of review.coverage)
                   this.store.criterion(runId, state.snapshotId ?? "", item);
               });
-              const severities = repairSeverities(this.store.run(runId));
+              const severities = repairSeverities(this.store.run(runId), policy);
               const failing = new Set(
                 review.coverage
                   .filter(
@@ -2888,11 +2898,45 @@ export class WorkflowScheduler {
       // A model that keeps failing, or whose window cannot hold the prompt, hands the step to the
       // next model of its route. Nothing is handed over once the attempt has changed files.
       const windowTooSmall =
-        error instanceof WorkflowFault &&
-        error.code === "BUDGET_EXHAUSTED" &&
-        error.details.reason === "context_window";
+        (error instanceof WorkflowFault &&
+          error.code === "BUDGET_EXHAUSTED" &&
+          error.details.reason === "context_window") ||
+        isInputTooLarge(error);
       if (next !== undefined && !signal.aborted && !wrote && (isTransient(error) || windowTooSmall))
         return again(0, fallbackIndex + 1, placement.primaryError ?? error);
+      // A request too large for the provider is an error of the prompt, not a lost worker: a
+      // restart on the same history failed the same way (#997). One fresh session, which does
+      // not carry that history, is tried; then the step stops for the size.
+      if (isInputTooLarge(error) && !signal.aborted) {
+        if (!placement.stepRetry && !wrote)
+          return this.call(
+            runId,
+            stepId,
+            state,
+            policy,
+            stageProfile,
+            extra,
+            signal,
+            task,
+            0,
+            validate,
+            limits,
+            hostTools,
+            {
+              ...(placement.root ? { root: placement.root } : {}),
+              ...(fallbackIndex ? { fallbackIndex } : {}),
+              ...(placement.primaryError !== undefined
+                ? { primaryError: placement.primaryError }
+                : {}),
+              stepRetry: true,
+            },
+          );
+        throw new WorkflowFault(
+          "BUDGET_EXHAUSTED",
+          `The model input exceeded the limit of ${profile.model}: ${error instanceof Error ? error.message : String(error)}`,
+          { reason: "context_window" },
+        );
+      }
       if (placement.primaryError !== undefined && !signal.aborted) {
         const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
         throw new WorkflowFault(
@@ -8246,7 +8290,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       throw new WorkflowFault("ARTIFACT_MISSING", "Review snapshot missing");
     const findings: Review["findings"] = [];
     const owners = new Map<string, Reviewer>();
-    const severities = repairSeverities(this.store.run(runId));
+    const severities = repairSeverities(this.store.run(runId), policy);
     const reviewSpec = state.spec;
     const reviewSnapshotId = state.snapshotId;
     const reviewSnapshotHash = state.workspaceHash;

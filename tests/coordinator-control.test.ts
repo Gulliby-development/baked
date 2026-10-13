@@ -6,7 +6,9 @@ import { closeLaunched, stopLaunched } from "../src/core/chat/coordinator-contro
 import { type ProjectLauncher, syncLaunched } from "../src/core/chat/coordinator-launch.js";
 import type { ProjectStateSource } from "../src/core/chat/project-state.js";
 import { type ChatAgentHost, ChatService, type TurnAgentRequest } from "../src/core/chat/sessions.js";
+import { getCwd, setCwd } from "../src/core/cwd.js";
 import type { InitiativeView } from "../src/core/workflows/initiatives/service.js";
+import { runSessionCli } from "../src/headless/session.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
 
 /** Answers every turn at once, or with `hang` waits until the turn is interrupted. */
@@ -222,4 +224,63 @@ describe("stopping an initiative", () => {
     expect(await syncLaunched(chat, coordinator, state)).toEqual([]);
     await expect(stopLaunched(chat, coordinator.id, state, launcher, { kind: "initiative", id: "init" })).rejects.toThrow("is closed");
   });
+});
+
+describe("stopping and closing from the CLI", () => {
+  async function cli(dir: string, argv: string[]) {
+    const previous = getCwd();
+    setCwd(dir, { changeProcess: false });
+    const out: string[] = [];
+    const err: string[] = [];
+    const stdout = process.stdout.write.bind(process.stdout);
+    const stderr = process.stderr.write.bind(process.stderr);
+    process.stdout.write = ((chunk: string) => out.push(String(chunk)) > 0) as typeof process.stdout.write;
+    process.stderr.write = ((chunk: string) => err.push(String(chunk)) > 0) as typeof process.stderr.write;
+    try {
+      const code = await runSessionCli(argv);
+      return { code, stdout: out.join(""), stderr: err.join("") };
+    } finally {
+      process.stdout.write = stdout;
+      process.stderr.write = stderr;
+      setCwd(previous, { changeProcess: false });
+    }
+  }
+
+  test("baked session coordinator stop cancels a launched run and close closes it", async () => {
+    const fixture = workflowFixture();
+    const chat = new ChatService({ workspace: fixture.root, config: fixture.service.config, host: new Host(), homeDir: fixture.root });
+    cleanups.push(async () => {
+      await chat.shutdown();
+      await fixture.dispose();
+    });
+    // Without a coordinator there is nothing to stop.
+    expect((await cli(fixture.root, ["coordinator", "stop", "run", "r"])).stderr).toMatch(/no coordinator yet/);
+    const coordinator = await chat.coordinator(true);
+    if (!coordinator) throw new Error("no coordinator");
+    const { runId } = await fixture.start();
+    const store = new BriefStore(chat.workspace, coordinator.id);
+    store.write({ ...store.read(), launched: [{ kind: "run", id: runId, why: "Ship", status: "started" }] }, 0);
+
+    const early = await cli(fixture.root, ["coordinator", "close", "run", runId]);
+    expect(early.code).toBe(1);
+    expect(early.stderr).toContain("stop it before closing");
+
+    const stopped = await cli(fixture.root, ["coordinator", "stop", "run", runId, "--json"]);
+    expect(stopped.code).toBe(0);
+    expect(JSON.parse(stopped.stdout)).toEqual({ stopped: { kind: "run", id: runId }, message: `Cancelled run ${runId}` });
+    expect(fixture.service.store.run(runId).status).toBe("cancelled");
+
+    const closed = await cli(fixture.root, ["coordinator", "close", "run", runId]);
+    expect(closed).toMatchObject({ code: 0, stdout: `Closed run ${runId}\n` });
+    expect(store.read().launched[0]).toMatchObject({ kind: "run", id: runId, closed: true });
+    expect((await cli(fixture.root, ["coordinator", "close", "run", runId, "--reopen"])).stdout).toBe(`Reopened run ${runId}\n`);
+    expect(store.read().launched[0]?.closed).toBeUndefined();
+
+    // A launched session's turn lives in the hosting process; unknown items and bad kinds are refused.
+    const session = await cli(fixture.root, ["coordinator", "stop", "session", "s1"]);
+    expect(session.code).toBe(1);
+    expect(session.stderr).toContain("POST /v1/coordinator/launched/stop");
+    expect((await cli(fixture.root, ["coordinator", "stop", "run", "nope"])).stderr).toContain("launched no run nope");
+    expect((await cli(fixture.root, ["coordinator", "stop", "task", "x"])).stderr).toContain("KIND is session, run or initiative");
+  }, 60000);
 });

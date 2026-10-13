@@ -365,6 +365,12 @@ export const PolicySchema = z
      */
     maxTaskRepairs: z.number().int().min(0).max(5).optional(),
     /**
+     * `note` keeps low review and convergence findings as notes from the first round on: they
+     * start no correction unless one is why an automated criterion fails. Absent means `repair`, so
+     * stored policies keep their hash.
+     */
+    lowFindings: z.enum(["repair", "note"]).optional(),
+    /**
      * The duplication and dead-code ratchet (quality/duplication.ts). Absent means `warn`: copies
      * and unused declarations the run adds are reported, never blocking, so stored policies keep
      * their hash. `ratchet` makes them blocking findings; `off` skips the measurement.
@@ -1472,6 +1478,8 @@ export interface StartRequest {
   sandbox?: "off" | "auto" | "required";
   /** Concurrent writers requested for this run (CLI `--writers N`); it overrides the policy. */
   maxConcurrentWriters?: number;
+  /** The run's dollar cap (CLI `--max-cost-usd N`); it overrides the policy's `maxCostUsd`. */
+  maxCostUsd?: number;
   /**
    * Best-of-N candidates per planned task for this run (CLI `--candidates N`); it overrides the
    * definition's tasks stage and the policy.

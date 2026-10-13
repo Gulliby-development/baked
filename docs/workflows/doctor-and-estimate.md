@@ -30,6 +30,7 @@ interface PreRunRequest {
   policy?: unknown;                    // --policy FILE content; default config.workflows.policy
   worktree?: boolean;                  // --worktree
   writers?: number;                    // --writers
+  maxCostUsd?: number;                 // --max-cost-usd; default the policy's, then runBudget.maxCostUsd
 }
 ```
 
@@ -113,6 +114,8 @@ calls it with a placeholder feature and prompt and reports a thrown fault as one
    warn (released on the next drive).
 9. **budget.** With the estimate available: `fits: "maybe"` or `"no"` is warn, never fail, since estimates
    are not measurements. Fix: raise `maxTotalTokens` in the policy.
+10. **budget.cost.** With a cost cap and a priced estimate: `cost.fits` `"maybe"` or `"no"` is warn.
+   Fix: raise `maxCostUsd` (`--max-cost-usd`), or extend the run when it stops.
 
 The store is opened read-only when it exists. No database skips the lease check and uses default
 estimate ranges; a database this build cannot read (`VERSION_UNSUPPORTED`) is a warn, not a crash.
@@ -185,6 +188,7 @@ interface PreRunEstimate {
   models: { model: string; stages: string[]; tokens: TokenRange; costUsd: TokenRange | null;
             price: "table" | "approximate" | "unknown" }[];
   budget: { maxTotalTokens: number; fits: "yes" | "maybe" | "no" };
+  cost?: { maxCostUsd: number; fits: "yes" | "maybe" | "no" }; // only with a cap and a priced estimate
   label: string;                     // one line, always says "Estimate"
 }
 ```
