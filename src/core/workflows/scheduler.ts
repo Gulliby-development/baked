@@ -686,7 +686,7 @@ export class WorkflowScheduler {
                     if (!parsed.success) return [];
                     const questions = parsed.data.openQuestions;
                     return [
-                      ...specCoverageProblems(parsed.data),
+                      ...specCoverageProblems(parsed.data, policy.checks),
                       ...deliverableProblems(parsed.data, coverageRequest(state)),
                       ...assumeProblems(
                         policy,

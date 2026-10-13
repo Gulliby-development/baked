@@ -11,6 +11,7 @@ import {
   hostBoundCriteria,
   manualRepositoryCriteria,
   specCoverageProblems,
+  uncontractedBuildCriteria,
   validateSpecCoverage,
   validateTaskGraph,
 } from "../src/core/workflows/schemas.js";
@@ -71,6 +72,27 @@ describe("spec-side checks", () => {
     for (const c of [matrix, simulated, oneOs, manual]) expect(hostBoundCriteria({ ...fixed, criteria: [...fixed.criteria, c] })).toEqual([]);
     // "edge case" is not the Edge browser.
     expect(hostBoundCriteria({ ...fixed, criteria: [...fixed.criteria, { ...crossOs, then: "Chrome handles the edge case" }] })).toEqual([]);
+  });
+  // zoneslot-update fc3e9c49: AC-010 "production build succeeds" with a contract of typecheck,
+  // lint and tests ended inconclusive although the build passed.
+  test("an automated build criterion needs a check that builds the project", () => {
+    const check = (id: string, executable: string, args: string[]) => ({ id, executable, args });
+    const contract = [check("typecheck", "bun", ["run", "typecheck"]), check("lint", "bun", ["run", "lint"]), check("tests", "bun", ["test"])];
+    const build = { ...criterion("AC-010", ["FR-001"]), when: "the release is prepared", then: "the production build succeeds" };
+    const spec = { ...fixed, criteria: [...fixed.criteria, build] };
+    expect(uncontractedBuildCriteria(spec, contract)).toEqual(["AC-010"]);
+    const message = specCoverageProblems(spec, contract).join(" ");
+    expect(message).toContain("criterion AC-010 is automated but needs a build");
+    expect(message).toContain("typecheck, lint, tests");
+    // A check that builds proves it; without the checks the spec author is not asked.
+    expect(uncontractedBuildCriteria(spec, [...contract, check("build", "bun", ["run", "build"])])).toEqual([]);
+    expect(uncontractedBuildCriteria(spec, [check("verify", "mvn", ["-q", "verify"])])).toEqual([]);
+    expect(specCoverageProblems(spec)).toEqual([]);
+    // Commands named outright, and the same text on a manual criterion or about the app's own command.
+    for (const then of ["`cargo build --release` exits 0", "bun run build completes", "the project builds without errors"])
+      expect(uncontractedBuildCriteria({ ...fixed, criteria: [{ ...build, then }] }, contract)).toEqual(["AC-010"]);
+    expect(uncontractedBuildCriteria({ ...fixed, criteria: [{ ...build, method: "manual" as const }] }, contract)).toEqual([]);
+    expect(uncontractedBuildCriteria({ ...fixed, criteria: [{ ...build, then: "the build command of the CLI prints the target" }] }, contract)).toEqual([]);
   });
   test("the task graph check still reports the spec defects", () => {
     const graph = { schemaVersion: 1 as const, featureId: "fixture", revision: 1, specHash: "", planHash: "", tasks: [] };
