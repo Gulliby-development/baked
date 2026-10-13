@@ -962,7 +962,7 @@ export function buildTools(
       }),
       execute: deferExecute((args) => {
         resetReadCounter();
-        return bakeFindTool.createExecute(opts?.repoMap)(args);
+        return bakeFindTool.createExecute(opts?.repoMap, cwd)(args);
       }),
     }),
 
