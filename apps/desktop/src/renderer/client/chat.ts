@@ -74,6 +74,23 @@ export interface ChatMessage {
   inputContext?: InputContextItem[];
   /** Images attached to a user message. */
   images?: StoredImage[];
+  /** On a coordinator's notice: the launched item it is about. */
+  launch?: LaunchNote;
+}
+
+/** What a coordinator notice says about one item it launched (`src/types/index.ts`). */
+export interface LaunchNote {
+  kind: "session" | "run" | "initiative";
+  id: string;
+  feature?: string;
+  title?: string;
+  status: string;
+  why: string;
+  task?: { ref: string; url?: string; state: "open" | "closed" | "local" };
+  /** For a session whose turn ended: its last answer, shortened. */
+  result?: string;
+  /** `status`: the item's status changed; `task-closed`: its task's pull request merged. */
+  event: "status" | "task-closed";
 }
 
 export type ImageMediaType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";

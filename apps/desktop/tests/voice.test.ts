@@ -3,7 +3,12 @@ import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { resolveVoiceDir, VOICE_SAMPLE_RATE, VoiceEngine } from "../src/main/voice.ts";
+import {
+  resolveVoiceDir,
+  VOICE_SAMPLE_RATE,
+  VoiceEngine,
+  voiceFix,
+} from "../src/main/voice.ts";
 
 const dirs: string[] = [];
 const engines: VoiceEngine[] = [];
@@ -14,8 +19,8 @@ function tempDir(): string {
   return dir;
 }
 
-function engine(dir: string): VoiceEngine {
-  const created = new VoiceEngine(dir);
+function engine(dir: string, fix?: string): VoiceEngine {
+  const created = new VoiceEngine(dir, fix);
   engines.push(created);
   return created;
 }
@@ -63,7 +68,23 @@ describe("voice directory", () => {
   });
 });
 
+describe("voice fix", () => {
+  test("a source run is told to stage the engine, a packaged app to reinstall", () => {
+    expect(voiceFix({ packaged: false })).toContain("bun run stage:voice");
+    expect(voiceFix({ packaged: true })).toBe("Reinstall BAKED to restore it.");
+    expect(voiceFix({ packaged: false, override: "/elsewhere" })).toContain("BAKED_VOICE_DIR");
+  });
+});
+
 describe("voice status", () => {
+  test("ends the reason with the fix for where the app runs from", () => {
+    const fix = voiceFix({ packaged: false });
+    expect(engine(tempDir(), fix).status()).toEqual({
+      available: false,
+      reason: `The speech engine is not installed. ${fix}`,
+    });
+  });
+
   test("names the missing engine", () => {
     const status = engine(tempDir()).status();
     expect(status.available).toBe(false);

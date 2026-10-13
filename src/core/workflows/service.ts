@@ -54,6 +54,13 @@ import { WorkflowFault } from "./errors.js";
 import { estimateHistory, type SavedEstimate } from "./estimate.js";
 import { replayEvents } from "./events.js";
 import {
+  captureForkSeed,
+  FORK_SEED_ARTIFACT,
+  type ForkSeed,
+  forkStagePosition,
+  forkStages,
+} from "./fork-stage.js";
+import {
   commandProcessMayRun,
   executionLeaseFor,
   leaseOwnerAlive,
@@ -1558,9 +1565,30 @@ export class NativeWorkflowService implements WorkflowService {
         "The run is executing; pause it before switching its models",
       );
   }
-  async fork(runId: string, command: CommandIdentity): Promise<RunSnapshot> {
+  /**
+   * A new run with the parent's spec, plan and task graph. Without `fromStage` it starts again at
+   * the analysis; with it, it starts at that stage (after the implementation) from the parent's
+   * changes as they are now, keeping the parent's approval, so a re-run of one stage on another
+   * model does not repeat the implementation (#855).
+   */
+  async fork(
+    runId: string,
+    command: CommandIdentity,
+    options: { fromStage?: string } = {},
+  ): Promise<RunSnapshot> {
     this.enabled();
-    return this.forkRun(runId, command, { runId, ...command, action: "fork" });
+    const fromStage = options.fromStage;
+    return this.forkRun(
+      runId,
+      command,
+      { runId, ...command, action: "fork", ...(fromStage ? { fromStage } : {}) },
+      undefined,
+      fromStage,
+    );
+  }
+  /** The stages a fork of the run can start at with `fromStage`. */
+  forkStages(runId: string): string[] {
+    return forkStages(this.store.run(runId).definition_json);
   }
   /**
    * A fork of an initiative feature whose upstream contracts changed: the new run keeps its spec,
@@ -1608,6 +1636,7 @@ export class NativeWorkflowService implements WorkflowService {
       policy?: RunPolicy;
       baseCommit?: string;
     },
+    fromStage?: string,
   ): RunSnapshot {
     return this.store.transaction(() => {
       const old = this.store.previousCommand(command.commandId, body);
@@ -1617,6 +1646,20 @@ export class NativeWorkflowService implements WorkflowService {
         throw new WorkflowFault("REVISION_CONFLICT", "Run changed before fork");
       const state = this.store.state(runId);
       const id = newId();
+      let seed: ForkSeed | null = null;
+      const stagePosition = fromStage ? forkStagePosition(run.definition_json, fromStage) : null;
+      const parentApproval = state.approvalRoot;
+      if (fromStage) {
+        if (run.status === "running" || this.active.has(runId))
+          throw new WorkflowFault("WORKSPACE_BUSY", "Pause the run before forking it from a stage");
+        if (!state.spec || !state.graph || !state.plan || !parentApproval)
+          throw new WorkflowFault(
+            "STALE_DECISION",
+            `Run ${runId} has no approved task graph, so it cannot be forked from ${fromStage}; fork it without a stage`,
+          );
+        seed = captureForkSeed(this.store, runId, state, runRoot(this.workspace, state), fromStage);
+      }
+      const worktreeBase = state.worktree?.baseHead ?? state.worktreeBase;
       state.stageIndex = state.spec && state.graph && state.plan ? 3 : 0;
       state.position = restartPosition(
         run.definition_json,
@@ -1653,6 +1696,14 @@ export class NativeWorkflowService implements WorkflowService {
       state.autoExtensions = 0;
       state.limitations = [];
       state.reviewNotes = [];
+      if (seed && stagePosition) {
+        // The parent's approval covers the same graph; the fork starts from the parent's base
+        // commit and its first drive writes the parent's changes back as journaled edits.
+        state.approvalRoot = parentApproval;
+        state.position = stagePosition.position;
+        state.stageIndex = stagePosition.stageIndex;
+        state.worktreeBase = worktreeBase;
+      }
       const policy = rebase?.policy ?? PolicySchema.parse(JSON.parse(run.policy_json));
       if (rebase) {
         state.hostDependencies = rebase.dependencies;
@@ -1689,6 +1740,10 @@ export class NativeWorkflowService implements WorkflowService {
       // Dependents find a feature's accepted contract through this artifact.
       if (state.spec) this.store.artifact(id, "spec", "spec.json", canonical(state.spec));
       if (state.graph) this.store.syncTasks(id, state.graph);
+      if (seed) {
+        this.store.artifact(id, "fork", FORK_SEED_ARTIFACT, canonical(seed));
+        this.store.setApproval(id, parentApproval);
+      }
       const gates = this.store.artifacts(runId).find((a) => a.logical_path === GATES_ARTIFACT);
       if (gates)
         this.store.artifact(id, "gates", GATES_ARTIFACT, this.store.readArtifact(runId, gates.id));

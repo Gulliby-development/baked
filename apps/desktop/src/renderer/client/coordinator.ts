@@ -18,6 +18,8 @@ export interface FlowTask {
 export interface LaunchedEntry {
   kind: LaunchedKind;
   id: string;
+  /** A name a person reads instead of the id: the session's title, the run's request. */
+  title?: string;
   why: string;
   status: string;
   /** For a feature of the initiative `id`: the feature, tracked on its own task. */

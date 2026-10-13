@@ -97,6 +97,23 @@ describe("mode tool gating", () => {
     expect(typeof archRead?.execute).toBe("function");
   });
 
+  test("architect mode lists and reads artifacts but refuses saving and deploying them", async () => {
+    const artifact = makeAgent("architect").tools.artifact;
+    const list = (await artifact!.execute!({ action: "list" }, {})) as unknown;
+    expect(typeof list).toBe("string");
+    expect(String(list)).not.toContain("architect");
+    const read = (await artifact!.execute!({ action: "read" }, {})) as unknown;
+    expect(read).toBe("Name the artifact: id.");
+    for (const action of ["save", "deploy"]) {
+      const denied = (await artifact!.execute!({ action, html: "<p>x</p>" }, {})) as {
+        error?: string;
+        output: string;
+      };
+      expect(denied.error).toBe("mode_restricted");
+      expect(denied.output).toContain("architect");
+    }
+  });
+
   test("default mode does not deny-stub edit_file (distinct execute from architect's stub)", () => {
     // The architect edit_file execute is the deny stub; the default one is the
     // real tool. They must be different function references — proves default

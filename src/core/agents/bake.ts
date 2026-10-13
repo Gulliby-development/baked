@@ -38,6 +38,7 @@ import {
   buildTools,
   CORE_TOOL_NAMES,
   PLAN_EXECUTION_TOOL_NAMES,
+  RESTRICTED_TOOL_ACTIONS,
   RESTRICTED_TOOL_NAMES,
 } from "../tools/index.js";
 import { renderTaskList } from "../tools/task-list.js";
@@ -986,6 +987,25 @@ export function createBakeAgent({
       if (modeAllows(name)) continue;
       const tool = def as { execute?: (...a: unknown[]) => unknown };
       if (typeof tool.execute !== "function") continue;
+      const readActions = isRestricted ? RESTRICTED_TOOL_ACTIONS[name] : undefined;
+      if (readActions) {
+        // Read-only actions of a tool that can also write (listing artifacts) run as usual.
+        const execute = tool.execute;
+        (allTools as Record<string, unknown>)[name] = {
+          ...(def as Record<string, unknown>),
+          execute: (input: unknown, ...rest: unknown[]) => {
+            const action = (input as { action?: unknown } | null)?.action;
+            if (typeof action === "string" && readActions.includes(action))
+              return execute(input, ...rest);
+            return Promise.resolve({
+              success: false,
+              output: modeDenyReason(name),
+              error: "mode_restricted",
+            });
+          },
+        };
+        continue;
+      }
       // Rebuild the entry as a fresh object (spread) with only execute swapped
       // for a deny stub — never mutate the source tool object in place. Some
       // entries (MCP tools from the singleton manager, spark-shared bakeTools)

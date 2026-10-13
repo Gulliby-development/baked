@@ -191,7 +191,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   reject: ["request", "reason", "expected-revision", "command-id"],
   pause: ["expected-revision", "command-id"],
   cancel: ["expected-revision", "command-id"],
-  fork: ["expected-revision", "command-id"],
+  fork: ["expected-revision", "command-id", "from-stage"],
   revise: ["candidate", "expected-revision", "command-id", "resume", "events", "after"],
   candidate: ["spec", "plan", "tasks", "policy", "workflow", "confirm-auto-approval", "command-id"],
   profiles: ["model"],
@@ -638,6 +638,9 @@ reject RUN_ID --request ID --reason TEXT --expected-revision N
   (see status). approve promotes it: the test file and its command gate with provenance are
   written to the project and confirmed; reject discards it. Neither changes the run's state.
 pause|cancel|fork RUN_ID --expected-revision N
+fork RUN_ID --expected-revision N --from-stage STAGE
+  (start the fork at a stage after the implementation, such as checks, review or converge, from
+  the run's changes as they are now; with reroute, one stage runs again on another model)
 continue RUN_ID --request ID --expected-revision N [--resume]   (answer a token checkpoint; resume then spends up to the next one. On a stopped convergence it allows one more repair round)
 accept RUN_ID --request ID --expected-revision N [--no-resume]   (a stopped convergence: accept the remaining findings as known limitations; reject stops the run)
 extend RUN_ID --expected-revision N [--tokens N] [--calls N] [--time-ms N] [--resume [--events]]
