@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { isStaticCheck, isWholeUnitCheck } from "../src/core/workflows/check-policy.js";
 import { detectGates, executeGate } from "../src/core/workflows/gates.js";
@@ -428,6 +428,12 @@ const RUNNABLE: Partial<Record<Stack, { files: Record<string, string>; needs: st
 };
 
 const toolchains = process.env.BAKED_GATE_MATRIX_TOOLCHAINS === "1";
+// The test preload points HOME at an empty profile, where rustup finds no default toolchain;
+// os.homedir() still names the real home, so the toolchain tier points rustup and cargo there.
+if (toolchains) {
+  process.env.RUSTUP_HOME ??= join(homedir(), ".rustup");
+  process.env.CARGO_HOME ??= join(homedir(), ".cargo");
+}
 const available = (needs: string[][]) =>
   needs.every(([command, ...args]) => {
     if (!command) return false;
