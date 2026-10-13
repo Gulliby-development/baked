@@ -21,7 +21,8 @@ class Host implements ChatAgentHost {
       agent: {
         stream: async ({ abortSignal }: { messages: ModelMessage[]; abortSignal: AbortSignal }) => ({
           stream: (async function* () {
-            if (hang)
+            // The turn may be interrupted before the stream is read, so check the signal first.
+            if (hang && !abortSignal.aborted)
               await new Promise<void>((resolve) => abortSignal.addEventListener("abort", () => resolve(), { once: true }));
             yield { type: "text-delta", text: "done" };
             yield { type: "finish-step", usage: { inputTokens: 10, outputTokens: 1 } };
