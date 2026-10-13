@@ -1339,6 +1339,7 @@ function mockCompare(a: MockRun, b: MockRun): RunComparison {
     activeMs: run.activeMs,
     agentCalls: run.usage.attempts.length,
     repairRounds: 0,
+    reviewRounds: 0,
     correctiveTasks: 0,
     stages: run.usage.stages,
     models: run.usage.models.map((m) => ({ model: m.model, tokens: m.tokens })),
