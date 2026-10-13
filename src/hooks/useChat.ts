@@ -41,6 +41,8 @@ import { getWorkspaceCoordinator } from "../core/coordination/WorkspaceCoordinat
 import { getCwd } from "../core/cwd.js";
 import { setCoAuthorEnabled } from "../core/git/status.js";
 import {
+  type CompactTrigger,
+  compactHooks,
   notificationHooks,
   runHooks,
   startSessionHooks,
@@ -111,6 +113,12 @@ import { reprimeContextFromMessages, safeParseArgs } from "./chat/message-proces
 import { cycleBakeMode } from "./useBakeMode.js";
 import { buildAssistantMessage, hasRenderableAssistantContent } from "./useChat-content.js";
 import { buildTabMeta } from "./useSessionBuilder.js";
+
+/** How `summarizeConversation` runs: `trigger` is `auto` when the context filled up. */
+interface CompactOptions {
+  skipQueueDrain?: boolean;
+  trigger?: CompactTrigger;
+}
 
 export interface TabState {
   id: string;
@@ -268,7 +276,7 @@ export interface ChatInstance {
     images?: ImageAttachment[],
     options?: SubmitOptions,
   ) => Promise<void>;
-  summarizeConversation: (opts?: { skipQueueDrain?: boolean }) => Promise<void>;
+  summarizeConversation: (opts?: CompactOptions) => Promise<void>;
   abort: () => void;
   interactiveCallbacks: InteractiveCallbacks;
   // Plan mode
@@ -896,12 +904,10 @@ export function useChat({
   // auto-retry "Continue." inherits the count from the previous attempt.
   const stallRetryCountRef = useRef<number>(0);
   const stallRetryPendingRef = useRef(false);
-  const summarizeConversationRef = useRef<(opts?: { skipQueueDrain?: boolean }) => Promise<void>>(
-    async () => {},
-  );
+  const summarizeConversationRef = useRef<(opts?: CompactOptions) => Promise<void>>(async () => {});
 
   const summarizeConversation = useCallback(
-    async (opts?: { skipQueueDrain?: boolean }) => {
+    async (opts?: CompactOptions) => {
       if (isCompactingRef.current) {
         // Already compacting — don't silently drop, queue for later
         pendingCompactRef.current = true;
@@ -945,7 +951,8 @@ export function useChat({
       if (visibleRef.current) useStatusBarStore.getState().setCompacting(true);
 
       // ── PreCompact hook ──
-      runHooks({ event: "PreCompact", sessionId: sessionIdRef.current, cwd }).catch(() => {});
+      const trigger = opts?.trigger ?? "manual";
+      compactHooks(sessionIdRef.current, cwd, "pre", trigger).catch(() => {});
 
       const compactAbort = new AbortController();
       compactAbortRef.current = compactAbort;
@@ -1240,7 +1247,7 @@ export function useChat({
           summarySnippet: summary.slice(0, 2000),
         });
         // ── PostCompact hook ──
-        runHooks({ event: "PostCompact", sessionId: sessionIdRef.current, cwd }).catch(() => {});
+        compactHooks(sessionIdRef.current, cwd, "post", trigger).catch(() => {});
         // As in Claude Code, a compacted session starts again with the source `compact`.
         startSessionHooks(sessionIdRef.current, cwd, "compact").catch(() => {});
       } catch (err) {
@@ -1314,7 +1321,7 @@ export function useChat({
           messagesBefore: coreMessagesRef.current.length,
         },
       );
-      summarizeConversation();
+      summarizeConversation({ trigger: "auto" });
     }
     if (pct < resetAt) {
       autoSummarizedRef.current = false;
@@ -1873,6 +1880,8 @@ export function useChat({
           runHooks({
             event: "SubagentStart",
             toolInput: { agent_id: event.agentId, agent_type: event.role },
+            fields: { agent_id: event.agentId, agent_type: event.role ?? "" },
+            matchTarget: event.role ?? "",
             sessionId: sessionIdRef.current,
             cwd,
           }).catch(() => {});
@@ -1897,6 +1906,12 @@ export function useChat({
           runHooks({
             event: "SubagentStop",
             toolInput: { agent_id: event.agentId, agent_type: event.role },
+            fields: {
+              agent_id: event.agentId,
+              agent_type: event.role ?? "",
+              stop_hook_active: false,
+            },
+            matchTarget: event.role ?? "",
             sessionId: sessionIdRef.current,
             cwd,
           }).catch(() => {});
@@ -3860,7 +3875,7 @@ export function useChat({
                   })()
                 : "";
             summarizeConversationRef
-              .current({ skipQueueDrain: true })
+              .current({ skipQueueDrain: true, trigger: "auto" })
               .then(() => {
                 setTimeout(() => handleSubmitRef.current(`Continue.${buildPlanHint()}`), 0);
               })

@@ -24,6 +24,7 @@ import {
   stopHooks,
   takeHookContext,
   userPromptHooks,
+  watchSubagentHooks,
   withHookContext,
 } from "../core/hooks/lifecycle.js";
 import { resolveModel } from "../core/llm/provider.js";
@@ -692,6 +693,11 @@ export async function runPrompt(opts: HeadlessRunOptions, merged: AppConfig): Pr
   // can restore the files the turn edits.
   if (opts.saveSession) await beginHeadlessTurn(session, env.cwd, priorChatMessages);
 
+  // A headless process runs one conversation, so every subagent it dispatches is this turn's.
+  const unwatchSubagents = watchSubagentHooks(
+    { cwd: env.cwd, sessionId: () => session.id },
+    () => true,
+  );
   const turn = await streamTurn(env.agent, messages, prompt, abortController.signal, {
     json: opts.json,
     events: isEvents,
@@ -707,6 +713,7 @@ export async function runPrompt(opts: HeadlessRunOptions, merged: AppConfig): Pr
     turn.error = `Timeout after ${String(Math.round((opts.timeout ?? 0) / 1000))}s`;
     exitCode = EXIT_TIMEOUT;
   }
+  unwatchSubagents();
   headlessStopHooks(session.id, env.cwd, turn);
 
   const duration = Date.now() - startTime;
@@ -1144,6 +1151,10 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
       opts.signal.addEventListener("abort", fwd, { once: true });
     }
 
+    const unwatchSubagents = watchSubagentHooks(
+      { cwd: env.cwd, sessionId: () => session.id },
+      () => true,
+    );
     const turn = await streamTurn(env.agent, history, prompt, turnAbort.signal, {
       json: opts.json,
       events: isEvents,
@@ -1154,6 +1165,7 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
       seenWarnings,
     });
 
+    unwatchSubagents();
     headlessStopHooks(session.id, env.cwd, turn);
     // Even partial output is valuable — save it
     if (turn.output) history.push({ role: "assistant" as const, content: turn.output });

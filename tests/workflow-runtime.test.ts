@@ -714,7 +714,8 @@ describe("durable SDD runtime", () => {
     const marker = join(mkdtempSync(join(tmpdir(), "baked-marker-")), "seen");
     const flaky: RunPolicy = {
       ...policy,
-      checks: [{ ...policy.checks[0]!, args: ["-e", `const fs = require('node:fs'); if (!fs.existsSync(${JSON.stringify(marker)})) { fs.writeFileSync(${JSON.stringify(marker)}, '1'); process.exit(1); }`] }],
+      // Fails twice: in the run's check baseline (#934) and in the checks stage.
+      checks: [{ ...policy.checks[0]!, args: ["-e", `const fs = require('node:fs'); const n = fs.existsSync(${JSON.stringify(marker)}) ? Number(fs.readFileSync(${JSON.stringify(marker)}, 'utf8')) : 0; if (n < 2) { fs.writeFileSync(${JSON.stringify(marker)}, String(n + 1)); process.exit(1); }`] }],
     };
     const root = mkdtempSync(join(tmpdir(), "baked-workflow-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));

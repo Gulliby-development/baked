@@ -149,6 +149,23 @@ export function clientLauncher(
         });
       return { initiativeId: view.initiativeId };
     },
+    // As the person's approve: the run continues once the decision is in; the client drives it.
+    approveRun: ({ runId, requestId, digest, expectedRevision }) =>
+      new Promise((resolve, reject) => {
+        const argv = [
+          "approve",
+          runId,
+          "--request",
+          requestId,
+          "--digest",
+          digest,
+          "--expected-revision",
+          String(expectedRevision),
+        ];
+        client
+          .command(argv, new AbortController().signal, () => resolve())
+          .then(() => resolve(), reject);
+      }),
     tasks: githubTasks(options.workspace, options.config),
   };
 }

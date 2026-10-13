@@ -1,11 +1,14 @@
 import { useEffect, useState } from "react";
+import type { GateDraftKind } from "../../client/setup.js";
 import { start } from "../../client/start.js";
 import {
   type EditorOp,
   type EditorView,
+  type GateTarget,
   type SaveReview,
   workflowEditor,
 } from "../../client/workflow-editor.js";
+import { Icon } from "../../components/Icon.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
 import {
@@ -21,33 +24,19 @@ import { Label } from "../../components/ui/label.js";
 import { Segment, SegmentGroup } from "../../components/ui/segmented.js";
 import { Skeleton } from "../../components/ui/skeleton.js";
 import { cn } from "../../lib/cn.js";
-import { LABEL } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
 import { AgentsNudge } from "./AgentsSection.js";
-import {
-  ACTIONS,
-  errorText,
-  GROW,
-  LIST,
-  LoadState,
-  NOTE,
-  ROW,
-  SETUP,
-  STACK,
-  Tag,
-  useLoad,
-} from "./shared.js";
+import { GateSetupDialog } from "./GateSetupDialog.js";
+import { ACTIONS, errorText, GROW, LoadState, NOTE, ROW, SETUP, Tag, useLoad } from "./shared.js";
 import { WorkflowFlow } from "./WorkflowFlow.js";
 import { type EditorTab, WorkflowGallery } from "./WorkflowGallery.js";
 import { WorkflowGraph } from "./WorkflowGraph.js";
-import { StageCard } from "./WorkflowStages.js";
 import { lineFromView } from "./workflow-studio-model.js";
 
-const TABS: [EditorTab, string][] = [
-  ["flow", "Flow"],
-  ["graph", "Graph"],
-  ["stages", "Stages"],
+const TABS: [EditorTab, string, string][] = [
+  ["flow", "Watch", "Plays a run along the workflow; nothing changes here"],
+  ["graph", "Edit", "The workflow as a graph: set up stations, arrows and gates"],
 ];
 
 /** The view a gallery link asked for, read once by the editor it opens. */
@@ -183,10 +172,10 @@ function SaveDialog({
 }
 
 /**
- * One workflow definition in the editor, in three views: Flow plays a run along it, Graph lays
- * its stations and transitions out to rearrange and edit, and Stages lists each stage with its
- * options, its own gates (check and review stages) and its outgoing transitions with their gates.
- * Every change goes through the backend, which validates it with the terminal editor's rules.
+ * One workflow definition in the editor, in two views: Watch plays a run along it, and Edit lays
+ * its stations and arrows out as a graph with the selected station or arrow set up beside it.
+ * Both show the same working copy. Every change goes through the backend, which validates it with
+ * the terminal editor's rules.
  */
 function WorkflowEditor({ project, id }: { project: SectionProps["project"]; id: string }) {
   const [tab, setTab] = useState<EditorTab>(() => takeRequestedTab() ?? "flow");
@@ -197,6 +186,8 @@ function WorkflowEditor({ project, id }: { project: SectionProps["project"]; id:
   const [notice, setNotice] = useState<{ text: string; failed?: boolean } | null>(null);
   const [review, setReview] = useState<SaveReview | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [focus, setFocus] = useState<string | null>(null);
+  const [creating, setCreating] = useState<GateTarget | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -312,33 +303,63 @@ function WorkflowEditor({ project, id }: { project: SectionProps["project"]; id:
       {general.length > 0 && (
         <Alert tone="error">{general.flatMap((g) => g.messages).join(" ")}</Alert>
       )}
-      <SegmentGroup aria-label="View">
-        {TABS.map(([value, label]) => (
-          <Segment key={value} aria-pressed={tab === value} onClick={() => setTab(value)}>
-            {label}
-          </Segment>
-        ))}
-      </SegmentGroup>
-      {tab === "flow" && <WorkflowFlow key={view.id} line={line} />}
+      <div className={ROW}>
+        <SegmentGroup aria-label="View">
+          {TABS.map(([value, label, title]) => (
+            <Segment
+              key={value}
+              aria-pressed={tab === value}
+              title={title}
+              className="inline-flex items-center gap-[6px]"
+              onClick={() => setTab(value)}
+            >
+              <Icon name={value === "flow" ? "eye" : "edit"} size={14} />
+              {label}
+            </Segment>
+          ))}
+        </SegmentGroup>
+        <span className={cn("text-dim-foreground", NOTE, GROW)}>
+          {tab === "flow"
+            ? "Watch only: it plays a run along the workflow. Set it up in Edit."
+            : view.readOnly
+              ? "Read only: duplicate it to change it."
+              : "Changes here show in Watch at once. Save… writes them to the file."}
+        </span>
+      </div>
+      {tab === "flow" && (
+        <WorkflowFlow
+          key={view.id}
+          line={line}
+          onEditStation={(stationId) => {
+            setFocus(stationId);
+            setTab("graph");
+          }}
+        />
+      )}
       {tab === "graph" && (
         <WorkflowGraph
           projectKey={project.key}
           view={view}
           line={line}
           busy={busy}
+          focus={focus}
+          onFocus={setFocus}
           onEdit={onEdit}
+          onCreateGate={setCreating}
         />
       )}
-      {tab === "stages" && (
-        <section aria-label="Stages" className={STACK}>
-          <h3 className={LABEL}>Stages · {view.stages.length}</h3>
-          <ol className={cn(LIST, "flex flex-col gap-3")}>
-            {view.stages.map((stage) => (
-              <StageCard key={stage.id} stage={stage} view={view} busy={busy} onEdit={onEdit} />
-            ))}
-          </ol>
-        </section>
-      )}
+      <GateSetupDialog
+        projectKey={project.key}
+        open={creating !== null}
+        onOpenChange={(open) => !open && setCreating(null)}
+        onSaved={() => undefined}
+        kind={creatingKind(view, creating)}
+        onCreated={(gateId) => {
+          const target = creating;
+          setCreating(null);
+          if (target) onEdit({ op: "addGate", target, gateId });
+        }}
+      />
       <SaveDialog
         review={review}
         busy={busy}
@@ -348,6 +369,14 @@ function WorkflowEditor({ project, id }: { project: SectionProps["project"]; id:
       />
     </div>
   );
+}
+
+/** The gate kind a new gate for a target needs: a review stage runs AI reviews, others commands. */
+function creatingKind(view: EditorView, target: GateTarget | null): GateDraftKind {
+  if (target?.kind !== "stage") return "command";
+  return view.stages.find((s) => s.id === target.stageId)?.type === "review"
+    ? "ai-review"
+    : "command";
 }
 
 /** Workflow definitions: the list, or one definition in the editor (`#/p/KEY/workflows/ID`). */
