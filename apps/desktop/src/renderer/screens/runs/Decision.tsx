@@ -229,6 +229,11 @@ function Approval({
           </ul>
         </div>
       ) : null}
+      {body.budgetWarning ? (
+        <p className="font-semibold text-[var(--warn)]" role="note">
+          {body.budgetWarning}
+        </p>
+      ) : null}
       {body.assumptions?.length ? (
         <div>
           <span className={FIELD_LABEL}>Assumptions the agents made instead of asking</span>
