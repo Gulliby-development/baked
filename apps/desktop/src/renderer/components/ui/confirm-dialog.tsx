@@ -11,6 +11,7 @@ export function ConfirmDialog({
   open,
   title,
   children,
+  extra,
   confirmLabel,
   danger = false,
   busy = false,
@@ -21,6 +22,8 @@ export function ConfirmDialog({
   open: boolean;
   title: string;
   children: ReactNode;
+  /** Controls shown under the question, such as a choice the action takes. */
+  extra?: ReactNode;
   confirmLabel: string;
   danger?: boolean;
   busy?: boolean;
@@ -35,6 +38,7 @@ export function ConfirmDialog({
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{children}</DialogDescription>
         </DialogHeader>
+        {extra}
         {error && <Alert tone="error">{error}</Alert>}
         <div className="flex flex-wrap justify-end gap-2">
           <Button variant="secondary" size="md" disabled={busy} onClick={onClose}>

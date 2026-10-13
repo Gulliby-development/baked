@@ -19,7 +19,10 @@ import {
 import { workerPath } from "./path.js";
 import { WorkerClient } from "./rpc.js";
 
-/** `reroute` moves a stopped run to another run model and continues it in one decision. */
+/**
+ * `reroute` moves a stopped run to another run model and continues it in one decision; `fork`
+ * with a stage starts the new run at that stage with this run's approval and changes.
+ */
 export type WorkflowAction =
   | "resume"
   | "pause"
@@ -28,6 +31,7 @@ export type WorkflowAction =
   | "discard-worktree"
   | "extend"
   | { reroute: string }
+  | { fork: string }
   | Decision;
 /** The run after an undo, and the `workspace-rollback` report it wrote; null when nothing was undone. */
 export interface UndoResult {
@@ -190,6 +194,7 @@ export class WorkflowClient extends WorkerClient {
     worktree: (id: string) => this.views.get(id)?.worktree ?? null,
     routing: (id: string) => this.views.get(id)?.routing ?? null,
     gates: (id: string) => this.views.get(id)?.gates ?? {},
+    forkStages: (id: string) => this.views.get(id)?.forkStages ?? [],
   };
   async command(
     argv: string[],
@@ -215,7 +220,10 @@ export class WorkflowClient extends WorkerClient {
     }
   }
   async action(runId: string, action: WorkflowAction): Promise<RunSnapshot> {
-    const drives = action === "resume" || action === "extend" || typeof action !== "string";
+    const drives =
+      action === "resume" ||
+      action === "extend" ||
+      (typeof action !== "string" && !("fork" in action));
     if (drives) this.driving.add(runId);
     try {
       return await this.callWithTimeout<RunSnapshot>(null, "action", runId, action);
