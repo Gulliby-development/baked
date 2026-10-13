@@ -29,6 +29,7 @@ export interface SessionListEntry {
   sizeBytes: number;
   projectId?: string;
   kind?: "coordinator";
+  worktree?: { path: string; branch: string };
   parentId?: string;
 }
 
@@ -298,6 +299,9 @@ export class SessionManager {
             sizeBytes: this.sessionDirSize(fullPath),
             ...(meta.projectId ? { projectId: meta.projectId } : {}),
             ...(meta.kind === "coordinator" ? { kind: meta.kind } : {}),
+            ...(meta.worktree
+              ? { worktree: { path: meta.worktree.path, branch: meta.worktree.branch } }
+              : {}),
             ...(meta.parentId ? { parentId: meta.parentId } : {}),
           });
         } catch {

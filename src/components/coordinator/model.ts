@@ -75,7 +75,8 @@ export function launchedLines(launched: LaunchedView[], width: number): ViewLine
       ? ` · ${entry.task.state === "local" ? "local task" : entry.task.ref}`
       : "";
     const status = entry.activity ? `${entry.status} (${entry.activity})` : entry.status;
-    const head = `${entry.active ? "●" : "○"} ${launchLabel(entry)}: ${status} · ${tokens(entry.tokens)}${task}`;
+    const branch = entry.worktree ? ` · ⎇ ${entry.worktree.branch}` : "";
+    const head = `${entry.active ? "●" : "○"} ${launchLabel(entry)}: ${status} · ${tokens(entry.tokens)}${task}${branch}`;
     const why = whyBesides(entry.why, entry.title);
     return labelled(
       "",
@@ -117,6 +118,10 @@ function launchNoteLines(note: LaunchNote, width: number): ViewLine[] {
   );
   const why = closed ? "" : whyBesides(note.why, note.title);
   if (why) lines.push(...labelled("    ", why, width, "muted"));
+  if (note.worktree && !closed)
+    lines.push(
+      ...labelled("    ", `⎇ ${note.worktree.branch} in ${note.worktree.path}`, width, "muted"),
+    );
   if (note.result) {
     const bar = "    │ ";
     const result = wrap(note.result, width - bar.length).map(

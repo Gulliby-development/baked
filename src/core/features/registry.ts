@@ -160,6 +160,15 @@ export const FEATURES: readonly Feature[] = [
     ],
   },
   {
+    id: "coordinator-session-worktrees",
+    group: "Chat and sessions",
+    title: "Editing sessions the coordinator launches work in their own Git worktree and branch",
+    tui: ["/coordinator: the branch on launched work and launch notes"],
+    cli: notNeeded("the headless CLI does not launch coordinator sessions"),
+    api: ["/v1/coordinator/launched: worktree", "/v1/sessions: worktree"],
+    desktop: ["project/coordinator: the branch on launch cards and launched work"],
+  },
+  {
     id: "coordinator-approval-rules",
     group: "Chat and sessions",
     title: "Coordinator answers routine approvals by rules",

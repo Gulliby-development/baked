@@ -1,5 +1,5 @@
 import { call } from "./api.js";
-import type { SessionDetail } from "./chat.js";
+import type { SessionDetail, SessionWorktree } from "./chat.js";
 
 /**
  * The project coordinator over `/v1/coordinator*` (docs/desktop/api.md, "Project coordinator").
@@ -44,6 +44,8 @@ export interface ProjectBrief {
 export interface LaunchedView extends LaunchedEntry {
   active: boolean;
   tokens: number;
+  /** A launched session's own worktree and branch. */
+  worktree?: SessionWorktree;
 }
 
 /** A rule the coordinator answers routine approvals of what it launched by (`approval-rules.ts`). */

@@ -91,6 +91,12 @@ export interface ChatMessage {
   launch?: LaunchNote;
 }
 
+/** A session's own Git worktree (absolute path) and branch. */
+export interface SessionWorktree {
+  path: string;
+  branch: string;
+}
+
 /** What a coordinator notice says about one item it launched (`src/types/index.ts`). */
 export interface LaunchNote {
   kind: "session" | "run" | "initiative";
@@ -100,6 +106,8 @@ export interface LaunchNote {
   status: string;
   why: string;
   task?: { ref: string; url?: string; state: "open" | "closed" | "local" };
+  /** A session's own worktree and branch, when it has one. */
+  worktree?: SessionWorktree;
   /** For a session whose turn ended: its last answer, shortened. */
   result?: string;
   /** For `auto-answered`: what the coordinator approved by one of the person's rules. */

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { LaunchNote } from "../../client/chat.js";
+import type { LaunchNote, SessionWorktree } from "../../client/chat.js";
 import { Icon, type IconName } from "../../components/Icon.js";
 import { Badge } from "../../components/ui/badge.js";
 import { buttonVariants } from "../../components/ui/button.js";
@@ -34,6 +34,19 @@ const FILL: Record<LaunchTone, string> = {
   busy: "bg-fill-info",
   "": "bg-background",
 };
+
+/** A session's own branch, with its worktree path on hover. */
+export function WorktreeLabel({ worktree }: { worktree: SessionWorktree }) {
+  return (
+    <span
+      className="inline-flex min-w-0 items-center gap-1"
+      title={`Own worktree: ${worktree.path}`}
+    >
+      <Icon name="git" size={12} />
+      <span className="truncate">{worktree.branch}</span>
+    </span>
+  );
+}
 
 /** What a launched session answered last: a few lines, expandable to the whole text. */
 function LaunchResult({ text }: { text: string }) {
@@ -99,6 +112,11 @@ export function LaunchNoteCard({ note, href }: { note: LaunchNote; href?: string
         <p className="m-0 truncate text-[14px] font-semibold text-foreground" title={note.id}>
           {name}
         </p>
+        {note.worktree && !closed && (
+          <p className="m-0 font-mono text-[12px] text-dim-foreground">
+            <WorktreeLabel worktree={note.worktree} />
+          </p>
+        )}
         {ruled ? (
           <>
             <p className="m-0 text-[13px] text-foreground">

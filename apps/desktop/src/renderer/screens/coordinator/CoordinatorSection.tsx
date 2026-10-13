@@ -23,6 +23,7 @@ import { SessionView } from "../chat/ChatSection.js";
 import type { SectionProps } from "../sections.js";
 import { NeedsNewer } from "../setup/shared.js";
 import { ApprovalRulesSection } from "./ApprovalRules.js";
+import { WorktreeLabel } from "./LaunchNote.js";
 import {
   BRIEF_TITLES,
   launchedHref,
@@ -65,9 +66,10 @@ function LaunchedCard({ project, item }: { project: DesktopProject; item: Launch
         {launchName(item)}
       </a>
       {why && <p className="m-0 line-clamp-3 text-[13px] text-soft-foreground">{why}</p>}
-      {(item.tokens > 0 || item.task) && (
+      {(item.tokens > 0 || item.task || item.worktree) && (
         <p className="m-0 flex flex-wrap gap-x-3 font-mono text-[12px] text-dim-foreground">
           {item.tokens > 0 && <span>{tokens(item.tokens)} tokens</span>}
+          {item.worktree && <WorktreeLabel worktree={item.worktree} />}
           {item.task &&
             (item.task.url ? (
               <a href={item.task.url} target="_blank" rel="noreferrer">
