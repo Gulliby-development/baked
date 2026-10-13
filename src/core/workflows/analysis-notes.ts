@@ -167,12 +167,42 @@ const ADDS =
  * Windows, macOS and Linux in 3 of 3 controls, two clarification requests under assume) is the
  * same case: the request wins and the addition is removed.
  */
+/**
+ * Wording of a finding that sets the spec against what the request itself states ("the request
+ * allows it", "the brief's explicit ban"): the request settles it.
+ */
+const SETTLES =
+  /\b(?:request|brief)(?:'s)?\s+(?:explicitly\s+|clearly\s+)?(?:allows?|permits?|states?|says|specifies|requires?|asks?|names?|bans?|forbids?|excludes?|includes?|defines?|accepts?|treats?)\b|\b(?:request|brief)'s\s+(?:explicit|stated)\b/i;
+
+/**
+ * An `inconsistency` finding whose one side is the request (cfgtrace 832775c7, bench round 15: a
+ * spec assumption excludes `tests/**`, the request allows it). It is not a defect between two
+ * artifacts to fix both ways: the request wins, like a restriction it lacks.
+ */
+/** Whether a conflict report names what the request itself states as one of its sides. */
+export const namesRequestSide = (text: string): boolean => SETTLES.test(text);
+
+export function requestSettles(finding: {
+  id?: string;
+  kind: string;
+  blocking: boolean;
+  description: string;
+}): boolean {
+  return (
+    finding.blocking &&
+    finding.kind === "inconsistency" &&
+    !(finding.id ?? "").startsWith("COVERAGE") &&
+    SETTLES.test(finding.description)
+  );
+}
+
 export function restrictsRequest(finding: {
   id?: string;
   kind: string;
   blocking: boolean;
   description: string;
 }): boolean {
+  if (requestSettles(finding)) return true;
   return (
     finding.blocking &&
     finding.kind === "scope" &&
@@ -185,7 +215,7 @@ export function restrictsRequest(finding: {
 
 /** What the host tells the spec author when a scope finding names a restriction the request lacks. */
 export const REQUEST_NOTE =
-  'The request is authoritative. These findings name restrictions the request does not state (input limits, rejected forms, excluded cases) or requirements, criteria and tasks the request does not ask for (such as CI, a platform matrix or release automation). Delete every such restriction or addition from the spec and the plan, with the criteria and tasks that only serve it; a domain you want to keep may be recorded only as a non-narrowing assumption ("<domain> Assumed: <value>, because <reason>."), never as out of scope, a rejected form or an exclusion. Do not trade one restriction for another.';
+  'The request is authoritative. These findings name restrictions the request does not state (input limits, rejected forms, excluded cases) or requirements, criteria and tasks the request does not ask for (such as CI, a platform matrix or release automation), or contradict what the request states. Delete every such restriction or addition, and change whatever contradicts the request to what it states, from the spec and the plan, with the criteria and tasks that only serve it; a domain you want to keep may be recorded only as a non-narrowing assumption ("<domain> Assumed: <value>, because <reason>."), never as out of scope, a rejected form or an exclusion. Do not trade one restriction for another.';
 
 /** Whether a blocking finding may be settled by a recorded assumption instead of a person. */
 export function assumable(finding: { kind: string; blocking: boolean }): boolean {
@@ -197,8 +227,16 @@ export function assumable(finding: { kind: string; blocking: boolean }): boolean
 }
 
 /** Whether a blocking finding is a defect the analysis must see fixed rather than assumed. */
-export function persistentDefect(finding: { kind: string; blocking: boolean }): boolean {
-  return finding.blocking && finding.kind === "inconsistency";
+export function persistentDefect(finding: {
+  kind: string;
+  blocking: boolean;
+  description?: string;
+}): boolean {
+  return (
+    finding.blocking &&
+    finding.kind === "inconsistency" &&
+    !requestSettles({ ...finding, description: finding.description ?? "" })
+  );
 }
 
 /** What the host tells the spec author when a defect survived the assumption reroute. */

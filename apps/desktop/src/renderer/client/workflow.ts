@@ -79,7 +79,7 @@ export const workflow = {
   extend: (
     key: string,
     run: Pick<RunSnapshot, "runId" | "revision">,
-    limits: { tokens?: number; calls?: number; timeMs?: number } = {},
+    limits: { tokens?: number; calls?: number; timeMs?: number; costUsd?: number } = {},
   ) => call<RunSnapshot>(key, "POST", runPath(run.runId, "extend"), { ...command(run), ...limits }),
   /**
    * Moves a stopped run to another run model and/or stage routes (stage ID to model). Completed

@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { type PointerEvent, useEffect, useState } from "react";
 import {
   type EditorOp,
   type EditorView,
   type GateTarget,
+  type InsertableStage,
   MAX_LOOP_ROUNDS,
   type Outcome,
   RECOMMENDED_LOOP_ROUNDS,
@@ -27,7 +28,7 @@ import { FINISH, stageIcon } from "../runs/line-model.js";
 import { ACTIONS, GROW, NOTE, ROW, WRAP } from "./shared.js";
 import { TYPE_FILL } from "./WorkflowGallery.js";
 import { problemsFor } from "./workflow-editor-logic.js";
-import { type ArrowDraft, OUTCOME_WHEN } from "./workflow-studio-model.js";
+import { type ArrowDraft, NEW_STATIONS, OUTCOME_WHEN } from "./workflow-studio-model.js";
 
 /**
  * The panel beside the workflow graph: the selected station or arrow in words, with the station
@@ -533,28 +534,15 @@ export function StationPanel({
             <Button variant="secondary" size="sm" disabled={busy} onClick={() => onDraw(stage.id)}>
               Draw an arrow from {stage.id}
             </Button>
-            {stage.type === "wait" ? (
-              <Button
-                variant="secondary"
-                size="sm"
-                disabled={busy}
-                aria-label={`Remove wait stage ${stage.id}`}
-                onClick={() => onEdit({ op: "removeWaitStage", stageId: stage.id })}
-              >
-                Remove this wait station
-              </Button>
-            ) : (
-              <Button
-                variant="secondary"
-                size="sm"
-                disabled={busy}
-                title="Insert a station that runs command gates every interval until they pass, with no model calls"
-                aria-label={`Add a wait stage after ${stage.id}`}
-                onClick={() => onEdit({ op: "addWaitStage", after: stage.id })}
-              >
-                Wait after it
-              </Button>
-            )}
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={busy}
+              title="The arrows into it go where it would have passed on to"
+              onClick={() => onEdit({ op: "removeStage", stageId: stage.id })}
+            >
+              Remove station {stage.id}
+            </Button>
           </div>
         )}
       </div>
@@ -570,6 +558,7 @@ export function ArrowPanel({
   onEdit,
   onSelectStation,
   onCreateGate,
+  onAddStation,
 }: {
   view: EditorView;
   id: string;
@@ -577,6 +566,7 @@ export function ArrowPanel({
   onEdit: (op: EditorOp) => void;
   onSelectStation: (id: string) => void;
   onCreateGate: (target: GateTarget) => void;
+  onAddStation: (type: InsertableStage, transition: string) => void;
 }) {
   const readOnly = view.readOnly !== null;
   const stage = view.stages.find((s) =>
@@ -635,6 +625,12 @@ export function ArrowPanel({
           onChange={(rounds) => onEdit({ op: "setLoop", id, rounds })}
         />
       )}
+      {!readOnly && tr.loop === null && (
+        <div className="flex flex-col gap-2 border-t-2 border-[var(--line)] pt-3">
+          <h4 className={LABEL}>Put a station on this arrow</h4>
+          <StationPalette disabled={busy} onPick={(type) => onAddStation(type, id)} />
+        </div>
+      )}
       <div className="flex flex-col gap-2 border-t-2 border-[var(--line)] pt-3">
         <h4 className={LABEL}>Gates on this arrow</h4>
         <span className={cn(NOTE, "text-dim-foreground")}>
@@ -651,6 +647,53 @@ export function ArrowPanel({
         />
       </div>
     </section>
+  );
+}
+
+/**
+ * The stations a custom workflow can add, as tiles in the colours of the graph. A tile is a
+ * button; with `onDragStart` it can also be pulled onto an arrow of the graph.
+ */
+export function StationPalette({
+  disabled,
+  active,
+  onPick,
+  onDragStart,
+}: {
+  disabled: boolean;
+  active?: InsertableStage | null;
+  onPick: (type: InsertableStage) => void;
+  onDragStart?: (type: InsertableStage, e: PointerEvent<HTMLButtonElement>) => void;
+}) {
+  return (
+    <ul className="m-0 grid list-none grid-cols-2 gap-[6px] p-0">
+      {NEW_STATIONS.map((s) => (
+        <li key={s.type} className="min-w-0">
+          <button
+            type="button"
+            disabled={disabled}
+            title={s.what}
+            aria-label={`${s.name} station: ${s.what}`}
+            className={cn(
+              "flex w-full min-w-0 touch-none items-center gap-2 rounded-base border-2 border-border px-2 py-[6px] text-left [font:inherit] text-[13px] font-bold text-main-foreground transition-[transform,box-shadow] duration-100 enabled:cursor-pointer enabled:hover:-translate-x-px enabled:hover:-translate-y-px enabled:hover:shadow-sm-hard disabled:opacity-60 motion-reduce:transition-none",
+              TYPE_FILL[s.type],
+              onDragStart && "enabled:cursor-grab",
+              active === s.type && "-rotate-1 shadow-sm-hard",
+            )}
+            onPointerDown={(e) => {
+              if (!onDragStart || e.button !== 0) return;
+              onDragStart(s.type, e);
+            }}
+            onClick={() => onPick(s.type)}
+          >
+            <span className="flex size-6 flex-none items-center justify-center rounded-[4px] border-2 border-border bg-secondary-background text-foreground">
+              <Icon name={stageIcon({ id: s.type, type: s.type, produces: null })} size={13} />
+            </span>
+            <span className="truncate">{s.name}</span>
+          </button>
+        </li>
+      ))}
+    </ul>
   );
 }
 

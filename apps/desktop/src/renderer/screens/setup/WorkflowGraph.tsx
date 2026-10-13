@@ -8,14 +8,20 @@ import {
   useState,
 } from "react";
 import type { WorkflowLine } from "../../client/start.js";
-import type { EditorOp, EditorView, GateTarget, StageView } from "../../client/workflow-editor.js";
+import type {
+  EditorOp,
+  EditorView,
+  GateTarget,
+  InsertableStage,
+  StageView,
+} from "../../client/workflow-editor.js";
 import { Icon } from "../../components/Icon.js";
 import { Button } from "../../components/ui/button.js";
 import { cn } from "../../lib/cn.js";
 import { LABEL, PANEL } from "../../lib/styles.js";
 import { FINISH, stageIcon } from "../runs/line-model.js";
 import { TYPE_FILL } from "./WorkflowGallery.js";
-import { ArrowDialog, ArrowPanel, StationPanel } from "./WorkflowInspector.js";
+import { ArrowDialog, ArrowPanel, StationPalette, StationPanel } from "./WorkflowInspector.js";
 import { outcomeLabel } from "./workflow-editor-logic.js";
 import {
   type ArrowDraft,
@@ -30,25 +36,29 @@ import {
   type Layout,
   magnet,
   mergeLayout,
+  NEW_STATIONS,
   NODE_H,
   NODE_W,
+  newStationId,
   nodeAt,
   type Point,
   snap,
+  stationSpot,
 } from "./workflow-studio-model.js";
 
 /**
  * The workflow as a graph: stations you drag around (they snap to the grid and pull into line
  * with each other), transitions as arrows with the repair loops dashed under the line, a handle
- * on each station to draw a new transition, and a gate library whose gates drop onto a station or
- * an arrow. Every change is an editor op the backend validates; the layout is only this
+ * on each station to draw a new transition, new stations that drop onto an arrow, and a gate
+ * library whose gates drop onto a station or an arrow. Every change is an editor op the backend validates; the layout is only this
  * computer's and is kept per project and workflow.
  */
 
 type Drag =
   | { kind: "node"; id: string; dx: number; dy: number; from: Point; moved: boolean }
   | { kind: "link"; from: string; at: Point }
-  | { kind: "gate"; gateId: string; at: Point };
+  | { kind: "gate"; gateId: string; at: Point }
+  | { kind: "station"; type: InsertableStage; at: Point; from: Point };
 type Selection = { kind: "stage"; id: string } | { kind: "edge"; id: string };
 
 const layoutKey = (project: string, id: string) => `baked.workflow-layout.${project}.${id}`;
@@ -199,6 +209,41 @@ export function WorkflowGraph({
     say(`${gateId} now guards ${where.name}.`);
   };
 
+  /**
+   * Puts a new station on a forward arrow and selects it. A line the person arranged keeps its
+   * places and the station lands where it was dropped; an untouched line is laid out again.
+   */
+  const addStation = (type: InsertableStage, transition: string, at?: Point) => {
+    const edge = edges.find((e) => e.id === transition);
+    if (!edge) return;
+    const why = stationSpot(edge);
+    if (why) return say(why, true);
+    const id = newStationId(view, type);
+    if (readLayout(key)) {
+      const spot = at ?? edge.mid;
+      place({ ...layout, [id]: snap({ x: spot.x - NODE_W / 2, y: spot.y - NODE_H / 2 }) });
+    }
+    onEdit({ op: "addStage", stageType: type, transition });
+    setSelected({ kind: "stage", id });
+    const name = NEW_STATIONS.find((s) => s.type === type)?.name ?? type;
+    say(`${name} station ${id} now sits between ${edge.from} and ${edge.to}.`);
+  };
+  const dropStation = (type: InsertableStage, at: Point) => {
+    const edge = edgeNear(edges, at);
+    if (!edge) return say("Drop the station on the dot in the middle of an arrow.", true);
+    addStation(type, edge.id, at);
+  };
+  // The tile holds the pointer while it is pulled, so a drop also clicks it; that click is spent.
+  const pulled = useRef(false);
+  const pickStation = (type: InsertableStage) => {
+    if (pulled.current) {
+      pulled.current = false;
+      return;
+    }
+    if (selectedEdge) return addStation(type, selectedEdge.id);
+    say("Drag it onto an arrow, or click an arrow first and pick the station again.");
+  };
+
   /** Opens the new-arrow dialog for an arrow from one station to another, or says why not. */
   const connect = (from: string, to: string) => {
     const stage = stageOf(from);
@@ -268,7 +313,14 @@ export function WorkflowGraph({
       if (drag.moved && p) place({ ...layout, [drag.id]: snap(p) });
     } else if (e.type === "pointerup") {
       if (drag.kind === "link") dropLink(drag.from, point(e));
-      else dropGate(drag.gateId, point(e));
+      else if (drag.kind === "station") {
+        // A press without a pull is a click: the tile's own handler takes it.
+        const at = point(e);
+        if (Math.hypot(at.x - drag.from.x, at.y - drag.from.y) > 6) {
+          pulled.current = true;
+          dropStation(drag.type, at);
+        }
+      } else dropGate(drag.gateId, point(e));
     }
   };
 
@@ -296,7 +348,18 @@ export function WorkflowGraph({
         ? undefined
         : view.stages[0];
   const linkTarget = drag && drag.kind !== "node" ? nodeAt(layout, drag.at, order) : null;
-  const gateEdge = drag?.kind === "gate" && !linkTarget ? edgeNear(edges, drag.at) : null;
+  const dropEdges =
+    drag?.kind === "gate"
+      ? edges
+      : drag?.kind === "station"
+        ? edges.filter((e) => !stationSpot(e))
+        : [];
+  const gateEdge =
+    drag?.kind === "gate" && !linkTarget
+      ? edgeNear(edges, drag.at)
+      : drag?.kind === "station"
+        ? edgeNear(dropEdges, drag.at)
+        : null;
 
   return (
     <div
@@ -314,7 +377,7 @@ export function WorkflowGraph({
                 ? drawing.from
                   ? `Click the station the arrow from ${drawing.from} goes to. Esc cancels.`
                   : "Click the station the arrow starts at. Esc cancels."
-                : "Click a station to set it up on the right. Drag stations to arrange them; Draw an arrow connects two, and gates drop from the library onto a station or an arrow."}
+                : "Click a station to set it up on the right. Drag stations to arrange them; Draw an arrow connects two, new stations drop onto an arrow, and gates drop from the library onto a station or an arrow."}
           </p>
           {!readOnly && (
             <Button
@@ -345,7 +408,7 @@ export function WorkflowGraph({
               className={cn(
                 "relative min-h-full min-w-full bg-secondary-background bg-[radial-gradient(var(--line)_1.4px,transparent_1.4px)] bg-[length:20px_20px] select-none",
                 (drag?.kind === "link" || drawing) && "cursor-crosshair",
-                drag?.kind === "gate" && "cursor-grabbing",
+                (drag?.kind === "gate" || drag?.kind === "station") && "cursor-grabbing",
               )}
               style={{ width: size.width, height: size.height }}
             >
@@ -436,19 +499,18 @@ export function WorkflowGraph({
                       />
                     );
                   })()}
-                {drag?.kind === "gate" &&
-                  edges.map((edge) => (
-                    <circle
-                      key={edge.id}
-                      cx={edge.mid.x}
-                      cy={edge.mid.y}
-                      r={gateEdge?.id === edge.id ? 12 : 8}
-                      className={cn(
-                        "stroke-[var(--ink)] stroke-2 transition-[r] duration-150",
-                        gateEdge?.id === edge.id ? "fill-[var(--fill-accent)]" : "fill-[var(--bg)]",
-                      )}
-                    />
-                  ))}
+                {dropEdges.map((edge) => (
+                  <circle
+                    key={edge.id}
+                    cx={edge.mid.x}
+                    cy={edge.mid.y}
+                    r={gateEdge?.id === edge.id ? 12 : 8}
+                    className={cn(
+                      "stroke-[var(--ink)] stroke-2 transition-[r] duration-150",
+                      gateEdge?.id === edge.id ? "fill-[var(--fill-accent)]" : "fill-[var(--bg)]",
+                    )}
+                  />
+                ))}
               </svg>
               {edges
                 .filter((edge) => edge.back || edge.bindings.length > 0)
@@ -576,6 +638,17 @@ export function WorkflowGraph({
                   </div>
                 );
               })}
+              {drag?.kind === "station" && (
+                <span
+                  className={cn(
+                    "pointer-events-none absolute z-[4] flex animate-nudge items-center gap-1 rounded-base border-2 border-border px-[10px] py-1 text-[12px] font-bold whitespace-nowrap text-main-foreground shadow-shadow motion-reduce:animate-none",
+                    TYPE_FILL[drag.type],
+                  )}
+                  style={{ left: drag.at.x + 10, top: drag.at.y + 10 }}
+                >
+                  {NEW_STATIONS.find((s) => s.type === drag.type)?.name} station
+                </span>
+              )}
               {drag?.kind === "gate" && (
                 <span
                   className="pointer-events-none absolute z-[4] flex animate-nudge items-center gap-1 rounded-base border-2 border-border bg-fill-ok px-[10px] py-1 font-mono text-[12px] font-bold whitespace-nowrap text-main-foreground shadow-shadow motion-reduce:animate-none"
@@ -610,6 +683,7 @@ export function WorkflowGraph({
             onEdit={onEdit}
             onSelectStation={(id) => setSelected({ kind: "stage", id })}
             onCreateGate={onCreateGate}
+            onAddStation={(type, transition) => addStation(type, transition)}
           />
         ) : selectedStage ? (
           <StationPanel
@@ -623,6 +697,22 @@ export function WorkflowGraph({
             onDraw={(from) => startDrawing(from)}
           />
         ) : null}
+        {!readOnly && (
+          <section aria-label="New stations" className={cn(PANEL, "flex flex-col gap-2")}>
+            <h3 className={LABEL}>New stations · drag onto an arrow</h3>
+            <StationPalette
+              disabled={busy}
+              active={drag?.kind === "station" ? drag.type : null}
+              onPick={pickStation}
+              onDragStart={(type, e) => {
+                capture(e);
+                pulled.current = false;
+                const at = point(e);
+                setDrag({ kind: "station", type, at, from: at });
+              }}
+            />
+          </section>
+        )}
         <section aria-label="Gate library" className={cn(PANEL, "flex flex-col gap-2")}>
           <h3 className={LABEL}>Gate library{readOnly ? "" : " · drag onto the graph"}</h3>
           {library.length === 0 && (

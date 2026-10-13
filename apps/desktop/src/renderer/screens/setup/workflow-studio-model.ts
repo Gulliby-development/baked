@@ -6,7 +6,13 @@ import {
   type Walkthrough,
 } from "../../../../../../src/core/workflows/v2/walkthrough.js";
 import type { DefinitionSummary, LineStage, WorkflowLine } from "../../client/start.js";
-import type { BindingView, EditorView, Outcome, StageView } from "../../client/workflow-editor.js";
+import type {
+  BindingView,
+  EditorView,
+  InsertableStage,
+  Outcome,
+  StageView,
+} from "../../client/workflow-editor.js";
 import { FINISH, lineOf, type Station } from "../runs/line-model.js";
 import { stageLabel } from "../runs/model.js";
 
@@ -445,4 +451,36 @@ export function lineFromView(view: EditorView, known?: WorkflowLine): WorkflowLi
     }),
   );
   return { stages, loops };
+}
+
+/** The stations a custom workflow can add, in words, in the order the palette shows them. */
+export const NEW_STATIONS: { type: InsertableStage; name: string; what: string }[] = [
+  { type: "check", name: "Check", what: "runs gates on the work, no model calls" },
+  { type: "review", name: "Review", what: "a model reviews the work and may ask for changes" },
+  { type: "approval", name: "Approval", what: "waits for you to approve before it goes on" },
+  { type: "wait", name: "Wait", what: "polls command gates until they pass or time out" },
+];
+const NEW_ID: Record<InsertableStage, string> = {
+  check: "check",
+  review: "review",
+  approval: "approve",
+  wait: "wait",
+};
+
+/** The id the editor gives a new station of `type`, as core `insertStage` picks it. */
+export function newStationId(view: EditorView, type: InsertableStage): string {
+  const taken = new Set(view.stages.map((s) => s.id));
+  for (const s of view.stages)
+    for (const t of s.targets) if (t.target.kind === "transition") taken.add(t.target.id);
+  const base = NEW_ID[type];
+  let id = base;
+  for (let n = 2; taken.has(id) || taken.has(`${id}-passed`); n++) id = `${base}-${n}`;
+  return id;
+}
+
+/** Why a new station cannot go on this arrow, or null when it can. */
+export function stationSpot(edge: Pick<GraphEdge, "loop" | "back">): string | null {
+  return edge.loop !== null || edge.back
+    ? "A station goes on a forward arrow, not on a loop."
+    : null;
 }

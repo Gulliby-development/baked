@@ -430,6 +430,7 @@ function mutationArgs(action: Mutation, runId: string, raw: unknown): WorkflowAr
         ...(body.tokens !== undefined ? { tokens: String(body.tokens) } : {}),
         ...(body.calls !== undefined ? { calls: String(body.calls) } : {}),
         ...(body.timeMs !== undefined ? { "time-ms": String(body.timeMs) } : {}),
+        ...(body.costUsd !== undefined ? { "cost-usd": String(body.costUsd) } : {}),
       });
     }
   }

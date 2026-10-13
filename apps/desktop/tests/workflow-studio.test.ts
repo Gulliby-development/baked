@@ -20,9 +20,11 @@ import {
   NODE_H,
   NODE_W,
   narrate,
+  newStationId,
   nodeAt,
   scenariosFor,
   snap,
+  stationSpot,
   stepAt,
   walkStations,
   walkthrough,
@@ -326,6 +328,17 @@ describe("workflow graph", () => {
     expect(arrowDraft(plan, "plan", v)).toEqual({ ok: false, reason: "An arrow goes to another station." });
     expect(arrowDraft(v.stages[1] as StageView, "implement", v).ok).toBe(false);
     expect(arrowDraft({ ...plan, targets: [] }, "zzz", v)).toEqual({ ok: false, reason: "plan cannot lead to zzz." });
+  });
+
+  test("a new station gets the id core gives it and goes only on a forward arrow", () => {
+    const v = view();
+    expect(newStationId(v, "review")).toBe("review");
+    expect(newStationId(v, "approval")).toBe("approve");
+    expect(newStationId(v, "check")).toBe("check");
+    const taken = { ...v, stages: [...v.stages, { ...(v.stages[2] as StageView), id: "check" }] };
+    expect(newStationId(taken, "check")).toBe("check-2");
+    expect(stationSpot({ loop: null, back: false })).toBeNull();
+    expect(stationSpot({ loop: 3, back: true })).toBe("A station goes on a forward arrow, not on a loop.");
   });
 
   test("the walkthrough plays the working copy from the editor view", () => {

@@ -96,14 +96,14 @@ test("watching a run opens the station it shows in Edit", async ({ app }) => {
   await expect(page.getByText(/^Station 2 of 5$/)).toBeVisible();
 });
 
-test("the gallery plays a run and opens a workflow in the graph", async ({ app }) => {
+test("the gallery plays a run and opens a workflow to edit", async ({ app }) => {
   const page = await app("#/p/baked/workflows");
   const banner = page.getByRole("region", { name: "How a run flows" });
   await expect(banner.locator("[data-station]").first()).toBeVisible();
   await page.getByRole("searchbox", { name: "Find a workflow" }).fill("fix");
   await expect(page.getByRole("article", { name: "Workflow quick-fix" })).toBeVisible();
   await expect(page.getByRole("article", { name: "Workflow sdd" })).toHaveCount(0);
-  await page.getByRole("link", { name: "Open quick-fix in the graph" }).click();
+  await page.getByRole("link", { name: "Edit quick-fix" }).click();
 
   await expect(page).toHaveURL(/#\/p\/baked\/workflows\/quick-fix$/);
   await expect(page.getByRole("button", { name: "Edit", exact: true })).toHaveAttribute(
@@ -142,4 +142,27 @@ test("the playing walkthrough does not scroll the page back to it", async ({ app
     await expect(told).not.toHaveText(text ?? "", { timeout: 5000 });
   }
   expect(await main.evaluate((box) => box.scrollTop)).toBe(top);
+});
+
+test("a station is put on an arrow of the copy and taken out again", async ({ app }) => {
+  const page = await app("#/p/baked/workflows/quick");
+  await page.getByRole("button", { name: "Duplicate as custom" }).click();
+  await page.getByRole("button", { name: /^Station implement/ }).click();
+  await page.getByRole("button", { name: "Arrow: if implement passes, go to checks" }).click();
+  const arrow = page.getByRole("region", { name: "Transition implement-checks" });
+  await arrow.getByRole("button", { name: /^Review station/ }).click();
+
+  const station = page.getByRole("region", { name: "Station review-2" });
+  await expect(station).toBeVisible();
+  await expect(
+    station.getByRole("button", { name: "Arrow: if review-2 passes, go to checks" }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Station review-2, review/ })).toBeVisible();
+
+  await station.getByRole("button", { name: "Remove station review-2" }).click();
+  await expect(page.getByRole("button", { name: /^Station review-2/ })).toHaveCount(0);
+  await page.getByRole("button", { name: /^Station implement/ }).click();
+  await expect(
+    page.getByRole("button", { name: "Arrow: if implement passes, go to checks" }),
+  ).toBeVisible();
 });

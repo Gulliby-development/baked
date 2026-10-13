@@ -381,6 +381,18 @@ describe("answering a clarification", () => {
       if (!assumed) throw new Error("No assumptions artifact");
       expect(service.store.readArtifact(run.runId, assumed.id)).toContain("AC-009");
     });
+    // cfgtrace 832775c7 (round 15): an inconsistency between a spec assumption and the request.
+    const settled = "A spec assumption excludes tests/**, while the request allows changes under tests/";
+    test("an inconsistency that the request settles is decided for the request, then assumed", async () => {
+      const executor = new ScriptedExecutor({ planFinding: 3, findingKind: "inconsistency", findingRefs: ["spec.json"], findingText: settled });
+      const service = setup(executor);
+      const run = await startAssume(service);
+      expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");
+      expect(executor.requests[7]?.prompt).toContain("The request is authoritative");
+      expect(executor.requests[7]?.prompt).toContain(settled);
+      expect(service.store.requests(run.runId).some((r) => r.kind === "clarification")).toBe(false);
+      expect(service.store.latestArtifact(run.runId, "assumptions/analysis.json")).toBeTruthy();
+    });
     test("a scope finding that survives still goes to a person", async () => {
       const executor = new ScriptedExecutor({ planFinding: 2, findingKind: "scope", findingRefs: ["spec.json"] });
       const service = setup(executor);
