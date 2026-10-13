@@ -223,6 +223,8 @@ Up to 20 remaining errors go back to the implementer with the rejected submissio
 
 **Whole-unit formatters.** `cargo fmt` and `rustfmt` also follow every module of the crate, so before integration they report the files of every other task. They are not part of the task-end check, and a planned task's `request_check` of one is not run: it answers `status: "deferred"` with a note that the formatter runs in the checks stage. There, when it fails, the host applies its fixer (`cargo fmt`) to the files the run's tasks write, journaled as edits of the task that last writes each file, and runs the check again. A corrective task, which runs after the checks stage, runs it as usual.
 
+An implementer that submits `blocked` or `failed` after its attempt applied file edits gets the submission back once, naming the files it wrote and saying that only BAKED's edit tools change files and no sandbox setting refuses them. Its next submission is accepted. This catches an agent that hit a refusal from a tool outside BAKED, such as Codex's own read-only sandbox, and reported "no changes were made" over edits BAKED had applied.
+
 ### Library docs
 
 When `libraryDocs` is configured (global or project config; a run freezes it into its policy, and a policy that names its own source keeps it), each implementer task gets docs for the versions of the libraries it uses. The versions come from the workspace's lockfiles:

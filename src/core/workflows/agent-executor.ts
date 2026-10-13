@@ -83,7 +83,7 @@ import {
   stepTokens,
   type ToolBackendCount,
 } from "./step-budget.js";
-import type { WorkflowStore } from "./store.js";
+import type { EffectRow, WorkflowStore } from "./store.js";
 import { pureWorkflowTools, WorkflowToolPolicy } from "./tool-policy.js";
 import type { AgentExecutor, ExecutionRequest, ExecutionResponse } from "./types.js";
 import { AcceptanceDraftSchema, AcceptanceWalkSchema } from "./v2/acceptance.js";
@@ -107,6 +107,18 @@ export const outputSchemas: Record<string, z.ZodType> = {
   distinction: DistinctionSchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;
+
+/** Workspace paths an attempt's applied file edits wrote, in first-write order. */
+export function appliedPaths(effects: readonly EffectRow[], attemptId: string): string[] {
+  const paths: string[] = [];
+  for (const effect of effects) {
+    if (effect.attempt_id !== attemptId || effect.kind !== "file_patch") continue;
+    if (effect.status !== "applied") continue;
+    const path = (JSON.parse(effect.intent_json) as { path?: unknown }).path;
+    if (typeof path === "string" && !paths.includes(path)) paths.push(path);
+  }
+  return paths;
+}
 /** Read-only steps in a row before an implementer is told to edit. */
 const EDIT_NUDGE_AFTER_READS = 4;
 
@@ -632,6 +644,7 @@ export class NativeAgentExecutor implements AgentExecutor {
       let submitted: unknown;
       let rejected = 0;
       let taskEndChecked = false;
+      let editsNoted = false;
       const submitResult = tool({
         description:
           "Submit the final typed result. Evidence IDs must come from the host context or tools.",
@@ -659,6 +672,27 @@ export class NativeAgentExecutor implements AgentExecutor {
               instruction:
                 "The result was not accepted. Fix every listed problem and call submit_result again with the complete corrected result.",
             };
+          }
+          // An agent that hit a refusal outside BAKED's tools (Codex's own read-only sandbox) can
+          // report a blocked task with "no changes were made" after BAKED applied its edits (#846).
+          const outcome = (parsed as { outcome?: unknown }).outcome;
+          if (
+            !errors.length &&
+            !editsNoted &&
+            request.task &&
+            (outcome === "blocked" || outcome === "failed")
+          ) {
+            editsNoted = true;
+            const written = appliedPaths(this.store.effects(request.runId), request.attemptId);
+            if (written.length)
+              return {
+                accepted: false,
+                errors: [
+                  `This attempt applied edits to ${written.join(", ")} with BAKED's edit tools; they are in the workspace. Only edit_file, multi_edit and delete_file change files, and no sandbox setting refuses them.`,
+                ],
+                instruction:
+                  "Check the files as they are now. If the task is done, submit outcome implemented; if something is still missing, finish it with BAKED's edit tools or submit blocked naming what remains, not that no changes were made. The next submission is accepted.",
+              };
           }
           if (
             !errors.length &&
