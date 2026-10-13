@@ -164,6 +164,10 @@ function loadWin32() {
       returns: T.i32,
     },
     SetTokenInformation: { args: [T.u64, T.u32, T.ptr, T.u32], returns: T.i32 },
+    SetSecurityInfo: {
+      args: [T.u64, T.u32, T.u32, T.ptr, T.ptr, T.ptr, T.u64],
+      returns: T.u32,
+    },
     CreateProcessAsUserW: {
       args: [T.u64, T.ptr, T.ptr, T.ptr, T.ptr, T.i32, T.u32, T.ptr, T.ptr, T.ptr, T.ptr],
       returns: T.i32,
@@ -183,7 +187,15 @@ function loadWin32() {
     WaitForSingleObject: { args: [T.u64, T.u32], returns: T.u32 },
     GetExitCodeProcess: { args: [T.u64, T.ptr], returns: T.i32 },
   });
-  return { ffi, a: advapi32.symbols, k: kernel32.symbols };
+  const user32 = dlopen("user32.dll", {
+    GetProcessWindowStation: { args: [], returns: T.u64 },
+    CreateWindowStationW: { args: [T.ptr, T.u32, T.u32, T.ptr], returns: T.u64 },
+    SetProcessWindowStation: { args: [T.u64], returns: T.i32 },
+    CloseWindowStation: { args: [T.u64], returns: T.i32 },
+    CreateDesktopW: { args: [T.ptr, T.ptr, T.ptr, T.u32, T.u32, T.ptr], returns: T.u64 },
+    CloseDesktop: { args: [T.u64], returns: T.i32 },
+  });
+  return { ffi, a: advapi32.symbols, k: kernel32.symbols, u: user32.symbols };
 }
 
 type Win32 = ReturnType<typeof loadWin32>;
@@ -256,15 +268,9 @@ function hasLabel(win: Win32, path: string, label: Label): boolean {
     : (current.mask & NO_READ_UP) !== 0 && (current.mask & NO_WRITE_UP) !== 0;
 }
 
-/**
- * Sets the label when the path lacks it. Setting a label with inheritance on a directory makes
- * Windows propagate it to everything below, so the first launch in a large tree takes longer.
- */
-function ensureLabel(win: Win32, path: string, label: Label): void {
-  if (hasLabel(win, path, label)) return;
-  const directory = statSync(path).isDirectory();
+/** Builds the SACL of an SDDL label string and passes it to `use`; the memory is freed after. */
+function withLabelAcl<T>(win: Win32, sddl: string, use: (acl: bigint) => T): T {
   const sd = Buffer.alloc(8);
-  const sddl = directory ? SDDL[label].dir : SDDL[label].file;
   if (!win.a.ConvertStringSecurityDescriptorToSecurityDescriptorW(wide(sddl), 1, sd, null))
     fail(win, "Building an integrity label");
   const descriptor = handleAt(sd);
@@ -274,22 +280,66 @@ function ensureLabel(win: Win32, path: string, label: Label): void {
     const defaulted = Buffer.alloc(4);
     if (!win.a.GetSecurityDescriptorSacl(descriptor, present, acl, defaulted))
       fail(win, "Reading an integrity label");
-    // Protected: an inherited low label from a writable parent must not apply next to this one.
-    const flags =
-      LABEL_SECURITY_INFORMATION | (label === "low" ? 0 : PROTECTED_SACL_SECURITY_INFORMATION);
-    const status = win.a.SetNamedSecurityInfoW(
-      wide(path),
-      SE_FILE_OBJECT,
-      flags,
-      null,
-      null,
-      null,
-      handleAt(acl),
-    );
-    if (status !== 0) fail(win, `Setting the ${label} integrity label on ${path}`, status);
+    return use(handleAt(acl));
   } finally {
     win.k.LocalFree(descriptor);
   }
+}
+
+/**
+ * Sets the label when the path lacks it. Setting a label with inheritance on a directory makes
+ * Windows propagate it to everything below, so the first launch in a large tree takes longer.
+ */
+function ensureLabel(win: Win32, path: string, label: Label): void {
+  if (hasLabel(win, path, label)) return;
+  const directory = statSync(path).isDirectory();
+  const sddl = directory ? SDDL[label].dir : SDDL[label].file;
+  // Protected: an inherited low label from a writable parent must not apply next to this one.
+  const flags =
+    LABEL_SECURITY_INFORMATION | (label === "low" ? 0 : PROTECTED_SACL_SECURITY_INFORMATION);
+  const status = withLabelAcl(win, sddl, (acl) =>
+    win.a.SetNamedSecurityInfoW(wide(path), SE_FILE_OBJECT, flags, null, null, null, acl),
+  );
+  if (status !== 0) fail(win, `Setting the ${label} integrity label on ${path}`, status);
+}
+
+/**
+ * A window station and desktop that a low-integrity process may use. The window station and
+ * desktops of a service session (CI runners, a user's services) are medium, and a process that
+ * cannot open its desktop dies in DLL initialization (0xc0000142). A station of its own also keeps
+ * the command away from the user's clipboard and windows. Returns the handles and the
+ * `station\\desktop` name for STARTUPINFO.
+ */
+function lowDesktop(win: Win32): { station: bigint; desktop: bigint; name: Buffer } {
+  const SE_WINDOW_OBJECT = 7;
+  const GENERIC_ALL = 0x10000000;
+  const label = (handle: bigint, what: string): void => {
+    const status = withLabelAcl(win, "S:(ML;;NW;;;LW)", (acl) =>
+      win.a.SetSecurityInfo(
+        handle,
+        SE_WINDOW_OBJECT,
+        LABEL_SECURITY_INFORMATION,
+        null,
+        null,
+        null,
+        acl,
+      ),
+    );
+    if (status !== 0) fail(win, `Labeling the sandbox ${what}`, status);
+  };
+  const name = `baked-sandbox-${process.pid}`;
+  const original = win.u.GetProcessWindowStation();
+  const station = win.u.CreateWindowStationW(wide(name), 0, GENERIC_ALL, null);
+  if (!station) fail(win, "CreateWindowStation");
+  label(station, "window station");
+  // A desktop is created in the calling process's window station.
+  if (!win.u.SetProcessWindowStation(station)) fail(win, "SetProcessWindowStation");
+  const desktop = win.u.CreateDesktopW(wide(name), null, null, 0, GENERIC_ALL, null);
+  const created = win.k.GetLastError();
+  win.u.SetProcessWindowStation(original);
+  if (!desktop) fail(win, "CreateDesktop", created);
+  label(desktop, "desktop");
+  return { station, desktop, name: wide(`${name}\\${name}`) };
 }
 
 function sidFrom(win: Win32, text: string): bigint {
@@ -376,10 +426,12 @@ export function runWindowsSandbox(spec: WindowsSandboxSpec): number {
     : windowsCommandLine(spec.executable, spec.args, spec.verbatim);
 
   const token = restrictedToken(win);
+  const desktop = lowDesktop(win);
   const job = killOnCloseJob(win);
   const startup = Buffer.alloc(104); // STARTUPINFOW
   startup.writeUInt32LE(startup.length, 0);
   startup.writeUInt32LE(0x100, 60); // STARTF_USESTDHANDLES
+  startup.writeBigUInt64LE(BigInt(win.ffi.ptr(desktop.name)), 16); // lpDesktop
   // STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE as DWORDs.
   [0xfffffff6, 0xfffffff5, 0xfffffff4].forEach((id, index) => {
     const handle = win.k.GetStdHandle(id);
@@ -418,6 +470,8 @@ export function runWindowsSandbox(spec: WindowsSandboxSpec): number {
   win.k.CloseHandle(processHandle);
   // Closing the job ends whatever the command left running, as bwrap's PID namespace does.
   win.k.CloseHandle(job);
+  win.u.CloseDesktop(desktop.desktop);
+  win.u.CloseWindowStation(desktop.station);
   win.k.CloseHandle(token);
   const status = exit.readUInt32LE(0);
   // An NTSTATUS exit (0xC0000142: a DLL failed to initialize) means Windows refused to run the
