@@ -294,6 +294,18 @@ A task attempt that reaches its step or token cap, submits an incomplete result 
 
 A step that stops at the profile's output cap (finish reason `length`) usually carried a tool call that was cut off and did not run. The next step gets a notice once, naming the cap and asking for smaller edits; like the finalize notice, it stays at the position where it first appeared so the replayed prefix is unchanged. The implementer's output cap is 16384 tokens.
 
+### Progress watcher
+
+Every agent attempt that submits a result is watched for a stuck loop before each model step. The rules, checked in this order over the attempt's own steps:
+
+- **Repeated reads**: the same `read`, `navigate`, `bake_find` or `bake_impact` call, with the same input, three times since the last edit.
+- **Same failure**: the last three `request_check`, `run_probe` or `run_repro` results are the same tool with identical output.
+- **No edits**: ten steps with tool calls and no edit, for an implementer whose task writes files.
+
+The first signal adds one steering message that names the pattern and asks the agent to apply the change, change approach, or submit what blocks it as unresolved. The attempt is stopped only when the same pattern goes on after that message: the same read or the same check result again, or three more steps without an edit. An edit clears the signal, and an attempt is steered at most once. The stop switches the attempt to its submit-only final step (stop reason `watcher` in `attempts/ID/usage.json`), so the run gets a result with the blocker listed instead of spending the step or token cap; an attempt the watcher stopped does not get the continuation with raised caps. Both the steering message and the stop are recorded as an `attempt.advisory` event, shown in the activity feed of the TUI run view and the desktop run screen and in the `--events` stream of `baked workflow run` and `resume`.
+
+The watcher only sees one attempt from inside its model loop. A provider call that hangs, or a host process that stops, is not detected here ([#604](https://github.com/Gulliby-development/baked/issues/604)).
+
 ### Raising a budget limit
 
 A run blocked with `budget_exhausted` shows B (raise limits) next to fork and cancel. The confirmation names the new values: every limit that is used up, or at least 80% used, doubles, and the tokens double when nothing else explains the stop; calls stop at 1000, active time at 24 hours and tokens at 50 million. Y applies it and the run continues from the stage that stopped.

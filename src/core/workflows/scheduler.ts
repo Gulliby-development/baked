@@ -1460,7 +1460,8 @@ export class WorkflowScheduler {
   private continueAtCap(runId: string, state: RuntimeState, stepId: string, task: Task): boolean {
     if ((state.taskContinuations[task.id] ?? 0) > 0) return false;
     const record = this.lastAttemptUsage(runId, stepId);
-    if (!record || record.finalizedBy === null) return false;
+    // An attempt the progress watcher stopped was stuck, not short of room.
+    if (!record || record.finalizedBy === null || record.finalizedBy === "watcher") return false;
     state.taskContinuations[task.id] = 1;
     state.taskBudgets[task.id] = Math.ceil(record.maxTokens * 1.5);
     state.taskSteps[task.id] = Math.ceil(record.maxSteps * 1.5);
