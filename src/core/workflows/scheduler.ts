@@ -353,6 +353,7 @@ import {
   pendingCodePaths,
   pendingOwners,
   readyTasks,
+  testUpdateOwners,
 } from "./task-graph.js";
 import {
   integrityFix,
@@ -5971,6 +5972,34 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       state.deferredChecks[task.id] = owners;
       this.store.transaction(() =>
         this.store.taskStatus(runId, task.id, "implemented", state.snapshotId),
+      );
+      return undefined;
+    }
+    const updaters =
+      checked.status === "failed" && checked.output
+        ? testUpdateOwners(
+            state.rootGraph ?? state.graph,
+            this.store.tasks(runId),
+            state.taskGates,
+            task,
+            checked.output,
+          )
+        : [];
+    if (updaters.length) {
+      // mdtoc-update (bench round 14): the change breaks expectations a later task of the plan
+      // updates; a corrective task rewrote that task's tests. That task's own checks run them.
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "diagnostic",
+          `tasks/handoffs/${task.id}.json`,
+          canonical({
+            taskId: task.id,
+            checkId: check.id,
+            evidenceId: checked.evidenceId,
+            owners: updaters,
+          }),
+        ),
       );
       return undefined;
     }

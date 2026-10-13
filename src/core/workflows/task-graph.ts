@@ -1,5 +1,6 @@
 import { hashJson } from "../specs/hash.js";
 import { pathsInOutput } from "../verification/convergence.js";
+import { isTestFile } from "./affected-tests.js";
 import { writtenCodePaths } from "./check-policy.js";
 import type { TaskGraph } from "./schemas.js";
 import type { TaskRow } from "./store.js";
@@ -241,6 +242,46 @@ export function pendingOwners(
       (t) => t.id !== task.id && t.writes.some((w) => w.path === path) && !done(t.id),
     );
     if (!pending.length || pending.some((t) => dependsOn(t.id, task.id))) return [...read];
+    for (const t of pending) owners.add(t.id);
+  }
+  return [...owners];
+}
+
+/**
+ * The unfinished planned tasks that update the existing tests a failed check of `task` names, when
+ * every file the output names is such a test: tests the task itself does not write and that a
+ * later task of the plan rewrites. The plan already knows the change breaks them (bench round 14,
+ * mdtoc-update: T001 changed `parseArgs`, T003 "Update existing CLI option expectations" depends on
+ * it), so the failure is that task's to settle, not a regression of `task`. Unlike
+ * `pendingOwners`, the owners may depend on `task`: nothing waits for them.
+ */
+export function testUpdateOwners(
+  graph: TaskGraph | null | undefined,
+  rows: TaskRow[],
+  gates: RuntimeState["taskGates"],
+  task: Task,
+  output: string,
+): string[] {
+  if (!graph || task.origin !== "planned") return [];
+  const named = pathsInOutput(output, graph.tasks);
+  if (!named.length || !named.every(isTestFile)) return [];
+  if (named.some((path) => task.writes.some((w) => w.path === path))) return [];
+  const done = (id: string): boolean =>
+    rows.some(
+      (r) =>
+        r.id === id &&
+        (r.status === "verified" || (r.status === "implemented" && hasTaskGate(r, gates))),
+    );
+  const owners = new Set<string>();
+  for (const path of named) {
+    const pending = graph.tasks.filter(
+      (t) =>
+        t.id !== task.id &&
+        t.origin === "planned" &&
+        t.writes.some((w) => w.path === path && w.action !== "delete") &&
+        !done(t.id),
+    );
+    if (!pending.length) return [];
     for (const t of pending) owners.add(t.id);
   }
   return [...owners];
