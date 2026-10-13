@@ -169,6 +169,39 @@ describe("attempt usage of a failing native attempt", () => {
   });
 });
 
+describe("attempts whose provider reports no tokens", () => {
+  const result = {
+    schemaVersion: 1,
+    summary: "Fixture researched",
+    facts: [],
+    unknowns: [],
+    constraints: [],
+    suggestedScope: [],
+  };
+
+  test("a submit step that reports zero tokens leaves the attempt's usage unknown", async () => {
+    // Codex reports a response's usage only after its tool call is answered, so an attempt that
+    // ends at its only call (the submit) sees zero input and zero output tokens.
+    scriptModel([step(0, 0, { name: "submit_result", input: result })]);
+    const { executor, request } = await nativeAttempt();
+    await expect(executor.execute(request)).resolves.toMatchObject({
+      output: result,
+      usageComplete: false,
+    });
+  });
+
+  test("an attempt with reported tokens stays complete", async () => {
+    scriptModel([
+      step(0, 0, { name: "unknown_tool", input: {} }),
+      step(5_000, 100, { name: "submit_result", input: result }),
+    ]);
+    const { executor, request } = await nativeAttempt();
+    const response = await executor.execute(request);
+    expect(response).toMatchObject({ inputTokens: 5_000, outputTokens: 100 });
+    expect(response.usageComplete).toBeUndefined();
+  });
+});
+
 describe("scheduler accounting of failed attempts", () => {
   test("a failed attempt is charged the usage its executor recorded and releases its reservation", async () => {
     const fixture = workflowFixture();
