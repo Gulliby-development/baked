@@ -41,6 +41,7 @@ import {
   convergenceStop,
   earlierFindings,
   grantRound,
+  noteInconclusiveReview,
   noteUnverifiedCriteria,
   passesWithNotes,
   REPEAT_NOTE,
@@ -120,6 +121,7 @@ import {
   fixerTiers,
   isCodePath,
   isWholeUnitCheck,
+  isWholeUnitFormatter,
   taskCheckList,
   validateChecks,
   withCoveringChecks,
@@ -2162,7 +2164,10 @@ export class WorkflowScheduler {
     policy: RunPolicy,
     task: Task,
   ): ((root: string, signal: AbortSignal) => Promise<string[]>) | undefined {
-    const checks = policy.checks.filter((c) => c.scope === "feature" && isWholeUnitCheck(c));
+    // A formatter reports no type errors to keep, so it would only cost a run (#842).
+    const checks = policy.checks.filter(
+      (c) => c.scope === "feature" && isWholeUnitCheck(c) && !isWholeUnitFormatter(c),
+    );
     const written = writtenCodePaths(task);
     if (!checks.length || !written.length) return undefined;
     return async (root, signal) => {
@@ -7756,13 +7761,29 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         // a test or declared check as a convergence task; without such a stage, or when the
         // verdict has no criterion behind it, the run blocks as before.
         const gaps = result.coverage.filter((c) => c.verdict === "inconclusive");
-        if (!routeGaps || !gaps.length)
+        if (!gaps.length)
           throw new WorkflowFault("OUTPUT_INVALID", `${reviewer.dimension} review inconclusive`);
-        state.reviewGaps[reviewer.key] = gaps.map((c) => ({
-          criterionId: c.criterionId,
-          explanation: c.explanation,
-        }));
-        result.verdict = result.findings.length ? "changes_requested" : "pass";
+        if (routeGaps) {
+          state.reviewGaps[reviewer.key] = gaps.map((c) => ({
+            criterionId: c.criterionId,
+            explanation: c.explanation,
+          }));
+          result.verdict = result.findings.length ? "changes_requested" : "pass";
+        } else {
+          // Without a converge stage (`quick`), a review with no finding has no defect to repair:
+          // when the required checks pass, its open criteria become known limitations instead of
+          // blocking the run on a verdict word (envguard-update f67dcde0, 445k tokens, #841).
+          if (result.findings.length || !requiredChecksPass(this.store, runId, state, policy))
+            throw new WorkflowFault("OUTPUT_INVALID", `${reviewer.dimension} review inconclusive`);
+          noteInconclusiveReview(
+            state,
+            reviewer.dimension,
+            gaps,
+            this.store.run(runId).convergence_rounds,
+          );
+          result.verdict = "pass";
+          delete state.reviewGaps[reviewer.key];
+        }
       } else delete state.reviewGaps[reviewer.key];
       this.store.transaction(() => this.store.finishStep(runId, child, "completed"));
       return { reviewer, result };

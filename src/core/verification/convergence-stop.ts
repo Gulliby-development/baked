@@ -471,6 +471,40 @@ export const limitedCriteria = (state: Pick<RuntimeState, "limitations">): Set<s
   new Set(state.limitations.flatMap((l) => l.criterionIds));
 
 /**
+ * Records the criteria a review left `inconclusive` with no finding, in a workflow without a
+ * converge stage to settle them, as known limitations accepted by the notes rule. The caller
+ * checks that the review has no finding and that every required check passes. Returns the
+ * limitations added.
+ */
+export function noteInconclusiveReview(
+  state: Pick<RuntimeState, "limitations">,
+  dimension: string,
+  coverage: Review["coverage"],
+  round: number,
+): Limitation[] {
+  const added: Limitation[] = [];
+  for (const item of coverage) {
+    const findingId = `review-inconclusive-${dimension}-${item.criterionId}`;
+    if (state.limitations.some((l) => l.findingId === findingId)) continue;
+    const limitation: Limitation = {
+      findingId,
+      severity: "low",
+      kind: "unverified",
+      criterionIds: [item.criterionId],
+      file: null,
+      symbol: null,
+      claim: `The ${dimension} review left criterion ${item.criterionId} inconclusive with no finding${item.explanation ? `: ${item.explanation.replace(/\s+/g, " ").slice(0, 400)}` : ""}`,
+      impact: "The required checks pass; no review established the criterion",
+      decidedBy: "notes",
+      round,
+    };
+    state.limitations.push(limitation);
+    added.push(limitation);
+  }
+  return added;
+}
+
+/**
  * Records criteria that convergence could not verify, and that no finding names, as known
  * limitations. A criterion only another environment can prove (propdrift eea2e0e9 AC-008, "behavior
  * is confirmed on Windows, macOS, and Linux", on a single-host runner) comes back `inconclusive`:
