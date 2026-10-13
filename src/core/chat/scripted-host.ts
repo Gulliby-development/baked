@@ -10,8 +10,9 @@ import type { ChatAgentHost, TurnAgent, TurnAgentRequest } from "./sessions.js";
  * Steps:
  * - `{ "text": "..." }` and `{ "reasoning": "..." }` stream word by word;
  * - `{ "tool": "read", "input": {...}, "output": "..." }` shows a tool call and its result;
- *   `"approval": { "outsideCwd": "/path" }` or `{ "destructive": "rm -rf x" }` first asks the
- *   user through the same prompts as a real tool, and a denial fails the call;
+ *   `"approval": { "outsideCwd": "/path" }`, `{ "destructive": "rm -rf x" }`,
+ *   `{ "webSearch": "query" }` or `{ "fetchPage": "https://..." }` first asks the user through the
+ *   same prompts as a real tool, and a denial fails the call;
  * - `{ "ifDenied": "..." }` after an approval streams this text only when it was denied, and
  *   `{ "ifApproved": "..." }` only when it was approved.
  * Turns after the last one answer "The test script has no more turns."
@@ -27,7 +28,11 @@ export type ScriptStep =
       tool: string;
       input?: Record<string, unknown>;
       output?: string;
-      approval?: { outsideCwd: string } | { destructive: string };
+      approval?:
+        | { outsideCwd: string }
+        | { destructive: string }
+        | { webSearch: string }
+        | { fetchPage: string };
     };
 
 export interface ChatScript {
@@ -104,11 +109,16 @@ export class ScriptedChatHost implements ChatAgentHost {
           const input = step.input ?? {};
           yield { type: "tool-call", toolCallId, toolName: step.tool, input };
           let allowed = true;
-          if (step.approval)
+          const approval = step.approval;
+          if (approval)
             allowed =
-              "outsideCwd" in step.approval
-                ? await request.onApproveOutsideCwd(step.tool, step.approval.outsideCwd)
-                : await request.onApproveDestructive(step.approval.destructive);
+              "outsideCwd" in approval
+                ? await request.onApproveOutsideCwd(step.tool, approval.outsideCwd)
+                : "webSearch" in approval
+                  ? ((await request.callbacks.onWebSearchApproval?.(approval.webSearch)) ?? false)
+                  : "fetchPage" in approval
+                    ? ((await request.callbacks.onFetchPageApproval?.(approval.fetchPage)) ?? false)
+                    : await request.onApproveDestructive(approval.destructive);
           if (step.approval) lastApproval = allowed;
           await sleep(delay, signal);
           yield {

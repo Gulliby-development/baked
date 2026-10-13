@@ -180,8 +180,13 @@ export interface LaunchNote {
   worktree?: { path: string; branch: string };
   /** For a session whose turn ended: its last answer, cut to `LAUNCH_RESULT_MAX` characters. */
   result?: string;
-  /** `status`: the item's status changed; `task-closed`: its task's pull request merged. */
-  event: "status" | "task-closed";
+  /** For `auto-answered`: what the coordinator approved by one of the user's rules. */
+  answered?: string;
+  /**
+   * `status`: the item's status changed; `task-closed`: its task's pull request merged;
+   * `auto-answered`: the coordinator answered one of its approvals by a rule (`why` names it).
+   */
+  event: "status" | "task-closed" | "auto-answered";
 }
 
 /** One `@` mention or `!` command of a user message and what it attached. */

@@ -3,6 +3,7 @@ import type { DefinitionSummary, WorkflowLine } from "../src/renderer/client/sta
 import type { EditorView, StageView } from "../src/renderer/client/workflow-editor.ts";
 import { handoff } from "../src/renderer/screens/runs/line-model.ts";
 import {
+  arrowDraft,
   boardSize,
   cardFacts,
   defaultLayout,
@@ -12,7 +13,6 @@ import {
   frameAt,
   graphEdges,
   lineFromView,
-  linkFor,
   magnet,
   matches,
   mergeLayout,
@@ -295,31 +295,37 @@ describe("workflow graph", () => {
     ]);
   });
 
-  test("a drawn link becomes the transition the editor would accept", () => {
+  test("a new arrow offers the station's outcomes, the free one that fits first", () => {
     const v = view();
     const [plan, , checks] = v.stages as [StageView, StageView, StageView];
-    expect(linkFor(plan, "checks", v)).toEqual({
-      ok: false,
-      reason: "plan already has a transition on passed. Remove it first.",
-    });
-    expect(linkFor({ ...plan, targets: [] }, "checks", v)).toEqual({
+    expect(arrowDraft(plan, "checks", v)).toEqual({
       ok: true,
-      on: "passed",
-      loop: null,
+      draft: {
+        back: false,
+        outcomes: [{ on: "passed", taken: "already goes to implement" }],
+        on: null,
+        rounds: 3,
+      },
     });
     const open = { ...checks, targets: checks.targets.filter((t) => t.transition?.on !== "failed") };
-    expect(linkFor(open, "plan", v)).toEqual({ ok: true, on: "failed", loop: 3 });
-    expect(linkFor(checks, "plan", v)).toEqual({
-      ok: false,
-      reason: "checks already has a transition on failed. Remove it first.",
+    expect(arrowDraft(open, "plan", v)).toEqual({
+      ok: true,
+      draft: {
+        back: true,
+        outcomes: [
+          { on: "passed", taken: "already goes to done" },
+          { on: "failed", taken: null },
+        ],
+        on: "failed",
+        rounds: 3,
+      },
     });
-    expect(linkFor(plan, "plan", v)).toEqual({ ok: false, reason: "plan cannot lead to plan." });
-    const implement = v.stages[1] as StageView;
-    expect(linkFor(implement, "plan", v)).toEqual({
-      ok: false,
-      reason:
-        "implement only passes, so it cannot send work back. Loops start at checks, reviews and convergence.",
-    });
+    const free = { ...checks, targets: [] };
+    expect(arrowDraft(free, "done", v)).toMatchObject({ ok: true, draft: { back: false, on: "passed" } });
+    expect(arrowDraft(free, "plan", v)).toMatchObject({ ok: true, draft: { back: true, on: "failed" } });
+    expect(arrowDraft(plan, "plan", v)).toEqual({ ok: false, reason: "An arrow goes to another station." });
+    expect(arrowDraft(v.stages[1] as StageView, "implement", v).ok).toBe(false);
+    expect(arrowDraft({ ...plan, targets: [] }, "zzz", v)).toEqual({ ok: false, reason: "plan cannot lead to zzz." });
   });
 
   test("the walkthrough plays the working copy from the editor view", () => {

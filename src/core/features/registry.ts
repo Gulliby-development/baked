@@ -169,6 +169,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/coordinator: the branch on launch cards and launched work"],
   },
   {
+    id: "coordinator-approval-rules",
+    group: "Chat and sessions",
+    title: "Coordinator answers routine approvals by rules",
+    tui: ["/coordinator rules"],
+    cli: ["baked session coordinator rules"],
+    api: ["/v1/coordinator/approval-rules"],
+    desktop: ["project/coordinator: Approval rules in the right panel"],
+  },
+  {
     id: "coordinator-summary",
     group: "Chat and sessions",
     title: "One-click coordinator digest: running, waiting, finished and open questions",
@@ -1031,7 +1040,7 @@ export const FEATURES: readonly Feature[] = [
       "/v1/workflow/editor/review",
       "/v1/workflow/editor/save",
     ],
-    desktop: ["project/workflows: gallery, Flow walkthrough, Graph editor, Stages"],
+    desktop: ["project/workflows: gallery, Watch walkthrough, Edit graph with station panel"],
   },
   {
     id: "project-agents",

@@ -83,13 +83,15 @@ function LaunchResult({ text }: { text: string }) {
 export function LaunchNoteCard({ note, href }: { note: LaunchNote; href?: string }) {
   const tone = noteTone(note);
   const closed = note.event === "task-closed";
+  const ruled = note.event === "auto-answered";
   const name = launchName(note);
-  const why = closed ? "" : launchWhy(note);
+  const why = closed || ruled ? "" : launchWhy(note);
+  const badge = closed ? "task closed" : ruled ? "approved by rule" : note.status;
   const task = note.task && note.task.state !== "local" ? note.task : null;
   return (
     <article
       className="flex min-w-0 items-start gap-3 rounded-base border-2 border-border bg-secondary-background px-3 py-2.5 shadow-sm-hard animate-rise motion-reduce:animate-none"
-      aria-label={`${launchKind(note)} ${name}: ${closed ? "task closed" : note.status}`}
+      aria-label={`${launchKind(note)} ${name}: ${badge}`}
     >
       <span
         className={cn(
@@ -98,14 +100,14 @@ export function LaunchNoteCard({ note, href }: { note: LaunchNote; href?: string
         )}
         aria-hidden="true"
       >
-        <Icon name={closed ? "ok" : ICONS[note.kind]} size={16} />
+        <Icon name={closed ? "ok" : ruled ? "shield" : ICONS[note.kind]} size={16} />
       </span>
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <span className="font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-dim-foreground">
             {launchKind(note)}
           </span>
-          <Badge tone={BADGE[tone]}>{closed ? "task closed" : note.status}</Badge>
+          <Badge tone={BADGE[tone]}>{badge}</Badge>
         </div>
         <p className="m-0 truncate text-[14px] font-semibold text-foreground" title={note.id}>
           {name}
@@ -115,7 +117,16 @@ export function LaunchNoteCard({ note, href }: { note: LaunchNote; href?: string
             <WorktreeLabel worktree={note.worktree} />
           </p>
         )}
-        {closed ? (
+        {ruled ? (
+          <>
+            <p className="m-0 text-[13px] text-foreground">
+              Approved {note.answered ?? "an approval"}
+            </p>
+            <p className="m-0 line-clamp-2 text-[12px] text-dim-foreground">
+              By your rule: {note.why}
+            </p>
+          </>
+        ) : closed ? (
           <p className="m-0 text-[13px] text-soft-foreground">
             Its pull request merged, so{" "}
             {task?.url ? (

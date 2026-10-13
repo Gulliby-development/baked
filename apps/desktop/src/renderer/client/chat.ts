@@ -99,8 +99,13 @@ export interface LaunchNote {
   worktree?: SessionWorktree;
   /** For a session whose turn ended: its last answer, shortened. */
   result?: string;
-  /** `status`: the item's status changed; `task-closed`: its task's pull request merged. */
-  event: "status" | "task-closed";
+  /** For `auto-answered`: what the coordinator approved by one of the person's rules. */
+  answered?: string;
+  /**
+   * `status`: the item's status changed; `task-closed`: its task's pull request merged;
+   * `auto-answered`: the coordinator answered one of its approvals by a rule (`why` names it).
+   */
+  event: "status" | "task-closed" | "auto-answered";
 }
 
 export type ImageMediaType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";

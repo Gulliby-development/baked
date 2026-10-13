@@ -23,8 +23,10 @@ import {
   effectiveMode,
   type Gate,
   type GateBinding,
+  MAX_LOOP_ROUNDS,
   type Outcome,
   PRESETS,
+  RECOMMENDED_LOOP_ROUNDS,
   STAGE_OUTCOMES,
   type Stage,
   stageGates,
@@ -523,7 +525,7 @@ export function transitionChoices(
   return {
     to: [...definition.stages.map((s) => s.id).filter((id) => id !== from), "done"],
     on: stage ? [...STAGE_OUTCOMES[stage.type]] : ["passed"],
-    loop: [null, 1, 2, 3, 4, 5],
+    loop: [null, 1, 2, 3, 4, 5, 10, 20, MAX_LOOP_ROUNDS],
   };
 }
 export function defaultTransitionDraft(definition: WorkflowV2, from: string): TransitionDraft {
@@ -632,7 +634,7 @@ export function stageFields(state: EditorState, stageId: string): StageField[] {
       key: `loop:${t.id}`,
       label: `Loop ${t.id}`,
       value: String(t.loop?.maxIterations ?? 1),
-      hint: "1 to 5 rounds",
+      hint: `1 to ${MAX_LOOP_ROUNDS} rounds, ${RECOMMENDED_LOOP_ROUNDS} or fewer recommended`,
     });
   return fields;
 }
@@ -708,13 +710,23 @@ export function changeStageField(
     const id = key.slice("loop:".length);
     const transition = state.definition.transitions.find((t) => t.id === id && t.from === stageId);
     if (!transition?.loop) return { state, error: `${id} is not a loop` };
-    const maxIterations = cycle([1, 2, 3, 4, 5], transition.loop.maxIterations, delta);
-    return edit(state, (d) => ({
-      ...d,
-      transitions: d.transitions.map((t) => (t.id === id ? { ...t, loop: { maxIterations } } : t)),
-    }));
+    return setLoopRounds(state, id, transition.loop.maxIterations + delta);
   }
   return { state, error: `${stageId} has no option ${key}` };
+}
+
+/** Sets how many rounds a loop transition may run, 1 to MAX_LOOP_ROUNDS. */
+export function setLoopRounds(state: EditorState, id: string, rounds: number): EditResult {
+  const transition = state.definition.transitions.find((t) => t.id === id);
+  if (!transition?.loop) return { state, error: `${id} is not a loop` };
+  if (!Number.isInteger(rounds) || rounds < 1 || rounds > MAX_LOOP_ROUNDS)
+    return { state, error: `A loop runs 1 to ${MAX_LOOP_ROUNDS} rounds` };
+  return edit(state, (d) => ({
+    ...d,
+    transitions: d.transitions.map((t) =>
+      t.id === id ? { ...t, loop: { maxIterations: rounds } } : t,
+    ),
+  }));
 }
 
 const WAIT_INTERVALS = [5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600];
