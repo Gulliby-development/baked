@@ -65,3 +65,19 @@ export async function buildReviewBundle(
         : text,
   };
 }
+
+/**
+ * The changed files of each task that changed any, so a reviewer ties a hunk of the bundle to its
+ * task without reading the task graph.
+ */
+export function taskChangedFiles(
+  tasks: readonly { id: string; writes: readonly { path: string }[] }[],
+  changed: readonly string[],
+): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const task of tasks) {
+    const paths = task.writes.map((w) => w.path).filter((path) => changed.includes(path));
+    if (paths.length) out[task.id] = paths;
+  }
+  return out;
+}

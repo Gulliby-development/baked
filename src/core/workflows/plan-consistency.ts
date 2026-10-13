@@ -69,6 +69,40 @@ export function withModuleDependencies(graph: TaskGraph): TaskGraph {
 }
 
 /**
+ * A task waits for the tasks that write a file it reads (`readHints`). Planners left such tasks
+ * without a dependency, so both ran in the same wave and the reader's checks failed on the file
+ * its sibling had not written yet (zoneslot-update c941a83a: 208k of repair; contrastgrid 14%).
+ * A file the task writes itself adds nothing, and a dependency that would close a cycle is not
+ * added: of two tasks that read each other's files, the first in the plan waits.
+ */
+export function withReadDependencies(graph: TaskGraph): TaskGraph {
+  const deps = new Map(graph.tasks.map((task) => [task.id, [...task.dependsOn]]));
+  const reaches = (from: string, to: string, seen = new Set<string>()): boolean => {
+    if (from === to) return true;
+    if (seen.has(from)) return false;
+    seen.add(from);
+    return (deps.get(from) ?? []).some((id) => reaches(id, to, seen));
+  };
+  for (const task of graph.tasks) {
+    const reads = task.readHints.filter((path) => !task.writes.some((w) => w.path === path));
+    if (!reads.length) continue;
+    for (const other of graph.tasks) {
+      if (other.id === task.id || reaches(task.id, other.id) || reaches(other.id, task.id))
+        continue;
+      if (other.writes.some((w) => w.action !== "delete" && reads.includes(w.path)))
+        deps.get(task.id)?.push(other.id);
+    }
+  }
+  return {
+    ...graph,
+    tasks: graph.tasks.map((task) => {
+      const next = deps.get(task.id) ?? task.dependsOn;
+      return next.length === task.dependsOn.length ? task : { ...task, dependsOn: next };
+    }),
+  };
+}
+
+/**
  * The requirement ids of a task follow from the criteria it owns: every requirement its criteria
  * verify, plus the ones the planner listed that exist in the spec. The planner is no longer
  * rejected (and asked for a complete 30-60k token plan again) over a mapping the spec already
