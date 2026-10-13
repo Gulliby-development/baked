@@ -9,7 +9,11 @@ import {
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { renderSpec, renderTasks } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
-import { assertAcceptance, assertAcceptanceV2 } from "../verification/acceptance.js";
+import {
+  assertAcceptance,
+  assertAcceptanceV2,
+  v1ReviewDimensions,
+} from "../verification/acceptance.js";
 import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
 import {
   appendCorrections,
@@ -68,6 +72,7 @@ import {
 import { budgetUsage, raiseToStartEstimate, reserveTokens } from "./budget.js";
 import {
   fixerCommand,
+  fixerTiers,
   taskCheckList,
   validateChecks,
   withCoveringChecks,
@@ -580,6 +585,7 @@ export class WorkflowScheduler {
                           sizing: plannerSizing(
                             policy,
                             sizingHistory(this.store.workspace, policy),
+                            this.sizingModel(runId, null),
                           ),
                         }
                       : {}),
@@ -1603,6 +1609,7 @@ export class WorkflowScheduler {
       policy,
       samples: sizingHistory(this.store.workspace, policy),
       spent: this.store.run(runId).token_usage,
+      model: this.sizingModel(runId, graph),
     });
     const split = splitTestTasks(graph, report);
     if (!split) return graph;
@@ -1701,6 +1708,13 @@ export class WorkflowScheduler {
     stepId: string,
     profile: AgentProfile,
   ): { models: string[]; effort?: RouteEffort } {
+    return this.stageRoute(runId, this.store.rootStage(runId, stepId), profile);
+  }
+  private stageRoute(
+    runId: string,
+    stage: string | null | undefined,
+    profile: AgentProfile,
+  ): { models: string[]; effort?: RouteEffort } {
     let routing = this.routing.get(runId);
     if (routing === undefined) {
       const row = this.store.latestArtifact(runId, ROUTING_ARTIFACT);
@@ -1710,7 +1724,6 @@ export class WorkflowScheduler {
       this.routing.set(runId, routing);
     }
     if (!routing) return { models: [profile.model] };
-    const stage = this.store.rootStage(runId, stepId);
     const staged = stage ? routing.stages[stage] : undefined;
     const own = routing.profiles[profile.id];
     const entry = staged ?? own;
@@ -1724,6 +1737,29 @@ export class WorkflowScheduler {
   private routed(runId: string, stepId: string, profile: AgentProfile, index = 0): AgentProfile {
     const model = this.route(runId, stepId, profile).models[index] ?? profile.model;
     return model === profile.model ? profile : { ...profile, model };
+  }
+  /**
+   * The model the plan's tasks will run on, as routing sends the profile most of them name to the
+   * task-graph stage; sizing prices them from that model's history. Null when it is not known.
+   */
+  private sizingModel(runId: string, graph: TaskGraph | null): string | null {
+    try {
+      const run = this.store.run(runId);
+      const profiles = ProfileSchema.array().parse(JSON.parse(run.profiles_json));
+      const counts = new Map<string, number>();
+      for (const task of graph?.tasks ?? [])
+        counts.set(task.profileId, (counts.get(task.profileId) ?? 0) + 1);
+      const named = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0];
+      const profile =
+        profiles.find((p) => p.id === named) ?? profiles.find((p) => p.id === "implementer");
+      if (!profile) return null;
+      const stage = WorkflowSchema.parse(JSON.parse(run.definition_json)).stages.find(
+        (s) => s.kind === "task-graph",
+      )?.id;
+      return this.stageRoute(runId, stage, profile).models[0] ?? profile.model;
+    } catch {
+      return null;
+    }
   }
   private requireProfile(profile: AgentProfile | undefined): AgentProfile {
     if (!profile) throw new WorkflowFault("INVALID_REFERENCE", "Stage profile is missing");
@@ -2128,11 +2164,13 @@ export class WorkflowScheduler {
     const graph = state.graph;
     if (!graph) return "continue";
     const samples = sizingHistory(this.store.workspace, policy);
+    const model = this.sizingModel(runId, graph);
     const report = sizePlan({
       graph,
       policy,
       samples,
       spent: this.store.run(runId).token_usage,
+      model,
     });
     this.store.transaction(() =>
       this.store.artifact(
@@ -2150,7 +2188,7 @@ export class WorkflowScheduler {
         this.raiseBudget(runId, state, policy, report);
         state.sizingReplans = 1;
         state.prompt += `
-${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
+${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`;
         state.analysisPassed = false;
         state.stageIndex = plan;
         this.store.transaction(() => this.store.saveState(runId, state));
@@ -4171,51 +4209,50 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     let changed = false;
     try {
       for (const check of fixable) {
-        const fix = check.fix;
-        if (!fix) continue;
-        for (const path of paths) {
-          signal.throwIfAborted();
-          this.leases.assert(lease);
-          const target = workspacePath(root, path);
-          const preImage = capturePreImage(this.store, runId, target);
-          const effectId = this.store.transaction(() =>
-            this.store.prepareEffect(
-              runId,
-              attempt,
-              "file_patch",
-              {
-                path,
-                tool: "apply_fix",
-                checkId: check.id,
-                taskId: owners.get(path),
-                ...rootField(this.store.workspace, root),
-              },
-              preImage,
-              null,
-            ),
-          );
-          try {
-            // A fixer that cannot fix everything exits non-zero; the rerun check decides.
-            const command = fixerCommand(fix, path);
-            await executeCheckCommand(
-              scope,
-              command.executable === "bun" ? process.execPath : command.executable,
-              command.args,
-              {
-                cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
-                env: buildCheckEnv(check),
-                timeoutMs: check.timeoutMs,
-                signal,
-              },
+        for (const fix of fixerTiers(check))
+          for (const path of paths) {
+            signal.throwIfAborted();
+            this.leases.assert(lease);
+            const target = workspacePath(root, path);
+            const preImage = capturePreImage(this.store, runId, target);
+            const effectId = this.store.transaction(() =>
+              this.store.prepareEffect(
+                runId,
+                attempt,
+                "file_patch",
+                {
+                  path,
+                  tool: "apply_fix",
+                  checkId: check.id,
+                  taskId: owners.get(path),
+                  ...rootField(this.store.workspace, root),
+                },
+                preImage,
+                null,
+              ),
             );
-            const after = fileHash(target);
-            this.store.transaction(() => this.store.finishFileEffect(runId, effectId, after));
-            if (after !== preImage) changed = true;
-          } catch (error) {
-            this.store.transaction(() => this.store.effectStatus(runId, effectId, "unknown"));
-            throw error;
+            try {
+              // A fixer that cannot fix everything exits non-zero; the rerun check decides.
+              const command = fixerCommand(fix, path);
+              await executeCheckCommand(
+                scope,
+                command.executable === "bun" ? process.execPath : command.executable,
+                command.args,
+                {
+                  cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+                  env: buildCheckEnv(check),
+                  timeoutMs: check.timeoutMs,
+                  signal,
+                },
+              );
+              const after = fileHash(target);
+              this.store.transaction(() => this.store.finishFileEffect(runId, effectId, after));
+              if (after !== preImage) changed = true;
+            } catch (error) {
+              this.store.transaction(() => this.store.effectStatus(runId, effectId, "unknown"));
+              throw error;
+            }
           }
-        }
       }
       const outside = changedPaths(before, await sourceManifest(root, generated, signal)).filter(
         (path) => !owners.has(path),
@@ -4255,16 +4292,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
   }
   /** The v1 review stage: correctness, security when triggered and language, each blocking. */
   private v1Reviewers(state: RuntimeState, policy: RunPolicy): Reviewer[] {
-    const dimensions = [
-      "correctness",
-      ...(requiresSecurityReview(
-        state.graph?.tasks.flatMap((t) => t.writes.map((w) => w.path)) ?? [],
-        policy.forceSecurityReview,
-      )
-        ? ["security"]
-        : []),
-      ...(policy.reviewProfiles.language ? ["language"] : []),
-    ] as (keyof RunPolicy["reviewProfiles"])[];
+    const dimensions = v1ReviewDimensions(state, policy);
     return dimensions.map((dimension) => ({
       key: dimension,
       dimension,
