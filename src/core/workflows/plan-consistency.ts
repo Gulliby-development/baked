@@ -260,6 +260,12 @@ const RUNS_PROGRAM =
 const PROSE_FILE = /(?:^|\/)(?:LICEN[CS]E|COPYING|NOTICE|AUTHORS)(?:[.-][\w.-]+)?$/i;
 const isProse = (path: string): boolean => fileKind(path) === "docs" || PROSE_FILE.test(path);
 
+/** Whether every file a task writes is documentation (a licence or notice beside it included). */
+export function writesOnlyDocs(task: Pick<Task, "writes">): boolean {
+  const files = task.writes.filter((w) => w.action !== "delete").map((w) => w.path);
+  return files.length > 0 && files.every(isProse);
+}
+
 /** Criterion or requirement text that asks the documentation to show what the program prints. */
 const SHOWS_OUTPUT =
   /\b(?:example|sample|worked|expected|actual|real|captured)[- ](?:output|block|session|run|example|invocation)s?\b|\boutput\b[^.]*\b(?:copied|pasted|captured|shown|printed|reproduced)\b|\b(?:copied|pasted|captured|shown|printed|reproduced)\b[^.]*\boutput\b|```/i;
@@ -301,8 +307,7 @@ export function withCommandDependencies(
     return (deps.get(from) ?? []).some((id) => reaches(id, to, seen));
   };
   for (const task of graph.tasks) {
-    const files = task.writes.filter((w) => w.action !== "delete").map((w) => w.path);
-    if (!files.length || !files.every(isProse)) continue;
+    if (!writesOnlyDocs(task)) continue;
     const ask = taskAsk(task, spec);
     if (
       !RUNS_PROGRAM.test(ask.own) &&
