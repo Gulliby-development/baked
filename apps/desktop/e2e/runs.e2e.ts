@@ -85,3 +85,11 @@ test("the run list previews a cleanup and imports a spec folder", async ({ app }
   await expect(importing.getByRole("status")).toContainText("Imported as candidate");
   await expect(importing.getByRole("status")).toContainText("Markdown imported as a draft");
 });
+
+test("a blocked run says why it stopped", async ({ app }) => {
+  const page = await app("#/p/baked/runs/run-locale-validation");
+  const why = page.getByRole("region", { name: "Why the run stopped" });
+  await expect(why).toContainText("The run is blocked: the token, call or time budget is used up.");
+  await expect(why).toContainText("Run token budget of 600000 would be exceeded");
+  await expect(page.getByText(/^The run is blocked\. Why it stopped is shown above/)).toBeVisible();
+});
