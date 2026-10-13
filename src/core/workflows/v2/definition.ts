@@ -94,6 +94,13 @@ export const CommandGate = z
           .object({ executable: z.string().min(1).max(512), args: z.array(z.string().max(2048)) })
           .strict()
           .optional(),
+        /** A second fixer tier run after `fix` (see `Check.fixUnsafe`). */
+        fixUnsafe: z
+          .object({ executable: z.string().min(1).max(512), args: z.array(z.string().max(2048)) })
+          .strict()
+          .optional(),
+        /** `json`: a custom gate whose JSON report decides the result (see `Check.report`). */
+        report: z.enum(["exit", "json"]).optional(),
       })
       .strict(),
     /** Set on a gate written from an accepted AI walk-through; the test file is pinned by hash. */

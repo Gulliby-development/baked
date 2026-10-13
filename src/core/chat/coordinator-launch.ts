@@ -17,7 +17,12 @@ import {
   MIN_FEATURES,
   planStructureProblems,
 } from "../workflows/initiatives/plan.js";
-import { createIssue, fetchIssue, issueTarget } from "../workflows/issue-source.js";
+import {
+  createIssue,
+  fetchIssue,
+  type IssueSource,
+  issueTarget,
+} from "../workflows/issue-source.js";
 import { terminalStates } from "../workflows/state-machine.js";
 import { BriefStore, type LaunchedEntry } from "./coordinator.js";
 import type { ProjectStateSource } from "./project-state.js";
@@ -70,6 +75,8 @@ export interface ProjectLauncher {
     prompt: string;
     plan?: InitiativePlan;
     approveSplit?: boolean;
+    /** The issue of each feature of `plan`; its runs start from it and delivery closes it. */
+    featureIssues?: Record<string, IssueSource>;
   }): Promise<{ initiativeId: string }>;
   /** Issues for flows; without it every flow gets a local task. */
   tasks?: TaskTracker;
@@ -156,6 +163,21 @@ function liveState(
       };
     }
     const view = state.initiative(entry.id);
+    if (entry.feature) {
+      const feature = view.features.find((f) => f.id === entry.feature);
+      if (!feature) return { status: "deleted", active: false, tokens: 0 };
+      // An accepted feature reads as a completed run, so its task is checked for a merge.
+      const done = feature.state === "accepted";
+      return {
+        status: done
+          ? "completed"
+          : feature.pendingRequests.length
+            ? `waiting: ${feature.pendingRequests[0]?.kind}`
+            : feature.state.replaceAll("_", " "),
+        active: !done && !["failed"].includes(feature.state),
+        tokens: feature.usage.tokens,
+      };
+    }
     const active = !["completed", "cancelled", "failed"].includes(view.status);
     return {
       status: view.pendingDecisions.length
@@ -200,7 +222,7 @@ export async function syncLaunched(
   const launched: LaunchedEntry[] = [];
   for (const entry of brief.launched) {
     const { status } = liveState(chat, state, entry);
-    const label = `${entry.kind} ${entry.id}${entry.task ? ` (${entry.task.ref})` : ""}`;
+    const label = `${entry.feature ? `feature ${entry.feature} of ` : ""}${entry.kind} ${entry.id}${entry.task ? ` (${entry.task.ref})` : ""}`;
     let next = entry;
     if (status !== entry.status) {
       if (NOTEWORTHY.test(status)) notices.push(`${label}: ${status} (${entry.why})`);
@@ -560,11 +582,17 @@ export function launchTools(
         }
         if (shape.mode === "initiative")
           try {
+            const featureIssues: Record<string, IssueSource> = {};
+            for (const [i, flow] of split.flows.entries()) {
+              const issue = issueOf(tasks[i], flow.title);
+              if (issue) featureIssues[flow.id] = issue;
+            }
             const { initiativeId } = await launcher.startInitiative({
               initiativeId: split.id,
               prompt: split.title,
               plan: shape.plan,
               approveSplit: true,
+              ...(Object.keys(featureIssues).length ? { featureIssues } : {}),
             });
             entries.push({
               kind: "initiative",
@@ -572,6 +600,19 @@ export function launchTools(
               status: "started",
               why: `${split.why}; tasks ${tasks.map((t) => t.ref).join(", ")}`.slice(0, 1000),
             });
+            // One entry per feature task, so a merge is reported per task as it is for runs.
+            for (const [i, flow] of split.flows.entries()) {
+              const task = tasks[i];
+              if (task && task.state !== "local")
+                entries.push({
+                  kind: "initiative",
+                  id: initiativeId,
+                  feature: flow.id,
+                  status: "started",
+                  why: `${flow.title} (${split.id})`,
+                  task,
+                });
+            }
           } catch (err) {
             errors.push(err instanceof Error ? err.message : String(err));
           }
@@ -612,6 +653,14 @@ export function launchTools(
       },
     }),
   };
+}
+
+/** The issue a flow's task names, for a feature run to start from; null for a local task. */
+export function issueOf(task: FlowTask | undefined, title: string): IssueSource | null {
+  const match =
+    task?.url && task.state !== "local" ? /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(task.ref) : null;
+  if (!task?.url || !match?.[1] || !match[2]) return null;
+  return { repository: match[1], number: Number(match[2]), url: task.url, title };
 }
 
 /** Applies one change to the brief, retrying once when the model edited it meanwhile. */
