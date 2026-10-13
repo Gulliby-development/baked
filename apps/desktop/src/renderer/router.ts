@@ -17,6 +17,7 @@ export const PROJECT_SECTIONS = [
   "run-memory",
   "chat-memory",
   "skills",
+  "packages",
   "hooks",
   "mcp",
   "lsp",

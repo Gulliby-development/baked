@@ -145,6 +145,17 @@ baked --headless --sandbox required "run the tests"
 
 `baked artifacts list|show|save|deploy|remove` manages the [artifacts](artifacts.md) shared by every project: HTML pages kept in the BAKED data folder. `deploy ID` prints what it would send to your Vercel account and deploys only with `--yes` (`--prod` for production).
 
+## Packages
+
+```sh
+baked add ../acme-review           # show the plan; install after a yes at the prompt
+baked add ../acme-review --yes     # install without the prompt
+baked packages list --json         # installed packages and files edited since
+baked packages remove acme-review  # delete the package's unchanged files
+```
+
+`baked add PATH` installs a [package](packages.md): a local folder with a `baked-package.json` that lists agent profiles, skills, workflow definitions and gates with their SHA-256 hashes. It checks the hashes and definitions, prints what it would write into `baked/`, and installs after a yes at the prompt; without a terminal (or with `--json`) it installs only with `--yes`. `--overwrite` replaces project files that differ. `baked packages list` and `remove NAME` manage installed packages; `remove` keeps files edited since the install. Installed gates still need `baked workflow gates confirm`. Exit codes: 0 done, 1 refused or not approved, 2 bad arguments, an unknown path or package.
+
 ## Approvals
 
 There is no one to ask in headless mode: actions that would ask for approval in the terminal UI (writes outside the project, destructive shell commands) are not prompted. Cap runs with `--max-steps` and `--timeout`, keep API keys in CI secrets, and run untrusted prompts in a disposable checkout or with `--sandbox required`.

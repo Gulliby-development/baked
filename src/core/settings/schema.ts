@@ -909,6 +909,22 @@ export const SETTINGS: readonly SettingDefinition[] = [
       { value: "off", label: "off", help: "Do not run Semgrep." },
     ],
   },
+  {
+    id: "quality.mutation",
+    page: "code-quality",
+    section: "Tests",
+    label: "Mutation gate",
+    help: "Plants small faults (a flipped condition, a shifted boundary, a changed constant) in the lines a run added and runs the required test checks against each. A fault the tests do not notice means they assert too little. advisory lists those in the run report; required makes them findings the run fixes with a test; preset follows the workflow (advisory for full runs, off for quick and standard).",
+    scopes: BOTH,
+    type: "enum",
+    default: "preset",
+    options: [
+      { value: "preset", label: "preset", help: "As the workflow preset says." },
+      { value: "off", label: "off", help: "Do not run the gate." },
+      { value: "advisory", label: "advisory", help: "Report surviving mutants." },
+      { value: "required", label: "required", help: "Block until a test kills them." },
+    ],
+  },
 ];
 
 const BY_ID = new Map(SETTINGS.map((setting) => [setting.id, setting]));

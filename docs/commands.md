@@ -119,6 +119,7 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 | `/memory` | Manage memory scopes, view & clear; the Runs tab shows and edits what workflow runs remember |
 | `/repo-map` | Baked map settings (AST index) |
 | `/skills` | Browse & install skills |
+| `/packages` | [Packages](packages.md) installed in the project; `/packages add PATH` shows a local package's plan and installs it after you pick Install, `/packages remove NAME` deletes its unchanged files (both ask first) |
 | `/tools` | Enable/disable tools for the agent |
 | `/artifacts` | [Artifacts](artifacts.md) shared by every project: pick one to open it in the browser; `/artifacts open ID` opens one, `/artifacts deploy ID [prod]` asks the agent to deploy it (it asks before it deploys) |
 | `/watch` | Watch files: saved baked! and baked? comments start the agent; `/watch on` starts it in this tab, `/watch off` stops it, `/watch status` shows it ([watch mode](watch.md)) |
@@ -128,7 +129,7 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 | Command | Does |
 | --- | --- |
 | `/agent-features` | Toggle agent features (de-sloppify, tier routing) |
-| `/code-quality` | Quality gates of workflow runs (duplication ratchet, anti-slop rules, dependency check, Semgrep) |
+| `/code-quality` | Quality gates of workflow runs (duplication ratchet, anti-slop rules, dependency check, Semgrep, mutation gate) |
 | `/chat-style` | Toggle chat layout style |
 | `/diff-style` | Change diff display style |
 | `/instructions` | Toggle instruction files (baked.md, CLAUDE.md, etc.) |

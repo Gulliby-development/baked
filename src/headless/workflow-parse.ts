@@ -28,6 +28,7 @@ const commands = [
   "candidate",
   "usage",
   "report",
+  "outcomes",
   "compare",
   "memory",
   "extend",
@@ -70,6 +71,7 @@ export interface WorkflowArgs {
 /** Options every workflow command takes. */
 const globalFlags = ["json", "cwd", "help"];
 const booleanFlags = new Set([
+  "refresh",
   "auto-preset",
   "all",
   "save",
@@ -125,6 +127,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "sandbox",
     "duplication",
     "sast",
+    "mutation",
     "issue",
     "budget",
     "auto-preset",
@@ -180,6 +183,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
   usage: ["model", "stage", "top", "format", "output"],
   report: ["output"],
+  outcomes: ["refresh"],
   compare: ["output"],
   memory: ["text"],
   extend: [
@@ -427,6 +431,12 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     !["auto", "off"].includes(String(result.flags.sast))
   )
     throw new WorkflowFault("INVALID_DEFINITION", "--sast accepts auto or off");
+  if (
+    !result.flags.help &&
+    "mutation" in result.flags &&
+    !["off", "advisory", "required"].includes(String(result.flags.mutation))
+  )
+    throw new WorkflowFault("INVALID_DEFINITION", "--mutation accepts off, advisory or required");
   if (!result.flags.help && ["run", "doctor", "estimate"].includes(result.command)) {
     if ("writers" in result.flags) {
       const writers = String(result.flags.writers);
@@ -452,7 +462,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--sandbox off|auto|required] [--duplication off|warn|ratchet] [--sast auto|off] [--budget PRESET]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--sandbox off|auto|required] [--duplication off|warn|ratchet] [--sast auto|off] [--mutation off|advisory|required] [--budget PRESET]
 run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --prompt-file FILE] [other run options]
   --issue takes the request from a GitHub issue (its title and body; --prompt adds instructions)
   and names the feature issue-N-TITLE unless --feature is given; the delivery pull request says
@@ -474,6 +484,9 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   duplication, then the quality.duplication setting, otherwise warn
   --sast off skips Semgrep on the run's diff; auto (the default) runs it when it is installed.
   Default: the policy's sast, then the quality.sast setting, otherwise auto
+  --mutation required makes the mutants of the added lines that the test checks do not kill
+  blocking findings; advisory lists them in the run report; off skips the gate. Default: the
+  policy's mutation, then the quality.mutation setting, then the preset (advisory for sdd/full)
   --budget quick|standard|extended|checkpoints scales the policy (--policy, the config's
   workflows.policy, or the built-in default): quick halves the limits, extended doubles them,
   checkpoints drops the token cap and pauses for your go-ahead. Default: standard
@@ -561,6 +574,10 @@ usage RUN_ID [--model ID] [--stage NAME] [--top N] [--format md] [--output FILE]
 report RUN_ID [--output FILE] [--json]
   One Markdown report of the run: summary, changes, tasks, checks, criteria, findings, decisions,
   tokens by stage and model, artifacts. Printed, or written to FILE; deliver uses it as the PR body.
+outcomes [RUN_ID] [--refresh] [--json]
+  The critic outcome log: each critic score with whether the task's checks passed, how the run
+  ended, the delivered commit's fate and the share of its lines that survive (final after 30 days).
+  --refresh updates delivery and survival from Git first.
 compare RUN_A RUN_B [--output FILE] [--json]
   an A/B of two runs (one feature run with two --route maps): the routes that differ, then status,
   tokens, cost, active time, agent calls, repairs, checks and review findings side by side

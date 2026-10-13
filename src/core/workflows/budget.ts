@@ -1,5 +1,6 @@
 import { canonical, hashJson } from "../specs/hash.js";
 import { defaultWorkflowPolicy } from "./defaults.js";
+import { WorkflowFault } from "./errors.js";
 import { type AgentProfile, PolicySchema, type RunPolicy } from "./schemas.js";
 import type { RunRow, WorkflowStore } from "./store.js";
 export function reserveTokens(prompt: string, profile: AgentProfile, policy: RunPolicy): number {
@@ -199,6 +200,40 @@ export function growBudgetOnProgress(
     finishedTasks: finished,
   });
   return projected <= policy.maxTotalTokens;
+}
+
+/**
+ * Checked before an attempt makes its first model call. An attempt whose cap the run budget no
+ * longer covers grows the budget first (as `growBudgetOnProgress` does). In a run with a sizing
+ * ceiling, whose attempt caps come from the priced plan, an attempt the budget still cannot cover
+ * blocks the run with `budget_exhausted` before it spends anything: junitdigest 3e5be74b started a
+ * task attempt and a converge attempt with less left than their caps and lost 46k and 149k to
+ * attempts that failed on the run cap mid-loop (#747). Without a ceiling the attempt starts and
+ * its cap shrinks to what is left, so it finalizes in time.
+ */
+export function assertAttemptFits(
+  store: WorkflowStore,
+  runId: string,
+  attemptId: string,
+  policy: RunPolicy,
+  attemptTokens: number,
+): void {
+  const remaining = store.remainingTokens(runId, policy, attemptId);
+  if (remaining >= attemptTokens) return;
+  const committed = policy.maxTotalTokens - remaining;
+  if (growBudgetOnProgress(store, runId, policy, committed + attemptTokens)) return;
+  if (policy.sizing?.maxRunTokens == null) return;
+  const left = store.remainingTokens(runId, policy, attemptId);
+  if (left >= attemptTokens) return;
+  throw new WorkflowFault(
+    "BUDGET_EXHAUSTED",
+    "The next attempt needs more tokens than the run budget has left",
+    {
+      remainingTokens: left,
+      attemptTokens,
+      maxTotalTokens: policy.maxTotalTokens,
+    },
+  );
 }
 
 /**
