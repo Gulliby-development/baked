@@ -145,6 +145,7 @@ import {
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
 import { coverageFinding } from "./coverage.js";
 import { type CriticCalibration, calibrateCritic, criticExamples } from "./critic-calibration.js";
+import { crossPlatformNote } from "./cross-platform.js";
 import { git } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
@@ -2943,6 +2944,10 @@ export class WorkflowScheduler {
       ) === "auto"
         ? propertyTestsNote(profile.output, this.propertyLibraries(runId, state))
         : null;
+    const crossPlatform =
+      profile.output === "spec"
+        ? crossPlatformNote(state.requestText || state.prompt, runRoot(this.store.workspace, state))
+        : null;
     const hardening =
       presetOf(parseRunDefinition(this.store.run(runId).definition_json)) === HARDEN_PRESET
         ? hardenNote(profile.output)
@@ -2956,6 +2961,7 @@ export class WorkflowScheduler {
       {
         ...input,
         ...(propertyNote ? { propertyTests: propertyNote } : {}),
+        ...(crossPlatform ? { crossPlatform } : {}),
         ...(hardening ? { hardening } : {}),
         ...(rules ? { learnedRules: rules } : {}),
         ...(workingSet ? { projectWorkingSet: workingSet } : {}),
