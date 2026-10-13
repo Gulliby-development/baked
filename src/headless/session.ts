@@ -1,11 +1,23 @@
-import { relative, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { join, relative, resolve } from "node:path";
+import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../config/index.js";
 import {
   coordinatorId,
   RULES_USAGE,
   runRulesCommand,
 } from "../core/chat/approval-rules-command.js";
 import { BriefStore, renderBrief } from "../core/chat/coordinator.js";
+import {
+  closeLaunched,
+  type LaunchedRef,
+  LaunchedRefSchema,
+  stopLaunched,
+} from "../core/chat/coordinator-control.js";
+import type { ProjectLauncher } from "../core/chat/coordinator-launch.js";
 import { ScheduleError, ScheduleStore, scheduleLine } from "../core/chat/coordinator-schedules.js";
+import { BakeChatHost } from "../core/chat/host.js";
+import { serviceStateSource } from "../core/chat/project-state.js";
+import { ChatError, ChatService } from "../core/chat/sessions.js";
 import type { RollbackReport } from "../core/checkpoints/fork.js";
 import { RollbackError } from "../core/checkpoints/fork.js";
 import { SavedCheckpointsError, savedSessionCheckpoints } from "../core/checkpoints/list.js";
@@ -15,6 +27,11 @@ import { TurnUndoError } from "../core/checkpoints/undo.js";
 import { getCwd } from "../core/cwd.js";
 import { exportChat } from "../core/sessions/export.js";
 import { type SessionListEntry, SessionManager } from "../core/sessions/manager.js";
+import { attentionItems } from "../core/workflows/attention.js";
+import { WorkflowFault } from "../core/workflows/errors.js";
+import { InitiativeService } from "../core/workflows/initiatives/service.js";
+import { NativeWorkflowService } from "../core/workflows/service.js";
+import { newId } from "../core/workflows/store.js";
 
 const help = `Usage: baked session list [--limit N] [--json]
        baked session delete SESSION [--json]
@@ -28,6 +45,8 @@ const help = `Usage: baked session list [--limit N] [--json]
        baked session coordinator schedule add --name NAME --when WHEN --prompt TEXT [--json]
        baked session coordinator schedule pause|resume|remove ID [--json]
        baked session coordinator rules [on|off|add ...|remove ID]
+       baked session coordinator stop run|initiative ID [--json]
+       baked session coordinator close session|run|initiative ID [--feature F] [--reopen] [--json]
 
 list prints the saved sessions of this project, most recently updated first (default limit 50);
 the project coordinator is not listed.
@@ -40,6 +59,12 @@ terminal UI's coordinator runs; one missed meanwhile fires once when it starts.
 coordinator rules shows or changes the rules the coordinator answers routine approvals of its
 launched work by (off by default):
 ${RULES_USAGE.replace(/^/gm, "  ")}
+coordinator stop cancels a workflow run the coordinator launched (a cancelled run cannot resume)
+or pauses an initiative it launched. A launched session's turn runs in the process that hosts the
+coordinator, so stop it there: Ctrl+X in the terminal UI or POST /v1/coordinator/launched/stop.
+coordinator close marks a finished or paused launched item closed, so the coordinator no longer
+follows it or counts it toward coordinator.maxActive; a closed session is archived. --feature
+closes one feature of an initiative, --reopen brings a closed item back.
 delete removes a saved session and the checkpoint tags it made; the files stay as they are.
 export writes the conversation of the session's active tab as Markdown (default) or JSON, to FILE
 or to .baked/exports/, as /session export does in the terminal UI.
@@ -79,7 +104,11 @@ export async function runSessionCli(argv: string[]): Promise<number> {
   if (command === "list") return list(rest);
   if (command === "delete") return remove(rest);
   if (command === "export") return exportSession(rest);
-  if (command === "coordinator") return coordinator(rest);
+  if (command === "coordinator") {
+    if (rest[0] === "stop" || rest[0] === "close")
+      return coordinatorControl(rest[0], rest.slice(1));
+    return coordinator(rest);
+  }
   if (command === "checkpoints") return checkpoints(rest);
   if (command !== "fork") {
     process.stderr.write(`Unknown session command: ${command}\n\n${help}`);
@@ -359,6 +388,94 @@ function coordinatorRules(args: string[]): number {
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
+  }
+}
+
+/** `baked session coordinator stop|close KIND ID`, through the same core as the coordinator's tools. */
+async function coordinatorControl(action: "stop" | "close", args: string[]): Promise<number> {
+  const json = args.includes("--json");
+  const reopen = args.includes("--reopen");
+  const feature = value(args, "--feature");
+  const [kind, id, extra] = args.filter(
+    (a, i) => !a.startsWith("--") && args[i - 1] !== "--feature",
+  );
+  const unknown = args.find(
+    (a) => a.startsWith("--") && !["--json", "--reopen", "--feature"].includes(a),
+  );
+  const parsed = LaunchedRefSchema.safeParse({ kind, id, ...(feature ? { feature } : {}) });
+  if (!parsed.success || extra || unknown || (action === "stop" && reopen)) {
+    process.stderr.write(
+      `${unknown ? `Unknown argument: ${unknown}` : `Give ${action} KIND ID, where KIND is session, run or initiative`}\n\n${help}`,
+    );
+    return 1;
+  }
+  const ref: LaunchedRef = parsed.data;
+  if (action === "stop" && ref.kind === "session") {
+    process.stderr.write(
+      `Session ${ref.id} runs in the process that hosts the coordinator; stop its turn there (Ctrl+X in the terminal UI, or POST /v1/coordinator/launched/stop on baked serve).\n`,
+    );
+    return 1;
+  }
+  const cwd = getCwd();
+  const coordinator = coordinatorId(cwd);
+  if (!coordinator) {
+    process.stderr.write(
+      "This project has no coordinator yet; the desktop app or POST /v1/coordinator creates it.\n",
+    );
+    return 1;
+  }
+  const config = mergeConfigs(loadConfig(), loadEffectiveProjectConfig(cwd));
+  const chat = new ChatService({ workspace: cwd, config, host: new BakeChatHost(cwd, config) });
+  // Runs and initiatives live in the workflow database, which exists once the first one started.
+  const service = existsSync(join(cwd, ".baked", "workflows.sqlite"))
+    ? new NativeWorkflowService(cwd, config, undefined, false)
+    : null;
+  try {
+    const initiatives = service ? new InitiativeService(service) : null;
+    const state =
+      service && initiatives
+        ? serviceStateSource(service, initiatives, () =>
+            attentionItems(service.store, initiatives.store),
+          )
+        : null;
+    const launcher: Pick<ProjectLauncher, "cancelRun" | "pauseInitiative"> | null =
+      service && initiatives
+        ? {
+            cancelRun: async (runId) => {
+              await service.cancel(runId, {
+                commandId: newId(),
+                expectedRevision: service.store.run(runId).revision,
+              });
+            },
+            pauseInitiative: async (initiativeId) => {
+              await initiatives.pause(initiativeId, {
+                commandId: newId(),
+                expectedRevision: initiatives.view(initiativeId).revision,
+              });
+            },
+          }
+        : null;
+    if (action === "stop") {
+      const message = await stopLaunched(chat, coordinator, state, launcher, ref);
+      process.stdout.write(
+        json ? `${JSON.stringify({ stopped: ref, message }, null, 2)}\n` : `${message}\n`,
+      );
+      return 0;
+    }
+    const entries = await closeLaunched(chat, coordinator, state, ref, reopen);
+    process.stdout.write(
+      json
+        ? `${JSON.stringify({ launched: entries }, null, 2)}\n`
+        : `${reopen ? "Reopened" : "Closed"} ${ref.feature ? `feature ${ref.feature} of initiative ${ref.id}` : `${ref.kind} ${ref.id}`}\n`,
+    );
+    return 0;
+  } catch (err) {
+    if (!(err instanceof ChatError || err instanceof WorkflowFault)) throw err;
+    process.stderr.write(`${err.message}\n`);
+    return 1;
+  } finally {
+    service?.close();
+    await chat.host.dispose();
   }
 }
 

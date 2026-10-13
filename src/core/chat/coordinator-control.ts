@@ -66,7 +66,7 @@ export async function stopLaunched(
   chat: ChatService,
   coordinatorId: string,
   state: ProjectStateSource | null,
-  launcher: ProjectLauncher | null,
+  launcher: Pick<ProjectLauncher, "cancelRun" | "pauseInitiative"> | null,
   ref: LaunchedRef,
 ): Promise<string> {
   const entry = entryOf(new BriefStore(chat.workspace, coordinatorId), ref);
