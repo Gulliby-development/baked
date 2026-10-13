@@ -4,6 +4,11 @@ import { loadProjectConfig, saveProjectConfig } from "../../config/index.js";
 import { gateSandbox } from "../security/sandbox.js";
 import { workspacePath } from "../specs/validate.js";
 import { buildCheckEnv } from "../verification/check-runner.js";
+import {
+  MISSING_GATE_REPORT,
+  readGateReport,
+  renderGateReport,
+} from "../verification/gate-report.js";
 import { validateChecks } from "./check-policy.js";
 import { defaultWorkflowPolicy } from "./defaults.js";
 import { WorkflowFault } from "./errors.js";
@@ -94,6 +99,8 @@ export interface GateDraft {
   scope: Check["scope"];
   envNames: string;
   writes: string;
+  /** The command prints a JSON report that decides the result (`Check.report`). */
+  jsonReport: boolean;
 }
 export const emptyGateDraft = (): GateDraft => ({
   id: "",
@@ -104,6 +111,7 @@ export const emptyGateDraft = (): GateDraft => ({
   scope: "feature",
   envNames: "",
   writes: "",
+  jsonReport: false,
 });
 export function draftFromCheck(check: Check): GateDraft {
   return {
@@ -115,6 +123,7 @@ export function draftFromCheck(check: Check): GateDraft {
     scope: check.scope,
     envNames: check.envNames.join(", "),
     writes: check.writes.join(", "),
+    jsonReport: check.report === "json",
   };
 }
 const list = (text: string): string[] =>
@@ -159,6 +168,7 @@ export function checkFromDraft(
     scope: draft.scope,
     envNames: list(draft.envNames),
     writes: list(draft.writes),
+    ...(draft.jsonReport ? { report: "json" } : {}),
   });
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
@@ -474,17 +484,27 @@ export async function executeGate(
         sandbox: gateSandbox(workspace),
       },
     );
+    const finished = !result.timedOut && !result.cancelled;
+    const report = finished && parsed.report === "json" ? readGateReport(result.output) : undefined;
+    const output =
+      report === undefined
+        ? result.output
+        : `${result.output}\n\n${report ? renderGateReport(report) : MISSING_GATE_REPORT}`;
     return {
       status: result.timedOut
         ? "timeout"
         : result.cancelled
           ? "cancelled"
-          : result.exitCode === 0
-            ? "passed"
-            : "failed",
+          : report !== undefined
+            ? report?.status === "failed" || (report?.status === "passed" && result.exitCode === 0)
+              ? report.status
+              : "error"
+            : result.exitCode === 0
+              ? "passed"
+              : "failed",
       exitCode: result.exitCode,
       durationMs: result.durationMs,
-      outputTail: outputTail(result.output),
+      outputTail: outputTail(output),
       truncated: result.truncated,
     };
   } catch (error) {

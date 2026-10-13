@@ -119,6 +119,12 @@ export const CheckSchema = z
       .object({ executable: z.string().min(1).max(512), args: z.array(z.string().max(2048)) })
       .strict()
       .optional(),
+    /**
+     * `json`: the command prints a JSON report (`status`, `summary`, `findings`) as its last JSON
+     * line and that report decides the result; without one the check is inconclusive. Absent means
+     * the exit code decides.
+     */
+    report: z.enum(["exit", "json"]).optional(),
   })
   .strict();
 
