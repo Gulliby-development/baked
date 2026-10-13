@@ -44,7 +44,7 @@ describe("chat memory over the local API", () => {
 
     const empty = (await (await call("/v1/memory")).json()) as ChatMemoryView;
     expect(empty.entries).toEqual([]);
-    expect(empty.settings).toEqual({ writeScope: "project", readScope: "all", settingsScope: "project" });
+    expect(empty.settings).toEqual({ writeScope: "project", readScope: "all", shareWithRuns: false, settingsScope: "project" });
 
     const project = seed.write("project", { summary: "Use bun, never npm", details: "", category: "pref", source: "user" }).record;
     const global = seed.write("global", { summary: "Short commit subjects", details: "under 60 chars", category: "pref", source: "agent" }).record;
@@ -84,11 +84,13 @@ describe("chat memory over the local API", () => {
   test("changes the scope settings and keeps them on disk", async () => {
     const { call, send, configDir, workspace } = await serve();
     const changed = await send<ChatMemoryView>("PUT", "/v1/memory/settings", { writeScope: "none", readScope: "project" });
-    expect(changed.settings).toEqual({ writeScope: "none", readScope: "project", settingsScope: "project" });
+    expect(changed.settings).toEqual({ writeScope: "none", readScope: "project", shareWithRuns: false, settingsScope: "project" });
+    const shared = await send<ChatMemoryView>("PUT", "/v1/memory/settings", { shareWithRuns: true });
+    expect(shared.settings).toEqual({ writeScope: "none", readScope: "project", shareWithRuns: true, settingsScope: "project" });
     const moved = await send<ChatMemoryView>("PUT", "/v1/memory/settings", { settingsScope: "global" });
-    expect(moved.settings).toEqual({ writeScope: "none", readScope: "project", settingsScope: "global" });
+    expect(moved.settings).toEqual({ writeScope: "none", readScope: "project", shareWithRuns: true, settingsScope: "global" });
     const reread = new MemoryManager(workspace, configDir);
-    expect(reread.scopeConfig).toEqual({ writeScope: "none", readScope: "project" });
+    expect(reread.scopeConfig).toEqual({ writeScope: "none", readScope: "project", shareWithRuns: true });
     expect(reread.settingsScope).toBe("global");
     reread.close();
     expect((await call("/v1/memory/settings", { method: "PUT", body: JSON.stringify({}) })).status).toBe(400);

@@ -14,7 +14,7 @@ import { Button } from "../../components/ui/button.js";
 import { WorkflowProposal } from "../../components/WorkflowProposal.js";
 import { cn } from "../../lib/cn.js";
 import { LaunchNoteCard } from "../coordinator/LaunchNote.js";
-import { fromCoordinator } from "../coordinator/model.js";
+import { messageSender } from "../coordinator/model.js";
 import { storedImageUrl } from "./images.js";
 import { INLINE_CODE, Markdown } from "./Markdown.js";
 import { CHIP_SMALL } from "./Popover.js";
@@ -858,9 +858,9 @@ export function Conversation({
         message.role === "user" ? (
           <UserBubble
             key={message.id}
-            text={fromCoordinator(message.content) ?? message.content}
-            {...(fromCoordinator(message.content) !== null
-              ? { note: "From the coordinator" }
+            text={messageSender(message.content)?.text ?? message.content}
+            {...(messageSender(message.content)
+              ? { note: `From ${messageSender(message.content)?.from}` }
               : message.isSteering
                 ? { note: "Sent while working" }
                 : {})}

@@ -76,6 +76,18 @@ describe("coordinator client", () => {
       event: "status",
     });
   });
+
+  test("What's happening starts a coordinator turn shown as the short question", async () => {
+    const session = await coordinator.open("docs");
+    expect(await chat.capabilities("docs")).toContain("coordinator-summary");
+    const started = await coordinator.summary("docs");
+    expect(started.queued).toBe(false);
+    const detail = await until(
+      () => chat.get("docs", session.id),
+      (d) => d.messages.some((m) => m.role === "assistant"),
+    );
+    expect(detail.messages.find((m) => m.role === "user")?.content).toBe("What's happening?");
+  });
 });
 
 describe("coordinator workflows", () => {
@@ -175,6 +187,18 @@ describe("coordinator screen model", () => {
     expect(model.noteTone({ ...note, status: "failed: check", event: "status" })).toBe("err");
     expect(model.noteTone({ ...note, status: "working", event: "status" })).toBe("busy");
     expect(model.noteTone({ ...note, event: "task-closed" })).toBe("ok");
+  });
+
+  test("names the session that sent a message", () => {
+    expect(model.messageSender('Message from session "API" (s-1):\n\nDone.')).toEqual({
+      from: '"API"',
+      text: "Done.",
+    });
+    expect(model.messageSender("Message from the project coordinator:\n\nGo")).toEqual({
+      from: "the coordinator",
+      text: "Go",
+    });
+    expect(model.messageSender("Done.")).toBeNull();
   });
 
   test("recognises a message the coordinator sent a launched session", () => {

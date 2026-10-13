@@ -180,6 +180,15 @@ export const FEATURES: readonly Feature[] = [
     ],
   },
   {
+    id: "coordinator-summary",
+    group: "Chat and sessions",
+    title: "One-click coordinator digest: running, waiting, finished and open questions",
+    tui: ["/coordinator summary", "/coordinator: Ctrl+S"],
+    cli: notNeeded("scripts read the same state with baked session coordinator and --json runs"),
+    api: ["/v1/coordinator/summary"],
+    desktop: ["project/coordinator: What's happening in the header"],
+  },
+  {
     id: "session-diagnostics",
     group: "Chat and sessions",
     title: "Diagnostic export and API request dumps",
@@ -497,6 +506,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/graph"],
   },
   {
+    id: "index-background-refresh",
+    group: "Tools and code intelligence",
+    title: "Background index updates after file changes, edits, runs and Git checkouts",
+    tui: ["/graph: updating note; updates run while the terminal UI is open"],
+    cli: notNeeded("a one-shot run indexes once when it starts"),
+    api: ["/v1/graph: indexing while baked serve updates", "/v1/settings: baked-map page"],
+    desktop: ["project/graph: Updating chip", "settings/chat: Baked map page"],
+  },
+  {
     id: "work-progress",
     group: "Tools and code intelligence",
     title: "Progress of long waits: opening the project, indexing, starting a run",
@@ -602,7 +620,7 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "chat-memory",
     group: "Tools and code intelligence",
-    title: "Long-term chat memory: browse, pin, reword, hide, cleanup, scopes",
+    title: "Long-term chat memory: browse, pin, reword, hide, cleanup, scopes, sharing with runs",
     tui: ["/memory: Chat tab"],
     cli: notNeeded("one-shot runs read memory, people curate it"),
     api: ["/v1/memory", "/v1/memory/cleanup", "/v1/memory/settings"],

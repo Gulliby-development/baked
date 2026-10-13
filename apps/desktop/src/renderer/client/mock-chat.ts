@@ -447,6 +447,8 @@ async function say(
 
 /** Each project's coordinator: its session and brief. */
 const coordinators = new Map<string, { session: MockSession; brief: ProjectBrief }>();
+/** The user message a coordinator summary request shows, as `SUMMARY_DISPLAY` in the core. */
+const SUMMARY_TEXT = "What's happening?";
 
 function mockBrief(): ProjectBrief {
   return {
@@ -569,6 +571,23 @@ async function workflowScript(session: MockSession, turn: MockTurn, text: string
 async function coordinatorScript(session: MockSession, turn: MockTurn, text: string) {
   if (/\b(fix|bug|broken|failing)\b/i.test(text)) return workflowScript(session, turn, text);
   const entry = coordinators.get(session.key);
+  if (text === SUMMARY_TEXT) {
+    const launched = entry ? launchedNow(entry.brief) : [];
+    const lines = (items: typeof launched) =>
+      items.length ? items.map((l) => `- ${l.kind} ${l.id}: ${l.status}`).join("\n") : "Nothing.";
+    const questions = entry?.brief.openQuestions ?? [];
+    await say(
+      session,
+      turn,
+      [
+        `**Running**\n${lines(launched.filter((l) => l.active))}`,
+        `**Waits for you**\n${lines(launched.filter((l) => l.status.startsWith("waiting")))}`,
+        `**Finished since the last summary**\n${lines(launched.filter((l) => !l.active))}`,
+        `**Open questions**\n${questions.length ? questions.map((q) => `- ${q}`).join("\n") : "Nothing."}`,
+      ].join("\n\n"),
+    );
+    return;
+  }
   // "…in a separate chat" starts a background session, drawn as a live thread card.
   if (/\b(chat|session|thread)\b/i.test(text)) {
     await say(session, turn, "I'll hand this to its own session and follow it here.\n\n");
@@ -1195,6 +1214,14 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
     const entry = coordinators.get(key);
     if (!entry)
       return response(404, { error: { code: "NOT_FOUND", message: "No coordinator yet" } });
+    if (path === "/v1/coordinator/summary" && method === "POST") {
+      const session = entry.session;
+      if (session.turn) {
+        session.queue.push(SUMMARY_TEXT);
+        return response(202, { turnId: session.turn.id, queued: true });
+      }
+      return response(202, { turnId: await startTurn(session, SUMMARY_TEXT), queued: false });
+    }
     if (path === "/v1/coordinator/launched" && method === "GET")
       return response(200, { launched: launchedNow(entry.brief) });
     if (path === "/v1/coordinator/brief" && method === "GET") return response(200, entry.brief);
