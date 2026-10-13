@@ -290,6 +290,36 @@ describe("host tools", () => {
   });
 });
 
+describe("a failed tool call", () => {
+  // R13, mdrefs T010: an apply_fix call failed after 8 ms and the journal did not say why.
+  test("is journaled with its error message", async () => {
+    scriptModel([
+      step(1000, 50, { name: "run_repro", input: { value: 1 } }),
+      () => {
+        throw new Error("provider unavailable");
+      },
+    ]);
+    const { store, run, executor, request } = await nativeAttempt();
+    await expect(
+      executor.execute({
+        ...request,
+        profile: { ...request.profile, allowedTools: [...request.profile.allowedTools, "run_repro"] },
+        hostTools: {
+          run_repro: {
+            description: "Run a repro",
+            inputSchema: z.object({ value: z.number() }),
+            execute: async () => {
+              throw new Error("the repro command is missing");
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow("provider unavailable");
+    const finished = store.events(run.runId).find((e) => e.type === "tool.finished");
+    expect(finished?.payload).toMatchObject({ tool: "run_repro", status: "error", error: "the repro command is missing" });
+  });
+});
+
 describe("documentation probes", () => {
   const planned = (path: string): Task => ({
     id: "T004",

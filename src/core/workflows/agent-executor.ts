@@ -39,7 +39,13 @@ import {
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
 import { affectedTestsFor } from "./affected-tests.js";
 import { assertAttemptFits } from "./budget.js";
-import { fixerCommand, fixerTiers } from "./check-policy.js";
+import {
+  fixerCommand,
+  fixerTiers,
+  isWholeUnitFixer,
+  wholeUnitFixerCommand,
+  writtenCodePaths,
+} from "./check-policy.js";
 import { fileHash, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { keepOutside, restoreOutside } from "./fixer-scope.js";
@@ -549,39 +555,63 @@ export class NativeAgentExecutor implements AgentExecutor {
             if (!check?.fix || !task)
               throw new WorkflowFault("CAPABILITY_DENIED", `Check ${checkId} has no fixer`);
             const tiers = fixerTiers(check);
+            const exists = (path: string) => !!fileHash(workspacePath(root, path));
             const paths = task.writes
-              .filter((w) => w.action !== "delete" && fileHash(workspacePath(root, w.path)))
+              .filter((w) => w.action !== "delete" && exists(w.path))
               .map((w) => w.path);
+            // A whole-unit formatter reads only source code; README and LICENSE give it nothing to do.
+            const codePaths = writtenCodePaths(task).filter(exists);
             const generated = generatedPaths(policy);
             const before = await sourceManifest(root, generated, request.signal);
             const kept = keepOutside(root, before, new Set(paths));
             const scope = new ProcessScope();
+            // Unsignalled, so the put-back also runs after the call was aborted.
+            const changedOutside = async () =>
+              changedPaths(before, await sourceManifest(root, generated)).filter(
+                (p) => !paths.includes(p),
+              );
+            let reverted: string[] = [];
             try {
               const outputs: string[] = [];
-              // One run per file, each recorded like an edit, so undo and rollback see it.
-              for (const fix of tiers)
-                for (const path of paths)
-                  await guard.execute("edit_file", { path }, async () => {
-                    const command = fixerCommand(fix, path);
-                    const executable =
-                      command.executable === "bun" ? process.execPath : command.executable;
-                    const result = await executeCheckCommand(scope, executable, command.args, {
-                      cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
-                      env: buildCheckEnv(check),
-                      timeoutMs: check.timeoutMs,
-                      signal: request.signal,
-                      sandbox: runSandbox(policy, root, {
-                        gitWrite: root !== this.store.workspace,
-                      }),
+              const runFixer = async (command: { executable: string; args: string[] }) => {
+                const executable =
+                  command.executable === "bun" ? process.execPath : command.executable;
+                return executeCheckCommand(scope, executable, command.args, {
+                  cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+                  env: buildCheckEnv(check),
+                  timeoutMs: check.timeoutMs,
+                  signal: request.signal,
+                  sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
+                });
+              };
+              try {
+                for (const fix of tiers) {
+                  if (isWholeUnitFixer(fix)) {
+                    if (!codePaths.length) continue;
+                    // One run for all the task's code files, still recorded as an edit of each.
+                    const once = async () => {
+                      const result = await runFixer(wholeUnitFixerCommand(fix, codePaths));
+                      outputs.push(`${codePaths.join(", ")}: exit ${String(result.exitCode)}`);
+                    };
+                    await codePaths.reduceRight<() => Promise<unknown>>(
+                      (inner, path) => () => guard.execute("edit_file", { path }, inner),
+                      once,
+                    )();
+                    continue;
+                  }
+                  // One run per file, each recorded like an edit, so undo and rollback see it.
+                  for (const path of paths)
+                    await guard.execute("edit_file", { path }, async () => {
+                      const result = await runFixer(fixerCommand(fix, path));
+                      outputs.push(`${path}: exit ${String(result.exitCode)}`);
                     });
-                    outputs.push(`${path}: exit ${String(result.exitCode)}`);
-                  });
-              const changedOutside = async () =>
-                changedPaths(before, await sourceManifest(root, generated, request.signal)).filter(
-                  (p) => !paths.includes(p),
-                );
-              const reverted = await changedOutside();
-              restoreOutside(root, kept, reverted);
+                }
+              } finally {
+                // Also when a run throws: a whole-crate formatter may already have rewritten
+                // sibling files (bench round 13, mdrefs T010: five files left reformatted).
+                reverted = await changedOutside();
+                restoreOutside(root, kept, reverted);
+              }
               const outside = await changedOutside();
               if (outside.length)
                 throw new WorkflowFault(
