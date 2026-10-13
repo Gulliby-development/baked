@@ -116,6 +116,7 @@ import {
   planConsistencyProblems,
   withDerivedRequirements,
   withModuleDependencies,
+  withReadDependencies,
 } from "./plan-consistency.js";
 import { ProcessScope } from "./process-scope.js";
 import {
@@ -252,12 +253,14 @@ function planGraph(
 ): TaskGraph {
   return withCoveringChecks(
     withTestDependencies(
-      withModuleDependencies(
-        withDerivedRequirements(spec, {
-          ...plan.taskGraph,
-          specHash: hashJson(spec),
-          planHash: hashBytes(plan.markdown),
-        }),
+      withReadDependencies(
+        withModuleDependencies(
+          withDerivedRequirements(spec, {
+            ...plan.taskGraph,
+            specHash: hashJson(spec),
+            planHash: hashBytes(plan.markdown),
+          }),
+        ),
       ),
     ),
     policy,
