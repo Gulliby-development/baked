@@ -76,6 +76,7 @@ export async function runServeCli(argv: string[]): Promise<number> {
       port: args.port,
       allowOrigins: args.allowOrigins,
       ownsService: true,
+      backgroundIndex: true,
       ...(args.tokenFile ? { tokenFile: resolve(cwd, args.tokenFile) } : {}),
     });
   } catch (error) {

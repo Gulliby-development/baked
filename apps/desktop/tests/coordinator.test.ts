@@ -122,6 +122,18 @@ describe("coordinator screen model", () => {
     expect(model.noteTone({ ...note, event: "task-closed" })).toBe("ok");
   });
 
+  test("names the session that sent a message", () => {
+    expect(model.messageSender('Message from session "API" (s-1):\n\nDone.')).toEqual({
+      from: '"API"',
+      text: "Done.",
+    });
+    expect(model.messageSender("Message from the project coordinator:\n\nGo")).toEqual({
+      from: "the coordinator",
+      text: "Go",
+    });
+    expect(model.messageSender("Done.")).toBeNull();
+  });
+
   test("recognises a message the coordinator sent a launched session", () => {
     expect(model.fromCoordinator("Message from the project coordinator:\n\nCheck the CLI")).toBe(
       "Check the CLI",

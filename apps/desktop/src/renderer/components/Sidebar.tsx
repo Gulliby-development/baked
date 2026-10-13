@@ -139,7 +139,10 @@ function SelectedProject({
   section: ProjectSection;
   id: string | null;
 }) {
-  const chats = useChatSessions(project.key, project.backend.kind === "running", COUNTED_CHATS);
+  const sessions = useChatSessions(project.key, project.backend.kind === "running", COUNTED_CHATS);
+  // Sessions the coordinator launched are its threads: they show under it, not among the chats.
+  const chats = sessions?.filter((s) => !s.parentId) ?? null;
+  const threads = sessions?.filter((s) => s.parentId) ?? [];
   const chatCount = chats ? chats.length : project.overview.sessions;
   const chatId = section === "chat" ? routeId : null;
   const runId = section === "runs" && routeId && !RUN_PAGES.has(routeId) ? routeId : null;
@@ -206,6 +209,22 @@ function SelectedProject({
                 New chat
               </a>
               {chats?.slice(0, SIDEBAR_CHATS).map((session) => (
+                <a
+                  key={session.id}
+                  className={cn(NAV, NESTED_ROW)}
+                  href={projectHref(project.key, "chat", session.id)}
+                  aria-current={current(chatId === session.id)}
+                  title={session.title}
+                >
+                  <Dot tone={STATE_TONE[session.state]} />
+                  <span className="min-w-0 truncate">{session.title}</span>
+                </a>
+              ))}
+            </div>
+          )}
+          {id === "coordinator" && threads.length > 0 && (
+            <div className={NESTED}>
+              {threads.slice(0, SIDEBAR_CHATS).map((session) => (
                 <a
                   key={session.id}
                   className={cn(NAV, NESTED_ROW)}
