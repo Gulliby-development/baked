@@ -1036,6 +1036,18 @@ function memoryState(key: string): RunMemoryView {
           hidden: false,
           sent: true,
         },
+        {
+          id: "r-2b8f4c61d0",
+          kind: "rule",
+          text: "Validate the locale argument before formatting and return a 400 for unknown ones.",
+          scope: "src/api/**",
+          status: "proposed",
+          runs: 2,
+          runId: "run-locale-validation",
+          findings: ["run-locale-validation/F2", "run-usage-totals/F1"],
+          hidden: false,
+          sent: false,
+        },
       ],
       hidden: [
         {
@@ -1075,7 +1087,11 @@ function editMemory(key: string, edit: Partial<RunMemoryEdit & { id: string; tex
     const [back] = m.hidden.splice(hiddenAt, 1);
     if (back) m.entries.push({ ...back, hidden: false, sent: true });
   } else if (!entry) return error(404, "NOT_FOUND", `No project memory entry ${edit.id ?? ""}`);
-  else if (edit.action === "forget") {
+  else if (edit.action === "accept") {
+    if (entry.kind !== "rule")
+      return error(400, "INVALID_DEFINITION", "Only a proposed rule can be accepted");
+    m.entries[at] = { ...entry, status: "active", sent: true };
+  } else if (edit.action === "forget") {
     m.entries.splice(at, 1);
     if (entry.kind !== "note") m.hidden.push({ ...entry, hidden: true });
   } else if (edit.action === "restore") {
@@ -1088,6 +1104,7 @@ function editMemory(key: string, edit: Partial<RunMemoryEdit & { id: string; tex
       ...entry,
       text,
       recorded: entry.kind === "note" ? undefined : (entry.recorded ?? entry.text),
+      ...(entry.kind === "rule" ? { status: "active" as const, sent: true } : {}),
     };
   }
   return response(200, { id: edit.id, ...memoryState(key) });

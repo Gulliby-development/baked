@@ -5,7 +5,12 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import type { RunUsageReport, UsageDimension, UsageSummary } from "./usage.js";
+import {
+  type RunUsageReport,
+  toolBackendLine,
+  type UsageDimension,
+  type UsageSummary,
+} from "./usage.js";
 
 const PRICE_NOTE =
   "Costs are estimates from BAKED's price table: uncached input, cache reads, cache writes and " +
@@ -112,6 +117,7 @@ export function usageMarkdown(summary: UsageSummary, now: number = Date.now()): 
 
 /** The usage of one run as Markdown: totals, then tokens and cost by stage and by model. */
 export function runUsageMarkdown(report: RunUsageReport): string {
+  const backends = toolBackendLine(report.toolBackends ?? []);
   interface Row {
     attempts: number;
     tokens: number;
@@ -196,6 +202,7 @@ export function runUsageMarkdown(report: RunUsageReport): string {
     `- Attempts: ${count(total.attempts)}`,
     `- Tokens: ${count(total.tokens)} (input ${count(total.input)}, output ${count(total.output)}, cache reads ${count(total.cacheRead)}, cache writes ${count(total.cacheWrite)})`,
     `- Estimated cost: ${cost(total.costUsd, total.unpriced)}`,
+    ...(backends ? [`- Code intelligence: ${backends}`] : []),
     "",
   ];
   if (report.attempts.length === 0) out.push("No attempts match.", "");

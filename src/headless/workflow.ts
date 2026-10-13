@@ -6,6 +6,7 @@ import { loadModelCatalog } from "../core/llm/model-catalog.js";
 import { parseRouteOverrides } from "../core/llm/model-routing.js";
 import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
 import { type BudgetLimits, type BudgetPresetId, presetPolicy } from "../core/workflows/budget.js";
+import { compareRuns, comparisonMarkdown } from "../core/workflows/compare.js";
 import { defaultWorkflowPolicy } from "../core/workflows/defaults.js";
 import { executeDelivery, prepareDelivery } from "../core/workflows/delivery.js";
 import type { PullRequestProvider } from "../core/workflows/delivery-provider.js";
@@ -140,14 +141,22 @@ export function formatRoute(route: RouteExplanation): string {
 }
 /** Project memory as `baked workflow memory` prints it: one entry per line with its ID. */
 export function formatProjectMemory(view: ProjectMemoryView & { id?: string }): string {
-  const KIND = { note: "note", answer: "answer", assumption: "assume", check: "check" } as const;
+  const KIND = {
+    note: "note",
+    answer: "answer",
+    assumption: "assume",
+    check: "check",
+    rule: "rule",
+  } as const;
   const line = (e: ProjectMemoryView["hidden"][number], extra = ""): string => {
     const source = e.runId ? ` (run ${e.runId.slice(0, 8)})` : "";
     const head = `${e.id}  ${KIND[e.kind].padEnd(6)}  `;
     const body =
       e.kind === "answer"
         ? `Q: ${e.question ?? ""}\n${" ".repeat(head.length)}A: ${e.text}`
-        : e.text;
+        : e.kind === "rule"
+          ? `${e.text} [${e.status ?? "proposed"}, ${e.scope ?? "**"}, ${String(e.runs ?? 0)} runs]`
+          : e.text;
     return `${head}${body}${source}${e.recorded ? " [edited]" : ""}${extra}`;
   };
   const out: string[] = [];
@@ -158,7 +167,16 @@ export function formatProjectMemory(view: ProjectMemoryView & { id?: string }): 
     view.entries.length
       ? `Project memory new runs read (${String(view.entries.length)}):`
       : "Project memory is empty: earlier runs recorded nothing and there are no notes.",
-    ...view.entries.map((e) => line(e, e.sent ? "" : " [not sent: the policy's own check]")),
+    ...view.entries.map((e) =>
+      line(
+        e,
+        e.sent
+          ? ""
+          : e.kind === "rule"
+            ? " [not sent: proposed; accept it to activate]"
+            : " [not sent: the policy's own check]",
+      ),
+    ),
   );
   if (view.hidden.length)
     out.push("", `Forgotten (${String(view.hidden.length)}):`, ...view.hidden.map((e) => line(e)));
@@ -521,6 +539,17 @@ export async function executeWorkflowCommand(
       writeFileSync(path, markdown);
       return { runId, path, bytes: Buffer.byteLength(markdown) };
     }
+    case "compare": {
+      const [a, b] = args.positional;
+      if (!a || !b) throw new WorkflowFault("INVALID_DEFINITION", "compare needs two run IDs");
+      const comparison = compareRuns(service.store, a, b);
+      const markdown = comparisonMarkdown(comparison);
+      if (typeof args.flags.output !== "string") return { ...comparison, markdown };
+      const path = resolve(service.store.workspace, args.flags.output);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, markdown);
+      return { a: a, b: b, path, bytes: Buffer.byteLength(markdown) };
+    }
     case "memory": {
       const [action = "list", id = ""] = args.positional;
       const policy = PolicySchema.parse(service.config.workflows?.policy ?? defaultWorkflowPolicy);
@@ -651,6 +680,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
       "export-progress",
       "usage",
       "report",
+      "compare",
     ].includes(args.command);
     if (args.command === "profiles") {
       process.stdout.write(
@@ -743,7 +773,9 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     await Promise.all(streams);
     // The report prints as Markdown so it can be piped into a file or a pull request.
     if (
-      (args.command === "report" || (args.command === "usage" && args.flags.format === "md")) &&
+      (args.command === "report" ||
+        args.command === "compare" ||
+        (args.command === "usage" && args.flags.format === "md")) &&
       !args.flags.json &&
       !args.flags.output
     ) {

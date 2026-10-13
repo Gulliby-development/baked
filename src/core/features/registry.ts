@@ -737,6 +737,17 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/chat: Code quality page"],
   },
   {
+    id: "anti-slop-rules",
+    group: "Workflow runs",
+    title: "Anti-slop rule pack on the lines a run adds",
+    tui: ["/code-quality", "/workflow: run report"],
+    cli: notNeeded(
+      "rule choices and ast-grep files live in quality of config.json; baked workflow report shows the findings",
+    ),
+    api: ["/v1/settings: code-quality page", "/v1/workflow/runs/:id/report"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
     id: "custom-gates",
     group: "Workflow runs",
     title:
@@ -768,6 +779,15 @@ export const FEATURES: readonly Feature[] = [
     cli: ["baked workflow definitions", "baked workflow status"],
     api: ["/v1/workflow/definitions", "/v1/workflow/runs/:id/events"],
     desktop: ["project/runs: conveyor gate marks and station gates"],
+  },
+  {
+    id: "run-compare",
+    group: "Workflow runs",
+    title: "Compare two runs side by side (A/B of routing maps)",
+    tui: ["/workflow: compare RUN_A RUN_B"],
+    cli: ["baked workflow compare"],
+    api: ["/v1/workflow/compare"],
+    desktop: ["project/runs: tick two runs, Compare"],
   },
   {
     id: "workflow-editor",
