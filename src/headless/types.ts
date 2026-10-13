@@ -6,6 +6,7 @@ import type {
   ChatEffort,
   InputContextItem,
   InteractiveCallbacks,
+  PermissionMode,
 } from "../types/index.js";
 
 export interface HeadlessRunOptions {
@@ -35,6 +36,8 @@ export interface HeadlessRunOptions {
   render?: boolean;
   /** `--approval-review`: the approval reviewer decides low-risk approvals; the rest are denied. */
   approvalReview?: boolean;
+  /** `--permissions`: manual denies every edit and command (nobody can allow them), full asks nothing. */
+  permissions?: PermissionMode;
 }
 
 export interface TokenUsage {
@@ -146,6 +149,8 @@ export interface HeadlessChatOptions {
   watchPoll?: boolean;
   /** `--approval-review`: the approval reviewer decides low-risk approvals; the rest are denied. */
   approvalReview?: boolean;
+  /** `--permissions`: manual denies every edit and command (nobody can allow them), full asks nothing. */
+  permissions?: PermissionMode;
 
   /** Prompt source. Default: line-buffered stdin reader. */
   readPrompt?: () => Promise<string | null>;

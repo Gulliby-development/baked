@@ -420,6 +420,8 @@ export interface AppConfig {
   coAuthorCommits?: boolean;
   /** Default Baked mode for new sessions. Default: "default" */
   defaultBakeMode?: BakeMode;
+  /** Default permission mode for new chats: manual, auto or full. Default: "auto" */
+  defaultPermissionMode?: PermissionMode;
   /** Enable/disable Baked map (AST index). Disabling saves ~4-8k prompt tokens. Default: true. Toggle via /repo-map → 'e'. */
   repoMap?: boolean;
   /** Keep the Baked map index current in the background: at startup, after file changes, chat turns, runs and git checkouts or pulls. Default: true. */
@@ -590,5 +592,8 @@ export interface MCPServerConfig {
 }
 
 export type BakeMode = "default" | "architect" | "plan" | "auto";
+
+/** How much a chat may do without asking; see `src/core/security/permission-mode.ts`. */
+export type PermissionMode = "manual" | "auto" | "full";
 
 export type ChatStyle = "accent" | "bubble";

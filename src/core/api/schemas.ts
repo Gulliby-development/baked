@@ -6,6 +6,7 @@ import { ScheduleInputSchema } from "../chat/coordinator-schedules.js";
 import { MAX_IMAGES_PER_MESSAGE } from "../chat/images.js";
 import { CHAT_MODES, PLAN_ACTIONS } from "../chat/sessions.js";
 import { CHAT_EFFORTS } from "../llm/provider-options.js";
+import { PERMISSION_MODES } from "../security/permission-mode.js";
 import { BUDGET_PRESETS } from "../workflows/budget.js";
 import { MAX_CANDIDATES } from "../workflows/candidates.js";
 import { MAX_CONCURRENT_WRITERS, RunStatus, SafeId } from "../workflows/schemas.js";
@@ -141,6 +142,7 @@ export const WorkingSetBody = z
 
 const ChatModeSchema = z.enum(CHAT_MODES);
 const ChatEffortSchema = z.enum(CHAT_EFFORTS);
+const PermissionModeSchema = z.enum(PERMISSION_MODES);
 /** `default`, `max`, or a window in tokens; a size the model lacks picks the nearest smaller. */
 const ChatContextSizeSchema = z.union([
   z.enum(["default", "max"]),
@@ -167,6 +169,7 @@ export const CreateSessionBody = z.strictObject({
   model: ModelId.optional(),
   mode: ChatModeSchema.optional(),
   effort: ChatEffortSchema.optional(),
+  permissions: PermissionModeSchema.optional(),
   contextSize: ChatContextSizeSchema.optional(),
   text: Text.optional(),
   images: Images.optional(),
@@ -188,6 +191,7 @@ export const UpdateSessionBody = z
     model: ModelId.optional(),
     mode: ChatModeSchema.optional(),
     effort: ChatEffortSchema.optional(),
+    permissions: PermissionModeSchema.optional(),
     contextSize: ChatContextSizeSchema.optional(),
   })
   .refine((body) => Object.keys(body).length > 0, { message: "Name a field to change" });

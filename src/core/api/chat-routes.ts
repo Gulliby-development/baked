@@ -188,6 +188,7 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
       ...(body.model ? { model: body.model } : {}),
       ...(body.mode ? { mode: body.mode } : {}),
       ...(body.effort ? { effort: body.effort } : {}),
+      ...(body.permissions ? { permissions: body.permissions } : {}),
       ...(body.contextSize !== undefined ? { contextSize: body.contextSize } : {}),
     });
     if (body.text || images) session.send(body.text ?? "", images);

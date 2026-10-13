@@ -107,6 +107,7 @@ export class BakeChatHost implements ChatAgentHost {
       modelId: request.modelId,
       model,
       mode: request.mode,
+      permissions: request.permissions,
       planExecution: request.planExecution,
       contextManager: context,
       providerOptions: provider.providerOptions,

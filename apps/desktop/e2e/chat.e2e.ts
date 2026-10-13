@@ -90,3 +90,39 @@ test("Undo asks in the app before it drops the last turn", async ({ app }) => {
   await dialog.getByRole("button", { name: "Undo" }).click();
   await expect(conversation.getByText("Clear the router cache and test")).toBeHidden();
 });
+
+test("the permissions chip switches the chat to Manual and asks once before Full access", async ({
+  app,
+}) => {
+  const page = await app("#/p/baked/chat");
+  const chip = page.getByRole("button", { name: "Permissions: Auto" });
+  await expect(chip).toBeVisible();
+
+  await chip.click();
+  await page.getByRole("button", { name: /^Manual/ }).click();
+  await expect(page.getByRole("button", { name: "Permissions: Manual" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Permissions: Manual" }).click();
+  await page.getByRole("button", { name: /^Full access/ }).click();
+  const confirm = page.getByRole("dialog", { name: "Give this chat full access?" });
+  await expect(confirm).toBeVisible();
+  await confirm.getByRole("button", { name: "Keep" }).click();
+  await expect(page.getByRole("button", { name: "Permissions: Manual" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Permissions: Manual" }).click();
+  await page.getByRole("button", { name: /^Full access/ }).click();
+  await page.getByRole("button", { name: "Allow everything" }).click();
+  await expect(page.getByRole("button", { name: "Permissions: Full access" })).toBeVisible();
+
+  // Confirmed once, Full access is not asked about again.
+  await page.getByRole("button", { name: "Permissions: Full access" }).click();
+  await page.getByRole("button", { name: /^Auto/ }).click();
+  await page.getByRole("button", { name: "Permissions: Auto" }).click();
+  await page.getByRole("button", { name: /^Full access/ }).click();
+  await expect(page.getByRole("button", { name: "Permissions: Full access" })).toBeVisible();
+});
+
+test("the coordinator has a permissions chip too", async ({ app }) => {
+  const page = await app("#/p/baked/coordinator");
+  await expect(page.getByRole("button", { name: "Permissions: Auto" })).toBeVisible();
+});

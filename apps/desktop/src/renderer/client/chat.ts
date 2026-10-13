@@ -10,6 +10,11 @@ import { bridge } from "./bridge.js";
 
 export type ChatMode = "default" | "architect" | "plan" | "auto";
 export const CHAT_MODES: readonly ChatMode[] = ["default", "architect", "plan", "auto"];
+/** What the mode picker offers on a server with `permission-modes`, where `auto` became full access. */
+export const AGENT_MODES: readonly ChatMode[] = ["default", "architect", "plan"];
+/** How much a chat runs without asking (`permission-modes` capability). */
+export type PermissionMode = "manual" | "auto" | "full";
+export const PERMISSION_MODES: readonly PermissionMode[] = ["manual", "auto", "full"];
 /** A chat's reasoning effort; `default` follows the global setting. */
 export type ChatEffort = "default" | "low" | "medium" | "high" | "xhigh" | "max";
 /**
@@ -43,6 +48,8 @@ export interface SessionSummary {
   mode: ChatMode;
   /** Reasoning effort of the next turn; servers without the `chat-effort` capability leave it out. */
   effort?: ChatEffort;
+  /** Permission mode; servers without the `permission-modes` capability leave it out. */
+  permissions?: PermissionMode;
   /** The chat's context size; older servers leave it out. */
   contextSize?: ChatContextSize;
   /** Context windows in tokens the model offers, smallest first; empty or absent for one. */
@@ -350,6 +357,7 @@ export const chat = {
       model?: string;
       mode?: ChatMode;
       effort?: ChatEffort;
+      permissions?: PermissionMode;
       contextSize?: ChatContextSize;
       text?: string;
       images?: ImageUpload[];
@@ -364,6 +372,7 @@ export const chat = {
       model?: string;
       mode?: ChatMode;
       effort?: ChatEffort;
+      permissions?: PermissionMode;
       contextSize?: ChatContextSize;
     },
   ) => call<SessionSummary>(key, "PATCH", sessionPath(id), body),
