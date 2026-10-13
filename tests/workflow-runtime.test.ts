@@ -537,6 +537,21 @@ describe("durable SDD runtime", () => {
     const question = service.store.requests(run.runId).find((r) => r.kind === "clarification" && r.status === "pending");
     expect(question?.body_json).toContain("initiative");
   });
+  test("under clarification assume a plan above the run ceiling continues within it and records the assumption", async () => {
+    const sized: RunPolicy = { ...policy, clarification: "assume", maxTotalTokens: 60_000, sizing: { maxRunTokens: 100_000 } };
+    const root = mkdtempSync(join(tmpdir(), "baked-workflow-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const service = new NativeWorkflowService(root, { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy: sized } }, new FixtureExecutor(root));
+    cleanups.push(() => service.close());
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy: sized });
+    await service.drive(run.runId, new AbortController().signal);
+    expect(service.store.requests(run.runId).some((r) => r.kind === "clarification")).toBe(false);
+    const assumption = service.store.artifacts(run.runId).find((a) => a.logical_path === "assumptions/sizing.json");
+    expect(assumption).toBeDefined();
+    const recorded = JSON.parse(service.store.readArtifact(run.runId, assumption!.id));
+    expect(recorded.assumed[0]).toMatchObject({ id: "SIZING-1", refs: ["tasks.json", "sizing/plan-1.json"] });
+    expect(recorded.assumed[0].description).toContain("continues within 100000 tokens");
+  });
   test("answering the plan-size question resumes at approval instead of blocking the run", async () => {
     const sized: RunPolicy = { ...policy, maxTotalTokens: 60_000, sizing: { maxRunTokens: 100_000 } };
     const root = mkdtempSync(join(tmpdir(), "baked-workflow-"));

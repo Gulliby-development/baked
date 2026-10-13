@@ -36,7 +36,7 @@ import { runUsage } from "../core/workflows/usage.js";
 import { runUsageMarkdown } from "../core/workflows/usage-markdown.js";
 import { recordedSteps } from "../core/workflows/v2/acceptance-gate.js";
 import { QUICK_WORKFLOW_ID } from "../core/workflows/v2/definitions.js";
-import { readRoutingSummary } from "../core/workflows/view.js";
+import { readCheckPreflight, readRoutingSummary } from "../core/workflows/view.js";
 import { worktreeView } from "../core/workflows/worktree.js";
 import type { AppConfig } from "../types/index.js";
 import { followProgress } from "./progress.js";
@@ -289,6 +289,7 @@ export async function executeWorkflowCommand(
         requests: service.store.requests(runId),
         worktree: worktreeView(service.workspace, service.store.state(runId)),
         routing: readRoutingSummary(service.store, runId),
+        preflight: readCheckPreflight(service.store, runId),
         acceptance: walkThroughs(service.store, runId),
         stopDetail:
           snapshot.status === "blocked" || snapshot.status === "failed"

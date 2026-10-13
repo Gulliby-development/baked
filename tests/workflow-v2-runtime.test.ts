@@ -363,6 +363,24 @@ describe("workflow v2 scheduler", () => {
     expect(service.store.checks(run.runId).map((c) => `${c.check_id}:${c.status}`)).toEqual(["check:passed"]);
   }, 30000);
 
+  test("rejecting an approval with a note sends the resumed run back to specify with the note", async () => {
+    const { start, drive, service, executor, pending } = setup();
+    const run = await start("standard");
+    expect((await drive(run.runId)).reason).toBe("approval");
+    const first = pending(run.runId, "approval");
+    if (!first) throw new Error("No pending approval");
+    const waiting = await service.get(run.runId);
+    const paused = await service.decide(run.runId, { commandId: newId(), expectedRevision: waiting.revision }, { kind: "reject", requestId: first.id, explanation: "Implementing the CLI and its tests is in scope" });
+    expect(paused.status).toBe("paused");
+    await service.resume(run.runId, { commandId: newId(), expectedRevision: paused.revision });
+    expect((await drive(run.runId)).reason).toBe("approval");
+    expect(executor.calls).toEqual(["research", "spec", "plan", "analysis", "spec", "plan", "analysis"]);
+    expect(executor.prompts[4]).toContain("Implementing the CLI and its tests is in scope");
+    expect(service.store.state(run.runId).revisedRejections).toEqual([first.id]);
+    const approvals = service.store.requests(run.runId).filter((r) => r.kind === "approval");
+    expect(approvals.map((r) => r.status)).toEqual(["rejected", "pending"]);
+  }, 30000);
+
   test("a plan finding from analysis goes back to the plan stage once before a person", async () => {
     const { start, drive, service, executor } = setup({ analysisFindings: 1 });
     const run = await start("standard");
@@ -1257,7 +1275,10 @@ describe("wait stage", () => {
   }, 30000);
 
   test("time asleep between polls does not count against the active time limit", async () => {
-    const { start, drive, service, define, gate, root } = setup({}, { ...policy, maxActiveMs: 1000 });
+    // The limit leaves room for the gate's process starts on a slow runner (a 1000 ms limit
+    // failed on Windows CI, #729); the sleep alone is still above it.
+    const limit = 3000;
+    const { start, drive, service, define, gate, root } = setup({}, { ...policy, maxActiveMs: limit });
     const ready = passesOn(root, 2);
     gate(ready.gate);
     define(waitDefinition());
@@ -1266,13 +1287,13 @@ describe("wait stage", () => {
       now: () => now,
       sleep: async (ms, signal) => {
         now += ms;
-        await new Promise((resolve) => setTimeout(resolve, 1500));
+        await new Promise((resolve) => setTimeout(resolve, limit + 500));
         signal.throwIfAborted();
       },
     };
     const run = await start("wait-only");
     expect((await drive(run.runId)).status).toBe("completed");
-    expect(service.store.run(run.runId).active_ms).toBeLessThan(1000);
+    expect(service.store.run(run.runId).active_ms).toBeLessThan(limit);
   }, 30000);
 
   test("a resumed wait keeps its deadline, and a cancel stops it at once", async () => {

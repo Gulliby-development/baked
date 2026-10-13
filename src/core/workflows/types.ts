@@ -166,6 +166,8 @@ export const RuntimeStateSchema = z
         ),
       )
       .default({}),
+    /** Rejected approval requests whose explanation already sent the run back to revise. */
+    revisedRejections: z.array(z.string()).default([]),
     /** Times analyze sent plan-only findings back to the planner instead of a person; once. */
     analysisReplans: z.number().int().nonnegative().default(0),
     taskGates: z
