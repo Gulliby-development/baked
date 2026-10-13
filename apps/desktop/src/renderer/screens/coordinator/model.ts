@@ -122,3 +122,11 @@ export function newestLaunchNotes(messages: readonly ChatMessage[]): Set<string>
     if (message.launch) newest.set(launchedKey(message.launch), message.id);
   return new Set(newest.values());
 }
+
+/** The prefix the coordinator's `message_session` puts before what it sends a launched session. */
+const COORDINATOR_PREFIX = "Message from the project coordinator:\n\n";
+
+/** The text of a message the coordinator sent this session, or null for the person's own. */
+export function fromCoordinator(content: string): string | null {
+  return content.startsWith(COORDINATOR_PREFIX) ? content.slice(COORDINATOR_PREFIX.length) : null;
+}

@@ -122,6 +122,13 @@ describe("coordinator screen model", () => {
     expect(model.noteTone({ ...note, event: "task-closed" })).toBe("ok");
   });
 
+  test("recognises a message the coordinator sent a launched session", () => {
+    expect(model.fromCoordinator("Message from the project coordinator:\n\nCheck the CLI")).toBe(
+      "Check the CLI",
+    );
+    expect(model.fromCoordinator("Check the CLI")).toBeNull();
+  });
+
   test("hands a chat's last request to the coordinator", () => {
     const message = (role: "user" | "assistant", content: string) => ({
       id: content,
