@@ -35,6 +35,11 @@ import { fixerCommand, fixerTiers } from "./check-policy.js";
 import { fileHash, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { withHostConstants } from "./host-constants.js";
+import {
+  accountIdentityMessage,
+  findAccountIdentity,
+  foreignAccountIdentities,
+} from "./host-identity.js";
 import { InitiativePlanSchema } from "./initiatives/plan.js";
 import type { WorkspaceLeases } from "./leases.js";
 import { grantedMcpServers, isMcpToolName, toolListAllows } from "./mcp-grants.js";
@@ -560,7 +565,9 @@ export class NativeAgentExecutor implements AgentExecutor {
         inputSchema: schema,
         execute: async (value) => {
           const parsed = schema.parse(value);
-          const errors = request.validate?.(parsed) ?? [];
+          const errors = [...(request.validate?.(parsed) ?? [])];
+          if (findAccountIdentity(canonical(parsed), foreignAccountIdentities(root)))
+            errors.push(accountIdentityMessage("The result"));
           // After the bounded corrections the scheduler rejects the result with these errors.
           if (errors.length && rejected < MAX_SEMANTIC_CORRECTIONS) {
             rejected++;
