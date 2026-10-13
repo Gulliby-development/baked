@@ -12,6 +12,7 @@ import { WorkflowFault } from "./errors.js";
 import { languageReviewProfile } from "./language.js";
 import { DEFAULT_DUPLICATION } from "./quality/duplication.js";
 import { presetMutation, presetOf } from "./quality/mutation.js";
+import { presetPropertyTests } from "./quality/properties.js";
 import { configuredRules } from "./quality/rules.js";
 import { DEFAULT_SAST_CONFIG } from "./quality/sast.js";
 import {
@@ -109,6 +110,7 @@ export async function prepareStart(
     | "duplication"
     | "sast"
     | "mutation"
+    | "propertyTests"
     | "modelStrict"
   >,
   deps: StartDeps = {},
@@ -213,6 +215,7 @@ export async function prepareStart(
     mutation: policyMutation,
     mutationThresholds: policyThresholds,
     mutationBudgetMs: policyMutationBudget,
+    propertyTests: policyPropertyTests,
     allowOverlappingWrites,
     editDiagnostics: _editDiagnostics,
     ...rest
@@ -243,6 +246,11 @@ export async function prepareStart(
     presetMutation(preset);
   const mutationThresholds = policyThresholds ?? config.quality?.mutationThresholds;
   const mutationBudgetMs = policyMutationBudget ?? config.quality?.mutationBudgetMs;
+  const propertyTests =
+    request.propertyTests ??
+    policyPropertyTests ??
+    (config.quality?.propertyTests === "preset" ? undefined : config.quality?.propertyTests) ??
+    presetPropertyTests(preset);
   // Overlapping writes are kept only when permitted, so a policy that leaves them off keeps the
   // hash it had before the field existed; the requested writer count overrides the policy.
   policy = PolicySchema.parse({
@@ -260,6 +268,7 @@ export async function prepareStart(
     ...(mutation !== presetMutation(preset) ? { mutation } : {}),
     ...(mutationThresholds && Object.keys(mutationThresholds).length ? { mutationThresholds } : {}),
     ...(mutationBudgetMs !== undefined ? { mutationBudgetMs } : {}),
+    ...(propertyTests !== presetPropertyTests(preset) ? { propertyTests } : {}),
     ...(request.maxConcurrentWriters !== undefined
       ? { maxConcurrentWriters: request.maxConcurrentWriters }
       : {}),
