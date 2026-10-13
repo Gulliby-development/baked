@@ -8,7 +8,7 @@ The agent picks tools itself; this page lists what they do. `/tools` turns tools
 | --- | --- |
 | `read` | A whole file, line ranges, or one symbol by name; large files return an outline first |
 | `list_dir`, `glob`, `grep` | Directory listing, file patterns, text search |
-| `navigate` | Definitions, references, call and type hierarchy |
+| `navigate` | Definitions, references, call and type hierarchy. Given only a symbol, it finds the file itself; project files outside dependency folders (`node_modules`, `vendor`, `target`, `bin`, `obj`) win over toolchain and dependency sources such as GOROOT or the JDK, so a project symbol is not reported as ambiguous |
 | `analyze` | Type signatures, symbol outlines, diagnostics and quick-fix suggestions |
 | `bake_find` | Fuzzy file and symbol search ranked by importance. In a workflow run it searches the attempt's worktree and never returns `.baked/` state |
 | `bake_grep` | Code search with per-file counts and symbol context from the repository graph |
