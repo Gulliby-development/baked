@@ -1,5 +1,6 @@
 import { canonical, hashJson } from "../specs/hash.js";
 import { WorkflowFault } from "../workflows/errors.js";
+import { counterexampleOf } from "../workflows/quality/properties.js";
 import {
   CorrectionSchema,
   type Review,
@@ -150,12 +151,12 @@ export function failedCheckFindings(
     symbol: null,
     evidenceIds: [evidenceId],
     claim: `Required check ${check.id} failed`,
-    impact: signature
-      ? `Implementation cannot be accepted. Failing: ${signature}`
-      : "Implementation cannot be accepted",
+    impact: `${signature ? `Implementation cannot be accepted. Failing: ${signature}` : "Implementation cannot be accepted"}${counterexample ? `. Property counterexample: ${counterexample}` : ""}`,
     suggestedFix,
   });
   const signature = failureSignature(output);
+  // A failing property's shrunk input is the reproduction the correction starts from (#637).
+  const counterexample = counterexampleOf(output);
   const owners = new Map<string, { task: Task; file: string }>();
   for (const path of pathsInOutput(output, tasks)) {
     const task = tasks.find((t) => t.writes.some((w) => w.path === path));
