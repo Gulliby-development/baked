@@ -241,5 +241,23 @@ describe("AttemptStepController", () => {
     });
     expect(controller.record([usage(9000, 1000)], false, record).stopReason).toBe("tokens");
     expect(controller.record(steps, true, record).stopReason).toBe("submitted");
+    expect(record.modelRequests).toBeUndefined();
+  });
+
+  test("records the model requests a provider reports per step and their sum", () => {
+    const controller = new AttemptStepController({
+      maxSteps: 4,
+      maxTokens: 100_000,
+      submitTools: ["submit_result"],
+      fallbackStepTokens: 100,
+    });
+    const steps = [
+      { ...usage(100, 10), providerMetadata: { codex: { responses: 3 } } },
+      usage(100, 10),
+      { ...usage(100, 10), providerMetadata: { codex: { responses: 1 } } },
+    ];
+    const record = controller.record(steps, true, { profileId: "implementer", taskId: "T001" });
+    expect(record.modelRequests).toBe(4);
+    expect(record.steps.map((s) => s.modelRequests)).toEqual([3, undefined, 1]);
   });
 });
