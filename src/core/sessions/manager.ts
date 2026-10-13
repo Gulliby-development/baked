@@ -30,6 +30,7 @@ export interface SessionListEntry {
   projectId?: string;
   kind?: "coordinator";
   archived?: true;
+  parentId?: string;
 }
 
 function withProjectId(projectId: string | null | undefined): { projectId?: string } {
@@ -299,6 +300,7 @@ export class SessionManager {
             ...(meta.projectId ? { projectId: meta.projectId } : {}),
             ...(meta.kind === "coordinator" ? { kind: meta.kind } : {}),
             ...(meta.archived === true ? { archived: true as const } : {}),
+            ...(meta.parentId ? { parentId: meta.parentId } : {}),
           });
         } catch {
           // Skip corrupted entries

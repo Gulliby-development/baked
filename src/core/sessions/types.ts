@@ -49,4 +49,6 @@ export interface SessionMeta {
   kind?: "coordinator";
   /** Set when the coordinator's launch of this session is closed; ordinary lists leave it out. */
   archived?: true;
+  /** The session that launched this one, such as the project coordinator. */
+  parentId?: string;
 }
