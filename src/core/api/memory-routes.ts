@@ -5,6 +5,7 @@
  */
 import { z } from "zod";
 import type { AppConfig } from "../../types/index.js";
+import { criticOutcomesView } from "../workflows/critic-outcomes.js";
 import { defaultWorkflowPolicy } from "../workflows/defaults.js";
 import { editProjectMemory, MAX_NOTE, projectMemoryView } from "../workflows/project-memory.js";
 import { PolicySchema } from "../workflows/schemas.js";
@@ -28,6 +29,17 @@ const EditBody = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("forget"), id: Id }),
   z.strictObject({ action: z.literal("restore"), id: Id }),
 ]);
+
+/**
+ * `GET /v1/workflow/critic[?runId=ID]`: the critic outcome log with its calibration, as
+ * `baked workflow outcomes` shows it (capability `critic-outcomes`).
+ */
+export function criticOutcomesRoute(ctx: MemoryRouteContext): Response | null {
+  if (ctx.path !== "/v1/workflow/critic") return null;
+  ctx.only("GET");
+  const runId = ctx.url.searchParams.get("runId") ?? undefined;
+  return ctx.json(200, criticOutcomesView(ctx.store, runId));
+}
 
 /** Answers a project memory request, or returns null when the path is not one. */
 export async function memoryRoute(ctx: MemoryRouteContext): Promise<Response | null> {

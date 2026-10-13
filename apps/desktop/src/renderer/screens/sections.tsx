@@ -16,6 +16,7 @@ import { HooksSection } from "./setup/HooksSection.js";
 import { InstructionsSection } from "./setup/InstructionsSection.js";
 import { LspSection } from "./setup/LspSection.js";
 import { McpSection } from "./setup/McpSection.js";
+import { PackagesSection } from "./setup/PackagesSection.js";
 import { RunMemorySection } from "./setup/RunMemorySection.js";
 import { SkillsSection } from "./setup/SkillsSection.js";
 import { WorkflowsSection } from "./setup/WorkflowsSection.js";
@@ -41,6 +42,7 @@ export const SECTION_VIEWS: Partial<Record<ProjectSection, ComponentType<Section
   "run-memory": RunMemorySection,
   "chat-memory": ChatMemorySection,
   skills: SkillsSection,
+  packages: PackagesSection,
   hooks: HooksSection,
   mcp: McpSection,
   lsp: LspSection,

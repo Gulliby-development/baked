@@ -23,6 +23,7 @@ baked doctor                                     # check keys, models, checks an
 | `spike` | Research and a written report; no file changes |
 | `review-only` | Review an existing diff against criteria; no file changes |
 | `fix-ci` | Reproduce failing checks, research the failure, plan, approve, fix and rerun the same checks ([Fix CI](fix-ci.md)) |
+| `harden` | Strengthen the tests of existing code without changing it, until the tests kill the module's mutants ([Harden](harden.md)) |
 
 `baked workflow definitions` lists them with the project's own definitions from `baked/workflows/`; `baked workflow define ID --from PRESET` copies one to edit.
 
@@ -35,8 +36,9 @@ baked doctor                                     # check keys, models, checks an
 | [Workflow v2](v2-design.md) | Definitions as stage graphs, presets, the approval invariant, the gate library and editor, the AI acceptance gate, migration from v1 |
 | [Quick workflow](quick.md) | `baked quick` for small changes |
 | [Fix CI](fix-ci.md) | The `fix-ci` preset for failing checks |
+| [Harden](harden.md) | The `harden` preset that strengthens the tests of existing code |
 | [Doctor and estimate](doctor-and-estimate.md) | Checks before a run and the token and cost estimate |
-| [Code quality gates](code-quality.md) | Duplication and dead-code ratchet, the anti-slop rule pack, the dependency check and Semgrep: defaults, run overrides and what the run report shows |
+| [Code quality gates](code-quality.md) | Duplication and dead-code ratchet, the anti-slop rule pack, the dependency check, Semgrep, property-based tests and the mutation gate: defaults, run overrides and what the run report shows |
 | [Parallel worktrees](parallel-worktrees.md) | Task worktrees, several writers and the integrator |
 | [Example gate](examples/ai-acceptance-gate.json) | An `ai-acceptance` gate definition |
 
