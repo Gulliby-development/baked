@@ -438,14 +438,19 @@ export class WorkflowStore {
       ? (JSON.parse(projection.inline_content) as Pick<
           RuntimeState,
           "workspaceHash" | "verificationState"
-        > & { limitations?: string[] })
+        > & { limitations?: string[]; reviewNotes?: string[] })
       : null;
-    // A projection from before limitations were projected is read from the full state.
+    // A projection from before limitations were projected is read from the full state. One from
+    // before review notes were projected has none: its run's state was saved before notes existed.
     const state = projected?.limitations ? projected : this.state(id);
-    const limitationIds =
-      "limitations" in state && Array.isArray(state.limitations)
-        ? state.limitations.map((l) => (typeof l === "string" ? l : l.findingId))
+    const ids = (items: unknown): string[] =>
+      Array.isArray(items)
+        ? items.map((l: string | { findingId: string }) =>
+            typeof l === "string" ? l : l.findingId,
+          )
         : [];
+    const limitationIds = ids("limitations" in state ? state.limitations : []);
+    const noteIds = ids("reviewNotes" in state ? state.reviewNotes : []);
     return {
       runId: id,
       featureId: row.feature_id,
@@ -463,6 +468,7 @@ export class WorkflowStore {
         row.estimated_cost_microusd === null ? null : row.estimated_cost_microusd / 1e6,
       verificationState: state.verificationState,
       limitations: { count: limitationIds.length, ids: limitationIds },
+      reviewNotes: { count: noteIds.length, ids: noteIds },
       ...this.stallOf(id, row.status),
       pendingRequestIds: this.requests(id)
         .filter((r) => r.status === "pending")
@@ -649,6 +655,7 @@ export class WorkflowStore {
         workspaceHash: state.workspaceHash,
         verificationState: state.verificationState,
         limitations: state.limitations.map((l) => l.findingId),
+        reviewNotes: state.reviewNotes.map((n) => n.findingId),
       }),
     );
     this.db.run("UPDATE runs SET input_manifest_json=?,input_hash=? WHERE id=?", [

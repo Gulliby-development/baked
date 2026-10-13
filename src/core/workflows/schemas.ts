@@ -1073,6 +1073,11 @@ export interface RunSnapshot {
    */
   limitations: { count: number; ids: string[] };
   /**
+   * Review and convergence findings that started no correction (inferred edge cases, findings
+   * below the blocking severities, advisory reviews, refuted repros); the run report lists them.
+   */
+  reviewNotes: { count: number; ids: string[] };
+  /**
    * Present while a run is `running` but has journaled nothing for longer than the stall limit:
    * the owner is alive and its work is not advancing.
    */

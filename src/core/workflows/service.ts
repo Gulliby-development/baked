@@ -306,6 +306,7 @@ export class NativeWorkflowService implements WorkflowService {
       decidedFindings: [],
       autoExtensions: 0,
       limitations: [],
+      reviewNotes: [],
       verificationState: "not_verified",
       instructionText: instructions.text,
       frozenFiles: instructions.files,
@@ -1173,6 +1174,7 @@ export class NativeWorkflowService implements WorkflowService {
         state.decidedFindings = [];
         state.autoExtensions = 0;
         state.limitations = [];
+        state.reviewNotes = [];
         state.manifest.correctionHashes = [];
         state.rootGraph = structuredClone(state.graph);
         state.manifest.rootGraphHash = hashJson(state.graph);
@@ -1514,6 +1516,7 @@ export class NativeWorkflowService implements WorkflowService {
       state.decidedFindings = [];
       state.autoExtensions = 0;
       state.limitations = [];
+      state.reviewNotes = [];
       const policy = rebase?.policy ?? PolicySchema.parse(JSON.parse(run.policy_json));
       if (rebase) {
         state.hostDependencies = rebase.dependencies;
