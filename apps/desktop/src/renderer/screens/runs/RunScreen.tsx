@@ -317,6 +317,7 @@ function Models({
   const models = useModelCatalog(stopped ? projectKey : null, chat.models);
   if (!routing) return null;
   const routed = Object.entries(routing.stages);
+  const summary = run.routing ?? null;
   const providerStop =
     run.status === "blocked" &&
     (run.reason === "provider_account" || run.reason === "provider_unavailable");
@@ -340,15 +341,34 @@ function Models({
       <p className="text-[12px]">
         Run model <span className="font-mono">{routing.runModel}</span>
       </p>
-      {routed.length > 0 && (
-        <ul className={SMALL_SUB}>
-          {routed.map(([stage, entry]) => (
-            <li key={stage}>
-              {stage}: <span className="font-mono">{entry.model}</span>
+      {summary?.strict && (
+        <p className="text-[12px]">The run model overrides the configured routes.</p>
+      )}
+      {summary?.effective.length ? (
+        <ul className={SMALL_SUB} aria-label="Models by role">
+          {summary.effective.map((row) => (
+            <li key={`${row.target}|${row.model}|${row.source}`}>
+              {row.target}: <span className="font-mono">{row.model}</span>
+              {` (${row.source})`}
             </li>
           ))}
         </ul>
+      ) : (
+        routed.length > 0 && (
+          <ul className={SMALL_SUB}>
+            {routed.map(([stage, entry]) => (
+              <li key={stage}>
+                {stage}: <span className="font-mono">{entry.model}</span>
+              </li>
+            ))}
+          </ul>
+        )
       )}
+      {(summary?.warnings ?? []).map((warning) => (
+        <p key={warning} className={WARN_NOTE}>
+          {warning}
+        </p>
+      ))}
       {stopped && (
         <form
           className={STACK_FORM}
