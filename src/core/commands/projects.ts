@@ -22,6 +22,7 @@ import { realPath } from "../projects/paths.js";
 import {
   fitLabel,
   overviewBrief,
+  plural,
   projectDetails,
   resolveFolderInput,
   runsExecutingInProcess,
@@ -255,7 +256,7 @@ export async function openProjectPicker(host: ProjectHost): Promise<void> {
     const picked = await openSelect<string>({
       title: "Projects",
       titleIcon: "folder",
-      placeholder: `${projects.length} projects · fuzzy filter…`,
+      placeholder: `${plural(projects.length, "project")} · fuzzy filter…`,
       current: here,
       options: [
         { value: CREATE_PROJECT, label: "Create project…", pinned: true },

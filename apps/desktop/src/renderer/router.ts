@@ -9,6 +9,7 @@ export const PROJECT_SECTIONS = [
   "usage",
   "graph",
   "git",
+  "artifacts",
   "gates",
   "workflows",
   "instructions",

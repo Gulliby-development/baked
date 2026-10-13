@@ -1,5 +1,12 @@
 import type { JSONValue } from "@ai-sdk/provider";
 import type { ModelMessage } from "@ai-sdk/provider-utils";
+import {
+  steeringNotice,
+  stillStuck,
+  type WatchFinding,
+  type WatchStep,
+  watchSteps,
+} from "./progress-watch.js";
 
 /** Per-attempt token cap used when the run policy does not set `maxAttemptTokens`. */
 export const DEFAULT_MAX_ATTEMPT_TOKENS = 250_000;
@@ -37,7 +44,10 @@ export function stepTokens(usage: StepUsageLike, fallback: number): number {
   return (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
 }
 
-export type FinalizeReason = "steps" | "tokens";
+/** `watcher`: the progress watcher ended a stuck attempt early (`progress-watch.ts`). */
+export type FinalizeReason = "steps" | "tokens" | "watcher";
+/** Steps after a steering message before the same stuck pattern ends the attempt. */
+export const WATCH_STOP_AFTER = 3;
 
 /**
  * Decide whether the next step must be the final one. Each step replays the whole history,
@@ -59,7 +69,9 @@ export function finalizeReason(input: {
   return null;
 }
 
-export function finalizeNotice(reason: FinalizeReason): string {
+export function finalizeNotice(reason: FinalizeReason, watched?: WatchFinding): string {
+  if (reason === "watcher")
+    return `The progress watcher ended this attempt early: ${watched?.detail ?? "the same pattern continued after the warning"}. Do not call any other tool. Call submit_result now with the work already done and list what blocks you as unresolved.`;
   const limit = reason === "steps" ? "step limit" : "token budget";
   return `The ${limit} for this task is reached. Do not call any other tool. Call submit_result now with the complete result for the work already done; list anything unfinished as unresolved instead of continuing. The host runs the checks after you, so a check you did not run again is not unresolved.`;
 }
@@ -227,6 +239,10 @@ export class AttemptStepController {
   private finalizeNoticed = false;
   private truncatedStep = -1;
   private nudged = false;
+  /** Steps taken when the watcher steered, and what ended the attempt early. */
+  private steered: { at: number; finding: WatchFinding } | null = null;
+  private watchDone = false;
+  private watchStop: WatchFinding | null = null;
   private readonly compactedBytes: number[] = [];
   /** Serialized size of the messages sent with each step, to estimate the next one. */
   private readonly sentBytes: number[] = [];
@@ -249,6 +265,14 @@ export class AttemptStepController {
       minSteps?: number;
       /** Hard limit the step floor never passes, such as what the run budget still allows. */
       ceilingTokens?: number;
+      /**
+       * The progress watcher: a first stuck signal adds one steering message, the same kind of
+       * signal `WATCH_STOP_AFTER` steps later finalizes the attempt. `onSignal` records both.
+       */
+      watch?: {
+        mustEdit: boolean;
+        onSignal: (finding: WatchFinding, action: "steered" | "stopped") => void;
+      };
     },
   ) {}
   get maxTokens(): number {
@@ -294,11 +318,12 @@ export class AttemptStepController {
   }
   prepare(input: {
     stepNumber: number;
-    steps: ReadonlyArray<{
-      usage: StepUsageLike;
-      finishReason?: string;
-      toolCalls?: readonly { toolName: string }[];
-    }>;
+    steps: ReadonlyArray<
+      {
+        usage: StepUsageLike;
+        finishReason?: string;
+      } & WatchStep
+    >;
     messages: ModelMessage[];
   }): { messages?: ModelMessage[]; activeTools?: string[]; toolChoice?: "required" } {
     const last = input.steps[input.steps.length - 1];
@@ -309,6 +334,29 @@ export class AttemptStepController {
       lastStepTokens: last ? stepTokens(last.usage, this.options.fallbackStepTokens) : 0,
       maxTokens: this.tokenCap(input.steps),
     });
+    const watch = this.options.watch;
+    let steer: WatchFinding | null = null;
+    // One steering message per attempt; the stop follows only when the steered pattern goes on.
+    if (watch && !this.watchDone && this.finalizedBy === null && this.options.submitTools.length) {
+      if (!this.steered) {
+        const finding = watchSteps(input.steps, { mustEdit: watch.mustEdit });
+        if (finding) {
+          this.steered = { at: input.steps.length, finding };
+          steer = finding;
+          watch.onSignal(finding, "steered");
+        }
+      } else {
+        const { at, finding } = this.steered;
+        const state = stillStuck(finding, input.steps, at, WATCH_STOP_AFTER);
+        if (state === "progress") this.watchDone = true;
+        else if (state === "stuck") {
+          this.watchDone = true;
+          this.finalizedBy = "watcher";
+          this.watchStop = finding;
+          watch.onSignal(finding, "stopped");
+        }
+      }
+    }
     const compacted = compactToolHistory(input.messages);
     this.compactedBytes[input.stepNumber] = compacted.savedBytes;
     const finalizing = this.finalizedBy !== null && this.options.submitTools.length > 0;
@@ -321,6 +369,7 @@ export class AttemptStepController {
         content: truncationNotice(this.options.maxOutputTokens),
       });
     }
+    if (steer) this.notices.push({ at: compacted.messages.length, content: steeringNotice(steer) });
     const nudgeAfter = this.options.editNudgeAfterReads;
     if (nudgeAfter && !this.nudged && !finalizing) {
       let reads = 0;
@@ -339,7 +388,7 @@ export class AttemptStepController {
       this.finalizeNoticed = true;
       this.notices.push({
         at: compacted.messages.length,
-        content: finalizeNotice(this.finalizedBy),
+        content: finalizeNotice(this.finalizedBy, this.watchStop ?? undefined),
       });
     }
     let messages = compacted.messages;

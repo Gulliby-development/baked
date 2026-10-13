@@ -60,6 +60,8 @@ function methodLabel(status: PackageStatus): string {
       return "[go]";
     case "github":
       return "[binary]";
+    case "generic":
+      return "[download]";
     default:
       return "";
   }

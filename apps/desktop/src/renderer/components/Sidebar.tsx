@@ -37,6 +37,7 @@ const WORK: [ProjectSection, string, IconName][] = [
   ["usage", "Usage", "usage"],
   ["graph", "Code graph", "graph"],
   ["git", "Git", "git"],
+  ["artifacts", "Artifacts", "artifacts"],
 ];
 
 const SETUP: [ProjectSection, string, IconName][] = [

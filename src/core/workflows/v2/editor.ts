@@ -27,6 +27,7 @@ import {
   PRESETS,
   STAGE_OUTCOMES,
   type Stage,
+  stageGates,
   type Transition,
   validateWorkflowV2,
   type WorkflowV2,
@@ -118,6 +119,21 @@ export const definitionText = (definition: WorkflowV2): string =>
  * `sdd`, the shipped presets and schema 1 files open read only, ready to be duplicated. Throws for
  * an unknown ID or a file that does not parse.
  */
+/** The gate library as the editor lists it, with whether each project gate is confirmed here. */
+export function libraryViews(
+  workspace: string,
+  policy: RunPolicy,
+  directories = gateDirectories(workspace),
+): LibraryGateView[] {
+  const library = loadGateLibrary(workspace, policy, directories);
+  const confirmations = readConfirmations(workspace);
+  return [...library.entries.values()].map((entry) => ({
+    gate: entry.gate,
+    source: entry.source,
+    confirmed: entry.source !== "project" || confirmations[entry.gate.id] === entry.hash,
+  }));
+}
+
 export function readEditorSource(
   workspace: string,
   id: string,
@@ -128,12 +144,6 @@ export function readEditorSource(
   } = {},
 ): EditorSource {
   const loaded = loadDefinition(workspace, SafeId.parse(id), policy);
-  const library = loadGateLibrary(
-    workspace,
-    policy,
-    options.gateDirectories ?? gateDirectories(workspace),
-  );
-  const confirmations = readConfirmations(workspace);
   const readOnly =
     loaded.path === null
       ? "Built-in workflows are read only. Press C to duplicate this one as a custom workflow."
@@ -160,11 +170,7 @@ export function readEditorSource(
     definition: asV2(loaded, policy),
     savedText: loaded.path && loaded.schemaVersion === 2 ? readFileSync(loaded.path, "utf8") : null,
     readOnly,
-    library: [...library.entries.values()].map((entry) => ({
-      gate: entry.gate,
-      source: entry.source,
-      confirmed: entry.source !== "project" || confirmations[entry.gate.id] === entry.hash,
-    })),
+    library: libraryViews(workspace, policy, options.gateDirectories),
     profiles,
     takenIds: [...new Set(["sdd", ...PRESETS, ...files])],
   };
@@ -188,6 +194,12 @@ export function openEditor(source: EditorSource): EditorState {
   };
 }
 
+/** The editor after the gate library changed on disk, for example after a new gate was saved. */
+export const withLibrary = (state: EditorState, library: LibraryGateView[]): EditorState => ({
+  ...state,
+  library: new Map(library.map((g) => [g.gate.id, g])),
+});
+
 export const withHistory = (state: EditorState, history: PastRun[] | null): EditorState => ({
   ...state,
   history,
@@ -202,10 +214,7 @@ export function selectedStage(state: EditorState): Stage | undefined {
 /** The gate lists of a stage: its own gates (check and review stages), then its outgoing transitions. */
 export function targetsOf(definition: WorkflowV2, stageId: string): GateTarget[] {
   const stage = definition.stages.find((s) => s.id === stageId);
-  const own: GateTarget[] =
-    stage && (stage.type === "check" || stage.type === "review")
-      ? [{ kind: "stage", stageId: stage.id }]
-      : [];
+  const own: GateTarget[] = stage && "gates" in stage ? [{ kind: "stage", stageId: stage.id }] : [];
   return [
     ...own,
     ...definition.transitions
@@ -225,7 +234,7 @@ export function transitionOf(definition: WorkflowV2, target: GateTarget): Transi
 export function bindingsAt(definition: WorkflowV2, target: GateTarget): GateBinding[] {
   if (target.kind === "transition") return transitionOf(definition, target)?.gates ?? [];
   const stage = definition.stages.find((s) => s.id === target.stageId);
-  return stage && (stage.type === "check" || stage.type === "review") ? stage.gates : [];
+  return stage ? stageGates(stage) : [];
 }
 export const targetName = (target: GateTarget): string =>
   target.kind === "stage" ? `stage ${target.stageId}` : target.id;
@@ -358,6 +367,10 @@ export function bindRestriction(
     const stage = definition.stages.find((s) => s.id === target.stageId);
     if (stage?.type === "check" && gate.type !== "command")
       return "a check stage runs command gates only";
+    if (stage?.type === "wait" && gate.type !== "command")
+      return "a wait stage polls command gates only";
+    if (stage?.type === "wait" && gate.type === "command" && gate.command.writes.length)
+      return "a wait stage polls command gates that write nothing";
     if (stage?.type === "review" && gate.type !== "ai-review")
       return "a review stage runs AI review gates only";
     if (gate.scope === "task") return "a task gate runs after each task, not in a stage";
@@ -419,7 +432,7 @@ function setBindings(definition: WorkflowV2, target: GateTarget, gates: GateBind
   return {
     ...definition,
     stages: definition.stages.map((s) =>
-      s.id === target.stageId && (s.type === "check" || s.type === "review") ? { ...s, gates } : s,
+      s.id === target.stageId && "gates" in s ? { ...s, gates } : s,
     ),
   };
 }
@@ -599,6 +612,21 @@ export function stageFields(state: EditorState, stageId: string): StageField[] {
         hint: "this approval authorizes that stage",
       });
   }
+  if (stage.type === "wait")
+    fields.push(
+      {
+        key: "interval",
+        label: "Interval",
+        value: `${stage.intervalSeconds}s`,
+        hint: "how often its gates run, 5 s to 1 h",
+      },
+      {
+        key: "timeout",
+        label: "Timeout",
+        value: `${stage.timeoutMinutes} min`,
+        hint: "then it ends failed, 1 min to 24 h",
+      },
+    );
   for (const t of definition.transitions.filter((t) => t.from === stageId && t.loop))
     fields.push({
       key: `loop:${t.id}`,
@@ -662,6 +690,20 @@ export function changeStageField(
       stages: d.stages.map((s) => (s.id === stageId ? ({ ...s, covers } as Stage) : s)),
     }));
   }
+  if ((key === "interval" || key === "timeout") && stage.type === "wait") {
+    const field = key === "interval" ? "intervalSeconds" : "timeoutMinutes";
+    const steps = key === "interval" ? WAIT_INTERVALS : WAIT_TIMEOUTS;
+    const current = stage[field];
+    const value = cycle(
+      steps.includes(current) ? steps : [...steps, current].sort((a, b) => a - b),
+      current,
+      delta,
+    );
+    return edit(state, (d) => ({
+      ...d,
+      stages: d.stages.map((s) => (s.id === stageId ? ({ ...s, [field]: value } as Stage) : s)),
+    }));
+  }
   if (key.startsWith("loop:")) {
     const id = key.slice("loop:".length);
     const transition = state.definition.transitions.find((t) => t.id === id && t.from === stageId);
@@ -673,6 +715,67 @@ export function changeStageField(
     }));
   }
   return { state, error: `${stageId} has no option ${key}` };
+}
+
+const WAIT_INTERVALS = [5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600];
+const WAIT_TIMEOUTS = [1, 5, 10, 15, 30, 60, 120, 240, 480, 720, 1440];
+
+/**
+ * Inserts a wait stage on the `passed` edge out of `afterStageId`: that edge now leads to the wait
+ * stage, which passes on to the old target. It has no gate yet (a problem until one is bound) and
+ * no `failed` edge, so a timeout blocks the run until one is added.
+ */
+export function insertWaitStage(state: EditorState, afterStageId: string): EditResult {
+  return edit(state, (d) => {
+    const out = d.transitions.filter(
+      (t) => t.from === afterStageId && t.on === "passed" && !t.loop,
+    );
+    const edge = out[0];
+    if (!edge || out.length > 1 || edge.when)
+      return `${afterStageId} needs exactly one passed transition to insert a wait stage after it`;
+    const taken = new Set([...d.stages.map((s) => s.id), ...d.transitions.map((t) => t.id)]);
+    let id = "wait";
+    for (let n = 2; taken.has(id) || taken.has(`${id}-passed`); n++) id = `wait-${n}`;
+    const stage: Stage = {
+      id,
+      type: "wait",
+      consumes: [],
+      produces: "gates",
+      effects: "none",
+      gates: [],
+      intervalSeconds: 30,
+      timeoutMinutes: 30,
+    };
+    const at = d.stages.findIndex((s) => s.id === afterStageId) + 1;
+    return {
+      ...d,
+      stages: [...d.stages.slice(0, at), stage, ...d.stages.slice(at)],
+      transitions: [
+        ...d.transitions.map((t) => (t.id === edge.id ? { ...t, to: id } : t)),
+        { id: `${id}-passed`, from: id, to: edge.to, on: "passed", carries: "gates", gates: [] },
+      ],
+      limits: { maxStageVisits: Math.max(d.limits.maxStageVisits, d.stages.length + 1) },
+    };
+  });
+}
+/** Removes a wait stage: the edges into it lead to where its `passed` edge led. */
+export function removeWaitStage(state: EditorState, stageId: string): EditResult {
+  return edit(state, (d) => {
+    const stage = d.stages.find((s) => s.id === stageId);
+    if (stage?.type !== "wait") return "Only a wait stage can be removed here";
+    const onward = d.transitions.find((t) => t.from === stageId && t.on === "passed" && !t.when);
+    if (!onward) return `${stageId} has no passed transition to reconnect`;
+    if (d.entry === stageId && onward.to === "done")
+      return `${stageId} is the only stage on the way to done`;
+    return {
+      ...d,
+      entry: d.entry === stageId ? onward.to : d.entry,
+      stages: d.stages.filter((s) => s.id !== stageId),
+      transitions: d.transitions
+        .filter((t) => t.from !== stageId)
+        .map((t) => (t.to === stageId ? { ...t, to: onward.to } : t)),
+    };
+  });
 }
 
 // --- Copy, estimate and save -----------------------------------------------------------------
@@ -734,7 +837,7 @@ export function estimateDefinition(
   let low = 0;
   let high = 0;
   for (const stage of definition.stages) {
-    if (stage.type === "check" || stage.type === "approval") continue;
+    if (stage.type === "check" || stage.type === "approval" || stage.type === "wait") continue;
     if (stage.type === "tasks") {
       low += prices.task.low * prices.taskCount.low;
       high += prices.task.high * prices.taskCount.high;

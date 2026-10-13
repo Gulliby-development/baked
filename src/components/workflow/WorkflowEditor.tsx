@@ -16,6 +16,8 @@ import {
   type EditorState,
   type EditResult,
   estimateDefinition,
+  insertWaitStage,
+  type LibraryGateView,
   markSaved,
   moveCursor,
   moveGate,
@@ -27,6 +29,7 @@ import {
   problemCount,
   removeGate,
   removeTransition,
+  removeWaitStage,
   type SaveReview,
   selectedStage,
   selectedTarget,
@@ -40,7 +43,15 @@ import {
   transitionOf,
   validateEditor,
   withHistory,
+  withLibrary,
 } from "../../core/workflows/v2/editor.js";
+import {
+  DRAFT_KIND_LABELS,
+  DRAFT_KINDS,
+  draftReport,
+  type GateDraft,
+  type GateDraftRequest,
+} from "../../core/workflows/v2/gate-draft.js";
 import { useKeyboard } from "../../hooks/useTerminalEvents.js";
 import { Hint, PremiumPopup } from "../ui/index.js";
 
@@ -51,11 +62,17 @@ export interface WorkflowEditorApi {
   save(definition: WorkflowV2): string;
   /** Past runs of the project for the estimate; null when no estimate can be made. */
   history(): Promise<PastRun[] | null>;
+  /** Drafts a gate from a sentence with the project's model; writes nothing. */
+  draftGate?(request: GateDraftRequest): Promise<GateDraft>;
+  /** Saves a confirmed draft to `baked/gates` and returns the gate library read again. */
+  saveGate?(draft: GateDraft): LibraryGateView[];
 }
 
 export type EditorMode =
   | "browse"
   | "picker"
+  | "describe"
+  | "draft"
   | "transition"
   | "options"
   | "review"
@@ -69,10 +86,12 @@ export const EDITOR_HINTS: Record<EditorMode, { key: string; label: string }[]> 
     { key: "Tab", label: "pane" },
     { key: "↑↓", label: "select" },
     { key: "A", label: "add gate" },
+    { key: "G", label: "new gate" },
     { key: "D", label: "remove" },
     { key: "M", label: "mode" },
     { key: "J/K", label: "move" },
     { key: "N", label: "transition" },
+    { key: "W", label: "wait stage" },
     { key: "E", label: "options" },
     { key: "C", label: "duplicate" },
     { key: "Ctrl+S", label: "save" },
@@ -83,6 +102,17 @@ export const EDITOR_HINTS: Record<EditorMode, { key: string; label: string }[]> 
     { key: "↑↓", label: "select" },
     { key: "Enter", label: "add" },
     { key: "Esc", label: "cancel" },
+  ],
+  describe: [
+    { key: "Tab", label: "kind" },
+    { key: "type", label: "describe" },
+    { key: "Enter", label: "draft" },
+    { key: "Esc", label: "cancel" },
+  ],
+  draft: [
+    { key: "↑↓", label: "scroll" },
+    { key: "Enter", label: "save and add" },
+    { key: "Esc", label: "back" },
   ],
   transition: [
     { key: "↑↓", label: "field" },
@@ -111,6 +141,7 @@ const GLYPH: Record<Stage["type"], string> = {
   agent: "◇",
   tasks: "✎",
   check: "✓",
+  wait: "⧗",
   approval: "⚑",
   review: "◎",
   reflection: "↺",
@@ -175,6 +206,11 @@ export function WorkflowEditor({
   const [review, setReview] = useState<SaveReview | null>(null);
   const [typed, setTyped] = useState("");
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [kind, setKind] = useState(0);
+  const [sentence, setSentence] = useState("");
+  const [drafting, setDrafting] = useState(false);
+  const [gateDraft, setGateDraft] = useState<GateDraft | null>(null);
+  const [scroll, setScroll] = useState(0);
 
   useEffect(() => onMode?.(mode), [mode, onMode]);
   useEffect(() => {
@@ -241,6 +277,47 @@ export function WorkflowEditor({
     }
   };
 
+  const requestDraft = (): void => {
+    const text = sentence.trim();
+    if (!api.draftGate || drafting) return;
+    if (!text) {
+      notify("info", "Describe the check in a sentence first.");
+      return;
+    }
+    setDrafting(true);
+    api
+      .draftGate({ text, kind: DRAFT_KINDS[kind] })
+      .then((draft) => {
+        setGateDraft(draft);
+        setScroll(0);
+        setMode("draft");
+      })
+      .catch((err: unknown) => notify("err", err instanceof Error ? err.message : String(err)))
+      .finally(() => setDrafting(false));
+  };
+  const saveDraft = (): void => {
+    if (!state || !target || !gateDraft || !api.saveGate) return;
+    if (gateDraft.problems.length) {
+      notify("err", gateDraft.problems[0] ?? "This draft cannot be saved.");
+      return;
+    }
+    try {
+      const next = withLibrary(state, api.saveGate(gateDraft));
+      const result = addGate(next, target, gateDraft.gate.id);
+      setState(result.error ? next : result.state);
+      setGateDraft(null);
+      setMode("browse");
+      notify(
+        result.error ? "err" : "ok",
+        result.error
+          ? `Saved ${gateDraft.path}, but it was not added: ${result.error}`
+          : `Saved ${gateDraft.path} and added it to ${targetName(target)}. Ctrl+S saves the workflow.`,
+      );
+    } catch (err) {
+      notify("err", err instanceof Error ? err.message : String(err));
+    }
+  };
+
   useKeyboard((evt) => {
     if (!active) return;
     const key = evt.name.toLowerCase();
@@ -298,6 +375,27 @@ export function WorkflowEditor({
           notify("ok", `${option.gate.id} added to ${targetName(target)}`);
         }
       }
+      return;
+    }
+    if (mode === "describe") {
+      if (key === "escape") {
+        evt.preventDefault();
+        setMode("browse");
+      } else if (key === "tab") {
+        evt.preventDefault();
+        setKind((k) => (k + (evt.shift ? DRAFT_KINDS.length - 1 : 1)) % DRAFT_KINDS.length);
+      } else if (key === "return") {
+        evt.preventDefault();
+        requestDraft();
+      }
+      return;
+    }
+    if (mode === "draft") {
+      evt.preventDefault();
+      if (key === "escape") setMode("describe");
+      else if (key === "up" || key === "k") setScroll((n) => Math.max(0, n - 1));
+      else if (key === "down" || key === "j") setScroll((n) => n + 1);
+      else if (key === "return") saveDraft();
       return;
     }
     if (mode === "transition") {
@@ -373,12 +471,23 @@ export function WorkflowEditor({
         setPick(0);
         setMode("picker");
       }
+    } else if (key === "g") {
+      evt.preventDefault();
+      if (!api.draftGate) notify("info", "Gates from a sentence are not available here.");
+      else if (state.readOnly) notify("info", state.readOnly);
+      else if (!target) notify("info", "This stage has no gate list yet. N adds a transition.");
+      else {
+        setSentence("");
+        setMode("describe");
+      }
     } else if (key === "d") {
       evt.preventDefault();
       if (gatesPane && target) apply(removeGate(state, target, state.gate));
       else if (state.pane === "transitions" && target?.kind === "transition")
         apply(removeTransition(state, target.id));
-      else notify("info", "Select a gate or a transition to remove.");
+      else if (state.pane === "stages" && stage?.type === "wait")
+        apply(removeWaitStage(state, stage.id));
+      else notify("info", "Select a gate, a transition or a wait stage to remove.");
     } else if (key === "m") {
       evt.preventDefault();
       if (gatesPane && target) apply(toggleMode(state, target, state.gate));
@@ -391,6 +500,9 @@ export function WorkflowEditor({
         setField(0);
         setMode("transition");
       }
+    } else if (key === "w" && stage) {
+      evt.preventDefault();
+      apply(insertWaitStage(state, stage.id));
     } else if (key === "e" && stage) {
       evt.preventDefault();
       if (state.readOnly) notify("info", state.readOnly);
@@ -492,6 +604,74 @@ export function WorkflowEditor({
             </box>
           );
         })}
+      </box>
+    );
+  }
+
+  if (mode === "describe" && target) {
+    const chosen = DRAFT_KINDS[kind] ?? "command";
+    return (
+      <box flexDirection="column">
+        {header}
+        <text fg={t.textPrimary} attributes={1}>{`New gate for ${targetName(target)}`}</text>
+        <text>
+          <span fg={t.textMuted}>{"Kind  "}</span>
+          {DRAFT_KINDS.map((k, i) => (
+            <span key={k} fg={k === chosen ? t.brand : t.textFaint}>
+              {`${i ? " · " : ""}${k === chosen ? `[${DRAFT_KIND_LABELS[k]}]` : DRAFT_KIND_LABELS[k]}`}
+            </span>
+          ))}
+        </text>
+        <box flexDirection="row" height={1}>
+          <text fg={t.brand}>{"Check "}</text>
+          <box width={Math.max(10, width - 10)} backgroundColor={t.bgPopupHighlight}>
+            <input
+              value={sentence}
+              onInput={setSentence}
+              focused={active && !drafting}
+              placeholder="In plain words, e.g. after the build, `app --sum 50 6` prints 56"
+              backgroundColor={t.bgPopupHighlight}
+            />
+          </box>
+        </box>
+        <Hint>
+          {drafting
+            ? "Drafting the gate with the project's model…"
+            : chosen === "command" || chosen === "ai-acceptance"
+              ? "The project's model drafts the gate; you review it before anything is saved."
+              : "Built from your sentence without a model; you review it before it is saved."}
+        </Hint>
+      </box>
+    );
+  }
+
+  if (mode === "draft" && gateDraft && target) {
+    const lines = draftReport(gateDraft);
+    const rows = Math.max(4, height - 14);
+    const top = Math.min(scroll, Math.max(0, lines.length - rows));
+    return (
+      <box flexDirection="column">
+        {header}
+        <text fg={t.textPrimary} attributes={1}>
+          {clip(`Save ${gateDraft.path} and add it to ${targetName(target)}?`, width)}
+        </text>
+        {lines.slice(top, top + rows).map((line, n) => (
+          <text
+            // biome-ignore lint/suspicious/noArrayIndexKey: lines of a fixed text
+            key={top + n}
+            fg={line.startsWith("  Cannot be saved") ? t.error : t.textPrimary}
+          >
+            {clip(line, width)}
+          </text>
+        ))}
+        {lines.length > top + rows ? (
+          <text fg={t.textFaint}>{`… ${lines.length - top - rows} more lines`}</text>
+        ) : null}
+        {gateDraft.problems.length ? (
+          <Hint kind="warn">Esc goes back to change the sentence or the kind.</Hint>
+        ) : (
+          <Hint>Saving confirms the gate for this workspace, because you just read it.</Hint>
+        )}
       </box>
     );
   }

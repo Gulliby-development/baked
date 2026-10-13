@@ -248,6 +248,15 @@ export function replay(events: readonly WorkflowEvent[], trace = emptyTrace()): 
             "err",
           );
         break;
+      case "attempt.advisory": {
+        const stageId = attempts.get(event.payload.attemptId);
+        const attempt = stageId ? `the ${stageLabel(stageId)} attempt` : "an attempt";
+        line(
+          `Progress watcher ${event.payload.action === "stopped" ? "stopped" : "warned"} ${attempt}: ${event.payload.detail}`,
+          event.payload.action === "stopped" ? "warn" : "info",
+        );
+        break;
+      }
       case "task.state_changed":
         applyTask(
           trace,
@@ -278,6 +287,16 @@ export function replay(events: readonly WorkflowEvent[], trace = emptyTrace()): 
         line(
           `Gate ${gateId} ${status}${mode === "advisory" ? " (advisory)" : ""}`,
           status === "passed" ? "ok" : status === "failed" ? "err" : "warn",
+        );
+        break;
+      }
+      case "wait.progress": {
+        const { stageId, pending, deadline, intervalSeconds } = event.payload;
+        line(
+          pending.length
+            ? `${stageLabel(stageId)} waits for ${pending.join(", ")} until ${new Date(deadline).toLocaleTimeString()}, every ${intervalSeconds}s`
+            : `${stageLabel(stageId)}: its gates pass`,
+          pending.length ? "info" : "ok",
         );
         break;
       }
@@ -316,6 +335,12 @@ export function replay(events: readonly WorkflowEvent[], trace = emptyTrace()): 
           );
         break;
       }
+      case "tool.finished":
+        if (event.payload.status === "deadline")
+          line(`Tool ${event.payload.tool} did not return in time`, "warn");
+        else if (event.payload.tool === "run_probe")
+          line(`Probe ran (${(event.payload.durationMs / 1000).toFixed(1)} s)`);
+        break;
       default:
         break;
     }

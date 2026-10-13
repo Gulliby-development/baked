@@ -52,13 +52,14 @@ The complete files are in `src/core/workflows/v2/presets/`.
 
 ### 3.1 Stage types
 
-The v1 stage kinds become seven stage types. No type adds a new executor: each is an existing v1 mechanism with a name.
+The v1 stage kinds become seven stage types, each an existing v1 mechanism with a name. An eighth, `wait`, has its own host mechanism: it polls command gates and calls no model.
 
 | Type | What it does | Produces | Effects | Outcomes | v1 kinds |
 | --- | --- | --- | --- | --- | --- |
 | `agent` | A read-only agent submits one typed result | the contract it names | none | passed | research, specify, plan, analyze |
 | `tasks` | Runs the approved task graph; the only stage that edits files | `implementation` | `workspace-write` | passed | task-graph |
 | `check` | Runs its command gates on a frozen snapshot, no model | `gates` | none | passed, failed | checks |
+| `wait` | Runs its command gates every `intervalSeconds` until they pass or `timeoutMinutes` pass, no model | `gates` | none | passed, failed | (new) |
 | `approval` | A decision bound to the digest of the contracts it covers | `decision` | none | passed | approve |
 | `review` | Runs its AI review gates, each reviewer in a fresh context | `review` | none | passed, changes_requested | review |
 | `reflection` | Covers every criterion; may append bounded corrective tasks | `convergence` | none | passed, changes_requested | converge |
@@ -226,7 +227,7 @@ Workflow editor: standard 1.0.0 (custom copy)
 ```
 
 - Three panes: stages (with the type glyph and `effects`), the outgoing transitions of the selected stage, and the ordered gates of the selected transition. A strip below shows validation results, updated on every change, and the spend estimate for the whole definition.
-- A adds a gate from the library through a picker with search and a one line summary (type, required, scope, timeout). Gates that cannot be bound there (a task gate after a non-task stage, a command gate in a review stage) are shown disabled with the reason. J and K reorder, M toggles required or advisory for this workflow only, D removes the binding. N adds a transition; E edits a stage option (profile, `covers`, loop bound).
+- A adds a gate from the library through a picker with search and a one line summary (type, required, scope, timeout). Gates that cannot be bound there (a task gate after a non-task stage, a command gate in a review stage) are shown disabled with the reason. J and K reorder, M toggles required or advisory for this workflow only, D removes the binding. N adds a transition; E edits a stage option (profile, `covers`, loop bound). G drafts a new gate from a sentence (section 9.1), saves it after the person read it and binds it to the selected list.
 - Ctrl+S validates with the same function as the run start. With problems it refuses and lists them with the transition or stage they belong to. Without problems it shows the diff against the saved file and the effective gates, and writes `baked/workflows/ID.json` through a temp file and a rename. The first save of a definition with `autoApproval` asks for the typed confirmation of section 5.2.
 - Built in presets are read only; "duplicate as custom" copies one. A saved definition affects runs created afterwards; started runs keep their frozen copy and a banner says so.
 - The window is a TUI popup with the same frame tests as the other workflow views at 120x40, 80x24 and 50x20; at the narrow size the panes become one list with a pane switcher. All logic (validation, effective modes, estimate) is in core modules, not in React.

@@ -29,12 +29,13 @@ import {
   type RunState,
 } from "../core/workflows/schemas.js";
 import { NativeWorkflowService } from "../core/workflows/service.js";
+import { stopDetail } from "../core/workflows/stop-detail.js";
 import { newId } from "../core/workflows/store.js";
 import { runUsage } from "../core/workflows/usage.js";
 import { runUsageMarkdown } from "../core/workflows/usage-markdown.js";
 import { recordedSteps } from "../core/workflows/v2/acceptance-gate.js";
 import { QUICK_WORKFLOW_ID } from "../core/workflows/v2/definitions.js";
-import { readRoutingSummary } from "../core/workflows/view.js";
+import { readCheckPreflight, readRoutingSummary } from "../core/workflows/view.js";
 import { worktreeView } from "../core/workflows/worktree.js";
 import type { AppConfig } from "../types/index.js";
 import { followProgress } from "./progress.js";
@@ -221,14 +222,8 @@ export async function executeWorkflowCommand(
     );
   switch (args.command) {
     case "quick": {
-      const run = quickRunArgs(service, args);
-      const policy = startPolicy(run);
-      if (!policy.checks.some((c) => c.scope === "feature"))
-        throw new WorkflowFault(
-          "INVALID_DEFINITION",
-          "A quick task needs at least one feature check in the workflow policy (workflows.policy.checks); /workflow gates adds them",
-        );
-      return executeWorkflowCommand(service, run, signal, onDrive, options);
+      // The start refuses a quick task without feature checks, as it does over the local API.
+      return executeWorkflowCommand(service, quickRunArgs(service, args), signal, onDrive, options);
     }
     case "run": {
       const policy = startPolicy(args);
@@ -288,14 +283,21 @@ export async function executeWorkflowCommand(
       onDrive?.(run.runId);
       return service.drive(run.runId, signal);
     }
-    case "status":
+    case "status": {
+      const snapshot = await service.get(runId);
       return {
-        ...(await service.get(runId)),
+        ...snapshot,
         requests: service.store.requests(runId),
         worktree: worktreeView(service.workspace, service.store.state(runId)),
         routing: readRoutingSummary(service.store, runId),
+        preflight: readCheckPreflight(service.store, runId),
         acceptance: walkThroughs(service.store, runId),
+        stopDetail:
+          snapshot.status === "blocked" || snapshot.status === "failed"
+            ? stopDetail(service.store, runId)
+            : null,
       };
+    }
     case "list":
       return service.list({
         featureId: typeof args.flags.feature === "string" ? args.flags.feature : undefined,
@@ -555,6 +557,8 @@ export async function executeWorkflowCommand(
         ...(typeof args.flags.branch === "string" ? { branch: args.flags.branch } : {}),
         draft: args.flags.draft === true,
         pullRequest: args.flags["no-pr"] !== true,
+        ...(args.flags["with-specs"] ? { specs: true } : {}),
+        ...(args.flags["no-specs"] ? { specs: false } : {}),
         ...provider,
       });
       return {

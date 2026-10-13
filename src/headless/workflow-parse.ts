@@ -65,76 +65,8 @@ export interface WorkflowArgs {
    */
   inline?: Record<string, unknown>;
 }
-const flags = new Set([
-  "model-strict",
-  "feature",
-  "workflow",
-  "prompt",
-  "prompt-file",
-  "policy",
-  "owner",
-  "model",
-  "json",
-  "events",
-  "request",
-  "digest",
-  "expected-revision",
-  "command-id",
-  "answers-file",
-  "file",
-  "accept",
-  "reason",
-  "candidate",
-  "source",
-  "path",
-  "destination",
-  "before",
-  "dry-run",
-  "limit",
-  "cursor",
-  "status",
-  "stage",
-  "top",
-  "format",
-  "after",
-  "effect",
-  "resolution",
-  "tokens",
-  "calls",
-  "time-ms",
-  "spec",
-  "plan",
-  "tasks",
-  "cwd",
-  "from",
-  "all",
-  "confirm-auto-approval",
-  "help",
-  "remote",
-  "branch",
-  "draft",
-  "no-pr",
-  "execute",
-  "worktree",
-  "writers",
-  "exclude-user-changes",
-  "route",
-  "resume",
-  "no-resume",
-  "clarification",
-  "duplication",
-  "sast",
-  "issue",
-  "output",
-  "text",
-  "provider",
-  "kind",
-  "id",
-  "save",
-  "from-criteria",
-  "at",
-  "budget",
-]);
+/** Options every workflow command takes. */
+const globalFlags = ["json", "cwd", "help"];
 const booleanFlags = new Set([
   "all",
   "save",
@@ -147,6 +79,8 @@ const booleanFlags = new Set([
   "help",
   "draft",
   "no-pr",
+  "with-specs",
+  "no-specs",
   "execute",
   "worktree",
   "exclude-user-changes",
@@ -260,15 +194,27 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   define: ["from"],
   gates: ["all"],
   gate: ["text", "kind", "id", "model", "from-criteria", "save", "file", "json", "workflow", "at"],
-  deliver: ["remote", "branch", "draft", "no-pr", "execute", "request", "expected-revision"],
+  deliver: [
+    "remote",
+    "branch",
+    "draft",
+    "no-pr",
+    "with-specs",
+    "no-specs",
+    "execute",
+    "request",
+    "expected-revision",
+  ],
   "discard-worktree": ["expected-revision", "command-id"],
   route: ["workflow", "model", "route", "json"],
   models: ["model", "provider", "json"],
   doctor: preRunFlags,
   estimate: preRunFlags,
 };
+/** Every option the parser knows: derived from the command tables, so a flag cannot be missed. */
+const flags = new Set([...globalFlags, ...Object.values(commandFlags).flat()]);
 /** The flag tables the argv parser checks, exposed so tests can assert they agree. */
-export const workflowFlagTables = { flags, booleanFlags, commandFlags };
+export const workflowFlagTables = { flags, booleanFlags, commandFlags, globalFlags };
 export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
   const command = argv[0];
   if (!commands.includes(command as WorkflowCommand))
@@ -306,7 +252,7 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
 /** Checks option combinations and values of parsed or programmatically built workflow arguments. */
 export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
   for (const name of Object.keys(result.flags)) {
-    if (!["json", "cwd", "help", ...commandFlags[result.command]].includes(name))
+    if (!globalFlags.includes(name) && !commandFlags[result.command].includes(name))
       throw new WorkflowFault("INVALID_DEFINITION", `--${name} is not valid for ${result.command}`);
     if (name === "status" && !RunStatus.safeParse(result.flags[name]).success)
       throw new WorkflowFault(
@@ -390,7 +336,14 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
   )
     throw new WorkflowFault("INVALID_DEFINITION", "--events and --after need --resume");
   if (!result.flags.help && result.command === "deliver") {
-    const planning = ["remote", "branch", "draft", "no-pr"].filter((name) => name in result.flags);
+    const planning = ["remote", "branch", "draft", "no-pr", "with-specs", "no-specs"].filter(
+      (name) => name in result.flags,
+    );
+    if (result.flags["with-specs"] && result.flags["no-specs"])
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        "--with-specs and --no-specs exclude each other",
+      );
     if (result.flags.execute) {
       if (planning.length)
         throw new WorkflowFault(
@@ -569,7 +522,7 @@ report RUN_ID [--output FILE] [--json]
   One Markdown report of the run: summary, changes, tasks, checks, criteria, findings, decisions,
   tokens by stage and model, artifacts. Printed, or written to FILE; deliver uses it as the PR body.
 gc --before ISO_DATE [--dry-run]          redact RUN_ID --file ARTIFACT_ID --reason TEXT
-deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr]
+deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr] [--with-specs|--no-specs]
   Prepare Git delivery of a completed, verified run: one commit of the run's files on a new
   branch, push, and a pull request. Stores the plan and a delivery request; nothing runs yet.
   Approve the exact plan with: approve RUN_ID --request ID --digest SHA256 --expected-revision N
