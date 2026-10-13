@@ -570,6 +570,8 @@ export async function executeWorkflowCommand(
         ...(typeof args.flags.branch === "string" ? { branch: args.flags.branch } : {}),
         draft: args.flags.draft === true,
         pullRequest: args.flags["no-pr"] !== true,
+        ...(args.flags["with-specs"] ? { specs: true } : {}),
+        ...(args.flags["no-specs"] ? { specs: false } : {}),
         ...provider,
       });
       return {

@@ -41,6 +41,14 @@ import {
 } from "../verification/evidence.js";
 import { findingBlocks, fingerprint, requiresSecurityReview } from "../verification/findings.js";
 import {
+  type BaselineCount,
+  baselineRegression,
+  CHECK_BASELINE_PATH,
+  commandKey,
+  outputCounts,
+  TEST_FILE,
+} from "../verification/output-counts.js";
+import {
   missingReproAdvice,
   type ReproOutcome,
   reproAllows,
@@ -55,7 +63,9 @@ import {
   assumable,
   DEFECT_NOTE,
   hostCounts,
+  hostSplitParts,
   isCountNit,
+  isHostSplitNit,
   knownRisks,
   persistentDefect,
   REQUEST_NOTE,
@@ -65,6 +75,7 @@ import { approvalDigest } from "./approval.js";
 import { writeViaTemp } from "./atomic-write.js";
 import {
   evaluateAutoApproval,
+  humanApprovalReason,
   plannerApprovalLimits,
   planScopeAdvice,
   policyDecisions,
@@ -115,6 +126,7 @@ import {
   planConsistencyProblems,
   withDerivedRequirements,
   withModuleDependencies,
+  withReadDependencies,
 } from "./plan-consistency.js";
 import { ProcessScope } from "./process-scope.js";
 import { type LearnedRule, rulesFor } from "./project-memory.js";
@@ -140,7 +152,7 @@ import {
   retryAfterMs,
   retryDelay,
 } from "./retry.js";
-import { buildReviewBundle, REVIEW_BUNDLE_PATH } from "./review-bundle.js";
+import { buildReviewBundle, REVIEW_BUNDLE_PATH, taskChangedFiles } from "./review-bundle.js";
 import {
   capturePreImage,
   createdByRunLineage,
@@ -252,12 +264,14 @@ function planGraph(
 ): TaskGraph {
   return withCoveringChecks(
     withTestDependencies(
-      withModuleDependencies(
-        withDerivedRequirements(spec, {
-          ...plan.taskGraph,
-          specHash: hashJson(spec),
-          planHash: hashBytes(plan.markdown),
-        }),
+      withReadDependencies(
+        withModuleDependencies(
+          withDerivedRequirements(spec, {
+            ...plan.taskGraph,
+            specHash: hashJson(spec),
+            planHash: hashBytes(plan.markdown),
+          }),
+        ),
       ),
     ),
     policy,
@@ -714,6 +728,9 @@ export class WorkflowScheduler {
                     verifiedByRuntime: PLAN_CONSISTENCY_CHECKS,
                     workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
                     hostCounts: hostCounts(graph),
+                    ...(Object.keys(hostSplitParts(graph)).length
+                      ? { hostSplit: hostSplitParts(graph) }
+                      : {}),
                   },
                   signal,
                   undefined,
@@ -729,8 +746,9 @@ export class WorkflowScheduler {
                   },
                 ),
               );
-              if (analysis.inputHash !== hashJson(state.manifest))
-                throw new WorkflowFault("OUTPUT_INVALID", "Analysis refers to stale inputs");
+              // The host binds the analysis to the manifest it analyzed; the model's copy of the hash
+              // is not checked (#347: one transposed character blocked d0f55591).
+              analysis.inputHash = hashJson(state.manifest);
               // The host adds a finding the model missed: a program was described and none is planned.
               // A feature of an initiative has its boundary approved with the split, not the request.
               const uncovered =
@@ -764,6 +782,22 @@ export class WorkflowScheduler {
                 if (finding.blocking && isCountNit(finding.description)) {
                   finding.blocking = false;
                   finding.description = `Counts are computed by the host (${String(counts.tasks)} tasks, ${String(counts.files)} distinct files); kept as a note: ${finding.description}`;
+                }
+              }
+              // The host split oversized test tasks after planning; plan.md names only the original.
+              const split = hostSplitParts(graph);
+              for (const finding of analysis.findings) {
+                if (
+                  finding.blocking &&
+                  finding.kind !== "scope" &&
+                  isHostSplitNit(finding, split)
+                ) {
+                  finding.blocking = false;
+                  finding.description = `About tasks the host split by file after planning (${Object.entries(
+                    split,
+                  )
+                    .map(([original, ids]) => `${original}: ${ids.join(", ")}`)
+                    .join("; ")}); kept as a note: ${finding.description}`;
                 }
               }
               // Findings about check outcomes stay in the record as notes; checks run later.
@@ -910,9 +944,14 @@ export class WorkflowScheduler {
                 await this.measureQualityBaseline(runId, state, policy, signal);
                 const digest = approvalDigest(state);
                 // A v2 approval stage marked human never approves on its own.
-                const human = v2?.stage.type === "approval" && v2.stage.decision === "human";
-                const auto = human
-                  ? { approval: null, reasons: [] }
+                const humanStage =
+                  v2?.stage.type === "approval" && v2.stage.decision === "human" ? v2 : null;
+                const human = humanStage !== null;
+                const auto = humanStage
+                  ? {
+                      approval: null,
+                      reasons: [humanApprovalReason(humanStage.definition.id, humanStage.stage.id)],
+                    }
                   : userChanges.length
                     ? {
                         approval: null,
@@ -964,7 +1003,7 @@ export class WorkflowScheduler {
                   ...(v2 && acceptanceGrants(v2.gates).length
                     ? { acceptanceCapabilities: acceptanceGrants(v2.gates) }
                     : {}),
-                  ...(policy.autoApproval
+                  ...(policy.autoApproval || human
                     ? { autoApproval: auto.approval ?? { declined: auto.reasons } }
                     : {}),
                 };
@@ -975,17 +1014,22 @@ export class WorkflowScheduler {
                 }
                 this.store.transaction(() => {
                   const requestId = this.store.request(runId, "approval", digest, body);
-                  // The host signs the same digest a person would; post-release criteria never get here.
+                  // The host signs the same digest a person would. Post-release criteria get here
+                  // only under clarification assume; the record names each one it defers.
                   this.store.decideRequest(
                     runId,
                     requestId,
                     "accepted",
-                    { digest, autoApproval: auto.approval },
+                    {
+                      digest,
+                      autoApproval: auto.approval,
+                      deferredCriteria: body.deferredCriteria,
+                    },
                     true,
                   );
                   this.store.setApproval(runId, digest);
                   state.approvalRoot = digest;
-                  state.deferredCriteria = [];
+                  state.deferredCriteria = body.deferredCriteria;
                 });
               }
               break;
@@ -1009,6 +1053,7 @@ export class WorkflowScheduler {
                 advance = false;
                 break;
               }
+              await this.recordCheckBaseline(runId, state, policy, signal);
               if (policy.maxConcurrentWriters > 1 && state.worktree)
                 await this.implementParallel(runId, stepId, state, policy, profiles, signal);
               else await this.implement(runId, stepId, state, policy, profiles, signal);
@@ -1439,7 +1484,12 @@ export class WorkflowScheduler {
           runId,
           "diagnostic",
           `errors/${newId()}.txt`,
-          fault instanceof Error ? fault.message : String(fault),
+          // A schema rejection keeps what the schema said, so a resume can tell the agent.
+          fault instanceof WorkflowFault && typeof fault.details.validation === "string"
+            ? `${fault.message}\n${fault.details.validation}`
+            : fault instanceof Error
+              ? fault.message
+              : String(fault),
         );
         this.store.transition(
           runId,
@@ -1548,6 +1598,35 @@ export class WorkflowScheduler {
     };
   }
   /**
+   * The input of a corrective task that starts from a clean context (convergence.ts
+   * `freshRestartAfter`): only the evidence its own findings cite, no earlier attempt's diffs or
+   * logs, and the host's account of what the earlier corrections tried.
+   */
+  private freshStart(
+    runId: string,
+    state: RuntimeState,
+    task: Task,
+  ): { only?: ReadonlySet<string>; extra: { freshStart?: { summary: string; note: string } } } {
+    const artifactId = state.freshTasks[task.id];
+    if (!artifactId) return { extra: {} };
+    const record = JSON.parse(this.store.readArtifact(runId, artifactId)) as { summary: string };
+    const cited = this.store
+      .findings(runId)
+      .filter((row) => task.findingIds.includes(row.id))
+      .flatMap(
+        (row) => (JSON.parse(row.body_json) as { evidenceIds?: string[] }).evidenceIds ?? [],
+      );
+    return {
+      only: new Set(cited),
+      extra: {
+        freshStart: {
+          summary: record.summary,
+          note: "Earlier corrections of this failure did not change it. This session starts clean: read the current files and the cited evidence, find the cause yourself, and take a different approach. If the cause lies outside the files you may edit, say so in unresolved.",
+        },
+      },
+    };
+  }
+  /**
    * Files the finished corrective tasks (repair, convergence) of the run changed; null when one of
    * their diffs is missing.
    */
@@ -1648,6 +1727,66 @@ export class WorkflowScheduler {
       ),
     );
     return split;
+  }
+  /**
+   * Before the first task of an update run, runs each feature check once on the code the run starts
+   * from and stores the counts its output reports (a linter's diagnostics, a test runner's tests)
+   * as `facts/check-baseline.json`. The checks stage compares the same commands with it.
+   * Nothing is measured for a scaffold, after a task has started, or for output no parser reads.
+   */
+  private async recordCheckBaseline(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (this.store.latestArtifact(runId, CHECK_BASELINE_PATH)) return;
+    const feature = policy.checks.filter((check) => check.scope === "feature");
+    if (!feature.length || this.baselineScaffold(runId, state)) return;
+    const fresh = this.store.tasks(runId).every((task) => task.status === "pending");
+    const counts: Record<string, BaselineCount[]> = {};
+    if (fresh)
+      for (const check of feature) {
+        const result = await this.checks.measure(
+          check,
+          signal,
+          runRoot(this.store.workspace, state),
+        );
+        if (result.truncated || result.status === "inconclusive") continue;
+        const found = outputCounts(result.output, result.status === "passed");
+        if (found.length) counts[commandKey(check)] = found;
+      }
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "facts",
+        CHECK_BASELINE_PATH,
+        canonical({ schemaVersion: 1, measured: fresh, counts }),
+      ),
+    );
+  }
+  /** What a passing required check fell behind the baseline by, as a failure reason; else null. */
+  private checkRegression(
+    runId: string,
+    state: RuntimeState,
+    check: Check,
+    output: string,
+  ): string | null {
+    const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
+    if (!artifact) return null;
+    const baseline = (
+      JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+        counts?: Record<string, BaselineCount[]>;
+      }
+    ).counts?.[commandKey(check)];
+    if (!baseline?.length) return null;
+    const deletesTests = (state.graph?.tasks ?? []).some((task) =>
+      task.writes.some((w) => w.action === "delete" && TEST_FILE.test(w.path)),
+    );
+    const regressions = baseline.flatMap(
+      (count) => baselineRegression(count, output, deletesTests) ?? [],
+    );
+    return regressions.length ? regressions.join("; ") : null;
   }
   /** Whether the workspace the run started from held no source files (empty or a scaffold). */
   private baselineScaffold(runId: string, state: RuntimeState): boolean {
@@ -2398,7 +2537,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       "tasks.md": renderTasks(state.graph),
     };
     for (const [name, content] of Object.entries(files)) {
-      const relative = `specs/${state.spec.featureId}/${name}`;
+      const relative = specPublicationPath(state.spec.featureId, name);
       const path = workspacePath(root, relative);
       const current = fileHash(path);
       const expected =
@@ -2469,6 +2608,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             bundle.changed.map((path) => [path, state.expectedFiles?.[path] ?? null]),
           ),
           criteriaToTasks: criteria,
+          taskFiles: taskChangedFiles(state.graph?.tasks ?? [], bundle.changed),
           patch: bundle.patch,
         }),
       );
@@ -2503,13 +2643,14 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
   private evidenceContext(
     runId: string,
     state: RuntimeState,
-    options: { reads: boolean; commands?: boolean } = { reads: true },
+    options: { reads: boolean; commands?: boolean; only?: ReadonlySet<string> } = { reads: true },
   ): unknown[] {
     const current = currentEvidence(this.store, runId, state.snapshotId ?? "");
     // Short handles (E1..En) number every current entry, so an agent can cite them instead of
     // copying a 36-character id; the host resolves them.
     const handles = new Map(current.map((e, index) => [e.id, evidenceHandle(index)]));
     return current
+      .filter((e) => !options.only || options.only.has(e.id))
       .filter((e) => options.reads || e.kind !== "read")
       .filter((e) => options.commands !== false || e.kind !== "command")
       .map((e) => {
@@ -2711,6 +2852,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         };
       };
       let proseEnd = false;
+      const fresh = this.freshStart(runId, state, task);
       const result = ImplementationSchema.parse(
         await this.call(
           runId,
@@ -2725,7 +2867,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             evidence: this.evidenceContext(runId, state, {
               reads: false,
               commands: task.origin !== "planned",
+              ...(fresh.only ? { only: fresh.only } : {}),
             }),
+            ...fresh.extra,
             ...(preloaded
               ? {
                   taskFiles: {
@@ -3119,9 +3263,14 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         stepId,
         this.requireProfile(profiles.find((p) => p.id === task.profileId)),
       );
+      const fresh = this.freshStart(runId, state, task);
       const extra = {
         task,
-        evidence: this.evidenceContext(runId, state, { reads: false }),
+        evidence: this.evidenceContext(runId, state, {
+          reads: false,
+          ...(fresh.only ? { only: fresh.only } : {}),
+        }),
+        ...fresh.extra,
         unresolvedMeans: UNRESOLVED_MEANING,
         ...this.previousAttempt(runId, task.id),
       };
@@ -4164,9 +4313,13 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         runRoot(this.store.workspace, state),
       );
       this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
-      if (result.status === "passed") passedIds.push(check.id);
+      const regression =
+        result.status === "passed" && check.required
+          ? this.checkRegression(runId, state, check, result.output)
+          : null;
+      if (result.status === "passed" && !regression) passedIds.push(check.id);
       if (result.status === "inconclusive" && check.required) inconclusive ??= check.id;
-      if (result.status === "failed" && check.required) {
+      if ((result.status === "failed" || regression) && check.required) {
         failedIds.push(check.id);
         const task =
           state.graph?.tasks.find((t) => t.checkIds.includes(check.id)) ?? state.graph?.tasks[0];
@@ -4179,7 +4332,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             result.output,
             (state.rootGraph ?? state.graph)?.tasks ?? [],
             task,
-            `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
+            regression
+              ? `The check passed but ${regression} (evidence ${result.evidenceId}).`
+              : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
             newId,
           ),
         );
@@ -4891,8 +5046,12 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         attempts: result.attempts,
         flaky: result.flaky,
       });
-      if (result.status === "passed") passedIds.push(check.id);
-      if (!check.required || result.status === "passed") continue;
+      const regression =
+        result.status === "passed" && check.required
+          ? this.checkRegression(runId, state, check, result.output ?? "")
+          : null;
+      if (result.status === "passed" && !regression) passedIds.push(check.id);
+      if (!check.required || (result.status === "passed" && !regression)) continue;
       if (result.status === "inconclusive") {
         inconclusive ??= check.id;
         continue;
@@ -4914,7 +5073,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           fallback,
           result.reason
             ? `${result.reason}: restore the approved test or promote a new one (evidence ${result.evidenceId}).`
-            : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
+            : regression
+              ? `The check passed but ${regression} (evidence ${result.evidenceId}).`
+              : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
           newId,
         ),
       );
@@ -5548,6 +5709,10 @@ function taskSize(
 /** The checks run after a task, in policy order: its task-scope checks and the static ones covering its code. */
 const taskChecks = (policy: RunPolicy, task: Task): Check[] => taskCheckList(policy, task);
 
+/** The documents a run publishes under `specs/<featureId>/` once its plan is ready. */
+export const SPEC_PUBLICATION_FILES = ["spec.json", "spec.md", "plan.md", "tasks.json", "tasks.md"];
+export const specPublicationPath = (featureId: string, name: string): string =>
+  `specs/${featureId}/${name}`;
 /** Logical path of the gates a v2 run froze when it started. */
 export const GATES_ARTIFACT = "definition/gates.json";
 
