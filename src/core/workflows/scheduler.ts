@@ -84,6 +84,7 @@ import { budgetUsage, raiseToStartEstimate, reserveTokens } from "./budget.js";
 import {
   fixerCommand,
   fixerTiers,
+  isCodePath,
   taskCheckList,
   validateChecks,
   withCoveringChecks,
@@ -140,6 +141,14 @@ import {
   qualityClaim,
   readCodeFiles,
 } from "./quality/duplication.js";
+import {
+  type ChangedFile,
+  checkQualityRules,
+  QUALITY_BASELINE_FILES,
+  QUALITY_RULES,
+  type RuleFinding,
+  ruleClaim,
+} from "./quality/rules.js";
 import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery.js";
 import {
@@ -4420,7 +4429,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       throw new WorkflowFault("OUTPUT_INVALID", `Required check ${inconclusive} is inconclusive`, {
         reason: "verification_failed",
       });
-    if (!failures.length) failures.push(...(await this.duplicationFindings(runId, state, policy)));
+    if (!failures.length) failures.push(...(await this.qualityFindings(runId, state, policy)));
     if (failures.length)
       return this.recordFindings(runId, {
         schemaVersion: 1,
@@ -4570,8 +4579,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     }
   }
   /**
-   * Measures the code at approval, before any task edits it, as the baseline of the duplication
-   * ratchet (#638). Kept once per run: a revised plan compares with the same code.
+   * Measures the code at approval, before any task edits it: the baseline of the duplication
+   * ratchet (#638), and the planned code files as they are, so the rule pack (#639) checks only
+   * the lines the run adds. Kept once per run: a revised plan compares with the same code.
    */
   private async measureQualityBaseline(
     runId: string,
@@ -4579,17 +4589,113 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     policy: RunPolicy,
     signal: AbortSignal,
   ): Promise<void> {
+    const root = runRoot(this.store.workspace, state);
+    if (!this.store.latestArtifact(runId, QUALITY_BASELINE_FILES)) {
+      const planned = (state.graph?.tasks ?? []).flatMap((t) => t.writes.map((w) => w.path));
+      const existing = planned.filter((path) => state.expectedFiles?.[path] !== undefined);
+      const code = await readCodeFiles(root, [...new Set(existing)]);
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "quality",
+          QUALITY_BASELINE_FILES,
+          canonical(Object.fromEntries(code.files)),
+        ),
+      );
+    }
     if (duplicationOf(policy) === "off" || this.store.latestArtifact(runId, QUALITY_BASELINE))
       return;
-    const code = await readCodeFiles(
-      runRoot(this.store.workspace, state),
-      Object.keys(state.expectedFiles ?? {}),
-    );
+    const code = await readCodeFiles(root, Object.keys(state.expectedFiles ?? {}));
     signal.throwIfAborted();
     const baseline = measureBaseline(code.files, code.skipped);
     this.store.transaction(() =>
       this.store.artifact(runId, "quality", QUALITY_BASELINE, canonical(baseline)),
     );
+  }
+  /**
+   * The code quality gates after the command checks pass (#630): the duplication ratchet and
+   * the anti-slop rule pack. Both always record their result for the run report; their blocking
+   * findings are corrected like failed checks.
+   */
+  private async qualityFindings(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+  ): Promise<Review["findings"]> {
+    return [
+      ...(await this.duplicationFindings(runId, state, policy)),
+      ...(await this.ruleFindings(runId, state, policy)),
+    ].slice(0, 100);
+  }
+  /**
+   * The anti-slop rule pack on the lines the run added to code files. A file's baseline is the
+   * pre-image the run kept before its first edit; a changed file without one is checked, but its
+   * findings stay notes. Earlier rule findings close once no blocking match remains.
+   */
+  private async ruleFindings(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+  ): Promise<Review["findings"]> {
+    if (!state.snapshotId) return [];
+    const files = state.expectedFiles ?? {};
+    const baselineId = state.manifest.baselineSnapshotId;
+    const before = (baselineId && this.store.snapshotFiles(runId, baselineId)) || {};
+    const root = runRoot(this.store.workspace, state);
+    const kept = this.store.latestArtifact(runId, QUALITY_BASELINE_FILES);
+    const planned = kept
+      ? (JSON.parse(this.store.readArtifact(runId, kept.id)) as Record<string, string>)
+      : {};
+    const changed: ChangedFile[] = [];
+    for (const path of changedPaths(before, files)) {
+      if (!isCodePath(path) || files[path] === undefined) continue;
+      const code = await readCodeFiles(root, [path]);
+      const content = code.files.get(path);
+      if (content === undefined) continue;
+      const hash = before[path];
+      changed.push({
+        path,
+        content,
+        before: hash
+          ? (planned[path] ?? readKept(this.store, runId, hash)?.toString("utf8") ?? undefined)
+          : null,
+      });
+    }
+    const result = checkQualityRules(root, changed, policy.qualityRules ?? {});
+    const evidenceId = this.store.transaction(() => {
+      const artifact = this.store.artifact(runId, "quality", QUALITY_RULES, canonical(result));
+      return this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
+    });
+    const blocking = result.findings.filter((f) => f.blocking);
+    if (!blocking.length) {
+      this.store.transaction(() => {
+        for (const finding of this.store.findings(runId))
+          if (
+            ["open", "confirmed"].includes(finding.status) &&
+            ruleClaim(JSON.parse(finding.body_json).claim)
+          )
+            this.store.findingStatus(runId, finding.id, "resolved");
+      });
+      return [];
+    }
+    const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [];
+    return blocking.map((match: RuleFinding) => {
+      const task = [...tasks].reverse().find((t) => t.writes.some((w) => w.path === match.file));
+      return {
+        id: newId(),
+        kind: "correctness" as const,
+        severity: "high" as const,
+        requirementIds:
+          task?.requirementIds ?? state.spec?.requirements.map((r) => r.id).slice(0, 1) ?? [],
+        criterionIds: task?.criterionIds ?? [],
+        file: match.file,
+        symbol: null,
+        evidenceIds: [evidenceId],
+        claim: `Rule ${match.rule}: ${match.message} (${match.file}:${match.line}: ${match.text})`,
+        impact: "The anti-slop rule pack of this run blocks this pattern.",
+        suggestedFix: match.fix,
+      };
+    });
   }
   /**
    * The duplication ratchet after the command checks pass: the run's code against the baseline
@@ -5164,7 +5270,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       throw new WorkflowFault("OUTPUT_INVALID", `Required check ${inconclusive} is inconclusive`, {
         reason: "verification_failed",
       });
-    if (!failures.length) failures.push(...(await this.duplicationFindings(runId, state, policy)));
+    if (!failures.length) failures.push(...(await this.qualityFindings(runId, state, policy)));
     if (!failures.length) {
       // Without a review stage nothing else closes the findings of an earlier failed run of
       // these gates; the passing gates close them.

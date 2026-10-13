@@ -291,6 +291,12 @@ export type TaskTier = "spark" | "ember";
 export interface QualityConfig {
   /** Duplication and dead-code ratchet: `warn` (default) reports, `ratchet` blocks, `off` skips. */
   duplication?: "off" | "warn" | "ratchet";
+  /** Rules of the anti-slop pack that do not run (built-in or ast-grep rule IDs). */
+  disabledRules?: string[];
+  /** Severity per rule ID: `error` blocks the run, `warning` is a note. */
+  ruleSeverity?: Record<string, "error" | "warning">;
+  /** The project's ast-grep rule files, relative to the workspace; they run when ast-grep is installed. */
+  ruleFiles?: string[];
 }
 
 export interface AppConfig {
