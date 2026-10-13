@@ -8,16 +8,24 @@ import {
   useState,
 } from "react";
 import type { WorkflowLine } from "../../client/start.js";
-import type { EditorOp, EditorView, GateTarget, StageView } from "../../client/workflow-editor.js";
+import type {
+  EditorOp,
+  EditorView,
+  GateTarget,
+  InsertableStage,
+  StageView,
+} from "../../client/workflow-editor.js";
 import { Icon } from "../../components/Icon.js";
 import { Button } from "../../components/ui/button.js";
 import { cn } from "../../lib/cn.js";
 import { LABEL, PANEL } from "../../lib/styles.js";
 import { FINISH, stageIcon } from "../runs/line-model.js";
 import { TYPE_FILL } from "./WorkflowGallery.js";
-import { GateList, StageCard } from "./WorkflowStages.js";
+import { ArrowDialog, ArrowPanel, StationPalette, StationPanel } from "./WorkflowInspector.js";
 import { outcomeLabel } from "./workflow-editor-logic.js";
 import {
+  type ArrowDraft,
+  arrowDraft,
   boardSize,
   defaultLayout,
   edgeNear,
@@ -26,28 +34,31 @@ import {
   gateLibrary,
   graphEdges,
   type Layout,
-  linkFor,
   magnet,
   mergeLayout,
+  NEW_STATIONS,
   NODE_H,
   NODE_W,
+  newStationId,
   nodeAt,
   type Point,
   snap,
+  stationSpot,
 } from "./workflow-studio-model.js";
 
 /**
  * The workflow as a graph: stations you drag around (they snap to the grid and pull into line
  * with each other), transitions as arrows with the repair loops dashed under the line, a handle
- * on each station to draw a new transition, and a gate library whose gates drop onto a station or
- * an arrow. Every change is an editor op the backend validates; the layout is only this
+ * on each station to draw a new transition, new stations that drop onto an arrow, and a gate
+ * library whose gates drop onto a station or an arrow. Every change is an editor op the backend validates; the layout is only this
  * computer's and is kept per project and workflow.
  */
 
 type Drag =
   | { kind: "node"; id: string; dx: number; dy: number; from: Point; moved: boolean }
   | { kind: "link"; from: string; at: Point }
-  | { kind: "gate"; gateId: string; at: Point };
+  | { kind: "gate"; gateId: string; at: Point }
+  | { kind: "station"; type: InsertableStage; at: Point; from: Point };
 type Selection = { kind: "stage"; id: string } | { kind: "edge"; id: string };
 
 const layoutKey = (project: string, id: string) => `baked.workflow-layout.${project}.${id}`;
@@ -91,13 +102,20 @@ export function WorkflowGraph({
   view,
   line,
   busy,
+  focus,
+  onFocus,
   onEdit,
+  onCreateGate,
 }: {
   projectKey: string;
   view: EditorView;
   line: WorkflowLine;
   busy: boolean;
+  /** The station to select first, e.g. the one Watch was showing. */
+  focus: string | null;
+  onFocus: (id: string) => void;
   onEdit: (op: EditorOp) => void;
+  onCreateGate: (target: GateTarget) => void;
 }) {
   const readOnly = view.readOnly !== null;
   const stageIds = useMemo(() => view.stages.map((s) => s.id), [view.stages]);
@@ -114,13 +132,19 @@ export function WorkflowGraph({
     x: null,
     y: null,
   });
-  const [selected, setSelected] = useState<Selection>({
+  const [selected, setSelectedState] = useState<Selection>({
     kind: "stage",
-    id:
-      view.stages.find((s) => s.targets.some((t) => t.target.kind === "stage"))?.id ??
-      stageIds[0] ??
-      "",
+    id: (focus && stageIds.includes(focus) ? focus : stageIds[0]) ?? "",
   });
+  const setSelected = (next: Selection) => {
+    setSelectedState(next);
+    if (next.kind === "stage") onFocus(next.id);
+  };
+  // Drawing an arrow by clicks: the first station clicked is its start, the second its end.
+  const [drawing, setDrawing] = useState<{ from: string | null } | null>(null);
+  const [pending, setPending] = useState<{ from: string; to: string; draft: ArrowDraft } | null>(
+    null,
+  );
   const [hint, setHint] = useState<{ text: string; bad: boolean; at: number } | null>(null);
   useEffect(() => {
     if (!hint) return;
@@ -185,18 +209,87 @@ export function WorkflowGraph({
     say(`${gateId} now guards ${where.name}.`);
   };
 
+  /**
+   * Puts a new station on a forward arrow and selects it. A line the person arranged keeps its
+   * places and the station lands where it was dropped; an untouched line is laid out again.
+   */
+  const addStation = (type: InsertableStage, transition: string, at?: Point) => {
+    const edge = edges.find((e) => e.id === transition);
+    if (!edge) return;
+    const why = stationSpot(edge);
+    if (why) return say(why, true);
+    const id = newStationId(view, type);
+    if (readLayout(key)) {
+      const spot = at ?? edge.mid;
+      place({ ...layout, [id]: snap({ x: spot.x - NODE_W / 2, y: spot.y - NODE_H / 2 }) });
+    }
+    onEdit({ op: "addStage", stageType: type, transition });
+    setSelected({ kind: "stage", id });
+    const name = NEW_STATIONS.find((s) => s.type === type)?.name ?? type;
+    say(`${name} station ${id} now sits between ${edge.from} and ${edge.to}.`);
+  };
+  const dropStation = (type: InsertableStage, at: Point) => {
+    const edge = edgeNear(edges, at);
+    if (!edge) return say("Drop the station on the dot in the middle of an arrow.", true);
+    addStation(type, edge.id, at);
+  };
+  // The tile holds the pointer while it is pulled, so a drop also clicks it; that click is spent.
+  const pulled = useRef(false);
+  const pickStation = (type: InsertableStage) => {
+    if (pulled.current) {
+      pulled.current = false;
+      return;
+    }
+    if (selectedEdge) return addStation(type, selectedEdge.id);
+    say("Drag it onto an arrow, or click an arrow first and pick the station again.");
+  };
+
+  /** Opens the new-arrow dialog for an arrow from one station to another, or says why not. */
+  const connect = (from: string, to: string) => {
+    const stage = stageOf(from);
+    if (!stage) return;
+    const result = arrowDraft(stage, to, view);
+    if (!result.ok) return say(result.reason, true);
+    setPending({ from, to, draft: result.draft });
+  };
   const dropLink = (from: string, at: Point) => {
     const to = nodeAt(layout, at, order);
-    const stage = stageOf(from);
-    if (!to || !stage) return;
+    if (!to) return;
     if (to === from) return say("Pull the handle onto another station.", true);
-    const link = linkFor(stage, to, view);
-    if (!link.ok) return say(link.reason, true);
-    onEdit({ op: "addTransition", from, to, on: link.on, loop: link.loop });
+    connect(from, to);
+  };
+  const clickStation = (id: string) => {
+    if (!drawing) {
+      if (id !== FINISH) setSelected({ kind: "stage", id });
+      return;
+    }
+    if (drawing.from === null) {
+      if (id === FINISH) return say("An arrow starts at a station; Done ends the line.", true);
+      setDrawing({ from: id });
+      return say(`From ${id}. Now click the station the arrow goes to.`);
+    }
+    const from = drawing.from;
+    setDrawing(null);
+    if (id === from) return say("Click another station for the end of the arrow.", true);
+    connect(from, id);
+  };
+  const startDrawing = (from: string | null) => {
+    setDrawing({ from });
     say(
-      `Added ${from} → ${to} on ${outcomeLabel(link.on)}${link.loop ? `, up to ${link.loop} rounds` : ""}.`,
+      from
+        ? `From ${from}. Click the station the arrow goes to.`
+        : "Click the station the arrow starts at, then the one it goes to.",
     );
   };
+
+  useEffect(() => {
+    if (!drawing) return;
+    const stop = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") setDrawing(null);
+    };
+    window.addEventListener("keydown", stop);
+    return () => window.removeEventListener("keydown", stop);
+  }, [drawing]);
 
   const onMove = (e: PointerEvent<HTMLDivElement>) => {
     if (!drag) return;
@@ -220,7 +313,14 @@ export function WorkflowGraph({
       if (drag.moved && p) place({ ...layout, [drag.id]: snap(p) });
     } else if (e.type === "pointerup") {
       if (drag.kind === "link") dropLink(drag.from, point(e));
-      else dropGate(drag.gateId, point(e));
+      else if (drag.kind === "station") {
+        // A press without a pull is a click: the tile's own handler takes it.
+        const at = point(e);
+        if (Math.hypot(at.x - drag.from.x, at.y - drag.from.y) > 6) {
+          pulled.current = true;
+          dropStation(drag.type, at);
+        }
+      } else dropGate(drag.gateId, point(e));
     }
   };
 
@@ -242,9 +342,24 @@ export function WorkflowGraph({
   const selectedEdge =
     selected.kind === "edge" ? edges.find((x) => x.id === selected.id) : undefined;
   const selectedStage =
-    selected.kind === "stage" ? stageOf(selected.id) : selectedEdge ? undefined : view.stages[0];
+    selected.kind === "stage"
+      ? (stageOf(selected.id) ?? view.stages[0])
+      : selectedEdge
+        ? undefined
+        : view.stages[0];
   const linkTarget = drag && drag.kind !== "node" ? nodeAt(layout, drag.at, order) : null;
-  const gateEdge = drag?.kind === "gate" && !linkTarget ? edgeNear(edges, drag.at) : null;
+  const dropEdges =
+    drag?.kind === "gate"
+      ? edges
+      : drag?.kind === "station"
+        ? edges.filter((e) => !stationSpot(e))
+        : [];
+  const gateEdge =
+    drag?.kind === "gate" && !linkTarget
+      ? edgeNear(edges, drag.at)
+      : drag?.kind === "station"
+        ? edgeNear(dropEdges, drag.at)
+        : null;
 
   return (
     <div
@@ -257,9 +372,24 @@ export function WorkflowGraph({
         <div className="flex flex-wrap items-center gap-3">
           <p className="m-0 min-w-0 flex-1 text-[13px] text-muted-foreground">
             {readOnly
-              ? "Drag stations to arrange the view. Duplicate the workflow to change its transitions and gates."
-              : "Drag stations to arrange the line; they snap to the grid and to each other. Pull a station's handle onto another station to add a transition, and drop a gate from the library on a station or an arrow."}
+              ? "Drag stations to arrange the view. Duplicate the workflow to change its arrows, gates and settings."
+              : drawing
+                ? drawing.from
+                  ? `Click the station the arrow from ${drawing.from} goes to. Esc cancels.`
+                  : "Click the station the arrow starts at. Esc cancels."
+                : "Click a station to set it up on the right. Drag stations to arrange them; Draw an arrow connects two, new stations drop onto an arrow, and gates drop from the library onto a station or an arrow."}
           </p>
+          {!readOnly && (
+            <Button
+              variant={drawing ? "primary" : "secondary"}
+              size="sm"
+              aria-pressed={drawing !== null}
+              disabled={busy}
+              onClick={() => (drawing ? setDrawing(null) : startDrawing(null))}
+            >
+              {drawing ? "Cancel arrow" : "Draw an arrow"}
+            </Button>
+          )}
           <Button
             variant="secondary"
             size="sm"
@@ -277,8 +407,8 @@ export function WorkflowGraph({
               ref={board}
               className={cn(
                 "relative min-h-full min-w-full bg-secondary-background bg-[radial-gradient(var(--line)_1.4px,transparent_1.4px)] bg-[length:20px_20px] select-none",
-                drag?.kind === "link" && "cursor-crosshair",
-                drag?.kind === "gate" && "cursor-grabbing",
+                (drag?.kind === "link" || drawing) && "cursor-crosshair",
+                (drag?.kind === "gate" || drag?.kind === "station") && "cursor-grabbing",
               )}
               style={{ width: size.width, height: size.height }}
             >
@@ -369,19 +499,18 @@ export function WorkflowGraph({
                       />
                     );
                   })()}
-                {drag?.kind === "gate" &&
-                  edges.map((edge) => (
-                    <circle
-                      key={edge.id}
-                      cx={edge.mid.x}
-                      cy={edge.mid.y}
-                      r={gateEdge?.id === edge.id ? 12 : 8}
-                      className={cn(
-                        "stroke-[var(--ink)] stroke-2 transition-[r] duration-150",
-                        gateEdge?.id === edge.id ? "fill-[var(--fill-accent)]" : "fill-[var(--bg)]",
-                      )}
-                    />
-                  ))}
+                {dropEdges.map((edge) => (
+                  <circle
+                    key={edge.id}
+                    cx={edge.mid.x}
+                    cy={edge.mid.y}
+                    r={gateEdge?.id === edge.id ? 12 : 8}
+                    className={cn(
+                      "stroke-[var(--ink)] stroke-2 transition-[r] duration-150",
+                      gateEdge?.id === edge.id ? "fill-[var(--fill-accent)]" : "fill-[var(--bg)]",
+                    )}
+                  />
+                ))}
               </svg>
               {edges
                 .filter((edge) => edge.back || edge.bindings.length > 0)
@@ -420,7 +549,11 @@ export function WorkflowGraph({
                       !dragging &&
                         "transition-[left,top,box-shadow,transform] duration-300 ease-[cubic-bezier(.3,1.5,.5,1)] hover:shadow-[5px_5px_0_0_var(--ink)] motion-reduce:transition-none",
                       dragging && "z-[3] -rotate-1 scale-[1.03] shadow-[8px_8px_0_0_var(--ink)]",
-                      isSelected && "outline-3 outline-offset-3 outline-[var(--accent)]",
+                      isSelected &&
+                        !drawing &&
+                        "outline-3 outline-offset-3 outline-[var(--accent)]",
+                      drawing?.from === id &&
+                        "outline-3 outline-offset-4 outline-dashed outline-[var(--accent)]",
                       linkTarget === id &&
                         "scale-[1.04] outline-3 outline-offset-4 outline-dashed outline-[var(--accent)]",
                     )}
@@ -433,14 +566,13 @@ export function WorkflowGraph({
                       className={cn(
                         "absolute inset-0 flex items-center gap-2 border-0 bg-transparent px-[9px] text-left [font:inherit]",
                         id === FINISH ? "text-foreground" : "text-main-foreground",
-                        dragging ? "cursor-grabbing" : "cursor-grab",
+                        drawing ? "cursor-crosshair" : dragging ? "cursor-grabbing" : "cursor-grab",
                         "focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-ring",
                       )}
                       onPointerDown={(e) => {
-                        if (e.button !== 0) return;
+                        if (e.button !== 0 || drawing) return;
                         capture(e);
                         const at = point(e);
-                        if (id !== FINISH) setSelected({ kind: "stage", id });
                         setDrag({
                           kind: "node",
                           id,
@@ -450,7 +582,7 @@ export function WorkflowGraph({
                           moved: false,
                         });
                       }}
-                      onClick={() => id !== FINISH && setSelected({ kind: "stage", id })}
+                      onClick={() => clickStation(id)}
                       onKeyDown={(e) => nudge(id, e)}
                     >
                       <span className="flex size-8 flex-none items-center justify-center rounded-[5px] border-2 border-border bg-secondary-background text-foreground">
@@ -506,6 +638,17 @@ export function WorkflowGraph({
                   </div>
                 );
               })}
+              {drag?.kind === "station" && (
+                <span
+                  className={cn(
+                    "pointer-events-none absolute z-[4] flex animate-nudge items-center gap-1 rounded-base border-2 border-border px-[10px] py-1 text-[12px] font-bold whitespace-nowrap text-main-foreground shadow-shadow motion-reduce:animate-none",
+                    TYPE_FILL[drag.type],
+                  )}
+                  style={{ left: drag.at.x + 10, top: drag.at.y + 10 }}
+                >
+                  {NEW_STATIONS.find((s) => s.type === drag.type)?.name} station
+                </span>
+              )}
               {drag?.kind === "gate" && (
                 <span
                   className="pointer-events-none absolute z-[4] flex animate-nudge items-center gap-1 rounded-base border-2 border-border bg-fill-ok px-[10px] py-1 font-mono text-[12px] font-bold whitespace-nowrap text-main-foreground shadow-shadow motion-reduce:animate-none"
@@ -533,19 +676,43 @@ export function WorkflowGraph({
       </div>
       <aside className="flex min-w-0 flex-[1_1_320px] flex-col gap-4" aria-label="Inspector">
         {selectedEdge ? (
-          <EdgePanel
-            edge={selectedEdge}
-            stage={stageOf(selectedEdge.from)}
-            readOnly={readOnly}
+          <ArrowPanel
+            view={view}
+            id={selectedEdge.id}
             busy={busy}
             onEdit={onEdit}
-            onStation={(id) => setSelected({ kind: "stage", id })}
+            onSelectStation={(id) => setSelected({ kind: "stage", id })}
+            onCreateGate={onCreateGate}
+            onAddStation={(type, transition) => addStation(type, transition)}
           />
         ) : selectedStage ? (
-          <ol className="m-0 list-none p-0">
-            <StageCard stage={selectedStage} view={view} busy={busy} onEdit={onEdit} />
-          </ol>
+          <StationPanel
+            view={view}
+            stage={selectedStage}
+            busy={busy}
+            onEdit={onEdit}
+            onSelectStation={(id) => setSelected({ kind: "stage", id })}
+            onSelectEdge={(id) => setSelected({ kind: "edge", id })}
+            onCreateGate={onCreateGate}
+            onDraw={(from) => startDrawing(from)}
+          />
         ) : null}
+        {!readOnly && (
+          <section aria-label="New stations" className={cn(PANEL, "flex flex-col gap-2")}>
+            <h3 className={LABEL}>New stations · drag onto an arrow</h3>
+            <StationPalette
+              disabled={busy}
+              active={drag?.kind === "station" ? drag.type : null}
+              onPick={pickStation}
+              onDragStart={(type, e) => {
+                capture(e);
+                pulled.current = false;
+                const at = point(e);
+                setDrag({ kind: "station", type, at, from: at });
+              }}
+            />
+          </section>
+        )}
         <section aria-label="Gate library" className={cn(PANEL, "flex flex-col gap-2")}>
           <h3 className={LABEL}>Gate library{readOnly ? "" : " · drag onto the graph"}</h3>
           {library.length === 0 && (
@@ -585,66 +752,26 @@ export function WorkflowGraph({
           </ul>
           {!readOnly && (
             <span className="text-[12px] text-muted-foreground">
-              Without a mouse, add gates from the station card above.
+              Without a mouse, add gates from the station above.
             </span>
           )}
         </section>
       </aside>
+      <ArrowDialog
+        from={pending?.from ?? ""}
+        to={pending?.to ?? ""}
+        draft={pending?.draft ?? null}
+        view={view}
+        onClose={() => setPending(null)}
+        onAdd={(on, loop) => {
+          if (!pending) return;
+          onEdit({ op: "addTransition", from: pending.from, to: pending.to, on, loop });
+          say(
+            `Added ${pending.from} → ${pending.to} on ${outcomeLabel(on)}${loop ? `, up to ${loop} rounds` : ""}.`,
+          );
+          setPending(null);
+        }}
+      />
     </div>
-  );
-}
-
-function EdgePanel({
-  edge,
-  stage,
-  readOnly,
-  busy,
-  onEdit,
-  onStation,
-}: {
-  edge: GraphEdge;
-  stage: StageView | undefined;
-  readOnly: boolean;
-  busy: boolean;
-  onEdit: (op: EditorOp) => void;
-  onStation: (id: string) => void;
-}) {
-  const target = stage?.targets.find(
-    (t) => t.target.kind === "transition" && t.target.id === edge.id,
-  );
-  return (
-    <section aria-label={`Transition ${edge.id}`} className={cn(PANEL, "flex flex-col gap-3")}>
-      <span className={LABEL}>{edge.back ? "Repair loop" : "Transition"}</span>
-      <div className="flex flex-wrap items-center gap-2 font-mono text-[16px] font-bold">
-        <button
-          type="button"
-          className="cursor-pointer border-0 bg-transparent p-0 [font:inherit] text-foreground underline"
-          onClick={() => onStation(edge.from)}
-        >
-          {edge.from}
-        </button>
-        <span aria-hidden="true">→</span>
-        {edge.to === FINISH ? (
-          <span>done</span>
-        ) : (
-          <button
-            type="button"
-            className="cursor-pointer border-0 bg-transparent p-0 [font:inherit] text-foreground underline"
-            onClick={() => onStation(edge.to)}
-          >
-            {edge.to}
-          </button>
-        )}
-      </div>
-      <p className="m-0 text-[13px] text-soft-foreground">
-        When {edge.from}{" "}
-        {edge.on === "passed" ? "passes" : edge.on === "failed" ? "fails" : "asks for changes"}, the
-        line goes {edge.back ? "back " : ""}to {edge.to}
-        {edge.back && edge.loop ? `, at most ${edge.loop} rounds` : ""}. Its gates must pass first.
-      </p>
-      {stage && target && (
-        <GateList stage={stage} target={target} readOnly={readOnly} busy={busy} onEdit={onEdit} />
-      )}
-    </section>
   );
 }

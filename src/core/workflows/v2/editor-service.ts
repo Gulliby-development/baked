@@ -20,6 +20,8 @@ import {
   estimateDefinition,
   type GateTarget,
   gateSummary,
+  type InsertableStage,
+  insertStage,
   insertWaitStage,
   moveGate,
   openEditor,
@@ -28,10 +30,12 @@ import {
   prepareSave,
   readEditorSource,
   removeGate,
+  removeStage,
   removeTransition,
   removeWaitStage,
   type SaveReview,
   type StageField,
+  setLoopRounds,
   stageFields,
   targetName,
   targetsOf,
@@ -51,7 +55,10 @@ export type EditorOp =
   | { op: "removeTransition"; id: string }
   | { op: "addWaitStage"; after: string }
   | { op: "removeWaitStage"; stageId: string }
+  | { op: "addStage"; stageType: InsertableStage; transition: string }
+  | { op: "removeStage"; stageId: string }
   | { op: "changeField"; stageId: string; key: string; delta: -1 | 1 }
+  | { op: "setLoop"; id: string; rounds: number }
   | { op: "duplicate" };
 
 export interface EditorRequest {
@@ -194,10 +201,16 @@ export function applyEditorOp(state: EditorState, op: EditorOp): EditResult {
       return removeTransition(state, op.id);
     case "addWaitStage":
       return insertWaitStage(state, op.after);
+    case "addStage":
+      return insertStage(state, op.transition, op.stageType);
+    case "removeStage":
+      return removeStage(state, op.stageId);
     case "removeWaitStage":
       return removeWaitStage(state, op.stageId);
     case "changeField":
       return changeStageField(state, op.stageId, op.key, op.delta);
+    case "setLoop":
+      return setLoopRounds(state, op.id, op.rounds);
     case "duplicate":
       return { state: duplicateAsCustom(state) };
   }

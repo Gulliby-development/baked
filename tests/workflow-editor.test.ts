@@ -34,7 +34,11 @@ import {
   toggleMode,
   validateEditor,
   writeDefinitionFile,
+  insertStage,
+  removeStage,
+  setLoopRounds,
 } from "../src/core/workflows/v2/editor.js";
+import { WorkflowV2Schema } from "../src/core/workflows/v2/definition.js";
 import { autoApprovalHash } from "../src/core/workflows/v2/runtime.js";
 
 const cleanups: (() => void)[] = [];
@@ -281,6 +285,18 @@ describe("workflow editor", () => {
     expect(validateEditor(state).flatMap((g) => g.messages)).toContain("implement has no approval stage");
   });
 
+  test("a loop runs 1 to 50 rounds, set directly or stepped without wrapping", () => {
+    const { open } = setup();
+    let state = ok(setLoopRounds(duplicateAsCustom(open("standard")), "checks-repair", 12));
+    expect(state.definition.transitions.find((t) => t.id === "checks-repair")?.loop).toEqual({ maxIterations: 12 });
+    expect(stageFields(state, "checks")[0]?.hint).toBe("1 to 50 rounds, 5 or fewer recommended");
+    expect(WorkflowV2Schema.safeParse(state.definition).success).toBe(true);
+    state = ok(setLoopRounds(state, "checks-repair", 50));
+    expect(changeStageField(state, "checks", "loop:checks-repair", 1).error).toBe("A loop runs 1 to 50 rounds");
+    expect(setLoopRounds(state, "checks-repair", 0).error).toBe("A loop runs 1 to 50 rounds");
+    expect(setLoopRounds(state, "checks-review", 3).error).toBe("checks-review is not a loop");
+  });
+
   test("W inserts a wait stage on a passed edge; E changes its interval and timeout; D removes it", () => {
     const { open } = setup();
     const source = duplicateAsCustom(open("standard"));
@@ -304,6 +320,36 @@ describe("workflow editor", () => {
     state = ok(removeWaitStage(state, "wait"));
     expect(state.definition.stages.some((s) => s.type === "wait")).toBe(false);
     expect(state.definition.transitions).toEqual(source.definition.transitions);
+  });
+
+  test("a check, review or approval station goes into a forward arrow and comes out again", () => {
+    const { open } = setup();
+    const source = duplicateAsCustom(open("standard"));
+    let state = ok(insertStage(source, "checks-review", "check"));
+    const ids = state.definition.stages.map((s) => s.id);
+    expect(ids.indexOf("check")).toBe(ids.indexOf("checks") + 1);
+    expect(state.definition.transitions.find((t) => t.id === "checks-review")?.to).toBe("check");
+    expect(state.definition.transitions.find((t) => t.id === "check-passed")).toMatchObject({ from: "check", to: "review", on: "passed", carries: "gates" });
+    expect(validateEditor(state).flatMap((g) => g.messages)).toContain("needs at least one gate");
+    state = ok(addGate(state, stageTarget("check"), "tests"));
+    expect(validateEditor(state)).toEqual([]);
+
+    state = ok(insertStage(state, "check-passed", "review"));
+    expect(state.definition.stages.find((s) => s.id === "review-2")).toMatchObject({ type: "review", produces: "review", gates: [] });
+    expect(state.definition.transitions.find((t) => t.id === "review-2-passed")).toMatchObject({ to: "review", carries: "review" });
+
+    state = ok(insertStage(state, "plan-analyze", "approval"));
+    expect(state.definition.stages.find((s) => s.id === "approve-2")).toMatchObject({ type: "approval", decision: "human", consumes: ["plan"], covers: ["implement"] });
+
+    expect(insertStage(state, "checks-repair", "check").error).toBe("A station goes on a forward arrow, not on a loop");
+    expect(insertStage(state, "nope", "check").error).toBe("Unknown transition nope");
+
+    state = ok(removeStage(state, "approve-2"));
+    state = ok(removeStage(state, "review-2"));
+    state = ok(removeStage(state, "check"));
+    expect(state.definition.stages).toEqual(source.definition.stages);
+    expect(state.definition.transitions).toEqual(source.definition.transitions);
+    expect(removeStage(state, "review").error).toBeUndefined();
   });
 
   test("the cursor moves per pane and a new stage resets the panes to its right", () => {

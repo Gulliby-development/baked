@@ -102,6 +102,8 @@ export interface RunSnapshot {
   tokenUsage: number;
   activeMs: number;
   estimatedCostUsd: number | null;
+  /** The run's dollar cap (`policy.maxCostUsd`); present only when the run has one. */
+  maxCostUsd?: number;
   pendingRequestIds: string[];
   /** Findings the run is accepted with; absent from servers before the field existed. */
   limitations?: { count: number; ids: string[] };

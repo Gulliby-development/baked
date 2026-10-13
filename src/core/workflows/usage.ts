@@ -400,7 +400,10 @@ export function attemptSpend(
 }
 
 /** The estimated cost of one attempt; see `AttemptUsageRow.costUsd`. */
-function attemptCost(model: string | null, usage: AttemptUsageRecord | undefined): number | null {
+export function attemptCost(
+  model: string | null,
+  usage: AttemptUsageRecord | undefined,
+): number | null {
   if (model === null) return 0;
   if (!usage) return null;
   const pricing = findPricing(model)?.pricing;
