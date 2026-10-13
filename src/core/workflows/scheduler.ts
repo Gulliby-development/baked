@@ -59,6 +59,7 @@ import {
 } from "../verification/repro.js";
 import { completeReview, reviewProblems, validateReview } from "../verification/review.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
+import { baselineKeys, taskErrors } from "../verification/task-end-check.js";
 import { outputSchemas } from "./agent-executor.js";
 import {
   assumable,
@@ -88,6 +89,7 @@ import {
   fixerCommand,
   fixerTiers,
   isCodePath,
+  isWholeUnitCheck,
   taskCheckList,
   validateChecks,
   withCoveringChecks,
@@ -128,6 +130,7 @@ import {
 } from "./leases.js";
 import { MAX_CONCURRENT_TASK_CHECKS, planBatch, Semaphore, unifiedDiff } from "./parallel.js";
 import {
+  fileReferences,
   PLAN_CONSISTENCY_CHECKS,
   planConsistencyProblems,
   withDerivedRequirements,
@@ -153,10 +156,18 @@ import {
   qualityClaim,
   readCodeFiles,
 } from "./quality/duplication.js";
+import {
+  HARDEN_PRESET,
+  hardenNote,
+  hardenPlanProblems,
+  hardenTargets,
+  QUALITY_MUTATION_BASELINE,
+} from "./quality/harden.js";
 import { isManifestPath, manifestDependencies } from "./quality/manifests.js";
 import {
   generateMutants,
   isTestCheck,
+  type MutationMode,
   type MutationResult,
   mutationClaim,
   mutationOf,
@@ -235,6 +246,7 @@ type Implementation = ReturnType<typeof ImplementationSchema.parse>;
 
 import {
   codeTaskCheckProblems,
+  loopHistory,
   plannerSizing,
   type SizingReport,
   sizePlan,
@@ -246,7 +258,7 @@ import {
 import { forgetProgress } from "./stall.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
-import { hasTaskGate, pendingOwners, readyTasks } from "./task-graph.js";
+import { hasTaskGate, pendingCodePaths, pendingOwners, readyTasks } from "./task-graph.js";
 import {
   integrityFix,
   isTestPath,
@@ -430,6 +442,8 @@ function readSummary(content: string): { tool: string; targets: string[]; bytes:
  * leaves out the spec, plan and check output, about 15k tokens instead of 45k.
  */
 const DIFF_REVIEW = "diffReview";
+/** Errors of the task-end check one submission gets back; the checks stage reports the rest. */
+const TASK_END_ERRORS = 20;
 
 export class WorkflowScheduler {
   dispose(): void {
@@ -1864,13 +1878,14 @@ export class WorkflowScheduler {
     if (!feature.length || this.baselineScaffold(runId, state)) return;
     const fresh = this.store.tasks(runId).every((task) => task.status === "pending");
     const counts: Record<string, BaselineCount[]> = {};
+    // The errors a whole-unit check already reports, so the task-end check does not feed them back.
+    const diagnostics: Record<string, string[]> = {};
     if (fresh)
       for (const check of feature) {
-        const result = await this.checks.measure(
-          check,
-          signal,
-          runRoot(this.store.workspace, state),
-        );
+        const root = runRoot(this.store.workspace, state);
+        const result = await this.checks.measure(check, signal, root);
+        if (result.status === "failed" && isWholeUnitCheck(check))
+          diagnostics[commandKey(check)] = baselineKeys(result.output, root);
         if (result.truncated || result.status === "inconclusive") continue;
         const found = outputCounts(result.output, result.status === "passed");
         if (found.length) counts[commandKey(check)] = found;
@@ -1880,9 +1895,65 @@ export class WorkflowScheduler {
         runId,
         "facts",
         CHECK_BASELINE_PATH,
-        canonical({ schemaVersion: 1, measured: fresh, counts }),
+        canonical({ schemaVersion: 1, measured: fresh, counts, diagnostics }),
       ),
     );
+  }
+  /**
+   * The task-end whole-unit check of a task that writes code (#673): the run's feature-scope type
+   * checks, run once in the task's directory, keeping the errors in the task's own files that
+   * neither the baseline nor a pending sibling task explains. Advisory: the checks stage still
+   * runs these checks on the integrated change.
+   */
+  private taskEndCheck(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ): ((root: string, signal: AbortSignal) => Promise<string[]>) | undefined {
+    const checks = policy.checks.filter((c) => c.scope === "feature" && isWholeUnitCheck(c));
+    const written = writtenCodePaths(task);
+    if (!checks.length || !written.length) return undefined;
+    return async (root, signal) => {
+      const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
+      const baseline = artifact
+        ? ((
+            JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+              diagnostics?: Record<string, string[]>;
+            }
+          ).diagnostics ?? {})
+        : {};
+      const pending = pendingCodePaths(
+        state.rootGraph ?? state.graph,
+        this.store.tasks(runId),
+        state.taskGates,
+        task,
+      );
+      const errors: string[] = [];
+      const results: { checkId: string; status: string; errors: string[] }[] = [];
+      for (const check of checks) {
+        const result = await this.checks.measure(check, signal, root);
+        const found =
+          result.status === "failed"
+            ? taskErrors(result.output, {
+                written,
+                pending,
+                baseline: baseline[commandKey(check)] ?? [],
+              })
+            : [];
+        results.push({ checkId: check.id, status: result.status, errors: found });
+        errors.push(...found.map((line) => `${check.id}: ${line}`));
+      }
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "diagnostic",
+          `tasks/${task.id}/task-end-check-${newId()}.json`,
+          canonical({ taskId: task.id, pending, results }),
+        ),
+      );
+      return errors.slice(0, TASK_END_ERRORS);
+    };
   }
   /** What a passing required check fell behind the baseline by, as a failure reason; else null. */
   private checkRegression(
@@ -1968,6 +2039,8 @@ export class WorkflowScheduler {
         policy.allowOverlappingWrites === true,
       ),
     );
+    if (presetOf(parseRunDefinition(this.store.run(runId).definition_json)) === HARDEN_PRESET)
+      problems.push(...hardenPlanProblems(graph.tasks));
     for (const task of graph.tasks) {
       if (!profiles.some((p) => p.id === task.profileId && p.output === "implementation"))
         problems.push(`Unknown implementation profile ${task.profileId}`);
@@ -2147,6 +2220,10 @@ export class WorkflowScheduler {
         reserveTokens(prompt, profile, policy),
         policy,
       );
+    const taskEndCheck =
+      task && profile.output === "implementation"
+        ? this.taskEndCheck(runId, state, policy, task)
+        : undefined;
     try {
       const result = await this.executor.execute({
         runId,
@@ -2165,6 +2242,7 @@ export class WorkflowScheduler {
           ? { attemptTokens: taskSize(state, task, "taskBudgets") }
           : {}),
         ...(validate ? { validate } : {}),
+        ...(taskEndCheck ? { taskEndCheck } : {}),
         ...(this.formatHints(runId, state, profile.output, task)
           ? { formatHints: this.formatHints(runId, state, profile.output, task) }
           : {}),
@@ -2450,6 +2528,10 @@ export class WorkflowScheduler {
       ) === "auto"
         ? propertyTestsNote(profile.output)
         : null;
+    const hardening =
+      presetOf(parseRunDefinition(this.store.run(runId).definition_json)) === HARDEN_PRESET
+        ? hardenNote(profile.output)
+        : null;
     const { [DIFF_REVIEW]: diffOnly, ...input } = (
       extra && typeof extra === "object" ? extra : { input: extra }
     ) as Record<string, unknown>;
@@ -2459,6 +2541,7 @@ export class WorkflowScheduler {
       {
         ...input,
         ...(propertyNote ? { propertyTests: propertyNote } : {}),
+        ...(hardening ? { hardening } : {}),
         ...(rules ? { learnedRules: rules } : {}),
         ...(workingSet ? { projectWorkingSet: workingSet } : {}),
         ...(memory ? { projectMemory: memory } : {}),
@@ -2499,6 +2582,7 @@ export class WorkflowScheduler {
       samples,
       spent: this.store.run(runId).token_usage,
       model,
+      loopShares: loopHistory(this.store.workspace, policy),
     });
     this.store.transaction(() =>
       this.store.artifact(
@@ -5214,6 +5298,25 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         ),
       );
     }
+    // A harden run's score before: the module's mutants against the tests it starts with.
+    const preset = presetOf(parseRunDefinition(this.store.run(runId).definition_json));
+    if (
+      preset === HARDEN_PRESET &&
+      mutationOf(policy, preset) !== "off" &&
+      !this.store.latestArtifact(runId, QUALITY_MUTATION_BASELINE)
+    ) {
+      const before = await this.mutate(
+        runId,
+        state,
+        policy,
+        "advisory",
+        await this.hardenModule(state),
+        signal,
+      );
+      this.store.transaction(() =>
+        this.store.artifact(runId, "quality", QUALITY_MUTATION_BASELINE, canonical(before)),
+      );
+    }
     if (duplicationOf(policy) === "off" || this.store.latestArtifact(runId, QUALITY_BASELINE))
       return;
     const code = await readCodeFiles(root, Object.keys(state.expectedFiles ?? {}));
@@ -5312,14 +5415,46 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     policy: RunPolicy,
     signal: AbortSignal,
   ): Promise<Review["findings"]> {
-    const mode = mutationOf(
-      policy,
-      presetOf(parseRunDefinition(this.store.run(runId).definition_json)),
-    );
+    const preset = presetOf(parseRunDefinition(this.store.run(runId).definition_json));
+    const mode = mutationOf(policy, preset);
     if (mode === "off" || !state.snapshotId) return [];
+    // A harden run changes no code: its mutants go into the module its tasks test.
+    const files =
+      preset === HARDEN_PRESET
+        ? await this.hardenModule(state)
+        : await this.changedFiles(runId, state, isCodePath);
+    const result = await this.mutate(runId, state, policy, mode, files, signal);
+    const evidenceId = this.store.transaction(() => {
+      const artifact = this.store.artifact(runId, "quality", QUALITY_MUTATION, canonical(result));
+      return this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
+    });
+    const blocking = result.mutants.filter((m) => m.blocking);
+    if (!blocking.length) {
+      this.resolveClaims(runId, mutationClaim);
+      return [];
+    }
+    return this.mutantFindings(state, blocking, evidenceId);
+  }
+  /** The module a harden run tests, read whole: every line of it may take a mutant. */
+  private async hardenModule(state: RuntimeState): Promise<ChangedFile[]> {
+    const targets = hardenTargets((state.rootGraph ?? state.graph)?.tasks ?? []);
+    const code = await readCodeFiles(runRoot(this.store.workspace, state), targets);
+    return [...code.files].map(([path, content]) => ({ path, content, before: "" }));
+  }
+  /**
+   * Plants each mutant of `files` in turn, runs the policy's required test checks against it and
+   * restores the file byte for byte, also from `quality/mutation-pending.json` after a crash.
+   */
+  private async mutate(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    mode: MutationMode,
+    changed: ChangedFile[],
+    signal: AbortSignal,
+  ): Promise<MutationResult> {
     const root = runRoot(this.store.workspace, state);
     const tests = policy.checks.filter((check) => check.required && isTestCheck(check));
-    const changed = await this.changedFiles(runId, state, isCodePath);
     const mutants = tests.length ? generateMutants(changed) : [];
     const originals = new Map<string, Buffer>();
     for (const mutant of mutants)
@@ -5394,18 +5529,22 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       await scope.stop();
       if (originals.size) pending(new Map());
     }
-    const evidenceId = this.store.transaction(() => {
-      const artifact = this.store.artifact(runId, "quality", QUALITY_MUTATION, canonical(result));
-      return this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
-    });
-    const blocking = result.mutants.filter((m) => m.blocking);
-    if (!blocking.length) {
-      this.resolveClaims(runId, mutationClaim);
-      return [];
-    }
+    return result;
+  }
+  /** Blocking findings for surviving mutants, each on a test file the correction may write. */
+  private mutantFindings(
+    state: RuntimeState,
+    blocking: MutationResult["mutants"],
+    evidenceId: string,
+  ): Review["findings"] {
     const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [];
     return blocking.map((m) => {
-      const owner = tasks.find((t) => t.writes.some((w) => w.path === m.file));
+      // The task that writes the mutated file, or in a harden run the one that tests it.
+      const owner =
+        tasks.find((t) => t.writes.some((w) => w.path === m.file)) ??
+        tasks.find(
+          (t) => t.readHints.includes(m.file) && t.writes.some((w) => isTestCodePath(w.path)),
+        );
       // The test file of a related task, so the correction may write the test that kills it.
       const testFile = tasks
         .filter(
@@ -5865,6 +6004,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       });
     // The workspace the run started from had no source code: the reviewers judge the whole program.
     const greenfield = this.baselineScaffold(runId, state);
+    const references = state.graph ? fileReferences(state.graph) : {};
     const runReviewer = async (reviewer: Reviewer) => {
       // A review of this very snapshot that an earlier, interrupted round finished is kept.
       const kept = state.reviews[reviewer.key];
@@ -5926,6 +6066,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
               ...(diffOnly ? { [DIFF_REVIEW]: true } : {}),
               ...rerun,
               ...(greenfield ? { baseline: { greenfield } } : {}),
+              ...(reviewer.dimension === "correctness" && Object.keys(references).length
+                ? { references }
+                : {}),
               ...extra,
             },
             signal,

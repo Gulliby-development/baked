@@ -116,6 +116,11 @@ export const TaskSchema = z
         .strict(),
     ),
     readHints: z.array(RelativePath),
+    /**
+     * An existing file that shows the pattern the task's code should follow (structure, naming,
+     * error handling, test style). The implementer reads it first; reviewers may cite divergence.
+     */
+    reference: RelativePath.optional(),
     checkIds: z.array(SafeId),
     origin: z.enum(["planned", "repair", "convergence"]),
     findingIds: z.array(SafeId),
