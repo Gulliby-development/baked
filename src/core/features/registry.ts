@@ -688,6 +688,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/gates"],
   },
   {
+    id: "duplication-ratchet",
+    group: "Workflow runs",
+    title: "Duplication and dead-code ratchet",
+    tui: ["/code-quality", "/workflow: run report"],
+    cli: ["baked workflow run: --duplication off|warn|ratchet", "baked workflow report"],
+    api: ["/v1/settings: code-quality page", "/v1/workflow/runs", "/v1/workflow/runs/:id/report"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
     id: "gate-drafts",
     group: "Workflow runs",
     title: "Gates from a plain-language sentence",

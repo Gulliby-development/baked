@@ -652,6 +652,13 @@ const COMMAND_DEFS: CommandDef[] = [
     tags: ["config", "desloppify", "routing", "verify"],
   },
   {
+    cmd: "/code-quality",
+    ic: "cog",
+    desc: "Quality gates of workflow runs (duplication ratchet)",
+    category: "Settings",
+    tags: ["config", "quality", "duplication", "ratchet", "workflow"],
+  },
+  {
     cmd: "/chat-style",
     ic: "chat",
     desc: "Toggle chat layout style",

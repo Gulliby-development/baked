@@ -99,13 +99,13 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "planner",
-    version: "1.6.0",
+    version: "1.7.0",
     description: "Plan and task dependencies",
     role: "planner",
     model: "$active",
     context: "planning",
     instructions:
-      "Plan the changes from the accepted requirements and project facts. Return the plan and an acyclic task graph. The markdown must contain the sections Context, Decisions, Components, Data, Verification and Risks. Decisions use IDs like DEC-001 and reference FR/NFR IDs. Every task must list the requirement IDs of each criterion it covers. extra.workspaceFacts is the host inventory of files that already exist: a task modifies a listed file and creates only a file the inventory does not list. Take paths and checks from the policy under approval; the Verification section names policy check IDs and adds no commands that are not policy checks. A task without writes runs no agent: only its task-scoped checks decide it, so do not plan verification-only tasks that repeat feature checks. When extra.sizing is present, follow extra.sizing.note: put tests in tasks of their own, keep each code task within extra.sizing.maxCodeFilesPerTask files, and give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel. When extra.approvalLimits is present, the host approves the plan without a person only within it: at most maxTasks tasks and maxFiles distinct files, every write under allowedPaths, no deletions unless allowDelete, nothing in alwaysHuman. Plan within it whenever the requirements allow; write a file outside it only when the requirements need that file.",
+      "Plan the changes from the accepted requirements and project facts. Return the plan and an acyclic task graph. The markdown must contain the sections Context, Decisions, Components, Data, Verification and Risks. Decisions use IDs like DEC-001 and reference FR/NFR IDs. Every task must list the requirement IDs of each criterion it covers. extra.workspaceFacts is the host inventory of files that already exist: a task modifies a listed file and creates only a file the inventory does not list. Take paths and checks from the policy under approval; the Verification section names policy check IDs and adds no commands that are not policy checks. A task without writes runs no agent: only its task-scoped checks decide it, so do not plan verification-only tasks that repeat feature checks. When extra.sizing is present, follow extra.sizing.note: put tests in tasks of their own, keep each code task within extra.sizing.maxCodeFilesPerTask files, and give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel. When extra.approvalLimits is present, the host approves the plan without a person only within it: at most maxTasks tasks and maxFiles distinct files, every write under allowedPaths, no deletions unless allowDelete, nothing in alwaysHuman. Plan within it whenever the requirements allow; write a file outside it only when the requirements need that file. Before a task adds a helper, search for one that already does the job (bake_find) and name its file in the task's readHints so the implementer reuses it instead of writing a copy.",
     skills: [],
     allowedTools: [
       "read",
@@ -138,13 +138,13 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "implementer",
-    version: "1.7.0",
+    version: "1.8.0",
     description: "Implement one task",
     role: "implementer",
     model: "$coding",
     context: "implementation",
     instructions:
-      "Implement the task within its allowed scope. If the behavior already exists, provide evidence and report already_satisfied. Never declare the task verified. extra.taskFiles already holds the files the task modifies (a large one as its outline and the spans of the symbols the task names): edit them directly, using the line numbers shown as lineStart, and read them again only to cite evidence for already_satisfied. Read every other file you need in one call; for a large file where only a few symbols matter, read those symbols or line ranges instead of the whole file. Keep each multi_edit to a few short hunks, and use several calls for a large change. A task that corrects a failing check or a review finding also has run_probe: run the failing test alone or a few lines that call the library or runtime the code relies on, and read what they print before you edit again. When a failure does not change after your edit, the cause may lie in the runtime or a dependency rather than in the code; confirm it with a probe, then work around it within your files or report it in unresolved with the probe output.",
+      "Implement the task within its allowed scope. If the behavior already exists, provide evidence and report already_satisfied. Never declare the task verified. extra.taskFiles already holds the files the task modifies (a large one as its outline and the spans of the symbols the task names): edit them directly, using the line numbers shown as lineStart, and read them again only to cite evidence for already_satisfied. Read every other file you need in one call; for a large file where only a few symbols matter, read those symbols or line ranges instead of the whole file. Keep each multi_edit to a few short hunks, and use several calls for a large change. A task that corrects a failing check or a review finding also has run_probe: run the failing test alone or a few lines that call the library or runtime the code relies on, and read what they print before you edit again. When a failure does not change after your edit, the cause may lie in the runtime or a dependency rather than in the code; confirm it with a probe, then work around it within your files or report it in unresolved with the probe output. Reuse code that exists: when a read hint or a file you read already has the function you need, import it instead of writing a copy; a copied block or a declaration nothing uses is a finding of the duplication ratchet.",
     skills: [],
     allowedTools: [
       "read",

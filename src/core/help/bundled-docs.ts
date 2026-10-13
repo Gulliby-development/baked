@@ -26,6 +26,7 @@ import toolsMd from "../../../docs/tools.md" with { type: "text" };
 import troubleshootingMd from "../../../docs/troubleshooting.md" with { type: "text" };
 import watchMd from "../../../docs/watch.md" with { type: "text" };
 import workflowsArchitectureMd from "../../../docs/workflows/architecture.md" with { type: "text" };
+import workflowsCodeQualityMd from "../../../docs/workflows/code-quality.md" with { type: "text" };
 import workflowsDoctorAndEstimateMd from "../../../docs/workflows/doctor-and-estimate.md" with {
   type: "text",
 };
@@ -62,6 +63,7 @@ export const BUNDLED_DOCS: ReadonlyArray<readonly [path: string, text: string]> 
   ["watch.md", watchMd],
   ["workflows/README.md", workflowsReadmeMd],
   ["workflows/architecture.md", workflowsArchitectureMd],
+  ["workflows/code-quality.md", workflowsCodeQualityMd],
   ["workflows/doctor-and-estimate.md", workflowsDoctorAndEstimateMd],
   ["workflows/fix-ci.md", workflowsFixCiMd],
   ["workflows/parallel-worktrees.md", workflowsParallelWorktreesMd],

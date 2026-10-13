@@ -595,7 +595,7 @@ One Markdown file for a run, at any status, read from the run's database without
 - the title, run and feature IDs, workflow, status with its reason, and verification state;
 - a summary: the spec's outcome, a report stage's summary and recommendation when the workflow has one, and the request (cut at 2,000 characters);
 - changes: every file the run changed, from the effect journal and the task diffs (published spec files are marked `spec`; a file edited outside the run since is marked `changed since`);
-- tasks with title, status and origin; checks with their latest result, validity, runs and time; acceptance criteria with verdicts and the final review verdict;
+- tasks with title, status and origin; checks with their latest result, validity, runs and time; the [code quality](code-quality.md) deltas and what the duplication ratchet found; acceptance criteria with verdicts and the final review verdict;
 - findings with status, severity, kind, file and claim; known limitations (findings accepted instead of repaired: at a [stopped convergence](#stopped-convergence), or as notes on a low partial finding behind verified behavior, with who accepted them); decisions (every request with its kind, decision and who made it) and the spec's assumptions;
 - usage: tokens against the budget, agent calls, active time, the estimated cost when known, and tokens per stage (in the order stages first ran) and per model;
 - artifacts: the latest revision of each artifact with its ID, read with `baked workflow artifacts RUN_ID --file ID`. Attempt outputs, internal state and baselines are counted, not listed.

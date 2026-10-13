@@ -195,6 +195,12 @@ export const PolicySchema = z
      */
     projectMemory: z.boolean().optional(),
     /**
+     * The duplication and dead-code ratchet (quality/duplication.ts). Absent means `warn`: copies
+     * and unused declarations the run adds are reported, never blocking, so stored policies keep
+     * their hash. `ratchet` makes them blocking findings; `off` skips the measurement.
+     */
+    duplication: z.enum(["off", "warn", "ratchet"]).optional(),
+    /**
      * Directories the applications of the run's AI acceptance gates may write. Like the outputs
      * of checks they are left out of source snapshots. Absent when no such gate grants writes.
      */
@@ -1036,6 +1042,8 @@ export interface StartRequest {
   modelStrict?: boolean;
   /** What blocking questions do in this run (CLI `--clarification MODE`); it overrides the policy. */
   clarification?: ClarificationMode;
+  /** The duplication ratchet of this run (CLI `--duplication MODE`); it overrides the policy. */
+  duplication?: "off" | "warn" | "ratchet";
   /**
    * Stage-level model routes for this run (CLI `--route STAGE=MODEL`); they win over
    * `modelRouting.workflows.<id>.stages`. A value starting with `$` names a model class.
