@@ -7,7 +7,24 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { win32 } from "node:path";
 import { IS_WIN } from "./index.js";
+
+/**
+ * The `tar` to run. On Windows this is the system bsdtar by absolute path: under Git Bash or
+ * MSYS2 a bare `tar` resolves to GNU tar, which reads `C:\...` as a remote host (`host:path`)
+ * and cannot open zip archives.
+ */
+export function tarCommand(
+  isWin: boolean = IS_WIN,
+  systemRoot: string | undefined = process.env.SystemRoot ?? process.env.windir,
+  exists: (path: string) => boolean = existsSync,
+): string {
+  if (!isWin) return "tar";
+  const system = win32.join(systemRoot ?? "C:\\Windows", "System32", "tar.exe");
+  return exists(system) ? system : "tar";
+}
 
 export interface ExtractResult {
   success: boolean;
@@ -15,7 +32,7 @@ export interface ExtractResult {
 }
 
 export function extractTarGz(archivePath: string, destDir: string): ExtractResult {
-  const result = spawnSync("tar", ["-xzf", archivePath, "-C", destDir], {
+  const result = spawnSync(tarCommand(), ["-xzf", archivePath, "-C", destDir], {
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 120_000,
     windowsHide: true,
@@ -26,7 +43,7 @@ export function extractTarGz(archivePath: string, destDir: string): ExtractResul
 }
 
 export function extractTarXz(archivePath: string, destDir: string): ExtractResult {
-  const result = spawnSync("tar", ["-xJf", archivePath, "-C", destDir], {
+  const result = spawnSync(tarCommand(), ["-xJf", archivePath, "-C", destDir], {
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 120_000,
     windowsHide: true,
@@ -38,7 +55,7 @@ export function extractTarXz(archivePath: string, destDir: string): ExtractResul
 
 export function extractZip(archivePath: string, destDir: string): ExtractResult {
   if (IS_WIN) {
-    const result = spawnSync("tar", ["-xf", archivePath, "-C", destDir], {
+    const result = spawnSync(tarCommand(), ["-xf", archivePath, "-C", destDir], {
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 120_000,
       windowsHide: true,

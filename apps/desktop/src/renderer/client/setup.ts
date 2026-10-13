@@ -417,7 +417,7 @@ export async function withCapability<T>(
 
 // --- Run memory (`run-memory` capability) -------------------------------------------------------
 
-export type MemoryEntryKind = "note" | "answer" | "assumption" | "check";
+export type MemoryEntryKind = "note" | "answer" | "assumption" | "check" | "rule";
 /** An entry of project memory (`MemoryEntry` in src/core/workflows/project-memory.ts). */
 export interface MemoryEntry {
   id: string;
@@ -428,6 +428,10 @@ export interface MemoryEntry {
   runs?: number;
   /** What runs recorded, when a person reworded the entry. */
   recorded?: string;
+  /** A learned rule's paths (`**` or `DIR/**`), status and source findings (`RUN/FINDING`). */
+  scope?: string;
+  status?: "proposed" | "active";
+  findings?: string[];
   hidden: boolean;
 }
 export interface RunMemoryView {
@@ -440,6 +444,7 @@ export interface RunMemoryView {
 export type RunMemoryEdit =
   | { action: "add"; text: string }
   | { action: "edit"; id: string; text: string }
+  | { action: "accept"; id: string }
   | { action: "forget"; id: string }
   | { action: "restore"; id: string };
 

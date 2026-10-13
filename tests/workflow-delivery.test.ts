@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hashBytes } from "../src/core/specs/hash.js";
@@ -77,7 +77,7 @@ interface Scenario {
 
 /** A completed run in a Git repository with a bare remote; optional user changes before the run. */
 async function completedRun(
-  options: { repository?: boolean; userChanges?: boolean } = {},
+  options: { repository?: boolean; userChanges?: boolean; specsTracked?: boolean } = {},
 ): Promise<Scenario> {
   const fx = workflowFixture();
   const remote = mkdtempSync(join(tmpdir(), "baked-delivery-remote-"));
@@ -95,6 +95,10 @@ async function completedRun(
     writeFileSync(join(root, ".gitignore"), ".baked/\n");
     writeFileSync(join(root, "README.md"), "# Project\n");
     writeFileSync(join(root, "user.txt"), "original\n");
+    if (options.specsTracked) {
+      mkdirSync(join(root, "specs"));
+      writeFileSync(join(root, "specs", "README.md"), "# Specs\n");
+    }
     git(root, "add", ".");
     git(root, "commit", "-q", "-m", "Initial");
     git(root, "remote", "add", "origin", remote);
@@ -149,11 +153,37 @@ const remoteHead = (s: Scenario, branch: string) => {
   return result.exitCode === 0 ? result.stdout.toString().trim() : null;
 };
 
+// Tests that execute a delivery twice spawn dozens of git processes, which can pass
+// the default 30s on Windows runners.
+const TWO_EXECUTES_TIMEOUT = 90_000;
+
 describe("Git delivery", () => {
+  test("leaves the run's specs out when the repository keeps none, unless asked", async () => {
+    const s = await completedRun();
+    const plan = (await prepare(s)).plan;
+    expect(plan.files.map((f) => f.path)).toEqual(["value.txt"]);
+    const specs = plan.excluded.filter((e) => e.reason === "specs").map((e) => e.path);
+    expect(specs.sort()).toEqual(
+      ["plan.md", "spec.json", "spec.md", "tasks.json", "tasks.md"].map((f) => `specs/fixture/${f}`),
+    );
+    expect(plan.userChanges).toEqual([]);
+    const forced = (await prepare(s, { specs: true })).plan;
+    expect(forced.files.map((f) => f.path)).toContain("specs/fixture/spec.json");
+  });
+
+  test("delivers the run's specs when the base commit tracks specs/", async () => {
+    const s = await completedRun({ specsTracked: true });
+    const plan = (await prepare(s)).plan;
+    expect(plan.files.map((f) => f.path)).toContain("specs/fixture/spec.json");
+    expect(plan.excluded.some((e) => e.reason === "specs")).toBe(false);
+    const without = (await prepare(s, { specs: false })).plan;
+    expect(without.files.map((f) => f.path)).toEqual(["value.txt"]);
+  });
+
   test("delivers only the run's files to a branch, a push and a pull request with evidence", async () => {
     const s = await completedRun({ userChanges: true });
     const headBefore = git(s.root, "rev-parse", "HEAD");
-    const prepared = await prepare(s, { draft: true });
+    const prepared = await prepare(s, { draft: true, specs: true });
     const plan = prepared.plan;
     expect(plan.operations).toEqual(["commit", "push", "pull_request"]);
     expect(plan.branch).toBe(`baked/fixture-${s.runId.slice(0, 8)}`);
@@ -219,7 +249,7 @@ describe("Git delivery", () => {
     expect(s.provider.creates).toBe(1);
     expect(deliveryEffects(s)).toHaveLength(3);
     expect(remoteHead(s, prepared.plan.branch)).toBe(first.commit);
-  });
+  }, TWO_EXECUTES_TIMEOUT);
 
   test("the CLI prepares, approves by digest and executes the plan", async () => {
     const s = await completedRun();
@@ -407,7 +437,7 @@ describe("Git delivery", () => {
     const result = await execute(s);
     expect(remoteHead(s, prepared.plan.branch)).toBe(result.commit);
     expect(deliveryEffects(s).filter((e) => e.operation === "commit")).toHaveLength(1);
-  });
+  }, TWO_EXECUTES_TIMEOUT);
 
   test("a failed push to an unreachable remote is retried without a second commit", async () => {
     const s = await completedRun();
@@ -426,7 +456,7 @@ describe("Git delivery", () => {
       ["push", "applied"],
       ["pull_request", "applied"],
     ]);
-  });
+  }, TWO_EXECUTES_TIMEOUT);
 
   test("a push whose outcome was lost is probed, and an unanswerable probe becomes a recovery request", async () => {
     const s = await completedRun();
@@ -460,7 +490,7 @@ describe("Git delivery", () => {
     expect(store.requests(s.runId).find((r) => r.id === recovery?.id)?.status).toBe("superseded");
     expect(deliveryEffects(s).filter((e) => e.operation === "push" && e.status === "applied")).toHaveLength(0);
     expect(result.pullRequest?.number).toBe(1);
-  });
+  }, TWO_EXECUTES_TIMEOUT);
 
   test("a lost pull request response is found by its head branch instead of creating a duplicate", async () => {
     const s = await completedRun();
