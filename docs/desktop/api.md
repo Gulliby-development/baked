@@ -320,6 +320,8 @@ type EditorOp =
   | {op: "removeTransition"; id: string}
   | {op: "addWaitStage"; after: string}      // a wait stage on the one passed edge out of `after`
   | {op: "removeWaitStage"; stageId: string}
+  | {op: "addStage"; stageType: "check" | "review" | "approval" | "wait"; transition: string} // a new station on a forward transition
+  | {op: "removeStage"; stageId: string}     // any stage; the arrows into it lead on to its passed target
   | {op: "changeField"; stageId: string; key: string; delta: -1 | 1}  // key from stage fields
   | {op: "setLoop"; id: string; rounds: number}  // a loop transition's bound, 1 to 50
   | {op: "duplicate"};

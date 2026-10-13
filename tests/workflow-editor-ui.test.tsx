@@ -242,3 +242,23 @@ test("G drafts a gate from a sentence, saves it to baked/gates and binds it wher
     expect(text).toContain("someone-from-design");
   } finally { await act(async () => view.renderer.destroy()); }
 }, 20000);
+
+test("I puts a new station on the transition out of the selected stage", async () => {
+  const { workspace, api, state } = harness();
+  const view = await mount(api, "standard", workspace, { width: 120, height: 40 }, () => { state.backs++; });
+  try {
+    await press(view, "i");
+    let text = await frame(view, 120, 40, "read only");
+    expect(text).not.toContain("Put a station on");
+    await press(view, "c");
+    await press(view, "i");
+    text = await frame(view, 120, 40, "station picker");
+    expect(text).toContain("Put a station on");
+    expect(text).toContain("Approval");
+    await press(view, "down");
+    await press(view, "return");
+    text = await frame(view, 120, 40, "inserted");
+    expect(text).toContain("Review station added on");
+    expect(text).not.toContain("Put a station on");
+  } finally { await act(async () => view.renderer.destroy()); }
+});
