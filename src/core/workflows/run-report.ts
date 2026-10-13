@@ -6,12 +6,14 @@
 
 import type { z } from "zod";
 import { modelVendor } from "../llm/model-vendor.js";
+import { type DependencyResult, QUALITY_DEPENDENCIES } from "./quality/dependencies.js";
 import {
   type DuplicationResult,
   metricDeltas,
   QUALITY_DUPLICATION,
 } from "./quality/duplication.js";
 import { QUALITY_RULES, type RulesResult } from "./quality/rules.js";
+import { QUALITY_SAST, type SastResult } from "./quality/sast.js";
 import {
   type Critique,
   ReportSchema,
@@ -247,8 +249,12 @@ function collect(store: WorkflowStore, runId: string) {
     return {
       run,
       state,
-      duplication: readJson<DuplicationResult>(QUALITY_DUPLICATION),
-      rules: readJson<RulesResult>(QUALITY_RULES),
+      quality: {
+        duplication: readJson<DuplicationResult>(QUALITY_DUPLICATION),
+        rules: readJson<RulesResult>(QUALITY_RULES),
+        dependencies: readJson<DependencyResult>(QUALITY_DEPENDENCIES),
+        sast: readJson<SastResult>(QUALITY_SAST),
+      },
       workflowId: definition,
       policy: parse<Partial<RunPolicy>>(run.policy_json, {}),
       report,
@@ -323,16 +329,73 @@ function reviewModels(routing: Facts["routing"]): string | null {
   return `Reviewed on ${named(review)}${implementation.length ? `; implemented on ${named(implementation)}` : ""}.`;
 }
 
-/** The code quality gates: the duplication ratchet (#638) and the anti-slop rules (#639). */
-function qualitySection(
-  duplication: DuplicationResult | null,
-  rules: RulesResult | null,
-  cap: number,
-): string[] {
+interface QualityFacts {
+  duplication: DuplicationResult | null;
+  rules: RulesResult | null;
+  dependencies: DependencyResult | null;
+  sast: SastResult | null;
+}
+
+/**
+ * The code quality gates: the duplication ratchet (#638), the anti-slop rules (#639), and the
+ * dependency check and SAST (#640).
+ */
+function qualitySection(quality: QualityFacts, cap: number): string[] {
   return [
-    ...(duplication ? duplicationSection(duplication, cap) : []),
-    ...(rules ? rulesSection(rules, cap) : []),
+    ...(quality.duplication ? duplicationSection(quality.duplication, cap) : []),
+    ...(quality.rules ? rulesSection(quality.rules, cap) : []),
+    ...(quality.dependencies ? dependenciesSection(quality.dependencies, cap) : []),
+    ...(quality.sast ? sastSection(quality.sast, cap) : []),
   ];
+}
+
+/** Every dependency the run added, so the pull request shows each one for approval (#640). */
+function dependenciesSection(result: DependencyResult, cap: number): string[] {
+  if (!result.dependencies.length) return ["New dependencies: none.", ""];
+  const blocking = result.dependencies.filter((d) => d.blocking).length;
+  const out = [
+    `New dependencies: ${result.dependencies.length}${blocking ? `, ${blocking} blocking` : ""}${result.lookups ? "" : " (registry lookups are off)"}.`,
+    "",
+  ];
+  out.push(
+    ...table(
+      ["Package", "Ecosystem", "Verdict", "Where", "Detail"],
+      result.dependencies.map((d) => [
+        code(d.name),
+        d.ecosystem,
+        d.blocking ? `${d.verdict}, blocking` : d.verdict,
+        code(`${d.file}:${d.line}`),
+        d.detail,
+      ]),
+      cap,
+    ),
+    "",
+  );
+  return out;
+}
+
+function sastSection(result: SastResult, cap: number): string[] {
+  if (!result.ran) return [`Semgrep: not run (${result.note ?? "unknown reason"}).`, ""];
+  const blocking = result.findings.filter((f) => f.blocking).length;
+  const out = [
+    `Semgrep (${code(result.config)}): ${blocking} blocking, ${result.findings.length - blocking} noted on the lines the run added${result.note ? `; ${result.note}` : ""}.`,
+    "",
+  ];
+  if (result.findings.length)
+    out.push(
+      ...table(
+        ["Rule", "Severity", "Where", "Message"],
+        result.findings.map((f) => [
+          code(f.rule),
+          f.blocking ? `${f.severity}, blocking` : f.severity,
+          code(`${f.file}:${f.line}`),
+          f.message,
+        ]),
+        cap,
+      ),
+      "",
+    );
+  return out;
 }
 
 function rulesSection(result: RulesResult, cap: number): string[] {
@@ -484,8 +547,8 @@ function render(facts: Facts, cap: number): string {
     );
   else out.push("No checks ran.", "");
 
-  if (facts.duplication || facts.rules)
-    out.push("## Code quality", "", ...qualitySection(facts.duplication, facts.rules, cap));
+  if (Object.values(facts.quality).some(Boolean))
+    out.push("## Code quality", "", ...qualitySection(facts.quality, cap));
 
   if (spec?.criteria.length) {
     out.push("## Acceptance criteria", "");
