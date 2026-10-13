@@ -921,7 +921,8 @@ export class WorkflowScheduler {
                 }
                 this.store.transaction(() => {
                   const requestId = this.store.request(runId, "approval", digest, body);
-                  // The host signs the same digest a person would; post-release criteria never get here.
+                  // The host signs the same digest a person would; post-release criteria get here
+                  // only under clarification assume, and stay deferred as the body lists them.
                   this.store.decideRequest(
                     runId,
                     requestId,
@@ -931,7 +932,7 @@ export class WorkflowScheduler {
                   );
                   this.store.setApproval(runId, digest);
                   state.approvalRoot = digest;
-                  state.deferredCriteria = [];
+                  state.deferredCriteria = body.deferredCriteria;
                 });
               }
               break;

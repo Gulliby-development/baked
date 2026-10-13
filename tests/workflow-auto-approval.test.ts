@@ -19,7 +19,7 @@ import {
 } from "../src/core/workflows/schemas.js";
 import { type ArtifactRow, newId, type RequestRow } from "../src/core/workflows/store.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
-import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
+import { FixtureExecutor, fixturePolicy, fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 
 const hash = "a".repeat(64);
 const manifest: InputManifest = {
@@ -181,6 +181,11 @@ describe("auto approval", () => {
   test("deferring post-release criteria needs a person", () => {
     const deferred = { ...spec, criteria: spec.criteria.map((c) => ({ ...c, method: "post-release" as const })) };
     expect(evaluateAutoApproval(limited, manifest, deferred, graph([modify("src/a.ts")]), []).approval).toBeNull();
+  });
+  test("under clarification assume post-release criteria are deferred without a person", () => {
+    // endfix 2295dbbd: AC-009 post-release was the only approval of twelve that needed a person.
+    const deferred = { ...spec, criteria: spec.criteria.map((c) => ({ ...c, method: "post-release" as const })) };
+    expect(evaluateAutoApproval({ ...limited, clarification: "assume" }, manifest, deferred, graph([modify("src/a.ts")]), []).approval?.mode).toBe("limits");
   });
   test("renews within the last human approval", () => {
     const previous = approved(renewing, [modify("src/a.ts"), modify("src/b.ts")]);
@@ -394,5 +399,54 @@ describe("planner scope advice in a run", () => {
     expect((await fixture.service.get(runId)).status).toBe("waiting");
     const pending = fixture.service.store.requests(runId).find((r) => r.status === "pending");
     expect(JSON.parse(pending!.body_json).autoApproval.declined).toContain("Limits: store.ts is outside the allowed paths");
+  });
+});
+
+describe("post-release deferral under clarification assume in a run", () => {
+  const cleanups: (() => void | Promise<void>)[] = [];
+  afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
+  const deferring: Spec = {
+    ...fixtureSpec,
+    requirements: [...fixtureSpec.requirements, { id: "FR-002", text: "Works on every platform", priority: "should", verification: "post-release", sourceRefs: [] }],
+    criteria: [...fixtureSpec.criteria, { id: "AC-002", requirementIds: ["FR-002"], given: "a release", when: "users run it", then: "it works", method: "post-release" }],
+  };
+  /** The fixture flow with a post-release criterion the convergence agent defers. */
+  class DeferringExecutor extends FixtureExecutor {
+    override async execute(request: ExecutionRequest) {
+      const result = await super.execute(request);
+      const output = result.output as Record<string, unknown>;
+      if (request.profile.output === "spec") return { ...result, output: deferring };
+      if (request.profile.output === "plan") {
+        const graph = output.taskGraph as TaskGraph;
+        return { ...result, output: { ...output, taskGraph: { ...graph, specHash: hashJson(deferring) } } };
+      }
+      if (request.profile.output === "convergence" || request.profile.output === "review") {
+        const coverage = output.coverage as unknown[];
+        return { ...result, output: { ...output, coverage: [...coverage, { criterionId: "AC-002", verdict: "deferred", evidenceIds: [], explanation: "Needs a release" }] } };
+      }
+      return result;
+    }
+  }
+
+  test("the run approves itself, keeps the criterion deferred and completes", async () => {
+    const policy: RunPolicy = {
+      ...fixturePolicy,
+      clarification: "assume",
+      autoApproval: { renewal: false, limits: { ...limits, allowedPaths: ["value.txt"], maxTotalTokens: fixturePolicy.maxTotalTokens } },
+    };
+    const fixture = workflowFixture({ policy, executor: (root) => new DeferringExecutor(root) });
+    cleanups.push(fixture.dispose);
+    const started = await fixture.start();
+    let current = await fixture.service.get(started.runId);
+    for (let i = 0; i < 12; i++) {
+      current = await fixture.service.get(started.runId);
+      if (["waiting", "completed", "blocked", "failed"].includes(current.status)) break;
+      if (current.status === "paused" || current.status === "created") await fixture.resume(started.runId);
+      await fixture.service.drive(started.runId, new AbortController().signal);
+    }
+    expect(current.status).toBe("completed");
+    const approval = fixture.service.store.requests(started.runId).find((r) => r.kind === "approval");
+    expect(approval?.actor).toBe("auto-approval");
+    expect(JSON.parse(approval!.body_json).deferredCriteria).toEqual(["AC-002"]);
   });
 });
