@@ -128,6 +128,12 @@ import {
   stageKind,
 } from "./v2/runtime.js";
 import { removeRunWorktree, runRoot } from "./worktree.js";
+import {
+  cleanWorktrees,
+  type WorktreeCleanup,
+  type WorktreeReport,
+  worktreeUsage,
+} from "./worktree-usage.js";
 
 /** A checked reroute that is not written yet (`planReroute`). */
 export interface PlannedReroute {
@@ -336,6 +342,7 @@ export class NativeWorkflowService implements WorkflowService {
       sizingReplans: 0,
       hostSplitTasks: 0,
       deferredChecks: {},
+      affectedTests: {},
       analysisReplans: 0,
       revisedRejections: [],
       taskContinuations: {},
@@ -1244,6 +1251,7 @@ export class NativeWorkflowService implements WorkflowService {
         state.correctionHashes = [];
         state.repairPredecessors = {};
         state.taskGates = {};
+        state.affectedTests = {};
         state.previousFindingSet = null;
         state.noProgressRounds = 0;
         state.extraConvergenceRounds = 0;
@@ -1589,6 +1597,7 @@ export class NativeWorkflowService implements WorkflowService {
       state.manifest.rootGraphHash = state.graph ? hashJson(state.graph) : null;
       state.repairPredecessors = {};
       state.taskGates = {};
+      state.affectedTests = {};
       state.previousFindingSet = null;
       state.noProgressRounds = 0;
       state.extraConvergenceRounds = 0;
@@ -1767,6 +1776,14 @@ export class NativeWorkflowService implements WorkflowService {
         canonical({ ...worktree, discardedAt: new Date().toISOString() }),
       );
     });
+  }
+  /** Run and task worktrees on disk with their size and run status (`baked workflow worktrees`). */
+  worktrees(): Promise<WorktreeReport> {
+    return worktreeUsage(this.store, (runId) => this.active.has(runId));
+  }
+  /** Removes the worktrees of ended and unknown runs; their branches stay. */
+  cleanWorktrees(dryRun: boolean): Promise<WorktreeCleanup> {
+    return cleanWorktrees(this.store, { dryRun, isActive: (runId) => this.active.has(runId) });
   }
   events(runId: string, afterSeq: number, signal: AbortSignal) {
     return replayEvents(this.store, runId, afterSeq, signal);

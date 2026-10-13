@@ -1,5 +1,6 @@
 /** Workflow v1 contracts. */
 import { z } from "zod";
+import { RouteEffort } from "../llm/model-routing.js";
 import { DEFAULT_MAX_CANDIDATES, MAX_CANDIDATES } from "./candidates.js";
 import { LibraryDocsSchema } from "./library-docs.js";
 
@@ -104,7 +105,18 @@ export const TaskSchema = z
     dependsOn: z.array(TaskId),
     profileId: SafeId,
     writes: z.array(
-      z.object({ path: RelativePath, action: z.enum(["create", "modify", "delete"]) }).strict(),
+      z
+        .object({
+          path: RelativePath,
+          action: z.enum(["create", "modify", "delete"]),
+          /**
+           * Why the task changes or deletes a test file that existed before the run. Without it
+           * the test-integrity guard keeps such a file read-only for the implementer. Absent on
+           * every other write, so stored graphs keep their hash.
+           */
+          reason: Text.optional(),
+        })
+        .strict(),
     ),
     readHints: z.array(RelativePath),
     /**
@@ -277,6 +289,12 @@ export const PolicySchema = z
      */
     projectMemory: z.boolean().optional(),
     /**
+     * What the test-integrity guard does with what it finds in a task's diff (test-integrity.ts):
+     * `block` makes each finding a repair, `warn` records it only. Absent means `block`; only
+     * `warn` is stored, so stored policies keep their hash.
+     */
+    testIntegrity: z.enum(["block", "warn"]).optional(),
+    /**
      * Review findings whose confidence is below this are notes and start no correction. Absent
      * means 0.8 (`DEFAULT_REVIEW_MIN_CONFIDENCE`), so stored policies keep their hash; a run start
      * copies `modelRouting.reviewMinConfidence` here when it is set.
@@ -443,6 +461,23 @@ export function writerPolicyProblem(policy: {
   return null;
 }
 
+/**
+ * Per-profile compaction of replayed tool output. `keepRecent` tool-result messages stay verbatim;
+ * compaction starts once the attempt has spent `startAtTokens`, or `startAtShare` of its token
+ * cap, and stays on for the rest of the attempt. Without a start it runs from the first step.
+ */
+export const ProfileCompactionSchema = z
+  .object({
+    keepRecent: z.number().int().min(1).max(20).optional(),
+    startAtTokens: z.number().int().min(1000).max(10_000_000).optional(),
+    startAtShare: z.number().gt(0).max(1).optional(),
+  })
+  .strict()
+  .refine((value) => value.startAtTokens === undefined || value.startAtShare === undefined, {
+    message: "Set startAtTokens or startAtShare, not both",
+  });
+export type ProfileCompaction = z.infer<typeof ProfileCompactionSchema>;
+
 export const ProfileSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -490,6 +525,10 @@ export const ProfileSchema = z
     ]),
     maxSteps: z.number().int().min(1).max(100),
     maxOutputTokens: z.number().int().min(256).max(65536),
+    /** Reasoning effort when the profile's model route sets none (#334). */
+    effort: RouteEffort.optional(),
+    /** When an attempt starts compacting older tool output (#334); unset keeps the runtime default. */
+    compaction: ProfileCompactionSchema.optional(),
   })
   .strict();
 
@@ -709,7 +748,11 @@ export const ImplementationSchema = z
   .object({
     schemaVersion: z.literal(1),
     taskId: TaskId,
-    outcome: z.enum(["implemented", "already_satisfied", "blocked", "failed"]),
+    /**
+     * `spec_conflict`: the spec and the tests (or the criteria) cannot both hold. The task stops
+     * without fitting the tests and the run asks a person which one is right.
+     */
+    outcome: z.enum(["implemented", "already_satisfied", "blocked", "failed", "spec_conflict"]),
     summary: Text,
     evidenceIds: z.array(SafeId),
     unresolved: z.array(Text),
@@ -1322,6 +1365,8 @@ export interface StartRequest {
   modelStrict?: boolean;
   /** What blocking questions do in this run (CLI `--clarification MODE`); it overrides the policy. */
   clarification?: ClarificationMode;
+  /** What the test-integrity guard does in this run (CLI `--test-integrity MODE`); it overrides the policy. */
+  testIntegrity?: "block" | "warn";
   /** The duplication ratchet of this run (CLI `--duplication MODE`); it overrides the policy. */
   duplication?: "off" | "warn" | "ratchet";
   /** Semgrep on the run's diff (CLI `--sast MODE`); it overrides the policy. */

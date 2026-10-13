@@ -596,6 +596,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/overview: New run, Quick task"],
   },
   {
+    id: "test-integrity",
+    group: "Workflow runs",
+    title: "Test-integrity guard: block or warn on test gaming, spec conflicts",
+    tui: ["/workflow: new run, Tests field; spec conflicts in the decision view"],
+    cli: ["baked workflow run: --test-integrity", "baked workflow answer"],
+    api: ["/v1/workflow/runs: testIntegrity", "/v1/workflow/runs/:id/answer"],
+    desktop: ["project/overview: New run, Test integrity", "attention"],
+  },
+  {
     id: "preset-proposal",
     group: "Workflow runs",
     title: "Propose the workflow and budget from the request",
@@ -742,6 +751,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs"],
   },
   {
+    id: "run-worktrees",
+    group: "Workflow runs",
+    title: "Worktree sizes and cleanup",
+    tui: ["/workflow: typed command"],
+    cli: ["baked workflow worktrees"],
+    api: ["/v1/workflow/worktrees", "/v1/workflow/worktrees/clean"],
+    desktop: ["project/runs: Worktrees"],
+  },
+  {
     id: "run-deliver",
     group: "Workflow runs",
     title: "Deliver a run (commit, pull request)",
@@ -823,6 +841,15 @@ export const FEATURES: readonly Feature[] = [
     cli: ["baked workflow doctor: libraryDocs in config.json"],
     api: gap(763),
     desktop: gap(763),
+  },
+  {
+    id: "profile-effort-compaction",
+    group: "Workflow runs",
+    title: "Per-profile effort and compaction threshold (set in agent profile files)",
+    tui: ["/workflow: routing view, profile rows show the effort"],
+    cli: ["baked workflow profiles", "baked workflow route"],
+    api: ["/v1/workflow/profiles", "/v1/workflow/route"],
+    desktop: ["settings/routing: profile rows show the effort"],
   },
   {
     id: "mutation-gate",

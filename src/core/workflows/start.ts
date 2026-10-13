@@ -41,6 +41,7 @@ import {
   type WorkflowDefinition,
   writerPolicyProblem,
 } from "./schemas.js";
+import { testIntegrityOf } from "./test-integrity.js";
 import {
   type Gate,
   validateWorkflowV2,
@@ -113,6 +114,7 @@ export async function prepareStart(
     | "maxConcurrentWriters"
     | "candidates"
     | "clarification"
+    | "testIntegrity"
     | "duplication"
     | "sast"
     | "mutation"
@@ -213,6 +215,7 @@ export async function prepareStart(
     executionMode: _previous,
     sandbox: policySandbox,
     clarification: _clarification,
+    testIntegrity: _testIntegrity,
     duplication: _duplication,
     qualityRules: requestRules,
     sast: policySast,
@@ -234,6 +237,8 @@ export async function prepareStart(
   const editDiagnostics = policy.editDiagnostics ?? config.editDiagnostics ?? "feedback";
   // `ask` leaves the field out, so the policy hash of an asking run is what it was before.
   const clarification = request.clarification ?? clarificationOf(policy);
+  // `block` is the default and is left out, so the policy hash of a guarded run is what it was.
+  const testIntegrity = request.testIntegrity ?? testIntegrityOf(policy);
   // The run flag overrides the policy, which overrides the configured default; `warn` is the
   // default and leaves the field out, so the policy hash stays what it was before the ratchet.
   const duplication =
@@ -290,6 +295,7 @@ export async function prepareStart(
     ...(sandbox !== "off" ? { sandbox } : {}),
     ...(allowOverlappingWrites ? { allowOverlappingWrites } : {}),
     ...(clarification === "assume" ? { clarification } : {}),
+    ...(testIntegrity === "warn" ? { testIntegrity } : {}),
     ...(editDiagnostics === "reject" ? { editDiagnostics } : {}),
     ...(libraryDocs ? { libraryDocs } : {}),
     ...(duplication !== DEFAULT_DUPLICATION ? { duplication } : {}),

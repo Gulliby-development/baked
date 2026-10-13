@@ -38,6 +38,8 @@ export const StartBody = z
     candidates: z.number().int().min(1).max(MAX_CANDIDATES).optional(),
     /** What blocking spec questions do, as `--clarification`; omitted, the policy decides. */
     clarification: z.enum(["ask", "assume"]).optional(),
+    /** What the test-integrity guard does, as `--test-integrity`; omitted, the policy decides. */
+    testIntegrity: z.enum(["block", "warn"]).optional(),
     /** The duplication ratchet of the run, as `--duplication`; omitted, the policy decides. */
     duplication: z.enum(["off", "warn", "ratchet"]).optional(),
     /** Semgrep on the run's diff, as `--sast`; omitted, the policy decides. */
@@ -311,6 +313,7 @@ export const RedactBody = z.strictObject({
   artifactId: SafeId,
   reason: z.string().trim().min(1).max(500),
 });
+export const WorktreeCleanBody = z.strictObject({ dryRun: z.boolean().optional() });
 export const GcBody = z.strictObject({
   before: z.string().refine((value) => Number.isFinite(Date.parse(value)), {
     message: "Expected an ISO date",
