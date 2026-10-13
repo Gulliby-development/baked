@@ -4,7 +4,7 @@
  *
  * Pipeline:
  *   1. config.memory.embeddingModel       (explicit user override)
- *   2. config.taskRouter.semantic         (reuse the existing semantic slot)
+ *   2. config.taskRouter.semantic         (only when it names an embedding model)
  *   3. heuristic from active chat model's provider
  *   4. null → hashbag-v2
  *
@@ -32,6 +32,11 @@ const PROVIDER_DEFAULTS: Readonly<Record<string, string | null>> = {
   copilot: null,
   "github-models": null,
 };
+
+/** Whether a model id names an embedding model ("openai/text-embedding-3-small"). */
+export function isEmbeddingModelId(modelId: string): boolean {
+  return /embed/i.test(modelId.slice(modelId.indexOf("/") + 1));
+}
 
 function extractProviderId(modelId: string): string {
   if (!modelId) return "";
@@ -64,12 +69,13 @@ export function resolveEmbeddingModel(
     return { modelId: null, source: "none", reason: "explicitly disabled via config" };
   }
 
-  // 2. Reuse the existing taskRouter.semantic slot — same model already
-  // selected by user for semantic summaries.
-  const semantic = config?.taskRouter?.semantic;
-  if (typeof semantic === "string" && semantic.trim().length > 0) {
+  // 2. The taskRouter.semantic slot picks the chat model that writes semantic summaries. It
+  // counts only when it names an embedding model; a chat model there (codex/gpt-6.1-sol) has no
+  // embedding API, and wiring it would fail on every start.
+  const semantic = config?.taskRouter?.semantic?.trim();
+  if (semantic && isEmbeddingModelId(semantic)) {
     return {
-      modelId: semantic.trim(),
+      modelId: semantic,
       source: "task-router",
       reason: "taskRouter.semantic",
     };
