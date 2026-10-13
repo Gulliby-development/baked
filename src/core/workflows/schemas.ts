@@ -273,6 +273,16 @@ export const PolicySchema = z
      * policies keep their hash.
      */
     libraryDocs: LibraryDocsSchema.optional(),
+    /**
+     * Record and replay of model calls (#856, model-recording.ts): `record` stores each call of
+     * the native executor in the run; `replay` names a recording file whose answers stand in for
+     * the provider until the first request that differs. Absent means neither, so stored policies
+     * keep their hash.
+     */
+    modelCalls: z
+      .object({ record: z.boolean().optional(), replay: z.string().min(1).max(4096).optional() })
+      .strict()
+      .optional(),
     allowedTools: UniqueStrings,
     network: z.enum(["deny", "ask", "allow"]),
     checks: z.array(CheckSchema),
@@ -664,6 +674,7 @@ export const ReasonCode = z.enum([
   "host_state",
   "interrupted_effect",
   "dependency_failed",
+  "replay_diverged",
   "none",
 ]);
 
@@ -1352,6 +1363,8 @@ export const EventSchema = z.discriminatedUnion("type", [
           durationMs: z.number().int().nonnegative(),
           /** Size of the JSON result handed back to the model, which later steps resend. */
           resultBytes: z.number().int().nonnegative().optional(),
+          /** The message of the error a failed call threw, cut to 1000 characters. */
+          error: z.string().max(1000).optional(),
         })
         .strict(),
     })

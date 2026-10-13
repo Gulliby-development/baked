@@ -71,3 +71,24 @@ test("the gallery plays a run and opens a workflow in the graph", async ({ app }
   await expect(progress).toHaveAttribute("aria-valuenow", String(before + 1));
   await expect(page.getByRole("region", { name: "Now" })).toBeVisible();
 });
+
+test("the playing walkthrough does not scroll the page back to it", async ({ app, page }) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await app("#/p/baked/workflows");
+  await page.setViewportSize({ width: 1400, height: 500 });
+  const banner = page.getByRole("region", { name: "How a run flows" });
+  await expect(banner.locator("[data-station]").first()).toBeVisible();
+  // Scroll down to the gallery, past the playing conveyor, and let it move on a few stations.
+  const main = page.locator("main");
+  const top = await main.evaluate((box) => {
+    box.scrollTop = box.scrollHeight;
+    return box.scrollTop;
+  });
+  expect(top).toBeGreaterThan(0);
+  const told = banner.locator("[aria-live]");
+  for (let i = 0; i < 2; i++) {
+    const text = await told.textContent();
+    await expect(told).not.toHaveText(text ?? "", { timeout: 5000 });
+  }
+  expect(await main.evaluate((box) => box.scrollTop)).toBe(top);
+});

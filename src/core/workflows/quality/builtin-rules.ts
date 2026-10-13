@@ -192,7 +192,9 @@ export const BUILTIN_RULES: readonly QualityRule[] = [
     message: "The body is a placeholder, not an implementation",
     fix: "Implement the behavior, or leave the function out until a task implements it.",
     match: lineRule(
-      /(?:throw\s+new\s+\w*Error\(\s*["'`](?:not\s+(?:yet\s+)?implemented|todo|unimplemented)\b|\btodo!\(|\bunimplemented!\(|panic\(\s*"(?:not\s+implemented|todo)|throw\s+new\s+(?:NotImplementedException|UnsupportedOperationException)\(\s*\))/i,
+      // "todo" counts only as the whole message or before ":", "!", "." or "-": "Todo with id 3
+      // does not exist" is an ordinary error of a todo app (#845).
+      /(?:throw\s+new\s+\w*Error\(\s*["'`](?:(?:not\s+(?:yet\s+)?implemented|unimplemented)\b|todo\s*(?:["'`]|[:!.-]))|\btodo!\(|\bunimplemented!\(|panic\(\s*"(?:not\s+implemented\b|todo\s*(?:"|[:!.-]))|throw\s+new\s+(?:NotImplementedException|UnsupportedOperationException)\(\s*\))/i,
     ),
   },
   {
