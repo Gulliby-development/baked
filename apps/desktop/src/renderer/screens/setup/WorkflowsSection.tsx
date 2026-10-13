@@ -3,10 +3,7 @@ import { start } from "../../client/start.js";
 import {
   type EditorOp,
   type EditorView,
-  type Outcome,
   type SaveReview,
-  type StageView,
-  type TargetView,
   workflowEditor,
 } from "../../client/workflow-editor.js";
 import { Alert } from "../../components/ui/alert.js";
@@ -18,15 +15,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../../components/ui/dialog.js";
-import { Dot } from "../../components/ui/dot.js";
 import { Empty } from "../../components/ui/empty.js";
-import { fieldClass, Input } from "../../components/ui/input.js";
+import { Input } from "../../components/ui/input.js";
 import { Label } from "../../components/ui/label.js";
+import { Segment, SegmentGroup } from "../../components/ui/segmented.js";
 import { Skeleton } from "../../components/ui/skeleton.js";
 import { cn } from "../../lib/cn.js";
-import { LABEL, LEDE, PANEL, TABLE } from "../../lib/styles.js";
+import { LABEL } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
+import { AgentsNudge } from "./AgentsSection.js";
 import {
   ACTIONS,
   errorText,
@@ -39,373 +37,42 @@ import {
   STACK,
   Tag,
   useLoad,
-  WRAP,
 } from "./shared.js";
-import { outcomeLabel, problemsFor, targetKey } from "./workflow-editor-logic.js";
+import { WorkflowFlow } from "./WorkflowFlow.js";
+import { type EditorTab, WorkflowGallery } from "./WorkflowGallery.js";
+import { WorkflowGraph } from "./WorkflowGraph.js";
+import { StageCard } from "./WorkflowStages.js";
+import { lineFromView } from "./workflow-studio-model.js";
 
-const SELECT = cn(fieldClass, "h-9 w-auto py-1 pr-8");
+const TABS: [EditorTab, string][] = [
+  ["flow", "Flow"],
+  ["graph", "Graph"],
+  ["stages", "Stages"],
+];
 
-/** Every workflow definition of the project, each opening in the editor. */
+/** The view a gallery link asked for, read once by the editor it opens. */
+let requestedTab: EditorTab | null = null;
+const takeRequestedTab = (): EditorTab | null => {
+  const tab = requestedTab;
+  requestedTab = null;
+  return tab;
+};
+
+/** Every workflow definition of the project as a gallery, each opening in the editor. */
 function WorkflowList({ project }: Pick<SectionProps, "project">) {
   const [list] = useLoad(() => start.definitions(project.key), [project.key, "definitions"]);
   if (list.state !== "ready") return <LoadState value={list} what="workflows" />;
   return (
-    <div className={SETUP}>
-      <p className={LEDE}>
-        The workflows a run can follow. Built-in ones open read only; duplicate one to make a
-        project workflow in <span className="font-mono">baked/workflows</span>, then change its
-        gates, transitions and stage options. The same editor as{" "}
-        <span className="font-mono">/workflow</span> in the terminal.
-      </p>
-      <div className="overflow-x-auto">
-        <table className={TABLE}>
-          <thead>
-            <tr>
-              <th>Workflow</th>
-              <th>Description</th>
-              <th>Source</th>
-              <th className="text-right">Stages</th>
-              <th>Problems</th>
-            </tr>
-          </thead>
-          <tbody>
-            {list.data.map((d) => (
-              <tr key={d.id}>
-                <td className="font-mono">
-                  <a href={projectHref(project.key, "workflows", d.id)}>{d.id}</a>
-                </td>
-                <td className="max-w-[360px]">{d.description || "–"}</td>
-                <td>
-                  <Tag>{d.source === "builtin" ? "built-in" : "project"}</Tag>
-                </td>
-                <td className="text-right font-mono">{d.stages.length}</td>
-                <td>
-                  {d.problems.length ? (
-                    <Tag tone="warn">
-                      {d.problems.length} problem{d.problems.length === 1 ? "" : "s"}
-                    </Tag>
-                  ) : (
-                    "–"
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+    <div className="flex min-w-0 flex-col gap-5">
+      <AgentsNudge projectKey={project.key} />
+      <WorkflowGallery
+        definitions={list.data}
+        projectKey={project.key}
+        onOpen={(tab) => {
+          requestedTab = tab;
+        }}
+      />
     </div>
-  );
-}
-
-function GateList({
-  stage,
-  target,
-  readOnly,
-  busy,
-  onEdit,
-}: {
-  stage: StageView;
-  target: TargetView;
-  readOnly: boolean;
-  busy: boolean;
-  onEdit: (op: EditorOp) => void;
-}) {
-  const [pick, setPick] = useState("");
-  const usable = target.options.filter((o) => o.disabled === null);
-  const choice = pick || usable[0]?.gateId || "";
-  const t = target.target;
-  return (
-    <fieldset
-      className="m-0 flex min-w-0 flex-col gap-2 border-0 border-t border-[var(--line)] p-0 pt-2"
-      aria-label={target.name}
-    >
-      <div className={ROW}>
-        <span className={cn(GROW, "font-mono text-[12px] text-foreground")}>
-          {target.transition
-            ? `${stage.id} → ${target.transition.to} on ${outcomeLabel(target.transition.on)}${
-                target.transition.loop ? ` · up to ${target.transition.loop} rounds` : ""
-              }`
-            : "Stage gates"}
-        </span>
-        {target.transition && !readOnly && t.kind === "transition" && (
-          <Button
-            variant="secondary"
-            size="sm"
-            disabled={busy}
-            onClick={() => onEdit({ op: "removeTransition", id: t.id })}
-          >
-            Remove transition
-          </Button>
-        )}
-      </div>
-      {target.bindings.length === 0 ? (
-        <span className={cn("text-dim-foreground", NOTE)}>No gates.</span>
-      ) : (
-        <ol className="m-0 flex list-none flex-col gap-1 p-0">
-          {target.bindings.map((b, index) => (
-            <li key={b.gateId} className={cn(ROW, "text-[13px]")}>
-              <span className={cn(GROW, "flex flex-col")}>
-                <span className="font-mono text-foreground">{b.gateId}</span>
-                {b.summary && <span className={cn("text-dim-foreground", NOTE)}>{b.summary}</span>}
-              </span>
-              <span className="flex items-center gap-2 whitespace-nowrap">
-                <Dot tone={b.mode === "required" ? "ok" : b.mode === "advisory" ? "warn" : "err"} />
-                {b.mode}
-                {b.override && <Tag>set here</Tag>}
-              </span>
-              {!readOnly && (
-                <span className={ACTIONS}>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    aria-label={`Move ${b.gateId} up`}
-                    disabled={busy || index === 0}
-                    onClick={() => onEdit({ op: "moveGate", target: t, index, delta: -1 })}
-                  >
-                    ↑
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    aria-label={`Move ${b.gateId} down`}
-                    disabled={busy || index === target.bindings.length - 1}
-                    onClick={() => onEdit({ op: "moveGate", target: t, index, delta: 1 })}
-                  >
-                    ↓
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    disabled={busy}
-                    onClick={() => onEdit({ op: "toggleMode", target: t, index })}
-                  >
-                    {b.mode === "required" ? "Make advisory" : "Make required"}
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    aria-label={`Remove ${b.gateId}`}
-                    disabled={busy}
-                    onClick={() => onEdit({ op: "removeGate", target: t, index })}
-                  >
-                    Remove
-                  </Button>
-                </span>
-              )}
-            </li>
-          ))}
-        </ol>
-      )}
-      {!readOnly && (
-        <div className={ROW}>
-          <select
-            aria-label={`Gate to add to ${target.name}`}
-            className={SELECT}
-            value={choice}
-            disabled={busy || usable.length === 0}
-            onChange={(e) => setPick(e.target.value)}
-          >
-            {target.options.map((o) => (
-              <option key={o.gateId} value={o.gateId} disabled={o.disabled !== null}>
-                {o.gateId}
-                {o.disabled ? ` (${o.disabled})` : ` · ${o.summary}`}
-              </option>
-            ))}
-          </select>
-          <Button
-            variant="secondary"
-            size="sm"
-            disabled={busy || !choice}
-            onClick={() => {
-              setPick("");
-              onEdit({ op: "addGate", target: t, gateId: choice });
-            }}
-          >
-            Add gate
-          </Button>
-        </div>
-      )}
-    </fieldset>
-  );
-}
-
-function NewTransition({
-  stage,
-  busy,
-  onEdit,
-}: {
-  stage: StageView;
-  busy: boolean;
-  onEdit: (op: EditorOp) => void;
-}) {
-  const choices = stage.transitionChoices;
-  const [to, setTo] = useState(choices.to[0] ?? "done");
-  const [on, setOn] = useState<Outcome>(choices.on[0] ?? "passed");
-  const [loop, setLoop] = useState<string>("");
-  return (
-    <div className={cn(ROW, "border-t border-[var(--line)] pt-2")}>
-      <span className={cn("text-dim-foreground", NOTE)}>New transition to</span>
-      <select
-        aria-label={`Transition from ${stage.id} to`}
-        className={SELECT}
-        value={to}
-        onChange={(e) => setTo(e.target.value)}
-      >
-        {choices.to.map((id) => (
-          <option key={id} value={id}>
-            {id}
-          </option>
-        ))}
-      </select>
-      <span className={cn("text-dim-foreground", NOTE)}>on</span>
-      <select
-        aria-label={`Transition from ${stage.id} on`}
-        className={SELECT}
-        value={on}
-        onChange={(e) => setOn(e.target.value as Outcome)}
-      >
-        {choices.on.map((o) => (
-          <option key={o} value={o}>
-            {outcomeLabel(o)}
-          </option>
-        ))}
-      </select>
-      <select
-        aria-label={`Transition from ${stage.id} loop`}
-        className={SELECT}
-        value={loop}
-        onChange={(e) => setLoop(e.target.value)}
-      >
-        {choices.loop.map((n) => (
-          <option key={String(n)} value={n === null ? "" : String(n)}>
-            {n === null ? "not a loop" : `loop, up to ${n} rounds`}
-          </option>
-        ))}
-      </select>
-      <Button
-        variant="secondary"
-        size="sm"
-        disabled={busy}
-        onClick={() =>
-          onEdit({ op: "addTransition", from: stage.id, to, on, loop: loop ? Number(loop) : null })
-        }
-      >
-        Add transition
-      </Button>
-    </div>
-  );
-}
-
-function StageCard({
-  stage,
-  view,
-  busy,
-  onEdit,
-}: {
-  stage: StageView;
-  view: EditorView;
-  busy: boolean;
-  onEdit: (op: EditorOp) => void;
-}) {
-  const readOnly = view.readOnly !== null;
-  const problems = problemsFor(view.problems, stage);
-  return (
-    <li
-      className={cn(PANEL, "flex flex-col gap-3", problems.length && "border-[var(--warn)]")}
-      aria-label={`Stage ${stage.id}`}
-    >
-      <div className={ROW}>
-        <span className={cn(GROW, "flex flex-wrap items-center gap-2")}>
-          <span className="font-mono text-[15px] font-semibold text-foreground">{stage.id}</span>
-          <Tag>{stage.type}</Tag>
-          <span className={cn("font-mono text-dim-foreground", NOTE)}>makes {stage.produces}</span>
-        </span>
-        {!readOnly && (
-          <span className={ACTIONS}>
-            {stage.type === "wait" ? (
-              <Button
-                variant="secondary"
-                size="sm"
-                disabled={busy}
-                aria-label={`Remove wait stage ${stage.id}`}
-                onClick={() => onEdit({ op: "removeWaitStage", stageId: stage.id })}
-              >
-                Remove
-              </Button>
-            ) : (
-              <Button
-                variant="secondary"
-                size="sm"
-                disabled={busy}
-                title="Insert a stage that runs command gates every interval until they pass, with no model calls"
-                aria-label={`Add a wait stage after ${stage.id}`}
-                onClick={() => onEdit({ op: "addWaitStage", after: stage.id })}
-              >
-                Wait after
-              </Button>
-            )}
-          </span>
-        )}
-      </div>
-      {problems.length > 0 && (
-        <ul className="m-0 flex list-none flex-col gap-1 p-0 text-[12px] text-[var(--warn)]">
-          {problems.map((m) => (
-            <li key={m} className={WRAP}>
-              {m}
-            </li>
-          ))}
-        </ul>
-      )}
-      {stage.fields.length > 0 && (
-        <div className="flex flex-col gap-1">
-          {stage.fields.map((f) => (
-            <div key={f.key} className={cn(ROW, "text-[13px]")}>
-              <span className="min-w-[140px] text-dim-foreground">{f.label}</span>
-              <span className={cn(GROW, "font-mono text-foreground")} title={f.hint}>
-                {f.value}
-              </span>
-              {!readOnly && (
-                <span className={ACTIONS}>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    aria-label={`Previous ${f.label}`}
-                    disabled={busy}
-                    onClick={() =>
-                      onEdit({ op: "changeField", stageId: stage.id, key: f.key, delta: -1 })
-                    }
-                  >
-                    ‹
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    aria-label={`Next ${f.label}`}
-                    disabled={busy}
-                    onClick={() =>
-                      onEdit({ op: "changeField", stageId: stage.id, key: f.key, delta: 1 })
-                    }
-                  >
-                    ›
-                  </Button>
-                </span>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-      {stage.targets.map((target) => (
-        <GateList
-          key={targetKey(target.target)}
-          stage={stage}
-          target={target}
-          readOnly={readOnly}
-          busy={busy}
-          onEdit={onEdit}
-        />
-      ))}
-      {!readOnly && <NewTransition stage={stage} busy={busy} onEdit={onEdit} />}
-    </li>
   );
 }
 
@@ -516,11 +183,14 @@ function SaveDialog({
 }
 
 /**
- * One workflow definition in the editor: its stages in order, each with its options, its own
- * gates (check and review stages) and its outgoing transitions with their gates. Every change
- * goes through the backend, which validates it with the terminal editor's rules.
+ * One workflow definition in the editor, in three views: Flow plays a run along it, Graph lays
+ * its stations and transitions out to rearrange and edit, and Stages lists each stage with its
+ * options, its own gates (check and review stages) and its outgoing transitions with their gates.
+ * Every change goes through the backend, which validates it with the terminal editor's rules.
  */
 function WorkflowEditor({ project, id }: { project: SectionProps["project"]; id: string }) {
+  const [tab, setTab] = useState<EditorTab>(() => takeRequestedTab() ?? "flow");
+  const [definitions] = useLoad(() => start.definitions(project.key), [project.key, "definitions"]);
   const [view, setView] = useState<EditorView | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -560,6 +230,7 @@ function WorkflowEditor({ project, id }: { project: SectionProps["project"]; id:
       const answer = await workflowEditor.edit(project.key, view, op);
       setView(answer.view);
       setNotice(answer.error ? { text: answer.error, failed: true } : null);
+      if (op.op === "duplicate" && !answer.error && tab === "flow") setTab("graph");
     });
   const openReview = () =>
     void run(async () => {
@@ -586,12 +257,20 @@ function WorkflowEditor({ project, id }: { project: SectionProps["project"]; id:
     });
   const problemCount = view.problems.reduce((n, g) => n + g.messages.length, 0);
   const general = view.problems.filter((g) => g.owner === "definition");
+  const summaries = definitions.state === "ready" ? definitions.data : [];
+  const known = (
+    summaries.find((d) => d.id === view.id) ?? summaries.find((d) => d.id === view.from)
+  )?.line;
+  const line = lineFromView(view, known);
 
   return (
     <div className={SETUP}>
       <div className={ROW}>
         <span className={cn(GROW, "flex flex-wrap items-center gap-2")}>
-          <h2 className="m-0 font-mono text-[18px] font-semibold">{view.id}</h2>
+          <a href={projectHref(project.key, "workflows")} className="text-[13px] font-semibold">
+            ← All workflows
+          </a>
+          <h2 className="m-0 font-mono text-[22px] font-bold">{view.id}</h2>
           {view.readOnly ? (
             <Tag>read only</Tag>
           ) : view.copy ? (
@@ -633,14 +312,33 @@ function WorkflowEditor({ project, id }: { project: SectionProps["project"]; id:
       {general.length > 0 && (
         <Alert tone="error">{general.flatMap((g) => g.messages).join(" ")}</Alert>
       )}
-      <section aria-label="Stages" className={STACK}>
-        <h3 className={LABEL}>Stages · {view.stages.length}</h3>
-        <ol className={cn(LIST, "flex flex-col gap-3")}>
-          {view.stages.map((stage) => (
-            <StageCard key={stage.id} stage={stage} view={view} busy={busy} onEdit={onEdit} />
-          ))}
-        </ol>
-      </section>
+      <SegmentGroup aria-label="View">
+        {TABS.map(([value, label]) => (
+          <Segment key={value} aria-pressed={tab === value} onClick={() => setTab(value)}>
+            {label}
+          </Segment>
+        ))}
+      </SegmentGroup>
+      {tab === "flow" && <WorkflowFlow key={view.id} line={line} />}
+      {tab === "graph" && (
+        <WorkflowGraph
+          projectKey={project.key}
+          view={view}
+          line={line}
+          busy={busy}
+          onEdit={onEdit}
+        />
+      )}
+      {tab === "stages" && (
+        <section aria-label="Stages" className={STACK}>
+          <h3 className={LABEL}>Stages · {view.stages.length}</h3>
+          <ol className={cn(LIST, "flex flex-col gap-3")}>
+            {view.stages.map((stage) => (
+              <StageCard key={stage.id} stage={stage} view={view} busy={busy} onEdit={onEdit} />
+            ))}
+          </ol>
+        </section>
+      )}
       <SaveDialog
         review={review}
         busy={busy}

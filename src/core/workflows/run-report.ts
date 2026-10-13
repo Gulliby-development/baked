@@ -462,18 +462,19 @@ function dependenciesSection(result: DependencyResult, cap: number): string[] {
 
 function propertiesSection(result: PropertiesResult, cap: number): string[] {
   const found = result.criteria.filter((c) => c.status === "found").length;
+  const waived = result.criteria.filter((c) => c.status === "waived").length;
   return [
-    `Property-based tests: ${found} of ${result.criteria.length} marked criteria have one.`,
+    `Property-based tests: ${found} of ${result.criteria.length} marked criteria have one${waived ? `; ${waived} waived because the project has no property library` : ""}.`,
     "",
     ...table(
       ["Criterion", "Domain", "Status", "Property tests"],
       result.criteria.map((c) => [
         c.id,
         c.domain,
-        c.status,
+        c.note ? `${c.status}: ${c.note}` : c.status,
         c.tests
           .filter((t) => t.property)
-          .map((t) => code(t.file))
+          .map((t) => (t.kind === "seeded" ? `${code(t.file)} (seeded)` : code(t.file)))
           .join(", ") || "-",
       ]),
       cap,
@@ -573,7 +574,11 @@ function rulesSection(result: RulesResult, cap: number): string[] {
       ["Rule", "Severity", "Where", "Line"],
       result.findings.map((f) => [
         code(f.rule),
-        f.blocking ? `${f.severity}, blocking` : f.severity,
+        f.blocking
+          ? `${f.severity}, blocking`
+          : f.kept
+            ? `${f.severity}, kept after its correction`
+            : f.severity,
         code(`${f.file}:${f.line}`),
         code(f.text),
       ]),
@@ -810,7 +815,9 @@ function render(facts: Facts, cap: number): string {
               ? "notes rule (behavior verified)"
               : l.decidedBy === "critic"
                 ? "critic early stop (calibrated score, checks passed)"
-                : "user",
+                : l.decidedBy === "rule"
+                  ? "rule pack (same match after its correction)"
+                  : "user",
         ]),
         cap,
       ),

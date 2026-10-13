@@ -5,7 +5,6 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { migrateLegacyConfigKeys } from "../../config/index.js";
 import type { ModelRouting } from "../llm/model-routing.js";
 import { configDir as defaultConfigDir } from "../platform/index.js";
 import { ensurebakedDir } from "../utils/ensure-baked-dir.js";
@@ -26,13 +25,13 @@ export function routingConfigFiles(workspace: string, configDir?: string): Routi
   };
 }
 
-/** Reads a config file, with legacy keys under their current names; a missing file is `{}`. */
+/** Reads a config file; a missing file is `{}`. */
 export function readConfigObject(path: string): Record<string, unknown> {
   if (!existsSync(path)) return {};
   const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
     throw new Error(`${path} does not hold a JSON object`);
-  return migrateLegacyConfigKeys(parsed as Record<string, unknown>);
+  return parsed as Record<string, unknown>;
 }
 
 export function readRoutingLayers(files: RoutingConfigFiles): RoutingLayers {

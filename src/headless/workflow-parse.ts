@@ -29,6 +29,7 @@ const commands = [
   "candidate",
   "usage",
   "report",
+  "recording",
   "outcomes",
   "compare",
   "memory",
@@ -41,6 +42,7 @@ const commands = [
   "validate",
   "define",
   "gates",
+  "agents",
   "gate",
   "deliver",
   "follow",
@@ -75,6 +77,7 @@ export interface WorkflowArgs {
 const globalFlags = ["json", "cwd", "help"];
 const booleanFlags = new Set([
   "approval-review",
+  "record-model-calls",
   "refresh",
   "clean",
   "auto-preset",
@@ -94,7 +97,10 @@ const booleanFlags = new Set([
   "execute",
   "once",
   "fix",
+  "reviews",
+  "resolve",
   "worktree",
+  "remove",
   "exclude-user-changes",
   "resume",
   "no-resume",
@@ -143,6 +149,8 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "budget",
     "approval-review",
     "auto-preset",
+    "record-model-calls",
+    "replay",
   ],
   quick: [
     "feature",
@@ -183,7 +191,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   reject: ["request", "reason", "expected-revision", "command-id"],
   pause: ["expected-revision", "command-id"],
   cancel: ["expected-revision", "command-id"],
-  fork: ["expected-revision", "command-id"],
+  fork: ["expected-revision", "command-id", "from-stage"],
   revise: ["candidate", "expected-revision", "command-id", "resume", "events", "after"],
   candidate: ["spec", "plan", "tasks", "policy", "workflow", "confirm-auto-approval", "command-id"],
   profiles: ["model"],
@@ -196,6 +204,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
   usage: ["model", "stage", "top", "format", "output"],
   report: ["output"],
+  recording: ["output"],
   outcomes: ["refresh"],
   compare: ["output"],
   memory: ["text"],
@@ -217,12 +226,15 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   validate: ["file"],
   define: ["from"],
   gates: ["all"],
+  agents: ["from", "stages", "remove"],
   gate: ["text", "kind", "id", "model", "from-criteria", "save", "file", "json", "workflow", "at"],
-  follow: ["interval", "timeout", "once", "fix"],
+  follow: ["interval", "timeout", "once", "fix", "reviews"],
   deliver: [
     "remote",
     "branch",
     "follow-up",
+    "answer-threads",
+    "resolve",
     "draft",
     "no-pr",
     "with-specs",
@@ -334,6 +346,11 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
         "INVALID_DEFINITION",
         rule[1] ? `memory ${action} requires --text` : `--text is not valid for memory ${action}`,
       );
+  } else if (!result.flags.help && result.command === "agents") {
+    const [action = "list", ...rest] = result.positional;
+    const arity: Record<string, number> = { list: 0, convert: 1, remove: 1 };
+    if (arity[action] === undefined || rest.length !== arity[action])
+      throw new WorkflowFault("INVALID_DEFINITION", "agents takes list, convert ID or remove NAME");
   } else if (!result.flags.help && ["route", "doctor", "estimate"].includes(result.command)) {
     if (result.positional.length > 1 || (result.positional.length && result.flags.workflow))
       throw new WorkflowFault(
@@ -391,6 +408,8 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
       "remote",
       "branch",
       "follow-up",
+      "answer-threads",
+      "resolve",
       "draft",
       "no-pr",
       "with-specs",
@@ -401,6 +420,19 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
       throw new WorkflowFault(
         "INVALID_DEFINITION",
         `--${newBranch} plans a new branch; --follow-up adds a commit to the followed run's branch and pull request`,
+      );
+    if (
+      ("answer-threads" in result.flags || "resolve" in result.flags) &&
+      !("follow-up" in result.flags)
+    )
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        "--answer-threads and --resolve answer review threads of the followed pull request; add --follow-up",
+      );
+    if (result.flags.resolve && !("answer-threads" in result.flags))
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        "--resolve resolves the --answer-threads threads",
       );
     if (result.flags["with-specs"] && result.flags["no-specs"])
       throw new WorkflowFault(
@@ -533,7 +565,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--candidates N] [--clarification ask|assume] [--sandbox off|auto|required] [--duplication off|warn|ratchet] [--sast auto|off] [--mutation off|advisory|required] [--property-tests auto|off] [--budget PRESET] [--approval-review]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--candidates N] [--clarification ask|assume] [--sandbox off|auto|required] [--duplication off|warn|ratchet] [--sast auto|off] [--mutation off|advisory|required] [--property-tests auto|off] [--budget PRESET] [--approval-review] [--record-model-calls] [--replay FILE]
 run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --prompt-file FILE] [other run options]
   --issue takes the request from a GitHub issue (its title and body; --prompt adds instructions)
   and names the feature issue-N-TITLE unless --feature is given; the delivery pull request says
@@ -559,6 +591,9 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   --approval-review lets the approval reviewer (a model) approve a low-risk plan that leaves the
   auto approval limits only by its task count, file count or paths; it needs autoApproval.limits.
   Always-human paths, deletions and the token limit still wait for you
+  --record-model-calls stores each model call of the run (request fingerprint and answer) in
+  the run, for the recording command; --replay FILE answers the model calls from such a recording instead
+  of the provider and blocks the run (replay_diverged) at the first request that differs
   --duplication ratchet blocks code the run copies and code it adds that nothing uses; warn (the
   default) reports them in the run report; off skips the measurement. Default: the policy's
   duplication, then the quality.duplication setting, otherwise warn
@@ -603,6 +638,9 @@ reject RUN_ID --request ID --reason TEXT --expected-revision N
   (see status). approve promotes it: the test file and its command gate with provenance are
   written to the project and confirmed; reject discards it. Neither changes the run's state.
 pause|cancel|fork RUN_ID --expected-revision N
+fork RUN_ID --expected-revision N --from-stage STAGE
+  (start the fork at a stage after the implementation, such as checks, review or converge, from
+  the run's changes as they are now; with reroute, one stage runs again on another model)
 continue RUN_ID --request ID --expected-revision N [--resume]   (answer a token checkpoint; resume then spends up to the next one. On a stopped convergence it allows one more repair round)
 accept RUN_ID --request ID --expected-revision N [--no-resume]   (a stopped convergence: accept the remaining findings as known limitations; reject stops the run)
 extend RUN_ID --expected-revision N [--tokens N] [--calls N] [--time-ms N] [--resume [--events]]
@@ -625,6 +663,11 @@ recover RUN_ID --request ID --effect ID --resolution record-applied|record-not-a
 definitions               list workflow definitions: sdd, the presets and baked/workflows/*.json
 validate (ID | --file FILE)   check a definition against the gate library; exit 1 with problems
 define ID --from PRESET   copy a preset or definition to baked/workflows/ID.json as a custom workflow
+agents                    list the project's custom agents from other tools (Claude Code, Copilot, OpenCode, Roo)
+agents convert ID [--from PRESET] [--stages NAME=STAGE,...] [--remove]
+  make workflow ID from them: each agent fills a stage (research, specify, plan, implement, review, skip);
+  --remove deletes the converted agent files
+agents remove NAME        delete one agent's file
 gates                     list the gate library with each gate's source and what it shadows
 gates confirm ID... | --all  confirm project gates (baked/gates) before a run may use them
 gate new "TEXT" [--kind command|ai-acceptance|human|ai-review] [--id ID] [--from-criteria] [--model ID] [--save] [--json]
@@ -657,6 +700,9 @@ usage RUN_ID [--model ID] [--stage NAME] [--top N] [--format md] [--output FILE]
 report RUN_ID [--output FILE] [--json]
   One Markdown report of the run: summary, changes, tasks, checks, criteria, findings, decisions,
   tokens by stage and model, artifacts. Printed, or written to FILE; deliver uses it as the PR body.
+recording RUN_ID [--output FILE] [--json]
+  The model calls a run recorded with --record-model-calls (or a replay recorded), for
+  run --replay FILE. Printed, or written to FILE.
 outcomes [RUN_ID] [--refresh] [--json]
   The critic outcome log: each critic score with whether the task's checks passed, how the run
   ended, the delivered commit's fate and the share of its lines that survive (final after 30 days).
@@ -677,11 +723,16 @@ deliver RUN_ID --follow-up DELIVERED_RUN_ID [--remote origin] [--with-specs|--no
   Plan one commit of this run's files on top of the branch DELIVERED_RUN_ID pushed, fast-forward
   only, and no new pull request: a fix for that pull request's checks or review. The local copy of
   that branch must match the remote and not be checked out.
-follow RUN_ID [--interval 60] [--timeout 60] [--once] [--fix]
+  --answer-threads ID,ID replies "Addressed in COMMIT." to those unresolved review threads of the
+  pull request after the push; --resolve also resolves them. Both are part of the approved plan.
+follow RUN_ID [--interval 60] [--timeout 60] [--once] [--fix] [--reviews]
   Wait for the checks GitHub reports on the commit the run's latest delivery pushed, reading them
   every --interval seconds (5..3600) for up to --timeout minutes (1..1440); no model runs. Ends at
   the first failed check, when all pass, or at the timeout. --once reads them once. --fix starts a
   fix-ci run for the failed checks; deliver it with deliver FIX_RUN_ID --follow-up RUN_ID.
+  --reviews also reads the pull request's unresolved review threads and requested changes once no
+  check failed; --fix then starts a quick-fix run for them, delivered with
+  deliver FIX_RUN_ID --follow-up RUN_ID --answer-threads THREAD_IDS.
 discard-worktree RUN_ID --expected-revision N
   Remove the worktree and delete the branch of a completed, failed or cancelled worktree run.
 worktrees [--clean [--dry-run]]

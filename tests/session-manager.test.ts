@@ -355,6 +355,33 @@ describe("SessionManager.saveTab", () => {
 		expect(loaded!.tabMessages.get("tab-new")![0]!.content).toBe("NEW");
 	});
 
+	it("keeps the longer saved slice unless the save rewrites the history on purpose", async () => {
+		const msgs = [
+			makeMessage("user", "1"),
+			makeMessage("assistant", "2"),
+			makeMessage("user", "3"),
+			makeMessage("assistant", "4"),
+		];
+		await manager.saveTab(SID, makeTab("tab-a"), msgs, undefined, fallback("tab-a"));
+
+		// A shorter slice is taken for a stale save.
+		await manager.saveTab(SID, makeTab("tab-a"), msgs.slice(0, 2), undefined, fallback("tab-a"));
+		expect(manager.loadSession(SID)!.tabMessages.get("tab-a")).toHaveLength(4);
+
+		// An undo rewrites it, with the undone turn kept in the tab for a redo.
+		const undone = {
+			...makeTab("tab-a"),
+			redoTurns: [{ index: 2, anchorMessageId: msgs[2]!.id, messages: msgs.slice(2) }],
+		};
+		await manager.saveTab(SID, undone, msgs.slice(0, 2), undefined, fallback("tab-a"), {
+			rewrite: true,
+		});
+		const loaded = manager.loadSession(SID)!;
+		expect(loaded.tabMessages.get("tab-a")!.map((m) => m.content)).toEqual(["1", "2"]);
+		expect(loaded.meta.tabs[0]!.messageRange).toEqual({ startLine: 0, endLine: 2 });
+		expect(loaded.meta.tabs[0]!.redoTurns).toHaveLength(1);
+	});
+
 	it("preserves core.json slots for non-target tabs", async () => {
 		const meta = makeMeta(SID, [{ id: "tab-a" }, { id: "tab-b" }]);
 		await manager.saveSession(
@@ -387,19 +414,5 @@ describe("SessionManager.saveTab", () => {
 			"A-core",
 		);
 		expect(loaded!.tabCoreMessages?.get("tab-b")).toHaveLength(2);
-	});
-
-	it("reads forgeMode from sessions saved before the rename as bakeMode", async () => {
-		const meta = makeMeta("sess-legacy");
-		await manager.saveSession(meta, new Map([["tab-1", [makeMessage("user", "hi")]]]));
-		const metaPath = join(TEST_DIR, ".baked", "sessions", "sess-legacy", "meta.json");
-		const { bakeMode: _mode, tabs, ...rest } = JSON.parse(readFileSync(metaPath, "utf-8")) as SessionMeta;
-		const legacy = { ...rest, forgeMode: "plan", tabs: tabs.map((t) => ({ ...t, forgeMode: "architect" })) };
-		writeFileSync(metaPath, JSON.stringify(legacy));
-
-		const loaded = manager.loadSession("sess-legacy");
-		expect(loaded!.meta.bakeMode).toBe("plan");
-		expect(loaded!.meta.tabs[0]!.bakeMode).toBe("architect");
-		expect("forgeMode" in loaded!.meta).toBe(false);
 	});
 });

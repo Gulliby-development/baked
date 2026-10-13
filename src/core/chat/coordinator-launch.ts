@@ -8,7 +8,7 @@
  */
 import { tool } from "ai";
 import { z } from "zod";
-import type { AppConfig } from "../../types/index.js";
+import type { AppConfig, ChatMessage, LaunchNote } from "../../types/index.js";
 import { hashJson } from "../specs/hash.js";
 import {
   InitiativeFeatureSchema,
@@ -33,6 +33,7 @@ export const LAUNCH_TOOLS = [
   "start_run",
   "start_initiative",
   "propose_split",
+  "message_session",
 ] as const;
 export const DEFAULT_MAX_ACTIVE = 3;
 export const DEFAULT_MAX_TOKENS = 20_000_000;
@@ -194,15 +195,74 @@ function liveState(
 /** A launched entry with its live status, whether it still runs, and the tokens it used. */
 export type LaunchedView = LaunchedEntry & { active: boolean; tokens: number };
 
+/** The entry's title, or for a session recorded without one, the session's own title. */
+function titleOf(chat: ChatService, entry: LaunchedEntry): string | undefined {
+  if (entry.title || entry.kind !== "session") return entry.title;
+  try {
+    return chat.get(entry.id).summary().title;
+  } catch {
+    return undefined;
+  }
+}
+
+/** How a launched session sees a message the coordinator sent it. */
+export const COORDINATOR_MESSAGE_PREFIX = "Message from the project coordinator:\n\n";
+
+/** The longest result a launch note carries from a session's last answer. */
+export const LAUNCH_RESULT_MAX = 2000;
+
+/** How many answers a launched session has given; 0 when it is gone. */
+function sessionAnswers(chat: ChatService, id: string): number {
+  try {
+    return chat.get(id).messages.filter((m) => m.role === "assistant").length;
+  } catch {
+    return 0;
+  }
+}
+
+/** What a launched session answered last, for its launch note; null while it has said nothing. */
+export function sessionResult(chat: ChatService, id: string): string | null {
+  let messages: ChatMessage[];
+  try {
+    messages = chat.get(id).messages;
+  } catch {
+    return null;
+  }
+  const last = [...messages].reverse().find((m) => m.role === "assistant" && m.content.trim());
+  if (!last) return null;
+  const text = last.content.trim();
+  return text.length > LAUNCH_RESULT_MAX ? `${text.slice(0, LAUNCH_RESULT_MAX - 1)}…` : text;
+}
+
+/** A session's id is a UUID nobody reads; its first block is enough to tell two apart. */
+const shortId = (id: string): string =>
+  /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(id) ? id.slice(0, 8) : id;
+
+/** How a notice names a launched item: its title when it has one, its kind and id otherwise. */
+export function launchLabel(note: Pick<LaunchNote, "kind" | "id" | "feature" | "title">): string {
+  const kind = note.kind[0]?.toUpperCase() + note.kind.slice(1);
+  if (note.feature) return `Feature "${note.title ?? note.feature}" of initiative ${note.id}`;
+  return note.title ? `${kind} "${note.title}"` : `${kind} ${shortId(note.id)}`;
+}
+
+/** The notice's text, for front ends that do not draw the launch card. */
+export function launchNoteText(note: LaunchNote): string {
+  const task = note.task && note.task.state !== "local" ? ` (${note.task.ref})` : "";
+  return note.event === "task-closed"
+    ? `Task ${note.task?.ref ?? ""} closed: the pull request of ${launchLabel(note)} merged`
+    : `${launchLabel(note)}${task}: ${note.status}`;
+}
+
 /** What the coordinator launched, as it is now; `GET /v1/coordinator/launched`. */
 export function launchedView(
   chat: ChatService,
   coordinatorId: string,
   state: ProjectStateSource | null,
 ): LaunchedView[] {
-  return new BriefStore(chat.workspace, coordinatorId)
-    .read()
-    .launched.map((entry) => ({ ...entry, ...liveState(chat, state, entry) }));
+  return new BriefStore(chat.workspace, coordinatorId).read().launched.map((entry) => {
+    const title = titleOf(chat, entry);
+    return { ...entry, ...(title ? { title } : {}), ...liveState(chat, state, entry) };
+  });
 }
 
 /**
@@ -217,23 +277,39 @@ export async function syncLaunched(
 ): Promise<string[]> {
   const store = new BriefStore(chat.workspace, coordinator.id);
   const brief = store.read();
-  const notices: string[] = [];
+  const notices: LaunchNote[] = [];
   let changed = false;
   const launched: LaunchedEntry[] = [];
   for (const entry of brief.launched) {
     const { status } = liveState(chat, state, entry);
-    const label = `${entry.feature ? `feature ${entry.feature} of ` : ""}${entry.kind} ${entry.id}${entry.task ? ` (${entry.task.ref})` : ""}`;
+    const title = titleOf(chat, entry);
+    const note = (next: LaunchedEntry, event: LaunchNote["event"]): LaunchNote => ({
+      kind: next.kind,
+      id: next.id,
+      ...(next.feature ? { feature: next.feature } : {}),
+      ...(title ? { title } : {}),
+      status: next.status,
+      why: next.why,
+      ...(next.task ? { task: next.task } : {}),
+      event,
+    });
     let next = entry;
-    if (status !== entry.status) {
-      if (NOTEWORTHY.test(status)) notices.push(`${label}: ${status} (${entry.why})`);
-      next = { ...next, status };
+    // A session that answered again between two checks (a quick follow-up) reports again too.
+    const answers = entry.kind === "session" ? sessionAnswers(chat, entry.id) : 0;
+    const answered = answers > (entry.answers ?? 0) && !/^working/.test(status);
+    if (status !== entry.status || answered) {
+      next = { ...next, status, ...(answered ? { answers } : {}) };
+      if (NOTEWORTHY.test(status)) {
+        const result = answered ? sessionResult(chat, entry.id) : null;
+        notices.push({ ...note(next, "status"), ...(result ? { result } : {}) });
+      }
     }
     // A completed run's pull request closes its issue when it merges.
     if (tasks && next.task?.state === "open" && status === "completed") {
       const closed = await tasks.closed(next.task.ref).catch(() => null);
       if (closed) {
-        notices.push(`task ${next.task.ref} closed: the pull request of ${label} merged`);
         next = { ...next, task: { ...next.task, state: "closed" } };
+        notices.push(note(next, "task-closed"));
       }
     }
     if (next !== entry) changed = true;
@@ -245,8 +321,9 @@ export async function syncLaunched(
   } catch {
     return [];
   }
-  for (const notice of notices) await coordinator.addNotice(`Launched ${notice}`);
-  return notices;
+  const texts = notices.map(launchNoteText);
+  for (const [i, notice] of notices.entries()) await coordinator.addNotice(texts[i] ?? "", notice);
+  return texts;
 }
 
 /** Checks the coordinator's limits before one more launch; returns why not, or null. */
@@ -267,6 +344,12 @@ function overLimit(
   if (tokens >= limits.maxTokens)
     return `Launched work has used ${tokens} tokens (limit ${limits.maxTokens}); ask the user to raise coordinator.maxTokens`;
   return null;
+}
+
+/** A launched item's title from its request: the first line, cut to the brief's limit. */
+function requestTitle(text: string): string {
+  const line = text.trim().split("\n")[0]?.trim() ?? "";
+  return line.length > 120 ? `${line.slice(0, 119)}…` : line || "Untitled";
 }
 
 const Why = z.string().trim().min(1).max(300).describe("One line on why, kept in the brief");
@@ -453,8 +536,37 @@ export function launchTools(
             throw new Error("The user declined to start a session that can edit files");
           const session = await chat.create({ title, mode: mode as ChatMode });
           session.send(brief);
-          return { kind: "session", id: session.id, status: "working" };
+          return { kind: "session", id: session.id, title, status: "working" };
         }, why),
+    }),
+    message_session: tool({
+      description:
+        "Send a follow-up, correction or answer to a session you launched. It reaches the session as a message from the coordinator: steered into its running turn, or starting its next turn. You get a note here with its answer when that turn ends.",
+      inputSchema: z.strictObject({
+        id: z.string().trim().min(1).max(200).describe("The launched session's id"),
+        text: z.string().trim().min(1).max(20_000),
+      }),
+      execute: async ({ id, text }) => {
+        if (!store.read().launched.some((l) => l.kind === "session" && l.id === id))
+          return failed(`Session ${id} is not one you launched; launch_session starts one`);
+        let session: ChatSession;
+        try {
+          session = chat.get(id);
+        } catch {
+          return failed(`Session ${id} no longer exists`);
+        }
+        try {
+          const { queued } = session.send(`${COORDINATOR_MESSAGE_PREFIX}${text}`);
+          return {
+            success: true,
+            output: queued
+              ? `Sent to session ${id}; it joins the turn that is running.`
+              : `Sent to session ${id}; it started a new turn.`,
+          };
+        } catch (err) {
+          return failed(err instanceof Error ? err.message : String(err));
+        }
+      },
     }),
     start_run: tool({
       description:
@@ -482,7 +594,13 @@ export function launchTools(
             ...(feature ? { feature } : {}),
             ...(task ? { issue: task.ref } : {}),
           });
-          return { kind: "run", id: runId, status: "started", ...(task ? { task } : {}) };
+          return {
+            kind: "run",
+            id: runId,
+            title: requestTitle(prompt),
+            status: "started",
+            ...(task ? { task } : {}),
+          };
         }, why);
       },
     }),
@@ -501,7 +619,12 @@ export function launchTools(
         if (!launcher) return failed("This server cannot start initiatives");
         return launch(async () => {
           const { initiativeId } = await launcher.startInitiative({ initiativeId: id, prompt });
-          return { kind: "initiative", id: initiativeId, status: "started" };
+          return {
+            kind: "initiative",
+            id: initiativeId,
+            title: requestTitle(prompt),
+            status: "started",
+          };
         }, why);
       },
     }),
@@ -597,6 +720,7 @@ export function launchTools(
             entries.push({
               kind: "initiative",
               id: initiativeId,
+              title: requestTitle(split.title),
               status: "started",
               why: `${split.why}; tasks ${tasks.map((t) => t.ref).join(", ")}`.slice(0, 1000),
             });
@@ -608,6 +732,7 @@ export function launchTools(
                   kind: "initiative",
                   id: initiativeId,
                   feature: flow.id,
+                  title: requestTitle(flow.title),
                   status: "started",
                   why: `${flow.title} (${split.id})`,
                   task,
@@ -630,6 +755,7 @@ export function launchTools(
               entries.push({
                 kind: "run",
                 id: runId,
+                title: requestTitle(flow.title),
                 status: "started",
                 why: `${flow.title} (${split.id})`,
                 ...(task ? { task } : {}),

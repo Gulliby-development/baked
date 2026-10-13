@@ -163,6 +163,11 @@ describe("a task whose implementer ended on text (scheduler)", () => {
     const restart = store.latestArtifact(run.runId, "tasks/restarts/T001.json");
     expect(restart).toBeDefined();
     expect(store.readArtifact(run.runId, restart?.id ?? "")).toContain("text reply");
+    expect(
+      store
+        .events(run.runId, 0, 10000)
+        .some((e) => e.type === "task.state_changed" && e.payload.to === "interrupted" && e.payload.cause === "restart"),
+    ).toBe(true);
     expect(store.latestArtifact(run.runId, "tasks/T001/host-result.json")).toBeNull();
     // The restarted session implements the task for real.
     expect(outcome.status).toBe("completed");

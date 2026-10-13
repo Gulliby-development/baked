@@ -24,8 +24,11 @@ import {
   fixChecksRequest,
   followPullRequest,
   pullRequestChecks,
+  pullRequestReviews,
+  repairReviewsRequest,
 } from "../core/workflows/follow.js";
 import { issueStart } from "../core/workflows/issue-source.js";
+import { runRecording, withModelCalls } from "../core/workflows/model-recording.js";
 import { describeProposal, presetChoice } from "../core/workflows/preset-router.js";
 import {
   editProjectMemory,
@@ -287,7 +290,14 @@ export async function executeWorkflowCommand(
           ? { ...args, flags: { ...args.flags, budget: choice.budget } }
           : args,
       );
-      const policy = args.flags["approval-review"] === true ? withModelReview(base) : base;
+      const reviewed = args.flags["approval-review"] === true ? withModelReview(base) : base;
+      const policy = withModelCalls(reviewed, {
+        record: args.flags["record-model-calls"] === true,
+        replay:
+          typeof args.flags.replay === "string"
+            ? resolve(service.store.workspace, args.flags.replay)
+            : undefined,
+      });
       if (proposal)
         process.stderr.write(
           `preset: ${describeProposal(proposal)}${choice?.overridden ? `; running ${workflowId} as asked` : ""}\n`,
@@ -362,6 +372,7 @@ export async function executeWorkflowCommand(
         routing: readRoutingSummary(service.store, runId),
         preflight: readCheckPreflight(service.store, runId),
         acceptance: walkThroughs(service.store, runId),
+        forkStages: service.forkStages(runId),
         stopDetail:
           snapshot.status === "blocked" || snapshot.status === "failed"
             ? stopDetail(service.store, runId)
@@ -383,8 +394,10 @@ export async function executeWorkflowCommand(
       return service.pause(runId, identity());
     case "cancel":
       return service.cancel(runId, identity());
-    case "fork":
-      return service.fork(runId, identity());
+    case "fork": {
+      const fromStage = args.flags["from-stage"];
+      return service.fork(runId, identity(), typeof fromStage === "string" ? { fromStage } : {});
+    }
     case "continue": {
       // One more convergence round is a decision like accept: the run goes on unless `--no-resume`.
       // A token checkpoint keeps the old behavior and resumes only with `--resume`.
@@ -586,6 +599,15 @@ export async function executeWorkflowCommand(
       writeFileSync(path, text);
       return { runId, path, bytes: Buffer.byteLength(text), usage: true };
     }
+    case "recording": {
+      const recording = runRecording(service.store, runId);
+      if (typeof args.flags.output !== "string")
+        return { runId, calls: recording.calls.length, recording };
+      const path = resolve(service.store.workspace, args.flags.output);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, `${JSON.stringify(recording)}\n`);
+      return { runId, path, calls: recording.calls.length };
+    }
     case "report": {
       const markdown = runReport(service.store, runId);
       if (typeof args.flags.output !== "string") return { runId, markdown };
@@ -646,6 +668,17 @@ export async function executeWorkflowCommand(
         ...(typeof args.flags["follow-up"] === "string"
           ? { followUp: args.flags["follow-up"] }
           : {}),
+        ...(typeof args.flags["answer-threads"] === "string"
+          ? {
+              answer: {
+                threads: args.flags["answer-threads"]
+                  .split(",")
+                  .map((id) => id.trim())
+                  .filter(Boolean),
+                resolve: args.flags.resolve === true,
+              },
+            }
+          : {}),
         draft: args.flags.draft === true,
         pullRequest: args.flags["no-pr"] !== true,
         ...(args.flags["with-specs"] ? { specs: true } : {}),
@@ -676,7 +709,41 @@ export async function executeWorkflowCommand(
             signal,
             ...provider,
           });
-      if (read.state !== "failed") return read;
+      if (read.state !== "failed") {
+        if (!args.flags.reviews) return read;
+        // Reviews are read once no check failed: a failing check is fixed first.
+        const reviews = await pullRequestReviews(
+          service.store,
+          service.config,
+          runId,
+          ...(options.pullRequests === undefined ? [] : [options.pullRequests]),
+        );
+        if (reviews.state !== "changes") return { ...read, reviews };
+        const repair = repairReviewsRequest(service.store, reviews);
+        const answer = `--answer-threads ${repair.threads.join(",")}`;
+        if (!args.flags.fix) return { ...read, reviews, repair };
+        const repairRun = (await executeWorkflowCommand(
+          service,
+          {
+            command: "run",
+            positional: [],
+            flags: {
+              workflow: repair.workflowId,
+              feature: repair.featureId,
+              prompt: repair.prompt,
+            },
+          },
+          signal,
+          onDrive,
+          options,
+        )) as { runId?: string };
+        return {
+          ...read,
+          reviews,
+          repairRun,
+          next: `baked workflow deliver ${repairRun.runId ?? "FIX_RUN_ID"} --follow-up ${runId}${repair.threads.length ? ` ${answer}` : ""}`,
+        };
+      }
       const fix = fixChecksRequest(service.store, read);
       // Without --fix the request of the fix run is returned for the caller to start.
       if (!args.flags.fix) return { ...read, fix };
@@ -706,6 +773,7 @@ export async function executeWorkflowCommand(
     case "validate":
     case "define":
     case "gates":
+    case "agents":
       return executeDefinitionCommand(
         args,
         service.store.workspace,

@@ -64,6 +64,8 @@ export const StartBody = z
     message: "feature and prompt are required without issue",
   });
 export const CommandBody = Command.strict();
+/** `POST /v1/workflow/runs/RUN_ID/fork`: `fromStage` starts the fork at that stage (#855). */
+export const ForkBody = Command.extend({ fromStage: SafeId.optional() }).strict();
 /** `POST /v1/workflow/propose`: the request text a run would start with. */
 export const ProposeBody = z.strictObject({ prompt: z.string().min(1).max(100_000) });
 export const ApproveBody = Command.extend({
@@ -234,6 +236,10 @@ export const DeliverBody = z.strictObject({
   branch: z.string().min(1).optional(),
   /** A delivered run whose branch and pull request receive this run's commit (`--follow-up`). */
   followUp: SafeId.optional(),
+  /** Review threads of the followed pull request answered after the push (`--answer-threads`). */
+  answerThreads: z.array(SafeId).min(1).max(100).optional(),
+  /** Also resolve the answered threads (`--resolve`). */
+  resolve: z.boolean().optional(),
   draft: z.boolean().optional(),
   pullRequest: z.boolean().optional(),
 });

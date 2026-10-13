@@ -11,10 +11,12 @@ You turn one app's run into findings that make BAKED better. You look at every t
 - `ledger/workflow-map.md`
 - `round.json` `lsp`: which languages had a working language server this round (from `baked lsp status --json` / `baked lsp check`), which the loop installed with `baked lsp install`, and any install failure
 - the same app's results in earlier rounds (control apps) from `ledger/metrics.csv`
+- the run's `routing.json` (models by role and stage), for `seenOn`
+- `config.json` `confirm` (cross-model confirmation model and budget) and the round's confirmation tokens so far in `state.json`
 
 ## Output
 
-`rounds/RNN/apps/<app>/findings.md`, one section per finding (shape in `templates/finding.md`), and a line per finding in `ledger/findings.jsonl` with `status: "new"` or `"known:#N"`.
+`rounds/RNN/apps/<app>/findings.md`, one section per finding (shape in `templates/finding.md`), and a line per finding in `ledger/findings.jsonl` with `status: "new"`, `"known:#N"` or `"watch"`, plus `kind`, `seenOn` and `confirmation` (see [Findings and model noise](../AGENTS.md#findings-and-model-noise)).
 
 ## What to look for
 
@@ -27,6 +29,15 @@ Go through the run in order and ask at each stage:
 5. **Workflow fit.** Was the workflow right for this task type? Would `quick`, `standard` or a split into an initiative have been cheaper or more reliable? Update `ledger/workflow-map.md` with the evidence (a row's confidence goes up with each measured run).
 6. **Code intelligence.** For each app, note from `round.json` `lsp` whether its language had a server, and which backend served code queries (language server, ts-morph, tree-sitter or regex fallback) if the run's events or tool results record it; say "not recorded" when they do not. Compare navigation, rename, diagnostics and post-edit fixes with and without a server across apps and rounds, and write a finding when a missing server visibly cost tokens, retries or interventions, or when a present server misbehaved.
 7. **Provider effects.** Cost or behavior that differs by provider or model. Say what an adaptive mechanism would do; never propose a constant tuned to one provider.
+
+## Kind, models and confirmation
+
+For each finding:
+
+1. **Kind.** Ask: would BAKED be wrong for every possible model answer? Then it is `invariant`. If a model made an ordinary mistake any model can make and BAKED did not detect or recover from it, it is `recovery`. If it is a habit of one model or provider, it is `model-behavior`. Write the reason in one line.
+2. **Seen on.** Record the provider/model of every role in the run (implementation, review, fix) from `routing.json`, and the earlier occurrences from `ledger/findings.jsonl`.
+3. **Confirm.** For a `model-behavior` finding, and for a `blocked` run whose cause is not an `invariant` finding, re-run the run from its approved plan on `confirm.crossModel` (a fork restarts at implementation in a fresh worktree, so take the finding with the largest expected effect first) while `confirm.maxTokensPerRound` allows: `baked workflow fork RUN --expected-revision N`, `baked workflow reroute FORK --expected-revision N --model MODEL` (or `--route STAGE=MODEL` for a review stage), `baked workflow resume FORK`. Never resume, extend or change the original run. Record `confirmation`: `reproduced` with the fork id, `not-reproduced` with the fork id (the finding becomes `model-only`), `pending` (budget spent; the next round's analyst tries again) or `skipped: reason`.
+4. **Status.** A `model-behavior` finding that is `model-only` or `pending` and seen for the first time gets `status: "watch"`: the backlog role files no issue for it yet. Seen a second time (another app or round) or `reproduced`, it is filed like any other finding.
 
 ## Brownfield findings (update runs)
 
@@ -45,7 +56,7 @@ For a run with `group: "update"`, tag every finding `brownfield` and add:
 - **Severity:** `P0` blocks runs or corrupts results; `P1` costs an intervention or >20% tokens; `P2` everything else.
 - **Surfaces:** whether a fix needs TUI, headless CLI, desktop (`baked serve` API) changes too.
 
-Skip things that are not BAKED's problem (a model's typo the review caught and fixed is BAKED working). Merge duplicates: the same cause seen in three apps is one finding with three pieces of evidence.
+Skip things that are not BAKED's problem (a model's typo the review caught and fixed is BAKED working). A fix for a `model-only` problem is a mechanism that detects and recovers from it, never prompt wording tuned to one model. Merge duplicates: the same cause seen in three apps is one finding with three pieces of evidence.
 
 ## Done
 

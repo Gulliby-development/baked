@@ -16,7 +16,8 @@ Commands:
   status [--all] [--json]         Language servers for the project's languages (the default);
                                   --all lists every server baked knows
   install ID [--json]             Install a server from the Mason registry; ID is a server
-                                  (gopls), a Mason package (pyright) or a language (go)
+                                  (gopls), a Mason package (pyright) or a language (go).
+                                  Starts it once and exits 1 when it does not start
   enable ID [--scope SCOPE]       Turn a disabled server back on
   disable ID [--scope SCOPE]      Keep baked from starting a server
   check [ID] [--json]             Start the project's servers in this process, wait for them
@@ -195,8 +196,9 @@ export async function runLspCli(argv: string[]): Promise<number> {
         if (!json) process.stdout.write(`${msg}\n`);
       });
       if (json) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      else if (result.warning) process.stderr.write(`${result.warning}\n`);
       else process.stdout.write(`Installed ${result.server} (${result.package}).\n`);
-      return 0;
+      return result.warning ? 1 : 0;
     }
     const given = flag(rest, "--scope");
     if (given !== undefined && given !== "global" && given !== "project") {

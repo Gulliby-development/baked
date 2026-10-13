@@ -79,6 +79,16 @@ export const isWholeUnitCheck = (check: Check): boolean =>
   WHOLE_UNIT_COMMAND.test([check.id, check.executable, ...check.args].join(" "));
 
 /**
+ * Whole-unit formatters (`cargo fmt`, `rustfmt`). Before integration they report every other
+ * task's unformatted files, and the checks stage applies their fixer to the run's files after
+ * integration, so a planned task's own run of one only adds a failing check and its output to the
+ * agent's context (bench round 13, mdrefs: 9 of 15 fmt runs failed on other tasks' files, #842).
+ */
+export const isWholeUnitFormatter = (check: Check): boolean =>
+  isWholeUnitCheck(check) &&
+  /\b(?:rustfmt|fmt|format)\b/i.test([check.id, check.executable, ...check.args].join(" "));
+
+/**
  * The checks that run for a task: the task-scope ones it names and the file-local static feature
  * ones covering its code. Whole-unit checks are left to the checks stage.
  */
@@ -130,6 +140,27 @@ export function fixerTiers(check: {
 }): { executable: string; args: string[] }[] {
   if (!check.fix) return [];
   return check.fixUnsafe ? [check.fix, check.fixUnsafe] : [check.fix];
+}
+
+/**
+ * A fixer that formats its whole package whatever file it is given (`cargo fmt`). It runs once for
+ * all of a task's files instead of once per file (bench round 13, mdrefs T010: one `cargo fmt` of
+ * the whole crate per README, LICENSE and test file).
+ */
+export function isWholeUnitFixer(fix: { executable: string; args: string[] }): boolean {
+  const name = fix.executable
+    .replace(/^.*[\\/]/, "")
+    .replace(/\.(?:exe|cmd|bat)$/i, "")
+    .toLowerCase();
+  return name === "cargo" && fix.args.includes("fmt") && !fix.args.includes("--");
+}
+
+/** The command that applies a whole-unit fixer to several files in one run. */
+export function wholeUnitFixerCommand(
+  fix: { executable: string; args: string[] },
+  paths: readonly string[],
+): { executable: string; args: string[] } {
+  return { executable: fix.executable, args: [...fix.args, "--", ...paths] };
 }
 
 export function fixerCommand(

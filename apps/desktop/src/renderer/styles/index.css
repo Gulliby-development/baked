@@ -17,6 +17,19 @@
   --animate-tray-back: tray-repair 1.8s ease-in-out forwards;
   --animate-lane: lane-dash 600ms linear infinite;
   --animate-pulse-dot: pulse-dot 1s ease-in-out infinite;
+  /* The Agents section (screens/setup/AgentsSection.tsx): agents waiting above the line, landing
+     on their stations when converted, and the panel that rises with the result. */
+  --animate-agent-float: agent-float 2.6s ease-in-out infinite;
+  --animate-agent-land: agent-land 650ms cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+  --animate-station-lit: station-lit 520ms ease-out both;
+  --animate-rise: rise 360ms ease-out both;
+  /* The package box (screens/setup/PackageBox.tsx): tiles hover over the open box, hop and fall in
+     one at a time, then the box settles shut and gets its tape and sticker. */
+  --animate-pkg-float: pkg-float 2.4s ease-in-out infinite;
+  --animate-pkg-drop: pkg-drop 620ms cubic-bezier(0.45, 0, 0.7, 0.4) both;
+  --animate-pkg-settle: pkg-settle 420ms ease-out both;
+  --animate-pkg-tape: pkg-tape 300ms ease-out both;
+  --animate-pkg-stamp: pkg-stamp 420ms cubic-bezier(0.2, 0.9, 0.3, 1.4) both;
 
   @keyframes belt-roll {
     to {
@@ -63,6 +76,83 @@
   @keyframes pulse-dot {
     50% {
       transform: scale(1.35);
+    }
+  }
+  @keyframes agent-float {
+    50% {
+      transform: translateY(-4px);
+    }
+  }
+  @keyframes agent-land {
+    from {
+      opacity: 0.4;
+      transform: translateY(-28px) scale(0.92);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+  @keyframes station-lit {
+    from {
+      transform: translate(var(--shadow-x), var(--shadow-y));
+      box-shadow: 0 0 0 0 var(--ink);
+    }
+    to {
+      transform: translate(0, 0);
+      box-shadow: var(--shadow);
+    }
+  }
+  @keyframes pkg-float {
+    50% {
+      transform: translateY(-5px);
+    }
+  }
+  @keyframes pkg-drop {
+    0% {
+      transform: translate(0, 0) rotate(0deg);
+    }
+    28% {
+      transform: translate(calc(var(--dx) * 0.25), -14px) rotate(calc(var(--tilt) * 0.5));
+    }
+    100% {
+      transform: translate(var(--dx), var(--dy)) rotate(var(--tilt));
+    }
+  }
+  @keyframes pkg-settle {
+    40% {
+      transform: scale(1.04, 0.93);
+    }
+    70% {
+      transform: scale(0.99, 1.02);
+    }
+  }
+  @keyframes pkg-tape {
+    from {
+      transform: scaleY(0);
+    }
+    to {
+      transform: scaleY(1);
+    }
+  }
+  @keyframes pkg-stamp {
+    from {
+      opacity: 0;
+      transform: scale(1.7) rotate(-14deg);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1) rotate(-4deg);
+    }
+  }
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
     }
   }
 }

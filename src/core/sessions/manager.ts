@@ -472,6 +472,9 @@ export class SessionManager {
    * Reads existing meta.json + messages.jsonl + core.json, splices in the new
    * slice (or appends a new tab entry if missing), recomputes messageRange
    * offsets, atomically rewrites. Serialized per session id via saveChains.
+   *
+   * `rewrite` marks a deliberate history rewrite (an undo), which may save fewer messages than
+   * the tab has on disk; without it a shorter slice is taken for a stale save and ignored.
    */
   async saveTab(
     sessionId: string,
@@ -485,11 +488,12 @@ export class SessionManager {
       bakeMode: import("../../types/index.js").BakeMode;
       activeTabId: string;
     },
+    options: { rewrite?: boolean } = {},
   ): Promise<void> {
     const prev = this.saveChains.get(sessionId) ?? Promise.resolve();
     const next = prev
       .catch(() => {})
-      .then(() => this.doSaveTab(sessionId, tabMeta, messages, coreMessages, fallback));
+      .then(() => this.doSaveTab(sessionId, tabMeta, messages, coreMessages, fallback, options));
     this.saveChains.set(sessionId, next);
     try {
       await next;
@@ -512,6 +516,7 @@ export class SessionManager {
       bakeMode: import("../../types/index.js").BakeMode;
       activeTabId: string;
     },
+    options: { rewrite?: boolean } = {},
   ): Promise<void> {
     this.ensureDir();
     const sessionDir = join(this.dir, sessionId);
@@ -576,7 +581,7 @@ export class SessionManager {
     // accepting it would permanently drop user-visible history because the
     // next save reads the truncated jsonl back as authoritative. UI must be a
     // superset of what the model sees; we never shrink messages.jsonl unless
-    // the caller went through an explicit clear flow.
+    // the caller rewrites the history on purpose (`options.rewrite`, an undo).
     const allMessages: ChatMessage[] = [];
     const updatedTabs: TabMeta[] = updatedTabsRaw.map((t) => {
       let msgs: ChatMessage[];
@@ -586,7 +591,7 @@ export class SessionManager {
           const priorSlice = prevRange
             ? existingAllMessages.slice(prevRange.startLine, prevRange.endLine)
             : [];
-          if (messages.length < priorSlice.length) {
+          if (messages.length < priorSlice.length && !options.rewrite) {
             // Stale-closure save — keep durable on-disk history.
             msgs = priorSlice;
           } else {

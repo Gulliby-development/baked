@@ -36,7 +36,8 @@ function pkg(name: string, bins: string[], purl: string): MasonPackage {
 }
 
 /** A machine with gopls on PATH, pyright installable and rust-analyzer missing its toolchain. */
-function machine(started = false) {
+function machine(started = false, startError: string | null = null) {
+  const probes: string[][] = [];
   const installed = new Map<string, string>([["gopls", "/usr/bin/gopls"]]);
   const restarts: (string | undefined)[] = [];
   const installs: string[] = [];
@@ -80,8 +81,12 @@ function machine(started = false) {
       return filter ? [`${filter}:x`] : ["all:x"];
     },
     refresh: () => {},
+    probe: async (command, args) => {
+      probes.push([command, ...args]);
+      return startError;
+    },
   };
-  return { deps, installs, restarts, installed };
+  return { deps, installs, restarts, installed, probes };
 }
 
 function project(): { workspace: string; global: string } {
@@ -163,6 +168,27 @@ describe("language server service", () => {
     expect(code).toBe("NOT_INSTALLABLE");
     const unknown = await installLspServer(options, "cobol").catch((e: LspServiceError) => e.code);
     expect(unknown).toBe("NOT_FOUND");
+  });
+
+  test("install starts the server once and warns when it does not start", async () => {
+    const { workspace, global } = project();
+    const ok = machine(false);
+    const fine = await installLspServer({ workspace, files: { global }, deps: ok.deps }, "pyright");
+    expect(fine.warning).toBeUndefined();
+    expect(ok.probes).toEqual([["/home/u/.baked/lsp-servers/bin/pyright-langserver", "--stdio"]]);
+
+    const broken = machine(false, "spawn jdtls.cmd EINVAL");
+    const lines: string[] = [];
+    const result = await installLspServer(
+      { workspace, files: { global }, deps: broken.deps },
+      "pyright",
+      (line) => lines.push(line),
+    );
+    expect(result.warning).toBe(
+      "pyright-langserver was installed but does not start: spawn jdtls.cmd EINVAL",
+    );
+    expect(lines.at(-1)).toBe(result.warning as string);
+    expect(broken.installs).toEqual(["pyright"]);
   });
 
   test("restart filters by server or language and does nothing before start", async () => {

@@ -349,7 +349,9 @@ export function handoff(
 ): Handoff | null {
   if (before.length !== after.length) return null;
   const moving = (s: Station): boolean => s.state === "current" || s.state === "waiting";
-  const was = before.findIndex(moving);
+  // A loop restarts an earlier stage after the stage that failed, or asked for changes, stopped.
+  const working = before.findIndex(moving);
+  const was = working >= 0 ? working : before.findIndex((s) => s.state === "failed");
   const now = after.findIndex(moving);
   if (now >= 0 && was >= 0 && now < was) {
     const loop = loops.find((l) => l.from === after[was]?.id && l.to === after[now]?.id);
@@ -372,4 +374,20 @@ export function handoff(
 /** A stage's icon from its ID alone, for lists that do not load the run's line. */
 export function stageIconOf(id: string): IconName {
   return stageIcon({ id, ...guess(id) });
+}
+
+/**
+ * The strip's new horizontal scroll offset that shows a station (`itemLeft` and `itemWidth` in
+ * the strip's content coordinates), moving as little as possible; unchanged when it is in view.
+ */
+export function revealLeft(
+  scrollLeft: number,
+  viewWidth: number,
+  itemLeft: number,
+  itemWidth: number,
+): number {
+  if (itemLeft < scrollLeft) return Math.max(0, itemLeft);
+  const itemRight = itemLeft + itemWidth;
+  if (itemRight > scrollLeft + viewWidth) return Math.min(itemLeft, itemRight - viewWidth);
+  return scrollLeft;
 }

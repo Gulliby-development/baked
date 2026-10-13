@@ -17,12 +17,13 @@ export function readyTasks(
   graph: TaskGraph,
   rows: TaskRow[],
   gates: RuntimeState["taskGates"] = {},
+  waitingFor: RuntimeState["waitingFor"] = {},
 ): Task[] {
   const statuses = new Map(rows.map((r) => [r.id, r.status]));
   return graph.tasks.filter(
     (t) =>
       ["pending", "invalidated", "interrupted"].includes(statuses.get(t.id) ?? "pending") &&
-      t.dependsOn.every((dep) =>
+      [...t.dependsOn, ...(waitingFor[t.id] ?? [])].every((dep) =>
         rows.some(
           (row) =>
             row.id === dep &&
@@ -31,6 +32,62 @@ export function readyTasks(
         ),
       ),
   );
+}
+
+/** Whether `text` names `path`: the path itself, or a module path's dotted form (`pkg.__main__`). */
+export function namesPath(text: string, path: string): boolean {
+  if (text.includes(path)) return true;
+  const stem = path.replace(/\.[^./]+$/, "");
+  if (!stem.includes("/")) return false;
+  const dotted = stem.replaceAll("/", ".").replace(/\.__init__$/, "");
+  return new RegExp(`(?:^|[^\\w.])${dotted.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w])`).test(
+    text,
+  );
+}
+
+/**
+ * The unfinished tasks that a task reporting `blocked` should wait for: tasks that write a file
+ * its account names (a missing `cfgtrace.__main__` the CLI task has not written yet), that it does
+ * not already wait for and that do not wait for it. A planner left a README that captures CLI
+ * output without a dependency on the CLI task; it ran first, blocked and stopped the run (bench
+ * round 12, cfgtrace 4018a791). A task that is blocked, failed or cancelled is not waited for.
+ */
+export function missingArtifactOwners(
+  graph: TaskGraph,
+  rows: TaskRow[],
+  task: Task,
+  account: { summary: string; unresolved: readonly string[] },
+  waitingFor: RuntimeState["waitingFor"] = {},
+): string[] {
+  const text = [account.summary, ...account.unresolved].join("\n");
+  const status = new Map(rows.map((r) => [r.id, r.status]));
+  const edges = (id: string): string[] => [
+    ...(graph.tasks.find((t) => t.id === id)?.dependsOn ?? []),
+    ...(waitingFor[id] ?? []),
+  ];
+  const reaches = (from: string, to: string, seen = new Set<string>()): boolean => {
+    if (from === to) return true;
+    if (seen.has(from)) return false;
+    seen.add(from);
+    return edges(from).some((id) => reaches(id, to, seen));
+  };
+  return graph.tasks
+    .filter(
+      (other) =>
+        other.id !== task.id &&
+        !["implemented", "verified", "blocked", "failed", "cancelled"].includes(
+          status.get(other.id) ?? "pending",
+        ) &&
+        !reaches(task.id, other.id) &&
+        !reaches(other.id, task.id) &&
+        other.writes.some(
+          (w) =>
+            w.action !== "delete" &&
+            !task.writes.some((own) => own.path === w.path) &&
+            namesPath(text, w.path),
+        ),
+    )
+    .map((other) => other.id);
 }
 /**
  * Tasks whose implementation a package revision keeps instead of implementing them again. This

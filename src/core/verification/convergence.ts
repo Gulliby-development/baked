@@ -4,6 +4,7 @@ import { counterexampleOf } from "../workflows/quality/properties.js";
 import {
   CorrectionSchema,
   DEFAULT_FRESH_RESTART_AFTER,
+  DEFAULT_MAX_TASK_REPAIRS,
   type Review,
   type RunPolicy,
   type Spec,
@@ -237,10 +238,46 @@ export function correctionBase(
   };
 }
 
+/**
+ * The first step of a correction whose finding carries a repro (#765): run it before editing,
+ * so the fix starts from the failure the reviewer showed, and again after the fix.
+ */
+function reproStep(repro: Review["findings"][number]["repro"]): string {
+  if (!repro) return "";
+  const command = [repro.executable, ...repro.args].map((a) => JSON.stringify(a)).join(" ");
+  return `\nReproduce first: run ${command} with run_probe before editing. The review saw it print ${JSON.stringify(repro.actual)} where the spec needs ${JSON.stringify(repro.expected)}. After the fix, run it again and confirm it prints the expected output.`;
+}
+
 /** A finding of a failed check run: it names the check and cites that run's evidence. */
 const checkRunFinding = (finding: Pick<Review["findings"][number], "claim" | "evidenceIds">) =>
   /^Required check \S+ failed$/.test(finding.claim) && finding.evidenceIds.length > 0;
 
+/**
+ * How many corrections lead to a task: 0 for a planned task, 1 for the correction of a planned
+ * task, 2 for the correction of that correction, and so on.
+ */
+function correctionDepth(state: RuntimeState, taskId: string): number {
+  let depth = 0;
+  let current = state.graph?.tasks.find((t) => t.id === taskId);
+  const seen = new Set<string>();
+  while (current && current.origin !== "planned" && !seen.has(current.id)) {
+    seen.add(current.id);
+    depth++;
+    const predecessor = current.findingIds
+      .map((id) => state.repairPredecessors[id])
+      .find((id): id is string => Boolean(id));
+    current = predecessor ? state.graph?.tasks.find((t) => t.id === predecessor) : undefined;
+  }
+  return depth;
+}
+
+/**
+ * Adds corrective tasks for findings. `scope: "task"` is a correction a task's own failed checks
+ * start during the implement stage: it is bounded by `maxTaskRepairs` per chain of corrections
+ * and does not spend a repair round, which counts checks-stage and review passes (cfgtrace
+ * 276e4858: two task-level corrections used both rounds and the checks stage could not repair
+ * eight failing tests).
+ */
 export function appendCorrections(
   store: WorkflowStore,
   runId: string,
@@ -248,19 +285,39 @@ export function appendCorrections(
   policy: RunPolicy,
   findings: Review["findings"],
   kind: "repair" | "convergence",
+  scope: "round" | "task" = "round",
 ): void {
   if (!state.graph || !state.rootGraph || !state.spec || !state.approvalRoot)
     throw new WorkflowFault("STALE_DECISION", "Repair requires an approved root graph");
   const run = store.run(runId);
-  const round = (kind === "repair" ? run.repair_rounds : run.convergence_rounds) + 1;
+  const taskLevel = kind === "repair" && scope === "task";
+  const chain = taskLevel
+    ? Math.max(
+        0,
+        ...findings.map((f) => {
+          const predecessor = state.repairPredecessors[f.id];
+          return predecessor ? correctionDepth(state, predecessor) : 0;
+        }),
+      )
+    : 0;
+  const round = taskLevel
+    ? chain + 1
+    : (kind === "repair" ? run.repair_rounds : run.convergence_rounds) + 1;
   // A person's "one more round" at a convergence decision raises both limits for that stage.
-  const limit =
-    kind === "repair"
+  const limit = taskLevel
+    ? (policy.maxTaskRepairs ?? DEFAULT_MAX_TASK_REPAIRS)
+    : kind === "repair"
       ? policy.maxRepairRounds
       : policy.maxConvergenceRounds + state.extraConvergenceRounds;
   const cap = policy.maxCorrectiveTasks + state.extraCorrectiveTasks;
   const findingSet = findingSetHash(findings);
-  const repeats = state.previousFindingSet === findingSet ? state.noProgressRounds + 1 : 0;
+  // A task-level correction repeating its task's failure is bounded by its chain length; it
+  // leaves the stage-level repeat count to the checks stage and reviews.
+  const repeats = taskLevel
+    ? 0
+    : state.previousFindingSet === findingSet
+      ? state.noProgressRounds + 1
+      : 0;
   // A repair that leaves the failing output as it was may have had no way to see the cause
   // (hookdrop c325575b: a library dropped a character the code could not restore). Repeats before
   // `freshRestartAfter` get the next repair round, told to isolate the failure with run_probe
@@ -268,24 +325,26 @@ export function appendCorrections(
   // the accumulated attempts are what it would otherwise keep repeating. A repeat after that
   // stops the run. Convergence repeats go to a person first (convergenceStop), so a convergence
   // round never repeats.
-  const after = kind === "repair" ? (policy.freshRestartAfter ?? DEFAULT_FRESH_RESTART_AFTER) : 0;
-  const fresh = kind === "repair" && repeats === after;
+  const after =
+    kind === "repair" && !taskLevel ? (policy.freshRestartAfter ?? DEFAULT_FRESH_RESTART_AFTER) : 0;
+  const fresh = kind === "repair" && !taskLevel && repeats === after;
   // The fresh-context attempt is the restart of a repeated failure, not another repair round, so
   // the round limit does not refuse it; the corrective task cap still applies.
   const overRounds = round > limit && !fresh;
-  // Not BUDGET_EXHAUSTED: `workflow extend` raises tokens, calls and time, none of which helps.
-  if (overRounds || run.corrective_tasks + findings.length > cap) {
-    const setting = overRounds
-      ? kind === "repair"
-        ? "maxRepairRounds"
-        : "maxConvergenceRounds"
-      : "maxCorrectiveTasks";
+  const refuse = (setting: string, value: number, count: number): never => {
+    // Not BUDGET_EXHAUSTED: `workflow extend` raises tokens, calls and time, none of which helps.
     throw new WorkflowFault(
       "RECOVERY_REQUIRED",
-      `no_progress: ${findings.length} finding(s) remain after the policy's ${setting} (${overRounds ? limit : cap}). Narrow the spec or raise ${setting} with workflow revise, or fork the run.`,
+      `no_progress: ${count} finding(s) remain after the policy's ${setting} (${value}). Narrow the spec or raise ${setting} with workflow revise, or fork the run.`,
       { reason: "no_progress", limit: setting },
     );
-  }
+  };
+  if (overRounds)
+    refuse(
+      taskLevel ? "maxTaskRepairs" : kind === "repair" ? "maxRepairRounds" : "maxConvergenceRounds",
+      limit,
+      findings.length,
+    );
   if (repeats > after)
     throw new WorkflowFault(
       "RECOVERY_REQUIRED",
@@ -294,8 +353,6 @@ export function appendCorrections(
         : "no_progress: consecutive reflection rounds repeat the same findings",
       { reason: "no_progress", ...(kind === "repair" ? { freshRestart: true } : {}) },
     );
-  state.noProgressRounds = repeats;
-  state.previousFindingSet = findingSet;
   const toCorrect =
     repeats > 0 && !fresh
       ? findings.map((f) => ({
@@ -303,6 +360,7 @@ export function appendCorrections(
           suggestedFix: `${f.suggestedFix} The previous correction left this failure unchanged: isolate the cause with run_probe (a minimal program or the failing test alone) and confirm what the code or a library actually does before editing again; if the cause lies outside the files you may edit, say so in unresolved.`,
         }))
       : findings;
+  const predecessorsBefore = { ...state.repairPredecessors };
   let next = Math.max(...state.graph.tasks.map((t) => Number(t.id.slice(1)))) + 1;
   // Findings against the same task and file become one corrective task: each task reads the
   // files again from scratch, so three failed checks of one task were three full rereads. The
@@ -346,6 +404,16 @@ export function appendCorrections(
       : { base, bases: [base], findings: [] as Review["findings"] };
     group.findings.push(finding);
     groups.set(key, group);
+  }
+  // The cap counts corrective tasks: the findings of one failed check run become one task, so one
+  // pytest run recorded against six owning files is one task, not six (cfgtrace 276e4858).
+  if (run.corrective_tasks + groups.size > cap) {
+    state.repairPredecessors = predecessorsBefore;
+    refuse("maxCorrectiveTasks", cap, findings.length);
+  }
+  if (!taskLevel) {
+    state.noProgressRounds = repeats;
+    state.previousFindingSet = findingSet;
   }
   const root = state.rootGraph;
   // A planned file the correction needs: its owner of the same profile joins the group, so the
@@ -394,7 +462,7 @@ export function appendCorrections(
       description: grouped
         .map(
           (finding) =>
-            `${grouped.length > 1 ? `Finding ${finding.id}: ` : ""}${finding.claim}\nImpact: ${finding.impact}\nProposed fix: ${finding.suggestedFix}`,
+            `${grouped.length > 1 ? `Finding ${finding.id}: ` : ""}${finding.claim}\nImpact: ${finding.impact}\nProposed fix: ${finding.suggestedFix}${reproStep(finding.repro)}`,
         )
         .join("\n\n"),
       dependsOn: [],
@@ -420,7 +488,9 @@ export function appendCorrections(
   const artifact = store.artifact(
     runId,
     "correction",
-    `corrections/${kind}-${round}.json`,
+    taskLevel
+      ? `corrections/task-${additions[0]?.id ?? "T000"}.json`
+      : `corrections/${kind}-${round}.json`,
     canonical(correction),
   );
   state.correctionHashes.push(artifact.content_hash);
@@ -452,7 +522,8 @@ export function appendCorrections(
       state.freshTasks[task.id] = artifact.id;
     }
   }
-  store.addRound(runId, kind, additions.length);
+  if (taskLevel) store.addCorrectiveTasks(runId, additions.length);
+  else store.addRound(runId, kind, additions.length);
 }
 
 /**

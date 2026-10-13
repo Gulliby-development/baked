@@ -191,6 +191,24 @@ describe("baked session checkpoints", () => {
   });
 });
 
+describe("baked session undo", () => {
+  test("says that the files were left as they are when the undone turn recorded no edits", async () => {
+    const dir = tempDir();
+    const store = new SessionManager(dir);
+    const messages = [
+      { id: "u1", role: "user", content: "first", timestamp: 1 },
+      { id: "a1", role: "assistant", content: "done", timestamp: 2 },
+    ] as unknown as ChatMessage[];
+    await store.saveSession(meta("noedit-1", "No edits", dir), new Map([["tab-1", messages]]));
+
+    const undo = await cli(dir, () => runSessionCli(["undo", "noedit"]));
+    expect(undo.code).toBe(0);
+    expect(undo.stdout).toBe(
+      "Undone to checkpoint #0 (0 messages, 1 turn(s) to redo)\nNo file edits were recorded for these turns; files were left as they are\n",
+    );
+  });
+});
+
 describe("baked session export", () => {
   test("writes the active tab as Markdown or JSON", async () => {
     const dir = tempDir();

@@ -55,10 +55,11 @@ export const LimitationSchema = z
     claim: z.string(),
     impact: z.string(),
     /**
-     * Who accepted it: a person, the `assume` rule when the checks passed, or the notes rule (a
-     * low `partial` finding behind verified behavior, accepted without a decision).
+     * Who accepted it: a person, the `assume` rule when the checks passed, the notes rule (a
+     * low `partial` finding behind verified behavior, accepted without a decision), or `rule`: a
+     * deterministic quality rule that still matched the same text after its correction.
      */
-    decidedBy: z.enum(["user", "assume", "notes", "critic"]),
+    decidedBy: z.enum(["user", "assume", "notes", "critic", "rule"]),
     /** Convergence rounds the run had used when the finding was accepted. */
     round: z.number().int().nonnegative(),
   })
@@ -158,6 +159,11 @@ export const RuntimeStateSchema = z
      * ID: the artifact with the host's account of the earlier attempts.
      */
     freshTasks: z.record(z.string(), z.string()).default({}),
+    /**
+     * Corrective tasks whose first attempt, limited to the files their findings point at, failed:
+     * their next attempts may write the full scope of the tasks they correct (#765).
+     */
+    widenedCorrections: z.array(z.string()).default([]),
     /** Attempt token cap per planned task, set by plan-time sizing; corrections use their base's. */
     taskBudgets: z.record(z.string(), z.number().int().positive()).default({}),
     /** Step cap per planned task from plan-time sizing (test tasks); corrections use their base's. */
@@ -175,6 +181,11 @@ export const RuntimeStateSchema = z
      * owners they wait for. The check runs again once the owners are done; no repair starts.
      */
     deferredChecks: z.record(z.string(), z.array(z.string())).default({}),
+    /**
+     * Tasks that reported `blocked` on a file an unfinished task writes, by the tasks they wait
+     * for. The task runs again once those are done (#807).
+     */
+    waitingFor: z.record(z.string(), z.array(z.string())).default({}),
     /**
      * The existing tests that reach each task's files, from the code graph, and how the check that
      * runs only them ended before the task's first attempt (#634). When that baseline passed, the

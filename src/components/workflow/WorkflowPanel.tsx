@@ -46,6 +46,7 @@ import { TaskGraphView } from "./TaskGraphView.js";
 import { UndoReport } from "./UndoReport.js";
 import { UsagePopup } from "./UsageView.js";
 import { WorkflowEditorPopup } from "./WorkflowEditor.js";
+import { WorkflowsPopup } from "./WorkflowsView.js";
 
 const sections = [
   "overview",
@@ -117,12 +118,19 @@ export function WorkflowPanel({
   const [confirmReroute, setConfirmReroute] = useState(false);
   const [confirmUndo, setConfirmUndo] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
-  /** The fix-ci run the last read of failed pull request checks proposes; Y starts it. */
+  // The stage a fork starts at; "" starts from the beginning with a new approval.
+  const [forkPick, setForkPick] = useState<{ stages: string[]; index: number } | null>(null);
+  /**
+   * The fix-ci run the last read of failed pull request checks proposes, or the quick-fix run for
+   * its unresolved review comments; Y starts it.
+   */
   const [fixChecks, setFixChecks] = useState<{
     featureId: string;
     prompt: string;
     workflowId: string;
     summary: string;
+    /** The follow-up delivery flags beyond --follow-up, such as the threads it answers. */
+    deliver: string;
   } | null>(null);
   // The last undo of the open run, shown until Esc or another run.
   const [undone, setUndone] = useState<{ runId: string; report: UndoResult["report"] } | null>(
@@ -201,13 +209,20 @@ export function WorkflowPanel({
       setFlash({ kind: "err", message: err instanceof Error ? err.message : String(err) });
     }
   };
-  /** Reads the delivered pull request's checks once; failed checks offer a fix-ci run. */
-  const readChecks = async (id: string): Promise<void> => {
+  /**
+   * Reads the delivered pull request's checks once; failed checks offer a fix-ci run. With
+   * `reviews` it also reads the unresolved review threads, which offer a quick-fix run.
+   */
+  const readChecks = async (id: string, reviews = false): Promise<void> => {
     try {
       const read = (await workflowSession(workspace).command(
-        ["follow", id, "--once"],
+        ["follow", id, "--once", ...(reviews ? ["--reviews"] : [])],
         new AbortController().signal,
-      )) as PullRequestChecks & { fix?: { featureId: string; prompt: string; workflowId: string } };
+      )) as PullRequestChecks & {
+        fix?: { featureId: string; prompt: string; workflowId: string };
+        reviews?: { threads: unknown[]; changesRequested: unknown[] };
+        repair?: { featureId: string; prompt: string; workflowId: string; threads: string[] };
+      };
       const failed = read.checks.filter((c) => c.state === "failed").map((c) => c.name);
       const where = read.pullRequest ? `#${read.pullRequest.number}` : read.branch;
       const summary =
@@ -218,7 +233,17 @@ export function WorkflowPanel({
             : read.state === "pending"
               ? `${where}: checks still running`
               : `${where}: no checks reported yet`;
-      if (read.fix) setFixChecks({ ...read.fix, summary });
+      if (read.fix) setFixChecks({ ...read.fix, summary, deliver: "" });
+      else if (read.repair && read.reviews)
+        setFixChecks({
+          ...read.repair,
+          summary: `${where}: ${read.reviews.threads.length} unresolved review thread(s), ${read.reviews.changesRequested.length} review(s) requesting changes`,
+          deliver: read.repair.threads.length
+            ? ` --answer-threads ${read.repair.threads.join(",")}`
+            : "",
+        });
+      else if (read.reviews)
+        setFlash({ kind: "info", message: `${summary}; no unresolved review comments` });
       else setFlash({ kind: read.state === "passed" ? "ok" : "info", message: summary });
     } catch (err) {
       setFlash({ kind: "err", message: err instanceof Error ? err.message : String(err) });
@@ -240,7 +265,8 @@ export function WorkflowPanel({
       screen === "editor" ||
       screen === "initiatives" ||
       screen === "routing" ||
-      screen === "usage"
+      screen === "usage" ||
+      screen === "workflows"
     )
       return;
     if (!onRun) {
@@ -264,6 +290,11 @@ export function WorkflowPanel({
       if (key === "u") {
         event.preventDefault();
         useWorkflowStore.getState().showUsage();
+        return;
+      }
+      if (key === "w") {
+        event.preventDefault();
+        useWorkflowStore.getState().showWorkflows();
         return;
       }
       if (key === "r") {
@@ -346,6 +377,20 @@ export function WorkflowPanel({
       } else if (key === "escape" || key === "n") setFixChecks(null);
       return;
     }
+    if (forkPick) {
+      event.preventDefault();
+      const count = forkPick.stages.length;
+      if (key === "left" || key === "h")
+        setForkPick({ ...forkPick, index: (forkPick.index + count - 1) % count });
+      else if (key === "right" || key === "l")
+        setForkPick({ ...forkPick, index: (forkPick.index + 1) % count });
+      else if (key === "y" || key === "return") {
+        const stage = forkPick.stages[forkPick.index];
+        setForkPick(null);
+        void act(stage ? { fork: stage } : "fork");
+      } else if (key === "escape" || key === "n") setForkPick(null);
+      return;
+    }
     if (confirmDiscard) {
       event.preventDefault();
       if (key === "y") {
@@ -390,7 +435,10 @@ export function WorkflowPanel({
     else if (action.action === "reroute") setConfirmReroute(true);
     else if (action.action === "cancel") setConfirmCancel(true);
     else if (action.action === "discard-worktree") setConfirmDiscard(true);
+    else if (action.action === "fork" && service?.store.forkStages(snapshot.runId).length)
+      setForkPick({ stages: ["", ...service.store.forkStages(snapshot.runId)], index: 0 });
     else if (action.action === "checks") void readChecks(snapshot.runId);
+    else if (action.action === "reviews") void readChecks(snapshot.runId, true);
     else if (action.action === "undo") {
       if (!driving) setConfirmUndo(true);
     } else void act(action.action);
@@ -408,6 +456,7 @@ export function WorkflowPanel({
     { key: "G", label: "gates" },
     { key: "R", label: "routing" },
     { key: "U", label: "usage" },
+    { key: "W", label: "workflows" },
     { key: "Esc", label: "close" },
   ];
   if (screen === "new")
@@ -471,6 +520,17 @@ export function WorkflowPanel({
           useWorkflowStore.getState().openInitiativeRun(id, activeTabId);
           setTab("overview");
         }}
+      />
+    );
+
+  if (screen === "workflows")
+    return (
+      <WorkflowsPopup
+        definitions={Object.entries(info?.definitions ?? {}).map(([id, d]) => ({ id, ...d }))}
+        width={popupW}
+        height={Math.min(40, height)}
+        onBack={() => useWorkflowStore.getState().showHome()}
+        onEdit={(id) => useWorkflowStore.getState().showEditor(id)}
       />
     );
 
@@ -690,9 +750,14 @@ export function WorkflowPanel({
             {`Remove this run's worktree ${worktree.path} and delete its branch ${worktree.branch}? Work that was not delivered is lost. Y confirms; N keeps them.`}
           </text>
         ) : null}
+        {forkPick ? (
+          <text fg={t.warning}>
+            {`Fork from: ${forkPick.stages.map((stage, i) => (i === forkPick.index ? `[${stage || "start"}]` : ` ${stage || "start"} `)).join(" ")}. ${forkPick.stages[forkPick.index] ? `The new run starts at ${forkPick.stages[forkPick.index]} with this run's approval and changes.` : "The new run reuses the spec and plan and needs a new approval."} ←→ picks; Y forks; N keeps this run.`}
+          </text>
+        ) : null}
         {fixChecks ? (
           <text fg={t.warning}>
-            {`${fixChecks.summary}. Start a fix-ci run (${fixChecks.featureId}) for them? Deliver it afterwards with --follow-up ${runId}. Y starts it; N leaves it.`}
+            {`${fixChecks.summary}. Start a ${fixChecks.workflowId} run (${fixChecks.featureId}) for them? Deliver it afterwards with --follow-up ${runId}${fixChecks.deliver}. Y starts it; N leaves it.`}
           </text>
         ) : null}
         {confirmCancel ? (

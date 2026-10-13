@@ -1,23 +1,27 @@
 import { useEffect, useState } from "react";
 import type { RunState } from "../../../shared/api.js";
 import { errorText, RUN_COMPARE_CAPABILITY, type RunRow, runs } from "../../client/runs.js";
-import { BlockIcon, Icon } from "../../components/Icon.js";
+import { BlockIcon } from "../../components/Icon.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
 import { Empty } from "../../components/ui/empty.js";
 import { Segment, SegmentGroup } from "../../components/ui/segmented.js";
 import { Skeleton } from "../../components/ui/skeleton.js";
 import { ago, tokens, usd } from "../../format.js";
-import { TABLE } from "../../lib/styles.js";
+import { cn } from "../../lib/cn.js";
+import { LABEL, PANEL, TABLE } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
 import { CompareView } from "./CompareView.js";
+import { Conveyor } from "./Conveyor.js";
 import { togglePick } from "./compare-model.js";
-import { stageIconOf } from "./line-model.js";
+import { lineOf, stations } from "./line-model.js";
+import type { RunBrief } from "./load.js";
 import { useBriefs } from "./load.js";
 import { RunsMaintenance } from "./Maintenance.js";
 import { STATUS_TEXT, stageLabel } from "./model.js";
 import { StatusPill } from "./parts.js";
+import { RunLine } from "./RunLine.js";
 
 const FILTERS: { label: string; status: RunState | null }[] = [
   { label: "All", status: null },
@@ -29,6 +33,48 @@ const FILTERS: { label: string; status: RunState | null }[] = [
   { label: "Failed", status: "failed" },
 ];
 const PAGE = 30;
+/** Runs on the line now: shown on their conveyor above the list. */
+const LIVE: readonly RunState[] = ["running", "waiting", "blocked", "paused"];
+const LIVE_MAX = 3;
+
+/** An active run on the same conveyor as its run screen; a station opens the run. */
+function LiveRun({ run, brief, projectKey }: { run: RunRow; brief: RunBrief; projectKey: string }) {
+  const href = projectHref(projectKey, "runs", run.runId);
+  const line = lineOf(
+    brief.pipeline.map((s) => s.id),
+    null,
+  );
+  const list = stations(brief.pipeline, line, new Map(), run.status);
+  const current = list.find((s) => s.state === "current" || s.state === "waiting");
+  return (
+    <article
+      aria-label={`Run ${run.featureId}`}
+      className={cn(PANEL, "flex min-w-0 flex-col gap-1 bg-raised py-3")}
+    >
+      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+        <a href={href} className="font-mono text-[15px] font-bold">
+          {run.featureId}
+        </a>
+        <StatusPill status={run.status} />
+        <span className="min-w-0 flex-1 truncate text-[13px] text-soft-foreground">
+          {brief.title ?? ""}
+        </span>
+        <span className="font-mono text-[12px] text-dim-foreground">
+          {tokens(run.tokenUsage)} · {usd(run.estimatedCostUsd)}
+        </span>
+      </div>
+      <Conveyor
+        stations={list}
+        loops={line.loops}
+        selected={current?.id ?? ""}
+        running={run.status === "running"}
+        onSelect={() => {
+          window.location.hash = href;
+        }}
+      />
+    </article>
+  );
+}
 
 export function RunsList({ project }: Pick<SectionProps, "project">) {
   const [status, setStatus] = useState<RunState | null>(null);
@@ -128,6 +174,24 @@ export function RunsList({ project }: Pick<SectionProps, "project">) {
           {status ? `No ${STATUS_TEXT[status]} runs.` : "No workflow runs in this project yet."}
         </Empty>
       )}
+      {(() => {
+        const live = (list ?? [])
+          .filter((run) => LIVE.includes(run.status) && briefs.get(run.runId)?.pipeline.length)
+          .slice(0, LIVE_MAX);
+        return live.length > 0 ? (
+          <section aria-label="On the line now" className="flex flex-col gap-2">
+            <h2 className={LABEL}>On the line now</h2>
+            {live.map((run) => (
+              <LiveRun
+                key={run.runId}
+                run={run}
+                brief={briefs.get(run.runId) as RunBrief}
+                projectKey={project.key}
+              />
+            ))}
+          </section>
+        ) : null;
+      })()}
       {list && list.length > 0 && (
         <div className="overflow-x-auto">
           <table className={TABLE}>
@@ -137,7 +201,7 @@ export function RunsList({ project }: Pick<SectionProps, "project">) {
                 <th>Feature</th>
                 <th>Title</th>
                 <th>Status</th>
-                <th>Stage</th>
+                <th>Line</th>
                 <th className="text-right">Tasks</th>
                 <th className="text-right">Tokens</th>
                 <th className="text-right">Cost</th>
@@ -169,20 +233,17 @@ export function RunsList({ project }: Pick<SectionProps, "project">) {
                       <StatusPill status={run.status} />
                     </td>
                     <td>
-                      {run.stageId ? (
-                        <span className="inline-flex items-center gap-[6px]">
-                          <Icon name={stageIconOf(run.stageId)} size={13} />
-                          {stageLabel(run.stageId)}
+                      <span className="flex items-center gap-3">
+                        {brief && <RunLine stages={brief.pipeline} />}
+                        <span className="inline-flex flex-col leading-tight">
+                          {run.stageId ? stageLabel(run.stageId) : "–"}
+                          {brief && brief.stage.total > 0 && (
+                            <span className="font-mono text-[11px] text-dim-foreground">
+                              {brief.stage.index}/{brief.stage.total}
+                            </span>
+                          )}
                         </span>
-                      ) : (
-                        "–"
-                      )}
-                      {brief && brief.stage.total > 0 && (
-                        <span className="font-mono text-dim-foreground">
-                          {" "}
-                          {brief.stage.index}/{brief.stage.total}
-                        </span>
-                      )}
+                      </span>
                     </td>
                     <td className="text-right font-mono">
                       {brief && brief.tasks.total > 0

@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   cargoMutants,
   detectMutationTool,
@@ -10,6 +13,7 @@ import {
   strykerMutants,
   type ToolShell,
 } from "../src/core/workflows/quality/mutation-tools.js";
+import { readablePath } from "../src/core/specs/validate.js";
 import { proposedMutants } from "../src/core/workflows/quality/mutation.js";
 
 // Trimmed from reports the tools wrote for these files (Stryker 10, cargo-mutants 27,
@@ -259,6 +263,28 @@ describe("running a tool", () => {
       "show calc.x_is_adult__mutmut_1",
       "show calc.x_clamp__mutmut_1",
     ]);
+  });
+});
+
+describe("tool paths in a worktree", () => {
+  test("a tool in the node_modules a worktree links to the working copy is found; other escapes are refused", () => {
+    const workspace = realpathSync(mkdtempSync(join(tmpdir(), "baked-tool-path-")));
+    try {
+      const bin = "node_modules/@stryker-mutator/core/bin/stryker.js";
+      mkdirSync(join(workspace, "node_modules/@stryker-mutator/core/bin"), { recursive: true });
+      writeFileSync(join(workspace, bin), "");
+      const worktree = join(workspace, ".baked/worktrees/run-1");
+      mkdirSync(worktree, { recursive: true });
+      symlinkSync(join(workspace, "node_modules"), join(worktree, "node_modules"), process.platform === "win32" ? "junction" : "dir");
+      writeFileSync(join(workspace, "secret.txt"), "");
+      symlinkSync(join(workspace, "secret.txt"), join(worktree, "report.json"));
+      expect(existsSync(readablePath(worktree, bin))).toBe(true);
+      expect(() => readablePath(worktree, "node_modules/../../../secret.txt")).toThrow();
+      expect(() => readablePath(worktree, "report.json")).toThrow();
+      expect(readablePath(worktree, "reports/mutation/mutation.json")).toBe(join(worktree, "reports/mutation/mutation.json"));
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 });
 

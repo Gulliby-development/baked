@@ -181,6 +181,11 @@ describe("local API chat sessions", () => {
 
     const fork = (await (await post(`/v1/sessions/${session.id}/fork`, {})).json()) as SessionDetail;
     expect(fork.effort).toBe("low");
+    // The session reads as idle before its last save lands, so wait for the saved effort.
+    await until(
+      async () => new SessionManager(fixture.root).loadSession(session.id)?.meta,
+      (meta) => meta?.tabs.some((tab) => tab.effort === "low") === true,
+    );
     const reloaded = new ChatService({ workspace: fixture.root, config: fixture.service.config, host });
     expect(reloaded.get(session.id).summary().effort).toBe("low");
 

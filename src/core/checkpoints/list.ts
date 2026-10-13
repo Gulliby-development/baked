@@ -3,6 +3,7 @@
  * and the command line (`baked session checkpoints`): one entry per turn, with what an undo to it
  * would keep, and the undone turns a redo can put back.
  */
+import { spawnSync } from "node:child_process";
 import type { ChatMessage } from "../../types/index.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildTurns, type CheckpointTag } from "./turns.js";
@@ -45,8 +46,12 @@ export function listCheckpoints(
   messages: ChatMessage[],
   tags: readonly CheckpointTag[],
   redo: readonly RedoTurn[] = [],
+  /** The snapshot tags present in the repository; when given, a missing tag is no snapshot. */
+  existingTags?: ReadonlySet<string>,
 ): CheckpointList {
-  const snapshots = new Set(tags.map((t) => t.index));
+  const snapshots = new Set(
+    tags.filter((t) => !existingTags || existingTags.has(t.gitTag)).map((t) => t.index),
+  );
   return {
     checkpoints: buildTurns(messages).map((turn) => {
       const anchor = messages[turn.start];
@@ -70,6 +75,17 @@ export function listCheckpoints(
 
 export class SavedCheckpointsError extends Error {}
 
+/** The `baked/*` tags of the repository at `cwd`, or undefined when Git cannot list them. */
+function bakedTags(cwd: string): Set<string> | undefined {
+  const r = spawnSync("git", ["for-each-ref", "--format=%(refname:strip=2)", "refs/tags/baked/"], {
+    cwd,
+    encoding: "utf-8",
+    timeout: 10_000,
+  });
+  if (r.error || r.status !== 0) return undefined;
+  return new Set(r.stdout.split("\n").filter(Boolean));
+}
+
 /** The checkpoints of a saved session's active conversation. */
 export function savedSessionCheckpoints(
   store: SessionManager,
@@ -87,6 +103,7 @@ export function savedSessionCheckpoints(
       data.tabMessages.get(tab.id) ?? [],
       tab.checkpointTags ?? [],
       tab.redoTurns ?? [],
+      tab.checkpointTags?.length ? bakedTags(data.meta.cwd) : undefined,
     ),
   };
 }

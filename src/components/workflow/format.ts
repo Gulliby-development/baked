@@ -174,7 +174,8 @@ export interface RunAction {
     | "extend"
     | "undo"
     | "reroute"
-    | "checks";
+    | "checks"
+    | "reviews";
 }
 /** The limits one "raise" decision would set, from the numbers the run screen already has. */
 export function extensionFor(budget: BudgetView): BudgetLimits | null {
@@ -237,6 +238,7 @@ export function runActions(
   if (s === "blocked" || isTerminal(s)) actions.push({ key: "F", label: "fork", action: "fork" });
   // A delivered run's pull request checks; the read says when the run was not delivered.
   if (s === "completed") actions.push({ key: "K", label: "PR checks", action: "checks" });
+  if (s === "completed") actions.push({ key: "V", label: "PR reviews", action: "reviews" });
   if (worktree && isTerminal(s))
     actions.push({ key: "D", label: "discard worktree", action: "discard-worktree" });
   // Undo needs the run's leases, so it is offered only while nothing executes the run.
@@ -354,7 +356,7 @@ export function eventText(event: WorkflowEvent, stages: StageView[]): string | n
     case "attempt.advisory":
       return `Progress watcher ${event.payload.action === "stopped" ? "stopped the agent call" : "warned the agent"}: ${event.payload.detail}`;
     case "task.state_changed":
-      return `Task ${event.payload.taskId}: ${event.payload.from} → ${event.payload.to}`;
+      return `Task ${event.payload.taskId}: ${event.payload.from} → ${event.payload.to}${event.payload.cause ? ` (${event.payload.cause.replaceAll("_", " ")}${event.payload.detail ? `: ${event.payload.detail}` : ""})` : ""}`;
     case "check.finished":
       return `Check ${event.payload.checkId} ${event.payload.status}`;
     case "finding.recorded":

@@ -24,6 +24,26 @@ export interface PullRequestChecks {
   }[];
   /** With failed checks: the fix-ci run to start; deliver it as a follow-up of this run. */
   fix?: { workflowId: string; featureId: string; prompt: string; followUp: string };
+  /** With `reviews`: the unresolved review threads and requested changes of the pull request. */
+  reviews?: {
+    state: "clear" | "changes";
+    threads: {
+      id: string;
+      outdated: boolean;
+      path: string;
+      line: number | null;
+      comments: { author: string; body: string; url: string }[];
+    }[];
+    changesRequested: { author: string; body: string; url: string }[];
+  };
+  /** With review changes asked for: the quick-fix run to start and the threads its delivery answers. */
+  repair?: {
+    workflowId: string;
+    featureId: string;
+    prompt: string;
+    followUp: string;
+    threads: string[];
+  };
 }
 
 export interface RunRow extends RunSnapshot {
@@ -51,6 +71,11 @@ export interface RunDetailStatus extends Omit<RunStatus, "requests"> {
    * src/core/workflows/routing.ts). Null before routing was recorded; absent from older backends.
    */
   routing?: RunRouting | null;
+  /**
+   * The stages after the implementation a fork can start at (`forkStages` in
+   * src/core/workflows/fork-stage.ts); absent from older backends.
+   */
+  forkStages?: string[];
 }
 
 export interface RunRouting {
@@ -113,7 +138,15 @@ export interface EventPayloads {
     action: "steered" | "stopped";
     detail: string;
   };
-  "task.state_changed": { taskId: string; from: string; to: string; generation: number };
+  "task.state_changed": {
+    taskId: string;
+    from: string;
+    to: string;
+    generation: number;
+    /** Why the task was interrupted (restart, continue_at_cap, worker_lost, ...). */
+    cause?: string;
+    detail?: string;
+  };
   "artifact.committed": { artifactId: string; kind: string; hash: string };
   "check.finished": { checkId: string; evidenceId: string; status: string };
   "finding.recorded": { findingId: string; artifactId: string };
@@ -191,8 +224,12 @@ export const runs = {
   usage: (key: string, runId: string) => call<RunUsage>(key, "GET", runPath(runId, "usage")),
   /** `GET /v1/workflow/runs/:id/report`: the run report in Markdown (src/core/workflows/run-report.ts). */
   /** One read of the checks on the commit the run's latest delivery pushed (`follow --once`). */
-  checks: (key: string, runId: string) =>
-    call<PullRequestChecks>(key, "GET", runPath(runId, "checks")),
+  checks: (key: string, runId: string, reviews = false) =>
+    call<PullRequestChecks>(
+      key,
+      "GET",
+      `${runPath(runId, "checks")}${reviews ? "?reviews=true" : ""}`,
+    ),
   report: async (key: string, runId: string): Promise<string> =>
     (await call<{ runId: string; markdown: string }>(key, "GET", runPath(runId, "report")))
       .markdown,
@@ -250,11 +287,15 @@ export const runs = {
       expectedRevision: run.revision,
       ...decision,
     }),
-  /** A new run from this one's spec and plan; it waits for a new approval. Returns the new run. */
-  fork: (key: string, run: Pick<RunSnapshot, "runId" | "revision">) =>
+  /**
+   * A new run from this one's spec and plan; it waits for a new approval. With `fromStage` it
+   * starts at that stage with this run's approval and changes instead. Returns the new run.
+   */
+  fork: (key: string, run: Pick<RunSnapshot, "runId" | "revision">, fromStage?: string) =>
     call<RunSnapshot>(key, "POST", runPath(run.runId, "fork"), {
       commandId: crypto.randomUUID(),
       expectedRevision: run.revision,
+      ...(fromStage ? { fromStage } : {}),
     }),
   /** Removes an ended run's worktree and deletes its branch. */
   discardWorktree: (key: string, run: Pick<RunSnapshot, "runId" | "revision">) =>

@@ -61,6 +61,12 @@ export interface DeliveryBody {
   pullRequest?: { repository: string; title: string; base: string; draft: boolean } | null;
   /** A follow-up: the commit goes onto the branch and pull request of an earlier delivered run. */
   followUp?: { runId: string; pullRequest: { number: number; url: string } | null };
+  /** Review threads of the followed pull request answered after the push. */
+  reviewReplies?: {
+    threads: { id: string; path: string; url: string }[];
+    resolve: boolean;
+    body: string;
+  };
 }
 
 export interface PreparedDelivery {

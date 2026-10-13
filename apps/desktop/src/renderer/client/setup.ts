@@ -6,7 +6,8 @@
  * fail like a missing endpoint (404) when the backend does not list the capability, so screens
  * show "needs a newer BAKED" either way.
  */
-import { ApiError, call } from "./api.js";
+import { ApiError, call, MODELS_READ } from "./api.js";
+import { invalidateRead } from "./cache.js";
 import {
   CHAT_MEMORY_CAPABILITY,
   CHECKS_CAPABILITY,
@@ -285,6 +286,18 @@ export interface CliLogin {
   error?: string;
   startedAt: string;
   endedAt?: string;
+}
+
+/** The sign-ins already seen finished, by provider and start, so each refreshes the models once. */
+const finishedLogins = new Set<string>();
+
+/** A sign-in finishes in the CLI, not through a write, so its first success refreshes the models. */
+function noteLogin(provider: string, login: CliLogin | null): void {
+  if (login?.state !== "succeeded") return;
+  const id = `${provider}@${login.startedAt}`;
+  if (finishedLogins.has(id)) return;
+  finishedLogins.add(id);
+  invalidateRead(MODELS_READ);
 }
 
 export interface CliSignIn {
@@ -730,8 +743,15 @@ export const setup = {
     call<null>(key, "DELETE", `/v1/providers/${json(provider)}/key`),
   startLogin: (key: string, provider: string) =>
     call<{ login: CliLogin }>(key, "POST", `/v1/providers/${json(provider)}/login`),
-  login: (key: string, provider: string) =>
-    call<{ login: CliLogin | null }>(key, "GET", `/v1/providers/${json(provider)}/login`),
+  login: async (key: string, provider: string) => {
+    const result = await call<{ login: CliLogin | null }>(
+      key,
+      "GET",
+      `/v1/providers/${json(provider)}/login`,
+    );
+    noteLogin(provider, result.login);
+    return result;
+  },
   cancelLogin: (key: string, provider: string) =>
     call<{ login: CliLogin | null }>(key, "DELETE", `/v1/providers/${json(provider)}/login`),
   logout: (key: string, provider: string) =>

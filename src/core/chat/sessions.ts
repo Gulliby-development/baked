@@ -36,24 +36,23 @@ import type {
   ImageAttachment,
   InputContextItem,
   InteractiveCallbacks,
+  LaunchNote,
   MessageSegment,
   Plan,
   PlanReviewAction,
   ToolCall,
-  ToolResult,
 } from "../../types/index.js";
 import {
-  checkpointTagName,
   copyCheckpointTags,
   ensureBaseSnapshot,
   forkPoint,
   RollbackError,
   type RollbackReport,
   rollbackToCheckpoint,
+  snapshotTurnEnd,
 } from "../checkpoints/fork.js";
 import { type CheckpointList, listCheckpoints, promptLine } from "../checkpoints/list.js";
-import { snapshotWorkspace } from "../checkpoints/snapshot.js";
-import { buildTurns, type CheckpointTag, extractFilesFromToolCalls } from "../checkpoints/turns.js";
+import { type CheckpointTag, extractFilesFromToolCalls } from "../checkpoints/turns.js";
 import {
   dropRedoTags,
   type RedoTurn,
@@ -91,6 +90,7 @@ import {
   STATE_TOOL,
   stateTool,
 } from "./project-state.js";
+import { toolResultOf } from "./tool-result.js";
 
 export const CHAT_MODES = ["default", "architect", "plan", "auto"] as const;
 export type ChatMode = (typeof CHAT_MODES)[number];
@@ -387,27 +387,6 @@ function errorText(error: unknown): string {
     return JSON.stringify(error);
   }
   return String(error);
-}
-
-function toolResultOf(output: unknown): ToolResult {
-  if (output && typeof output === "object" && "success" in output) {
-    const r = output as Partial<ToolResult> & { success: boolean };
-    return {
-      success: r.success,
-      output: typeof r.output === "string" ? r.output : "",
-      ...(r.error ? { error: r.error } : {}),
-      ...(r.filesEdited ? { filesEdited: r.filesEdited } : {}),
-    };
-  }
-  if (output && typeof output === "object" && "filesEdited" in output) {
-    const d = output as { filesEdited?: string[] };
-    return {
-      success: true,
-      output: JSON.stringify(output),
-      ...(d.filesEdited ? { filesEdited: d.filesEdited } : {}),
-    };
-  }
-  return { success: true, output: typeof output === "string" ? output : JSON.stringify(output) };
 }
 
 /** Ends a turn before the model runs, without counting as a failure. */
@@ -967,13 +946,14 @@ export class ChatSession {
   }
 
   /** Adds a note to the transcript that the model does not see, such as a launched run's news. */
-  async addNotice(content: string): Promise<ChatMessage> {
+  async addNotice(content: string, launch?: LaunchNote): Promise<ChatMessage> {
     const message: ChatMessage = {
       id: crypto.randomUUID(),
       role: "system",
       content,
       timestamp: Date.now(),
       showInChat: true,
+      ...(launch ? { launch } : {}),
     };
     this.messages = [...this.messages, message];
     this.emit({ type: "notice", message });
@@ -1365,10 +1345,8 @@ export class ChatSession {
         : null;
     if (assistant) this.messages = [...this.messages, assistant];
     if (assistant && extractFilesFromToolCalls(assistant).edited.length > 0) {
-      const index = buildTurns(this.messages).length;
-      const tag = checkpointTagName(this.tagOwner, index, text);
-      if (await snapshotWorkspace(this.owner.workspace, tag, `baked checkpoint ${String(index)}`))
-        this.addCheckpointTag({ index, anchorMessageId: userMessage.id, gitTag: tag });
+      const tag = await snapshotTurnEnd(this.owner.workspace, this.tagOwner, this.messages, text);
+      if (tag) this.addCheckpointTag(tag);
     }
     this.usage = {
       input: this.usage.input + usage.input,

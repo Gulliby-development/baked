@@ -538,7 +538,7 @@ export const FEATURES: readonly Feature[] = [
     tui: ["/packages pack"],
     cli: ["baked packages pack: --check exits 1 when out of date"],
     api: ["/v1/packages/pack"],
-    desktop: ["project/packages: Write manifest"],
+    desktop: ["project/packages: Create package"],
   },
   {
     id: "baked-help",
@@ -666,6 +666,15 @@ export const FEATURES: readonly Feature[] = [
       "/v1/workflow/runs/:id/usage",
     ],
     desktop: ["project/runs"],
+  },
+  {
+    id: "model-call-recording",
+    group: "Workflow runs",
+    title: "Record a run's model calls and replay them without the provider",
+    tui: notNeeded("a debugging aid for BAKED itself"),
+    cli: ["baked workflow run: --record-model-calls, --replay", "baked workflow recording"],
+    api: notNeeded("a debugging aid for BAKED itself"),
+    desktop: notNeeded("a debugging aid for BAKED itself"),
   },
   {
     id: "critic-outcomes",
@@ -803,8 +812,9 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "pr-follow",
     group: "Workflow runs",
-    title: "Follow a delivered pull request's checks and start a fix-ci run for failures",
-    tui: ["/workflow: run view, K (PR checks)"],
+    title:
+      "Follow a delivered pull request's checks and review comments and start a run that fixes them",
+    tui: ["/workflow: run view, K (PR checks), V (PR reviews)"],
     cli: ["baked workflow follow"],
     api: ["/v1/workflow/runs/:id/checks"],
     desktop: ["project/runs: Pull request panel"],
@@ -953,6 +963,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs: conveyor gate marks and station gates"],
   },
   {
+    id: "workflow-walkthrough",
+    group: "Workflow runs",
+    title: "Each workflow's family and line, and a step-through of a run along it",
+    tui: ["/workflow: definitions screen (W), a line per workflow; Enter steps through a run"],
+    cli: ["baked workflow definitions"],
+    api: ["/v1/workflow/definitions"],
+    desktop: ["project/workflows"],
+  },
+  {
     id: "run-compare",
     group: "Workflow runs",
     title: "Compare two runs side by side (A/B of routing maps)",
@@ -973,7 +992,17 @@ export const FEATURES: readonly Feature[] = [
       "/v1/workflow/editor/review",
       "/v1/workflow/editor/save",
     ],
-    desktop: ["project/workflows"],
+    desktop: ["project/workflows: gallery, Flow walkthrough, Graph editor, Stages"],
+  },
+  {
+    id: "project-agents",
+    group: "Workflow runs",
+    title:
+      "Agents a project brought from other tools: edit them and turn them into a workflow (shown only when the project has some)",
+    tui: ["/agents: the landing page shows a card for them"],
+    cli: ["baked workflow agents"],
+    api: ["/v1/agents", "/v1/agents/convert"],
+    desktop: ["project/agents", "project/workflows: a line points at Agents"],
   },
   {
     id: "wait-stage",

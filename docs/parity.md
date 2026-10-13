@@ -116,6 +116,7 @@ bun test tests/feature-parity.test.ts
 | Tests first: failing tests approved before the code, tdd preset | `/workflow` | `baked workflow run`, `baked workflow approve`, `baked workflow reject` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/approve`, `/v1/workflow/runs/:id/reject` | `project/overview`, `attention` |
 | Propose the workflow and budget from the request | `/workflow` | `baked workflow propose`, `baked workflow run`, `auto-preset` | `/v1/workflow/propose` | `project/overview` |
 | Run list, detail, report, artifacts and usage | `/workflow` | `baked workflow list`, `baked workflow status`, `baked workflow report` +2 | `/v1/workflow/runs`, `/v1/workflow/runs/:id`, `/v1/workflow/runs/:id/events` +3 | `project/runs` |
+| Record a run's model calls and replay them without the provider | Not needed: a debugging aid for BAKED itself | `baked workflow run`, `baked workflow recording` | Not needed: a debugging aid for BAKED itself | Not needed: a debugging aid for BAKED itself |
 | Critic outcome log and calibration: scores with checks, acceptance, delivery, survival | `/workflow` | `baked workflow outcomes` | `/v1/workflow/critic`, `/v1/workflow/runs/:id/report` | `settings/routing`, `project/runs` |
 | Best-of-N: implement each planned task several times and keep the best candidate | `/workflow` | `baked workflow run` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `project/overview`, `project/runs` |
 | Progress watcher: steer, then stop, a stuck agent attempt | `/workflow` | `baked workflow run`, `baked workflow resume` | `/v1/workflow/runs/:id/events` | `project/runs` |
@@ -127,7 +128,7 @@ bun test tests/feature-parity.test.ts
 | Discard a run's worktree | `/workflow` | `baked workflow discard-worktree` | `/v1/workflow/runs/:id/discard-worktree` | `project/runs` |
 | Worktree sizes and cleanup | `/workflow` | `baked workflow worktrees` | `/v1/workflow/worktrees`, `/v1/workflow/worktrees/clean` | `project/runs` |
 | Deliver a run (commit, pull request, follow-up commits to a delivered pull request) | `/workflow` | `baked workflow deliver` | `/v1/workflow/runs/:id/deliver`, `/v1/workflow/runs/:id/deliver/execute` | `project/runs`, `attention` |
-| Follow a delivered pull request's checks and start a fix-ci run for failures | `/workflow` | `baked workflow follow` | `/v1/workflow/runs/:id/checks` | `project/runs` |
+| Follow a delivered pull request's checks and review comments and start a run that fixes them | `/workflow` | `baked workflow follow` | `/v1/workflow/runs/:id/checks` | `project/runs` |
 | Revise a run after its instructions change | `/workflow` | `baked workflow candidate`, `baked workflow revise` | `/v1/workflow/runs/:id/candidate`, `/v1/workflow/runs/:id/revise` | `project/runs` |
 | Approval reviewer: a model decides low-risk plans outside the auto approval limits | `/workflow` | `baked workflow run`, `baked quick`, `approval-review` | `/v1/workflow/runs` | `project/runs` |
 | Checks: list, edit, run now, suggestions | `/workflow` | `baked doctor` | `/v1/workflow/checks`, `/v1/workflow/checks/suggestions`, `/v1/workflow/checks/:id/run` | `project/gates` |
@@ -143,8 +144,10 @@ bun test tests/feature-parity.test.ts
 | Custom gates: a script or container that reports its result as JSON (command.report json) | `/workflow` | `baked workflow gates`, `baked workflow validate` | `/v1/workflow/checks`, `/v1/workflow/checks/:id/run` | `project/gates` |
 | Gates from a plain-language sentence | `/workflow` | `baked workflow gate` | `/v1/workflow/gates/draft`, `/v1/workflow/gates/:id`, `/v1/workflow/gates/:id/places` +1 | `project/gates` |
 | Gates on the run's line: what each does, blocks or advises, last result | `/workflow` | `baked workflow definitions`, `baked workflow status` | `/v1/workflow/definitions`, `/v1/workflow/runs/:id/events` | `project/runs` |
+| Each workflow's family and line, and a step-through of a run along it | `/workflow` | `baked workflow definitions` | `/v1/workflow/definitions` | `project/workflows` |
 | Compare two runs side by side (A/B of routing maps) | `/workflow` | `baked workflow compare` | `/v1/workflow/compare` | `project/runs` |
 | Workflow definition editor | `/workflow` | `baked workflow define`, `baked workflow validate` | `/v1/workflow/definitions`, `/v1/workflow/editor`, `/v1/workflow/editor/review` +1 | `project/workflows` |
+| Agents a project brought from other tools: edit them and turn them into a workflow (shown only when the project has some) | `/agents` | `baked workflow agents` | `/v1/agents`, `/v1/agents/convert` | `project/agents`, `project/workflows` |
 | Wait stage: poll command gates until they pass or time out, with no model calls | `/workflow` | `baked workflow validate`, `baked workflow run` | `/v1/workflow/editor`, `/v1/workflow/runs/:id/events` | `project/workflows`, `project/runs` |
 | Doctor and estimate before a run | `/workflow` | `baked doctor`, `baked workflow estimate` | `/v1/workflow/doctor`, `/v1/workflow/estimate` | `project/overview` |
 | Usage across runs: days, by stage and model | `/workflow` | `baked usage`, `baked workflow usage` | `/v1/usage` | `project/usage` |

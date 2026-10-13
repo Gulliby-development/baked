@@ -3,6 +3,7 @@ import type { ModelMessage } from "@ai-sdk/provider-utils";
 import {
   generateText,
   isStepCount,
+  type LanguageModel,
   type LanguageModelUsage,
   type Tool,
   ToolChoiceViolationError,
@@ -39,7 +40,14 @@ import {
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
 import { affectedTestsFor } from "./affected-tests.js";
 import { assertAttemptFits } from "./budget.js";
-import { fixerCommand, fixerTiers } from "./check-policy.js";
+import {
+  fixerCommand,
+  fixerTiers,
+  isWholeUnitFixer,
+  isWholeUnitFormatter,
+  wholeUnitFixerCommand,
+  writtenCodePaths,
+} from "./check-policy.js";
 import { fileHash, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { keepOutside, restoreOutside } from "./fixer-scope.js";
@@ -52,6 +60,14 @@ import {
 import { InitiativePlanSchema } from "./initiatives/plan.js";
 import type { WorkspaceLeases } from "./leases.js";
 import { grantedMcpServers, isMcpToolName, toolListAllows } from "./mcp-grants.js";
+import {
+  attemptModel,
+  type RecordedCall,
+  readRecording,
+  recordedAttempts,
+  recordingKey,
+  recordingPath,
+} from "./model-recording.js";
 import { ProcessScope } from "./process-scope.js";
 import { isTargetedRead, outlineLargeReads } from "./read-outline.js";
 import { settleInterruptedEdits } from "./recovery.js";
@@ -83,7 +99,7 @@ import {
   stepTokens,
   type ToolBackendCount,
 } from "./step-budget.js";
-import type { WorkflowStore } from "./store.js";
+import type { EffectRow, WorkflowStore } from "./store.js";
 import { pureWorkflowTools, WorkflowToolPolicy } from "./tool-policy.js";
 import type { AgentExecutor, ExecutionRequest, ExecutionResponse } from "./types.js";
 import { AcceptanceDraftSchema, AcceptanceWalkSchema } from "./v2/acceptance.js";
@@ -107,6 +123,18 @@ export const outputSchemas: Record<string, z.ZodType> = {
   distinction: DistinctionSchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;
+
+/** Workspace paths an attempt's applied file edits wrote, in first-write order. */
+export function appliedPaths(effects: readonly EffectRow[], attemptId: string): string[] {
+  const paths: string[] = [];
+  for (const effect of effects) {
+    if (effect.attempt_id !== attemptId || effect.kind !== "file_patch") continue;
+    if (effect.status !== "applied") continue;
+    const path = (JSON.parse(effect.intent_json) as { path?: unknown }).path;
+    if (typeof path === "string" && !paths.includes(path)) paths.push(path);
+  }
+  return paths;
+}
 /** Read-only steps in a row before an implementer is told to edit. */
 const EDIT_NUDGE_AFTER_READS = 4;
 
@@ -152,6 +180,8 @@ interface AttemptWatch {
 export class NativeAgentExecutor implements AgentExecutor {
   private readonly rootContext: SharedRootContext;
   private readonly ownsRootContext: boolean;
+  /** Recordings a replay run reads, by path, loaded once per executor. */
+  private readonly replays = new Map<string, RecordedCall[]>();
   /** Without `rootContext`, the executor creates and disposes a root of its own. */
   constructor(
     private store: WorkflowStore,
@@ -229,6 +259,13 @@ export class NativeAgentExecutor implements AgentExecutor {
     const rootPath = rootField(this.store.workspace, root).root ?? "";
     const parent = await this.rootContext.get();
     const context = new ContextManager(root, parent.getSharedResources());
+    // Model calls end with the attempt. A provider that keeps a conversation open between steps
+    // (Codex app-server threads) releases it when this fires, also after the last step: the
+    // thread that ends at `submit_result` would otherwise go on calling the model (#863).
+    const modelCalls = new AbortController();
+    const stopModelCalls = () => modelCalls.abort(request.signal.reason);
+    request.signal.addEventListener("abort", stopModelCalls, { once: true });
+    if (request.signal.aborted) stopModelCalls();
     try {
       const provider = await buildProviderOptions(
         request.profile.model,
@@ -455,6 +492,14 @@ export class NativeAgentExecutor implements AgentExecutor {
               affected?.id === checkId ? affected : policy.checks.find((c) => c.id === checkId);
             if (!check || (check !== affected && !task?.checkIds.includes(checkId)))
               throw new WorkflowFault("CAPABILITY_DENIED", "Check ID is outside the task scope");
+            // A planned task runs before integration, where a whole-unit formatter only reports the
+            // other tasks' files; the checks stage formats the integrated change (#842).
+            if (task?.origin === "planned" && isWholeUnitFormatter(check))
+              return {
+                checkId: check.id,
+                status: "deferred",
+                note: `${check.id} formats the whole project, so it runs in the checks stage after the tasks are integrated, where the host applies its fixer to the files this run writes. It is not run for a single task and is not a failure: do not run it or reformat files by hand for it.`,
+              };
             const scope = new ProcessScope();
             try {
               const result = await new CheckRunner(this.store, scope).run(
@@ -549,39 +594,63 @@ export class NativeAgentExecutor implements AgentExecutor {
             if (!check?.fix || !task)
               throw new WorkflowFault("CAPABILITY_DENIED", `Check ${checkId} has no fixer`);
             const tiers = fixerTiers(check);
+            const exists = (path: string) => !!fileHash(workspacePath(root, path));
             const paths = task.writes
-              .filter((w) => w.action !== "delete" && fileHash(workspacePath(root, w.path)))
+              .filter((w) => w.action !== "delete" && exists(w.path))
               .map((w) => w.path);
+            // A whole-unit formatter reads only source code; README and LICENSE give it nothing to do.
+            const codePaths = writtenCodePaths(task).filter(exists);
             const generated = generatedPaths(policy);
             const before = await sourceManifest(root, generated, request.signal);
             const kept = keepOutside(root, before, new Set(paths));
             const scope = new ProcessScope();
+            // Unsignalled, so the put-back also runs after the call was aborted.
+            const changedOutside = async () =>
+              changedPaths(before, await sourceManifest(root, generated)).filter(
+                (p) => !paths.includes(p),
+              );
+            let reverted: string[] = [];
             try {
               const outputs: string[] = [];
-              // One run per file, each recorded like an edit, so undo and rollback see it.
-              for (const fix of tiers)
-                for (const path of paths)
-                  await guard.execute("edit_file", { path }, async () => {
-                    const command = fixerCommand(fix, path);
-                    const executable =
-                      command.executable === "bun" ? process.execPath : command.executable;
-                    const result = await executeCheckCommand(scope, executable, command.args, {
-                      cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
-                      env: buildCheckEnv(check),
-                      timeoutMs: check.timeoutMs,
-                      signal: request.signal,
-                      sandbox: runSandbox(policy, root, {
-                        gitWrite: root !== this.store.workspace,
-                      }),
+              const runFixer = async (command: { executable: string; args: string[] }) => {
+                const executable =
+                  command.executable === "bun" ? process.execPath : command.executable;
+                return executeCheckCommand(scope, executable, command.args, {
+                  cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+                  env: buildCheckEnv(check),
+                  timeoutMs: check.timeoutMs,
+                  signal: request.signal,
+                  sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
+                });
+              };
+              try {
+                for (const fix of tiers) {
+                  if (isWholeUnitFixer(fix)) {
+                    if (!codePaths.length) continue;
+                    // One run for all the task's code files, still recorded as an edit of each.
+                    const once = async () => {
+                      const result = await runFixer(wholeUnitFixerCommand(fix, codePaths));
+                      outputs.push(`${codePaths.join(", ")}: exit ${String(result.exitCode)}`);
+                    };
+                    await codePaths.reduceRight<() => Promise<unknown>>(
+                      (inner, path) => () => guard.execute("edit_file", { path }, inner),
+                      once,
+                    )();
+                    continue;
+                  }
+                  // One run per file, each recorded like an edit, so undo and rollback see it.
+                  for (const path of paths)
+                    await guard.execute("edit_file", { path }, async () => {
+                      const result = await runFixer(fixerCommand(fix, path));
+                      outputs.push(`${path}: exit ${String(result.exitCode)}`);
                     });
-                    outputs.push(`${path}: exit ${String(result.exitCode)}`);
-                  });
-              const changedOutside = async () =>
-                changedPaths(before, await sourceManifest(root, generated, request.signal)).filter(
-                  (p) => !paths.includes(p),
-                );
-              const reverted = await changedOutside();
-              restoreOutside(root, kept, reverted);
+                }
+              } finally {
+                // Also when a run throws: a whole-crate formatter may already have rewritten
+                // sibling files (bench round 13, mdrefs T010: five files left reformatted).
+                reverted = await changedOutside();
+                restoreOutside(root, kept, reverted);
+              }
               const outside = await changedOutside();
               if (outside.length)
                 throw new WorkflowFault(
@@ -617,6 +686,7 @@ export class NativeAgentExecutor implements AgentExecutor {
       let submitted: unknown;
       let rejected = 0;
       let taskEndChecked = false;
+      let editsNoted = false;
       const submitResult = tool({
         description:
           "Submit the final typed result. Evidence IDs must come from the host context or tools.",
@@ -644,6 +714,27 @@ export class NativeAgentExecutor implements AgentExecutor {
               instruction:
                 "The result was not accepted. Fix every listed problem and call submit_result again with the complete corrected result.",
             };
+          }
+          // An agent that hit a refusal outside BAKED's tools (Codex's own read-only sandbox) can
+          // report a blocked task with "no changes were made" after BAKED applied its edits (#846).
+          const outcome = (parsed as { outcome?: unknown }).outcome;
+          if (
+            !errors.length &&
+            !editsNoted &&
+            request.task &&
+            (outcome === "blocked" || outcome === "failed")
+          ) {
+            editsNoted = true;
+            const written = appliedPaths(this.store.effects(request.runId), request.attemptId);
+            if (written.length)
+              return {
+                accepted: false,
+                errors: [
+                  `This attempt applied edits to ${written.join(", ")} with BAKED's edit tools; they are in the workspace. Only edit_file, multi_edit and delete_file change files, and no sandbox setting refuses them.`,
+                ],
+                instruction:
+                  "Check the files as they are now. If the task is done, submit outcome implemented; if something is still missing, finish it with BAKED's edit tools or submit blocked naming what remains, not that no changes were made. The next submission is accepted.",
+              };
           }
           if (
             !errors.length &&
@@ -713,6 +804,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         },
       });
       const meta = { profileId: request.profile.id, taskId: request.task?.id ?? null };
+      const model = this.attemptModel(request, policy);
       const writeUsage = (usage: AttemptUsageRecord) =>
         this.store.transaction(() =>
           this.store.artifact(
@@ -764,7 +856,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         // automatic one after the newest message, so each step re-reads the earlier ones.
         const cacheTtl = this.config.cache?.ttl ?? "5m";
         const generated = await generateText({
-          model: resolveModel(request.profile.model),
+          model,
           instructions: {
             role: "system",
             content: request.profile.instructions,
@@ -779,7 +871,7 @@ export class NativeAgentExecutor implements AgentExecutor {
           ],
           maxRetries: 0,
           maxOutputTokens: request.profile.maxOutputTokens,
-          abortSignal: request.signal,
+          abortSignal: modelCalls.signal,
           providerOptions: withAutomaticCache(provider.providerOptions, cacheTtl),
           headers: provider.headers,
           onStepEnd: (step) => {
@@ -862,7 +954,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         proseEnd = result.text;
         try {
           const continued = await generateText({
-            model: resolveModel(request.profile.model),
+            model,
             instructions: {
               role: "system",
               content: request.profile.instructions,
@@ -880,7 +972,7 @@ export class NativeAgentExecutor implements AgentExecutor {
             stopWhen: [() => submitted !== undefined, isStepCount(2)],
             maxRetries: 0,
             maxOutputTokens: request.profile.maxOutputTokens,
-            abortSignal: request.signal,
+            abortSignal: modelCalls.signal,
             providerOptions: withAutomaticCache(
               provider.providerOptions,
               this.config.cache?.ttl ?? "5m",
@@ -987,14 +1079,14 @@ export class NativeAgentExecutor implements AgentExecutor {
             let correctedText = "";
             try {
               const corrected = await generateText({
-                model: resolveModel(request.profile.model),
+                model,
                 prompt: correctionPrompt,
                 tools: { submit_result: submitResult },
                 toolChoice: { type: "tool", toolName: "submit_result" },
                 stopWhen: isStepCount(1),
                 maxRetries: 0,
                 maxOutputTokens: request.profile.maxOutputTokens,
-                abortSignal: request.signal,
+                abortSignal: modelCalls.signal,
                 providerOptions: provider.providerOptions,
                 headers: provider.headers,
                 // Counted per model call so a response that skips the tool is still charged.
@@ -1040,6 +1132,8 @@ export class NativeAgentExecutor implements AgentExecutor {
         ...(reportedNoTokens(result.steps) ? { usageComplete: false } : {}),
       };
     } finally {
+      request.signal.removeEventListener("abort", stopModelCalls);
+      modelCalls.abort(new DOMException("The workflow attempt ended.", "AbortError"));
       context.dispose({ preserveSharedIO: true });
     }
   }
@@ -1047,6 +1141,35 @@ export class NativeAgentExecutor implements AgentExecutor {
    * MCP tools that both the profile and the run policy grant. Only the servers those grants name
    * are connected; a server that fails to connect contributes no tools.
    */
+  /**
+   * The attempt's model: the provider's, or with `modelCalls` in the policy one that records
+   * each call in the run, or answers from a recording (#856).
+   */
+  private attemptModel(request: ExecutionRequest, policy: RunPolicy): LanguageModel {
+    const calls = policy.modelCalls;
+    const model = () => resolveModel(request.profile.model);
+    if (!calls?.record && !calls?.replay) return model();
+    const key = recordingKey(request.profile.id, request.task?.id);
+    const paths = this.store.artifacts(request.runId).map((a) => a.logical_path);
+    if (calls.replay && !this.replays.has(calls.replay))
+      this.replays.set(calls.replay, readRecording(calls.replay).calls);
+    return attemptModel({
+      model,
+      modelId: request.profile.model,
+      key,
+      attempt: recordedAttempts(paths, key).length,
+      ...(calls.replay ? { replay: this.replays.get(calls.replay) ?? [] } : {}),
+      record: (call) =>
+        this.store.transaction(() =>
+          this.store.artifact(
+            request.runId,
+            "recording",
+            recordingPath(key, request.attemptId, call.call),
+            canonical(call),
+          ),
+        ),
+    });
+  }
   private async mcpTools(profileTools: readonly string[], policy: RunPolicy): Promise<ToolSet> {
     const servers = grantedMcpServers(
       this.config.mcpServers ?? [],

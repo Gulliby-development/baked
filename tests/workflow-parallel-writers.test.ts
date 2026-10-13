@@ -343,6 +343,11 @@ describe("workflow parallel writers", () => {
     expect(stopped.reason).toBe("owner_lost");
     expect(fx.status("T002", run.runId)).toBe("interrupted");
     expect(fx.status("T001", run.runId)).toBe("implemented");
+    expect(
+      fx.store
+        .events(run.runId, 0, 10000)
+        .some((e) => e.type === "task.state_changed" && e.payload.to === "interrupted" && e.payload.cause === "lease_lost"),
+    ).toBe(true);
     expect(readFileSync(join(fx.tree(run.runId), "a.txt"), "utf8")).toBe("A");
     expect(existsSync(join(fx.tree(run.runId), "b.txt"))).toBe(false);
     // The run's own leases are released; the lease the other owner took is its own.
@@ -369,9 +374,23 @@ describe("workflow parallel writers", () => {
     expect(restarted?.earlierEdits?.paths).toEqual(["b.txt"]);
     const record = fx.store.artifacts(run.runId).find((a) => a.logical_path === "tasks/restarts/T002.json");
     expect(record).toBeDefined();
-    const restart = JSON.parse(fx.store.readArtifact(run.runId, record?.id ?? "")) as { reason: string; carriedPaths: string[] };
+    const restart = JSON.parse(fx.store.readArtifact(run.runId, record?.id ?? "")) as {
+      reason: string;
+      carriedPaths: string[];
+      interruptedTokens: number;
+      carriedTokens: number;
+    };
     expect(restart.reason).toContain("worker process exited");
     expect(restart.carriedPaths).toEqual(["b.txt"]);
+    // #843: what the restart reuses of the attempt it replaces.
+    expect(typeof restart.interruptedTokens).toBe("number");
+    expect(restart.carriedTokens).toBe(restart.interruptedTokens);
+    const interrupted = fx.store
+      .events(run.runId, 0, 10000)
+      .flatMap((e) => (e.type === "task.state_changed" && e.payload.to === "interrupted" ? [e.payload] : []));
+    expect(interrupted).toEqual([
+      expect.objectContaining({ taskId: "T002", cause: "worker_lost", detail: expect.stringContaining("worker process exited") }),
+    ]);
     expect(fx.store.state(run.runId).taskRestarts).toEqual({ T002: 1 });
     expect(fx.store.leases()).toEqual([]);
   });
@@ -441,6 +460,43 @@ describe("workflow parallel writers", () => {
       expect(fx.store.artifacts(run.runId).some((a) => a.logical_path === "tasks/restarts/T002.json")).toBe(true);
     });
   }
+
+  // Bench round 12, cfgtrace 4018a791: the README task ran before the CLI task, reported the
+  // missing `cfgtrace.__main__` as blocked and stopped the run (#807).
+  for (const writers of [1, 2]) {
+    test(`a task blocked on a file a task still to run writes waits for it, ${String(writers)} writer(s)`, async () => {
+      const fx = setup(
+        [{ id: "T001", files: { "USAGE.md": "R" } }, { id: "T002", files: { "tool/out.txt": "C" } }],
+        { "USAGE.md": "R", "tool/out.txt": "C" },
+        { policy: { clarification: "ask" } },
+      );
+      fx.executor.blockedOnce.T001 = { summary: "Cannot capture the output: tool/out.txt is missing in this worktree" };
+      const run = await fx.start(writers);
+      const done = await fx.complete(run.runId);
+      expect(fx.lastError(run.runId)).toBe("");
+      expect(done.status).toBe("completed");
+      expect(fx.store.state(run.runId).taskRestarts).toEqual({});
+      const wait = fx.store.artifacts(run.runId).find((a) => a.logical_path === "tasks/waits/T001.json");
+      expect(wait && JSON.parse(fx.store.readArtifact(run.runId, wait.id)).waitsFor).toEqual(["T002"]);
+      const t001 = fx.executor.started.filter((s) => s.taskId === "T001");
+      const t002 = fx.executor.started.find((s) => s.taskId === "T002");
+      expect(t001).toHaveLength(2);
+      expect(t002 && t001[1] && t001[1].start >= t002.end).toBe(true);
+    });
+  }
+
+  test("a task blocked on a file no unfinished task writes still blocks the run", async () => {
+    const fx = setup(
+      [{ id: "T001", files: { "tool/out.txt": "C" } }, { id: "T002", files: { "USAGE.md": "R" } }],
+      { "USAGE.md": "R", "tool/out.txt": "C" },
+      { policy: { clarification: "ask" } },
+    );
+    fx.executor.blockedOnce.T002 = { summary: "Cannot capture the output: tool/out.txt is missing in this worktree" };
+    const run = await fx.start(1);
+    const stopped = await fx.complete(run.runId);
+    expect(stopped.status).toBe("blocked");
+    expect(fx.store.artifacts(run.runId).some((a) => a.logical_path.startsWith("tasks/waits/"))).toBe(false);
+  });
 
   test("a session that made no tool call and submitted nothing restarts without assume, whatever its wording", async () => {
     const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }], { "a.txt": "A", "b.txt": "B" }, { policy: { clarification: "ask" } });
