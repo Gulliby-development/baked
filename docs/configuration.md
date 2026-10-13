@@ -50,6 +50,7 @@ The chat settings that the terminal pickers edit (provider options, chat router 
 | `vercelTeamId` | unset | Vercel team artifacts deploy to; unset is the personal account (`VERCEL_TEAM_ID` works too) |
 | `codeExecution`, `computerUse`, `anthropicTextEditor` | `true`, `false`, `false` | Provider-side tools for Claude models |
 | `repoMap` | `true` | Build the repository graph on launch |
+| `repoMapBackgroundRefresh` | `true` | Keep the graph current in the background: after file changes, agent edits, runs and Git checkouts or pulls ([repository graph](guide.md#repository-graph)) |
 | `semanticSummaries` | `"ast"` | Symbol summaries: `off`, `ast`, `synthetic`, `llm`, `full`; `semanticSummaryLimit` caps LLM summaries (300) |
 | `repoMapTokenBudget` | auto | Token budget of the graph in the prompt |
 | `disabledLspServers` | `[]` | Language servers to skip, by command (`gopls`); Mason package names such as `pyright` work too. A project list replaces the global one. See [language servers](#language-servers) |

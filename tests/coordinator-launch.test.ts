@@ -11,6 +11,7 @@ import {
   syncLaunched,
   type TaskTracker,
 } from "../src/core/chat/coordinator-launch.js";
+import { PEER_TOOL, parsePeerMessage } from "../src/core/chat/peer-messages.js";
 import type { ProjectStateSource } from "../src/core/chat/project-state.js";
 import { type ChatAgentHost, ChatService, type TurnAgentRequest } from "../src/core/chat/sessions.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
@@ -89,6 +90,45 @@ async function noticeFor(chat: ChatService, pattern: RegExp): Promise<string> {
 }
 
 describe("coordinator launches", () => {
+  test("threads write to their coordinator and to each other, marked as theirs", async () => {
+    const { chat, host, coordinator, tool } = await setup();
+    const start = async (title: string) => {
+      const out = await tool("launch_session").execute({ title, brief: `Do ${title}`, mode: "architect", why: title });
+      const id = /session ([0-9a-f-]{36})/.exec(out.output)?.[1] ?? "";
+      await chat.get(id).settled();
+      return id;
+    };
+    const api = await start("API");
+    const ui = await start("UI");
+    // A turn of API after UI exists, so it is told about its sibling.
+    chat.get(api).send("Continue");
+    await chat.get(api).settled();
+    const request = host.requests.filter((r) => r.sessionId === api).at(-1);
+    expect(request?.instructions).toContain(`"UI" (${ui})`);
+    const send = (request?.tools ?? {})[PEER_TOOL] as Tool;
+
+    expect(await send.execute({ to: "coordinator", text: "API is done." })).toMatchObject({ success: true });
+    await coordinator.settled();
+    const toCoordinator = coordinator.messages.filter((m) => m.role === "user").at(-1)?.content ?? "";
+    expect(parsePeerMessage(toCoordinator)).toEqual({ title: "API", id: api, text: "API is done." });
+
+    expect(await send.execute({ to: ui, text: "Use /v2." })).toMatchObject({ success: true });
+    await chat.get(ui).settled();
+    expect(chat.get(ui).messages.filter((m) => m.role === "user").at(-1)?.content).toBe(
+      `Message from session "API" (${api}):\n\nUse /v2.`,
+    );
+
+    const stranger = await chat.create({ title: "Other" });
+    expect(await send.execute({ to: stranger.id, text: "Hi" })).toMatchObject({ success: false });
+    // An ordinary chat gets no message tool.
+    stranger.send("Hello");
+    await stranger.settled();
+    expect(host.requests.filter((r) => r.sessionId === stranger.id).at(-1)?.tools).toBeUndefined();
+    for (let i = 0; i < 3; i++) await send.execute({ to: "coordinator", text: `note ${i}` });
+    expect((await send.execute({ to: "coordinator", text: "too many" })).error).toContain("At most 5");
+    await coordinator.settled();
+  }, 60000);
+
   test("message_session sends a launched session a follow-up and its answer comes back", async () => {
     const { chat, coordinator, tool } = await setup();
     const launched = await tool("launch_session").execute({
