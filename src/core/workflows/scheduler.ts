@@ -2455,6 +2455,8 @@ export class WorkflowScheduler {
           profiles: ProfileSchema.array()
             .parse(JSON.parse(this.store.run(runId).profiles_json))
             .filter((p) => profile.context !== "implementation" || p.id === profile.id)
+            // The approval reviewer takes no part in a run's work, only in its approvals.
+            .filter((p) => p.output !== "approval-review" || p.id === profile.id)
             .map((p) => ({ id: p.id, role: p.role, allowedTools: p.allowedTools })),
           policy: { allowedTools: policy.allowedTools, network: policy.network },
         },
