@@ -25,6 +25,7 @@ import {
 } from "../src/core/workflows/v2/definitions.js";
 import { checkToGate, gateToCheck, loadGateLibrary } from "../src/core/workflows/v2/library.js";
 import { workflowLine } from "../src/core/workflows/v2/line.js";
+import { checksOf, frozenGates } from "../src/core/workflows/v2/runtime.js";
 import { upgradeWorkflowV1 } from "../src/core/workflows/v2/upgrade.js";
 
 const examples = join(import.meta.dir, "fixtures", "workflow-v2");
@@ -204,6 +205,52 @@ describe("rejected definitions (V2-02)", () => {
       patch(draft);
       const parsed = GateSchema.safeParse(draft);
       const errors = parsed.success ? validateGate(parsed.data) : [`schema: ${parsed.error.issues[0]?.message}`];
+      expect(errors.some((e) => e.includes(reason)), errors.join(" | ") || "no error").toBe(true);
+    });
+});
+
+describe("wait stages", () => {
+  const library = exampleLibrary();
+  const tests = library.get("tests") as Gate;
+  const polling: Gate = { ...tests, id: "ci-green", description: "CI is green" } as Gate;
+  const writing: Gate = {
+    ...polling,
+    id: "writes-report",
+    command: { ...(polling as Extract<Gate, { type: "command" }>).command, writes: ["report.txt"] },
+  } as Gate;
+  const gates = new Map([...library, [polling.id, polling], [writing.id, writing]]);
+  /** The standard preset with a wait stage after its review. */
+  const withWait = (gateIds: string[], edit: (d: WorkflowV2) => void = () => {}): string[] => {
+    const draft = structuredClone(examplePreset("standard"));
+    draft.stages.push({ id: "wait-ci", type: "wait", consumes: [], produces: "gates", effects: "none", gates: gateIds.map((gateId) => ({ gateId })), intervalSeconds: 30, timeoutMinutes: 60 });
+    const done = draft.transitions.find((t) => t.id === "review-done") as Transition;
+    done.to = "wait-ci";
+    draft.transitions.push({ id: "wait-done", from: "wait-ci", to: "done", on: "passed", carries: "gates", gates: [] });
+    draft.limits.maxStageVisits += 1;
+    edit(draft);
+    const parsed = WorkflowV2Schema.safeParse(draft);
+    return parsed.success ? validateWorkflowV2(parsed.data, gates) : [`schema: ${parsed.error.issues[0]?.message}`];
+  };
+
+  test("a wait stage polling a command gate is valid; its gates are frozen but are not run checks", () => {
+    expect(withWait(["ci-green"])).toEqual([]);
+    const draft = structuredClone(examplePreset("standard"));
+    draft.stages.push({ id: "wait-ci", type: "wait", consumes: [], produces: "gates", effects: "none", gates: [{ gateId: "ci-green" }], intervalSeconds: 30, timeoutMinutes: 60 });
+    expect(frozenGates(draft, gates).map((g) => g.id)).toContain("ci-green");
+    expect(checksOf(draft, frozenGates(draft, gates)).map((c) => c.id)).not.toContain("ci-green");
+  });
+  const cases: [string, string[], (d: WorkflowV2) => void, string][] = [
+    ["an AI review gate", ["correctness-review"], () => {}, "a wait stage runs command gates only"],
+    ["a task gate", ["task-tests"], () => {}, "runs after each task"],
+    ["a gate that writes files", ["writes-report"], () => {}, "write nothing"],
+    ["a changes_requested edge", ["ci-green"], (d) => { d.transitions.push({ id: "wait-again", from: "wait-ci", to: "done", on: "changes_requested", carries: "gates", gates: [] }); }, "cannot end changes_requested"],
+    ["no gate", [], () => {}, "schema"],
+    ["a poll faster than 5 seconds", ["ci-green"], (d) => { const w = d.stages.find((x) => x.type === "wait"); if (w?.type === "wait") w.intervalSeconds = 4; }, "schema"],
+    ["a timeout over a day", ["ci-green"], (d) => { const w = d.stages.find((x) => x.type === "wait"); if (w?.type === "wait") w.timeoutMinutes = 1441; }, "schema"],
+  ];
+  for (const [name, ids, edit, reason] of cases)
+    test(`rejects ${name}`, () => {
+      const errors = withWait(ids, edit);
       expect(errors.some((e) => e.includes(reason)), errors.join(" | ") || "no error").toBe(true);
     });
 });

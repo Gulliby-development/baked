@@ -447,6 +447,11 @@ describe("local API chat sessions", () => {
     expect(fork.messages.map((m) => m.content)).toEqual(["Hello", "ok"]);
     expect((await post(`/v1/sessions/${session.id}/fork`, { atMessageId: "missing" })).status).toBe(404);
 
+    // The session reads as idle before its last save lands, so wait for the saved meta.
+    await until(
+      async () => new SessionManager(fixture.root).loadSession(session.id)?.meta,
+      (meta) => meta?.customTitle === "Renamed" && meta.tabs.some((tab) => tab.messageRange.endLine === 4),
+    );
     const reloaded = new ChatService({ workspace: fixture.root, config: fixture.service.config, host });
     expect(reloaded.get(session.id).summary()).toMatchObject({ title: "Renamed", model: "anthropic/claude-test", mode: "auto" });
 

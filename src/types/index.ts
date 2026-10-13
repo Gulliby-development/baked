@@ -23,6 +23,8 @@ export interface ToolResult {
   error?: string;
   /** Which intelligence backend handled this (ts-morph, lsp, tree-sitter, regex) */
   backend?: string;
+  /** The language server that answered, when `backend` is lsp (rust-analyzer, jdtls). */
+  server?: string;
   /** True when read returned only an outline (large file) — tracker should not cache this as a full read */
   outlineOnly?: boolean;
   /** Files edited by dispatch tool — used by /changes panel to track per-tab edits */
@@ -363,6 +365,10 @@ export interface AppConfig {
   anthropicTextEditor?: boolean;
   /** Enable web search tool for all LLMs. Always prompts for approval before searching. Default: true */
   webSearch?: boolean;
+  /** Allow deploying artifacts to the user's Vercel account. Each deploy still asks. Default: false */
+  artifactDeploy?: boolean;
+  /** The Vercel team artifacts deploy to; unset (or VERCEL_TEAM_ID unset) is the personal account. */
+  vercelTeamId?: string;
   /** Show verbose tool output (plan updates, etc.) in chat. Default: false */
   verbose?: boolean;
   /** Diff display style: "default" | "sidebyside" | "compact". Default: "default" */
@@ -390,6 +396,17 @@ export interface AppConfig {
   /** LSP servers to disable (by Mason package name). Scoped: project overrides global. */
   disabledLspServers?: string[];
   agentFeatures?: AgentFeatures;
+  /**
+   * What an edit that introduces errors (in the edited file or a file importing it) does:
+   * `feedback` (default) keeps it and returns the errors, `reject` restores the file and returns
+   * the errors with the original text. Workflow runs take it from their policy.
+   */
+  editDiagnostics?: "feedback" | "reject";
+  /** Diagnostics around edits. Global only. */
+  diagnostics?: {
+    /** Wait for diagnostics before and after an edit, each, in ms. Default 2500. */
+    timeoutMs?: number;
+  };
   /** Tools disabled by the user. Persisted across sessions. */
   disabledTools?: string[];
   /** Instruction files to load into system prompt. Default: ["baked"] (baked.md only). */

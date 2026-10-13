@@ -37,6 +37,7 @@ const WORK: [ProjectSection, string, IconName][] = [
   ["usage", "Usage", "usage"],
   ["graph", "Code graph", "graph"],
   ["git", "Git", "git"],
+  ["artifacts", "Artifacts", "artifacts"],
 ];
 
 const SETUP: [ProjectSection, string, IconName][] = [
@@ -47,6 +48,7 @@ const SETUP: [ProjectSection, string, IconName][] = [
   ["run-memory", "Run memory", "run-memory"],
   ["chat-memory", "Chat memory", "chat-memory"],
   ["skills", "Skills", "skills"],
+  ["packages", "Packages", "packages"],
   ["hooks", "Hooks", "hooks"],
   ["mcp", "MCP servers", "mcp"],
   ["lsp", "Language servers", "lsp"],

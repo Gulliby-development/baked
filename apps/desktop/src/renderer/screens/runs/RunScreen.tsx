@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { reasonText } from "../../../../../../src/core/workflows/reasons.js";
 import { chat } from "../../client/chat.js";
 import {
   errorText,
@@ -316,6 +317,7 @@ function Models({
   const models = useModelCatalog(stopped ? projectKey : null, chat.models);
   if (!routing) return null;
   const routed = Object.entries(routing.stages);
+  const summary = run.routing ?? null;
   const providerStop =
     run.status === "blocked" &&
     (run.reason === "provider_account" || run.reason === "provider_unavailable");
@@ -339,15 +341,34 @@ function Models({
       <p className="text-[12px]">
         Run model <span className="font-mono">{routing.runModel}</span>
       </p>
-      {routed.length > 0 && (
-        <ul className={SMALL_SUB}>
-          {routed.map(([stage, entry]) => (
-            <li key={stage}>
-              {stage}: <span className="font-mono">{entry.model}</span>
+      {summary?.strict && (
+        <p className="text-[12px]">The run model overrides the configured routes.</p>
+      )}
+      {summary?.effective.length ? (
+        <ul className={SMALL_SUB} aria-label="Models by role">
+          {summary.effective.map((row) => (
+            <li key={`${row.target}|${row.model}|${row.source}`}>
+              {row.target}: <span className="font-mono">{row.model}</span>
+              {` (${row.source})`}
             </li>
           ))}
         </ul>
+      ) : (
+        routed.length > 0 && (
+          <ul className={SMALL_SUB}>
+            {routed.map(([stage, entry]) => (
+              <li key={stage}>
+                {stage}: <span className="font-mono">{entry.model}</span>
+              </li>
+            ))}
+          </ul>
+        )
       )}
+      {(summary?.warnings ?? []).map((warning) => (
+        <p key={warning} className={WARN_NOTE}>
+          {warning}
+        </p>
+      ))}
       {stopped && (
         <form
           className={STACK_FORM}
@@ -385,6 +406,28 @@ function Models({
           </Button>
         </form>
       )}
+    </Panel>
+  );
+}
+
+/** The advisory checks that could not start when the run began; a required one refuses the start. */
+function StartChecks({ data }: { data: RunData }) {
+  const failed = (data.artifacts.preflight ?? []).filter(
+    (c) => c.status === "not_found" || c.status === "cannot_start",
+  );
+  if (!failed.length) return null;
+  return (
+    <Panel title="Checks at start">
+      <ul className={SMALL_SUB}>
+        {failed.map((c) => (
+          <li key={c.checkId}>
+            <span className="font-mono">{c.checkId}</span>: {c.executable}{" "}
+            {c.status === "not_found"
+              ? "was not found on the PATH"
+              : `cannot start (${c.detail ?? "spawn failed"})`}
+          </li>
+        ))}
+      </ul>
     </Panel>
   );
 }
@@ -553,6 +596,7 @@ function RunMeter({
         >
           <Budget projectKey={projectKey} data={data} onDone={refresh} />
           <Models projectKey={projectKey} data={data} onDone={refresh} />
+          <StartChecks data={data} />
           <Activity trace={trace} />
         </div>
       )}
@@ -568,6 +612,7 @@ function StationCard({
   loops,
   contractState,
   waiting,
+  blocked,
 }: {
   station: Station;
   index: number;
@@ -577,6 +622,8 @@ function StationCard({
   contractState: (name: string) => "made" | "failed" | "coming";
   /** Requests wait for the user; they are shown above the station. */
   waiting: number;
+  /** The run is blocked; why is shown above the station. */
+  blocked: boolean;
 }) {
   const takes = station.consumes;
   return (
@@ -628,15 +675,35 @@ function StationCard({
         <p className="m-0 text-[13px]">
           {waiting
             ? `${waiting} decision${waiting === 1 ? " waits" : "s wait"} for you above.`
-            : station.state === "current"
-              ? "Nothing is needed from you. This station is working."
-              : station.state === "failed"
-                ? "This station failed. The activity and its sections below say why."
-                : station.state === "done"
-                  ? "Done. Its results are in the sections below."
-                  : "Nothing yet. This station has not started."}
+            : blocked && station.state !== "done"
+              ? "The run is blocked. Why it stopped is shown above: retry, switch the model or fork it."
+              : station.state === "current"
+                ? "Nothing is needed from you. This station is working."
+                : station.state === "failed"
+                  ? "This station failed. The activity and its sections below say why."
+                  : station.state === "done"
+                    ? "Done. Its results are in the sections below."
+                    : "Nothing yet. This station has not started."}
         </p>
       </div>
+    </section>
+  );
+}
+
+/** Why a blocked or failed run stopped: the reason in words and the error the runtime recorded. */
+function StopNote({ run }: { run: RunData["status"] }) {
+  const reason = run.reason && run.reason !== "none" ? reasonText(run.reason) : null;
+  return (
+    <section aria-label="Why the run stopped" className="flex flex-col gap-2">
+      <Alert tone="error">
+        {run.status === "failed" ? "The run failed" : "The run is blocked"}
+        {reason ? `: ${reason}.` : "."}
+      </Alert>
+      {run.stopDetail && (
+        <pre className="m-0 max-h-[240px] overflow-auto whitespace-pre-wrap rounded-base border-2 border-border bg-[var(--bg-sunken)] px-3 py-2 font-mono text-[12px]">
+          {run.stopDetail}
+        </pre>
+      )}
     </section>
   );
 }
@@ -722,6 +789,9 @@ function RunBody({
       ? `${run.limitations.count} accepted limitation${run.limitations.count === 1 ? "" : "s"}`
       : null,
     run.stalled ? `stalled: no event for ${Math.round(run.stalled.silentMs / 60_000)} min` : null,
+    run.autoRetry
+      ? `retrying by itself at ${new Date(run.autoRetry.at).toLocaleTimeString()} (${run.autoRetry.attempt} of ${run.autoRetry.of})`
+      : null,
   ].filter(Boolean);
 
   const stages = pipeline(data.stages, trace, run);
@@ -786,6 +856,7 @@ function RunBody({
         onSelect={select}
       />
       {undone && <UndoReport report={undone.report} onClose={() => setUndone(null)} />}
+      {(run.status === "blocked" || run.status === "failed") && <StopNote run={run} />}
       {pending.length > 0 && (
         <section aria-label="Your part" className="flex flex-col gap-3">
           {pending.map((r) => (
@@ -808,6 +879,7 @@ function RunBody({
         loops={line.loops}
         contractState={contractState}
         waiting={pending.length}
+        blocked={run.status === "blocked"}
       />
       <div className="flex flex-col gap-[18px] border-t-2 border-border pt-4">
         <div className="flex flex-wrap items-center gap-3">

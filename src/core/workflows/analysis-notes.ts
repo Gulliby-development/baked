@@ -1,5 +1,7 @@
 import type { z } from "zod";
+import { withModuleDependencies, withReadDependencies } from "./plan-consistency.js";
 import type { ResearchSchema, TaskGraph } from "./schemas.js";
+import { withTestDependencies } from "./sizing.js";
 
 type Research = z.infer<typeof ResearchSchema>;
 
@@ -15,6 +17,86 @@ export function hostCounts(graph: TaskGraph): { tasks: number; files: number } {
     tasks: graph.tasks.length,
     files: new Set(graph.tasks.flatMap((task) => task.writes.map((write) => write.path))).size,
   };
+}
+
+const SPLIT_PART =
+  /Sizing split this task by file: write only .*? belong to the other parts of (T\d+)\./;
+
+/**
+ * The tasks the host split by file after planning (`splitTestTasks`), keyed by the planned task:
+ * the first part keeps the planned ID, the others are new IDs that plan.md cannot name.
+ */
+export function hostSplitParts(graph: TaskGraph): Record<string, string[]> {
+  const parts: Record<string, string[]> = {};
+  for (const task of graph.tasks) {
+    const original = SPLIT_PART.exec(task.description)?.[1];
+    if (!original) continue;
+    parts[original] = [...(parts[original] ?? []), task.id];
+  }
+  return parts;
+}
+
+/**
+ * A finding about a task the host split: every task it names belongs to one split, and at least
+ * one is a part plan.md cannot list (cronsay 15eb3204: "T009 is not in plan.md" and "T005 and
+ * T009 check the same thing" sent the run back to plan four times).
+ */
+export function isHostSplitNit(
+  finding: { refs: readonly string[]; description: string },
+  parts: Record<string, string[]>,
+): boolean {
+  const named = new Set(
+    [...finding.refs, finding.description].flatMap((text) => text.match(/\bT\d{3,}\b/g) ?? []),
+  );
+  if (!named.size) return false;
+  return Object.entries(parts).some(
+    ([original, ids]) =>
+      ids.some((id) => id !== original && named.has(id)) &&
+      [...named].every((id) => ids.includes(id)),
+  );
+}
+
+/**
+ * The `dependsOn` edges of the stored graph that the host adds whatever the planner wrote: a
+ * module index after the module files, a reader after the writer of its read hint, a test after
+ * the code sharing its criterion. The planner cannot remove them, so the analyzer must not ask
+ * for that (bench round 10, dirdrift: one dependency finding came back in 4 of 7 analysis passes).
+ */
+export function hostDependencyEdges(graph: TaskGraph): Array<{ task: string; dependsOn: string }> {
+  const bare = { ...graph, tasks: graph.tasks.map((task) => ({ ...task, dependsOn: [] })) };
+  const derived = withTestDependencies(withReadDependencies(withModuleDependencies(bare)));
+  return derived.tasks.flatMap((task) => {
+    const stored = graph.tasks.find((t) => t.id === task.id)?.dependsOn ?? [];
+    return task.dependsOn
+      .filter((dep) => stored.includes(dep))
+      .map((dependsOn) => ({ task: task.id, dependsOn }));
+  });
+}
+
+/**
+ * A dependency finding about edges the host owns: it is about dependencies and every task it
+ * names is joined to another named task by a host edge.
+ */
+export function isHostEdgeNit(
+  finding: { refs: readonly string[]; description: string },
+  edges: ReadonlyArray<{ task: string; dependsOn: string }>,
+  taskIds: readonly string[],
+): boolean {
+  const text = [...finding.refs, finding.description].join(" ");
+  if (!/depend|edge|order/i.test(text)) return false;
+  const named = taskIds.filter((id) =>
+    new RegExp(
+      `(?:^|[^A-Za-z0-9_-])${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9_-])`,
+    ).test(text),
+  );
+  if (named.length < 2) return false;
+  const joined = (id: string) =>
+    edges.some(
+      (e) =>
+        (e.task === id && named.includes(e.dependsOn)) ||
+        (e.dependsOn === id && named.includes(e.task)),
+    );
+  return named.every(joined);
 }
 
 const COUNT = /\b\d+\s+(?:distinct\s+|unique\s+|code\s+)?(?:tasks?|files?)\b/gi;

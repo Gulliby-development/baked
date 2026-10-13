@@ -20,7 +20,7 @@ import { executeWorkflowCommand } from "../src/headless/workflow.js";
 import { CheckRunner } from "../src/core/verification/check-runner.js";
 import { gitBaseline, sourceManifest } from "../src/core/verification/snapshot.js";
 import { fingerprint } from "../src/core/verification/findings.js";
-import { ReviewSchema, PlanSchema, ImplementationSchema } from "../src/core/workflows/schemas.js";
+import { ReviewSchema, PlanSchema, ImplementationSchema, generatedPaths } from "../src/core/workflows/schemas.js";
 import { workspacePath } from "../src/core/specs/validate.js";
 import { planConsistencyProblems } from "../src/core/workflows/plan-consistency.js";
 import { validateEvidence } from "../src/core/verification/evidence.js";
@@ -298,6 +298,34 @@ describe("durable SDD runtime", () => {
     expect(service.store.run(run.runId).convergence_rounds).toBe(1);
     expect(service.store.state(run.runId).spec).toEqual(spec);
   });
+  test("already_satisfied may cite reads of the task's worktree after its earlier edits", async () => {
+    // junitdigest 3e5be74b T014: the fix of attempt 1 was in place, so the read evidence of the
+    // retry named the worktree snapshot, not the run snapshot, and was rejected as stale.
+    const { service, executor, root } = setup();
+    const original = executor.execute.bind(executor);
+    executor.execute = async (request) => {
+      if (request.profile.output !== "implementation") return original(request);
+      writeFileSync(join(root, "value.txt"), "ready");
+      const files = await sourceManifest(root, generatedPaths(policy));
+      const evidenceId = service.store.transaction(() => {
+        const snapshot = service.store.putSnapshot(request.runId, files);
+        const artifact = service.store.artifact(request.runId, "read", `reads/${newId()}.json`, "{}");
+        return service.store.addEvidence(request.runId, "read", snapshot.id, artifact.id);
+      });
+      return { output: ImplementationSchema.parse({ schemaVersion: 1, taskId: request.task?.id, outcome: "already_satisfied", summary: "The value is in place", evidenceIds: [evidenceId], unresolved: [] }), inputTokens: 20, outputTokens: 30 };
+    };
+    const { run } = await start(service); await service.drive(run.runId, new AbortController().signal); await approve(service, run.runId);
+    const done = await service.drive(run.runId, new AbortController().signal);
+    expect(done.status).toBe("completed");
+  });
+  test("evidence counts for any of the snapshots given and no other", async () => {
+    const { service } = setup(); const { run } = await start(service);
+    const [a, b, c] = ["a", "b", "c"].map((value) => service.store.putSnapshot(run.runId, { "value.txt": value }));
+    const artifact = service.store.artifact(run.runId, "read", "reads/x.json", "{}");
+    const read = service.store.addEvidence(run.runId, "read", b!.id, artifact.id);
+    expect(() => validateEvidence(service.store, run.runId, [a!.id, b!.id], [read])).not.toThrow();
+    expect(() => validateEvidence(service.store, run.runId, [a!.id, c!.id], [read])).toThrow("stale");
+  });
   test("a failed task check repairs its predecessor before running descendants", async () => {
     const { service, executor, root } = setup(true); const original = executor.execute.bind(executor);
     executor.execute = async (request) => {
@@ -391,6 +419,26 @@ describe("durable SDD runtime", () => {
     const step = service.store.beginStep(run.runId, "fixture"); const attempt = service.store.reserve(run.runId, step, null, 0, policy);
     const scope = new ProcessScope();
     try { const checked = await new CheckRunner(service.store, scope).run(run.runId, attempt, { ...policy.checks[0]!, executable: "baked-fixture-command-does-not-exist" }, new AbortController().signal); expect(checked.status).toBe("inconclusive"); } finally { await scope.stop(); }
+  });
+  test("a custom gate's JSON report, not its exit code, decides the check", async () => {
+    const { service } = setup(); const { run } = await start(service);
+    const step = service.store.beginStep(run.runId, "fixture"); const attempt = service.store.reserve(run.runId, step, null, 0, policy);
+    const scope = new ProcessScope();
+    const runner = new CheckRunner(service.store, scope);
+    const custom = (code: string) => ({ ...policy.checks[0]!, args: ["-e", code], report: "json" as const });
+    try {
+      const failed = await runner.run(run.runId, attempt, custom(`console.log('log line'); console.log(JSON.stringify({ status: 'failed', summary: 'two leaks', findings: [{ severity: 'high', message: 'leaked key', path: 'src/a.ts', line: 3 }] }))`), new AbortController().signal);
+      expect(failed.status).toBe("failed");
+      expect(failed.output).toContain("- [high] src/a.ts:3 leaked key");
+      const passed = await runner.run(run.runId, attempt, custom(`console.log(JSON.stringify({ status: 'passed' }))`), new AbortController().signal);
+      expect(passed.status).toBe("passed");
+      const contradicting = await runner.run(run.runId, attempt, custom(`console.log(JSON.stringify({ status: 'passed' })); process.exit(2)`), new AbortController().signal);
+      expect(contradicting.status).toBe("inconclusive");
+      const silent = await runner.run(run.runId, attempt, custom("console.log('no report')"), new AbortController().signal);
+      expect(silent.status).toBe("inconclusive");
+      expect(silent.output).toContain("Gate report: missing");
+      expect(service.store.checkDetails(run.runId).slice(-4).map((r) => r.reason)).toEqual(["report", "report", "report_exit_mismatch", "no_report"]);
+    } finally { await scope.stop(); }
   });
   test("evidence IDs cannot be borrowed from another run", async () => {
     const { service } = setup(); const first = await start(service); const second = await start(service);
@@ -517,6 +565,21 @@ describe("durable SDD runtime", () => {
     const question = service.store.requests(run.runId).find((r) => r.kind === "clarification" && r.status === "pending");
     expect(question?.body_json).toContain("initiative");
   });
+  test("under clarification assume a plan above the run ceiling continues within it and records the assumption", async () => {
+    const sized: RunPolicy = { ...policy, clarification: "assume", maxTotalTokens: 60_000, sizing: { maxRunTokens: 100_000 } };
+    const root = mkdtempSync(join(tmpdir(), "baked-workflow-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const service = new NativeWorkflowService(root, { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy: sized } }, new FixtureExecutor(root));
+    cleanups.push(() => service.close());
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy: sized });
+    await service.drive(run.runId, new AbortController().signal);
+    expect(service.store.requests(run.runId).some((r) => r.kind === "clarification")).toBe(false);
+    const assumption = service.store.artifacts(run.runId).find((a) => a.logical_path === "assumptions/sizing.json");
+    expect(assumption).toBeDefined();
+    const recorded = JSON.parse(service.store.readArtifact(run.runId, assumption!.id));
+    expect(recorded.assumed[0]).toMatchObject({ id: "SIZING-1", refs: ["tasks.json", "sizing/plan-1.json"] });
+    expect(recorded.assumed[0].description).toContain("continues within 100000 tokens");
+  });
   test("answering the plan-size question resumes at approval instead of blocking the run", async () => {
     const sized: RunPolicy = { ...policy, maxTotalTokens: 60_000, sizing: { maxRunTokens: 100_000 } };
     const root = mkdtempSync(join(tmpdir(), "baked-workflow-"));
@@ -623,7 +686,7 @@ describe("durable SDD runtime", () => {
     const satisfied = async (outcome = result) => {
       const child = service.store.beginStep(run.runId, "implement-rerun");
       return (service.scheduler as unknown as { correctionSatisfied: (...args: unknown[]) => Promise<boolean> })
-        .correctionSatisfied(run.runId, child, taskPolicy, task, outcome, new AbortController().signal, root);
+        .correctionSatisfied(run.runId, service.store.state(run.runId), child, taskPolicy, task, outcome, new AbortController().signal, root);
     };
     // The first run of a planned task that changed nothing did not do its work.
     expect(await satisfied()).toBe(false);

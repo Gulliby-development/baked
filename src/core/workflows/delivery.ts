@@ -49,7 +49,7 @@ export interface DeliveryFile {
 }
 export interface DeliveryExclusion {
   path: string;
-  reason: "secret" | "internal" | "ignored" | "symlink" | "unchanged";
+  reason: "secret" | "internal" | "ignored" | "symlink" | "unchanged" | "specs";
 }
 export interface DeliveryPlan {
   schemaVersion: 1;
@@ -327,6 +327,12 @@ export interface PrepareDeliveryOptions {
   draft?: boolean;
   /** False plans commit and push only. */
   pullRequest?: boolean;
+  /**
+   * Whether the run's published `specs/FEATURE/` documents go into the commit. By default they do
+   * only when the base commit already tracks a `specs/` directory: in a repository that does not
+   * keep specs, they are noise in the reviewer's diff and stay in the run's artifacts.
+   */
+  specs?: boolean;
   provider?: PullRequestProvider | null;
   /** Seconds since the epoch for the plan and commit dates; defaults to now. */
   now?: number;
@@ -400,6 +406,10 @@ export async function prepareDelivery(
     ]),
   ].sort();
 
+  const specsDir = `specs/${run.feature_id}/`;
+  const withSpecs =
+    options.specs ??
+    (await git(workspace, ["ls-tree", "--name-only", head, "--", "specs"])).stdout.trim() !== "";
   const files: DeliveryFile[] = [];
   const excluded: DeliveryExclusion[] = [];
   const dirty: string[] = [];
@@ -407,6 +417,10 @@ export async function prepareDelivery(
   for (const path of candidates) {
     if (internalPath(path)) {
       excluded.push({ path, reason: "internal" });
+      continue;
+    }
+    if (!withSpecs && path.startsWith(specsDir)) {
+      excluded.push({ path, reason: "specs" });
       continue;
     }
     if (looksSecret(path)) {
@@ -551,7 +565,12 @@ export async function prepareDelivery(
   const planId = newId();
   const userChanges = statusPaths(
     (await git(workspace, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])).stdout,
-  ).filter((p) => !internalPath(p) && !files.some((f) => f.path === p));
+  ).filter(
+    (p) =>
+      !internalPath(p) &&
+      !files.some((f) => f.path === p) &&
+      !excluded.some((e) => e.path === p && e.reason === "specs"),
+  );
   const evidence = evidenceOf(store, runId);
   const title = (state.spec?.title ?? `Deliver ${run.feature_id}`).slice(0, 72);
   const outcome = state.spec?.outcome ?? null;

@@ -94,6 +94,13 @@ export const CommandGate = z
           .object({ executable: z.string().min(1).max(512), args: z.array(z.string().max(2048)) })
           .strict()
           .optional(),
+        /** A second fixer tier run after `fix` (see `Check.fixUnsafe`). */
+        fixUnsafe: z
+          .object({ executable: z.string().min(1).max(512), args: z.array(z.string().max(2048)) })
+          .strict()
+          .optional(),
+        /** `json`: a custom gate whose JSON report decides the result (see `Check.report`). */
+        report: z.enum(["exit", "json"]).optional(),
       })
       .strict(),
     /** Set on a gate written from an accepted AI walk-through; the test file is pinned by hash. */
@@ -299,6 +306,19 @@ export const StageSchema = z.discriminatedUnion("type", [
       gates: z.array(GateBinding).min(1),
     })
     .strict(),
+  // Polls its command gates by host code, no model call, until they pass or the timeout.
+  z
+    .object({
+      ...StageCommon,
+      type: z.literal("wait"),
+      consumes: z.array(ContractId),
+      produces: z.literal("gates"),
+      effects: z.literal("none"),
+      gates: z.array(GateBinding).min(1),
+      intervalSeconds: z.number().int().min(5).max(3600),
+      timeoutMinutes: z.number().int().min(1).max(1440),
+    })
+    .strict(),
   z
     .object({
       ...StageCommon,
@@ -342,6 +362,8 @@ export const StageSchema = z.discriminatedUnion("type", [
     .strict(),
 ]);
 export type Stage = z.infer<typeof StageSchema>;
+/** The gate bindings a stage runs itself: check, review and wait stages. */
+export const stageGates = (stage: Stage): GateBinding[] => ("gates" in stage ? stage.gates : []);
 
 export const TransitionSchema = z
   .object({
@@ -432,6 +454,7 @@ export const STAGE_OUTCOMES: Record<Stage["type"], readonly Outcome[]> = {
   approval: ["passed"],
   learn: ["passed"],
   check: ["passed", "failed"],
+  wait: ["passed", "failed"],
   review: ["passed", "changes_requested"],
   reflection: ["passed", "changes_requested"],
 };
@@ -488,8 +511,8 @@ export function validateWorkflowV2(
     }
   }
   for (const stage of workflow.stages) {
-    if (stage.type !== "check" && stage.type !== "review") continue;
-    const wanted = stage.type === "check" ? "command" : "ai-review";
+    if (stage.type !== "check" && stage.type !== "review" && stage.type !== "wait") continue;
+    const wanted = stage.type === "review" ? "ai-review" : "command";
     for (const binding of stage.gates) {
       const gate = gates.get(binding.gateId);
       if (!gate) errors.push(`${stage.id}: unknown gate ${binding.gateId}`);
@@ -497,6 +520,8 @@ export function validateWorkflowV2(
         errors.push(`${stage.id}: a ${stage.type} stage runs ${wanted} gates only`);
       else if (gate.scope === "task")
         errors.push(`${stage.id}: task gate ${gate.id} runs after each task, not in a stage`);
+      else if (stage.type === "wait" && gate.type === "command" && gate.command.writes.length)
+        errors.push(`${stage.id}: a wait stage polls command gates that write nothing`);
     }
   }
   for (const t of workflow.transitions) {

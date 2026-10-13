@@ -89,11 +89,18 @@ const ASSUME_RULES = [
   "Otherwise ask a person.",
 ];
 
-/** The identity of a finding set: the same claims against the same criteria. */
+/**
+ * The identity of a finding set: the same claims against the same criteria. A failed task check
+ * names the corrective task that ran it, a new ID every round, so the ID is left out.
+ */
 export const findingSetHash = (findings: Review["findings"]): string =>
   hashJson(
     findings
-      .map((f) => ({ claim: f.claim, criteria: f.criterionIds, impact: f.impact }))
+      .map((f) => ({
+        claim: f.claim.replace(/^Task T\d+ required check /, "Task required check "),
+        criteria: f.criterionIds,
+        impact: f.impact,
+      }))
       .sort((a, b) => a.claim.localeCompare(b.claim)),
   );
 
@@ -426,7 +433,13 @@ export const testOrDocFile = (file: string | null): boolean =>
  * when the finding is on a test or documentation file only, since the behavior is verified and the
  * gap is in how well it is pinned or described (md-site and url-shortener B spent about 600k each
  * on such findings). zoneslot 409f3022 F-001 (the Kolkata test did not assert every UTC column)
- * cost 263k, 23% of its run, while the behavior was already verified.
+ * cost 263k, 23% of its run, while the behavior was already verified. A `missing` finding on a test
+ * or documentation file qualifies as well: reviewers label an absent test or README section
+ * `missing` rather than `partial` (all 5 such repairs in round R06, about 635k), and the gap is the
+ * same kind when every criterion it names has evidence. A low `correctness` or `contradicts`
+ * finding qualifies too: with every required check passing it is a detail the checks accept
+ * (junitdigest 3e5be74b spent about 1.1M each on `time.After` in a test helper and `%q` in an
+ * error message, #744), not a reason for another convergence round.
  */
 export function passesWithNotes(
   finding: Finding,
@@ -437,7 +450,10 @@ export function passesWithNotes(
     checksPass &&
     (finding.severity === "low" ||
       (finding.severity === "medium" && testOrDocFile(finding.file))) &&
-    finding.kind === "partial" &&
+    (finding.kind === "partial" ||
+      (finding.kind === "missing" && testOrDocFile(finding.file)) ||
+      (finding.severity === "low" &&
+        (finding.kind === "correctness" || finding.kind === "contradicts"))) &&
     finding.criterionIds.length > 0 &&
     finding.criterionIds.every(
       (id) => (coverage.find((c) => c.criterionId === id)?.evidenceIds.length ?? 0) > 0,

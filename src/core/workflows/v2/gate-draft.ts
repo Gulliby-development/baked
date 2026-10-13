@@ -20,6 +20,13 @@ import { confirmGates, describeGate, type GateLibrary, gateDirectories } from ".
 /** Kinds a model drafts; `human` and `ai-review` are built from the sentence without a model. */
 export type DraftKind = "command" | "ai-acceptance" | "human" | "ai-review";
 export const DRAFT_KINDS: readonly DraftKind[] = ["command", "ai-acceptance", "human", "ai-review"];
+/** Each kind in plain words, for a person choosing one. */
+export const DRAFT_KIND_LABELS: Record<DraftKind, string> = {
+  command: "Run a command",
+  "ai-acceptance": "AI check of the running app",
+  "ai-review": "AI review of the change",
+  human: "Ask a person",
+};
 
 export interface GateDraftRequest {
   text: string;
@@ -378,6 +385,31 @@ export async function draftGate(
     problems,
     path: `baked/gates/${gate.id}.json`,
   };
+}
+
+/** The draft as text lines for a person to confirm: what it checks, what it may do, its test. */
+export function draftReport(draft: GateDraft): string[] {
+  const lines = [
+    `Draft gate ${draft.gate.id} (${draft.gate.type}, ${draft.gate.required ? "required" : "advisory"})`,
+    `  ${draft.gate.description}`,
+  ];
+  if (draft.gate.type === "ai-acceptance") {
+    const { scenario } = draft.gate.acceptance;
+    lines.push("  Steps:", ...scenario.steps.map((s, i) => `    ${i + 1}. ${s}`));
+    lines.push("  Expectations:", ...scenario.expectations.map((e, i) => `    E${i + 1}. ${e}`));
+  }
+  lines.push("  It may:", ...draft.capabilities.map((c) => `    - ${c}`));
+  if (draft.script)
+    lines.push(
+      `  Test script ${draft.script.path}:`,
+      ...draft.script.content
+        .trimEnd()
+        .split("\n")
+        .map((l) => `      ${l}`),
+    );
+  if (draft.problems.length)
+    lines.push("  Cannot be saved:", ...draft.problems.map((p) => `    - ${p}`));
+  return lines;
 }
 
 /**

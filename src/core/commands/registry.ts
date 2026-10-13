@@ -1,4 +1,5 @@
 import { getCwd } from "../cwd.js";
+import { register as registerArtifacts } from "./artifacts.js";
 import { matchCheckpointPrefix, register as registerCheckpoint } from "./checkpoint.js";
 import { matchClaimsPrefix, register as registerClaims } from "./claims.js";
 import { register as registerClaudeCode } from "./claude-code.js";
@@ -11,6 +12,7 @@ import { matchGitPrefix, register as registerGit } from "./git.js";
 import { register as registerGraph } from "./graph.js";
 import { register as registerHooks } from "./hooks.js";
 import { matchNavPrefix, register as registerNavigation } from "./navigation.js";
+import { register as registerPackages } from "./packages.js";
 import { register as registerProjects } from "./projects.js";
 import { matchSessionPrefix, register as registerSession } from "./session.js";
 import { register as registerStorage } from "./storage.js";
@@ -37,6 +39,8 @@ registerCheckpoint(commandMap);
 registerWorkflow(commandMap);
 registerProjects(commandMap);
 registerWatch(commandMap);
+registerArtifacts(commandMap);
+registerPackages(commandMap);
 commandMap.set("/commands", handleListCustomCommands);
 
 const prefixMatchers = [
@@ -550,6 +554,29 @@ const COMMAND_DEFS: CommandDef[] = [
     hidden: true,
   },
   {
+    cmd: "/artifacts",
+    ic: "globe",
+    desc: "Artifacts: HTML pages shared by every project; open one, or deploy it to Vercel",
+    category: "Intelligence",
+    tags: ["html", "page", "vercel", "deploy", "publish", "site"],
+  },
+  {
+    cmd: "/artifacts open",
+    ic: "globe",
+    desc: "Open an artifact in the browser",
+    category: "Intelligence",
+    tags: ["html", "page"],
+    hidden: true,
+  },
+  {
+    cmd: "/artifacts deploy",
+    ic: "globe",
+    desc: "Deploy an artifact to your Vercel (asks first)",
+    category: "Intelligence",
+    tags: ["vercel", "publish"],
+    hidden: true,
+  },
+  {
     cmd: "/watch",
     ic: "eye",
     desc: "Watch files: saved baked! and baked? comments start the agent",
@@ -634,6 +661,29 @@ const COMMAND_DEFS: CommandDef[] = [
     desc: "Browse & install skills",
     category: "Intelligence",
     tags: ["plugins", "extensions"],
+  },
+  {
+    cmd: "/packages",
+    ic: "skills",
+    desc: "Packages: install profiles, skills, workflows and gates from a local package into baked/",
+    category: "Intelligence",
+    tags: ["package", "install", "add", "profiles", "workflows", "gates"],
+  },
+  {
+    cmd: "/packages add",
+    ic: "skills",
+    desc: "Show a local package's plan and install it (asks first)",
+    category: "Intelligence",
+    tags: ["package", "install"],
+    hidden: true,
+  },
+  {
+    cmd: "/packages remove",
+    ic: "skills",
+    desc: "Remove an installed package's unchanged files (asks first)",
+    category: "Intelligence",
+    tags: ["package", "uninstall"],
+    hidden: true,
   },
   {
     cmd: "/tools",

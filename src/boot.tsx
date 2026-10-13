@@ -51,6 +51,17 @@ if (cliArgs[0] === "mcp") {
   process.exit(await runMcpCli(cliArgs.slice(1)));
 }
 
+if (cliArgs[0] === "add" || cliArgs[0] === "packages") {
+  const { runPackagesCli } = await import("./headless/packages.js");
+  // `baked add PATH` installs a package; `baked packages list|remove` manages installed ones.
+  process.exit(await runPackagesCli(cliArgs[0] === "add" ? cliArgs : cliArgs.slice(1)));
+}
+
+if (cliArgs[0] === "artifacts") {
+  const { runArtifactsCli } = await import("./headless/artifacts.js");
+  process.exit(await runArtifactsCli(cliArgs.slice(1)));
+}
+
 if (cliArgs[0] === "lsp") {
   const { runLspCli } = await import("./headless/lsp.js");
   process.exit(await runLspCli(cliArgs.slice(1)));

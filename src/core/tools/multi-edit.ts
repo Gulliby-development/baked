@@ -196,7 +196,7 @@ export const multiEditTool = {
       const beforeMetrics = analyzeFile(originalContent);
       const afterMetrics = analyzeFile(content);
 
-      const diagsPromise = startPreEditDiagnostics(filePath);
+      const diags = await startPreEditDiagnostics(filePath);
 
       // CAS: verify file hasn't been modified since we read it.
       // ifHash trusts the caller's last-read hash against originalContent (read this call) —
@@ -256,7 +256,18 @@ export const multiEditTool = {
       }
 
       output = await appendAutoFormatResult(filePath, finalContent, output, args.tabId);
-      output = await appendPostEditDiagnostics(diagsPromise, filePath, output);
+      const checked = await appendPostEditDiagnostics(diags, filePath, output, {
+        before: rawContent,
+        after: finalContent,
+        tabId: args.tabId,
+      });
+      if (checked.rejected)
+        return {
+          success: false,
+          output: checked.output,
+          error: "edit rejected: it introduced errors",
+        };
+      output = checked.output;
       output = await appendCloneHints(filePath, output);
 
       // Nudge: warn if any edits lacked lineStart (consistent with edit_file)

@@ -8,6 +8,7 @@ import {
   type GateBinding,
   GateSchema,
   type Stage,
+  stageGates,
   type WorkflowV2,
   WorkflowV2Schema,
 } from "./definition.js";
@@ -26,7 +27,11 @@ export function parseRunDefinition(json: string): RunDefinition {
 }
 
 /** The v1 stage mechanism that executes a v2 stage; `report` and `decompose` are the ones v2 adds. */
-export type StageKind = WorkflowDefinition["stages"][number]["kind"] | "report" | "decompose";
+export type StageKind =
+  | WorkflowDefinition["stages"][number]["kind"]
+  | "report"
+  | "decompose"
+  | "wait";
 
 const AGENT_KINDS: Partial<Record<Stage["produces"], StageKind>> = {
   research: "research",
@@ -54,6 +59,8 @@ export function stageKind(stage: Stage): StageKind | null {
       return "converge";
     case "learn":
       return "learn";
+    case "wait":
+      return "wait";
   }
 }
 
@@ -132,14 +139,21 @@ export function initialPosition(definition: WorkflowV2): NonNullable<RuntimeStat
 }
 
 /** Every gate binding of a definition, with where it is bound. */
-export function bindingsOf(
-  definition: WorkflowV2,
-): { binding: GateBinding; stageId: string | null; transitionId: string | null }[] {
+export function bindingsOf(definition: WorkflowV2): {
+  binding: GateBinding;
+  stageId: string | null;
+  transitionId: string | null;
+  /** Set for a gate a wait stage polls: it watches the outside world, not the run's work. */
+  wait?: true;
+}[] {
   return [
     ...definition.stages.flatMap((s) =>
-      s.type === "check" || s.type === "review"
-        ? s.gates.map((binding) => ({ binding, stageId: s.id, transitionId: null }))
-        : [],
+      stageGates(s).map((binding) => ({
+        binding,
+        stageId: s.id,
+        transitionId: null,
+        ...(s.type === "wait" ? { wait: true as const } : {}),
+      })),
     ),
     ...definition.transitions.flatMap((t) =>
       t.gates.map((binding) => ({ binding, stageId: null, transitionId: t.id })),
@@ -168,7 +182,9 @@ export function frozenGates(definition: WorkflowV2, library: ReadonlyMap<string,
 export function checksOf(definition: WorkflowV2, gates: readonly Gate[]): Check[] {
   const byId = new Map(gates.map((g) => [g.id, g]));
   const checks = new Map<string, Check>();
-  for (const { binding } of bindingsOf(definition)) {
+  // A wait stage's gates are polled by that stage only, never planned as task checks or accepted.
+  for (const { binding, wait } of bindingsOf(definition)) {
+    if (wait) continue;
     const gate = byId.get(binding.gateId);
     if (gate?.type !== "command") continue;
     const check = gateToCheck(gate, binding);

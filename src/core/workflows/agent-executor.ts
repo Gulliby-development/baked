@@ -25,15 +25,27 @@ import {
 } from "../llm/provider-options.js";
 import { canonical } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
+import { withEditDiagnosticsMode } from "../tools/edit-diagnostics.js";
 import { buildTools } from "../tools/index.js";
 import { deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
 import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
-import { probeTool, reproExecutables, runProbe } from "../verification/repro.js";
+import {
+  probeTool,
+  reproExecutables,
+  runProbe,
+  writesDocumentation,
+} from "../verification/repro.js";
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
-import { fixerCommand } from "./check-policy.js";
-import { fileHash } from "./effects.js";
+import { assertAttemptFits } from "./budget.js";
+import { fixerCommand, fixerTiers } from "./check-policy.js";
+import { fileHash, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { withHostConstants } from "./host-constants.js";
+import {
+  accountIdentityMessage,
+  findAccountIdentity,
+  foreignAccountIdentities,
+} from "./host-identity.js";
 import { InitiativePlanSchema } from "./initiatives/plan.js";
 import type { WorkspaceLeases } from "./leases.js";
 import { grantedMcpServers, isMcpToolName, toolListAllows } from "./mcp-grants.js";
@@ -43,6 +55,7 @@ import { settleInterruptedEdits } from "./recovery.js";
 import { isTransient } from "./retry.js";
 import {
   AnalysisSchema,
+  CritiqueSchema,
   generatedPaths,
   ImplementationSchema,
   PlanSchema,
@@ -53,6 +66,7 @@ import {
   type RunPolicy,
   SpecSchema,
 } from "./schemas.js";
+import { indexTools, markStaleIndexResult, writtenInRoot } from "./stale-index.js";
 import { type StallSettings, stalledFault, stallSettings, touchProgress } from "./stall.js";
 import {
   AttemptStepController,
@@ -61,6 +75,7 @@ import {
   MIN_ATTEMPT_STEPS,
   type StepLike,
   stepTokens,
+  type ToolBackendCount,
 } from "./step-budget.js";
 import type { WorkflowStore } from "./store.js";
 import { pureWorkflowTools, WorkflowToolPolicy } from "./tool-policy.js";
@@ -80,6 +95,7 @@ export const outputSchemas: Record<string, z.ZodType> = {
   acceptance: AcceptanceWalkSchema,
   "acceptance-draft": AcceptanceDraftSchema,
   initiativePlan: InitiativePlanSchema,
+  critique: CritiqueSchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;
 /** Read-only steps in a row before an implementer is told to edit. */
@@ -89,6 +105,18 @@ const EDIT_NUDGE_AFTER_READS = 4;
 /** Sent after a step that ended without a tool call, before the one forced submission. */
 const SUBMIT_NOW_NOTICE =
   "You ended your turn without calling submit_result. Call submit_result now with the complete result for the work already done. If the task is not finished or something failed, submit outcome blocked (or the matching unfinished state) and list what is unresolved. Do not call any other tool.";
+
+/**
+ * Model steps ran but every one reported zero input and output tokens. Codex reports a response's
+ * usage only once its tool call is answered, so an attempt that ends at its only tool call (a
+ * submit) never hears its spend; that is unknown, not free (#364, #592).
+ */
+export function reportedNoTokens(steps: readonly StepLike[]): boolean {
+  return (
+    steps.length > 0 &&
+    steps.every((step) => step.usage.inputTokens === 0 && step.usage.outputTokens === 0)
+  );
+}
 
 function sumUsage(steps: readonly StepLike[]): Partial<LanguageModelUsage> {
   const add = (a: number | undefined, b: number | undefined) =>
@@ -189,6 +217,7 @@ export class NativeAgentExecutor implements AgentExecutor {
       );
     const policy = JSON.parse(this.store.run(request.runId).policy_json) as RunPolicy;
     const root = request.root ?? this.store.workspace;
+    const rootPath = rootField(this.store.workspace, root).root ?? "";
     const parent = await this.rootContext.get();
     const context = new ContextManager(root, parent.getSharedResources());
     try {
@@ -242,6 +271,8 @@ export class NativeAgentExecutor implements AgentExecutor {
         },
       );
       const available: ToolSet = {};
+      // Which code intelligence backend (and language server) answered each tool, for usage.
+      const backends = new Map<string, ToolBackendCount>();
       // A tool call is progress while it runs (it has its own deadline); the last one names a stall.
       const track = async <T>(name: string, call: () => Promise<T>): Promise<T> => {
         watch.tools++;
@@ -284,26 +315,48 @@ export class NativeAgentExecutor implements AgentExecutor {
                       ? { ...f, path: workspacePath(root, guard.path(f.path)) }
                       : f,
                 );
-              const result = await guard.execute(name, args, async () => {
-                if (name !== "read" || !Array.isArray(normalized.files))
-                  return execute(normalized, options);
-                const { files, outlines } = await outlineLargeReads(
-                  normalized.files,
-                  (request.task?.writes ?? []).map((w) => workspacePath(root, w.path)),
+              const editMode = policy.editDiagnostics ?? "feedback";
+              let result = await withEditDiagnosticsMode(editMode, () =>
+                guard.execute(name, args, async () => {
+                  if (name !== "read" || !Array.isArray(normalized.files))
+                    return execute(normalized, options);
+                  const { files, outlines } = await outlineLargeReads(
+                    normalized.files,
+                    (request.task?.writes ?? []).map((w) => workspacePath(root, w.path)),
+                  );
+                  // The read tool refuses a fourth range read of a file as "already in your
+                  // context"; after an outline the agent reads several spans of one file.
+                  const fresh = files.length > 0 && files.every(isTargetedRead);
+                  const input = { ...normalized, files, ...(fresh ? { fresh: true } : {}) };
+                  if (outlines.length === 0) return execute(input, options);
+                  const read = files.length
+                    ? ((await execute(input, options)) as { output?: unknown })
+                    : null;
+                  const output = [typeof read?.output === "string" ? read.output : "", ...outlines]
+                    .filter(Boolean)
+                    .join("\n\n");
+                  return { ...(read ?? {}), success: true, output };
+                }),
+              );
+              // A worktree's own edits are not in the project's index.
+              if (rootPath && indexTools.has(name))
+                result = markStaleIndexResult(
+                  result,
+                  writtenInRoot(this.store.effects(request.runId), rootPath),
                 );
-                // The read tool refuses a fourth range read of a file as "already in your
-                // context"; after an outline the agent reads several spans of one file.
-                const fresh = files.length > 0 && files.every(isTargetedRead);
-                const input = { ...normalized, files, ...(fresh ? { fresh: true } : {}) };
-                if (outlines.length === 0) return execute(input, options);
-                const read = files.length
-                  ? ((await execute(input, options)) as { output?: unknown })
-                  : null;
-                const output = [typeof read?.output === "string" ? read.output : "", ...outlines]
-                  .filter(Boolean)
-                  .join("\n\n");
-                return { ...(read ?? {}), success: true, output };
-              });
+              const answered = result as { backend?: unknown; server?: unknown } | null;
+              if (answered && typeof answered.backend === "string") {
+                const server = typeof answered.server === "string" ? answered.server : null;
+                const key = JSON.stringify([name, answered.backend, server]);
+                const count = backends.get(key) ?? {
+                  tool: name,
+                  backend: answered.backend,
+                  server,
+                  calls: 0,
+                };
+                count.calls++;
+                backends.set(key, count);
+              }
               if (!["edit_file", "multi_edit"].includes(name)) {
                 const files = await sourceManifest(root, generatedPaths(policy), request.signal);
                 const evidenceId = this.store.transaction(() => {
@@ -404,18 +457,40 @@ export class NativeAgentExecutor implements AgentExecutor {
         request.profile.role === "implementer" &&
         request.profile.allowedTools.includes("run_probe") &&
         request.task &&
-        request.task.origin !== "planned" &&
+        (request.task.origin !== "planned" || writesDocumentation(request.task.writes)) &&
         probeable.length > 0
       ) {
+        let probes = 0;
         const probe = probeTool(probeable, async (input) => {
           const scope = new ProcessScope();
+          const started = Date.now();
           try {
-            return await runProbe(scope, input, {
+            const outcome = await runProbe(scope, input, {
               root,
               executables: probeable,
               generated: generatedPaths(policy),
               signal: request.signal,
             });
+            // Each probe is evidence of how the repair went, so it is journaled with the attempt (#454).
+            try {
+              this.store.transaction(() =>
+                this.store.artifact(
+                  request.runId,
+                  "probe",
+                  `attempts/${request.attemptId}/probe-${String(++probes)}.json`,
+                  canonical({
+                    taskId: request.task?.id ?? null,
+                    executable: input.executable,
+                    args: input.args,
+                    durationMs: Date.now() - started,
+                    ...outcome,
+                  }),
+                ),
+              );
+            } catch {
+              // The probe's answer matters more to the attempt than its journal entry.
+            }
+            return outcome;
           } finally {
             await scope.stop();
           }
@@ -423,7 +498,8 @@ export class NativeAgentExecutor implements AgentExecutor {
         available.run_probe = tool({
           description: probe.description,
           inputSchema: probe.inputSchema,
-          execute: async (input: unknown) => probe.execute(input),
+          // Under the tool policy, so the call has a deadline and `tool.started`/`tool.finished`.
+          execute: async (input: unknown) => guard.host("run_probe", () => probe.execute(input)),
         });
       }
       const fixable = policy.checks.filter((c) => c.fix);
@@ -442,7 +518,7 @@ export class NativeAgentExecutor implements AgentExecutor {
             const check = fixable.find((c) => c.id === checkId);
             if (!check?.fix || !task)
               throw new WorkflowFault("CAPABILITY_DENIED", `Check ${checkId} has no fixer`);
-            const fix = check.fix;
+            const tiers = fixerTiers(check);
             const paths = task.writes
               .filter((w) => w.action !== "delete" && fileHash(workspacePath(root, w.path)))
               .map((w) => w.path);
@@ -452,19 +528,20 @@ export class NativeAgentExecutor implements AgentExecutor {
             try {
               const outputs: string[] = [];
               // One run per file, each recorded like an edit, so undo and rollback see it.
-              for (const path of paths)
-                await guard.execute("edit_file", { path }, async () => {
-                  const command = fixerCommand(fix, path);
-                  const executable =
-                    command.executable === "bun" ? process.execPath : command.executable;
-                  const result = await executeCheckCommand(scope, executable, command.args, {
-                    cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
-                    env: buildCheckEnv(check),
-                    timeoutMs: check.timeoutMs,
-                    signal: request.signal,
+              for (const fix of tiers)
+                for (const path of paths)
+                  await guard.execute("edit_file", { path }, async () => {
+                    const command = fixerCommand(fix, path);
+                    const executable =
+                      command.executable === "bun" ? process.execPath : command.executable;
+                    const result = await executeCheckCommand(scope, executable, command.args, {
+                      cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+                      env: buildCheckEnv(check),
+                      timeoutMs: check.timeoutMs,
+                      signal: request.signal,
+                    });
+                    outputs.push(`${path}: exit ${String(result.exitCode)}`);
                   });
-                  outputs.push(`${path}: exit ${String(result.exitCode)}`);
-                });
               const after = await sourceManifest(root, generated, request.signal);
               const outside = changedPaths(before, after).filter((p) => !paths.includes(p));
               if (outside.length)
@@ -497,7 +574,9 @@ export class NativeAgentExecutor implements AgentExecutor {
         inputSchema: schema,
         execute: async (value) => {
           const parsed = schema.parse(value);
-          const errors = request.validate?.(parsed) ?? [];
+          const errors = [...(request.validate?.(parsed) ?? [])];
+          if (findAccountIdentity(canonical(parsed), foreignAccountIdentities(root)))
+            errors.push(accountIdentityMessage("The result"));
           // After the bounded corrections the scheduler rejects the result with these errors.
           if (errors.length && rejected < MAX_SEMANTIC_CORRECTIONS) {
             rejected++;
@@ -528,16 +607,18 @@ export class NativeAgentExecutor implements AgentExecutor {
       const submitTools = ["submit_result", "submit_artifact", "submit_review"].filter(
         (name) => name in available,
       );
+      const attemptCap = Math.min(
+        request.maxTokens ?? Number.POSITIVE_INFINITY,
+        request.attemptTokens ?? policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS,
+      );
+      // An attempt starts only when the run budget, grown if it may, still covers its cap.
+      assertAttemptFits(this.store, request.runId, request.attemptId, policy, attemptCap);
       // The attempt cap never exceeds what the run budget still allows, so an attempt started
       // close to the run limit finalizes and submits instead of failing on the run cap mid-loop.
       const remaining = this.store.remainingTokens(request.runId, policy, request.attemptId);
       const budget = new AttemptStepController({
         maxSteps: request.maxSteps,
-        maxTokens: Math.min(
-          request.maxTokens ?? Number.POSITIVE_INFINITY,
-          request.attemptTokens ?? policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS,
-          remaining,
-        ),
+        maxTokens: Math.min(attemptCap, remaining),
         // Token caps come from history on whatever provider produced it; each attempt may still
         // take a minimum number of steps at its own step cost, within what the run allows.
         minSteps: Math.min(request.maxSteps, MIN_ATTEMPT_STEPS),
@@ -549,6 +630,21 @@ export class NativeAgentExecutor implements AgentExecutor {
         ...(request.profile.role === "implementer" && request.task?.writes.length
           ? { editNudgeAfterReads: EDIT_NUDGE_AFTER_READS }
           : {}),
+        watch: {
+          mustEdit: request.profile.role === "implementer" && !!request.task?.writes.length,
+          onSignal: (finding, action) =>
+            this.store.transaction(() =>
+              this.store.emit(request.runId, {
+                type: "attempt.advisory",
+                payload: {
+                  attemptId: request.attemptId,
+                  signal: finding.signal,
+                  action,
+                  detail: finding.detail.slice(0, 500),
+                },
+              }),
+            ),
+        },
       });
       const meta = { profileId: request.profile.id, taskId: request.task?.id ?? null };
       const writeUsage = (usage: AttemptUsageRecord) =>
@@ -557,7 +653,7 @@ export class NativeAgentExecutor implements AgentExecutor {
             request.runId,
             "usage",
             `attempts/${request.attemptId}/usage.json`,
-            canonical(usage),
+            canonical(backends.size ? { ...usage, toolBackends: [...backends.values()] } : usage),
           ),
         );
       // Usage is persisted as each step finishes, so a loop that throws keeps its real spend.
@@ -875,6 +971,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         output: submitted,
         inputTokens: result.usage.inputTokens ?? null,
         outputTokens: result.usage.outputTokens ?? null,
+        ...(reportedNoTokens(result.steps) ? { usageComplete: false } : {}),
       };
     } finally {
       context.dispose({ preserveSharedIO: true });

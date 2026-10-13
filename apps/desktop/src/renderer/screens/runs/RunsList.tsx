@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { RunState } from "../../../shared/api.js";
-import { errorText, type RunRow, runs } from "../../client/runs.js";
+import { errorText, RUN_COMPARE_CAPABILITY, type RunRow, runs } from "../../client/runs.js";
 import { BlockIcon, Icon } from "../../components/Icon.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
@@ -11,6 +11,8 @@ import { ago, tokens, usd } from "../../format.js";
 import { TABLE } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
+import { CompareView } from "./CompareView.js";
+import { togglePick } from "./compare-model.js";
 import { stageIconOf } from "./line-model.js";
 import { useBriefs } from "./load.js";
 import { RunsMaintenance } from "./Maintenance.js";
@@ -35,6 +37,20 @@ export function RunsList({ project }: Pick<SectionProps, "project">) {
   const [error, setError] = useState<string | null>(null);
   const [reloads, setReloads] = useState(0);
   const briefs = useBriefs(project.key, list);
+  const [canCompare, setCanCompare] = useState(false);
+  const [picked, setPicked] = useState<string[]>([]);
+  const [comparing, setComparing] = useState<[string, string] | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    runs.capabilities(project.key).then(
+      (caps) => live && setCanCompare(caps.includes(RUN_COMPARE_CAPABILITY)),
+      () => live && setCanCompare(false),
+    );
+    return () => {
+      live = false;
+    };
+  }, [project.key]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: `reloads` only triggers a reload after a cleanup
   useEffect(() => {
@@ -84,7 +100,26 @@ export function RunsList({ project }: Pick<SectionProps, "project">) {
           ))}
         </SegmentGroup>
         <RunsMaintenance projectKey={project.key} onChanged={() => setReloads((n) => n + 1)} />
+        {canCompare && (
+          <Button
+            variant="secondary"
+            size="md"
+            disabled={picked.length !== 2}
+            title="Tick two runs, for example one feature run with two routing maps"
+            onClick={() => setComparing([picked[0] as string, picked[1] as string])}
+          >
+            Compare {picked.length}/2
+          </Button>
+        )}
       </div>
+      {comparing && (
+        <CompareView
+          projectKey={project.key}
+          a={comparing[0]}
+          b={comparing[1]}
+          onClose={() => setComparing(null)}
+        />
+      )}
       {error && <Alert tone="error">{error}</Alert>}
       {!error && !list && <Skeleton label="Loading runs" />}
       {list?.length === 0 && (
@@ -98,6 +133,7 @@ export function RunsList({ project }: Pick<SectionProps, "project">) {
           <table className={TABLE}>
             <thead>
               <tr>
+                {canCompare && <th aria-label="Compare" />}
                 <th>Feature</th>
                 <th>Title</th>
                 <th>Status</th>
@@ -113,6 +149,16 @@ export function RunsList({ project }: Pick<SectionProps, "project">) {
                 const brief = briefs.get(run.runId);
                 return (
                   <tr key={run.runId}>
+                    {canCompare && (
+                      <td>
+                        <input
+                          type="checkbox"
+                          aria-label={`Compare ${run.featureId} (${run.runId})`}
+                          checked={picked.includes(run.runId)}
+                          onChange={() => setPicked((p) => togglePick(p, run.runId))}
+                        />
+                      </td>
+                    )}
                     <td className="font-mono">
                       <a href={projectHref(project.key, "runs", run.runId)}>{run.featureId}</a>
                     </td>
