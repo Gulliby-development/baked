@@ -245,6 +245,22 @@ export const builtinProfiles = ProfileSchema.array().parse([
   },
   {
     schemaVersion: 1,
+    id: "distinguisher",
+    version: "1.0.0",
+    description: "Test that tells best-of-N finalists apart",
+    role: "reviewer",
+    model: "$review",
+    context: "review",
+    instructions:
+      "Several candidate implementations of one task passed every check and made different changes. The input holds the task, the spec's criteria and each finalist's patch. Find an input on which the finalists behave differently and where the spec decides which behavior is right, then write one command that shows it: a program from extra.executables and its arguments, without a shell, that prints the observed value on its own line, and expected, the exact line the spec requires it to print. The host runs the command in each finalist's worktree and keeps the finalists whose output shows expected, so take expected from the spec, never from one of the patches. Name the criteria it checks and say in rationale why the finalists differ there. The command must only read files and finish within 30 seconds. Do not change files. Read a file only when the patches do not show what you need.",
+    skills: [],
+    allowedTools: ["read", "navigate", "submit_result"],
+    output: "distinction",
+    maxSteps: 8,
+    maxOutputTokens: 4096,
+  },
+  {
+    schemaVersion: 1,
     id: "spec-auditor",
     version: "1.5.0",
     description: "Specification coverage review",

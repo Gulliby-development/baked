@@ -62,10 +62,12 @@ import {
 } from "../verification/output-counts.js";
 import {
   missingReproAdvice,
+  outputShows,
   type ReproOutcome,
   reproAllows,
   reproExecutables,
   reproTool,
+  runProbe,
   runRepro,
 } from "../verification/repro.js";
 import { completeReview, reviewProblems, validateReview } from "../verification/review.js";
@@ -103,6 +105,7 @@ import {
   type CandidateResult,
   type CandidateSelection,
   candidateCount,
+  candidateModel,
   candidatesToJudge,
   changedLineCount,
   normalizedFingerprint,
@@ -264,6 +267,8 @@ import {
   type Critique,
   CritiqueSchema,
   DEFAULT_MAX_PARALLEL_RUNS,
+  type Distinction,
+  DistinctionSchema,
   executionModeOf,
   generatedPaths,
   ImplementationSchema,
@@ -539,6 +544,8 @@ export class WorkflowScheduler {
   /** How a `libraryDocs` MCP source is called; tests replace it. */
   mcpCall: McpCall = (server, tool, args) =>
     configuredMcpCall(this.store.workspace, server, tool, args);
+  /** Best-of-N candidate steps that run on a model of `candidateModels` instead of their route. */
+  private stepModels = new Map<string, string>();
   constructor(
     private store: WorkflowStore,
     private leases: WorkspaceLeases,
@@ -2185,6 +2192,8 @@ export class WorkflowScheduler {
     stepId: string,
     profile: AgentProfile,
   ): { models: string[]; effort?: RouteEffort } {
+    const candidate = this.stepModels.get(stepId);
+    if (candidate) return { models: [candidate] };
     return this.stageRoute(runId, this.store.rootStage(runId, stepId), profile);
   }
   private stageRoute(
@@ -3665,6 +3674,12 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       profiles,
       Array.from({ length: candidateCount(policy) }, () => task),
     );
+    for (const [i, entry] of batch.entries()) {
+      const model = candidateModel(policy, i + 1);
+      if (!model) continue;
+      entry.profile = { ...entry.profile, model };
+      this.stepModels.set(entry.child, model);
+    }
     const base = await runContentCommit(this.store, runId, worktree);
     this.store.transaction(() =>
       this.store.artifact(
@@ -3703,12 +3718,25 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         );
         const criticDecides =
           policy.critic === "select" && this.criticCalibration(runId).calibrated;
+        const distinction = criticDecides
+          ? null
+          : await this.distinguishFinalists(runId, stepId, state, policy, profiles, task, {
+              batch,
+              results,
+              signal,
+            });
+        const narrowed =
+          distinction &&
+          distinction.matching.length > 0 &&
+          distinction.matching.length < distinction.finalists.length
+            ? distinction.matching
+            : null;
         const critic = this.criticOf(runId, policy, profiles);
         if (critic)
           for (const index of candidatesToJudge(
             results.map((r) => r.result),
             criticDecides,
-          )) {
+          ).filter((i) => !narrowed || (narrowed.length > 1 && narrowed.includes(i)))) {
             const candidate = results[index - 1];
             const entry = batch[index - 1];
             if (!candidate || !entry) continue;
@@ -3726,8 +3754,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         const selection = selectCandidate(
           results.map((r) => r.result),
           criticDecides,
+          distinction?.matching ?? null,
         );
-        this.recordSelection(runId, task, batch, results, selection);
+        this.recordSelection(runId, task, batch, results, selection, distinction);
         const chosen =
           selection.winner !== null
             ? outcomes[selection.winner - 1]
@@ -3762,9 +3791,103 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         }
       }
     } finally {
-      for (const entry of batch) await this.releaseTaskWorktree(runId, entry);
+      for (const entry of batch) {
+        this.stepModels.delete(entry.child);
+        await this.releaseTaskWorktree(runId, entry);
+      }
     }
     if (failure) throw failure;
+  }
+  /**
+   * The distinguishing test of a tied vote (#769, after S*): the `distinction` profile reads the
+   * finalists' patches and the task's criteria and writes one command with the line the spec
+   * requires; the host runs it in each finalist's worktree as a probe (programs the checks start,
+   * no file changes) and keeps those whose output shows that line. Null when the vote decided, no
+   * profile or program is available, or the profile failed.
+   */
+  private async distinguishFinalists(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    profiles: AgentProfile[],
+    task: Task,
+    candidates: {
+      batch: BatchEntry[];
+      results: { result: CandidateResult; patch: string }[];
+      signal: AbortSignal;
+    },
+  ): Promise<DistinctionRecord | null> {
+    const { batch, results, signal } = candidates;
+    const finalists = candidatesToJudge(
+      results.map((r) => r.result),
+      false,
+    );
+    const profile = profiles.find((p) => p.output === "distinction");
+    const executables = reproExecutables(policy.checks);
+    if (finalists.length < 2 || !profile || !executables.length) return null;
+    const child = this.store.transaction(() => this.store.beginStep(runId, "distinguish", stepId));
+    let test: Distinction;
+    try {
+      test = DistinctionSchema.parse(
+        await this.call(
+          runId,
+          child,
+          state,
+          policy,
+          profile,
+          {
+            task,
+            criteria: (state.spec?.criteria ?? []).filter((c) => task.criterionIds.includes(c.id)),
+            executables,
+            finalists: finalists.map((index) => ({
+              candidate: index,
+              patch: results[index - 1]?.patch ?? "",
+            })),
+          },
+          signal,
+        ),
+      );
+      this.store.transaction(() => this.store.finishStep(runId, child, "completed"));
+    } catch (error) {
+      if (signal.aborted) throw error;
+      if (
+        error instanceof WorkflowFault &&
+        ["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code)
+      )
+        throw error;
+      this.store.transaction(() => this.store.finishStep(runId, child, "failed"));
+      return null;
+    }
+    const runs: DistinctionRecord["runs"] = [];
+    for (const index of finalists) {
+      const entry = batch[index - 1];
+      if (!entry) continue;
+      const outcome = await runProbe(
+        this.processes,
+        { executable: test.executable, args: test.args },
+        {
+          root: join(this.store.workspace, entry.path),
+          executables,
+          generated: generatedPaths(policy),
+          signal,
+        },
+      );
+      runs.push({
+        candidate: index,
+        status: outcome.status,
+        shows: outcome.status === "ran" && outputShows(outcome.output, test.expected),
+        exitCode: outcome.exitCode ?? null,
+        output: outcome.output.slice(-2000),
+        ...(outcome.reason ? { reason: outcome.reason } : {}),
+      });
+    }
+    return {
+      test,
+      finalists,
+      runs,
+      matching: runs.filter((r) => r.shows).map((r) => r.candidate),
+    };
   }
   /** What the selection sees of one candidate, with its patch against the run worktree. */
   private async candidateResult(
@@ -3872,6 +3995,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     batch: BatchEntry[],
     results: { result: CandidateResult; patch: string; changed: string[] }[],
     selection: CandidateSelection,
+    distinction: DistinctionRecord | null = null,
   ): void {
     this.store.transaction(() => {
       for (const { result, patch, changed } of results)
@@ -3899,6 +4023,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           // The oracle rate's numerator: some candidate passed; the selected rate's: the winner did.
           oracle: selection.passing.length > 0,
           selectedPassed: selection.winner !== null && selection.passing.includes(selection.winner),
+          ...(distinction ? { distinction } : {}),
         }),
       );
     });
@@ -8359,6 +8484,23 @@ const gateToRequired = (binding: { gateId: string; mode?: "required" | "advisory
  */
 const UNRESOLVED_MEANING =
   "unresolved lists only parts of THIS task that you could not finish. Work that belongs to other tasks of the plan, to checks run later, or to documentation tasks is not unresolved: leave it out. A defect you found in a file outside your write scope is not unresolved either: finish your own files (a test that exposes the defect stays as written), name the file and the defect in summary, and report implemented; the failing check becomes a corrective task that may edit that file. Any entry blocks this task.";
+
+/** The distinguishing test of a best-of-N tie and how each finalist ran it (#769). */
+interface DistinctionRecord {
+  test: Distinction;
+  finalists: number[];
+  runs: {
+    candidate: number;
+    status: "ran" | "refused";
+    /** The output shows the line the spec requires. */
+    shows: boolean;
+    exitCode: number | null;
+    output: string;
+    reason?: string;
+  }[];
+  /** Finalists whose output showed it. */
+  matching: number[];
+}
 
 /** One task of a batch: its reserved attempt and, once created, its worktree. */
 interface BatchEntry {

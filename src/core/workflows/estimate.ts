@@ -327,7 +327,10 @@ export interface PlannedStage {
   id: string;
   /** The v2 stage type: agent, tasks, check, approval, review, reflection or learn. */
   type: string;
-  /** Distinct models; tokens are split evenly between them. Empty for stages without agents. */
+  /**
+   * Models; tokens are split evenly between the entries, so a model listed twice (best-of-N
+   * candidates on `candidateModels`) gets two shares. Empty for stages without agents.
+   */
   models: string[];
   /** Best-of-N candidates per task of a tasks stage (#642); absent means 1. */
   candidates?: number;
@@ -489,7 +492,7 @@ export function estimatePreRun(input: {
         costUsd: price ? ZERO : null,
         price: price?.match ?? "unknown",
       };
-      entry.stages.push(stage.id);
+      if (!entry.stages.includes(stage.id)) entry.stages.push(stage.id);
       entry.tokens = add(entry.tokens, tokens);
       if (entry.costUsd && modelCost) entry.costUsd = add(entry.costUsd, modelCost);
       byModel.set(model, entry);

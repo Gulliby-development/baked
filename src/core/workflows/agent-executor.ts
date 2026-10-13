@@ -59,6 +59,7 @@ import {
   AnalysisSchema,
   ApprovalReviewSchema,
   CritiqueSchema,
+  DistinctionSchema,
   generatedPaths,
   ImplementationSchema,
   MutantProposalSchema,
@@ -102,6 +103,7 @@ export const outputSchemas: Record<string, z.ZodType> = {
   "approval-review": ApprovalReviewSchema,
   critique: CritiqueSchema,
   mutants: MutantProposalSchema,
+  distinction: DistinctionSchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;
 /** Read-only steps in a row before an implementer is told to edit. */
