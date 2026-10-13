@@ -127,6 +127,7 @@ import {
   PLAN_CONSISTENCY_CHECKS,
   planConsistencyProblems,
   withDerivedRequirements,
+  withImplementationProfiles,
   withModuleDependencies,
   withReadDependencies,
 } from "./plan-consistency.js";
@@ -271,13 +272,14 @@ function planGraph(
   spec: Spec,
   plan: { markdown: string; taskGraph: TaskGraph },
   policy: RunPolicy,
+  profiles: AgentProfile[],
 ): TaskGraph {
   return withCoveringChecks(
     withTestDependencies(
       withReadDependencies(
         withModuleDependencies(
           withDerivedRequirements(spec, {
-            ...plan.taskGraph,
+            ...withImplementationProfiles(plan.taskGraph, profiles),
             specHash: hashJson(spec),
             planHash: hashBytes(plan.markdown),
           }),
@@ -678,7 +680,7 @@ export class WorkflowScheduler {
               const problems = this.planProblems(runId, spec, plan, policy, profiles);
               if (problems.length)
                 throw new WorkflowFault("INVALID_REFERENCE", problems.join("\n"));
-              const planned = planGraph(spec, plan, policy);
+              const planned = planGraph(spec, plan, policy, profiles);
               const graph = policy.sizing ? this.splitTests(runId, planned, policy) : planned;
               state.graph = graph;
               state.hostSplitTasks = graph.tasks.length - planned.tasks.length;
@@ -1850,7 +1852,7 @@ export class WorkflowScheduler {
     policy: RunPolicy,
     profiles: AgentProfile[],
   ): string[] {
-    const graph = planGraph(spec, plan, policy);
+    const graph = planGraph(spec, plan, policy, profiles);
     const problems: string[] = [];
     const root = this.rootOf(runId);
     try {

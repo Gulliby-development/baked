@@ -153,6 +153,10 @@ const remoteHead = (s: Scenario, branch: string) => {
   return result.exitCode === 0 ? result.stdout.toString().trim() : null;
 };
 
+// Tests that execute a delivery twice spawn dozens of git processes, which can pass
+// the default 30s on Windows runners.
+const TWO_EXECUTES_TIMEOUT = 90_000;
+
 describe("Git delivery", () => {
   test("leaves the run's specs out when the repository keeps none, unless asked", async () => {
     const s = await completedRun();
@@ -245,7 +249,7 @@ describe("Git delivery", () => {
     expect(s.provider.creates).toBe(1);
     expect(deliveryEffects(s)).toHaveLength(3);
     expect(remoteHead(s, prepared.plan.branch)).toBe(first.commit);
-  });
+  }, TWO_EXECUTES_TIMEOUT);
 
   test("the CLI prepares, approves by digest and executes the plan", async () => {
     const s = await completedRun();
@@ -433,7 +437,7 @@ describe("Git delivery", () => {
     const result = await execute(s);
     expect(remoteHead(s, prepared.plan.branch)).toBe(result.commit);
     expect(deliveryEffects(s).filter((e) => e.operation === "commit")).toHaveLength(1);
-  });
+  }, TWO_EXECUTES_TIMEOUT);
 
   test("a failed push to an unreachable remote is retried without a second commit", async () => {
     const s = await completedRun();
@@ -452,7 +456,7 @@ describe("Git delivery", () => {
       ["push", "applied"],
       ["pull_request", "applied"],
     ]);
-  });
+  }, TWO_EXECUTES_TIMEOUT);
 
   test("a push whose outcome was lost is probed, and an unanswerable probe becomes a recovery request", async () => {
     const s = await completedRun();
@@ -486,7 +490,7 @@ describe("Git delivery", () => {
     expect(store.requests(s.runId).find((r) => r.id === recovery?.id)?.status).toBe("superseded");
     expect(deliveryEffects(s).filter((e) => e.operation === "push" && e.status === "applied")).toHaveLength(0);
     expect(result.pullRequest?.number).toBe(1);
-  });
+  }, TWO_EXECUTES_TIMEOUT);
 
   test("a lost pull request response is found by its head branch instead of creating a duplicate", async () => {
     const s = await completedRun();
