@@ -47,4 +47,10 @@ describe("workspace facts", () => {
       expect(text(id)).toContain("workspaceFacts");
     expect(text("researcher")).toContain("scaffold:");
   });
+  test("the planners and the reviewer are told what an empty or scaffold workspace means", () => {
+    const text = (id: string) => builtinProfiles.find((p) => p.id === id)?.instructions ?? "";
+    expect(text("planner")).toContain("When its kind is empty or scaffold");
+    expect(text("quick-planner")).toContain("When its kind is empty or scaffold");
+    expect(text("reviewer")).toContain("extra.baseline.greenfield");
+  });
 });
