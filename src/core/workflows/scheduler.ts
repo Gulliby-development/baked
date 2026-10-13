@@ -331,6 +331,7 @@ import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./s
 import {
   hasTaskGate,
   missingArtifactOwners,
+  namesPath,
   pendingCodePaths,
   pendingOwners,
   readyTasks,
@@ -3368,6 +3369,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       return this.store.beginStep(runId, `task-${task.id}`, stepId);
     });
     let integrity: Review["findings"] = [];
+    let reported: { summary: string; unresolved: string[] } | undefined;
     if (!checking && task.writes.length === 0) {
       // A task that may not write has nothing for a model to do: its task checks decide it,
       // and the checks stage covers the rest.
@@ -3613,6 +3615,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       }
       if (result.outcome === "already_satisfied")
         this.validateSatisfiedEvidence(runId, state, after, result);
+      reported = { summary: result.summary, unresolved: result.unresolved };
       await this.snapshot(runId, state, policy, signal);
       const beforeHashes = Object.fromEntries(
         changed.map((p) => [p, earlier.has(p) ? (earlier.get(p) ?? null) : (before[p] ?? null)]),
@@ -3681,6 +3684,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       signal,
     );
     this.settleTask(runId, state, policy, task, child, taskFailures, checkEvidence);
+    if (!taskFailures.length && reported)
+      await this.routeReportedDefect(runId, state, policy, task, child, reported, signal, taskRoot);
   }
   /**
    * Implementation with several writers (a worktree run whose policy allows more than one). Ready
@@ -4575,7 +4580,15 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         );
         results.push({ check, checked });
       }
-      return { kind: "done", entry, before, after, changed, checks: results };
+      return {
+        kind: "done",
+        entry,
+        before,
+        after,
+        changed,
+        checks: results,
+        account: { summary: result.summary, unresolved: result.unresolved },
+      };
     } catch (error) {
       if (runSignal.aborted) return { kind: "fatal", entry, error: runSignal.reason ?? error };
       if (
@@ -4795,6 +4808,17 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       signal,
     );
     this.settleTask(runId, state, policy, task, entry.child, failures, evidence);
+    if (!failures.length)
+      await this.routeReportedDefect(
+        runId,
+        state,
+        policy,
+        task,
+        entry.child,
+        outcome.account,
+        signal,
+        mainRoot,
+      );
   }
   /**
    * A required task check that failed and declares a fixer gets one host repair before it becomes
@@ -5993,6 +6017,88 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       this.store.transaction(() => this.store.finishStep(runId, child, "failed"));
       return null;
     }
+  }
+  /**
+   * Routes a defect a task names in another task's file to that file's owner at once (#839). A
+   * test task may not edit the source it exposes a defect in, so it names the file in its summary
+   * and reports implemented; until now nothing acted on that before the checks stage, and every
+   * later test task paid for the same failure (cfgtrace 276e4858: four test tasks, 1.94M tokens,
+   * named env_source.py). When the account names a file an implemented task writes, the run's
+   * required feature checks run once; the findings of a failing one on the named files become a
+   * corrective task of their owner, with the failing check as the repro. The account alone starts
+   * nothing: without a failing check there is no evidence of a defect.
+   */
+  private async routeReportedDefect(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    child: string,
+    account: { summary: string; unresolved: string[] },
+    signal: AbortSignal,
+    root: string,
+  ): Promise<void> {
+    const graph = state.graph;
+    if (!graph || !state.rootGraph) return;
+    const rows = this.store.tasks(runId);
+    if (rows.find((r) => r.id === task.id)?.status !== "implemented") return;
+    if (this.store.latestArtifact(runId, `tasks/defects/${task.id}.json`)) return;
+    const done = new Set(
+      rows.filter((r) => ["implemented", "verified"].includes(r.status)).map((r) => r.id),
+    );
+    const text = [account.summary, ...account.unresolved].join("\n");
+    const files = [
+      ...new Set(
+        graph.tasks
+          .filter((t) => t.id !== task.id && done.has(t.id))
+          .flatMap((t) => t.writes.filter((w) => w.action !== "delete").map((w) => w.path))
+          .filter((path) => !task.writes.some((w) => w.path === path) && namesPath(text, path)),
+      ),
+    ];
+    if (!files.length) return;
+    const findings: Review["findings"] = [];
+    const ran: { checkId: string; status: string; evidenceId: string }[] = [];
+    for (const check of policy.checks.filter((c) => c.required && c.scope === "feature")) {
+      const checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
+      ran.push({ checkId: check.id, status: checked.status, evidenceId: checked.evidenceId });
+      if (checked.status !== "failed") continue;
+      const failed = failedCheckFindings(
+        check,
+        checked.evidenceId,
+        checked.output ?? "",
+        state.rootGraph.tasks,
+        task,
+        `${task.id} reported a defect in ${files.join(", ")}: ${account.summary.slice(0, 600)} Run the failing tests of evidence ${checked.evidenceId} first and fix the cause in the source; the tests stay as written.`,
+        newId,
+      );
+      // Output that names planned files decides who owns the failure; output that names none
+      // (a bare assertion) is the reporting task's account of where the defect is.
+      const named = failed.filter((f) => f.file !== null && files.includes(f.file));
+      const unnamed = failed.every((f) => f.file === null);
+      findings.push(
+        ...(named.length || !unnamed
+          ? named
+          : files.flatMap((file) => failed.map((f) => ({ ...f, id: newId(), file })))),
+      );
+    }
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `tasks/defects/${task.id}.json`,
+        canonical({ taskId: task.id, files, checks: ran, findings: findings.map((f) => f.id) }),
+      ),
+    );
+    if (!findings.length) return;
+    const recorded = this.recordFindings(runId, {
+      schemaVersion: 1,
+      snapshotHash: state.workspaceHash ?? "",
+      verdict: "changes_requested",
+      coverage: [],
+      findings,
+    });
+    this.repair(runId, state, policy, recorded, "repair", "task");
+    this.store.transaction(() => this.store.saveState(runId, state));
   }
   /**
    * Closes a task after its checks: failures become corrective tasks; otherwise the task gets its
@@ -8894,6 +9000,8 @@ type WorkerOutcome =
       after: Record<string, string>;
       changed: string[];
       checks: WorkerCheck[];
+      /** The worker's summary and unresolved items, for a defect it names in another task's file. */
+      account: { summary: string; unresolved: string[] };
     }
   /** The task's result is refused: a change outside its writes, or no complete implementation. */
   | {
