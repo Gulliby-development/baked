@@ -47,6 +47,8 @@ export const StartBody = z
     propertyTests: z.enum(["auto", "off"]).optional(),
     /** The run model overrides configured model routes, as `--model-strict`. */
     modelStrict: z.boolean().optional(),
+    /** The approval reviewer may approve low-risk plans outside the limits, as `--approval-review`. */
+    approvalReview: z.boolean().optional(),
     /**
      * Propose the workflow and budget from the request, as `--auto-preset`; with `workflow` the
      * person's pick runs and both are recorded.

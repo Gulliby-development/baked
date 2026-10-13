@@ -737,6 +737,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs"],
   },
   {
+    id: "approval-review",
+    group: "Workflow runs",
+    title: "Approval reviewer: a model decides low-risk plans outside the auto approval limits",
+    tui: ["/workflow: approval prompt shows the reviewer's verdict"],
+    cli: ["baked workflow run", "baked quick", "approval-review"],
+    api: ["/v1/workflow/runs"],
+    desktop: ["project/runs: approval card shows the reviewer's verdict"],
+  },
+  {
     id: "checks",
     group: "Workflow runs",
     title: "Checks: list, edit, run now, suggestions",
@@ -782,6 +791,15 @@ export const FEATURES: readonly Feature[] = [
     cli: ["baked workflow run: --sast auto|off", "baked workflow report"],
     api: ["/v1/settings: code-quality page", "/v1/workflow/runs", "/v1/workflow/runs/:id/report"],
     desktop: ["settings/chat: Code quality page"],
+  },
+  {
+    id: "library-docs",
+    group: "Workflow runs",
+    title: "Docs for the locked library versions a task uses",
+    tui: gap(763),
+    cli: ["baked workflow doctor: libraryDocs in config.json"],
+    api: gap(763),
+    desktop: gap(763),
   },
   {
     id: "mutation-gate",

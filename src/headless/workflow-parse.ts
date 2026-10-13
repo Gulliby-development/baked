@@ -71,6 +71,7 @@ export interface WorkflowArgs {
 /** Options every workflow command takes. */
 const globalFlags = ["json", "cwd", "help"];
 const booleanFlags = new Set([
+  "approval-review",
   "refresh",
   "auto-preset",
   "all",
@@ -130,6 +131,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "property-tests",
     "issue",
     "budget",
+    "approval-review",
     "auto-preset",
   ],
   quick: [
@@ -146,6 +148,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "worktree",
     "route",
     "model-strict",
+    "approval-review",
   ],
   status: [],
   list: ["feature", "limit", "cursor", "status"],
@@ -468,7 +471,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--duplication off|warn|ratchet] [--sast auto|off] [--mutation off|advisory|required] [--property-tests auto|off] [--budget PRESET]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--duplication off|warn|ratchet] [--sast auto|off] [--mutation off|advisory|required] [--property-tests auto|off] [--budget PRESET] [--approval-review]
 run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --prompt-file FILE] [other run options]
   --issue takes the request from a GitHub issue (its title and body; --prompt adds instructions)
   and names the feature issue-N-TITLE unless --feature is given; the delivery pull request says
@@ -485,6 +488,9 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   --test-integrity warn records test gaming in a task's diff (deleted, skipped or weakened tests,
   suppressions, special cases for test inputs) instead of sending it to a repair. Default: the
   policy's testIntegrity, otherwise block
+  --approval-review lets the approval reviewer (a model) approve a low-risk plan that leaves the
+  auto approval limits only by its task count, file count or paths; it needs autoApproval.limits.
+  Always-human paths, deletions and the token limit still wait for you
   --duplication ratchet blocks code the run copies and code it adds that nothing uses; warn (the
   default) reports them in the run report; off skips the measurement. Default: the policy's
   duplication, then the quality.duplication setting, otherwise warn
@@ -505,7 +511,7 @@ propose TEXT... | --prompt TEXT | --prompt-file FILE [--json]
   The workflow and budget --auto-preset would pick for a request, with the reason: a review of
   existing changes (review-only), research without a change (spike), a failing check (fix-ci),
   a docs-only or small change (quick, quick budget), a large change (default, extended budget)
-quick TEXT... | --prompt-file FILE [--feature ID] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--budget PRESET] [--events] [--worktree] [--confirm-auto-approval HASH]
+quick TEXT... | --prompt-file FILE [--feature ID] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--budget PRESET] [--events] [--worktree] [--confirm-auto-approval HASH] [--approval-review]
   A small task without specification: one agent finds the files and plans, then approval,
   implementation, the policy checks and one correctness review. The feature ID is derived from
   the text. Runs workflows.quickWorkflow when set, otherwise the quick preset. Also: baked quick

@@ -67,6 +67,7 @@ The chat settings that the terminal pickers edit (provider options, chat router 
 | `memory.embeddingModel` | unset | Embedding model for memory recall; unset uses the offline embedder |
 | `mcpServers` | `[]` | MCP servers ([extensions](extensions.md#mcp-servers)) |
 | `hooks` | unset | Lifecycle hooks ([extensions](extensions.md#hooks)) |
+| `libraryDocs` | unset | Docs for the library versions a project's lockfile pins, given to workflow implementers: `{"dir": "~/.baked/library-docs"}` reads `<name>@<version>.md` or `<name>/<version>.md`, `{"mcp": {"server": "context7", "tool": "get-library-docs", "args": {"id": "{name}", "version": "{version}"}}}` calls an MCP tool; `maxChars` (default 8000) cuts each document. A project value replaces the global one ([library docs](workflows/runtime.md#library-docs)) |
 | `workflows` | on (`enabled` defaults to `true`; set `false` to turn them off) | Spec-driven workflows ([runtime guide](workflows/runtime.md#enabling)); `workflows.maxParallelRuns` (1..8, default 2) caps the runs executing at once ([parallel runs](workflows/runtime.md#parallel-runs)); `workflows.stall` sets tool deadlines, the step watchdog and automatic resumes after a stall or a provider outage ([stalls](workflows/runtime.md#stalls-deadlines-and-automatic-resume)) |
 | `keyPriority` | `"env"` | Key lookup order, see below |
 | `theme`, `diffStyle`, `chatStyle`, `collapseDiffs`, `showReasoning`, `verbose` | | Display; `/theme`, `/diff-style`, `/chat-style`, `/reasoning`, `/verbose` |
