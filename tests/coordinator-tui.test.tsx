@@ -292,6 +292,15 @@ describe("terminal coordinator view model", () => {
     ]);
   });
 
+  test("a thread's message reads as the thread's, not the person's", () => {
+    const [line] = messageLines(
+      [{ id: "1", role: "user", content: 'Message from session "API" (s-1):\n\nDone.', timestamp: 0 }],
+      "",
+      80,
+    );
+    expect(line).toEqual({ text: 'from "API": Done.', tone: "accent" });
+  });
+
   test("messages label the speaker and list tool calls", () => {
     const lines = messageLines(
       [

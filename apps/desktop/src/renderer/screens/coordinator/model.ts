@@ -96,3 +96,17 @@ const COORDINATOR_PREFIX = "Message from the project coordinator:\n\n";
 export function fromCoordinator(content: string): string | null {
   return content.startsWith(COORDINATOR_PREFIX) ? content.slice(COORDINATOR_PREFIX.length) : null;
 }
+
+/** The line a session's `send_message` puts first (`src/core/chat/peer-messages.ts`). */
+const PEER_LINE = /^Message from session "([^"]*)" \(([^)]+)\):\n\n/;
+
+/**
+ * Who wrote a user message that another session sent: the coordinator, or a thread by its title.
+ * Null for the person's own messages.
+ */
+export function messageSender(content: string): { from: string; text: string } | null {
+  const coordinator = fromCoordinator(content);
+  if (coordinator !== null) return { from: "the coordinator", text: coordinator };
+  const peer = PEER_LINE.exec(content);
+  return peer ? { from: `"${peer[1]}"`, text: content.slice(peer[0].length) } : null;
+}
