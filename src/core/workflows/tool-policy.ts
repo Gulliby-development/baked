@@ -21,6 +21,7 @@ import {
   withDeadline,
 } from "./stall.js";
 import type { EffectRow, WorkflowStore } from "./store.js";
+import { preexistingTest, testIntegrityOf } from "./test-integrity.js";
 import type { Task } from "./types.js";
 
 export const pureWorkflowTools = new Set(["read", "navigate", "bake_find", "bake_impact"]);
@@ -103,6 +104,15 @@ export class WorkflowToolPolicy {
     const write = this.task.writes.find((w) => w.path === path);
     if (!write || (write.action === "delete") !== (name === "delete_file"))
       throw new WorkflowFault("CAPABILITY_DENIED", `Task ${this.task.id} cannot write ${path}`);
+    if (write.action !== "create" && !write.reason && testIntegrityOf(this.policy) === "block") {
+      const state = this.store.state(this.runId);
+      const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [this.task];
+      if (preexistingTest(path, tasks))
+        throw new WorkflowFault(
+          "CAPABILITY_DENIED",
+          `${path} is a test that existed before this run, and the approved plan gives no reason to change it, so it is read-only. Make the code pass it. If the spec and this test cannot both hold, submit outcome spec_conflict and name both.`,
+        );
+    }
     if (
       name !== "delete_file" &&
       findAccountIdentity(JSON.stringify(args), foreignAccountIdentities(this.root))

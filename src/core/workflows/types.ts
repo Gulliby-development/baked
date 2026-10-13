@@ -175,6 +175,22 @@ export const RuntimeStateSchema = z
      * owners they wait for. The check runs again once the owners are done; no repair starts.
      */
     deferredChecks: z.record(z.string(), z.array(z.string())).default({}),
+    /**
+     * The existing tests that reach each task's files, from the code graph, and how the check that
+     * runs only them ended before the task's first attempt (#634). When that baseline passed, the
+     * check is required after the task: a test outside the task's files that it breaks blocks it.
+     */
+    affectedTests: z
+      .record(
+        z.string(),
+        z.object({
+          paths: z.array(z.string()),
+          checkId: z.string().nullable(),
+          baseline: z.enum(["passed", "failed", "inconclusive"]).nullable(),
+          evidenceId: z.string().nullable(),
+        }),
+      )
+      .default({}),
     /** Times plan-time sizing sent the plan back to be split; it does so once. */
     sizingReplans: z.number().int().nonnegative().default(0),
     /**

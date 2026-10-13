@@ -1,7 +1,8 @@
 /**
  * Diagnostics of the local API (`/v1/diagnostics/*`): disk use and cleanup of BAKED's data, the
- * background error log and the model events of this server process. The terminal UI's
- * `/storage`, `/errors` and `/model-events` read the same core modules in src/core/diagnostics/.
+ * background error log, the model events of this server process and the OS sandbox status. The
+ * terminal UI's `/storage`, `/errors`, `/model-events` and `/sandbox` read the same core modules
+ * (src/core/diagnostics/, src/core/security/sandbox.ts).
  */
 import { z } from "zod";
 import { backgroundErrors } from "../diagnostics/errors.js";
@@ -14,10 +15,13 @@ import {
   type StorageSizes,
   vacuumDatabases,
 } from "../diagnostics/storage.js";
+import { sandboxStatus } from "../security/sandbox.js";
 import type { RouteContext } from "./route-context.js";
 
 export interface DiagnosticsRouteContext extends RouteContext {
   dirs: StorageDirs;
+  /** The served project; the sandbox status reads its config. */
+  workspace: string;
   /** Deletes the project's saved chat sessions; throws while a chat turn runs. */
   clearSessions: () => number;
   /** Clears the repository map through the running context manager; throws while busy. */
@@ -113,6 +117,9 @@ export async function diagnosticsRoute(ctx: DiagnosticsRouteContext): Promise<Re
         storage: storageView(computeStorageSizes(ctx.dirs)),
       });
     }
+    case "/v1/diagnostics/sandbox":
+      ctx.only("GET");
+      return ctx.json(200, sandboxStatus(ctx.workspace));
     case "/v1/diagnostics/errors":
       ctx.only("GET");
       return ctx.json(200, { errors: backgroundErrors() });

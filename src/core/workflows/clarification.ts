@@ -122,7 +122,8 @@ export function planOnlyFindings<T extends { kind: string; refs: string[]; block
  * plan; clearing the flag blocked the run at approve (cronsay 15eb3204).
  */
 export function answerInvalidatesAnalysis(askingKind: string | undefined): boolean {
-  return askingKind !== "approve";
+  // A spec conflict of a task is raised after approval; its answer goes to the task, not the analysis.
+  return askingKind !== "approve" && askingKind !== "task-graph";
 }
 
 /**
