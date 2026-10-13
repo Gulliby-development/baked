@@ -148,7 +148,7 @@ export function RunOverview({
           />
           {snapshot.estimatedCostUsd !== null ? (
             <text fg={t.textMuted}>
-              {`${"Cost".padEnd(12)}about ${usd(snapshot.estimatedCostUsd)} (cache reads and writes at their own prices)`}
+              {`${"Cost".padEnd(12)}about ${usd(snapshot.estimatedCostUsd)}${budget.cost ? ` of the ${usd(budget.cost.maxCostUsd)} cap` : ""} (cache reads and writes at their own prices)`}
             </text>
           ) : null}
           {budget.heldTokens ? (

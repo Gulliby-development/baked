@@ -212,6 +212,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "tokens",
     "calls",
     "time-ms",
+    "cost-usd",
     "expected-revision",
     "command-id",
     "resume",
@@ -314,6 +315,11 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
           `--${name} requires a ${minimum ? "positive" : "non-negative"} integer`,
         );
     }
+  }
+  if ("cost-usd" in result.flags) {
+    const value = Number(result.flags["cost-usd"]);
+    if (!/^\d+(\.\d+)?$/.test(String(result.flags["cost-usd"])) || !(value > 0))
+      throw new WorkflowFault("INVALID_DEFINITION", "--cost-usd requires a positive number");
   }
   if ("format" in result.flags && result.flags.format !== "md")
     throw new WorkflowFault("INVALID_DEFINITION", "--format takes md");
@@ -643,8 +649,9 @@ fork RUN_ID --expected-revision N --from-stage STAGE
   the run's changes as they are now; with reroute, one stage runs again on another model)
 continue RUN_ID --request ID --expected-revision N [--resume]   (answer a token checkpoint; resume then spends up to the next one. On a stopped convergence it allows one more repair round)
 accept RUN_ID --request ID --expected-revision N [--no-resume]   (a stopped convergence: accept the remaining findings as known limitations; reject stops the run)
-extend RUN_ID --expected-revision N [--tokens N] [--calls N] [--time-ms N] [--resume [--events]]
-  (raise the limits of a run blocked on its budget; resume continues it, or --resume in the same command)
+extend RUN_ID --expected-revision N [--tokens N] [--calls N] [--time-ms N] [--cost-usd N] [--resume [--events]]
+  (raise the limits of a run blocked on its budget, and the cost cap of a run started with one;
+  resume continues it, or --resume in the same command)
 reroute RUN_ID --expected-revision N [--model ID] [--route STAGE=MODEL,...] [--resume [--events]]
   (move a stopped run to other models: completed stages and tasks stay, the next agent calls use
   the new models; routes resolve again through modelRouting with the new run model, the start

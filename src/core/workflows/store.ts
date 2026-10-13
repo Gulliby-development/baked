@@ -2,10 +2,11 @@ import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { findPricing } from "../llm/pricing.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { writeViaTemp } from "./atomic-write.js";
-import { growBudgetOnProgress } from "./budget.js";
+import { costRate, growBudgetOnProgress } from "./budget.js";
 import { WorkflowFault } from "./errors.js";
 import type { PastRun } from "./estimate.js";
 import { migration001 } from "./migrations/001.js";
@@ -316,6 +317,11 @@ export function readStoreHistory(path: string): PastRun[] {
   }
 }
 
+/** The snapshot field of a run's dollar cap, left out when the policy has none. */
+function costCapOf(policyJson: string): { maxCostUsd?: number } {
+  const cap = (JSON.parse(policyJson) as { maxCostUsd?: unknown }).maxCostUsd;
+  return typeof cap === "number" ? { maxCostUsd: cap } : {};
+}
 export class WorkflowStore {
   private readonly db: Database;
   readonly path: string;
@@ -490,6 +496,7 @@ export class WorkflowStore {
       tokenUsage: row.token_usage,
       activeMs: row.active_ms,
       estimatedCostUsd: this.costOf(id, row.estimated_cost_microusd),
+      ...costCapOf(row.policy_json),
       verificationState: state.verificationState,
       limitations: { count: limitationIds.length, ids: limitationIds },
       reviewNotes: { count: noteIds.length, ids: noteIds },
@@ -1243,6 +1250,7 @@ export class WorkflowStore {
         (projected > policy.maxTotalTokens && !growBudgetOnProgress(this, runId, policy, projected))
       )
         throw new WorkflowFault("BUDGET_EXHAUSTED", "Run agent/token/time budget exhausted");
+      if (modelId) this.assertCostFits(runId, policy, modelId, tokens);
       this.assertBelowCheckpoint(runId, policy, row.token_usage + reserved + tokens);
       const id = newId();
       const ordinal = this.attempts(runId).filter((a) => a.step_id === stepId).length + 1;
@@ -1362,6 +1370,53 @@ export class WorkflowStore {
     this.pastCosts.set(runId, { attempts: finished.length, cost });
     return cost;
   }
+  /**
+   * The run's cost against its dollar cap: what finished attempts cost, and the tokens every
+   * other open attempt still reserves priced at the run's rate so far (`costRate`), so parallel
+   * attempts reserve against what is left instead of all starting on the same remainder.
+   */
+  costUsage(runId: string, attemptId?: string): { spentUsd: number; reservedUsd: number } {
+    const row = this.run(runId);
+    const spent = this.costOf(runId, row.estimated_cost_microusd);
+    const reservedUsd = this.attempts(runId)
+      .filter((a) => !a.usage_complete && a.id !== attemptId && a.model_id !== null)
+      .reduce(
+        (sum, a) => sum + a.reserved_tokens * costRate(spent, row.token_usage, a.model_id),
+        0,
+      );
+    return { spentUsd: spent ?? 0, reservedUsd };
+  }
+  /**
+   * Refuses a model call the dollar cap (`maxCostUsd`) no longer covers: the cost spent, the cost
+   * other open attempts reserve and this call's tokens at the run's rate. A model without a price
+   * is refused too, so it can never spend outside the cap.
+   */
+  private assertCostFits(
+    runId: string,
+    policy: RunPolicy,
+    model: string,
+    tokens: number,
+    attemptId?: string,
+  ): void {
+    const cap = policy.maxCostUsd;
+    if (cap === null) return;
+    if (findPricing(model) === null)
+      throw new WorkflowFault(
+        "BUDGET_EXHAUSTED",
+        `No price is known for ${model}, so the run's cost cap cannot hold`,
+        { reason: "cost", model, maxCostUsd: cap },
+      );
+    const { spentUsd, reservedUsd } = this.costUsage(runId, attemptId);
+    const row = this.run(runId);
+    const requestedUsd =
+      tokens * costRate(this.costOf(runId, row.estimated_cost_microusd), row.token_usage, model);
+    if (spentUsd + reservedUsd + requestedUsd > cap)
+      throw new WorkflowFault(
+        "BUDGET_EXHAUSTED",
+        "The next model call would pass the run's cost cap",
+        { reason: "cost", spentUsd, reservedUsd, requestedUsd, maxCostUsd: cap },
+      );
+  }
   /** Tokens an executor recorded for the attempt so far, or null when none reported any. */
   recordedUsage(runId: string, attemptId: string): number | null {
     return this.attempts(runId).find((a) => a.id === attemptId)?.used_tokens ?? null;
@@ -1400,6 +1455,8 @@ export class WorkflowStore {
             maxTotalTokens: policy.maxTotalTokens,
           },
         );
+      const model = this.attempts(runId).find((a) => a.id === attemptId)?.model_id ?? null;
+      if (model) this.assertCostFits(runId, policy, model, tokens, attemptId);
       this.assertBelowCheckpoint(runId, policy, run.token_usage + reserved + tokens);
       this.db.run(
         "UPDATE attempts SET reserved_tokens=MAX(reserved_tokens,?) WHERE run_id=? AND id=? AND status='running'",

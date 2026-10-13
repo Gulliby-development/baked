@@ -85,6 +85,8 @@ export const ExtendBody = Command.extend({
   tokens: PositiveInt.optional(),
   calls: PositiveInt.optional(),
   timeMs: PositiveInt.optional(),
+  /** A new cost cap in USD, for a run started with one. */
+  costUsd: z.number().positive().optional(),
 }).strict();
 
 /** A new run model and/or stage routes (stage ID to model or `$class`), as `workflow reroute`. */

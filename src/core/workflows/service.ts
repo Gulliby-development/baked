@@ -24,12 +24,14 @@ import { supersedeResearch } from "./analysis-notes.js";
 import { approvalDigest } from "./approval.js";
 import { AttentionNotifier } from "./attention-notify.js";
 import {
+  assertCostCapPriced,
   type BudgetLimits,
   budgetUsage,
   LIMIT_NAMES,
   limitsOf,
   MAX_EXTENDED_MS,
   MAX_EXTENDED_TOKENS,
+  proposeCostCap,
   proposeExtension,
 } from "./budget.js";
 import { validateChecks } from "./check-policy.js";
@@ -1358,7 +1360,7 @@ export class NativeWorkflowService implements WorkflowService {
   async extendBudget(
     runId: string,
     command: CommandIdentity,
-    requested: Partial<BudgetLimits> = {},
+    requested: Partial<BudgetLimits> & { maxCostUsd?: number } = {},
   ): Promise<RunSnapshot> {
     this.enabled();
     return this.store.command(
@@ -1386,6 +1388,25 @@ export class NativeWorkflowService implements WorkflowService {
           maxActiveMs: requested.maxActiveMs ?? proposal?.maxActiveMs ?? before.maxActiveMs,
         };
         const current = limitsOf(before);
+        const cost = this.store.costUsage(runId);
+        const costCap =
+          requested.maxCostUsd ??
+          proposeCostCap(
+            before.maxCostUsd,
+            cost.spentUsd + cost.reservedUsd,
+            current,
+            budgetUsage(this.store, row),
+          );
+        if (costCap !== null && before.maxCostUsd === null)
+          throw new WorkflowFault(
+            "INVALID_DEFINITION",
+            "This run has no cost cap to raise; a cost cap is set in the policy at start",
+          );
+        if (costCap !== null && before.maxCostUsd !== null && costCap < before.maxCostUsd)
+          throw new WorkflowFault(
+            "INVALID_DEFINITION",
+            `Limits can only be raised: cost $${before.maxCostUsd} now, you asked $${costCap}`,
+          );
         for (const key of Object.keys(current) as (keyof BudgetLimits)[])
           if (limits[key] < current[key])
             throw new WorkflowFault(
@@ -1393,6 +1414,7 @@ export class NativeWorkflowService implements WorkflowService {
               `Limits can only be raised: ${LIMIT_NAMES[key]} ${current[key].toLocaleString("en-US")} now, you asked ${limits[key].toLocaleString("en-US")}`,
             );
         if (
+          costCap === before.maxCostUsd &&
           Object.keys(current).every(
             (key) => limits[key as keyof BudgetLimits] === current[key as keyof BudgetLimits],
           )
@@ -1418,6 +1440,7 @@ export class NativeWorkflowService implements WorkflowService {
         const after = PolicySchema.parse({
           ...before,
           ...limits,
+          maxCostUsd: costCap,
           ...(autoApproval === undefined ? {} : { autoApproval }),
         });
         if (limits.maxActiveMs > MAX_EXTENDED_MS || limits.maxTotalTokens > MAX_EXTENDED_TOKENS)
@@ -1434,8 +1457,15 @@ export class NativeWorkflowService implements WorkflowService {
             approvedBy: "user",
             commandId: command.commandId,
             stageId: row.stage_id,
-            previous: current,
-            next: limitsOf(after),
+            previous: {
+              ...current,
+              ...(before.maxCostUsd === null ? {} : { maxCostUsd: before.maxCostUsd }),
+            },
+            next: {
+              ...limitsOf(after),
+              ...(after.maxCostUsd === null ? {} : { maxCostUsd: after.maxCostUsd }),
+            },
+            ...(after.maxCostUsd === null ? {} : { cost }),
             previousPolicyHash: hashJson(before),
             policyHash: hashJson(after),
             usage: budgetUsage(this.store, row),
@@ -1506,6 +1536,7 @@ export class NativeWorkflowService implements WorkflowService {
     );
     const changes = routeChanges(before, after);
     if (!changes.length && after.runModel === before.runModel) return null;
+    assertCostCapPriced(PolicySchema.parse(JSON.parse(row.policy_json)), after);
     const warnings: string[] = [];
     const independence = independentReviewMode(this.config);
     if (independence !== "off") {
