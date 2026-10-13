@@ -9,6 +9,7 @@ import type {
   BakeMode,
   ChatEffort,
   ChatStyle,
+  PermissionMode,
 } from "../../types/index.js";
 import type { CompactionStrategy } from "../compaction/types.js";
 import type { ContextManager } from "../context/manager.js";
@@ -33,6 +34,9 @@ export interface CommandContext {
   setBakeMode: (mode: BakeMode) => void;
   /** Sets the active tab's reasoning effort and the header chip. */
   setEffort: (effort: ChatEffort) => void;
+  /** Sets the active tab's permission mode (manual, auto, full) and the header chip. */
+  setPermissionMode: (mode: PermissionMode) => void;
+  currentPermissionMode: PermissionMode;
   currentMode: BakeMode;
   currentModeLabel: string;
   contextManager: ContextManager;

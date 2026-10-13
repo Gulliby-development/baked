@@ -772,11 +772,19 @@ const COMMAND_DEFS: CommandDef[] = [
     tags: ["prompt", "agents.md", "create"],
   },
   {
+    cmd: "/permissions",
+    ic: "cog",
+    desc: "Permissions of this chat: manual, auto or full access",
+    category: "Settings",
+    tags: ["allow", "approve", "manual", "auto", "full", "yolo"],
+    suggested: true,
+  },
+  {
     cmd: "/mode",
     ic: "cog",
     desc: "Switch Baked mode",
     category: "Settings",
-    tags: ["architect", "plan", "auto"],
+    tags: ["architect", "plan"],
     suggested: true,
   },
   {

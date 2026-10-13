@@ -435,7 +435,7 @@ export function launchTools(
   return {
     launch_session: tool({
       description:
-        "Start a background chat session with a brief. It runs on its own, shows in the session list, and reports back here when its turn ends or it asks something. architect mode only reads; default or auto mode can edit files and needs the user's yes first.",
+        "Start a background chat session with a brief. It runs on its own, shows in the session list, and reports back here when its turn ends or it asks something. architect mode only reads; default or auto mode can edit files and needs the user's yes first unless the user gave this chat full access. The session gets this chat's permission mode; auto mode gives it full access.",
       inputSchema: z.strictObject({
         title: z.string().trim().min(1).max(200),
         brief: z.string().trim().min(1).max(20_000).describe("The session's first message"),
@@ -444,14 +444,17 @@ export function launchTools(
       }),
       execute: async ({ title, brief, mode, why }) =>
         launch(async () => {
+          // A coordinator with full access starts editing sessions without asking.
+          const permissions = coordinator.permissionMode;
           if (
             mode !== "architect" &&
+            permissions !== "full" &&
             !(await coordinator.confirm(
               `Start a ${mode}-mode session that can edit files: "${title}"`,
             ))
           )
             throw new Error("The user declined to start a session that can edit files");
-          const session = await chat.create({ title, mode: mode as ChatMode });
+          const session = await chat.create({ title, mode: mode as ChatMode, permissions });
           session.send(brief);
           return { kind: "session", id: session.id, status: "working" };
         }, why),

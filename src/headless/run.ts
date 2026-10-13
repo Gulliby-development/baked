@@ -32,6 +32,7 @@ import type {
   ImageAttachment,
   InputContextItem,
   InteractiveCallbacks,
+  PermissionMode,
   ToolCall,
 } from "../types/index.js";
 import { DIM, EXIT_ABORT, EXIT_ERROR, EXIT_OK, EXIT_TIMEOUT, PURPLE, RST } from "./constants.js";
@@ -102,6 +103,7 @@ async function setupAgent(
     onApproveDestructive?: (description: string) => Promise<boolean>;
     /** `--approval-review`: the approval reviewer decides low-risk approvals first. */
     approvalReview?: boolean;
+    permissions?: PermissionMode;
   },
   merged: AppConfig,
 ): Promise<AgentEnv> {
@@ -213,6 +215,7 @@ async function setupAgent(
     modelId,
     model,
     mode,
+    ...(opts.permissions ? { permissions: opts.permissions } : {}),
     contextManager,
     providerOptions: providerOpts.providerOptions,
     headers: providerOpts.headers,

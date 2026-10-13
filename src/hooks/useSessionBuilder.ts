@@ -4,7 +4,7 @@ import type { SessionMeta, TabMeta } from "../core/sessions/types.js";
 import { useCheckpointStore } from "../stores/checkpoints.js";
 import { useUIStore } from "../stores/ui.js";
 import { useWorkflowStore } from "../stores/workflow.js";
-import type { ChatEffort, ChatMessage } from "../types/index.js";
+import type { ChatEffort, ChatMessage, PermissionMode } from "../types/index.js";
 import type { WorkspaceSnapshot } from "./useChat.js";
 
 interface BuildParams {
@@ -65,6 +65,7 @@ export function buildSessionMeta({
       coAuthorCommits: tabState.coAuthorCommits,
       bakeMode: tabState.bakeMode,
       ...(tabState.effort && tabState.effort !== "default" ? { effort: tabState.effort } : {}),
+      ...(tabState.permissionMode ? { permissionMode: tabState.permissionMode } : {}),
       tokenUsage: tabState.tokenUsage,
       messageRange: { startLine: 0, endLine: msgs.length },
       ...(checkpointTags.length > 0 ? { checkpointTags } : {}),
@@ -108,6 +109,7 @@ export function buildTabMeta(args: {
   coAuthorCommits: boolean;
   bakeMode: import("../types/index.js").BakeMode;
   effort?: ChatEffort;
+  permissionMode?: PermissionMode;
   tokenUsage: TabMeta["tokenUsage"];
   messages: ChatMessage[];
   coreMessages?: ModelMessage[];
@@ -131,6 +133,7 @@ export function buildTabMeta(args: {
     coAuthorCommits: args.coAuthorCommits,
     bakeMode: args.bakeMode,
     ...(args.effort && args.effort !== "default" ? { effort: args.effort } : {}),
+    ...(args.permissionMode ? { permissionMode: args.permissionMode } : {}),
     tokenUsage: args.tokenUsage,
     messageRange: { startLine: 0, endLine: msgs.length },
     ...(checkpointTags.length > 0 ? { checkpointTags } : {}),
