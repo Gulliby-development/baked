@@ -120,6 +120,14 @@ export const CheckSchema = z
       .strict()
       .optional(),
     /**
+     * A second fixer tier run after `fix` on the same files, for fixes the tool marks unsafe
+     * (`biome check --write --unsafe`), limited to what the project allows. Used only with `fix`.
+     */
+    fixUnsafe: z
+      .object({ executable: z.string().min(1).max(512), args: z.array(z.string().max(2048)) })
+      .strict()
+      .optional(),
+    /**
      * `json`: the command prints a JSON report (`status`, `summary`, `findings`) as its last JSON
      * line and that report decides the result; without one the check is inconclusive. Absent means
      * the exit code decides.
