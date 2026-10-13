@@ -339,7 +339,7 @@ export class NativeWorkflowService implements WorkflowService {
         project?.id ?? null,
       );
       this.store.artifact(id, "routing", ROUTING_ARTIFACT, canonical(routing));
-      if (smoke)
+      if (smoke?.length)
         this.store.artifact(
           id,
           "preflight",
