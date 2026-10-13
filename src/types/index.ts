@@ -305,6 +305,14 @@ export interface QualityConfig {
   sastConfig?: string;
   /** Look new dependencies up in their public registries (default true). */
   registryLookups?: boolean;
+  /** Mutation gate: `advisory` notes surviving mutants, `required` blocks; `preset` or absent follows the workflow preset. */
+  mutation?: "preset" | "off" | "advisory" | "required";
+  /** Killed share in percent a file needs under `required`, by path or glob (default 100). */
+  mutationThresholds?: Record<string, number>;
+  /** Time the mutation gate may spend per checks stage, in milliseconds (default 300000). */
+  mutationBudgetMs?: number;
+  /** Property-based tests from marked criteria: `preset` or absent follows the workflow preset. */
+  propertyTests?: "preset" | "auto" | "off";
 }
 
 export interface AppConfig {

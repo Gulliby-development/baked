@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { raiseToStartEstimate } from "../src/core/workflows/budget.js";
+import { growBudgetOnProgress, raiseToStartEstimate } from "../src/core/workflows/budget.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -64,6 +64,63 @@ describe("automatic budget growth", () => {
     const last = await drive(fixture, run.runId);
     expect(last).toMatchObject({ status: "blocked", reason: "budget_exhausted" });
     expect(JSON.parse(fixture.service.store.run(run.runId).policy_json).maxTotalTokens).toBeLessThanOrEqual(1_000_000);
+  });
+
+  // junitdigest 3e5be74b stopped twice at its ceiling and was cleared by mechanical extends (#747).
+  test("under assume a run grows past its ceiling up to extendToTokens while it makes progress", async () => {
+    const policy = {
+      ...fixturePolicy,
+      clarification: "assume" as const,
+      maxTotalTokens: 300000,
+      sizing: { maxRunTokens: 1_000_000, extendToTokens: 10_000_000 },
+    };
+    const fixture = workflowFixture({ policy, tokensPerCall: heavy });
+    cleanups.push(fixture.dispose);
+    const run = await fixture.start();
+    const last = await drive(fixture, run.runId);
+    expect(last.status).toBe("completed");
+    const store = fixture.service.store;
+    const stored = JSON.parse(store.run(run.runId).policy_json);
+    expect(stored.maxTotalTokens).toBeGreaterThan(1_000_000);
+    expect(stored.maxTotalTokens).toBeLessThanOrEqual(10_000_000);
+    const extensions = store
+      .artifacts(run.runId)
+      .filter((a) => a.logical_path.startsWith("policy-revisions/auto-"))
+      .map((a) => JSON.parse(store.readArtifact(run.runId, a.id)))
+      .filter((b) => b.kind === "auto-extend");
+    expect(extensions.length).toBeGreaterThan(0);
+    expect(extensions[0]).toMatchObject({ approvedBy: "sizing", hardCeiling: 10_000_000 });
+    expect(extensions[0].next.maxTotalTokens).toBeGreaterThan(extensions[0].previous.maxTotalTokens);
+  });
+
+  test("without assume the ceiling still stops the run", async () => {
+    const policy = {
+      ...fixturePolicy,
+      maxTotalTokens: 300000,
+      sizing: { maxRunTokens: 1_000_000, extendToTokens: 10_000_000 },
+    };
+    const fixture = workflowFixture({ policy, tokensPerCall: heavy });
+    cleanups.push(fixture.dispose);
+    const run = await fixture.start();
+    const last = await drive(fixture, run.runId);
+    expect(last).toMatchObject({ status: "blocked", reason: "budget_exhausted" });
+    expect(JSON.parse(fixture.service.store.run(run.runId).policy_json).maxTotalTokens).toBeLessThanOrEqual(1_000_000);
+  });
+
+  test("a run at its ceiling with nothing finished or resolved is not extended", async () => {
+    const policy = {
+      ...fixturePolicy,
+      clarification: "assume" as const,
+      maxTotalTokens: 1_000_000,
+      sizing: { maxRunTokens: 1_000_000, extendToTokens: 10_000_000 },
+    };
+    const fixture = workflowFixture({ policy });
+    cleanups.push(fixture.dispose);
+    const run = await fixture.start();
+    const store = fixture.service.store;
+    const current = JSON.parse(store.run(run.runId).policy_json);
+    expect(growBudgetOnProgress(store, run.runId, current, 1_200_000)).toBe(false);
+    expect(JSON.parse(store.run(run.runId).policy_json).maxTotalTokens).toBe(1_000_000);
   });
 
   test("the planning budget starts at the start estimate's high end, up to the ceiling", async () => {

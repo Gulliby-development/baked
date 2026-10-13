@@ -8,6 +8,12 @@ import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
 import { withModelReview } from "../core/workflows/auto-approval.js";
 import { type BudgetLimits, type BudgetPresetId, presetPolicy } from "../core/workflows/budget.js";
 import { compareRuns, comparisonMarkdown } from "../core/workflows/compare.js";
+import {
+  type CriticOutcomes,
+  criticOutcomesView,
+  formatCriticOutcomes,
+  refreshCriticOutcomes,
+} from "../core/workflows/critic-outcomes.js";
 import { defaultWorkflowPolicy } from "../core/workflows/defaults.js";
 import { executeDelivery, prepareDelivery } from "../core/workflows/delivery.js";
 import type { PullRequestProvider } from "../core/workflows/delivery-provider.js";
@@ -313,6 +319,14 @@ export async function executeWorkflowCommand(
         ...(args.flags.sast === "auto" || args.flags.sast === "off"
           ? { sast: args.flags.sast }
           : {}),
+        ...(args.flags.mutation === "off" ||
+        args.flags.mutation === "advisory" ||
+        args.flags.mutation === "required"
+          ? { mutation: args.flags.mutation }
+          : {}),
+        ...(args.flags["property-tests"] === "auto" || args.flags["property-tests"] === "off"
+          ? { propertyTests: args.flags["property-tests"] }
+          : {}),
       });
       // The run's record keeps these warnings; the operator sees them before the run goes on.
       for (const warning of readRoutingSummary(service.store, run.runId)?.warnings ?? [])
@@ -564,6 +578,10 @@ export async function executeWorkflowCommand(
       writeFileSync(path, markdown);
       return { runId, path, bytes: Buffer.byteLength(markdown) };
     }
+    case "outcomes": {
+      if (args.flags.refresh === true) await refreshCriticOutcomes(service.store);
+      return criticOutcomesView(service.store, runId || undefined);
+    }
     case "compare": {
       const [a, b] = args.positional;
       if (!a || !b) throw new WorkflowFault("INVALID_DEFINITION", "compare needs two run IDs");
@@ -713,6 +731,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
       "export-progress",
       "usage",
       "report",
+      "outcomes",
       "compare",
     ].includes(args.command);
     if (args.command === "profiles") {
@@ -822,6 +841,10 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
       !args.flags.output
     ) {
       process.stdout.write((result as { markdown: string }).markdown);
+      return 0;
+    }
+    if (args.command === "outcomes" && !args.flags.json) {
+      process.stdout.write(formatCriticOutcomes(result as CriticOutcomes));
       return 0;
     }
     if (args.command === "memory" && !args.flags.json) {
