@@ -28,7 +28,12 @@ import { workspacePath } from "../specs/validate.js";
 import { buildTools } from "../tools/index.js";
 import { deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
 import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
-import { probeTool, reproExecutables, runProbe } from "../verification/repro.js";
+import {
+  probeTool,
+  reproExecutables,
+  runProbe,
+  writesDocumentation,
+} from "../verification/repro.js";
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
 import { fixerCommand, fixerTiers } from "./check-policy.js";
 import { fileHash, rootField } from "./effects.js";
@@ -447,7 +452,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         request.profile.role === "implementer" &&
         request.profile.allowedTools.includes("run_probe") &&
         request.task &&
-        request.task.origin !== "planned" &&
+        (request.task.origin !== "planned" || writesDocumentation(request.task.writes)) &&
         probeable.length > 0
       ) {
         let probes = 0;

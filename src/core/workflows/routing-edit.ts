@@ -11,6 +11,7 @@ import {
   resolveRef,
 } from "../llm/model-routing.js";
 import type { RouteExplanation } from "./routing.js";
+import { DEFAULT_REVIEW_MIN_CONFIDENCE } from "./schemas.js";
 
 /**
  * Editing `modelRouting` one route at a time, for the TUI routing screen and the local API. The functions are pure:
@@ -123,6 +124,8 @@ function compact(routing: ModelRouting): ModelRouting | undefined {
   if (profiles) next.profiles = profiles;
   if (Object.keys(workflows).length) next.workflows = workflows;
   if (routing.independentReview) next.independentReview = routing.independentReview;
+  if (routing.reviewMinConfidence !== undefined)
+    next.reviewMinConfidence = routing.reviewMinConfidence;
   return Object.keys(next).length ? next : undefined;
 }
 
@@ -171,6 +174,15 @@ export function setIndependentReview(
     ...routing,
     ...(mode ? { independentReview: mode } : { independentReview: undefined }),
   });
+}
+
+/** Sets (or, with `null`, removes) the review confidence threshold of a layer. */
+export function setReviewMinConfidence(
+  routing: ModelRouting | undefined,
+  value: number | null,
+): ModelRouting | undefined {
+  const { reviewMinConfidence: _previous, ...rest } = routing ?? {};
+  return compact(value === null ? rest : { ...rest, reviewMinConfidence: value });
 }
 
 type ClassRoute = NonNullable<ModelRouting["classes"]>[string];
@@ -263,7 +275,8 @@ export interface RoutingLayers {
  */
 export type RoutingChange =
   | { target: RoutingTarget; route: RouteDraft | null; create?: boolean }
-  | { independentReview: IndependentReviewMode | null };
+  | { independentReview: IndependentReviewMode | null }
+  | { reviewMinConfidence: number | null };
 
 /**
  * Applies a change to one layer and lists what would stop it: the draft's own problems, then what
@@ -279,6 +292,12 @@ export function applyRoutingChange(
   const other = layers[scope === "global" ? "project" : "global"];
   if ("independentReview" in change)
     return { routing: setIndependentReview(current, change.independentReview), problems: [] };
+  if ("reviewMinConfidence" in change) {
+    const value = change.reviewMinConfidence;
+    if (value !== null && !(value >= 0 && value <= 1))
+      return { routing: current, problems: ["reviewMinConfidence must be between 0 and 1"] };
+    return { routing: setReviewMinConfidence(current, value), problems: [] };
+  }
   const { target, route } = change;
   if (route === null) {
     const routing = setRoute(current, target, null);
@@ -364,6 +383,12 @@ export interface RoutingOverview {
     project: IndependentReviewMode | null;
     effective: IndependentReviewMode;
   };
+  /** Review findings below this confidence are notes; `effective` is 0.8 when no layer sets it. */
+  reviewMinConfidence: {
+    global: number | null;
+    project: number | null;
+    effective: number;
+  };
   /** Reviews that would share a model with the implementation. */
   warnings: string[];
   /** Why the workflow's stages and profiles could not be explained, such as no run model. */
@@ -378,6 +403,8 @@ export function routingOverview(input: {
   legacy?: RoutingInputs["legacy"];
   explanation: RouteExplanation | null;
   error?: string | null;
+  /** The mode a run would use when no layer sets one (`independentReviewMode`). */
+  reviewMode?: IndependentReviewMode;
 }): RoutingOverview {
   const { layers, explanation } = input;
   const routing = mergeModelRouting(layers.global, layers.project);
@@ -411,7 +438,12 @@ export function routingOverview(input: {
     independentReview: {
       global: layers.global?.independentReview ?? null,
       project: layers.project?.independentReview ?? null,
-      effective: routing?.independentReview ?? (routing ? "warn" : "off"),
+      effective: routing?.independentReview ?? input.reviewMode ?? (routing ? "warn" : "off"),
+    },
+    reviewMinConfidence: {
+      global: layers.global?.reviewMinConfidence ?? null,
+      project: layers.project?.reviewMinConfidence ?? null,
+      effective: routing?.reviewMinConfidence ?? DEFAULT_REVIEW_MIN_CONFIDENCE,
     },
     warnings: explanation?.warnings ?? [],
     error: input.error ?? null,

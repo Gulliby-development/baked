@@ -31,9 +31,10 @@ import {
   startCliLogin,
   switchCliAccount,
 } from "../llm/cli-login.js";
-import { ROUTED_ROLES, RouteEffort } from "../llm/model-routing.js";
+import { INDEPENDENT_REVIEW_MODES, ROUTED_ROLES, RouteEffort } from "../llm/model-routing.js";
 import { checkProviders } from "../llm/provider.js";
 import { getProviderSecretEntries } from "../llm/providers/index.js";
+import { cachedVendorModels } from "../llm/vendor-models.js";
 import { configDir as defaultConfigDir } from "../platform/index.js";
 import {
   forgetKnownProject,
@@ -55,7 +56,11 @@ import {
 import { ensurebakedDir } from "../utils/ensure-baked-dir.js";
 import { defaultWorkflowPolicy } from "../workflows/defaults.js";
 import { WorkflowFault } from "../workflows/errors.js";
-import { explainRoute, type RouteExplanation } from "../workflows/routing.js";
+import {
+  explainRoute,
+  independentReviewMode,
+  type RouteExplanation,
+} from "../workflows/routing.js";
 import {
   readConfigObject,
   readRoutingLayers,
@@ -144,7 +149,13 @@ const RoutingBody = z.union([
     scope: z.enum(["global", "project"]),
     workflow: z.string().min(1).max(200).optional(),
     model: z.string().min(1).max(200).optional(),
-    independentReview: z.enum(["off", "warn", "require"]).nullable(),
+    independentReview: z.enum(INDEPENDENT_REVIEW_MODES).nullable(),
+  }),
+  z.strictObject({
+    scope: z.enum(["global", "project"]),
+    workflow: z.string().min(1).max(200).optional(),
+    model: z.string().min(1).max(200).optional(),
+    reviewMinConfidence: z.number().min(0).max(1).nullable(),
   }),
 ]);
 const SkillQuery = z.strictObject({ q: z.string().max(200).optional() });
@@ -433,7 +444,11 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
       let error: string | null = workflowId ? null : "No workflow definitions found";
       if (workflowId)
         try {
-          explanation = explainRoute(workspace, config, { workflowId, model });
+          explanation = explainRoute(workspace, config, {
+            workflowId,
+            model,
+            availableModels: cachedVendorModels(),
+          });
         } catch (failure) {
           error = failure instanceof Error ? failure.message : String(failure);
         }
@@ -449,6 +464,7 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
         },
         explanation,
         error,
+        reviewMode: independentReviewMode(config),
       });
     };
     if (method === "GET") {
@@ -459,15 +475,17 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
     const change: RoutingChange =
       "independentReview" in body
         ? { independentReview: body.independentReview }
-        : {
-            target: body.target,
-            route: body.route && {
-              model: body.route.model,
-              effort: body.route.effort ?? null,
-              fallback: body.route.fallback ?? [],
-            },
-            ...(body.create ? { create: true } : {}),
-          };
+        : "reviewMinConfidence" in body
+          ? { reviewMinConfidence: body.reviewMinConfidence }
+          : {
+              target: body.target,
+              route: body.route && {
+                model: body.route.model,
+                effort: body.route.effort ?? null,
+                fallback: body.route.fallback ?? [],
+              },
+              ...(body.create ? { create: true } : {}),
+            };
     let problems: string[];
     try {
       ({ problems } = saveRoutingChange(
