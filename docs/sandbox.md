@@ -13,7 +13,7 @@ BAKED can run the commands it starts on the agent's behalf inside an operating-s
 | AI acceptance applications, declared commands and promoted tests | yes | the gate's `capabilities.writePaths` only; the workspace stays read-only | shared while the gate grants `listenPorts` or `outboundHosts`, else the policy's `network` |
 | `baked workflow gate run` (a gate outside any run) | yes | the project root | denied |
 
-Not sandboxed in this slice: hooks (the user configures them, so the user is the trust boundary), the formatter run after edits, Git commands BAKED runs itself, the Chromium of the browser driver, and the tools of the Claude Code and Codex providers, which run inside their own CLIs (Codex passes its own `--sandbox`).
+Not sandboxed in this slice: the start-up smoke test of each check before a run (stopped as soon as it spawns, in an empty scratch directory), hooks (the user configures them, so the user is the trust boundary), the formatter run after edits, Git commands BAKED runs itself, the Chromium of the browser driver, and the tools of the Claude Code and Codex providers, which run inside their own CLIs (Codex passes its own `--sandbox`).
 
 ## Modes
 
