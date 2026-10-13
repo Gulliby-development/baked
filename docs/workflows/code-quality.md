@@ -149,4 +149,4 @@ A mutant whose tests run out of time is `timeout` and never blocks. The gate sto
 
 Without a matching threshold every surviving mutant of a file blocks. The default follows the workflow's preset: `full`, which the `sdd` workflow runs, is `advisory`; `quick`, `standard` and the other presets are `off`. `quality.mutation: preset` (the setting's default) keeps that; another value, the policy's `mutation` or `--mutation` overrides it and is frozen in the run's policy. The implementer is told to write tests that fail when a condition, boundary or constant changes.
 
-The run report shows the mode, the score, how many mutants were killed, timed out or not run, and a table of the survivors.
+The run report shows the mode, the score, how many mutants were killed, timed out or not run, and a table of the survivors. The [`harden` preset](harden.md) plants the mutants in the module under test instead of in added lines and reports the score before and after.

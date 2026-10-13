@@ -105,6 +105,11 @@ export const TaskSchema = z
       z.object({ path: RelativePath, action: z.enum(["create", "modify", "delete"]) }).strict(),
     ),
     readHints: z.array(RelativePath),
+    /**
+     * An existing file that shows the pattern the task's code should follow (structure, naming,
+     * error handling, test style). The implementer reads it first; reviewers may cite divergence.
+     */
+    reference: RelativePath.optional(),
     checkIds: z.array(SafeId),
     origin: z.enum(["planned", "repair", "convergence"]),
     findingIds: z.array(SafeId),
@@ -271,10 +276,14 @@ export const PolicySchema = z
     reviewMinConfidence: z.number().min(0).max(1).optional(),
     /**
      * The critic that scores every task attempt with a rubric (#646): `advise` shows the score
-     * and decides nothing, `off` skips it. Absent means `advise` when the critic's model is of
-     * another vendor than the implementation's, else off, so stored policies keep their hash.
+     * and decides nothing, `off` skips it. `select` and `earlyStop` score like `advise` and also
+     * decide once the project's outcome log calibrates the critic (critic-calibration.ts):
+     * `select` keeps the best-scored attempt of a task, `earlyStop` accepts the remaining
+     * convergence findings instead of another repair when every task scores at the threshold and
+     * the checks pass. Absent means `advise` when the critic's model is of another vendor than the
+     * implementation's, else off, so stored policies keep their hash.
      */
-    critic: z.enum(["off", "advise"]).optional(),
+    critic: z.enum(["off", "advise", "select", "earlyStop"]).optional(),
     /**
      * `false` leaves out learned code rules (#643): rules proposed from findings that recurred in
      * earlier runs and activated by recurrence or a person. Absent means on, so stored policies
@@ -1216,6 +1225,11 @@ export interface RunSnapshot {
    * clean. The exit code stays 0.
    */
   limitations: { count: number; ids: string[] };
+  /**
+   * Review and convergence findings that started no correction (inferred edge cases, findings
+   * below the blocking severities, advisory reviews, refuted repros); the run report lists them.
+   */
+  reviewNotes: { count: number; ids: string[] };
   /**
    * Present while a run is `running` but has journaled nothing for longer than the stall limit:
    * the owner is alive and its work is not advancing.

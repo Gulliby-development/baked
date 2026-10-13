@@ -58,7 +58,9 @@ import {
   runRepro,
 } from "../verification/repro.js";
 import { completeReview, reviewProblems, validateReview } from "../verification/review.js";
+import { addReviewNotes, noteReason } from "../verification/review-notes.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
+import { baselineKeys, taskErrors } from "../verification/task-end-check.js";
 import { outputSchemas } from "./agent-executor.js";
 import {
   assumable,
@@ -89,6 +91,7 @@ import {
   fixerCommand,
   fixerTiers,
   isCodePath,
+  isWholeUnitCheck,
   taskCheckList,
   validateChecks,
   withCoveringChecks,
@@ -108,6 +111,7 @@ import {
 } from "./clarification.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
 import { coverageFinding } from "./coverage.js";
+import { type CriticCalibration, calibrateCritic, criticExamples } from "./critic-calibration.js";
 import { git } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
@@ -128,6 +132,7 @@ import {
 } from "./leases.js";
 import { MAX_CONCURRENT_TASK_CHECKS, planBatch, Semaphore, unifiedDiff } from "./parallel.js";
 import {
+  fileReferences,
   PLAN_CONSISTENCY_CHECKS,
   planConsistencyProblems,
   withDerivedRequirements,
@@ -153,10 +158,18 @@ import {
   qualityClaim,
   readCodeFiles,
 } from "./quality/duplication.js";
+import {
+  HARDEN_PRESET,
+  hardenNote,
+  hardenPlanProblems,
+  hardenTargets,
+  QUALITY_MUTATION_BASELINE,
+} from "./quality/harden.js";
 import { isManifestPath, manifestDependencies } from "./quality/manifests.js";
 import {
   generateMutants,
   isTestCheck,
+  type MutationMode,
   type MutationResult,
   mutationClaim,
   mutationOf,
@@ -237,6 +250,7 @@ type Implementation = ReturnType<typeof ImplementationSchema.parse>;
 
 import {
   codeTaskCheckProblems,
+  loopHistory,
   plannerSizing,
   type SizingReport,
   sizePlan,
@@ -248,7 +262,7 @@ import {
 import { forgetProgress } from "./stall.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
-import { hasTaskGate, pendingOwners, readyTasks } from "./task-graph.js";
+import { hasTaskGate, pendingCodePaths, pendingOwners, readyTasks } from "./task-graph.js";
 import { takeHashRefusals } from "./tool-policy.js";
 import type { AgentExecutor, Check, HostTool, RuntimeState, Task } from "./types.js";
 import { acceptanceGrants, blocksRun } from "./v2/acceptance.js";
@@ -423,6 +437,8 @@ function readSummary(content: string): { tool: string; targets: string[]; bytes:
  * leaves out the spec, plan and check output, about 15k tokens instead of 45k.
  */
 const DIFF_REVIEW = "diffReview";
+/** Errors of the task-end check one submission gets back; the checks stage reports the rest. */
+const TASK_END_ERRORS = 20;
 
 export class WorkflowScheduler {
   dispose(): void {
@@ -1436,16 +1452,25 @@ export class WorkflowScheduler {
               }
               // Below the severity floor a finding still repairs when it is why a criterion fails:
               // acceptance needs every automated criterion to pass.
-              const findings = this.recordFindings(
-                runId,
-                review,
-                review.findings.filter(
-                  (f) =>
-                    !notes.has(f.id) &&
-                    ((severities.includes(f.severity) &&
-                      findingBlocks(f, policy.reviewMinConfidence)) ||
-                      f.criterionIds.some((id) => failing.has(id))),
-                ),
+              const repair = review.findings.filter(
+                (f) =>
+                  !notes.has(f.id) &&
+                  ((severities.includes(f.severity) &&
+                    findingBlocks(f, policy.reviewMinConfidence)) ||
+                    f.criterionIds.some((id) => failing.has(id))),
+              );
+              const findings = this.recordFindings(runId, review, repair);
+              const kept = new Set([...repair, ...noted].map((f) => f.id));
+              addReviewNotes(
+                state.reviewNotes,
+                "convergence",
+                state.snapshotId,
+                review.findings
+                  .filter((f) => !kept.has(f.id))
+                  .map((finding) => ({
+                    finding,
+                    reason: noteReason(finding, severities, policy.reviewMinConfidence),
+                  })),
               );
               if (findings.length) {
                 repairFindings = { findings, kind: "convergence" };
@@ -1882,13 +1907,14 @@ export class WorkflowScheduler {
     if (!feature.length || this.baselineScaffold(runId, state)) return;
     const fresh = this.store.tasks(runId).every((task) => task.status === "pending");
     const counts: Record<string, BaselineCount[]> = {};
+    // The errors a whole-unit check already reports, so the task-end check does not feed them back.
+    const diagnostics: Record<string, string[]> = {};
     if (fresh)
       for (const check of feature) {
-        const result = await this.checks.measure(
-          check,
-          signal,
-          runRoot(this.store.workspace, state),
-        );
+        const root = runRoot(this.store.workspace, state);
+        const result = await this.checks.measure(check, signal, root);
+        if (result.status === "failed" && isWholeUnitCheck(check))
+          diagnostics[commandKey(check)] = baselineKeys(result.output, root);
         if (result.truncated || result.status === "inconclusive") continue;
         const found = outputCounts(result.output, result.status === "passed");
         if (found.length) counts[commandKey(check)] = found;
@@ -1898,9 +1924,65 @@ export class WorkflowScheduler {
         runId,
         "facts",
         CHECK_BASELINE_PATH,
-        canonical({ schemaVersion: 1, measured: fresh, counts }),
+        canonical({ schemaVersion: 1, measured: fresh, counts, diagnostics }),
       ),
     );
+  }
+  /**
+   * The task-end whole-unit check of a task that writes code (#673): the run's feature-scope type
+   * checks, run once in the task's directory, keeping the errors in the task's own files that
+   * neither the baseline nor a pending sibling task explains. Advisory: the checks stage still
+   * runs these checks on the integrated change.
+   */
+  private taskEndCheck(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ): ((root: string, signal: AbortSignal) => Promise<string[]>) | undefined {
+    const checks = policy.checks.filter((c) => c.scope === "feature" && isWholeUnitCheck(c));
+    const written = writtenCodePaths(task);
+    if (!checks.length || !written.length) return undefined;
+    return async (root, signal) => {
+      const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
+      const baseline = artifact
+        ? ((
+            JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+              diagnostics?: Record<string, string[]>;
+            }
+          ).diagnostics ?? {})
+        : {};
+      const pending = pendingCodePaths(
+        state.rootGraph ?? state.graph,
+        this.store.tasks(runId),
+        state.taskGates,
+        task,
+      );
+      const errors: string[] = [];
+      const results: { checkId: string; status: string; errors: string[] }[] = [];
+      for (const check of checks) {
+        const result = await this.checks.measure(check, signal, root);
+        const found =
+          result.status === "failed"
+            ? taskErrors(result.output, {
+                written,
+                pending,
+                baseline: baseline[commandKey(check)] ?? [],
+              })
+            : [];
+        results.push({ checkId: check.id, status: result.status, errors: found });
+        errors.push(...found.map((line) => `${check.id}: ${line}`));
+      }
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "diagnostic",
+          `tasks/${task.id}/task-end-check-${newId()}.json`,
+          canonical({ taskId: task.id, pending, results }),
+        ),
+      );
+      return errors.slice(0, TASK_END_ERRORS);
+    };
   }
   /** What a passing required check fell behind the baseline by, as a failure reason; else null. */
   private checkRegression(
@@ -1986,6 +2068,8 @@ export class WorkflowScheduler {
         policy.allowOverlappingWrites === true,
       ),
     );
+    if (presetOf(parseRunDefinition(this.store.run(runId).definition_json)) === HARDEN_PRESET)
+      problems.push(...hardenPlanProblems(graph.tasks));
     for (const task of graph.tasks) {
       if (!profiles.some((p) => p.id === task.profileId && p.output === "implementation"))
         problems.push(`Unknown implementation profile ${task.profileId}`);
@@ -2165,6 +2249,10 @@ export class WorkflowScheduler {
         reserveTokens(prompt, profile, policy),
         policy,
       );
+    const taskEndCheck =
+      task && profile.output === "implementation"
+        ? this.taskEndCheck(runId, state, policy, task)
+        : undefined;
     try {
       const result = await this.executor.execute({
         runId,
@@ -2183,6 +2271,7 @@ export class WorkflowScheduler {
           ? { attemptTokens: taskSize(state, task, "taskBudgets") }
           : {}),
         ...(validate ? { validate } : {}),
+        ...(taskEndCheck ? { taskEndCheck } : {}),
         ...(this.formatHints(runId, state, profile.output, task)
           ? { formatHints: this.formatHints(runId, state, profile.output, task) }
           : {}),
@@ -2468,6 +2557,10 @@ export class WorkflowScheduler {
       ) === "auto"
         ? propertyTestsNote(profile.output)
         : null;
+    const hardening =
+      presetOf(parseRunDefinition(this.store.run(runId).definition_json)) === HARDEN_PRESET
+        ? hardenNote(profile.output)
+        : null;
     const { [DIFF_REVIEW]: diffOnly, ...input } = (
       extra && typeof extra === "object" ? extra : { input: extra }
     ) as Record<string, unknown>;
@@ -2477,6 +2570,7 @@ export class WorkflowScheduler {
       {
         ...input,
         ...(propertyNote ? { propertyTests: propertyNote } : {}),
+        ...(hardening ? { hardening } : {}),
         ...(rules ? { learnedRules: rules } : {}),
         ...(workingSet ? { projectWorkingSet: workingSet } : {}),
         ...(memory ? { projectMemory: memory } : {}),
@@ -2519,6 +2613,7 @@ export class WorkflowScheduler {
       samples,
       spent: this.store.run(runId).token_usage,
       model,
+      loopShares: loopHistory(this.store.workspace, policy),
     });
     this.store.transaction(() =>
       this.store.artifact(
@@ -2644,6 +2739,19 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     policy: RunPolicy,
     findings: Review["findings"],
   ): "go" | "wait" | "accepted" {
+    const early = this.criticEarlyStop(runId, state, policy, findings);
+    if (early) {
+      this.store.transaction(() => {
+        this.store.artifact(
+          runId,
+          "critic-early-stop",
+          `critic/early-stop-${String(this.store.run(runId).convergence_rounds)}.json`,
+          canonical({ ...early, findingIds: findings.map((f) => f.id) }),
+        );
+        acceptResidual(this.store, runId, state, { findings }, "critic");
+      });
+      return "accepted";
+    }
     const stop = convergenceStop(this.store, runId, state, policy, findings);
     if (!stop) return "go";
     const body = convergenceBody(this.store, runId, state, policy, stop, findings);
@@ -4418,7 +4526,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
   }
   /**
    * The critic of a run (#646), or null when it does not run: `critic: "off"` turns it off and
-   * `"advise"` on; without the field it runs only on a vendor other than the implementation's
+   * any other mode on; without the field it runs only on a vendor other than the implementation's
    * (see model-vendor.ts), so a one-provider setup spends nothing on a judge that shares the
    * implementer's blind spots.
    */
@@ -4430,7 +4538,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     if (policy.critic === "off") return null;
     const critic = profiles.find((p) => p.output === "critique");
     if (!critic) return null;
-    if (policy.critic === "advise") return critic;
+    if (policy.critic) return critic;
     const routing = this.routingRecord(runId);
     const modelOf = (profile: AgentProfile) =>
       routing?.profiles[profile.id]?.model ?? profile.model;
@@ -4438,6 +4546,70 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       .filter((p) => p.output === "implementation")
       .map((p) => modelVendor(modelOf(p)));
     return implementation.includes(modelVendor(modelOf(critic))) ? null : critic;
+  }
+  /**
+   * The run's critic calibration, computed once from the project's outcome log (earlier runs
+   * only) and frozen as `critic/calibration.json`, with the examples the critic is shown.
+   */
+  private criticCalibration(
+    runId: string,
+  ): CriticCalibration & { examples: ReturnType<typeof criticExamples> } {
+    const path = "critic/calibration.json";
+    const kept = this.store.latestArtifact(runId, path);
+    if (kept)
+      return JSON.parse(this.store.readArtifact(runId, kept.id)) as CriticCalibration & {
+        examples: ReturnType<typeof criticExamples>;
+      };
+    const rows = this.store.criticOutcomes().filter((r) => r.run_id !== runId);
+    const calibration = { ...calibrateCritic(rows), examples: criticExamples(rows) };
+    this.store.transaction(() =>
+      this.store.artifact(runId, "critic-calibration", path, canonical(calibration)),
+    );
+    return calibration;
+  }
+  /**
+   * Why `critic: earlyStop` accepts the remaining convergence findings instead of another repair,
+   * or null when it does not: the critic must be calibrated, every required check must pass, every
+   * scored task's latest attempt must score at the calibrated threshold, and no finding may be
+   * critical, a security finding or high with a reproduction the host ran.
+   */
+  private criticEarlyStop(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    findings: Review["findings"],
+  ): { threshold: number; scores: Record<string, number>; why: string } | null {
+    if (policy.critic !== "earlyStop" || !findings.length) return null;
+    const calibration = this.criticCalibration(runId);
+    if (!calibration.calibrated || calibration.threshold === null) return null;
+    if (!requiredChecksPass(this.store, runId, state, policy)) return null;
+    if (
+      findings.some(
+        (f) =>
+          f.severity === "critical" ||
+          f.kind === "security" ||
+          (f.severity === "high" && f.repro !== undefined),
+      )
+    )
+      return null;
+    const scores: Record<string, number> = {};
+    for (const task of state.graph?.tasks ?? []) {
+      const kept = this.store.latestArtifact(runId, `tasks/${task.id}/critique.json`);
+      if (!kept) continue;
+      const record = JSON.parse(this.store.readArtifact(runId, kept.id)) as {
+        critique?: { score: number };
+      };
+      if (!record.critique) return null;
+      scores[task.id] = record.critique.score;
+    }
+    const values = Object.values(scores);
+    const threshold = calibration.threshold;
+    if (!values.length || values.some((v) => v < threshold)) return null;
+    return {
+      threshold,
+      scores,
+      why: `Every required check passes and every task scores at least ${threshold.toFixed(2)} (calibrated on ${String(calibration.samples)} attempts, AUC ${(calibration.auc ?? 0).toFixed(2)}); ${String(findings.length)} finding(s) none critical, security or high with a reproduction are accepted instead of another repair.`,
+    };
   }
   /**
    * Scores a finished task attempt with the critic and stores the critique as
@@ -4471,6 +4643,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     };
     const patch = diff.patch ?? (await this.taskPatch(runId, root, diff.before ?? {}));
     const attempt = this.store.artifacts(runId).filter((a) => a.logical_path === path).length + 1;
+    const examples = policy.critic === "off" ? [] : this.criticCalibration(runId).examples;
     const child = this.store.transaction(() => this.store.beginStep(runId, "critic", stepId));
     const record = (body: Record<string, unknown>) =>
       this.store.transaction(() =>
@@ -4493,6 +4666,14 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             task,
             patch,
             failedChecks: failures.map((f) => f.claim),
+            ...(examples.length
+              ? {
+                  earlierAttempts: {
+                    examples,
+                    note: "Scored attempts of this project and how they turned out: held up (checks passed and the code stayed) or did not (repaired, rejected, reverted or mostly rewritten). Use them to judge what this project keeps.",
+                  },
+                }
+              : {}),
           },
           signal,
         ),
@@ -4929,6 +5110,25 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         ),
       );
     }
+    // A harden run's score before: the module's mutants against the tests it starts with.
+    const preset = presetOf(parseRunDefinition(this.store.run(runId).definition_json));
+    if (
+      preset === HARDEN_PRESET &&
+      mutationOf(policy, preset) !== "off" &&
+      !this.store.latestArtifact(runId, QUALITY_MUTATION_BASELINE)
+    ) {
+      const before = await this.mutate(
+        runId,
+        state,
+        policy,
+        "advisory",
+        await this.hardenModule(state),
+        signal,
+      );
+      this.store.transaction(() =>
+        this.store.artifact(runId, "quality", QUALITY_MUTATION_BASELINE, canonical(before)),
+      );
+    }
     if (duplicationOf(policy) === "off" || this.store.latestArtifact(runId, QUALITY_BASELINE))
       return;
     const code = await readCodeFiles(root, Object.keys(state.expectedFiles ?? {}));
@@ -5027,14 +5227,46 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     policy: RunPolicy,
     signal: AbortSignal,
   ): Promise<Review["findings"]> {
-    const mode = mutationOf(
-      policy,
-      presetOf(parseRunDefinition(this.store.run(runId).definition_json)),
-    );
+    const preset = presetOf(parseRunDefinition(this.store.run(runId).definition_json));
+    const mode = mutationOf(policy, preset);
     if (mode === "off" || !state.snapshotId) return [];
+    // A harden run changes no code: its mutants go into the module its tasks test.
+    const files =
+      preset === HARDEN_PRESET
+        ? await this.hardenModule(state)
+        : await this.changedFiles(runId, state, isCodePath);
+    const result = await this.mutate(runId, state, policy, mode, files, signal);
+    const evidenceId = this.store.transaction(() => {
+      const artifact = this.store.artifact(runId, "quality", QUALITY_MUTATION, canonical(result));
+      return this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
+    });
+    const blocking = result.mutants.filter((m) => m.blocking);
+    if (!blocking.length) {
+      this.resolveClaims(runId, mutationClaim);
+      return [];
+    }
+    return this.mutantFindings(state, blocking, evidenceId);
+  }
+  /** The module a harden run tests, read whole: every line of it may take a mutant. */
+  private async hardenModule(state: RuntimeState): Promise<ChangedFile[]> {
+    const targets = hardenTargets((state.rootGraph ?? state.graph)?.tasks ?? []);
+    const code = await readCodeFiles(runRoot(this.store.workspace, state), targets);
+    return [...code.files].map(([path, content]) => ({ path, content, before: "" }));
+  }
+  /**
+   * Plants each mutant of `files` in turn, runs the policy's required test checks against it and
+   * restores the file byte for byte, also from `quality/mutation-pending.json` after a crash.
+   */
+  private async mutate(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    mode: MutationMode,
+    changed: ChangedFile[],
+    signal: AbortSignal,
+  ): Promise<MutationResult> {
     const root = runRoot(this.store.workspace, state);
     const tests = policy.checks.filter((check) => check.required && isTestCheck(check));
-    const changed = await this.changedFiles(runId, state, isCodePath);
     const mutants = tests.length ? generateMutants(changed) : [];
     const originals = new Map<string, Buffer>();
     for (const mutant of mutants)
@@ -5109,18 +5341,22 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       await scope.stop();
       if (originals.size) pending(new Map());
     }
-    const evidenceId = this.store.transaction(() => {
-      const artifact = this.store.artifact(runId, "quality", QUALITY_MUTATION, canonical(result));
-      return this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
-    });
-    const blocking = result.mutants.filter((m) => m.blocking);
-    if (!blocking.length) {
-      this.resolveClaims(runId, mutationClaim);
-      return [];
-    }
+    return result;
+  }
+  /** Blocking findings for surviving mutants, each on a test file the correction may write. */
+  private mutantFindings(
+    state: RuntimeState,
+    blocking: MutationResult["mutants"],
+    evidenceId: string,
+  ): Review["findings"] {
     const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [];
     return blocking.map((m) => {
-      const owner = tasks.find((t) => t.writes.some((w) => w.path === m.file));
+      // The task that writes the mutated file, or in a harden run the one that tests it.
+      const owner =
+        tasks.find((t) => t.writes.some((w) => w.path === m.file)) ??
+        tasks.find(
+          (t) => t.readHints.includes(m.file) && t.writes.some((w) => isTestCodePath(w.path)),
+        );
       // The test file of a related task, so the correction may write the test that kills it.
       const testFile = tasks
         .filter(
@@ -5580,6 +5816,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       });
     // The workspace the run started from had no source code: the reviewers judge the whole program.
     const greenfield = this.baselineScaffold(runId, state);
+    const references = state.graph ? fileReferences(state.graph) : {};
     const runReviewer = async (reviewer: Reviewer) => {
       // A review of this very snapshot that an earlier, interrupted round finished is kept.
       const kept = state.reviews[reviewer.key];
@@ -5641,6 +5878,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
               ...(diffOnly ? { [DIFF_REVIEW]: true } : {}),
               ...rerun,
               ...(greenfield ? { baseline: { greenfield } } : {}),
+              ...(reviewer.dimension === "correctness" && Object.keys(references).length
+                ? { references }
+                : {}),
               ...extra,
             },
             signal,
@@ -5768,6 +6008,24 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           );
         const blocking = candidates.filter((f) =>
           reproAllows(f, outcomes.get(f.id)?.status, executables.length > 0),
+        );
+        const repaired = new Set(blocking.map((f) => f.id));
+        addReviewNotes(
+          state.reviewNotes,
+          reviewer.dimension,
+          reviewSnapshotId,
+          result.findings
+            .filter((f) => !repaired.has(f.id))
+            .map((finding) => ({
+              finding,
+              reason: reviewer.required
+                ? noteReason(
+                    finding,
+                    severities.filter((s) => reviewer.blocking.includes(s)),
+                    policy.reviewMinConfidence,
+                  )
+                : "advisory",
+            })),
         );
         for (const finding of this.recordFindings(runId, result, blocking)) {
           findings.push(finding);

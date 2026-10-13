@@ -612,19 +612,11 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "critic-outcomes",
     group: "Workflow runs",
-    title: "Critic outcome log: scores with checks, acceptance, delivery and line survival",
+    title: "Critic outcome log and calibration: scores with checks, acceptance, delivery, survival",
     tui: ["/workflow: outcomes, and the Critic section of report"],
     cli: ["baked workflow outcomes"],
-    api: partial(
-      ["/v1/workflow/runs/:id/report: Critic section"],
-      646,
-      "the log across runs comes with calibration",
-    ),
-    desktop: partial(
-      ["project/runs: Report tab, Critic section"],
-      646,
-      "the log across runs comes with calibration",
-    ),
+    api: ["/v1/workflow/critic", "/v1/workflow/runs/:id/report: Critic section"],
+    desktop: ["settings/routing: Critic calibration", "project/runs: Report tab, Critic section"],
   },
   {
     id: "progress-watcher",
@@ -808,6 +800,15 @@ export const FEATURES: readonly Feature[] = [
     cli: ["baked workflow run: --property-tests auto|off", "baked workflow report"],
     api: ["/v1/settings: code-quality page", "/v1/workflow/runs", "/v1/workflow/runs/:id/report"],
     desktop: ["settings/chat: Code quality page"],
+  },
+  {
+    id: "harden-preset",
+    group: "Workflow runs",
+    title: "Harden preset: strengthen the tests of existing code",
+    tui: ["/workflow"],
+    cli: ["baked workflow run: --workflow harden"],
+    api: ["/v1/workflow/runs", "/v1/workflow/definitions"],
+    desktop: ["project/overview: New run"],
   },
   {
     id: "custom-gates",
