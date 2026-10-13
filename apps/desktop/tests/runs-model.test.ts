@@ -71,6 +71,12 @@ describe("event replay", () => {
       changes: [{ target: "profile implementer", from: "openai/gpt-6-luna", to: "codex/gpt-6-luna" }],
     });
     expect(replay([switched]).activity.map((a) => a.text)).toEqual(["Switched to codex/gpt-6-luna (was openai/gpt-6-luna)"]);
+    const waiting = ev("wait.progress", { stageId: "wait-ci", deadline: "2026-10-10T08:00:00.000Z", intervalSeconds: 30, pending: ["ci-green"], polls: 0 });
+    const passed = ev("wait.progress", { stageId: "wait-ci", deadline: "2026-10-10T08:00:00.000Z", intervalSeconds: 30, pending: [], polls: 4 });
+    const lines = replay([waiting, passed]).activity.map((a) => a.text);
+    expect(lines[0]).toContain("waits for ci-green until");
+    expect(lines[0]).toContain("every 30s");
+    expect(lines[1]).toContain("its gates pass");
     expect(refetchFor([switched]).status).toBe(true);
   });
 

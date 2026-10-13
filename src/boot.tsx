@@ -51,6 +51,11 @@ if (cliArgs[0] === "mcp") {
   process.exit(await runMcpCli(cliArgs.slice(1)));
 }
 
+if (cliArgs[0] === "artifacts") {
+  const { runArtifactsCli } = await import("./headless/artifacts.js");
+  process.exit(await runArtifactsCli(cliArgs.slice(1)));
+}
+
 if (cliArgs[0] === "lsp") {
   const { runLspCli } = await import("./headless/lsp.js");
   process.exit(await runLspCli(cliArgs.slice(1)));
