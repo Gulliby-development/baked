@@ -49,6 +49,13 @@ export const DEFAULT_PER_FILE: Record<FileKind, Record<WriteAction, TokenRange>>
 };
 /** This project's own samples of a kind and action needed before other projects' are left out. */
 export const MIN_PROJECT_SAMPLES = 2;
+/**
+ * Samples of a kind, from any store, at which their own upper bound replaces the default's. With
+ * fewer, a rate from elsewhere keeps the default's room; with this many the history is measured
+ * well enough that the default high would only overprice (cronsay: 8 test samples, high 350k
+ * against a measured 72k-ish median).
+ */
+export const MIN_HISTORY_SAMPLES = 6;
 /** Steps of a test task attempt when the policy names none; test tasks ran out at 20. */
 export const DEFAULT_TEST_TASK_STEPS = 32;
 /** Without a configured ceiling, a task attempt may grow to this. */
@@ -213,7 +220,11 @@ export function perFileRates(samples: SizingSample[]): Rates {
     const range = perFile(pool);
     return range
       ? {
-          perFile: { low: range.low, high: Math.max(range.high, fallback.high) },
+          perFile: {
+            low: range.low,
+            high:
+              pool.length >= MIN_HISTORY_SAMPLES ? range.high : Math.max(range.high, fallback.high),
+          },
           samples: pool.length,
           basis: "history",
         }
@@ -249,8 +260,14 @@ export interface SizingReport {
   schemaVersion: 3;
   rates: Rates;
   tasks: TaskSize[];
-  /** Tokens the run is expected to need in total, from what it spent so far. */
+  /**
+   * Tokens the run is expected to need in total, from what it spent so far: the tasks' midpoints
+   * plus a margin that grows with the square root of their number, not the sum of every task's
+   * upper bound, since independent tasks do not all hit their worst case together.
+   */
   runTokens: number;
+  /** The tasks alone: the sum of their lower bounds, of their midpoints, and of their upper bounds. */
+  taskTokens: { low: number; expected: number; high: number };
   /** Tokens held on top of the price for repair and convergence tasks. */
   repairReserve: number;
   budgetBefore: number;
@@ -270,6 +287,34 @@ export function priceTask(task: Pick<Task, "writes">, rates: Rates): TokenRange 
     },
     { low: 0, high: 0 },
   );
+}
+
+/**
+ * The price of a set of tasks: the sum of their midpoints plus the root of the summed squares of
+ * their half-ranges. One task is priced at its upper bound; many independent ones well below the
+ * sum of their upper bounds (seven priced runs of round 01 cost 0.36-0.77x the summed highs).
+ */
+export function taskTotal(estimates: TokenRange[]): {
+  low: number;
+  expected: number;
+  high: number;
+  price: number;
+} {
+  let low = 0;
+  let high = 0;
+  let squares = 0;
+  for (const estimate of estimates) {
+    low += estimate.low;
+    high += estimate.high;
+    squares += ((estimate.high - estimate.low) / 2) ** 2;
+  }
+  const expected = (low + high) / 2;
+  return {
+    low: Math.round(low),
+    expected: Math.round(expected),
+    high: Math.round(high),
+    price: Math.round(Math.min(high, expected + Math.sqrt(squares))),
+  };
 }
 
 /**
@@ -305,7 +350,8 @@ export function sizePlan(input: {
   const verification =
     ((DEFAULT_STAGE_RANGES.review?.high ?? 0) + (DEFAULT_STAGE_RANGES.converge?.high ?? 0)) *
     VERIFICATION_FACTOR;
-  const priced = tasks.reduce((total, task) => total + task.estimate.high, 0) + verification;
+  const taskTokens = taskTotal(tasks.map((task) => task.estimate));
+  const priced = taskTokens.price + verification;
   const runTokens = Math.round(input.spent + priced);
   const repairReserve = Math.round(priced * REPAIR_RESERVE);
   const budgetBefore = input.policy.maxTotalTokens;
@@ -337,6 +383,7 @@ export function sizePlan(input: {
     rates,
     tasks,
     runTokens,
+    taskTokens: { low: taskTokens.low, expected: taskTokens.expected, high: taskTokens.high },
     repairReserve,
     budgetBefore,
     budgetAfter,
