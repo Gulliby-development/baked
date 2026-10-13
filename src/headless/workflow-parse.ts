@@ -28,6 +28,7 @@ const commands = [
   "candidate",
   "usage",
   "report",
+  "outcomes",
   "compare",
   "memory",
   "extend",
@@ -70,6 +71,7 @@ export interface WorkflowArgs {
 /** Options every workflow command takes. */
 const globalFlags = ["json", "cwd", "help"];
 const booleanFlags = new Set([
+  "refresh",
   "auto-preset",
   "all",
   "save",
@@ -179,6 +181,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
   usage: ["model", "stage", "top", "format", "output"],
   report: ["output"],
+  outcomes: ["refresh"],
   compare: ["output"],
   memory: ["text"],
   extend: [
@@ -560,6 +563,10 @@ usage RUN_ID [--model ID] [--stage NAME] [--top N] [--format md] [--output FILE]
 report RUN_ID [--output FILE] [--json]
   One Markdown report of the run: summary, changes, tasks, checks, criteria, findings, decisions,
   tokens by stage and model, artifacts. Printed, or written to FILE; deliver uses it as the PR body.
+outcomes [RUN_ID] [--refresh] [--json]
+  The critic outcome log: each critic score with whether the task's checks passed, how the run
+  ended, the delivered commit's fate and the share of its lines that survive (final after 30 days).
+  --refresh updates delivery and survival from Git first.
 compare RUN_A RUN_B [--output FILE] [--json]
   an A/B of two runs (one feature run with two --route maps): the routes that differ, then status,
   tokens, cost, active time, agent calls, repairs, checks and review findings side by side

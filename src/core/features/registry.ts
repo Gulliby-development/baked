@@ -610,6 +610,23 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs"],
   },
   {
+    id: "critic-outcomes",
+    group: "Workflow runs",
+    title: "Critic outcome log: scores with checks, acceptance, delivery and line survival",
+    tui: ["/workflow: outcomes, and the Critic section of report"],
+    cli: ["baked workflow outcomes"],
+    api: partial(
+      ["/v1/workflow/runs/:id/report: Critic section"],
+      646,
+      "the log across runs comes with calibration",
+    ),
+    desktop: partial(
+      ["project/runs: Report tab, Critic section"],
+      646,
+      "the log across runs comes with calibration",
+    ),
+  },
+  {
     id: "progress-watcher",
     group: "Workflow runs",
     title: "Progress watcher: steer, then stop, a stuck agent attempt",

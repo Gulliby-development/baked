@@ -4444,6 +4444,16 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       );
       const critique = { ...output, taskId: task.id };
       record({ critique });
+      this.store.transaction(() =>
+        this.store.recordCriticScore(
+          runId,
+          task.id,
+          attempt,
+          critic.model,
+          critique.score,
+          critique.rubric,
+        ),
+      );
       this.store.transaction(() => this.store.finishStep(runId, child, "completed"));
       return critique;
     } catch (error) {
@@ -4478,6 +4488,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       });
       return;
     }
+    this.store.transaction(() =>
+      this.store.criticTaskResult(runId, task.id, taskFailures.length ? "repaired" : "passed"),
+    );
     if (taskFailures.length) {
       delete state.deferredChecks[task.id];
       const recorded = this.recordFindings(runId, {
