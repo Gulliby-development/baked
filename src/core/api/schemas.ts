@@ -243,6 +243,8 @@ export const EditorOpBody = z.discriminatedUnion("op", [
     loop: z.number().int().min(1).max(5).nullable(),
   }),
   z.strictObject({ op: z.literal("removeTransition"), id: z.string().min(1).max(200) }),
+  z.strictObject({ op: z.literal("addWaitStage"), after: SafeId }),
+  z.strictObject({ op: z.literal("removeWaitStage"), stageId: SafeId }),
   z.strictObject({
     op: z.literal("changeField"),
     stageId: SafeId,

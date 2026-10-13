@@ -8,6 +8,7 @@ name: OS tests
 on:
   pull_request:
     branches: [main]
+  merge_group:
   schedule:
     - cron: "41 3 * * *"
   workflow_dispatch:
@@ -32,9 +33,9 @@ jobs:
       - id: decide
         env:
           EVENT: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: |
-          if [ "$EVENT" != "pull_request" ]; then
+          if [ "$EVENT" != "pull_request" ] && [ "$EVENT" != "merge_group" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi

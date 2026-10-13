@@ -41,7 +41,7 @@ import {
   worktreeRefusal,
 } from "./v2/definition.js";
 import { type LoadedDefinition, loadDefinition } from "./v2/definitions.js";
-import { describeGate, loadGateLibrary, unconfirmedGates } from "./v2/library.js";
+import { describeGate, gateToCheck, loadGateLibrary, unconfirmedGates } from "./v2/library.js";
 import {
   autoApprovalHash,
   autoApprovalOf,
@@ -327,6 +327,22 @@ export function bindDefinition(
     ...(acceptanceWrites.length ? { acceptanceWrites } : {}),
   });
   validateChecks(workspace, policy);
+  // The gates a wait stage polls are not run checks, but their processes pass the same rules.
+  const polled = definition.stages.flatMap((stage) =>
+    stage.type === "wait"
+      ? stage.gates.flatMap((binding) => {
+          const gate = gates.find((g) => g.id === binding.gateId);
+          return gate?.type === "command" && !policy.checks.some((c) => c.id === gate.id)
+            ? [gateToCheck(gate, binding)]
+            : [];
+        })
+      : [],
+  );
+  if (polled.length)
+    validateChecks(workspace, {
+      ...policy,
+      checks: [...new Map(polled.map((c) => [c.id, c])).values()],
+    });
   for (const stage of definition.stages) {
     const kind = stageKind(stage);
     if (!kind)

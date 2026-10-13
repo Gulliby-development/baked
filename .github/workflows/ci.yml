@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
 
 jobs:
   check:
@@ -47,6 +48,7 @@ jobs:
       - name: Build
         run: bun run build
 
+  # Runs on the pull request only; in the merge queue it reports "skipped", which counts as passed.
   branch-name:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
