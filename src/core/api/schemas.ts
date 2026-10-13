@@ -326,3 +326,15 @@ export const UsageQuery = z.strictObject({
   /** `md` answers `{ markdown }`, the summary as a Markdown document to share. */
   format: z.literal("md").optional(),
 });
+/** `POST /v1/packages/inspect`: a package folder, relative to the workspace or absolute. */
+export const PackageInspectBody = z.strictObject({ path: z.string().min(1).max(1000) });
+/**
+ * `POST /v1/packages/install`: the `planHash` of the plan the person approved; the server plans
+ * again and refuses a different one, so an install never writes what was not shown.
+ */
+export const PackageInstallBody = z.strictObject({
+  path: z.string().min(1).max(1000),
+  planHash: z.string().regex(/^[0-9a-f]{64}$/),
+  overwrite: z.boolean().optional(),
+  commandId: SafeId.optional(),
+});
