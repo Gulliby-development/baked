@@ -419,7 +419,16 @@ export function runWindowsSandbox(spec: WindowsSandboxSpec): number {
   // Closing the job ends whatever the command left running, as bwrap's PID namespace does.
   win.k.CloseHandle(job);
   win.k.CloseHandle(token);
-  return exit.readUInt32LE(0);
+  const status = exit.readUInt32LE(0);
+  // An NTSTATUS exit (0xC0000142: a DLL failed to initialize) means Windows refused to run the
+  // command under the restricted token; say so, as the status alone does not fit an exit code.
+  if (status >= 0xc0000000) {
+    process.stderr.write(
+      `baked sandbox: ${spec.executable} ended with status 0x${status.toString(16)}\n`,
+    );
+    return LAUNCHER_FAILURE;
+  }
+  return status;
 }
 
 /** `__sandbox-exec <spec>`: the launcher's entry point; returns the process exit status. */

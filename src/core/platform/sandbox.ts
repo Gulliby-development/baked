@@ -506,7 +506,9 @@ export function probeSandbox(deps: SandboxProbeDeps = defaultProbeDeps()): Sandb
       path: program,
       reason: line
         ? `the sandbox launcher does not start: ${line.trim()}`
-        : "the sandbox launcher does not start",
+        : `the sandbox launcher does not start (${
+            result.status === null ? "no exit status: timed out or killed" : `exit ${result.status}`
+          })`,
     };
   }
   return {
