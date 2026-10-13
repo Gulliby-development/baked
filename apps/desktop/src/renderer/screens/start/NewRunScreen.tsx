@@ -193,6 +193,8 @@ export function NewRunScreen({ project }: SectionProps) {
   // Null follows the configured policy; the checkbox overrides it for this run.
   const [assumeOverride, setAssume] = useState<boolean | null>(null);
   const [warnOverride, setWarn] = useState<boolean | null>(null);
+  // Empty follows the policy and the sandbox setting; a choice overrides them for this run.
+  const [sandbox, setSandbox] = useState<"" | "off" | "auto" | "required">("");
   const [strict, setStrict] = useState(false);
   const [model, setModel] = useState("");
   const [showReadiness, setShowReadiness] = useState(false);
@@ -210,6 +212,7 @@ export function NewRunScreen({ project }: SectionProps) {
     ...(model ? { model } : {}),
     worktree,
     writers,
+    ...(sandbox ? { sandbox } : {}),
   });
   const limits = presetLimits(
     budget,
@@ -300,6 +303,7 @@ export function NewRunScreen({ project }: SectionProps) {
       // Sent only when changed here, so a backend without the field still starts the run.
       ...(assumeOverride !== null ? { clarification: assume ? "assume" : "ask" } : {}),
       ...(warnOverride !== null ? { testIntegrity: warnTests ? "warn" : "block" } : {}),
+      ...(sandbox ? { sandbox } : {}),
       ...(proposal ? { autoPreset: true } : {}),
       ...(strict ? { modelStrict: true } : {}),
     });
@@ -543,6 +547,25 @@ export function NewRunScreen({ project }: SectionProps) {
                 {feature !== "" && !featureValid
                   ? "Letters, digits, - and _; starts with a letter or digit; at most 96 characters."
                   : "Names the run and its folder under specs/."}
+              </span>
+            </div>
+            <div className={FIELD}>
+              <label htmlFor="new-run-sandbox" className={LEGEND}>
+                OS sandbox
+              </label>
+              <select
+                id="new-run-sandbox"
+                value={sandbox}
+                aria-describedby="new-run-sandbox-hint"
+                onChange={(e) => setSandbox(e.target.value as typeof sandbox)}
+              >
+                <option value="">Policy and sandbox setting</option>
+                <option value="off">Off</option>
+                <option value="auto">Auto: sandbox when a backend is available</option>
+                <option value="required">Required: refuse to start without a backend</option>
+              </select>
+              <span id="new-run-sandbox-hint" className={HINT}>
+                Checks, fixes and acceptance apps of the run; the doctor reports the backend.
               </span>
             </div>
             <div className={FIELD}>

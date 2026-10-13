@@ -102,6 +102,7 @@ const preRunFlags = [
   "policy",
   "worktree",
   "writers",
+  "sandbox",
   "confirm-auto-approval",
   "json",
 ];
@@ -125,6 +126,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "model-strict",
     "clarification",
     "test-integrity",
+    "sandbox",
     "duplication",
     "sast",
     "mutation",
@@ -424,6 +426,12 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     throw new WorkflowFault("INVALID_DEFINITION", "--test-integrity accepts block or warn");
   if (
     !result.flags.help &&
+    "sandbox" in result.flags &&
+    !["off", "auto", "required"].includes(String(result.flags.sandbox))
+  )
+    throw new WorkflowFault("INVALID_DEFINITION", "--sandbox accepts off, auto or required");
+  if (
+    !result.flags.help &&
     "duplication" in result.flags &&
     !["off", "warn", "ratchet"].includes(String(result.flags.duplication))
   )
@@ -471,7 +479,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--duplication off|warn|ratchet] [--sast auto|off] [--mutation off|advisory|required] [--property-tests auto|off] [--budget PRESET] [--approval-review]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--sandbox off|auto|required] [--duplication off|warn|ratchet] [--sast auto|off] [--mutation off|advisory|required] [--property-tests auto|off] [--budget PRESET] [--approval-review]
 run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --prompt-file FILE] [other run options]
   --issue takes the request from a GitHub issue (its title and body; --prompt adds instructions)
   and names the feature issue-N-TITLE unless --feature is given; the delivery pull request says
@@ -488,6 +496,9 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   --test-integrity warn records test gaming in a task's diff (deleted, skipped or weakened tests,
   suppressions, special cases for test inputs) instead of sending it to a repair. Default: the
   policy's testIntegrity, otherwise block
+  --sandbox runs the run's checks, fixes, probes and acceptance apps in the OS sandbox (see
+  docs/sandbox.md); required refuses to start without a backend. Default: the stricter of the
+  policy's sandbox and the sandbox setting
   --approval-review lets the approval reviewer (a model) approve a low-risk plan that leaves the
   auto approval limits only by its task count, file count or paths; it needs autoApproval.limits.
   Always-human paths, deletions and the token limit still wait for you
@@ -576,7 +587,7 @@ models [--model ID] [--provider ID] [--json]
   list what a route, --route, --model or a fallback can name: the model names ($active, $fast,
   ...) with the model each resolves to, then the models of each provider; providers without a key
   or login are listed with that reason
-doctor [WORKFLOW] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--worktree [--writers N]] [--confirm-auto-approval HASH] [--json]
+doctor [WORKFLOW] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--worktree [--writers N]] [--sandbox MODE] [--confirm-auto-approval HASH] [--json]
   check before a run: start refusals, provider keys of every routed model, check commands, Git,
   a busy workspace and the budget; exit 1 when something must be fixed (also: baked doctor)
 estimate [WORKFLOW] (same options as doctor)

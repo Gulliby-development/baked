@@ -197,6 +197,7 @@ describe("run_probe", () => {
     executables: ["bun"],
     generated: [] as string[],
     signal: new AbortController().signal,
+    sandbox: null,
   });
 
   test("returns the output of a program the checks start", async () => {

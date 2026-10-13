@@ -314,6 +314,11 @@ export async function executeWorkflowCommand(
         ...(args.flags["test-integrity"] === "block" || args.flags["test-integrity"] === "warn"
           ? { testIntegrity: args.flags["test-integrity"] }
           : {}),
+        ...(args.flags.sandbox === "off" ||
+        args.flags.sandbox === "auto" ||
+        args.flags.sandbox === "required"
+          ? { sandbox: args.flags.sandbox }
+          : {}),
         ...(args.flags.duplication === "off" ||
         args.flags.duplication === "warn" ||
         args.flags.duplication === "ratchet"

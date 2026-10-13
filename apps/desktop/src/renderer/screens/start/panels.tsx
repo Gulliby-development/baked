@@ -355,12 +355,18 @@ export function usePreRun(key: string, input: PreRunInput, delayMs = 350): PreRu
     estimateError: null,
     loading: true,
   });
-  const { workflow, model, worktree, writers } = input;
+  const { workflow, model, worktree, writers, sandbox } = input;
   useEffect(() => {
     let live = true;
     setState((s) => ({ ...s, loading: true }));
     const timer = setTimeout(() => {
-      const request: PreRunInput = { workflow, model, worktree, writers };
+      const request: PreRunInput = {
+        workflow,
+        model,
+        worktree,
+        writers,
+        ...(sandbox ? { sandbox } : {}),
+      };
       void Promise.allSettled([start.doctor(key, request), start.estimate(key, request)]).then(
         ([doctor, estimate]) => {
           if (!live) return;
@@ -378,7 +384,7 @@ export function usePreRun(key: string, input: PreRunInput, delayMs = 350): PreRu
       live = false;
       clearTimeout(timer);
     };
-  }, [key, workflow, model, worktree, writers, delayMs]);
+  }, [key, workflow, model, worktree, writers, sandbox, delayMs]);
   return state;
 }
 

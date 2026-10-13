@@ -430,6 +430,13 @@ export interface AppConfig {
   watchdogTimeouts?: WatchdogTimeouts;
   /** Tool call timeout in minutes. Applies to shell, project, and agent tools. Default: 2 */
   toolTimeout?: number;
+  /**
+   * OS sandbox for shell, project and check commands. Default "off". Only the global config sets
+   * it; a project config can only raise it. See docs/sandbox.md.
+   */
+  sandbox?: "off" | "auto" | "required";
+  /** Network inside the chat sandbox; workflow runs follow their policy's `network`. Default "allow". */
+  sandboxNetwork?: "allow" | "deny";
   /** Retry behavior for transient provider errors (429, 529, 503, timeouts, overloaded). */
   retry?: RetryConfig;
   /** Memory subsystem config. embeddingModel: AI SDK model id (e.g. "openai/text-embedding-3-small"). null/undefined falls back to hashbag-v2. */

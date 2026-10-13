@@ -383,6 +383,12 @@ export const PolicySchema = z
      */
     executionMode: z.enum(["inline", "worktree"]).optional(),
     /**
+     * OS sandbox of the run's check, fixer, probe, repro and acceptance processes. Absent means
+     * off, so stored policies keep their hash. Network inside it follows `network`: only `allow`
+     * grants it. See docs/sandbox.md.
+     */
+    sandbox: z.enum(["auto", "required"]).optional(),
+    /**
      * Lets independent tasks of one batch write the same path; their results are integrated
      * through an integrator task. Absent means false, so stored policies keep their hash.
      */
@@ -1301,6 +1307,11 @@ export interface StartRequest {
    * definition; omitted, the definition's `execution`, then the policy's `executionMode` apply.
    */
   executionMode?: ExecutionMode;
+  /**
+   * OS sandbox requested for this run (CLI `--sandbox MODE`). It overrides the configured mode and
+   * the policy; omitted, the stricter of the policy and the configuration applies.
+   */
+  sandbox?: "off" | "auto" | "required";
   /** Concurrent writers requested for this run (CLI `--writers N`); it overrides the policy. */
   maxConcurrentWriters?: number;
   /**

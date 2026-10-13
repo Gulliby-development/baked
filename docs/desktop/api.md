@@ -23,6 +23,8 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 `GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `checkpoints` (`GET /v1/sessions/ID/checkpoints`), `run-memory` (`/v1/workflow/memory`), `critic-outcomes` (`GET /v1/workflow/critic`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded), `chat-export` (`GET /v1/sessions/ID/export`), `chat-effort` (`effort` on sessions and `efforts` on `GET /v1/models`), `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`), `settings` (`GET|PATCH /v1/settings`), `git` (`GET /v1/git`, `POST /v1/git/actions`), `hooks` (`GET /v1/hooks`, `POST /v1/hooks/session`), `provider-switch` (`POST /v1/providers/ID/switch`), `mcp` (`/v1/mcp*`), `lsp` (`/v1/lsp*`), `workflow-editor` (`POST /v1/workflow/editor*`), `lsp-diagnose` (`POST /v1/lsp/diagnose`), `run-maintenance` (`POST /v1/workflow/import`, `POST /v1/workflow/gc`, `POST /v1/workflow/runs/ID/export` and `/redact`), `diagnostics` (`/v1/diagnostics/*`), `coordinator` (`/v1/coordinator*`), `watch` (`GET|POST /v1/sessions/ID/watch`), `artifacts` (`/v1/artifacts*`), `gate-drafts` (`POST /v1/workflow/gates/draft`, `POST /v1/workflow/gates`, `GET /v1/workflow/gates/ID`, `GET /v1/workflow/gates/ID/places`, `POST /v1/workflow/gates/ID/bind`), `run-compare` (`GET /v1/workflow/compare`), `preset-proposal` (`POST /v1/workflow/propose`, `autoPreset` on `POST /v1/workflow/runs`) and `packages` (`/v1/packages*`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
+The `sandbox` capability covers `GET /v1/diagnostics/sandbox` and the `sandbox` field of `POST /v1/workflow/runs` and of the doctor and estimate queries.
+
 ## Sessions and chat (A)
 
 A session is a chat conversation stored in `.baked/sessions/ID/` of the project, the same store the terminal UI uses: sessions created by either front end are listed and can be continued by the other. A session saved by the terminal UI with several tabs is continued on its active tab; the other tabs are kept as they are. The server saves a session after every turn. Only one writer should hold a session at a time: while the API runs a turn of a session, the terminal UI should not continue the same session.
@@ -254,6 +256,8 @@ Exists: `GET /v1/workflow/definitions` (each summary has `stages` and `line`: `s
 
 `POST /v1/workflow/runs` also takes `testIntegrity` (`block` or `warn`, as `--test-integrity`; see [test integrity](../workflows/runtime.md#test-integrity)); omitted, the policy decides.
 
+`POST /v1/workflow/runs` and the `GET /v1/workflow/doctor` and `/estimate` queries take `sandbox` (`off`, `auto` or `required`, as `--sandbox`): the run's [OS sandbox](../sandbox.md), frozen in its policy; omitted, the stricter of the policy's `sandbox` and the configured `sandbox` setting applies, and `required` without a backend is refused with 400 `INVALID_DEFINITION`.
+
 `POST /v1/workflow/runs` takes `approvalReview: true` (as `--approval-review`): the [approval reviewer](../workflows/runtime.md#auto-approval) may approve a low-risk plan outside the auto approval limits. It is refused without `autoApproval.limits`, and a pending approval's body then carries `autoApproval.review` or `autoApproval.reviewError`.
 
 The run snapshot also has `reviewNotes`: `{count, ids}` of the review and convergence findings that started no correction (the [run report](../workflows/runtime.md#run-report) lists them; absent from older servers).
@@ -455,7 +459,7 @@ Servers of detected languages come first. `GET /v1/workflow/doctor` adds an `lsp
 
 ## Chat settings
 
-The chat settings the terminal UI edits in its pickers (`/provider-settings`, `/router`, `/model-scope`, `/tools`, `/web-search`, `/agent-features`, `/repo-map`, `/compaction`, `/timeouts`, `/context-window`, `/code-quality`) are described once in `src/core/settings/schema.ts`. The server validates changes against that schema and the desktop draws its settings pages from it, so a setting added there shows up on every surface. Unlike `PATCH /v1/config`, these routes check every value and write nested keys without replacing their neighbours.
+The chat settings the terminal UI edits in its pickers (`/provider-settings`, `/router`, `/model-scope`, `/tools`, `/web-search`, `/agent-features`, `/repo-map`, `/compaction`, `/timeouts`, `/context-window`, `/sandbox`, `/code-quality`) are described once in `src/core/settings/schema.ts`. The server validates changes against that schema and the desktop draws its settings pages from it, so a setting added there shows up on every surface. Unlike `PATCH /v1/config`, these routes check every value and write nested keys without replacing their neighbours.
 
 | Method and path | Body | Result |
 | --- | --- | --- |
@@ -565,7 +569,7 @@ interface GitOverview {
 
 ## Diagnostics
 
-Disk use and cleanup of BAKED's own data, the model calls and the background errors of this server process: what the terminal UI shows with `/storage`, `/model-events` and `/errors`. The logic is in `src/core/diagnostics/`. Project data is the workspace's `.baked` folder; global data is the user configuration directory (`~/.baked`, or `%LOCALAPPDATA%\baked` on Windows).
+Disk use and cleanup of BAKED's own data, the model calls and the background errors of this server process, and its OS sandbox status: what the terminal UI shows with `/storage`, `/model-events`, `/errors` and `/sandbox`. The logic is in `src/core/diagnostics/`. Project data is the workspace's `.baked` folder; global data is the user configuration directory (`~/.baked`, or `%LOCALAPPDATA%\baked` on Windows).
 
 | Method and path | Body | Result |
 | --- | --- | --- |
@@ -573,6 +577,7 @@ Disk use and cleanup of BAKED's own data, the model calls and the background err
 | `POST /v1/diagnostics/storage/cleanup` | `{target: "repo-map" \| "sessions" \| "plans" \| "history" \| "vacuum", confirm?: true}` | `{target, freedBytes, removed?, storage: StorageView}`; `removed` is the number of sessions deleted. Every target except `vacuum` deletes data and needs `confirm: true`, or the request fails with 400 `INVALID_REQUEST`. Nothing to clear is not an error (`freedBytes: 0`). 409 `SESSION_BUSY` while a chat turn of this server runs (`sessions`, `repo-map`), 409 `WORKSPACE_BUSY` while this server drives a workflow run (`repo-map`) or when the history database cannot be opened |
 | `GET /v1/diagnostics/errors` | | `{errors: {id, source, message, timestamp}[]}`, newest first. The log of failures off the chat transcript (hooks, language servers, agents, session saves) since the server started, at most 500. Read-only, like the terminal `/errors` view |
 | `GET /v1/diagnostics/model-events` | | `ModelEventsView` below |
+| `GET /v1/diagnostics/sandbox` | | `SandboxStatus` below: the [OS sandbox](../sandbox.md) mode of the served project and the backend of this machine, as `baked sandbox status --json` and `/sandbox status` show it (`sandbox` capability). The mode itself is the `sandbox` setting (`GET\|PATCH /v1/settings`, Tools page) |
 | `POST /v1/diagnostics/model-events` | `{action: "enable" \| "disable" \| "clear"}` | `ModelEventsView` after the change. Recording is off when the server starts; `disable` also drops the recorded calls |
 
 The cleanup targets: `repo-map` deletes the repository map (`.baked/repomap.db`) through the server's context manager, which starts indexing again; `sessions` deletes every saved chat session of the workspace, including those the terminal UI saved; `plans` deletes `.baked/plans`; `history` deletes the terminal UI's prompt history in `history.db` for every project; `vacuum` runs SQLite `VACUUM` on the repository map, memory and history databases and keeps all data.
@@ -582,6 +587,16 @@ interface StorageView {
   projectDir: string; globalDir: string;
   project: { totalBytes; repoMapBytes; sessionsBytes; sessionCount; memoryBytes; plansBytes; configBytes };
   global: { totalBytes; historyBytes; memoryBytes; configBytes; binariesBytes };
+}
+interface SandboxStatus {
+  mode: "off" | "auto" | "required";        // the global setting, or the server's --sandbox override
+  project: "off" | "auto" | "required" | null; // the project config's value; it can only raise the mode
+  effectiveMode: "off" | "auto" | "required";
+  source: "config" | "override" | "project";
+  backend: "bwrap" | "seatbelt" | "none";
+  available: boolean; path: string | null; reason: string | null; // why the backend is unavailable
+  network: "allow" | "deny";                  // sandboxNetwork: network of sandboxed chat commands
+  active: boolean;                            // chat commands run isolated now
 }
 interface ModelEventsView {
   enabled: boolean;
@@ -657,7 +672,7 @@ The [artifacts](../artifacts.md) of the user, the same for every project's serve
 | Project setup: language servers | `GET /v1/lsp`, `POST /v1/lsp/ID/install\|enable\|disable\|restart`, `POST /v1/lsp/restart`, `POST /v1/lsp/diagnose` |
 | Project setup: instructions | `GET|PUT /v1/projects/current/instructions`, `PUT /v1/projects/current/instructions/sources` |
 | Project setup: working set | `GET /v1/projects/current`, `POST /v1/projects/current/working-set` |
-| Project setup: diagnostics | `GET /v1/diagnostics/storage`, `POST /v1/diagnostics/storage/cleanup`, `GET\|POST /v1/diagnostics/model-events`, `GET /v1/diagnostics/errors` |
+| Project setup: diagnostics | `GET /v1/diagnostics/storage`, `POST /v1/diagnostics/storage/cleanup`, `GET\|POST /v1/diagnostics/model-events`, `GET /v1/diagnostics/errors`, `GET /v1/diagnostics/sandbox` |
 
 ## Not in this contract yet
 

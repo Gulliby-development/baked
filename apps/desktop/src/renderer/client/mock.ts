@@ -103,6 +103,7 @@ const FULL_CAPABILITIES = [
   "chat-effort",
   "watch",
   "diagnostics",
+  "sandbox",
   "gate-drafts",
   "run-compare",
   "coordinator",
