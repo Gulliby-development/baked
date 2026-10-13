@@ -50,6 +50,24 @@ export function correctionWrites(
   }));
 }
 
+const fileStem = (path: string): string =>
+  path
+    .slice(path.lastIndexOf("/") + 1)
+    .replace(/\.[^.]+$/, "")
+    .toLowerCase();
+const TEST_DIR = /(^|\/)(tests?|__tests__|spec)\//;
+/** The stem a test file is named after (`cli_test.go`, `test_cli.py`, `cli.test.ts`, `CliTest.java`), or null for a non-test file. */
+function testedStem(path: string): string | null {
+  const name = path.slice(path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
+  const stripped = name.replace(/^test_/i, "").replace(/(?:[._-](?:test|spec)|Tests?)$/, "");
+  if (stripped === name && !TEST_DIR.test(path)) return null;
+  return stripped.toLowerCase();
+}
+/** Whether `test` is a test file of the source file `source`, by name. */
+export function isTestOf(test: string, source: string): boolean {
+  return testedStem(source) === null && testedStem(test) === fileStem(source);
+}
+
 /**
  * The task checks a correction of `base` runs: its own and those of the related planned tasks. A
  * correction that may edit the test file must also run the test check, or it cannot see that its
@@ -312,22 +330,38 @@ export function appendCorrections(
     groups.set(key, group);
   }
   const root = state.rootGraph;
-  // A failure that names files of other tasks of the same profile: their owners join the group,
-  // so the correction may write them and the acceptance rule still finds them related.
-  for (const group of groups.values())
-    for (const finding of group.findings)
-      for (const path of state.repairScope?.[finding.id] ?? []) {
-        const owner = root.tasks.find(
-          (t) => t.profileId === group.base.profileId && t.writes.some((w) => w.path === path),
-        );
-        if (!owner || group.bases.some((b) => b.id === owner.id)) continue;
-        group.bases.push(owner);
-        group.base = {
-          ...group.base,
-          criterionIds: unique([...group.base.criterionIds, ...owner.criterionIds]),
-          requirementIds: unique([...group.base.requirementIds, ...owner.requirementIds]),
-        };
-      }
+  // A planned file the correction needs: its owner of the same profile joins the group, so the
+  // correction may write it and the acceptance rule still finds it related.
+  const writable = (group: { bases: Task[] }): string[] =>
+    group.bases.flatMap((b) => correctionWrites(b, root, null)).map((w) => w.path);
+  const join = (group: { base: Task; bases: Task[] }, path: string): void => {
+    if (writable(group).includes(path)) return;
+    const owner = root.tasks.find(
+      (t) => t.profileId === group.base.profileId && t.writes.some((w) => w.path === path),
+    );
+    if (!owner || group.bases.some((b) => b.id === owner.id)) return;
+    group.bases.push(owner);
+    group.base = {
+      ...group.base,
+      criterionIds: unique([...group.base.criterionIds, ...owner.criterionIds]),
+      requirementIds: unique([...group.base.requirementIds, ...owner.requirementIds]),
+    };
+  };
+  const planned = unique(root.tasks.flatMap((t) => t.writes.map((w) => w.path)));
+  for (const group of groups.values()) {
+    // The files a failing check names, and the planned files the findings name in their claim or
+    // fix (expenses-py 1363445a: "update tests/test_cli.py" from a task that could not write it).
+    for (const finding of group.findings) {
+      for (const path of state.repairScope?.[finding.id] ?? []) join(group, path);
+      for (const path of pathsInOutput(`${finding.claim}\n${finding.suggestedFix}`, root.tasks))
+        join(group, path);
+    }
+    // The planned tests of the files the correction writes: a fix often needs its regression
+    // assertion there (junitdigest 3e5be74b T014 could not add one to internal/cli/cli_test.go).
+    const written = writable(group);
+    for (const path of planned)
+      if (written.some((source) => isTestOf(path, source))) join(group, path);
+  }
   const additions = [...groups.values()].map(({ base, bases, findings: grouped }) => {
     const ids = grouped.map((f) => f.id);
     return {
