@@ -1,5 +1,6 @@
 import {
   BUILTIN_CLASSES,
+  type CriticMode,
   type ModelRouting,
   ModelRoutingSchema,
   mergeModelRouting,
@@ -126,6 +127,7 @@ function compact(routing: ModelRouting): ModelRouting | undefined {
   if (routing.independentReview) next.independentReview = routing.independentReview;
   if (routing.reviewMinConfidence !== undefined)
     next.reviewMinConfidence = routing.reviewMinConfidence;
+  if (routing.critic) next.critic = routing.critic;
   return Object.keys(next).length ? next : undefined;
 }
 
@@ -183,6 +185,15 @@ export function setReviewMinConfidence(
 ): ModelRouting | undefined {
   const { reviewMinConfidence: _previous, ...rest } = routing ?? {};
   return compact(value === null ? rest : { ...rest, reviewMinConfidence: value });
+}
+
+/** Sets (or, with `null`, removes) the critic mode of a layer. */
+export function setCritic(
+  routing: ModelRouting | undefined,
+  mode: CriticMode | null,
+): ModelRouting | undefined {
+  const { critic: _previous, ...rest } = routing ?? {};
+  return compact(mode === null ? rest : { ...rest, critic: mode });
 }
 
 type ClassRoute = NonNullable<ModelRouting["classes"]>[string];
@@ -276,7 +287,8 @@ export interface RoutingLayers {
 export type RoutingChange =
   | { target: RoutingTarget; route: RouteDraft | null; create?: boolean }
   | { independentReview: IndependentReviewMode | null }
-  | { reviewMinConfidence: number | null };
+  | { reviewMinConfidence: number | null }
+  | { critic: CriticMode | null };
 
 /**
  * Applies a change to one layer and lists what would stop it: the draft's own problems, then what
@@ -292,6 +304,7 @@ export function applyRoutingChange(
   const other = layers[scope === "global" ? "project" : "global"];
   if ("independentReview" in change)
     return { routing: setIndependentReview(current, change.independentReview), problems: [] };
+  if ("critic" in change) return { routing: setCritic(current, change.critic), problems: [] };
   if ("reviewMinConfidence" in change) {
     const value = change.reviewMinConfidence;
     if (value !== null && !(value >= 0 && value <= 1))
@@ -389,6 +402,12 @@ export interface RoutingOverview {
     project: number | null;
     effective: number;
   };
+  /** The task-attempt critic; `effective` is null when no layer sets it (the vendor rule decides). */
+  critic: {
+    global: CriticMode | null;
+    project: CriticMode | null;
+    effective: CriticMode | null;
+  };
   /** Reviews that would share a model with the implementation. */
   warnings: string[];
   /** Why the workflow's stages and profiles could not be explained, such as no run model. */
@@ -444,6 +463,11 @@ export function routingOverview(input: {
       global: layers.global?.reviewMinConfidence ?? null,
       project: layers.project?.reviewMinConfidence ?? null,
       effective: routing?.reviewMinConfidence ?? DEFAULT_REVIEW_MIN_CONFIDENCE,
+    },
+    critic: {
+      global: layers.global?.critic ?? null,
+      project: layers.project?.critic ?? null,
+      effective: routing?.critic ?? null,
     },
     warnings: explanation?.warnings ?? [],
     error: input.error ?? null,

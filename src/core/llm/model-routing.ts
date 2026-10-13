@@ -38,6 +38,8 @@ const Route = z.union([RouteRef, z.object({ model: RouteRef, ...RouteOptions }).
 export type Route = z.infer<typeof Route>;
 /** What a class names: a model, or a model with effort and fallback models. */
 export const INDEPENDENT_REVIEW_MODES = ["off", "warn", "require", "provider"] as const;
+export const CRITIC_MODES = ["off", "advise"] as const;
+export type CriticMode = (typeof CRITIC_MODES)[number];
 export type IndependentReview = (typeof INDEPENDENT_REVIEW_MODES)[number];
 const ClassRoute = z.union([ModelId, z.object({ model: ModelId, ...RouteOptions }).strict()]);
 const Role = z.enum([
@@ -76,6 +78,12 @@ export const ModelRoutingSchema = z
      * freezes it into its policy (`reviewMinConfidence`); the default is 0.8.
      */
     reviewMinConfidence: z.number().min(0).max(1).optional(),
+    /**
+     * The task-attempt critic (#646): `advise` scores every attempt, `off` skips it. Without it
+     * the critic runs only on a vendor other than the implementation's. A run freezes it into its
+     * policy (`critic`).
+     */
+    critic: z.enum(CRITIC_MODES).optional(),
   })
   .strict();
 export type ModelRouting = z.infer<typeof ModelRoutingSchema>;
@@ -240,6 +248,7 @@ export function mergeModelRouting(
     workflows[id] = { stages: { ...workflows[id]?.stages, ...entry.stages } };
   const independentReview = layer.independentReview ?? base.independentReview;
   const reviewMinConfidence = layer.reviewMinConfidence ?? base.reviewMinConfidence;
+  const critic = layer.critic ?? base.critic;
   return {
     classes: { ...base.classes, ...layer.classes },
     roles: { ...base.roles, ...layer.roles },
@@ -247,6 +256,7 @@ export function mergeModelRouting(
     workflows,
     ...(independentReview ? { independentReview } : {}),
     ...(reviewMinConfidence !== undefined ? { reviewMinConfidence } : {}),
+    ...(critic ? { critic } : {}),
   };
 }
 

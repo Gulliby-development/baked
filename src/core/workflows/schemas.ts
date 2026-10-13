@@ -236,6 +236,12 @@ export const PolicySchema = z
      */
     reviewMinConfidence: z.number().min(0).max(1).optional(),
     /**
+     * The critic that scores every task attempt with a rubric (#646): `advise` shows the score
+     * and decides nothing, `off` skips it. Absent means `advise` when the critic's model is of
+     * another vendor than the implementation's, else off, so stored policies keep their hash.
+     */
+    critic: z.enum(["off", "advise"]).optional(),
+    /**
      * `false` leaves out learned code rules (#643): rules proposed from findings that recurred in
      * earlier runs and activated by recurrence or a person. Absent means on, so stored policies
      * keep their hash.
@@ -383,6 +389,7 @@ export const ProfileSchema = z
       "acceptance",
       "acceptance-draft",
       "initiativePlan",
+      "critique",
     ]),
     maxSteps: z.number().int().min(1).max(100),
     maxOutputTokens: z.number().int().min(256).max(65536),
@@ -572,6 +579,35 @@ export const ReviewSchema = z
   })
   .strict();
 
+/**
+ * One item of the rubric a critic scores a task attempt on (#646): 0 is bad, 1 good. The items:
+ * the attempt understood the intent, followed the instructions, stayed in scope, did not game the
+ * tests, and implemented the task completely.
+ */
+const RubricItem = z.object({ score: z.number().min(0).max(1), note: Text }).strict();
+/**
+ * A critic's score of one task attempt: advice shown in the run, not a gate. `score` is the
+ * critic's estimate that the attempt is correct and will be kept as it is.
+ */
+export const CritiqueSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    taskId: TaskId,
+    score: z.number().min(0).max(1),
+    rubric: z
+      .object({
+        intent: RubricItem,
+        instructions: RubricItem,
+        scope: RubricItem,
+        testIntegrity: RubricItem,
+        completeness: RubricItem,
+      })
+      .strict(),
+    summary: Text,
+  })
+  .strict();
+export type Critique = z.infer<typeof CritiqueSchema>;
+
 export const ImplementationSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -704,6 +740,8 @@ export const WorkflowConfigSchema = z
         stepStallMs: z.number().int().min(10_000).max(14_400_000).optional(),
         maxToolTimeouts: z.number().int().min(1).max(50).optional(),
         autoResumes: z.number().int().min(0).max(20).optional(),
+        providerResumes: z.number().int().min(0).max(20).optional(),
+        providerWaitMs: z.number().int().min(0).max(3_600_000).optional(),
       })
       .strict()
       .optional(),
@@ -1125,6 +1163,11 @@ export interface RunSnapshot {
    * the owner is alive and its work is not advancing.
    */
   stalled?: { silentMs: number; lastEventAt: string | null };
+  /**
+   * Present while a run blocked with `provider_unavailable` waits for its automatic resume
+   * (`workflows.stall.providerResumes`): when it retries, and which resume that is.
+   */
+  autoRetry?: { at: string; attempt: number; of: number };
   pendingRequestIds: string[];
   /** The project of the run's workspace when it was created. */
   projectId?: string;
