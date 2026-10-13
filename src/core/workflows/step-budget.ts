@@ -7,6 +7,7 @@ import {
   type WatchStep,
   watchSteps,
 } from "./progress-watch.js";
+import type { ProfileCompaction } from "./schemas.js";
 
 /** Per-attempt token cap used when the run policy does not set `maxAttemptTokens`. */
 export const DEFAULT_MAX_ATTEMPT_TOKENS = 250_000;
@@ -266,6 +267,8 @@ export class AttemptStepController {
   private watchDone = false;
   private watchStop: WatchFinding | null = null;
   private readonly compactedBytes: number[] = [];
+  /** Whether compaction has started; once on, it stays on so the cached prefix keeps matching. */
+  private compacting = false;
   /** Serialized size of the messages sent with each step, to estimate the next one. */
   private readonly sentBytes: number[] = [];
   constructor(
@@ -287,6 +290,8 @@ export class AttemptStepController {
       minSteps?: number;
       /** Hard limit the step floor never passes, such as what the run budget still allows. */
       ceilingTokens?: number;
+      /** The profile's compaction settings; unset compacts from the first step. */
+      compaction?: ProfileCompaction;
       /**
        * The progress watcher: a first stuck signal adds one steering message, the same kind of
        * signal `WATCH_STOP_AFTER` steps later finalizes the attempt. `onSignal` records both.
@@ -379,7 +384,16 @@ export class AttemptStepController {
         }
       }
     }
-    const compacted = compactToolHistory(input.messages);
+    const compaction = this.options.compaction;
+    const startAt =
+      compaction?.startAtTokens ??
+      (compaction?.startAtShare !== undefined
+        ? compaction.startAtShare * this.options.maxTokens
+        : 0);
+    this.compacting ||= this.consumed(input.steps) >= startAt;
+    const compacted = this.compacting
+      ? compactToolHistory(input.messages, compaction?.keepRecent)
+      : { messages: input.messages, savedBytes: 0 };
     this.compactedBytes[input.stepNumber] = compacted.savedBytes;
     const finalizing = this.finalizedBy !== null && this.options.submitTools.length > 0;
     // A step cut off at the output cap usually carried an oversized edit; say so once, unless

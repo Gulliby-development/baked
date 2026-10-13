@@ -68,6 +68,7 @@ const stateOf = (): RuntimeState =>
     previousFindingSet: null,
     deferredChecks: {},
     taskGates: {},
+    affectedTests: {},
   }) as unknown as RuntimeState;
 const policy = { maxRepairRounds: 3, maxConvergenceRounds: 3, maxCorrectiveTasks: 20 } as RunPolicy;
 
