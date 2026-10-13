@@ -287,6 +287,7 @@ export class NativeWorkflowService implements WorkflowService {
       prompt: request.prompt,
       requestText: request.prompt,
       coverageRaised: false,
+      uncoveredReturned: [],
       ownerLabel: request.ownerLabel,
       stageIndex: 0,
       manifest: {
