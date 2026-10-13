@@ -59,6 +59,20 @@ export interface LaunchedView extends LaunchedEntry {
   worktree?: SessionWorktree;
 }
 
+/** A prompt that starts a coordinator turn on its own; `when` as `src/core/chat/coordinator-schedules.ts`. */
+export interface Schedule {
+  id: string;
+  name: string;
+  prompt: string;
+  when: string;
+  enabled: boolean;
+  createdAt: number;
+  lastRunAt: number | null;
+  nextRunAt: number;
+}
+
+export type ScheduleInput = Pick<Schedule, "name" | "prompt" | "when">;
+
 /** A rule the coordinator answers routine approvals of what it launched by (`approval-rules.ts`). */
 export type ApprovalRule =
   | { id: string; kind: "run-approval"; maxTokens: number; paths?: string[] }
@@ -124,6 +138,16 @@ export const coordinator = {
       ...refOf(item),
       ...(reopen ? { reopen: true } : {}),
     }),
+  schedules: (key: string) =>
+    call<{ schedules: Schedule[] }>(key, "GET", "/v1/coordinator/schedules"),
+  addSchedule: (key: string, input: ScheduleInput) =>
+    call<Schedule>(key, "POST", "/v1/coordinator/schedules", input),
+  setScheduleEnabled: (key: string, id: string, enabled: boolean) =>
+    call<Schedule>(key, "PATCH", `/v1/coordinator/schedules/${encodeURIComponent(id)}`, {
+      enabled,
+    }),
+  removeSchedule: (key: string, id: string) =>
+    call<null>(key, "DELETE", `/v1/coordinator/schedules/${encodeURIComponent(id)}`),
   approvalRules: (key: string) => call<ApprovalRules>(key, "GET", "/v1/coordinator/approval-rules"),
   /** Saves the switch and the rules; a 409 `STALE_REVISION` means they changed meanwhile. */
   saveApprovalRules: (

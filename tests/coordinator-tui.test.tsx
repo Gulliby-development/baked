@@ -21,7 +21,9 @@ import {
   ReadonlyProjectState,
 } from "../src/core/chat/coordinator-host";
 import { BriefStore } from "../src/core/chat/coordinator";
+import { ScheduleStore } from "../src/core/chat/coordinator-schedules";
 import type { ChatAgentHost, ChatPrompt, TurnAgentRequest } from "../src/core/chat/sessions";
+import { nextLabel, scheduleLines } from "../src/components/coordinator/schedules";
 import type { InitiativeView } from "../src/core/workflows/initiatives/service";
 import type { AppConfig } from "../src/types/index";
 
@@ -488,4 +490,47 @@ describe("terminal coordinator view", () => {
       }
     });
   }
+});
+
+describe("terminal coordinator schedules", () => {
+  test("schedule lines show name, when and the next firing", () => {
+    const now = new Date(2026, 9, 10, 8, 0).getTime();
+    const base = { prompt: "x", createdAt: now, lastRunAt: null };
+    const lines = scheduleLines(
+      [
+        { ...base, id: "a", name: "Nightly", when: "0 2 * * *", enabled: true, nextRunAt: new Date(2026, 9, 11, 2, 0).getTime() },
+        { ...base, id: "b", name: "Deps", when: "every 1d", enabled: false, nextRunAt: now },
+      ],
+      80,
+      now,
+    );
+    expect(lines).toEqual([
+      { text: "\u25f7 Nightly \u00b7 0 2 * * * \u00b7 next 2026-10-11 02:00", tone: "accent" },
+      { text: "\u2016 Deps \u00b7 every day \u00b7 paused", tone: "muted" },
+    ]);
+    expect(nextLabel(new Date(2026, 9, 10, 9, 30).getTime(), now)).toBe("09:30");
+    const long = { ...base, id: "c", name: "A long name", when: "every 1h", enabled: true, nextRunAt: now };
+    expect(scheduleLines([long], 10, now)[0]?.text).toHaveLength(10);
+  });
+
+  test("the view lists the coordinator's schedules", async () => {
+    const { local } = await openLocal();
+    new ScheduleStore(local.chat.workspace, local.session.id).add({
+      name: "Morning summary",
+      prompt: "Summarize the night",
+      when: "0 9 * * *",
+    });
+    const view = await testRender(<CoordinatorView visible open={async () => local} onClose={() => {}} />, {
+      width: 100,
+      height: 30,
+    });
+    try {
+      await until(view, "Morning summary");
+      expect(view.captureCharFrame()).toContain("Schedules");
+    } finally {
+      await act(async () => {
+        view.renderer.destroy();
+      });
+    }
+  });
 });

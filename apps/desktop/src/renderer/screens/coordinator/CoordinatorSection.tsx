@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import type { DesktopProject } from "../../../shared/api.js";
 import { ApiError } from "../../client/api.js";
-import { COORDINATOR_CAPABILITY } from "../../client/capabilities.js";
+import {
+  COORDINATOR_CAPABILITY,
+  COORDINATOR_SCHEDULES_CAPABILITY,
+} from "../../client/capabilities.js";
 import { chat } from "../../client/chat.js";
 import {
   BRIEF_LISTS,
@@ -36,6 +39,7 @@ import {
   taskLabel,
   withList,
 } from "./model.js";
+import { SchedulesPanel } from "./SchedulesPanel.js";
 
 /** How often the panel reads launched work and the brief again. */
 const REFRESH_MS = 5000;
@@ -231,10 +235,12 @@ function BriefSection({
 /** Launched work and the brief, read again every few seconds. */
 function CoordinatorPanel({
   project,
+  schedules,
   launched,
   onLaunched,
 }: {
   project: DesktopProject;
+  schedules: boolean;
   /** Launched work with live status; null from an older backend without the live view. */
   launched: LaunchedView[] | null;
   onLaunched: (launched: LaunchedView[]) => void;
@@ -277,6 +283,7 @@ function CoordinatorPanel({
       className="flex w-[340px] flex-none flex-col gap-5 overflow-y-auto border-l-2 border-border bg-secondary-background px-4 py-4 [@media(max-width:1000px)]:w-[280px]"
       aria-label="Coordinator brief"
     >
+      {schedules && <SchedulesPanel projectKey={key} />}
       <section className="flex flex-col gap-2" aria-label="Launched work">
         <h2 className={LABEL}>Launched work</h2>
         {items.length === 0 ? (
@@ -326,9 +333,9 @@ function CoordinatorPanel({
  */
 export function CoordinatorSection({ project }: SectionProps) {
   const key = project.key;
-  const [state, setState] = useState<"loading" | "missing" | { id: string } | { error: string }>(
-    "loading",
-  );
+  const [state, setState] = useState<
+    "loading" | "missing" | { id: string; schedules: boolean } | { error: string }
+  >("loading");
   const launched = useLaunched(key, typeof state === "object" && "id" in state);
   useEffect(() => {
     let live = true;
@@ -337,7 +344,9 @@ export function CoordinatorSection({ project }: SectionProps) {
       if (capabilities !== null && !capabilities.includes(COORDINATOR_CAPABILITY))
         return live && setState("missing");
       const session = await coordinator.open(key);
-      if (live) setState({ id: session.id });
+      // An older backend without the capability list is assumed to have no schedules.
+      const schedules = capabilities?.includes(COORDINATOR_SCHEDULES_CAPABILITY) ?? false;
+      if (live) setState({ id: session.id, schedules });
     })().catch((e: unknown) => {
       if (!live) return;
       setState(e instanceof ApiError && e.status === 404 ? "missing" : { error: message(e) });
@@ -374,7 +383,10 @@ export function CoordinatorSection({ project }: SectionProps) {
           ) : null;
         }}
       />
-      <CoordinatorPanel project={project} launched={launched.items} onLaunched={launched.set} />
+      <CoordinatorPanel
+        project={project}
+        schedules={state.schedules}
+        launched={launched.items} onLaunched={launched.set} />
     </div>
   );
 }

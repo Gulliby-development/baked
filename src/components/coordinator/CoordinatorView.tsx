@@ -26,9 +26,12 @@ import {
   type ViewLine,
   wrap,
 } from "./model.js";
+import { scheduleLines } from "./schedules.js";
 
 /** At most this many lines of launched work show above the conversation. */
 const LAUNCHED_ROWS = 4;
+/** At most this many schedules show above the launched work. */
+const SCHEDULE_ROWS = 3;
 
 interface Props {
   visible: boolean;
@@ -258,6 +261,14 @@ function CoordinatorBody({
           { text: `… ${launched.length - LAUNCHED_ROWS + 1} more lines`, tone: "muted" as const },
         ]
       : launched;
+  const schedules = scheduleLines(view?.schedules ?? [], width);
+  const shownSchedules =
+    schedules.length > SCHEDULE_ROWS
+      ? [
+          ...schedules.slice(0, SCHEDULE_ROWS - 1),
+          { text: `… ${schedules.length - SCHEDULE_ROWS + 1} more`, tone: "muted" as const },
+        ]
+      : schedules;
   const card = prompt ? promptLines(prompt, width) : [];
   const conversation: ViewLine[] = loading
     ? [{ text: "Opening the coordinator…", tone: "muted" }]
@@ -273,12 +284,26 @@ function CoordinatorBody({
     viewport.height -
       3 -
       (shownLaunched.length ? shownLaunched.length + 2 : 0) -
+      (shownSchedules.length ? shownSchedules.length + 2 : 0) -
       (card.length ? card.length + 1 : 0),
   );
   const tail = conversation.slice(-room);
 
   return (
     <box flexDirection="column" paddingX={1} height={Math.max(4, viewport.height)}>
+      {shownSchedules.length > 0 && (
+        <box flexDirection="column" flexShrink={0}>
+          <text fg={t.textMuted} attributes={1}>
+            Schedules
+          </text>
+          {keyed(shownSchedules, "s").map((line) => (
+            <text key={line.key} fg={toneColor(t, line.tone)} wrapMode="none" truncate>
+              {line.text}
+            </text>
+          ))}
+          <text> </text>
+        </box>
+      )}
       {shownLaunched.length > 0 && (
         <box flexDirection="column" flexShrink={0}>
           <text fg={t.textMuted} attributes={1}>

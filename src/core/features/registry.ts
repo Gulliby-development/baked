@@ -178,6 +178,18 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/coordinator: the branch on launch cards and launched work"],
   },
   {
+    id: "coordinator-schedules",
+    group: "Chat and sessions",
+    title: "Coordinator schedules: prompts that start a coordinator turn on their own",
+    tui: ["/coordinator: lists the schedules; the coordinator adds and changes them on request"],
+    cli: [
+      "baked session coordinator schedules",
+      "baked session coordinator schedule: add, pause, resume and remove",
+    ],
+    api: ["/v1/coordinator/schedules: also /v1/coordinator/schedules/ID"],
+    desktop: ["project/coordinator: Schedules with add, pause, resume and remove"],
+  },
+  {
     id: "coordinator-approval-rules",
     group: "Chat and sessions",
     title: "Coordinator answers routine approvals by rules",
