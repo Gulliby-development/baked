@@ -10,6 +10,11 @@ import { bridge } from "./bridge.js";
 
 export type ChatMode = "default" | "architect" | "plan" | "auto";
 export const CHAT_MODES: readonly ChatMode[] = ["default", "architect", "plan", "auto"];
+/** What the mode picker offers on a server with `permission-modes`, where `auto` became full access. */
+export const AGENT_MODES: readonly ChatMode[] = ["default", "architect", "plan"];
+/** How much a chat runs without asking (`permission-modes` capability). */
+export type PermissionMode = "manual" | "auto" | "full";
+export const PERMISSION_MODES: readonly PermissionMode[] = ["manual", "auto", "full"];
 /** A chat's reasoning effort; `default` follows the global setting. */
 export type ChatEffort = "default" | "low" | "medium" | "high" | "xhigh" | "max";
 /** How a plan review is answered; `revise` sends feedback with it. */
@@ -38,6 +43,8 @@ export interface SessionSummary {
   mode: ChatMode;
   /** Reasoning effort of the next turn; servers without the `chat-effort` capability leave it out. */
   effort?: ChatEffort;
+  /** Permission mode; servers without the `permission-modes` capability leave it out. */
+  permissions?: PermissionMode;
   /** True while a manual compaction runs; older servers leave it out. */
   compacting?: boolean;
 }
@@ -300,6 +307,7 @@ export const chat = {
       model?: string;
       mode?: ChatMode;
       effort?: ChatEffort;
+      permissions?: PermissionMode;
       text?: string;
       images?: ImageUpload[];
     } = {},
@@ -308,7 +316,13 @@ export const chat = {
   update: (
     key: string,
     id: string,
-    body: { title?: string; model?: string; mode?: ChatMode; effort?: ChatEffort },
+    body: {
+      title?: string;
+      model?: string;
+      mode?: ChatMode;
+      effort?: ChatEffort;
+      permissions?: PermissionMode;
+    },
   ) => call<SessionSummary>(key, "PATCH", sessionPath(id), body),
   /** Deletes a saved session; the server refuses one with a running turn. */
   remove: (key: string, id: string) => call<null>(key, "DELETE", sessionPath(id)),

@@ -9,6 +9,7 @@ import type {
   ChatPrompt,
   ImageUpload,
   MessageSegment,
+  PermissionMode,
   PlanAction,
   SessionDetail,
   SessionDiffStats,
@@ -192,6 +193,7 @@ function seed(): Map<string, MockSession> {
       state: "idle",
       model: DEFAULT_MODEL,
       mode: "default",
+      permissions: "auto",
     };
     sessions.set(id, {
       key,
@@ -866,6 +868,7 @@ function create(
     model?: string;
     mode?: ChatMode;
     effort?: ChatEffort;
+    permissions?: PermissionMode;
     text?: string;
     images?: ImageUpload[];
   },
@@ -880,8 +883,9 @@ function create(
     updatedAt: now,
     state: "idle",
     model: body.model ?? DEFAULT_MODEL,
-    mode: body.mode ?? "default",
+    mode: body.mode === "auto" ? "default" : (body.mode ?? "default"),
     effort: body.effort ?? "default",
+    permissions: body.mode === "auto" ? "full" : (body.permissions ?? "auto"),
   };
   const session: MockSession = {
     key,
@@ -1101,6 +1105,7 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
       model?: string;
       mode?: ChatMode;
       effort?: ChatEffort;
+      permissions?: PermissionMode;
     };
     session.summary = {
       ...session.summary,
@@ -1108,6 +1113,7 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
       ...(changes.model ? { model: changes.model } : {}),
       ...(changes.mode ? { mode: changes.mode } : {}),
       ...(changes.effort ? { effort: changes.effort } : {}),
+      ...(changes.permissions ? { permissions: changes.permissions } : {}),
     };
     emitSession(session);
     return response(200, session.summary);
@@ -1138,6 +1144,7 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
       title: `${session.summary.title} (fork)`,
       mode: session.summary.mode,
       ...(session.summary.effort ? { effort: session.summary.effort } : {}),
+      ...(session.summary.permissions ? { permissions: session.summary.permissions } : {}),
     });
     forked.transcript = { ...forked.transcript, messages: all.slice(0, at + 1) };
     forked.summary = { ...forked.summary, messageCount: at + 1 };
