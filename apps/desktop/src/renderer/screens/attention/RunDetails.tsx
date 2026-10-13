@@ -129,6 +129,17 @@ export function ApprovalDetail({ item, onDone }: DetailProps) {
                 ))}
               </section>
             ) : null}
+            {body.autoApproval?.declined?.length ? (
+              <section className={LIST} aria-label="Why this waits for you">
+                <span className={LABEL}>Why this waits for you</span>
+                {body.autoApproval.declined.map((reason, i) => (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: reasons may repeat
+                  <div key={i} className={ROW}>
+                    <span>{reason}</span>
+                  </div>
+                ))}
+              </section>
+            ) : null}
             {body.deferredCriteria?.length ? (
               <p className={NOTE}>
                 Checked after release, not by this run: {body.deferredCriteria.join(", ")}.

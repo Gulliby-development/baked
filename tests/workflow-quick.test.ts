@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { builtinProfiles } from "../src/core/agents/profiles/builtin.js";
 import { resolveProfileModel } from "../src/core/llm/model-routing.js";
+import { humanApprovalReason } from "../src/core/workflows/auto-approval.js";
 import { scopedPlanBudget } from "../src/core/workflows/clarification.js";
 import { runDoctor } from "../src/core/workflows/doctor.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
@@ -56,6 +57,16 @@ describe("quick workflow", () => {
     expect(service.store.artifacts(run.runId).map((a) => a.logical_path)).toEqual(
       expect.arrayContaining(["plan.md", "tasks.json"]),
     );
+  }, 30000);
+
+  test("the plan approval says why it waits for a person and how to approve automatically", async () => {
+    const { start, service } = quickFixture();
+    const run = await start("quick");
+    await service.drive(run.runId, new AbortController().signal);
+    const approval = service.store.requests(run.runId).find((r) => r.kind === "approval");
+    const body = JSON.parse(approval?.body_json ?? "{}") as { autoApproval?: { declined?: string[] } };
+    expect(body.autoApproval?.declined).toEqual([humanApprovalReason("quick", "approve")]);
+    expect(body.autoApproval?.declined?.[0]).toContain("baked workflow define ID --from quick");
   }, 30000);
 
   test("a definition without the publish field still writes its documents to specs/", async () => {
