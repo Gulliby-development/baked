@@ -82,10 +82,10 @@ export async function takeBaseline(
 ): Promise<DiagnosticsBaseline> {
   const deadline = Date.now() + timeoutMs;
   const safe = (path: string) => source.diagnostics(path).catch((): null => null);
-  const [before, ...deps] = await Promise.all([
-    within(safe(file), deadline),
-    ...dependents.map((path) => within(safe(path), deadline)),
-  ]);
+  // The edited file first: reading it sends any change the server has not seen, which marks the
+  // importers' cached diagnostics stale, so their baseline is not read from before that change.
+  const before = await within(safe(file), deadline);
+  const deps = await Promise.all(dependents.map((path) => within(safe(path), deadline)));
   const baseline: DiagnosticsBaseline = {
     file,
     before: before === undefined ? null : (before ?? []),
