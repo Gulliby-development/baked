@@ -426,6 +426,18 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/lsp", "project/overview: Doctor language-server line"],
   },
   {
+    id: "design-kit",
+    group: "Tools and code intelligence",
+    title: "BAKED kit: default styles for web projects and artifacts that have none",
+    tui: ["/agent-features: BAKED kit"],
+    cli: [
+      "--headless: the agent gets the kit guidance",
+      "baked workflow run: in frozen instructions",
+    ],
+    api: ["/v1/settings: agent-features page"],
+    desktop: ["settings/chat: Agent features page"],
+  },
+  {
     id: "artifacts",
     group: "Tools and code intelligence",
     title: "Artifacts: HTML pages shared by every project, deployed to the user's Vercel",

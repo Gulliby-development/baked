@@ -6,6 +6,8 @@
  * each marked criterion has one (#796: a run is never asked for a dependency it cannot install). A failing property's shrunk counterexample
  * is put into the failed check's finding, so the correction starts from a reproduction.
  */
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { readablePath } from "../../specs/validate.js";
 import { isTestCodePath } from "./duplication.js";
 
 export type PropertyTestsMode = "auto" | "off";
@@ -132,6 +134,38 @@ export interface LibraryProbe {
   list(directory: string): string[];
   /** Whether Python can import a module, or null when there is no Python. */
   pythonImports(module: string): boolean | null;
+}
+
+/**
+ * The files of a run's root as the library probe reads them. A worktree's linked `node_modules`
+ * is read in place (`readablePath`); a path that cannot be read is absent.
+ */
+export function libraryFiles(root: string): Omit<LibraryProbe, "pythonImports"> {
+  return {
+    read: (path) => {
+      try {
+        return readFileSync(readablePath(root, path), "utf8");
+      } catch {
+        return null;
+      }
+    },
+    exists: (path) => {
+      try {
+        return existsSync(readablePath(root, path));
+      } catch {
+        return false;
+      }
+    },
+    list: (directory) => {
+      try {
+        return readdirSync(directory ? readablePath(root, directory) : root).map((name) =>
+          directory ? `${directory}/${name}` : name,
+        );
+      } catch {
+        return [];
+      }
+    },
+  };
 }
 
 /**

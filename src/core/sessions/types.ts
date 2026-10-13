@@ -49,4 +49,6 @@ export interface SessionMeta {
   projectId?: string;
   /** `coordinator` for the project's coordinator chat; absent for an ordinary session. */
   kind?: "coordinator";
+  /** The session that launched this one, such as the project coordinator. */
+  parentId?: string;
 }

@@ -47,6 +47,8 @@ export interface SessionSummary {
   permissions?: PermissionMode;
   /** True while a manual compaction runs; older servers leave it out. */
   compacting?: boolean;
+  /** The session that launched this one, such as the project coordinator. */
+  parentId?: string;
 }
 
 export interface ToolResult {
