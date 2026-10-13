@@ -119,7 +119,6 @@ type Label = "low" | "protect" | "hidden";
 
 const DACL_SECURITY_INFORMATION = 0x4;
 const LABEL_SECURITY_INFORMATION = 0x10;
-const PROTECTED_SACL_SECURITY_INFORMATION = 0x40000000;
 const SE_FILE_OBJECT = 1;
 const SYSTEM_MANDATORY_LABEL_ACE_TYPE = 0x11;
 const INHERITED_ACE = 0x10;
@@ -318,11 +317,18 @@ function ensureLabel(win: Win32, path: string, label: Label): void {
   if (hasLabel(win, path, label)) return;
   const directory = statSync(path).isDirectory();
   const sddl = directory ? SDDL[label].dir : SDDL[label].file;
-  // Protected: an inherited low label from a writable parent must not apply next to this one.
-  const flags =
-    LABEL_SECURITY_INFORMATION | (label === "low" ? 0 : PROTECTED_SACL_SECURITY_INFORMATION);
+  // The explicit label comes before any label inherited from a writable parent, and the first
+  // label wins. Protecting the SACL from inheritance instead would need SeSecurityPrivilege.
   const status = withLabelAcl(win, sddl, (acl) =>
-    win.a.SetNamedSecurityInfoW(wide(path), SE_FILE_OBJECT, flags, null, null, null, acl),
+    win.a.SetNamedSecurityInfoW(
+      wide(path),
+      SE_FILE_OBJECT,
+      LABEL_SECURITY_INFORMATION,
+      null,
+      null,
+      null,
+      acl,
+    ),
   );
   if (status !== 0) fail(win, `Setting the ${label} integrity label on ${path}`, status);
 }

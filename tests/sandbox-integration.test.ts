@@ -85,7 +85,7 @@ describe.skipIf(!detection.available)("OS sandbox", () => {
 
   test("runs Bun and records the backend", async () => {
     const result = await run(process.execPath, ["-e", "console.log(6 * 7)"]);
-    expect(result.exitCode).toBe(0);
+    expect(result).toMatchObject({ exitCode: 0 }); // prints the output when it fails
     expect(result.output.trim()).toBe("42");
     expect(result.sandbox).toEqual(
       detection.backend === "restricted-token"
@@ -98,7 +98,7 @@ describe.skipIf(!detection.available)("OS sandbox", () => {
     const write = (path: string) =>
       run(...script(`require("node:fs").writeFileSync(${JSON.stringify(path)}, "ok\\n")`));
     const inside = await write("made.txt");
-    expect(inside.exitCode).toBe(0);
+    expect(inside).toMatchObject({ exitCode: 0 }); // prints the output when it fails
     expect(readFileSync(join(workspace, "made.txt"), "utf8")).toBe("ok\n");
     const target = join(outside, "escaped.txt");
     const escaped = await write(target);
@@ -169,7 +169,7 @@ describe.skipIf(!detection.available)("OS sandbox", () => {
       }
       const committed = await run("git", commit, { ...over, gitWrite: true }, tree);
       expect(committed.output).toBe("");
-      expect(committed.exitCode).toBe(0);
+      expect(committed).toMatchObject({ exitCode: 0 }); // prints the output when it fails
       expect(git(tree, "log", "-1", "--format=%s")).toBe("sandboxed");
       const hook = await run(...write(join(common, "hooks", "x"), "evil"), { ...over, gitWrite: true }, tree);
       expect(hook.exitCode).not.toBe(0);
@@ -219,7 +219,7 @@ describe.skipIf(!detection.available)("OS sandbox", () => {
       "-e",
       "const s=Bun.serve({port:0,hostname:'127.0.0.1',fetch:()=>new Response('loop')});fetch(`http://127.0.0.1:${s.port}/`).then(r=>r.text()).then(t=>{console.log(t);s.stop(true);});",
     ]);
-    expect(loopback.exitCode).toBe(0);
+    expect(loopback).toMatchObject({ exitCode: 0 }); // prints the output when it fails
     expect(loopback.output.trim()).toBe("loop");
   });
 
@@ -296,7 +296,7 @@ describe.skipIf(!detection.available)("OS sandbox", () => {
       const reachable = spawnSync("curl", ["-sI", "--max-time", "10", "https://example.com"]).status === 0;
       if (!reachable) return;
       const result = await run("curl", ["-sI", "--max-time", "10", "https://example.com"], { network: true });
-      expect(result.exitCode).toBe(0);
+      expect(result).toMatchObject({ exitCode: 0 }); // prints the output when it fails
     });
   });
 });
