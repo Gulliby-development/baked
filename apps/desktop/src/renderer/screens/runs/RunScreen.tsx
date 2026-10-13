@@ -266,6 +266,14 @@ function Budget({
         limit={limit}
         text={`${tokens(run.tokenUsage)}${limit ? ` / ${tokens(limit)}` : ""} · ${usd(run.estimatedCostUsd)}`}
       />
+      {run.maxCostUsd !== undefined && (
+        <Meter
+          label="Cost cap"
+          value={run.estimatedCostUsd ?? 0}
+          limit={run.maxCostUsd}
+          text={`${usd(run.estimatedCostUsd)} / ${usd(run.maxCostUsd)}`}
+        />
+      )}
       <Meter
         label="Agent calls"
         value={calls ?? 0}
@@ -287,7 +295,12 @@ function Budget({
             void extend();
           }}
         >
-          <p className={WARN_NOTE}>The run stopped on its budget.</p>
+          <p className={WARN_NOTE}>
+            The run stopped on its budget.
+            {run.maxCostUsd !== undefined
+              ? " Extending also doubles its cost cap when the cap stopped it."
+              : ""}
+          </p>
           <label htmlFor="extend-tokens" className={FIELD_LABEL}>
             New token limit (empty: BAKED proposes one)
           </label>
@@ -589,7 +602,8 @@ function RunMeter({
         )}
         <span className="font-mono">
           {tokens(run.tokenUsage)}
-          {limit ? ` / ${tokens(limit)}` : ""} · {usd(run.estimatedCostUsd)} ·{" "}
+          {limit ? ` / ${tokens(limit)}` : ""} · {usd(run.estimatedCostUsd)}
+          {run.maxCostUsd !== undefined ? ` of ${usd(run.maxCostUsd)}` : ""} ·{" "}
           {duration(run.activeMs)} active
         </span>
         {model && (

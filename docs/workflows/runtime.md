@@ -415,12 +415,25 @@ The first signal adds one steering message that names the pattern and asks the a
 
 The watcher only sees one attempt from inside its model loop. A provider call that hangs, or a host process that stops, is not detected here ([#604](https://github.com/Gulliby-development/baked/issues/604)).
 
+### Run cost
+
+A run's estimated cost in USD is `estimatedCostUsd` in its status (`baked workflow status RUN_ID`, `GET /v1/workflow/runs/RUN_ID`) and in `budget.updated` events. Each model attempt adds its cost when it finishes, priced from its `attempts/ATTEMPT/usage.json` with the model's price table: uncached input, cache reads, cache writes and output each at their own price, so a cache-heavy run (most of a claude-code run's input is cache traffic) costs far less than its token count at the input price. Host attempts, attempts without per-step usage and models without a price add nothing; the cost stays null until a priced attempt finishes. Runs recorded before the run kept its cost get it summed from their attempts' usage. The TUI shows it under the Tokens bar of a run and on the run list, the desktop app in the run header, run list and project home. The token limits still count every token alike; a run that should stop on dollars sets a cost cap.
+
+### Cost cap
+
+`maxCostUsd` in the policy (`workflows.policy` in the config, or a `--policy` file) caps a run's estimated cost in USD. It is opt-in: the default is `null`, the built-in policy and every budget preset keep only token, call and time limits, and a cap works beside them, never instead of them.
+
+- At start, and on every reroute, each model the run can call (the run model, every stage and profile route and their fallback models) must have a price in `src/core/llm/pricing.ts`, the one price table every provider shares. A model without one is refused with `maxCostUsd needs a price for every model the run can call; no price is known for MODEL`, so no model can spend outside the cap. Family guesses and Copilot request prices count as priced; they are approximate, like the cost itself.
+- Before each model call, and before each step widens an attempt's reservation, the cost spent (`estimatedCostUsd`), the cost every other open attempt reserves and the call's own tokens must fit under the cap. Reserved tokens are priced at the run's cost per token so far, which carries its cache share; before anything is priced, the model's input price stands in. Parallel attempts therefore reserve against what is left, and the last wave of a run does not start tasks the cap cannot pay for. A call that does not fit stops the run with `budget_exhausted` (`The next model call would pass the run's cost cap`), like the token limit.
+- Status carries the cap as `maxCostUsd` (left out when the run has none). The TUI shows `about $X of the $Y cap` under the Tokens bar and names the cap when it stopped the run; the desktop run screen shows a Cost cap meter and `$X of $Y` in the header.
+- Raising the limits of a capped run (B in the TUI, Extend in the desktop app, `workflow extend` with no values) doubles the cap when the spent and reserved cost reaches 80% of it, or when no token, call or time limit is 80% used, so the cap is what stopped the run. `--cost-usd N` (`costUsd` in `POST /v1/workflow/runs/RUN_ID/extend`) sets a cap of its own; it can only go up, and a run started without a cap cannot get one by extending.
+
 ### Raising a budget limit
 
 A run blocked with `budget_exhausted` shows B (raise limits) next to fork and cancel. The confirmation names the new values: every limit that is used up, or at least 80% used, doubles, and the tokens double when nothing else explains the stop; calls stop at 1000, active time at 24 hours and tokens at 50 million. Y applies it and the run continues from the stage that stopped.
 
 ```sh
-baked workflow extend RUN_ID --expected-revision N [--tokens N] [--calls N] [--time-ms N]
+baked workflow extend RUN_ID --expected-revision N [--tokens N] [--calls N] [--time-ms N] [--cost-usd N]
 baked workflow resume RUN_ID --expected-revision NEW_N
 # or both in one command, with the exit codes of resume:
 baked workflow extend RUN_ID --expected-revision N --tokens N --resume [--events]
@@ -456,7 +469,7 @@ All numbers are estimates and are labeled as such. The new-run form shows a rang
 
 - Only the definition's stages count. History is this project's runs plus those of the stores in `sizing.historyStores`, and the basis line says how many came from other projects. A stage uses earlier runs of the same workflow when they reached it, then runs of other workflows, then a generic range by stage type (tasks stages: task cost times task count; approval, check and learn stages without history: zero).
 - Each stage carries the models routing gives it: the stage route, else its profile's model; tasks stages use `implementer`, review stages their review profiles, and their tokens are split evenly.
-- The cost in USD prices 60% uncached input, 30% cache reads and 10% output at the prices in `src/core/llm/pricing.ts`. The estimate leaves cache writes out, so Anthropic costs read low. Family guesses and Copilot request prices are marked approximate; a model without a price is left out and the cost is marked partial. The cost is advice only: `maxCostUsd` stays disabled.
+- The cost in USD prices 60% uncached input, 30% cache reads and 10% output at the prices in `src/core/llm/pricing.ts`. The estimate leaves cache writes out, so Anthropic costs read low. Family guesses and Copilot request prices are marked approximate; a model without a price is left out and the cost is marked partial. The estimate is advice only; a run's [cost cap](#cost-cap) is enforced on its measured cost.
 
 ### Doctor
 
@@ -1182,7 +1195,7 @@ baked serve [--port N] [--token-file FILE] [--allow-origin ORIGIN]... [--cwd DIR
 | `POST /v1/workflow/runs/RUN_ID/approve` | `approve` | plus `requestId`, `digest`, optional `excludeUserChanges` |
 | `POST /v1/workflow/runs/RUN_ID/reject` | `reject` | plus `requestId`, `reason` |
 | `POST /v1/workflow/runs/RUN_ID/answer` | `answer` | plus `requestId`, `answers` (object of strings) |
-| `POST /v1/workflow/runs/RUN_ID/extend` | `extend` | plus optional `tokens`, `calls`, `timeMs` |
+| `POST /v1/workflow/runs/RUN_ID/extend` | `extend` | plus optional `tokens`, `calls`, `timeMs`, `costUsd` |
 | `POST /v1/workflow/runs/RUN_ID/reroute` | `reroute` | plus `model` and/or `routes` (object of stage ID to model or `$class`); the run keeps its status, so resume it after |
 | `GET /v1/workflow/runs/RUN_ID/events` | `--events` | `?after=SEQ`; SSE, or JSON with `Accept: application/json` (`?limit=`, at most 1000) |
 | `POST /v1/workflow/runs/RUN_ID/continue` | `continue` | plus `requestId` |

@@ -1,4 +1,8 @@
-import { type BudgetLimits, proposeExtension } from "../../core/workflows/budget.js";
+import {
+  type BudgetLimits,
+  proposeCostCap,
+  proposeExtension,
+} from "../../core/workflows/budget.js";
 import { rangeText, type StartEstimate } from "../../core/workflows/estimate.js";
 import { detectGates } from "../../core/workflows/gates.js";
 import { reasonText } from "../../core/workflows/reasons.js";
@@ -130,7 +134,7 @@ export function headline(
       if (snapshot.reason === "budget_exhausted")
         return {
           now: `Blocked at ${at}: ${budget ? budgetLimitText(budget) : reasonText(snapshot.reason)}.`,
-          next: `${budget && extensionFor(budget) ? `Press B to raise the limits (${extensionText(budget)}) and continue from this stage. ` : ""}F forks a new run with the same limits and fresh counters${stage && ["research", "specify", "plan", "analyze"].includes(stage.kind) ? " (it starts again from Research)" : ""}. For broad requests, narrow the description first. C cancels.`,
+          next: `${budget && canExtend(budget) ? `Press B to raise the limits (${extensionText(budget)}) and continue from this stage. ` : ""}F forks a new run with the same limits and fresh counters${stage && ["research", "specify", "plan", "analyze"].includes(stage.kind) ? " (it starts again from Research)" : ""}. For broad requests, narrow the description first. C cancels.`,
         };
       if (snapshot.reason === "provider_account" || snapshot.reason === "provider_unavailable")
         return {
@@ -153,11 +157,35 @@ export function headline(
   }
 }
 
+/** A dollar amount: cents below $100, whole dollars above. */
+export function usd(value: number): string {
+  return value >= 100 ? `$${value.toFixed(0)}` : `$${value.toFixed(2)}`;
+}
+const limitsOfView = (budget: BudgetView): BudgetLimits => ({
+  maxTotalTokens: budget.maxTokens,
+  maxAgentCalls: budget.maxCalls,
+  maxActiveMs: budget.maxActiveMs,
+});
+/** The cost cap one "raise" decision would set; null when the run has none. */
+export function costCapFor(budget: BudgetView): number | null {
+  const cost = budget.cost;
+  if (!cost) return null;
+  return proposeCostCap(
+    cost.maxCostUsd,
+    cost.spentUsd + cost.reservedUsd,
+    limitsOfView(budget),
+    budget,
+  );
+}
 /** Which limit stopped the run, with the numbers that explain it. */
 export function budgetLimitText(budget: BudgetView): string {
   if (budget.calls >= budget.maxCalls) return `all ${budget.maxCalls} agent calls are used`;
   if (budget.activeMs >= budget.maxActiveMs)
     return `the active time limit of ${formatDuration(budget.maxActiveMs)} is reached`;
+  const cost = budget.cost;
+  const cap = costCapFor(budget);
+  if (cost && cap !== null && cap > cost.maxCostUsd)
+    return `the next agent step would pass the cost cap: about ${usd(cost.spentUsd + cost.reservedUsd)} of ${usd(cost.maxCostUsd)} is spent or reserved`;
   const taken = budget.tokens + budget.heldTokens + budget.inFlightTokens;
   return `the next agent step needs more tokens than remain: ${formatTokens(taken)} of ${formatTokens(budget.maxTokens)} are used or held, ${formatTokens(Math.max(0, budget.maxTokens - taken))} left`;
 }
@@ -179,19 +207,23 @@ export interface RunAction {
 }
 /** The limits one "raise" decision would set, from the numbers the run screen already has. */
 export function extensionFor(budget: BudgetView): BudgetLimits | null {
-  return proposeExtension(
-    {
-      maxTotalTokens: budget.maxTokens,
-      maxAgentCalls: budget.maxCalls,
-      maxActiveMs: budget.maxActiveMs,
-    },
-    budget,
-  );
+  return proposeExtension(limitsOfView(budget), budget);
+}
+/** Whether a "raise" decision would raise any limit, the cost cap included. */
+export function canExtend(budget: BudgetView): boolean {
+  const cap = costCapFor(budget);
+  return extensionFor(budget) !== null || (cap !== null && cap > (budget.cost?.maxCostUsd ?? cap));
 }
 export function extensionText(budget: BudgetView): string {
   const next = extensionFor(budget);
-  if (!next) return "no limit can be raised further";
+  const cap = costCapFor(budget);
+  const costText =
+    budget.cost && cap !== null && cap > budget.cost.maxCostUsd
+      ? `cost cap ${usd(budget.cost.maxCostUsd)} → ${usd(cap)}`
+      : null;
+  if (!next) return costText ?? "no limit can be raised further";
   return [
+    costText,
     next.maxTotalTokens > budget.maxTokens &&
       `tokens ${formatTokens(budget.maxTokens)} → ${formatTokens(next.maxTotalTokens)}`,
     next.maxAgentCalls > budget.maxCalls && `calls ${budget.maxCalls} → ${next.maxAgentCalls}`,
@@ -227,11 +259,7 @@ export function runActions(
       action: "resume",
     });
   if (s === "running") actions.push({ key: "P", label: "pause", action: "pause" });
-  if (
-    s === "blocked" &&
-    snapshot.reason === "budget_exhausted" &&
-    (!budget || extensionFor(budget))
-  )
+  if (s === "blocked" && snapshot.reason === "budget_exhausted" && (!budget || canExtend(budget)))
     actions.push({ key: "B", label: "raise limits", action: "extend" });
   if (switchTo && (s === "created" || s === "paused" || s === "blocked" || s === "waiting"))
     actions.push({ key: "M", label: "switch model", action: "reroute" });
