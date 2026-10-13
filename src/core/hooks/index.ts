@@ -1,4 +1,6 @@
 export {
+  type CompactTrigger,
+  compactHooks,
   endAllSessionHooks,
   endSessionHooks,
   type NotificationType,
@@ -11,6 +13,7 @@ export {
   stopHooks,
   takeHookContext,
   userPromptHooks,
+  watchSubagentHooks,
   withHookContext,
 } from "./lifecycle.js";
 export {
