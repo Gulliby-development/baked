@@ -1,4 +1,4 @@
-import { readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import type { ModelMessage } from "@ai-sdk/provider-utils";
 import {
   generateText,
@@ -29,7 +29,7 @@ import { canonical } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { withEditDiagnosticsMode } from "../tools/edit-diagnostics.js";
 import { buildTools } from "../tools/index.js";
-import { deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
+import { contentHash, deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
 import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
 import {
   probeTool,
@@ -177,6 +177,17 @@ interface AttemptWatch {
   abort(error: Error): void;
 }
 
+/**
+ * Whether `expected` names the current content of a file `delete_file` is asked to remove: the
+ * `hash:` footer `read` prints (Bun's content hash, which is not a SHA-256), the file's SHA-256,
+ * or a prefix of that SHA-256 of at least 16 characters (#970).
+ */
+export function deleteHashMatches(path: string, expected: string): boolean {
+  const sha = fileHash(path);
+  if (sha === null) return false;
+  if (expected === sha || (expected.length >= 16 && sha.startsWith(expected))) return true;
+  return contentHash(readFileSync(path, "utf-8")) === expected;
+}
 export class NativeAgentExecutor implements AgentExecutor {
   private readonly rootContext: SharedRootContext;
   private readonly ownsRootContext: boolean;
@@ -446,15 +457,26 @@ export class NativeAgentExecutor implements AgentExecutor {
       ) {
         available.delete_file = tool({
           description:
-            "Delete a file explicitly declared with action=delete in the approved task. Requires its current SHA-256 hash.",
+            "Delete a file explicitly declared with action=delete in the approved task. expectedHash is optional: pass the `hash:` footer `read` printed for the file (or its SHA-256) to refuse the delete when the file changed since that read. Without it the delete is still refused when the file changed outside this attempt.",
           inputSchema: z
-            .object({ path: z.string(), expectedHash: z.string().regex(/^[a-f0-9]{64}$/) })
+            .object({
+              path: z.string(),
+              expectedHash: z
+                .string()
+                .regex(/^[a-f0-9]{1,64}$/)
+                .optional(),
+            })
             .strict(),
           execute: async (args) =>
             guard.execute("delete_file", args, async () => {
               const path = workspacePath(root, guard.path(args.path));
-              if (fileHash(path) !== args.expectedHash)
-                throw new WorkflowFault("INPUT_CHANGED", "Delete target changed");
+              if (!existsSync(path))
+                throw new WorkflowFault("INPUT_CHANGED", `Delete target is missing: ${args.path}`);
+              if (args.expectedHash !== undefined && !deleteHashMatches(path, args.expectedHash))
+                throw new WorkflowFault(
+                  "INPUT_CHANGED",
+                  `Delete target changed: ${args.path} no longer has hash ${args.expectedHash}. Read it again and pass the new hash.`,
+                );
               const content = canonical({
                 encoding: "base64",
                 content: readFileSync(path).toString("base64"),
