@@ -319,6 +319,13 @@ export class WorkflowScheduler {
   maxParallelRuns = DEFAULT_MAX_PARALLEL_RUNS;
   /** The browser driver of AI acceptance gates; Playwright when unset. Tests inject a fake. */
   browserDriver: BrowserDriverOptions | undefined;
+  /** The clock of wait stages: wall time and an abortable sleep. Tests inject a fake one. */
+  waitClock: { now: () => number; sleep: (ms: number, signal: AbortSignal) => Promise<void> } = {
+    now: () => Date.now(),
+    sleep: abortableDelay,
+  };
+  /** Runs a sleep that does not count as active time; set while a run is driven. */
+  private idle: <T>(sleep: () => Promise<T>) => Promise<T> = (sleep) => sleep();
   /**
    * Requests for a person raised by the current step. They become durable only together with the
    * state they were raised on (see `flushWaits`), so a decision never sees a request whose state
@@ -363,10 +370,25 @@ export class WorkflowScheduler {
     if (outerSignal.aborted) abort();
     const signal = controller.signal;
     const started = performance.now();
-    const timeout = setTimeout(
-      () => controller.abort(new WorkflowFault("BUDGET_EXHAUSTED", "Active deadline exhausted")),
-      Math.max(1, policy.maxActiveMs - this.store.run(runId).active_ms),
-    );
+    const activeBefore = this.store.run(runId).active_ms;
+    let idleMs = 0;
+    const arm = () =>
+      setTimeout(
+        () => controller.abort(new WorkflowFault("BUDGET_EXHAUSTED", "Active deadline exhausted")),
+        Math.max(1, policy.maxActiveMs - activeBefore - (performance.now() - started - idleMs)),
+      );
+    let timeout = arm();
+    // A wait stage sleeps between polls; that time is not active time.
+    this.idle = async <T>(sleep: () => Promise<T>): Promise<T> => {
+      clearTimeout(timeout);
+      const from = performance.now();
+      try {
+        return await sleep();
+      } finally {
+        idleMs += performance.now() - from;
+        timeout = arm();
+      }
+    };
     // Management commands from another process must stop this owner before the next effect.
     const poll = setInterval(() => {
       if (["paused", "cancelled"].includes(this.store.run(runId).status))
@@ -960,6 +982,16 @@ export class WorkflowScheduler {
               else await this.implement(runId, stepId, state, policy, profiles, signal);
               break;
             }
+            case "wait": {
+              const failed = v2
+                ? await this.runWaitStage(runId, stepId, state, policy, v2, signal)
+                : null;
+              if (failed) {
+                repairFindings = { findings: failed, kind: "repair" };
+                advance = false;
+              }
+              break;
+            }
             case "checks": {
               const failed = v2
                 ? await this.runCheckStage(runId, stepId, state, policy, v2, signal)
@@ -1387,11 +1419,14 @@ export class WorkflowScheduler {
       forgetProgress(runId);
       clearInterval(poll);
       clearTimeout(timeout);
+      this.idle = (sleep) => sleep();
       outerSignal.removeEventListener("abort", abort);
       leaseSignal.removeEventListener("abort", leaseLost);
       await this.processes.stop();
       try {
-        this.store.transaction(() => this.store.addActiveTime(runId, performance.now() - started));
+        this.store.transaction(() =>
+          this.store.addActiveTime(runId, performance.now() - started - idleMs),
+        );
       } finally {
         this.leases.release();
       }
@@ -4507,7 +4542,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
   }
   private outcomeOf(stage: Stage, repair: boolean): Outcome {
     if (!repair) return "passed";
-    return stage.type === "check" ? "failed" : "changes_requested";
+    return stage.type === "check" || stage.type === "wait" ? "failed" : "changes_requested";
   }
   /** Keeps the latest result of a gate in the state and writes `gate.finished`. */
   private recordGate(
@@ -4700,6 +4735,103 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       coverage: [],
       findings: failures,
     });
+  }
+  /**
+   * A wait stage: polls its command gates by host code, without a model call, every interval until
+   * every required gate passes or the deadline passes. Polls record nothing; the run that decides
+   * the stage records each gate once. The deadline is saved with the position, so a resumed visit
+   * keeps it. Returns null when the gates pass, and an empty list (outcome failed, no corrective
+   * work) when the wait timed out.
+   */
+  private async runWaitStage(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    v2: { stage: Stage; gates: Gate[] },
+    signal: AbortSignal,
+  ): Promise<Review["findings"] | null> {
+    const stage = v2.stage;
+    const position = state.position;
+    if (stage.type !== "wait" || !position) return null;
+    const bound = stage.gates.map((binding) => {
+      const gate = v2.gates.find((g) => g.id === binding.gateId);
+      if (gate?.type !== "command")
+        throw new WorkflowFault("INVALID_REFERENCE", `Wait gate ${binding.gateId} is missing`);
+      return { gate, check: gateToCheck(gate, binding) };
+    });
+    const required = bound.filter((b) => b.check.required);
+    const clock = this.waitClock;
+    const visit = position.visits[stage.id] ?? 1;
+    let wait = position.wait;
+    if (wait?.stageId !== stage.id || wait.visit !== visit) {
+      const now = clock.now();
+      wait = {
+        stageId: stage.id,
+        visit,
+        startedAt: now,
+        deadlineAt: now + stage.timeoutMinutes * 60_000,
+      };
+      position.wait = wait;
+      this.store.transaction(() => this.store.saveState(runId, state));
+    }
+    const { deadlineAt } = wait;
+    const progress = (pending: readonly string[], polls: number) =>
+      this.store.transaction(() =>
+        this.store.emit(runId, {
+          type: "wait.progress",
+          payload: {
+            stageId: stage.id,
+            deadline: new Date(deadlineAt).toISOString(),
+            intervalSeconds: stage.intervalSeconds,
+            pending: [...pending],
+            polls,
+          },
+        }),
+      );
+    progress(
+      required.map((b) => b.gate.id),
+      0,
+    );
+    let reported = required.map((b) => b.gate.id).join(",");
+    const root = this.rootOf(runId);
+    for (let polls = 1; ; polls++) {
+      signal.throwIfAborted();
+      const pending: string[] = [];
+      for (const { gate, check } of required) {
+        const left = Math.max(1000, deadlineAt - clock.now());
+        if ((await this.checks.probe(check, signal, root, left)) !== "passed")
+          pending.push(gate.id);
+      }
+      const key = pending.join(",");
+      if (key !== reported) {
+        reported = key;
+        progress(pending, polls);
+      }
+      const timedOut = clock.now() >= deadlineAt;
+      if (!pending.length || timedOut) {
+        const ordered = [...required, ...bound.filter((b) => !b.check.required)];
+        let failing = false;
+        for (const { gate, check } of ordered) {
+          const result = await this.runCommandGate(runId, stepId, check, gate, policy, signal);
+          this.recordGate(runId, state, gate.id, null, {
+            status: result.status,
+            mode: check.required ? "required" : "advisory",
+            evidenceId: result.evidenceId,
+            attempts: result.attempts,
+            flaky: result.flaky,
+          });
+          if (check.required && result.status !== "passed") failing = true;
+        }
+        if (!failing) return null;
+        if (timedOut) return [];
+        // The gate changed between the poll and the recorded run: keep waiting.
+      }
+      const left = deadlineAt - clock.now();
+      await this.idle(() =>
+        clock.sleep(Math.max(0, Math.min(stage.intervalSeconds * 1000, left)), signal),
+      );
+    }
   }
   /**
    * Takes the transition that answers the decided outcome of the current stage: its gates in

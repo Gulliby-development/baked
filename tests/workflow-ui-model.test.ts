@@ -117,6 +117,9 @@ describe("workflow panel formatting", () => {
     expect(
       eventText({ ...base, type: "budget.updated", payload: { usedTokens: 1, reservedTokens: 0, activeMs: 0, estimatedCostUsd: null } }, stages),
     ).toBeNull();
+    const wait = { stageId: "wait-ci", deadline: "2026-10-10T08:00:00.000Z", intervalSeconds: 30, polls: 0 };
+    expect(eventText({ ...base, type: "wait.progress", payload: { ...wait, pending: ["ci-green"] } }, stages)).toMatch(/^Waiting for ci-green until .+ \(every 30s\)$/);
+    expect(eventText({ ...base, type: "wait.progress", payload: { ...wait, pending: [] } }, stages)).toBe("Wait gates pass");
   });
   test("paused stages and no-op transitions read correctly", () => {
     const stage = { id: "plan", kind: "plan", status: "running" as const, generation: 0 };
