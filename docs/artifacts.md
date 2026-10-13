@@ -10,6 +10,8 @@ Artifacts are stored in the BAKED data folder: `~/.baked/artifacts/` on macOS an
 
 The agent's `artifact` tool saves a page it wrote (as HTML, or from an `.html` file of the project), lists and reads artifacts, and deploys one. Ask in words: "save this page as an artifact", "deploy the release-notes artifact", "deploy it to production". A deploy shows what goes where and waits for your yes in every approval mode, auto included; a chat that cannot ask (a headless run) refuses to deploy. Subagents cannot deploy.
 
+A page saved without styles of its own (no `<style>` block or stylesheet link) gets the [BAKED kit](kit.md): its stylesheet goes into the page's head and a small "Made with BAKED" line ends its body. The agent can pass `kit: false` to keep a page exactly as written; `designKit: "off"` turns this off. `baked artifacts save` stores a file as it is.
+
 ## Terminal and desktop
 
 `/artifacts` lists the artifacts; picking one opens it in the browser. `/artifacts deploy ID` (or `ID prod`) asks the agent to deploy it, with the same confirmation. In the desktop app, Artifacts in every project's sidebar shows the list, a preview, Open in browser and Deploy preview… or Deploy to production…, which confirm in a dialog first; the local API is in [`desktop/api.md`](desktop/api.md#artifacts).
