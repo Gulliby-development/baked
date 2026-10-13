@@ -47,6 +47,7 @@ const SettingsBody = z
   .strictObject({
     writeScope: z.enum(["project", "global", "none"]).optional(),
     readScope: z.enum(["project", "global", "all", "none"]).optional(),
+    shareWithRuns: z.boolean().optional(),
     settingsScope: Scope.optional(),
   })
   .refine((b) => Object.keys(b).length > 0, "Name at least one setting");

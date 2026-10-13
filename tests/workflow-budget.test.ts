@@ -151,7 +151,7 @@ describe("extending the budget of a blocked run", () => {
     await expect(service.extendBudget(run.runId, { commandId: newId(), expectedRevision: run.revision })).rejects.toThrow("stopped on its budget");
     const blocked = await runUntilBlocked(fixture, run.runId);
     const command = { commandId: newId(), expectedRevision: blocked.revision };
-    await expect(service.extendBudget(run.runId, { ...command, commandId: newId() }, { maxTotalTokens: 1000 })).rejects.toThrow("only be raised");
+    await expect(service.extendBudget(run.runId, { ...command, commandId: newId() }, { maxTotalTokens: 1000 })).rejects.toThrow("Limits can only be raised: tokens 300,000 now, you asked 1,000");
     await expect(service.extendBudget(run.runId, { ...command, commandId: newId() }, { maxActiveMs: 100 * 24 * 3600 * 1000 })).rejects.toThrow("ceiling");
     await expect(service.extendBudget(run.runId, { commandId: newId(), expectedRevision: blocked.revision + 5 })).rejects.toThrow("revision");
     const first = await service.extendBudget(run.runId, command, { maxTotalTokens: 450000 });
