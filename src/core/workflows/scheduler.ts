@@ -745,8 +745,9 @@ export class WorkflowScheduler {
                   },
                 ),
               );
-              if (analysis.inputHash !== hashJson(state.manifest))
-                throw new WorkflowFault("OUTPUT_INVALID", "Analysis refers to stale inputs");
+              // The host binds the analysis to the manifest it analyzed; the model's copy of the hash
+              // is not checked (#347: one transposed character blocked d0f55591).
+              analysis.inputHash = hashJson(state.manifest);
               // The host adds a finding the model missed: a program was described and none is planned.
               // A feature of an initiative has its boundary approved with the split, not the request.
               const uncovered =
@@ -1012,17 +1013,22 @@ export class WorkflowScheduler {
                 }
                 this.store.transaction(() => {
                   const requestId = this.store.request(runId, "approval", digest, body);
-                  // The host signs the same digest a person would; post-release criteria never get here.
+                  // The host signs the same digest a person would. Post-release criteria get here
+                  // only under clarification assume; the record names each one it defers.
                   this.store.decideRequest(
                     runId,
                     requestId,
                     "accepted",
-                    { digest, autoApproval: auto.approval },
+                    {
+                      digest,
+                      autoApproval: auto.approval,
+                      deferredCriteria: body.deferredCriteria,
+                    },
                     true,
                   );
                   this.store.setApproval(runId, digest);
                   state.approvalRoot = digest;
-                  state.deferredCriteria = [];
+                  state.deferredCriteria = body.deferredCriteria;
                 });
               }
               break;
@@ -1478,7 +1484,12 @@ export class WorkflowScheduler {
           runId,
           "diagnostic",
           `errors/${newId()}.txt`,
-          fault instanceof Error ? fault.message : String(fault),
+          // A schema rejection keeps what the schema said, so a resume can tell the agent.
+          fault instanceof WorkflowFault && typeof fault.details.validation === "string"
+            ? `${fault.message}\n${fault.details.validation}`
+            : fault instanceof Error
+              ? fault.message
+              : String(fault),
         );
         this.store.transition(
           runId,
@@ -1583,6 +1594,35 @@ export class WorkflowScheduler {
         summary: record.summary ?? "",
         unresolved: record.unresolved ?? [],
         note: "An earlier session of this task ended without a complete implementation, as described here. Start from the current files and finish what it left; do not repeat its failed approach.",
+      },
+    };
+  }
+  /**
+   * The input of a corrective task that starts from a clean context (convergence.ts
+   * `freshRestartAfter`): only the evidence its own findings cite, no earlier attempt's diffs or
+   * logs, and the host's account of what the earlier corrections tried.
+   */
+  private freshStart(
+    runId: string,
+    state: RuntimeState,
+    task: Task,
+  ): { only?: ReadonlySet<string>; extra: { freshStart?: { summary: string; note: string } } } {
+    const artifactId = state.freshTasks[task.id];
+    if (!artifactId) return { extra: {} };
+    const record = JSON.parse(this.store.readArtifact(runId, artifactId)) as { summary: string };
+    const cited = this.store
+      .findings(runId)
+      .filter((row) => task.findingIds.includes(row.id))
+      .flatMap(
+        (row) => (JSON.parse(row.body_json) as { evidenceIds?: string[] }).evidenceIds ?? [],
+      );
+    return {
+      only: new Set(cited),
+      extra: {
+        freshStart: {
+          summary: record.summary,
+          note: "Earlier corrections of this failure did not change it. This session starts clean: read the current files and the cited evidence, find the cause yourself, and take a different approach. If the cause lies outside the files you may edit, say so in unresolved.",
+        },
       },
     };
   }
@@ -2587,13 +2627,14 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
   private evidenceContext(
     runId: string,
     state: RuntimeState,
-    options: { reads: boolean; commands?: boolean } = { reads: true },
+    options: { reads: boolean; commands?: boolean; only?: ReadonlySet<string> } = { reads: true },
   ): unknown[] {
     const current = currentEvidence(this.store, runId, state.snapshotId ?? "");
     // Short handles (E1..En) number every current entry, so an agent can cite them instead of
     // copying a 36-character id; the host resolves them.
     const handles = new Map(current.map((e, index) => [e.id, evidenceHandle(index)]));
     return current
+      .filter((e) => !options.only || options.only.has(e.id))
       .filter((e) => options.reads || e.kind !== "read")
       .filter((e) => options.commands !== false || e.kind !== "command")
       .map((e) => {
@@ -2795,6 +2836,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         };
       };
       let proseEnd = false;
+      const fresh = this.freshStart(runId, state, task);
       const result = ImplementationSchema.parse(
         await this.call(
           runId,
@@ -2809,7 +2851,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             evidence: this.evidenceContext(runId, state, {
               reads: false,
               commands: task.origin !== "planned",
+              ...(fresh.only ? { only: fresh.only } : {}),
             }),
+            ...fresh.extra,
             ...(preloaded
               ? {
                   taskFiles: {
@@ -3203,9 +3247,14 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         stepId,
         this.requireProfile(profiles.find((p) => p.id === task.profileId)),
       );
+      const fresh = this.freshStart(runId, state, task);
       const extra = {
         task,
-        evidence: this.evidenceContext(runId, state, { reads: false }),
+        evidence: this.evidenceContext(runId, state, {
+          reads: false,
+          ...(fresh.only ? { only: fresh.only } : {}),
+        }),
+        ...fresh.extra,
         unresolvedMeans: UNRESOLVED_MEANING,
         ...this.previousAttempt(runId, task.id),
       };
