@@ -212,6 +212,13 @@ export const PolicySchema = z
       .strict(),
     skepticProfileId: SafeId,
     forceSecurityReview: z.boolean(),
+    /**
+     * What an edit that introduces errors in the edited file or a file importing it does during
+     * the run: `feedback` returns the errors, `reject` also restores the file. Absent means
+     * `feedback`, so stored policies keep their hash; a run takes `reject` from the project's
+     * `editDiagnostics` setting when the policy does not name it (start.ts).
+     */
+    editDiagnostics: z.enum(["feedback", "reject"]).optional(),
     allowedTools: UniqueStrings,
     network: z.enum(["deny", "ask", "allow"]),
     checks: z.array(CheckSchema),
@@ -235,6 +242,12 @@ export const PolicySchema = z
      * copies `modelRouting.reviewMinConfidence` here when it is set.
      */
     reviewMinConfidence: z.number().min(0).max(1).optional(),
+    /**
+     * The critic that scores every task attempt with a rubric (#646): `advise` shows the score
+     * and decides nothing, `off` skips it. Absent means `advise` when the critic's model is of
+     * another vendor than the implementation's, else off, so stored policies keep their hash.
+     */
+    critic: z.enum(["off", "advise"]).optional(),
     /**
      * `false` leaves out learned code rules (#643): rules proposed from findings that recurred in
      * earlier runs and activated by recurrence or a person. Absent means on, so stored policies
@@ -377,6 +390,7 @@ export const ProfileSchema = z
       "acceptance",
       "acceptance-draft",
       "initiativePlan",
+      "critique",
     ]),
     maxSteps: z.number().int().min(1).max(100),
     maxOutputTokens: z.number().int().min(256).max(65536),
@@ -566,6 +580,35 @@ export const ReviewSchema = z
   })
   .strict();
 
+/**
+ * One item of the rubric a critic scores a task attempt on (#646): 0 is bad, 1 good. The items:
+ * the attempt understood the intent, followed the instructions, stayed in scope, did not game the
+ * tests, and implemented the task completely.
+ */
+const RubricItem = z.object({ score: z.number().min(0).max(1), note: Text }).strict();
+/**
+ * A critic's score of one task attempt: advice shown in the run, not a gate. `score` is the
+ * critic's estimate that the attempt is correct and will be kept as it is.
+ */
+export const CritiqueSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    taskId: TaskId,
+    score: z.number().min(0).max(1),
+    rubric: z
+      .object({
+        intent: RubricItem,
+        instructions: RubricItem,
+        scope: RubricItem,
+        testIntegrity: RubricItem,
+        completeness: RubricItem,
+      })
+      .strict(),
+    summary: Text,
+  })
+  .strict();
+export type Critique = z.infer<typeof CritiqueSchema>;
+
 export const ImplementationSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -698,6 +741,8 @@ export const WorkflowConfigSchema = z
         stepStallMs: z.number().int().min(10_000).max(14_400_000).optional(),
         maxToolTimeouts: z.number().int().min(1).max(50).optional(),
         autoResumes: z.number().int().min(0).max(20).optional(),
+        providerResumes: z.number().int().min(0).max(20).optional(),
+        providerWaitMs: z.number().int().min(0).max(3_600_000).optional(),
       })
       .strict()
       .optional(),
@@ -1119,6 +1164,11 @@ export interface RunSnapshot {
    * the owner is alive and its work is not advancing.
    */
   stalled?: { silentMs: number; lastEventAt: string | null };
+  /**
+   * Present while a run blocked with `provider_unavailable` waits for its automatic resume
+   * (`workflows.stall.providerResumes`): when it retries, and which resume that is.
+   */
+  autoRetry?: { at: string; attempt: number; of: number };
   pendingRequestIds: string[];
   /** The project of the run's workspace when it was created. */
   projectId?: string;
@@ -1175,6 +1225,8 @@ export interface StartRequest {
   routes?: Record<string, string>;
   /** The GitHub issue the request comes from (CLI `--issue`); the delivery pull request closes it. */
   issue?: { repository: string; number: number; url: string; title: string };
+  /** The proposal of `--auto-preset` and the workflow the run took (`PresetChoice`). */
+  presetChoice?: import("./preset-router.js").PresetChoice;
 }
 export type Decision =
   | {

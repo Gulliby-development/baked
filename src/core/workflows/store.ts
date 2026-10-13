@@ -464,6 +464,7 @@ export class WorkflowStore {
       verificationState: state.verificationState,
       limitations: { count: limitationIds.length, ids: limitationIds },
       ...this.stallOf(id, row.status),
+      ...this.autoRetryOf(id, row),
       pendingRequestIds: this.requests(id)
         .filter((r) => r.status === "pending")
         .map((r) => r.id),
@@ -483,6 +484,23 @@ export class WorkflowStore {
     return silent >= DEFAULT_STALL_SETTINGS.stepStallMs
       ? { stalled: { silentMs: silent, lastEventAt: new Date(last.at).toISOString() } }
       : {};
+  }
+  /**
+   * The pending automatic resume of a run blocked with `provider_unavailable`: the latest
+   * `provider/resume-N.json` the service journaled before its wait, while that wait is not over.
+   */
+  private autoRetryOf(id: string, row: RunRow): { autoRetry?: RunSnapshot["autoRetry"] } {
+    if (row.status !== "blocked" || row.reason !== "provider_unavailable") return {};
+    const attempt = this.state(id).providerResumes;
+    if (attempt < 1) return {};
+    const artifact = this.latestArtifact(id, `provider/resume-${attempt}.json`);
+    if (!artifact) return {};
+    const body = JSON.parse(this.readArtifact(id, artifact.id)) as {
+      retryAt?: string;
+      of?: number;
+    };
+    if (!body.retryAt || Date.parse(body.retryAt) <= Date.now()) return {};
+    return { autoRetry: { at: body.retryAt, attempt, of: body.of ?? attempt } };
   }
   /** The latest runs of a project, newest first; none in a database older than migration 007. */
   /** How many runs are in each state, for overviews that do not need the runs themselves. */

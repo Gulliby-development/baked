@@ -209,8 +209,11 @@ export async function prepareStart(
     duplication: _duplication,
     qualityRules: requestRules,
     allowOverlappingWrites,
+    editDiagnostics: _editDiagnostics,
     ...rest
   } = policy;
+  // The project's chat setting is the default; `feedback` leaves the field out of the hash.
+  const editDiagnostics = policy.editDiagnostics ?? config.editDiagnostics ?? "feedback";
   // `ask` leaves the field out, so the policy hash of an asking run is what it was before.
   const clarification = request.clarification ?? clarificationOf(policy);
   // The run flag overrides the policy, which overrides the configured default; `warn` is the
@@ -237,6 +240,7 @@ export async function prepareStart(
     ...(sandbox !== "off" ? { sandbox } : {}),
     ...(allowOverlappingWrites ? { allowOverlappingWrites } : {}),
     ...(clarification === "assume" ? { clarification } : {}),
+    ...(editDiagnostics === "reject" ? { editDiagnostics } : {}),
     ...(duplication !== DEFAULT_DUPLICATION ? { duplication } : {}),
     ...(qualityRules ? { qualityRules } : {}),
     ...(request.maxConcurrentWriters !== undefined
@@ -277,9 +281,16 @@ export async function prepareStart(
   routing = independence.record;
   const notes = [...independence.moved, ...independence.warnings];
   if (notes.length) routing.warnings = [...(routing.warnings ?? []), ...notes];
-  const minConfidence = parseModelRouting(config.modelRouting)?.reviewMinConfidence;
-  if (minConfidence !== undefined && policy.reviewMinConfidence === undefined)
-    policy = PolicySchema.parse({ ...policy, reviewMinConfidence: minConfidence });
+  // Review settings of modelRouting join the policy, so the approval digest covers them; a
+  // policy that sets one itself keeps it.
+  const reviewSettings = parseModelRouting(config.modelRouting);
+  if (reviewSettings?.reviewMinConfidence !== undefined && policy.reviewMinConfidence === undefined)
+    policy = PolicySchema.parse({
+      ...policy,
+      reviewMinConfidence: reviewSettings.reviewMinConfidence,
+    });
+  if (reviewSettings?.critic && policy.critic === undefined)
+    policy = PolicySchema.parse({ ...policy, critic: reviewSettings.critic });
   const instructions = frozenInstructions(workspace, config.instructionFiles);
   const skillHashes: Record<string, string> = {};
   for (const profile of profiles)

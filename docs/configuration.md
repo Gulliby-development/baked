@@ -63,11 +63,13 @@ The chat settings that the terminal pickers edit (provider options, chat router 
 | `toolTimeout` | `2` | Minutes before a shell, project or agent tool call times out; `0` disables |
 | `sandbox` | `"off"` | OS sandbox of shell, project, check and acceptance commands: `off`, `auto` (sandbox when a backend works, else run without it) or `required` (refuse without a backend). Global; a project config can only raise it. `/sandbox`, Tools page ([OS sandbox](sandbox.md)) |
 | `sandboxNetwork` | `"allow"` | Network inside the chat sandbox: `allow` or `deny` (loopback only); workflow runs follow their policy's `network` |
+| `editDiagnostics` | `"feedback"` | What an edit that adds errors in its file or an importing file does: `feedback` returns them, `reject` also restores the file ([tools](tools.md#diagnostics-after-edits)) |
+| `diagnostics.timeoutMs` | `2500` | Global only. Wait for diagnostics before and after an edit, each; a check that does not finish in time is reported as not checked |
 | `cache.ttl` | `"5m"` | Anthropic prompt cache lifetime: `5m` or `1h` |
 | `memory.embeddingModel` | unset | Embedding model for memory recall; unset uses the offline embedder |
 | `mcpServers` | `[]` | MCP servers ([extensions](extensions.md#mcp-servers)) |
 | `hooks` | unset | Lifecycle hooks ([extensions](extensions.md#hooks)) |
-| `workflows` | on (`enabled` defaults to `true`; set `false` to turn them off) | Spec-driven workflows ([runtime guide](workflows/runtime.md#enabling)); `workflows.maxParallelRuns` (1..8, default 2) caps the runs executing at once ([parallel runs](workflows/runtime.md#parallel-runs)); `workflows.stall` sets tool deadlines, the step watchdog and automatic resumes ([stalls](workflows/runtime.md#stalls-deadlines-and-automatic-resume)) |
+| `workflows` | on (`enabled` defaults to `true`; set `false` to turn them off) | Spec-driven workflows ([runtime guide](workflows/runtime.md#enabling)); `workflows.maxParallelRuns` (1..8, default 2) caps the runs executing at once ([parallel runs](workflows/runtime.md#parallel-runs)); `workflows.stall` sets tool deadlines, the step watchdog and automatic resumes after a stall or a provider outage ([stalls](workflows/runtime.md#stalls-deadlines-and-automatic-resume)) |
 | `keyPriority` | `"env"` | Key lookup order, see below |
 | `theme`, `diffStyle`, `chatStyle`, `collapseDiffs`, `showReasoning`, `verbose` | | Display; `/theme`, `/diff-style`, `/chat-style`, `/reasoning`, `/verbose` |
 | `motion` | `"full"` | Brand animations; `"reduced"` shows still frames (`/motion`, or `BAKED_REDUCED_MOTION=1`) ([guide](guide.md#motion)) |

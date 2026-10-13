@@ -483,7 +483,7 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "agent-features",
     group: "Tools and code intelligence",
-    title: "Agent features: de-sloppify, verify edits, tier routing",
+    title: "Agent features: de-sloppify, verify edits, tier routing, edits that add errors",
     tui: ["/agent-features"],
     cli: notNeeded("set in config.json"),
     api: ["/v1/settings: agent-features page"],
@@ -584,6 +584,15 @@ export const FEATURES: readonly Feature[] = [
     ],
     api: ["/v1/workflow/runs", "/v1/workflow/definitions", "/v1/workflow/profiles"],
     desktop: ["project/overview: New run, Quick task"],
+  },
+  {
+    id: "preset-proposal",
+    group: "Workflow runs",
+    title: "Propose the workflow and budget from the request",
+    tui: ["/workflow: new run form (proposed workflow)"],
+    cli: ["baked workflow propose", "baked workflow run", "auto-preset"],
+    api: ["/v1/workflow/propose"],
+    desktop: ["project/overview: New run (proposed recipe)"],
   },
   {
     id: "run-detail",
@@ -1031,7 +1040,7 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "timeouts",
     group: "Projects and setup",
-    title: "Tool and watchdog timeouts, context-window overrides",
+    title: "Tool, edit diagnostics and watchdog timeouts, context-window overrides",
     tui: ["/timeouts"],
     cli: ["--timeout"],
     api: ["/v1/settings: limits page"],

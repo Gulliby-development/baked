@@ -48,7 +48,22 @@ It is read-only, so it is available in plan and other read-only modes, in chat o
 
 Line endings are kept per file. `read` adds a `line endings: CRLF` header (or a mixed-file note with the line counts) for files that are not plain LF, and shows lines without the carriage return. `edit_file` and `multi_edit` match `oldString` against the file with either ending, write the result back with the file's dominant ending (CRLF or LF) and normalize the minority lines of a mixed file to it, so a CRLF checkout never ends up half LF. A new file takes the `end_of_line` of the nearest `.editorconfig`, else the dominant ending of a few sibling files, else the text as given.
 
-Before an edit the file is snapshotted; an edit is refused if the file changed on disk in the meantime. Diagnostics are compared before and after, and the agent is told which errors it introduced or fixed, also in other files. Writes outside the project directory and edits of sensitive files ask for approval in the terminal UI.
+Before an edit the file is snapshotted; an edit is refused if the file changed on disk in the meantime. Writes outside the project directory and edits of sensitive files ask for approval in the terminal UI.
+
+### Diagnostics after edits
+
+Once code intelligence has started, `edit_file`, `multi_edit`, `ast_edit` and `refactor` compare language-server diagnostics before and after each edit. The comparison covers the edited file and up to 8 files that import it, taken from the code graph (the same dependents `bake_impact` lists; in a workflow worktree they are looked up by their project path and checked inside the worktree). Diagnostics are matched by severity, code and message, so lines that an edit moves do not count as new. The tool result lists:
+
+- new errors in the edited file, with the language server's first quick fix when it offers one;
+- `CROSS-FILE ERRORS`: new errors in importing files, such as a caller that no longer matches a changed signature;
+- errors the edit resolved, and new warnings when there are no new errors;
+- `Diagnostics not checked` when the baseline or the result did not arrive within `diagnostics.timeoutMs`, and the number of importing files that had no result in time. A check that times out is reported, never left out.
+
+The wait is the global `diagnostics.timeoutMs` (2500 ms by default, 250 to 30000), applied once before the edit and once after it. Set it in the Timeouts and limits page (`/timeouts` in the terminal UI, Settings in the desktop app, `PATCH /v1/settings`).
+
+`editDiagnostics` decides what an edit that adds errors does. `feedback` (the default) keeps the edit and returns the errors. `reject` writes the original text back, drops the edit from the undo stack and fails the tool call with the errors and the original lines, so the agent rewrites the edit instead of building on a broken one. A new file created with `ast_edit` is never rejected. It is a chat setting in the Agent features page (`/agent-features`, the desktop settings, `/v1/settings`), per project or global; a workflow run freezes it in its policy ([runtime guide](workflows/runtime.md#diagnostics-after-edits)).
+
+The authoritative whole-project typecheck stays in the workflow checks stage and the `git commit` checks below; the language server is the fast feedback after each edit. A typecheck at the end of each workflow task is planned in [#673](https://github.com/Gulliby-development/baked/issues/673).
 
 ## Running things
 
