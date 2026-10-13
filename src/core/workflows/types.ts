@@ -158,6 +158,11 @@ export const RuntimeStateSchema = z
      * ID: the artifact with the host's account of the earlier attempts.
      */
     freshTasks: z.record(z.string(), z.string()).default({}),
+    /**
+     * Corrective tasks whose first attempt, limited to the files their findings point at, failed:
+     * their next attempts may write the full scope of the tasks they correct (#765).
+     */
+    widenedCorrections: z.array(z.string()).default([]),
     /** Attempt token cap per planned task, set by plan-time sizing; corrections use their base's. */
     taskBudgets: z.record(z.string(), z.number().int().positive()).default({}),
     /** Step cap per planned task from plan-time sizing (test tasks); corrections use their base's. */

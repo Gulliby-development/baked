@@ -30,6 +30,7 @@ import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification
 import {
   appendCorrections,
   failedCheckFindings,
+  isTestOf,
   pathsInOutput,
 } from "../verification/convergence.js";
 import {
@@ -3385,9 +3386,15 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           )
         : "";
       const focus = correctionFocus(this.store, runId, state, task);
+      const narrow = state.widenedCorrections.includes(task.id)
+        ? null
+        : narrowCorrectionWrites(task, focus.files);
+      // The task as this attempt may write it: a correction's first attempt only where its
+      // findings point.
+      const scoped: Task = narrow ? { ...task, writes: narrow } : task;
       const preloaded = await preloadTaskFiles(
         root,
-        focus.files.length ? focusFirst(task.writes, focus.files) : task.writes,
+        focus.files.length ? focusFirst(scoped.writes, focus.files) : scoped.writes,
         `${task.title}\n${task.description}\n${focus.symbols.join(" ")}`,
       );
       // The source manifest cannot see git-ignored files (a docs directory in .gitignore), but the
@@ -3422,7 +3429,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           policy,
           this.requireProfile(profiles.find((p) => p.id === task.profileId)),
           {
-            task,
+            task: scoped,
             // A planned task needs the earlier tasks' changes, not their check logs; a repair
             // task gets the logs of the checks it fixes.
             evidence: this.evidenceContext(runId, state, {
@@ -3448,6 +3455,17 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
                     files: focus.files,
                     symbols: focus.symbols,
                     note: "The findings this task corrects point at these files and symbols; they come first in taskFiles. Start the fix there and read the other written files only when the fix needs them.",
+                    ...(narrow
+                      ? {
+                          scope: {
+                            writable: narrow.map((w) => w.path),
+                            later: task.writes
+                              .filter((w) => !narrow.includes(w))
+                              .map((w) => w.path),
+                            note: "This attempt may write only the writable files. If the fix needs a file in later, it is unresolved (unlike other files outside your write scope): report blocked and name that file in unresolved. The next attempt may write all of them.",
+                          },
+                        }
+                      : {}),
                   },
                 }
               : {}),
@@ -3463,7 +3481,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
               : {}),
           },
           signal,
-          task,
+          scoped,
         ).catch(async (error: unknown) => {
           if (!endedOnProse(error)) throw error;
           proseEnd = true;
@@ -3484,7 +3502,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         return;
       }
       if (result.outcome === "implemented")
-        await this.fixTaskFiles(runId, child, root, policy, task, signal);
+        await this.fixTaskFiles(runId, child, root, policy, scoped, signal);
       const { after, changed } = await currentChanges();
       const outside = changed.filter((path) => !task.writes.some((w) => w.path === path));
       if (outside.length)
@@ -3506,6 +3524,17 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         result.unresolved.length > 0 ||
         !correction
       ) {
+        if (narrow) {
+          // The fix may need another file of the correction's scope: the next attempt may write
+          // all of them, and keeps this attempt's edits.
+          this.store.transaction(() => {
+            state.widenedCorrections.push(task.id);
+            this.store.taskStatus(runId, task.id, "interrupted");
+            this.store.finishStep(runId, child, "failed");
+            this.store.saveState(runId, state);
+          });
+          return;
+        }
         const restartReason = this.blockedRestartReason(
           runId,
           state,
@@ -8632,6 +8661,20 @@ export function correctionFocus(
   }
   return { files: files.filter((path) => task.writes.some((w) => w.path === path)), symbols };
 }
+/**
+ * The writes of a correction's first attempt (#765): the files its findings point at and their
+ * planned tests. Null when that is every file it may write, or when nothing says where the
+ * findings point. A correction carries every file of the tasks it corrects (cfgtrace 4018a791:
+ * 18 files, LICENSE among them), so the first attempt starts small and a failed one widens.
+ */
+export function narrowCorrectionWrites(task: Task, focus: string[]): Task["writes"] | null {
+  if (task.origin === "planned" || !focus.length) return null;
+  const narrow = task.writes.filter(
+    (w) => focus.includes(w.path) || focus.some((source) => isTestOf(w.path, source)),
+  );
+  return narrow.length && narrow.length < task.writes.length ? narrow : null;
+}
+
 /** The writes with the given paths first, in their order, then the rest in plan order. */
 export function focusFirst<T extends { path: string }>(writes: readonly T[], first: string[]): T[] {
   const rank = (path: string): number => {
