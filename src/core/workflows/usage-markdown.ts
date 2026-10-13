@@ -118,6 +118,10 @@ export function usageMarkdown(summary: UsageSummary, now: number = Date.now()): 
 /** The usage of one run as Markdown: totals, then tokens and cost by stage and by model. */
 export function runUsageMarkdown(report: RunUsageReport): string {
   const backends = toolBackendLine(report.toolBackends ?? []);
+  const unreported = report.attempts.reduce(
+    (sum, attempt) => sum + (attempt.unreportedResponses ?? 0),
+    0,
+  );
   interface Row {
     attempts: number;
     tokens: number;
@@ -203,6 +207,11 @@ export function runUsageMarkdown(report: RunUsageReport): string {
     `- Tokens: ${count(total.tokens)} (input ${count(total.input)}, output ${count(total.output)}, cache reads ${count(total.cacheRead)}, cache writes ${count(total.cacheWrite)})`,
     `- Estimated cost: ${cost(total.costUsd, total.unpriced)}`,
     ...(backends ? [`- Code intelligence: ${backends}`] : []),
+    ...(unreported
+      ? [
+          `- Unreported responses: ${count(unreported)} model responses whose usage the provider never reported; the tokens above are low`,
+        ]
+      : []),
     "",
   ];
   if (report.attempts.length === 0) out.push("No attempts match.", "");

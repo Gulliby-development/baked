@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { withImplementationProfiles, withModuleDependencies, withReadDependencies } from "../src/core/workflows/plan-consistency.js";
+import {
+  withCommandDependencies,
+  withImplementationProfiles,
+  withModuleDependencies,
+  withReadDependencies,
+} from "../src/core/workflows/plan-consistency.js";
 import type { TaskGraph } from "../src/core/workflows/schemas.js";
 import type { Task } from "../src/core/workflows/types.js";
 
@@ -94,6 +99,41 @@ describe("a task waits for the tasks that write the files it reads", () => {
     );
     // T003 and T004 read each other's files: the first waits, the second does not close a cycle.
     expect(deps(out)).toEqual([[], [], ["T004"], [], ["T004"]]);
+  });
+});
+
+// Bench round 12, cfgtrace 4018a791: T011 (README with worked-example output) had no dependency
+// and ran in the first wave beside T001 while the CLI was T005; it found no `cfgtrace.__main__`
+// in its worktree and blocked the run.
+describe("a docs task that runs the program waits for its entry points", () => {
+  const described = (id: string, paths: string[], description: string, dependsOn: string[] = []): Task => ({
+    ...task(id, paths, dependsOn),
+    description,
+  });
+  test("a README that captures CLI output depends on the tasks writing the entry points", () => {
+    const out = withCommandDependencies(
+      graphOf(
+        task("T001", ["cfgtrace/model.py"]),
+        task("T005", ["cfgtrace/cli.py", "cfgtrace/__main__.py"], ["T001"]),
+        task("T006", ["bin/cfgtrace"]),
+        described("T011", ["README.md"], "Document usage with a worked example: run the CLI on the sample config and paste its output."),
+      ),
+    );
+    expect(deps(out)).toEqual([[], ["T001"], [], ["T005", "T006"]]);
+  });
+  test("docs that run nothing, code tasks, test entry points and cycles add nothing", () => {
+    const out = withCommandDependencies(
+      graphOf(
+        task("T001", ["src/main.ts"]),
+        described("T002", ["docs/design.md"], "Describe the module layout and the data model."),
+        described("T003", ["src/util.ts"], "Run the CLI and capture its output in a fixture."),
+        task("T004", ["tests/main.test.ts"]),
+        described("T005", ["README.md"], "Show sample output of the command.", ["T004"]),
+        described("T006", ["src/server.ts", "CHANGELOG.md"], "Changelog", ["T005"]),
+      ),
+    );
+    // T005 waits for T001 but not for T006, which depends on it already.
+    expect(deps(out)).toEqual([[], [], [], [], ["T004", "T001"], ["T005"]]);
   });
 });
 

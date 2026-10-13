@@ -1,6 +1,7 @@
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -45,6 +46,7 @@ import {
   REPEAT_NOTE,
   requiredChecksPass,
 } from "../verification/convergence-stop.js";
+import { type DocExampleResult, isDocFile, runDocExamples } from "../verification/doc-examples.js";
 import {
   currentEvidence,
   evidenceHandle,
@@ -170,6 +172,7 @@ import {
   fileReferences,
   PLAN_CONSISTENCY_CHECKS,
   planConsistencyProblems,
+  withCommandDependencies,
   withDerivedRequirements,
   withImplementationProfiles,
   withModuleDependencies,
@@ -227,9 +230,11 @@ import { detectMutationTool, runMutationTool, type ToolShell } from "./quality/m
 import {
   checkPropertyTests,
   propertyClaim,
+  propertyLibraries,
   propertyTestsNote,
   propertyTestsOf,
   QUALITY_PROPERTIES,
+  QUALITY_PROPERTY_LIBRARIES,
 } from "./quality/properties.js";
 import type { RegistryFetch } from "./quality/registry.js";
 import {
@@ -255,7 +260,12 @@ import {
   retryAfterMs,
   retryDelay,
 } from "./retry.js";
-import { buildReviewBundle, REVIEW_BUNDLE_PATH, taskChangedFiles } from "./review-bundle.js";
+import {
+  buildReviewBundle,
+  journaledBaseHashes,
+  REVIEW_BUNDLE_PATH,
+  taskChangedFiles,
+} from "./review-bundle.js";
 import {
   capturePreImage,
   createdByRunLineage,
@@ -412,13 +422,15 @@ function planGraph(
   policy: RunPolicy,
   profiles: AgentProfile[],
 ): TaskGraph {
-  const graph = withReadDependencies(
-    withModuleDependencies(
-      withDerivedRequirements(spec, {
-        ...withImplementationProfiles(withoutApprovalRemarks(plan.taskGraph), profiles),
-        specHash: hashJson(spec),
-        planHash: hashBytes(plan.markdown),
-      }),
+  const graph = withCommandDependencies(
+    withReadDependencies(
+      withModuleDependencies(
+        withDerivedRequirements(spec, {
+          ...withImplementationProfiles(withoutApprovalRemarks(plan.taskGraph), profiles),
+          specHash: hashJson(spec),
+          planHash: hashBytes(plan.markdown),
+        }),
+      ),
     ),
   );
   // Tests first runs the test tasks before the code; otherwise a test task waits for its code.
@@ -528,6 +540,12 @@ function readSummary(content: string): { tool: string; targets: string[]; bytes:
  * leaves out the spec, plan and check output, about 15k tokens instead of 45k.
  */
 const DIFF_REVIEW = "diffReview";
+/**
+ * Model steps of one review attempt; one that ends unsubmitted gets one retry with 1.5 times as
+ * many, the reviewers' former cap. The host runs the README examples, so a review reads the
+ * patch, tries a few repros and submits (#750: an 11-step attempt cost 236k tokens).
+ */
+const REVIEW_ATTEMPT_STEPS = 16;
 /** Errors of the task-end check one submission gets back; the checks stage reports the rest. */
 const TASK_END_ERRORS = 20;
 
@@ -2759,7 +2777,7 @@ export class WorkflowScheduler {
         policy,
         presetOf(parseRunDefinition(this.store.run(runId).definition_json)),
       ) === "auto"
-        ? propertyTestsNote(profile.output)
+        ? propertyTestsNote(profile.output, this.propertyLibraries(runId, state))
         : null;
     const hardening =
       presetOf(parseRunDefinition(this.store.run(runId).definition_json)) === HARDEN_PRESET
@@ -6439,6 +6457,53 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     return blocking.slice(0, 100);
   }
   /**
+   * The property library of each language the project has, found once per run and kept in
+   * `quality/property-libraries.json`, so every agent and every gate of the run sees the same.
+   */
+  private propertyLibraries(runId: string, state: RuntimeState): Record<string, boolean> {
+    const kept = this.store.latestArtifact(runId, QUALITY_PROPERTY_LIBRARIES);
+    if (kept) return JSON.parse(this.store.readArtifact(runId, kept.id)) as Record<string, boolean>;
+    const root = runRoot(this.store.workspace, state);
+    const libraries = propertyLibraries({
+      read: (path) => {
+        try {
+          return readFileSync(workspacePath(root, path), "utf8");
+        } catch {
+          return null;
+        }
+      },
+      exists: (path) => existsSync(workspacePath(root, path)),
+      list: (directory) => {
+        try {
+          return readdirSync(directory ? workspacePath(root, directory) : root).map((name) =>
+            directory ? `${directory}/${name}` : name,
+          );
+        } catch {
+          return [];
+        }
+      },
+      pythonImports: (module) => {
+        const python =
+          process.platform === "win32"
+            ? (Bun.which("python") ?? Bun.which("py"))
+            : (Bun.which("python3") ?? Bun.which("python"));
+        if (!python) return null;
+        const probe = Bun.spawnSync([python, "-c", `import ${module}`], {
+          cwd: root,
+          env: buildSafeEnv(),
+          stdout: "ignore",
+          stderr: "ignore",
+          timeout: 5_000,
+        });
+        return probe.exitCode === 0;
+      },
+    });
+    this.store.transaction(() =>
+      this.store.artifact(runId, "quality", QUALITY_PROPERTY_LIBRARIES, canonical(libraries)),
+    );
+    return libraries;
+  }
+  /**
    * Property-based tests (#637): every criterion the spec marks with `property` needs a property
    * test in a test file of a task that covers it. A missing one is a blocking finding on that
    * file, so the correction writes it; the result is kept for the run report.
@@ -6456,13 +6521,19 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     if (mode === "off" || !state.snapshotId || !criteria.some((c) => c.property)) return [];
     const root = runRoot(this.store.workspace, state);
     const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [];
-    const result = checkPropertyTests(mode, criteria, tasks, (path) => {
-      try {
-        return readFileSync(workspacePath(root, path), "utf8");
-      } catch {
-        return null;
-      }
-    });
+    const result = checkPropertyTests(
+      mode,
+      criteria,
+      tasks,
+      (path) => {
+        try {
+          return readFileSync(workspacePath(root, path), "utf8");
+        } catch {
+          return null;
+        }
+      },
+      this.propertyLibraries(runId, state),
+    );
     const evidenceId = this.store.transaction(() => {
       const artifact = this.store.artifact(runId, "quality", QUALITY_PROPERTIES, canonical(result));
       return this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
@@ -6482,7 +6553,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         evidenceId,
         claim: `Property test missing for ${c.id}: the criterion holds over ${c.domain} inputs, and no test file of its tasks has a property-based test`,
         impact: "Example tests miss edge inputs of the domain the criterion covers.",
-        suggestedFix: `Add a property-based test for ${c.id}${file ? ` in ${file}` : ""} with the ecosystem library (fast-check, Hypothesis, proptest, jqwik, rapid, FsCheck) that generates inputs over the whole ${c.domain} domain and asserts the criterion; declare the library as a development dependency if the project lacks it.`,
+        suggestedFix: `${c.note ? `Remove the fallback: ${c.note}. ` : ""}Add a property-based test for ${c.id}${file ? ` in ${file}` : ""} with the property library the project has (fast-check, Hypothesis, proptest, jqwik, rapid, FsCheck), or without one a generator with a fixed seed in the project's test framework, that generates inputs over the whole ${c.domain} domain and asserts the criterion. Do not add a dependency for it.`,
       });
       return {
         ...finding,
@@ -7433,6 +7504,47 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       return false;
     });
   }
+  /**
+   * The command examples of the documents the run changed, run by the host in a copy of the
+   * workspace with the output each printed, kept per snapshot so a resumed review does not run
+   * them again (#750).
+   */
+  private async documentedExamples(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    executables: string[],
+    signal: AbortSignal,
+  ): Promise<DocExampleResult[]> {
+    if (!state.snapshotId || !state.expectedFiles || !executables.length) return [];
+    const logicalPath = `reviews/examples-${state.snapshotId}.json`;
+    const kept = this.store.latestArtifact(runId, logicalPath);
+    if (kept)
+      return (
+        JSON.parse(this.store.readArtifact(runId, kept.id)) as { examples: DocExampleResult[] }
+      ).examples;
+    const root = runRoot(this.store.workspace, state);
+    const docs = [...journaledBaseHashes(this.store, runId).keys()]
+      .filter(isDocFile)
+      .flatMap((path) => {
+        const absolute = workspacePath(root, path);
+        return existsSync(absolute) ? [{ path, text: readFileSync(absolute, "utf8") }] : [];
+      });
+    if (!docs.length) return [];
+    const examples = await runDocExamples(this.processes, docs, {
+      root,
+      files: Object.keys(state.expectedFiles),
+      executables,
+      signal,
+      sandbox: (dir) => runSandbox(policy, dir),
+    });
+    // Documents without command examples run nothing, so there is nothing to keep.
+    if (!examples.length) return [];
+    this.store.transaction(() =>
+      this.store.artifact(runId, "diagnostic", logicalPath, canonical({ examples })),
+    );
+    return examples;
+  }
   private async review(
     runId: string,
     stepId: string,
@@ -7465,6 +7577,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     // The workspace the run started from had no source code: the reviewers judge the whole program.
     const greenfield = this.baselineScaffold(runId, state);
     const references = state.graph ? fileReferences(state.graph) : {};
+    const examples = reviewers.some((r) => r.dimension === "correctness")
+      ? await this.documentedExamples(runId, state, policy, executables, signal)
+      : [];
     const runReviewer = async (reviewer: Reviewer) => {
       // A review of this very snapshot that an earlier, interrupted round finished is kept.
       const kept = state.reviews[reviewer.key];
@@ -7532,6 +7647,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
               // Named in the prompt as well as the tool list: round 11 reviewers said no tool was
               // available while run_repro was offered (#528).
               ...(canRepro ? { reproTool: { name: "run_repro", programs: executables } } : {}),
+              ...(reviewer.dimension === "correctness" && examples.length
+                ? { documentedExamples: examples }
+                : {}),
               ...extra,
             },
             signal,
@@ -7554,7 +7672,10 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
               if (advice.length) reproAdvised = true;
               return advice;
             },
-            undefined,
+            {
+              maxSteps: Math.min(profile.maxSteps, policy.maxAgentSteps, REVIEW_ATTEMPT_STEPS),
+              maxTokens: undefined,
+            },
             canRepro ? () => ({ run_repro: reproTool(executables, repro) }) : undefined,
           ),
         );

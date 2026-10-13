@@ -212,6 +212,8 @@ export interface AttemptStepUsage {
   compactedBytes: number;
   /** Model requests behind the step, when the provider reports them (Codex app-server). */
   modelRequests?: number;
+  /** Earlier model responses whose usage the provider will never report (Codex app-server). */
+  unreportedResponses?: number;
 }
 
 export interface AttemptUsageRecord {
@@ -226,6 +228,10 @@ export interface AttemptUsageRecord {
   totalTokens: number;
   /** Sum of the steps' model requests; absent when the provider reports none. */
   modelRequests?: number;
+  /**
+   * Model responses whose usage was never reported, so `totalTokens` is low; absent when none.
+   */
+  unreportedResponses?: number;
   steps: AttemptStepUsage[];
   /** Tool calls by the code intelligence backend that answered; absent when none reported one. */
   toolBackends?: ToolBackendCount[];
@@ -250,6 +256,15 @@ export interface StepLike {
 function toolCallName(call: unknown): string {
   const name = (call as { toolName?: unknown } | null)?.toolName;
   return typeof name === "string" ? name : "unknown";
+}
+
+/** Responses whose usage a provider reports as lost before this step (Codex app-server, #820). */
+export function stepUnreportedResponses(
+  step: Pick<StepLike, "providerMetadata">,
+): number | undefined {
+  const count = (step.providerMetadata as { codex?: { unreportedResponses?: unknown } } | undefined)
+    ?.codex?.unreportedResponses;
+  return typeof count === "number" && count > 0 ? count : undefined;
 }
 
 /** Model requests a step cost, when the provider reports them (Codex app-server `responses`). */
@@ -456,6 +471,8 @@ export class AttemptStepController {
     const maxTokens = this.tokenCap(steps);
     const requests = steps.map(stepModelRequests);
     const reported = requests.filter((r): r is number => r !== undefined);
+    const unreported = steps.map(stepUnreportedResponses);
+    const lost = unreported.reduce<number>((sum, n) => sum + (n ?? 0), 0);
     return {
       schemaVersion: 1,
       profileId: meta.profileId,
@@ -474,6 +491,7 @@ export class AttemptStepController {
       finalizedBy: this.finalizedBy,
       totalTokens,
       ...(reported.length ? { modelRequests: reported.reduce((a, b) => a + b, 0) } : {}),
+      ...(lost ? { unreportedResponses: lost } : {}),
       steps: steps.map((step, index) => ({
         inputTokens: step.usage.inputTokens ?? null,
         outputTokens: step.usage.outputTokens ?? null,
@@ -483,6 +501,7 @@ export class AttemptStepController {
         ...(step.toolCalls.length ? { tools: step.toolCalls.map(toolCallName) } : {}),
         compactedBytes: this.compactedBytes[index] ?? 0,
         ...(requests[index] !== undefined ? { modelRequests: requests[index] } : {}),
+        ...(unreported[index] !== undefined ? { unreportedResponses: unreported[index] } : {}),
       })),
     };
   }

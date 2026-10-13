@@ -1,4 +1,4 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { logBackgroundError } from "../../../diagnostics/errors.js";
 import { IS_WIN, killTree as platformKillTree } from "../../../platform/index.js";
@@ -24,6 +24,7 @@ import {
   type LspWorkspaceEdit,
 } from "./protocol.js";
 import type { LspServerConfig } from "./server-registry.js";
+import { spawnLspServer } from "./spawn.js";
 
 const LANGUAGE_ID_MAP: Partial<Record<string, string>> = {
   typescript: "typescript",
@@ -91,20 +92,7 @@ export class StandaloneLspClient {
 
   /** Spawn the server process and perform the initialize handshake */
   async start(): Promise<void> {
-    // On POSIX, spawn detached so the child becomes its own process group leader.
-    // This lets us kill the entire process tree via negative PID, which is critical
-    // for LSP wrappers (e.g. biome's Mason shim) that use spawnSync to launch
-    // a native binary grandchild — without this, SIGTERM only hits the wrapper
-    // and the grandchild becomes an orphan.
-    this.process = spawn(this.config.command, this.config.args, {
-      stdio: ["pipe", "pipe", "pipe"],
-      cwd: this.cwd,
-      // On Windows a detached child has no console, so console grandchildren
-      // (e.g. node behind the biome.exe shim) open visible windows. Tree kill
-      // there goes through taskkill, so the process group is not needed.
-      detached: !IS_WIN,
-      windowsHide: true,
-    });
+    this.process = spawnLspServer(this.config.command, this.config.args, this.cwd);
     trackProcess(this.process);
     if (this.process.pid) trackLspPid(this.process.pid);
 

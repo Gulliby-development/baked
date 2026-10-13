@@ -425,7 +425,7 @@ The language servers code intelligence uses for the project ([language servers](
 | Endpoint | Body | Answer |
 | --- | --- | --- |
 | `GET /v1/lsp` | | `LspView` |
-| `POST /v1/lsp/ID/install` | | `{...LspView, restarted, installed: {server, package}, log: string[]}` after the install, which can take minutes. `ID` is a server, a Mason package or a language. 404 `NOT_FOUND`, 409 `NOT_INSTALLABLE` (no package, or its toolchain is not on PATH), 409 `BUSY` while the same install runs, 502 `INSTALL_FAILED` |
+| `POST /v1/lsp/ID/install` | | `{...LspView, restarted, installed: {server, package, warning?}, log: string[]}` after the install, which can take minutes. The server is started once after the install; `warning` says why it did not start (a spawn error, or an exit within a few seconds). `ID` is a server, a Mason package or a language. 404 `NOT_FOUND`, 409 `NOT_INSTALLABLE` (no package, or its toolchain is not on PATH), 409 `BUSY` while the same install runs, 502 `INSTALL_FAILED` |
 | `POST /v1/lsp/ID/disable` | `{scope?: "global" \| "project"}` or none | `{...LspView, restarted}`. Without `scope`, the project file when it has its own list, otherwise the global one |
 | `POST /v1/lsp/ID/enable` | `{scope?}` or none | `{...LspView, restarted}`; removes the server from every list that names it, or only from `scope` |
 | `POST /v1/lsp/ID/restart` | | `{...LspView, restarted, startedNow}`: restarts the server (or a language's servers) and retries ones that failed. Before anything started the servers, it starts the project's servers instead (`startedNow: true`) |

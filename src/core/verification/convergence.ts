@@ -237,6 +237,16 @@ export function correctionBase(
   };
 }
 
+/**
+ * The first step of a correction whose finding carries a repro (#765): run it before editing,
+ * so the fix starts from the failure the reviewer showed, and again after the fix.
+ */
+function reproStep(repro: Review["findings"][number]["repro"]): string {
+  if (!repro) return "";
+  const command = [repro.executable, ...repro.args].map((a) => JSON.stringify(a)).join(" ");
+  return `\nReproduce first: run ${command} with run_probe before editing. The review saw it print ${JSON.stringify(repro.actual)} where the spec needs ${JSON.stringify(repro.expected)}. After the fix, run it again and confirm it prints the expected output.`;
+}
+
 /** A finding of a failed check run: it names the check and cites that run's evidence. */
 const checkRunFinding = (finding: Pick<Review["findings"][number], "claim" | "evidenceIds">) =>
   /^Required check \S+ failed$/.test(finding.claim) && finding.evidenceIds.length > 0;
@@ -394,7 +404,7 @@ export function appendCorrections(
       description: grouped
         .map(
           (finding) =>
-            `${grouped.length > 1 ? `Finding ${finding.id}: ` : ""}${finding.claim}\nImpact: ${finding.impact}\nProposed fix: ${finding.suggestedFix}`,
+            `${grouped.length > 1 ? `Finding ${finding.id}: ` : ""}${finding.claim}\nImpact: ${finding.impact}\nProposed fix: ${finding.suggestedFix}${reproStep(finding.repro)}`,
         )
         .join("\n\n"),
       dependsOn: [],
