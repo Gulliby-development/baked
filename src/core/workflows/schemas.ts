@@ -66,6 +66,22 @@ export const SpecSchema = z
       )
       .min(1),
     dependencies: z.array(z.object({ featureId: SafeId, contractHash: Hash }).strict()),
+    /**
+     * The request's deliverables in its own words, each covered by requirements or left out by
+     * the request's own words (see request-coverage.ts). Optional, so specs stored before it keep
+     * their hashes.
+     */
+    deliverables: z
+      .array(
+        z
+          .object({
+            quote: Text,
+            requirementIds: z.array(RequirementId),
+            outOfScope: Text.optional(),
+          })
+          .strict(),
+      )
+      .optional(),
   })
   .strict();
 
@@ -228,6 +244,12 @@ export const PolicySchema = z
      */
     testIntegrity: z.enum(["block", "warn"]).optional(),
     /**
+     * `false` leaves out learned code rules (#643): rules proposed from findings that recurred in
+     * earlier runs and activated by recurrence or a person. Absent means on, so stored policies
+     * keep their hash.
+     */
+    learnedRules: z.boolean().optional(),
+    /**
      * How many repair rounds in a row may leave the same failures before the next correction
      * starts from a clean context: the spec, the task, the current files and a host-written account
      * of what was tried, without the earlier attempts' evidence. If that attempt fails the same way
@@ -240,6 +262,19 @@ export const PolicySchema = z
      * their hash. `ratchet` makes them blocking findings; `off` skips the measurement.
      */
     duplication: z.enum(["off", "warn", "ratchet"]).optional(),
+    /**
+     * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
+     * rules turned off, severities changed and ast-grep rule files added. Absent means the
+     * built-in pack as shipped, so stored policies keep their hash.
+     */
+    qualityRules: z
+      .object({
+        disabled: z.array(z.string().min(1).max(128)).max(200).optional(),
+        severity: z.record(z.string().min(1).max(128), z.enum(["error", "warning"])).optional(),
+        files: z.array(RelativePath).max(32).optional(),
+      })
+      .strict()
+      .optional(),
     /**
      * Directories the applications of the run's AI acceptance gates may write. Like the outputs
      * of checks they are left out of source snapshots. Absent when no such gate grants writes.
@@ -428,6 +463,7 @@ export const ReasonCode = z.enum([
   "checkpoint",
   "no_progress",
   "verification_failed",
+  "check_unavailable",
   "provider_unavailable",
   "provider_account",
   "tool_denied",

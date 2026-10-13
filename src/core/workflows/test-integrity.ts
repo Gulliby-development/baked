@@ -31,8 +31,11 @@ export interface IntegrityFinding {
 
 export interface FileChange {
   path: string;
-  /** The content before the task, or null when the file did not exist. */
-  before: string | null;
+  /**
+   * The content before the task, null when the file did not exist, or undefined when it existed
+   * but its content was not kept: then only a deletion is reported, since counts cannot be compared.
+   */
+  before: string | null | undefined;
   /** The content after the task, or null when the task deleted it. */
   after: string | null;
 }
@@ -195,13 +198,20 @@ export function scanTestIntegrity(
   for (const source of [
     ...(options.testSources ?? []),
     ...changes.flatMap((c) => (isTestPath(c.path) && c.after !== null ? [c.after] : [])),
-    ...changes.flatMap((c) => (isTestPath(c.path) && c.before !== null ? [c.before] : [])),
+    ...changes.flatMap((c) =>
+      isTestPath(c.path) && typeof c.before === "string" ? [c.before] : [],
+    ),
   ])
     for (const value of literals(source)) testLiterals.add(value);
   const spec = options.specText ?? "";
   for (const change of changes) {
     const { path } = change;
     const reasoned = options.reasoned?.has(path) === true;
+    if (change.before === undefined) {
+      if (isTestPath(path) && change.after === null && !reasoned)
+        findings.push({ rule: "test-deleted", path, detail: "deleted the test file" });
+      continue;
+    }
     const beforeRaw = change.before ?? "";
     const afterRaw = change.after ?? "";
     const before = codeLines(beforeRaw);

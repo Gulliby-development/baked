@@ -2,6 +2,11 @@ import { isAbsolute, relative } from "node:path";
 import { workspacePath } from "../specs/validate.js";
 import { fileHash, intentRoot, rootField, sameContentIgnoringEol } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
+import {
+  accountIdentityMessage,
+  findAccountIdentity,
+  foreignAccountIdentities,
+} from "./host-identity.js";
 import { mutationLeaseFor, type WorkspaceLeases } from "./leases.js";
 import { isMcpToolName, toolListAllows } from "./mcp-grants.js";
 import { capturePreImage, createdByRunLineage } from "./rollback.js";
@@ -108,6 +113,11 @@ export class WorkflowToolPolicy {
           `${path} is a test that existed before this run, and the approved plan gives no reason to change it, so it is read-only. Make the code pass it. If the spec and this test cannot both hold, submit outcome spec_conflict and name both.`,
         );
     }
+    if (
+      name !== "delete_file" &&
+      findAccountIdentity(JSON.stringify(args), foreignAccountIdentities(this.root))
+    )
+      throw new WorkflowFault("CAPABILITY_DENIED", accountIdentityMessage(`The edit to ${path}`));
     const existing = fileHash(workspacePath(this.root, path));
     const ownEffect = this.store
       .effects(this.runId)

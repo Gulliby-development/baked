@@ -1,5 +1,5 @@
 import { findPricing } from "../llm/pricing.js";
-import type { AttemptUsageRecord } from "./step-budget.js";
+import type { AttemptUsageRecord, ToolBackendCount } from "./step-budget.js";
 import type { WorkflowStore } from "./store.js";
 
 export interface AttemptUsageRow {
@@ -25,6 +25,8 @@ export interface AttemptUsageRow {
   compactedBytes: number | null;
   stopReason: AttemptUsageRecord["stopReason"] | null;
   finalizedBy: AttemptUsageRecord["finalizedBy"];
+  /** Tool calls by the code intelligence backend and language server that answered them. */
+  toolBackends: ToolBackendCount[];
 }
 
 export interface RunUsageReport {
@@ -40,6 +42,8 @@ export interface RunUsageReport {
   stages: Array<{ stage: string; attempts: number; tokens: number; steps: number | null }>;
   /** Usage per model, most tokens first; host attempts are grouped as `(host)`. */
   models: Array<{ model: string; attempts: number; tokens: number; steps: number | null }>;
+  /** Tool calls of every attempt by backend and server, most calls first. */
+  toolBackends: ToolBackendCount[];
   attempts: AttemptUsageRow[];
 }
 
@@ -91,6 +95,7 @@ export function runUsage(
         compactedBytes: sum((step) => step.compactedBytes),
         stopReason: usage?.stopReason ?? null,
         finalizedBy: usage?.finalizedBy ?? null,
+        toolBackends: usage?.toolBackends ?? [],
       };
     });
   const byStage = new Map<string, RunUsageReport["stages"][number]>();
@@ -140,11 +145,35 @@ export function runUsage(
     models: [...byModel.values()].sort(
       (a, b) => b.tokens - a.tokens || a.model.localeCompare(b.model),
     ),
+    toolBackends: mergeToolBackends(attempts.flatMap((attempt) => attempt.toolBackends)),
     attempts:
       top === undefined
         ? attempts
         : [...attempts].sort((a, b) => (b.usedTokens ?? 0) - (a.usedTokens ?? 0)).slice(0, top),
   };
+}
+
+/** Adds up counts of the same tool, backend and server, most calls first. */
+export function mergeToolBackends(counts: readonly ToolBackendCount[]): ToolBackendCount[] {
+  const merged = new Map<string, ToolBackendCount>();
+  for (const count of counts) {
+    const key = JSON.stringify([count.tool, count.backend, count.server]);
+    const entry = merged.get(key) ?? { ...count, calls: 0 };
+    entry.calls += count.calls;
+    merged.set(key, entry);
+  }
+  return [...merged.values()].sort(
+    (a, b) => b.calls - a.calls || `${a.tool}${a.backend}`.localeCompare(`${b.tool}${b.backend}`),
+  );
+}
+
+/** One line per run: `navigate lsp (rust-analyzer) 12, bake_find repo-map 3`. */
+export function toolBackendLine(counts: readonly ToolBackendCount[]): string | null {
+  return counts.length
+    ? counts
+        .map((c) => `${c.tool} ${c.backend}${c.server ? ` (${c.server})` : ""} ${c.calls}`)
+        .join(", ")
+    : null;
 }
 
 export const USAGE_DIMENSIONS = ["model", "stage", "day"] as const;
