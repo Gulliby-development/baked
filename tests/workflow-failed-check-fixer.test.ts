@@ -94,3 +94,26 @@ test("a fixer that changes nothing leaves the failure to the repair task", async
   expect((await fixture.service.get(run.runId)).status).not.toBe("completed");
   expect(fixture.executor.calls.filter((call) => call === "implementation").length).toBeGreaterThan(1);
 });
+
+test("the unsafe fixer tier runs after the safe one and fixes what it left", async () => {
+  const tiered: RunPolicy = {
+    ...policy,
+    checks: policy.checks.map((c) =>
+      c.id === "fmt"
+        ? { ...c, fix: { executable: "bun", args: ["-e", "0"] }, fixUnsafe: policy.checks[0]?.fix }
+        : c,
+    ),
+  };
+  const fixture = workflowFixture({ policy: tiered });
+  cleanups.push(fixture.dispose);
+  sloppyExecutor(fixture, fixture.root);
+  const run = await runToEnd(fixture);
+  expect((await fixture.service.get(run.runId)).status).toBe("completed");
+  expect(readFileSync(join(fixture.root, "value.txt"), "utf8")).toBe("ready");
+  expect(fixture.executor.calls.filter((call) => call === "implementation")).toHaveLength(1);
+  const fixes = fixture.service.store
+    .effects(run.runId)
+    .filter((e) => e.kind === "file_patch" && JSON.parse(e.intent_json).tool === "apply_fix");
+  // One journaled run per tier.
+  expect(fixes).toHaveLength(2);
+});

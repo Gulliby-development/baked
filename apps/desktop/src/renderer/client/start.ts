@@ -170,6 +170,8 @@ export interface StartBody {
   writers?: number;
   /** What blocking spec questions do (`--clarification`); omitted, the policy decides. */
   clarification?: "ask" | "assume";
+  /** The run model overrides every configured route (`--model-strict`). */
+  modelStrict?: boolean;
 }
 
 /** The most tasks a run may implement at once (`MAX_CONCURRENT_WRITERS` in the core). */
