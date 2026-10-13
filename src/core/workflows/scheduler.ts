@@ -745,8 +745,9 @@ export class WorkflowScheduler {
                   },
                 ),
               );
-              if (analysis.inputHash !== hashJson(state.manifest))
-                throw new WorkflowFault("OUTPUT_INVALID", "Analysis refers to stale inputs");
+              // The host binds the analysis to the manifest it analyzed; the model's copy of the hash
+              // is not checked (#347: one transposed character blocked d0f55591).
+              analysis.inputHash = hashJson(state.manifest);
               // The host adds a finding the model missed: a program was described and none is planned.
               // A feature of an initiative has its boundary approved with the split, not the request.
               const uncovered =
@@ -1477,7 +1478,12 @@ export class WorkflowScheduler {
           runId,
           "diagnostic",
           `errors/${newId()}.txt`,
-          fault instanceof Error ? fault.message : String(fault),
+          // A schema rejection keeps what the schema said, so a resume can tell the agent.
+          fault instanceof WorkflowFault && typeof fault.details.validation === "string"
+            ? `${fault.message}\n${fault.details.validation}`
+            : fault instanceof Error
+              ? fault.message
+              : String(fault),
         );
         this.store.transition(
           runId,

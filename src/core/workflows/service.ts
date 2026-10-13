@@ -140,6 +140,9 @@ function rerouteBody(runId: string, command: CommandIdentity, request: RerouteRe
   };
 }
 
+const INVALID_OUTPUT_NOTE =
+  "The previous attempt of this stage was rejected as invalid output with the diagnostic below. Correct what it names in this attempt.";
+
 export class NativeWorkflowService implements WorkflowService {
   readonly store: WorkflowStore;
   readonly leases: WorkspaceLeases;
@@ -619,6 +622,9 @@ export class NativeWorkflowService implements WorkflowService {
           return;
         }
       }
+      const blocked = this.store.run(runId);
+      if (blocked.status === "blocked" && blocked.reason === "invalid_output")
+        this.noteInvalidOutput(runId);
       // Resuming is the operator's decision to try again: a task whose implementation did not
       // complete (no snapshot) goes back to pending and continues on the edits already in place.
       for (const task of this.store.tasks(runId))
@@ -626,6 +632,25 @@ export class NativeWorkflowService implements WorkflowService {
           this.store.taskStatus(runId, task.id, "pending");
       this.store.transition(runId, "paused", "none");
     });
+  }
+  /**
+   * Resuming a run that blocked on invalid output repeats the stage that produced it. The agent
+   * gets the diagnostic as a correction note, so the retry is not the same attempt again; a
+   * diagnostic already noted is not added twice.
+   */
+  private noteInvalidOutput(runId: string): void {
+    const latest = this.store
+      .artifacts(runId)
+      .filter((a) => a.logical_path.startsWith("errors/"))
+      .at(-1);
+    if (!latest) return;
+    const diagnostic = this.store.readArtifact(runId, latest.id).trim().slice(0, 2000);
+    if (!diagnostic) return;
+    const state = this.store.state(runId);
+    const note = `\n${INVALID_OUTPUT_NOTE}\n${canonical({ diagnostic })}`;
+    if (state.prompt.includes(note)) return;
+    state.prompt += note;
+    this.store.saveState(runId, state);
   }
   /**
    * "Accept" on a stopped convergence: the remaining findings become known limitations, and the
