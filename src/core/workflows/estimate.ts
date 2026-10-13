@@ -1,4 +1,6 @@
-import type { WorkflowStore } from "./store.js";
+import { join, resolve } from "node:path";
+import type { RunPolicy } from "./schemas.js";
+import { readStoreHistory, type WorkflowStore } from "./store.js";
 
 /**
  * Spend estimates. Every number here is a forecast from the runs already stored in this project,
@@ -23,6 +25,8 @@ export interface PastRun {
   stageTokens: Record<string, number>;
   /** Tokens spent in task steps only, to price one task. */
   taskTokens: number;
+  /** Set to `shared` for a run read from a store the policy names in `sizing.historyStores`. */
+  source?: "project" | "shared";
 }
 
 /** Used when the project has no history for a stage. Deliberately wide: they are not measurements. */
@@ -275,6 +279,44 @@ export function readHistory(store: WorkflowStore, maxAgeMs = 5000): PastRun[] {
   return rows;
 }
 
+/**
+ * The workflow databases a policy's `sizing.historyStores` names, other than the project's own: a
+ * `.sqlite` path, or a project directory whose `.baked/workflows.sqlite` is meant. Relative paths
+ * are relative to the workspace.
+ */
+export function historyStorePaths(
+  workspace: string,
+  policy: Pick<RunPolicy, "sizing"> | null | undefined,
+): string[] {
+  const own = resolve(workspace, ".baked", "workflows.sqlite");
+  return [
+    ...new Set(
+      (policy?.sizing?.historyStores ?? [])
+        .map((path) => resolve(workspace, path))
+        .map((path) => (path.endsWith(".sqlite") ? path : join(path, ".baked", "workflows.sqlite")))
+        .filter((path) => path !== own),
+    ),
+  ];
+}
+
+/**
+ * History for a start estimate: this project's runs, then the runs of the stores the policy names
+ * in `sizing.historyStores`, each run once (a run found in both counts as this project's).
+ */
+export function estimateHistory(
+  store: WorkflowStore | null,
+  workspace: string,
+  policy: Pick<RunPolicy, "sizing"> | null | undefined,
+  maxAgeMs = 5000,
+): PastRun[] {
+  const own = store ? readHistory(store, maxAgeMs) : [];
+  const seen = new Set(own.map((run) => run.runId));
+  const shared = historyStorePaths(workspace, policy)
+    .flatMap(readStoreHistory)
+    .filter((run) => !seen.has(run.runId) && seen.add(run.runId));
+  return [...own, ...shared];
+}
+
 /** A stage of the definition about to run, with the models its agents will use. */
 export interface PlannedStage {
   id: string;
@@ -456,12 +498,14 @@ export function estimatePreRun(input: {
     : stages.some((s) => s.basis === "history")
       ? "history"
       : "defaults";
-  const samples =
+  const sampled =
     basis === "workflow-history"
-      ? same.length
+      ? same
       : basis === "history"
-        ? input.history.filter((r) => Object.keys(r.stageTokens).length > 0).length
-        : 0;
+        ? input.history.filter((r) => Object.keys(r.stageTokens).length > 0)
+        : [];
+  const samples = sampled.length;
+  const shared = sampled.filter((r) => r.source === "shared").length;
   const models = [...byModel.values()].map((m) => ({
     ...m,
     tokens: { low: Math.round(m.tokens.low), high: Math.round(m.tokens.high) },
@@ -483,11 +527,12 @@ export function estimatePreRun(input: {
       : tokens.low > input.maxTotalTokens
         ? "no"
         : "maybe";
+  const fromOthers = shared ? `, ${shared} of them from other projects` : "";
   const basisLabel =
     basis === "workflow-history"
-      ? `from ${samples} earlier run${samples === 1 ? "" : "s"} of ${input.workflowId}`
+      ? `from ${samples} earlier run${samples === 1 ? "" : "s"} of ${input.workflowId}${fromOthers}`
       : basis === "history"
-        ? `from ${samples} earlier run${samples === 1 ? "" : "s"} of other workflows`
+        ? `from ${samples} earlier run${samples === 1 ? "" : "s"} of other workflows${fromOthers}`
         : "generic range: no earlier runs";
   return {
     schemaVersion: 1,

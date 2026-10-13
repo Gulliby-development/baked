@@ -52,6 +52,8 @@ interface MockRun {
   /** A frozen input changed while the run was not driving; resuming is refused until revised. */
   inputChanged?: boolean;
   worktree?: RunWorktree | null;
+  /** The error the runtime recorded when it stopped a blocked or failed run. */
+  stopDetail?: string;
 }
 
 class Log {
@@ -819,6 +821,7 @@ function localeValidation(): MockRun {
     featureId: "locale-validation",
     status: "blocked",
     reason: "budget_exhausted",
+    stopDetail: "Run token budget of 600000 would be exceeded by the review call",
     stageId: "review",
     revision: 18,
     tokenUsage: 598_000,
@@ -1370,6 +1373,8 @@ const runRoutes: MockRoute = ({ key, method, path, query, body }) => {
         ...snapshot(run),
         requests: run.requests,
         worktree: run.worktree ?? null,
+        stopDetail:
+          run.status === "blocked" || run.status === "failed" ? (run.stopDetail ?? null) : null,
       });
     case "usage":
       return response(200, run.usage);
