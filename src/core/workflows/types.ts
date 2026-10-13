@@ -79,7 +79,7 @@ export const ReviewNoteSchema = z
      * Why it starts no correction: an `inferred` edge case, a severity below the blocking ones,
      * an advisory reviewer, or a repro that did not show it.
      */
-    reason: z.enum(["inferred", "severity", "advisory", "repro"]),
+    reason: z.enum(["inferred", "confidence", "severity", "advisory", "repro"]),
     /** The earlier note on the same kind, file and symbol from an earlier snapshot, if any. */
     repeatOf: z.string().nullable(),
     snapshotId: z.string().nullable(),
@@ -102,6 +102,17 @@ export const RuntimeStateSchema = z
     workspaceHash: z.string().nullable(),
     expectedFiles: z.record(z.string(), z.string()).nullable(),
     reviews: z.record(z.string(), ReviewSchema),
+    /**
+     * The reviews of the round before the last correction, by reviewer key, with the source
+     * manifest they reviewed: a later round skips a dimension that passed and whose files did not
+     * change, and tells a rerun reviewer what it found and what changed since.
+     */
+    priorReviews: z
+      .record(
+        z.string(),
+        z.object({ review: ReviewSchema, files: z.record(z.string(), z.string()) }),
+      )
+      .default({}),
     /**
      * Criteria a required reviewer could not establish after its one re-prompt, by reviewer key:
      * the converge stage gets them as evidence gaps and settles them with a test or a check.

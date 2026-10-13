@@ -13,6 +13,7 @@ import {
   describeRoute,
   draftOf,
   EFFORT_CHOICES,
+  type IndependentReviewMode,
   parseFallback,
   type RoutingScope,
   type RoutingTarget,
@@ -20,8 +21,10 @@ import {
   routeAt,
   routingClasses,
   setIndependentReview,
+  setReviewMinConfidence,
   targetPath,
 } from "../../core/workflows/routing-edit.js";
+import { DEFAULT_REVIEW_MIN_CONFIDENCE } from "../../core/workflows/schemas.js";
 import { useKeyboard } from "../../hooks/useTerminalEvents.js";
 import { PremiumPopup } from "../ui/index.js";
 import { PopupViewport } from "../ui/PopupViewport.js";
@@ -38,6 +41,8 @@ export interface RoutingApi {
     workflows: string[];
     /** The legacy `/router` Code and Review slots that `$coding` and `$review` fall back to. */
     legacy?: RoutingInputs["legacy"];
+    /** The independent-review mode a run uses when no layer sets one. */
+    reviewMode?: IndependentReviewMode;
   };
   /** The models a run of this workflow would use with the saved configuration. */
   explain(workflowId: string, model: string | null): RouteExplanation;
@@ -79,6 +84,7 @@ type Row =
   | { kind: "route"; target: RoutingTarget; label: string }
   | { kind: "new-class" }
   | { kind: "review" }
+  | { kind: "confidence" }
   | { kind: "note"; text: string; tone: "muted" | "error" };
 
 type Field = "name" | "model" | "effort" | "fallback";
@@ -100,13 +106,20 @@ interface Shown {
   fallback?: string[] | undefined;
 }
 
-const REVIEW_MODES = [null, "off", "warn", "require"] as const;
+const REVIEW_MODES = [null, "off", "warn", "require", "provider"] as const;
+const CONFIDENCE_STEP = 0.05;
 const clip = (text: string, width: number): string =>
   width <= 0 ? "" : text.length <= width ? text : `${text.slice(0, Math.max(1, width - 1))}…`;
 const pad = (text: string, width: number): string => clip(text, width).padEnd(width);
 
 function selectable(row: Row | undefined): boolean {
-  return !!row && (row.kind === "route" || row.kind === "new-class" || row.kind === "review");
+  return (
+    !!row &&
+    (row.kind === "route" ||
+      row.kind === "new-class" ||
+      row.kind === "review" ||
+      row.kind === "confidence")
+  );
 }
 
 function initialScope(api: RoutingApi): RoutingScope {
@@ -179,6 +192,7 @@ export function RoutingView({
     }
   }, [api, workflow, model, generation]);
   const effective = mergeModelRouting(layers.global, layers.project);
+  const confidence = effective?.reviewMinConfidence ?? DEFAULT_REVIEW_MIN_CONFIDENCE;
   const wantsModels = picking !== null && catalog.data === null && catalog.error === null;
   useEffect(() => {
     if (!wantsModels) return;
@@ -220,6 +234,7 @@ export function RoutingView({
       out.push({ kind: "route", target: { kind: "profile", id }, label: id });
     out.push({ kind: "header", title: "Independent review" });
     out.push({ kind: "review" });
+    out.push({ kind: "confidence" });
     return out;
   }, [layers.global, layers.project, workflow, explained]);
 
@@ -405,6 +420,20 @@ export function RoutingView({
     if ((key === "d" || key === "delete" || key === "backspace") && current.kind === "route") {
       evt.preventDefault();
       clear(current.target);
+      return;
+    }
+    if (current.kind === "confidence" && (key === "left" || key === "right")) {
+      evt.preventDefault();
+      const own = layers[scope]?.reviewMinConfidence ?? confidence;
+      const next = Math.min(1, Math.max(0, own + (key === "left" ? -1 : 1) * CONFIDENCE_STEP));
+      const rounded = Math.round(next * 100) / 100;
+      save(setReviewMinConfidence(layers[scope], rounded), `Set reviewMinConfidence to ${rounded}`);
+      return;
+    }
+    if ((key === "d" || key === "delete" || key === "backspace") && current.kind === "confidence") {
+      evt.preventDefault();
+      if (layers[scope]?.reviewMinConfidence === undefined) return;
+      save(setReviewMinConfidence(layers[scope], null), "Cleared reviewMinConfidence");
       return;
     }
     if ((key === "d" || key === "delete" || key === "backspace") && current.kind === "review") {
@@ -603,13 +632,20 @@ export function RoutingView({
   const start = Math.max(0, Math.min(cursor - Math.floor(listRows / 2), rows.length - listRows));
   const labelW = Math.min(20, Math.max(10, Math.floor(width * 0.3)));
   const valueW = Math.max(4, width - labelW - 3);
-  const reviewMode = effective?.independentReview ?? (effective ? "warn" : "off");
+  const reviewMode =
+    effective?.independentReview ?? loaded.data?.reviewMode ?? (effective ? "warn" : "off");
   const rowText = (row: Row): { value: string; tone: "set" | "inherited" | "default" } => {
     if (row.kind === "review") {
       const own = layers[scope]?.independentReview;
       return own
         ? { value: `‹ ${own} ›`, tone: "set" }
         : { value: `‹ unset › = ${reviewMode}`, tone: "default" };
+    }
+    if (row.kind === "confidence") {
+      const own = layers[scope]?.reviewMinConfidence;
+      return own !== undefined
+        ? { value: `‹ ${own} ›`, tone: "set" }
+        : { value: `‹ unset › = ${confidence}`, tone: "default" };
     }
     if (row.kind !== "route") return { value: "", tone: "default" };
     const own = routeAt(layers[scope], row.target);
@@ -640,8 +676,12 @@ export function RoutingView({
   } else if (current?.kind === "new-class") {
     detail.push("Enter adds a class; routes name it as $NAME.");
   } else if (current?.kind === "review") {
-    detail.push(`Effective: ${reviewMode}. warn records a warning, require refuses the start,`);
-    detail.push("when a reviewer would use a model the implementation also uses.");
+    detail.push(`Effective: ${reviewMode}. warn records a warning, require refuses the start`);
+    detail.push("when a reviewer shares the implementation's model; provider moves reviewers");
+    detail.push("to another vendor's model (Codex reviews Claude Code and back).");
+  } else if (current?.kind === "confidence") {
+    detail.push(`Effective: ${confidence}. Review findings below this confidence stay notes`);
+    detail.push("and start no correction. ←→ change it by 0.05, D clears it.");
   }
   while (detail.length < 3) detail.push("");
   const shownDetail = compact
@@ -672,7 +712,9 @@ export function RoutingView({
               ? row.label
               : row.kind === "new-class"
                 ? "+ new class"
-                : "independentReview";
+                : row.kind === "confidence"
+                  ? "reviewMinConfidence"
+                  : "independentReview";
           const { value, tone } = rowText(row);
           return (
             <text key={`r-${index}`} bg={bg}>

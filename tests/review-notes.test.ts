@@ -48,8 +48,9 @@ describe("review notes", () => {
   });
 
   test("the reason names why the finding starts no correction", () => {
-    expect(noteReason(finding({}), false, ["high"])).toBe("inferred");
-    expect(noteReason(finding({ basis: "spec" }), true, ["high"])).toBe("severity");
-    expect(noteReason(finding({ basis: "spec", severity: "high" }), true, ["high"])).toBe("repro");
+    expect(noteReason(finding({}), ["high"], 0.5)).toBe("inferred");
+    expect(noteReason(finding({ basis: "spec", confidence: 0.3 }), ["low"], 0.5)).toBe("confidence");
+    expect(noteReason(finding({ basis: "spec" }), ["high"], 0.5)).toBe("severity");
+    expect(noteReason(finding({ basis: "spec", severity: "high" }), ["high"], 0.5)).toBe("repro");
   });
 });

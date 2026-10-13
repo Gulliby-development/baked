@@ -1,5 +1,6 @@
-import type { Review } from "../workflows/schemas.js";
+import { DEFAULT_REVIEW_MIN_CONFIDENCE, type Review } from "../workflows/schemas.js";
 import type { ReviewNote } from "../workflows/types.js";
+import { findingBlocks } from "./findings.js";
 
 type ReviewFinding = Review["findings"][number];
 
@@ -51,10 +52,11 @@ export function addReviewNotes(
 /** Why a finding the host does not repair starts no correction, for its note. */
 export function noteReason(
   finding: ReviewFinding,
-  blocks: boolean,
   severities: readonly string[],
+  minConfidence = DEFAULT_REVIEW_MIN_CONFIDENCE,
 ): ReviewNote["reason"] {
-  if (!blocks) return "inferred";
+  if ((finding.confidence ?? 1) < minConfidence) return "confidence";
+  if (!findingBlocks(finding, minConfidence)) return "inferred";
   if (!severities.includes(finding.severity)) return "severity";
   return "repro";
 }

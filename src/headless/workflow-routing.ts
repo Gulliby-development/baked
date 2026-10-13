@@ -1,5 +1,5 @@
 import { getCwd } from "../core/cwd.js";
-import { ROUTED_ROLES, RouteEffort } from "../core/llm/model-routing.js";
+import { INDEPENDENT_REVIEW_MODES, ROUTED_ROLES, RouteEffort } from "../core/llm/model-routing.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
 import {
   readRoutingLayers,
@@ -11,7 +11,8 @@ import type { RoutingChange, RoutingScope, RoutingTarget } from "../core/workflo
 export const routingHelp = `Usage: baked workflow routing [show] [--json]
        baked workflow routing set TARGET MODEL [--effort LEVEL] [--fallback ID,ID] [--scope project|global]
        baked workflow routing clear TARGET [--scope project|global]
-       baked workflow routing review off|warn|require|unset [--scope project|global]
+       baked workflow routing review off|warn|require|provider|unset [--scope project|global]
+       baked workflow routing confidence 0..1|unset [--scope project|global]
 
 Changes modelRouting in the project config (.baked/config.json, the default) or the global one
 (--scope global), with the checks of the routing screen and the local API: nothing is written
@@ -20,8 +21,10 @@ when a check fails, and the reasons are printed with exit code 1.
 TARGET is a class ($coding or class:coding), a role (role:reviewer), a profile
 (profile:implementer) or a workflow stage (stage:sdd/plan). MODEL is provider/model, or $class
 outside a class. --effort is ${RouteEffort.options.join(", ")}; --fallback names up to three
-models. review sets independentReview; unset removes it. show prints the modelRouting of both
-files; "baked workflow route" shows what each stage resolves to.
+models. review sets independentReview (provider moves reviewers to another vendor's model);
+confidence sets reviewMinConfidence, below which review findings stay notes (0.8 by default);
+unset removes either. show prints the modelRouting of both files; "baked workflow route" shows
+what each stage resolves to.
 `;
 
 export function parseRoutingTarget(text: string): RoutingTarget {
@@ -138,11 +141,23 @@ export function runRoutingCli(argv: string[], configDir?: string): number {
   } else if (command === "review") {
     only(flags, ["scope", "json"]);
     const [mode, ...rest] = args;
-    if (rest.length || !mode || !["off", "warn", "require", "unset"].includes(mode))
-      throw new WorkflowFault("INVALID_DEFINITION", "review takes off, warn, require or unset");
-    change = {
-      independentReview: mode === "unset" ? null : (mode as "off" | "warn" | "require"),
-    };
+    const known = INDEPENDENT_REVIEW_MODES.find((m) => m === mode);
+    if (rest.length || !mode || (!known && mode !== "unset"))
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        `review takes ${INDEPENDENT_REVIEW_MODES.join(", ")} or unset`,
+      );
+    change = { independentReview: known ?? null };
+  } else if (command === "confidence") {
+    only(flags, ["scope", "json"]);
+    const [value, ...rest] = args;
+    const number = Number(value);
+    if (rest.length || !value || (value !== "unset" && !(number >= 0 && number <= 1)))
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        "confidence takes a number from 0 to 1 or unset",
+      );
+    change = { reviewMinConfidence: value === "unset" ? null : number };
   } else {
     process.stderr.write(`Unknown routing command: ${command}\n\n${routingHelp}`);
     return 1;
