@@ -28,6 +28,7 @@ const commands = [
   "candidate",
   "usage",
   "report",
+  "compare",
   "memory",
   "extend",
   "reroute",
@@ -173,6 +174,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
   usage: ["model", "stage", "top", "format", "output"],
   report: ["output"],
+  compare: ["output"],
   memory: ["text"],
   extend: [
     "tokens",
@@ -285,6 +287,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
       list: [0, false],
       add: [0, true],
       edit: [1, true],
+      accept: [1, false],
       forget: [1, false],
       restore: [1, false],
     } as const;
@@ -292,7 +295,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     if (!rule)
       throw new WorkflowFault(
         "INVALID_DEFINITION",
-        "memory accepts list, add, edit, forget or restore",
+        "memory accepts list, add, edit, accept, forget or restore",
       );
     if (rest.length !== rule[0])
       throw new WorkflowFault(
@@ -321,7 +324,9 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
       ["list", "profiles", "models", "import", "gc", "definitions"].includes(result.command) ||
       (result.command === "validate" && result.flags.file)
         ? 0
-        : 1;
+        : result.command === "compare"
+          ? 2
+          : 1;
     if (result.positional.length !== count)
       throw new WorkflowFault(
         "INVALID_DEFINITION",
@@ -440,10 +445,11 @@ quick TEXT... | --prompt-file FILE [--feature ID] [--model ID] [--route STAGE=MO
   implementation, the policy checks and one correctness review. The feature ID is derived from
   the text. Runs workflows.quickWorkflow when set, otherwise the quick preset. Also: baked quick
 status RUN_ID [--json]
-memory [list] [--json] | memory add --text TEXT | memory edit ID --text TEXT | memory forget|restore ID
-  What earlier runs taught new runs (answers, approved assumptions, passing checks) and your notes.
-  add writes a note; edit rewords a note, answer or assumption; forget deletes a note or hides an
-  entry; restore brings an entry back as runs recorded it. Runs started afterwards read the result
+memory [list] [--json] | memory add --text TEXT | memory edit ID --text TEXT | memory accept|forget|restore ID
+  What earlier runs taught new runs (answers, approved assumptions, passing checks, code rules
+  learned from recurring findings) and your notes. add writes a note; edit rewords a note, answer,
+  assumption or rule; accept activates a proposed rule; forget deletes a note or hides an entry
+  (retires a rule); restore brings an entry back as runs recorded it. Runs started afterwards read the result
 list [--feature ID] [--status STATUS] [--limit 20] [--cursor RUN_ID]
   --status accepts: ${RunStatus.options.join(", ")}
 resume RUN_ID --expected-revision N [--events]
@@ -512,6 +518,9 @@ usage RUN_ID [--model ID] [--stage NAME] [--top N] [--format md] [--output FILE]
 report RUN_ID [--output FILE] [--json]
   One Markdown report of the run: summary, changes, tasks, checks, criteria, findings, decisions,
   tokens by stage and model, artifacts. Printed, or written to FILE; deliver uses it as the PR body.
+compare RUN_A RUN_B [--output FILE] [--json]
+  an A/B of two runs (one feature run with two --route maps): the routes that differ, then status,
+  tokens, cost, active time, agent calls, repairs, checks and review findings side by side
 gc --before ISO_DATE [--dry-run]          redact RUN_ID --file ARTIFACT_ID --reason TEXT
 deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr] [--with-specs|--no-specs]
   Prepare Git delivery of a completed, verified run: one commit of the run's files on a new
