@@ -8,7 +8,7 @@ import {
   failedCheckFindings,
   failureSignature,
 } from "../src/core/verification/convergence.js";
-import { PROBE_TRIES, probeTool, runProbe } from "../src/core/verification/repro.js";
+import { PROBE_TRIES, probeTool, runProbe, writesDocumentation } from "../src/core/verification/repro.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
 import { ProcessScope } from "../src/core/workflows/process-scope.js";
 import type { Review, RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
@@ -240,5 +240,15 @@ describe("run_probe", () => {
   test("only the implementer profile offers it", () => {
     const withProbe = builtinProfiles.filter((p) => p.allowedTools.includes("run_probe"));
     expect(withProbe.map((p) => p.id)).toEqual(["implementer"]);
+  });
+
+  test("documentation writes are recognized by name and extension", () => {
+    const writes = (path: string, action = "modify") => [{ path, action }];
+    expect(writesDocumentation(writes("README.md"))).toBe(true);
+    expect(writesDocumentation(writes("readme"))).toBe(true);
+    expect(writesDocumentation(writes("docs\\usage.rst", "create"))).toBe(true);
+    expect(writesDocumentation(writes("src/app.ts"))).toBe(false);
+    expect(writesDocumentation(writes("src/readme.ts.bak/x.go"))).toBe(false);
+    expect(writesDocumentation(writes("README.md", "delete"))).toBe(false);
   });
 });

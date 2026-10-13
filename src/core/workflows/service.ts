@@ -296,6 +296,7 @@ export class NativeWorkflowService implements WorkflowService {
       workspaceHash: null,
       expectedFiles: null,
       reviews: {},
+      priorReviews: {},
       reviewGaps: {},
       convergence: null,
       approvalRoot: null,
@@ -1171,6 +1172,7 @@ export class NativeWorkflowService implements WorkflowService {
         state.position = restartPosition(this.store.run(runId).definition_json, true);
         state.analysisPassed = false;
         state.reviews = {};
+        state.priorReviews = {};
         state.convergence = null;
         state.manualCriteria = {};
         state.correctionHashes = [];
@@ -1393,6 +1395,8 @@ export class NativeWorkflowService implements WorkflowService {
         policy,
         loadGateLibrary(this.workspace, policy).gates,
         profiles,
+        // A reroute names its models, so `provider` only warns about a shared vendor.
+        independence === "provider" ? "provider" : "model",
       );
       if (found.length && independence === "require")
         throw new WorkflowFault(
@@ -1506,6 +1510,7 @@ export class NativeWorkflowService implements WorkflowService {
       state.workspaceHash = null;
       state.expectedFiles = null;
       state.reviews = {};
+      state.priorReviews = {};
       state.convergence = null;
       state.manualCriteria = {};
       state.correctionHashes = [];

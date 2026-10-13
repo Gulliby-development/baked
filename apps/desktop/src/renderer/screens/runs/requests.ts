@@ -6,6 +6,14 @@ export interface ApprovalBody {
   checks?: { id: string }[];
   /** Defaults the agents chose instead of asking (`clarification: "assume"`). */
   assumptions?: string[];
+  /** Each deliverable of the request and what covers it (`request-coverage.ts` in the core). */
+  requestCoverage?: {
+    deliverable: string;
+    requirementIds: string[];
+    criterionIds: string[];
+    outOfScope: string | null;
+    mapped: boolean;
+  }[];
   executionMode?: "inline" | "worktree";
   worktree?: { path: string; branch: string; userChangesInScope: string[] };
   acceptance?: unknown;
