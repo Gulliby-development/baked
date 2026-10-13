@@ -382,7 +382,10 @@ export class NativeAgentExecutor implements AgentExecutor {
         available[name] = tool({
           description: host.description,
           inputSchema: host.inputSchema,
-          execute: async (input: unknown) => host.execute(input),
+          // Journaled like every other tool call, so a reviewer's repros and an acceptance agent's
+          // commands show up in `tool.started`/`tool.finished` and can be attributed.
+          execute: async (input: unknown) =>
+            track(name, () => guard.host(name, () => host.execute(input))),
         });
       }
       if (
