@@ -475,13 +475,14 @@ interface SettingsView {
   settings: SettingDefinition[];                           // in display order
   values: { [id]: { id; value; source: "project" | "global" | "default" | "env" | "keychain" | "file"; global?; project? } };
   catalogs: { tools: { name; description }[]; "quality-rules": { name; description }[] }; // choices of string-list settings: the tool catalog, the anti-slop rules
+  checks?: { [id]: { status: "ok" | "warn" | "fail" | "skip"; title; detail?; fix? } }; // what the server found checking a value in use, as workflow doctor reports it
 }
 interface SettingDefinition {
   id: string;            // dotted config path, e.g. "performance.effort"; a secret's store key, e.g. "brave-api-key"
   page; section; label; help: string;
   scopes: ("global" | "project")[];
   enabledWhen?: { id; values: (string | boolean)[] };   // only meaningful while that setting has one of these values
-  type: "boolean" | "enum" | "number" | "model" | "string-list" | "model-list-map" | "model-number-map" | "secret";
+  type: "boolean" | "enum" | "number" | "model" | "string-list" | "model-list-map" | "model-number-map" | "secret" | "library-docs";
   default: unknown;
   options?: { value; label; help? }[];                     // enum
   min?; max?; step?; integer?; nullable?;                  // number; model-number-map has min and max
@@ -491,7 +492,7 @@ interface SettingDefinition {
 }
 ```
 
-A secret's `value` is only whether a key is set; the key itself is never returned. Provider API keys stay under `/v1/providers`. Chat sessions of the server apply these settings on their next turn as the terminal UI does: disabled tools, code execution, computer use and the text editor tool, the task router, the Baked map and summary settings, and the cache lifetime.
+A `library-docs` setting (`libraryDocs`) takes the whole [library docs source](../workflows/runtime.md#library-docs) as its value, `{dir, maxChars?}` or `{mcp: {server, tool, args?}, maxChars?}`, and `null` removes it; `checks.libraryDocs` says whether the directory exists or the MCP server is configured and enabled. A secret's `value` is only whether a key is set; the key itself is never returned. Provider API keys stay under `/v1/providers`. Chat sessions of the server apply these settings on their next turn as the terminal UI does: disabled tools, code execution, computer use and the text editor tool, the task router, the Baked map and summary settings, and the cache lifetime.
 
 ## Code graph
 

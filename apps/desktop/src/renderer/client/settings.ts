@@ -29,6 +29,15 @@ export interface SettingsView {
   values: Record<string, SettingValue>;
   /** Catalogs of `string-list` settings; a server older than a catalog leaves it out. */
   catalogs: Partial<Record<SettingCatalog, { name: string; description: string }[]>>;
+  /** What the server found when it checked a value in use, by setting ID; older servers omit it. */
+  checks?: Record<string, SettingCheck>;
+}
+
+export interface SettingCheck {
+  status: "ok" | "warn" | "fail" | "skip";
+  title: string;
+  detail?: string;
+  fix?: string;
 }
 
 export interface SettingsChange {

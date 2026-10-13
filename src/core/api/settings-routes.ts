@@ -83,6 +83,7 @@ export async function settingsRoute(ctx: SettingsRouteContext): Promise<Response
       project: layer(projectFile),
       effective: effective(),
       secret: (id) => secrets.status(id),
+      workspace: ctx.workspace,
     });
   if (ctx.method === "GET") return ctx.json(200, view());
 

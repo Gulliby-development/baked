@@ -64,7 +64,8 @@ export const GROUPS = [
   "Terminal interface",
 ] as const;
 
-const gap = (issue: number, note?: string): Gap =>
+/** A surface that lacks the feature, with its follow-up issue; exported while no entry has one. */
+export const gap = (issue: number, note?: string): Gap =>
   note === undefined ? { status: "gap", issue } : { status: "gap", issue, note };
 
 const partial = (reach: string[], issue: number, note: string): Partial => ({
@@ -877,10 +878,10 @@ export const FEATURES: readonly Feature[] = [
     id: "library-docs",
     group: "Workflow runs",
     title: "Docs for the locked library versions a task uses",
-    tui: gap(763),
+    tui: ["/code-quality: Library docs source"],
     cli: ["baked workflow doctor: libraryDocs in config.json"],
-    api: gap(763),
-    desktop: gap(763),
+    api: ["/v1/settings: libraryDocs, with its check"],
+    desktop: ["settings/chat: Code quality page"],
   },
   {
     id: "profile-effort-compaction",

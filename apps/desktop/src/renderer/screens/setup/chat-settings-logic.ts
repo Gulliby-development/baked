@@ -116,3 +116,86 @@ export function scopeValue<T>(value: SettingValue | undefined, scope: SettingSco
   const own = scope === "global" ? value?.global : value?.project;
   return ((own ?? value?.value ?? empty) as T) ?? empty;
 }
+
+type LibraryDocsMcp = { server: string; tool: string; args?: Record<string, string> };
+/** The library docs source as the server stores it: a directory or an MCP tool. */
+export type LibraryDocsValue =
+  | { dir: string; maxChars?: number }
+  | { mcp: LibraryDocsMcp; maxChars?: number };
+
+/** The editor's fields for a library docs source; `args` holds one `key=value` per line. */
+export interface LibraryDocsDraft {
+  kind: "none" | "dir" | "mcp";
+  dir: string;
+  server: string;
+  tool: string;
+  args: string;
+  maxChars: string;
+}
+
+export function libraryDocsSummary(value: unknown): string {
+  if (!value || typeof value !== "object") return "not set";
+  if ("dir" in value) return `directory ${String(value.dir)}`;
+  if ("mcp" in value && value.mcp && typeof value.mcp === "object") {
+    const mcp = value.mcp as { server?: unknown; tool?: unknown };
+    return `MCP ${String(mcp.server)} / ${String(mcp.tool)}`;
+  }
+  return "not set";
+}
+
+export function libraryDocsDraft(value: unknown): LibraryDocsDraft {
+  const draft: LibraryDocsDraft = {
+    kind: "none",
+    dir: "",
+    server: "",
+    tool: "",
+    args: "",
+    maxChars: "",
+  };
+  if (!value || typeof value !== "object") return draft;
+  const source = value as { dir?: unknown; mcp?: LibraryDocsMcp; maxChars?: unknown };
+  if (typeof source.maxChars === "number") draft.maxChars = String(source.maxChars);
+  if (typeof source.dir === "string") return { ...draft, kind: "dir", dir: source.dir };
+  if (source.mcp)
+    return {
+      ...draft,
+      kind: "mcp",
+      server: source.mcp.server,
+      tool: source.mcp.tool,
+      args: Object.entries(source.mcp.args ?? {})
+        .map(([key, arg]) => `${key}=${arg}`)
+        .join("\n"),
+    };
+  return draft;
+}
+
+/** The source a draft saves, null for none, or what is wrong with it. */
+export function parseLibraryDocs(
+  draft: LibraryDocsDraft,
+): { value: LibraryDocsValue | null } | { error: string } {
+  if (draft.kind === "none") return { value: null };
+  let maxChars: number | undefined;
+  if (draft.maxChars.trim()) {
+    maxChars = Number(draft.maxChars.trim());
+    if (!Number.isInteger(maxChars) || maxChars < 500 || maxChars > 50_000)
+      return { error: "Max characters is a whole number from 500 to 50000." };
+  }
+  const cap = maxChars === undefined ? {} : { maxChars };
+  if (draft.kind === "dir") {
+    const dir = draft.dir.trim();
+    return dir ? { value: { dir, ...cap } } : { error: "Name the directory." };
+  }
+  const server = draft.server.trim();
+  const tool = draft.tool.trim();
+  if (!server || !tool) return { error: "Name the MCP server and its tool." };
+  const args: Record<string, string> = {};
+  for (const line of draft.args.split("\n")) {
+    if (!line.trim()) continue;
+    const at = line.indexOf("=");
+    if (at <= 0) return { error: `Write each argument as key=value: ${line.trim()}` };
+    args[line.slice(0, at).trim()] = line.slice(at + 1).trim();
+  }
+  return {
+    value: { mcp: { server, tool, ...(Object.keys(args).length ? { args } : {}) }, ...cap },
+  };
+}
