@@ -102,6 +102,7 @@ const FULL_CAPABILITIES = [
   "git",
   "git-graph",
   "hooks",
+  "hooks-edit",
   "provider-switch",
   "chat-export",
   "chat-effort",

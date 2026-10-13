@@ -21,21 +21,32 @@ import type { HookEventName, HookRule, HooksConfig } from "./types.js";
 /** Who a hooks file belongs to: the user (home), the project, or the project's local overrides. */
 export type HookSourceScope = "user" | "project" | "local";
 
+/** Which tool's config format a hooks file belongs to; BAKED writes only its own files. */
+export type HookSourceOrigin = "claude" | "baked";
+
 /** A file hooks are read from. */
 export interface HookSourcePath {
   path: string;
   scope: HookSourceScope;
+  origin: HookSourceOrigin;
+}
+
+/** The BAKED config file that hooks of `scope` are saved to. */
+export function bakedHooksPath(cwd: string, scope: "project" | "user"): string {
+  return scope === "user"
+    ? join(userHome(), ".baked", "config.json")
+    : join(cwd, ".baked", "config.json");
 }
 
 /** The files hooks are read from for `cwd`, in load order. */
 export function getHookSourcePaths(cwd: string): HookSourcePath[] {
   const home = userHome();
   const paths: HookSourcePath[] = [
-    { path: join(home, ".claude", "settings.json"), scope: "user" },
-    { path: join(cwd, ".claude", "settings.json"), scope: "project" },
-    { path: join(cwd, ".claude", "settings.local.json"), scope: "local" },
-    { path: join(home, ".baked", "config.json"), scope: "user" },
-    { path: join(cwd, ".baked", "config.json"), scope: "project" },
+    { path: join(home, ".claude", "settings.json"), scope: "user", origin: "claude" },
+    { path: join(cwd, ".claude", "settings.json"), scope: "project", origin: "claude" },
+    { path: join(cwd, ".claude", "settings.local.json"), scope: "local", origin: "claude" },
+    { path: bakedHooksPath(cwd, "user"), scope: "user", origin: "baked" },
+    { path: bakedHooksPath(cwd, "project"), scope: "project", origin: "baked" },
   ];
   // In the home directory the user and project paths name the same file; read it once so
   // its hooks do not run twice.

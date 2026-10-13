@@ -14,6 +14,7 @@ import {
   CRITIC_OUTCOMES_CAPABILITY,
   GATE_DRAFTS_CAPABILITY,
   HOOKS_CAPABILITY,
+  HOOKS_EDIT_CAPABILITY,
   LIBRARY_CAPABILITY,
   offers,
   PROVIDER_SWITCH_CAPABILITY,
@@ -555,10 +556,18 @@ export interface ChatMemoryCleanupAction {
 // --- Hooks (`hooks` capability) -----------------------------------------------------------------
 
 export type HookScope = "user" | "project" | "local";
+/** Where new hooks are saved: the project's `.baked/config.json`, or the home folder's. */
+export type HookWriteScope = "project" | "user";
 /** One hook command (`HookCommandView` in src/core/hooks/overview.ts). */
 export interface HookCommand {
   source: string;
   scope: HookScope;
+  /** `baked` hooks can be edited; `claude` ones are imported read-only from `.claude` files. */
+  origin: "baked" | "claude";
+  id: string | null;
+  rev: string | null;
+  /** The command had a secret redacted; an edit that keeps it sends no command. */
+  redacted: boolean;
   matcher: string | null;
   command: string;
   async: boolean;
@@ -577,8 +586,27 @@ export interface HookEvent {
 /** `GET /v1/hooks`. */
 export interface HooksView {
   disabledBy: string | null;
-  sources: { path: string; scope: HookScope; exists: boolean; hooks: number }[];
+  sources: {
+    path: string;
+    scope: HookScope;
+    origin: "baked" | "claude";
+    exists: boolean;
+    hooks: number;
+  }[];
+  /** The BAKED files new hooks are saved to. */
+  targets: { project: string; user: string };
   events: HookEvent[];
+}
+/** The form of a hook for `POST|PUT /v1/hooks`. */
+export interface HookDraft {
+  event: string;
+  matcher: string | null;
+  command?: string;
+  timeout: number | null;
+  async: boolean;
+  once: boolean;
+  if: string | null;
+  scope: HookWriteScope;
 }
 
 /** `POST /v1/providers/ID/switch`. */
@@ -589,9 +617,19 @@ export interface AccountSwitch {
 }
 
 export const setup = {
-  /** The hooks of the project, its local overrides and the home folder; listed, never edited. */
+  /** The hooks of the project, its local overrides and the home folder. */
   hooks: (key: string) =>
     withCapability(key, HOOKS_CAPABILITY, () => call<HooksView>(key, "GET", "/v1/hooks")),
+  /** Whether the backend saves hooks to BAKED's config files. */
+  canEditHooks: async (key: string) =>
+    offers(await capabilities(key), HOOKS_EDIT_CAPABILITY) === true,
+  /** Adds a hook to `.baked/config.json` of the project or the home folder. */
+  addHook: (key: string, draft: HookDraft) => call<HooksView>(key, "POST", "/v1/hooks", draft),
+  /** Changes a BAKED hook; fails with 409 when its file changed since `rev`. */
+  updateHook: (key: string, id: string, rev: string, draft: HookDraft) =>
+    call<HooksView>(key, "PUT", "/v1/hooks", { id, rev, ...draft }),
+  removeHook: (key: string, id: string, rev: string) =>
+    call<HooksView>(key, "DELETE", "/v1/hooks", { id, rev }),
   /** Switches an event's hooks off or on for this backend process; no file is written. */
   setHookEvent: (key: string, event: string, enabled: boolean) =>
     call<HooksView>(key, "POST", "/v1/hooks/session", { event, enabled }),
