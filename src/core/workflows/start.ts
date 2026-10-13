@@ -8,6 +8,7 @@ import { validateChecks } from "./check-policy.js";
 import { frozenInstructions } from "./context.js";
 import { WorkflowFault } from "./errors.js";
 import { languageReviewProfile } from "./language.js";
+import { DEFAULT_DUPLICATION } from "./quality/duplication.js";
 import {
   independenceWarnings,
   independentReviewMode,
@@ -89,6 +90,7 @@ export async function prepareStart(
     | "maxConcurrentWriters"
     | "clarification"
     | "testIntegrity"
+    | "duplication"
     | "modelStrict"
   >,
 ): Promise<PreparedStart> {
@@ -185,6 +187,7 @@ export async function prepareStart(
     clarification: _clarification,
     testIntegrity: _testIntegrity,
     testsFirst: _testsFirst,
+    duplication: _duplication,
     allowOverlappingWrites,
     ...rest
   } = policy;
@@ -197,6 +200,10 @@ export async function prepareStart(
     (loaded.schemaVersion === 2 ? loaded.definition.testsFirst : undefined) ??
     policy.testsFirst ??
     "off";
+  // The run flag overrides the policy, which overrides the configured default; `warn` is the
+  // default and leaves the field out, so the policy hash stays what it was before the ratchet.
+  const duplication =
+    request.duplication ?? policy.duplication ?? config.quality?.duplication ?? DEFAULT_DUPLICATION;
   // Overlapping writes are kept only when permitted, so a policy that leaves them off keeps the
   // hash it had before the field existed; the requested writer count overrides the policy.
   policy = PolicySchema.parse({
@@ -206,6 +213,7 @@ export async function prepareStart(
     ...(clarification === "assume" ? { clarification } : {}),
     ...(testIntegrity === "warn" ? { testIntegrity } : {}),
     ...(testsFirst !== "off" ? { testsFirst } : {}),
+    ...(duplication !== DEFAULT_DUPLICATION ? { duplication } : {}),
     ...(request.maxConcurrentWriters !== undefined
       ? { maxConcurrentWriters: request.maxConcurrentWriters }
       : {}),

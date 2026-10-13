@@ -54,6 +54,8 @@ export interface StartRunInput {
   clarification?: ClarificationMode;
   /** What the test-integrity guard does, as `--test-integrity`; omitted, the policy decides. */
   testIntegrity?: "block" | "warn";
+  /** The run model overrides the configured routes, as `--model-strict`. */
+  modelStrict?: boolean;
 }
 
 /** The execution controls of the new-run form. */

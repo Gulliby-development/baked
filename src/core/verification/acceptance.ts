@@ -1,5 +1,6 @@
 import { hashJson } from "../specs/hash.js";
 import { WorkflowFault } from "../workflows/errors.js";
+import { LANGUAGE_REVIEW_PROFILE, touchesLanguageFiles } from "../workflows/language.js";
 import { CorrectionSchema, type RunPolicy } from "../workflows/schemas.js";
 import type { WorkflowStore } from "../workflows/store.js";
 import { hasTaskGate } from "../workflows/task-graph.js";
@@ -16,27 +17,39 @@ import { limitedCriteria } from "./convergence-stop.js";
 import { validateEvidence } from "./evidence.js";
 import { requiresSecurityReview } from "./findings.js";
 
+/**
+ * The review dimensions of a v1 run: correctness, security when the change triggers it, and
+ * language. The language reviewer the host added for the project's manifests runs only when the
+ * change touches that language's files; one the policy names always runs.
+ */
+export function v1ReviewDimensions(
+  state: RuntimeState,
+  policy: RunPolicy,
+): (keyof RunPolicy["reviewProfiles"])[] {
+  const paths = state.graph?.tasks.flatMap((t) => t.writes.map((w) => w.path)) ?? [];
+  const language = policy.reviewProfiles.language;
+  return [
+    "correctness",
+    ...(requiresSecurityReview(paths, policy.forceSecurityReview) ? ["security" as const] : []),
+    ...(language &&
+    (language !== LANGUAGE_REVIEW_PROFILE ||
+      touchesLanguageFiles([...paths, ...(state.diff?.files ?? [])]))
+      ? ["language" as const]
+      : []),
+  ];
+}
+
 export function assertAcceptance(
   store: WorkflowStore,
   runId: string,
   state: RuntimeState,
   policy: RunPolicy,
 ): void {
-  const dimensions = [
-    "correctness",
-    ...(requiresSecurityReview(
-      state.graph?.tasks.flatMap((t) => t.writes.map((w) => w.path)) ?? [],
-      policy.forceSecurityReview,
-    )
-      ? ["security"]
-      : []),
-    ...(policy.reviewProfiles.language ? ["language"] : []),
-  ];
   acceptance(store, runId, state, {
     convergence: true,
     checks: policy.checks.filter((c) => c.required).map((c) => c.id),
     taskChecks: [],
-    reviews: dimensions,
+    reviews: v1ReviewDimensions(state, policy),
   });
 }
 
