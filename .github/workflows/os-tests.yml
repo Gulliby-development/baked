@@ -75,6 +75,7 @@ jobs:
       - name: Test
         if: needs.scope.outputs.run == 'true'
         env:
-          # macOS ships sandbox-exec, so the OS sandbox integration tests must run there.
-          BAKED_REQUIRE_SANDBOX: ${{ matrix.os == 'macos-latest' && 'seatbelt' || '' }}
+          # macOS ships sandbox-exec and Windows runs BAKED's restricted-token launcher, so the OS
+          # sandbox integration tests must run on both.
+          BAKED_REQUIRE_SANDBOX: ${{ matrix.os == 'macos-latest' && 'seatbelt' || 'restricted-token' }}
         run: bun run test

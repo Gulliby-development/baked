@@ -492,7 +492,7 @@ export const SETTINGS: readonly SettingDefinition[] = [
     page: "tools",
     section: "Sandbox",
     label: "OS sandbox",
-    help: "Run shell, project and check commands in an OS sandbox (bubblewrap on Linux, seatbelt on macOS): writes stay in the project, credential files are hidden. A project config can only raise it.",
+    help: "Run shell, project and check commands in an OS sandbox (bubblewrap on Linux, seatbelt on macOS, a low-integrity restricted token on Windows): writes stay in the project, credential files are hidden. A project config can only raise it.",
     scopes: GLOBAL,
     type: "enum",
     default: "off",

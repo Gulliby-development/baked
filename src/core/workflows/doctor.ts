@@ -287,7 +287,9 @@ export function sandboxCheck(mode: SandboxMode, detection: SandboxDetection): Do
     fix:
       detection.backend === "bwrap"
         ? "Install bubblewrap (apt install bubblewrap) and allow user namespaces"
-        : "Set sandbox to auto or off, or run on Linux or macOS",
+        : detection.backend === "restricted-token"
+          ? "Check that BAKED can start its sandbox launcher (see docs/sandbox.md), or set sandbox to auto or off"
+          : "Set sandbox to auto or off, or run on Linux, macOS or Windows",
   };
 }
 

@@ -37,7 +37,7 @@ export interface SandboxStatus {
   project: SandboxMode | null;
   effectiveMode: SandboxMode;
   source: "config" | "override" | "project";
-  backend: "bwrap" | "seatbelt" | "none";
+  backend: "bwrap" | "seatbelt" | "restricted-token" | "none";
   available: boolean;
   path: string | null;
   reason: string | null;

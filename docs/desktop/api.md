@@ -591,7 +591,7 @@ interface SandboxStatus {
   project: "off" | "auto" | "required" | null; // the project config's value; it can only raise the mode
   effectiveMode: "off" | "auto" | "required";
   source: "config" | "override" | "project";
-  backend: "bwrap" | "seatbelt" | "none";
+  backend: "bwrap" | "seatbelt" | "restricted-token" | "none";
   available: boolean; path: string | null; reason: string | null; // why the backend is unavailable
   network: "allow" | "deny";                  // sandboxNetwork: network of sandboxed chat commands
   active: boolean;                            // chat commands run isolated now
