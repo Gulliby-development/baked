@@ -6,6 +6,7 @@ import type { ProcessResult, ProcessScope } from "../workflows/process-scope.js"
 import { generatedPaths, type RunPolicy } from "../workflows/schemas.js";
 import type { WorkflowStore } from "../workflows/store.js";
 import type { Check } from "../workflows/types.js";
+import { MISSING_GATE_REPORT, readGateReport, renderGateReport } from "./gate-report.js";
 import { changedPaths, sourceManifest } from "./snapshot.js";
 
 /** Shared process execution for native checks and the legacy project formatter. */
@@ -178,7 +179,7 @@ export class CheckRunner {
     if (note) result = { ...result, output: `${result.output}\n\n${note}` };
     const after = await sourceManifest(root, generated);
     const unstable = changedPaths(before, after).length > 0;
-    const status =
+    let status: "passed" | "failed" | "inconclusive" =
       unstable || result.timedOut || result.cancelled || result.exitCode === null
         ? "inconclusive"
         : result.exitCode === 0
@@ -187,6 +188,17 @@ export class CheckRunner {
     if (unstable) reason = "source_changed";
     else if (result.timedOut) reason = "timeout";
     else if (result.cancelled) reason = "cancelled";
+    else if (check.report === "json" && reason === "exit") {
+      const report = readGateReport(result.output);
+      // A passing report from a command that exited nonzero contradicts itself; neither is trusted.
+      const contradicts = report?.status === "passed" && result.exitCode !== 0;
+      status = report && !contradicts ? report.status : "inconclusive";
+      reason = !report ? "no_report" : contradicts ? "report_exit_mismatch" : "report";
+      result = {
+        ...result,
+        output: `${result.output}\n\n${report ? renderGateReport(report) : MISSING_GATE_REPORT}`,
+      };
+    }
     const evidenceId = this.store.transaction(() => {
       this.store.effectStatus(runId, effectId, "reconciled");
       const artifact = this.store.artifact(
