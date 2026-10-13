@@ -105,7 +105,7 @@ bun test tests/feature-parity.test.ts
 | Ask the agent about BAKED itself (bundled docs, baked_help tool) | `key Enter` | `--headless`, `--chat` | `/v1/sessions/:id/messages` | `project/chat` |
 | Instruction files: view and edit content | `/instructions show`, `/instructions edit` | Partial [#407](https://github.com/Gulliby-development/baked/issues/407): read-only | `/v1/projects/current/instructions` | `project/instructions` |
 | Instruction files: switch on or off | `/instructions`, `/instructions files` | Not needed: set instructionFiles in config.json | `/v1/projects/current/instructions/sources` | `project/instructions` |
-| Long-term chat memory: browse, pin, reword, hide, cleanup, scopes | `/memory` | Not needed: one-shot runs read memory, people curate it | `/v1/memory`, `/v1/memory/cleanup`, `/v1/memory/settings` | `project/memory` |
+| Long-term chat memory: browse, pin, reword, hide, cleanup, scopes, sharing with runs | `/memory` | Not needed: one-shot runs read memory, people curate it | `/v1/memory`, `/v1/memory/cleanup`, `/v1/memory/settings` | `project/memory` |
 | OS sandbox for shell commands, checks and acceptance apps | `/sandbox` | `baked sandbox status`, `--sandbox`, `baked workflow run --sandbox` +1 | `/v1/diagnostics/sandbox`, `/v1/settings`, `/v1/workflow/runs` | `settings/chat`, `project/diagnostics`, `project/overview` |
 | Run memory: view and edit what runs learned | `/memory` | `baked workflow memory` | `/v1/workflow/memory` | `project/memory` |
 

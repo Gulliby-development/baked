@@ -22,7 +22,8 @@ export interface ChatMemoryEntry {
 }
 
 export interface ChatMemorySettings extends MemoryScopeConfig {
-  /** Where the two scope settings are saved. */
+  shareWithRuns: boolean;
+  /** Where these settings are saved. */
   settingsScope: "project" | "global";
 }
 
@@ -87,7 +88,11 @@ function entry(m: MemoryRecord, scope: MemoryScope): ChatMemoryEntry {
 const scoped = (m: ScopedMemory): ChatMemoryEntry => entry(m, m.scope);
 
 export function chatMemorySettings(manager: MemoryManager): ChatMemorySettings {
-  return { ...manager.scopeConfig, settingsScope: manager.settingsScope };
+  return {
+    ...manager.scopeConfig,
+    shareWithRuns: manager.scopeConfig.shareWithRuns ?? false,
+    settingsScope: manager.settingsScope,
+  };
 }
 
 /** Active memories of both scopes, then hidden ones that can be restored. */
@@ -138,11 +143,16 @@ export function setChatMemorySettings(
   const { settingsScope, ...scopes } = change;
   if (settingsScope && settingsScope !== manager.settingsScope)
     manager.setSettingsScope(settingsScope);
-  if (scopes.writeScope || scopes.readScope)
+  if (scopes.writeScope || scopes.readScope || scopes.shareWithRuns !== undefined) {
+    const { shareWithRuns: _, ...current } = manager.scopeConfig;
+    const share = scopes.shareWithRuns ?? manager.scopeConfig.shareWithRuns ?? false;
     manager.scopeConfig = {
-      writeScope: scopes.writeScope ?? manager.scopeConfig.writeScope,
-      readScope: scopes.readScope ?? manager.scopeConfig.readScope,
+      ...current,
+      writeScope: scopes.writeScope ?? current.writeScope,
+      readScope: scopes.readScope ?? current.readScope,
+      ...(share ? { shareWithRuns: true } : {}),
     };
+  }
   return chatMemorySettings(manager);
 }
 
