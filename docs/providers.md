@@ -85,7 +85,7 @@ For Claude models BAKED marks the system prompt and the newest message with Copi
 
 ## OpenAI Codex
 
-The Codex provider drives the installed Codex CLI with your ChatGPT login. BAKED starts one `codex app-server` per process and keeps one ephemeral Codex thread per conversation, so Codex reuses the same prompt cache key and the cached prefix across steps. BAKED's system prompt becomes the thread's instructions; Codex's own agent prompt, built-in tools, skills, project docs and environment notes are switched off.
+The Codex provider drives the installed Codex CLI with your ChatGPT login. BAKED starts one `codex app-server` per process and keeps one ephemeral Codex thread per conversation, so Codex reuses the same prompt cache key and the cached prefix across steps. BAKED's system prompt becomes the thread's instructions; Codex's own agent prompt, built-in tools, skills, project docs and environment notes are switched off. The app-server refuses an input above 1,048,576 characters, so BAKED keeps each turn's input and each tool result it returns within 90% of that: an oversized tool result keeps its head and tail with a note of how many characters were left out, and a turn that carries several results shrinks the oldest first.
 
 BAKED's tools are registered with Codex as native function tools, and replies stream as they are generated:
 
