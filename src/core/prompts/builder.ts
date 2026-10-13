@@ -58,6 +58,8 @@ export interface PromptBuilderOptions {
   bakeMode: BakeMode;
   contextPercent?: number;
   projectInstructions: string | null;
+  /** BAKED kit design guidance for projects without styles of their own (src/core/kit). */
+  designGuidance?: string | null;
   cwd?: string;
   hasGhCli?: boolean;
 }
@@ -118,6 +120,7 @@ export function buildSystemPrompt(opts: PromptBuilderOptions): string {
 
   // Project instructions (baked.md, CLAUDE.md, etc.)
   if (opts.projectInstructions) parts.push(opts.projectInstructions);
+  if (opts.designGuidance) parts.push(opts.designGuidance);
 
   // Mode overlay is NOT baked into the cached system prompt — it's injected as
   // a cache-stable user message in prepareStep (bake.ts) so switching modes

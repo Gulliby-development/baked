@@ -18,6 +18,7 @@ import extensionsMd from "../../../docs/extensions.md" with { type: "text" };
 import gettingStartedMd from "../../../docs/getting-started.md" with { type: "text" };
 import guideMd from "../../../docs/guide.md" with { type: "text" };
 import headlessMd from "../../../docs/headless.md" with { type: "text" };
+import kitMd from "../../../docs/kit.md" with { type: "text" };
 import packagesMd from "../../../docs/packages.md" with { type: "text" };
 import parityMd from "../../../docs/parity.md" with { type: "text" };
 import privacyMd from "../../../docs/privacy.md" with { type: "text" };
@@ -59,6 +60,7 @@ export const BUNDLED_DOCS: ReadonlyArray<readonly [path: string, text: string]> 
   ["getting-started.md", gettingStartedMd],
   ["guide.md", guideMd],
   ["headless.md", headlessMd],
+  ["kit.md", kitMd],
   ["packages.md", packagesMd],
   ["parity.md", parityMd],
   ["privacy.md", privacyMd],
