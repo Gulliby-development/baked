@@ -65,6 +65,7 @@ import {
   TEST_FILE,
 } from "../verification/output-counts.js";
 import {
+  carryNoRepro,
   missingReproAdvice,
   outputShows,
   type ReproOutcome,
@@ -2389,9 +2390,11 @@ export class WorkflowScheduler {
       const profile =
         profiles.find((p) => p.id === named) ?? profiles.find((p) => p.id === "implementer");
       if (!profile) return null;
-      const stage = WorkflowSchema.parse(JSON.parse(run.definition_json)).stages.find(
-        (s) => s.kind === "task-graph",
-      )?.id;
+      const parsed = parseRunDefinition(run.definition_json);
+      const stage =
+        parsed.schemaVersion === 1
+          ? parsed.definition.stages.find((s) => s.kind === "task-graph")?.id
+          : parsed.definition.stages.find((s) => stageKind(s) === "task-graph")?.id;
       return this.stageRoute(runId, stage, profile).models[0] ?? profile.model;
     } catch {
       return null;
@@ -6332,6 +6335,24 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           definitionHash: hashJson(task),
           evidenceIds: checkEvidence,
         };
+        // The task checks a corrective task was created for passed: the host's finding that they
+        // failed no longer holds. A run without a review stage has nothing else to close it (#866).
+        const passed = new Set(
+          this.store
+            .checks(runId)
+            .filter((c) => checkEvidence.includes(c.evidence_id))
+            .map((c) => c.check_id),
+        );
+        for (const finding of this.store.findings(runId)) {
+          const failed = taskCheckOfClaim(JSON.parse(finding.body_json).claim);
+          if (
+            task.findingIds.includes(finding.id) &&
+            ["open", "confirmed"].includes(finding.status) &&
+            failed &&
+            passed.has(failed)
+          )
+            this.store.findingStatus(runId, finding.id, "resolved");
+        }
         // Restore the whole repair chain atomically with the successful check gate.
         const restored = new Set<string>();
         const completed = [task];
@@ -7997,7 +8018,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
               );
               // Asked once: a reviewer that still has no repro after the advice is not blocked.
               if (problems.length || reproAdvised || !canRepro) return problems;
-              const advice = missingReproAdvice(output as Review, executables);
+              const advice = missingReproAdvice(output as Review, executables, prior?.review);
               if (advice.length) reproAdvised = true;
               return advice;
             },
@@ -8008,6 +8029,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             canRepro ? () => ({ run_repro: reproTool(executables, repro) }) : undefined,
           ),
         );
+        carryNoRepro(answer, prior?.review);
         // The host owns the snapshot hash and the evidence ids; omitted criteria are listed as
         // inconclusive, and the converge stage settles coverage.
         completeReview(
@@ -9039,9 +9061,11 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
   ): void {
     this.store.transaction(() => {
       appendCorrections(this.store, runId, state, policy, findings, kind, scope);
-      state.stageIndex = WorkflowSchema.parse(
-        JSON.parse(this.store.run(runId).definition_json),
-      ).stages.findIndex((s) => s.kind === "task-graph");
+      // A v2 run keeps its position: a task's repair runs in the tasks stage it is in, and a
+      // stage's failure goes back along the definition's repair transition (#853).
+      const parsed = parseRunDefinition(this.store.run(runId).definition_json);
+      if (parsed.schemaVersion === 1)
+        state.stageIndex = parsed.definition.stages.findIndex((s) => s.kind === "task-graph");
     });
   }
   private async accept(
@@ -9172,6 +9196,14 @@ function taskSize(
 
 /** The checks run after a task, in policy order: its task-scope checks and the static ones covering its code. */
 const taskChecks = (policy: RunPolicy, task: Task): Check[] => taskCheckList(policy, task);
+/** The check a host finding says a task failed (`applyTaskCheck`), or null for another claim. */
+const taskCheckOfClaim = (claim: unknown): string | null =>
+  typeof claim === "string"
+    ? (/^Task \S+ (?:required check (\S+) failed$|broke existing tests: check (\S+) passed )/
+        .exec(claim)
+        ?.slice(1)
+        .find(Boolean) ?? null)
+    : null;
 /** Every check a task declares, whatever its scope. */
 const declaredChecks = (policy: RunPolicy, task: Task): Check[] =>
   policy.checks.filter((check) => task.checkIds.includes(check.id));

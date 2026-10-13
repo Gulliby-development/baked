@@ -1,45 +1,57 @@
-import { useState } from "react";
+import { type CSSProperties, type ReactNode, useEffect, useState } from "react";
 import {
+  type BackgroundError,
   type CleanupAction,
   cleanupActions,
   diagnostics,
   formatBytes,
+  type ModelCallSource,
   type ModelEventsView,
   type SandboxStatus,
   type StorageView,
 } from "../../client/diagnostics.js";
+import { Icon, type IconName } from "../../components/Icon.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Badge } from "../../components/ui/badge.js";
 import { Button } from "../../components/ui/button.js";
 import { ConfirmDialog } from "../../components/ui/confirm-dialog.js";
 import { Empty } from "../../components/ui/empty.js";
 import { Switch } from "../../components/ui/switch.js";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "../../components/ui/table.js";
 import { ago, tokens } from "../../format.js";
 import { cn } from "../../lib/cn.js";
-import { LEDE } from "../../lib/styles.js";
+import { LEDE, TABLE } from "../../lib/styles.js";
+import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
-import {
-  ACTIONS,
-  errorText,
-  H2,
-  LoadState,
-  NOTE,
-  ROW,
-  SETUP,
-  STACK,
-  useLoad,
-  WRAP,
-} from "./shared.js";
+import { ACTIONS, errorText, LoadState, ROW, SETUP, useLoad, WRAP } from "./shared.js";
 
 const NUM = "text-right font-mono tabular-nums";
+
+/** The colour blocks of the screen: each kind of data and each section owns one. */
+type Tone = "accent" | "ok" | "warn" | "err" | "info" | "plain";
+type BadgeTone = "accent" | "ok" | "warn" | "err" | "info" | "neutral";
+
+const FILL: Record<Tone, string> = {
+  accent: "bg-main text-main-foreground",
+  ok: "bg-fill-ok text-main-foreground",
+  warn: "bg-fill-warn text-main-foreground",
+  err: "bg-fill-err text-main-foreground",
+  info: "bg-fill-info text-main-foreground",
+  plain: "bg-secondary-background text-foreground",
+};
+
+const GROW = "transition-[width] duration-700 ease-out motion-reduce:transition-none";
+const RISE = "animate-rise motion-reduce:animate-none";
+
+const SECTIONS = {
+  storage: { title: "Storage", icon: "database", tone: "accent" },
+  events: { title: "Model events", icon: "model", tone: "warn" },
+  errors: { title: "Error log", icon: "warning", tone: "err" },
+  sandbox: { title: "Sandbox", icon: "shield", tone: "info" },
+} as const satisfies Record<string, { title: string; icon: IconName; tone: Tone }>;
+type SectionId = keyof typeof SECTIONS;
+const ORDER: SectionId[] = ["storage", "events", "errors", "sandbox"];
+
+const delay = (step: number, ms = 60): CSSProperties => ({ animationDelay: `${step * ms}ms` });
 
 function ms(value: number): string {
   if (value <= 0) return "–";
@@ -48,6 +60,306 @@ function ms(value: number): string {
 
 function shortModel(id: string): string {
   return id.slice(id.lastIndexOf("/") + 1);
+}
+
+function plural(n: number, one: string, many = `${one}s`): string {
+  return `${String(n)} ${n === 1 ? one : many}`;
+}
+
+/** False on the first frame, so widths set from it grow in from zero. */
+function useGrown(): boolean {
+  const [grown, setGrown] = useState(false);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setGrown(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
+  return grown;
+}
+
+/** A square colour block with a line icon: the identity of a section or a kind of data. */
+function Tile({ tone, icon, large = false }: { tone: Tone; icon: IconName; large?: boolean }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        "grid shrink-0 place-items-center rounded-base border-2 border-border shadow-sm-hard",
+        large ? "size-10" : "size-9",
+        FILL[tone],
+      )}
+    >
+      <Icon name={icon} size={large ? 20 : 18} />
+    </span>
+  );
+}
+
+/** A section: a header strip in the section's colour with what it shows, then its body. */
+function Panel({
+  id,
+  about,
+  actions,
+  children,
+}: {
+  id: SectionId;
+  about: ReactNode;
+  actions?: ReactNode;
+  children: ReactNode;
+}) {
+  const s = SECTIONS[id];
+  return (
+    <section
+      id={`diagnostics-${id}`}
+      aria-label={s.title}
+      className={cn(
+        "min-w-0 scroll-mt-4 overflow-hidden rounded-base border-2 border-border bg-background shadow-shadow",
+        RISE,
+      )}
+      style={delay(ORDER.indexOf(id) + 1, 70)}
+    >
+      <header
+        className={cn(
+          "flex flex-wrap items-center gap-x-4 gap-y-3 border-b-2 border-border px-4 py-3",
+          FILL[s.tone],
+        )}
+      >
+        <span
+          aria-hidden="true"
+          className="grid size-10 shrink-0 place-items-center rounded-base border-2 border-border bg-background text-foreground shadow-sm-hard"
+        >
+          <Icon name={s.icon} size={20} />
+        </span>
+        <div className="min-w-[240px] flex-1">
+          <h2 className="m-0 text-[17px] font-bold">{s.title}</h2>
+          <p className="m-0 mt-0.5 text-[12px] leading-snug">{about}</p>
+        </div>
+        {actions && <div className={ACTIONS}>{actions}</div>}
+      </header>
+      <div className="flex min-w-0 flex-col gap-4 p-4">{children}</div>
+    </section>
+  );
+}
+
+/** One kind of data on disk. Kinds that share a colour hold the same kind of data. */
+interface Part {
+  key: string;
+  label: string;
+  icon: IconName;
+  tone: Tone;
+  bytes: number;
+  about: ReactNode;
+  note?: string;
+  action?: CleanupAction;
+}
+
+function projectParts(
+  view: StorageView,
+  actions: Map<string, CleanupAction>,
+  projectKey: string,
+): Part[] {
+  const p = view.project;
+  return [
+    {
+      key: "repo-map",
+      label: "Code map",
+      icon: "graph",
+      tone: "accent",
+      bytes: p.repoMapBytes,
+      about:
+        "The index of files and symbols the agent searches. Clear deletes it; the next index pass rebuilds it.",
+      action: actions.get("repo-map"),
+    },
+    {
+      key: "sessions",
+      label: "Chat sessions",
+      icon: "chat",
+      tone: "ok",
+      bytes: p.sessionsBytes,
+      note: `${String(p.sessionCount)} saved`,
+      about:
+        "Saved chats of this project, from the app and the terminal. Clear deletes them for good.",
+      action: actions.get("sessions"),
+    },
+    {
+      key: "memory",
+      label: "Memory",
+      icon: "chat-memory",
+      tone: "info",
+      bytes: p.memoryBytes,
+      about: (
+        <>
+          What the chat agent remembers about this project. Edit it on the{" "}
+          <a href={projectHref(projectKey, "memory")}>Memory</a> page.
+        </>
+      ),
+    },
+    {
+      key: "plans",
+      label: "Plans",
+      icon: "plan",
+      tone: "warn",
+      bytes: p.plansBytes,
+      about: "Plans the agent wrote in plan mode. Clear deletes them for good.",
+      action: actions.get("plans"),
+    },
+    {
+      key: "config",
+      label: "Config",
+      icon: "settings",
+      tone: "plain",
+      bytes: p.configBytes,
+      about: "This project's settings and forbidden paths. Kept.",
+    },
+  ];
+}
+
+function globalParts(view: StorageView, actions: Map<string, CleanupAction>): Part[] {
+  const g = view.global;
+  return [
+    {
+      key: "history",
+      label: "Prompt history",
+      icon: "rewind",
+      tone: "ok",
+      bytes: g.historyBytes,
+      about: "Prompts typed in the terminal UI, for every project. Clear deletes them for good.",
+      action: actions.get("history"),
+    },
+    {
+      key: "memory",
+      label: "Memory",
+      icon: "chat-memory",
+      tone: "info",
+      bytes: g.memoryBytes,
+      about: "What the chat agent remembers in every project.",
+    },
+    {
+      key: "config",
+      label: "Config",
+      icon: "settings",
+      tone: "plain",
+      bytes: g.configBytes,
+      about: "Settings and keys for all projects. Kept.",
+    },
+    {
+      key: "binaries",
+      label: "Binaries",
+      icon: "packages",
+      tone: "accent",
+      bytes: g.binariesBytes,
+      about: "Tools BAKED downloaded, such as language servers. Kept.",
+    },
+  ];
+}
+
+function share(bytes: number, total: number): number {
+  return total > 0 ? (bytes / total) * 100 : 0;
+}
+
+function percent(bytes: number, total: number): string {
+  const value = share(bytes, total);
+  if (value === 0) return "0%";
+  return value < 1 ? "<1%" : `${String(Math.round(value))}%`;
+}
+
+function StorageGroup({
+  title,
+  dir,
+  total,
+  parts,
+  busy,
+  onClear,
+}: {
+  title: string;
+  dir: string;
+  total: number;
+  parts: Part[];
+  busy: boolean;
+  onClear: (action: CleanupAction) => void;
+}) {
+  const grown = useGrown();
+  const filled = parts.filter((p) => p.bytes > 0);
+  return (
+    <div className="@container flex min-w-0 flex-col gap-3">
+      <div className={ROW}>
+        <span className="text-[15px] font-bold">{title}</span>
+        <span className="min-w-0 truncate font-mono text-[12px] text-dim-foreground" title={dir}>
+          {dir}
+        </span>
+        <span className="ml-auto font-mono text-[15px] font-bold tabular-nums">
+          {formatBytes(total)}
+        </span>
+      </div>
+      <div
+        role="img"
+        aria-label={`${title}: ${filled.map((p) => `${p.label} ${percent(p.bytes, total)}`).join(", ") || "empty"}`}
+        className="flex h-6 w-full overflow-hidden rounded-base border-2 border-border bg-secondary-background"
+      >
+        {filled.map((p) => (
+          <span
+            key={p.key}
+            title={`${p.label}: ${formatBytes(p.bytes)}`}
+            className={cn(
+              "h-full shrink-0 border-r-2 border-border last:border-r-0",
+              GROW,
+              FILL[p.tone],
+            )}
+            style={{ width: grown ? `${String(share(p.bytes, total))}%` : "0%" }}
+          />
+        ))}
+      </div>
+      <ul className="m-0 list-none p-0">
+        {parts.map((p, i) => (
+          <li
+            key={p.key}
+            className={cn(
+              "flex items-center gap-x-4 border-b border-[var(--line)] py-3 last:border-b-0",
+              RISE,
+              p.bytes === 0 && "[&>:first-child]:opacity-60",
+            )}
+            style={delay(i, 45)}
+          >
+            <Tile tone={p.tone} icon={p.icon} />
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="font-semibold">{p.label}</span>
+                {p.note && <Badge>{p.note}</Badge>}
+              </div>
+              <p className="m-0 text-[12px] leading-snug text-muted-foreground">{p.about}</p>
+            </div>
+            <div className="flex w-[150px] shrink-0 items-center gap-2 @max-2xl:hidden">
+              <span className="h-3 flex-1 overflow-hidden rounded-full border-2 border-border bg-secondary-background">
+                <span
+                  className={cn(
+                    "block h-full",
+                    GROW,
+                    FILL[p.tone],
+                    p.bytes > 0 && p.bytes < total && "border-r-2 border-border",
+                  )}
+                  style={{ width: grown ? `${String(share(p.bytes, total))}%` : "0%" }}
+                />
+              </span>
+              <span className="w-9 text-right font-mono text-[11px] tabular-nums text-dim-foreground">
+                {percent(p.bytes, total)}
+              </span>
+            </div>
+            <span className={cn(NUM, "w-[76px] shrink-0")}>{formatBytes(p.bytes)}</span>
+            <span className="flex w-[64px] shrink-0 justify-end">
+              {p.action && (
+                <Button
+                  variant="secondary"
+                  size="md"
+                  disabled={busy}
+                  onClick={() => p.action && onClear(p.action)}
+                  aria-label={`Clear ${p.label.toLowerCase()}`}
+                >
+                  Clear
+                </Button>
+              )}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 function StoragePanel({ projectKey }: { projectKey: string }) {
@@ -81,87 +393,52 @@ function StoragePanel({ projectKey }: { projectKey: string }) {
     }
   };
 
-  if (storage.state !== "ready") return <LoadState value={storage} what="storage use" />;
+  const about =
+    "What BAKED keeps on disk, by kind. Clear deletes one kind; Compact databases reclaims the space SQLite keeps after deleted rows and keeps all data.";
+  if (storage.state !== "ready")
+    return (
+      <Panel id="storage" about={about}>
+        <LoadState value={storage} what="storage use" />
+      </Panel>
+    );
   const view: StorageView = storage.data;
   const actions = new Map(cleanupActions(view).map((a) => [a.target, a]));
-  const rows: [string, number, CleanupAction | undefined, string?][] = [
-    ["Code map", view.project.repoMapBytes, actions.get("repo-map")],
-    [
-      "Chat sessions",
-      view.project.sessionsBytes,
-      actions.get("sessions"),
-      `${String(view.project.sessionCount)} saved`,
-    ],
-    ["Memory", view.project.memoryBytes, undefined],
-    ["Plans", view.project.plansBytes, actions.get("plans")],
-    ["Config", view.project.configBytes, undefined],
-  ];
-  const globalRows: [string, number, CleanupAction | undefined, string?][] = [
-    ["Prompt history", view.global.historyBytes, actions.get("history")],
-    ["Memory", view.global.memoryBytes, undefined],
-    ["Config", view.global.configBytes, undefined],
-    ["Binaries", view.global.binariesBytes, undefined],
-  ];
   const vacuum = actions.get("vacuum");
-  const table = (
-    title: string,
-    dir: string,
-    total: number,
-    list: [string, number, CleanupAction | undefined, string?][],
-  ) => (
-    <div className={STACK}>
-      <div className={cn(ROW, "mb-2")}>
-        <span className="font-semibold">{title}</span>
-        <span className="font-mono text-[12px] text-dim-foreground">{dir}</span>
-        <span className="ml-auto font-mono tabular-nums">{formatBytes(total)}</span>
-      </div>
-      <Table>
-        <TableBody>
-          {list.map(([label, bytes, action, note]) => (
-            <TableRow key={label}>
-              <TableCell>
-                {label}
-                {note && <span className={cn("ml-2 text-dim-foreground", NOTE)}>{note}</span>}
-              </TableCell>
-              <TableCell className={NUM}>{formatBytes(bytes)}</TableCell>
-              <TableCell className="w-[1%] text-right">
-                {action && (
-                  <Button
-                    variant="secondary"
-                    size="md"
-                    disabled={busy}
-                    onClick={() => {
-                      setNotice(null);
-                      setError(null);
-                      setAsking(action);
-                    }}
-                    aria-label={`Clear ${label.toLowerCase()}`}
-                  >
-                    Clear
-                  </Button>
-                )}
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </div>
-  );
+  const ask = (action: CleanupAction): void => {
+    setNotice(null);
+    setError(null);
+    setAsking(action);
+  };
 
   return (
-    <section className={SETUP} aria-label="Storage">
-      {table("This project", view.projectDir, view.project.totalBytes, rows)}
-      {table("All projects", view.globalDir, view.global.totalBytes, globalRows)}
-      <div className={ROW}>
-        {vacuum && (
+    <Panel
+      id="storage"
+      about={about}
+      actions={
+        vacuum && (
           <Button variant="secondary" size="md" disabled={busy} onClick={() => void run(vacuum)}>
+            <Icon name="compact" />
             Compact databases
           </Button>
-        )}
-        <span className={cn(LEDE, NOTE)}>
-          Reclaims space SQLite keeps after deleted rows. Keeps all data.
-        </span>
-      </div>
+        )
+      }
+    >
+      <StorageGroup
+        title="This project"
+        dir={view.projectDir}
+        total={view.project.totalBytes}
+        parts={projectParts(view, actions, projectKey)}
+        busy={busy}
+        onClear={ask}
+      />
+      <StorageGroup
+        title="All projects"
+        dir={view.globalDir}
+        total={view.global.totalBytes}
+        parts={globalParts(view, actions)}
+        busy={busy}
+        onClear={ask}
+      />
       {notice && <Alert>{notice}</Alert>}
       {error && !asking && <Alert tone="error">{error}</Alert>}
       <ConfirmDialog
@@ -179,9 +456,18 @@ function StoragePanel({ projectKey }: { projectKey: string }) {
       >
         {asking?.warning}
       </ConfirmDialog>
-    </section>
+    </Panel>
   );
 }
+
+const SOURCE_TONE: Record<ModelCallSource, BadgeTone> = {
+  main: "accent",
+  subagent: "info",
+  run: "ok",
+  compaction: "warn",
+  embed: "neutral",
+  other: "neutral",
+};
 
 function ModelEventsPanel({ projectKey }: { projectKey: string }) {
   const [events, reload, setEvents] = useLoad(
@@ -203,22 +489,23 @@ function ModelEventsPanel({ projectKey }: { projectKey: string }) {
     }
   };
 
-  if (events.state !== "ready") return <LoadState value={events} what="model events" />;
+  const about =
+    "Every model call of this project's chats and workflow runs while recording is on. Off by default; kept in memory (the latest 500) until the backend stops, and turning it off drops them.";
+  if (events.state !== "ready")
+    return (
+      <Panel id="events" about={about}>
+        <LoadState value={events} what="model events" />
+      </Panel>
+    );
   const view: ModelEventsView = events.data;
   const recent = view.events.slice(0, 50);
+  const busiest = Math.max(1, ...view.models.map((m) => m.calls));
   return (
-    <section className={SETUP} aria-label="Model events">
-      <div className={ROW}>
-        <span className="flex items-center gap-2.5">
-          <Switch
-            checked={view.enabled}
-            disabled={busy}
-            onCheckedChange={(on) => void change(on ? "enable" : "disable")}
-            aria-label="Record model events"
-          />
-          <span aria-hidden="true">Record model calls of this backend</span>
-        </span>
-        <span className={cn(ACTIONS, "ml-auto")}>
+    <Panel
+      id="events"
+      about={about}
+      actions={
+        <>
           <Button variant="secondary" size="md" disabled={busy} onClick={reload}>
             Refresh
           </Button>
@@ -230,12 +517,33 @@ function ModelEventsPanel({ projectKey }: { projectKey: string }) {
           >
             Clear
           </Button>
+        </>
+      }
+    >
+      <div
+        className={cn(
+          "flex items-center gap-3 rounded-base border-2 px-3 py-2.5",
+          view.enabled
+            ? "border-border bg-fill-warn text-main-foreground"
+            : "border-dashed border-[var(--line-strong)] text-soft-foreground",
+        )}
+      >
+        <Switch
+          checked={view.enabled}
+          disabled={busy}
+          onCheckedChange={(on) => void change(on ? "enable" : "disable")}
+          aria-label="Record model events"
+        />
+        <span aria-hidden="true" className="font-semibold">
+          Record model calls of this backend
+        </span>
+        <span className="ml-auto flex items-center gap-2 font-mono text-[11px] font-bold uppercase tracking-wider">
+          {view.enabled && (
+            <span className="size-2 rounded-full bg-[var(--err)] animate-pulse-dot motion-reduce:animate-none" />
+          )}
+          {view.enabled ? "Recording" : "Off"}
         </span>
       </div>
-      <p className={cn(LEDE, NOTE)}>
-        Off by default. While on, every model call of this project's chats and workflow runs is kept
-        in memory (the latest 500) until the backend stops. Turning it off drops them.
-      </p>
       {error && <Alert tone="error">{error}</Alert>}
       {view.events.length === 0 ? (
         <Empty>
@@ -245,67 +553,82 @@ function ModelEventsPanel({ projectKey }: { projectKey: string }) {
         </Empty>
       ) : (
         <>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Model</TableHead>
-                <TableHead className="text-right">Calls</TableHead>
-                <TableHead className="text-right">Errors</TableHead>
-                <TableHead className="text-right">Avg</TableHead>
-                <TableHead className="text-right">Input</TableHead>
-                <TableHead className="text-right">Output</TableHead>
-                <TableHead className="text-right">Cache read</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
+          <table className={TABLE} aria-label="Model totals">
+            <thead>
+              <tr>
+                <th>Model</th>
+                <th className="w-[30%]">Calls</th>
+                <th className="text-right">Errors</th>
+                <th className="text-right">Avg</th>
+                <th className="text-right">Input</th>
+                <th className="text-right">Output</th>
+                <th className="text-right">Cache read</th>
+              </tr>
+            </thead>
+            <tbody>
               {view.models.map((m) => (
-                <TableRow key={m.modelId}>
-                  <TableCell className="font-mono" title={m.modelId}>
-                    {shortModel(m.modelId)}
-                  </TableCell>
-                  <TableCell className={NUM}>{m.calls}</TableCell>
-                  <TableCell className={NUM}>{m.errors}</TableCell>
-                  <TableCell className={NUM}>{ms(m.avgMs)}</TableCell>
-                  <TableCell className={NUM}>{tokens(m.input)}</TableCell>
-                  <TableCell className={NUM}>{tokens(m.output)}</TableCell>
-                  <TableCell className={NUM}>{tokens(m.cacheRead)}</TableCell>
-                </TableRow>
+                <tr key={m.modelId}>
+                  <td className="font-mono" title={m.modelId}>
+                    <span className="flex items-center gap-2">
+                      <Icon name="model" size={14} className="text-dim-foreground" />
+                      {shortModel(m.modelId)}
+                    </span>
+                  </td>
+                  <td>
+                    <span className="flex items-center gap-2">
+                      <span className="h-3 flex-1 overflow-hidden rounded-full border-2 border-border bg-secondary-background">
+                        <span
+                          className="block h-full border-r-2 border-border bg-fill-warn"
+                          style={{ width: `${String((m.calls / busiest) * 100)}%` }}
+                        />
+                      </span>
+                      <span className="w-8 text-right font-mono tabular-nums">{m.calls}</span>
+                    </span>
+                  </td>
+                  <td className={NUM}>
+                    {m.errors > 0 ? <Badge tone="err">{m.errors}</Badge> : "0"}
+                  </td>
+                  <td className={NUM}>{ms(m.avgMs)}</td>
+                  <td className={NUM}>{tokens(m.input)}</td>
+                  <td className={NUM}>{tokens(m.output)}</td>
+                  <td className={NUM}>{tokens(m.cacheRead)}</td>
+                </tr>
               ))}
-            </TableBody>
-          </Table>
-          <Table aria-label="Recent model calls">
-            <TableHeader>
-              <TableRow>
-                <TableHead>When</TableHead>
-                <TableHead>Model</TableHead>
-                <TableHead>Source</TableHead>
-                <TableHead className="text-right">Time</TableHead>
-                <TableHead className="text-right">In / out</TableHead>
-                <TableHead>Result</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
+            </tbody>
+          </table>
+          <table className={TABLE} aria-label="Recent model calls">
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Model</th>
+                <th>Source</th>
+                <th className="text-right">Time</th>
+                <th className="text-right">In / out</th>
+                <th>Result</th>
+              </tr>
+            </thead>
+            <tbody>
               {recent.map((ev) => (
-                <TableRow key={ev.id}>
-                  <TableCell className="text-dim-foreground">{ago(ev.startedAt)}</TableCell>
-                  <TableCell className="font-mono" title={ev.modelId}>
+                <tr key={ev.id} className={cn(ev.state === "error" && "bg-[var(--diff-del)]")}>
+                  <td className="text-dim-foreground">{ago(ev.startedAt)}</td>
+                  <td className="font-mono" title={ev.modelId}>
                     {shortModel(ev.modelId)}
-                  </TableCell>
-                  <TableCell>
-                    {ev.source}
+                  </td>
+                  <td>
+                    <Badge tone={SOURCE_TONE[ev.source]}>{ev.source}</Badge>
                     {ev.runId && (
-                      <span className="ml-1 font-mono text-dim-foreground">
+                      <span className="ml-2 font-mono text-[12px] text-dim-foreground">
                         {ev.runId.slice(0, 12)}
                       </span>
                     )}
-                  </TableCell>
-                  <TableCell className={NUM}>{ms(ev.durationMs)}</TableCell>
-                  <TableCell className={NUM}>
+                  </td>
+                  <td className={NUM}>{ms(ev.durationMs)}</td>
+                  <td className={NUM}>
                     {ev.state === "ok"
                       ? `${tokens(ev.input ?? 0)} / ${tokens(ev.output ?? 0)}`
                       : "–"}
-                  </TableCell>
-                  <TableCell className={cn(WRAP, "max-w-[360px] whitespace-normal")}>
+                  </td>
+                  <td className={cn(WRAP, "max-w-[360px] whitespace-normal")}>
                     {ev.state === "ok" ? (
                       <Badge tone="ok">ok</Badge>
                     ) : (
@@ -314,15 +637,25 @@ function ModelEventsPanel({ projectKey }: { projectKey: string }) {
                         <span className="text-[12px]">{ev.errorMessage}</span>
                       </span>
                     )}
-                  </TableCell>
-                </TableRow>
+                  </td>
+                </tr>
               ))}
-            </TableBody>
-          </Table>
+            </tbody>
+          </table>
         </>
       )}
-    </section>
+    </Panel>
   );
+}
+
+/** Background error sources are free text; the known families get their own colour. */
+function sourceTone(source: string): BadgeTone {
+  const s = source.toLowerCase();
+  if (s.includes("lsp") || s.includes("language")) return "info";
+  if (s.includes("hook")) return "warn";
+  if (s.includes("agent")) return "accent";
+  if (s.includes("session")) return "ok";
+  return "neutral";
 }
 
 function ErrorLogPanel({ projectKey }: { projectKey: string }) {
@@ -330,38 +663,50 @@ function ErrorLogPanel({ projectKey }: { projectKey: string }) {
     () => diagnostics.errors(projectKey),
     [projectKey, "diagnostics-errors"],
   );
-  if (log.state !== "ready") return <LoadState value={log} what="the error log" />;
-  const { errors } = log.data;
+  const about =
+    "Failures off the chat transcript in this backend: hooks, language servers, agents and session saves. Kept in memory (the latest 500) until the backend stops; chat and tool errors stay in their chats.";
+  const refresh = (
+    <Button variant="secondary" size="md" onClick={reload}>
+      Refresh
+    </Button>
+  );
+  if (log.state !== "ready")
+    return (
+      <Panel id="errors" about={about}>
+        <LoadState value={log} what="the error log" />
+      </Panel>
+    );
+  const errors: BackgroundError[] = log.data.errors;
   return (
-    <section className={SETUP} aria-label="Error log">
-      <div className={ROW}>
-        <p className={cn(LEDE, NOTE, "flex-1")}>
-          Failures off the chat transcript in this backend: hooks, language servers, agents and
-          session saves. Kept in memory (the latest 500) until the backend stops; chat and tool
-          errors stay in their chats.
-        </p>
-        <Button variant="secondary" size="md" onClick={reload}>
-          Refresh
-        </Button>
-      </div>
+    <Panel id="errors" about={about} actions={refresh}>
       {errors.length === 0 ? (
-        <Empty>No background errors since this backend started.</Empty>
+        <Empty className="flex items-center justify-center gap-3">
+          <Tile tone="ok" icon="ok" />
+          No background errors since this backend started.
+        </Empty>
       ) : (
-        <Table>
-          <TableBody>
-            {errors.map((e) => (
-              <TableRow key={e.id}>
-                <TableCell className="w-[1%] text-dim-foreground">{ago(e.timestamp)}</TableCell>
-                <TableCell className="w-[1%] font-mono">{e.source}</TableCell>
-                <TableCell className={cn(WRAP, "whitespace-pre-wrap font-mono text-[12px]")}>
-                  {e.message}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+        <ul className="m-0 flex list-none flex-col gap-2 p-0">
+          {errors.map((e, i) => (
+            <li
+              key={e.id}
+              className={cn(
+                "flex flex-wrap items-start gap-x-3 gap-y-1 rounded-base border-2 border-l-[6px] border-border border-l-[var(--fill-err)] bg-secondary-background px-3 py-2.5",
+                RISE,
+              )}
+              style={delay(i, 40)}
+            >
+              <Badge tone={sourceTone(e.source)}>{e.source}</Badge>
+              <span
+                className={cn(WRAP, "min-w-0 flex-1 whitespace-pre-wrap font-mono text-[12px]")}
+              >
+                {e.message}
+              </span>
+              <span className="text-[12px] text-dim-foreground">{ago(e.timestamp)}</span>
+            </li>
+          ))}
+        </ul>
       )}
-    </section>
+    </Panel>
   );
 }
 
@@ -374,59 +719,195 @@ function sandboxSummary(status: SandboxStatus): string {
     : "No sandbox backend here, so sandboxed commands are refused.";
 }
 
+/** One fact of the sandbox as a coloured card. */
+function Fact({
+  tone,
+  icon,
+  label,
+  value,
+  children,
+}: {
+  tone: Tone;
+  icon: IconName;
+  label: string;
+  value: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="flex min-w-0 items-start gap-3 rounded-base border-2 border-border bg-secondary-background px-3 py-3">
+      <Tile tone={tone} icon={icon} />
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <span className="font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-dim-foreground">
+          {label}
+        </span>
+        <span className={cn(WRAP, "font-semibold")}>{value}</span>
+        {children && <span className="text-[12px] text-muted-foreground">{children}</span>}
+      </div>
+    </div>
+  );
+}
+
 function SandboxPanel({ projectKey }: { projectKey: string }) {
   const [status, reload] = useLoad(
     () => diagnostics.sandbox(projectKey),
     [projectKey, "diagnostics-sandbox"],
   );
-  if (status.state !== "ready") return <LoadState value={status} what="the sandbox status" />;
+  const how =
+    "Change the mode on the Tools page of the chat settings; a project config can only raise it.";
+  if (status.state !== "ready")
+    return (
+      <Panel id="sandbox" about={how}>
+        <LoadState value={status} what="the sandbox status" />
+      </Panel>
+    );
   const s = status.data;
   const problem = s.effectiveMode !== "off" && !s.available;
+  const modeTone: Tone =
+    s.effectiveMode === "off"
+      ? "plain"
+      : problem
+        ? s.effectiveMode === "required"
+          ? "err"
+          : "warn"
+        : "ok";
   return (
-    <section className={SETUP} aria-label="Sandbox">
-      <div className={ROW}>
-        <p className={cn(LEDE, NOTE, "flex-1")}>
-          {sandboxSummary(s)} Change the mode on the Tools page of the chat settings; a project
-          config can only raise it.
-        </p>
+    <Panel
+      id="sandbox"
+      about={`${sandboxSummary(s)} ${how}`}
+      actions={
         <Button variant="secondary" size="md" onClick={reload}>
           Refresh
         </Button>
+      }
+    >
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-3">
+        <Fact tone={modeTone} icon="shield" label="Mode" value={s.effectiveMode}>
+          {s.source === "project"
+            ? `Raised by the project config from ${s.mode}.`
+            : s.source === "override"
+              ? "Command-line override."
+              : s.active
+                ? "Commands run isolated."
+                : "Commands are not isolated."}
+        </Fact>
+        <Fact
+          tone={s.available ? "ok" : "warn"}
+          icon="shell"
+          label="Backend"
+          value={<span className="font-mono text-[13px]">{s.available ? s.backend : "none"}</span>}
+        >
+          <span className={cn(WRAP, "font-mono")}>
+            {s.available ? (s.path ?? "found") : (s.reason ?? "unavailable")}
+          </span>
+        </Fact>
+        <Fact
+          tone={s.network === "deny" ? "ok" : "plain"}
+          icon="globe"
+          label="Chat network"
+          value={s.network}
+        >
+          {s.network === "deny"
+            ? "Sandboxed chat commands have no network."
+            : "Sandboxed chat commands can reach the network."}
+        </Fact>
       </div>
-      <Table>
-        <TableBody>
-          <TableRow>
-            <TableCell className="w-[1%] text-dim-foreground">Mode</TableCell>
-            <TableCell>
-              <Badge tone={s.effectiveMode === "off" ? "neutral" : problem ? "warn" : "ok"}>
-                {s.effectiveMode}
-              </Badge>
-              {s.source === "project" ? (
-                <span className="ml-2 text-[12px]">raised by the project config from {s.mode}</span>
-              ) : s.source === "override" ? (
-                <span className="ml-2 text-[12px]">command-line override</span>
-              ) : null}
-            </TableCell>
-          </TableRow>
-          <TableRow>
-            <TableCell className="w-[1%] text-dim-foreground">Backend</TableCell>
-            <TableCell className={cn(WRAP, "font-mono text-[12px]")}>
-              {s.available ? `${s.backend} (${s.path ?? "found"})` : (s.reason ?? "unavailable")}
-            </TableCell>
-          </TableRow>
-          <TableRow>
-            <TableCell className="w-[1%] text-dim-foreground">Chat network</TableCell>
-            <TableCell>{s.network}</TableCell>
-          </TableRow>
-        </TableBody>
-      </Table>
       {problem && s.effectiveMode === "required" ? (
         <Alert tone="error">
           The sandbox is required but this machine has no working backend: shell, project and check
           commands are refused until it is installed or the mode is lowered.
         </Alert>
       ) : null}
-    </section>
+    </Panel>
+  );
+}
+
+/** The four sections at a glance; each card scrolls to its section. */
+function Glance({ projectKey }: { projectKey: string }) {
+  const [storage] = useLoad(
+    () => diagnostics.storage(projectKey),
+    [projectKey, "diagnostics-storage"],
+  );
+  const [events] = useLoad(
+    () => diagnostics.modelEvents(projectKey),
+    [projectKey, "diagnostics-modelEvents"],
+  );
+  const [log] = useLoad(() => diagnostics.errors(projectKey), [projectKey, "diagnostics-errors"]);
+  const [sandbox] = useLoad(
+    () => diagnostics.sandbox(projectKey),
+    [projectKey, "diagnostics-sandbox"],
+  );
+
+  const failed =
+    events.state === "ready" ? events.data.events.filter((e) => e.state === "error").length : 0;
+  const glance: Record<SectionId, [string | null, string]> = {
+    storage:
+      storage.state === "ready"
+        ? [
+            formatBytes(storage.data.project.totalBytes + storage.data.global.totalBytes),
+            `${formatBytes(storage.data.project.totalBytes)} in this project`,
+          ]
+        : [null, "Disk use"],
+    events:
+      events.state === "ready"
+        ? [
+            plural(events.data.events.length, "call"),
+            !events.data.enabled
+              ? "Not recording"
+              : failed > 0
+                ? `${plural(failed, "error")} · recording`
+                : "Recording",
+          ]
+        : [null, "Model calls"],
+    errors:
+      log.state === "ready"
+        ? [
+            String(log.data.errors.length),
+            log.data.errors.length === 0 ? "All clear" : "Since the backend started",
+          ]
+        : [null, "Background errors"],
+    sandbox:
+      sandbox.state === "ready"
+        ? [sandbox.data.effectiveMode, sandbox.data.active ? "Commands isolated" : "Not isolated"]
+        : [null, "OS sandbox"],
+  };
+
+  return (
+    <nav
+      aria-label="Diagnostics sections"
+      className="grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-3"
+    >
+      {ORDER.map((id, i) => {
+        const s = SECTIONS[id];
+        const [value, sub] = glance[id];
+        return (
+          <button
+            key={id}
+            type="button"
+            onClick={() =>
+              document
+                .getElementById(`diagnostics-${id}`)
+                ?.scrollIntoView({ behavior: "smooth", block: "start" })
+            }
+            className={cn(
+              "flex min-w-0 cursor-pointer items-center gap-3 rounded-base border-2 border-border bg-background px-3 py-3 text-left [font:inherit] text-foreground shadow-shadow transition-[transform,box-shadow] duration-100 hover:translate-x-boxShadowX hover:translate-y-boxShadowY hover:shadow-none motion-reduce:transition-none",
+              RISE,
+            )}
+            style={delay(i, 50)}
+          >
+            <Tile tone={s.tone} icon={s.icon} large />
+            <span className="flex min-w-0 flex-col">
+              <span className="font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-dim-foreground">
+                {s.title}
+              </span>
+              <span className="text-[19px] leading-tight font-bold tabular-nums">
+                {value ?? "–"}
+              </span>
+              <span className="truncate text-[12px] text-muted-foreground">{sub}</span>
+            </span>
+          </button>
+        );
+      })}
+    </nav>
   );
 }
 
@@ -440,13 +921,10 @@ export function DiagnosticsSection({ project }: SectionProps) {
         <span className="font-mono">/model-events</span>, <span className="font-mono">/errors</span>{" "}
         and <span className="font-mono">/sandbox</span>.
       </p>
-      <h2 className={H2}>Storage</h2>
+      <Glance projectKey={project.key} />
       <StoragePanel projectKey={project.key} />
-      <h2 className={H2}>Model events</h2>
       <ModelEventsPanel projectKey={project.key} />
-      <h2 className={H2}>Error log</h2>
       <ErrorLogPanel projectKey={project.key} />
-      <h2 className={H2}>Sandbox</h2>
       <SandboxPanel projectKey={project.key} />
     </div>
   );
