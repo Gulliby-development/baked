@@ -420,10 +420,28 @@ describe("workflow parallel writers", () => {
       .events(run.runId, 0, 10000)
       .flatMap((e) => (e.type === "task.state_changed" && e.payload.to === "interrupted" ? [e.payload] : []));
     expect(interrupted).toEqual([
-      expect.objectContaining({ taskId: "T002", cause: "worker_lost", detail: expect.stringContaining("worker process exited") }),
+      // #929: an error of BAKED's own code carries its stack, so its caller is known.
+      expect.objectContaining({ taskId: "T002", cause: "worker_lost", detail: expect.stringContaining("worker process exited"), stack: expect.stringContaining("workflow-parallel-writers.test.ts") }),
     ]);
     expect(fx.store.state(run.runId).taskRestarts).toEqual({ T002: 1 });
     expect(fx.store.leases()).toEqual([]);
+  });
+
+  test("a step that hashes a record with an undefined field does not lose the task's worker", async () => {
+    // #929: canonical() threw "Cannot hash a non-JSON value" for an undefined object value, which
+    // the scheduler reported as a lost worker and the attempt was discarded.
+    const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }], { "a.txt": "A", "b.txt": "B" });
+    fx.executor.hooks.T002 = async () => {
+      hashJson({ path: "b.txt", range: undefined });
+    };
+    const run = await fx.start(2);
+    const done = await fx.complete(run.runId);
+    expect(done.status).toBe("completed");
+    expect(fx.batches(run.runId).map((b) => b.tasks)).toEqual([["T001", "T002"]]);
+    const interrupted = fx.store
+      .events(run.runId, 0, 10000)
+      .filter((e) => e.type === "task.state_changed" && e.payload.to === "interrupted");
+    expect(interrupted).toEqual([]);
   });
 
   test("a task whose worker dies again after its restart blocks the run with owner_lost", async () => {
