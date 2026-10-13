@@ -426,7 +426,10 @@ export const testOrDocFile = (file: string | null): boolean =>
  * when the finding is on a test or documentation file only, since the behavior is verified and the
  * gap is in how well it is pinned or described (md-site and url-shortener B spent about 600k each
  * on such findings). zoneslot 409f3022 F-001 (the Kolkata test did not assert every UTC column)
- * cost 263k, 23% of its run, while the behavior was already verified.
+ * cost 263k, 23% of its run, while the behavior was already verified. A `missing` finding on a test
+ * or documentation file qualifies as well: reviewers label an absent test or README section
+ * `missing` rather than `partial` (all 5 such repairs in round R06, about 635k), and the gap is the
+ * same kind when every criterion it names has evidence.
  */
 export function passesWithNotes(
   finding: Finding,
@@ -437,7 +440,7 @@ export function passesWithNotes(
     checksPass &&
     (finding.severity === "low" ||
       (finding.severity === "medium" && testOrDocFile(finding.file))) &&
-    finding.kind === "partial" &&
+    (finding.kind === "partial" || (finding.kind === "missing" && testOrDocFile(finding.file))) &&
     finding.criterionIds.length > 0 &&
     finding.criterionIds.every(
       (id) => (coverage.find((c) => c.criterionId === id)?.evidenceIds.length ?? 0) > 0,

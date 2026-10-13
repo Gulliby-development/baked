@@ -1089,6 +1089,15 @@ describe("passesWithNotes", () => {
       expect(passesWithNotes({ ...medium, file }, coverage, true)).toBe(false);
     expect(passesWithNotes({ ...medium, severity: "high", file: "README.md" }, coverage, true)).toBe(false);
   });
+  test("a missing test or documentation gap passes like a partial one", () => {
+    for (const severity of ["low", "medium"] as const)
+      for (const file of ["tests/app.test.ts", "README.md"])
+        expect(passesWithNotes({ ...finding, kind: "missing", severity, file }, coverage, true)).toBe(true);
+    for (const file of [null, "src/app.ts"])
+      expect(passesWithNotes({ ...finding, kind: "missing", file }, coverage, true)).toBe(false);
+    expect(passesWithNotes({ ...finding, kind: "missing", file: "README.md" }, coverage, false)).toBe(false);
+    expect(passesWithNotes({ ...finding, kind: "missing", file: "README.md", criterionIds: [] }, coverage, true)).toBe(false);
+  });
 });
 
 describe("project gates and protected definitions", () => {
