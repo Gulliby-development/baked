@@ -30,6 +30,7 @@ import {
   isFeatureId,
   quickBlocker,
   stageLabel,
+  startRefusal,
   uniqueFeatureId,
 } from "./logic.js";
 import { DoctorPanel, doctorLine, EstimatePanel, useLoad, usePreRun } from "./panels.js";
@@ -102,7 +103,10 @@ export function QuickTaskScreen({ project }: SectionProps) {
     prompt,
     feature,
     hasWorkflow: definitions.value ? definition !== null : null,
+    refusal: startRefusal(preRun.doctor),
   });
+  // The quick preset runs the project's feature checks; without any it cannot start.
+  const needsChecks = startRefusal(preRun.doctor)?.includes("workflows.policy.checks") ?? false;
   const canStart = blocker === null && !launcher.starting;
 
   const submit = (event: React.FormEvent): void => {
@@ -171,6 +175,15 @@ export function QuickTaskScreen({ project }: SectionProps) {
 
         <BudgetPicker value={budget} onChange={setBudget} policy={policy} base={limits.base} />
 
+        {needsChecks && (
+          <Alert tone="error">
+            A quick task runs the project's checks, and this project has none yet.{" "}
+            <a className="font-semibold underline" href={projectHref(project.key, "gates")}>
+              Add them in Gates and checks
+            </a>
+            .
+          </Alert>
+        )}
         <RunStarting projectKey={project.key} starting={launcher.starting} />
         {launcher.error && <Alert tone="error">{launcher.error}</Alert>}
         <div className={INLINE}>
