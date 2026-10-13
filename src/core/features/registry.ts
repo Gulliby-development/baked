@@ -974,7 +974,7 @@ export const FEATURES: readonly Feature[] = [
       "/v1/workflow/editor/review",
       "/v1/workflow/editor/save",
     ],
-    desktop: ["project/workflows"],
+    desktop: ["project/workflows: gallery, Flow walkthrough, Graph editor, Stages"],
   },
   {
     id: "project-agents",
