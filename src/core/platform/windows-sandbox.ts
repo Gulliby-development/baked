@@ -117,6 +117,7 @@ export function sandboxTempDir(): string {
 type Pointer = import("bun:ffi").Pointer;
 type Label = "low" | "protect" | "hidden";
 
+const DACL_SECURITY_INFORMATION = 0x4;
 const LABEL_SECURITY_INFORMATION = 0x10;
 const PROTECTED_SACL_SECURITY_INFORMATION = 0x40000000;
 const SE_FILE_OBJECT = 1;
@@ -156,6 +157,9 @@ function loadWin32() {
       returns: T.i32,
     },
     GetSecurityDescriptorSacl: { args: [T.u64, T.ptr, T.ptr, T.ptr], returns: T.i32 },
+    GetSecurityDescriptorDacl: { args: [T.u64, T.ptr, T.ptr, T.ptr], returns: T.i32 },
+    GetTokenInformation: { args: [T.u64, T.u32, T.ptr, T.u32, T.ptr], returns: T.i32 },
+    ConvertSidToStringSidW: { args: [T.u64, T.ptr], returns: T.i32 },
     ConvertStringSidToSidW: { args: [T.ptr, T.ptr], returns: T.i32 },
     GetLengthSid: { args: [T.u64], returns: T.u32 },
     OpenProcessToken: { args: [T.u64, T.u32, T.ptr], returns: T.i32 },
@@ -165,7 +169,7 @@ function loadWin32() {
     },
     SetTokenInformation: { args: [T.u64, T.u32, T.ptr, T.u32], returns: T.i32 },
     SetSecurityInfo: {
-      args: [T.u64, T.u32, T.u32, T.ptr, T.ptr, T.ptr, T.u64],
+      args: [T.u64, T.u32, T.u32, T.ptr, T.ptr, T.u64, T.u64],
       returns: T.u32,
     },
     CreateProcessAsUserW: {
@@ -268,22 +272,42 @@ function hasLabel(win: Win32, path: string, label: Label): boolean {
     : (current.mask & NO_READ_UP) !== 0 && (current.mask & NO_WRITE_UP) !== 0;
 }
 
-/** Builds the SACL of an SDDL label string and passes it to `use`; the memory is freed after. */
-function withLabelAcl<T>(win: Win32, sddl: string, use: (acl: bigint) => T): T {
+/**
+ * Builds the DACL and SACL of an SDDL string and passes them to `use` (0n for a part the string
+ * lacks); the memory is freed after.
+ */
+function withAcls<T>(win: Win32, sddl: string, use: (dacl: bigint, sacl: bigint) => T): T {
   const sd = Buffer.alloc(8);
   if (!win.a.ConvertStringSecurityDescriptorToSecurityDescriptorW(wide(sddl), 1, sd, null))
-    fail(win, "Building an integrity label");
+    fail(win, `Building the security descriptor ${sddl}`);
   const descriptor = handleAt(sd);
   try {
-    const present = Buffer.alloc(4);
-    const acl = Buffer.alloc(8);
-    const defaulted = Buffer.alloc(4);
-    if (!win.a.GetSecurityDescriptorSacl(descriptor, present, acl, defaulted))
-      fail(win, "Reading an integrity label");
-    return use(handleAt(acl));
+    const part = (get: typeof win.a.GetSecurityDescriptorSacl): bigint => {
+      const present = Buffer.alloc(4);
+      const acl = Buffer.alloc(8);
+      const defaulted = Buffer.alloc(4);
+      if (!get(descriptor, present, acl, defaulted)) fail(win, "Reading a security descriptor");
+      return present.readInt32LE(0) ? handleAt(acl) : 0n;
+    };
+    return use(part(win.a.GetSecurityDescriptorDacl), part(win.a.GetSecurityDescriptorSacl));
   } finally {
     win.k.LocalFree(descriptor);
   }
+}
+
+/** Builds the SACL of an SDDL label string and passes it to `use`; the memory is freed after. */
+function withLabelAcl<T>(win: Win32, sddl: string, use: (acl: bigint) => T): T {
+  return withAcls(win, sddl, (_dacl, sacl) => use(sacl));
+}
+
+/** Reads a NUL-terminated UTF-16 string at a native address and frees it with LocalFree. */
+function takeWideString(win: Win32, address: bigint): string {
+  const pointer = addressOf(address);
+  let length = 0;
+  while (win.ffi.read.u16(pointer, length * 2) !== 0) length++;
+  const text = Buffer.from(win.ffi.toArrayBuffer(pointer, 0, length * 2)).toString("utf16le");
+  win.k.LocalFree(address);
+  return text;
 }
 
 /**
@@ -310,22 +334,24 @@ function ensureLabel(win: Win32, path: string, label: Label): void {
  * the command away from the user's clipboard and windows. Returns the handles and the
  * `station\\desktop` name for STARTUPINFO.
  */
-function lowDesktop(win: Win32): { station: bigint; desktop: bigint; name: Buffer } {
+function lowDesktop(win: Win32, user: string): { station: bigint; desktop: bigint; name: Buffer } {
   const SE_WINDOW_OBJECT = 7;
   const GENERIC_ALL = 0x10000000;
+  // The DACL names the user: the default DACL of an elevated token grants only Administrators
+  // and SYSTEM, and the sandboxed token has Administrators as deny-only.
   const label = (handle: bigint, what: string): void => {
-    const status = withLabelAcl(win, "S:(ML;;NW;;;LW)", (acl) =>
+    const status = withAcls(win, `D:(A;;GA;;;${user})(A;;GA;;;SY)S:(ML;;NW;;;LW)`, (dacl, sacl) =>
       win.a.SetSecurityInfo(
         handle,
         SE_WINDOW_OBJECT,
-        LABEL_SECURITY_INFORMATION,
+        DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION,
         null,
         null,
-        null,
-        acl,
+        dacl,
+        sacl,
       ),
     );
-    if (status !== 0) fail(win, `Labeling the sandbox ${what}`, status);
+    if (status !== 0) fail(win, `Securing the sandbox ${what}`, status);
   };
   const name = `baked-sandbox-${process.pid}`;
   const original = win.u.GetProcessWindowStation();
@@ -348,12 +374,27 @@ function sidFrom(win: Win32, text: string): bigint {
   return handleAt(out);
 }
 
-/** A primary token without privileges or administrator rights, at low integrity. */
-function restrictedToken(win: Win32): bigint {
+/** The user SID of a token as SDDL text. */
+function tokenUser(win: Win32, token: bigint): string {
+  const info = Buffer.alloc(256); // TOKEN_USER: a SID_AND_ATTRIBUTES pointing into the buffer
+  const needed = Buffer.alloc(4);
+  if (!win.a.GetTokenInformation(token, 1, info, info.length, needed))
+    fail(win, "Reading the user");
+  const text = Buffer.alloc(8);
+  if (!win.a.ConvertSidToStringSidW(handleAt(info), text)) fail(win, "Reading the user SID");
+  return takeWideString(win, handleAt(text));
+}
+
+/**
+ * A primary token without privileges or administrator rights, at low integrity, and the user SID
+ * it runs as.
+ */
+function restrictedToken(win: Win32): { handle: bigint; user: string } {
   const own = Buffer.alloc(8);
   // TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ADJUST_DEFAULT
   if (!win.a.OpenProcessToken(CURRENT_PROCESS, 0x8b, own)) fail(win, "OpenProcessToken");
   const token = handleAt(own);
+  const user = tokenUser(win, token);
   const administrators = sidFrom(win, "S-1-5-32-544");
   const disable = Buffer.alloc(16);
   disable.writeBigUInt64LE(administrators, 0);
@@ -372,7 +413,17 @@ function restrictedToken(win: Win32): bigint {
   if (!win.a.SetTokenInformation(handle, 25, label, 16 + win.a.GetLengthSid(low)))
     fail(win, "Lowering the token's integrity level");
   win.k.LocalFree(low);
-  return handle;
+  // Objects the command creates (its processes, files without inherited ACEs) get the token's
+  // default DACL. An elevated token's default grants only Administrators and SYSTEM, which the
+  // command could not use; grant its user as well.
+  withAcls(win, `D:(A;;GA;;;${user})(A;;GA;;;SY)(A;;GA;;;BA)`, (dacl) => {
+    const info = Buffer.alloc(8); // TOKEN_DEFAULT_DACL
+    info.writeBigUInt64LE(dacl, 0);
+    // TokenDefaultDacl
+    if (!win.a.SetTokenInformation(handle, 6, info, info.length))
+      fail(win, "Setting the token's default DACL");
+  });
+  return { handle, user };
 }
 
 /** A job that kills its processes when the launcher's handle closes, without clipboard or desktop access. */
@@ -425,8 +476,8 @@ export function runWindowsSandbox(spec: WindowsSandboxSpec): number {
     ? batchCommandLine(comspec, resolved, spec.args)
     : windowsCommandLine(spec.executable, spec.args, spec.verbatim);
 
-  const token = restrictedToken(win);
-  const desktop = lowDesktop(win);
+  const { handle: token, user } = restrictedToken(win);
+  const desktop = lowDesktop(win, user);
   const job = killOnCloseJob(win);
   const startup = Buffer.alloc(104); // STARTUPINFOW
   startup.writeUInt32LE(startup.length, 0);
