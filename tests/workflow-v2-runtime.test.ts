@@ -455,7 +455,7 @@ describe("workflow v2 scheduler", () => {
     expect(lastError(service, run.runId)).toBe("");
     expect(final.status).toBe("completed");
     expect(executor.calls.filter((c) => c === "review")).toHaveLength(2);
-    expect(service.store.run(run.runId).repair_rounds).toBe(1);
+    expect(service.store.run(run.runId).review_rounds).toBe(1);
   }, 30000);
 
   // R12 dirdrift-update 6b57dc61 completed with AC-005 failing: its spec-based medium finding, which
@@ -467,7 +467,7 @@ describe("workflow v2 scheduler", () => {
     expect(lastError(service, run.runId)).toBe("");
     expect(final.status).toBe("completed");
     expect(executor.calls.filter((c) => c === "review")).toHaveLength(3);
-    expect(service.store.run(run.runId).repair_rounds).toBe(2);
+    expect(service.store.run(run.runId).review_rounds).toBe(2);
   }, 30000);
 
   test("below the floor, an inferred finding stays a note even with a repro", async () => {
@@ -617,7 +617,7 @@ describe("workflow v2 scheduler", () => {
     const final = await complete(run.runId);
     expect(lastError(service, run.runId)).toBe("");
     expect(final.status).toBe("completed");
-    expect(service.store.run(run.runId).repair_rounds).toBe(1);
+    expect(service.store.run(run.runId).review_rounds).toBe(1);
   }, 30000);
 
   test("a failed check takes the bounded repair loop back to the tasks stage", async () => {

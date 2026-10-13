@@ -24,6 +24,7 @@ export interface ComparedRun {
   activeMs: number;
   agentCalls: number;
   repairRounds: number;
+  reviewRounds: number;
   correctiveTasks: number;
   stages: { stage: string; attempts: number; tokens: number }[];
   /** Tokens per model, most first. */
@@ -95,6 +96,7 @@ function compared(store: WorkflowStore, runId: string): ComparedRun {
       activeMs: snapshot.activeMs,
       agentCalls: run.agent_calls,
       repairRounds: run.repair_rounds,
+      reviewRounds: run.review_rounds ?? 0,
       correctiveTasks: run.corrective_tasks,
       stages: usage.stages.map((s) => ({ stage: s.stage, attempts: s.attempts, tokens: s.tokens })),
       models: usage.models.map((m) => ({ model: m.model, tokens: m.tokens })),
@@ -179,6 +181,7 @@ export function comparisonMarkdown(c: RunComparison): string {
     `| Active time | ${minutes(a.activeMs)} | ${minutes(b.activeMs)} | ${signed(c.delta.activeMs, minutes(c.delta.activeMs))} |`,
     `| Agent calls | ${a.agentCalls} | ${b.agentCalls} | ${signed(b.agentCalls - a.agentCalls, String(b.agentCalls - a.agentCalls))} |`,
     `| Repair rounds | ${a.repairRounds} | ${b.repairRounds} | |`,
+    `| Review rounds | ${a.reviewRounds} | ${b.reviewRounds} | |`,
     `| Checks passed / failed | ${a.checks.passed} / ${a.checks.failed} | ${b.checks.passed} / ${b.checks.failed} | |`,
     `| Review findings | ${findingText(a)} | ${findingText(b)} | |`,
     `| Accepted limitations | ${a.limitations} | ${b.limitations} | |`,
