@@ -28,6 +28,7 @@ const commands = [
   "candidate",
   "usage",
   "report",
+  "outcomes",
   "compare",
   "memory",
   "extend",
@@ -46,6 +47,7 @@ const commands = [
   "models",
   "doctor",
   "estimate",
+  "propose",
 ] as const;
 export type WorkflowCommand = (typeof commands)[number];
 /** Decisions that continue the run in the terminal unless `--no-resume` is given. */
@@ -69,6 +71,8 @@ export interface WorkflowArgs {
 /** Options every workflow command takes. */
 const globalFlags = ["json", "cwd", "help"];
 const booleanFlags = new Set([
+  "refresh",
+  "auto-preset",
   "all",
   "save",
   "from-criteria",
@@ -120,8 +124,11 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "model-strict",
     "clarification",
     "duplication",
+    "sast",
+    "mutation",
     "issue",
     "budget",
+    "auto-preset",
   ],
   quick: [
     "feature",
@@ -174,6 +181,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
   usage: ["model", "stage", "top", "format", "output"],
   report: ["output"],
+  outcomes: ["refresh"],
   compare: ["output"],
   memory: ["text"],
   extend: [
@@ -211,6 +219,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   models: ["model", "provider", "json"],
   doctor: preRunFlags,
   estimate: preRunFlags,
+  propose: ["prompt", "prompt-file", "json"],
 };
 /** Every option the parser knows: derived from the command tables, so a flag cannot be missed. */
 const flags = new Set([...globalFlags, ...Object.values(commandFlags).flat()]);
@@ -318,7 +327,8 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     result.command !== "run" &&
     result.command !== "quick" &&
     result.command !== "gates" &&
-    result.command !== "gate"
+    result.command !== "gate" &&
+    result.command !== "propose"
   ) {
     const count =
       ["list", "profiles", "models", "import", "gc", "definitions"].includes(result.command) ||
@@ -362,6 +372,18 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
         "--request and --expected-revision apply only with --execute",
       );
   }
+  if (
+    !result.flags.help &&
+    result.command === "propose" &&
+    Number(result.positional.length > 0) +
+      Number(!!result.flags.prompt) +
+      Number(!!result.flags["prompt-file"]) !==
+      1
+  )
+    throw new WorkflowFault(
+      "INVALID_DEFINITION",
+      "Describe the request as text, with --prompt or with --prompt-file",
+    );
   if (!result.flags.help && result.command === "run") {
     if (result.positional.length > 1 || (result.positional.length && result.flags.workflow))
       throw new WorkflowFault(
@@ -395,6 +417,18 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     !["off", "warn", "ratchet"].includes(String(result.flags.duplication))
   )
     throw new WorkflowFault("INVALID_DEFINITION", "--duplication accepts off, warn or ratchet");
+  if (
+    !result.flags.help &&
+    "sast" in result.flags &&
+    !["auto", "off"].includes(String(result.flags.sast))
+  )
+    throw new WorkflowFault("INVALID_DEFINITION", "--sast accepts auto or off");
+  if (
+    !result.flags.help &&
+    "mutation" in result.flags &&
+    !["off", "advisory", "required"].includes(String(result.flags.mutation))
+  )
+    throw new WorkflowFault("INVALID_DEFINITION", "--mutation accepts off, advisory or required");
   if (!result.flags.help && ["run", "doctor", "estimate"].includes(result.command)) {
     if ("writers" in result.flags) {
       const writers = String(result.flags.writers);
@@ -420,7 +454,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--duplication off|warn|ratchet] [--budget PRESET]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--duplication off|warn|ratchet] [--sast auto|off] [--mutation off|advisory|required] [--budget PRESET]
 run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --prompt-file FILE] [other run options]
   --issue takes the request from a GitHub issue (its title and body; --prompt adds instructions)
   and names the feature issue-N-TITLE unless --feature is given; the delivery pull request says
@@ -437,9 +471,20 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   --duplication ratchet blocks code the run copies and code it adds that nothing uses; warn (the
   default) reports them in the run report; off skips the measurement. Default: the policy's
   duplication, then the quality.duplication setting, otherwise warn
+  --sast off skips Semgrep on the run's diff; auto (the default) runs it when it is installed.
+  Default: the policy's sast, then the quality.sast setting, otherwise auto
+  --mutation required makes the mutants of the added lines that the test checks do not kill
+  blocking findings; advisory lists them in the run report; off skips the gate. Default: the
+  policy's mutation, then the quality.mutation setting, then the preset (advisory for sdd/full)
   --budget quick|standard|extended|checkpoints scales the policy (--policy, the config's
   workflows.policy, or the built-in default): quick halves the limits, extended doubles them,
   checkpoints drops the token cap and pauses for your go-ahead. Default: standard
+  --auto-preset proposes the workflow and budget from the request (see propose) and runs it; with a
+  WORKFLOW the person's pick wins and both are recorded in the run. --budget still wins
+propose TEXT... | --prompt TEXT | --prompt-file FILE [--json]
+  The workflow and budget --auto-preset would pick for a request, with the reason: a review of
+  existing changes (review-only), research without a change (spike), a failing check (fix-ci),
+  a docs-only or small change (quick, quick budget), a large change (default, extended budget)
 quick TEXT... | --prompt-file FILE [--feature ID] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--budget PRESET] [--events] [--worktree] [--confirm-auto-approval HASH]
   A small task without specification: one agent finds the files and plans, then approval,
   implementation, the policy checks and one correctness review. The feature ID is derived from
@@ -518,6 +563,10 @@ usage RUN_ID [--model ID] [--stage NAME] [--top N] [--format md] [--output FILE]
 report RUN_ID [--output FILE] [--json]
   One Markdown report of the run: summary, changes, tasks, checks, criteria, findings, decisions,
   tokens by stage and model, artifacts. Printed, or written to FILE; deliver uses it as the PR body.
+outcomes [RUN_ID] [--refresh] [--json]
+  The critic outcome log: each critic score with whether the task's checks passed, how the run
+  ended, the delivered commit's fate and the share of its lines that survive (final after 30 days).
+  --refresh updates delivery and survival from Git first.
 compare RUN_A RUN_B [--output FILE] [--json]
   an A/B of two runs (one feature run with two --route maps): the routes that differ, then status,
   tokens, cost, active time, agent calls, repairs, checks and review findings side by side

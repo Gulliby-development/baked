@@ -36,7 +36,7 @@ baked doctor                                     # check keys, models, checks an
 | [Quick workflow](quick.md) | `baked quick` for small changes |
 | [Fix CI](fix-ci.md) | The `fix-ci` preset for failing checks |
 | [Doctor and estimate](doctor-and-estimate.md) | Checks before a run and the token and cost estimate |
-| [Code quality gates](code-quality.md) | Duplication and dead-code ratchet and the anti-slop rule pack: defaults, run overrides and what the run report shows |
+| [Code quality gates](code-quality.md) | Duplication and dead-code ratchet, the anti-slop rule pack, the dependency check, Semgrep and the mutation gate: defaults, run overrides and what the run report shows |
 | [Parallel worktrees](parallel-worktrees.md) | Task worktrees, several writers and the integrator |
 | [Example gate](examples/ai-acceptance-gate.json) | An `ai-acceptance` gate definition |
 

@@ -131,6 +131,17 @@ describe("attempt usage of a failing native attempt", () => {
     expect(store.attempts(run.runId).find((a) => a.id === attemptId)).toMatchObject({ used_tokens: 12_500, usage_complete: 1 });
   });
 
+  test("a sized run at its ceiling blocks before an attempt its budget cannot cover (#747)", async () => {
+    // 50,000 left of a 60,000 ceiling, below the default attempt cap: no model step runs.
+    const policy = { ...fixturePolicy, maxTotalTokens: 60_000, sizing: { maxRunTokens: 60_000 } };
+    scriptModel([step(12_000, 500, { name: "unknown_tool", input: {} })]);
+    const { store, run, attemptId, executor, request } = await nativeAttempt(policy);
+    const other = store.beginStep(run.runId, "other");
+    store.reserve(run.runId, other, "openai/fixture-model", 10_000, policy);
+    await expect(executor.execute(request)).rejects.toThrow("The next attempt needs more tokens than the run budget has left");
+    expect(store.recordedUsage(run.runId, attemptId)).toBe(0);
+  });
+
   test("an attempt that fails before any model step records zero tokens", async () => {
     scriptModel([
       () => {
@@ -238,6 +249,44 @@ describe("repair probes", () => {
       .filter((e) => e.type === "tool.finished")
       .map((e) => e.payload as { tool: string; status: string });
     expect(tools).toContainEqual(expect.objectContaining({ tool: "run_probe", status: "ok" }));
+  });
+});
+
+describe("documentation probes", () => {
+  const planned = (path: string): Task => ({
+    id: "T004",
+    title: "Write the README",
+    description: "Document the CLI",
+    requirementIds: ["FR-001"],
+    criterionIds: ["AC-001"],
+    dependsOn: [],
+    profileId: "implementer",
+    writes: [{ path, action: "modify" }],
+    readHints: [],
+    checkIds: ["check"],
+    origin: "planned",
+    findingIds: [],
+    rationale: "docs",
+  });
+  const probeOnce = async (path: string) => {
+    scriptModel([
+      step(1000, 50, { name: "run_probe", input: { executable: "bun", args: ["-e", "console.log('usage: app <dir>/')"] } }),
+      () => {
+        throw new Error("provider unavailable");
+      },
+    ]);
+    const { store, run, attemptId, executor, request } = await nativeAttempt(fixturePolicy, "implementation", planned(path));
+    await expect(executor.execute(request)).rejects.toThrow("provider unavailable");
+    return store.latestArtifact(run.runId, `attempts/${attemptId}/probe-1.json`);
+  };
+
+  // R09 propdrift 90c09da7: README examples were written from the spec and disagreed with the CLI.
+  test("a planned task that writes a README can run the program to capture its output", async () => {
+    expect((await probeOnce("README.md"))?.kind).toBe("probe");
+  });
+
+  test("a planned task that writes only code has no probe", async () => {
+    expect(await probeOnce("value.txt")).toBeNull();
   });
 });
 

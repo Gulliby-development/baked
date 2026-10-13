@@ -106,6 +106,7 @@ const FULL_CAPABILITIES = [
   "run-compare",
   "coordinator",
   "artifacts",
+  "packages",
 ];
 /** What a backend from before the optional capability groups answers. */
 const OLDER_CAPABILITIES = ["workflow", "attention", "projects", "sessions", "setup"];

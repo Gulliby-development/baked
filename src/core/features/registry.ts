@@ -481,7 +481,7 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "agent-features",
     group: "Tools and code intelligence",
-    title: "Agent features: de-sloppify, verify edits, tier routing",
+    title: "Agent features: de-sloppify, verify edits, tier routing, edits that add errors",
     tui: ["/agent-features"],
     cli: notNeeded("set in config.json"),
     api: ["/v1/settings: agent-features page"],
@@ -504,6 +504,16 @@ export const FEATURES: readonly Feature[] = [
     cli: notNeeded("`bunx skills add` installs from scripts"),
     api: ["/v1/skills", "/v1/skills/catalog", "/v1/skills/project/:id", "/v1/skills/global/:id"],
     desktop: ["project/skills"],
+  },
+  {
+    id: "packages",
+    group: "Tools and code intelligence",
+    title:
+      "Packages: install agent profiles, skills, workflows and gates from a local folder with per-file hashes",
+    tui: ["/packages", "/packages add: asks before it installs", "/packages remove"],
+    cli: ["baked add: --yes or a prompt", "baked packages"],
+    api: ["/v1/packages", "/v1/packages/inspect", "/v1/packages/install", "/v1/packages/:id"],
+    desktop: ["project/packages"],
   },
   {
     id: "baked-help",
@@ -567,6 +577,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/overview: New run, Quick task"],
   },
   {
+    id: "preset-proposal",
+    group: "Workflow runs",
+    title: "Propose the workflow and budget from the request",
+    tui: ["/workflow: new run form (proposed workflow)"],
+    cli: ["baked workflow propose", "baked workflow run", "auto-preset"],
+    api: ["/v1/workflow/propose"],
+    desktop: ["project/overview: New run (proposed recipe)"],
+  },
+  {
     id: "run-detail",
     group: "Workflow runs",
     title: "Run list, detail, report, artifacts and usage",
@@ -587,6 +606,23 @@ export const FEATURES: readonly Feature[] = [
       "/v1/workflow/runs/:id/usage",
     ],
     desktop: ["project/runs"],
+  },
+  {
+    id: "critic-outcomes",
+    group: "Workflow runs",
+    title: "Critic outcome log: scores with checks, acceptance, delivery and line survival",
+    tui: ["/workflow: outcomes, and the Critic section of report"],
+    cli: ["baked workflow outcomes"],
+    api: partial(
+      ["/v1/workflow/runs/:id/report: Critic section"],
+      646,
+      "the log across runs comes with calibration",
+    ),
+    desktop: partial(
+      ["project/runs: Report tab, Critic section"],
+      646,
+      "the log across runs comes with calibration",
+    ),
   },
   {
     id: "progress-watcher",
@@ -733,6 +769,24 @@ export const FEATURES: readonly Feature[] = [
       "rule choices and ast-grep files live in quality of config.json; baked workflow report shows the findings",
     ),
     api: ["/v1/settings: code-quality page", "/v1/workflow/runs/:id/report"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
+    id: "dependency-check-sast",
+    group: "Workflow runs",
+    title: "New dependencies looked up before checks; Semgrep on the run's diff",
+    tui: ["/code-quality", "/workflow: run report"],
+    cli: ["baked workflow run: --sast auto|off", "baked workflow report"],
+    api: ["/v1/settings: code-quality page", "/v1/workflow/runs", "/v1/workflow/runs/:id/report"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
+    id: "mutation-gate",
+    group: "Workflow runs",
+    title: "Mutation gate on the lines a run added",
+    tui: ["/code-quality", "/workflow: run report"],
+    cli: ["baked workflow run: --mutation off|advisory|required", "baked workflow report"],
+    api: ["/v1/settings: code-quality page", "/v1/workflow/runs", "/v1/workflow/runs/:id/report"],
     desktop: ["settings/chat: Code quality page"],
   },
   {
@@ -1012,7 +1066,7 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "timeouts",
     group: "Projects and setup",
-    title: "Tool and watchdog timeouts, context-window overrides",
+    title: "Tool, edit diagnostics and watchdog timeouts, context-window overrides",
     tui: ["/timeouts"],
     cli: ["--timeout"],
     api: ["/v1/settings: limits page"],
