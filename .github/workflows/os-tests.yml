@@ -2,8 +2,11 @@ name: OS tests
 
 # Runs `bun run test` on Windows and macOS; `CI / check` runs it on Linux for every pull request.
 # Windows and macOS runners cost 2x and 10x Linux minutes in a private repository, so these run
-# on pull requests that touch platform-sensitive code (process, path, shell, filesystem and key
-# store handling, the workflow runtime, the test setup), nightly against main, and on demand.
+# in the merge queue for changes to platform-sensitive code (process, path, shell, filesystem and
+# key store handling, the workflow runtime, the test setup), nightly against main, and on demand.
+# On a pull request the `test (...)` checks pass at once: the queue tests the same change merged
+# with the current main before it lands. Windows is the slow platform, so its run is split into
+# shards that run side by side; `test (<os>)` reports the result of all of its shards.
 
 on:
   pull_request:
@@ -35,32 +38,42 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: |
+          # A pull request that changes how these tests run still runs them, to prove the change.
+          if [ "$EVENT" = "pull_request" ] && ! git diff --name-only "$BASE_SHA" HEAD | grep -Eq '^(\.github/workflows/os-tests\.yml|scripts/test-shard\.ts)$'; then
+            echo "Pull request: these platforms run in the merge queue."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$EVENT" != "pull_request" ] && [ "$EVENT" != "merge_group" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           changed="$(git diff --name-only "$BASE_SHA" HEAD)"
           echo "$changed"
-          pattern='^(package\.json$|bun\.lock$|bunfig\.toml$|tsconfig\.json$|\.gitattributes$|\.github/workflows/os-tests\.yml$|tests/setup/|src/core/(platform|workflows|verification|tools|sessions|memory|hooks|security|utils|workers|git|checkpoints|mcp|terminal|projects)/|src/core/(spawn|process-tracker|secrets|cwd)\.ts$|src/headless/)'
+          pattern='^(package\.json$|bun\.lock$|bunfig\.toml$|tsconfig\.json$|\.gitattributes$|\.github/workflows/os-tests\.yml$|scripts/test-shard\.ts$|tests/setup/|src/core/(platform|workflows|verification|tools|sessions|memory|hooks|security|utils|workers|git|checkpoints|mcp|terminal|projects)/|src/core/(spawn|process-tracker|secrets|cwd)\.ts$|src/headless/)'
           if echo "$changed" | grep -Eq "$pattern"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
           fi
 
-  test:
+  shard:
     needs: scope
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        include:
+          - { os: windows-latest, shard: 1, shards: 3 }
+          - { os: windows-latest, shard: 2, shards: 3 }
+          - { os: windows-latest, shard: 3, shards: 3 }
+          - { os: macos-latest, shard: 1, shards: 1 }
     runs-on: ${{ matrix.os }}
-    name: test (${{ matrix.os }})
-    timeout-minutes: 40
+    name: shard (${{ matrix.os }}, ${{ matrix.shard }}/${{ matrix.shards }})
+    timeout-minutes: 30
     steps:
       - name: Skip
         if: needs.scope.outputs.run != 'true'
-        run: echo "No platform-sensitive files changed; this platform runs nightly."
+        run: echo "No platform-sensitive files changed, or this is a pull request; this platform runs in the merge queue and nightly."
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.scope.outputs.run == 'true'
         with:
@@ -78,4 +91,21 @@ jobs:
           # macOS ships sandbox-exec and Windows runs BAKED's restricted-token launcher, so the OS
           # sandbox integration tests must run on both.
           BAKED_REQUIRE_SANDBOX: ${{ matrix.os == 'macos-latest' && 'seatbelt' || 'restricted-token' }}
-        run: bun run test
+        run: bun scripts/test-shard.ts ${{ matrix.shard }} ${{ matrix.shards }}
+
+  # The required checks: one per platform, green only when every shard of it passed.
+  test:
+    needs: shard
+    if: always()
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }})
+    steps:
+      - name: All shards passed
+        env:
+          RESULT: ${{ needs.shard.result }}
+        run: |
+          echo "Shards: $RESULT"
+          [ "$RESULT" = "success" ]
