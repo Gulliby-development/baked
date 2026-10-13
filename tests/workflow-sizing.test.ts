@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { hostSplitParts, isHostSplitNit } from "../src/core/workflows/analysis-notes.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
 import {
@@ -320,6 +321,20 @@ describe("runtime split of test tasks", () => {
     expect(split?.tasks[2]?.criterionIds).toEqual(["AC-001"]);
     expect(split?.tasks[2]?.description).toContain("write only tests/test_report.py");
     expect(split && sized(split).decision).not.toBe("split-tasks");
+  });
+  // cronsay 15eb3204: analysis read the added part as missing from plan.md and as a duplicate of
+  // its sibling, and sent the run back to plan four times.
+  test("analysis findings about the added parts are notes", () => {
+    const tests = { ...task("T002", ["tests/test_parser.py", "tests/test_report.py"]), dependsOn: ["T001"] };
+    const g = graph(task("T001", ["src/report.py"]), tests);
+    const split = splitTestTasks(g, sized(g));
+    const parts = hostSplitParts(split as TaskGraph);
+    expect(parts).toEqual({ T002: ["T002", "T003"] });
+    expect(isHostSplitNit({ refs: ["tasks.json"], description: "T003 is not listed in plan.md" }, parts)).toBe(true);
+    expect(isHostSplitNit({ refs: ["T002", "T003"], description: "T002 and T003 check the same thing" }, parts)).toBe(true);
+    expect(isHostSplitNit({ refs: ["T001", "T003"], description: "T003 tests code T001 never writes" }, parts)).toBe(false);
+    expect(isHostSplitNit({ refs: ["T002"], description: "T002 has no test file" }, parts)).toBe(false);
+    expect(hostSplitParts(g)).toEqual({});
   });
   test("code tasks and test tasks within one attempt are left to the planner", () => {
     const g = graph(task("T001", ["src/a.ts", "src/b.ts"]), task("T002", ["tests/a.test.ts"]));

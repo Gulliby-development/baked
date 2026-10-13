@@ -25,6 +25,13 @@ export function fillHostConstants(output: string, version: unknown, value: unkno
   if (!isRecord(value)) return value;
   const filled: Record<string, unknown> = { ...value };
   if (version !== undefined) filled.schemaVersion = version;
+  // The analysis is bound to the manifest the host gave it; a hand-copied hash (d0f55591 transposed
+  // two characters) is replaced by the scheduler, so a missing or malformed one is no rejection.
+  if (
+    output === "analysis" &&
+    (typeof filled.inputHash !== "string" || !HASH.test(filled.inputHash))
+  )
+    filled.inputHash = PENDING_HASH;
   if (output === "plan" && isRecord(filled.taskGraph)) {
     const graph: Record<string, unknown> = { ...filled.taskGraph, schemaVersion: 1 };
     for (const key of ["specHash", "planHash"])

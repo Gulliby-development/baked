@@ -43,6 +43,7 @@ import {
   type DoctorDeps,
   defaultDoctorDeps,
 } from "./doctor.js";
+import { fileHash } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { estimateHistory, type SavedEstimate } from "./estimate.js";
 import { replayEvents } from "./events.js";
@@ -70,7 +71,12 @@ import {
   rerouteRecord,
   routeChanges,
 } from "./routing.js";
-import { GATES_ARTIFACT, WorkflowScheduler } from "./scheduler.js";
+import {
+  GATES_ARTIFACT,
+  SPEC_PUBLICATION_FILES,
+  specPublicationPath,
+  WorkflowScheduler,
+} from "./scheduler.js";
 import {
   type CommandIdentity,
   DEFAULT_MAX_PARALLEL_RUNS,
@@ -134,6 +140,9 @@ function rerouteBody(runId: string, command: CommandIdentity, request: RerouteRe
     routes: request.routes ?? {},
   };
 }
+
+const INVALID_OUTPUT_NOTE =
+  "The previous attempt of this stage was rejected as invalid output with the diagnostic below. Correct what it names in this attempt.";
 
 export class NativeWorkflowService implements WorkflowService {
   readonly store: WorkflowStore;
@@ -210,6 +219,8 @@ export class NativeWorkflowService implements WorkflowService {
       instructionHashes,
     } = prepared;
     const v2 = loaded.schemaVersion === 2 ? loaded.definition : null;
+    if (!v2 || (v2.publish !== false && produces(v2, "plan")))
+      this.refuseTakenFeatureId(request.featureId);
     // A definition without a spec stage works on the request stated as one requirement.
     const hostDependencies = request.dependencies
       ? request.dependencies.map(({ featureId, contractHash }) => ({
@@ -295,6 +306,7 @@ export class NativeWorkflowService implements WorkflowService {
       frozenFiles: instructions.files,
       repairPredecessors: {},
       repairScope: {},
+      freshTasks: {},
       taskBudgets: {},
       taskSteps: {},
       sizingReplans: 0,
@@ -393,6 +405,32 @@ export class NativeWorkflowService implements WorkflowService {
     ];
     if (warnings.length)
       prepared.routing.warnings = [...(prepared.routing.warnings ?? []), ...warnings];
+  }
+  /**
+   * Publication refuses to overwrite `specs/<featureId>/` files that no finished run published
+   * as they are, but only after research, specify and plan have run. The same check at start
+   * costs no model call.
+   */
+  private refuseTakenFeatureId(featureId: string): void {
+    const taken: { path: string; openRun: string | null }[] = [];
+    for (const name of SPEC_PUBLICATION_FILES) {
+      const path = specPublicationPath(featureId, name);
+      const current = fileHash(join(this.workspace, path));
+      if (current === null) continue;
+      const last = this.store.lastPublication(path);
+      const published = last !== null && last.afterHash === current;
+      if (published && ["completed", "failed", "cancelled"].includes(last.status)) continue;
+      taken.push({ path, openRun: published ? last.runId : null });
+    }
+    if (!taken.length) return;
+    const open = taken.find((t) => t.openRun)?.openRun;
+    throw new WorkflowFault(
+      "INPUT_CHANGED",
+      open
+        ? `specs/${featureId}/ belongs to open run ${open}; continue or cancel that run, or start with another feature id`
+        : `specs/${featureId}/ already holds ${taken.map((t) => t.path).join(", ")}, which no finished run published; start with another feature id, or move that folder first`,
+      { reason: "feature_id_taken", files: taken.map((t) => t.path) },
+    );
   }
   private saveEstimate(runId: string, prepared: PreparedStart, workflowId: string): void {
     try {
@@ -599,6 +637,9 @@ export class NativeWorkflowService implements WorkflowService {
           return;
         }
       }
+      const blocked = this.store.run(runId);
+      if (blocked.status === "blocked" && blocked.reason === "invalid_output")
+        this.noteInvalidOutput(runId);
       // Resuming is the operator's decision to try again: a task whose implementation did not
       // complete (no snapshot) goes back to pending and continues on the edits already in place.
       for (const task of this.store.tasks(runId))
@@ -606,6 +647,25 @@ export class NativeWorkflowService implements WorkflowService {
           this.store.taskStatus(runId, task.id, "pending");
       this.store.transition(runId, "paused", "none");
     });
+  }
+  /**
+   * Resuming a run that blocked on invalid output repeats the stage that produced it. The agent
+   * gets the diagnostic as a correction note, so the retry is not the same attempt again; a
+   * diagnostic already noted is not added twice.
+   */
+  private noteInvalidOutput(runId: string): void {
+    const latest = this.store
+      .artifacts(runId)
+      .filter((a) => a.logical_path.startsWith("errors/"))
+      .at(-1);
+    if (!latest) return;
+    const diagnostic = this.store.readArtifact(runId, latest.id).trim().slice(0, 2000);
+    if (!diagnostic) return;
+    const state = this.store.state(runId);
+    const note = `\n${INVALID_OUTPUT_NOTE}\n${canonical({ diagnostic })}`;
+    if (state.prompt.includes(note)) return;
+    state.prompt += note;
+    this.store.saveState(runId, state);
   }
   /**
    * "Accept" on a stopped convergence: the remaining findings become known limitations, and the
