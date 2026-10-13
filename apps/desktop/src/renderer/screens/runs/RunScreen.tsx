@@ -64,7 +64,7 @@ const SMALL_SUB = "text-[12px] text-muted-foreground";
 const WARN_NOTE = "text-[12px] text-[var(--warn)]";
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 
-type Confirm = "undo" | "cancel" | "fork" | "discard";
+type Confirm = "undo" | "cancel" | "fork" | "discard" | "accept";
 
 function Controls({
   projectKey,
@@ -106,6 +106,7 @@ function Controls({
   const canFork = groupB && (run.status === "blocked" || ended);
   const worktree = run.worktree?.present ? run.worktree : null;
   const canDiscard = groupB && ended && worktree !== null;
+  const canAccept = run.status === "blocked" && run.reason === "input_changed";
   const dialog = (which: Confirm) => ({
     open: confirm === which,
     busy,
@@ -120,6 +121,11 @@ function Controls({
         </span>
       )}
       <RunMaintenance projectKey={projectKey} data={data} />
+      {canAccept && (
+        <Button variant="secondary" size="md" disabled={busy} onClick={() => ask("accept")}>
+          Accept changes
+        </Button>
+      )}
       {canUndo && (
         <Button variant="secondary" size="md" disabled={busy} onClick={() => ask("undo")}>
           Undo edits
@@ -160,6 +166,17 @@ function Controls({
           Cancel run
         </Button>
       )}
+      <ConfirmDialog
+        {...dialog("accept")}
+        title="Keep the changed files?"
+        confirmLabel="Accept and resume"
+        onConfirm={() =>
+          void act(() => workflow.resume(projectKey, run, { acceptWorkspace: true }))
+        }
+      >
+        Keeps the files changed outside the run, as listed above, and continues from where the run
+        stopped. Later tasks build on them, and the run records that you accepted them.
+      </ConfirmDialog>
       <ConfirmDialog
         {...dialog("undo")}
         title="Undo this run's edits?"

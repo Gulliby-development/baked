@@ -127,7 +127,7 @@ bun test tests/feature-parity.test.ts
 | Approve, reject, answer, give evidence, continue, accept a stopped convergence | `/workflow` | `baked workflow approve`, `baked workflow reject`, `baked workflow answer` +3 | `/v1/workflow/runs/:id/approve`, `/v1/workflow/runs/:id/reject`, `/v1/workflow/runs/:id/answer` +3 | `project/runs`, `attention` |
 | Acceptance: criteria that need a person's evidence | `/workflow` | `baked workflow evidence` | `/v1/workflow/runs/:id/evidence` | `project/runs`, `attention` |
 | Recover a stuck side effect | `/workflow` | `baked workflow recover` | `/v1/workflow/runs/:id/recover` | `project/runs` |
-| Pause, resume, cancel, extend, reroute, undo edits | `/workflow` | `baked workflow pause`, `baked workflow resume`, `baked workflow cancel` +3 | `/v1/workflow/runs/:id/pause`, `/v1/workflow/runs/:id/resume`, `/v1/workflow/runs/:id/cancel` +3 | `project/runs` |
+| Pause, resume, accept outside changes, cancel, extend, reroute, undo edits | `/workflow` | `baked workflow pause`, `baked workflow resume`, `baked workflow cancel` +3 | `/v1/workflow/runs/:id/pause`, `/v1/workflow/runs/:id/resume`, `/v1/workflow/runs/:id/cancel` +3 | `project/runs` |
 | Fork a run | `/workflow` | `baked workflow fork` | `/v1/workflow/runs/:id/fork` | `project/runs` |
 | Discard a run's worktree | `/workflow` | `baked workflow discard-worktree` | `/v1/workflow/runs/:id/discard-worktree` | `project/runs` |
 | Worktree sizes and cleanup | `/workflow` | `baked workflow worktrees` | `/v1/workflow/worktrees`, `/v1/workflow/worktrees/clean` | `project/runs` |

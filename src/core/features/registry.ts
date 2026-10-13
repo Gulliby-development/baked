@@ -792,7 +792,7 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "run-control",
     group: "Workflow runs",
-    title: "Pause, resume, cancel, extend, reroute, undo edits",
+    title: "Pause, resume, accept outside changes, cancel, extend, reroute, undo edits",
     tui: ["/workflow"],
     cli: [
       "baked workflow pause",

@@ -1123,7 +1123,12 @@ function mutate(run: MockRun, action: string, body: { requestId?: string; tokens
       run.revision++;
       break;
     case "resume":
-      if (run.inputChanged || run.reason === "input_changed")
+      // Accepting keeps a person's edits; changed instructions still need a revised plan.
+      if (
+        run.inputChanged ||
+        (run.reason === "input_changed" &&
+          (body as { acceptWorkspace?: boolean }).acceptWorkspace !== true)
+      )
         return conflict("INPUT_CHANGED", "An input of this run changed; revise its plan first");
       if (run.status !== "running") setStatus(run, "running");
       if (

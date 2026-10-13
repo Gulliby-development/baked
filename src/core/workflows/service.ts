@@ -18,7 +18,7 @@ import {
   type ConvergenceRequestBody,
   grantRound,
 } from "../verification/convergence-stop.js";
-import { hostDiff } from "../verification/snapshot.js";
+import { hostDiff, sourceManifest } from "../verification/snapshot.js";
 import { NativeAgentExecutor } from "./agent-executor.js";
 import { supersedeResearch } from "./analysis-notes.js";
 import { approvalDigest } from "./approval.js";
@@ -79,7 +79,7 @@ import {
   renderProjectMemory,
 } from "./project-memory.js";
 import { abortableDelay } from "./retry.js";
-import { undoRunEdits } from "./rollback.js";
+import { runWrittenHash, undoRunEdits } from "./rollback.js";
 import {
   independenceWarnings,
   independentReviewMode,
@@ -99,6 +99,7 @@ import {
   DEFAULT_MAX_PARALLEL_RUNS,
   type Decision,
   executionModeOf,
+  generatedPaths,
   Hash,
   PolicySchema,
   ProfileSchema,
@@ -731,10 +732,22 @@ export class NativeWorkflowService implements WorkflowService {
     if (active) await active.promise;
     return result;
   }
-  async resume(runId: string, command: CommandIdentity): Promise<RunSnapshot> {
+  async resume(
+    runId: string,
+    command: CommandIdentity,
+    options: { acceptWorkspace?: boolean } = {},
+  ): Promise<RunSnapshot> {
     this.enabled();
-    return this.store.command(runId, command, { runId, ...command, action: "resume" }, () => {
+    const outside = options.acceptWorkspace ? await this.outsideChanges(runId) : null;
+    const body = {
+      runId,
+      ...command,
+      action: "resume",
+      ...(options.acceptWorkspace ? { acceptWorkspace: true } : {}),
+    };
+    return this.store.command(runId, command, body, () => {
       assertMutable(this.store.run(runId).status);
+      if (outside) this.acceptOutsideChanges(runId, outside);
       if (this.store.requests(runId).some(blocksRun))
         throw new WorkflowFault("STALE_DECISION", "Resolve pending requests before resuming");
       assertFrozenInputs(this.store.state(runId));
@@ -766,6 +779,53 @@ export class NativeWorkflowService implements WorkflowService {
           this.store.taskStatus(runId, task.id, "pending");
       this.store.transition(runId, "paused", "none");
     });
+  }
+  /**
+   * The source files that differ from what the run expects and that none of the run's own
+   * journaled edits explain: a person's changes in the run's workspace.
+   */
+  async outsideChanges(
+    runId: string,
+  ): Promise<{ path: string; before: string | null; after: string | null }[]> {
+    const state = this.store.state(runId);
+    const expected = state.expectedFiles;
+    if (!expected) return [];
+    const policy = PolicySchema.parse(JSON.parse(this.store.run(runId).policy_json));
+    const files = await sourceManifest(runRoot(this.workspace, state), generatedPaths(policy));
+    return [...new Set([...Object.keys(files), ...Object.keys(expected)])]
+      .filter((path) => files[path] !== expected[path])
+      .filter((path) => runWrittenHash(this.store, runId, path) !== (files[path] ?? null))
+      .sort()
+      .map((path) => ({ path, before: expected[path] ?? null, after: files[path] ?? null }));
+  }
+  /**
+   * Keeps a person's changes to the run's workspace as the run's baseline (#971, rotaplan
+   * c4ae5074: a diagnostic asked the operator to delete a file, and the run then blocked on that
+   * change with no way back). The accepted paths with their hashes are an operator record; the
+   * run's own edits stay journaled, so `workflow undo` still restores what the run wrote.
+   */
+  private acceptOutsideChanges(
+    runId: string,
+    changes: { path: string; before: string | null; after: string | null }[],
+  ): void {
+    const state = this.store.state(runId);
+    if (!changes.length || !state.expectedFiles)
+      throw new WorkflowFault("STALE_DECISION", "The workspace has no outside changes to accept");
+    const expected = { ...state.expectedFiles };
+    for (const change of changes) {
+      if ((expected[change.path] ?? null) !== change.before)
+        throw new WorkflowFault("STALE_DECISION", `${change.path} changed again; check it again`);
+      if (change.after === null) delete expected[change.path];
+      else expected[change.path] = change.after;
+    }
+    this.store.artifact(
+      runId,
+      "recovery",
+      `operator/accepted-workspace-${newId()}.json`,
+      canonical({ acceptedBy: "operator", changes }),
+    );
+    state.expectedFiles = expected;
+    this.store.saveState(runId, state);
   }
   /**
    * Resuming a run that blocked on invalid output repeats the stage that produced it. The agent
