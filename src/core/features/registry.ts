@@ -570,7 +570,7 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "chat-memory",
     group: "Tools and code intelligence",
-    title: "Long-term chat memory: browse, pin, reword, hide, cleanup, scopes",
+    title: "Long-term chat memory: browse, pin, reword, hide, cleanup, scopes, sharing with runs",
     tui: ["/memory: Chat tab"],
     cli: notNeeded("one-shot runs read memory, people curate it"),
     api: ["/v1/memory", "/v1/memory/cleanup", "/v1/memory/settings"],

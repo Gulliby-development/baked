@@ -36,6 +36,8 @@ import {
 import { onFileEdited, onFileRead } from "../tools/file-events.js";
 import { IntelligenceClient } from "../workers/intelligence-client.js";
 import { dotnetFiles } from "../workflows/language.js";
+import { runMemoryForChat } from "../workflows/project-memory.js";
+import { WorkflowStore } from "../workflows/store.js";
 import { BakeMapSnapshot } from "./bake-map-snapshot.js";
 // extractConversationTerms removed — FTS boosting was noisy
 import { walkDir } from "./file-tree.js";
@@ -78,6 +80,8 @@ export class ContextManager {
   private recallEditEpoch = 0;
   /** Memory ids surfaced earlier in this turn-stream — skipped on subsequent recall to avoid duplicate <recalled_memories> blocks. Cleared on cache reset (compaction, /clear, session restore). */
   private surfacedMemoryIds = new Set<string>();
+  /** Whether this session already read run memory (shared once per session, #818). */
+  private runMemorySurfaced = false;
   private bakeMode: BakeMode = "default";
   private fileTreeCache: { tree: string; at: number } | null = null;
   private projectInfoCache: { info: string | null; at: number } | null = null;
@@ -243,7 +247,8 @@ export class ContextManager {
     const memGen = this.memoryManager.generation;
     const readScope = this.memoryManager.scopeConfig.readScope;
     if (readScope === "none") return null;
-    const cacheKey = `${memGen}|${this.recallEditEpoch}|${readScope}|${lastUserMessage}|${editedPaths.join(",")}`;
+    const sharing = this.memoryManager.scopeConfig.shareWithRuns === true;
+    const cacheKey = `${memGen}|${this.recallEditEpoch}|${readScope}|${sharing}|${lastUserMessage}|${editedPaths.join(",")}`;
     if (this.recallCache && this.recallCache.key === cacheKey) {
       return this.recallCache.pair;
     }
@@ -267,7 +272,12 @@ export class ContextManager {
     );
 
     const fresh = results.filter((r) => !this.surfacedMemoryIds.has(r.record.id));
-    if (fresh.length === 0) {
+    let runMemory: string | null = null;
+    if (sharing && !this.runMemorySurfaced) {
+      runMemory = this.readRunMemory();
+      this.runMemorySurfaced = true;
+    }
+    if (fresh.length === 0 && !runMemory) {
       this.recallCache = { key: cacheKey, pair: null };
       return null;
     }
@@ -292,16 +302,39 @@ export class ContextManager {
     if (anyHasDetails) {
       lines.push("(call memory(action:'get', id:<8-char prefix>) to read full details)");
     }
+    // Run memory rides inside the same envelope so compaction skips it like any recall.
+    if (runMemory) {
+      lines.push(
+        "<run_memory>",
+        "What workflow runs in this project learned (shared by the memory settings; people edit it under Memory > Runs). Background: the user's words take precedence.",
+        runMemory,
+        "</run_memory>",
+      );
+    }
     lines.push("</recalled_memories>");
 
     const userMessage = lines.join("\n");
-    const assistantAck = MEMORY_RECALL_ACK(surfacedIds.length);
+    const assistantAck = MEMORY_RECALL_ACK(surfacedIds.length + (runMemory ? 1 : 0));
     const pair: [{ role: "user"; content: string }, { role: "assistant"; content: string }] = [
       { role: "user" as const, content: userMessage },
       { role: "assistant" as const, content: assistantAck },
     ];
     this.recallCache = { key: cacheKey, pair };
     return pair;
+  }
+
+  /** Run memory for the chat agent, or null when the project has no runs or nothing to share. */
+  private readRunMemory(): string | null {
+    if (!existsSync(join(this.cwd, ".baked", "workflows.sqlite"))) return null;
+    let store: WorkflowStore | null = null;
+    try {
+      store = new WorkflowStore(this.cwd, true);
+      return runMemoryForChat(store);
+    } catch {
+      return null;
+    } finally {
+      store?.close();
+    }
   }
 
   /** Provider options for the memory recall message pair — cached ephemerally. */
@@ -619,6 +652,7 @@ export class ContextManager {
   resetConversationTracking(): void {
     this.editedFiles.clear();
     this.surfacedMemoryIds.clear();
+    this.runMemorySurfaced = false;
     resetSurfacedHints(this.tabId ?? undefined);
     this.recallCache = null;
     this.mentionedFiles.clear();
