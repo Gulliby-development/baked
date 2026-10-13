@@ -174,6 +174,8 @@ export interface StartBody {
   clarification?: "ask" | "assume";
   /** The run's OS sandbox (`--sandbox`); omitted, the policy and the sandbox setting decide. */
   sandbox?: "off" | "auto" | "required";
+  /** The run model overrides every configured route (`--model-strict`). */
+  modelStrict?: boolean;
 }
 
 /** The most tasks a run may implement at once (`MAX_CONCURRENT_WRITERS` in the core). */

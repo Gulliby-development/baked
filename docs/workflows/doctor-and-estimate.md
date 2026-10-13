@@ -144,6 +144,10 @@ so doctor and start report the same problem in the same words.
   when there is at least one; otherwise from all runs; otherwise from the default ranges. The basis line
   says which (`2 earlier runs of standard`, `5 earlier runs of other workflows`, `generic range`).
   A stage keeps per-stage fallback: a stage the same-workflow runs never reached uses all runs.
+- **Reads the shared stores.** The runs are this project's plus those of every store the policy names
+  in `sizing.historyStores` (a `.sqlite` path or a project directory, relative to the workspace), each
+  run once. The basis line counts them: `3 earlier runs of sdd, 2 of them from other projects`. The
+  start estimate, `baked workflow estimate` and the doctor read the same history.
 - **Attaches models.** Each stage gets the models that will run it: the stage route, else the stage
   profile's resolved model; tasks stages use the `implementer` profile; review stages use their bound
   review profiles, and their tokens are split evenly across those models.

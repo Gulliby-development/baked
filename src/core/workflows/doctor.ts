@@ -8,7 +8,7 @@ import { getProviderApiKey } from "../secrets.js";
 import { type SandboxMode, sandboxSettings } from "../security/sandbox.js";
 import { defaultWorkflowPolicy } from "./defaults.js";
 import { WorkflowFault } from "./errors.js";
-import { type PreRunEstimate, readHistory } from "./estimate.js";
+import { estimateHistory, type PreRunEstimate } from "./estimate.js";
 import { commandMayBeRunning, isExecutionLease, leaseOwnerAlive } from "./leases.js";
 import { unmatchedMcpGrants } from "./mcp-grants.js";
 import { estimatePrepared, type ModelUse, plannedStages } from "./pre-run.js";
@@ -311,7 +311,11 @@ export async function preRunEstimate(
   const prepared = await prepareStart(workspace, config, start);
   const { store } = openStore(workspace);
   try {
-    return estimatePrepared(prepared, start.workflowId, store ? readHistory(store, 0) : []);
+    return estimatePrepared(
+      prepared,
+      start.workflowId,
+      estimateHistory(store, workspace, prepared.policy, 0),
+    );
   } finally {
     store?.close();
   }
@@ -586,7 +590,11 @@ export async function runDoctor(
           subject: profileId,
         });
       try {
-        estimate = estimatePrepared(prepared, workflowId, store ? readHistory(store, 0) : []);
+        estimate = estimatePrepared(
+          prepared,
+          workflowId,
+          estimateHistory(store, workspace, prepared.policy, 0),
+        );
       } catch {
         // An estimate is advice; the doctor reports without it.
       }
