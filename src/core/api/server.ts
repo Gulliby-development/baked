@@ -130,6 +130,7 @@ import {
   RedactBody,
   RejectBody,
   RerouteBody,
+  ResumeBody,
   ReviseBody,
   RouteQuery,
   StartBody,
@@ -179,6 +180,7 @@ export const CAPABILITIES = [
   "settings",
   "git",
   "hooks",
+  "hooks-edit",
   "provider-switch",
   "chat-export",
   "chat-effort",
@@ -341,8 +343,14 @@ function mutationArgs(action: Mutation, runId: string, raw: unknown): WorkflowAr
       ...(inline ? { inline } : {}),
     });
   switch (action) {
+    case "resume": {
+      const body = ResumeBody.parse(raw);
+      return args({
+        ...identity(body),
+        ...(body.acceptWorkspace ? { "accept-workspace": true } : {}),
+      });
+    }
     case "pause":
-    case "resume":
     case "cancel":
     case "discard-worktree":
       return args(identity(CommandBody.parse(raw)));

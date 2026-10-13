@@ -44,7 +44,14 @@ Hooks run shell commands at lifecycle events. The format is the one Claude Code 
 4. the global BAKED `config.json`
 5. `.baked/config.json`
 
-`"disableAllHooks": true` in any of them turns hooks off. `/hooks` lists active hooks and toggles them for the session. In the desktop app, the project's Hooks section lists them with their files and switches an event off until the project's backend restarts (`GET /v1/hooks`, `POST /v1/hooks/session` in the [desktop API](desktop/api.md)); neither writes a file, and hooks are added or changed only in the files above.
+`"disableAllHooks": true` in any of them turns hooks off.
+
+BAKED adds, edits and deletes hooks only in its own files: `.baked/config.json` of the project ("This project") or of the home folder ("All my projects"). Claude Code's `.claude` files are read and run but never written; their hooks show as imported, read-only, and can be copied into BAKED's config to change them. Every other key of a config file is kept.
+
+- `/hooks` in the terminal lists the events by phase with their hooks. **New hook** starts from a template (format after edits, block `rm -rf`, notify when done, log shell commands, ping on approvals) or a blank hook, then asks for the event, the matcher, the command, whether to wait and where to save. Picking an event pauses its hooks for the session, adds a hook to it, or opens a hook to edit or delete it.
+- The desktop app's Hooks section shows the same as a timeline of the agent's events, each explained in a sentence, with its hooks as cards: the command, matcher, condition, whether the agent waits, and a badge for the file it comes from. **New hook** opens a dialog with the same templates and fields and a preview of the JSON it saves; each BAKED hook has Edit and Delete, each imported one Copy to BAKED, and each event with hooks a switch that pauses them until the project's backend restarts. The local API serves it as `GET|POST|PUT|DELETE /v1/hooks` and `POST /v1/hooks/session` ([desktop API](desktop/api.md)).
+
+A hook in a file is addressed by its position and a hash of its content, so a change made after someone edited the file by hand fails with a conflict instead of changing another hook. A command shown with a secret redacted keeps its stored value when an edit leaves it unchanged.
 
 ```json
 {

@@ -17,6 +17,13 @@ export interface ProviderModelInfo {
   contextWindow?: number;
 }
 
+/** One context window a provider offers for a model, and the model ID that asks for it. */
+export interface ContextSizeOption {
+  tokens: number;
+  /** The provider's own model ID (without the `provider/` prefix) for this size. */
+  modelId: string;
+}
+
 export interface ProviderDefinition {
   id: string;
   name: string;
@@ -42,6 +49,11 @@ export interface ProviderDefinition {
   contextWindows: [pattern: string, tokens: number][];
 
   contextWindowOverrides?: [pattern: string, tokens: number][];
+  /**
+   * The context windows the provider offers for a model, smallest first, when it offers more
+   * than one (Claude Code's `[1m]` variants). Absent or fewer than two: the model has one size.
+   */
+  contextSizes?(modelId: string): ContextSizeOption[];
   grouped?: boolean;
   checkAvailability?(): Promise<boolean>;
   /** A login another tool already holds, used when no key is set in the environment or saved. */

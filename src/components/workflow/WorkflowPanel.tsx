@@ -117,6 +117,8 @@ export function WorkflowPanel({
   const [confirmExtend, setConfirmExtend] = useState(false);
   const [confirmReroute, setConfirmReroute] = useState(false);
   const [confirmUndo, setConfirmUndo] = useState(false);
+  // The files changed outside a blocked run that "accept changes" would keep.
+  const [confirmAccept, setConfirmAccept] = useState<string[] | null>(null);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   // The stage a fork starts at; "" starts from the beginning with a new approval.
   const [forkPick, setForkPick] = useState<{ stages: string[]; index: number } | null>(null);
@@ -352,6 +354,14 @@ export function WorkflowPanel({
       } else if (key === "escape" || key === "n") setConfirmReroute(false);
       return;
     }
+    if (confirmAccept) {
+      event.preventDefault();
+      if (key === "y") {
+        setConfirmAccept(null);
+        void act(confirmAccept.length ? "accept-workspace" : "resume");
+      } else if (key === "escape" || key === "n") setConfirmAccept(null);
+      return;
+    }
     if (confirmUndo) {
       event.preventDefault();
       if (key === "y") {
@@ -437,6 +447,13 @@ export function WorkflowPanel({
     else if (action.action === "discard-worktree") setConfirmDiscard(true);
     else if (action.action === "fork" && service?.store.forkStages(snapshot.runId).length)
       setForkPick({ stages: ["", ...service.store.forkStages(snapshot.runId)], index: 0 });
+    else if (action.action === "accept-workspace" && service)
+      void service
+        .outsideChanges(snapshot.runId)
+        .then((changes) => setConfirmAccept(changes.map((c) => c.path)))
+        .catch((err: unknown) =>
+          setFlash({ kind: "err", message: err instanceof Error ? err.message : String(err) }),
+        );
     else if (action.action === "checks") void readChecks(snapshot.runId);
     else if (action.action === "reviews") void readChecks(snapshot.runId, true);
     else if (action.action === "undo") {
@@ -742,6 +759,13 @@ export function WorkflowPanel({
           <text fg={t.warning}>
             Undo this run's uncommitted task edits? Files changed since the run wrote them stay as
             they are. Y confirms; N keeps the files.
+          </text>
+        ) : null}
+        {confirmAccept ? (
+          <text fg={t.warning}>
+            {confirmAccept.length
+              ? `Keep the files changed outside the run (${confirmAccept.slice(0, 5).join(", ")}${confirmAccept.length > 5 ? `, and ${String(confirmAccept.length - 5)} more` : ""}) and continue? Later tasks build on them. Y confirms; N keeps the run blocked.`
+              : "No file differs from the run any more. Y retries the run; N keeps it blocked."}
           </text>
         ) : null}
         {undone?.runId === runId ? <UndoReport report={undone.report} /> : null}

@@ -301,6 +301,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/chat: effort picker"],
   },
   {
+    id: "context-size",
+    group: "Chat and sessions",
+    title: "Context window size per chat; the coordinator defaults to the largest",
+    tui: ["/context-size: per tab, shown in the header"],
+    cli: ["--context"],
+    api: ["/v1/sessions/:id: contextSize, contextSizes", "/v1/models: contextSizes"],
+    desktop: ["project/chat: context size picker", "project/coordinator: context size picker"],
+  },
+  {
     id: "context-dashboard",
     group: "Chat and sessions",
     title: "Context and cost dashboard for a chat",
@@ -545,7 +554,7 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "hooks",
     group: "Tools and code intelligence",
-    title: "Hooks: view and switch off",
+    title: "Hooks: view, add, edit, pause",
     tui: ["/hooks"],
     cli: notNeeded("hooks are files scripts edit directly"),
     api: ["/v1/hooks", "/v1/hooks/session"],
@@ -792,7 +801,7 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "run-control",
     group: "Workflow runs",
-    title: "Pause, resume, cancel, extend, reroute, undo edits",
+    title: "Pause, resume, accept outside changes, cancel, extend, reroute, undo edits",
     tui: ["/workflow"],
     cli: [
       "baked workflow pause",

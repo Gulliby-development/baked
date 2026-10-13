@@ -17,7 +17,8 @@ files:
   - out/**
   - "!out/**/*.map"
   - package.json
-  # The tray icon is loaded from <appPath>/build at runtime.
+  # The window and tray icons are loaded from <appPath>/build at runtime.
+  - build/icon.png
   - build/tray.png
   - build/tray@2x.png
   - build/trayTemplate.png

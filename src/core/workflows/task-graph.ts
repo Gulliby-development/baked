@@ -1,5 +1,5 @@
 import { hashJson } from "../specs/hash.js";
-import { pathsInOutput } from "../verification/convergence.js";
+import { failingPathsInOutput, pathsInOutput } from "../verification/convergence.js";
 import { isTestFile } from "./affected-tests.js";
 import { writtenCodePaths } from "./check-policy.js";
 import type { TaskGraph } from "./schemas.js";
@@ -263,26 +263,46 @@ export function testUpdateOwners(
   output: string,
 ): string[] {
   if (!graph || task.origin !== "planned") return [];
-  const named = pathsInOutput(output, graph.tasks);
+  // Where the output locates failures, only those files count: a type error in a test names the
+  // source declaration it disagrees with in an indented line (mdtoc-update 952805a8, #972).
+  const located = failingPathsInOutput(output, graph.tasks);
+  const named = located.length ? located : pathsInOutput(output, graph.tasks);
   if (!named.length || !named.every(isTestFile)) return [];
   if (named.some((path) => task.writes.some((w) => w.path === path))) return [];
+  const owners = new Set<string>();
+  for (const path of named) {
+    const pending = pendingWriters(graph, rows, gates, task, path);
+    if (!pending.length) return [];
+    for (const id of pending) owners.add(id);
+  }
+  return [...owners];
+}
+
+/**
+ * The planned tasks other than `task` that write `path` and have not finished: a repair of
+ * `task` must leave the file to them (mdtoc-update 952805a8: a corrective task rewrote the tests
+ * four later tasks update, #972).
+ */
+export function pendingWriters(
+  graph: TaskGraph | null | undefined,
+  rows: TaskRow[],
+  gates: RuntimeState["taskGates"],
+  task: Pick<Task, "id">,
+  path: string,
+): string[] {
   const done = (id: string): boolean =>
     rows.some(
       (r) =>
         r.id === id &&
         (r.status === "verified" || (r.status === "implemented" && hasTaskGate(r, gates))),
     );
-  const owners = new Set<string>();
-  for (const path of named) {
-    const pending = graph.tasks.filter(
+  return (graph?.tasks ?? [])
+    .filter(
       (t) =>
         t.id !== task.id &&
         t.origin === "planned" &&
         t.writes.some((w) => w.path === path && w.action !== "delete") &&
         !done(t.id),
-    );
-    if (!pending.length) return [];
-    for (const t of pending) owners.add(t.id);
-  }
-  return [...owners];
+    )
+    .map((t) => t.id);
 }

@@ -27,6 +27,7 @@ import {
   watchSubagentHooks,
   withHookContext,
 } from "../core/hooks/lifecycle.js";
+import { withContextSize } from "../core/llm/context-sizes.js";
 import { resolveModel } from "../core/llm/provider.js";
 import { buildProviderOptions, withChatEffort } from "../core/llm/provider-options.js";
 import { disposeMCPManager } from "../core/mcp/index.js";
@@ -36,6 +37,7 @@ import { setActiveSessionId } from "../stores/session.js";
 import type {
   AppConfig,
   BakeMode,
+  ChatContextSize,
   ChatEffort,
   ChatMessage,
   ImageAttachment,
@@ -101,6 +103,7 @@ async function setupAgent(
     modelId?: string;
     mode?: BakeMode;
     effort?: ChatEffort;
+    contextSize?: ChatContextSize;
     noRepomap?: boolean;
     system?: string;
     quiet?: boolean;
@@ -119,7 +122,9 @@ async function setupAgent(
   const mode = opts.mode ?? "default";
   const showProgress = !opts.json && !opts.events && !opts.quiet;
 
-  const modelId = opts.modelId ?? merged.defaultModel;
+  const chosenModel = opts.modelId ?? merged.defaultModel;
+  // `--context` picks the model variant with that window (Claude Code `[1m]`).
+  const modelId = withContextSize(chosenModel, opts.contextSize);
   if (modelId === "none") {
     stderrError("No model configured. Pass --model provider/model or set defaultModel in config.");
     process.exit(EXIT_ERROR);

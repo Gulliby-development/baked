@@ -66,6 +66,9 @@ export interface SharedContextResources {
  */
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 
+/** Embedding models already reported as failing; each process logs a model once. */
+const failedEmbedders = new Set<string>();
+
 export class ContextManager {
   private cwd: string;
   private hasGhCli: boolean | null = null;
@@ -1829,12 +1832,12 @@ export class ContextManager {
   /**
    * Resolve and wire the memory embedder. Pipeline:
    *   1. config.memory.embeddingModel (explicit)
-   *   2. config.taskRouter.semantic
+   *   2. config.taskRouter.semantic, when it names an embedding model
    *   3. heuristic from active chat model's provider
    *   4. null → hashbag-v2 fallback
    *
-   * Best-effort — every failure path falls back to hashbag-v2 and logs
-   * once to background errors. NEVER throws. Idempotent: re-calling with
+   * Best-effort — every failure path falls back to hashbag-v2; a failing
+   * explicit model is logged once to background errors. NEVER throws. Idempotent: re-calling with
    * the same resolved model is a no-op via MemoryManager.configureEmbedder.
    */
   private async maybeWireMemoryEmbedder(activeModelId?: string): Promise<void> {
@@ -1857,14 +1860,19 @@ export class ContextManager {
       if (provider) {
         this.memoryRecall.setProviderEmbedder(provider);
       } else {
-        // configureEmbedder smoke-tested and rejected — log once, fall back.
-        try {
-          const { logBackgroundError } = await import("../diagnostics/errors.js");
-          logBackgroundError(
-            "memory.embedder",
-            `Failed to wire ${resolution.modelId} (${resolution.reason}) — using hashbag-v2`,
-          );
-        } catch {}
+        // configureEmbedder smoke-tested and rejected — fall back. Only a model the user named
+        // in memory.embeddingModel is an error worth showing, once per model per process; a
+        // guessed default that does not answer (no OpenAI key) quietly stays on hashbag-v2.
+        if (resolution.source === "explicit" && !failedEmbedders.has(resolution.modelId)) {
+          failedEmbedders.add(resolution.modelId);
+          try {
+            const { logBackgroundError } = await import("../diagnostics/errors.js");
+            logBackgroundError(
+              "memory.embedder",
+              `Failed to wire ${resolution.modelId} (${resolution.reason}) — using hashbag-v2`,
+            );
+          } catch {}
+        }
         this.memoryRecall.setProviderEmbedder(null);
       }
     } catch {

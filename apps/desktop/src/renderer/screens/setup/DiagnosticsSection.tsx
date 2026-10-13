@@ -1,4 +1,4 @@
-import { type CSSProperties, type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useState } from "react";
 import {
   type BackgroundError,
   type CleanupAction,
@@ -17,30 +17,27 @@ import { Button } from "../../components/ui/button.js";
 import { ConfirmDialog } from "../../components/ui/confirm-dialog.js";
 import { Empty } from "../../components/ui/empty.js";
 import { Switch } from "../../components/ui/switch.js";
+import {
+  FILL,
+  GlanceCard,
+  GROW,
+  RISE,
+  riseDelay,
+  Tile,
+  type Tone,
+  TonePanel,
+  useGrown,
+} from "../../components/ui/tone.js";
 import { ago, tokens } from "../../format.js";
 import { cn } from "../../lib/cn.js";
 import { LEDE, TABLE } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
-import { ACTIONS, errorText, LoadState, ROW, SETUP, useLoad, WRAP } from "./shared.js";
+import { errorText, LoadState, ROW, SETUP, useLoad, WRAP } from "./shared.js";
 
 const NUM = "text-right font-mono tabular-nums";
 
-/** The colour blocks of the screen: each kind of data and each section owns one. */
-type Tone = "accent" | "ok" | "warn" | "err" | "info" | "plain";
 type BadgeTone = "accent" | "ok" | "warn" | "err" | "info" | "neutral";
-
-const FILL: Record<Tone, string> = {
-  accent: "bg-main text-main-foreground",
-  ok: "bg-fill-ok text-main-foreground",
-  warn: "bg-fill-warn text-main-foreground",
-  err: "bg-fill-err text-main-foreground",
-  info: "bg-fill-info text-main-foreground",
-  plain: "bg-secondary-background text-foreground",
-};
-
-const GROW = "transition-[width] duration-700 ease-out motion-reduce:transition-none";
-const RISE = "animate-rise motion-reduce:animate-none";
 
 const SECTIONS = {
   storage: { title: "Storage", icon: "database", tone: "accent" },
@@ -51,7 +48,7 @@ const SECTIONS = {
 type SectionId = keyof typeof SECTIONS;
 const ORDER: SectionId[] = ["storage", "events", "errors", "sandbox"];
 
-const delay = (step: number, ms = 60): CSSProperties => ({ animationDelay: `${step * ms}ms` });
+const delay = riseDelay;
 
 function ms(value: number): string {
   if (value <= 0) return "–";
@@ -66,33 +63,7 @@ function plural(n: number, one: string, many = `${one}s`): string {
   return `${String(n)} ${n === 1 ? one : many}`;
 }
 
-/** False on the first frame, so widths set from it grow in from zero. */
-function useGrown(): boolean {
-  const [grown, setGrown] = useState(false);
-  useEffect(() => {
-    const id = requestAnimationFrame(() => setGrown(true));
-    return () => cancelAnimationFrame(id);
-  }, []);
-  return grown;
-}
-
-/** A square colour block with a line icon: the identity of a section or a kind of data. */
-function Tile({ tone, icon, large = false }: { tone: Tone; icon: IconName; large?: boolean }) {
-  return (
-    <span
-      aria-hidden="true"
-      className={cn(
-        "grid shrink-0 place-items-center rounded-base border-2 border-border shadow-sm-hard",
-        large ? "size-10" : "size-9",
-        FILL[tone],
-      )}
-    >
-      <Icon name={icon} size={large ? 20 : 18} />
-    </span>
-  );
-}
-
-/** A section: a header strip in the section's colour with what it shows, then its body. */
+/** A section of the screen in its own colour. */
 function Panel({
   id,
   about,
@@ -106,35 +77,17 @@ function Panel({
 }) {
   const s = SECTIONS[id];
   return (
-    <section
+    <TonePanel
       id={`diagnostics-${id}`}
-      aria-label={s.title}
-      className={cn(
-        "min-w-0 scroll-mt-4 overflow-hidden rounded-base border-2 border-border bg-background shadow-shadow",
-        RISE,
-      )}
-      style={delay(ORDER.indexOf(id) + 1, 70)}
+      title={s.title}
+      icon={s.icon}
+      tone={s.tone}
+      about={about}
+      actions={actions}
+      step={ORDER.indexOf(id) + 1}
     >
-      <header
-        className={cn(
-          "flex flex-wrap items-center gap-x-4 gap-y-3 border-b-2 border-border px-4 py-3",
-          FILL[s.tone],
-        )}
-      >
-        <span
-          aria-hidden="true"
-          className="grid size-10 shrink-0 place-items-center rounded-base border-2 border-border bg-background text-foreground shadow-sm-hard"
-        >
-          <Icon name={s.icon} size={20} />
-        </span>
-        <div className="min-w-[240px] flex-1">
-          <h2 className="m-0 text-[17px] font-bold">{s.title}</h2>
-          <p className="m-0 mt-0.5 text-[12px] leading-snug">{about}</p>
-        </div>
-        {actions && <div className={ACTIONS}>{actions}</div>}
-      </header>
-      <div className="flex min-w-0 flex-col gap-4 p-4">{children}</div>
-    </section>
+      {children}
+    </TonePanel>
   );
 }
 
@@ -880,31 +833,20 @@ function Glance({ projectKey }: { projectKey: string }) {
         const s = SECTIONS[id];
         const [value, sub] = glance[id];
         return (
-          <button
+          <GlanceCard
             key={id}
-            type="button"
+            tone={s.tone}
+            icon={s.icon}
+            label={s.title}
+            value={value ?? "–"}
+            note={sub}
+            step={i}
             onClick={() =>
               document
                 .getElementById(`diagnostics-${id}`)
                 ?.scrollIntoView({ behavior: "smooth", block: "start" })
             }
-            className={cn(
-              "flex min-w-0 cursor-pointer items-center gap-3 rounded-base border-2 border-border bg-background px-3 py-3 text-left [font:inherit] text-foreground shadow-shadow transition-[transform,box-shadow] duration-100 hover:translate-x-boxShadowX hover:translate-y-boxShadowY hover:shadow-none motion-reduce:transition-none",
-              RISE,
-            )}
-            style={delay(i, 50)}
-          >
-            <Tile tone={s.tone} icon={s.icon} large />
-            <span className="flex min-w-0 flex-col">
-              <span className="font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-dim-foreground">
-                {s.title}
-              </span>
-              <span className="text-[19px] leading-tight font-bold tabular-nums">
-                {value ?? "–"}
-              </span>
-              <span className="truncate text-[12px] text-muted-foreground">{sub}</span>
-            </span>
-          </button>
+          />
         );
       })}
     </nav>

@@ -57,7 +57,10 @@ export class WorkflowToolPolicy {
     private settings: StallSettings = DEFAULT_STALL_SETTINGS,
     /** Called for each tool call that hit its deadline, so the attempt can give up on repeats. */
     private onDeadline?: (tool: string) => void,
+    /** Called for each edit the hash check refuses, with the refusals of that path so far (#954). */
+    private onRefusal?: (path: string, count: number) => void,
   ) {}
+  private readonly refusals = new Map<string, number>();
   path(value: string): string {
     const path = (isAbsolute(value) ? relative(this.root, value) : value).replaceAll("\\", "/");
     workspacePath(this.root, path);
@@ -172,6 +175,9 @@ export class WorkflowToolPolicy {
       )
     ) {
       hashRefusals.set(this.root, [...(hashRefusals.get(this.root) ?? []), path]);
+      const count = (this.refusals.get(path) ?? 0) + 1;
+      this.refusals.set(path, count);
+      this.onRefusal?.(path, count);
       throw new WorkflowFault("INPUT_CHANGED", `File changed outside this attempt: ${path}`);
     }
     if (

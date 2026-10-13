@@ -114,3 +114,32 @@ describe("resolveEmbeddingModel — degenerate inputs", () => {
     expect(r.modelId).toBe("openai/text-embedding-3-small");
   });
 });
+
+describe("resolveEmbeddingModel — taskRouter.semantic", () => {
+  test("a chat model in the semantic slot is not used as an embedder", () => {
+    const cfg = baseConfig({
+      taskRouter: { semantic: "codex/gpt-6.1-sol" } as AppConfig["taskRouter"],
+    });
+    const r = resolveEmbeddingModel(cfg, "codex/gpt-6.1-sol");
+    expect(r.modelId).toBeNull();
+    expect(r.source).toBe("none");
+  });
+
+  test("a chat model in the semantic slot falls through to the active provider", () => {
+    const cfg = baseConfig({
+      taskRouter: { semantic: "anthropic/claude-sonnet-4-6" } as AppConfig["taskRouter"],
+    });
+    const r = resolveEmbeddingModel(cfg, "openai/gpt-5");
+    expect(r.modelId).toBe("openai/text-embedding-3-small");
+    expect(r.source).toBe("heuristic");
+  });
+
+  test("an embedding model in the semantic slot is used", () => {
+    const cfg = baseConfig({
+      taskRouter: { semantic: " openai/text-embedding-3-large " } as AppConfig["taskRouter"],
+    });
+    const r = resolveEmbeddingModel(cfg, "codex/gpt-6.1-sol");
+    expect(r.modelId).toBe("openai/text-embedding-3-large");
+    expect(r.source).toBe("task-router");
+  });
+});
