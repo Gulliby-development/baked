@@ -70,6 +70,8 @@ interface Behavior {
   gapRepeatOf?: (round: number) => string | null | undefined;
   /** The gaps carry a reproduction the host can run. */
   gapRepro?: boolean;
+  /** Each gap's reproduction runs another case (another command), as a sibling of the last. */
+  gapReproCase?: boolean;
   /** Convergence reports AC-001 inconclusive with no finding, as for a criterion only another operating system can prove. */
   unverifiable?: boolean;
   /** A spec that names another feature than the run's. */
@@ -197,7 +199,7 @@ class V2Executor implements AgentExecutor {
           ? {
               schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "changes_requested",
               coverage: [{ criterionId: "AC-001", verdict: "fail", evidenceIds: evidence, explanation: `Gap ${round}` }, ...this.passing(evidence, "Command checked the value").slice(1)],
-              findings: [{ id: `G${round}`, kind: this.behavior.gapKind ?? "missing", severity: this.behavior.gapSeverity ?? "high", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "value.txt", symbol: this.behavior.gapSymbols?.[round - 1] ?? this.behavior.gapSymbol ?? (this.behavior.gapSameLocation ? null : `symbol${round}`), ...(this.behavior.gapRepeatOf?.(round) !== undefined ? { repeatOf: this.behavior.gapRepeatOf(round) } : {}), ...(this.behavior.gapRepro ? { repro: oldValueRepro } : {}), evidenceIds: evidence, claim: `Gap number ${round} remains`, impact: "The criterion is not met", suggestedFix: `Close gap ${round}` }],
+              findings: [{ id: `G${round}`, kind: this.behavior.gapKind ?? "missing", severity: this.behavior.gapSeverity ?? "high", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "value.txt", symbol: this.behavior.gapSymbols?.[round - 1] ?? this.behavior.gapSymbol ?? (this.behavior.gapSameLocation ? null : `symbol${round}`), ...(this.behavior.gapRepeatOf?.(round) !== undefined ? { repeatOf: this.behavior.gapRepeatOf(round) } : {}), ...(this.behavior.gapRepro ? { repro: this.behavior.gapReproCase ? { ...oldValueRepro, args: [...oldValueRepro.args, `case${round}`] } : oldValueRepro } : {}), evidenceIds: evidence, claim: `Gap number ${round} remains`, impact: "The criterion is not met", suggestedFix: `Close gap ${round}` }],
             }
           : { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", coverage: this.passing(evidence, "Command checked the value"), findings: [] };
         break;
@@ -455,7 +457,7 @@ describe("workflow v2 scheduler", () => {
     expect(lastError(service, run.runId)).toBe("");
     expect(final.status).toBe("completed");
     expect(executor.calls.filter((c) => c === "review")).toHaveLength(2);
-    expect(service.store.run(run.runId).repair_rounds).toBe(1);
+    expect(service.store.run(run.runId).review_rounds).toBe(1);
   }, 30000);
 
   // R12 dirdrift-update 6b57dc61 completed with AC-005 failing: its spec-based medium finding, which
@@ -467,7 +469,7 @@ describe("workflow v2 scheduler", () => {
     expect(lastError(service, run.runId)).toBe("");
     expect(final.status).toBe("completed");
     expect(executor.calls.filter((c) => c === "review")).toHaveLength(3);
-    expect(service.store.run(run.runId).repair_rounds).toBe(2);
+    expect(service.store.run(run.runId).review_rounds).toBe(2);
   }, 30000);
 
   test("below the floor, an inferred finding stays a note even with a repro", async () => {
@@ -617,7 +619,7 @@ describe("workflow v2 scheduler", () => {
     const final = await complete(run.runId);
     expect(lastError(service, run.runId)).toBe("");
     expect(final.status).toBe("completed");
-    expect(service.store.run(run.runId).repair_rounds).toBe(1);
+    expect(service.store.run(run.runId).review_rounds).toBe(1);
   }, 30000);
 
   test("a failed check takes the bounded repair loop back to the tasks stage", async () => {
@@ -795,10 +797,11 @@ describe("workflow v2 scheduler", () => {
 
   test("V2-09 advisory gates never block, retries are recorded and a late pass is flaky", async () => {
     const { start, complete, service, define, gate, root } = setup();
+    // The run's check baseline runs each required gate once before the tasks (#934).
     const counter = join(root, "..", `${basename(root)}-counter`);
     cleanups.push(() => rmSync(counter, { force: true }));
     gate(commandGate("always-fails", ["-e", "process.exit(3)"], { required: false }));
-    gate(commandGate("second-time", ["-e", `const f=${JSON.stringify(counter)};const n=Number(await Bun.file(f).text().catch(()=>"0"))+1;await Bun.write(f,String(n));process.exit(n>1?0:1)`], { retries: { max: 2, retryOn: ["failed"] } }));
+    gate(commandGate("second-time", ["-e", `const f=${JSON.stringify(counter)};const n=Number(await Bun.file(f).text().catch(()=>"0"))+1;await Bun.write(f,String(n));process.exit(n>2?0:1)`], { retries: { max: 2, retryOn: ["failed"] } }));
     define(quickFix((d) => ({
       ...d,
       stages: d.stages.map((s) => (s.type === "check" ? { ...s, gates: [{ gateId: "always-fails" }, { gateId: "check" }, { gateId: "second-time" }] } : s)),
@@ -1044,6 +1047,27 @@ describe("a stopped convergence asks for a decision", () => {
     expect(waiting.status).toBe("completed");
     expect(service.store.requests(run.runId).filter((r) => r.kind === "convergence")).toHaveLength(0);
     expect(service.store.run(run.runId).convergence_rounds).toBe(2);
+  }, 60000);
+
+  test("a reproduced sibling case of a repaired finding is repaired, not a stop (#943)", async () => {
+    // todo-cli tdd 14b08673: `add --help` was repaired, then the re-review reproduced the same
+    // defect through `tag` and `untag`, named the earlier finding and the run stopped.
+    const { service, run, waiting } = await stopped("v2-sdd", { gaps: 2, gapSymbol: "parseValue", gapRepro: true, gapReproCase: true, gapRepeatOf: (round) => (round === 2 ? "G1" : undefined) });
+    expect(lastError(service, run.runId)).toBe("");
+    expect(waiting.status).toBe("completed");
+    expect(service.store.requests(run.runId).filter((r) => r.kind === "convergence")).toHaveLength(0);
+    expect(service.store.run(run.runId).convergence_rounds).toBe(2);
+    // Each correction of a reviewer's finding is told to look for the same defect next to it.
+    const corrections = service.store.state(run.runId).graph?.tasks.filter((t) => t.origin === "convergence") ?? [];
+    expect(corrections).toHaveLength(2);
+    for (const task of corrections) expect(task.description).toContain("Look for the same defect in sibling code paths");
+  }, 60000);
+
+  test("the same reproduction named as a repeat still stops the run", async () => {
+    const { service, run, waiting } = await stopped("sdd", { gaps: 2, gapSymbol: "parseValue", gapRepro: true, gapRepeatOf: (round) => (round === 2 ? "G1" : undefined) });
+    expect(waiting.status).toBe("waiting");
+    const body = JSON.parse(pendingConvergence(service, run.runId)?.body_json ?? "{}");
+    expect(body.contradictions[0]).toMatchObject({ findingId: "G2", earlierId: "G1", via: "repeatOf" });
   }, 60000);
 
   test("without repeatOf a symbol that shares a word still matches", async () => {

@@ -142,9 +142,17 @@ export class WorkflowToolPolicy {
           JSON.parse(effect.intent_json).path === path &&
           intentRoot(effect.intent_json) === root,
       );
+    const inherited = this.earlierAttemptEffect(writes);
+    // A task restarted after `invalidated` can get a rebuilt worktree without the file its earlier
+    // attempt wrote. When the file is back to how it was before the task first wrote it, the carried
+    // write is gone, so the path counts as untouched by this task (#927).
+    const reverted =
+      inherited !== undefined &&
+      existing !== inherited.after_hash &&
+      existing === this.beforeLineage(writes, inherited)?.before_hash;
     const ownEffect =
       writes.filter((effect) => effect.attempt_id === this.attemptId).at(-1) ??
-      this.earlierAttemptEffect(writes);
+      (reverted ? undefined : inherited);
     const baseline = this.store.state(this.runId).expectedFiles;
     // The baseline lists the files the snapshot can see. A file that exists but is not listed is
     // git-ignored and untracked (for example a docs directory in .gitignore): the snapshot has no
@@ -154,6 +162,7 @@ export class WorkflowToolPolicy {
     if (
       baseline &&
       !unseen &&
+      !(reverted && !ownEffect) &&
       existing !== (ownEffect ? ownEffect.after_hash : (baseline[path] ?? null)) &&
       !sameContentIgnoringEol(
         workspacePath(this.root, path),
@@ -187,6 +196,21 @@ export class WorkflowToolPolicy {
       uncommittedEdits(this.store, this.runId, this.task.id).map((e) => e.id),
     );
     return lineage.has(last.id) ? last : undefined;
+  }
+  /** The first write of the task's uncommitted lineage that `last` ends: the file before the task. */
+  private beforeLineage(writes: EffectRow[], last: EffectRow): EffectRow | undefined {
+    if (!this.task) return undefined;
+    const lineage = new Set(
+      uncommittedEdits(this.store, this.runId, this.task.id).map((e) => e.id),
+    );
+    const upTo = writes.slice(0, writes.indexOf(last) + 1);
+    let first = last;
+    for (let i = upTo.length - 1; i >= 0; i--) {
+      const effect = upTo[i];
+      if (!effect || !lineage.has(effect.id)) break;
+      first = effect;
+    }
+    return first;
   }
   /**
    * Runs a tool call under its deadline and journals it (`tool.started`, `tool.finished`), so a

@@ -257,7 +257,7 @@ function view(d: MockDefinition, from: string, copy: boolean, readOnly: string |
             key: `loop:${t.id}`,
             label: `Loop ${t.id}`,
             value: String(t.loop?.maxIterations ?? 1),
-            hint: "1 to 5 rounds",
+            hint: "1 to 50 rounds, 5 or fewer recommended",
           })),
       ],
       targets: targetsOf(d, stage).map((target) => {
@@ -287,7 +287,7 @@ function view(d: MockDefinition, from: string, copy: boolean, readOnly: string |
       transitionChoices: {
         to: [...d.stages.map((s) => s.id).filter((id) => id !== stage.id), "done"],
         on: OUTCOMES[stage.type],
-        loop: [null, 1, 2, 3, 4, 5],
+        loop: [null, 1, 2, 3, 4, 5, 10, 20, 50],
       },
     })),
     problems: problems(d),
@@ -413,14 +413,24 @@ function apply(d: MockDefinition, op: EditorOp): string | null {
       if (op.key.startsWith("loop:")) {
         const t = d.transitions.find((x) => x.id === op.key.slice(5));
         if (!t?.loop) return "Not a loop";
-        t.loop.maxIterations = ((t.loop.maxIterations - 1 + op.delta + 5) % 5) + 1;
-        return null;
+        return setLoop(t, t.loop.maxIterations + op.delta);
       }
       return `No other ${op.key} for ${op.stageId}`;
+    }
+    case "setLoop": {
+      const t = d.transitions.find((x) => x.id === op.id);
+      return t ? setLoop(t, op.rounds) : `Unknown transition ${op.id}`;
     }
     case "duplicate":
       return null;
   }
+}
+
+function setLoop(t: MockDefinition["transitions"][number], rounds: number): string | null {
+  if (!t.loop) return `${t.id} is not a loop`;
+  if (!Number.isInteger(rounds) || rounds < 1 || rounds > 50) return "A loop runs 1 to 50 rounds";
+  t.loop.maxIterations = rounds;
+  return null;
 }
 
 interface Body {

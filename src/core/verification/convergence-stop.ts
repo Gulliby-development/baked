@@ -126,6 +126,18 @@ function sameLocation(
 }
 
 /**
+ * Whether a finding reproduces a case its earlier finding did not: both carry a repro and the
+ * commands differ. todo-cli tdd 14b08673: the repair of `add --help` held, and the re-review
+ * reproduced the same parsing defect through `tag` and `untag`, which is a new case to repair.
+ */
+function newCase(earlier: Partial<Finding>, finding: Pick<Finding, "repro">): boolean {
+  if (!earlier.repro || !finding.repro) return false;
+  const command = (repro: NonNullable<Finding["repro"]>): string =>
+    JSON.stringify([repro.executable, ...repro.args]);
+  return command(earlier.repro) !== command(finding.repro);
+}
+
+/**
  * The findings ledger: a finding that repeats one an earlier correction of the run already
  * addressed. A reviewer words the same defect differently each round and the finding ids change
  * with it (md-site F2, F2-2, F2-3 on one unreadable-file test; expenses-py A F-001..F-003 on
@@ -150,6 +162,9 @@ export function contradictions(
   return findings.flatMap((finding): Contradiction[] => {
     if (finding.repeatOf === null) return [];
     const named = finding.repeatOf ? earlier.find((e) => e.id === finding.repeatOf) : undefined;
+    // A reproduced case the earlier repro did not show (another command, another input) is
+    // progress: the earlier fix held for its case and missed a sibling (#943), so it is repaired.
+    if (named && newCase(named.body, finding)) return [];
     if (named)
       return [
         {
@@ -163,6 +178,7 @@ export function contradictions(
     if (!finding.file) return [];
     const match = earlier.find(
       (e) =>
+        !newCase(e.body, finding) &&
         sameLocation(e.body, finding) &&
         (e.body.criterionIds ?? []).some((id) => finding.criterionIds.includes(id)),
     );

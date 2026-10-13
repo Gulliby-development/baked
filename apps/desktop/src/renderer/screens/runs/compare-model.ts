@@ -69,6 +69,13 @@ export function compareRows(c: RunComparison): CompareRow[] {
       better: lower(a.repairRounds, b.repairRounds),
     },
     {
+      label: "Review rounds",
+      a: String(a.reviewRounds ?? 0),
+      b: String(b.reviewRounds ?? 0),
+      delta: "",
+      better: lower(a.reviewRounds ?? 0, b.reviewRounds ?? 0),
+    },
+    {
       label: "Checks passed / failed",
       a: `${a.checks.passed} / ${a.checks.failed}`,
       b: `${b.checks.passed} / ${b.checks.failed}`,
