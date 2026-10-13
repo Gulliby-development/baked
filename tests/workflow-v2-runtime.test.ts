@@ -795,10 +795,11 @@ describe("workflow v2 scheduler", () => {
 
   test("V2-09 advisory gates never block, retries are recorded and a late pass is flaky", async () => {
     const { start, complete, service, define, gate, root } = setup();
+    // The run's check baseline runs each required gate once before the tasks (#934).
     const counter = join(root, "..", `${basename(root)}-counter`);
     cleanups.push(() => rmSync(counter, { force: true }));
     gate(commandGate("always-fails", ["-e", "process.exit(3)"], { required: false }));
-    gate(commandGate("second-time", ["-e", `const f=${JSON.stringify(counter)};const n=Number(await Bun.file(f).text().catch(()=>"0"))+1;await Bun.write(f,String(n));process.exit(n>1?0:1)`], { retries: { max: 2, retryOn: ["failed"] } }));
+    gate(commandGate("second-time", ["-e", `const f=${JSON.stringify(counter)};const n=Number(await Bun.file(f).text().catch(()=>"0"))+1;await Bun.write(f,String(n));process.exit(n>2?0:1)`], { retries: { max: 2, retryOn: ["failed"] } }));
     define(quickFix((d) => ({
       ...d,
       stages: d.stages.map((s) => (s.type === "check" ? { ...s, gates: [{ gateId: "always-fails" }, { gateId: "check" }, { gateId: "second-time" }] } : s)),
