@@ -2,6 +2,7 @@ import { isMock } from "./client/bridge.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { TitleBar } from "./components/TitleBar.js";
 import { Alert } from "./components/ui/alert.js";
+import { TitleTooltips } from "./components/ui/title-tooltips.js";
 import { useRoute } from "./router.js";
 import { AttentionScreen } from "./screens/AttentionScreen.js";
 import { ProjectScreen } from "./screens/ProjectScreen.js";
@@ -40,6 +41,7 @@ export function App() {
           )}
         </main>
       </div>
+      <TitleTooltips />
     </div>
   );
 }
