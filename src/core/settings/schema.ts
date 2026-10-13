@@ -68,7 +68,8 @@ export type SettingPageId =
   | "agent-features"
   | "baked-map"
   | "compaction"
-  | "limits";
+  | "limits"
+  | "code-quality";
 
 export interface SettingPage {
   id: SettingPageId;
@@ -126,6 +127,13 @@ export const SETTING_PAGES: readonly SettingPage[] = [
     title: "Timeouts and limits",
     description: "Tool and stream timeouts, and context-window overrides per model.",
     command: "/timeouts",
+  },
+  {
+    id: "code-quality",
+    title: "Code quality",
+    description:
+      "Quality gates of workflow runs. New runs take these defaults and keep them until they finish.",
+    command: "/code-quality",
   },
 ];
 
@@ -771,6 +779,23 @@ export const SETTINGS: readonly SettingDefinition[] = [
     default: {},
     min: 1000,
     max: 10_000_000,
+  },
+
+  // Code quality
+  {
+    id: "quality.duplication",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Duplication ratchet",
+    help: "Code a run copies, and code it adds that nothing uses. warn reports them in the run report; ratchet makes them blocking findings the run must fix; off skips the measurement.",
+    scopes: BOTH,
+    type: "enum",
+    default: "warn",
+    options: [
+      { value: "off", label: "off", help: "Do not measure." },
+      { value: "warn", label: "warn", help: "Report in the run report." },
+      { value: "ratchet", label: "ratchet", help: "Block until the run reuses the code." },
+    ],
   },
 ];
 

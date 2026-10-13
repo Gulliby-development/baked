@@ -593,6 +593,21 @@ export class NativeAgentExecutor implements AgentExecutor {
         ...(request.profile.role === "implementer" && request.task?.writes.length
           ? { editNudgeAfterReads: EDIT_NUDGE_AFTER_READS }
           : {}),
+        watch: {
+          mustEdit: request.profile.role === "implementer" && !!request.task?.writes.length,
+          onSignal: (finding, action) =>
+            this.store.transaction(() =>
+              this.store.emit(request.runId, {
+                type: "attempt.advisory",
+                payload: {
+                  attemptId: request.attemptId,
+                  signal: finding.signal,
+                  action,
+                  detail: finding.detail.slice(0, 500),
+                },
+              }),
+            ),
+        },
       });
       const meta = { profileId: request.profile.id, taskId: request.task?.id ?? null };
       const writeUsage = (usage: AttemptUsageRecord) =>

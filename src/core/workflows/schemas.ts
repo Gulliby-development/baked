@@ -162,6 +162,8 @@ export const AutoApprovalSchema = z
 /** Upper bound of `maxConcurrentWriters`. */
 export const MAX_CONCURRENT_WRITERS = 4;
 
+/** Repair rounds that repeat the same failures before a fresh-context correction (see the policy). */
+export const DEFAULT_FRESH_RESTART_AFTER = 2;
 export const PolicySchema = z
   .object({
     maxConcurrentReadAgents: z.number().int().min(1).max(8),
@@ -208,6 +210,19 @@ export const PolicySchema = z
      * Absent means on, so stored policies keep their hash.
      */
     projectMemory: z.boolean().optional(),
+    /**
+     * How many repair rounds in a row may leave the same failures before the next correction
+     * starts from a clean context: the spec, the task, the current files and a host-written account
+     * of what was tried, without the earlier attempts' evidence. If that attempt fails the same way
+     * the run stops. Absent means `DEFAULT_FRESH_RESTART_AFTER`, so stored policies keep their hash.
+     */
+    freshRestartAfter: z.number().int().min(1).max(5).optional(),
+    /**
+     * The duplication and dead-code ratchet (quality/duplication.ts). Absent means `warn`: copies
+     * and unused declarations the run adds are reported, never blocking, so stored policies keep
+     * their hash. `ratchet` makes them blocking findings; `off` skips the measurement.
+     */
+    duplication: z.enum(["off", "warn", "ratchet"]).optional(),
     /**
      * Directories the applications of the run's AI acceptance gates may write. Like the outputs
      * of checks they are left out of source snapshots. Absent when no such gate grants writes.
@@ -667,6 +682,7 @@ export const EventType = z.enum([
   "stage.finished",
   "attempt.started",
   "attempt.finished",
+  "attempt.advisory",
   "task.state_changed",
   "artifact.committed",
   "check.finished",
@@ -768,6 +784,21 @@ export const EventSchema = z.discriminatedUnion("type", [
           status: z.enum(["completed", "failed", "interrupted", "cancelled"]),
           usageComplete: z.boolean(),
           usedTokens: z.number().int().nonnegative().nullable(),
+        })
+        .strict(),
+    })
+    .strict(),
+  // The progress watcher noticed a stuck loop: it steered the attempt once, then stopped it.
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("attempt.advisory"),
+      payload: z
+        .object({
+          attemptId: SafeId,
+          signal: z.enum(["repeated-reads", "no-edits", "same-failure"]),
+          action: z.enum(["steered", "stopped"]),
+          detail: z.string().max(500),
         })
         .strict(),
     })
@@ -1075,6 +1106,8 @@ export interface StartRequest {
   modelStrict?: boolean;
   /** What blocking questions do in this run (CLI `--clarification MODE`); it overrides the policy. */
   clarification?: ClarificationMode;
+  /** The duplication ratchet of this run (CLI `--duplication MODE`); it overrides the policy. */
+  duplication?: "off" | "warn" | "ratchet";
   /**
    * Stage-level model routes for this run (CLI `--route STAGE=MODEL`); they win over
    * `modelRouting.workflows.<id>.stages`. A value starting with `$` names a model class.
