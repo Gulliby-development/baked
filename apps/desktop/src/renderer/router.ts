@@ -14,8 +14,7 @@ export const PROJECT_SECTIONS = [
   "workflows",
   "instructions",
   "working-set",
-  "run-memory",
-  "chat-memory",
+  "memory",
   "skills",
   "packages",
   "hooks",
@@ -68,6 +67,9 @@ export function parseRoute(hash: string): Route {
   if (head === "p" && a) {
     // Acceptance was a sidebar section before it moved into the run screen and Needs you.
     if (b === "acceptance") return { name: "project", key: a, section: "runs", id: c ?? null };
+    // Run memory and Chat memory were two sections before they became parts of Memory.
+    if (b === "run-memory") return { name: "project", key: a, section: "memory", id: "runs" };
+    if (b === "chat-memory") return { name: "project", key: a, section: "memory", id: "chat" };
     const section = (PROJECT_SECTIONS as readonly string[]).includes(b ?? "")
       ? (b as ProjectSection)
       : "overview";

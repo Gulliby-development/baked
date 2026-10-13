@@ -406,7 +406,7 @@ export function ChatMemorySection({ project }: SectionProps) {
       <p className={LEDE}>
         What the chat agent remembers across sessions: your preferences, decisions and gotchas it
         saved, in this project and for all projects. Chat in the terminal and here share it. The
-        memory of workflow runs is under Run memory.
+        memory of workflow runs is in the Runs part.
       </p>
       {writeScope === "none" && readScope === "none" && (
         <Alert>Chat memory is off: the agent neither saves nor recalls memories.</Alert>

@@ -667,8 +667,8 @@ The [artifacts](../artifacts.md) of the user, the same for every project's serve
 | Settings: model routing, providers | `GET|PATCH /v1/config`, `GET|PATCH /v1/workflow/routing`, `GET /v1/workflow/critic`, `GET /v1/providers`, `PUT|DELETE /v1/providers/ID/key`, `GET|POST|DELETE /v1/providers/ID/login`, `POST /v1/providers/ID/logout`, `POST /v1/providers/ID/switch`, `GET /v1/models` |
 | Project setup: workflows | `GET /v1/workflow/definitions`, `POST /v1/workflow/editor`, `POST /v1/workflow/editor/review\|save` |
 | Project setup: hooks | `GET /v1/hooks`, `POST /v1/hooks/session` |
-| Run memory | `GET\|POST /v1/workflow/memory` |
-| Chat memory | `GET\|POST /v1/memory`, `PUT /v1/memory/settings`, `GET\|POST /v1/memory/cleanup` |
+| Memory: Runs | `GET\|POST /v1/workflow/memory` |
+| Memory: Chat | `GET\|POST /v1/memory`, `PUT /v1/memory/settings`, `GET\|POST /v1/memory/cleanup` |
 | Git | `GET /v1/git`, `POST /v1/git/actions` |
 | Code graph | `POST /v1/graph`, `GET /v1/graph/file`, `GET /v1/graph/link`, `GET /v1/graph/search` |
 | Project setup: gates and checks | `GET\|PUT /v1/workflow/checks`, `GET /v1/workflow/checks/suggestions`, `POST /v1/workflow/checks/ID/run`; gate definition files in `GET /v1/workflow/gates` and `POST /v1/workflow/gates/confirm` |
