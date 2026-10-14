@@ -7,7 +7,12 @@ import { buttonVariants } from "../../components/ui/button.js";
 import { tokens as formatTokens } from "../../format.js";
 import { cn } from "../../lib/cn.js";
 import { CLAMPED, Markdown } from "../chat/Markdown.js";
-import { emptyTranscript, reduceTranscript, type Transcript } from "../chat/transcript.js";
+import {
+  emptyTranscript,
+  reduceTranscript,
+  subscribeAfter,
+  type Transcript,
+} from "../chat/transcript.js";
 import { type ThreadView, threadView } from "./thread.js";
 
 /**
@@ -25,7 +30,7 @@ function useLiveSession(key: string, id: string): { transcript: Transcript; miss
       (detail) => {
         if (!live) return;
         dispatch({ type: "snapshot", detail });
-        stop = chat.subscribe(key, id, detail.lastSeq, (event) => {
+        stop = chat.subscribe(key, id, subscribeAfter(detail), (event) => {
           if (live) dispatch(event);
         });
       },

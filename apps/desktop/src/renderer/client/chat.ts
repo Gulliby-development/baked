@@ -163,7 +163,7 @@ export interface MentionSuggestion {
 
 export type ChatPrompt = { id: string; createdAt: number } & (
   | { kind: "outside-cwd"; tool: string; path: string }
-  | { kind: "destructive"; description: string }
+  | { kind: "destructive"; description: string; confirm?: true }
   | { kind: "web-search"; query: string }
   | { kind: "fetch-page"; url: string }
   | {
@@ -236,6 +236,8 @@ export interface SessionDetail extends SessionSummary {
   redo?: RedoTurn[];
   /** Subscribe to events after this sequence to miss nothing. */
   lastSeq: number;
+  /** While a turn runs: the sequence before it started, to replay what it streamed so far. */
+  turnSeq?: number;
 }
 
 /** A turn an undo dropped: its number and the first line of its prompt. */

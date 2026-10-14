@@ -27,7 +27,9 @@ export function promptSummary(prompt: ChatPrompt): string {
     case "outside-cwd":
       return `${prompt.tool} wants to touch a file outside the project: ${prompt.path}`;
     case "destructive":
-      return `The agent wants to run a destructive command: ${prompt.description}`;
+      return prompt.confirm
+        ? `The agent asks you to approve: ${prompt.description}`
+        : `The agent wants to run a destructive command: ${prompt.description}`;
     case "web-search":
       return `The agent wants to search the web for: ${prompt.query}`;
     case "fetch-page":

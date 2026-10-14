@@ -435,7 +435,9 @@ function ContextChip({
             setOpen(false);
           }
         }}
-        onClick={() => setOpen((v) => !v)}
+        // Hover and focus open the panel before a click lands, so the click must not toggle it
+        // closed again; leaving it, Escape or a blur close it.
+        onClick={show}
       >
         <Ring percent={context?.percent ?? 0} />
         {context ? `${context.percent}% context` : "Context"}

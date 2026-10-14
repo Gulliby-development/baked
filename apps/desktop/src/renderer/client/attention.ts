@@ -93,7 +93,7 @@ export interface DeliveryResult {
 
 export type ChatPrompt = { id: string; createdAt: number } & (
   | { kind: "outside-cwd"; tool: string; path: string }
-  | { kind: "destructive"; description: string }
+  | { kind: "destructive"; description: string; confirm?: true }
   | { kind: "web-search"; query: string }
   | { kind: "fetch-page"; url: string }
   | {

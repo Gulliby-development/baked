@@ -27,6 +27,8 @@ export interface LaunchOptions {
    * repository's own `baked` from source, with BAKED_TEST_SCRIPT, instead of the fake.
    */
   script?: unknown;
+  /** Settings merged into the scripted backend's `~/.baked/config.json`. */
+  config?: Record<string, unknown>;
   /** Extra environment for the app, e.g. BAKED_VOICE_DIR. */
   env?: Record<string, string>;
   /** Extra Chromium switches, e.g. a fake microphone. */
@@ -97,7 +99,7 @@ export const test = base.extend<Fixtures>({
         mkdirSync(join(home, ".baked"), { recursive: true });
         writeFileSync(
           join(home, ".baked", "config.json"),
-          JSON.stringify({ defaultModel: "openai/gpt-scripted" }),
+          JSON.stringify({ defaultModel: "openai/gpt-scripted", ...options.config }),
         );
       }
       if (options.script !== undefined)
