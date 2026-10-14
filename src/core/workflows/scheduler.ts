@@ -395,6 +395,7 @@ import {
 import {
   integrityFix,
   isTestPath,
+  rewriteTargets,
   scanTestIntegrity,
   testIntegrityOf,
   testWriteProblems,
@@ -6316,7 +6317,13 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     // A correction of a spec amendment changes the tests that served the amended wording.
     const amendments = this.amendments(runId);
     const amending = amendments.some((a) => task.findingIds.includes(a.findingId));
+    // A correction whose finding asks for its test file to be rewritten may drop assertions.
+    const ownFindings = this.store
+      .findings(runId)
+      .filter((f) => task.findingIds.includes(f.id))
+      .map((f) => JSON.parse(f.body_json) as Review["findings"][number]);
     const found = scanTestIntegrity(changes, {
+      rewrites: task.origin === "planned" ? new Set() : rewriteTargets(ownFindings),
       reasoned: new Set([
         ...task.writes
           .filter((w) => w.reason || (amending && isTestPath(w.path)))
@@ -6543,6 +6550,16 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         return { path, before: kept, after: read(path) };
       }),
       {
+        rewrites: rewriteTargets(
+          this.store
+            .findings(runId)
+            .filter((f) =>
+              (state.graph?.tasks ?? []).some(
+                (t) => t.origin !== "planned" && t.findingIds.includes(f.id),
+              ),
+            )
+            .map((f) => JSON.parse(f.body_json) as Review["findings"][number]),
+        ),
         reasoned: new Set([
           ...tasks.flatMap((t) => t.writes.filter((w) => w.reason).map((w) => w.path)),
           ...this.amendments(runId).flatMap((a) => a.paths),
