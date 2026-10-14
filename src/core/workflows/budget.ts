@@ -276,7 +276,11 @@ export function growBudgetOnProgress(
     projectedTokens: projected,
     finishedTasks: finished,
   });
-  return projected <= policy.maxTotalTokens;
+  if (projected <= policy.maxTotalTokens) return true;
+  // A call that reaches the ceiling from below and still falls short extends past it now, under
+  // the same rules: md-site eaeb51d6 grew to 6,000,000 for an attempt that needed 6,039,774 and
+  // stopped `budget_exhausted` with the 9,000,000 hard limit unused (#1187).
+  return policy.maxTotalTokens >= ceiling && extendUnderAssume(store, runId, policy, projected);
 }
 
 /** Share of the sizing ceiling one extension past it adds, at least: about one review round. */
