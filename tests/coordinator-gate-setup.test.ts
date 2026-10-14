@@ -126,13 +126,35 @@ describe("coordinator gate setup", () => {
       coordinator.messages.flatMap((m) => m.toolCalls ?? []).find((c) => c.name === "start_run")?.result,
     );
     expect(refusal).toContain("Workflow standard cannot start yet");
-    expect(refusal).toContain("Ask the user one short question");
+    expect(refusal).toContain("Fill the gates in yourself");
     expect(readGates(fixture.root).map((c) => c.id)).toEqual(["check"]);
     expect(fixture.config.workflows?.policy?.checks?.map((c) => c.id)).toEqual(["check"]);
     const [run] = new BriefStore(chat.workspace, coordinator.id).read().launched;
     expect(run).toMatchObject({ kind: "run", workflow: "standard" });
     expect((await fixture.service.list({ limit: 10 })).items).toHaveLength(1);
     expect(needsGates(fixture.root, fixture.config, "standard")).toBe(false);
+  }, 60_000);
+
+  test("start_run fills in the detected gates on its card without asking", async () => {
+    const host = new RecordingHost();
+    const { fixture, coordinator } = await serve(host);
+    writeFileSync(join(fixture.root, "package.json"), JSON.stringify({ scripts: { test: "bun test" } }));
+    writeFileSync(join(fixture.root, "bun.lock"), "");
+    coordinator.send("hello");
+    await coordinator.settled();
+    const tools = (host.requests.at(-1)?.tools ?? {}) as Record<string, Tool>;
+    const started = tools.start_run?.execute({
+      prompt: "Create ready value",
+      feature: "fixture",
+      workflow: "standard",
+      why: "Ship it",
+    });
+    const card = await until(() => coordinator.pendingPrompts[0], (p) => p !== undefined);
+    expect(card).toMatchObject({ kind: "workflow", workflow: "standard", gates: ["tests: bun run test"] });
+    // Declining saves nothing.
+    coordinator.answer(card?.id ?? "", { approve: false });
+    expect(await started).toMatchObject({ success: false });
+    expect(readGates(fixture.root)).toEqual([]);
   }, 60_000);
 
   test("list_workflows and list_gates show what is missing and what BAKED detects", async () => {

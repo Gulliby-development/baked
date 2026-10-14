@@ -9,6 +9,7 @@ import type { AppConfig } from "../../types/index.js";
 import {
   type GateRequest,
   gateLine,
+  gateSuggestions,
   renderGateSetup,
   resolveGateRequests,
   saveGateChanges,
@@ -62,6 +63,12 @@ export async function applyGates(
 
 export const resolveGates = (ctx: GateToolContext, requests: GateRequest[]) =>
   resolveGateRequests(ctx.workspace, ctx.config, requests);
+
+/** The detected gates BAKED would preselect, as requests a run card can fill in on its own. */
+export const detectedGateRequests = (ctx: GateToolContext): GateRequest[] =>
+  gateSuggestions(ctx.workspace, ctx.config)
+    .filter((s) => s.preselected)
+    .map((s) => ({ id: s.check.id }));
 
 export function gateTools(ctx: GateToolContext) {
   const failed = (error: string) => ({ success: false, output: "", error });

@@ -30,7 +30,13 @@ import type { Check } from "../workflows/types.js";
 import type { DefinitionSummary } from "../workflows/v2/definitions.js";
 import type { RunApprover } from "./approval-rules.js";
 import { BriefStore, type LaunchedEntry } from "./coordinator.js";
-import { applyGates, GateRequestSchema, type GateToolContext, resolveGates } from "./gate-tools.js";
+import {
+  applyGates,
+  detectedGateRequests,
+  GateRequestSchema,
+  type GateToolContext,
+  resolveGates,
+} from "./gate-tools.js";
 import type { ProjectStateSource } from "./project-state.js";
 import type { ChatMode, ChatPrompt, ChatService, ChatSession } from "./sessions.js";
 
@@ -752,7 +758,7 @@ export function launchTools(
     }),
     start_run: tool({
       description:
-        'Ask the user to run a workflow on a request, then start it. The chat shows a card "Run workflow?" with the workflow, its stages and the request; the run starts only when the user approves the card, and its own approvals stay with the user. Without `workflow`, the one BAKED proposes for the prompt (list_workflows). The run shows in Launched work with its live stage, and you get an update turn when it finishes, fails or waits.',
+        'Ask the user to run a workflow on a request, then start it. The chat shows a card "Run workflow?" with the workflow, its stages and the request; the run starts only when the user approves the card, and its own approvals stay with the user. Without `workflow`, the one BAKED proposes for the prompt (list_workflows). A workflow that needs gates gets the ones BAKED detects filled in on the card; pass `gates` to choose them yourself. The run shows in Launched work with its live stage, and you get an update turn when it finishes, fails or waits.',
       inputSchema: z.strictObject({
         prompt: z.string().trim().min(1).max(20_000),
         workflow: z.string().trim().min(1).max(100).optional(),
@@ -769,7 +775,7 @@ export function launchTools(
           .max(20)
           .optional()
           .describe(
-            "Gates to save before the run, for a workflow that needs them (list_gates); the card shows them and its approval saves them",
+            "Gates to save before the run, for a workflow that needs them; left out, the detected ones are filled in. The card shows them and its approval saves them",
           ),
         why: Why,
       }),
@@ -786,11 +792,17 @@ export function launchTools(
           if (!resolved.ok) return failed(resolved.error);
           added = resolved.checks;
         }
-        if (
-          gateContext &&
-          chosen.id &&
-          needsGates(gateContext.workspace, gateContext.config, chosen.id, added)
-        )
+        const missing = () =>
+          gateContext !== null &&
+          chosen.id !== null &&
+          needsGates(gateContext.workspace, gateContext.config, chosen.id, added);
+        // From chat the coordinator fills the gates in itself: the detected ones go on the card,
+        // which the user approves or declines, instead of a question first.
+        if (gateContext && missing()) {
+          const detected = resolveGates(gateContext, detectedGateRequests(gateContext));
+          if (detected.ok) added = [...added, ...detected.checks];
+        }
+        if (gateContext && chosen.id && missing())
           return failed(missingGatesProblem(gateContext, chosen.id));
         // A closed or unknown issue is refused before the user is asked.
         let task: FlowTask | undefined;
@@ -1075,9 +1087,9 @@ export function chooseWorkflow(
 /** What `start_run` tells the model when the workflow needs gates the project lacks. */
 function missingGatesProblem(ctx: GateToolContext, workflowId: string): string {
   return [
-    `Workflow ${workflowId} cannot start yet: the project has no feature gate (a check every run must pass, such as the build or the tests). Nothing was shown to the user.`,
+    `Workflow ${workflowId} cannot start yet: the project has no feature gate (a check every run must pass, such as the build or the tests) and BAKED detected none to fill in. Nothing was shown to the user.`,
     renderGateSetup(ctx.workspace, ctx.config, [workflowId]),
-    "Ask the user one short question: which detected gates to use (name them with their commands), or, when none was detected, which command checks the work. Then call start_run again with `gates`; the run card shows them and one approval saves them and starts the run. Do not send the user to a settings screen.",
+    "Fill the gates in yourself: read the project (its manifest, README, CI workflow, Makefile) for the command that builds or tests it, and call start_run again with `gates` set to it. The run card shows them and one approval saves them and starts the run. Ask the user only when the project has no command you can run to check the work. Do not send the user to a settings screen.",
   ].join("\n\n");
 }
 
@@ -1125,7 +1137,7 @@ export function renderWorkflows(workflows: WorkflowCatalog, request?: string): s
     const problems = d.problems.length
       ? ` CANNOT START: ${d.problems.join("; ")}`
       : workflows.needsGates?.(d.id)
-        ? " NEEDS GATES: the project has no feature gate yet; read list_gates, ask the user which to use, and pass them to start_run as gates"
+        ? " NEEDS GATES: the project has no feature gate yet; start_run fills in the detected ones (list_gates), or pass the project's build or test command as gates"
         : "";
     return `- ${d.id} (${flags.join(", ")}): ${d.description.replace(/\s+/g, " ").trim() || "no description"}. Stages: ${d.stages.join(" > ") || "none"}.${problems}`;
   });
