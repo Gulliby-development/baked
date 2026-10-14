@@ -23,6 +23,7 @@ import { presetPropertyTests } from "./quality/properties.js";
 import { configuredRules } from "./quality/rules.js";
 import { DEFAULT_SAST_CONFIG } from "./quality/sast.js";
 import {
+  explicitModelConfig,
   independentReviewMode,
   reviewIndependence,
   routedProfiles,
@@ -125,8 +126,13 @@ export async function prepareStart(
   >,
   deps: StartDeps = {},
 ): Promise<PreparedStart> {
-  const config = request.modelStrict ? strictRoutingConfig(configured) : configured;
-  const model = request.model ?? config.defaultModel;
+  const explicit = Boolean(request.model?.trim()) && request.model?.trim() !== "none";
+  const model = request.model ?? configured.defaultModel;
+  const config = request.modelStrict
+    ? strictRoutingConfig(configured)
+    : explicit && model
+      ? explicitModelConfig(configured, model)
+      : configured;
   if (!model?.trim() || model.trim() === "none")
     throw new WorkflowFault("INVALID_DEFINITION", "Select a model before starting a workflow");
   let policy = PolicySchema.parse(request.policy);
@@ -160,7 +166,8 @@ export async function prepareStart(
   );
   const profiles = registry.list().map((p) => p.profile);
   if (request.modelStrict) routing.strict = true;
-  else if (request.model?.trim() && request.model.trim() !== "none") {
+  else if (explicit) {
+    routing.explicitModel = true;
     const shadowed = shadowedModelWarnings(routing, profiles);
     if (shadowed.length) routing.warnings = shadowed;
   }

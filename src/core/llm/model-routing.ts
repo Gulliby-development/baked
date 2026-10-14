@@ -282,6 +282,8 @@ export const RoutingRecordSchema = z
     warnings: z.array(z.string()).optional(),
     /** The run model overrides the configured routes (`--model-strict`); a reroute keeps it. */
     strict: z.boolean().optional(),
+    /** The run model was given explicitly (`--model`), so it serves the `active` class; a reroute keeps it. */
+    explicitModel: z.boolean().optional(),
   })
   .strict();
 export type RoutingRecord = z.infer<typeof RoutingRecordSchema>;
