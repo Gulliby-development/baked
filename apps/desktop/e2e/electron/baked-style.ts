@@ -16,8 +16,9 @@ export function failOnNativeDialogs(page: Page): string[] {
 }
 
 /**
- * Checks the current screen for native controls that open a system popup: `<select>`, date,
- * time and colour pickers, and `<datalist>` suggestions.
+ * Checks the current screen for native controls that open a system popup: a `<select>` without
+ * the customizable `base-select` look (base.css styles its picker), date, time and colour
+ * pickers, and `<datalist>` suggestions.
  */
 export async function expectBakedStyle(page: Page): Promise<void> {
   const native = await page.evaluate(() => {
@@ -26,7 +27,9 @@ export async function expectBakedStyle(page: Page): Promise<void> {
       `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ""}${
         el.getAttribute("aria-label") ? `[${el.getAttribute("aria-label")}]` : ""
       }`;
-    for (const el of document.querySelectorAll("select, datalist")) found.push(describe(el));
+    for (const el of document.querySelectorAll("select"))
+      if (getComputedStyle(el).appearance !== "base-select") found.push(describe(el));
+    for (const el of document.querySelectorAll("datalist")) found.push(describe(el));
     for (const el of document.querySelectorAll("input[list]")) found.push(describe(el));
     for (const el of document.querySelectorAll("input")) {
       const type = (el as HTMLInputElement).type;
@@ -39,8 +42,8 @@ export async function expectBakedStyle(page: Page): Promise<void> {
 }
 
 /**
- * Picks `option` in the dropdown named `name`: the app's own select (a `combobox` button with a
- * `listbox` popup) or, until a screen moves to it, a native `<select>`.
+ * Picks `option` in the dropdown named `name`: a `<select>`, or a `combobox` button with a
+ * `listbox` popup.
  */
 export async function choose(
   scope: Page | Locator,
