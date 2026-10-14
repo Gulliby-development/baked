@@ -883,7 +883,7 @@ test("gates: a gate file that does not parse is reported and not listed", async 
   expect(dialogs).toEqual([]);
 });
 
-test("gates: placing a gate in a workflow without checks is refused and writes no workflow", async ({
+test("gates: a workflow without checks offers no place and leads to a new check", async ({
   workspace,
   launch,
 }) => {
@@ -900,14 +900,16 @@ test("gates: placing a gate in a workflow without checks is refused and writes n
     .fill("QA signs off the release");
   await dialog.getByRole("button", { name: "Draft the gate" }).click();
   await dialog.getByRole("button", { name: "Save gate" }).click();
-  await dialog.getByRole("button", { name: "Add to workflow" }).click();
-  await expect(dialog.getByRole("alert")).toContainText("The checks stage has no checks yet");
+  // A person's gate cannot go into the empty check stage, and nothing else is offered (#1103).
+  await expect(dialog.getByRole("status")).toContainText("has no checks yet");
+  await expect(dialog.getByRole("button", { name: "Add to workflow" })).toBeDisabled();
   await expectBakedStyle(page);
   expect(existsSync(join(root, "baked", "workflows"))).toBe(false);
 
-  // The gate itself is saved; it can be placed later.
-  await dialog.getByRole("button", { name: "Later" }).click();
+  // The gate itself is saved; New check closes the dialog and opens the check form.
+  await dialog.getByRole("button", { name: "New check" }).click();
   await expect(dialog).toBeHidden();
+  await expect(page.getByRole("form", { name: "New check" })).toBeVisible();
   const [file] = readdirSync(join(root, "baked", "gates"));
   await expect(gateButton(page, (file ?? "").replace(/\.json$/, ""))).toContainText("human");
   expect(dialogs).toEqual([]);

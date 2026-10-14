@@ -131,6 +131,7 @@ export async function executeGateCommand(
         const places = gatePlaces(workspace, workflow, id, policy);
         const text = [
           `Where ${id} can go in ${places.workflowId}${places.copyTo ? ` (binding copies it as ${places.copyTo})` : ""}:`,
+          ...(places.needsChecks ? [places.needsChecks] : []),
           ...places.places.map(
             (p) =>
               `  ${p.key}  ${p.label}${p.bound ? "  [bound]" : p.disabled ? `  (not here: ${p.disabled})` : ""}`,

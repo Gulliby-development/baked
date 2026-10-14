@@ -196,6 +196,57 @@ test.describe("Skills", () => {
     expect(dialogs).toEqual([]);
   });
 
+  // #1106: a skill a package put in baked/skills is listed under its package, read-only.
+  test("a skill from a package is listed with its package and is not removable alone", async ({
+    workspace,
+    launch,
+  }) => {
+    const root = workspace.project("gamma");
+    const path = "baked/skills/release-notes/SKILL.md";
+    write(join(root, path), notesSkill);
+    write(
+      join(root, "baked", "packages.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        packages: [
+          {
+            name: "acme-notes",
+            version: "1.0.0",
+            installedAt: "2026-10-14T00:00:00Z",
+            files: [{ path, sha256: createHash("sha256").update(notesSkill).digest("hex") }],
+          },
+        ],
+      }),
+    );
+    const { page } = await launch(backend);
+    const dialogs = failOnNativeDialogs(page);
+    await openScreen(page, "Skills");
+    const fromPackages = page.getByRole("region", { name: "From packages" });
+    await expect(fromPackages.getByText("release-notes", { exact: true })).toBeVisible();
+    await expect(fromPackages.getByText("From the package acme-notes")).toBeVisible();
+    await expect(fromPackages.getByRole("button", { name: "Remove release-notes" })).toHaveCount(0);
+    await expect(
+      page.getByRole("region", { name: "In this project" }).getByText("release-notes"),
+    ).toHaveCount(0);
+    await expectBakedStyle(page);
+
+    await fromPackages.getByRole("button", { name: "Open" }).click();
+    const view = page.getByRole("dialog", { name: "release-notes" });
+    await expect(view).toContainText(join(root, "baked", "skills", "release-notes", "SKILL.md"));
+    await page.keyboard.press("Escape");
+    await expect(view).toBeHidden();
+
+    const { skills } = await api<{ skills: { id: string; scope: string; package?: string }[] }>(
+      page,
+      "GET",
+      "/v1/skills",
+    );
+    expect(skills).toEqual([
+      expect.objectContaining({ id: "release-notes", scope: "package", package: "acme-notes" }),
+    ]);
+    expect(dialogs).toEqual([]);
+  });
+
   test("a SKILL.md outside its own folder is not removed", async ({ workspace, launch }) => {
     const root = workspace.project("gamma");
     const loose = join(root, ".claude", "skills", "SKILL.md");
