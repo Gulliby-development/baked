@@ -283,7 +283,7 @@ async function commitEnv(store: WorkflowStore, runId: string): Promise<Record<st
 export async function runContentCommit(
   store: WorkflowStore,
   runId: string,
-  worktree: WorktreeState,
+  worktree: Pick<WorktreeState, "path">,
 ): Promise<string> {
   const root = join(store.workspace, worktree.path);
   const directory = mkdtempSync(join(tmpdir(), "baked-worktree-"));
@@ -296,7 +296,9 @@ export async function runContentCommit(
     else await required(root, ["read-tree", "HEAD"], { env });
     // An exclude pathspec that names an ignored path fails the add ("paths are ignored"); the
     // linked node_modules is a junction on Windows, which .gitignore already covers.
-    const ignored = (await git(root, ["check-ignore", "-q", "node_modules"])).code === 0;
+    // The project root (a run without its own worktree) has `.baked`, usually ignored too.
+    const ignored = async (path: string) =>
+      (await git(root, ["check-ignore", "-q", path])).code === 0;
     await required(
       root,
       [
@@ -305,8 +307,8 @@ export async function runContentCommit(
         "-A",
         "--",
         ".",
-        ":(exclude).baked",
-        ...(ignored ? [] : [":(exclude)node_modules"]),
+        ...((await ignored(".baked")) ? [] : [":(exclude).baked"]),
+        ...((await ignored("node_modules")) ? [] : [":(exclude)node_modules"]),
       ],
       { env },
     );

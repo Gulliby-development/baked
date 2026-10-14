@@ -10,7 +10,9 @@ import {
   runMutants,
   thresholdFor,
 } from "../src/core/workflows/quality/mutation.js";
+import { QUALITY_MUTATION } from "../src/core/workflows/quality/mutation.js";
 import { runReport } from "../src/core/workflows/run-report.js";
+import type { WorkflowStore } from "../src/core/workflows/store.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
@@ -257,6 +259,89 @@ describe("mutation gate in a run", () => {
     } finally {
       await fixture.dispose();
     }
+  });
+
+  /**
+   * An advisory run in a Git repository whose test check takes a while; `ignored` lists files
+   * Git ignores, which a copy of the run does not have. Returns what the first review saw: whether
+   * the score existed yet, and the file the gate mutates.
+   */
+  async function besideReview(ignored: string[], verify: (report: string) => void) {
+    const git = (cwd: string, ...args: string[]) => {
+      const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+      if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr.toString()}`);
+    };
+    const seen: { score: boolean; sign: string }[] = [];
+    let store: WorkflowStore | null = null;
+    let runId = "";
+    class ReviewWatcher extends SignExecutor {
+      constructor(private readonly root: string) {
+        super(root);
+      }
+      override async execute(request: ExecutionRequest) {
+        if (request.profile.output === "review" && store && !seen.length)
+          seen.push({
+            score: Boolean(store.latestArtifact(runId, QUALITY_MUTATION)),
+            sign: readFileSync(join(this.root, "src/sign.ts"), "utf8"),
+          });
+        return super.execute(request);
+      }
+    }
+    const first = fixturePolicy.checks[0] as (typeof fixturePolicy.checks)[number];
+    const fixture = workflowFixture({
+      policy: {
+        ...fixturePolicy,
+        mutation: "advisory",
+        // Each test run takes a while, so the gate is still running when the review starts.
+        checks: [...fixturePolicy.checks, { ...first, id: "unit", args: ["test", "--preload", "./slow.ts", "tests/"] }],
+      },
+      executor: (root) => new ReviewWatcher(root),
+    });
+    try {
+      const { service, root } = fixture;
+      git(root, "init", "-q", "-b", "main");
+      git(root, "config", "user.name", "Test User");
+      git(root, "config", "user.email", "test@example.test");
+      git(root, "config", "commit.gpgsign", "false");
+      writeFileSync(join(root, ".gitignore"), [".baked/", ...ignored, ""].join("\n"));
+      writeFileSync(join(root, "README.md"), "# Sign\n");
+      writeFileSync(join(root, "slow.ts"), "await Bun.sleep(400);\n");
+      git(root, "add", ".");
+      git(root, "commit", "-q", "-m", "Initial");
+      store = service.store;
+      const run = await fixture.start();
+      runId = run.runId;
+      await service.drive(run.runId, new AbortController().signal);
+      await fixture.approve(run.runId);
+      const done = await service.drive(run.runId, new AbortController().signal);
+      expect(done.status).toBe("completed");
+      // The review read the unmutated file.
+      expect(seen.map((s) => s.sign)).toEqual(["export const sign = (n: number) => (n < 0 ? -1 : 1);\n"]);
+      // The copy is gone and the run's own file was never mutated.
+      expect(existsSync(join(root, ".baked/worktrees", run.runId, "quality-mutation"))).toBe(false);
+      expect(readFileSync(join(root, "src/sign.ts"), "utf8")).toBe("export const sign = (n: number) => (n < 0 ? -1 : 1);\n");
+      verify(runReport(service.store, run.runId));
+      return seen;
+    } finally {
+      await fixture.dispose();
+    }
+  }
+
+  test("an advisory gate runs beside the review in a copy, so the review starts before its score", async () => {
+    // The score still reaches the report before the run finishes.
+    const seen = await besideReview([], (report) =>
+      expect(report).toMatch(/Mutation gate \(`advisory`\): score \d+%/),
+    );
+    // The review started while the gate was still running.
+    expect(seen.map((s) => s.score)).toEqual([false]);
+  });
+
+  test("a copy whose tests fail without a mutant reports why instead of a score", async () => {
+    // The ignored preload is missing in the copy, so every mutant would look killed.
+    await besideReview(["slow.ts"], (report) => {
+      expect(report).not.toMatch(/Mutation gate \(`advisory`\): score/);
+      expect(report).toContain("check unit fails in a copy of the run without any mutant, so no mutant ran");
+    });
   });
 
   test("with Stryker installed the gate reports Stryker's mutants instead of its own", async () => {
