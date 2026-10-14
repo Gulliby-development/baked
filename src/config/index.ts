@@ -186,6 +186,9 @@ export function mergeConfigs(global: AppConfig, project: Partial<AppConfig> | nu
     const runBudget = layer.runBudget
       ? { ...merged.runBudget, ...layer.runBudget }
       : merged.runBudget;
+    const coordinator = layer.coordinator
+      ? { ...merged.coordinator, ...layer.coordinator }
+      : merged.coordinator;
     const watchdogTimeouts = layer.watchdogTimeouts
       ? { ...merged.watchdogTimeouts, ...layer.watchdogTimeouts }
       : merged.watchdogTimeouts;
@@ -207,6 +210,7 @@ export function mergeConfigs(global: AppConfig, project: Partial<AppConfig> | nu
       cache,
       ...(quality ? { quality } : {}),
       ...(runBudget ? { runBudget } : {}),
+      ...(coordinator ? { coordinator } : {}),
       watchdogTimeouts,
       mcpServers,
     };
@@ -248,6 +252,7 @@ export function saveProjectConfig(cwd: string, patch: Partial<AppConfig>): void 
   if (patch.agentFeatures)
     merged.agentFeatures = { ...existing.agentFeatures, ...patch.agentFeatures };
   if (patch.retry) merged.retry = { ...existing.retry, ...patch.retry };
+  if (patch.coordinator) merged.coordinator = { ...existing.coordinator, ...patch.coordinator };
 
   writeFileSync(file, JSON.stringify(merged, null, 2));
 }
@@ -276,6 +281,7 @@ export function saveGlobalConfig(patch: Partial<AppConfig>): void {
   if (patch.agentFeatures)
     merged.agentFeatures = { ...existing.agentFeatures, ...patch.agentFeatures };
   if (patch.retry) merged.retry = { ...existing.retry, ...patch.retry };
+  if (patch.coordinator) merged.coordinator = { ...existing.coordinator, ...patch.coordinator };
 
   writeFileSync(configFile, JSON.stringify(merged, null, 2));
 }

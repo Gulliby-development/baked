@@ -2,13 +2,16 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { confirm, openSelect, promptText } from "../../components/ui/dialogs/index.js";
 import { reasonText, statusGlyph } from "../../components/workflow/format.js";
-import { requestSummaryOnOpen } from "../../hooks/useCoordinator.js";
+import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../../config/index.js";
+import { requestSummaryOnOpen, setCoordinatorWorkStyle } from "../../hooks/useCoordinator.js";
 import { drivingWorkflowRuns } from "../../hooks/useWorkflow.js";
 import { useDialogStore } from "../../stores/dialog.js";
 import { getAppSessionId } from "../../stores/session.js";
 import { useUIStore } from "../../stores/ui.js";
 import { useWorkflowStore } from "../../stores/workflow.js";
+import { COORDINATOR_WORK_STYLES, type CoordinatorWorkStyle } from "../../types/index.js";
 import { coordinatorId, runRulesCommand } from "../chat/approval-rules-command.js";
+import { coordinatorWorkStyle } from "../chat/coordinator.js";
 import { checkNewProject, createProject } from "../projects/create.js";
 import {
   addKnownProject,
@@ -31,6 +34,7 @@ import {
   waitingAcrossProjects,
 } from "../projects/switcher.js";
 import { SessionManager } from "../sessions/manager.js";
+import { settingById } from "../settings/schema.js";
 import type { CommandContext, CommandHandler } from "./types.js";
 import { sysMsg } from "./utils.js";
 
@@ -456,6 +460,49 @@ export function coordinatorRules(input: string, ctx: CommandContext): void {
   }
 }
 
+/**
+ * /coordinator style [STYLE]: how the coordinator proposes work (Settings > Coordinator on the
+ * desktop). With a style it saves it to the project config; without one it opens a picker.
+ */
+export function coordinatorStyle(input: string, ctx: CommandContext): void {
+  const setting = settingById("coordinator.workStyle");
+  const options = setting?.type === "enum" ? setting.options : [];
+  const save = (value: string, scope: "global" | "project") => {
+    const workStyle = value as CoordinatorWorkStyle;
+    ctx.saveToScope({ coordinator: { workStyle } }, scope);
+    setCoordinatorWorkStyle(ctx.cwd, workStyle);
+    const label = options.find((o) => o.value === value)?.label ?? value;
+    sysMsg(ctx, `Coordinator work style: ${label} (${scope}). It applies from the next turn.`);
+  };
+  const arg = input
+    .replace(/^\s*\/coordinator\s+style\b/i, "")
+    .trim()
+    .toLowerCase();
+  if (arg) {
+    if (!(COORDINATOR_WORK_STYLES as readonly string[]).includes(arg)) {
+      sysMsg(ctx, `Unknown work style ${arg}; use one of ${COORDINATOR_WORK_STYLES.join(", ")}.`);
+      return;
+    }
+    save(arg, "project");
+    return;
+  }
+  const current = coordinatorWorkStyle(
+    mergeConfigs(loadConfig(), loadEffectiveProjectConfig(ctx.cwd)),
+  );
+  ctx.openCommandPicker({
+    title: "Coordinator work style",
+    options: options.map((o) => ({
+      value: o.value,
+      label: o.label,
+      ...(o.help ? { description: o.help } : {}),
+    })),
+    currentValue: current,
+    scopeEnabled: true,
+    initialScope: "project",
+    onSelect: (value, scope) => save(value, scope ?? "project"),
+  });
+}
+
 export function projectHost(ctx: CommandContext): ProjectHost {
   return {
     cwd: ctx.cwd,
@@ -471,6 +518,7 @@ export function register(map: Map<string, CommandHandler>): void {
   map.set("/project waiting", (_input, ctx) => showWaitingAcrossProjects(ctx));
   map.set("/coordinator", () => useUIStore.getState().openModal("coordinator"));
   map.set("/coordinator rules", (input, ctx) => coordinatorRules(input, ctx));
+  map.set("/coordinator style", (input, ctx) => coordinatorStyle(input, ctx));
   map.set("/coordinator summary", () => {
     requestSummaryOnOpen();
     useUIStore.getState().openModal("coordinator");

@@ -97,7 +97,7 @@ import { watchOptions } from "../watch/config.js";
 import { WatchController, type WatchTurn, watchTurnDisplay } from "../watch/controller.js";
 import { projectDefinitions, proposeForWorkspace } from "../workflows/v2/propose.js";
 import { answerByRules } from "./approval-rules.js";
-import { COORDINATOR_MODE } from "./coordinator.js";
+import { COORDINATOR_MODE, coordinatorWorkStyle } from "./coordinator.js";
 import {
   closeLaunched,
   controlTools,
@@ -180,9 +180,12 @@ export type ChatPrompt = { id: string; createdAt: number } & (
       /** A coordinator's proposed split into flows; approving it launches them all. */
       kind: "split";
       title: string;
-      /** Independent runs in their own worktrees, or one initiative that orders dependent flows. */
-      mode: "runs" | "initiative";
-      /** `task`: the flow's issue (`owner/name#N`), `new issue` or `local task`. */
+      /**
+       * Independent runs in their own worktrees, one initiative that orders dependent flows, or
+       * parallel chat sessions without a workflow.
+       */
+      mode: "runs" | "initiative" | "chats";
+      /** `task`: the flow's issue (`owner/name#N`), `new issue`, `local task`, or for a chat what it may do. */
       flows: { id: string; title: string; paths: string[]; dependsOn: string[]; task: string }[];
       /** Binds the approval to exactly this split. */
       digest: string;
@@ -635,7 +638,7 @@ export class ChatSession {
     this.mode = modes.mode;
     this.permissions = modes.permissions;
     this.effort = tab.effort ?? "default";
-    this.contextSize = tab.contextSize ?? "default";
+    this.contextSize = meta.kind === "coordinator" ? "max" : (tab.contextSize ?? "default");
     this.usage = {
       input: tab.tokenUsage.prompt,
       output: tab.tokenUsage.completion,
@@ -727,7 +730,8 @@ export class ChatSession {
       effort: this.effort,
       permissions: this.permissions,
       contextSize: this.contextSize,
-      contextSizes: this.model ? getModelContextSizes(this.model) : [],
+      // The coordinator always runs with the largest window, so it offers no choice.
+      contextSizes: this.model && !this.isCoordinator ? getModelContextSizes(this.model) : [],
       contextTokens: this.model
         ? chatContextTokens(this.model, this.contextSize, this.sizeOptions)
         : null,
@@ -843,6 +847,11 @@ export class ChatSession {
     if (changes.model !== undefined) this.model = changes.model;
     if (changes.mode !== undefined && this.isCoordinator && changes.mode !== COORDINATOR_MODE)
       throw new ChatError("INVALID_REQUEST", "The coordinator always runs in architect mode");
+    if (changes.contextSize !== undefined && this.isCoordinator && changes.contextSize !== "max")
+      throw new ChatError(
+        "INVALID_REQUEST",
+        "The coordinator always runs with the largest context window",
+      );
     if (changes.mode !== undefined) {
       // The legacy `auto` mode is the default mode with full access.
       const modes = splitLegacyMode(changes.mode, changes.permissions ?? this.permissions);
@@ -1763,7 +1772,8 @@ export class ChatSession {
       bakeMode: this.mode,
       effort: this.effort,
       permissionMode: this.permissions,
-      contextSize: this.contextSize === "default" ? undefined : this.contextSize,
+      contextSize:
+        this.contextSize === "default" || this.isCoordinator ? undefined : this.contextSize,
       planMode: this.mode === "plan",
       tokenUsage: {
         ...this.tab.tokenUsage,
@@ -1960,7 +1970,11 @@ export class ChatService {
       list: (limit) => this.list(limit),
       messages: (id) => {
         const session = this.get(id);
-        return { title: session.title, messages: session.messages };
+        return {
+          title: session.title,
+          messages: session.messages,
+          pending: session.pendingPrompts,
+        };
       },
     };
     return {
@@ -1975,6 +1989,7 @@ export class ChatService {
         this.launcher,
         coordinatorLimits(this.options.config),
         this.workflowCatalog(),
+        coordinatorWorkStyle(this.options.config),
       ),
       ...controlTools(this, coordinator, this.projectState, this.launcher),
       // Setup changes ask the person on a card, as launches do; reading needs no approval.

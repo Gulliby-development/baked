@@ -17,6 +17,7 @@ import { Icon, type IconName } from "./Icon.js";
 import { Badge } from "./ui/badge.js";
 import { buttonVariants } from "./ui/button.js";
 import { Dot, type DotTone } from "./ui/dot.js";
+import { Tooltip } from "./ui/tooltip.js";
 
 /** How many projects the sidebar lists before "All projects" takes over. */
 const SIDEBAR_PROJECTS = 8;
@@ -79,6 +80,13 @@ const NESTED = "ml-7 flex flex-col gap-0.5 border-l-2 border-border pl-1.5";
 
 const NESTED_ROW = "min-h-7 py-1 text-[13px]";
 
+/**
+ * The plus at the end of the Chat row: a small outlined block that lifts onto a hard shadow and
+ * fills with the accent on hover or focus, its plus turning a quarter.
+ */
+const NEW_CHAT =
+  "group/new pointer-events-auto flex size-6 items-center justify-center rounded-[4px] border-2 border-border bg-background text-soft-foreground no-underline transition-[transform,box-shadow,background-color,color] duration-150 ease-out hover:-translate-x-px hover:-translate-y-px hover:bg-main hover:text-main-foreground hover:shadow-sm-hard focus-visible:-translate-x-px focus-visible:-translate-y-px focus-visible:bg-main focus-visible:text-main-foreground focus-visible:shadow-sm-hard focus-visible:outline-none active:translate-x-0 active:translate-y-0 active:shadow-none aria-[current=page]:bg-main aria-[current=page]:text-main-foreground motion-reduce:transition-none [&>svg]:transition-transform [&>svg]:duration-200 hover:[&>svg]:rotate-90 focus-visible:[&>svg]:rotate-90 motion-reduce:[&>svg]:transition-none";
+
 const GROUP_LABEL = `${LABEL} px-2.5 pb-1.5`;
 
 function ProjectEntry({ project, route }: { project: DesktopProject; route: Route }) {
@@ -130,7 +138,7 @@ function useRecentRuns(project: DesktopProject, openRun: string | null): RunRow[
   return list;
 }
 
-/** The selected project with its sections, New chat and its recent chats. */
+/** The selected project with its sections, the New chat plus and its recent chats. */
 function SelectedProject({
   project,
   section,
@@ -177,14 +185,14 @@ function SelectedProject({
           New run
         </a>
       </div>
-      {WORK.map(([id, label, icon]) => (
-        <Fragment key={id}>
+      {WORK.map(([id, label, icon]) => {
+        const row = (
           <a
-            className={cn(NAV, "pl-5")}
+            className={cn(NAV, "pl-5", id === "chat" && "pr-10")}
             href={projectHref(project.key, id)}
             aria-current={current(
               section === id &&
-                (id !== "chat" || chatId === null) &&
+                (id !== "chat" || chatId === null || chatId === "new") &&
                 (id !== "runs" || runId === null),
             )}
           >
@@ -199,76 +207,91 @@ function SelectedProject({
               <span className={COUNT}>{project.overview.activeRuns} active</span>
             )}
           </a>
-          {id === "chat" && (
-            <div className={NESTED}>
-              <a
-                className={cn(NAV, NESTED_ROW, "font-heading text-foreground")}
-                href={projectHref(project.key, "chat", "new")}
-                aria-current={current(chatId === "new")}
-              >
-                <Icon name="new" size={13} />
-                New chat
-              </a>
-              {chats?.slice(0, SIDEBAR_CHATS).map((session) => (
-                <a
-                  key={session.id}
-                  className={cn(NAV, NESTED_ROW)}
-                  href={projectHref(project.key, "chat", session.id)}
-                  aria-current={current(chatId === session.id)}
-                  title={session.title}
-                >
-                  <Dot tone={STATE_TONE[session.state]} />
-                  <span className="min-w-0 truncate">{session.title}</span>
-                </a>
-              ))}
-            </div>
-          )}
-          {id === "coordinator" && threads.length > 0 && (
-            <div className={NESTED}>
-              {threads.slice(0, SIDEBAR_CHATS).map((session) => (
-                <a
-                  key={session.id}
-                  className={cn(NAV, NESTED_ROW)}
-                  href={projectHref(project.key, "chat", session.id)}
-                  aria-current={current(chatId === session.id)}
-                  title={session.title}
-                >
-                  <Dot tone={STATE_TONE[session.state]} />
-                  <span className="min-w-0 truncate">{session.title}</span>
-                </a>
-              ))}
-            </div>
-          )}
-          {id === "runs" && recentRuns && recentRuns.length > 0 && (
-            <div className={NESTED}>
-              {recentRuns.slice(0, SIDEBAR_RUNS).map((run) => {
-                const title = briefs.get(run.runId)?.title ?? run.featureId;
-                const wait = runWait(project.key, run, attention);
-                return (
+        );
+        return (
+          <Fragment key={id}>
+            {id === "chat" ? (
+              <div className="relative">
+                {row}
+                <div className="pointer-events-none absolute inset-y-0 right-1.5 flex items-center">
+                  <Tooltip content="New chat">
+                    <a
+                      className={NEW_CHAT}
+                      href={projectHref(project.key, "chat", "new")}
+                      aria-label="New chat"
+                      aria-current={current(chatId === "new")}
+                    >
+                      <Icon name="new" size={13} />
+                    </a>
+                  </Tooltip>
+                </div>
+              </div>
+            ) : (
+              row
+            )}
+            {id === "chat" && chats && chats.length > 0 && (
+              <div className={NESTED}>
+                {chats.slice(0, SIDEBAR_CHATS).map((session) => (
                   <a
-                    key={run.runId}
+                    key={session.id}
                     className={cn(NAV, NESTED_ROW)}
-                    href={projectHref(project.key, "runs", run.runId)}
-                    aria-current={current(runId === run.runId)}
-                    title={`${title}: ${STATUS_TEXT[run.status]}`}
+                    href={projectHref(project.key, "chat", session.id)}
+                    aria-current={current(chatId === session.id)}
+                    title={session.title}
                   >
-                    <Dot tone={runDot(run.status)} />
-                    <span className="min-w-0 truncate">{title}</span>
-                    {wait && (
-                      <Badge
-                        tone="warn"
-                        className="ml-auto px-1.5 py-0 text-[10px] tracking-normal"
-                      >
-                        {wait}
-                      </Badge>
-                    )}
+                    <Dot tone={STATE_TONE[session.state]} />
+                    <span className="min-w-0 truncate">{session.title}</span>
                   </a>
-                );
-              })}
-            </div>
-          )}
-        </Fragment>
-      ))}
+                ))}
+              </div>
+            )}
+            {id === "coordinator" && threads.length > 0 && (
+              <div className={NESTED}>
+                {threads.slice(0, SIDEBAR_CHATS).map((session) => (
+                  <a
+                    key={session.id}
+                    className={cn(NAV, NESTED_ROW)}
+                    href={projectHref(project.key, "chat", session.id)}
+                    aria-current={current(chatId === session.id)}
+                    title={session.title}
+                  >
+                    <Dot tone={STATE_TONE[session.state]} />
+                    <span className="min-w-0 truncate">{session.title}</span>
+                  </a>
+                ))}
+              </div>
+            )}
+            {id === "runs" && recentRuns && recentRuns.length > 0 && (
+              <div className={NESTED}>
+                {recentRuns.slice(0, SIDEBAR_RUNS).map((run) => {
+                  const title = briefs.get(run.runId)?.title ?? run.featureId;
+                  const wait = runWait(project.key, run, attention);
+                  return (
+                    <a
+                      key={run.runId}
+                      className={cn(NAV, NESTED_ROW)}
+                      href={projectHref(project.key, "runs", run.runId)}
+                      aria-current={current(runId === run.runId)}
+                      title={`${title}: ${STATUS_TEXT[run.status]}`}
+                    >
+                      <Dot tone={runDot(run.status)} />
+                      <span className="min-w-0 truncate">{title}</span>
+                      {wait && (
+                        <Badge
+                          tone="warn"
+                          className="ml-auto px-1.5 py-0 text-[10px] tracking-normal"
+                        >
+                          {wait}
+                        </Badge>
+                      )}
+                    </a>
+                  );
+                })}
+              </div>
+            )}
+          </Fragment>
+        );
+      })}
       <p className={cn(LABEL, "pt-2 pr-2.5 pb-1 pl-5 text-[11px]")}>Setup</p>
       {SETUP.filter(([id]) => id !== "agents" || agentCount > 0).map(([id, label, icon]) => (
         <a

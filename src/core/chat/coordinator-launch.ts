@@ -8,7 +8,13 @@
  */
 import { tool } from "ai";
 import { z } from "zod";
-import type { AppConfig, ChatMessage, LaunchNote, PermissionMode } from "../../types/index.js";
+import type {
+  AppConfig,
+  ChatMessage,
+  CoordinatorWorkStyle,
+  LaunchNote,
+  PermissionMode,
+} from "../../types/index.js";
 import { hashJson } from "../specs/hash.js";
 import {
   InitiativeFeatureSchema,
@@ -23,12 +29,12 @@ import {
   type IssueSource,
   issueTarget,
 } from "../workflows/issue-source.js";
-import type { WorkflowProposal } from "../workflows/preset-router.js";
+import { assessRequest, type WorkflowProposal } from "../workflows/preset-router.js";
 import { terminalStates } from "../workflows/state-machine.js";
 import type { DefinitionSummary } from "../workflows/v2/definitions.js";
 import type { RunApprover } from "./approval-rules.js";
 import { BriefStore, type LaunchedEntry } from "./coordinator.js";
-import type { ProjectStateSource } from "./project-state.js";
+import { describePrompt, type ProjectStateSource } from "./project-state.js";
 import type { ChatMode, ChatPrompt, ChatService, ChatSession } from "./sessions.js";
 
 export const LAUNCH_TOOLS = [
@@ -38,7 +44,9 @@ export const LAUNCH_TOOLS = [
   "control_run",
   "start_initiative",
   "propose_split",
+  "propose_chats",
   "message_session",
+  "answer_session",
 ] as const;
 export const DEFAULT_MAX_ACTIVE = 3;
 export const DEFAULT_MAX_TOKENS = 20_000_000;
@@ -330,6 +338,17 @@ export function sessionResult(chat: ChatService, id: string): string | null {
   return text.length > LAUNCH_RESULT_MAX ? `${text.slice(0, LAUNCH_RESULT_MAX - 1)}…` : text;
 }
 
+/** What a launched session waits on, for its launch note; null when it waits on nothing. */
+export function sessionAsks(chat: ChatService, id: string): string | null {
+  let prompts: ChatPrompt[];
+  try {
+    prompts = chat.get(id).pendingPrompts;
+  } catch {
+    return null;
+  }
+  return prompts.length ? prompts.map((p) => describePrompt(p)).join("\n") : null;
+}
+
 /** A session's id is a UUID nobody reads; its first block is enough to tell two apart. */
 const shortId = (id: string): string =>
   /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(id) ? id.slice(0, 8) : id;
@@ -412,7 +431,16 @@ export async function syncLaunched(
       next = { ...next, status, ...(answered ? { answers } : {}) };
       if (NOTEWORTHY.test(status)) {
         const result = answered ? sessionResult(chat, entry.id) : null;
-        notices.push({ ...note(next, "status"), ...(result ? { result } : {}) });
+        // A question asked mid-turn is a prompt, not a message: the note carries it.
+        const asks =
+          entry.kind === "session" && status.startsWith("waiting")
+            ? sessionAsks(chat, entry.id)
+            : null;
+        notices.push({
+          ...note(next, "status"),
+          ...(result ? { result } : {}),
+          ...(asks ? { asks } : {}),
+        });
       }
     }
     // A completed run's pull request closes its issue when it merges.
@@ -444,7 +472,8 @@ export function wakeLine(note: LaunchNote): string {
     ? `feature ${note.feature} of initiative ${note.id}`
     : `${note.kind} id ${note.id}`;
   const line = `${launchNoteText(note)} [${id}; why: ${note.why.replace(/\s+/g, " ")}]`;
-  return note.result ? `${line}\nAnswer: ${note.result}` : line;
+  const asks = note.asks ? `\nIt asks: ${note.asks}` : "";
+  return note.result ? `${line}\nAnswer: ${note.result}${asks}` : `${line}${asks}`;
 }
 
 /**
@@ -456,7 +485,7 @@ export function wakePrompt(notices: string[]): string {
     "[Update on work you launched. BAKED sent this, not the user.]",
     ...notices.map((n) => `- ${n}`),
     "",
-    "Take control back. Tell the user in one or two short lines what finished, failed or waits for them (read the run with project_state when you need its result). Then continue: start the next step of the work this was part of, propose what is left, or say it is done. A request the run waits for stays the user's decision: ask them, and use control_run only after they say yes. Do not repeat these lines verbatim.",
+    "Take control back. Tell the user in one or two short lines what finished, failed or waits for them (read the run with project_state when you need its result). Then continue: start the next step of the work this was part of, propose what is left, or say it is done. A request the run waits for stays the user's decision: ask them, and use control_run only after they say yes. When a session asks something, quote its question and options to the user; once they answer here, answer_session passes their answer on. Do not repeat these lines verbatim.",
   ].join("\n");
 }
 
@@ -516,6 +545,53 @@ export const SplitInput = z.strictObject({
   why: Why,
 });
 export type SplitRequest = z.infer<typeof SplitInput>;
+
+export const ChatsInput = z.strictObject({
+  title: z.string().trim().min(1).max(200).describe("What the chats do together"),
+  chats: z
+    .array(
+      z.strictObject({
+        id: z
+          .string()
+          .regex(/^[a-z0-9][a-z0-9-]{0,39}$/)
+          .describe("Short lowercase id, unique in this proposal"),
+        title: z.string().trim().min(1).max(200),
+        brief: z.string().trim().min(1).max(20_000).describe("The chat's first message"),
+        mode: z
+          .enum(["architect", "default", "auto"])
+          .default("default")
+          .describe("architect only reads; default and auto edit files in their own worktree"),
+        paths: z
+          .array(z.string().trim().min(1).max(500))
+          .max(50)
+          .default([])
+          .describe("The files the chat writes, as globs; two editing chats must not overlap"),
+      }),
+    )
+    .min(2)
+    .max(MAX_FEATURES),
+  why: Why,
+});
+export type ChatsRequest = z.infer<typeof ChatsInput>;
+
+/** Why parallel chats cannot start as proposed, or null: unique ids, disjoint writes. */
+export function chatsProblem(request: ChatsRequest): string | null {
+  const ids = new Set<string>();
+  for (const c of request.chats) {
+    if (ids.has(c.id)) return `Two chats have the id ${c.id}`;
+    ids.add(c.id);
+  }
+  const editing = request.chats.filter((c) => c.mode !== "architect");
+  for (const [i, a] of editing.entries())
+    for (const b of editing.slice(i + 1)) {
+      const pair = a.paths
+        .flatMap((p) => b.paths.map((q) => [p, q] as const))
+        .find(([p, q]) => pathsOverlap(p, q));
+      if (pair)
+        return `Chats ${a.id} and ${b.id} both write ${pair[0]} / ${pair[1]}; merge them into one chat or narrow their paths`;
+    }
+  return null;
+}
 
 /** The literal directory part of a path glob: `src/api/**` gives `src/api/`. */
 function literalPrefix(pattern: string): string {
@@ -609,9 +685,17 @@ export function launchTools(
   launcher: ProjectLauncher | null,
   limits: { maxActive: number; maxTokens: number },
   workflows: WorkflowCatalog | null = null,
+  workStyle: CoordinatorWorkStyle = "ask",
 ) {
   const store = new BriefStore(chat.workspace, coordinator.id);
   const failed = (error: string) => ({ success: false, output: "", error });
+  /** Why the user's work style turns a tool off, or null. */
+  const offByStyle = (needs: "workflow" | "chats"): string | null =>
+    needs === "workflow" && workStyle === "chats-only"
+      ? "The user works only through chats (Settings > Coordinator, work style chats only): propose_chats or launch_session instead. A workflow needs that setting changed."
+      : needs === "chats" && workStyle === "workflows-only"
+        ? "The user works only through workflows (Settings > Coordinator, work style workflows only): start_run instead. Chats need that setting changed."
+        : null;
   const tracker = launcher?.tasks ?? null;
   /** The task an issue reference names; read from GitHub when this server can. */
   const linkTask = async (reference: string): Promise<FlowTask> => {
@@ -694,7 +778,7 @@ export function launchTools(
     }),
     list_workflows: tool({
       description:
-        "List the workflows this project can run: id, where it comes from (built in or the project's baked/workflows), what it is for, its stages in order and whether it writes files. With `request`, also the workflow BAKED proposes for that request and why. Read this before suggesting a workflow.",
+        "List the workflows this project can run: id, where it comes from (built in or the project's baked/workflows), what it is for, its stages in order and whether it writes files. With `request`, also BAKED's assessment of the request (kind, size, risk, the parts it lists) and the workflow it proposes and why. Read this before suggesting a workflow.",
       inputSchema: z.strictObject({
         request: z
           .string()
@@ -759,6 +843,8 @@ export function launchTools(
         why: Why,
       }),
       execute: async ({ prompt, workflow, feature, issue, why }) => {
+        const off = offByStyle("workflow");
+        if (off) return failed(off);
         if (!launcher) return failed("This server cannot start workflow runs");
         const blocked = overLimit(chat, state, store.read().launched, limits);
         if (blocked) return failed(blocked);
@@ -774,7 +860,9 @@ export function launchTools(
         const card = workflowCard(chosen, prompt, why, task?.ref);
         if (!(await coordinator.proposeWorkflow(card)))
           return failed(
-            `The user did not approve running workflow ${card.workflow}. Ask what to change, or carry on without a run.`,
+            workStyle === "workflows-only"
+              ? `The user did not approve running workflow ${card.workflow}. Ask what to change in the run.`
+              : `The user did not approve running workflow ${card.workflow}. Ask what to change, or work without a workflow: if the task has parts that can run side by side, propose_chats them as parallel chats; otherwise launch_session one chat.`,
           );
         return launch(async () => {
           const { runId } = await launcher.startRun({
@@ -839,6 +927,8 @@ export function launchTools(
         why: Why,
       }),
       execute: async ({ id, prompt, why }) => {
+        const off = offByStyle("workflow");
+        if (off) return failed(off);
         if (!launcher) return failed("This server cannot start initiatives");
         return launch(async () => {
           const { initiativeId } = await launcher.startInitiative({ initiativeId: id, prompt });
@@ -851,11 +941,145 @@ export function launchTools(
         }, why);
       },
     }),
+    answer_session: tool({
+      description:
+        "Pass the user's answer to a question a session you launched is waiting on (project_state session shows it). Use it only with what the user said in this chat, never an answer of your own. Permissions and plan reviews stay with the user in that session.",
+      inputSchema: z.strictObject({
+        id: z.string().trim().min(1).max(200).describe("The launched session's id"),
+        answer: z
+          .string()
+          .trim()
+          .max(4000)
+          .describe(
+            "The user's answer, or an option's label; empty skips a question that allows it",
+          ),
+        promptId: z
+          .string()
+          .trim()
+          .min(1)
+          .max(200)
+          .optional()
+          .describe("The question; the only one pending when left out"),
+      }),
+      execute: async ({ id, answer, promptId }) => {
+        if (!store.read().launched.some((l) => l.kind === "session" && l.id === id))
+          return failed(`Session ${id} is not one you launched; the user answers it there`);
+        let session: ChatSession;
+        try {
+          session = chat.get(id);
+        } catch {
+          return failed(`Session ${id} no longer exists`);
+        }
+        const pending = session.pendingPrompts;
+        const prompt = promptId ? pending.find((p) => p.id === promptId) : pending[0];
+        if (!prompt) return failed(`Session ${id} waits for no answer`);
+        if (!promptId && pending.length > 1)
+          return failed(
+            `Session ${id} waits on several prompts (${pending.map((p) => `${p.id}: ${p.kind}`).join(", ")}); name one`,
+          );
+        if (prompt.kind !== "question")
+          return failed(
+            `Session ${id} waits on ${describePrompt(prompt)}. The user answers that in the session itself.`,
+          );
+        const option = prompt.options.find(
+          (o) => o.label.toLowerCase() === answer.toLowerCase() || o.value === answer,
+        );
+        const value = option?.value ?? answer;
+        const title = session.title;
+        if (
+          coordinator.permissionMode !== "full" &&
+          !(await coordinator.confirm(
+            `Answer "${prompt.question}" in session "${title}" with: ${answer || "(skip)"}`,
+          ))
+        )
+          return failed("The user did not approve the answer. Nothing was sent.");
+        try {
+          session.answer(prompt.id, { answer: value });
+        } catch (err) {
+          return failed(err instanceof Error ? err.message : String(err));
+        }
+        return {
+          success: true,
+          output: `Answered the question of session ${id}; it goes on. You get a note here when its turn ends or it asks again.`,
+        };
+      },
+    }),
+    propose_chats: tool({
+      description:
+        "Propose working without a workflow: split a task into parallel chat sessions the user approves as one card, then start them all. Use it when the user does not want a workflow run and the task has parts that can run side by side. Each chat gets its own brief; an editing chat works in its own Git worktree and branch, and two editing chats must not write the same paths. You get a note here as each one finishes or asks something.",
+      inputSchema: ChatsInput,
+      execute: async (request: ChatsRequest) => {
+        const off = offByStyle("chats");
+        if (off) return failed(off);
+        const problem = chatsProblem(request);
+        if (problem) return failed(problem);
+        const blocked = overLimit(chat, state, store.read().launched, limits, request.chats.length);
+        if (blocked) return failed(blocked);
+        const digest = hashJson({ kind: "chats", chats: request.chats });
+        const approved = await coordinator.proposeSplit({
+          kind: "split",
+          title: request.title,
+          mode: "chats",
+          flows: request.chats.map((c) => ({
+            id: c.id,
+            title: c.title,
+            paths: c.paths,
+            dependsOn: [],
+            task: c.mode === "architect" ? "chat, reads only" : "chat, edits files",
+          })),
+          digest,
+        });
+        const decided = `Parallel chats "${request.title}" ${approved ? "approved" : "rejected"} (digest ${digest.slice(0, 12)})`;
+        if (!approved) {
+          recordInBrief(store, (brief) => ({
+            ...brief,
+            openQuestions: [...brief.openQuestions, `${decided}; ask what to change`],
+          }));
+          return failed("The user rejected the chats. Ask what to change, then propose again.");
+        }
+        const entries: LaunchedEntry[] = [];
+        const errors: string[] = [];
+        const details: string[] = [];
+        for (const c of request.chats)
+          try {
+            const { session, detail } = await createLaunched(chat, {
+              title: c.title,
+              mode: c.mode as ChatMode,
+              permissions: coordinator.permissionMode,
+              parentId: coordinator.id,
+              worktree: c.mode !== "architect",
+            });
+            session.send(c.brief);
+            entries.push({
+              kind: "session",
+              id: session.id,
+              title: requestTitle(c.title),
+              status: "working",
+              why: `${c.title} (${request.title})`.slice(0, 300),
+            });
+            if (detail) details.push(`${c.id}: ${detail}`);
+          } catch (err) {
+            errors.push(`${c.id}: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        recordInBrief(store, (brief) => ({
+          ...brief,
+          decisions: [...brief.decisions, decided],
+          launched: [...brief.launched, ...entries],
+        }));
+        return {
+          success: errors.length === 0,
+          output: `The user approved the chats. Started ${entries.map((e) => `session ${e.id} "${e.title}"`).join(", ") || "nothing"}.${details.length ? ` ${details.join(" ")}` : ""} You get a note here as each finishes or asks something; report back to the user when they are all done.`,
+          ...(errors.length ? { error: `Not started: ${errors.join("; ")}` } : {}),
+        };
+      },
+    }),
     propose_split: tool({
       description:
         "Propose splitting a large request into flows the user approves as one card. Flows without dependsOn run as parallel workflow runs, each in its own worktree and branch, and must have disjoint boundary paths; if any flow depends on another, the whole split runs as one initiative (3 to 12 flows) that orders them. Waits for the user's answer, then launches everything at once.",
       inputSchema: SplitInput,
       execute: async (split: SplitRequest) => {
+        const off = offByStyle("workflow");
+        if (off) return failed(off);
         if (!launcher) return failed("This server cannot start workflow runs");
         const shape = splitShape(split);
         if ("problem" in shape) return failed(shape.problem);
@@ -1072,7 +1296,14 @@ export function renderWorkflows(workflows: WorkflowCatalog, request?: string): s
   const head: string[] = [];
   if (request) {
     const p = workflows.propose(request);
+    const a = assessRequest(request, p);
+    const signals = a.signals.length ? ` (signals: ${[...new Set(a.signals)].join(", ")})` : "";
+    const parts =
+      a.parts >= 2
+        ? ` It lists ${a.parts} parts; if they touch different files they can run side by side.`
+        : "";
     head.push(
+      `Assessment: ${a.kind} request, size ${a.size}, risk ${a.risk}${signals}.${parts}`,
       `Proposed for this request: ${p.workflowId} (${p.reason}; ${p.confidence} confidence, budget ${p.budget})`,
       "",
     );

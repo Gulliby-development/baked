@@ -155,8 +155,9 @@ export const RuntimeStateSchema = z
     frozenFiles: z.record(z.string(), z.string()),
     repairPredecessors: z.record(z.string(), z.string()).default({}),
     /**
-     * Planned files a failed task check named outside the failing task's own writes, by finding ID:
-     * the correction of that finding may also write them, through the tasks that own them.
+     * Planned files a failed task check named, by finding ID: those outside the failing task's own
+     * writes, which the correction may also write through the tasks that own them, and for a
+     * static check the task's own files its diagnostics name, where the correction starts (#1067).
      */
     repairScope: z.record(z.string(), z.array(z.string())).default({}),
     /**

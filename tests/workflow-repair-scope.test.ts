@@ -43,7 +43,7 @@ const root: TaskGraph = {
     task("T004", "docs/guide.md", "writer"),
   ],
 };
-const check = { id: "fmt", required: true } as RunPolicy["checks"][number];
+const check = { id: "fmt", required: true, executable: "cargo", args: ["fmt", "--check"] } as RunPolicy["checks"][number];
 const store = {
   transaction: (fn: () => unknown) => fn(),
   taskStatus: () => undefined,
@@ -103,7 +103,8 @@ describe("the repair scope follows the files a failed check names", () => {
     const failures = fail(state, root.tasks[2] as Task, "Diff in tests/docs.rs\nDiff in src/lib.rs\nDiff in src/render.rs");
     expect(failures).toHaveLength(1);
     const id = failures[0]?.id ?? "";
-    expect(state.repairScope[id]).toEqual(["src/lib.rs", "src/render.rs"]);
+    // The formatter's diagnostics in the task's own file come first (#1067).
+    expect(state.repairScope[id]).toEqual(["tests/docs.rs", "src/lib.rs", "src/render.rs"]);
     expect(failures[0]?.suggestedFix).toContain("src/lib.rs");
 
     state.repairPredecessors[id] = "T003";
@@ -116,7 +117,7 @@ describe("the repair scope follows the files a failed check names", () => {
   test("a failure inside the task's own files keeps its scope", () => {
     const state = stateOf();
     const failures = fail(state, root.tasks[2] as Task, "Diff in tests/docs.rs");
-    expect(state.repairScope[failures[0]?.id ?? ""]).toBeUndefined();
+    expect(state.repairScope[failures[0]?.id ?? ""]).toEqual(["tests/docs.rs"]);
     state.repairPredecessors[failures[0]?.id ?? ""] = "T003";
     appendCorrections(store, "run", state, policy, failures, "repair");
     expect(((state.graph?.tasks ?? []).at(-1) as Task).writes.map((w) => w.path)).toEqual(["tests/docs.rs"]);

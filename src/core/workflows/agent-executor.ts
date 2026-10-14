@@ -959,11 +959,12 @@ export class NativeAgentExecutor implements AgentExecutor {
       );
       // An attempt starts only when the run budget, grown if it may, still covers its cap.
       assertAttemptFits(this.store, request.runId, request.attemptId, policy, attemptCap);
-      // The attempt cap never exceeds what the run budget still allows, so an attempt started
-      // close to the run limit finalizes and submits instead of failing on the run cap mid-loop.
+      // The run budget still free bounds every token of the attempt, so an attempt started close
+      // to the run limit finalizes and submits instead of failing on the run cap mid-loop.
       const remaining = this.store.remainingTokens(request.runId, policy, request.attemptId);
       const budget = new AttemptStepController({
         maxSteps: request.maxSteps,
+        // The cap leaves cache reads out (#1070); the ceiling, the run's free budget, counts them.
         maxTokens: Math.min(attemptCap, remaining),
         // Token caps come from history on whatever provider produced it; each attempt may still
         // take a minimum number of steps at its own step cost, within what the run allows.
@@ -1227,7 +1228,11 @@ export class NativeAgentExecutor implements AgentExecutor {
       const usage = budget.record(result.steps, submitted !== undefined, meta);
       writeUsage(estimated ? { ...usage, estimatedUsage: estimated } : usage);
       if (usage.stopReason === "tokens")
-        throw attemptCapFault(request.profile.id, usage.totalTokens, usage.maxTokens);
+        throw attemptCapFault(
+          request.profile.id,
+          usage.cappedTokens ?? usage.totalTokens,
+          usage.maxTokens,
+        );
       if (submitted === undefined) {
         // Nothing to reformat: a correction pass over empty text would invent a result. The
         // scheduler repeats an attempt that ended at its step cap with more steps.

@@ -1,29 +1,38 @@
 /**
- * A small Markdown parser for assistant text. It returns a tree that the screen renders as React
- * elements, so model output never reaches the DOM as HTML: raw tags stay literal text.
+ * Markdown for assistant text, read with marked's GitHub-flavoured lexer and turned into a small
+ * tree that the screen renders as React elements. Model output never reaches the DOM as HTML: raw
+ * tags stay literal text, and only http(s) and mailto links become links.
  */
+import { lexer, type Token, type Tokens } from "marked";
 
 export type Inline =
   | { type: "text"; text: string }
   | { type: "code"; text: string }
   | { type: "strong"; children: Inline[] }
   | { type: "em"; children: Inline[] }
-  | { type: "link"; href: string; children: Inline[] };
+  | { type: "del"; children: Inline[] }
+  | { type: "link"; href: string; children: Inline[] }
+  | { type: "break" };
+
+export type Align = "left" | "center" | "right" | null;
+
+export interface ListItem {
+  /** Set for a task list item (`- [ ]` or `- [x]`). */
+  checked?: boolean;
+  children: Block[];
+}
 
 export type Block =
   | { type: "paragraph"; children: Inline[] }
   | { type: "heading"; level: number; children: Inline[] }
   | { type: "code"; lang: string; text: string }
   | { type: "quote"; children: Block[] }
-  | { type: "list"; ordered: boolean; start: number; items: Inline[][] }
+  | { type: "list"; ordered: boolean; start: number; items: ListItem[] }
+  | { type: "table"; align: Align[]; header: Inline[][]; rows: Inline[][][] }
   | { type: "rule" };
 
-const FENCE = /^\s{0,3}(```|~~~)\s*([\w+-]*)\s*$/;
-const HEADING = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
-const BULLET = /^\s{0,3}[-*+]\s+(.*)$/;
-const ORDERED = /^\s{0,3}(\d{1,9})[.)]\s+(.*)$/;
-const RULE = /^\s{0,3}([-*_])(\s*\1){2,}\s*$/;
-const QUOTE = /^\s{0,3}>\s?(.*)$/;
+/** Chat text keeps its single line breaks, as GitHub comments do. */
+const OPTIONS = { gfm: true, breaks: true } as const;
 
 /** Only links a browser can safely open outside the app. */
 function safeHref(href: string): string | null {
@@ -37,141 +46,145 @@ function pushText(out: Inline[], text: string): void {
   else out.push({ type: "text", text });
 }
 
-export function parseInline(source: string): Inline[] {
+function pushAll(out: Inline[], nodes: Inline[]): void {
+  for (const node of nodes) {
+    if (node.type === "text") pushText(out, node.text);
+    else out.push(node);
+  }
+}
+
+function inlineTokens(tokens: Token[] | undefined): Inline[] {
   const out: Inline[] = [];
-  let i = 0;
-  while (i < source.length) {
-    const ch = source[i] as string;
-    if (ch === "\\" && i + 1 < source.length && /[\\`*_[\]()#>+\-.!]/.test(source[i + 1] ?? "")) {
-      pushText(out, source[i + 1] ?? "");
-      i += 2;
-      continue;
-    }
-    if (ch === "`") {
-      const ticks = /^`+/.exec(source.slice(i))?.[0] ?? "`";
-      const end = source.indexOf(ticks, i + ticks.length);
-      if (end > 0) {
-        out.push({ type: "code", text: source.slice(i + ticks.length, end).trim() });
-        i = end + ticks.length;
-        continue;
-      }
-    }
-    if ((ch === "*" || ch === "_") && source[i + 1] === ch) {
-      const marker = ch + ch;
-      const end = source.indexOf(marker, i + 2);
-      if (end > i + 2) {
-        out.push({ type: "strong", children: parseInline(source.slice(i + 2, end)) });
-        i = end + 2;
-        continue;
-      }
-    }
-    if (ch === "*" || ch === "_") {
-      const end = source.indexOf(ch, i + 1);
-      const inner = source.slice(i + 1, end);
-      const wordStart = ch === "*" || i === 0 || /\W/.test(source[i - 1] ?? " ");
-      if (end > i + 1 && wordStart && !/^\s|\s$/.test(inner)) {
-        out.push({ type: "em", children: parseInline(inner) });
-        i = end + 1;
-        continue;
-      }
-    }
-    if (ch === "[") {
-      const link = /^\[([^\]]+)\]\(([^)\s]+)\)/.exec(source.slice(i));
-      if (link) {
-        const href = safeHref(link[2] ?? "");
-        const children = parseInline(link[1] ?? "");
+  for (const token of tokens ?? []) {
+    switch (token.type) {
+      case "text":
+        if ("tokens" in token && token.tokens?.length) pushAll(out, inlineTokens(token.tokens));
+        else pushText(out, token.text);
+        break;
+      case "escape":
+      case "html":
+        pushText(out, token.type === "html" ? token.raw : token.text);
+        break;
+      case "codespan":
+        out.push({ type: "code", text: token.text });
+        break;
+      case "strong":
+      case "em":
+      case "del":
+        out.push({ type: token.type, children: inlineTokens(token.tokens) });
+        break;
+      case "br":
+        out.push({ type: "break" });
+        break;
+      case "link": {
+        const children = inlineTokens(token.tokens);
+        const href = safeHref(token.href);
         if (href) out.push({ type: "link", href, children });
-        else for (const child of children) out.push(child);
-        i += link[0].length;
-        continue;
+        else pushAll(out, children);
+        break;
       }
+      case "image": {
+        // Images are not loaded from model output; the alt text links to the address instead.
+        const href = safeHref(token.href);
+        const children: Inline[] = [{ type: "text", text: token.text || token.href }];
+        if (href) out.push({ type: "link", href, children });
+        else pushAll(out, children);
+        break;
+      }
+      default:
+        pushText(out, token.raw);
     }
-    pushText(out, ch);
-    i++;
   }
   return out;
 }
 
-export function parseMarkdown(source: string): Block[] {
-  const lines = source.replace(/\r\n?/g, "\n").split("\n");
-  const blocks: Block[] = [];
-  let paragraph: string[] = [];
-  const flush = (): void => {
-    if (paragraph.length > 0)
-      blocks.push({ type: "paragraph", children: parseInline(paragraph.join(" ")) });
-    paragraph = [];
-  };
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i] ?? "";
-    const fence = FENCE.exec(line);
-    if (fence) {
-      flush();
-      const body: string[] = [];
-      i++;
-      while (i < lines.length && !(lines[i] ?? "").trim().startsWith(fence[1] ?? "```"))
-        body.push(lines[i++] ?? "");
-      i++;
-      blocks.push({ type: "code", lang: fence[2] ?? "", text: body.join("\n") });
-      continue;
-    }
-    if (line.trim() === "") {
-      flush();
-      i++;
-      continue;
-    }
-    if (RULE.test(line)) {
-      flush();
-      blocks.push({ type: "rule" });
-      i++;
-      continue;
-    }
-    const heading = HEADING.exec(line);
-    if (heading) {
-      flush();
-      blocks.push({
-        type: "heading",
-        level: heading[1]?.length ?? 1,
-        children: parseInline(heading[2] ?? ""),
-      });
-      i++;
-      continue;
-    }
-    if (QUOTE.test(line)) {
-      flush();
-      const body: string[] = [];
-      while (i < lines.length && QUOTE.test(lines[i] ?? ""))
-        body.push(QUOTE.exec(lines[i++] ?? "")?.[1] ?? "");
-      blocks.push({ type: "quote", children: parseMarkdown(body.join("\n")) });
-      continue;
-    }
-    const bullet = BULLET.exec(line);
-    const ordered = ORDERED.exec(line);
-    if (bullet || ordered) {
-      flush();
-      const isOrdered = !bullet;
-      const pattern = isOrdered ? ORDERED : BULLET;
-      const items: string[] = [];
-      while (i < lines.length) {
-        const current = lines[i] ?? "";
-        const item = pattern.exec(current);
-        if (item) items.push((isOrdered ? item[2] : item[1]) ?? "");
-        else if (/^\s{2,}\S/.test(current) && items.length > 0)
-          items[items.length - 1] += ` ${current.trim()}`;
-        else break;
-        i++;
+function blockTokens(tokens: Token[]): Block[] {
+  const out: Block[] = [];
+  for (const token of tokens) {
+    switch (token.type) {
+      case "space":
+      case "def":
+      case "checkbox":
+        break;
+      case "paragraph":
+        out.push({ type: "paragraph", children: inlineTokens(token.tokens) });
+        break;
+      case "text": {
+        // A tight list item's text, or loose text between blocks.
+        const children =
+          "tokens" in token && token.tokens?.length
+            ? inlineTokens(token.tokens)
+            : [{ type: "text" as const, text: token.text }];
+        out.push({ type: "paragraph", children });
+        break;
       }
-      blocks.push({
-        type: "list",
-        ordered: isOrdered,
-        start: isOrdered ? Number(ordered?.[1] ?? 1) : 1,
-        items: items.map(parseInline),
-      });
-      continue;
+      case "heading":
+        out.push({ type: "heading", level: token.depth, children: inlineTokens(token.tokens) });
+        break;
+      case "code":
+        out.push({
+          type: "code",
+          lang: (token.lang ?? "").split(/\s/)[0] ?? "",
+          text: token.text,
+        });
+        break;
+      case "blockquote":
+        out.push({ type: "quote", children: blockTokens(token.tokens ?? []) });
+        break;
+      case "list": {
+        const list = token as Tokens.List;
+        out.push({
+          type: "list",
+          ordered: list.ordered,
+          start: list.ordered && typeof list.start === "number" ? list.start : 1,
+          items: list.items.map((item) => ({
+            ...(item.task ? { checked: item.checked === true } : {}),
+            children: blockTokens(item.tokens),
+          })),
+        });
+        break;
+      }
+      case "table": {
+        const table = token as Tokens.Table;
+        out.push({
+          type: "table",
+          align: table.align,
+          header: table.header.map((cell) => inlineTokens(cell.tokens)),
+          rows: table.rows.map((row) => row.map((cell) => inlineTokens(cell.tokens))),
+        });
+        break;
+      }
+      case "hr":
+        out.push({ type: "rule" });
+        break;
+      default:
+        // Raw HTML blocks and anything unknown stay visible as plain text.
+        if (token.raw.trim())
+          out.push({ type: "paragraph", children: [{ type: "text", text: token.raw.trim() }] });
     }
-    paragraph.push(line.trim());
-    i++;
   }
-  flush();
-  return blocks;
+  return out;
+}
+
+/**
+ * Hides a link the model is still writing at the very end of a streaming reply (`[`, `[text`,
+ * `[text](https://ex`), so half a link does not flash up as stray brackets.
+ */
+export function trimPartialMarkdown(source: string): string {
+  return source.replace(/!?\[[^\]\n]*(\]\([^)\s]*)?$/, "").replace(/!?\[[^\]\n]*\]$/, "");
+}
+
+export function parseInline(source: string): Inline[] {
+  const blocks = lexer(source, OPTIONS);
+  const out: Inline[] = [];
+  for (const block of blockTokens(blocks)) {
+    if (out.length > 0) out.push({ type: "break" });
+    if (block.type === "paragraph" || block.type === "heading") pushAll(out, block.children);
+  }
+  return out;
+}
+
+export function parseMarkdown(source: string, options: { streaming?: boolean } = {}): Block[] {
+  const text = source.replace(/\r\n?/g, "\n");
+  return blockTokens(lexer(options.streaming ? trimPartialMarkdown(text) : text, OPTIONS));
 }

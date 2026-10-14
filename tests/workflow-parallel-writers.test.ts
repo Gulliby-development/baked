@@ -88,6 +88,8 @@ class ParallelExecutor implements AgentExecutor {
    * step spent and no submit, and throw the cap fault as the executor does (#1056).
    */
   capAtLimit: Record<string, number> = {};
+  /** Tasks of `capAtLimit` whose last step went past the cap before a final submit was forced (#1070). */
+  capUnforced = new Set<string>();
   /** Tasks whose first attempt reports its edit tool unavailable and submits no change. */
   lostTool = new Set<string>();
   /** Tasks whose first attempt ends blocked with this summary and no change. */
@@ -162,7 +164,7 @@ class ParallelExecutor implements AgentExecutor {
       if ((this.capAtLimit[task.id] ?? 0) > 0) {
         this.capAtLimit[task.id] = (this.capAtLimit[task.id] ?? 0) - 1;
         await write(first, "partial");
-        service.store.artifact(request.runId, "usage", `attempts/${request.attemptId}/usage.json`, JSON.stringify({ schemaVersion: 1, profileId: request.profile.id, taskId: task.id, maxSteps: request.maxSteps, maxTokens: 1000, stopReason: "tokens", finalizedBy: "tokens", totalTokens: 1000, steps: [] }));
+        service.store.artifact(request.runId, "usage", `attempts/${request.attemptId}/usage.json`, JSON.stringify({ schemaVersion: 1, profileId: request.profile.id, taskId: task.id, maxSteps: request.maxSteps, maxTokens: 1000, stopReason: "tokens", finalizedBy: this.capUnforced.has(task.id) ? null : "tokens", totalTokens: 1000, steps: [] }));
         throw attemptCapFault(request.profile.id, 1000, 1000);
       }
       if (this.capFault.delete(task.id)) {
@@ -325,6 +327,19 @@ describe("workflow parallel writers", () => {
     // The sibling ran once.
     expect(fx.executor.started.filter((s) => s.taskId === "T002")).toHaveLength(1);
     expect(readFileSync(join(fx.tree(run.runId), "a.txt"), "utf8")).toBe("A");
+  });
+
+  test("an attempt whose last step passed the cap before a final submit was forced continues too (#1070)", async () => {
+    // Bench R21 cfgtrace T016: a multi_edit applied, 10 steps, 426,324 tokens of a 426,324 cap and
+    // no finalize step, so the attempt was not continued and the run stopped.
+    const fx = setup([{ id: "T001", files: { "a.txt": "A" } }], { "a.txt": "A" });
+    fx.executor.capAtLimit.T001 = 1;
+    fx.executor.capUnforced.add("T001");
+    const run = await fx.start(1);
+    const done = await fx.complete(run.runId);
+    expect(done.status).toBe("completed");
+    expect(fx.executor.earlier.filter((e) => e.taskId === "T001")).toHaveLength(2);
+    expect(fx.store.state(run.runId).taskContinuations).toEqual({ T001: 1 });
   });
 
   test("a second capped attempt stops the run but keeps the finished sibling for the resume (#1056)", async () => {
