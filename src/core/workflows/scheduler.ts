@@ -2164,8 +2164,14 @@ export class WorkflowScheduler {
   ): AttemptUsageRecord | undefined {
     if ((state.taskContinuations[task.id] ?? 0) > 0) return undefined;
     const record = this.lastAttemptUsage(runId, stepId);
-    // An attempt the progress watcher stopped was stuck, not short of room.
-    if (!record || record.finalizedBy === null || record.finalizedBy === "watcher")
+    // An attempt the progress watcher stopped was stuck, not short of room. One whose last step
+    // went past the cap before the final submit could be forced ended at the cap all the same
+    // (cfgtrace T016: an edit applied, 426,324 tokens of a 426,324 cap, the run stopped; #1070).
+    if (
+      !record ||
+      record.finalizedBy === "watcher" ||
+      (record.finalizedBy === null && record.stopReason !== "tokens")
+    )
       return undefined;
     return record;
   }

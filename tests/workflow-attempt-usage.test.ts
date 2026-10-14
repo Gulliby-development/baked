@@ -208,6 +208,44 @@ describe("an attempt at its token cap", () => {
   });
 });
 
+/** A step whose input is mostly the cached prefix the earlier steps already sent. */
+function cachedStep(input: number, cached: number, output: number, call: { name: string; input: unknown }): LanguageModelV3GenerateResult {
+  const base = step(input, output, call);
+  return { ...base, usage: { ...base.usage, inputTokens: { total: input, noCache: input - cached, cacheRead: cached, cacheWrite: 0 } } };
+}
+
+describe("an attempt whose steps replay a cached context (#1070)", () => {
+  test("counts its cap without the cache reads, so eight cached steps fit a cap that holds three uncached ones", async () => {
+    // Bench round 21: 37 of 85 codex task attempts ended at the cap, cache reads were 71 percent
+    // of their tokens (colfit 112fb4f9: 469,135 tokens in 10 steps, 84 percent cache read).
+    const result = { schemaVersion: 1, summary: "Fixture researched", facts: [], unknowns: [], constraints: [], suggestedScope: [] };
+    scriptModel([
+      ...Array.from({ length: 7 }, () => cachedStep(40_000, 36_000, 500, { name: "unknown_tool", input: {} })),
+      cachedStep(40_000, 36_000, 500, { name: "submit_result", input: result }),
+    ]);
+    const { executor, request, usageRecord } = await nativeAttempt();
+    await expect(executor.execute({ ...request, attemptTokens: 160_000 })).resolves.toMatchObject({ output: result });
+    const usage = usageRecord();
+    expect(usage).toMatchObject({ stopReason: "submitted", finalizedBy: null, maxTokens: 160_000, totalTokens: 324_000, cappedTokens: 36_000 });
+  });
+
+  test("still finalizes before the run's free budget, which counts the cache reads", async () => {
+    // 130,000 of the 200,000-token run are held elsewhere: the 70,000 left bound the attempt's
+    // tokens, cache reads included, even though its cap counts only 3,500 a step.
+    const policy = { ...fixturePolicy, maxTotalTokens: 200_000 };
+    const result = { schemaVersion: 1, summary: "Fixture researched", facts: [], unknowns: [], constraints: [], suggestedScope: [] };
+    scriptModel([
+      cachedStep(30_000, 27_000, 500, { name: "unknown_tool", input: {} }),
+      cachedStep(30_000, 27_000, 500, { name: "submit_result", input: result }),
+    ]);
+    const { store, run, executor, request, usageRecord } = await nativeAttempt(policy);
+    const other = store.beginStep(run.runId, "other");
+    store.reserve(run.runId, other, "openai/fixture-model", 130_000, policy);
+    await expect(executor.execute(request)).resolves.toMatchObject({ output: result });
+    expect(usageRecord()).toMatchObject({ stopReason: "submitted", finalizedBy: "tokens", totalTokens: 61_000, cappedTokens: 7_000 });
+  });
+});
+
 describe("attempts whose provider reports no tokens", () => {
   const result = {
     schemaVersion: 1,
