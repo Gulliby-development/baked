@@ -12,6 +12,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
+import { failureSignature } from "../src/core/verification/output-counts.js";
 import { isStaticCheck, isWholeUnitCheck } from "../src/core/workflows/check-policy.js";
 import { detectGates, executeGate } from "../src/core/workflows/gates.js";
 import { addedDependencies } from "../src/core/workflows/quality/dependencies.js";
@@ -637,6 +638,17 @@ for (const stack of STACKS) {
       const plain = probe(setup.workspace);
       expect(plain["JS/TS"]).toBe(Boolean(INSTALLED[stack]));
       for (const { root } of setup.roots) expect(probe(root)).toEqual(plain);
+    });
+
+    // The baseline is measured in the run worktree; a later failure may name a task worktree or the
+    // working copy behind the linked node_modules, and is still the same failure (#1055).
+    cell(stack, "worktree: baseline-signature", () => {
+      const run = setup.roots.find((r) => r.name === "run")?.root ?? "";
+      const failure = (root: string) => `Error: boom\n    at ${join(root, "src", "a")}:3:7`;
+      const expected = failureSignature(failure(run), run);
+      expect(expected).toContain("<root>");
+      for (const root of [setup.workspace, ...setup.roots.map((r) => r.root)])
+        expect(failureSignature(failure(root), run)).toBe(expected);
     });
   });
 }
