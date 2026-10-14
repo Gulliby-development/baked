@@ -5,6 +5,7 @@ import { Button } from "../../components/ui/button.js";
 import { Skeleton } from "../../components/ui/skeleton.js";
 import { cn } from "../../lib/cn.js";
 import { LEDE, PANEL } from "../../lib/styles.js";
+import { Markdown } from "../chat/Markdown.js";
 
 /** File name the report is saved under. */
 export const reportFileName = (runId: string): string =>
@@ -73,14 +74,9 @@ export function ReportView({
           Save as .md
         </Button>
       </div>
-      <pre
-        className={cn(
-          PANEL,
-          "m-0 whitespace-pre-wrap font-mono text-[12.5px] leading-[1.6] text-soft-foreground [overflow-wrap:anywhere]",
-        )}
-      >
-        {markdown}
-      </pre>
+      <div className={PANEL}>
+        <Markdown text={markdown} />
+      </div>
     </section>
   );
 }

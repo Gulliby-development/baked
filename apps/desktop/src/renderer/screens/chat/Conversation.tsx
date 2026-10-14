@@ -211,10 +211,13 @@ function Assistant({
   message,
   thoughtMs,
   thinking,
+  streaming = false,
 }: {
   message: ChatMessage;
   thoughtMs: number[] | undefined;
   thinking: boolean;
+  /** The turn is still being written, so its last text may end mid-link. */
+  streaming?: boolean;
 }) {
   const calls = new Map((message.toolCalls ?? []).map((c) => [c.id, c]));
   const segments = message.segments ?? [
@@ -227,7 +230,13 @@ function Assistant({
       {segments.map((segment, i) => {
         const key = `${segment.type}-${i}`;
         if (segment.type === "text")
-          return segment.content.trim() ? <Markdown key={key} text={segment.content} /> : null;
+          return segment.content.trim() ? (
+            <Markdown
+              key={key}
+              text={segment.content}
+              streaming={streaming && i === segments.length - 1}
+            />
+          ) : null;
         if (segment.type === "reasoning") {
           const ms = thoughtMs?.[reasoningIndex++];
           return (
@@ -910,6 +919,7 @@ export function Conversation({
           message={live}
           thoughtMs={thoughtMs[live.id]}
           thinking={transcript.thinkingSince !== null}
+          streaming={running}
         />
       )}
       {prompts.map((entry) => (

@@ -624,6 +624,8 @@ export class NativeWorkflowService implements WorkflowService {
    * itself after a growing wait, at most `workflows.stall.providerResumes` times. The failed call
    * changed no files, so a person would only have resumed it. The wait is journaled first, with the
    * time of the retry, so `workflow status` and the desktop run view can show when it comes back.
+   * The limit counts one outage: once a model attempt has completed since the last resume, the
+   * provider came back, so the next outage starts again from the first, shortest wait (#1068).
    */
   private async resumeProviderOutage(runId: string, signal: AbortSignal): Promise<boolean> {
     if (signal.aborted) return false;
@@ -631,9 +633,13 @@ export class NativeWorkflowService implements WorkflowService {
     if (run.status !== "blocked" || run.reason !== "provider_unavailable") return false;
     const state = this.store.state(runId);
     const settings = stallSettings(this.config);
-    if (state.providerResumes >= settings.providerResumes) return false;
+    const completed = this.store
+      .attempts(runId)
+      .filter((a) => a.model_id !== null && a.status === "completed").length;
+    const used = this.providerResumesOfOutage(runId, state.providerResumes, completed);
+    if (used >= settings.providerResumes) return false;
     if (this.store.requests(runId).some(blocksRun)) return false;
-    const attempt = state.providerResumes + 1;
+    const attempt = used + 1;
     const wait = providerResumeWaitMs(settings, attempt);
     this.store.transaction(() => {
       state.providerResumes = attempt;
@@ -646,6 +652,7 @@ export class NativeWorkflowService implements WorkflowService {
           of: settings.providerResumes,
           waitMs: wait,
           retryAt: new Date(Date.now() + wait).toISOString(),
+          completedAttempts: completed,
         }),
       );
       this.store.saveState(runId, state);
@@ -664,6 +671,16 @@ export class NativeWorkflowService implements WorkflowService {
       return false;
     }
     return true;
+  }
+  /** The automatic resumes already spent on the current outage: 0 once an attempt completed since the last one. */
+  private providerResumesOfOutage(runId: string, resumes: number, completed: number): number {
+    if (resumes < 1) return 0;
+    const last = this.store.latestArtifact(runId, `provider/resume-${resumes}.json`);
+    if (!last) return resumes;
+    const body = JSON.parse(this.store.readArtifact(runId, last.id)) as {
+      completedAttempts?: number;
+    };
+    return body.completedAttempts !== undefined && completed > body.completedAttempts ? 0 : resumes;
   }
   private async driveOnce(runId: string, signal: AbortSignal): Promise<RunSnapshot> {
     this.enabled();

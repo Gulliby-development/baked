@@ -71,3 +71,22 @@ test("an older BAKED gets a 'needs a newer BAKED' notice instead of an error", a
   ).toBeVisible();
   await expect(page.getByText("running · 0.0.9")).toBeVisible();
 });
+
+test("the plus on the Chat row opens a new chat and explains itself in a tooltip", async ({
+  app,
+}) => {
+  const page = await app("#/p/baked/overview");
+  const sidebar = page.getByRole("navigation", { name: "Main" });
+  // New chat is a button on the Chat row, not a row of its own among the chats.
+  await expect(sidebar.getByText("New chat", { exact: true })).toHaveCount(0);
+  const plus = sidebar.getByRole("link", { name: "New chat" });
+  await plus.hover();
+  await expect(page.getByText("New chat", { exact: true })).toBeVisible();
+  await plus.click();
+  await expect(page).toHaveURL(/#\/p\/baked\/chat\/new$/);
+  await expect(page.getByRole("heading", { name: "New chat" })).toBeVisible();
+  await expect(sidebar.getByRole("link", { name: /^Chat/ })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+});

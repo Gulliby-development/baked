@@ -33,8 +33,10 @@ import {
   ruleClaimText,
   ruleFindingKey,
 } from "../src/core/workflows/quality/rules.js";
-import type { RuntimeState } from "../src/core/workflows/schemas.js";
+import { staticCorrection } from "../src/core/workflows/scheduler.js";
+import type { Check, RunPolicy, RuntimeState } from "../src/core/workflows/schemas.js";
 import type { WorkflowStore } from "../src/core/workflows/store.js";
+import type { Task } from "../src/core/workflows/types.js";
 import {
   createTaskWorktree,
   ensureRunWorktree,
@@ -62,6 +64,17 @@ import {
 type Stack = "bun" | "npm" | "python" | "go" | "rust" | "maven" | "dotnet";
 const STACKS: Stack[] = ["bun", "npm", "python", "go", "rust", "maven", "dotnet"];
 
+/** The gates a failure of which is corrected only in the files its output names (#1067). */
+const STATIC_FIXES: Record<Stack, string[]> = {
+  bun: ["typecheck", "lint"],
+  npm: ["lint"],
+  python: ["ruff"],
+  go: ["go-vet"],
+  rust: ["cargo-fmt", "cargo-clippy"],
+  maven: [],
+  dotnet: ["dotnet-format"],
+};
+
 /** Cells known to be wrong today: `<stack>:<cell>` -> issue. */
 const KNOWN: Record<string, string> = {};
 
@@ -74,8 +87,11 @@ interface Fixture {
   wholeUnit: string[];
   /** A manifest change that adds one dependency, and the dependency it adds. */
   manifest: { path: string; before: string; after: string; added: string };
-  /** A library-free property test (allowed when the project forbids new dependencies) and one with the library. */
-  property: { path: string; seeded: string; library: string };
+  /**
+   * A library-free property test (allowed when the project forbids new dependencies), one with the
+   * library, and a deterministic one that enumerates a bounded domain (a request without random input, #1064).
+   */
+  property: { path: string; seeded: string; library: string; exhaustive: string };
   /** What makes the stack's mutation tool detectable (files and commands on PATH), or null when only the built-in engine exists. */
   mutation: { tool: string; source: string; files: Record<string, string>; on: string[] } | null;
 }
@@ -99,6 +115,8 @@ const FIXTURES: Record<Stack, Fixture> = {
     },
     property: {
       path: "test/sum.test.ts",
+      exhaustive:
+        "import { expect, test } from 'bun:test';\ntest('sum is commutative for every byte pair', () => {\n  for (let a = 0; a < 256; a++) for (let b = 0; b < 16; b++) expect(a + b).toBe(b + a);\n});\n",
       seeded:
         "import { expect, test } from 'bun:test';\nfunction mulberry32(a: number) { return () => (a = (a + 0x6d2b79f5) | 0) / 2 ** 32; }\ntest('sum is commutative', () => {\n  const rand = mulberry32(42);\n  for (let i = 0; i < 100; i++) {\n    const a = rand(), b = rand();\n    expect(a + b).toBe(b + a);\n  }\n});\n",
       library:
@@ -129,6 +147,8 @@ const FIXTURES: Record<Stack, Fixture> = {
     },
     property: {
       path: "src/sum.test.js",
+      exhaustive:
+        "import { expect, test } from 'vitest';\ntest('sum', () => {\n  for (let a = 0; a < 256; a++) expect(a + 0).toBe(a);\n});\n",
       seeded:
         "import { expect, test } from 'vitest';\nconst seed = 7;\nlet s = seed;\nconst prng = () => (s = (s * 1103515245 + 12345) % 2 ** 31);\ntest('sum', () => {\n  for (let i = 0; i < 50; i++) { const a = prng(), b = prng(); expect(a + b).toBe(b + a); }\n});\n",
       library:
@@ -156,6 +176,8 @@ const FIXTURES: Record<Stack, Fixture> = {
     },
     property: {
       path: "tests/test_sum.py",
+      exhaustive:
+        "def test_sum_commutes_for_every_byte():\n    for a in range(256):\n        for b in range(16):\n            assert a + b == b + a\n",
       seeded:
         "import random\n\n\ndef test_sum_commutes():\n    rng = random.Random(42)\n    for _ in range(100):\n        a, b = rng.randint(0, 9), rng.randint(0, 9)\n        assert a + b == b + a\n",
       library:
@@ -175,6 +197,8 @@ const FIXTURES: Record<Stack, Fixture> = {
     },
     property: {
       path: "sum_test.go",
+      exhaustive:
+        "package fixture\n\nimport \"testing\"\n\nfunc TestSumForEveryMask(t *testing.T) {\n\tfor mask := 0; mask < 256; mask++ {\n\t\tif mask+0 != mask {\n\t\t\tt.Fatal(mask)\n\t\t}\n\t}\n}\n",
       seeded:
         'package fixture\n\nimport (\n\t"math/rand"\n\t"testing"\n)\n\nfunc TestSum(t *testing.T) {\n\tr := rand.New(rand.NewSource(42))\n\tfor i := 0; i < 100; i++ {\n\t\ta, b := r.Intn(9), r.Intn(9)\n\t\tif a+b != b+a {\n\t\t\tt.Fatal(a, b)\n\t\t}\n\t}\n}\n',
       library:
@@ -196,6 +220,8 @@ const FIXTURES: Record<Stack, Fixture> = {
     },
     property: {
       path: "tests/sum.rs",
+      exhaustive:
+        "#[test]\nfn sum_commutes_for_every_byte() {\n    for a in 0..256u32 {\n        assert_eq!(a + 1, 1 + a);\n    }\n}\n",
       seeded:
         "#[test]\nfn sum_commutes() {\n    let mut x: u64 = 42;\n    for _ in 0..100 {\n        x = x.wrapping_mul(6364136223846793005).wrapping_add(1);\n        let (a, b) = (x % 10, (x >> 8) % 10);\n        assert_eq!(a + b, b + a);\n    }\n}\n",
       library:
@@ -216,6 +242,8 @@ const FIXTURES: Record<Stack, Fixture> = {
     },
     property: {
       path: "src/test/java/com/example/SumTest.java",
+      exhaustive:
+        "package com.example;\n\nimport org.junit.jupiter.api.Test;\nimport static org.junit.jupiter.api.Assertions.assertEquals;\n\nclass SumTest {\n    @Test\n    void commutesForEveryByte() {\n        for (int a = 0; a < 256; a++) {\n            assertEquals(a + 1, 1 + a);\n        }\n    }\n}\n",
       seeded:
         "package com.example;\n\nimport java.util.Random;\nimport org.junit.jupiter.api.Test;\nimport static org.junit.jupiter.api.Assertions.assertEquals;\n\nclass SumTest {\n    @Test\n    void commutes() {\n        Random r = new Random(42);\n        for (int i = 0; i < 100; i++) {\n            int a = r.nextInt(9), b = r.nextInt(9);\n            assertEquals(a + b, b + a);\n        }\n    }\n}\n",
       library:
@@ -247,6 +275,8 @@ const FIXTURES: Record<Stack, Fixture> = {
     },
     property: {
       path: "Tests/SumTests.cs",
+      exhaustive:
+        "using Xunit;\n\npublic class SumTests\n{\n    [Fact]\n    public void CommutesForEveryByte()\n    {\n        for (var a = 0; a < 256; a++)\n        {\n            Assert.Equal(a + 1, 1 + a);\n        }\n    }\n}\n",
       seeded:
         "using Xunit;\n\npublic class SumTests\n{\n    [Fact]\n    public void Commutes()\n    {\n        var r = new System.Random(42);\n        for (var i = 0; i < 100; i++)\n        {\n            int a = r.Next(9), b = r.Next(9);\n            Assert.Equal(a + b, b + a);\n        }\n    }\n}\n",
       library:
@@ -329,6 +359,19 @@ for (const stack of STACKS) {
 
     // `allowNewDependencies: false` relies on this to see a dependency added to the stack's
     // manifest (#802).
+    // A failed linter, formatter or type checker is corrected in the files its output names,
+    // without their tests and without the planned task's whole scope; a test gate is not (#1067).
+    cell(stack, "lint-corrective-scope", () => {
+      const correction = (check: Check): boolean => {
+        const store = {
+          findings: () => [{ id: "F1", body_json: JSON.stringify({ claim: `Task T001 required check ${check.id} failed` }) }],
+        } as unknown as WorkflowStore;
+        const task = { origin: "repair", findingIds: ["F1"] } as Task;
+        return staticCorrection(store, "run", { checks: [check] } as RunPolicy, task);
+      };
+      expect(preselected().filter(correction).map((c) => c.id)).toEqual(STATIC_FIXES[stack]);
+    });
+
     cell(stack, "dependency-check", () => {
       const { declared } = addedDependencies([
         { path: fixture.manifest.path, before: fixture.manifest.before, content: fixture.manifest.after },
@@ -341,6 +384,12 @@ for (const stack of STACKS) {
     cell(stack, "property-tests", () => {
       expect(propertyTestKind(fixture.property.path, fixture.property.seeded)).toBe("seeded");
       expect(propertyTestKind(fixture.property.path, fixture.property.library)).toBe("library");
+    });
+
+    // A request that forbids random input still gets a property test: a loop over every value of
+    // a bounded domain counts (#1064: cidrfold-update looped over all 256 masks and was refused).
+    cell(stack, "property-tests-exhaustive", () => {
+      expect(propertyTestKind(fixture.property.path, fixture.property.exhaustive)).toBe("exhaustive");
     });
 
     cell(stack, "mutation-tool", () => {

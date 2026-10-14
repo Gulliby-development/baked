@@ -1304,6 +1304,8 @@ export class WorkflowStore {
     usedTokens: number | null,
     /** The tokens are an estimate because the provider reported none (#1057). */
     estimated = false,
+    /** Why a failed attempt failed, so a 429 or a crash is visible on the attempt itself (#1068). */
+    failure?: unknown,
   ): void {
     const update = this.db.run(
       "UPDATE attempts SET status=?,used_tokens=?,usage_complete=?,ended_at=? WHERE run_id=? AND id=? AND status='running'",
@@ -1326,6 +1328,7 @@ export class WorkflowStore {
         usedTokens,
         ...(estimated ? { usageEstimated: true } : {}),
         ...(spend ? { spend } : {}),
+        ...(status === "failed" && failure !== undefined ? { error: attemptError(failure) } : {}),
       },
     });
   }
@@ -1869,4 +1872,19 @@ export class WorkflowStore {
       if (existsSync(path)) unlinkSync(path);
     }
   }
+}
+
+/** The code and first line of an attempt's error, as `attempt.finished` records it. */
+export function attemptError(error: unknown): { code: string; message: string } {
+  const info = error as { code?: unknown; statusCode?: unknown; name?: unknown; message?: unknown };
+  const code =
+    error instanceof WorkflowFault
+      ? error.code
+      : typeof info?.statusCode === "number"
+        ? `HTTP_${info.statusCode}`
+        : typeof info?.name === "string" && info.name !== "Error"
+          ? info.name
+          : "ERROR";
+  const text = typeof info?.message === "string" ? info.message : String(error);
+  return { code: code.slice(0, 64), message: text.trim().slice(0, 500) };
 }

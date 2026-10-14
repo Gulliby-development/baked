@@ -11,6 +11,7 @@ import {
   type TaskGraph,
   validateTaskGraph,
 } from "../workflows/schemas.js";
+import { namesRunDocument } from "../workflows/spec-amendment.js";
 import type { WorkflowStore } from "../workflows/store.js";
 import type { RuntimeState, Task } from "../workflows/types.js";
 import { findingSetHash } from "./convergence-stop.js";
@@ -457,7 +458,12 @@ export function appendCorrections(
       Number(!a.file) - Number(!b.file) ||
       SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity),
   );
+  // A finding on a run document has no task to correct it: its spec amendment, recorded before
+  // this call, settles it (#1066).
+  const plannedPaths = state.rootGraph.tasks.flatMap((t) => t.writes.map((w) => w.path));
+  const documents = ordered.filter((f) => namesRunDocument(f, plannedPaths));
   for (const finding of ordered) {
+    if (documents.includes(finding)) continue;
     const predecessor = state.repairPredecessors[finding.id];
     const base =
       (predecessor && state.graph?.tasks.find((t) => t.id === predecessor)) ||
@@ -495,6 +501,19 @@ export function appendCorrections(
       : { base, bases: [base], findings: [] as Review["findings"] };
     group.findings.push(finding);
     groups.set(key, group);
+  }
+  // Only findings on run documents: their amendments settle them and no file changes, so the
+  // reviews stand and only the convergence is judged again, with the amendment in its prompt.
+  if (!groups.size && documents.length) {
+    for (const finding of documents) store.findingStatus(runId, finding.id, "resolved");
+    state.convergence = null;
+    // It still counts as a round, so a reviewer that keeps raising run documents meets the limit.
+    if (!taskLevel) {
+      state.noProgressRounds = repeats;
+      state.previousFindingSet = findingSet;
+      store.addRound(runId, roundKind, 0);
+    }
+    return;
   }
   // The cap counts corrective tasks: the findings of one failed check run become one task, so one
   // pytest run recorded against six owning files is one task, not six (cfgtrace 276e4858).
@@ -601,6 +620,7 @@ export function appendCorrections(
   store.syncTasks(runId, graph);
   for (const task of additions)
     for (const id of task.findingIds) store.findingStatus(runId, id, "confirmed", task.id);
+  for (const finding of documents) store.findingStatus(runId, finding.id, "resolved");
   if (fresh) {
     const account = freshAccount(store, runId, state, roundKind, round, repeats, findings);
     for (const task of additions) {
