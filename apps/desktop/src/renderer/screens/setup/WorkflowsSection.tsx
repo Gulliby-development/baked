@@ -97,11 +97,16 @@ function DeleteWorkflowDialog({
   );
 }
 
-/** The line shown after a delete: whether a built-in workflow of the same ID is back. */
-const deletedText = (removed: RemovedDefinition): string =>
-  removed.restores
-    ? `Deleted ${removed.path}. New runs use the built-in ${removed.restores} again.`
-    : `Deleted ${removed.path}.`;
+/**
+ * The line shown after a delete: whether a built-in workflow of the same ID is back. It names the
+ * file as the question did; `removed.path` is absolute.
+ */
+const deletedText = (removed: RemovedDefinition): string => {
+  const file = `baked/workflows/${removed.id}.json`;
+  return removed.restores
+    ? `Deleted ${file}. New runs use the built-in ${removed.restores} again.`
+    : `Deleted ${file}.`;
+};
 
 /** Every workflow definition of the project as a gallery, each opening in the editor. */
 function WorkflowList({

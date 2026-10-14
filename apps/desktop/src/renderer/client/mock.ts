@@ -99,6 +99,7 @@ const FULL_CAPABILITIES = [
   "workflow-editor",
   "workflow-delete",
   "custom-commands",
+  "commands-edit",
   "settings",
   "git",
   "git-graph",

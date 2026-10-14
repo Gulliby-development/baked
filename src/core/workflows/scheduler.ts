@@ -372,6 +372,7 @@ import {
 } from "./sizing.js";
 import {
   amendmentNote,
+  analysisAmendmentOf,
   documentAmendmentOf,
   namesRunDocument,
   type SpecAmendment,
@@ -541,6 +542,8 @@ interface QueuedRequest {
  */
 const coverageRequest = (state: RuntimeState): string =>
   state.hostDependencies ? "" : state.requestText;
+/** Records that the planner was given the scope advice in this run. */
+const SCOPE_ADVICE = "plan-repairs/scope-advice.json";
 /** The planner's accepted plan that a revision by patch edits (#1058). */
 const PLAN_BASE = "revisions/base/plan.json";
 /** How often rejected approvals may send one run back to revise before a rejection only pauses it. */
@@ -903,7 +906,13 @@ export class WorkflowScheduler {
                 // The host makes a host-bound criterion checkable itself (#1015).
                 return [
                   ...size,
-                  ...specCoverageProblems(repairHostBoundCriteria(parsed.data).spec, policy.checks),
+                  ...specCoverageProblems(
+                    repairHostBoundCriteria(parsed.data).spec,
+                    policy.checks,
+                    {
+                      request: state.requestText || state.prompt,
+                    },
+                  ),
                   // The host maps a deliverable the spec names elsewhere itself (#1037).
                   ...deliverableProblems(
                     repairDeliverables(parsed.data, coverageRequest(state)).spec,
@@ -1003,8 +1012,10 @@ export class WorkflowScheduler {
                   ? scopedPlanBudget(state.prompt, planner, policy)
                   : null;
               const approvalLimits = plannerApprovalLimits(policy);
-              // Scope advice is given once; a plan that keeps the writes is approved by a person.
-              let scopeAdvised = false;
+              // Scope advice is given once per run, not once per plan generation: a plan that
+              // keeps the writes is approved by a person, and a later generation that is told
+              // again only submits the same plan twice (#1111).
+              let scopeAdvised = this.store.latestArtifact(runId, SCOPE_ADVICE) !== null;
               // A criterion left uncovered again by a plan that names it is one the planner cannot
               // cover; it stops being a submission error and goes back to the spec (#780).
               const uncoveredSubmissions = new Map<string, number>();
@@ -1036,8 +1047,14 @@ export class WorkflowScheduler {
                   parsed.data.taskGraph,
                   (path) => existsSync(join(runRoot(this.store.workspace, state), path)),
                   this.baselineScaffold(runId, state),
+                  state.requestText,
                 );
-                if (advice.length) scopeAdvised = true;
+                if (advice.length) {
+                  scopeAdvised = true;
+                  this.store.transaction(() =>
+                    this.store.artifact(runId, "diagnostic", SCOPE_ADVICE, canonical({ advice })),
+                  );
+                }
                 return [...open, ...advice];
               };
               const patchedPlan = await this.patchRevision(
@@ -1400,6 +1417,15 @@ export class WorkflowScheduler {
                         description,
                       })),
                     }),
+                  ),
+                );
+                // A spec finding the request settles is an amendment, so review does not raise
+                // it against spec.json again after implement (#1120).
+                this.store.transaction(() =>
+                  this.amendFromAnalysis(
+                    runId,
+                    state,
+                    assumed.filter((f) => restrictsRequest(f)),
                   ),
                 );
                 findings = findings.map((f) =>
@@ -3373,9 +3399,24 @@ export class WorkflowScheduler {
       const plan = stages.findIndex((stage) => stage.kind === "plan");
       if (plan >= 0) {
         this.raiseBudget(runId, state, policy, report);
+        const note = splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask);
+        // Under `revision: "patch"` the planner splits the oversized tasks with edit operations;
+        // a whole new plan cost ratesim 029a5aec 170k tokens to split one skeleton task (#1112).
+        this.pendPatch(
+          state,
+          policy,
+          [
+            {
+              kind: "sizing",
+              refs: ["tasks.json", `sizing/plan-${String(state.sizingReplans)}.json`],
+              description: note,
+            },
+          ],
+          ["plan"],
+        );
         state.sizingReplans = 1;
         state.prompt += `
-${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`;
+${note}`;
         state.analysisPassed = false;
         state.stageIndex = plan;
         this.store.transaction(() => this.store.saveState(runId, state));
@@ -10095,6 +10136,24 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       // A repeated finding of a later round names the same contradiction: one note is enough.
       if (!state.prompt.includes(amendment.claim.slice(0, 1000)))
         state.prompt += `\n${amendmentNote(path, amendment)}`;
+    }
+  }
+  /** Analysis findings on the spec that the request settles record amendments (#1120). */
+  private amendFromAnalysis(
+    runId: string,
+    state: RuntimeState,
+    findings: { id: string; refs: string[]; description: string }[],
+  ): void {
+    if (!state.spec) return;
+    for (const finding of findings) {
+      const amendment = analysisAmendmentOf(finding, state.spec);
+      if (!amendment) continue;
+      const path = `amendments/${amendment.findingId}.json`;
+      if (this.store.latestArtifact(runId, path)) continue;
+      this.store.artifact(runId, "assumption", path, canonical(amendment));
+      // The return notes already quote the finding, so only the note itself is checked.
+      const note = amendmentNote(path, amendment);
+      if (!state.prompt.includes(note)) state.prompt += `\n${note}`;
     }
   }
   /** The run's spec amendments (`amendments/*.json`). */

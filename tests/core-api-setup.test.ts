@@ -494,6 +494,77 @@ describe("local API setup and workflow additions", () => {
     expect(skills[0]?.description).toBeUndefined();
   });
 
+  // #1106: skills a package put in baked/skills show with the package that installed them.
+  test("skills installed by a package are listed with their package and cannot be removed alone", async () => {
+    const { get, call, fixture } = await setup();
+    mkdirSync(join(fixture.root, "baked", "skills", "review-notes"), { recursive: true });
+    writeFileSync(
+      join(fixture.root, "baked", "skills", "review-notes", "SKILL.md"),
+      "---\nname: review-notes\ndescription: The review checklist\n---\nCheck the diff.",
+    );
+    const files = ["baked/skills/review-notes/SKILL.md", "baked/skills/gone/SKILL.md"].map((path) => ({ path, sha256: "a".repeat(64) }));
+    writeFileSync(
+      join(fixture.root, "baked", "packages.json"),
+      JSON.stringify({ schemaVersion: 1, packages: [{ name: "acme-review", version: "1.0.0", installedAt: "2026-10-14T00:00:00Z", files }] }),
+    );
+    const { skills } = await get<{ skills: { id: string; scope: string; package?: string; description?: string }[] }>("/v1/skills");
+    expect(skills).toEqual([
+      expect.objectContaining({ id: "review-notes", scope: "package", package: "acme-review", description: "The review checklist" }),
+    ]);
+    const item = await get<{ content: string; package: string }>("/v1/skills/package/review-notes");
+    expect(item).toMatchObject({ package: "acme-review", content: expect.stringContaining("Check the diff.") });
+    const removed = await call("/v1/skills/package/review-notes", { method: "DELETE" });
+    expect(removed.status).toBe(409);
+    expect(((await removed.json()) as { error: { message: string } }).error.message).toContain("remove the package");
+    expect((await call("/v1/skills/package/gone")).status).toBe(404);
+  });
+
+  // #1102: Settings > Global commands creates, edits and removes commands in ~/.baked/commands.
+  test("global commands are created, edited, renamed and removed in the home folder", async () => {
+    const { get, send, post, call, homeDir } = await setup();
+    const dir = join(homeDir, ".baked", "commands");
+    const created = await post("/v1/commands", {
+      scope: "global",
+      name: "frontend:component",
+      description: "Add a component",
+      argumentHint: "<name>",
+      body: "Create the component $1.",
+    });
+    expect(created.status).toBe(201);
+    expect(readFileSync(join(dir, "frontend", "component.md"), "utf8")).toBe(
+      "---\ndescription: Add a component\nargument-hint: <name>\n---\nCreate the component $1.\n",
+    );
+    type Listed = { commands: { name: string; scope: string; description: string; argumentHint?: string }[] };
+    expect((await get<Listed>("/v1/commands")).commands).toEqual([
+      expect.objectContaining({ name: "/frontend:component", scope: "global", description: "Add a component", argumentHint: "<name>" }),
+    ]);
+    const draft = await get<{ name: string; description: string; argumentHint: string; body: string }>(
+      "/v1/commands/global/frontend:component",
+    );
+    expect(draft).toMatchObject({ name: "/frontend:component", description: "Add a component", argumentHint: "<name>", body: "Create the component $1." });
+
+    // An empty, invalid or taken name is refused.
+    expect((await post("/v1/commands", { scope: "global", name: " ", body: "x" })).status).toBe(400);
+    expect((await post("/v1/commands", { scope: "global", name: "Fix CI", body: "x" })).status).toBe(400);
+    expect((await post("/v1/commands", { scope: "global", name: "/frontend:component", body: "x" })).status).toBe(409);
+    expect((await post("/v1/commands", { scope: "global", name: "empty", body: "  " })).status).toBe(400);
+
+    // A rename moves the file and removes the folder it leaves empty.
+    const renamed = await send("PUT", "/v1/commands/global/frontend:component", { name: "component", body: "Create $1." });
+    expect(renamed.status).toBe(200);
+    expect((await get<Listed>("/v1/commands")).commands.map((c) => [c.name, c.description])).toEqual([["/component", "Create $1."]]);
+    expect(readFileSync(join(dir, "component.md"), "utf8")).toBe("Create $1.\n");
+    expect(() => readFileSync(join(dir, "frontend", "component.md"))).toThrow();
+    await post("/v1/commands", { scope: "global", name: "standup", body: "Write a standup." });
+    expect((await send("PUT", "/v1/commands/global/standup", { name: "component", body: "x" })).status).toBe(409);
+    expect((await send("PUT", "/v1/commands/global/missing", { name: "missing", body: "x" })).status).toBe(404);
+
+    expect((await call("/v1/commands/global/component", { method: "DELETE" })).status).toBe(200);
+    expect((await call("/v1/commands/global/component", { method: "DELETE" })).status).toBe(404);
+    expect((await get<Listed>("/v1/commands")).commands.map((c) => c.name)).toEqual(["/standup"]);
+    expect((await get<{ capabilities: string[] }>("/v1/health")).capabilities).toContain("commands-edit");
+  });
+
   test("a waiting run adopts changed instructions through a candidate and a revision", async () => {
     const { post, get, send, fixture } = await setup();
     writeFileSync(join(fixture.root, "baked.md"), "# Rules\n");

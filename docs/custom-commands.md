@@ -31,6 +31,14 @@ Find why the CI job $1 fails and fix it. Extra notes: $ARGUMENTS
 - When the body has no placeholder and arguments were given, they are appended as `\n\nARGUMENTS: <args>` so they are not lost.
 - The expanded text is an ordinary user prompt and goes through the normal `UserPromptSubmit` hooks, approvals and tools. Like typed text, its `@` mentions attach files and symbols, and a body whose first line starts with `!` runs that line as a command ([mentions and shell commands](guide.md#mentions-and-shell-commands-in-the-input)).
 
+## Managing commands
+
+- Terminal UI: `/commands` lists them. `/commands add NAME PROMPT` writes `.baked/commands/NAME.md` of the project with the prompt as its body, and `/commands add --global NAME PROMPT` the same file in `~/.baked/commands/`; edit the file for frontmatter or a longer prompt. `/commands remove [--global] NAME` deletes it. `NAME` is `fix-ci`, `/fix-ci` or `frontend:component` (a file in a subfolder).
+- Desktop app: **Settings > Global commands** lists the commands of `~/.baked/commands/` and adds, edits and removes them with a form: name, description, argument hint and prompt.
+- Local API: `POST /v1/commands`, `GET|PUT|DELETE /v1/commands/SCOPE/NAME` (servers with the `commands-edit` capability, see the [API reference](desktop/api.md)).
+
+A name is refused when it is empty, has characters other than lowercase letters, digits, `-`, `_` and `.` (with `:` between folder levels), or is taken by another command of the same scope; an empty prompt is refused too. A rename moves the file, and a folder a removal leaves empty is removed.
+
 ## Name conflicts
 
 Built-in commands win. A custom command whose name equals a built-in command, its first word (for example `/session`) or an alias is not runnable and is hidden from the palette. `/commands` lists custom commands with their scope and file, and marks shadowed ones.

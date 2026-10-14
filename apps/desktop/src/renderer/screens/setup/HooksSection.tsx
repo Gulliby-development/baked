@@ -461,7 +461,11 @@ export function HooksSection({ project }: SectionProps) {
           <span className="font-mono">disableAllHooks: true</span>.
         </Alert>
       )}
-      {error && <Alert tone="error">{error}</Alert>}
+      {error && (
+        <Alert tone="error" role="alert">
+          {error}
+        </Alert>
+      )}
 
       <ol aria-label="Agent events" className="relative m-0 flex list-none flex-col gap-5 p-0 pl-8">
         <span

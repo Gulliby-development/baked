@@ -238,7 +238,11 @@ export function RunMemorySection({ project }: SectionProps) {
           Add note
         </Button>
       </form>
-      {error && <Alert tone="error">{error}</Alert>}
+      {error && (
+        <Alert tone="error" role="alert">
+          {error}
+        </Alert>
+      )}
 
       {view.entries.length === 0 && (
         <Empty>

@@ -114,10 +114,10 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "custom-commands-list",
     group: "Chat and sessions",
-    title: "List custom commands",
-    tui: ["/commands"],
-    cli: notNeeded("scripts read .baked/commands directly"),
-    api: ["/v1/commands"],
+    title: "List, add, edit and remove custom commands",
+    tui: ["/commands: add [--global] NAME PROMPT, remove [--global] NAME"],
+    cli: notNeeded("scripts read and write .baked/commands directly"),
+    api: ["/v1/commands", "/v1/commands/project/:id", "/v1/commands/global/:id"],
     desktop: ["settings/commands"],
   },
   {
@@ -677,7 +677,13 @@ export const FEATURES: readonly Feature[] = [
     title: "Skills: browse, install, remove",
     tui: ["/skills"],
     cli: notNeeded("`bunx skills add` installs from scripts"),
-    api: ["/v1/skills", "/v1/skills/catalog", "/v1/skills/project/:id", "/v1/skills/global/:id"],
+    api: [
+      "/v1/skills",
+      "/v1/skills/catalog",
+      "/v1/skills/project/:id",
+      "/v1/skills/global/:id",
+      "/v1/skills/package/:id",
+    ],
     desktop: ["project/skills"],
   },
   {

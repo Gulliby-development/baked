@@ -91,7 +91,11 @@ export function WorkingSetPane({ project }: Pick<SectionProps, "project">) {
           Add
         </Button>
       </form>
-      {error && <Alert tone="error">{error}</Alert>}
+      {error && (
+        <Alert tone="error" role="alert">
+          {error}
+        </Alert>
+      )}
 
       <section aria-label="Entries" className={STACK}>
         <h2 className={LABEL}>Entries</h2>

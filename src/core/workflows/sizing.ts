@@ -20,7 +20,7 @@ import type { Task } from "./types.js";
  * must be split.
  */
 
-export type FileKind = "code" | "test" | "docs";
+export type FileKind = "code" | "test" | "docs" | "manifest";
 export type TaskKind = FileKind | "mixed";
 export type WriteAction = "create" | "modify";
 export const WRITE_ACTIONS: readonly WriteAction[] = ["create", "modify"];
@@ -50,6 +50,10 @@ export const DEFAULT_PER_FILE: Record<FileKind, Record<WriteAction, TokenRange>>
   code: { create: { low: 30_000, high: 100_000 }, modify: { low: 40_000, high: 130_000 } },
   test: { create: { low: 60_000, high: 350_000 }, modify: { low: 150_000, high: 350_000 } },
   docs: { create: { low: 40_000, high: 250_000 }, modify: { low: 60_000, high: 250_000 } },
+  // A project manifest or solution file is a few declarative lines; priced as code, the skeleton
+  // task of ratesim 029a5aec (two csproj files, an slnx entry, a console entry point) came to 763k
+  // against 191k spent and was split (#1132).
+  manifest: { create: { low: 5_000, high: 40_000 }, modify: { low: 5_000, high: 40_000 } },
 };
 /** This project's own samples of a kind and action needed before other projects' are left out. */
 export const MIN_PROJECT_SAMPLES = 2;
@@ -98,13 +102,21 @@ const TEST_PATH = /(^|\/)(tests?|__tests__|spec)\/|\.(test|spec)\.[cm]?[jt]sx?$/
 const DOCS_EXTENSION = /\.(md|mdx|markdown|rst|adoc)$/i;
 const DOCS_DIR = /(^|\/)docs?\//i;
 const SOURCE = /\.[cm]?[jt]sx?$/i;
-/** Documentation by extension anywhere, or a non-source file under `docs/`; then tests; else code. */
+/** Project manifests and solution files, by file name. */
+const MANIFEST =
+  /(^|\/)(package\.json|tsconfig(\.[\w-]+)?\.json|deno\.jsonc?|go\.mod|go\.work|Cargo\.toml|pom\.xml|(build|settings)\.gradle(\.kts)?|pyproject\.toml|setup\.cfg|requirements([.-][\w-]+)?\.txt|Pipfile|Gemfile|composer\.json|mix\.exs|global\.json|Directory\.(Build|Packages)\.(props|targets)|[^/]+\.(csproj|fsproj|vbproj|sln|slnx))$/i;
+/**
+ * Documentation by extension anywhere, or a non-source file under `docs/`; then project manifests
+ * and solution files; then tests; else code.
+ */
 export const fileKind = (path: string): FileKind =>
   DOCS_EXTENSION.test(path) || (DOCS_DIR.test(path) && !SOURCE.test(path))
     ? "docs"
-    : TEST_PATH.test(path)
-      ? "test"
-      : "code";
+    : MANIFEST.test(path)
+      ? "manifest"
+      : TEST_PATH.test(path)
+        ? "test"
+        : "code";
 
 type Written = { path: string; action: WriteAction };
 function written(task: Pick<Task, "writes">): Written[] {
@@ -382,7 +394,12 @@ export function perFileRates(samples: SizingSample[], model: string | null = nul
       ]),
     ) as Record<WriteAction, KindRate>;
   };
-  return { code: byAction("code"), test: byAction("test"), docs: byAction("docs") };
+  return {
+    code: byAction("code"),
+    test: byAction("test"),
+    docs: byAction("docs"),
+    manifest: byAction("manifest"),
+  };
 }
 
 /** The highest per-file price of a kind, over creating and modifying. */
@@ -701,7 +718,7 @@ export function plannerSizing(
   const k = (kind: FileKind) => `${Math.round(highest(rates, kind) / 1000)}k`;
   return {
     maxCodeFilesPerTask,
-    note: `Give every task that writes code the policy's typecheck check, so its errors show in that task. Put tests in tasks of their own: a test file costs about ${k("test")} tokens, a code file about ${k("code")}, a documentation file about ${k("docs")}. Keep each code task to at most ${maxCodeFilesPerTask} files. Give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel and are merged afterwards; a test task depends on the code tasks whose criteria it covers. A test task above one attempt is split into one task per test file.`,
+    note: `Give every task that writes code the policy's typecheck check, so its errors show in that task. Put tests in tasks of their own: a test file costs about ${k("test")} tokens, a code file about ${k("code")}, a documentation file about ${k("docs")}, a project manifest or solution file about ${k("manifest")}. Keep each code task to at most ${maxCodeFilesPerTask} files. Give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel and are merged afterwards; a test task depends on the code tasks whose criteria it covers. A test task above one attempt is split into one task per test file.`,
   };
 }
 

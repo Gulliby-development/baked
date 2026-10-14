@@ -16,14 +16,14 @@ import { cn } from "../../lib/cn.js";
 import { CHECK, STACK as COLUMN, LEDE, PANEL } from "../../lib/styles.js";
 import type { SettingsSection } from "../../router.js";
 import { useDesktop } from "../../store.js";
-import { commandLabel, signInView } from "./logic.js";
+import { GlobalCommands } from "./GlobalCommands.js";
+import { externalUrl, signInView } from "./logic.js";
 import { type RoutingProject, RoutingSection } from "./RoutingSection.js";
 import {
   ADD,
   errorText,
   FLUSH,
   GROW,
-  LINE,
   LINE_LOOSE,
   LIST,
   LoadState,
@@ -274,7 +274,7 @@ function ProviderRow({
         />
       )}
       {provider.keyUrl && !provider.configured && (
-        <a href={provider.keyUrl} target="_blank" rel="noreferrer">
+        <a href={externalUrl(provider.keyUrl)} target="_blank" rel="noreferrer">
           Get a key
         </a>
       )}
@@ -360,36 +360,6 @@ function Providers({ projectKey }: { projectKey: string }) {
         </ul>
       ) : (
         <LoadState value={providers} what="providers" />
-      )}
-    </section>
-  );
-}
-
-function GlobalCommands({ projectKey }: { projectKey: string }) {
-  const [commands] = useLoad(() => setup.commands(projectKey), [projectKey, "commands"]);
-  const global =
-    commands.state === "ready" ? commands.data.commands.filter((c) => c.scope === "global") : [];
-  return (
-    <section className={STACK} aria-label="Global commands">
-      {commands.state !== "ready" ? (
-        <LoadState value={commands} what="the command list" />
-      ) : global.length === 0 ? (
-        <Empty>No global commands.</Empty>
-      ) : (
-        <ul className={cn(PANEL, LIST, FLUSH)}>
-          {global.map((c) => (
-            <li key={c.path} className={LINE}>
-              <span className="font-mono">
-                {commandLabel(c.name)}
-                {c.argumentHint ? (
-                  <span className="text-dim-foreground"> {c.argumentHint}</span>
-                ) : null}
-              </span>
-              <span className={cn("text-dim-foreground", GROW)}>{c.description}</span>
-              <span className={cn("font-mono text-dim-foreground", NOTE)}>{c.path}</span>
-            </li>
-          ))}
-        </ul>
       )}
     </section>
   );
@@ -632,7 +602,11 @@ function GlobalSettingsFor({
         <span className={cn("text-dim-foreground", NOTE)}>
           Shared by every project on this computer, in{" "}
           <span className="font-mono">
-            {config.state === "ready" ? config.data.paths.global : "~/.baked/config.json"}
+            {section === "commands"
+              ? "~/.baked/commands/"
+              : config.state === "ready"
+                ? config.data.paths.global
+                : "~/.baked/config.json"}
           </span>
           . <Tag>read through {projectName}</Tag>
         </span>

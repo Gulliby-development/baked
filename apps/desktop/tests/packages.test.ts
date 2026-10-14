@@ -9,7 +9,7 @@ const { ApiError } = await import("../src/renderer/client/api.ts");
 const { offers, PACKAGES_CAPABILITY } = await import("../src/renderer/client/capabilities.ts");
 const { MOCK_PACKAGE_PATH } = await import("../src/renderer/client/mock-packages.ts");
 const { installAction, packages, packSummary } = await import("../src/renderer/client/packages.ts");
-const { installSummary, PackageActions } = await import("../src/renderer/screens/setup/PackagesSection.tsx");
+const { installSummary, PackageActions, removeSummary } = await import("../src/renderer/screens/setup/PackagesSection.tsx");
 const { PackageBox } = await import("../src/renderer/screens/setup/PackageBox.tsx");
 const { boxItems, contentsLine, packingMs, BOX_SLOTS, DROP_MS } = await import("../src/renderer/screens/setup/packages-model.ts");
 const { parseRoute, projectHref } = await import("../src/renderer/router.ts");
@@ -41,6 +41,17 @@ describe("packages client", () => {
     expect(removed.removed).toHaveLength(4);
     expect((await packages.list("site")).packages).toEqual([]);
     expect(await packages.inspect("site", "/nowhere").catch((e: unknown) => e)).toBeInstanceOf(ApiError);
+  });
+
+  test("install and remove summaries count one file as a file", () => {
+    const installed = { name: "x", version: "1.0.0", written: ["a"], unchanged: [], removed: ["b"], kept: ["c"], gatesToConfirm: [] };
+    expect(installSummary(installed)).toBe(
+      "Installed x 1.0.0: 1 file written, 1 file of the old version removed, 1 edited file of the old version kept.",
+    );
+    expect(removeSummary({ name: "x", version: "1.0.0", removed: ["a"], kept: [], missing: [] })).toBe("Removed x 1.0.0: 1 file deleted.");
+    expect(removeSummary({ name: "x", version: "1.0.0", removed: ["a", "b"], kept: ["baked/c.md"], missing: [] })).toBe(
+      "Removed x 1.0.0: 2 files deleted; kept 1 edited: baked/c.md.",
+    );
   });
 
   test("a plan with problems cannot be installed", () => {

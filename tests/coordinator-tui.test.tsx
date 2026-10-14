@@ -355,6 +355,43 @@ describe("terminal coordinator view model", () => {
     expect(line).toEqual({ text: 'from "API": Done.', tone: "accent" });
   });
 
+  test("an assistant reply's Markdown reads as the chat draws it, without raw markers (#1077)", () => {
+    const reply = [
+      "## Runs",
+      "",
+      "Two are **open**: see `baked status` or [the board](https://example.com/b).",
+      "",
+      "| Run | State |",
+      "|---|---|",
+      "| md-site | waiting for an approval that has a long reason |",
+      "",
+      "- first",
+      "- second",
+    ].join("\n");
+    const lines = messageLines([{ id: "1", role: "assistant", content: reply, timestamp: 0 }], "", 40);
+    expect(lines.map((l) => l.text)).toEqual([
+      "     Runs",
+      "     ",
+      "     Two are open: see baked status or",
+      "     the board (https://example.com/b).",
+      "     ",
+      "     ╭─────────┬───────────────────────╮",
+      "     │ Run     │ State                 │",
+      "     ├─────────┼───────────────────────┤",
+      "     │ md-site │ waiting for an appro… │",
+      "     ╰─────────┴───────────────────────╯",
+      "     ",
+      "     • first",
+      "     • second",
+      "",
+    ]);
+    expect(lines[0]?.tone).toBe("accent");
+    for (const line of lines) expect(line.text.length).toBeLessThanOrEqual(40);
+    // A reply still streaming is drawn the same way.
+    const live = messageLines([], "Done: **2** runs", 40);
+    expect(live).toEqual([{ text: "     Done: 2 runs", tone: "assistant" }]);
+  });
+
   test("messages label the speaker and list tool calls", () => {
     const lines = messageLines(
       [

@@ -8,7 +8,7 @@
 | Project | `<project>/.baked/config.json` |
 | Project manifest | `baked/project.json` `defaults.config` (`defaultModel`, `taskRouter`, `modelRouting`, `modelFallback`; see [projects](projects.md)) |
 
-Project settings override global ones; a setting changed for the session only overrides both until exit. Commands that change settings ask which scope to save to. `/settings` lists every option in one place. The global file is created with defaults on the first start; an invalid JSON file stops startup with the error and is not overwritten.
+Project settings override global ones; a setting changed for the session only overrides both until exit. Commands that change settings ask which scope to save to. `/settings` lists every option in one place. The global file is created with defaults on the first start; an invalid JSON file stops startup with the error and is not overwritten. Settings are saved through a temp file renamed into place, so another BAKED process (a workflow run, the desktop backend) never reads a half-written file; a file that fails to parse is read again for half a second before it counts as invalid.
 
 The type of the whole file is `AppConfig` in `src/types/index.ts`; the comments there are the reference for each field.
 

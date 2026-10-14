@@ -4,6 +4,7 @@ import { TextAttributes } from "@opentui/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ContextManager } from "../../core/context/manager.js";
 import { getCwd } from "../../core/cwd.js";
+import { listPackageSkills, type PackageSkill } from "../../core/packages/packages.js";
 import {
   type InstalledSkill,
   installSkill,
@@ -89,7 +90,7 @@ function InstalledSkillRow({
   isLoaded,
   innerW: _innerW,
 }: {
-  skill: InstalledSkill;
+  skill: InstalledSkill | PackageSkill;
   isSelected: boolean;
   isLoaded: boolean;
   innerW: number;
@@ -110,7 +111,11 @@ function InstalledSkillRow({
       </text>
       <text bg={bg} fg={t.textMuted}>
         {" "}
-        {skill.scope === "project" ? "(project)" : "(global)"}
+        {skill.scope === "package"
+          ? `(package ${skill.package})`
+          : skill.scope === "project"
+            ? "(project)"
+            : "(global)"}
       </text>
       {isLoaded && (
         <text bg={bg} fg={t.info} attributes={TextAttributes.BOLD}>
@@ -159,7 +164,7 @@ export function SkillSearch({ visible, contextManager, onClose, onSystemMessage 
   const [query, setQuery] = useState("");
   const [popular, setPopular] = useState<SkillSearchResult[]>([]);
   const [results, setResults] = useState<SkillSearchResult[]>([]);
-  const [installed, setInstalled] = useState<InstalledSkill[]>([]);
+  const [installed, setInstalled] = useState<(InstalledSkill | PackageSkill)[]>([]);
   const [activeSkills, setActiveSkills] = useState<string[]>([]);
   const [searching, setSearching] = useState(false);
   const [catalogLoading, setCatalogLoading] = useState(false);
@@ -203,7 +208,8 @@ export function SkillSearch({ visible, contextManager, onClose, onSystemMessage 
   })();
 
   const refreshInstalled = useCallback(() => {
-    setInstalled(listInstalledSkills());
+    // Skills of installed packages come last; workflow profiles that name them use them (#1106).
+    setInstalled([...listInstalledSkills(), ...listPackageSkills(getCwd())]);
   }, []);
 
   const refreshActive = useCallback(() => {
@@ -380,7 +386,11 @@ export function SkillSearch({ visible, contextManager, onClose, onSystemMessage 
     if (evt.ctrl && evt.name === "d") {
       if (tab === "installed") {
         const skill = filteredInstalled[cursor];
-        if (skill) {
+        if (skill?.scope === "package") {
+          onSystemMessage(
+            `Skill "${skill.name}" belongs to the package ${skill.package}: /packages remove ${skill.package} removes it.`,
+          );
+        } else if (skill) {
           if (activeSkills.includes(skill.name)) {
             contextManager.removeSkill(skill.name);
           }

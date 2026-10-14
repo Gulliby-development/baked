@@ -4,6 +4,7 @@ import { mergeModelRouting } from "../core/llm/model-routing.js";
 import { configDir } from "../core/platform/index.js";
 import { activeProject } from "../core/projects/resolve.js";
 import { ensurebakedDir } from "../core/utils/ensure-baked-dir.js";
+import { writeViaTemp } from "../core/workflows/atomic-write.js";
 import { parseWorkflowConfig } from "../core/workflows/config-policy.js";
 import type { AppConfig, MCPServerConfig, TaskRouter } from "../types";
 
@@ -45,6 +46,48 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
 };
 
+/**
+ * Writes a config file through a temp file and a rename. Every chat turn and workflow task of
+ * every BAKED process reads the global config, and a plain write truncates the file first: a
+ * reader in another process saw it empty or half written and exited 1 in the middle of a run
+ * (#1115). Windows refuses the rename while a reader has the file open, so that is retried.
+ */
+function writeConfigFile(path: string, text: string): void {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      writeViaTemp(path, text, { flag: "w", flush: true });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!["EPERM", "EACCES", "EBUSY"].includes(code ?? "")) throw error;
+      if (attempt >= 10) {
+        writeFileSync(path, text);
+        return;
+      }
+      Bun.sleepSync(20);
+    }
+  }
+}
+
+/**
+ * Reads and parses the global config. A file another process is replacing can read as empty or
+ * cut short for a moment, or, on Windows, refuse to open while the rename lands, so a parse or
+ * sharing failure is retried before it is reported.
+ */
+function readConfigFile(path: string): Partial<AppConfig> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return JSON.parse(readFileSync(path, "utf-8")) as Partial<AppConfig>;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? "";
+      const transient =
+        error instanceof SyntaxError || ["EPERM", "EACCES", "EBUSY", "ENOENT"].includes(code);
+      if (attempt >= 20 || !transient) throw error;
+      Bun.sleepSync(25);
+    }
+  }
+}
+
 export function loadConfig(): AppConfig {
   const configDir = getConfigDir();
   const configFile = getConfigFile();
@@ -55,11 +98,11 @@ export function loadConfig(): AppConfig {
   let userConfig: Partial<AppConfig> = {};
   let fileExists = existsSync(configFile);
   if (!fileExists) {
-    writeFileSync(configFile, JSON.stringify(DEFAULT_CONFIG, null, 2));
+    writeConfigFile(configFile, JSON.stringify(DEFAULT_CONFIG, null, 2));
     fileExists = true;
   } else {
     try {
-      userConfig = JSON.parse(readFileSync(configFile, "utf-8")) as Partial<AppConfig>;
+      userConfig = readConfigFile(configFile);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(
@@ -229,7 +272,7 @@ export function saveConfig(config: AppConfig): void {
   if (!existsSync(configDir)) {
     mkdirSync(configDir, { recursive: true, mode: 0o700 });
   }
-  writeFileSync(getConfigFile(), JSON.stringify(config, null, 2));
+  writeConfigFile(getConfigFile(), JSON.stringify(config, null, 2));
 }
 
 /** Save a partial config to <cwd>/.baked/config.json (deep-merge). */
@@ -254,7 +297,7 @@ export function saveProjectConfig(cwd: string, patch: Partial<AppConfig>): void 
   if (patch.retry) merged.retry = { ...existing.retry, ...patch.retry };
   if (patch.coordinator) merged.coordinator = { ...existing.coordinator, ...patch.coordinator };
 
-  writeFileSync(file, JSON.stringify(merged, null, 2));
+  writeConfigFile(file, JSON.stringify(merged, null, 2));
 }
 
 /** Save a partial config to ~/.baked/config.json (deep-merge). */
@@ -267,7 +310,7 @@ export function saveGlobalConfig(patch: Partial<AppConfig>): void {
   try {
     existing = {
       ...DEFAULT_CONFIG,
-      ...(JSON.parse(readFileSync(configFile, "utf-8")) as object),
+      ...readConfigFile(configFile),
     };
   } catch {
     // no existing file
@@ -283,7 +326,7 @@ export function saveGlobalConfig(patch: Partial<AppConfig>): void {
   if (patch.retry) merged.retry = { ...existing.retry, ...patch.retry };
   if (patch.coordinator) merged.coordinator = { ...existing.coordinator, ...patch.coordinator };
 
-  writeFileSync(configFile, JSON.stringify(merged, null, 2));
+  writeConfigFile(configFile, JSON.stringify(merged, null, 2));
 }
 
 /** Remove specific top-level keys from project config. */
@@ -293,7 +336,7 @@ export function removeProjectConfigKeys(cwd: string, keys: string[]): void {
   try {
     const existing = JSON.parse(readFileSync(file, "utf-8")) as Record<string, unknown>;
     for (const k of keys) delete existing[k];
-    writeFileSync(file, JSON.stringify(existing, null, 2));
+    writeConfigFile(file, JSON.stringify(existing, null, 2));
   } catch {}
 }
 
@@ -304,7 +347,7 @@ export function removeGlobalConfigKeys(keys: string[]): void {
   try {
     const existing = JSON.parse(readFileSync(configFile, "utf-8")) as Record<string, unknown>;
     for (const k of keys) delete existing[k];
-    writeFileSync(configFile, JSON.stringify(existing, null, 2));
+    writeConfigFile(configFile, JSON.stringify(existing, null, 2));
   } catch {}
 }
 

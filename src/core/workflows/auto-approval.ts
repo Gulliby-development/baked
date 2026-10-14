@@ -184,6 +184,7 @@ function scopeProblems(
   limits: Limits,
   graph: TaskGraph,
   hostSplitTasks = 0,
+  required: (write: Write) => boolean = () => false,
 ): { text: string; reviewable: boolean }[] {
   const writes = graph.tasks.flatMap((task) => task.writes);
   const problems: { text: string; reviewable: boolean }[] = [];
@@ -195,6 +196,7 @@ function scopeProblems(
     problems.push({ text: `${files.size} files exceed ${limits.maxFiles}`, reviewable: true });
   const globs = limits.allowedPaths.map((pattern) => new Bun.Glob(pattern.toLowerCase()));
   for (const write of writes) {
+    if (required(write)) continue;
     if (!globs.some((glob) => glob.match(write.path.toLowerCase())))
       problems.push({ text: `${write.path} is outside the allowed paths`, reviewable: true });
     if (write.action === "delete" && !limits.allowDelete)
@@ -226,23 +228,43 @@ export function plannerApprovalLimits(policy: RunPolicy): {
   };
 }
 
+/** Test files that .NET project templates create and a plan replaces with real tests. */
+const templatePlaceholder = /(?:^|\/)(?:UnitTest1|Class1)\.(?:cs|fs|vb)$/i;
+
 /**
- * Why a submitted plan would not be approved within the limits. The planner gets these once as
- * advice: a plan that still needs such a write is accepted and goes to a person at approval.
+ * A write the planner cannot drop: the request names its file, or it deletes a project template's
+ * placeholder. Advising against it only makes the planner submit the same plan again (#1111).
+ */
+function requiredByRequest(write: Write, request: string): boolean {
+  if (write.action === "delete" && templatePlaceholder.test(write.path)) return true;
+  const text = request.toLowerCase();
+  const path = write.path.toLowerCase();
+  const name = path.split("/").at(-1) ?? path;
+  return text.includes(path) || (name.includes(".") && text.includes(name));
+}
+
+/**
+ * Why a submitted plan would not be approved within the limits. The planner gets these once per
+ * run as advice: a plan that still needs such a write is accepted and goes to a person at
+ * approval. Writes the request requires are left out, since dropping them is not an option.
  */
 export function planScopeAdvice(
   policy: RunPolicy,
   graph: TaskGraph,
   exists?: (path: string) => boolean,
   scaffold = false,
+  request = "",
 ): string[] {
   const limits = policy.autoApproval?.limits;
   if (!limits) return [];
+  const required = (write: Write) => requiredByRequest(write, request);
   const always = graph.tasks
     .flatMap((task) => task.writes)
-    .filter((write) => needsPerson(write, exists, scaffold))
+    .filter((write) => !required(write) && needsPerson(write, exists, scaffold))
     .map((write) => `${write.path} always needs a person`);
-  const problems = [...new Set([...always, ...scopeProblems(limits, graph).map((p) => p.text)])];
+  const problems = [
+    ...new Set([...always, ...scopeProblems(limits, graph, 0, required).map((p) => p.text)]),
+  ];
   if (!problems.length) return [];
   return [
     `This plan needs a person at approval: ${problems.join("; ")}. Automatic approval covers at most ${limits.maxTasks} tasks and ${limits.maxFiles} files under ${limits.allowedPaths.join(", ")}${limits.allowDelete ? "" : " without deletions"}. Drop writes the requirements do not need (an optional refactor, a type or helper that can live in a file already written) and merge small tasks. If every listed write is needed, submit the plan again unchanged: it is accepted and a person approves it once at approval, which authorizes every write it lists. Do not mention approval in task descriptions or rationales; the tasks run only after the person approved.`,

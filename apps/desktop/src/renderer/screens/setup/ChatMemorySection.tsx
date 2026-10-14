@@ -305,7 +305,11 @@ function Cleanup({
         Finds duplicates, memories whose files are gone, long-unused ones and near-duplicates.
         Hidden memories stay restorable.
       </span>
-      {error && <Alert tone="error">{error}</Alert>}
+      {error && (
+        <Alert tone="error" role="alert">
+          {error}
+        </Alert>
+      )}
       {done && <Alert>{done}</Alert>}
       {candidates === null ? (
         <span className={ACTIONS}>
@@ -418,7 +422,11 @@ export function ChatMemorySection({ project }: SectionProps) {
           stale memories: a cleanup below would help recall.
         </Alert>
       )}
-      {error && <Alert tone="error">{error}</Alert>}
+      {error && (
+        <Alert tone="error" role="alert">
+          {error}
+        </Alert>
+      )}
 
       <section aria-label="Settings" className={cn(PANEL, STACK, "gap-4")}>
         <Choice

@@ -13,7 +13,14 @@ import {
 } from "../../config/index.js";
 import type { AppConfig } from "../../types/index.js";
 import { agentContextPreview } from "../agent-context.js";
-import { listCustomCommands } from "../commands/custom.js";
+import {
+  CustomCommandError,
+  type CustomCommandScope,
+  deleteCustomCommand,
+  listCustomCommands,
+  readCustomCommandDraft,
+  saveCustomCommand,
+} from "../commands/custom.js";
 import {
   instructionSourceStates,
   isInstructionSource,
@@ -41,6 +48,7 @@ import {
 import { checkProviders } from "../llm/provider.js";
 import { getProviderSecretEntries } from "../llm/providers/index.js";
 import { cachedVendorModels } from "../llm/vendor-models.js";
+import { listPackageSkills, type PackageSkill } from "../packages/packages.js";
 import { configDir as defaultConfigDir } from "../platform/index.js";
 import {
   forgetKnownProject,
@@ -186,7 +194,19 @@ const SkillInstallBody = z.strictObject({
     .regex(/^[A-Za-z0-9][A-Za-z0-9._/@:-]*$/, "Send the catalog skill ID"),
   scope: z.enum(["project", "global"]),
 });
-const SKILL_ITEM = /^\/v1\/skills\/(project|global)\/([^/]+)$/;
+const SKILL_ITEM = /^\/v1\/skills\/(project|global|package)\/([^/]+)$/;
+const CommandFields = {
+  name: z.string().max(200),
+  description: z.string().max(400).optional(),
+  argumentHint: z.string().max(200).optional(),
+  body: z.string().max(64 * 1024),
+};
+const CommandCreateBody = z.strictObject({
+  scope: z.enum(["project", "global"]),
+  ...CommandFields,
+});
+const CommandUpdateBody = z.strictObject(CommandFields);
+const COMMAND_ITEM = /^\/v1\/commands\/(project|global)\/([^/]+)$/;
 const KeyBody = z.strictObject({ key: z.string().trim().min(1).max(4096) });
 const PROVIDER_KEY = /^\/v1\/providers\/([a-z0-9-]+)\/key$/;
 const PROVIDER_LOGIN = /^\/v1\/providers\/([a-z0-9-]+)\/(login|logout|switch)$/;
@@ -335,26 +355,79 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
     );
   }
 
+  const commandHome = ctx.homeDir ? { home: ctx.homeDir } : {};
+  const commandList = () => ({
+    commands: listCustomCommands(workspace, commandHome).map((command) => ({
+      name: command.name,
+      scope: command.scope,
+      path: command.path,
+      description: command.description,
+      ...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
+    })),
+  });
+  /** Runs a command write; a rejected name or a missing command answers with its status. */
+  const commandWrite = <T>(write: () => T): T => {
+    try {
+      return write();
+    } catch (error) {
+      if (!(error instanceof CustomCommandError)) throw error;
+      return ctx.fail(
+        error.status,
+        error.status === 404 ? "NOT_FOUND" : error.status === 409 ? "CONFLICT" : "INVALID_COMMAND",
+        error.message,
+      );
+    }
+  };
+
   if (path === "/v1/commands") {
-    ctx.only("GET");
+    ctx.only("GET", "POST");
+    if (method === "GET") return ctx.json(200, commandList());
+    const { scope, ...draft } = CommandCreateBody.parse(await ctx.readJson());
+    const command = commandWrite(() => saveCustomCommand(workspace, scope, draft, commandHome));
+    return ctx.json(201, {
+      command: { name: command.name, scope, path: command.path },
+      ...commandList(),
+    });
+  }
+
+  const commandItem = COMMAND_ITEM.exec(path);
+  if (commandItem) {
+    ctx.only("GET", "PUT", "DELETE");
+    const scope = commandItem[1] as CustomCommandScope;
+    let name = commandItem[2] ?? "";
+    try {
+      name = decodeURIComponent(name);
+    } catch {}
+    if (method === "GET")
+      return ctx.json(200, {
+        scope,
+        ...commandWrite(() => readCustomCommandDraft(workspace, scope, name, commandHome)),
+      });
+    if (method === "DELETE") {
+      commandWrite(() => deleteCustomCommand(workspace, scope, name, commandHome));
+      return ctx.json(200, commandList());
+    }
+    const draft = CommandUpdateBody.parse(await ctx.readJson());
+    const command = commandWrite(() =>
+      saveCustomCommand(workspace, scope, draft, { ...commandHome, previous: name }),
+    );
     return ctx.json(200, {
-      commands: listCustomCommands(workspace, ctx.homeDir ? { home: ctx.homeDir } : {}).map(
-        (command) => ({
-          name: command.name,
-          scope: command.scope,
-          path: command.path,
-          description: command.description,
-          ...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
-        }),
-      ),
+      command: { name: command.name, scope, path: command.path },
+      ...commandList(),
     });
   }
 
   const skillDirs = { cwd: workspace, ...(ctx.homeDir ? { home: ctx.homeDir } : {}) };
-  const installedSkills = () =>
-    listInstalledSkills(skillDirs)
+  // Package skills follow the project and global ones; they cannot be removed one by one.
+  const installedSkills = () => [
+    ...listInstalledSkills(skillDirs)
       .map(skillEntry)
-      .sort((a, b) => a.id.localeCompare(b.id));
+      .sort((a, b) => a.id.localeCompare(b.id)),
+    ...listPackageSkills(workspace).map((skill) => ({
+      ...skillEntry(skill),
+      package: skill.package,
+    })),
+  ];
 
   if (path === "/v1/skills") {
     ctx.only("GET", "POST");
@@ -400,11 +473,27 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
   const skillItem = SKILL_ITEM.exec(path);
   if (skillItem) {
     ctx.only("GET", "DELETE");
-    const scope = skillItem[1] as InstalledSkill["scope"];
+    const scope = skillItem[1] as InstalledSkill["scope"] | PackageSkill["scope"];
     let name = skillItem[2] ?? "";
     try {
       name = decodeURIComponent(name);
     } catch {}
+    if (scope === "package") {
+      const skill = listPackageSkills(workspace).find((s) => s.name === name);
+      if (!skill) ctx.fail(404, "NOT_FOUND", `No installed package has a skill named ${name}`);
+      if (method === "DELETE")
+        ctx.fail(
+          409,
+          "NOT_REMOVABLE",
+          `${name} belongs to the package ${skill.package}; remove the package to remove it`,
+        );
+      const content = readFileSync(skill.path, "utf8");
+      return ctx.json(200, {
+        ...skillEntry(skill),
+        package: skill.package,
+        content: content.slice(0, 256 * 1024),
+      });
+    }
     const skill = listInstalledSkills(skillDirs).find((s) => s.name === name && s.scope === scope);
     if (!skill) ctx.fail(404, "NOT_FOUND", `No ${scope} skill named ${name} is installed`);
     if (method === "GET") {
@@ -602,7 +691,7 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
 }
 
 /** The `description` of a SKILL.md front matter, if it has one. */
-function skillEntry(skill: InstalledSkill) {
+function skillEntry(skill: InstalledSkill | PackageSkill) {
   const description = skillDescription(skill.path);
   return {
     id: skill.name,
