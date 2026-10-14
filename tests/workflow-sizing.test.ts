@@ -131,7 +131,33 @@ describe("plan-time sizing", () => {
     expect(fileKind("docs/workflows/runtime.md")).toBe("docs");
     expect(fileKind("docs/diagram.svg")).toBe("docs");
     expect(fileKind("docs/.vitepress/config.ts")).toBe("code");
-    expect(fileKind("requirements.txt")).toBe("code");
+    expect(fileKind("requirements.txt")).toBe("manifest");
+    expect(fileKind("src/Core/Core.csproj")).toBe("manifest");
+    expect(fileKind("RateSim.slnx")).toBe("manifest");
+    expect(fileKind("package.json")).toBe("manifest");
+    expect(fileKind("crates/cli/Cargo.toml")).toBe("manifest");
+    expect(fileKind("src/package.ts")).toBe("code");
+  });
+
+  // #1132: a skeleton task of manifests, a solution file and an entry point was priced as four
+  // code files and split.
+  test("project manifests and solution files are priced as their own cheap kind", () => {
+    const history = Array.from({ length: MIN_HISTORY_SAMPLES }, () => sample("code", 250_000));
+    const skeleton = task(
+      "T001",
+      ["src/Core/Core.csproj", "RateSim.slnx", "src/Console/Console.csproj", "src/Console/Program.cs"],
+      "planned",
+      "create",
+    );
+    const report = sizePlan({ graph: graph(skeleton), policy: policy({}), samples: history, spent: 0 });
+    const manifest = DEFAULT_PER_FILE.manifest.create;
+    expect(report.tasks[0]).toMatchObject({
+      kind: "mixed",
+      estimate: { low: 250_000 + 3 * manifest.low, high: 250_000 + 3 * manifest.high },
+      oversized: false,
+    });
+    expect(report.decision).not.toBe("split-tasks");
+    expect(perFileRates(history).manifest.create).toMatchObject({ basis: "defaults", samples: 0 });
   });
 
   test("each kind and action is priced per file from tasks of that kind only, or from defaults", () => {
