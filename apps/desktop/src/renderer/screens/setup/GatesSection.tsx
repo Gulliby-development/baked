@@ -559,6 +559,7 @@ export function GatesSection({ project }: SectionProps) {
         open={settingUp}
         onOpenChange={setSettingUp}
         onSaved={reloadGates}
+        onAddCheck={canEdit ? () => setCreating(true) : undefined}
       />
 
       {canEdit && suggestions.state === "ready" && (

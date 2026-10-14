@@ -5,7 +5,8 @@ import { basename, join } from "node:path";
 import { startApiServer } from "../src/core/api/server.js";
 import { copilotConfigDir } from "../src/core/llm/detected-logins.js";
 import { recordProjectOpen } from "../src/core/projects/known.js";
-import type { RunSnapshot } from "../src/core/workflows/schemas.js";
+import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
+import type { RunPolicy, RunSnapshot } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
 import { removeTempDir } from "./helpers/temp-dir.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
@@ -22,8 +23,8 @@ const gateReply = {
   command: { executable: "bun", args: ["cli.ts"] },
 };
 
-async function setup() {
-  const fixture = workflowFixture();
+async function setup(policy?: RunPolicy) {
+  const fixture = workflowFixture({ policy });
   const configDir = mkdtempSync(join(tmpdir(), "baked-api-config-"));
   const homeDir = mkdtempSync(join(tmpdir(), "baked-api-home-"));
   const server = await startApiServer({
@@ -241,6 +242,32 @@ describe("local API setup and workflow additions", () => {
     expect(await bound.json()).toEqual({ workflowId: "quick-fix-custom", path: "baked/workflows/quick-fix-custom.json", copiedFrom: "quick-fix" });
     expect((await post("/v1/workflow/gates/api-check/bind", { at: "nowhere" })).status).toBe(400);
     expect((await call("/v1/workflow/gates/api-check/bind")).status).toBe(405);
+  });
+
+  test("without checks a gate is offered only the empty check stage, and the places say why", async () => {
+    const { fixture, get, post } = await setup({ ...defaultWorkflowPolicy, checks: [] });
+    type Places = { needsChecks: string | null; places: { key: string; disabled: string | null; bound: boolean }[] };
+    const human = (await (await post("/v1/workflow/gates/draft", { text: "QA signs off the release", kind: "human" })).json()) as { gate: { id: string } };
+    expect((await post("/v1/workflow/gates", { gate: human.gate })).status).toBe(201);
+    const forHuman = await get<Places>(`/v1/workflow/gates/${human.gate.id}/places?workflow=sdd`);
+    expect(forHuman.needsChecks).toContain("has no checks yet");
+    expect(forHuman.needsChecks).not.toContain("or put this gate");
+    expect(forHuman.places.filter((p) => p.disabled === null && !p.bound)).toEqual([]);
+    expect(forHuman.places.some((p) => p.disabled?.includes("has no checks yet"))).toBe(true);
+
+    const command = (await (await post("/v1/workflow/gates/draft", { text: "the CLI prints 56" })).json()) as { gate: { id: string } };
+    expect((await post("/v1/workflow/gates", { gate: command.gate })).status).toBe(201);
+    const forCommand = await get<Places>("/v1/workflow/gates/api-check/places?workflow=sdd");
+    expect(forCommand.needsChecks).toContain("or put this gate");
+    const open = forCommand.places.filter((p) => p.disabled === null && !p.bound).map((p) => p.key);
+    expect(open.length).toBe(1);
+    expect(open[0]).toStartWith("stage:");
+    // Every place offered is one bind accepts: the gate becomes the stage's first check.
+    expect((await post("/v1/workflow/gates/api-check/bind", { workflow: "sdd", at: open[0] })).status).toBe(200);
+    expect(readFileSync(join(fixture.root, "baked", "workflows", "sdd-custom.json"), "utf8")).toContain("api-check");
+    const after = await get<Places>(`/v1/workflow/gates/${human.gate.id}/places?workflow=sdd-custom`);
+    expect(after.needsChecks).toBeNull();
+    expect(after.places.some((p) => p.disabled === null)).toBe(true);
   });
 
   test("initiatives are listed, validated and not found by unknown id", async () => {
