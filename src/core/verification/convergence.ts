@@ -205,6 +205,18 @@ export function failureSignature(output: string): string {
 }
 
 /**
+ * Whether a test check's output says the runner collected no test at all: pytest's exit 5
+ * ("no tests ran", "collected 0 items"), or "No tests found" / "No test files found" of the
+ * JavaScript runners and Go's "no test files". A plan that writes the tests last has this state
+ * until its test tasks run, and it is no defect of the code (#1031).
+ */
+export function noTestsCollected(output: string): boolean {
+  return /\bno tests ran\b|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b/i.test(
+    output,
+  );
+}
+
+/**
  * Findings for a failed run-level check. Run 6931efd6: ruff flagged three test files of three
  * tasks, but the one finding (no file) went to the first task with the check, whose correction
  * could not edit the other two files. When the output names planned files, each task that
