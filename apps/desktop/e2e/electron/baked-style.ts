@@ -26,7 +26,9 @@ export async function expectBakedStyle(page: Page): Promise<void> {
       `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ""}${
         el.getAttribute("aria-label") ? `[${el.getAttribute("aria-label")}]` : ""
       }`;
-    for (const el of document.querySelectorAll("select, datalist")) found.push(describe(el));
+    for (const el of document.querySelectorAll("select"))
+      if (getComputedStyle(el).appearance !== "base-select") found.push(describe(el));
+    for (const el of document.querySelectorAll("datalist")) found.push(describe(el));
     for (const el of document.querySelectorAll("input[list]")) found.push(describe(el));
     for (const el of document.querySelectorAll("input")) {
       const type = (el as HTMLInputElement).type;
