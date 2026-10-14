@@ -302,7 +302,8 @@ function taskAsk(task: TaskGraph["tasks"][number], spec?: Pick<Spec, "requiremen
  * planner edge from a task that writes them to it is dropped first: cfgtrace 6474504a planned
  * `T001.dependsOn = ["T012"]` (the package after its README), the cycle guard then declined the
  * right edge, and the README ran first and stopped the run with 0 of 12 tasks done (#1012). A
- * dependency that would still close a cycle is not added.
+ * task that reads a file the documentation task writes keeps its edge. A dependency that would
+ * still close a cycle is not added.
  */
 export function withCommandDependencies(
   graph: TaskGraph,
@@ -322,13 +323,26 @@ export function withCommandDependencies(
       RUNS_PROGRAM.test(ask.own) || SHOWS_OUTPUT.test(ask.own) || SHOWS_OUTPUT.test(ask.covered)
     );
   });
-  const docs = new Set(showsOutput.map((task) => task.id));
+  const docs = new Map(
+    showsOutput.map((task) => [
+      task.id,
+      task.writes.filter((w) => w.action !== "delete").map((w) => w.path),
+    ]),
+  );
+  // A task that reads what the documentation task writes keeps its edge: a README test reads
+  // README.md and can only pass after it (statevet a93faa86 lost T012 -> T011, and the analyzer
+  // raised the missing edge for five generations, #1054).
   for (const other of graph.tasks)
-    if (!writesOnlyDocs(other) && other.writes.some((w) => w.action !== "delete"))
+    if (!writesOnlyDocs(other) && other.writes.some((w) => w.action !== "delete")) {
+      const reads = readsOf(other);
       deps.set(
         other.id,
-        (deps.get(other.id) ?? []).filter((id) => !docs.has(id)),
+        (deps.get(other.id) ?? []).filter((id) => {
+          const written = docs.get(id);
+          return !written || written.some((path) => reads.includes(path));
+        }),
       );
+    }
   for (const task of showsOutput) {
     for (const other of graph.tasks) {
       if (other.id === task.id || reaches(task.id, other.id) || reaches(other.id, task.id))
