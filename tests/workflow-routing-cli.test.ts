@@ -69,6 +69,17 @@ describe("baked workflow routing", () => {
     expect(existsSync(join(home, "config.json"))).toBe(false);
   });
 
+  test("specify-sonnet turns the opt-in specify route on, off and unset (#1173)", () => {
+    const { run, project } = setup();
+    expect(run(["specify-sonnet", "on"]).code).toBe(0);
+    expect(project()).toEqual({ modelRouting: { specifyOnSonnet: true } });
+    expect(run(["specify-sonnet", "off"]).code).toBe(0);
+    expect(project()).toEqual({ modelRouting: { specifyOnSonnet: false } });
+    expect(run(["specify-sonnet", "unset"]).code).toBe(0);
+    expect(project()).toEqual({});
+    expect(() => run(["specify-sonnet", "yes"])).toThrow(/on, off or unset/);
+  });
+
   test("--scope global writes the global config", () => {
     const { home, run } = setup();
     const result = run(["set", "$fast", "openai/gpt-5-mini", "--scope", "global", "--json"]);

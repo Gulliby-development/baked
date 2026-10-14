@@ -269,6 +269,8 @@ export interface ModelRouting {
   independentReview?: IndependentReview;
   reviewMinConfidence?: number;
   critic?: CriticMode;
+  /** Opt-in: Claude Code Opus runs write their spec on claude-code/sonnet (#1173). */
+  specifyOnSonnet?: boolean;
 }
 
 /** The config keys the setup screens read; the files hold many more, kept as they are. */
@@ -416,6 +418,8 @@ export interface RoutingOverview {
     project: CriticMode | null;
     effective: CriticMode | null;
   };
+  /** The opt-in specify route to Sonnet on Claude Code Opus runs; `effective` is false when unset. */
+  specifyOnSonnet?: { global: boolean | null; project: boolean | null; effective: boolean };
   warnings: string[];
   error: string | null;
 }
@@ -431,7 +435,8 @@ export type RoutingChange =
   | { target: RoutingTarget; route: RouteDraft | null; create?: boolean }
   | { independentReview: IndependentReview | null }
   | { reviewMinConfidence: number | null }
-  | { critic: CriticMode | null };
+  | { critic: CriticMode | null }
+  | { specifyOnSonnet: boolean | null };
 
 // --- Calls --------------------------------------------------------------------------------------
 

@@ -128,6 +128,7 @@ function compact(routing: ModelRouting): ModelRouting | undefined {
   if (routing.reviewMinConfidence !== undefined)
     next.reviewMinConfidence = routing.reviewMinConfidence;
   if (routing.critic) next.critic = routing.critic;
+  if (routing.specifyOnSonnet !== undefined) next.specifyOnSonnet = routing.specifyOnSonnet;
   return Object.keys(next).length ? next : undefined;
 }
 
@@ -194,6 +195,15 @@ export function setCritic(
 ): ModelRouting | undefined {
   const { critic: _previous, ...rest } = routing ?? {};
   return compact(mode === null ? rest : { ...rest, critic: mode });
+}
+
+/** Sets (or, with `null`, removes) the opt-in `specify` route to Sonnet of a layer (#1173). */
+export function setSpecifyOnSonnet(
+  routing: ModelRouting | undefined,
+  value: boolean | null,
+): ModelRouting | undefined {
+  const { specifyOnSonnet: _previous, ...rest } = routing ?? {};
+  return compact(value === null ? rest : { ...rest, specifyOnSonnet: value });
 }
 
 type ClassRoute = NonNullable<ModelRouting["classes"]>[string];
@@ -288,7 +298,8 @@ export type RoutingChange =
   | { target: RoutingTarget; route: RouteDraft | null; create?: boolean }
   | { independentReview: IndependentReviewMode | null }
   | { reviewMinConfidence: number | null }
-  | { critic: CriticMode | null };
+  | { critic: CriticMode | null }
+  | { specifyOnSonnet: boolean | null };
 
 /**
  * Applies a change to one layer and lists what would stop it: the draft's own problems, then what
@@ -305,6 +316,8 @@ export function applyRoutingChange(
   if ("independentReview" in change)
     return { routing: setIndependentReview(current, change.independentReview), problems: [] };
   if ("critic" in change) return { routing: setCritic(current, change.critic), problems: [] };
+  if ("specifyOnSonnet" in change)
+    return { routing: setSpecifyOnSonnet(current, change.specifyOnSonnet), problems: [] };
   if ("reviewMinConfidence" in change) {
     const value = change.reviewMinConfidence;
     if (value !== null && !(value >= 0 && value <= 1))
@@ -408,6 +421,12 @@ export interface RoutingOverview {
     project: CriticMode | null;
     effective: CriticMode | null;
   };
+  /** The opt-in `specify` route to Sonnet on Claude Code Opus runs; `effective` is false when unset. */
+  specifyOnSonnet: {
+    global: boolean | null;
+    project: boolean | null;
+    effective: boolean;
+  };
   /** Reviews that would share a model with the implementation. */
   warnings: string[];
   /** Why the workflow's stages and profiles could not be explained, such as no run model. */
@@ -468,6 +487,11 @@ export function routingOverview(input: {
       global: layers.global?.critic ?? null,
       project: layers.project?.critic ?? null,
       effective: routing?.critic ?? null,
+    },
+    specifyOnSonnet: {
+      global: layers.global?.specifyOnSonnet ?? null,
+      project: layers.project?.specifyOnSonnet ?? null,
+      effective: routing?.specifyOnSonnet ?? false,
     },
     warnings: explanation?.warnings ?? [],
     error: input.error ?? null,

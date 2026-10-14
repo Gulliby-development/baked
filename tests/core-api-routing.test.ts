@@ -53,7 +53,7 @@ describe("local API model routing", () => {
   });
 
   test("routes are written to the chosen layer and resolve for new runs", async () => {
-    const { patch, configDir, fixture, readFile } = await setup();
+    const { patch, get, configDir, fixture, readFile } = await setup();
     const saved = await patch({
       scope: "global",
       model: "fixture/model",
@@ -95,6 +95,12 @@ describe("local API model routing", () => {
 
     const review = await patch({ scope: "project", independentReview: "require" });
     expect(((await review.json()) as RoutingOverview).independentReview.effective).toBe("require");
+
+    // The opt-in specify route to Sonnet (#1173): off until a layer turns it on.
+    expect((await get()).specifyOnSonnet).toEqual({ global: null, project: null, effective: false });
+    const sonnet = await patch({ scope: "global", specifyOnSonnet: true });
+    expect(((await sonnet.json()) as RoutingOverview).specifyOnSonnet).toEqual({ global: true, project: null, effective: true });
+    expect(readFile(join(configDir, "config.json")).modelRouting).toMatchObject({ specifyOnSonnet: true });
   });
 
   test("changes a run start would refuse are not written", async () => {
