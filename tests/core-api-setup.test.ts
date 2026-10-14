@@ -458,6 +458,17 @@ describe("local API setup and workflow additions", () => {
     expect((await send("PUT", "/v1/workflow/checks", { checks: [{ id: "x" }] })).status).toBe(400);
   }, 60000);
 
+  test("a check saved in a project without a workflows block is a gate at once", async () => {
+    const { get, send, fixture } = await setup();
+    rmSync(join(fixture.root, ".baked", "config.json"), { force: true });
+    fixture.service.config.workflows = undefined;
+    const check = { id: "version", executable: "bun", args: ["--version"], cwd: ".", timeoutMs: 10000, required: true, scope: "feature", envNames: [], writes: [] };
+    expect((await send("PUT", "/v1/workflow/checks", { checks: [check] })).status).toBe(200);
+    expect(fixture.service.config.workflows?.policy.checks.map((c) => c.id)).toEqual(["version"]);
+    const { gates } = await get<{ gates: { id: string; source: string }[] }>("/v1/workflow/gates");
+    expect(gates).toContainEqual(expect.objectContaining({ id: "version", source: "policy" }));
+  });
+
   test("custom commands and installed skills are listed from the project and the home folder", async () => {
     const { get, fixture, homeDir } = await setup();
     mkdirSync(join(fixture.root, ".baked", "commands"), { recursive: true });
