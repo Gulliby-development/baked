@@ -378,6 +378,13 @@ export const PolicySchema = z
      */
     lowFindings: z.enum(["repair", "note"]).optional(),
     /**
+     * `on` starts a correction whose findings are all low, or all point at one file, with a quick
+     * fix: one attempt with a small step and token cap on the files the findings name. When it
+     * does not finish the fix, the correction continues with the usual budget and all its files.
+     * Absent means `off`, so stored policies keep their hash.
+     */
+    quickFix: z.enum(["off", "on"]).optional(),
+    /**
      * Whether analyze, review and converge get a digest of a large spec, with each criterion in
      * full behind `read_criterion` (spec-digest.ts). Absent means `auto`: a spec above
      * SPEC_DIGEST_BYTES is digested, a smaller one is sent whole. `off` always sends it whole.
