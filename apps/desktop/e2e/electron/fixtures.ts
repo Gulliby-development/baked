@@ -127,6 +127,12 @@ export const test = base.extend<Fixtures>({
         });
       expect(await app.evaluate(({ app }) => app.getPath("userData"))).toBe(userData);
       const page = await app.firstWindow();
+      page.on("console", (entry) => {
+        output = (output + `[renderer ${entry.type()}] ${entry.text()}\n`).slice(-6000);
+      });
+      page.on("pageerror", (error) => {
+        output = (output + `[renderer error] ${error.message}\n`).slice(-6000);
+      });
       await expect(page.getByRole("heading", { name: "All projects", level: 1 })).toBeVisible();
       return { app, page };
     });
@@ -138,7 +144,9 @@ export const test = base.extend<Fixtures>({
           ?.locator("main")
           .ariaSnapshot({ timeout: 2000 })
           .catch((error: unknown) => String(error));
-        console.log(`--- window at failure ---\n${snapshot?.slice(0, 6000)}`);
+        console.log(
+          `--- window at failure (${app.windows()[0]?.url()}) ---\n${snapshot?.slice(0, 6000)}`,
+        );
       }
       console.log(`--- app output ---\n${output}`);
     }
