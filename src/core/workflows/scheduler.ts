@@ -464,6 +464,9 @@ import {
   worktreePath,
 } from "./worktree.js";
 
+/** Set by the test setup in CI: agent-call errors that block a run are printed with their stack (#1177). */
+const TRACE_RUN_BLOCKS = process.env.BAKED_TRACE_RUN_BLOCKS === "1";
+
 /** Severity of a review finding. */
 type Severity = Review["findings"][number]["severity"];
 /** The task worktree an advisory mutation gate runs in beside the review (#1147). */
@@ -3372,6 +3375,10 @@ export class WorkflowScheduler {
           { reason: "provider_unavailable" },
         );
       }
+      if (!(error instanceof WorkflowFault) && !signal.aborted && TRACE_RUN_BLOCKS)
+        process.stderr.write(
+          `[agent-call-error] ${runId} ${stepId}: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
+        );
       if (!(error instanceof WorkflowFault) && !signal.aborted)
         throw new WorkflowFault(
           "OUTPUT_INVALID",
