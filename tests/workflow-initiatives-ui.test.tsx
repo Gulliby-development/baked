@@ -7,6 +7,7 @@ import { type InitiativesApi, InitiativesPopup } from "../src/components/workflo
 import { NewRunForm } from "../src/components/workflow/NewRunForm.js";
 import { PremiumPopup } from "../src/components/ui/index.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
+import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.js";
 import type { InitiativeStartInput } from "../src/core/workflows/initiatives/forms.js";
 import type { InitiativeView } from "../src/core/workflows/initiatives/service.js";
 import type { InitiativeAction } from "../src/core/workflows/initiatives/view-model.js";
@@ -315,3 +316,41 @@ for (const [width, height] of SIZES) {
     } finally { await act(async () => view.renderer.destroy()); }
   }, 20000);
 }
+
+test("T estimates the split and shows its level, tokens and each feature's range", async () => {
+  const views = initiatives();
+  const asked: string[] = [];
+  const estimate = estimateInitiative({
+    features: ["schema", "client", "ui"].map((id) => ({ id, title: id, workflowId: "sdd", size: "medium" as const, stages: [{ id: "implement", type: "tasks", models: [] }] })),
+    history: [],
+    samples: [],
+    maxTotalTokens: 400_000,
+  });
+  const api: InitiativesApi = {
+    load: async () => ({ initiatives: views, driving: [], errors: {} }),
+    act: async (id) => views.find((v) => v.initiativeId === id) as InitiativeView,
+    estimate: async (id) => {
+      asked.push(id);
+      return estimate;
+    },
+  };
+  let view!: View;
+  await act(async () => {
+    view = await testRender(
+      <InitiativesPopup api={api} width={120} height={40} selectedId="billing" onSelect={() => {}} onBack={() => {}} onOpenRun={() => {}} />,
+      { width: 120, height: 40 },
+    );
+  });
+  try {
+    let text = await frame(view, 120, 40, "estimate-before");
+    expect(text).toContain("estimate");
+    expect(text).not.toContain("Estimate: Level");
+    await press(view, "t");
+    await act(async () => { await Bun.sleep(20); });
+    text = await frame(view, 120, 40, "estimate");
+    expect(asked).toEqual(["billing"]);
+    expect(flat(text)).toContain(`Estimate: Level ${estimate.level} · ~${estimate.tasks.low}-${estimate.tasks.high} tasks`);
+    expect(flat(text)).toContain("over the budget");
+    expect(flat(text)).toMatch(/estimate \d+k-\d+(\.\d)?[kM] tokens/);
+  } finally { await act(async () => view.renderer.destroy()); }
+});

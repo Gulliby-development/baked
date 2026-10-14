@@ -14,6 +14,7 @@ const subcommands = [
   "show",
   "list",
   "events",
+  "estimate",
   "merge",
   "split",
   "remove",
@@ -59,6 +60,7 @@ const commandFlags: Record<InitiativeCommand, string[]> = {
   show: [],
   list: [],
   events: ["after", "limit"],
+  estimate: [],
   merge: ["features", "id", "title", ...mutation],
   split: ["feature", "parts", ...mutation],
   remove: ["feature", ...mutation],
@@ -238,6 +240,15 @@ export async function executeInitiativeCommand(
         features: view.features.length,
         next: view.next,
       }));
+    case "estimate": {
+      const estimate = initiatives.estimate(id);
+      if (!estimate)
+        throw new WorkflowFault(
+          "INVALID_DEFINITION",
+          `Initiative ${id} has no split to estimate yet`,
+        );
+      return estimate;
+    }
     case "events":
       return initiatives.events(
         id,
@@ -341,7 +352,7 @@ export function initiativeExit(view: InitiativeView): number {
 }
 
 const DRIVING: readonly InitiativeCommand[] = ["start", "approve", "drive", "resume"];
-const READING: readonly InitiativeCommand[] = ["show", "list", "events"];
+const READING: readonly InitiativeCommand[] = ["show", "list", "events", "estimate"];
 
 export async function runInitiativeCli(
   argv: string[],
@@ -381,6 +392,9 @@ start ID (--prompt TEXT | --prompt-file FILE) [--plan FILE] [--workflow sdd] [--
   takes a budget share weighted by its size. --worktree runs feature runs in worktrees, so
   independent features run side by side.
 show ID | list | events ID [--after SEQ] [--limit 200]
+estimate ID
+  Estimate the split: a level from 1 to 5 by planned tasks and a token range per feature and in
+  total, from this project's run history, with a 25% margin compared with the shared budget.
 merge ID --features A,B[,C] [--id NEW] [--title TEXT] --expected-revision N
 split ID --feature F --parts FILE --expected-revision N   (FILE: [{"id","title","scope?","paths?","contract?"}, ...])
 remove ID --feature F --expected-revision N    rename ID --feature F --title TEXT --expected-revision N

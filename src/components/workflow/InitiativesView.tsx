@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTheme } from "../../core/theme/index.js";
+import {
+  estimateSummary,
+  type InitiativeEstimate,
+} from "../../core/workflows/initiatives/estimate.js";
 import type { InitiativeStartInput } from "../../core/workflows/initiatives/forms.js";
 import type { FeatureView, InitiativeView } from "../../core/workflows/initiatives/service.js";
 import {
@@ -30,6 +34,8 @@ export interface InitiativesApi {
   start?(input: InitiativeStartInput): Promise<InitiativeView>;
   /** Workflows the start form offers. */
   info?(): Promise<Pick<WorkflowInfo, "workflows" | "defaultWorkflow">>;
+  /** The estimate of an initiative's split; absent, the screen offers none. */
+  estimate?(initiativeId: string): Promise<InitiativeEstimate | null>;
 }
 
 type Color = (t: ReturnType<typeof useTheme>) => string;
@@ -72,6 +78,10 @@ const FEATURE_GLYPH: Record<FeatureView["state"], string> = {
   failed: "✗",
   stale: "↻",
   accepted: "✓",
+};
+const featureEstimateText = (estimate: InitiativeEstimate | null, featureId: string): string => {
+  const f = estimate?.features.find((e) => e.featureId === featureId);
+  return f ? ` · estimate ${formatTokens(f.tokens.low)}-${formatTokens(f.tokens.high)} tokens` : "";
 };
 const clip = (text: string, width: number): string =>
   text.length > width ? `${text.slice(0, Math.max(1, width - 1))}…` : text;
@@ -156,6 +166,8 @@ export function InitiativesPopup({
   const [busy, setBusy] = useState(false);
   const [flash, setFlash] = useState<{ kind: "ok" | "err" | "info"; message: string } | null>(null);
   const [epoch, setEpoch] = useState(0);
+  // Estimates asked for with T, by initiative; they stay until the screen closes.
+  const [estimates, setEstimates] = useState<Record<string, InitiativeEstimate>>({});
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: epoch forces an immediate reload after a command
   useEffect(() => {
@@ -305,6 +317,18 @@ export function InitiativesPopup({
       onOpenRun(selected.decompose.runId);
       return;
     }
+    if (key === "t" && api.estimate && features.length) {
+      event.preventDefault();
+      const id = selected.initiativeId;
+      void api.estimate(id).then(
+        (estimate) => {
+          if (estimate) setEstimates((all) => ({ ...all, [id]: estimate }));
+        },
+        (err: unknown) =>
+          setFlash({ kind: "err", message: err instanceof Error ? err.message : String(err) }),
+      );
+      return;
+    }
     const option = actions.find((a) => a.key.toLowerCase() === key);
     if (!option || busy) return;
     event.preventDefault();
@@ -325,6 +349,7 @@ export function InitiativesPopup({
           ? [
               ...initiativeHints("detail", actions, !!feature?.runId),
               ...(selected.decompose ? [{ key: "O", label: "split run" }] : []),
+              ...(api.estimate && features.length ? [{ key: "T", label: "estimate" }] : []),
             ]
           : initiativeHints("list", [], false, !!api.start && !!data);
   return (
@@ -409,6 +434,7 @@ export function InitiativesPopup({
             view={selected}
             featureCursor={Math.min(featureCursor, Math.max(0, features.length - 1))}
             driveError={data.errors[selected.initiativeId] ?? null}
+            estimate={estimates[selected.initiativeId] ?? null}
             width={contentW}
           />
         ) : selectedId ? (
@@ -530,11 +556,14 @@ export function InitiativeDetail({
   view,
   featureCursor,
   driveError,
+  estimate = null,
   width,
 }: {
   view: InitiativeView;
   featureCursor: number;
   driveError: string | null;
+  /** The estimate of the split, once asked for with T. */
+  estimate?: InitiativeEstimate | null;
   width: number;
 }) {
   const t = useTheme();
@@ -566,6 +595,11 @@ export function InitiativeDetail({
           width,
         )}
       </text>
+      {estimate ? (
+        <text fg={estimate.budget.fits === "yes" ? t.textMuted : t.warning}>
+          {clip(`Estimate: ${estimateSummary(estimate)}`, width)}
+        </text>
+      ) : null}
       <text fg={view.next.kind === "blocked" ? t.error : t.info}>
         {clip(`Next: ${view.next.message || view.next.kind}`, width)}
       </text>
@@ -629,7 +663,7 @@ export function InitiativeDetail({
                 {narrow ? null : (
                   <text fg={t.textMuted}>
                     {clip(
-                      `Workflow ${f.workflowId} · ${f.size}${f.share ? ` · starts with ${formatTokens(f.share.tokens)} tokens` : ""}`,
+                      `Workflow ${f.workflowId} · ${f.size}${f.share ? ` · starts with ${formatTokens(f.share.tokens)} tokens` : ""}${featureEstimateText(estimate, f.id)}`,
                       width - 4,
                     )}
                   </text>

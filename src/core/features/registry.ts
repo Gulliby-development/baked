@@ -1315,6 +1315,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/initiatives: the feature board, Workflow and the size switch on a feature"],
   },
   {
+    id: "initiative-estimate",
+    group: "Initiatives",
+    title: "Estimate a split: a difficulty level and a token range from run history",
+    tui: ["/workflow: initiatives, T estimates the split"],
+    cli: ["baked workflow initiative estimate"],
+    api: ["/v1/initiatives/:id/estimate"],
+    desktop: ["project/initiatives: Estimate under the feature board"],
+  },
+  {
     id: "initiative-parallel-features",
     group: "Initiatives",
     title: "Independent features run side by side in worktrees",

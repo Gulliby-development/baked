@@ -335,6 +335,7 @@ export function workflowInitiativesApi(workspace: string): InitiativesApi {
     act: (id, action) => workflowSession(workspace).initiativeAction(id, action),
     start: (input) => workflowSession(workspace).startInitiative(input),
     info: () => workflowSession(workspace).info(),
+    estimate: (id) => workflowSession(workspace).initiativeEstimate(id),
   };
 }
 

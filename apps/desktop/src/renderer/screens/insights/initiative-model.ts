@@ -1,5 +1,6 @@
 import type {
   FeatureState,
+  InitiativeEstimate,
   InitiativeFeature,
   InitiativeListItem,
   InitiativeStatus,
@@ -400,4 +401,28 @@ export const hasDependents = (
 ): boolean => view.features.some((f) => f.dependsOn.includes(feature.id));
 
 /** What the coordinator gets when a person starts an initiative from this screen. */
+/** What an estimate's basis means, for the line under it. */
+export function estimateBasisText(estimate: InitiativeEstimate): string {
+  switch (estimate.basis) {
+    case "initiative-history":
+      return "From finished feature runs of earlier initiatives in this project.";
+    case "workflow-history":
+      return "From earlier runs of each feature's workflow in this project.";
+    case "history":
+      return "From earlier runs in this project.";
+    default:
+      return "Generic ranges: this project has no finished runs to measure yet.";
+  }
+}
+
+/** The estimate against the shared budget, with its tone. */
+export function estimateFit(estimate: InitiativeEstimate): { text: string; tone: Tone } {
+  const margin = Math.round(estimate.margin * 100);
+  if (estimate.budget.fits === "yes")
+    return { text: `Fits the shared budget with a ${margin}% margin`, tone: "ok" };
+  if (estimate.budget.fits === "maybe")
+    return { text: `May not fit the shared budget with a ${margin}% margin`, tone: "warn" };
+  return { text: "Does not fit the shared budget", tone: "err" };
+}
+
 export const COORDINATOR_INITIATIVE_PREFIX = "Plan this as an initiative: ";

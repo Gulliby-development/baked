@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type {
   AttemptUsageRow,
+  InitiativeEstimate,
   InitiativeFeature,
   InitiativeView,
   RunUsageReport,
@@ -18,6 +19,8 @@ import {
   canSplitFeature,
   canSwitchModel,
   configurableFeatures,
+  estimateBasisText,
+  estimateFit,
   featureCounts,
   featureRow,
   featureSteps,
@@ -739,6 +742,16 @@ describe("mock initiative backend", () => {
     const large = (await mock("POST", `${path}/configure`, { feature: "ui-tui", size: "large" }))
       .body as InitiativeView;
     expect(large.features.find((f) => f.id === "ui-tui")?.size).toBe("large");
+    const estimate = (await mock("GET", `${path}/estimate`)).body as InitiativeEstimate;
+    expect(estimate.features.map((f) => [f.featureId, f.size])).toEqual([
+      ["core", "medium"],
+      ["api", "medium"],
+      ["ui-tui", "large"],
+    ]);
+    expect(estimate.withMargin).toBe(Math.round(estimate.tokens.high * 1.25));
+    expect(estimate.level).toBeGreaterThanOrEqual(1);
+    expect(estimateFit(estimate).tone).toBe(estimate.budget.fits === "yes" ? "ok" : estimate.budget.fits === "maybe" ? "warn" : "err");
+    expect(estimateBasisText(estimate)).toContain("Generic ranges");
     const extended = (await mock("POST", `${path}/extend`, { tokens: 9_000_000 }))
       .body as InitiativeView;
     expect(extended.budget.limits.maxTotalTokens).toBe(9_000_000);
