@@ -23,7 +23,7 @@ const base: Spec = { schemaVersion: 1, featureId: "fixture", revision: 1, title:
 const withCi: Spec = {
   ...base,
   requirements: [...base.requirements, { id: "NFR-001", text: "CI runs the tests on every OS", priority: "must", verification: "automated", sourceRefs: [] }],
-  criteria: [...base.criteria, { id: "AC-002", requirementIds: ["NFR-001"], given: "a push", when: "CI runs", then: "the suite passes on Windows, macOS and Linux", method: "automated" }],
+  criteria: [...base.criteria, { id: "AC-002", requirementIds: ["NFR-001"], given: "a push", when: "CI runs", then: "the CI workflow file runs the suite on a matrix of Windows, macOS and Linux", method: "automated" }],
 };
 const policy: RunPolicy = { ...defaultWorkflowPolicy, checks: [{ id: "check", executable: "bun", args: ["-e", "process.exit(0)"], cwd: ".", timeoutMs: 10000, required: true, scope: "feature", envNames: [], writes: [] }] };
 const markdown = (names: boolean) =>
@@ -134,7 +134,7 @@ describe("uncovered criterion helpers", () => {
     expect(plannerNote(markdown(false), "AC-002")).toBe("");
   });
   test("the spec note and the finding quote the criterion", () => {
-    expect(uncoveredSpecNote(withCi, ["AC-002"], markdown(true))).toContain("then the suite passes on Windows, macOS and Linux");
+    expect(uncoveredSpecNote(withCi, ["AC-002"], markdown(true))).toContain("then the CI workflow file runs the suite on a matrix of Windows, macOS and Linux");
     const [finding] = uncoveredFindings(withCi, ["AC-002"], markdown(true));
     expect(finding?.refs).toEqual(["spec.json", "AC-002"]);
     const stages = sddWorkflow.stages;
