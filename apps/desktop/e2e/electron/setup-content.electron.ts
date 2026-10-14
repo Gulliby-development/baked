@@ -368,6 +368,7 @@ test.describe("Language servers", () => {
     launch,
   }) => {
     const root = workspace.project("gamma");
+    write(join(root, "data.json"), "{}\n");
     write(
       join(root, ".baked", "config.json"),
       JSON.stringify({ disabledLspServers: ["vscode-json-language-server"] }),
@@ -403,6 +404,7 @@ test.describe("Language servers", () => {
     launch,
   }) => {
     const root = workspace.project("gamma");
+    write(join(root, "data.json"), "{}\n");
     const globalConfig = join(home(workspace.dir), ".baked", "config.json");
     const { page } = await launch(backend);
     const dialogs = failOnNativeDialogs(page);
@@ -428,12 +430,13 @@ test.describe("Language servers", () => {
     workspace,
     launch,
   }) => {
-    workspace.project("gamma");
+    const root = workspace.project("gamma");
+    write(join(root, "data.json"), "{}\n");
     const { page } = await launch(backend);
     const dialogs = failOnNativeDialogs(page);
     await openScreen(page, "Language servers");
     const servers = page.getByRole("region", { name: "Servers" });
-    // A new project holds only baked/project.json, so JSON is its one language.
+    // BAKED's own baked/project.json is not counted, so data.json makes JSON the one language.
     await expect(servers.getByText(/^Languages found: json\./)).toBeVisible();
     const pyright = servers.getByRole("switch", { name: /^Turn (on|off) pyright-langserver$/ });
     await expect(pyright).toHaveCount(0);
@@ -641,7 +644,12 @@ test.describe("Memory", () => {
     await notes
       .getByRole("button", { name: "Delete Public APIs keep their names and signatures" })
       .click();
-    // A note of your own is deleted outright; only recorded entries can be restored.
+    // A note of your own cannot be restored, so deleting it asks first.
+    const confirm = page.getByRole("dialog", { name: "Delete this note?" });
+    await expect(confirm).toContainText("A deleted note cannot be restored.");
+    await expectBakedStyle(page);
+    await confirm.getByRole("button", { name: "Delete" }).click();
+    await expect(confirm).toBeHidden();
     await expect(notes).toHaveCount(0);
     await expect(page.getByRole("region", { name: "Forgotten" })).toHaveCount(0);
     await expect(page.getByText(/^Nothing yet\. Runs record the answers/)).toBeVisible();

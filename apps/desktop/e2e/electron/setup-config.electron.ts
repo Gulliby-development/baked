@@ -458,7 +458,9 @@ test("mcp: a project server with a global server's name replaces it until rename
   const inProject = page.getByRole("region", { name: "In this project" });
   const global = page.getByRole("region", { name: "Global" });
   await expect(serverRow(inProject, "search")).toContainText("replaces global");
-  await expect(global.getByRole("heading", { name: "Global · 0" })).toBeVisible();
+  // The global server stays listed, greyed out, as replaced here.
+  await expect(global.getByRole("heading", { name: "Global · 1" })).toBeVisible();
+  await expect(global.getByText("replaced here")).toBeVisible();
 
   await serverRow(inProject, "search").getByRole("button", { name: "Remove search" }).click();
   const remove = page.getByRole("dialog", { name: "Remove search?" });
@@ -473,6 +475,7 @@ test("mcp: a project server with a global server's name replaces it until rename
   await expect(edit).toBeHidden();
   await expect(serverRow(inProject, "search-local")).not.toContainText("replaces global");
   await expect(global.getByRole("heading", { name: "Global · 1" })).toBeVisible();
+  await expect(global.getByText("replaced here")).toHaveCount(0);
   expect(projectConfig(root).mcpServers).toEqual([
     { name: "search-local", command: "bunx", args: ["search-mcp"] },
   ]);
