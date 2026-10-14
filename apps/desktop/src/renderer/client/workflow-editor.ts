@@ -5,7 +5,7 @@
  * the same code as the terminal editor (src/core/workflows/v2/editor-service.ts).
  */
 import { call } from "./api.js";
-import { offers, WORKFLOW_EDITOR_CAPABILITY } from "./capabilities.js";
+import { offers, WORKFLOW_DELETE_CAPABILITY, WORKFLOW_EDITOR_CAPABILITY } from "./capabilities.js";
 
 export type GateTarget = { kind: "stage"; stageId: string } | { kind: "transition"; id: string };
 export type Outcome = "passed" | "failed" | "changes_requested";
@@ -124,16 +124,34 @@ const working = (view: EditorView) => ({
   definition: view.definition,
 });
 
+/** `DELETE /v1/workflow/definitions/ID`: the deleted file. */
+export interface RemovedDefinition {
+  id: string;
+  path: string;
+  /** The built-in workflow of the same ID that new runs use again, or null. */
+  restores: string | null;
+}
+
 export const workflowEditor = {
-  /** Whether the backend has the editor; null when its health cannot be read. */
-  offered: async (key: string): Promise<boolean | null> => {
+  /**
+   * Whether the backend has the editor and can delete project workflows; null when its health
+   * cannot be read.
+   */
+  offered: async (key: string): Promise<{ editor: boolean | null; remove: boolean | null }> => {
     try {
       const health = await call<{ capabilities?: string[] }>(key, "GET", "/v1/health");
-      return offers(health.capabilities ?? null, WORKFLOW_EDITOR_CAPABILITY);
+      const capabilities = health.capabilities ?? null;
+      return {
+        editor: offers(capabilities, WORKFLOW_EDITOR_CAPABILITY),
+        remove: offers(capabilities, WORKFLOW_DELETE_CAPABILITY),
+      };
     } catch {
-      return null;
+      return { editor: null, remove: null };
     }
   },
+  /** Deletes the project workflow `baked/workflows/ID.json`; built-in workflows are refused. */
+  remove: (key: string, id: string) =>
+    call<RemovedDefinition>(key, "DELETE", `/v1/workflow/definitions/${encodeURIComponent(id)}`),
   open: (key: string, id: string) =>
     call<{ view: EditorView }>(key, "POST", "/v1/workflow/editor", { from: id }),
   /** Applies one edit; a refused edit comes back as `error` with the view unchanged. */

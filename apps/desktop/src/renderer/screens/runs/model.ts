@@ -417,7 +417,7 @@ export function pipeline(
       state =
         current.status === "waiting" || current.status === "blocked" || current.status === "paused"
           ? "waiting"
-          : current.status === "failed"
+          : current.status === "failed" || current.status === "cancelled"
             ? "failed"
             : "current";
     } else if (current.status === "completed" && state === "pending" && seen === undefined) {

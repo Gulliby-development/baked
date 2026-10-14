@@ -6,7 +6,7 @@
  * the same files the same way. Reading runs nothing; every change is shown to the person on an
  * approval card first and is refused without an approval callback.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tool } from "ai";
 import { z } from "zod";
@@ -63,7 +63,12 @@ import { defaultWorkflowPolicy } from "../workflows/defaults.js";
 import { PolicySchema, SafeId } from "../workflows/schemas.js";
 import { Outcome } from "../workflows/v2/definition.js";
 import { listDefinitions } from "../workflows/v2/definitions.js";
-import { definitionPath, INSERTABLE_STAGES, writeDefinitionFile } from "../workflows/v2/editor.js";
+import {
+  definitionPath,
+  INSERTABLE_STAGES,
+  removeDefinitionFile,
+  writeDefinitionFile,
+} from "../workflows/v2/editor.js";
 import {
   applyEditorOp,
   type EditorOp,
@@ -358,8 +363,10 @@ export function createSetupTool(options: SetupToolOptions) {
         if (!existsSync(path))
           throw new SetupError(`${id} is not a project workflow; built-in workflows stay`);
         await confirm(`Delete workflow ${id} (${path})`);
-        rmSync(path);
-        return `Deleted workflow ${id}.`;
+        const removed = removeDefinitionFile(workspace, id);
+        return removed.restores
+          ? `Deleted workflow ${id}; new runs use the built-in ${id} again.`
+          : `Deleted workflow ${id}.`;
       }
     }
     throw new SetupError("unreachable");

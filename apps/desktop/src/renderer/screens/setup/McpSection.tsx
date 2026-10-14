@@ -342,11 +342,14 @@ function Group({
   label,
   about,
   servers,
+  replaced = [],
   ...row
 }: {
   label: string;
   about: string;
   servers: McpServer[];
+  /** Names of servers in this group that a project server of the same name replaces. */
+  replaced?: string[];
 } & Omit<Parameters<typeof ServerRow>[0], "server" | "onToggle" | "onReconnect"> & {
     onToggle: (server: McpServer, enabled: boolean) => void;
     onReconnect: (server: McpServer) => void;
@@ -354,13 +357,23 @@ function Group({
   return (
     <section aria-label={label} className={STACK}>
       <h2 className={LABEL}>
-        {label} · {servers.length}
+        {label} · {servers.length + replaced.length}
       </h2>
       <span className={cn("text-dim-foreground", NOTE)}>{about}</span>
-      {servers.length === 0 ? (
+      {servers.length + replaced.length === 0 ? (
         <Empty className="p-4 text-[13px]">None yet.</Empty>
       ) : (
         <ul className={cn(PANEL, LIST, "p-0")}>
+          {replaced.map((name) => (
+            <li
+              key={`replaced/${name}`}
+              className="flex items-center gap-2 border-b border-[var(--line)] px-[14px] py-[10px] text-[13px] text-dim-foreground opacity-60"
+            >
+              <span className="font-mono font-semibold">{name}</span>
+              <Tag>replaced here</Tag>
+              <span className={NOTE}>This project's server of the same name is used instead.</span>
+            </li>
+          ))}
           {servers.map((server) => (
             <ServerRow
               key={`${server.scope}/${server.name}`}
@@ -469,6 +482,7 @@ export function McpSection({ project }: SectionProps) {
         label="Global"
         about="In your user config; every project gets them."
         servers={servers.filter((s) => s.scope === "global")}
+        replaced={servers.filter((s) => s.overridesGlobal).map((s) => s.name)}
         {...rowProps}
       />
 

@@ -147,6 +147,12 @@ describe("pipeline", () => {
     const stages = pipeline(["research", "learn"], trace, { stageId: "research", status: "completed" });
     expect(stages.map((s) => s.state)).toEqual(["done", "skipped"]);
   });
+
+  test("a run cancelled at a stage shows that stage stopped, not working", () => {
+    const trace = replay([...stage("research"), ...stage("specify"), ...stage("plan")]);
+    const stages = pipeline(definition, trace, { stageId: "approve", status: "cancelled" });
+    expect(stages.map((s) => s.state)).toEqual(["done", "done", "done", "failed", "pending"]);
+  });
 });
 
 describe("tasks", () => {

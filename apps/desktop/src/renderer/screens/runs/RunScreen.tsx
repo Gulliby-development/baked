@@ -813,7 +813,8 @@ function RunBody({
   refresh: () => Promise<void>;
 }) {
   const run = data.status;
-  const pending = blockingRequests(run.requests);
+  // An ended run waits for nobody: its requests stay pending in the store but cannot be answered.
+  const pending = TERMINAL.has(run.status) ? [] : blockingRequests(run.requests);
   // The last undo of this run, shown until dismissed; `report` is null when nothing was undone.
   const [undone, setUndone] = useState<{ report: RollbackReport | null } | null>(null);
   const [picked, setPicked] = useState<string | null>(null);

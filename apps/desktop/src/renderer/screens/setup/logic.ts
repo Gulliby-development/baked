@@ -318,6 +318,14 @@ export function signInView(signIn: CliSignIn): {
 } {
   if (signIn.login?.state === "running") return { note: "signing in…", action: "cancel" };
   if (!signIn.installed) return { note: "CLI not installed", action: "install" };
-  if (signIn.loggedIn) return { note: "signed in through the CLI", action: "sign-out" };
+  if (signIn.loggedIn) {
+    // The CLI also counts a token in the environment, which a sign-in elsewhere does not change;
+    // its own summary ends with how it is signed in, such as "(oauth_token)".
+    const method = /\(([^()]+)\)\s*$/.exec(signIn.message)?.[1];
+    return {
+      note: method ? `signed in through the CLI (${method})` : "signed in through the CLI",
+      action: "sign-out",
+    };
+  }
   return { note: "not signed in", action: "sign-in" };
 }

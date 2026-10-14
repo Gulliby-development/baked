@@ -38,6 +38,7 @@ import {
   libraryDocsSummary,
   lockedReason,
   numberDraft,
+  orderError,
   pageSections,
   parseLibraryDocs,
   parseNumber,
@@ -366,7 +367,13 @@ function SettingControl({
       );
     case "number":
       return (
-        <NumberEditor setting={setting} current={current} disabled={disabled} change={change} />
+        <NumberEditor
+          setting={setting}
+          current={current}
+          disabled={disabled}
+          change={change}
+          view={view}
+        />
       );
     case "model":
       return (
@@ -487,15 +494,19 @@ function NumberEditor({
   current,
   disabled,
   change,
+  view,
 }: {
   setting: SettingDefinition;
   current: unknown;
   disabled: boolean;
   change: Change;
+  view: SettingsView;
 }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
-  const parsed = parseNumber(setting, draft);
+  const read = parseNumber(setting, draft);
+  const order = "error" in read ? null : orderError(setting, read.value, view);
+  const parsed = order ? { error: order } : read;
   const unit = setting.type === "number" ? setting.display?.unit : undefined;
   const id = `setting-${setting.id}`;
   const invalid = "error" in parsed && draft.trim() !== "";
