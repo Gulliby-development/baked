@@ -298,6 +298,60 @@ test("project workflows list from disk and built-in ones stay read only", async 
   expect(native).toEqual([]);
 });
 
+test("a project workflow is deleted from the editor and the list after the app's question", async ({
+  workspace,
+  launch,
+}) => {
+  const root = workspace.project("delta");
+  repository(root);
+  withFeatureCheck(root);
+  const { page } = await launch(scripted);
+  const native = noNativeDialogs(page);
+  await openProject(page, "delta");
+  await nav(page).getByRole("link", { name: "Workflows" }).click();
+
+  await page.getByRole("link", { name: "quick", exact: true }).click();
+  await page.getByRole("button", { name: "Duplicate as custom" }).click();
+  await page.getByRole("button", { name: "Save…" }).click();
+  await page
+    .getByRole("dialog", { name: "Write the workflow file?" })
+    .getByRole("button", { name: "Write file" })
+    .click();
+  const custom = join(root, "baked", "workflows", "quick-custom.json");
+  await expect(page.getByText("baked/workflows/quick-custom.json", { exact: true })).toBeVisible();
+  // A project file with a built-in ID shadows that workflow until it is deleted.
+  const shadow = join(root, "baked", "workflows", "quick.json");
+  writeFileSync(shadow, JSON.stringify({ ...JSON.parse(readFileSync(custom, "utf8")), id: "quick" }));
+
+  // From the editor: cancelling keeps the file, confirming deletes it and returns to the list.
+  await page.getByRole("button", { name: "Delete…" }).click();
+  const ask = page.getByRole("dialog", { name: "Delete workflow quick-custom?" });
+  await expect(ask).toContainText("baked/workflows/quick-custom.json");
+  await ask.getByRole("button", { name: "Keep" }).click();
+  await expect(ask).toBeHidden();
+  expect(existsSync(custom)).toBe(true);
+  await page.getByRole("button", { name: "Delete…" }).click();
+  await ask.getByRole("button", { name: "Delete" }).click();
+  await expect(page.getByRole("group", { name: "Source" })).toBeVisible();
+  expect(existsSync(custom)).toBe(false);
+  await expect(page.getByRole("article", { name: "Workflow quick-custom" })).toBeHidden();
+
+  // From the list: deleting the shadowing file gives the built-in workflow back.
+  const card = page.getByRole("article", { name: "Workflow quick", exact: true });
+  await expect(card).toContainText("project");
+  await card.getByRole("button", { name: "Delete quick" }).click();
+  await page
+    .getByRole("dialog", { name: "Delete workflow quick?" })
+    .getByRole("button", { name: "Delete" })
+    .click();
+  await expect(
+    page.getByText("Deleted baked/workflows/quick.json. New runs use the built-in quick again."),
+  ).toBeVisible();
+  expect(existsSync(shadow)).toBe(false);
+  await expect(card).not.toContainText("project");
+  expect(native).toEqual([]);
+});
+
 test("a Claude Code agent becomes a workflow, then its file is removed after the question", async ({
   workspace,
   launch,
