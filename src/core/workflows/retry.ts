@@ -61,6 +61,24 @@ export function isCapacityError(error: unknown): boolean {
 export const CAPACITY_RETRIES = 4;
 const CAPACITY_WAITS_MS = [5_000, 15_000, 45_000, 90_000];
 
+const RATE_LIMIT = /\b429\b|rate limit|too many requests/i;
+
+/**
+ * The provider throttles requests (a 429 that is not spent credits). Codex reports it after its
+ * own quick retries ("429 Too Many Requests exceeded retry limit"); three more attempts one or two
+ * seconds apart only spend the step's calls (bench round 21: 9 of 42 attempts in one run, #1068).
+ */
+export function isRateLimit(error: unknown): boolean {
+  if (error instanceof WorkflowFault || accountRefusal(error) || isCapacityError(error))
+    return false;
+  const info = error as ProviderError | undefined;
+  return info?.statusCode === 429 || RATE_LIMIT.test(info?.message ?? "");
+}
+
+/** Retries a rate limit gets, at least; the waits are 5, 15 and 45 seconds unless the provider asks for longer. */
+export const RATE_LIMIT_RETRIES = 3;
+const RATE_LIMIT_WAITS_MS = [5_000, 15_000, 45_000];
+
 const INPUT_TOO_LARGE =
   /input_too_large|input exceeds the maximum length|prompt is too long|context_length_exceeded|maximum context length|request too large/i;
 
@@ -110,6 +128,11 @@ export function retryDelay(error: unknown, retry: number, maxRetries = 2): numbe
   if (isCapacityError(error)) {
     if (retry >= Math.max(maxRetries, CAPACITY_RETRIES)) return null;
     const wait = CAPACITY_WAITS_MS[Math.min(retry, CAPACITY_WAITS_MS.length - 1)] ?? 90_000;
+    return Math.max(wait + Math.floor(Math.random() * 1000), retryAfterMs(error));
+  }
+  if (isRateLimit(error)) {
+    if (retry >= Math.max(maxRetries, RATE_LIMIT_RETRIES)) return null;
+    const wait = RATE_LIMIT_WAITS_MS[Math.min(retry, RATE_LIMIT_WAITS_MS.length - 1)] ?? 45_000;
     return Math.max(wait + Math.floor(Math.random() * 1000), retryAfterMs(error));
   }
   if (retry >= maxRetries || !isTransient(error)) return null;

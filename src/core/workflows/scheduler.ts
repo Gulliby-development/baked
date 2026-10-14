@@ -2952,6 +2952,8 @@ export class WorkflowScheduler {
             attempt,
             signal.aborted ? "cancelled" : "failed",
             this.store.recordedUsage(runId, attempt),
+            false,
+            error,
           ),
         );
       const wrote = this.store.effects(runId).some((effect) => effect.attempt_id === attempt);
