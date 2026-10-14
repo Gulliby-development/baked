@@ -7,6 +7,7 @@ import {
   sandboxEnv,
   sandboxLaunch,
 } from "../security/sandbox.js";
+import { OUTPUT_GRACE_MS } from "../spawn.js";
 
 function stopTree(child: ChildProcess, scope: string, force = false): void {
   if (!child.pid) return;
@@ -122,6 +123,7 @@ export class ProcessScope {
       let cancelled = false;
       let truncated = false;
       let hardKill: ReturnType<typeof setTimeout> | undefined;
+      let outputGrace: ReturnType<typeof setTimeout> | undefined;
       const stop = (): void => {
         stopTree(child, scope);
         hardKill ??= setTimeout(() => {
@@ -163,6 +165,7 @@ export class ProcessScope {
       const cleanup = (): void => {
         if (timer) clearTimeout(timer);
         if (hardKill) clearTimeout(hardKill);
+        if (outputGrace) clearTimeout(outputGrace);
         this.children.delete(child);
         options.signal.removeEventListener("abort", abort);
       };
@@ -170,12 +173,15 @@ export class ProcessScope {
         cleanup();
         reject(error);
       });
-      child.once("close", (exitCode, signal) => {
+      let settled = false;
+      const finish = (exitCode: number | null, signal: string | null, note = ""): void => {
+        if (settled) return;
+        settled = true;
         cleanup();
         resolve({
           exitCode,
           signal,
-          output: output.toString("utf8"),
+          output: output.toString("utf8") + note,
           stdout: Buffer.concat(stdout).toString("utf8"),
           stderr: Buffer.concat(stderr).toString("utf8"),
           timedOut,
@@ -184,7 +190,21 @@ export class ProcessScope {
           durationMs: Math.ceil(performance.now() - started),
           ...(launch ? { sandbox: launch.applied } : {}),
         });
+      };
+      child.once("exit", (exitCode, signal) => {
+        outputGrace = setTimeout(() => {
+          // Stops what the command left running where the platform can find it, then stops reading.
+          stopTree(child, scope, true);
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          finish(
+            exitCode,
+            signal,
+            "\n[baked] The command exited, but a process it started kept its output open; later output is not captured.",
+          );
+        }, OUTPUT_GRACE_MS);
       });
+      child.once("close", (exitCode, signal) => finish(exitCode, signal));
     });
   }
   async stop(): Promise<void> {

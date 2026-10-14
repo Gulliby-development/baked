@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { processOutput } from "../spawn.js";
 import { WorkflowFault } from "./errors.js";
 import type { WorkflowStore } from "./store.js";
 import { runRoot } from "./worktree.js";
@@ -22,8 +23,8 @@ async function git(workspace: string, args: string[]): Promise<{ code: number; o
     stderr: "pipe",
     timeout: 10000,
   });
-  const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
-  return { code, out };
+  const { code, stdout } = await processOutput(proc);
+  return { code, out: new TextDecoder().decode(stdout) };
 }
 
 /** Status entries recorded at approval; porcelain v1 entries carry the path after 3 characters. */
