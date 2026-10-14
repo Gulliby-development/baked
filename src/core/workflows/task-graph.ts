@@ -247,6 +247,9 @@ export function pendingOwners(
   return [...owners];
 }
 
+/** A Rust integration test, `tests/*.rs` of a crate, which `cargo test` runs as its own binary. */
+const isRustTestFile = (path: string): boolean => /(?:^|\/)tests\/[^/]+\.rs$/.test(path);
+
 /**
  * The unfinished planned tasks that update the existing tests a failed check of `task` names, when
  * every file the output names is such a test: tests the task itself does not write and that a
@@ -267,7 +270,7 @@ export function testUpdateOwners(
   // source declaration it disagrees with in an indented line (mdtoc-update 952805a8, #972).
   const located = failingPathsInOutput(output, graph.tasks);
   const named = located.length ? located : pathsInOutput(output, graph.tasks);
-  if (!named.length || !named.every(isTestFile)) return [];
+  if (!named.length || !named.every((path) => isTestFile(path) || isRustTestFile(path))) return [];
   if (named.some((path) => task.writes.some((w) => w.path === path))) return [];
   const owners = new Set<string>();
   for (const path of named) {
