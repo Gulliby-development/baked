@@ -786,11 +786,32 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         if (driven !== undefined && runDrives.get(driven) === tracked) runDrives.delete(driven);
         // A run may have changed files in a worktree or by tools the watcher did not see.
         if (started) indexRefresher?.request();
+        if (driven !== undefined) continueInitiativeOf(driven);
       });
     drives.add(tracked);
     const runId = await Promise.race([driving, execution.then(() => undefined)]);
     if (!runId) throw new ApiError(500, "INTERNAL", "The run did not start");
     return service.get(runId);
+  }
+
+  /**
+   * A feature run a person resumed (after approving or answering it in the run screen) has
+   * stopped: its active initiative continues, so the features after it start without a separate
+   * drive. While another of its runs is still driven here, that run's stop continues it instead.
+   */
+  function continueInitiativeOf(runId: string): void {
+    if (shutdown.signal.aborted) return;
+    try {
+      const id = initiatives.store.initiativeOfRun(runId);
+      if (!id || initiatives.store.get(id).status !== "active") return;
+      if (initiatives.store.links(id).some((link) => runDrives.has(link.run_id))) return;
+      driveInitiative(id);
+    } catch (error) {
+      const { code, message } = errorOf(error);
+      log(
+        JSON.stringify({ event: "initiative-drive-error", code, message: redactSecrets(message) }),
+      );
+    }
   }
 
   /**

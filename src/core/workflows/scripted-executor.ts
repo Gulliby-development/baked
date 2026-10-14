@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { hashBytes, hashJson } from "../specs/hash.js";
 import { WorkflowStore } from "./store.js";
@@ -10,8 +10,10 @@ import type { AgentExecutor, ExecutionRequest, ExecutionResponse } from "./types
  * BAKED_TEST_WORKFLOW environment variable is set; no config file can turn it on.
  *
  * Every run gets one requirement, one criterion and one task that writes `BAKED_TEST_WORKFLOW`'s
- * value as the file path (`e2e-output.txt` for `1`) with the text `ready`; reviews pass with the
- * run's evidence. `BAKED_TEST_WORKFLOW_DELAY_MS` delays each agent call, so a test can watch a
+ * value as the file path (`e2e-output.txt` for `1`; `{run}` in it becomes the run ID, so each
+ * run of an initiative writes a file of its own) with the text `ready`; reviews pass with the
+ * run's evidence. An initiative's split is always the same four features (`SCRIPTED_SPLIT`).
+ * `BAKED_TEST_WORKFLOW_DELAY_MS` delays each agent call, so a test can watch a
  * run while it works.
  */
 export const TEST_WORKFLOW_ENV = "BAKED_TEST_WORKFLOW";
@@ -30,6 +32,57 @@ export function scriptedExecutorFromEnv(
     Number.isFinite(delay) ? delay : 0,
   );
 }
+
+/**
+ * The split the scripted decomposer proposes: `api` and `docs` start first and side by side, `ui`
+ * and `cli` build on the `api` contract.
+ */
+export const SCRIPTED_SPLIT = {
+  schemaVersion: 1,
+  title: "Scripted initiative",
+  goals: ["Ship the scripted features"],
+  completionCriteria: ["Every feature wrote its output file"],
+  features: [
+    {
+      id: "api",
+      title: "Service API",
+      boundary: { scope: "The service endpoints", paths: [] },
+      contract: "The endpoints answer with JSON",
+      dependsOn: [],
+      mandatory: true,
+      size: "large",
+    },
+    {
+      id: "docs",
+      title: "User guide",
+      boundary: { scope: "The guide", paths: [] },
+      contract: "The guide describes every endpoint",
+      dependsOn: [],
+      mandatory: true,
+      workflow: "quick",
+      size: "small",
+    },
+    {
+      id: "ui",
+      title: "Web screens",
+      boundary: { scope: "The screens", paths: [] },
+      contract: "Each screen reads the API",
+      dependsOn: ["api"],
+      mandatory: true,
+      workflow: "quick",
+    },
+    {
+      id: "cli",
+      title: "Command line",
+      boundary: { scope: "The commands", paths: [] },
+      contract: "Each command calls the API",
+      dependsOn: ["api"],
+      mandatory: true,
+      workflow: "quick",
+      size: "small",
+    },
+  ],
+};
 
 interface PromptData {
   inputHash?: string;
@@ -64,6 +117,7 @@ export class ScriptedWorkflowExecutor implements AgentExecutor {
       }
     })();
     const evidence = data.extra?.evidence?.map((e) => e.id) ?? [];
+    const file = this.file.replaceAll("{run}", request.runId);
     const featureId = this.feature(request.runId);
     const spec = {
       schemaVersion: 1,
@@ -72,7 +126,7 @@ export class ScriptedWorkflowExecutor implements AgentExecutor {
       title: "Scripted feature",
       problem: "The output file is missing",
       outcome: "The output file says ready",
-      inScope: [`Write ${this.file}`],
+      inScope: [`Write ${file}`],
       outOfScope: [],
       assumptions: [],
       openQuestions: [],
@@ -115,7 +169,7 @@ export class ScriptedWorkflowExecutor implements AgentExecutor {
           facts: [],
           unknowns: [],
           constraints: [],
-          suggestedScope: [this.file],
+          suggestedScope: [file],
         };
         break;
       case "spec":
@@ -125,11 +179,11 @@ export class ScriptedWorkflowExecutor implements AgentExecutor {
         const markdown = [
           "# Plan",
           "## Context",
-          `Write ${this.file}.`,
+          `Write ${file}.`,
           "## Decisions",
           "DEC-001: FR-001 needs the word ready.",
           "## Components",
-          this.file,
+          file,
           "## Data",
           "Text",
           "## Verification",
@@ -155,7 +209,15 @@ export class ScriptedWorkflowExecutor implements AgentExecutor {
                 criterionIds: ["AC-001"],
                 dependsOn: [],
                 profileId: "implementer",
-                writes: [{ path: this.file, action: "create" }],
+                // A later feature of an initiative in the same working copy finds the file.
+                writes: [
+                  {
+                    path: file,
+                    action: existsSync(join(request.root ?? this.workspace, file))
+                      ? "modify"
+                      : "create",
+                  },
+                ],
                 readHints: [],
                 checkIds: [],
                 origin: "planned",
@@ -167,18 +229,21 @@ export class ScriptedWorkflowExecutor implements AgentExecutor {
         };
         break;
       }
+      case "initiativePlan":
+        output = SCRIPTED_SPLIT;
+        break;
       case "analysis":
         output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] };
         break;
       case "implementation": {
-        const target = join(request.root ?? this.workspace, this.file);
+        const target = join(request.root ?? this.workspace, file);
         mkdirSync(dirname(target), { recursive: true });
         writeFileSync(target, "ready");
         output = {
           schemaVersion: 1,
           taskId: request.task?.id,
           outcome: "implemented",
-          summary: `Wrote ${this.file}`,
+          summary: `Wrote ${file}`,
           evidenceIds: [],
           unresolved: [],
         };
