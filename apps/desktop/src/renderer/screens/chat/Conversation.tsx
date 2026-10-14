@@ -797,12 +797,16 @@ function PromptCard({
         : prompt.kind === "web-search"
           ? prompt.query
           : prompt.url;
+  const title =
+    prompt.kind === "destructive" && prompt.confirm
+      ? "Approve this step?"
+      : APPROVAL_TITLES[prompt.kind];
   return (
     <section
       className={`${PROMPT_CARD} gap-[10px] bg-fill-warn text-main-foreground`}
-      aria-label={APPROVAL_TITLES[prompt.kind]}
+      aria-label={title}
     >
-      <p className={PROMPT_TITLE}>{APPROVAL_TITLES[prompt.kind]}</p>
+      <p className={PROMPT_TITLE}>{title}</p>
       <pre className="m-0 px-[10px] py-2 border-2 border-border rounded-base bg-[var(--bg-code)] font-mono text-[13px] text-soft-foreground whitespace-pre-wrap wrap-anywhere">
         {detail}
       </pre>

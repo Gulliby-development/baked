@@ -40,6 +40,7 @@ test("a chat turn against a real baked serve streams, calls tools and waits for 
     .getByRole("navigation", { name: "Main" })
     .getByRole("link", { name: "New chat" })
     .click();
+  await expect(page.getByRole("heading", { name: "New chat", level: 1 })).toBeVisible();
   const composer = page.getByRole("textbox", { name: "Message BAKED" });
   await composer.fill("Save a note outside the project");
   await composer.press("Enter");
