@@ -11,6 +11,8 @@ async function newChat(page: Page, project = "gamma") {
   await page.getByRole("article", { name: project }).getByRole("button", { name: "Open" }).click();
   await expect(page.getByRole("heading", { name: "Coordinator", level: 1 })).toBeVisible();
   await page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "New chat" }).click();
+  // The coordinator's composer has the same name: wait for the new chat's page first.
+  await expect(page.getByRole("heading", { name: "New chat", level: 1 })).toBeVisible();
   return chatParts(page);
 }
 
@@ -190,6 +192,7 @@ test("two chats run their turns at the same time", async ({ workspace, launch })
   const first = page.url();
 
   await page.getByRole("link", { name: "New chat" }).first().click();
+  await expect(page.getByRole("heading", { name: "New chat", level: 1 })).toBeVisible();
   await send(page, "This is the second chat");
   await expect(conversation.getByText("Second chat answer.")).toBeVisible();
   await idle(page);
