@@ -91,7 +91,17 @@ describe("coordinator send (scripted scenario)", () => {
       { ...brief, launched: [{ kind: "session", id: session.id, title: "Survey auth", why: "Find token checks", status: "working" }] },
       brief.revision,
     );
+    // The host hands out scripted turns in the order agents are asked for, so the session's turn
+    // must have taken the first script before the coordinator's turn asks for the second.
+    const streaming = new Promise<void>((resolve) => {
+      const stop = session.subscribe(session.detail().lastSeq, (event) => {
+        if (event.type !== "text") return;
+        stop?.();
+        resolve();
+      });
+    });
     session.send("survey");
+    await streaming;
     expect(session.summary().state).toBe("working");
 
     const io = capture();
