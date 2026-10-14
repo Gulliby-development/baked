@@ -372,6 +372,7 @@ import {
 } from "./sizing.js";
 import {
   amendmentNote,
+  analysisAmendmentOf,
   documentAmendmentOf,
   namesRunDocument,
   type SpecAmendment,
@@ -905,7 +906,13 @@ export class WorkflowScheduler {
                 // The host makes a host-bound criterion checkable itself (#1015).
                 return [
                   ...size,
-                  ...specCoverageProblems(repairHostBoundCriteria(parsed.data).spec, policy.checks),
+                  ...specCoverageProblems(
+                    repairHostBoundCriteria(parsed.data).spec,
+                    policy.checks,
+                    {
+                      request: state.requestText || state.prompt,
+                    },
+                  ),
                   // The host maps a deliverable the spec names elsewhere itself (#1037).
                   ...deliverableProblems(
                     repairDeliverables(parsed.data, coverageRequest(state)).spec,
@@ -1410,6 +1417,15 @@ export class WorkflowScheduler {
                         description,
                       })),
                     }),
+                  ),
+                );
+                // A spec finding the request settles is an amendment, so review does not raise
+                // it against spec.json again after implement (#1120).
+                this.store.transaction(() =>
+                  this.amendFromAnalysis(
+                    runId,
+                    state,
+                    assumed.filter((f) => restrictsRequest(f)),
                   ),
                 );
                 findings = findings.map((f) =>
@@ -10105,6 +10121,24 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       // A repeated finding of a later round names the same contradiction: one note is enough.
       if (!state.prompt.includes(amendment.claim.slice(0, 1000)))
         state.prompt += `\n${amendmentNote(path, amendment)}`;
+    }
+  }
+  /** Analysis findings on the spec that the request settles record amendments (#1120). */
+  private amendFromAnalysis(
+    runId: string,
+    state: RuntimeState,
+    findings: { id: string; refs: string[]; description: string }[],
+  ): void {
+    if (!state.spec) return;
+    for (const finding of findings) {
+      const amendment = analysisAmendmentOf(finding, state.spec);
+      if (!amendment) continue;
+      const path = `amendments/${amendment.findingId}.json`;
+      if (this.store.latestArtifact(runId, path)) continue;
+      this.store.artifact(runId, "assumption", path, canonical(amendment));
+      // The return notes already quote the finding, so only the note itself is checked.
+      const note = amendmentNote(path, amendment);
+      if (!state.prompt.includes(note)) state.prompt += `\n${note}`;
     }
   }
   /** The run's spec amendments (`amendments/*.json`). */
