@@ -360,6 +360,7 @@ export class NativeWorkflowService implements WorkflowService {
       affectedTests: {},
       analysisReplans: 0,
       revisedRejections: [],
+      pendingPatch: null,
       taskContinuations: {},
       taskEditRetries: {},
       taskRestarts: {},

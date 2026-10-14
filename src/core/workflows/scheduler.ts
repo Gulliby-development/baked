@@ -346,6 +346,13 @@ type Implementation = ReturnType<typeof ImplementationSchema.parse>;
 
 import { planCostOf } from "./plan-cost.js";
 import {
+  applyRevision,
+  MAX_PATCH_FINDINGS,
+  RevisionSchema,
+  type RevisionTarget,
+  revisionNote,
+} from "./revision-patch.js";
+import {
   codeTaskCheckProblems,
   loopHistory,
   overCeilingOf,
@@ -523,6 +530,8 @@ interface QueuedRequest {
  */
 const coverageRequest = (state: RuntimeState): string =>
   state.hostDependencies ? "" : state.requestText;
+/** The planner's accepted plan that a revision by patch edits (#1058). */
+const PLAN_BASE = "revisions/base/plan.json";
 /** How often rejected approvals may send one run back to revise before a rejection only pauses it. */
 const MAX_REJECTION_REVISIONS = 3;
 const REJECTION_NOTE =
@@ -849,48 +858,62 @@ export class WorkflowScheduler {
             case "specify": {
               // An oversized spec goes back once; the author's second submission stands (#1013).
               let sizeAdvised = false;
+              const validateSpec = (output: unknown): string[] => {
+                const parsed = SpecSchema.safeParse(output);
+                if (!parsed.success) return [];
+                const questions = parsed.data.openQuestions;
+                const size = sizeAdvised
+                  ? []
+                  : specSizeProblems(parsed.data, state.requestText || state.prompt);
+                if (size.length) sizeAdvised = true;
+                // The host makes a host-bound criterion checkable itself (#1015).
+                return [
+                  ...size,
+                  ...specCoverageProblems(repairHostBoundCriteria(parsed.data).spec, policy.checks),
+                  // The host maps a deliverable the spec names elsewhere itself (#1037).
+                  ...deliverableProblems(
+                    repairDeliverables(parsed.data, coverageRequest(state)).spec,
+                    coverageRequest(state),
+                  ),
+                  ...assumeProblems(
+                    policy,
+                    questions,
+                    (_, index) => questions[index]?.question ?? "",
+                  ),
+                ];
+              };
+              const author = this.requireProfile(profile);
+              const patched = await this.patchRevision(
+                runId,
+                stepId,
+                state,
+                policy,
+                author,
+                "spec",
+                state.spec,
+                (artifact) => {
+                  const parsed = SpecSchema.safeParse(artifact);
+                  return parsed.success ? validateSpec(parsed.data) : [parsed.error.message];
+                },
+                signal,
+              );
               state.spec = SpecSchema.parse(
-                await this.call(
-                  runId,
-                  stepId,
-                  state,
-                  policy,
-                  this.requireProfile(profile),
-                  {
-                    featureId: run.feature_id,
-                    workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
-                  },
-                  signal,
-                  undefined,
-                  0,
-                  (output) => {
-                    const parsed = SpecSchema.safeParse(output);
-                    if (!parsed.success) return [];
-                    const questions = parsed.data.openQuestions;
-                    const size = sizeAdvised
-                      ? []
-                      : specSizeProblems(parsed.data, state.requestText || state.prompt);
-                    if (size.length) sizeAdvised = true;
-                    // The host makes a host-bound criterion checkable itself (#1015).
-                    return [
-                      ...size,
-                      ...specCoverageProblems(
-                        repairHostBoundCriteria(parsed.data).spec,
-                        policy.checks,
-                      ),
-                      // The host maps a deliverable the spec names elsewhere itself (#1037).
-                      ...deliverableProblems(
-                        repairDeliverables(parsed.data, coverageRequest(state)).spec,
-                        coverageRequest(state),
-                      ),
-                      ...assumeProblems(
-                        policy,
-                        questions,
-                        (_, index) => questions[index]?.question ?? "",
-                      ),
-                    ];
-                  },
-                ),
+                patched ??
+                  (await this.call(
+                    runId,
+                    stepId,
+                    state,
+                    policy,
+                    author,
+                    {
+                      featureId: run.feature_id,
+                      workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
+                    },
+                    signal,
+                    undefined,
+                    0,
+                    validateSpec,
+                  )),
               );
               const repair = repairHostBoundCriteria(state.spec);
               if (repair.repaired.length) {
@@ -952,82 +975,101 @@ export class WorkflowScheduler {
               // cover; it stops being a submission error and goes back to the spec (#780).
               const uncoveredSubmissions = new Map<string, number>();
               const cannotCover = new Set<string>();
-              const submittedPlan = PlanSchema.parse(
-                await this.call(
-                  runId,
-                  stepId,
-                  state,
+              // The planner sees package errors at submission and can correct them in place.
+              const validatePlan = (output: unknown): string[] => {
+                const parsed = PlanSchema.safeParse(output);
+                if (!parsed.success) return [parsed.error.message];
+                // The host lists a criterion on the task that implements its requirement (#1037).
+                const submitted = repairUncoveredCriteria(spec, parsed.data).plan;
+                const problems = [
+                  ...this.planProblems(runId, spec, submitted, policy, profiles),
+                  ...codeTaskCheckProblems(submitted.taskGraph, policy),
+                  ...testWriteProblems(submitted.taskGraph, policy),
+                  ...testsFirstProblems(spec, submitted.taskGraph, policy),
+                ];
+                const open = problems.filter((problem) => {
+                  const id = uncoveredCriterion(problem);
+                  if (!id) return true;
+                  const count = (uncoveredSubmissions.get(id) ?? 0) + 1;
+                  uncoveredSubmissions.set(id, count);
+                  if (count >= UNCOVERED_SUBMISSIONS && parsed.data.markdown.includes(id))
+                    cannotCover.add(id);
+                  return !cannotCover.has(id);
+                });
+                if (scopeAdvised) return open;
+                const advice = planScopeAdvice(
                   policy,
-                  planner,
-                  {
-                    checks: policy.checks,
-                    // The approval reviewer decides approvals; no task can be assigned to it.
-                    profiles: profiles.filter((p) => p.output !== "approval-review"),
-                    workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
-                    ...(approvalLimits ? { approvalLimits } : {}),
-                    ...(testsFirstOf(policy) !== "off"
-                      ? {
-                          testsFirst: testsFirstNote(
-                            testsFirstOf(policy),
-                            testsFirstCriteria(spec, testsFirstOf(policy)),
-                          ),
-                        }
-                      : {}),
-                    ...(policy.sizing
-                      ? {
-                          sizing: plannerSizing(
-                            policy,
-                            sizingHistory(this.store.workspace, policy),
-                            this.sizingModel(runId, null),
-                          ),
-                        }
-                      : {}),
-                    ...(scope
-                      ? {
-                          researchScope: {
-                            namedPaths: scope.namedPaths,
-                            maxSteps: scope.maxSteps,
-                          },
-                        }
-                      : {}),
-                  },
-                  signal,
-                  undefined,
-                  0,
-                  // The planner sees package errors at submission and can correct them in place.
-                  (output) => {
-                    const parsed = PlanSchema.safeParse(output);
-                    if (!parsed.success) return [parsed.error.message];
-                    // The host lists a criterion on the task that implements its requirement (#1037).
-                    const submitted = repairUncoveredCriteria(spec, parsed.data).plan;
-                    const problems = [
-                      ...this.planProblems(runId, spec, submitted, policy, profiles),
-                      ...codeTaskCheckProblems(submitted.taskGraph, policy),
-                      ...testWriteProblems(submitted.taskGraph, policy),
-                      ...testsFirstProblems(spec, submitted.taskGraph, policy),
-                    ];
-                    const open = problems.filter((problem) => {
-                      const id = uncoveredCriterion(problem);
-                      if (!id) return true;
-                      const count = (uncoveredSubmissions.get(id) ?? 0) + 1;
-                      uncoveredSubmissions.set(id, count);
-                      if (count >= UNCOVERED_SUBMISSIONS && parsed.data.markdown.includes(id))
-                        cannotCover.add(id);
-                      return !cannotCover.has(id);
-                    });
-                    if (scopeAdvised) return open;
-                    const advice = planScopeAdvice(
-                      policy,
-                      parsed.data.taskGraph,
-                      (path) => existsSync(join(runRoot(this.store.workspace, state), path)),
-                      this.baselineScaffold(runId, state),
-                    );
-                    if (advice.length) scopeAdvised = true;
-                    return [...open, ...advice];
-                  },
-                  scope ? { maxSteps: scope.maxSteps, maxTokens: scope.maxTokens } : undefined,
-                ),
+                  parsed.data.taskGraph,
+                  (path) => existsSync(join(runRoot(this.store.workspace, state), path)),
+                  this.baselineScaffold(runId, state),
+                );
+                if (advice.length) scopeAdvised = true;
+                return [...open, ...advice];
+              };
+              const patchedPlan = await this.patchRevision(
+                runId,
+                stepId,
+                state,
+                policy,
+                planner,
+                "plan",
+                this.planBase(runId),
+                validatePlan,
+                signal,
               );
+              const submittedPlan = PlanSchema.parse(
+                patchedPlan ??
+                  (await this.call(
+                    runId,
+                    stepId,
+                    state,
+                    policy,
+                    planner,
+                    {
+                      checks: policy.checks,
+                      // The approval reviewer decides approvals; no task can be assigned to it.
+                      profiles: profiles.filter((p) => p.output !== "approval-review"),
+                      workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
+                      ...(approvalLimits ? { approvalLimits } : {}),
+                      ...(testsFirstOf(policy) !== "off"
+                        ? {
+                            testsFirst: testsFirstNote(
+                              testsFirstOf(policy),
+                              testsFirstCriteria(spec, testsFirstOf(policy)),
+                            ),
+                          }
+                        : {}),
+                      ...(policy.sizing
+                        ? {
+                            sizing: plannerSizing(
+                              policy,
+                              sizingHistory(this.store.workspace, policy),
+                              this.sizingModel(runId, null),
+                            ),
+                          }
+                        : {}),
+                      ...(scope
+                        ? {
+                            researchScope: {
+                              namedPaths: scope.namedPaths,
+                              maxSteps: scope.maxSteps,
+                            },
+                          }
+                        : {}),
+                    },
+                    signal,
+                    undefined,
+                    0,
+                    validatePlan,
+                    scope ? { maxSteps: scope.maxSteps, maxTokens: scope.maxTokens } : undefined,
+                  )),
+              );
+              // The plan a later revision by patch starts from (#1058): the planner's own, before
+              // the host adds edges and splits tasks.
+              if (policy.revision === "patch")
+                this.store.transaction(() =>
+                  this.store.artifact(runId, "plan", PLAN_BASE, canonical(submittedPlan)),
+                );
               const listed = repairUncoveredCriteria(spec, submittedPlan);
               const plan = listed.plan;
               if (listed.repaired.length)
@@ -1088,6 +1130,8 @@ export class WorkflowScheduler {
               break;
             }
             case "analyze": {
+              // A patch answers the findings of one analysis; the next analysis judges the result.
+              state.pendingPatch = null;
               await this.publish(runId, stepId, state, policy, signal);
               state.manifest.dependencyContracts = dependencyContracts(this.store, state).map(
                 ({ featureId, contractHash, artifactHash }) => ({
@@ -1233,6 +1277,7 @@ export class WorkflowScheduler {
                 if (this.moveTo(state, stages, plan, v2)) {
                   // Gaps in the plan text go back to the planner once before a person is asked.
                   state.analysisReplans = 1;
+                  this.pendPatch(state, policy, planOnly, ["plan"]);
                   state.prompt += `\nAnalysis findings on the plan; fix every one of them in plan.md and tasks.json:\n${canonical(planOnly.map(({ kind, refs, description }) => ({ kind, refs, description })))}`;
                   advance = false;
                   rerouted = v2 !== null;
@@ -1266,6 +1311,14 @@ export class WorkflowScheduler {
                 if (target !== asking && this.moveTo(state, stages, target, v2)) {
                   // Findings a default settles go back to the stage they refer to before a person.
                   state.analysisReplans = defectRound || restrictsRound ? 3 : 2;
+                  const back = stages[target]?.kind;
+                  if (back === "specify" || back === "plan")
+                    this.pendPatch(
+                      state,
+                      policy,
+                      blockingFindings,
+                      back === "specify" ? ["spec", "plan"] : ["plan"],
+                    );
                   const restricted = blockingFindings.some((f) => restrictsRequest(f));
                   state.prompt += `\nAnalysis findings; resolve every one of them in the artifacts they refer to. ${defectRound ? DEFECT_NOTE : `${restricted ? `${REQUEST_NOTE} ` : ""}Where a finding needs a decision: ${ASSUME_NOTE}`}\n${canonical(blockingFindings.map(({ kind, refs, description }) => ({ kind, refs, description })))}`;
                   advance = false;
@@ -9512,6 +9565,104 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     state.analysisPassed = false;
     state.prompt += `\n${REJECTION_NOTE}\n${canonical({ explanation })}`;
     return true;
+  }
+  /**
+   * Marks analysis findings for revision by patch when the policy asks for it and few block; the
+   * spec, then the plan, answer them with edit operations (see patchRevision).
+   */
+  private pendPatch(
+    state: RuntimeState,
+    policy: RunPolicy,
+    findings: readonly { kind: string; refs: string[]; description: string }[],
+    targets: RevisionTarget[],
+  ): void {
+    if (policy.revision !== "patch" || !findings.length || findings.length > MAX_PATCH_FINDINGS)
+      return;
+    state.pendingPatch = {
+      findings: findings.map(({ kind, refs, description }) => ({ kind, refs, description })),
+      targets,
+    };
+  }
+  /** The planner's last accepted plan, which a revision by patch edits; null before one. */
+  private planBase(runId: string): unknown {
+    const base = this.store.latestArtifact(runId, PLAN_BASE);
+    return base ? (JSON.parse(this.store.readArtifact(runId, base.id)) as unknown) : null;
+  }
+  /**
+   * Revision by patch (#1058): when analysis sent findings back under `revision: "patch"`, the
+   * author answers them with edit operations on `current`, and the host applies them. `check`
+   * validates the patched artifact as a submission would be. Null when no patch is pending for
+   * `target`, or when the patch does not apply or validate: the stage then writes the artifact
+   * again as before.
+   */
+  private async patchRevision(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    profile: AgentProfile,
+    target: RevisionTarget,
+    current: unknown,
+    check: (artifact: unknown) => string[],
+    signal: AbortSignal,
+  ): Promise<unknown | null> {
+    const pending = state.pendingPatch;
+    if (!pending?.targets.includes(target) || current === null) return null;
+    pending.targets = pending.targets.filter((t) => t !== target);
+    const patched = (output: unknown) => {
+      const parsed = RevisionSchema.safeParse(output);
+      if (!parsed.success) return { value: null, errors: [parsed.error.message] };
+      const applied = applyRevision(current, parsed.data.operations);
+      return applied.errors.length
+        ? applied
+        : { value: applied.value, errors: check(applied.value) };
+    };
+    const round = this.store
+      .artifacts(runId)
+      .filter(
+        (a) => a.kind === "diagnostic" && a.logical_path.startsWith(`revisions/${target}-`),
+      ).length;
+    const record = (body: Record<string, unknown>) =>
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "diagnostic",
+          `revisions/${target}-${String(round + 1)}.json`,
+          canonical({ findings: pending.findings, ...body }),
+        ),
+      );
+    let output: unknown;
+    try {
+      output = await this.call(
+        runId,
+        stepId,
+        state,
+        policy,
+        { ...profile, output: "revision" },
+        {
+          revision: {
+            artifact: target,
+            instruction: revisionNote(target),
+            findings: pending.findings,
+          },
+        },
+        signal,
+        undefined,
+        0,
+        (submitted) => patched(submitted).errors,
+      );
+    } catch (error) {
+      if (!(error instanceof WorkflowFault) || error.code !== "OUTPUT_INVALID") throw error;
+      record({ accepted: false, problems: [error.message] });
+      return null;
+    }
+    const result = patched(output);
+    record({
+      accepted: result.errors.length === 0,
+      operations: (output as { operations?: unknown }).operations ?? [],
+      ...(result.errors.length ? { problems: result.errors } : {}),
+    });
+    return result.errors.length ? null : result.value;
   }
   /**
    * Sends the run back to an earlier stage outside the definition's transitions. A v2 run counts

@@ -288,6 +288,13 @@ export const PolicySchema = z
     checks: z.array(CheckSchema),
     autoApproval: AutoApprovalSchema.nullable().optional(),
     /**
+     * How analysis findings revise the spec and the plan (#1058, revision-patch.ts): `patch` asks
+     * the author for edit operations on the current artifact when at most five findings block,
+     * and falls back to writing it again when the patch does not apply or validate. Absent means
+     * `regenerate`, so stored policies keep their hash.
+     */
+    revision: z.enum(["regenerate", "patch"]).optional(),
+    /**
      * What a blocking question of research, spec or analysis does. Absent means `ask`: the run
      * waits for a person, as before this field existed, so stored policies keep their hash.
      * `assume` returns the question to its agent to settle with a recorded default first; only
@@ -574,6 +581,7 @@ export const ProfileSchema = z
       "critique",
       "mutants",
       "distinction",
+      "revision",
     ]),
     maxSteps: z.number().int().min(1).max(100),
     maxOutputTokens: z.number().int().min(256).max(65536),

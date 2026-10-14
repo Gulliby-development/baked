@@ -260,6 +260,19 @@ export const RuntimeStateSchema = z
       .default({}),
     /** Rejected approval requests whose explanation already sent the run back to revise. */
     revisedRejections: z.array(z.string()).default([]),
+    /**
+     * Analysis findings the spec and plan authors answer with a patch (#1058, policy `revision:
+     * "patch"`): the artifacts still to revise that way. Cleared when analysis runs again.
+     */
+    pendingPatch: z
+      .object({
+        findings: z.array(
+          z.object({ kind: z.string(), refs: z.array(z.string()), description: z.string() }),
+        ),
+        targets: z.array(z.enum(["spec", "plan"])),
+      })
+      .nullable()
+      .default(null),
     /** Times analyze sent plan-only findings back to the planner instead of a person; once. */
     analysisReplans: z.number().int().nonnegative().default(0),
     taskGates: z
