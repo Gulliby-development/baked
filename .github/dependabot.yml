@@ -12,6 +12,14 @@ updates:
       # web-tree-sitter stays at 0.25.10 for @opentui/core; code intelligence uses the web-tree-sitter-engine alias.
       - dependency-name: web-tree-sitter
         versions: [">=0.26.0"]
+  - package-ecosystem: bun
+    directory: /apps/desktop
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      desktop-minor-and-patch:
+        update-types: [minor, patch]
   - package-ecosystem: github-actions
     directory: /
     schedule:
