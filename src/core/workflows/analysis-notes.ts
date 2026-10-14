@@ -40,15 +40,28 @@ export function hostSplitParts(graph: TaskGraph): Record<string, string[]> {
   return parts;
 }
 
+/** What a finding says about the split itself: a part plan.md does not list, or parts that overlap. */
+const SPLIT_TOPIC =
+  /\b(?:not (?:listed|named|mentioned|described|present|included) in (?:the )?plan(?:\.md)?|(?:missing|absent) from (?:the )?plan(?:\.md)?|plan(?:\.md)? (?:does not|doesn't|never) (?:list|name|mention|describe|include)|not in (?:the )?plan(?:\.md)?|no counterpart|(?:check|test|verif|cover|assert)\w* the same|duplicat\w*|overlap\w*|redundant)\b/i;
+/** A finding that says implementing the work fails or contradicts a criterion or requirement. */
+const FAILS_CRITERION =
+  /\b(?:fails?|failing|violat\w*|contradict\w*|breaks?|conflicts? with|cannot (?:both )?(?:hold|pass|satisfy|meet))\b[^.;]*?\b(?:AC|FR|NFR)-\d+|\b(?:AC|FR|NFR)-\d+\b[^.;]*?\b(?:fails?|is violated|is contradicted|cannot (?:hold|pass))\b/i;
+
 /**
- * A finding about a task the host split: every task it names belongs to one split, and at least
- * one is a part plan.md cannot list (cronsay 15eb3204: "T009 is not in plan.md" and "T005 and
- * T009 check the same thing" sent the run back to plan four times).
+ * A finding about a task the host split: every task it names belongs to one split, at least one
+ * is a part plan.md cannot list, and it is about the split itself (cronsay 15eb3204: "T009 is not
+ * in plan.md" and "T005 and T009 check the same thing" sent the run back to plan four times). A
+ * finding that only names a part is not enough: mdtoc-update 20f81464 F-001 ("AC-007 whitelists
+ * four changed files, but FR-005 and task T005 require edits in tests/cli.test.ts, so implementing
+ * the request fails AC-007") was demoted because T005 was a split part, and the run implemented a
+ * contradictory spec and blocked at converge after 1.19M tokens (#1142).
  */
 export function isHostSplitNit(
   finding: { refs: readonly string[]; description: string },
   parts: Record<string, string[]>,
 ): boolean {
+  if (!SPLIT_TOPIC.test(finding.description) || FAILS_CRITERION.test(finding.description))
+    return false;
   const named = new Set(
     [...finding.refs, finding.description].flatMap((text) => text.match(/\bT\d{3,}\b/g) ?? []),
   );
