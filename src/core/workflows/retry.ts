@@ -153,6 +153,25 @@ export function reportsLostTool(result: {
   return LOST_TOOL.test([result.summary, ...result.unresolved].join("\n"));
 }
 
+const EDIT_NOT_APPLIED =
+  /\b(?:did ?n[o']t apply|was ?n[o']t applied|not applied|failed to apply|could ?n[o']t (?:be )?appl(?:y|ied)|cannot apply|edit (?:failed|was rejected)|old[_ ]string (?:was )?not found|no match(?:es)? for)\b/i;
+
+/**
+ * The files of a task's own write list that an `implemented` result leaves unresolved because an
+ * edit did not apply (cfgtrace b8544e36, #1036: a `multi_edit` of a test file in the task's
+ * scope did not apply, one line remained, and the run stopped at 13 of 14 tasks). That is not a
+ * conflict or a missing prerequisite: a fresh attempt from the applied edits finishes it.
+ */
+export function failedOwnEdits(
+  result: { outcome: string; unresolved: string[] },
+  writes: { path: string; action: string }[],
+): string[] {
+  if (result.outcome !== "implemented") return [];
+  const own = writes.filter((w) => w.action !== "delete").map((w) => w.path);
+  const failed = result.unresolved.filter((item) => EDIT_NOT_APPLIED.test(item));
+  return own.filter((path) => failed.some((item) => item.includes(path)));
+}
+
 /**
  * A model call that ended on text instead of a submission, after the continuation and the format
  * correction (R7: four of six interventions). The fault carries the text it ended with.
