@@ -323,6 +323,17 @@ export class InitiativeStore {
       )
       .all(id);
   }
+  /** The initiative whose feature a run currently stands for, or null for any other run. */
+  initiativeOfRun(runId: string): string | null {
+    if (!this.available()) return null;
+    return (
+      this.db
+        .query<{ initiative_id: string }, [string]>(
+          "SELECT initiative_id FROM initiative_runs WHERE run_id=? AND superseded_at IS NULL LIMIT 1",
+        )
+        .get(runId)?.initiative_id ?? null
+    );
+  }
   /** The run that currently stands for a feature: its newest link that is not superseded. */
   current(id: string, featureId: string): InitiativeRunRow | null {
     return (

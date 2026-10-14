@@ -11,7 +11,8 @@ import type { AgentExecutor, ExecutionRequest, ExecutionResponse } from "./types
  *
  * Every run gets one requirement, one criterion and one task that writes `BAKED_TEST_WORKFLOW`'s
  * value as the file path (`e2e-output.txt` for `1`) with the text `ready`; reviews pass with the
- * run's evidence. `BAKED_TEST_WORKFLOW_DELAY_MS` delays each agent call, so a test can watch a
+ * run's evidence. An initiative's split is always the same four features (`SCRIPTED_SPLIT`).
+ * `BAKED_TEST_WORKFLOW_DELAY_MS` delays each agent call, so a test can watch a
  * run while it works.
  */
 export const TEST_WORKFLOW_ENV = "BAKED_TEST_WORKFLOW";
@@ -30,6 +31,57 @@ export function scriptedExecutorFromEnv(
     Number.isFinite(delay) ? delay : 0,
   );
 }
+
+/**
+ * The split the scripted decomposer proposes: `api` and `docs` start first and side by side, `ui`
+ * and `cli` build on the `api` contract.
+ */
+export const SCRIPTED_SPLIT = {
+  schemaVersion: 1,
+  title: "Scripted initiative",
+  goals: ["Ship the scripted features"],
+  completionCriteria: ["Every feature wrote its output file"],
+  features: [
+    {
+      id: "api",
+      title: "Service API",
+      boundary: { scope: "The service endpoints", paths: [] },
+      contract: "The endpoints answer with JSON",
+      dependsOn: [],
+      mandatory: true,
+      size: "large",
+    },
+    {
+      id: "docs",
+      title: "User guide",
+      boundary: { scope: "The guide", paths: [] },
+      contract: "The guide describes every endpoint",
+      dependsOn: [],
+      mandatory: true,
+      workflow: "quick",
+      size: "small",
+    },
+    {
+      id: "ui",
+      title: "Web screens",
+      boundary: { scope: "The screens", paths: [] },
+      contract: "Each screen reads the API",
+      dependsOn: ["api"],
+      mandatory: true,
+      workflow: "quick",
+    },
+    {
+      id: "cli",
+      title: "Command line",
+      boundary: { scope: "The commands", paths: [] },
+      contract: "Each command calls the API",
+      dependsOn: ["api"],
+      mandatory: true,
+      workflow: "quick",
+      size: "small",
+    },
+  ],
+};
 
 interface PromptData {
   inputHash?: string;
@@ -167,6 +219,9 @@ export class ScriptedWorkflowExecutor implements AgentExecutor {
         };
         break;
       }
+      case "initiativePlan":
+        output = SCRIPTED_SPLIT;
+        break;
       case "analysis":
         output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] };
         break;
