@@ -125,6 +125,32 @@ describe("scripted chat scenarios", () => {
     expect(session.detail().turnSeq).toBeUndefined();
   });
 
+  test("a turn whose answer is saved but not yet announced has no turnSeq to replay from", async () => {
+    const chat = service({ delayMs: 1, turns: [{ steps: [{ text: "Answer one." }] }] });
+    const session = await chat.create({});
+    // Hold the save at the end of the turn, between storing the answer and turn-done.
+    const owner = chat as unknown as { persist: (s: ChatSession) => Promise<void> };
+    const persist = owner.persist.bind(chat);
+    let release = () => {};
+    let held: ReturnType<ChatSession["detail"]> | null = null;
+    owner.persist = async (s) => {
+      if (s.messages.at(-1)?.role === "assistant" && !held) {
+        held = s.detail();
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      return persist(s);
+    };
+    session.send("Question one");
+    await until(() => held !== null);
+    const detail = held as unknown as ReturnType<ChatSession["detail"]>;
+    release();
+    await session.settled();
+    expect(detail.messages.at(-1)?.content).toBe("Answer one.");
+    expect(detail.turnSeq).toBeUndefined();
+  });
+
   test("a coordinator's confirm is a step to approve, not a destructive command", async () => {
     const chat = service({ delayMs: 1, turns: [] });
     const session = await chat.create({});

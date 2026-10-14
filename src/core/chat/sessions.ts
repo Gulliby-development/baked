@@ -816,7 +816,11 @@ export class ChatSession {
         prompt: promptLine(t.messages[0]?.content ?? ""),
       })),
       lastSeq: this.seq,
-      ...(this.turnSeq !== null && (this.events[0]?.seq ?? Infinity) <= this.turnSeq + 1
+      // Only while the turn runs: once its answer is in `messages`, replaying its text would
+      // show the answer twice until `turn-done` arrives.
+      ...(this.turn !== null &&
+      this.turnSeq !== null &&
+      (this.events[0]?.seq ?? Infinity) <= this.turnSeq + 1
         ? { turnSeq: this.turnSeq }
         : {}),
     };
