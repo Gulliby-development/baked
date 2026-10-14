@@ -31,7 +31,9 @@ async function send(page: Page, text: string): Promise<void> {
   await expect(composer).toHaveValue("");
 }
 
-const idle = (page: Page) => expect(page.getByRole("button", { name: "Send" })).toBeVisible();
+// A scripted turn streams for several seconds (150 words at 30 ms), longer than the default wait.
+const idle = (page: Page) =>
+  expect(page.getByRole("button", { name: "Send" })).toBeVisible({ timeout: 20_000 });
 
 /** A long answer that streams for a few seconds at 30 ms a word. */
 const longText = (tag: string) =>
