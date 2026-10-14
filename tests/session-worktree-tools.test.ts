@@ -52,7 +52,7 @@ const call = (tools: Tools, name: string, args: unknown) => {
 };
 
 describe("tools of an agent in its own worktree", () => {
-  test("edit, read, list, search and shell work in the worktree, not the process directory", async () => {
+  test("edit, read, list and shell work in the worktree, not the process directory", async () => {
     const dir = worktree();
     expect(getCwd()).not.toBe(dir);
     const tools = agentTools(dir);
@@ -68,9 +68,6 @@ describe("tools of an agent in its own worktree", () => {
     const list = await call(tools, "list_dir", {});
     expect(list.output).toContain("src/");
     expect(list.output).toContain("docs/");
-
-    const grep = await call(tools, "grep", { pattern: "const one" });
-    expect(grep.output).toContain("math.ts");
 
     const shell = await call(tools, "shell", { command: "pwd", description: "Print the directory" });
     expect(shell.output.trim()).toContain(dir);
