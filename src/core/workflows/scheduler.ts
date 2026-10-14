@@ -6009,7 +6009,8 @@ ${note}`;
    * run). The checks are the task's own and the ones its findings name. A planned task counts
    * only on a rerun (generation above 0): a repair invalidated it though it was already correct
    * (md-site 2707d602 T004 generation 3 blocked the run), while a first run that changed nothing
-   * did not do its work. Otherwise it returns why the result is not accepted, for the message.
+   * did not do its work. A rerun with no such check counts when its files are unchanged since its
+   * last implementation. Otherwise it returns why the result is not accepted, for the message.
    */
   private async correctionSatisfied(
     runId: string,
@@ -6047,7 +6048,9 @@ ${note}`;
       ...this.gatedChecks(state, policy, task, root).filter((c) => c.id === regression),
     ];
     if (!checks.length)
-      return "it changed none of its files and no required check of it confirms the work is already done";
+      return rerun && (await this.unchangedSinceImplemented(runId, task, policy, root, signal))
+        ? true
+        : "it changed none of its files and no required check of it confirms the work is already done";
     for (const check of checks) {
       const checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
       if (checked.status === "passed") continue;
@@ -6065,6 +6068,36 @@ ${note}`;
       return `it changed none of its files and check ${check.id} still fails${named.length ? ` on ${named.slice(0, 5).join(", ")}` : ""} (evidence ${checked.evidenceId})`;
     }
     return true;
+  }
+  /**
+   * Whether every file a rerun task writes is still what an earlier implementation of it left:
+   * a repair invalidated the task for a change elsewhere, so its work is already done. Covers the
+   * tasks with no required check to confirm it, such as a README and licence task (cimatrix
+   * 5670e55c T010 stopped the run with an empty rerun, #1144).
+   */
+  private async unchangedSinceImplemented(
+    runId: string,
+    task: Task,
+    policy: RunPolicy,
+    root: string,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const written = task.writes.filter((w) => w.action !== "delete").map((w) => w.path);
+    if (!written.length) return false;
+    const left = new Map<string, string | null>();
+    const diffs = this.store
+      .artifacts(runId)
+      .filter((a) => a.logical_path === `tasks/${task.id}/diff.json`)
+      .sort((a, b) => a.revision - b.revision);
+    for (const row of diffs) {
+      const diff = JSON.parse(this.store.readArtifact(runId, row.id)) as {
+        after?: Record<string, string | null>;
+      };
+      for (const [path, hash] of Object.entries(diff.after ?? {})) left.set(path, hash);
+    }
+    if (!written.every((path) => left.get(path))) return false;
+    const now = await sourceManifest(root, generatedPaths(policy), signal);
+    return written.every((path) => now[path] === left.get(path));
   }
   /**
    * Whether a correction's failing checks pass before its first attempt: another correction

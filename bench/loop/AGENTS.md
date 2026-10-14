@@ -12,8 +12,9 @@ Rules that follow:
 
 1. **Spend scarce resources on BAKED.** When budget, time or attention is short, spend it on analysis and BAKED fixes (prefer broad structural fixes over parameter tuning), not on getting more apps through.
 2. **Never rescue a run.** Never hand-fix an app, edit app files to make a run pass, or work around a BAKED defect just to make a run or a verification pass. A stuck run is recorded as `blocked` and becomes a finding (see rule 5 in `roles/implementer.md`). The same holds for the publisher: it may correct README text to match real behavior and fix hygiene items (license, logo, topics, description), never app logic.
-3. **Success metrics are BAKED-side.** A round is judged by interventions per run, stop reasons (counts by reason), tokens per verified app, runs completed without intervention, and fixes merged together with whether last round's fixes moved the metric they targeted. App counts (published, updated) are secondary and are reported after these.
+3. **Success metrics are BAKED-side.** A round is judged first by quality: every new app of the round's level verified, runs completed without intervention, stop reasons (counts by reason) and whether new P0 or P1 findings were filed; then by interventions per run, and by fixes merged together with whether last round's fixes moved the metric they targeted. Tokens and dollars per verified app are reported as measurements, not as targets (owner's decision of 2026-10-14, see rule 5). App counts (published, updated) are secondary and are reported after these.
 4. **Rounds may shrink.** A round may be shortened or skipped for apps (for example to retest fixes on the control apps only) when analysis and fixing need the time.
+5. **Quality first, cost second.** The owner's words (2026-10-14, translated): from now on the loop chases quality first; rewrite the spec, run level 3 once more, and as soon as there are no errors move to level 4, then, as soon as level 4 has no errors, to level 5. Cost no longer steers the loop: the cost caps below exist to catch a runaway, not to shape the apps, and a round that goes over a cap because its level needs it is reported, not shrunk. The level ladder rule below is how the loop climbs.
 
 ## Purpose
 
@@ -182,7 +183,7 @@ A key missing from the loop root's `config.json` (the file is copied once and ne
 - `runs.referenceModel` is the model every control-app run uses, every round (`provider/model`). `null` means "the default model configured on the PC at loop start"; phase 0 resolves it once and writes it here, and it changes only by the owner's edit.
 - `runs.rotateNewAppProviders`: new apps cycle through the other configured providers (one provider per app, recorded per run), so BAKED keeps being tested on more than one provider. Estimates must stay provider-agnostic; a provider that costs much more is a finding, not a reason to tune constants to it.
 - `round.maxConcurrentRuns` is the number of build lanes: runs of apps (new, update, control) that execute at the same time. It is 3 from round 7 (2 before). If builds or tests start timing out because the PC is saturated, drop back to 2 for the next round and say so in the report; the owner changes the default in `config.json`, the orchestrator never edits it.
-- `round.difficulty` is the ideator's starting difficulty level (1-5). The current level lives in `state.json` (`difficulty`); the orchestrator raises it there under the [difficulty rule](#difficulty-rule) and [Stop conditions](#stop-conditions) and says so in the round report. The orchestrator never edits `config.json`.
+- `round.difficulty` is the ideator's starting difficulty level (1-5). The current level lives in `state.json` (`difficulty`); the orchestrator raises it there under the [level ladder rule](#level-ladder-rule) and [Stop conditions](#stop-conditions) and says so in the round report. The orchestrator never edits `config.json`.
 - `confirm.crossModel` is the model that re-runs a run from its approved plan to tell a BAKED problem from a model's habit (see [Findings and model noise](#findings-and-model-noise)). `null` means "the configured model of another vendor than the run's own": a run on `codex/...` confirms on `claude-code/opus`, a run on `claude-code/...` confirms on the codex model. `confirm.maxTokensPerRound` caps these re-runs; they count toward `roundRunTokens`.
 - `review.rotateReviewer`: when no other experiment is planned, the round's experiment is one new app on the round's default provider whose review stages run on another vendor's model (see [Findings and model noise](#findings-and-model-noise)).
 - `retro.everyRounds` and `retro.maxChangesPerRetro` set how often phase 11 runs and how many changes one retro may make (see [Improving the loop itself](#improving-the-loop-itself)).
@@ -273,9 +274,18 @@ Until round 6 the loop built only Python and TypeScript (Bun) projects. From rou
 - **PATH.** A shell started by the harness may not have the toolchains on `PATH` (Git Bash on Windows in particular). `tools/launch.sh` and the scaffold scripts add the directories of Go, the .NET SDK, Cargo and the JDK and Maven explicitly, in front of the inherited `PATH`; on another machine adjust that list and nothing else.
 - **Publishing.** The publisher takes `templates/ci/<stack>.yml`: `bun`, `vite`, `python`, `go`, `dotnet`, `rust` or `java`.
 
-## Difficulty rule
+## Level ladder rule
 
-The orchestrator keeps the current difficulty in `state.json`. After each round it applies this standing rule (owner's decision, round 6): a round without BAKED-side problems raises `state.difficulty` by one for the next round (at most 5; the loop never goes above level 5, and a level-5 app is always built as a BAKED initiative, never as one run, owner's decisions of 2026-10-13); a round with problems keeps it. A round has BAKED-side problems when any of these holds: a run ended `blocked`, an operator action beyond infrastructure resumes was needed (an extension, an answer, a recovery, a reroute, a manual approval outside auto-approval, a cancel), or the analysts filed a new P1 (or P0) finding. Infrastructure resumes (a provider outage, a reboot, a rate limit) do not count. The report states the verdict and the new level. This rule is in addition to `stop.maxRoundsWithoutProgress` below.
+The orchestrator keeps the current level in `state.json` (`difficulty`, 1-5; the level definitions with sizes and expected costs are in `roles/ideator.md`). Since the owner's decision of 2026-10-14 the loop climbs one level at a time, quality first:
+
+- **Start.** The loop runs at level 3 until a level-3 round has no errors.
+- **No errors.** A round at level L has no errors when, for the new apps of that round, every new app of level L was built, passed verification and (when `publish.mode` allows) was published, and the round's analysts filed no new P0 or P1 finding. Controls, updates and the other probes are still run and analysed, but only these two conditions decide the level. Infrastructure resumes (a provider outage, a reboot, a rate limit) do not count as errors; a manual approval that policy always requires (a new project file, a CI file) does not either, but is still a finding when it was avoidable.
+- **Climb.** A round with no errors at level L sets the next round's level to L+1 (at most 5). A round with errors repeats level L: the fixes of its findings are measured by the next round at the same level.
+- **Level 5.** A level-5 app is always built as a BAKED initiative (`baked workflow initiative start`), never as one run. After a level-5 round with no errors the loop stays at level 5 until the owner decides what comes next.
+- **What stays.** One new app of every round is still built on the claude-code series (Opus for plan, spec and review, Sonnet for code, `revision: patch`) and one update per round still runs on the `quick` preset; the update picks, the controls and the cfgtrace-style probe keep their rules and levels (updates stay at difficulty 2). The new app of the other series is built at the same level.
+- **Report.** The round report states the verdict (`no errors` or the list of errors), the level just run and the next level, and keeps cost as a reported metric next to quality.
+
+This replaces the earlier difficulty rule, under which a round without BAKED-side problems raised the level. It is in addition to the stop conditions below.
 
 ## Updates to existing projects
 
@@ -314,8 +324,8 @@ Most runs use one implementation model and one review model, so a habit of that 
 
 | Budget | Default | On reaching it |
 |---|---|---|
-| One BAKED run | starts at the policy budget; the implementer may raise it up to `selfRaiseTokensUpTo` (8M) on its own | above 8M only with the owner's OK; otherwise stop the run and record `budget_cap` |
-| All BAKED runs in a round | `roundRunTokens` 30M | finish runs in progress, skip unbuilt new apps and updates (record them), go to phase 6 |
+| One BAKED run | starts at the policy budget; the implementer may raise it up to `selfRaiseTokensUpTo` (8M) on its own at levels 1-3 and up to 15M at levels 4 and 5 (owner's decision of 2026-10-14) | above the cap only with the owner's OK; otherwise stop the run and record `budget_cap` |
+| All BAKED runs in a round | `roundRunTokens` 30M at levels 1-3, 45M at levels 4 and 5 | finish runs in progress, skip unbuilt new apps and updates (record them), go to phase 6; a level that needs more is reported, not shrunk |
 | Fix work per round | `maxFixIssuesPerRound` 6 issues, at least `minBroadFeaturesPerRound` 1 broad feature when one is open (the top-ranked `idea` counts; the backlog role ranks ideas, the owner does not pick) | the rest stays on the board for later rounds |
 | One fix PR | `maxPrAttemptsPerIssue` 3 CI rounds | leave the PR open with a comment on what fails, take the next issue |
 | Round wall clock | `maxWallClockHours` 30 | finish the current step, write the report with what is done |
@@ -331,7 +341,7 @@ The loop is autonomous except at these points:
 |---|---|
 | Creating a public repository | `publish.mode = auto` (default): none; standing authorization, see below. `approve-per-round` (optional, owner's switch): the owner's typed approval ("yes", in any language) on that round's batch. Either way only apps whose `verify.json` passes. |
 | Making a repository public (`gh repo edit --visibility public`) | same as creating it, and only after CI is green on all three operating systems |
-| Raising one run above 8M tokens | the owner's OK for that run |
+| Raising one run above its level's cap (8M at levels 1-3, 15M at levels 4 and 5) | the owner's OK for that run |
 | Merging a fix PR into BAKED `main` | none when `fix.mergeAfterGreenCi` is true and CI is green (owner's standing authorization of 2026-10-09). False: leave PRs for the owner. |
 | Merging a verified update PR into a published repository | none when `publish.mode` is `auto` and the repository's CI is green on all three operating systems (standing authorization of 2026-10-11, same as creating the repositories) |
 | Tags, releases, version bumps | never; the owner pushes tags |
@@ -356,12 +366,12 @@ In `approve-per-round` mode the publish gate never blocks the loop: a batch wait
 
 **Pause and ask** (keep the session alive, report once, continue other phases that don't depend on the answer):
 - The device's permission mode refuses a command the loop needs.
-- A run needs more than 8M tokens.
+- A run needs more than its level's cap (8M at levels 1-3, 15M at levels 4 and 5).
 - An issue labelled `needs-gulliby` blocks work (accounts, money, organization settings). Scout ideas never wait for the owner; the backlog role triages them.
 - A finding is a security issue in BAKED itself (report it privately to the owner; don't file a public detail if the repo becomes public).
 
 **Change course instead of stopping:**
-- The [difficulty rule](#difficulty-rule) after every round, and `maxRoundsWithoutProgress` rounds in a row without improvement (no new P0/P1 findings, control metrics flat within ±10%, every new app passing): raise difficulty for the next round, never above level 5 (see the ideator's difficulty ladder) and say so in the report. Easy rounds teach nothing.
+- The [level ladder rule](#level-ladder-rule) after every round: a round without errors climbs one level, a round with errors repeats its level, never above level 5 (see the ideator's difficulty ladder). `maxRoundsWithoutProgress` no longer raises the level on its own: a round without new P0/P1 findings and with every new app passing has no errors and climbs by the rule above.
 
 ## Reporting to the owner
 
