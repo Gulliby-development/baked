@@ -2,6 +2,7 @@ import { useState } from "react";
 import { attentionApi, type ChatPrompt } from "../../client/attention.js";
 import { SplitFlows } from "../../components/SplitFlows.js";
 import { Button } from "../../components/ui/button.js";
+import { WorkflowProposal } from "../../components/WorkflowProposal.js";
 import { LABEL } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
 import {
@@ -41,6 +42,8 @@ export function promptSummary(prompt: ChatPrompt): string {
       return `The coordinator proposes splitting "${prompt.title}" into ${prompt.flows.length} ${
         prompt.mode === "runs" ? "parallel runs" : "features of one initiative"
       }`;
+    case "workflow":
+      return `The coordinator asks to run workflow ${prompt.workflow}`;
   }
 }
 
@@ -173,6 +176,39 @@ export function ChatDetail({ item, onDone }: DetailProps) {
                     onClick={() => send({ approve: false }, "Split rejected. Nothing started.")}
                   >
                     Reject
+                  </Button>
+                  {openChat}
+                </div>
+              </>
+            ) : prompt.kind === "workflow" ? (
+              <>
+                <p className={LEDE}>{promptSummary(prompt)}</p>
+                <WorkflowProposal prompt={prompt} />
+                <p className={NOTE}>
+                  The coordinator waits until you decide. Approving starts the run; it shows in the
+                  coordinator's Launched work.
+                </p>
+                <ActionError error={action.error} />
+                <div className={ACTIONS}>
+                  <Button
+                    variant="primary"
+                    size="md"
+                    className={BTN}
+                    disabled={action.busy}
+                    onClick={() =>
+                      send({ approve: true, digest: prompt.digest }, "Approved. The run starts.")
+                    }
+                  >
+                    Run workflow
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="md"
+                    className={BTN}
+                    disabled={action.busy}
+                    onClick={() => send({ approve: false }, "Not now. Nothing started.")}
+                  >
+                    Not now
                   </Button>
                   {openChat}
                 </div>

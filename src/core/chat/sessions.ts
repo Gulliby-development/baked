@@ -93,6 +93,7 @@ import { rebuildCoreMessages as rebuildCore } from "../sessions/rebuild.js";
 import type { SessionMeta, TabMeta } from "../sessions/types.js";
 import { watchOptions } from "../watch/config.js";
 import { WatchController, type WatchTurn, watchTurnDisplay } from "../watch/controller.js";
+import { projectDefinitions, proposeForWorkspace } from "../workflows/v2/propose.js";
 import { answerByRules } from "./approval-rules.js";
 import { COORDINATOR_MODE } from "./coordinator.js";
 import {
@@ -108,6 +109,9 @@ import {
   launchTools,
   type ProjectLauncher,
   syncLaunched,
+  type WorkflowCatalog,
+  wakeLine,
+  wakePrompt,
 } from "./coordinator-launch.js";
 import {
   SCHEDULE_TICK_MS,
@@ -179,6 +183,27 @@ export type ChatPrompt = { id: string; createdAt: number } & (
       /** `task`: the flow's issue (`owner/name#N`), `new issue` or `local task`. */
       flows: { id: string; title: string; paths: string[]; dependsOn: string[]; task: string }[];
       /** Binds the approval to exactly this split. */
+      digest: string;
+    }
+  | {
+      /** A coordinator asks to run a workflow on a request; approving it starts the run. */
+      kind: "workflow";
+      /** The workflow definition id, or `default` for the project default. */
+      workflow: string;
+      description: string;
+      /** The workflow's stages in order. */
+      stages: string[];
+      /** Whether the workflow changes files. */
+      writes: boolean;
+      /** The request the run starts with. */
+      prompt: string;
+      /** The coordinator's one line on why. */
+      why: string;
+      /** Why this workflow: named by the coordinator, or BAKED's proposal for the request. */
+      reason: string;
+      /** The issue the run starts from. */
+      issue?: string;
+      /** Binds the approval to exactly this workflow and request. */
       digest: string;
     }
 );
@@ -313,7 +338,9 @@ export type ChatEventBody =
       context: SessionDetail["context"];
     }
   | { type: "session"; session: SessionSummary }
-  | { type: "watch"; watch: WatchStatus };
+  | { type: "watch"; watch: WatchStatus }
+  /** A coordinator's launched work changed: a status, a run's stage or its tasks. */
+  | { type: "launched"; launched: LaunchedView[] };
 export type CompactionStatus = "compacted" | "skipped" | "failed" | "interrupted";
 export type PromptOutcome = "approved" | "denied" | "answered" | "skipped";
 export type ChatEvent = ChatEventBody & { seq: number; at: number };
@@ -418,6 +445,8 @@ interface QueuedInput {
   display?: string;
   /** Sent as is, without `@` or `!` expansion, and as a turn of its own (watch mode). */
   verbatim?: boolean;
+  /** Not shown as a user message: a coordinator's wake-up on launched work. */
+  hidden?: boolean;
 }
 
 /** Queued messages sent as one: texts joined, images relabelled `image-1`… in order. */
@@ -509,6 +538,11 @@ function promptNotice(prompt: ChatPrompt): {
       return {
         type: "question",
         message: `BAKED waits for you to review the split: ${prompt.title}`,
+      };
+    case "workflow":
+      return {
+        type: "question",
+        message: `BAKED asks to run the ${prompt.workflow} workflow: ${prompt.why}`,
       };
   }
 }
@@ -742,7 +776,7 @@ export class ChatSession {
       ...this.summary(),
       messages: this.messages,
       prompts: this.pendingPrompts,
-      queued: this.queue.map((q) => q.display ?? q.text),
+      queued: this.queue.filter((q) => !q.hidden).map((q) => q.display ?? q.text),
       usage: { ...this.usage },
       context: this.context,
       filesEdited: editedFiles(this.messages),
@@ -831,6 +865,21 @@ export class ChatSession {
   /** Starts a watch mode turn, or queues it as a turn of its own behind the running one. */
   sendWatch(turn: WatchTurn): { turnId: string; queued: boolean } {
     return this.submit({ text: turn.prompt, display: watchTurnDisplay(turn), verbatim: true });
+  }
+
+  /**
+   * Wakes a coordinator on news about what it launched: a turn of its own, not shown as a user
+   * message (the notices already are), queued behind a running turn. Returns false when the
+   * session has no model to run it with.
+   */
+  wake(lines: string[]): boolean {
+    if (!this.isCoordinator || lines.length === 0 || !this.model) return false;
+    this.submit({ text: wakePrompt(lines), verbatim: true, hidden: true });
+    return true;
+  }
+
+  emitLaunched(launched: LaunchedView[]): void {
+    this.emit({ type: "launched", launched });
   }
 
   /** Starts the turn a coordinator schedule fires, or queues it behind the running one. */
@@ -1122,10 +1171,14 @@ export class ChatSession {
     }
     if (!("approve" in body))
       throw new ChatError("INVALID_REQUEST", "Answer an approval with {approve}");
-    if (prompt.kind === "split" && body.approve && body.digest !== prompt.digest)
+    if (
+      (prompt.kind === "split" || prompt.kind === "workflow") &&
+      body.approve &&
+      body.digest !== prompt.digest
+    )
       throw new ChatError(
         "STALE_PROMPT",
-        "Approve a split with the digest of the split it shows; this one has changed",
+        `Approve a ${prompt.kind} with the digest of the ${prompt.kind} it shows; this one has changed`,
       );
     this.settlePrompt(promptId, body.approve, body.approve ? "approved" : "denied");
   }
@@ -1141,6 +1194,11 @@ export class ChatSession {
 
   /** Asks a person to approve a coordinator's split as one card; true when they approve it. */
   async proposeSplit(card: Omit<Extract<ChatPrompt, { kind: "split" }>, "id" | "createdAt">) {
+    return (await this.ask(card)) === true;
+  }
+
+  /** Asks a person whether to run a workflow, as one card; true when they approve it. */
+  async proposeWorkflow(card: Omit<Extract<ChatPrompt, { kind: "workflow" }>, "id" | "createdAt">) {
     return (await this.ask(card)) === true;
   }
 
@@ -1346,6 +1404,7 @@ export class ChatSession {
       // The model gets the whole plan; the transcript names it, as the plan is shown above.
       content: executing ? `Execute the plan: ${executing.title}` : (input.display ?? text),
       timestamp: started,
+      ...(input.hidden ? { showInChat: false } : {}),
       ...(images ? { images } : {}),
       ...(inputContext ? { inputContext } : {}),
     };
@@ -1836,7 +1895,14 @@ export class ChatService {
     }
   }
 
-  /** Refreshes the statuses of what the coordinator launched and notes changes in its chat. */
+  /** The launched view last sent to the coordinator's subscribers, to send only changes. */
+  private launchedSent = "";
+
+  /**
+   * Refreshes the statuses of what the coordinator launched and notes changes in its chat. News
+   * that something finished, failed or waits wakes the coordinator, unless `coordinator.wake` is
+   * false, and any change of the launched view (a stage, a task count) reaches its subscribers.
+   */
   async syncLaunched(): Promise<string[]> {
     if (this.syncing || this.closed) return [];
     const coordinator = [...this.live.values()].find((s) => s.isCoordinator);
@@ -1846,13 +1912,33 @@ export class ChatService {
       // Approvals a rule covers are answered first, so they never read as waiting for a person.
       const approver = this.launcher?.approveRun ? { approveRun: this.launcher.approveRun } : null;
       await answerByRules(this, coordinator, this.projectState, approver, this.ruleTried);
-      return await syncLaunched(this, coordinator, this.projectState, this.launcher?.tasks ?? null);
+      const notices = await syncLaunched(
+        this,
+        coordinator,
+        this.projectState,
+        this.launcher?.tasks ?? null,
+        (notes) => {
+          if (this.options.config.coordinator?.wake !== false)
+            coordinator.wake(notes.map(wakeLine));
+        },
+      );
+      this.publishLaunched(coordinator);
+      return notices;
     } catch (err) {
       logBackgroundError("chat:coordinator-sync", errorText(err));
       return [];
     } finally {
       this.syncing = false;
     }
+  }
+
+  /** Sends the coordinator's launched view as a `launched` event when it changed since the last one. */
+  private publishLaunched(coordinator: ChatSession): void {
+    const launched = this.launched(coordinator.id);
+    const sent = JSON.stringify(launched);
+    if (sent === this.launchedSent) return;
+    this.launchedSent = sent;
+    coordinator.emitLaunched(launched);
   }
 
   /** What the coordinator `coordinatorId` launched, with live status and tokens. */
@@ -1880,8 +1966,19 @@ export class ChatService {
         this.projectState,
         this.launcher,
         coordinatorLimits(this.options.config),
+        this.workflowCatalog(),
       ),
       ...controlTools(this, coordinator, this.projectState, this.launcher),
+    };
+  }
+
+  /** The workflows of this project as the coordinator lists and proposes them. */
+  private workflowCatalog(): WorkflowCatalog {
+    const { workspace } = this;
+    const { config } = this.options;
+    return {
+      list: () => projectDefinitions(workspace, config),
+      propose: (request) => proposeForWorkspace(workspace, config, request),
     };
   }
 
@@ -1895,6 +1992,7 @@ export class ChatService {
   /** Closes or reopens an item the coordinator launched; `POST /v1/coordinator/launched/close`. */
   async closeLaunched(coordinatorId: string, ref: LaunchedRef, reopen = false): Promise<void> {
     await closeLaunched(this, coordinatorId, this.projectState, ref, reopen);
+    this.publishLaunched(this.get(coordinatorId));
   }
 
   /** A coordinator thread's message tool and what it is told about its peers; none otherwise. */

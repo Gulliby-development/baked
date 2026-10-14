@@ -119,6 +119,19 @@ export type ChatPrompt = { id: string; createdAt: number } & (
       }[];
       digest: string;
     }
+  | {
+      /** The coordinator asks to run a workflow; approving it with the digest starts the run. */
+      kind: "workflow";
+      workflow: string;
+      description: string;
+      stages: string[];
+      writes: boolean;
+      prompt: string;
+      why: string;
+      reason: string;
+      issue?: string;
+      digest: string;
+    }
 );
 
 export interface SessionPrompts {

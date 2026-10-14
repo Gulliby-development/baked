@@ -113,6 +113,7 @@ const KIND_LABEL: Record<string, string> = {
   question: "question",
   "plan-review": "plan review",
   split: "split proposal",
+  workflow: "workflow run proposal",
   split_approval: "plan approval",
 };
 

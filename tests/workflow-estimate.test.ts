@@ -179,6 +179,8 @@ describe("estimates in a real run", () => {
     const policy = { sizing: { historyStores: [other.service.workspace, join(here, "missing")] } };
     const history = estimateHistory(null, here, policy, 0);
     expect(history.map((r) => [r.runId, r.source])).toEqual([[run.runId, "shared"]]);
+    // The history records the model that spent the run's tokens, to key estimates by model (#936).
+    expect(history[0]?.model).toBe("fixture/model");
     // A store named twice, or this project's own store, is read once.
     expect(historyStorePaths(here, { sizing: { historyStores: [here, other.service.workspace, `${other.service.workspace}/`] } })).toEqual([
       join(other.service.workspace, ".baked", "workflows.sqlite"),
@@ -186,6 +188,23 @@ describe("estimates in a real run", () => {
     const estimate = estimatePreRun({ history, workflowId: "sdd", stages: [{ id: "plan", type: "agent", models: [] }], maxTotalTokens: 800000, price: () => null });
     expect(estimate.basis).toBe("workflow-history");
     expect(estimate.label).toContain("from 1 earlier run of sdd, 1 of them from other projects");
+  });
+
+  // Bench R14 (#936): one start estimate for both providers although a claude-code run spent 3.06M
+  // where codex runs of the same briefs spent under 1.4M.
+  test("with enough runs of the planned model the estimate reads only those", () => {
+    const stages = [{ id: "plan", type: "agent", models: ["claude-code/opus"] }];
+    const run = (model: string, plan: number) => past({ workflowId: "sdd", model, stageTokens: { plan } });
+    const codex = [run("codex/luna", 30000), run("codex/luna", 32000), run("codex/luna", 34000), run("codex/luna", 36000)];
+    const claude = [run("claude-code/opus", 90000), run("claude-code/opus", 100000), run("claude-code/opus", 110000)];
+    const keyed = estimatePreRun({ history: [...codex, ...claude], workflowId: "sdd", stages, maxTotalTokens: 800000, price: () => null });
+    expect(keyed.tokens).toEqual({ low: 90000, high: 110000 });
+    expect(keyed.samples).toBe(3);
+    expect(keyed.notes).toContain("History of claude-code/opus only (3 runs).");
+    // Too few runs of the planned model: every run counts, and the estimate says the models mix.
+    const mixed = estimatePreRun({ history: [...codex, ...claude.slice(0, 2)], workflowId: "sdd", stages, maxTotalTokens: 800000, price: () => null });
+    expect(mixed.samples).toBe(6);
+    expect(mixed.notes.some((n) => n.startsWith("Fewer than 3 earlier runs of claude-code/opus"))).toBe(true);
   });
 
   test("a run in progress shows a re-estimate and a forecast the panel can render", async () => {

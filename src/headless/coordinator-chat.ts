@@ -29,7 +29,7 @@ export interface CoordinatorChatIO {
 
 export interface CoordinatorChatOptions {
   json: boolean;
-  /** Approves every approval and split the turn asks for. */
+  /** Approves every approval, split and workflow card the turn asks for. */
   yes: boolean;
   /** Keeps following launched work after the reply until none of it is active. */
   follow: boolean;
@@ -50,6 +50,10 @@ export function promptLine(prompt: ChatPrompt): string {
       return prompt.question;
     case "plan-review":
       return `Run the plan "${prompt.title}"`;
+    case "workflow": {
+      const stages = prompt.stages.length ? ` (${prompt.stages.join(" > ")})` : "";
+      return `Run the workflow ${prompt.workflow}${stages}: ${prompt.why}\n  Request: ${prompt.prompt.replace(/\s+/g, " ")}`;
+    }
     case "split": {
       const flows = prompt.flows.map((f) => `\n  - ${f.title} (${f.task})`).join("");
       return `Split "${prompt.title}" into ${prompt.flows.length} ${prompt.mode === "initiative" ? "flows of one initiative" : "runs"}:${flows}`;
@@ -79,7 +83,8 @@ export async function answerPrompt(
   if (!approve && io.ask)
     approve = YES.test((await io.ask(`${promptLine(prompt)}\nAllow? [y/N] `)).trim());
   if (prompt.kind === "plan-review") return { action: approve ? "execute" : "cancel" };
-  if (prompt.kind === "split") return approve ? { approve, digest: prompt.digest } : { approve };
+  if (prompt.kind === "split" || prompt.kind === "workflow")
+    return approve ? { approve, digest: prompt.digest } : { approve };
   return { approve };
 }
 
@@ -88,7 +93,7 @@ export function launchedLines(launched: LaunchedView[]): string[] {
   const open = launched.filter((item) => !item.closed);
   const lines = open.map(
     (item) =>
-      `${item.active ? "●" : "○"} ${launchLabel(item)}: ${item.status}${item.activity ? ` (${item.activity})` : ""} · ${item.tokens} tokens`,
+      `${item.active ? "●" : "○"} ${launchLabel(item)}${item.workflow ? ` [${item.workflow}]` : ""}: ${item.status}${item.activity ? ` (${item.activity})` : ""} · ${item.tokens} tokens`,
   );
   const closed = launched.length - open.length;
   if (closed > 0) lines.push(`${closed} closed`);

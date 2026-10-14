@@ -13,6 +13,7 @@ import {
   answerPrompt,
   type CoordinatorChatIO,
   launchedLines,
+  promptLine,
   talkToCoordinator,
 } from "../src/headless/coordinator-chat.js";
 
@@ -123,13 +124,33 @@ describe("coordinator CLI helpers", () => {
     expect(await answerPrompt(question, { yes: true }, io)).toEqual({ answer: "" });
   });
 
+  test("a workflow card is described with its stages and approved with its digest", async () => {
+    const card = {
+      id: "w",
+      createdAt: 0,
+      kind: "workflow",
+      workflow: "fix-ci",
+      description: "a failing check",
+      stages: ["reproduce", "tasks", "check"],
+      writes: true,
+      prompt: "Fix the\n tests",
+      why: "CI is red",
+      reason: "a failing check",
+      digest: "d2",
+    } as ChatPrompt;
+    expect(promptLine(card)).toBe("Run the workflow fix-ci (reproduce > tasks > check): CI is red\n  Request: Fix the tests");
+    const io = capture().io;
+    expect(await answerPrompt(card, { yes: true }, io)).toEqual({ approve: true, digest: "d2" });
+    expect(await answerPrompt(card, { yes: false }, io)).toEqual({ approve: false });
+  });
+
   test("lists open launched work and counts closed items", () => {
     expect(launchedLines([])).toEqual(["The coordinator has launched nothing yet."]);
     expect(
       launchedLines([
-        { kind: "run", id: "r1", title: "Fix login", why: "", status: "running", active: true, tokens: 1200 },
+        { kind: "run", id: "r1", title: "Fix login", workflow: "fix-ci", why: "", status: "running", active: true, tokens: 1200 },
         { kind: "session", id: "s1", why: "", status: "completed", active: false, tokens: 5, closed: true },
       ]),
-    ).toEqual(['● Run "Fix login": running · 1200 tokens', "1 closed"]);
+    ).toEqual(['● Run "Fix login" [fix-ci]: running · 1200 tokens', "1 closed"]);
   });
 });

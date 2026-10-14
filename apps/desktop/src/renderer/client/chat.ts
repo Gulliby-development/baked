@@ -2,6 +2,7 @@ import type { ChatExportFormat } from "../../shared/bridge.js";
 import { parseChatEvent } from "../screens/chat/transcript.js";
 import { ApiError, call } from "./api.js";
 import { bridge } from "./bridge.js";
+import type { LaunchedView } from "./coordinator.js";
 
 /**
  * Chat sessions over `/v1/sessions/*`, `GET /v1/models` and `GET /v1/mentions` (docs/desktop/api.md, group A).
@@ -90,6 +91,8 @@ export interface ChatMessage {
   segments?: MessageSegment[];
   durationMs?: number;
   isSteering?: boolean;
+  /** False for a message the chat does not show, such as a coordinator's wake-up. */
+  showInChat?: boolean;
   /** What the message's `@` mentions and `!` command attached. */
   inputContext?: InputContextItem[];
   /** Images attached to a user message. */
@@ -192,6 +195,19 @@ export type ChatPrompt = { id: string; createdAt: number } & (
       }[];
       digest: string;
     }
+  | {
+      /** The coordinator asks to run a workflow; approving it with the digest starts the run. */
+      kind: "workflow";
+      workflow: string;
+      description: string;
+      stages: string[];
+      writes: boolean;
+      prompt: string;
+      why: string;
+      reason: string;
+      issue?: string;
+      digest: string;
+    }
 );
 
 export interface Usage {
@@ -291,7 +307,9 @@ export type ChatEventBody =
       context: ContextFill | null;
     }
   | { type: "session"; session: SessionSummary }
-  | { type: "watch"; watch: WatchStatus };
+  | { type: "watch"; watch: WatchStatus }
+  /** The coordinator's launched work changed; `launched` is `GET /v1/coordinator/launched`. */
+  | { type: "launched"; launched: LaunchedView[] };
 
 /** Watch mode as one session sees it: `GET /v1/sessions/ID/watch` and the `watch` event. */
 export interface WatchStatus {

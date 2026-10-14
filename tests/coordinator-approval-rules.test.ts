@@ -287,7 +287,12 @@ describe("the coordinator answers a run's plan approval by a rule", () => {
     const store = new ApprovalRulesStore(chat.workspace, coordinator.id);
     store.write({ enabled: true, rules: [{ id: "tiny", kind: "run-approval", maxTokens: 1 }] }, 0);
 
-    const started = await startRun.execute({ prompt: "Create ready value", feature: "fixture", why: "Ship" });
+    const starting = startRun.execute({ prompt: "Create ready value", feature: "fixture", why: "Ship" });
+    // start_run asks the user first; approve its workflow card.
+    await until(chat, () => coordinator.pendingPrompts.some((p) => p.kind === "workflow"), "the workflow card");
+    const card = coordinator.pendingPrompts.find((p) => p.kind === "workflow");
+    if (card?.kind === "workflow") coordinator.answer(card.id, { approve: true, digest: card.digest });
+    const started = await starting;
     expect(started).toMatchObject({ success: true });
     const runId = /run ([0-9a-f-]{36})/.exec(started.output)?.[1] ?? "";
     const status = () => fixture.service.store.run(runId).status;

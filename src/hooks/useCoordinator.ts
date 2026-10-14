@@ -99,9 +99,10 @@ export function useCoordinatorSnapshot(local: LocalCoordinator | null): Coordina
       if (event.type === "turn-start") live = "";
       else if (event.type === "text") live += event.delta;
       else if (event.type === "turn-done") live = "";
+      // A `launched` event carries the new view: statuses, a run's stage and its tasks.
       refresh();
     });
-    // Launched work changes without a session event; read it again now and then.
+    // Schedules and the approval rules change without a session event; read them again now and then.
     const timer = setInterval(refresh, 2000);
     return () => {
       stop?.();
