@@ -134,10 +134,13 @@ describe("coordinator launches", () => {
 
     const stranger = await chat.create({ title: "Other" });
     expect(await send.execute({ to: stranger.id, text: "Hi" })).toMatchObject({ success: false });
-    // An ordinary chat gets no message tool.
+    // An ordinary chat gets no message tool, only the gate tools every chat has.
     stranger.send("Hello");
     await stranger.settled();
-    expect(host.requests.filter((r) => r.sessionId === stranger.id).at(-1)?.tools).toBeUndefined();
+    expect(Object.keys(host.requests.filter((r) => r.sessionId === stranger.id).at(-1)?.tools ?? {})).toEqual([
+      "list_gates",
+      "save_gates",
+    ]);
     for (let i = 0; i < 3; i++) await send.execute({ to: "coordinator", text: `note ${i}` });
     expect((await send.execute({ to: "coordinator", text: "too many" })).error).toContain("At most 5");
     await coordinator.settled();

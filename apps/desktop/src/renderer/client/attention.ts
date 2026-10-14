@@ -135,6 +135,8 @@ export type ChatPrompt = { id: string; createdAt: number } & (
       why: string;
       reason: string;
       issue?: string;
+      /** Gates approving the card saves before the run starts, one `id: command` line each. */
+      gates?: string[];
       digest: string;
     }
 );

@@ -10,6 +10,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { AppConfig, ChatMessage, LaunchNote, PermissionMode } from "../../types/index.js";
 import { hashJson } from "../specs/hash.js";
+import { gateLine, needsGates, renderGateSetup } from "../workflows/gate-setup.js";
 import {
   InitiativeFeatureSchema,
   type InitiativePlan,
@@ -25,9 +26,11 @@ import {
 } from "../workflows/issue-source.js";
 import type { WorkflowProposal } from "../workflows/preset-router.js";
 import { terminalStates } from "../workflows/state-machine.js";
+import type { Check } from "../workflows/types.js";
 import type { DefinitionSummary } from "../workflows/v2/definitions.js";
 import type { RunApprover } from "./approval-rules.js";
 import { BriefStore, type LaunchedEntry } from "./coordinator.js";
+import { applyGates, GateRequestSchema, type GateToolContext, resolveGates } from "./gate-tools.js";
 import type { ProjectStateSource } from "./project-state.js";
 import type { ChatMode, ChatPrompt, ChatService, ChatSession } from "./sessions.js";
 
@@ -98,6 +101,8 @@ export interface ProjectLauncher {
    * runs.
    */
   control?(input: RunControl): Promise<void>;
+  /** Gives a live workflow worker the gate list a chat just saved to the project file. */
+  gatesSaved?(checks: Check[]): Promise<void>;
 }
 
 /** One control action on a run the coordinator launched; the user approved it first. */
@@ -110,6 +115,8 @@ export type RunControl =
 export interface WorkflowCatalog {
   list(): DefinitionSummary[];
   propose(request: string): WorkflowProposal;
+  /** Whether the workflow cannot start until the project has a feature gate. */
+  needsGates?(workflowId: string): boolean;
 }
 
 /** Tasks as GitHub issues, read and created with `workflows.delivery.tokenEnv`. */
@@ -609,6 +616,7 @@ export function launchTools(
   launcher: ProjectLauncher | null,
   limits: { maxActive: number; maxTokens: number },
   workflows: WorkflowCatalog | null = null,
+  gateContext: GateToolContext | null = null,
 ) {
   const store = new BriefStore(chat.workspace, coordinator.id);
   const failed = (error: string) => ({ success: false, output: "", error });
@@ -756,14 +764,34 @@ export function launchTools(
         issue: IssueRef.optional().describe(
           "Start from this issue: its text is the request, the prompt adds to it, and the pull request closes it",
         ),
+        gates: z
+          .array(GateRequestSchema)
+          .max(20)
+          .optional()
+          .describe(
+            "Gates to save before the run, for a workflow that needs them (list_gates); the card shows them and its approval saves them",
+          ),
         why: Why,
       }),
-      execute: async ({ prompt, workflow, feature, issue, why }) => {
+      execute: async ({ prompt, workflow, feature, issue, gates, why }) => {
         if (!launcher) return failed("This server cannot start workflow runs");
         const blocked = overLimit(chat, state, store.read().launched, limits);
         if (blocked) return failed(blocked);
         const chosen = chooseWorkflow(workflows, prompt, workflow);
         if ("problem" in chosen) return failed(chosen.problem);
+        // Missing gates are settled before the card, so approving it never ends in a refusal.
+        let added: Check[] = [];
+        if (gateContext && gates?.length) {
+          const resolved = resolveGates(gateContext, gates);
+          if (!resolved.ok) return failed(resolved.error);
+          added = resolved.checks;
+        }
+        if (
+          gateContext &&
+          chosen.id &&
+          needsGates(gateContext.workspace, gateContext.config, chosen.id, added)
+        )
+          return failed(missingGatesProblem(gateContext, chosen.id));
         // A closed or unknown issue is refused before the user is asked.
         let task: FlowTask | undefined;
         try {
@@ -771,11 +799,19 @@ export function launchTools(
         } catch (err) {
           return failed(err instanceof Error ? err.message : String(err));
         }
-        const card = workflowCard(chosen, prompt, why, task?.ref);
+        const card = workflowCard(chosen, prompt, why, task?.ref, added.map(gateLine));
         if (!(await coordinator.proposeWorkflow(card)))
           return failed(
             `The user did not approve running workflow ${card.workflow}. Ask what to change, or carry on without a run.`,
           );
+        if (gateContext && added.length)
+          try {
+            await applyGates(gateContext, added);
+          } catch (err) {
+            return failed(
+              `The gates were not saved, so the run did not start: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
         return launch(async () => {
           const { runId } = await launcher.startRun({
             prompt,
@@ -1036,12 +1072,22 @@ export function chooseWorkflow(
   };
 }
 
-/** The "Run workflow?" card; its digest binds the approval to this workflow and request. */
+/** What `start_run` tells the model when the workflow needs gates the project lacks. */
+function missingGatesProblem(ctx: GateToolContext, workflowId: string): string {
+  return [
+    `Workflow ${workflowId} cannot start yet: the project has no feature gate (a check every run must pass, such as the build or the tests). Nothing was shown to the user.`,
+    renderGateSetup(ctx.workspace, ctx.config, [workflowId]),
+    "Ask the user one short question: which detected gates to use (name them with their commands), or, when none was detected, which command checks the work. Then call start_run again with `gates`; the run card shows them and one approval saves them and starts the run. Do not send the user to a settings screen.",
+  ].join("\n\n");
+}
+
+/** The "Run workflow?" card; its digest binds the approval to this workflow, request and gates. */
 export function workflowCard(
   chosen: { id: string | null; summary: DefinitionSummary | null; reason: string },
   prompt: string,
   why: string,
   issue?: string,
+  gates: string[] = [],
 ): WorkflowCardBody {
   const workflow = chosen.id ?? "default";
   const body = {
@@ -1054,8 +1100,18 @@ export function workflowCard(
     why,
     reason: chosen.reason,
     ...(issue ? { issue } : {}),
+    ...(gates.length ? { gates } : {}),
   };
-  return { ...body, digest: hashJson({ workflow, prompt, issue: issue ?? null }) };
+  // The digest is unchanged for a card without gates, so earlier approvals still match.
+  return {
+    ...body,
+    digest: hashJson({
+      workflow,
+      prompt,
+      issue: issue ?? null,
+      ...(gates.length ? { gates } : {}),
+    }),
+  };
 }
 
 /** The workflow list the model reads; with a request, the proposal first. */
@@ -1066,7 +1122,11 @@ export function renderWorkflows(workflows: WorkflowCatalog, request?: string): s
       d.source === "project" ? "project" : "built in",
       d.writes ? "writes files" : "read only",
     ];
-    const problems = d.problems.length ? ` CANNOT START: ${d.problems.join("; ")}` : "";
+    const problems = d.problems.length
+      ? ` CANNOT START: ${d.problems.join("; ")}`
+      : workflows.needsGates?.(d.id)
+        ? " NEEDS GATES: the project has no feature gate yet; read list_gates, ask the user which to use, and pass them to start_run as gates"
+        : "";
     return `- ${d.id} (${flags.join(", ")}): ${d.description.replace(/\s+/g, " ").trim() || "no description"}. Stages: ${d.stages.join(" > ") || "none"}.${problems}`;
   });
   const head: string[] = [];
