@@ -7,6 +7,7 @@ import { canonical, hashBytes } from "../specs/hash.js";
 import { WorkflowFault } from "./errors.js";
 import type { AgentProfile } from "./schemas.js";
 import type { RuntimeState } from "./types.js";
+import { specDigest } from "./spec-digest.js";
 
 export function frozenInstructions(
   workspace: string,
@@ -72,6 +73,8 @@ export function buildWorkflowContext(
   contextWindow = 128000,
   /** A review of the diff alone (the language dimension): the request, without spec or plan. */
   diffOnly = false,
+  /** Send a digest of the spec, its criteria in full behind `read_criterion` (spec-digest.ts). */
+  digestSpec = false,
 ): string {
   const implementation = profile.context === "implementation";
   // The run-level documents come first and the attempt's own input last, so attempts of a run
@@ -87,7 +90,7 @@ export function buildWorkflowContext(
           profile.context === "review" || profile.context === "convergence" || implementation
             ? null
             : state.research,
-        spec: state.spec,
+        spec: digestSpec && state.spec ? specDigest(state.spec) : state.spec,
         plan: state.plan,
         graph:
           implementation && state.graph

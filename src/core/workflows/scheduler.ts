@@ -352,6 +352,7 @@ import {
   splitTestTasks,
   withTestDependencies,
 } from "./sizing.js";
+import { digestsSpec, READ_CRITERION, readCriterionTool } from "./spec-digest.js";
 import { forgetProgress } from "./stall.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
@@ -2672,6 +2673,15 @@ export class WorkflowScheduler {
       task && profile.output === "implementation"
         ? this.attributeCheck(runId, state, policy, task)
         : undefined;
+    // A digested spec (#1019) comes with the tool that reads its criteria in full.
+    const digested = digestsSpec(state.spec, profile, policy);
+    const host =
+      hostTools || digested
+        ? {
+            ...(hostTools ? hostTools(attempt) : {}),
+            ...(digested && state.spec ? { [READ_CRITERION]: readCriterionTool(state.spec) } : {}),
+          }
+        : undefined;
     try {
       const result = await this.executor.execute({
         runId,
@@ -2695,7 +2705,7 @@ export class WorkflowScheduler {
         ...(this.formatHints(runId, state, profile.output, task)
           ? { formatHints: this.formatHints(runId, state, profile.output, task) }
           : {}),
-        ...(hostTools ? { hostTools: hostTools(attempt) } : {}),
+        ...(host ? { hostTools: host } : {}),
         ...(route.effort ? { effort: route.effort } : {}),
       });
       const parsed = outputSchemas[profile.output]?.safeParse(result.output);
@@ -3053,6 +3063,7 @@ export class WorkflowScheduler {
       },
       undefined,
       diffOnly === true,
+      diffOnly !== true && digestsSpec(state.spec, profile, policy),
     );
   }
   /**
