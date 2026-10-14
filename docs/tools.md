@@ -20,6 +20,7 @@ The agent picks tools itself; this page lists what they do. `/tools` turns tools
 | `web_search`, `fetch_page` | Web search and page reading (asks before each search) |
 | `baked_help` | Searches and reads BAKED's own documentation, bundled with the build; see [Asking about BAKED](#asking-about-baked) |
 | `artifact` | Saves, reads and lists the [artifacts](artifacts.md) every project shares, and deploys one to your Vercel; a deploy asks every time, in every approval mode |
+| `baked_setup` | Reads and changes BAKED's own setup for the project; see [Setting BAKED up from chat](#setting-baked-up-from-chat) |
 
 ## Asking about BAKED
 
@@ -32,6 +33,25 @@ Questions about BAKED itself (commands, settings, providers, workflows, the desk
 - `list`: every page with its title and the BAKED version.
 
 It is read-only, so it is available in plan and other read-only modes, in chat on every surface (terminal UI, headless `baked --headless`, desktop chat through `baked serve`). Workflow stages do not get it: their tool lists come from the stage profiles. A new page in `docs/` is added to `src/core/help/bundled-docs.ts`; `tests/docs.test.ts` fails when a page is missing there.
+
+## Setting BAKED up from chat
+
+Ask the chat or the [coordinator](coordinator.md) to set something up ("add a workflow for UI fixes", "write AGENTS.md with our conventions", "connect the docs MCP server") and it does it with `baked_setup`, through the same code as the Setup screens, so the files it writes are the ones `/workflow edit`, `/instructions`, `/memory`, `/skills`, `/packages`, `/hooks`, `/mcp`, `/lsp` and the desktop Setup pages write.
+
+| Area | Actions | What changes |
+| --- | --- | --- |
+| `workflow` | `list`, `show`, `create`, `edit`, `remove` | `baked/workflows/<id>.json`. `create` copies a workflow (`from`, the project default when left out) under a new ID and description; `create` and `edit` take the [workflow editor](workflows/runtime.md#workflow-editor)'s operations (add or remove a check, review, approval or wait stage, transitions, loop rounds, stage options). Gate bindings and auto approval are left to the editor and the gate setup; a definition that would not start is refused with its problems. Built-in workflows stay read only |
+| `agent_context` | `list`, `show`, `write` | An instruction file every agent reads (`AGENTS.md` by default), written whole and checked against the version read before the approval |
+| `memory` | `list`, `edit`, `pin`, `unpin`, `hide`, `restore`, `share_with_runs` | Chat memory, as the Memory screen changes it; new memories are written with the `memory` tool |
+| `skill` | `list`, `show`, `create`, `remove` | A `SKILL.md` in `.baked/skills/<name>/`, or `~/.baked/skills/<name>/` with `scope: "global"`; skills from skills.sh are installed with the `skills` tool |
+| `package` | `list`, `inspect`, `install`, `remove`, `create` | [Packages](packages.md): install from a folder, remove, or write a package folder's manifest |
+| `hook` | `list`, `add`, `remove` | Hooks in `.baked/config.json`, or the user config with `scope: "global"`; Claude Code's files stay read only |
+| `mcp` | `list`, `add`, `edit`, `enable`, `disable`, `remove` | `mcpServers` of the project or global config; servers that already run follow the change |
+| `lsp` | `list`, `install`, `enable`, `disable` | Language servers, installed into BAKED's own folder or switched off in the config |
+
+The agent fills in the values itself (IDs, descriptions, file text, commands, the workflow to start from) from the project and the conversation instead of asking for them one by one; the approval card is the one question, and you approve it or say what to change. Reading needs no approval. Every change is shown first: the workflow diff with its effective gates, the file or `SKILL.md` text, the hook command, the MCP command or URL, and nothing is written until you approve the card (prompt kind `destructive` in the chat, the coordinator's own card there). A setup change outlives the session, so it asks in every approval mode, full access included, and the approval reviewer does not answer it. A session that cannot ask anyone only reads. Plan and architect mode allow `list`, `show` and `inspect`.
+
+In the chat, `baked_setup` is loaded on demand like other non-core tools (`request_tools`); the coordinator always has it.
 
 ## Editing
 
