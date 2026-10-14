@@ -24,7 +24,9 @@ function chatParts(page: Page) {
 async function send(page: Page, text: string): Promise<void> {
   const { composer } = chatParts(page);
   await composer.fill(text);
+  await expect(composer).toHaveValue(text);
   await composer.press("Enter");
+  await expect(composer).toHaveValue("");
 }
 
 const idle = (page: Page) => expect(page.getByRole("button", { name: "Send" })).toBeVisible();
