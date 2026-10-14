@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { resolve } from "node:path";
 
 /**
@@ -12,9 +13,17 @@ import { resolve } from "node:path";
  */
 let _cwd = process.cwd();
 
-/** The active workspace directory (absolute). */
+/** A tool call's own workspace, e.g. a chat session's worktree inside `baked serve`. */
+const scoped = new AsyncLocalStorage<string>();
+
+/** The active workspace directory (absolute): the calling tool's scope, else the process's. */
 export function getCwd(): string {
-  return _cwd;
+  return scoped.getStore() ?? _cwd;
+}
+
+/** Runs `fn` with `getCwd()` returning `dir` for everything it awaits. */
+export function runWithCwd<T>(dir: string, fn: () => T): T {
+  return scoped.run(resolve(dir), fn);
 }
 
 /**

@@ -19,6 +19,7 @@ import {
   canSplitFeature,
   canSwitchModel,
   configurableFeatures,
+  detailStatus,
   estimateBasisText,
   estimateFit,
   featureCounts,
@@ -26,6 +27,7 @@ import {
   featureSteps,
   featureWorkflow,
   featureWorkflowChoices,
+  initiativeIsLive,
   initiativeLine,
   isInitiativeKey,
   mergeProblem,
@@ -432,6 +434,20 @@ function feature(state: InitiativeFeature["state"], extra: Partial<InitiativeFea
 }
 
 describe("initiative view model", () => {
+  test("a rejected split waits for edits, not for an approval", () => {
+    const pending = [{ scope: "initiative", featureId: null, runId: null, requestId: "r", kind: "split_approval", digest: "d" }] as InitiativeView["pendingDecisions"];
+    expect(detailStatus({ status: "awaiting_approval", pendingDecisions: pending }).label).toBe("approve split");
+    expect(detailStatus({ status: "awaiting_approval", pendingDecisions: [] })).toEqual({ label: "split rejected", tone: "warn" });
+    expect(detailStatus({ status: "active", pendingDecisions: [] }).label).toBe("active");
+  });
+
+  test("the screen follows an initiative while the backend splits or runs it", () => {
+    expect(initiativeIsLive("decomposing")).toBe(true);
+    expect(initiativeIsLive("active")).toBe(true);
+    for (const status of ["awaiting_approval", "paused", "completed", "refused"] as const)
+      expect(initiativeIsLive(status)).toBe(false);
+  });
+
   test("feature rows", () => {
     expect(featureRow(feature("accepted"))).toMatchObject({ label: "done", link: "Run" });
     expect(featureRow(feature("needs_decision"))).toMatchObject({ tone: "warn", link: "Decide" });

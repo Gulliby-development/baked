@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { chat } from "../../client/chat.js";
 import type {
   FeatureSize,
@@ -36,12 +36,15 @@ import {
   canSplitFeature,
   canSwitchModel,
   configurableFeatures,
+  detailStatus,
   estimateBasisText,
   estimateFit,
   featureCounts,
   featureRow,
   featureSteps,
   featureWorkflow,
+  INITIATIVE_REFRESH_MS,
+  initiativeIsLive,
   initiativeLine,
   initiativeStatus,
   splitApproval,
@@ -346,6 +349,15 @@ function FeatureBoard({
   );
 }
 
+/** Reads again every few seconds while `live`: the backend splits or runs the initiative. */
+function useLiveRefresh(live: boolean, reload: () => void): void {
+  useEffect(() => {
+    if (!live) return;
+    const timer = setInterval(reload, INITIATIVE_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [live, reload]);
+}
+
 /**
  * The estimate of the split, asked for with a button: a level from 1 to 5 by planned tasks and a
  * token range per feature and in total, measured from this project's runs.
@@ -433,6 +445,7 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Open | null>(null);
+  useLiveRefresh(state.kind === "ready" && initiativeIsLive(state.data.status), reload);
   const [picked, setPicked] = useState<readonly string[]>([]);
   if (state.kind !== "ready")
     return (
@@ -443,7 +456,7 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
       />
     );
   const view = state.data;
-  const status = initiativeStatus(view.status);
+  const status = detailStatus(view);
   const counts = featureCounts(view);
   const split = splitApproval(view);
   const editable = canEditSplit(view);
@@ -534,6 +547,7 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
         </div>
       </div>
       {error && <Alert tone="error">{error}</Alert>}
+      {view.status === "awaiting_approval" && !split && view.reason && <Alert>{view.reason}</Alert>}
       {view.goals.map((goal) => (
         <p key={goal} className="m-0 max-w-[760px] text-muted-foreground leading-[1.6]">
           {goal}
@@ -756,6 +770,10 @@ export function InitiativesSection({ project, id }: SectionProps) {
   );
   const [creating, setCreating] = useState(false);
   const [direct, setDirect] = useState(false);
+  useLiveRefresh(
+    state.kind === "ready" && state.data.some((item) => initiativeIsLive(item.status)),
+    reload,
+  );
   if (state.kind !== "ready") return <LoadState state={state} what="Initiatives" />;
   const items = state.data;
   const newDialog = direct && (

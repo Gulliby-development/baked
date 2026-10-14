@@ -499,6 +499,35 @@ describe("task-end check", () => {
     expect(response.output).toMatchObject({ outcome: "blocked" });
   });
 
+  // R24 stmtsplit-update T007/T008 (#1158): a correction closed a reproduced finding as
+  // already_satisfied twice while its repro still showed the defect.
+  test("an already_satisfied result goes back while a finding's repro still reproduces, a bounded number of times", async () => {
+    const satisfied = (summary: string) => ({ ...implemented(summary), outcome: "already_satisfied" });
+    scriptModel([
+      step(1000, 50, { name: "submit_result", input: satisfied("first") }),
+      step(1000, 50, { name: "submit_result", input: satisfied("second") }),
+      step(1000, 50, { name: "submit_result", input: satisfied("third") }),
+    ]);
+    const { executor, request } = await nativeAttempt(fixturePolicy, "implementation", codeTask);
+    let runs = 0;
+    const response = await executor.execute({
+      ...request,
+      reproCheck: async () => {
+        runs++;
+        return ['Finding F1 still reproduces: `bun -e ...` prints "ready" where "fixed" is expected.'];
+      },
+    });
+    expect(runs).toBe(2);
+    expect(response.output).toMatchObject({ summary: "third" });
+  });
+
+  test("a result whose finding no longer reproduces is accepted", async () => {
+    scriptModel([step(1000, 50, { name: "submit_result", input: implemented("first") })]);
+    const { executor, request } = await nativeAttempt(fixturePolicy, "implementation", codeTask);
+    const response = await executor.execute({ ...request, reproCheck: async () => [] });
+    expect(response.output).toMatchObject({ summary: "first" });
+  });
+
   test("a clean check accepts the first submission", async () => {
     scriptModel([step(1000, 50, { name: "submit_result", input: implemented("first") })]);
     const { executor, request } = await nativeAttempt(fixturePolicy, "implementation", codeTask);

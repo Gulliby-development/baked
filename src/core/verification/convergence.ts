@@ -14,6 +14,7 @@ import {
 import { namesRunDocument } from "../workflows/spec-amendment.js";
 import type { WorkflowStore } from "../workflows/store.js";
 import type { RuntimeState, Task } from "../workflows/types.js";
+import { robustnessShapes, sweepEntryPoints, sweepStep } from "./class-sweep.js";
 import { findingSetHash } from "./convergence-stop.js";
 
 /**
@@ -341,10 +342,14 @@ function reproStep(repro: Review["findings"][number]["repro"]): string {
 /**
  * The last step of a correction for a reviewer's finding (#943): the reviewer shows one case, and
  * the same defect often sits in sibling code paths (todo-cli: `add --help` was repaired, then the
- * re-review found `tag` and `untag`, and the run stopped). One repair should cover them all.
+ * re-review found `tag` and `untag`, and the run stopped). One repair should cover them all. It
+ * goes to the corrections of review passes too, not only of convergence (#1160).
  */
 const SIBLING_STEP =
   "\nThe review shows one case. Look for the same defect in sibling code paths (other commands, options, branches or callers that share the faulty pattern) and fix every case you find, checking each one as you checked the reported one.";
+
+/** The group key prefix of a class sweep's findings (#1160). */
+const SWEEP_KEY = "sweep\n";
 
 const SEVERITY_ORDER = ["critical", "high", "medium", "low"];
 
@@ -494,6 +499,13 @@ export function appendCorrections(
   // A finding on a run document has no task to correct it: its spec amendment, recorded before
   // this call, settles it (#1066).
   const plannedPaths = state.rootGraph.tasks.flatMap((t) => t.writes.map((w) => w.path));
+  // With `classSweep`, the robustness findings of a review or convergence pass become one task per
+  // profile that sweeps the class across its entry points (#1160).
+  const sweeping = (finding: Review["findings"][number]): boolean =>
+    policy.classSweep === true &&
+    (kind === "convergence" || reviewPass) &&
+    !checkRunFinding(finding) &&
+    robustnessShapes(finding).length > 0;
   const documents = ordered.filter((f) => namesRunDocument(f, plannedPaths));
   for (const finding of ordered) {
     if (documents.includes(finding)) continue;
@@ -518,6 +530,7 @@ export function appendCorrections(
       key = groups.has(fileKey) ? fileKey : (runGroups.get(run) ?? fileKey);
       runGroups.set(run, key);
     }
+    if (sweeping(finding)) key = `${SWEEP_KEY}${base.profileId}`;
     const existing = groups.get(key);
     const group = existing
       ? {
@@ -587,12 +600,28 @@ export function appendCorrections(
     }
     // The planned tests of the files the correction writes: a fix often needs its regression
     // assertion there (junitdigest 3e5be74b T014 could not add one to internal/cli/cli_test.go).
+    // A sweep may write its entry points, and its first attempt is focused on them (#765).
+    if (group.findings.some(sweeping)) {
+      const entries = sweepEntryPoints(group.findings, root, group.base.profileId, group.base);
+      for (const path of entries) join(group, path);
+      for (const finding of group.findings.filter(sweeping))
+        state.repairScope[finding.id] = unique([
+          ...(state.repairScope[finding.id] ?? []),
+          ...entries,
+        ]);
+    }
     const written = writable(group);
     for (const path of planned)
       if (written.some((source) => isTestOf(path, source))) join(group, path);
   }
-  const additions = [...groups.values()].map(({ base, bases, findings: grouped }) => {
+  const additions = [...groups].map(([key, { base, bases, findings: grouped }]) => {
     const ids = grouped.map((f) => f.id);
+    const sweep = key.startsWith(SWEEP_KEY)
+      ? sweepStep(
+          unique(grouped.flatMap(robustnessShapes)),
+          sweepEntryPoints(grouped, root, base.profileId, base),
+        )
+      : "";
     return {
       ...base,
       writes: mergeCorrectionWrites(
@@ -605,9 +634,10 @@ export function appendCorrections(
       description: grouped
         .map(
           (finding) =>
-            `${grouped.length > 1 ? `Finding ${finding.id}: ` : ""}${finding.claim}\nImpact: ${finding.impact}\nProposed fix: ${finding.suggestedFix}${reproStep(finding.repro)}${kind === "convergence" && !checkRunFinding(finding) ? SIBLING_STEP : ""}`,
+            `${grouped.length > 1 ? `Finding ${finding.id}: ` : ""}${finding.claim}\nImpact: ${finding.impact}\nProposed fix: ${finding.suggestedFix}${reproStep(finding.repro)}${(kind === "convergence" || reviewPass) && !sweep && !checkRunFinding(finding) ? SIBLING_STEP : ""}`,
         )
-        .join("\n\n"),
+        .join("\n\n")
+        .concat(sweep),
       dependsOn: [],
       origin: kind,
       findingIds: ids,
