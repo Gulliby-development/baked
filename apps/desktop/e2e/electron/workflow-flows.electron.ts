@@ -172,6 +172,38 @@ test("a workflow duplicated in the editor is saved to the project and runs", asy
   expect(readFileSync(join(root, "e2e-output.txt"), "utf8")).toBe("ready");
 });
 
+test("a project workflow is deleted from the gallery after a confirmation", async ({
+  workspace,
+  launch,
+}) => {
+  const root = workspace.project("gamma");
+  runnableProject(root);
+  const { page } = await launch(scripted());
+  await openProject(page);
+  await nav(page).getByRole("link", { name: "Workflows" }).click();
+  await page.getByRole("link", { name: "quick", exact: true }).click();
+  await page.getByRole("button", { name: "Duplicate as custom" }).click();
+  await page.getByRole("button", { name: "Save…" }).click();
+  await page.getByRole("dialog", { name: "Write the workflow file?" }).getByRole("button", { name: "Write file" }).click();
+  const file = join(root, "baked", "workflows", "quick-custom.json");
+  await expect.poll(() => existsSync(file)).toBe(true);
+
+  await nav(page).getByRole("link", { name: "Workflows" }).click();
+  // Built-in workflows offer no delete; the project's own copy does.
+  await expect(page.getByRole("button", { name: "Delete quick", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Delete quick-custom" }).click();
+  const dialog = page.getByRole("dialog", { name: "Delete workflow quick-custom?" });
+  await dialog.getByRole("button", { name: "Keep" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(existsSync(file)).toBe(true);
+
+  await page.getByRole("button", { name: "Delete quick-custom" }).click();
+  await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Deleted baked/workflows/quick-custom.json." })).toBeVisible();
+  await expect(page.getByRole("link", { name: "quick-custom", exact: true })).toHaveCount(0);
+  expect(existsSync(file)).toBe(false);
+});
+
 test("two runs in their own worktrees work at the same time", async ({ workspace, launch }) => {
   const root = workspace.project("gamma");
   runnableProject(root);
