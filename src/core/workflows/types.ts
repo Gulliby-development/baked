@@ -233,6 +233,11 @@ export const RuntimeStateSchema = z
      * run blocks with `owner_lost`.
      */
     taskRestarts: z.record(z.string(), z.number().int().nonnegative()).default({}),
+    /**
+     * Extra restarts per task for an `implemented` result whose unresolved items are edits of its
+     * own files that did not apply (#1036); granted once even after the task's restart.
+     */
+    taskEditRetries: z.record(z.string(), z.number().int().nonnegative()).default({}),
     /** Times a run blocked with `owner_lost` was resumed without a person (`clarification: assume`). */
     ownerLostResumes: z.number().int().nonnegative().default(0),
     /** Times a run blocked with `step_stalled` resumed by itself (`workflows.stall.autoResumes`). */

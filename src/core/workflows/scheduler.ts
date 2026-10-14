@@ -277,6 +277,7 @@ import {
   abortableDelay,
   accountRefusal,
   endedOnProse,
+  failedOwnEdits,
   isCapacityError,
   isInputTooLarge,
   isTransient,
@@ -545,6 +546,8 @@ function isStoreError(error: unknown): boolean {
   const code = (error as { code?: unknown }).code;
   return error.name === "SQLiteError" || (typeof code === "string" && code.startsWith("SQLITE_"));
 }
+/** The start of the restart reason for an edit of the task's own file that did not apply. */
+const EDIT_RETRY = "an edit of its own file did not apply";
 const incompleteReason = (unresolved: string[]): string =>
   unresolved.length ? `: ${unresolved.slice(0, 3).join("; ").slice(0, 500)}` : "";
 /** Why a result that changed nothing was not accepted (#972: the message had no detail). */
@@ -2072,7 +2075,12 @@ export class WorkflowScheduler {
     changed: string[],
     proseEnd = false,
   ): string | null {
-    if ((state.taskRestarts[task.id] ?? 0) > 0) return null;
+    const failedEdits = failedOwnEdits(result, task.writes);
+    const editRetry = failedEdits.length
+      ? `${EDIT_RETRY}: ${failedEdits.join(", ")}; the next attempt starts from the edits that applied`
+      : null;
+    if ((state.taskRestarts[task.id] ?? 0) > 0)
+      return (state.taskEditRetries[task.id] ?? 0) === 0 ? editRetry : null;
     const unfinished =
       ["blocked", "failed"].includes(result.outcome) || result.unresolved.length > 0;
     if (!unfinished) return null;
@@ -2087,7 +2095,7 @@ export class WorkflowScheduler {
       usage.steps.reduce((sum, step) => sum + step.toolCalls, 0) === 0
     )
       return "its session made no tool call and submitted no result, so it had no working tools";
-    if (policy.clarification !== "assume") return null;
+    if (policy.clarification !== "assume") return editRetry;
     return `the worker ended ${result.outcome === "implemented" ? "unfinished" : result.outcome} under clarification assume`;
   }
   /** The worker's own account of the attempt a restart replaces, for the fresh session's prompt. */
@@ -4796,7 +4804,11 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     carriedPaths: string[],
     account?: { summary: string; unresolved: string[] },
   ): boolean {
-    if ((state.taskRestarts[taskId] ?? 0) > 0) return false;
+    // A failed edit of the task's own file gets one attempt of its own, also after a restart (#1036).
+    const editRetry = reason.startsWith(EDIT_RETRY);
+    if (editRetry && (state.taskEditRetries[taskId] ?? 0) > 0) return false;
+    if (!editRetry && (state.taskRestarts[taskId] ?? 0) > 0) return false;
+    if (editRetry) state.taskEditRetries[taskId] = 1;
     // What the restart reuses of the attempt it replaces (#843): the files it carries and the
     // tokens that attempt spent, which count as reused only when files are carried.
     const interruptedTokens = this.store
