@@ -15,6 +15,7 @@ import {
   checkResultText,
   commandLabel,
   draftToCheck,
+  externalUrl,
   frozenRunState,
   gateMark,
   joinCommand,
@@ -222,5 +223,17 @@ describe("runs that froze a changed file", () => {
       "paused; resuming needs a revised plan",
     );
     expect(frozenRunState({ status: "completed" }).canRevise).toBe(false);
+  });
+});
+
+describe("externalUrl", () => {
+  test("makes a provider's bare key page an https link", () => {
+    expect(externalUrl("platform.openai.com")).toBe("https://platform.openai.com");
+    expect(externalUrl("github.com/settings/tokens")).toBe("https://github.com/settings/tokens");
+  });
+
+  test("keeps a link that already names its scheme", () => {
+    expect(externalUrl("https://console.anthropic.com")).toBe("https://console.anthropic.com");
+    expect(externalUrl("http://localhost:8080/keys")).toBe("http://localhost:8080/keys");
   });
 });
