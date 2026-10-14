@@ -127,6 +127,7 @@ import {
   fixerCommand,
   fixerTiers,
   isCodePath,
+  isStaticCheck,
   isWholeUnitCheck,
   isWholeUnitFormatter,
   taskCheckList,
@@ -4026,9 +4027,10 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           )
         : "";
       const focus = correctionFocus(this.store, runId, state, task);
+      const diagnostics = staticCorrection(this.store, runId, policy, task);
       const narrow = state.widenedCorrections.includes(task.id)
         ? null
-        : narrowCorrectionWrites(task, focus.files);
+        : narrowCorrectionWrites(task, focus.files, !diagnostics);
       // The task as this attempt may write it: a correction's first attempt only where its
       // findings point.
       const scoped: Task = narrow ? { ...task, writes: narrow } : task;
@@ -4095,6 +4097,11 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
                     files: focus.files,
                     symbols: focus.symbols,
                     note: "The findings this task corrects point at these files and symbols; they come first in taskFiles. Start the fix there and read the other written files only when the fix needs them.",
+                    ...(diagnostics
+                      ? {
+                          diagnostics: STATIC_DIAGNOSTICS,
+                        }
+                      : {}),
                     ...(narrow
                       ? {
                           scope: {
@@ -5152,7 +5159,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           entry.extra && typeof entry.extra === "object"
             ? {
                 ...entry.extra,
-                ...(await this.correctionContext(runId, state, root, task)),
+                ...(await this.correctionContext(runId, state, policy, root, task)),
                 ...(await this.libraryDocsContext(runId, policy, root, task)),
                 ...(earlierEdits ? { earlierEdits } : {}),
                 ...this.affectedTestsContext(root, state, policy, task),
@@ -5992,6 +5999,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
   private async correctionContext(
     runId: string,
     state: RuntimeState,
+    policy: RunPolicy,
     root: string,
     task: Task,
   ): Promise<Record<string, unknown>> {
@@ -6015,6 +6023,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         files: focus.files,
         symbols: focus.symbols,
         note: "The findings this task corrects point at these files and symbols. Start the fix there and read the other written files only when the fix needs them.",
+        ...(staticCorrection(this.store, runId, policy, task)
+          ? { diagnostics: STATIC_DIAGNOSTICS }
+          : {}),
       },
     };
   }
@@ -6716,8 +6727,16 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         `out_of_scope_failure: check ${check.id} fails on ${outside.slice(0, 5).join(", ")}, which ${task.id} may not write and no task of its profile owns (evidence ${checked.evidenceId}). Fix those files or revise the plan, then resume.`,
         { reason: "no_progress" },
       );
+    // A linter or formatter names each file it rejects, and its diagnostics are fixed in those
+    // lines: the correction starts there, not from the whole task (cfgtrace 424e275b T013: 1.56M
+    // tokens and two new test files for three ruff rules, #1067).
+    const diagnosed =
+      !regression && isStaticCheck(check) && !isTestCheck(check)
+        ? named.filter((path) => task.writes.some((w) => w.path === path))
+        : [];
+    const scope = [...diagnosed, ...owned];
     const findingId = newId();
-    if (owned.length) state.repairScope[findingId] = owned;
+    if (scope.length) state.repairScope[findingId] = scope;
     taskFailures.push({
       id: findingId,
       kind: "correctness",
@@ -6733,9 +6752,11 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       impact: "Dependent tasks cannot run",
       suggestedFix: regression
         ? `Fix the change ${task.id} made so the existing tests pass again and repeat ${check.id}; change a test only when the task's requirements change the behavior it expects.`
-        : owned.length
-          ? `Fix ${task.id} and the files the check output names (${owned.slice(0, 5).join(", ")}) and repeat ${check.id}.`
-          : `Fix ${task.id} within its approved paths and repeat ${check.id}.`,
+        : diagnosed.length
+          ? `Fix the ${check.id} diagnostics in the files the check output names (${scope.slice(0, 5).join(", ")}) and repeat ${check.id}. Change only what the diagnostics require: no behavior changes and no new tests.`
+          : owned.length
+            ? `Fix ${task.id} and the files the check output names (${owned.slice(0, 5).join(", ")}) and repeat ${check.id}.`
+            : `Fix ${task.id} within its approved paths and repeat ${check.id}.`,
     });
     return undefined;
   }
@@ -10048,10 +10069,14 @@ export function correctionFocus(
  * findings point. A correction carries every file of the tasks it corrects (cfgtrace 4018a791:
  * 18 files, LICENSE among them), so the first attempt starts small and a failed one widens.
  */
-export function narrowCorrectionWrites(task: Task, focus: string[]): Task["writes"] | null {
+export function narrowCorrectionWrites(
+  task: Task,
+  focus: string[],
+  tests = true,
+): Task["writes"] | null {
   if (task.origin === "planned" || !focus.length) return null;
   const narrow = task.writes.filter(
-    (w) => focus.includes(w.path) || focus.some((source) => isTestOf(w.path, source)),
+    (w) => focus.includes(w.path) || (tests && focus.some((source) => isTestOf(w.path, source))),
   );
   return narrow.length && narrow.length < task.writes.length ? narrow : null;
 }
@@ -10084,6 +10109,33 @@ function taskSize(
 /** The checks run after a task, in policy order: its task-scope checks and the static ones covering its code. */
 const taskChecks = (policy: RunPolicy, task: Task): Check[] => taskCheckList(policy, task);
 /** The check a host finding says a task failed (`applyTaskCheck`), or null for another claim. */
+const STATIC_DIAGNOSTICS =
+  "Every finding is a linter, formatter or type checker diagnostic in these files. Fix the reported lines and rerun the check; do not probe the task's criteria, change behavior, or add or rewrite tests.";
+
+/**
+ * Whether every finding a correction fixes is a failed static check (a linter, formatter or type
+ * checker): its fix lies in the lines the diagnostics name, so its first attempt writes only the
+ * files the output names, without their tests (#1067).
+ */
+export function staticCorrection(
+  store: WorkflowStore,
+  runId: string,
+  policy: RunPolicy,
+  task: Task,
+): boolean {
+  if (task.origin === "planned" || !task.findingIds.length) return false;
+  const findings = store.findings(runId).filter((f) => task.findingIds.includes(f.id));
+  return (
+    findings.length === task.findingIds.length &&
+    findings.every((f) => {
+      const claim = (JSON.parse(f.body_json) as { claim?: unknown }).claim;
+      if (typeof claim !== "string" || claim.includes(" broke existing tests: ")) return false;
+      const id = /^Required check (\S+) failed$/.exec(claim)?.[1] ?? taskCheckOfClaim(claim);
+      const check = policy.checks.find((c) => c.id === id);
+      return Boolean(check && isStaticCheck(check) && !isTestCheck(check));
+    })
+  );
+}
 const taskCheckOfClaim = (claim: unknown): string | null =>
   typeof claim === "string"
     ? (/^Task \S+ (?:required check (\S+) failed$|broke existing tests: check (\S+) passed )/

@@ -33,8 +33,10 @@ import {
   ruleClaimText,
   ruleFindingKey,
 } from "../src/core/workflows/quality/rules.js";
-import type { RuntimeState } from "../src/core/workflows/schemas.js";
+import { staticCorrection } from "../src/core/workflows/scheduler.js";
+import type { Check, RunPolicy, RuntimeState } from "../src/core/workflows/schemas.js";
 import type { WorkflowStore } from "../src/core/workflows/store.js";
+import type { Task } from "../src/core/workflows/types.js";
 import {
   createTaskWorktree,
   ensureRunWorktree,
@@ -61,6 +63,17 @@ import {
 
 type Stack = "bun" | "npm" | "python" | "go" | "rust" | "maven" | "dotnet";
 const STACKS: Stack[] = ["bun", "npm", "python", "go", "rust", "maven", "dotnet"];
+
+/** The gates a failure of which is corrected only in the files its output names (#1067). */
+const STATIC_FIXES: Record<Stack, string[]> = {
+  bun: ["typecheck", "lint"],
+  npm: ["lint"],
+  python: ["ruff"],
+  go: ["go-vet"],
+  rust: ["cargo-fmt", "cargo-clippy"],
+  maven: [],
+  dotnet: ["dotnet-format"],
+};
 
 /** Cells known to be wrong today: `<stack>:<cell>` -> issue. */
 const KNOWN: Record<string, string> = {};
@@ -329,6 +342,19 @@ for (const stack of STACKS) {
 
     // `allowNewDependencies: false` relies on this to see a dependency added to the stack's
     // manifest (#802).
+    // A failed linter, formatter or type checker is corrected in the files its output names,
+    // without their tests and without the planned task's whole scope; a test gate is not (#1067).
+    cell(stack, "lint-corrective-scope", () => {
+      const correction = (check: Check): boolean => {
+        const store = {
+          findings: () => [{ id: "F1", body_json: JSON.stringify({ claim: `Task T001 required check ${check.id} failed` }) }],
+        } as unknown as WorkflowStore;
+        const task = { origin: "repair", findingIds: ["F1"] } as Task;
+        return staticCorrection(store, "run", { checks: [check] } as RunPolicy, task);
+      };
+      expect(preselected().filter(correction).map((c) => c.id)).toEqual(STATIC_FIXES[stack]);
+    });
+
     cell(stack, "dependency-check", () => {
       const { declared } = addedDependencies([
         { path: fixture.manifest.path, before: fixture.manifest.before, content: fixture.manifest.after },
