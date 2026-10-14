@@ -636,7 +636,7 @@ export class ChatSession {
     this.mode = modes.mode;
     this.permissions = modes.permissions;
     this.effort = tab.effort ?? "default";
-    this.contextSize = tab.contextSize ?? "default";
+    this.contextSize = meta.kind === "coordinator" ? "max" : (tab.contextSize ?? "default");
     this.usage = {
       input: tab.tokenUsage.prompt,
       output: tab.tokenUsage.completion,
@@ -728,7 +728,8 @@ export class ChatSession {
       effort: this.effort,
       permissions: this.permissions,
       contextSize: this.contextSize,
-      contextSizes: this.model ? getModelContextSizes(this.model) : [],
+      // The coordinator always runs with the largest window, so it offers no choice.
+      contextSizes: this.model && !this.isCoordinator ? getModelContextSizes(this.model) : [],
       contextTokens: this.model
         ? chatContextTokens(this.model, this.contextSize, this.sizeOptions)
         : null,
@@ -844,6 +845,11 @@ export class ChatSession {
     if (changes.model !== undefined) this.model = changes.model;
     if (changes.mode !== undefined && this.isCoordinator && changes.mode !== COORDINATOR_MODE)
       throw new ChatError("INVALID_REQUEST", "The coordinator always runs in architect mode");
+    if (changes.contextSize !== undefined && this.isCoordinator && changes.contextSize !== "max")
+      throw new ChatError(
+        "INVALID_REQUEST",
+        "The coordinator always runs with the largest context window",
+      );
     if (changes.mode !== undefined) {
       // The legacy `auto` mode is the default mode with full access.
       const modes = splitLegacyMode(changes.mode, changes.permissions ?? this.permissions);
@@ -1764,7 +1770,8 @@ export class ChatSession {
       bakeMode: this.mode,
       effort: this.effort,
       permissionMode: this.permissions,
-      contextSize: this.contextSize === "default" ? undefined : this.contextSize,
+      contextSize:
+        this.contextSize === "default" || this.isCoordinator ? undefined : this.contextSize,
       planMode: this.mode === "plan",
       tokenUsage: {
         ...this.tab.tokenUsage,

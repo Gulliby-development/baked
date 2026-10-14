@@ -74,7 +74,7 @@ bun test tests/feature-parity.test.ts
 | Files changed in a session and diff stats | `/changes` | `--diff` | `/v1/sessions/:id/diff` | `project/chat` |
 | Reasoning effort per chat | `/effort` | `--effort` | `/v1/sessions/:id`, `/v1/models` | `project/chat` |
 | Permission mode per chat: manual, auto or full access | `/permissions` | `--permissions` | `/v1/sessions/:id` | `project/chat`, `project/coordinator` |
-| Context window size per chat; the coordinator defaults to the largest | `/context-size` | `--context` | `/v1/sessions/:id`, `/v1/models` | `project/chat`, `project/coordinator` |
+| Context window size per chat; the coordinator always runs with the largest | `/context-size` | `--context` | `/v1/sessions/:id`, `/v1/models` | `project/chat` |
 | Context and cost dashboard for a chat | `/context`, `/context clear`, `/status` | Not needed: --json reports usage of a one-shot run | `/v1/sessions/:id` | `project/chat` |
 
 ### Models and providers

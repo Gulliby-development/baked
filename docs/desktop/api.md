@@ -35,7 +35,7 @@ A session is a chat conversation stored in `.baked/sessions/ID/` of the project,
 type Mode = "default" | "architect" | "plan" | "auto";   // "plan" needs the plan-mode capability
 type Effort = "default" | "low" | "medium" | "high" | "xhigh" | "max";  // needs the chat-effort capability
 type Permissions = "manual" | "auto" | "full";              // needs the permission-modes capability
-type ContextSize = "default" | "max" | number;  // a window in tokens; "default" is the largest for the coordinator
+type ContextSize = "default" | "max" | number;  // a window in tokens; the coordinator always reports "max" and refuses another size
 type SessionState = "idle" | "working" | "waiting";        // waiting: a prompt waits for a person
 
 interface SessionSummary {
