@@ -51,6 +51,7 @@ import {
   passesWithNotes,
   REPEAT_NOTE,
   requiredChecksPass,
+  reviewLimitAccepts,
 } from "../verification/convergence-stop.js";
 import { type DocExampleResult, isDocFile, runDocExamples } from "../verification/doc-examples.js";
 import {
@@ -1725,7 +1726,22 @@ export class WorkflowScheduler {
                 v2 ? this.v2Reviewers(runId, state, v2) : this.v1Reviewers(state, policy),
                 !v2 || v2.definition.stages.some((s) => s.type === "reflection"),
               );
-              if (failures.length) {
+              // With the review rounds used up and every required check green, findings below
+              // high are known limitations rather than a no_progress stop: stmtsplit-update
+              // cae4291d and cfgtrace a657dc4d ended blocked on one low or medium finding (#1157).
+              if (
+                failures.length &&
+                reviewLimitAccepts(
+                  this.store.run(runId).review_rounds ?? 0,
+                  policy,
+                  failures,
+                  requiredChecksPass(this.store, runId, state, policy),
+                )
+              )
+                this.store.transaction(() =>
+                  acceptResidual(this.store, runId, state, { findings: failures }, "review"),
+                );
+              else if (failures.length) {
                 repairFindings = { findings: failures, kind: "repair" };
                 advance = false;
               }

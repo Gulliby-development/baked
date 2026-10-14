@@ -277,6 +277,27 @@ export function requiredChecksPass(
   });
 }
 
+/**
+ * Whether a review pass's findings become known limitations instead of a correction (#1157): the
+ * review rounds (`maxRepairRounds`) are used, every required check passed on the current
+ * snapshot, and no finding is critical or high. Such a correction would be refused as
+ * `no_progress`, yet each round of cfgtrace a657dc4d resolved what it was given and the next pass
+ * found a new medium case; a fixed count cannot tell that from a loop.
+ */
+export function reviewLimitAccepts(
+  reviewRounds: number,
+  policy: RunPolicy,
+  findings: Pick<Finding, "severity">[],
+  checksPass: boolean,
+): boolean {
+  return (
+    checksPass &&
+    findings.length > 0 &&
+    reviewRounds >= policy.maxRepairRounds &&
+    findings.every((f) => f.severity === "medium" || f.severity === "low")
+  );
+}
+
 /** Distinct findings: a finding that repeats another counts with it. */
 const distinctFindings = (findings: ConvergenceRequestBody["findings"]): number =>
   new Set(findings.map((f) => f.repeatOf ?? f.id)).size;
