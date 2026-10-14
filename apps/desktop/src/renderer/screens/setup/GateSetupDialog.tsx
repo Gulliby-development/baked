@@ -54,12 +54,14 @@ function SetupFlow({
   onDone,
   kind: initialKind = "command",
   onCreated,
+  onAddCheck,
 }: {
   projectKey: string;
   onSaved: () => void;
   onDone: () => void;
   kind?: GateDraftKind;
   onCreated?: (gateId: string) => void;
+  onAddCheck?: () => void;
 }) {
   const [step, setStep] = useState<GateSetupStep>("kind");
   const [kind, setKind] = useState<GateDraftKind>(initialKind);
@@ -222,6 +224,23 @@ function SetupFlow({
                   Where it runs
                 </legend>
                 {!places && <span className="text-[12px] text-dim-foreground">Loading…</span>}
+                {places?.needsChecks && (
+                  <Alert role="status" className="flex flex-col items-start gap-2">
+                    <span>{places.needsChecks}</span>
+                    {onAddCheck && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => {
+                          onAddCheck();
+                          onDone();
+                        }}
+                      >
+                        New check
+                      </Button>
+                    )}
+                  </Alert>
+                )}
                 {places?.places.map((p) => (
                   <button
                     key={p.key}
@@ -350,6 +369,7 @@ export function GateSetupDialog({
   onSaved,
   kind,
   onCreated,
+  onAddCheck,
 }: {
   projectKey: string;
   open: boolean;
@@ -359,6 +379,8 @@ export function GateSetupDialog({
   kind?: GateDraftKind;
   /** Called with the saved gate's ID instead of the step that places it in a workflow file. */
   onCreated?: (gateId: string) => void;
+  /** Opens the new check form, offered when the workflow's check stage has no checks yet. */
+  onAddCheck?: () => void;
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -370,6 +392,7 @@ export function GateSetupDialog({
             onDone={() => onOpenChange(false)}
             kind={kind}
             onCreated={onCreated}
+            onAddCheck={onAddCheck}
           />
         )}
       </DialogContent>
