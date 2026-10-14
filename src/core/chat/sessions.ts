@@ -83,6 +83,7 @@ import {
   withHookContext,
 } from "../hooks/lifecycle.js";
 import { chatContextTokens, getModelContextSizes, withContextSize } from "../llm/context-sizes.js";
+import type { MemoryManager } from "../memory/manager.js";
 import {
   DEFAULT_PERMISSION_MODE,
   isPermissionMode,
@@ -91,6 +92,7 @@ import {
 import { SessionManager } from "../sessions/manager.js";
 import { rebuildCoreMessages as rebuildCore } from "../sessions/rebuild.js";
 import type { SessionMeta, TabMeta } from "../sessions/types.js";
+import { createSetupTool, SETUP_TOOL } from "../tools/baked-setup.js";
 import { watchOptions } from "../watch/config.js";
 import { WatchController, type WatchTurn, watchTurnDisplay } from "../watch/controller.js";
 import { projectDefinitions, proposeForWorkspace } from "../workflows/v2/propose.js";
@@ -1839,6 +1841,12 @@ export class ChatService {
 
   private projectState: ProjectStateSource | null = null;
   private launcher: ProjectLauncher | null = null;
+  private memorySource: (() => Promise<MemoryManager>) | null = null;
+
+  /** The chat memory the coordinator's setup tool edits; the API server sets it. */
+  setMemorySource(source: (() => Promise<MemoryManager>) | null): void {
+    this.memorySource = source;
+  }
   private watch: ReturnType<typeof setInterval> | null = null;
   private scheduleTimer: ReturnType<typeof setInterval> | null = null;
   private syncing = false;
@@ -1969,6 +1977,14 @@ export class ChatService {
         this.workflowCatalog(),
       ),
       ...controlTools(this, coordinator, this.projectState, this.launcher),
+      // Setup changes ask the person on a card, as launches do; reading needs no approval.
+      [SETUP_TOOL]: createSetupTool({
+        cwd: this.workspace,
+        config: () => this.options.config,
+        approve: (text) => coordinator.confirm(text),
+        ...(this.memorySource ? { memory: this.memorySource } : {}),
+        ...(this.options.homeDir ? { homeDir: this.options.homeDir } : {}),
+      }),
     };
   }
 

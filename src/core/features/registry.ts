@@ -194,6 +194,22 @@ export const FEATURES: readonly Feature[] = [
     ],
   },
   {
+    id: "chat-setup",
+    group: "Chat and sessions",
+    title:
+      "Chat and coordinator set BAKED up on request: workflows, agent context, memory, skills, packages, hooks, MCP and language servers, each change on an approval card",
+    tui: [
+      "/coordinator: baked_setup changes shown on an approval card",
+      "key Enter: ask in the chat; baked_setup loads on demand and asks like a destructive action",
+    ],
+    cli: [
+      "baked session coordinator send: answers the setup card (--yes or a terminal)",
+      "--prompt: baked_setup asks like any destructive action",
+    ],
+    api: ["/v1/sessions/:id/prompts: answers the setup prompt"],
+    desktop: ["project/coordinator: setup approval card", "project/chat: setup approval card"],
+  },
+  {
     id: "coordinator-session-worktrees",
     group: "Chat and sessions",
     title: "Editing sessions the coordinator launches work in their own Git worktree and branch",
