@@ -438,7 +438,7 @@ describe("workflow parallel writers", () => {
     const done = await fx.complete(run.runId);
     expect(fx.lastError(run.runId)).not.toContain("outside its write scope");
     expect(done.status).toBe("completed");
-    expect(readFileSync(join(fx.tree(run.runId), "shared.txt"), "utf8")).toBe("one\ntwo\n");
+    expect(readFileSync(join(fx.tree(run.runId), "shared.txt"), "utf8").replace(/\r\n/g, "\n")).toBe("one\ntwo\n");
     expect(existsSync(join(fx.tree(run.runId), "stray.txt"))).toBe(false);
     const record = fx.store.artifacts(run.runId).find((a) => a.logical_path.startsWith("tasks/T002/reverted-outside-"));
     const reverted = JSON.parse(fx.store.readArtifact(run.runId, record?.id ?? "")) as { reverted: { path: string; before: string | null; after: string | null }[] };
@@ -454,7 +454,7 @@ describe("workflow parallel writers", () => {
     const done = await fx.complete(run.runId);
     expect(fx.lastError(run.runId)).not.toContain("outside its write scope");
     expect(done.status).toBe("completed");
-    expect(readFileSync(join(fx.tree(run.runId), "shared.txt"), "utf8")).toBe("one\ntwo\n");
+    expect(readFileSync(join(fx.tree(run.runId), "shared.txt"), "utf8").replace(/\r\n/g, "\n")).toBe("one\ntwo\n");
     expect(fx.store.artifacts(run.runId).some((a) => a.logical_path.startsWith("tasks/T002/reverted-outside-"))).toBe(true);
   });
 
