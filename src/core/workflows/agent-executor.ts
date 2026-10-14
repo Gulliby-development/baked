@@ -187,6 +187,30 @@ export function reportedNoTokens(steps: readonly StepLike[]): boolean {
   );
 }
 
+/**
+ * The tokens of an attempt whose provider reported none, from the bytes it sent and received at
+ * about 4 bytes a token: the prompt once per step, and the text and tool call arguments of the
+ * steps (the submitted result among them). Codex spec and plan revisions recorded 0 tokens and
+ * $0 for real work (bench round 20, colfit 448c01af: a 15 KB revised spec, #1057).
+ */
+export function estimateUnreportedUsage(
+  prompt: string,
+  steps: readonly StepLike[],
+  text: string,
+): { inputTokens: number; outputTokens: number } {
+  const tokens = (bytes: number) => Math.ceil(bytes / 4);
+  const calls = steps.flatMap((step) => step.toolCalls) as { input?: unknown; args?: unknown }[];
+  const argumentBytes = calls.reduce((sum, call) => {
+    const value = call?.input ?? call?.args;
+    if (value === undefined) return sum;
+    return sum + Buffer.byteLength(typeof value === "string" ? value : JSON.stringify(value));
+  }, 0);
+  return {
+    inputTokens: tokens(Buffer.byteLength(prompt) * Math.max(1, steps.length)),
+    outputTokens: tokens(Buffer.byteLength(text) + argumentBytes),
+  };
+}
+
 function sumUsage(steps: readonly StepLike[]): Partial<LanguageModelUsage> {
   const add = (a: number | undefined, b: number | undefined) =>
     a === undefined ? b : b === undefined ? a : a + b;
@@ -1195,8 +1219,11 @@ export class NativeAgentExecutor implements AgentExecutor {
           }
         }
       }
+      const estimated = reportedNoTokens(result.steps)
+        ? estimateUnreportedUsage(request.prompt, result.steps, result.text)
+        : undefined;
       const usage = budget.record(result.steps, submitted !== undefined, meta);
-      writeUsage(usage);
+      writeUsage(estimated ? { ...usage, estimatedUsage: estimated } : usage);
       if (usage.stopReason === "tokens")
         throw attemptCapFault(request.profile.id, usage.totalTokens, usage.maxTokens);
       if (submitted === undefined) {
@@ -1290,9 +1317,12 @@ export class NativeAgentExecutor implements AgentExecutor {
       }
       return {
         output: submitted,
-        inputTokens: result.usage.inputTokens ?? null,
-        outputTokens: result.usage.outputTokens ?? null,
-        ...(reportedNoTokens(result.steps) ? { usageComplete: false } : {}),
+        ...(estimated
+          ? { ...estimated, usageComplete: false, usageEstimated: true }
+          : {
+              inputTokens: result.usage.inputTokens ?? null,
+              outputTokens: result.usage.outputTokens ?? null,
+            }),
       };
     } finally {
       request.signal.removeEventListener("abort", stopModelCalls);

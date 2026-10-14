@@ -122,6 +122,7 @@ export function runUsageMarkdown(report: RunUsageReport): string {
     (sum, attempt) => sum + (attempt.unreportedResponses ?? 0),
     0,
   );
+  const estimated = report.attempts.filter((attempt) => attempt.usageEstimated).length;
   interface Row {
     attempts: number;
     tokens: number;
@@ -211,6 +212,11 @@ export function runUsageMarkdown(report: RunUsageReport): string {
     `- Tokens: ${count(total.tokens)} (input ${count(total.input)}, output ${count(total.output)}, cache reads ${count(total.cacheRead)}, cache writes ${count(total.cacheWrite)})`,
     `- Estimated cost: ${cost(total.costUsd, total.unpriced)}`,
     ...(backends ? [`- Code intelligence: ${backends}`] : []),
+    ...(estimated
+      ? [
+          `- Estimated usage: ${count(estimated)} attempts whose provider reported no usage; their tokens and cost are estimated from the sizes of the request and the response`,
+        ]
+      : []),
     ...(unreported
       ? [
           `- Unreported responses: ${count(unreported)} model responses whose usage the provider never reported; the tokens above are low`,

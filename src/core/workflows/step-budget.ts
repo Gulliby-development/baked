@@ -237,6 +237,11 @@ export interface AttemptUsageRecord {
   toolBackends?: ToolBackendCount[];
   /** The reasoning effort sent to the provider; absent when none was sent (#936). */
   effort?: string;
+  /**
+   * The provider reported no tokens for any step, so these are estimated from the sizes of the
+   * request and the response (about 4 bytes a token); absent when the provider reported usage.
+   */
+  estimatedUsage?: { inputTokens: number; outputTokens: number };
 }
 
 /** Calls of one tool answered by one backend (lsp with its server, tree-sitter, regex, repo-map). */

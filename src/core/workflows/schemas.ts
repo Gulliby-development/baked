@@ -1134,6 +1134,8 @@ export const EventSchema = z.discriminatedUnion("type", [
           status: z.enum(["completed", "failed", "interrupted", "cancelled"]),
           usageComplete: z.boolean(),
           usedTokens: z.number().int().nonnegative().nullable(),
+          /** `usedTokens` is an estimate from the request and response sizes (#1057). */
+          usageEstimated: z.literal(true).optional(),
           spend: z
             .object({
               inputTokens: z.number().int().nonnegative(),
