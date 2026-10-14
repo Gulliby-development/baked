@@ -338,6 +338,7 @@ import {
   RefutationSchema,
   ReportSchema,
   type Repro,
+  ReproSchema,
   ResearchSchema,
   type Review,
   ReviewSchema,
@@ -2731,6 +2732,62 @@ export class WorkflowScheduler {
       return errors.slice(0, TASK_END_ERRORS);
     };
   }
+  /**
+   * The repro check of a corrective task (#1158): runs the repro of each finding the task corrects
+   * in `root` and describes the ones that still show the reported behavior. stmtsplit-update
+   * T007 and T008 closed a reproduced finding as already_satisfied twice (546k tokens) while its
+   * repro still reproduced. Undefined when no finding of the task has a repro the run can start.
+   */
+  private reproCheck(
+    runId: string,
+    policy: RunPolicy,
+    task: Task,
+  ): ((root: string, signal: AbortSignal) => Promise<string[]>) | undefined {
+    if (task.origin === "planned" || !task.findingIds.length) return undefined;
+    const executables = reproExecutables(policy.checks);
+    const repros = this.store
+      .findings(runId)
+      .filter((f) => task.findingIds.includes(f.id))
+      .flatMap((f) => {
+        const repro = ReproSchema.safeParse((JSON.parse(f.body_json) as { repro?: unknown }).repro);
+        return repro.success && executables.includes(repro.data.executable)
+          ? [{ findingId: f.id, repro: repro.data }]
+          : [];
+      });
+    if (!repros.length) return undefined;
+    return async (root, signal) => {
+      const outcomes: { findingId: string; repro: Repro; outcome: ReproOutcome }[] = [];
+      for (const { findingId, repro } of repros)
+        outcomes.push({
+          findingId,
+          repro,
+          outcome: await runRepro(this.processes, repro, {
+            root,
+            executables,
+            generated: generatedPaths(policy),
+            signal,
+            sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
+          }),
+        });
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "repro",
+          `tasks/${task.id}/repro-check-${newId()}.json`,
+          canonical({
+            taskId: task.id,
+            outcomes: outcomes.map(({ findingId, outcome }) => ({ findingId, ...outcome })),
+          }),
+        ),
+      );
+      return outcomes
+        .filter(({ outcome }) => outcome.status === "reproduced")
+        .map(
+          ({ findingId, repro, outcome }) =>
+            `Finding ${findingId} still reproduces: \`${[repro.executable, ...repro.args].join(" ")}\` prints "${repro.actual}" where "${repro.expected}" is expected. Output:\n${outcome.output.slice(-1500)}`,
+        );
+    };
+  }
   /** What a passing required check fell behind the baseline by, as a failure reason; else null. */
   private checkRegression(
     runId: string,
@@ -3022,6 +3079,10 @@ export class WorkflowScheduler {
       task && profile.output === "implementation"
         ? this.attributeCheck(runId, state, policy, task)
         : undefined;
+    const reproCheck =
+      task && profile.output === "implementation"
+        ? this.reproCheck(runId, policy, task)
+        : undefined;
     // A digested spec (#1019) comes with the tool that reads its criteria in full.
     const digested = digestsSpec(state.spec, profile, policy);
     const host =
@@ -3050,6 +3111,7 @@ export class WorkflowScheduler {
           : {}),
         ...(validate ? { validate } : {}),
         ...(taskEndCheck ? { taskEndCheck } : {}),
+        ...(reproCheck ? { reproCheck } : {}),
         ...(attributeCheck ? { attributeCheck } : {}),
         ...(this.formatHints(runId, state, profile.output, task)
           ? { formatHints: this.formatHints(runId, state, profile.output, task) }
@@ -4310,10 +4372,14 @@ ${note}`;
           "INPUT_CHANGED",
           `Task changed ${outside.length} file(s) outside its write scope: ${outside.slice(0, 5).join(", ")}${outside.length > 5 ? ", ..." : ""}`,
         );
-      const correction =
+      const satisfied =
         result.outcome === "implemented" && changed.length === 0 && task.writes.length > 0
           ? await this.correctionSatisfied(runId, state, child, policy, task, result, signal, root)
           : true;
+      const correction =
+        satisfied === true
+          ? await this.stillReproduces(runId, policy, task, result, changed, root, signal)
+          : satisfied;
       if (correction instanceof WorkflowFault) {
         this.store.transaction(() => this.store.taskStatus(runId, task.id, "blocked"));
         throw correction;
@@ -5384,7 +5450,7 @@ ${note}`;
           account,
         };
       const refused = takeHashRefusals(root);
-      const correction =
+      const satisfied =
         result.outcome === "implemented" && changed.length === 0
           ? await this.correctionSatisfied(
               runId,
@@ -5397,6 +5463,10 @@ ${note}`;
               root,
             )
           : true;
+      const correction =
+        satisfied === true
+          ? await this.stillReproduces(runId, policy, task, result, changed, root, signal)
+          : satisfied;
       if (correction instanceof WorkflowFault)
         return { kind: "rejected", entry, error: correction };
       if (
@@ -6092,6 +6162,30 @@ ${note}`;
       return `it changed none of its files and check ${check.id} still fails${named.length ? ` on ${named.slice(0, 5).join(", ")}` : ""} (evidence ${checked.evidenceId})`;
     }
     return true;
+  }
+  /**
+   * A corrective result that changed nothing, or reports the task already satisfied, is not
+   * accepted while a finding it corrects still reproduces (#1158): the attempt's own refusals
+   * are bounded, and an executor may not run them. Returns true, or why the result is refused.
+   */
+  private async stillReproduces(
+    runId: string,
+    policy: RunPolicy,
+    task: Task,
+    result: { taskId: string; outcome: string },
+    changed: string[],
+    root: string,
+    signal: AbortSignal,
+  ): Promise<true | string> {
+    if (result.taskId !== task.id) return true;
+    if (
+      result.outcome !== "already_satisfied" &&
+      !(result.outcome === "implemented" && changed.length === 0)
+    )
+      return true;
+    const live = (await this.reproCheck(runId, policy, task)?.(root, signal)) ?? [];
+    if (!live.length) return true;
+    return `it reported ${result.outcome.replace("_", " ")} but ${live.map((line) => line.split("\n")[0]?.replace(/^Finding /, "finding ")).join("; ")}`;
   }
   /**
    * Whether every file a rerun task writes is still what an earlier implementation of it left:
