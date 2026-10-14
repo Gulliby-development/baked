@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useState } from "react";
+import { createContext, type FormEvent, useContext, useEffect, useState } from "react";
 import { chat } from "../../client/chat.js";
 import {
   type SettingDefinition,
@@ -49,6 +49,12 @@ import { errorText, LoadState, NOTE, OK, SETUP, STACK, Tag, useLoad } from "./sh
 
 type Models = ReturnType<typeof useModelCatalog>;
 type Change = (change: SettingsChange, what: string) => Promise<boolean>;
+
+/** The backend's answer to the last refused change, shown again inside an open edit dialog. */
+const ChangeError = createContext<{ error: string | null; clear: () => void }>({
+  error: null,
+  clear: () => {},
+});
 
 const SCOPES: { scope: SettingScope; label: string }[] = [
   { scope: "global", label: "All projects" },
@@ -197,32 +203,38 @@ function ChatSettingsFor({
       <span className={cn("text-dim-foreground", NOTE)}>
         Editing <strong>{layerName}</strong> in <span className="font-mono">{file}</span>
       </span>
-      {error && <Alert tone="error">{error}</Alert>}
+      {error && (
+        <Alert tone="error" role="alert">
+          {error}
+        </Alert>
+      )}
       {saved && (
         <output className={cn(OK, NOTE)}>
           ✓ {saved} in {layerName}.
         </output>
       )}
-      {pageSections(view.data, current.id).map((section) => (
-        <section
-          key={section.title}
-          className={cn(PANEL, "flex flex-col py-[6px]")}
-          aria-label={section.title}
-        >
-          <h2 className={cn(LABEL, "pt-2 pb-1")}>{section.title}</h2>
-          {section.settings.map((setting) => (
-            <SettingRow
-              key={setting.id}
-              setting={setting}
-              view={view.data}
-              scope={scope}
-              busy={busy}
-              models={models}
-              change={change}
-            />
-          ))}
-        </section>
-      ))}
+      <ChangeError.Provider value={{ error, clear: () => setError(null) }}>
+        {pageSections(view.data, current.id).map((section) => (
+          <section
+            key={section.title}
+            className={cn(PANEL, "flex flex-col py-[6px]")}
+            aria-label={section.title}
+          >
+            <h2 className={cn(LABEL, "pt-2 pb-1")}>{section.title}</h2>
+            {section.settings.map((setting) => (
+              <SettingRow
+                key={setting.id}
+                setting={setting}
+                view={view.data}
+                scope={scope}
+                busy={busy}
+                models={models}
+                change={change}
+              />
+            ))}
+          </section>
+        ))}
+      </ChangeError.Provider>
     </div>
   );
 }
@@ -250,7 +262,12 @@ function SettingRow({
   const disabled = busy || locked !== null;
   const wide = setting.type === "string-list" || setting.type.endsWith("-map");
   return (
-    <div className={cn(ROW, wide && "items-start")} data-setting={setting.id}>
+    // A group named after the setting, so its Edit, Change and Reset buttons are told apart.
+    <fieldset
+      className={cn(ROW, "m-0 min-w-0 border-x-0 border-t-0 px-0", wide && "items-start")}
+      aria-label={setting.label}
+      data-setting={setting.id}
+    >
       <div className={cn("flex min-w-[220px] flex-1 flex-col gap-[2px]", !active && "opacity-60")}>
         <span className="flex items-center text-[14px] font-semibold text-foreground">
           {setting.label}
@@ -295,7 +312,7 @@ function SettingRow({
           </Button>
         )}
       </div>
-    </div>
+    </fieldset>
   );
 }
 
@@ -416,6 +433,13 @@ function EditDialog({
   description: string;
   children: React.ReactNode;
 }) {
+  const changeError = useContext(ChangeError);
+  const { clear } = changeError;
+  // An error from before the dialog opened belongs to the page, not to this edit.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only opening the dialog clears it.
+  useEffect(() => {
+    if (open) clear();
+  }, [open]);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       {open && (
@@ -424,6 +448,11 @@ function EditDialog({
             <DialogTitle>{title}</DialogTitle>
             <DialogDescription>{description}</DialogDescription>
           </DialogHeader>
+          {changeError.error && (
+            <Alert tone="error" role="alert">
+              {changeError.error}
+            </Alert>
+          )}
           {children}
         </DialogContent>
       )}
@@ -469,6 +498,7 @@ function NumberEditor({
   const parsed = parseNumber(setting, draft);
   const unit = setting.type === "number" ? setting.display?.unit : undefined;
   const id = `setting-${setting.id}`;
+  const invalid = "error" in parsed && draft.trim() !== "";
   const submit = (e: FormEvent) => {
     e.preventDefault();
     if ("error" in parsed) return;
@@ -509,10 +539,15 @@ function NumberEditor({
               inputMode="decimal"
               value={draft}
               placeholder={setting.type === "number" && setting.nullable ? "auto" : ""}
+              aria-invalid={invalid || undefined}
+              aria-describedby={`${id}-note`}
               onChange={(e) => setDraft(e.target.value)}
             />
-            <span className={cn("text-dim-foreground", NOTE)}>
-              {"error" in parsed && draft.trim() !== ""
+            <span
+              id={`${id}-note`}
+              className={cn(invalid ? "text-[var(--err)]" : "text-dim-foreground", NOTE)}
+            >
+              {"error" in parsed && invalid
                 ? parsed.error
                 : setting.type === "number"
                   ? `From ${displayNumber(setting, setting.min)} to ${displayNumber(setting, setting.max)}${setting.nullable ? "; leave empty for auto" : ""}.`
@@ -755,10 +790,12 @@ function MapEditor({
                 inputMode="numeric"
                 value={tokens}
                 placeholder="200000"
+                aria-invalid={(!tokensOk && tokens.trim() !== "") || undefined}
+                aria-describedby={`${setting.id}-tokens-error`}
                 onChange={(e) => setTokens(e.target.value)}
               />
               {!tokensOk && tokens.trim() !== "" && range && (
-                <span className={cn("text-[var(--err)]", NOTE)}>
+                <span id={`${setting.id}-tokens-error`} className={cn("text-[var(--err)]", NOTE)}>
                   A whole number from {range.min.toLocaleString("en-US")} to{" "}
                   {range.max.toLocaleString("en-US")}.
                 </span>
@@ -887,7 +924,9 @@ function LibraryDocsEditor({
             </div>
           )}
           {"error" in parsed && (
-            <span className={cn("text-[var(--warn)]", NOTE)}>{parsed.error}</span>
+            <span role="alert" className={cn("text-[var(--err)]", NOTE)}>
+              {parsed.error}
+            </span>
           )}
           <DialogActions disabled={disabled || "error" in parsed} onCancel={() => setOpen(false)} />
         </form>
