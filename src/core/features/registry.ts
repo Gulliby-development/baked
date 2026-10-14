@@ -1265,6 +1265,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/initiatives"],
   },
   {
+    id: "initiative-feature-workflows",
+    group: "Initiatives",
+    title: "Each feature runs its own workflow, with a budget share by size",
+    tui: ["/workflow: initiatives, W sets a feature's workflow and Z its size"],
+    cli: ["baked workflow initiative set-workflow", "baked workflow initiative set-size"],
+    api: ["/v1/initiatives/:id/configure"],
+    desktop: ["project/initiatives: the feature board, Workflow and the size switch on a feature"],
+  },
+  {
     id: "initiative-parallel-features",
     group: "Initiatives",
     title: "Independent features run side by side in worktrees",

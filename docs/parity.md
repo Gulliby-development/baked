@@ -173,6 +173,7 @@ bun test tests/feature-parity.test.ts
 | Start an initiative | `/workflow` | `baked workflow initiative` | `/v1/initiatives` | `project/initiatives` |
 | Initiative view: approve split, pause, resume, switch model | `/workflow` | `baked workflow initiative` | `/v1/initiatives/:id`, `/v1/initiatives/:id/events`, `/v1/initiatives/:id/approve` +3 | `project/initiatives`, `attention` |
 | Reject, merge, split, rename, remove, re-plan, extend | `/workflow` | `baked workflow initiative` | `/v1/initiatives/:id/reject`, `/v1/initiatives/:id/merge`, `/v1/initiatives/:id/split` +4 | `project/initiatives` |
+| Each feature runs its own workflow, with a budget share by size | `/workflow` | `baked workflow initiative set-workflow`, `baked workflow initiative set-size` | `/v1/initiatives/:id/configure` | `project/initiatives` |
 | Independent features run side by side in worktrees | `/workflow` | `baked workflow initiative drive`, `baked workflow initiative show` | `/v1/initiatives/:id` | `project/initiatives` |
 
 ### Projects and setup

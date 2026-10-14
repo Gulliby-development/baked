@@ -361,12 +361,13 @@ The `baked workflow initiative` commands over HTTP. Mutations take `commandId` a
 | Method and path | Body | CLI |
 | --- | --- | --- |
 | `GET /v1/initiatives` | | `list` |
-| `POST /v1/initiatives` | `commandId`, `initiativeId`, `prompt`, `plan?`, `workflow?`, `policy?`, `model?`, `owner?`, `budget?: {tokens, calls, timeMs}`, `tieredApproval?: {maxTasks, maxFiles}`, `confirmAutoApproval?`, `featureIssues?: {FEATURE: {repository, number, url, title}}` (needs `plan`; each feature's runs start from its issue and their delivery closes it; the feature view's `issue` shows it) | `start`; 202 with the view, planning is driven in the background like a run |
-| `GET /v1/initiatives/ID` | | `show`; the view's `parallelRuns` is how many feature runs execute at once (1 inline) |
+| `POST /v1/initiatives` | `commandId`, `initiativeId`, `prompt`, `plan?`, `workflow?` (the default for features that name none), `policy?`, `model?`, `owner?`, `budget?: {tokens, calls, timeMs}`, `tieredApproval?: {maxTasks, maxFiles}`, `confirmAutoApproval?`, `featureIssues?: {FEATURE: {repository, number, url, title}}` (needs `plan`; each feature's runs start from its issue and their delivery closes it; the feature view's `issue` shows it), `worktree?` (feature runs execute in worktrees) | `start`; 202 with the view, planning is driven in the background like a run |
+| `GET /v1/initiatives/ID` | | `show`; the view's `parallelRuns` is how many feature runs execute at once (1 inline); each feature has `workflowId`, `size` (`small`, `medium`, `large`) and `share` (the budget it starts with, null once it has a run) |
 | `GET /v1/initiatives/ID/events` | `?after=` | `events` as SSE, or JSON with `Accept: application/json` |
 | `POST /v1/initiatives/ID/merge` | `features`, `id?`, `title?` | `merge` |
 | `POST /v1/initiatives/ID/split` | `feature`, `parts` | `split` |
 | `POST /v1/initiatives/ID/remove`, `/rename`, `/replan` | `feature` (and `title` for rename) | same |
+| `POST /v1/initiatives/ID/configure` | `feature` and either `workflow` or `size` | `set-workflow`, `set-size` |
 | `POST /v1/initiatives/ID/approve`, `/reject` | `requestId` and `digest`, or `requestId` and `reason` | same; approve drives in the background |
 | `POST /v1/initiatives/ID/resume`, `/pause` | | same; resume drives in the background |
 | `POST /v1/initiatives/ID/extend` | `tokens?`, `calls?`, `timeMs?` | `extend` |
