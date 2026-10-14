@@ -41,3 +41,14 @@ test("the old Instructions and Working set links open the Agent context tabs", a
   await expect(page.getByRole("tab", { name: "Rules" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("region", { name: "Sources agents read" })).toBeVisible();
 });
+
+// #1106: skills a package installed show on the Skills screen with their package, read-only.
+test("skills from packages are listed with their package and no Remove", async ({ app }) => {
+  const page = await app("#/p/baked/skills");
+  const group = page.getByRole("region", { name: "From packages" });
+  await expect(group.getByText("review-notes")).toBeVisible();
+  await expect(group.getByText("From the package acme-review")).toBeVisible();
+  await expect(group.getByRole("button", { name: "Remove review-notes" })).toHaveCount(0);
+  await group.getByRole("button", { name: "Open" }).click();
+  await expect(page.getByRole("dialog").getByText("# review-notes")).toBeVisible();
+});

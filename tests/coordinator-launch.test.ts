@@ -28,6 +28,8 @@ class RecordingHost implements ChatAgentHost {
       agent: {
         stream: async ({ messages }: { messages: ModelMessage[]; abortSignal: AbortSignal }) => ({
           stream: (async function* () {
+            if (JSON.stringify(messages.at(-1)?.content ?? "").includes("[fail]"))
+              throw new Error("The model lost its tools\nstack line");
             // A brief with "[ask]" asks the person a question mid-turn, as a session's ask tool does.
             if (JSON.stringify(messages.at(-1)?.content ?? "").includes("[ask]")) {
               const picked = await request.callbacks.onAskUser(
@@ -148,10 +150,13 @@ describe("coordinator launches", () => {
 
     const stranger = await chat.create({ title: "Other" });
     expect(await send.execute({ to: stranger.id, text: "Hi" })).toMatchObject({ success: false });
-    // An ordinary chat gets no message tool.
+    // An ordinary chat gets no message tool, only the gate tools every chat has.
     stranger.send("Hello");
     await stranger.settled();
-    expect(host.requests.filter((r) => r.sessionId === stranger.id).at(-1)?.tools).toBeUndefined();
+    expect(Object.keys(host.requests.filter((r) => r.sessionId === stranger.id).at(-1)?.tools ?? {})).toEqual([
+      "list_gates",
+      "save_gates",
+    ]);
     for (let i = 0; i < 3; i++) await send.execute({ to: "coordinator", text: `note ${i}` });
     expect((await send.execute({ to: "coordinator", text: "too many" })).error).toContain("At most 5");
     await coordinator.settled();
@@ -233,6 +238,26 @@ describe("coordinator launches", () => {
       ["run", "waiting: approval", true],
     ]);
     expect(live.launched[0]?.tokens).toBeGreaterThan(0);
+  }, 60000);
+
+  test("a session whose turn failed reports why instead of idling", async () => {
+    const { chat, tool } = await setup();
+    const session = await tool("launch_session").execute({
+      title: "Write the docs",
+      brief: "[fail] Write docs/api.md.",
+      mode: "architect",
+      why: "Document the API",
+    });
+    const sessionId = /session ([0-9a-f-]{36})/.exec(session.output)?.[1] ?? "";
+    await chat.get(sessionId).settled();
+    expect(chat.get(sessionId).detail().lastError).toBe("The model lost its tools\nstack line");
+    expect(await noticeFor(chat, /^Session/)).toBe('Session "Write the docs": failed: The model lost its tools');
+
+    // A later turn that works clears it.
+    chat.get(sessionId).send("Try again.");
+    await chat.get(sessionId).settled();
+    expect(chat.get(sessionId).detail().lastError).toBeUndefined();
+    expect(await noticeFor(chat, /^Session/)).toBe('Session "Write the docs": done');
   }, 60000);
 
   test("with full access the coordinator starts a writing session at once, and passes it on", async () => {

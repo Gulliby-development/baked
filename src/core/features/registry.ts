@@ -114,10 +114,10 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "custom-commands-list",
     group: "Chat and sessions",
-    title: "List custom commands",
-    tui: ["/commands"],
-    cli: notNeeded("scripts read .baked/commands directly"),
-    api: ["/v1/commands"],
+    title: "List, add, edit and remove custom commands",
+    tui: ["/commands: add [--global] NAME PROMPT, remove [--global] NAME"],
+    cli: notNeeded("scripts read and write .baked/commands directly"),
+    api: ["/v1/commands", "/v1/commands/project/:id", "/v1/commands/global/:id"],
     desktop: ["settings/commands"],
   },
   {
@@ -178,9 +178,11 @@ export const FEATURES: readonly Feature[] = [
     id: "coordinator-workflows",
     group: "Chat and sessions",
     title: "Coordinator suggests, runs and follows workflows",
-    tui: ["/coordinator: Run workflow? card (Ctrl+Y/Ctrl+N), launched runs with their stages"],
+    tui: [
+      "/coordinator: Run workflow? card (Ctrl+Y/Ctrl+N) with the gates it sets up, launched runs with their stages",
+    ],
     cli: [
-      "baked session coordinator send: answers the workflow card (--yes or a terminal) and follows the run's stages",
+      "baked session coordinator send: answers the workflow card (--yes or a terminal), with the gates it sets up, and follows the run's stages",
       "baked session coordinator launched: runs with their workflow and stages",
     ],
     api: [
@@ -189,9 +191,25 @@ export const FEATURES: readonly Feature[] = [
       "/v1/coordinator/launched: run progress",
     ],
     desktop: [
-      "project/coordinator: Run workflow card, live stages in Launched work",
+      "project/coordinator: Run workflow card with the gates it sets up, live stages in Launched work",
       "attention: workflow run proposals",
     ],
+  },
+  {
+    id: "chat-setup",
+    group: "Chat and sessions",
+    title:
+      "Chat and coordinator set BAKED up on request: workflows, agent context, memory, skills, packages, hooks, MCP and language servers, each change on an approval card",
+    tui: [
+      "/coordinator: baked_setup changes shown on an approval card",
+      "key Enter: ask in the chat; baked_setup loads on demand and asks like a destructive action",
+    ],
+    cli: [
+      "baked session coordinator send: answers the setup card (--yes or a terminal)",
+      "--prompt: baked_setup asks like any destructive action",
+    ],
+    api: ["/v1/sessions/:id/prompts: answers the setup prompt"],
+    desktop: ["project/coordinator: setup approval card", "project/chat: setup approval card"],
   },
   {
     id: "coordinator-parallel-chats",
@@ -659,7 +677,13 @@ export const FEATURES: readonly Feature[] = [
     title: "Skills: browse, install, remove",
     tui: ["/skills"],
     cli: notNeeded("`bunx skills add` installs from scripts"),
-    api: ["/v1/skills", "/v1/skills/catalog", "/v1/skills/project/:id", "/v1/skills/global/:id"],
+    api: [
+      "/v1/skills",
+      "/v1/skills/catalog",
+      "/v1/skills/project/:id",
+      "/v1/skills/global/:id",
+      "/v1/skills/package/:id",
+    ],
     desktop: ["project/skills"],
   },
   {
@@ -1007,6 +1031,21 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/gates"],
   },
   {
+    id: "gates-from-chat",
+    group: "Workflow runs",
+    title: "Gates from chat: list detected gates, save them on an approval, set them up with a run",
+    tui: ["/coordinator: list_gates, save_gates and the gates on the Run workflow? card"],
+    cli: [
+      "baked session: list_gates and save_gates",
+      "baked session coordinator send: list_gates, save_gates and the gates on the workflow card",
+    ],
+    api: ["/v1/sessions/:id/prompts: answers the save_gates approval and the workflow card"],
+    desktop: [
+      "project/chat: list_gates and save_gates",
+      "project/coordinator: Run workflow card with the gates it sets up",
+    ],
+  },
+  {
     id: "gates",
     group: "Workflow runs",
     title: "Gates: list and confirm",
@@ -1144,15 +1183,17 @@ export const FEATURES: readonly Feature[] = [
     id: "workflow-editor",
     group: "Workflow runs",
     title: "Workflow definition editor",
-    tui: ["/workflow: definition editor"],
-    cli: ["baked workflow define", "baked workflow validate"],
+    tui: ["/workflow: definition editor, remove ID"],
+    cli: ["baked workflow define", "baked workflow validate", "baked workflow remove"],
     api: [
       "/v1/workflow/definitions",
       "/v1/workflow/editor",
       "/v1/workflow/editor/review",
       "/v1/workflow/editor/save",
     ],
-    desktop: ["project/workflows: gallery, Watch walkthrough, Edit graph with station panel"],
+    desktop: [
+      "project/workflows: gallery, Watch walkthrough, Edit graph with station panel, Delete on a project workflow",
+    ],
   },
   {
     id: "project-agents",

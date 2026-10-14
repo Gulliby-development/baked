@@ -66,7 +66,13 @@ import {
   type WatchControl,
 } from "./Header.js";
 import { pendingText } from "./images.js";
-import { emptyTranscript, isBusy, reduceTranscript, turnCount } from "./transcript.js";
+import {
+  emptyTranscript,
+  isBusy,
+  reduceTranscript,
+  subscribeAfter,
+  turnCount,
+} from "./transcript.js";
 import { useVoiceInput } from "./useVoiceInput.js";
 
 const NEW = "new";
@@ -266,7 +272,7 @@ export function SessionView({
         if (!live) return;
         dispatch({ type: "snapshot", detail });
         setLoad("ready");
-        stop = chat.subscribe(key, sessionId, detail.lastSeq, (event) => {
+        stop = chat.subscribe(key, sessionId, subscribeAfter(detail), (event) => {
           if (!live) return;
           if (event.type === "watch") setWatchState(event.watch);
           dispatch(event);
@@ -707,6 +713,7 @@ export function SessionView({
           model={draft ? draftModel : (session?.model ?? null)}
           mode={draft ? draftMode : (session?.mode ?? "default")}
           effort={draft ? draftEffort : (session?.effort ?? "default")}
+          {...(!draft && session?.efforts ? { efforts: session.efforts } : {})}
           autoFocusKey={sessionId}
           initialText={seed.n > 0 ? seed.text : initialText}
           onSend={send}

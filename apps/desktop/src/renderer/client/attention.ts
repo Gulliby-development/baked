@@ -93,7 +93,7 @@ export interface DeliveryResult {
 
 export type ChatPrompt = { id: string; createdAt: number } & (
   | { kind: "outside-cwd"; tool: string; path: string }
-  | { kind: "destructive"; description: string }
+  | { kind: "destructive"; description: string; confirm?: true }
   | { kind: "web-search"; query: string }
   | { kind: "fetch-page"; url: string }
   | {
@@ -137,6 +137,8 @@ export type ChatPrompt = { id: string; createdAt: number } & (
       why: string;
       reason: string;
       issue?: string;
+      /** Gates approving the card saves before the run starts, one `id: command` line each. */
+      gates?: string[];
       digest: string;
     }
 );

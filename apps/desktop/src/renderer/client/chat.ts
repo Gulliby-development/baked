@@ -49,6 +49,8 @@ export interface SessionSummary {
   mode: ChatMode;
   /** Reasoning effort of the next turn; servers without the `chat-effort` capability leave it out. */
   effort?: ChatEffort;
+  /** Reasoning efforts the session's model takes, lowest first; older servers leave it out. */
+  efforts?: Exclude<ChatEffort, "default">[];
   /** Permission mode; servers without the `permission-modes` capability leave it out. */
   permissions?: PermissionMode;
   /** The chat's context size; older servers leave it out. */
@@ -165,7 +167,7 @@ export interface MentionSuggestion {
 
 export type ChatPrompt = { id: string; createdAt: number } & (
   | { kind: "outside-cwd"; tool: string; path: string }
-  | { kind: "destructive"; description: string }
+  | { kind: "destructive"; description: string; confirm?: true }
   | { kind: "web-search"; query: string }
   | { kind: "fetch-page"; url: string }
   | {
@@ -210,6 +212,8 @@ export type ChatPrompt = { id: string; createdAt: number } & (
       why: string;
       reason: string;
       issue?: string;
+      /** Gates approving the card saves before the run starts, one `id: command` line each. */
+      gates?: string[];
       digest: string;
     }
 );
@@ -240,6 +244,10 @@ export interface SessionDetail extends SessionSummary {
   redo?: RedoTurn[];
   /** Subscribe to events after this sequence to miss nothing. */
   lastSeq: number;
+  /** While a turn runs: the sequence before it started, to replay what it streamed so far. */
+  turnSeq?: number;
+  /** Why the last turn failed, until another turn starts. */
+  lastError?: string;
 }
 
 /** A turn an undo dropped: its number and the first line of its prompt. */

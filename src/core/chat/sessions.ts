@@ -34,6 +34,7 @@ import type {
   ChatContextSize,
   ChatEffort,
   ChatMessage,
+  EffortLevel,
   ImageAttachment,
   InputContextItem,
   InteractiveCallbacks,
@@ -83,6 +84,8 @@ import {
   withHookContext,
 } from "../hooks/lifecycle.js";
 import { chatContextTokens, getModelContextSizes, withContextSize } from "../llm/context-sizes.js";
+import { getModelEffortLevels } from "../llm/provider-options.js";
+import type { MemoryManager } from "../memory/manager.js";
 import {
   DEFAULT_PERMISSION_MODE,
   isPermissionMode,
@@ -91,8 +94,10 @@ import {
 import { SessionManager } from "../sessions/manager.js";
 import { rebuildCoreMessages as rebuildCore } from "../sessions/rebuild.js";
 import type { SessionMeta, TabMeta } from "../sessions/types.js";
+import { createSetupTool, SETUP_TOOL } from "../tools/baked-setup.js";
 import { watchOptions } from "../watch/config.js";
 import { WatchController, type WatchTurn, watchTurnDisplay } from "../watch/controller.js";
+import { needsGates } from "../workflows/gate-setup.js";
 import { projectDefinitions, proposeForWorkspace } from "../workflows/v2/propose.js";
 import { answerByRules } from "./approval-rules.js";
 import { COORDINATOR_MODE, coordinatorWorkStyle } from "./coordinator.js";
@@ -122,6 +127,7 @@ import {
   scheduleTool,
 } from "./coordinator-schedules.js";
 import { editedFiles, type SessionDiffStats, sessionDiffStats } from "./diff-stats.js";
+import { type GateToolContext, gateTools } from "./gate-tools.js";
 import { userContent } from "./images.js";
 import type { ExpandedChatInput } from "./input-expansion.js";
 import { hasInputReferences } from "./input-parse.js";
@@ -155,7 +161,12 @@ const API_TAB = "desktop";
 
 export type ChatPrompt = { id: string; createdAt: number } & (
   | { kind: "outside-cwd"; tool: string; path: string }
-  | { kind: "destructive"; description: string }
+  | {
+      kind: "destructive";
+      description: string;
+      /** A step the agent asks a person to approve (a coordinator launch), not a command. */
+      confirm?: true;
+    }
   | { kind: "web-search"; query: string }
   | { kind: "fetch-page"; url: string }
   | {
@@ -214,7 +225,9 @@ export type ChatPrompt = { id: string; createdAt: number } & (
       reason: string;
       /** The issue the run starts from. */
       issue?: string;
-      /** Binds the approval to exactly this workflow and request. */
+      /** Gates approving the card saves before the run starts, one `id: command` line each. */
+      gates?: string[];
+      /** Binds the approval to exactly this workflow, request and gates. */
       digest: string;
     }
 );
@@ -242,6 +255,11 @@ export interface SessionSummary {
   mode: ChatMode;
   /** Reasoning effort for this chat's turns; `default` follows the global setting. */
   effort: ChatEffort;
+  /**
+   * Reasoning efforts the chat's model takes, lowest first; empty when it takes none. The effort
+   * menu reads them here when the provider's model list leaves the model out (#1092).
+   */
+  efforts: EffortLevel[];
   /** How much the chat runs without asking: manual, auto or full. */
   permissions: PermissionMode;
   /**
@@ -290,6 +308,13 @@ export interface SessionDetail extends SessionSummary {
   /** Turns an undo dropped that a redo can put back, oldest first. */
   redo: { index: number; prompt: string }[];
   lastSeq: number;
+  /** Why the last turn failed; absent once another turn starts or when it did not fail. */
+  lastError?: string;
+  /**
+   * While a turn runs and its events are still buffered: the sequence just before its
+   * `turn-start`. Subscribing after it replays the turn's text and tool calls streamed so far.
+   */
+  turnSeq?: number;
 }
 
 /** What an undo or redo did: the turn count left and the file rollback report. */
@@ -606,6 +631,8 @@ export class ChatSession {
   private usage: Usage;
   private context: SessionDetail["context"] = null;
   private turn: TurnState | null = null;
+  /** Why the last turn failed, until another turn starts. */
+  private turnError: string | null = null;
   /** True while an undo or redo rewrites the conversation and the files. */
   private rewinding = false;
   private compaction: TurnState | null = null;
@@ -619,6 +646,8 @@ export class ChatSession {
   private executingPlan: Plan | null = null;
   private events: ChatEvent[] = [];
   private seq = 0;
+  /** The sequence before the running turn's `turn-start`, or null between turns. */
+  private turnSeq: number | null = null;
   private readonly listeners = new Set<(event: ChatEvent) => void>();
   /** The `source` of the session's first SessionStart when it is not `startup` or `resume`. */
   startSource: SessionStartSource | null = null;
@@ -705,6 +734,11 @@ export class ChatSession {
     this.tabCore.set(this.tabId, value);
   }
 
+  /** Why the last turn failed, or null. */
+  get lastError(): string | null {
+    return this.turnError;
+  }
+
   get busy(): boolean {
     return this.turn !== null || this.compaction !== null || this.rewinding;
   }
@@ -734,6 +768,7 @@ export class ChatSession {
       model: this.model,
       mode: this.mode,
       effort: this.effort,
+      efforts: this.model ? getModelEffortLevels(this.model) : [],
       permissions: this.permissions,
       contextSize: this.contextSize,
       // The coordinator always runs with the largest window, so it offers no choice.
@@ -798,6 +833,14 @@ export class ChatSession {
         prompt: promptLine(t.messages[0]?.content ?? ""),
       })),
       lastSeq: this.seq,
+      ...(this.turnError ? { lastError: this.turnError } : {}),
+      // Only while the turn runs: once its answer is in `messages`, replaying its text would
+      // show the answer twice until `turn-done` arrives.
+      ...(this.turn !== null &&
+      this.turnSeq !== null &&
+      (this.events[0]?.seq ?? Infinity) <= this.turnSeq + 1
+        ? { turnSeq: this.turnSeq }
+        : {}),
     };
   }
 
@@ -825,6 +868,8 @@ export class ChatSession {
     if (body.type === "tool-call") this.currentTool = body.tool;
     else if (body.type === "tool-result" || body.type === "turn-done") this.currentTool = null;
     const event = { ...body, seq: ++this.seq, at: Date.now() } as ChatEvent;
+    if (body.type === "turn-start") this.turnSeq = event.seq - 1;
+    else if (body.type === "turn-done") this.turnSeq = null;
     this.events.push(event);
     if (this.events.length > this.owner.bufferSize)
       this.events.splice(0, this.events.length - this.owner.bufferSize);
@@ -931,6 +976,7 @@ export class ChatSession {
       );
     const turn: TurnState = { id: crypto.randomUUID(), abort: new AbortController() };
     this.turn = turn;
+    this.turnError = null;
     this.turnDone = this.runTurn(turn, input).catch(() => {});
     return { turnId: turn.id, queued: false };
   }
@@ -1206,7 +1252,7 @@ export class ChatSession {
 
   /** Asks a person to approve an action of this session's running turn, as a destructive prompt. */
   async confirm(description: string): Promise<boolean> {
-    return (await this.ask({ kind: "destructive", description })) === true;
+    return (await this.ask({ kind: "destructive", description, confirm: true })) === true;
   }
 
   /** Asks a person to approve a coordinator's split as one card; true when they approve it. */
@@ -1668,6 +1714,7 @@ export class ChatSession {
     };
     const notice = followUp ? this.applyPlanFollowUp(followUp) : null;
     if (!notice?.execute && this.plan) this.setPlan(null);
+    this.turnError = status === "failed" ? (error ?? "The turn failed.") : null;
     this.turn = null;
     await this.owner.persist(this);
     this.emit({
@@ -1857,6 +1904,12 @@ export class ChatService {
 
   private projectState: ProjectStateSource | null = null;
   private launcher: ProjectLauncher | null = null;
+  private memorySource: (() => Promise<MemoryManager>) | null = null;
+
+  /** The chat memory the coordinator's setup tool edits; the API server sets it. */
+  setMemorySource(source: (() => Promise<MemoryManager>) | null): void {
+    this.memorySource = source;
+  }
   private watch: ReturnType<typeof setInterval> | null = null;
   private scheduleTimer: ReturnType<typeof setInterval> | null = null;
   private syncing = false;
@@ -1990,8 +2043,29 @@ export class ChatService {
         coordinatorLimits(this.options.config),
         this.workflowCatalog(),
         coordinatorWorkStyle(this.options.config),
+        this.gateContext(coordinator),
       ),
+      ...gateTools(this.gateContext(coordinator)),
       ...controlTools(this, coordinator, this.projectState, this.launcher),
+      // Setup changes ask the person on a card, as launches do; reading needs no approval.
+      [SETUP_TOOL]: createSetupTool({
+        cwd: this.workspace,
+        config: () => this.options.config,
+        approve: (text) => coordinator.confirm(text),
+        ...(this.memorySource ? { memory: this.memorySource } : {}),
+        ...(this.options.homeDir ? { homeDir: this.options.homeDir } : {}),
+      }),
+    };
+  }
+
+  /** Where a session's gate tools save: the project, with this service's configuration. */
+  private gateContext(session: ChatSession): GateToolContext {
+    const saved = this.launcher?.gatesSaved;
+    return {
+      workspace: this.workspace,
+      config: this.options.config,
+      confirm: (text) => session.confirm(text),
+      saved: saved ? (checks) => saved(checks) : undefined,
     };
   }
 
@@ -2002,6 +2076,7 @@ export class ChatService {
     return {
       list: () => projectDefinitions(workspace, config),
       propose: (request) => proposeForWorkspace(workspace, config, request),
+      needsGates: (id) => needsGates(workspace, config, id),
     };
   }
 
@@ -2020,9 +2095,11 @@ export class ChatService {
 
   /** A coordinator thread's message tool and what it is told about its peers; none otherwise. */
   threadExtras(session: ChatSession): { tools?: Record<string, unknown>; instructions?: string } {
+    // Every chat can set the project's gates up; each save asks the person first.
+    const gates = gateTools(this.gateContext(session));
     const instructions = peerInstructions(this, session);
-    if (!instructions) return {};
-    return { tools: { [PEER_TOOL]: peerTool(this, session) }, instructions };
+    if (!instructions) return { tools: gates };
+    return { tools: { ...gates, [PEER_TOOL]: peerTool(this, session) }, instructions };
   }
 
   /** Context fills (0-1) at which a coordinator compacts itself, and below which it may again. */
@@ -2066,6 +2143,7 @@ export class ChatService {
         model: null,
         mode: "default",
         effort: "default",
+        efforts: [],
         permissions: this.defaultPermissions,
         contextSize: "default",
         contextSizes: [],

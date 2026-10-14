@@ -113,6 +113,8 @@ Installing a newer version of an installed package updates its files, deletes th
 
 `baked/packages.json` records each installed package: its name, version, description, when it was installed, and every file it wrote with its hash. Commit it with the files. `baked packages list` (and `GET /v1/packages`) compares the hashes with the files and names those edited or deleted since the install.
 
+The skills a package installed are listed from the lock file under their package: in `/skills` in the terminal UI as `(package NAME)`, on the desktop's Skills screen under From packages, and in `GET /v1/skills` with `scope: "package"`. They are read only there; they go when the package is removed.
+
 ## Remove
 
 `baked packages remove NAME` deletes each file of the package whose hash still matches the lock file and drops the package from it. Files edited since the install stay, and the command lists them; empty folders the package created are removed. A confirmation of an installed gate stays in `.baked/gate-confirmations.json` until that gate ID is confirmed again.

@@ -42,6 +42,7 @@ import {
   earlierFindings,
   grantRound,
   noteInconclusiveReview,
+  noteStoppedInconclusive,
   noteUnverifiedCriteria,
   passesWithNotes,
   REPEAT_NOTE,
@@ -372,6 +373,7 @@ import {
 } from "./sizing.js";
 import {
   amendmentNote,
+  analysisAmendmentOf,
   documentAmendmentOf,
   namesRunDocument,
   type SpecAmendment,
@@ -394,6 +396,7 @@ import {
 import {
   integrityFix,
   isTestPath,
+  rewriteTargets,
   scanTestIntegrity,
   testIntegrityOf,
   testWriteProblems,
@@ -541,6 +544,8 @@ interface QueuedRequest {
  */
 const coverageRequest = (state: RuntimeState): string =>
   state.hostDependencies ? "" : state.requestText;
+/** Records that the planner was given the scope advice in this run. */
+const SCOPE_ADVICE = "plan-repairs/scope-advice.json";
 /** The planner's accepted plan that a revision by patch edits (#1058). */
 const PLAN_BASE = "revisions/base/plan.json";
 /** How often rejected approvals may send one run back to revise before a rejection only pauses it. */
@@ -573,6 +578,29 @@ function isStoreError(error: unknown): boolean {
 }
 /** The start of the restart reason for an edit of the task's own file that did not apply. */
 const EDIT_RETRY = "an edit of its own file did not apply";
+const CHECK_FAILURE = /fail|error|violation|assert|does not pass|not passing/i;
+const CHECK_KIND =
+  /test|lint|ruff|eslint|biome|clippy|flake8|mypy|pyright|tsc|typecheck|type check/i;
+/** A linter rule code such as Ruff's ISC004 or ESLint-style E501: naming one reports a violation. */
+const RULE_CODE = /\b[A-Z]{1,4}\d{3,4}\b/;
+/**
+ * A task that changed its files and reports, as unresolved, only failing tests or lint findings in
+ * those files has done its work: the failures go to a corrective task like a failed task check,
+ * instead of a rejection that restarts the task and blocks the run when the second attempt reports
+ * the same (#1110, keeplint T004: two attempts, 592k tokens, two failing tests of its own).
+ */
+export function ownCheckFailures(
+  task: Task,
+  result: { taskId: string; outcome: string; unresolved: string[] },
+  changed: string[],
+): boolean {
+  if (result.taskId !== task.id || result.outcome !== "implemented" || !changed.length)
+    return false;
+  if (!result.unresolved.length || result.unresolved.length > 5) return false;
+  return result.unresolved.every(
+    (item) => (CHECK_FAILURE.test(item) && CHECK_KIND.test(item)) || RULE_CODE.test(item),
+  );
+}
 const incompleteReason = (unresolved: string[]): string =>
   unresolved.length ? `: ${unresolved.slice(0, 3).join("; ").slice(0, 500)}` : "";
 /** Why a result that changed nothing was not accepted (#972: the message had no detail). */
@@ -880,7 +908,13 @@ export class WorkflowScheduler {
                 // The host makes a host-bound criterion checkable itself (#1015).
                 return [
                   ...size,
-                  ...specCoverageProblems(repairHostBoundCriteria(parsed.data).spec, policy.checks),
+                  ...specCoverageProblems(
+                    repairHostBoundCriteria(parsed.data).spec,
+                    policy.checks,
+                    {
+                      request: state.requestText || state.prompt,
+                    },
+                  ),
                   // The host maps a deliverable the spec names elsewhere itself (#1037).
                   ...deliverableProblems(
                     repairDeliverables(parsed.data, coverageRequest(state)).spec,
@@ -980,8 +1014,10 @@ export class WorkflowScheduler {
                   ? scopedPlanBudget(state.prompt, planner, policy)
                   : null;
               const approvalLimits = plannerApprovalLimits(policy);
-              // Scope advice is given once; a plan that keeps the writes is approved by a person.
-              let scopeAdvised = false;
+              // Scope advice is given once per run, not once per plan generation: a plan that
+              // keeps the writes is approved by a person, and a later generation that is told
+              // again only submits the same plan twice (#1111).
+              let scopeAdvised = this.store.latestArtifact(runId, SCOPE_ADVICE) !== null;
               // A criterion left uncovered again by a plan that names it is one the planner cannot
               // cover; it stops being a submission error and goes back to the spec (#780).
               const uncoveredSubmissions = new Map<string, number>();
@@ -1013,8 +1049,14 @@ export class WorkflowScheduler {
                   parsed.data.taskGraph,
                   (path) => existsSync(join(runRoot(this.store.workspace, state), path)),
                   this.baselineScaffold(runId, state),
+                  state.requestText,
                 );
-                if (advice.length) scopeAdvised = true;
+                if (advice.length) {
+                  scopeAdvised = true;
+                  this.store.transaction(() =>
+                    this.store.artifact(runId, "diagnostic", SCOPE_ADVICE, canonical({ advice })),
+                  );
+                }
                 return [...open, ...advice];
               };
               const patchedPlan = await this.patchRevision(
@@ -1190,6 +1232,9 @@ export class WorkflowScheduler {
                     verifiedByRuntime: hostEdgesNote(graph, spec),
                     workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
                     hostCounts: hostCounts(graph),
+                    ...(state.analysisRaised.length
+                      ? { earlierFindings: state.analysisRaised }
+                      : {}),
                     ...(Object.keys(hostSplitParts(graph)).length
                       ? { hostSplit: hostSplitParts(graph) }
                       : {}),
@@ -1289,6 +1334,10 @@ export class WorkflowScheduler {
               // Analysis passes when no finding blocks: the rest are notes, whatever the model's verdict.
               const blocking = findings.some((f) => f.blocking);
               state.analysisPassed = !blocking && analysis.verdict !== "inconclusive";
+              // The next pass sees what this one raised, whichever way the run goes on.
+              for (const { kind, refs, description } of findings.filter((f) => f.blocking))
+                if (!state.analysisRaised.some((f) => f.description === description))
+                  state.analysisRaised.push({ kind, refs, description });
               const planOnly = state.analysisPassed ? [] : planOnlyFindings(findings);
               const stages = this.stageKinds(runId, v2);
               const plan = stages.findIndex((s) => s.kind === "plan");
@@ -1370,6 +1419,15 @@ export class WorkflowScheduler {
                         description,
                       })),
                     }),
+                  ),
+                );
+                // A spec finding the request settles is an amendment, so review does not raise
+                // it against spec.json again after implement (#1120).
+                this.store.transaction(() =>
+                  this.amendFromAnalysis(
+                    runId,
+                    state,
+                    assumed.filter((f) => restrictsRequest(f)),
                   ),
                 );
                 findings = findings.map((f) =>
@@ -3348,9 +3406,24 @@ export class WorkflowScheduler {
       const plan = stages.findIndex((stage) => stage.kind === "plan");
       if (plan >= 0) {
         this.raiseBudget(runId, state, policy, report);
+        const note = splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask);
+        // Under `revision: "patch"` the planner splits the oversized tasks with edit operations;
+        // a whole new plan cost ratesim 029a5aec 170k tokens to split one skeleton task (#1112).
+        this.pendPatch(
+          state,
+          policy,
+          [
+            {
+              kind: "sizing",
+              refs: ["tasks.json", `sizing/plan-${String(state.sizingReplans)}.json`],
+              description: note,
+            },
+          ],
+          ["plan"],
+        );
         state.sizingReplans = 1;
         state.prompt += `
-${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`;
+${note}`;
         state.analysisPassed = false;
         state.stageIndex = plan;
         this.store.transaction(() => this.store.saveState(runId, state));
@@ -3479,6 +3552,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           canonical({ ...early, findingIds: findings.map((f) => f.id) }),
         );
         acceptResidual(this.store, runId, state, { findings }, "critic");
+        noteStoppedInconclusive(state, this.store.run(runId).convergence_rounds);
       });
       return "accepted";
     }
@@ -3508,6 +3582,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         const id = this.store.request(runId, "convergence", hashJson(state.manifest), body);
         this.store.decideRequest(runId, id, "accepted", { kind: "accept", automatic: true }, true);
         acceptResidual(this.store, runId, state, body, "assume");
+        noteStoppedInconclusive(state, this.store.run(runId).convergence_rounds);
       });
       return "accepted";
     }
@@ -3993,6 +4068,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     });
     let integrity: Review["findings"] = [];
     let reported: { summary: string; unresolved: string[] } | undefined;
+    let unresolvedAccount: { summary: string; unresolved: string[] } | undefined;
     if (
       !checking &&
       (task.writes.length === 0 ||
@@ -4180,10 +4256,11 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         this.store.transaction(() => this.store.taskStatus(runId, task.id, "blocked"));
         throw correction;
       }
+      const ownFailures = ownCheckFailures(task, result, changed);
       if (
         result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
-        result.unresolved.length > 0 ||
+        (result.unresolved.length > 0 && !ownFailures) ||
         correction !== true
       ) {
         if (narrow) {
@@ -4274,6 +4351,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       if (result.outcome === "already_satisfied")
         this.validateSatisfiedEvidence(runId, state, after, result);
       reported = { summary: result.summary, unresolved: result.unresolved };
+      if (ownFailures) unresolvedAccount = reported;
       await this.snapshot(runId, state, policy, signal);
       const beforeHashes = Object.fromEntries(
         changed.map((p) => [p, earlier.has(p) ? (earlier.get(p) ?? null) : (before[p] ?? null)]),
@@ -4330,6 +4408,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         checkEvidence,
       );
     this.inconclusiveTaskCheck(inconclusive, taskFailures);
+    if (unresolvedAccount && !taskFailures.length && !taskResults.length)
+      taskFailures.push(...this.unresolvedFindings(runId, state, task, unresolvedAccount));
     await this.critique(
       runId,
       child,
@@ -4342,7 +4422,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       signal,
     );
     this.settleTask(runId, state, policy, task, child, taskFailures, checkEvidence);
-    if (!taskFailures.length && reported)
+    if (!taskFailures.length && reported && !unresolvedAccount)
       await this.routeReportedDefect(runId, state, policy, task, child, reported, signal, taskRoot);
   }
   /**
@@ -5260,7 +5340,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       if (
         result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
-        result.unresolved.length > 0 ||
+        (result.unresolved.length > 0 && !ownCheckFailures(task, result, changed)) ||
         correction !== true
       )
         return {
@@ -5502,6 +5582,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     ))
       inconclusive ??= this.applyTaskCheck(runId, state, task, check, checked, failures, evidence);
     this.inconclusiveTaskCheck(inconclusive, failures);
+    if (outcome.account.unresolved.length && !failures.length && !results.length)
+      failures.push(...this.unresolvedFindings(runId, state, task, outcome.account));
     await this.critique(
       runId,
       entry.child,
@@ -5514,7 +5596,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       signal,
     );
     this.settleTask(runId, state, policy, task, entry.child, failures, evidence);
-    if (!failures.length)
+    if (!failures.length && !outcome.account.unresolved.length)
       await this.routeReportedDefect(
         runId,
         state,
@@ -6183,6 +6265,51 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
    * `tasks/TASK_ID/integrity.json`; under `testIntegrity: "block"` (the default) each becomes a
    * task failure that a repair must undo, under `warn` it stays a record.
    */
+  /** Every path the task graph writes, for telling a task's own files from the others. */
+  private plannedPaths(state: RuntimeState): string[] {
+    return [...new Set((state.graph?.tasks ?? []).flatMap((t) => t.writes.map((w) => w.path)))];
+  }
+  /**
+   * The failing tests or lint findings a task reported unresolved in its own files, as findings
+   * of a corrective task when no task check ran to show them (#1110). The account is the evidence.
+   */
+  private unresolvedFindings(
+    runId: string,
+    state: RuntimeState,
+    task: Task,
+    account: { summary: string; unresolved: string[] },
+  ): Review["findings"] {
+    const writes = task.writes.filter((w) => w.action !== "delete").map((w) => w.path);
+    // A failure that names another task's file (a README assertion before the README task ran)
+    // is left to the checks and review of the whole feature: the task cannot fix it in its files.
+    const others = this.plannedPaths(state).filter((path) => !writes.includes(path));
+    const items = account.unresolved.filter(
+      (item) => !others.some((path) => namesPath(item, path)),
+    );
+    if (!items.length) return [];
+    const evidenceId = this.store.transaction(() => {
+      const artifact = this.store.artifact(
+        runId,
+        "diff",
+        `tasks/${task.id}/unresolved.json`,
+        canonical({ taskId: task.id, ...account }),
+      );
+      return this.store.addEvidence(runId, "diff", state.snapshotId ?? "", artifact.id);
+    });
+    return items.map((item) => ({
+      id: newId(),
+      kind: "partial" as const,
+      severity: "medium" as const,
+      requirementIds: task.requirementIds,
+      criterionIds: task.criterionIds,
+      file: writes.find((path) => namesPath(item, path)) ?? writes[0] ?? null,
+      symbol: null,
+      evidenceIds: [evidenceId],
+      claim: `Task ${task.id} reported unresolved in its own files: ${item.slice(0, 1500)}`,
+      impact: "The task's own tests or lint fail, so its work is not done",
+      suggestedFix: `Run the failing tests or lint of ${task.id}'s files, fix the cause and rerun them. Keep every test that matches the spec as written.`,
+    }));
+  }
   private integrityFailures(
     runId: string,
     state: RuntimeState,
@@ -6211,7 +6338,13 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     // A correction of a spec amendment changes the tests that served the amended wording.
     const amendments = this.amendments(runId);
     const amending = amendments.some((a) => task.findingIds.includes(a.findingId));
+    // A correction whose finding asks for its test file to be rewritten may drop assertions.
+    const ownFindings = this.store
+      .findings(runId)
+      .filter((f) => task.findingIds.includes(f.id))
+      .map((f) => JSON.parse(f.body_json) as Review["findings"][number]);
     const found = scanTestIntegrity(changes, {
+      rewrites: task.origin === "planned" ? new Set() : rewriteTargets(ownFindings),
       reasoned: new Set([
         ...task.writes
           .filter((w) => w.reason || (amending && isTestPath(w.path)))
@@ -6438,6 +6571,16 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         return { path, before: kept, after: read(path) };
       }),
       {
+        rewrites: rewriteTargets(
+          this.store
+            .findings(runId)
+            .filter((f) =>
+              (state.graph?.tasks ?? []).some(
+                (t) => t.origin !== "planned" && t.findingIds.includes(f.id),
+              ),
+            )
+            .map((f) => JSON.parse(f.body_json) as Review["findings"][number]),
+        ),
         reasoned: new Set([
           ...tasks.flatMap((t) => t.writes.filter((w) => w.reason).map((w) => w.path)),
           ...this.amendments(runId).flatMap((a) => a.paths),
@@ -6516,6 +6659,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const example = first && writesOnlyDocs(task) && namesExampleRule(report);
     const assume = first && (example || namesRequestSide(report));
     const tests = first && !assume ? this.conflictingTests(runId, state, task, report) : [];
+    const own =
+      first && !assume && !tests.length ? this.ownRunTests(runId, state, task, report) : [];
     this.store.transaction(() => {
       this.store.artifact(
         runId,
@@ -6544,6 +6689,25 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     }
     if (assume) {
       state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the spec or its tests contradict the request: ${report.slice(0, 1500)} The request is authoritative: follow what it states. Where a criterion, a requirement or a test says otherwise, the request wins; a test that contradicts the request is changed to what the request states, and no other test is weakened.`;
+      return;
+    }
+    if (own.length) {
+      // md-site a652d8fc (bench round 22): a correction met a test this run generated and could
+      // rewrite, but stopped rather than change a test. Two things the run wrote are never a
+      // question for a person: the spec and the request win, and the task corrects its test.
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "assumption",
+          assumedPath,
+          canonical({
+            ...account,
+            assumed: `The approved spec and the request win over ${own.join(", ")}, which this run wrote`,
+            tests: own,
+          }),
+        ),
+      );
+      state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that tests this run wrote contradict the approved spec: ${report.slice(0, 1500)} The approved spec and the request win over ${own.join(", ")}, which this run wrote and ${task.id} may write: change only the assertions there that contradict them to what they state, keep every other assertion and test, and make the code pass.`;
       return;
     }
     if (tests.length) {
@@ -6600,6 +6764,28 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       ],
       specConflict: account,
     });
+  }
+  /**
+   * The test files a conflict report names that the task itself may write and that this run
+   * created: absent from the baseline snapshot (or, without one, created by a task of the plan).
+   * Tests written first and approved by a person, and tests that existed before the run, stay a
+   * question.
+   */
+  private ownRunTests(runId: string, state: RuntimeState, task: Task, report: string): string[] {
+    const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [task];
+    const baselineId = state.manifest.baselineSnapshotId;
+    const baseline = baselineId ? this.store.snapshotFiles(runId, baselineId) : null;
+    const created = (path: string) =>
+      baseline
+        ? !(path in baseline)
+        : tasks.some((t) => t.writes.some((w) => w.path === path && w.action === "create"));
+    return pathsInOutput(report, [task]).filter(
+      (path) =>
+        isTestPath(path) &&
+        task.writes.some((w) => w.path === path && w.action !== "delete") &&
+        !state.testsFirst?.files.includes(path) &&
+        created(path),
+    );
   }
   /**
    * The test files a conflict report names that the task cannot write and that an implemented test
@@ -9973,6 +10159,24 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       // A repeated finding of a later round names the same contradiction: one note is enough.
       if (!state.prompt.includes(amendment.claim.slice(0, 1000)))
         state.prompt += `\n${amendmentNote(path, amendment)}`;
+    }
+  }
+  /** Analysis findings on the spec that the request settles record amendments (#1120). */
+  private amendFromAnalysis(
+    runId: string,
+    state: RuntimeState,
+    findings: { id: string; refs: string[]; description: string }[],
+  ): void {
+    if (!state.spec) return;
+    for (const finding of findings) {
+      const amendment = analysisAmendmentOf(finding, state.spec);
+      if (!amendment) continue;
+      const path = `amendments/${amendment.findingId}.json`;
+      if (this.store.latestArtifact(runId, path)) continue;
+      this.store.artifact(runId, "assumption", path, canonical(amendment));
+      // The return notes already quote the finding, so only the note itself is checked.
+      const note = amendmentNote(path, amendment);
+      if (!state.prompt.includes(note)) state.prompt += `\n${note}`;
     }
   }
   /** The run's spec amendments (`amendments/*.json`). */

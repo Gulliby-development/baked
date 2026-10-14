@@ -118,24 +118,30 @@ export const EFFORT_LABELS: Record<ChatEffort, string> = {
 
 /**
  * Reasoning effort of the chat: `Default` and the levels the current model takes, which the
- * model list reports. A model without effort leaves only `Default`, with a note why.
+ * model list reports. A model without effort leaves only `Default`, with a note why. A model the
+ * provider's list leaves out (it failed to load, or no longer lists the id) takes the levels the
+ * session reports for its own model (#1092).
  */
 export function EffortMenu({
   model,
   effort,
   models,
+  efforts,
   onEffort,
   close,
 }: {
   model: string | null;
   effort: ChatEffort;
   models: ModelList;
+  /** The session's levels for its model; absent for a draft or an older server. */
+  efforts?: readonly ChatEffort[];
   onEffort: (effort: ChatEffort) => void;
   close: () => void;
 }) {
-  if (!models.providers) return <p className={MENU_NOTE}>{models.error ?? "Loading efforts…"}</p>;
-  const found = models.providers.flatMap((p) => p.models).find((m) => m.id === model);
-  const levels = found?.efforts ?? [];
+  if (!models.providers && !efforts)
+    return <p className={MENU_NOTE}>{models.error ?? "Loading efforts…"}</p>;
+  const found = models.providers?.flatMap((p) => p.models).find((m) => m.id === model);
+  const levels: readonly ChatEffort[] = found ? (found.efforts ?? []) : (efforts ?? []);
   const choices: ChatEffort[] = ["default", ...levels];
   if (!choices.includes(effort)) choices.push(effort);
   return (
@@ -227,6 +233,7 @@ export function Composer({
   model,
   mode,
   effort = "default",
+  efforts,
   autoFocusKey,
   initialText = "",
   onSend,
@@ -249,6 +256,8 @@ export function Composer({
   model: string | null;
   mode: ChatMode;
   effort?: ChatEffort;
+  /** Efforts the session reports for its model, used when the model list leaves it out. */
+  efforts?: readonly ChatEffort[];
   /** The modes the menu offers; defaults to the modes every backend has. */
   modes?: readonly ChatMode[];
   /** Changing it moves the focus to the textarea, e.g. when another session opens. */
@@ -450,7 +459,11 @@ export function Composer({
   useEffect(() => () => recorder.current?.cancel(), []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: refocus when the session changes
   useEffect(() => {
-    area.current?.focus();
+    const el = area.current;
+    if (!el) return;
+    el.focus();
+    // After seeded text (such as "Change the split: "), typing goes on from its end.
+    el.setSelectionRange(el.value.length, el.value.length);
   }, [autoFocusKey]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: resize whenever the text changes
   useEffect(() => {
@@ -728,6 +741,7 @@ export function Composer({
                 model={model}
                 effort={effort}
                 models={models}
+                {...(efforts ? { efforts } : {})}
                 onEffort={onEffort}
                 close={close}
               />

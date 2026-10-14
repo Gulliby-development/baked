@@ -81,6 +81,47 @@ export function nativeToolInEvent(event: unknown): string | null {
   return null;
 }
 
+/**
+ * Native tool calls in the event that name one of BAKED's tools with an object input. Such a call
+ * is the model asking for that tool in the wrong form, so the adapter takes it as the step's
+ * answer instead of correcting the model.
+ */
+export function bakedToolUses(
+  event: unknown,
+  toolNames: ReadonlySet<string>,
+): Array<{ toolName: string; inputJson: string }> {
+  const content = (event as { message?: { content?: unknown } } | null)?.message?.content;
+  if (!Array.isArray(content)) return [];
+  const calls: Array<{ toolName: string; inputJson: string }> = [];
+  for (const block of content as Record<string, unknown>[]) {
+    if (block.type !== "tool_use" || typeof block.name !== "string") continue;
+    if (block.name.toLowerCase() === STRUCTURED_OUTPUT_TOOL) continue;
+    const input = block.input;
+    if (!toolNames.has(block.name) || !input || typeof input !== "object" || Array.isArray(input))
+      return [];
+    // Some calls wrap the input the way the envelope does: `{inputJson: "..."}`.
+    const wrapped = (input as Record<string, unknown>).inputJson;
+    const inputJson =
+      Object.keys(input).length === 1 && typeof wrapped === "string"
+        ? wrapped
+        : JSON.stringify(input);
+    calls.push({ toolName: block.name, inputJson });
+  }
+  return calls;
+}
+
+/** The BAKED tool names the step's JSON envelope allows. */
+function schemaToolNames(schema: JSONSchema7): Set<string> {
+  const toolCalls = schema.properties?.toolCalls;
+  const items = typeof toolCalls === "object" ? toolCalls.items : undefined;
+  const toolName =
+    items && typeof items === "object" && !Array.isArray(items)
+      ? items.properties?.toolName
+      : undefined;
+  const names = typeof toolName === "object" ? toolName.enum : undefined;
+  return new Set((names ?? []).filter((name: unknown): name is string => typeof name === "string"));
+}
+
 export interface ClaudeCodeRunner {
   run(call: ClaudeCodeCall): Promise<ClaudeCodeTurnResult>;
 }
@@ -123,6 +164,10 @@ interface SessionState {
     nativeTools: string[];
     /** Usage of the interrupted attempts, charged to the final answer. */
     carriedUsage: LanguageModelV3Usage[];
+    /** Tools the step may call. */
+    toolNames: ReadonlySet<string>;
+    /** BAKED tool calls the model made as native ones; they answer the step once interrupted. */
+    salvaged: Array<{ toolName: string; inputJson: string }> | null;
   } | null;
 }
 
@@ -446,7 +491,11 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
     if (event.type !== "result") {
       if (!live.interrupting && (event.type === "assistant" || event.type === "user")) {
         const nativeTool = nativeToolInEvent(event);
-        if (nativeTool) this.abortNativeToolTurn(session, live, nativeTool);
+        if (nativeTool) {
+          const calls = bakedToolUses(event, live.toolNames);
+          if (calls.length > 0) live.salvaged = calls;
+          this.abortNativeToolTurn(session, live, nativeTool);
+        }
       }
       return;
     }
@@ -457,6 +506,18 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
       if (pending.interruptTimer) clearTimeout(pending.interruptTimer);
       pending.interruptTimer = null;
       pending.carriedUsage.push(usageFromResult(result.usage));
+      if (pending.salvaged) {
+        session.pending = null;
+        pending.resolve({
+          structured: { finishReason: "tool-calls", text: "", toolCalls: pending.salvaged },
+          text: "",
+          usage: sumUsage(pending.carriedUsage),
+          nativeToolAborts: pending.nativeTools,
+        });
+        // The session holds the native call, not the envelope; the next step starts afresh.
+        this.closeSession(session);
+        return;
+      }
       if (pending.nativeTools.length > MAX_NATIVE_TOOL_CORRECTIONS) {
         session.pending = null;
         pending.reject(
@@ -544,6 +605,8 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
         interruptTimer: null,
         nativeTools: [],
         carriedUsage: [],
+        toolNames: schemaToolNames(call.parts.schema),
+        salvaged: null,
       };
       call.abortSignal?.addEventListener("abort", onAbort, { once: true });
       session.process.send(

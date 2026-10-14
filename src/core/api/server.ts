@@ -176,7 +176,9 @@ export const CAPABILITIES = [
   "worktrees",
   "lsp-diagnose",
   "workflow-editor",
+  "workflow-delete",
   "custom-commands",
+  "commands-edit",
   "settings",
   "git",
   "git-graph",
@@ -1158,6 +1160,19 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         origin,
       );
     }
+    const definition = /^\/v1\/workflow\/definitions\/([^/]+)$/.exec(path);
+    if (definition) {
+      only("DELETE");
+      return json(
+        200,
+        await execute({
+          command: "remove",
+          positional: [decodeURIComponent(definition[1] ?? "")],
+          flags: {},
+        }),
+        origin,
+      );
+    }
     if (path === "/v1/workflow/definitions" || path === "/v1/workflow/profiles") {
       only("GET");
       const command = path.endsWith("definitions") ? "definitions" : "profiles";
@@ -1590,6 +1605,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     ownMemory ??= new MemoryManager(service.workspace, options.configDir);
     return ownMemory;
   };
+  chat.setMemorySource(chatMemory);
   const stop = (): Promise<void> => {
     stopping ??= (async () => {
       shutdown.abort(new Error("API server shutdown"));

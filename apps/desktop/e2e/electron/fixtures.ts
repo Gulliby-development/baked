@@ -27,6 +27,8 @@ export interface LaunchOptions {
    * repository's own `baked` from source, with BAKED_TEST_SCRIPT, instead of the fake.
    */
   script?: unknown;
+  /** Settings merged into the scripted backend's `~/.baked/config.json`. */
+  config?: Record<string, unknown>;
   /** Extra environment for the app, e.g. BAKED_VOICE_DIR. */
   env?: Record<string, string>;
   /** Extra Chromium switches, e.g. a fake microphone. */
@@ -53,11 +55,15 @@ export const test = base.extend<Fixtures>({
         return path;
       },
     });
-    // A backend that is still shutting down can write into the temp home while it is removed.
-    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    // A backend that is still shutting down can write into the temp home while it is removed;
+    // a temp folder left behind is not a failure of the test.
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
+    } catch {}
   },
-  launch: async ({ workspace }, use) => {
+  launch: async ({ workspace }, use, testInfo) => {
     const apps: ElectronApplication[] = [];
+    let output = "";
     await use(async (options = {}) => {
       const home = join(workspace.dir, "home");
       const config = join(home, ".config");
@@ -97,7 +103,7 @@ export const test = base.extend<Fixtures>({
         mkdirSync(join(home, ".baked"), { recursive: true });
         writeFileSync(
           join(home, ".baked", "config.json"),
-          JSON.stringify({ defaultModel: "openai/gpt-scripted" }),
+          JSON.stringify({ defaultModel: "openai/gpt-scripted", ...options.config }),
         );
       }
       if (options.script !== undefined)
@@ -114,11 +120,54 @@ export const test = base.extend<Fixtures>({
         env,
       });
       apps.push(app);
+      // The backend's and the main process's output, printed when the test fails.
+      for (const stream of [app.process().stdout, app.process().stderr])
+        stream?.on("data", (chunk: Buffer) => {
+          output = (output + chunk.toString()).slice(-6000);
+        });
       expect(await app.evaluate(({ app }) => app.getPath("userData"))).toBe(userData);
       const page = await app.firstWindow();
+      page.on("console", (entry) => {
+        output = (output + `[renderer ${entry.type()}] ${entry.text()}\n`).slice(-6000);
+      });
+      page.on("pageerror", (error) => {
+        output = (output + `[renderer error] ${error.message}\n`).slice(-6000);
+      });
       await expect(page.getByRole("heading", { name: "All projects", level: 1 })).toBeVisible();
+      // Backend state changes and navigations, for the log of a failed test.
+      await page.evaluate(() => {
+        const log = (line: string) => console.debug(`[${Math.round(performance.now())}ms] ${line}`);
+        const bridge = (window as unknown as {
+          baked: { onProjects(listener: (list: DesktopProjectLike[]) => void): void };
+        }).baked;
+        type DesktopProjectLike = { name: string; backend: { kind: string } };
+        bridge.onProjects((list) =>
+          log(`projects ${list.map((p) => `${p.name}:${p.backend.kind}`).join(" ")}`),
+        );
+        window.addEventListener("hashchange", () => log(`hash ${window.location.hash}`));
+        let prompt: Element | null = null;
+        new MutationObserver(() => {
+          const now = document.getElementById("chat-prompt");
+          if (now !== prompt) log(now ? "composer mounted" : "composer removed");
+          prompt = now;
+        }).observe(document.body, { childList: true, subtree: true });
+      });
       return { app, page };
     });
+    if (testInfo.status !== testInfo.expectedStatus) {
+      // CI artifacts are not always at hand: the window and the process output go to the log.
+      for (const app of apps) {
+        const snapshot = await app
+          .windows()[0]
+          ?.locator("main")
+          .ariaSnapshot({ timeout: 2000 })
+          .catch((error: unknown) => String(error));
+        console.log(
+          `--- window at failure (${app.windows()[0]?.url()}) ---\n${snapshot?.slice(0, 6000)}`,
+        );
+      }
+      console.log(`--- app output ---\n${output}`);
+    }
     for (const app of apps) await app.close();
   },
 });

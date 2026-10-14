@@ -9,6 +9,7 @@ import {
   type PackResult,
   packages,
   packSummary,
+  type RemoveResult,
 } from "../../client/packages.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button, buttonVariants } from "../../components/ui/button.js";
@@ -54,15 +55,25 @@ import {
   WRAP,
 } from "./shared.js";
 
+const files = (count: number, what = "file") => `${count} ${what}${count === 1 ? "" : "s"}`;
+
 /** What an install did, in one sentence. */
 export function installSummary(result: InstallResult): string {
   const parts = [
-    `Installed ${result.name} ${result.version}: ${result.written.length} files written`,
+    `Installed ${result.name} ${result.version}: ${files(result.written.length)} written`,
     result.unchanged.length ? `${result.unchanged.length} already identical` : "",
-    result.removed.length ? `${result.removed.length} files of the old version removed` : "",
-    result.kept.length ? `${result.kept.length} edited files of the old version kept` : "",
+    result.removed.length ? `${files(result.removed.length)} of the old version removed` : "",
+    result.kept.length ? `${files(result.kept.length, "edited file")} of the old version kept` : "",
   ].filter(Boolean);
   return `${parts.join(", ")}.`;
+}
+
+/** What removing a package did, in one sentence. */
+export function removeSummary(result: RemoveResult): string {
+  const kept = result.kept.length
+    ? `; kept ${result.kept.length} edited: ${result.kept.join(", ")}`
+    : "";
+  return `Removed ${result.name} ${result.version}: ${files(result.removed.length)} deleted${kept}.`;
 }
 
 function Steps({

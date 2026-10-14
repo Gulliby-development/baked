@@ -9,6 +9,7 @@ import {
   libraryDocsSummary,
   lockedReason,
   numberDraft,
+  orderError,
   pageSections,
   parseLibraryDocs,
   parseNumber,
@@ -97,5 +98,17 @@ describe("library docs source", () => {
     expect(parseLibraryDocs({ ...empty, kind: "mcp", server: "context7" })).toHaveProperty("error");
     expect(parseLibraryDocs({ ...empty, kind: "mcp", server: "s", tool: "t", args: "novalue" })).toHaveProperty("error");
     expect(parseLibraryDocs({ ...empty, kind: "dir", dir: "d", maxChars: "100" })).toHaveProperty("error");
+  });
+
+  test("Rearm below stays under Compact at, whichever of the two is edited", () => {
+    const values = view({ "compaction.triggerThreshold": 0.7, "compaction.resetThreshold": 0.4 });
+    const rearm = setting("compaction.resetThreshold");
+    const trigger = setting("compaction.triggerThreshold");
+    expect(orderError(rearm, 0.5, values)).toBeNull();
+    expect(orderError(rearm, 0.8, values)).toBe("Keep it below Compact at (70%)");
+    expect(orderError(rearm, 0.7, values)).toBe("Keep it below Compact at (70%)");
+    expect(orderError(trigger, 0.6, values)).toBeNull();
+    expect(orderError(trigger, 0.35, values)).toBe("Keep it above Rearm below (40%)");
+    expect(orderError(setting("repoMapTokenBudget"), null, values)).toBeNull();
   });
 });

@@ -131,6 +131,12 @@ export function emptyTranscript(): Transcript {
   };
 }
 
+/**
+ * Where a client subscribes after loading `detail`: before the running turn, so the text and
+ * tool calls it already streamed are replayed, or else after the last event.
+ */
+export const subscribeAfter = (detail: SessionDetail): number => detail.turnSeq ?? detail.lastSeq;
+
 export function fromDetail(detail: SessionDetail, previous?: Transcript): Transcript {
   const {
     messages,
@@ -139,11 +145,14 @@ export function fromDetail(detail: SessionDetail, previous?: Transcript): Transc
     usage,
     context,
     filesEdited,
-    lastSeq,
+    lastSeq: _lastSeq,
+    turnSeq: _turnSeq,
+    lastError,
     plan,
     redo,
     ...session
   } = detail;
+  const lastSeq = subscribeAfter(detail);
   const compacting = session.compacting === true;
   const working = session.state !== "idle" && !compacting;
   return {
@@ -160,6 +169,8 @@ export function fromDetail(detail: SessionDetail, previous?: Transcript): Transc
     turnId: working ? "running" : null,
     compacting,
     redo: redo ?? [],
+    // A turn that failed before the page loaded still says why.
+    notice: lastError && !working ? { kind: "error", text: lastError } : null,
     ...(previous?.session?.id === session.id
       ? { pending: previous.pending, thoughtMs: previous.thoughtMs, notice: previous.notice }
       : {}),

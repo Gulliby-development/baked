@@ -693,6 +693,13 @@ const SKILLS: SkillEntry[] = [
     scope: "global",
     path: "C:\\Users\\you\\.claude\\skills\\pdf\\SKILL.md",
   },
+  {
+    id: "review-notes",
+    scope: "package",
+    path: "C:\\Project\\BAKED\\baked\\skills\\review-notes\\SKILL.md",
+    description: "The checklist Acme's reviewer follows",
+    package: "acme-review",
+  },
 ];
 
 const CATALOG: CatalogSkill[] = [
@@ -714,6 +721,78 @@ const skillPath = (scope: SkillEntry["scope"], id: string) =>
   scope === "project"
     ? `C:\\Project\\BAKED\\.agents\\skills\\${id}\\SKILL.md`
     : `C:\\Users\\you\\.agents\\skills\\${id}\\SKILL.md`;
+
+/** Prompts of the mock commands, by `scope:name`, for the edit form. */
+const COMMAND_BODIES = new Map<string, string>();
+
+const commandPath = (scope: CommandEntry["scope"], name: string) =>
+  `${scope === "global" ? "C:\\Users\\you" : "C:\\Project\\BAKED"}\\.baked\\commands\\${name.slice(1).replaceAll(":", "\\")}.md`;
+
+/** `POST /v1/commands` and `GET|PUT|DELETE /v1/commands/SCOPE/NAME`, with the backend's checks. */
+function commandRoutes(request: MockRequest) {
+  const { path, method } = request;
+  type Draft = {
+    scope?: CommandEntry["scope"];
+    name?: string;
+    description?: string;
+    argumentHint?: string;
+    body?: string;
+  };
+  const write = (scope: CommandEntry["scope"], draft: Draft, previous: CommandEntry | null) => {
+    const raw = (draft.name ?? "").trim().replace(/^\//, "");
+    if (!raw) return error(400, "INVALID_COMMAND", "A command needs a name");
+    if (raw.split(":").some((segment) => !/^[a-z0-9_][a-z0-9_.-]*$/.test(segment)))
+      return error(400, "INVALID_COMMAND", `"${raw}" is not a valid command name`);
+    const prompt = draft.body?.trim() ?? "";
+    if (!prompt) return error(400, "INVALID_COMMAND", "A command needs a prompt");
+    const name = `/${raw}`;
+    const taken = COMMANDS.find((c) => c.scope === scope && c.name === name);
+    if (taken && taken !== previous)
+      return error(409, "CONFLICT", `A ${scope} command ${name} already exists`);
+    const entry: CommandEntry = {
+      name,
+      scope,
+      path: commandPath(scope, name),
+      description: draft.description?.trim() || prompt.split("\n")[0] || "Custom command",
+      ...(draft.argumentHint?.trim() ? { argumentHint: draft.argumentHint.trim() } : {}),
+    };
+    if (previous) COMMANDS.splice(COMMANDS.indexOf(previous), 1);
+    COMMANDS.push(entry);
+    COMMANDS.sort((a, b) => a.name.localeCompare(b.name));
+    COMMAND_BODIES.set(`${scope}:${name}`, prompt);
+    COMMAND_BODIES.set(`${scope}:${name}:description`, draft.description?.trim() ?? "");
+    return response(previous ? 200 : 201, {
+      command: { name, scope, path: entry.path },
+      commands: COMMANDS,
+    });
+  };
+  if (path === "/v1/commands" && method === "POST") {
+    const draft = body<Draft>(request);
+    return write(draft.scope === "project" ? "project" : "global", draft, null);
+  }
+  const item = /^\/v1\/commands\/(project|global)\/([^/]+)$/.exec(path);
+  if (!item) return undefined;
+  const scope = item[1] as CommandEntry["scope"];
+  const name = `/${decodeURIComponent(item[2] ?? "")}`;
+  const found = COMMANDS.find((c) => c.scope === scope && c.name === name) ?? null;
+  if (!found) return error(404, "NOT_FOUND", `No ${scope} command ${name}`);
+  if (method === "GET")
+    return response(200, {
+      scope,
+      name,
+      path: found.path,
+      description: COMMAND_BODIES.get(`${scope}:${name}:description`) ?? found.description,
+      argumentHint: found.argumentHint ?? "",
+      body:
+        COMMAND_BODIES.get(`${scope}:${name}`) ?? `${found.description}.\n\nArguments: $ARGUMENTS`,
+    });
+  if (method === "PUT") return write(scope, body<Draft>(request), found);
+  if (method === "DELETE") {
+    COMMANDS.splice(COMMANDS.indexOf(found), 1);
+    return response(200, { commands: COMMANDS });
+  }
+  return undefined;
+}
 
 function skillRoutes(request: MockRequest) {
   const { path, method, query } = request;
@@ -740,7 +819,7 @@ function skillRoutes(request: MockRequest) {
     SKILLS.sort((a, b) => a.id.localeCompare(b.id));
     return response(200, { skill, skills: SKILLS });
   }
-  const item = /^\/v1\/skills\/(project|global)\/([^/]+)$/.exec(path);
+  const item = /^\/v1\/skills\/(project|global|package)\/([^/]+)$/.exec(path);
   if (!item) return undefined;
   const id = decodeURIComponent(item[2] ?? "");
   const at = SKILLS.findIndex((s) => s.id === id && s.scope === item[1]);
@@ -751,6 +830,12 @@ function skillRoutes(request: MockRequest) {
       ...found,
       content: `---\nname: ${id}\ndescription: ${found.description ?? ""}\n---\n\n# ${id}\n\nUse this skill when the task touches ${id.replace("-", " ")}.\n\n1. Read the relevant files first.\n2. Follow the steps below.\n`,
     });
+  if (method === "DELETE" && found.scope === "package")
+    return error(
+      409,
+      "NOT_REMOVABLE",
+      `${id} belongs to the package ${found.package}; remove the package to remove it`,
+    );
   if (method === "DELETE") {
     SKILLS.splice(at, 1);
     return response(200, { skills: SKILLS });
@@ -1664,6 +1749,8 @@ export const setupRoutes: MockRoute = (request) => {
   }
   const skill = skillRoutes(request);
   if (skill) return skill;
+  const command = commandRoutes(request);
+  if (command) return command;
   const s = state(key);
   switch (`${method} ${path}`) {
     case "GET /v1/projects/current":

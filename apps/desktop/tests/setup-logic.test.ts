@@ -12,9 +12,12 @@ import type {
 } from "../src/renderer/client/setup.ts";
 import {
   checkDraft,
+  BLANK_COMMAND,
   checkResultText,
+  commandFormProblem,
   commandLabel,
   draftToCheck,
+  externalUrl,
   frozenRunState,
   gateMark,
   joinCommand,
@@ -222,5 +225,30 @@ describe("runs that froze a changed file", () => {
       "paused; resuming needs a revised plan",
     );
     expect(frozenRunState({ status: "completed" }).canRevise).toBe(false);
+  });
+});
+
+describe("externalUrl", () => {
+  test("makes a provider's bare key page an https link", () => {
+    expect(externalUrl("platform.openai.com")).toBe("https://platform.openai.com");
+    expect(externalUrl("github.com/settings/tokens")).toBe("https://github.com/settings/tokens");
+  });
+
+  test("keeps a link that already names its scheme", () => {
+    expect(externalUrl("https://console.anthropic.com")).toBe("https://console.anthropic.com");
+    expect(externalUrl("http://localhost:8080/keys")).toBe("http://localhost:8080/keys");
+  });
+});
+
+// #1102: the global command form says what the backend would refuse before it is sent.
+describe("global command form", () => {
+  const form = (name: string, body = "Fix it") => ({ ...BLANK_COMMAND, name, body });
+  test("needs a valid, free name and a prompt", () => {
+    expect(commandFormProblem(form(""), [])).toBe("Give the command a name.");
+    expect(commandFormProblem(form("Fix CI"), [])).toContain("Use lowercase letters");
+    expect(commandFormProblem(form("a::b"), [])).toContain("Use lowercase letters");
+    expect(commandFormProblem(form("/fix-ci"), ["/fix-ci"])).toBe("/fix-ci already exists.");
+    expect(commandFormProblem(form("fix-ci", "  "), [])).toBe("Write the prompt the command sends.");
+    expect(commandFormProblem(form("frontend:component"), ["/fix-ci"])).toBeNull();
   });
 });

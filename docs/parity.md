@@ -48,12 +48,13 @@ bun test tests/feature-parity.test.ts
 | --- | --- | --- | --- | --- |
 | Chat with the agent | `key Enter`, `/session`, `/session new` +2 | `--headless`, `--chat` | `/v1/sessions`, `/v1/sessions/:id`, `/v1/sessions/:id/messages` +3 | `project/chat` |
 | Run custom slash commands (.baked/commands) in chat | `key /` | `--headless` | `/v1/sessions/:id/messages` | `project/chat` |
-| List custom commands | `/commands` | Not needed: scripts read .baked/commands directly | `/v1/commands` | `settings/commands` |
+| List, add, edit and remove custom commands | `/commands` | Not needed: scripts read and write .baked/commands directly | `/v1/commands`, `/v1/commands/project/:id`, `/v1/commands/global/:id` | `settings/commands` |
 | Session list, resume and rename | `/session history`, `/session rename` | `--resume`, `--session`, `baked session list` | `/v1/sessions`, `/v1/sessions/:id` | `project/chat` |
 | Delete a session | `/session history` | `baked session delete` | `/v1/sessions/:id` | `project/chat` |
 | Export a chat (Markdown, JSON, clipboard) | `/session export`, `/session export json`, `/session export clipboard` | `baked session export` | `/v1/sessions/:id/export` | `project/chat` |
 | Project coordinator chat with a durable project brief and read access to the project | `/coordinator`, `/projects` | `baked session coordinator`, `baked session coordinator send`, `baked session coordinator launched` +2 | `/v1/coordinator`, `/v1/coordinator/brief`, `/v1/coordinator/launched` +2 | `project/coordinator`, `project/chat` |
 | Coordinator suggests, runs and follows workflows | `/coordinator` | `baked session coordinator send`, `baked session coordinator launched` | `/v1/sessions/:id/prompts`, `/v1/sessions/:id/events`, `/v1/coordinator/launched` | `project/coordinator`, `attention` |
+| Chat and coordinator set BAKED up on request: workflows, agent context, memory, skills, packages, hooks, MCP and language servers, each change on an approval card | `/coordinator`, `key Enter` | `baked session coordinator send`, `--prompt` | `/v1/sessions/:id/prompts` | `project/coordinator`, `project/chat` |
 | Coordinator assesses a task and, without a workflow, splits it into parallel chats | `/coordinator` | `baked session coordinator send` | `/v1/sessions/:id/prompts`, `/v1/sessions/:id/events` | `project/coordinator`, `attention` |
 | Coordinator work style: workflows only, mostly workflows, not set, mostly chats, chats only | `/coordinator style` | Not needed: set coordinator.workStyle in config.json; the CLI coordinator reads it | `/v1/settings` | `settings/chat` |
 | Editing sessions the coordinator launches work in their own Git worktree and branch | `/coordinator` | Not needed: the headless CLI does not launch coordinator sessions | `/v1/coordinator/launched`, `/v1/sessions` | `project/coordinator` |
@@ -108,7 +109,7 @@ bun test tests/feature-parity.test.ts
 | Agent features: de-sloppify, verify edits, tier routing, edits that add errors | `/agent-features` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
 | Approval reviewer for chat tool approvals: a model decides low-risk cleanup first | `/agent-features` | `--approval-review` | `/v1/settings` | `settings/chat`, `project/chat` |
 | Hooks: view, add, edit, pause | `/hooks` | Not needed: hooks are files scripts edit directly | `/v1/hooks`, `/v1/hooks/session` | `project/hooks` |
-| Skills: browse, install, remove | `/skills` | Not needed: `bunx skills add` installs from scripts | `/v1/skills`, `/v1/skills/catalog`, `/v1/skills/project/:id` +1 | `project/skills` |
+| Skills: browse, install, remove | `/skills` | Not needed: `bunx skills add` installs from scripts | `/v1/skills`, `/v1/skills/catalog`, `/v1/skills/project/:id` +2 | `project/skills` |
 | Packages: install agent profiles, skills, workflows and gates from a local folder with per-file hashes | `/packages`, `/packages add`, `/packages remove` | `baked add`, `baked packages` | `/v1/packages`, `/v1/packages/inspect`, `/v1/packages/install` +1 | `project/packages` |
 | Packages: write a package's manifest with every file's hash after the install checks | `/packages pack` | `baked packages pack` | `/v1/packages/pack` | `project/packages` |
 | Ask the agent about BAKED itself (bundled docs, baked_help tool) | `key Enter` | `--headless`, `--chat` | `/v1/sessions/:id/messages` | `project/chat` |
@@ -144,6 +145,7 @@ bun test tests/feature-parity.test.ts
 | Revise a run after its instructions change | `/workflow` | `baked workflow candidate`, `baked workflow revise` | `/v1/workflow/runs/:id/candidate`, `/v1/workflow/runs/:id/revise` | `project/runs` |
 | Approval reviewer: a model decides low-risk plans outside the auto approval limits | `/workflow` | `baked workflow run`, `baked quick`, `approval-review` | `/v1/workflow/runs` | `project/runs` |
 | Checks: list, edit, run now, suggestions | `/workflow` | `baked doctor` | `/v1/workflow/checks`, `/v1/workflow/checks/suggestions`, `/v1/workflow/checks/:id/run` | `project/gates` |
+| Gates from chat: list detected gates, save them on an approval, set them up with a run | `/coordinator` | `baked session`, `baked session coordinator send` | `/v1/sessions/:id/prompts` | `project/chat`, `project/coordinator` |
 | Gates: list and confirm | `/workflow` | `baked workflow gates` | `/v1/workflow/gates`, `/v1/workflow/gates/confirm` | `project/gates` |
 | Duplication and dead-code ratchet | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | Anti-slop rule pack on the lines a run adds | `/code-quality`, `/workflow` | Not needed: rule choices and ast-grep files live in quality of config.json; baked workflow report shows the findings | `/v1/settings`, `/v1/workflow/runs/:id/report` | `settings/chat` |
@@ -158,7 +160,7 @@ bun test tests/feature-parity.test.ts
 | Gates on the run's line: what each does, blocks or advises, last result | `/workflow` | `baked workflow definitions`, `baked workflow status` | `/v1/workflow/definitions`, `/v1/workflow/runs/:id/events` | `project/runs` |
 | Each workflow's family and line, and a step-through of a run along it | `/workflow` | `baked workflow definitions` | `/v1/workflow/definitions` | `project/workflows` |
 | Compare two runs side by side (A/B of routing maps) | `/workflow` | `baked workflow compare` | `/v1/workflow/compare` | `project/runs` |
-| Workflow definition editor | `/workflow` | `baked workflow define`, `baked workflow validate` | `/v1/workflow/definitions`, `/v1/workflow/editor`, `/v1/workflow/editor/review` +1 | `project/workflows` |
+| Workflow definition editor | `/workflow` | `baked workflow define`, `baked workflow validate`, `baked workflow remove` | `/v1/workflow/definitions`, `/v1/workflow/editor`, `/v1/workflow/editor/review` +1 | `project/workflows` |
 | Agents a project brought from other tools: edit them and turn them into a workflow (shown only when the project has some) | `/agents` | `baked workflow agents` | `/v1/agents`, `/v1/agents/convert` | `project/agents`, `project/workflows` |
 | Wait stage: poll command gates until they pass or time out, with no model calls | `/workflow` | `baked workflow validate`, `baked workflow run` | `/v1/workflow/editor`, `/v1/workflow/runs/:id/events` | `project/workflows`, `project/runs` |
 | Doctor and estimate before a run | `/workflow` | `baked doctor`, `baked workflow estimate` | `/v1/workflow/doctor`, `/v1/workflow/estimate` | `project/overview` |

@@ -156,6 +156,41 @@ export function readLock(workspace: string): InstalledPackage[] {
   return parsed.data.packages;
 }
 
+/** A skill an installed package put in `baked/skills/<id>/SKILL.md`. */
+export interface PackageSkill {
+  name: string;
+  /** Absolute path of the SKILL.md. */
+  path: string;
+  scope: "package";
+  /** The package that installed it. */
+  package: string;
+}
+
+/**
+ * The skills installed packages put in the project, from the lock file, while their SKILL.md is
+ * still there (#1106). Workflow profiles that name them use them; the chat agent's skill folders
+ * (`listInstalledSkills`) do not include them. An unreadable lock file lists none.
+ */
+export function listPackageSkills(workspace: string): PackageSkill[] {
+  let packages: InstalledPackage[];
+  try {
+    packages = readLock(workspace);
+  } catch {
+    return [];
+  }
+  return packages
+    .flatMap((entry) =>
+      entry.files.flatMap((file) => {
+        const id = /^baked\/skills\/([^/]+)\/SKILL\.md$/.exec(file.path)?.[1];
+        const path = projectFile(workspace, file.path);
+        return id && existsSync(path)
+          ? [{ name: id, path, scope: "package" as const, package: entry.name }]
+          : [];
+      }),
+    )
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 function writeLock(workspace: string, packages: InstalledPackage[]): void {
   const path = projectFile(workspace, LOCK_PATH);
   mkdirSync(dirname(path), { recursive: true });

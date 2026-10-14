@@ -5,12 +5,14 @@ import {
   type EditorOp,
   type EditorView,
   type GateTarget,
+  type RemovedDefinition,
   type SaveReview,
   workflowEditor,
 } from "../../client/workflow-editor.js";
 import { Icon } from "../../components/Icon.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
+import { ConfirmDialog } from "../../components/ui/confirm-dialog.js";
 import {
   Dialog,
   DialogContent,
@@ -47,18 +49,97 @@ const takeRequestedTab = (): EditorTab | null => {
   return tab;
 };
 
+/**
+ * Asks before deleting a project workflow's file (#1101) and deletes it. Runs that started keep
+ * the definition they froze; a file that shadowed a built-in workflow gives it back.
+ */
+function DeleteWorkflowDialog({
+  projectKey,
+  id,
+  onClose,
+  onDeleted,
+}: {
+  projectKey: string;
+  id: string | null;
+  onClose: () => void;
+  onDeleted: (removed: RemovedDefinition) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (id) setError(null);
+  }, [id]);
+  const confirm = async () => {
+    if (!id) return;
+    setBusy(true);
+    try {
+      onDeleted(await workflowEditor.remove(projectKey, id));
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <ConfirmDialog
+      open={id !== null}
+      title={`Delete workflow ${id ?? ""}?`}
+      confirmLabel="Delete"
+      danger
+      busy={busy}
+      error={error}
+      onConfirm={() => void confirm()}
+      onClose={onClose}
+    >
+      Deletes <span className="font-mono">baked/workflows/{id}.json</span>. New runs can no longer
+      pick it; runs that already started keep the definition they froze.
+    </ConfirmDialog>
+  );
+}
+
+/**
+ * The line shown after a delete: whether a built-in workflow of the same ID is back. It names the
+ * file as the question did; `removed.path` is absolute.
+ */
+const deletedText = (removed: RemovedDefinition): string => {
+  const file = `baked/workflows/${removed.id}.json`;
+  return removed.restores
+    ? `Deleted ${file}. New runs use the built-in ${removed.restores} again.`
+    : `Deleted ${file}.`;
+};
+
 /** Every workflow definition of the project as a gallery, each opening in the editor. */
-function WorkflowList({ project }: Pick<SectionProps, "project">) {
-  const [list] = useLoad(() => start.definitions(project.key), [project.key, "definitions"]);
+function WorkflowList({
+  project,
+  canDelete,
+}: Pick<SectionProps, "project"> & { canDelete: boolean }) {
+  const [list, refresh] = useLoad(
+    () => start.definitions(project.key),
+    [project.key, "definitions"],
+  );
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   if (list.state !== "ready") return <LoadState value={list} what="workflows" />;
   return (
     <div className="flex min-w-0 flex-col gap-5">
       <AgentsNudge projectKey={project.key} />
+      {notice && <Alert role="status">{notice}</Alert>}
       <WorkflowGallery
         definitions={list.data}
         projectKey={project.key}
         onOpen={(tab) => {
           requestedTab = tab;
+        }}
+        onDelete={canDelete ? setDeleting : undefined}
+      />
+      <DeleteWorkflowDialog
+        projectKey={project.key}
+        id={deleting}
+        onClose={() => setDeleting(null)}
+        onDeleted={(removed) => {
+          setDeleting(null);
+          setNotice(deletedText(removed));
+          refresh();
         }}
       />
     </div>
@@ -177,9 +258,21 @@ function SaveDialog({
  * Both show the same working copy. Every change goes through the backend, which validates it with
  * the terminal editor's rules.
  */
-function WorkflowEditor({ project, id }: { project: SectionProps["project"]; id: string }) {
+function WorkflowEditor({
+  project,
+  id,
+  canDelete,
+}: {
+  project: SectionProps["project"];
+  id: string;
+  canDelete: boolean;
+}) {
   const [tab, setTab] = useState<EditorTab>(() => takeRequestedTab() ?? "flow");
-  const [definitions] = useLoad(() => start.definitions(project.key), [project.key, "definitions"]);
+  const [definitions, refreshDefinitions] = useLoad(
+    () => start.definitions(project.key),
+    [project.key, "definitions"],
+  );
+  const [deleting, setDeleting] = useState<string | null>(null);
   const [view, setView] = useState<EditorView | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -287,9 +380,22 @@ function WorkflowEditor({ project, id }: { project: SectionProps["project"]; id:
               Duplicate as custom
             </Button>
           ) : (
-            <Button variant="primary" size="md" disabled={busy} onClick={openReview}>
-              Save…
-            </Button>
+            <>
+              {canDelete && !view.copy && (
+                <Button
+                  variant="secondary"
+                  size="md"
+                  disabled={busy}
+                  onClick={() => setDeleting(view.id)}
+                >
+                  <Icon name="delete" size={14} />
+                  Delete…
+                </Button>
+              )}
+              <Button variant="primary" size="md" disabled={busy} onClick={openReview}>
+                Save…
+              </Button>
+            </>
           )}
         </span>
       </div>
@@ -360,6 +466,16 @@ function WorkflowEditor({ project, id }: { project: SectionProps["project"]; id:
           if (target) onEdit({ op: "addGate", target, gateId });
         }}
       />
+      <DeleteWorkflowDialog
+        projectKey={project.key}
+        id={deleting}
+        onClose={() => setDeleting(null)}
+        onDeleted={() => {
+          setDeleting(null);
+          refreshDefinitions();
+          window.location.hash = projectHref(project.key, "workflows");
+        }}
+      />
       <SaveDialog
         review={review}
         busy={busy}
@@ -381,7 +497,9 @@ function creatingKind(view: EditorView, target: GateTarget | null): GateDraftKin
 
 /** Workflow definitions: the list, or one definition in the editor (`#/p/KEY/workflows/ID`). */
 export function WorkflowsSection({ project, id }: SectionProps) {
-  const [offered, setOffered] = useState<boolean | null | undefined>(undefined);
+  const [offered, setOffered] = useState<
+    Awaited<ReturnType<typeof workflowEditor.offered>> | undefined
+  >(undefined);
   useEffect(() => {
     let live = true;
     workflowEditor.offered(project.key).then((value) => live && setOffered(value));
@@ -390,12 +508,18 @@ export function WorkflowsSection({ project, id }: SectionProps) {
     };
   }, [project.key]);
   if (offered === undefined) return <Skeleton label="Loading workflows" />;
-  if (offered === false)
+  if (offered.editor === false)
     return (
       <Empty>
         Needs a newer BAKED: this project's backend has no workflow editor yet. Update BAKED, or
         edit workflows with <span className="font-mono">/workflow</span> in the terminal.
       </Empty>
     );
-  return id ? <WorkflowEditor project={project} id={id} /> : <WorkflowList project={project} />;
+  // An unreadable health answer still offers Delete; an older backend then answers 404 in the dialog.
+  const canDelete = offered.remove !== false;
+  return id ? (
+    <WorkflowEditor project={project} id={id} canDelete={canDelete} />
+  ) : (
+    <WorkflowList project={project} canDelete={canDelete} />
+  );
 }

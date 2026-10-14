@@ -12,6 +12,7 @@ import {
 import { parsePeerMessage } from "../../core/chat/peer-messages.js";
 import type { ChatPrompt } from "../../core/chat/sessions.js";
 import type { ChatMessage, LaunchNote } from "../../types/index.js";
+import { markdownLines } from "./markdown-lines.js";
 
 export type LineTone = "user" | "assistant" | "muted" | "tool" | "accent" | "warning" | "error";
 
@@ -171,8 +172,7 @@ export function messageLines(messages: ChatMessage[], live: string, width: numbe
     } else if (message.role === "assistant") {
       for (const call of message.toolCalls ?? [])
         lines.push(...labelled("  ↳ ", call.name, width, "tool"));
-      if (message.content.trim())
-        lines.push(...labelled("     ", message.content, width, "assistant"));
+      if (message.content.trim()) lines.push(...assistantLines(message.content, width));
     } else if (message.launch) {
       lines.push(...launchNoteLines(message.launch, width));
     } else if (message.showInChat !== false) {
@@ -180,8 +180,17 @@ export function messageLines(messages: ChatMessage[], live: string, width: numbe
     }
     lines.push({ text: "", tone: "muted" });
   }
-  if (live.trim()) lines.push(...labelled("     ", live, width, "assistant"));
+  if (live.trim()) lines.push(...assistantLines(live, width));
   return lines;
+}
+
+/** An assistant reply: its Markdown drawn as the chat draws it, indented under the speakers. */
+function assistantLines(text: string, width: number): ViewLine[] {
+  const indent = "     ";
+  return markdownLines(text, width - indent.length, wrap).map((line) => ({
+    text: `${indent}${line.text}`,
+    tone: line.tone,
+  }));
 }
 
 /** The pending prompt as a card the keys below it answer. */
@@ -224,6 +233,8 @@ export function promptLines(prompt: ChatPrompt, width: number): ViewLine[] {
       );
       if (prompt.issue)
         lines.push(...labelled("   ", `From issue ${prompt.issue}`, width, "muted"));
+      for (const gate of prompt.gates ?? [])
+        lines.push(...labelled("   Gate: ", gate, width, "accent"));
       lines.push(...labelled("   ", `Why this workflow: ${prompt.reason}`, width, "muted"));
       return lines;
     }

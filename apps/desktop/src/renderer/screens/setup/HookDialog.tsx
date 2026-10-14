@@ -383,7 +383,11 @@ export function HookDialog({
               targets={targets}
               redacted={editing && state.hook.redacted}
             />
-            {error && <Alert tone="error">{error}</Alert>}
+            {error && (
+              <Alert tone="error" role="alert">
+                {error}
+              </Alert>
+            )}
             <div className="flex flex-wrap items-center justify-end gap-2">
               {problem && (
                 <span className={cn(NOTE, "mr-auto text-dim-foreground")}>{problem}</span>

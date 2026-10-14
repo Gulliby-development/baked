@@ -16,6 +16,7 @@ import type {
   PermissionMode,
 } from "../../types/index.js";
 import { hashJson } from "../specs/hash.js";
+import { gateLine, needsGates, renderGateSetup } from "../workflows/gate-setup.js";
 import {
   InitiativeFeatureSchema,
   type InitiativePlan,
@@ -31,9 +32,17 @@ import {
 } from "../workflows/issue-source.js";
 import { assessRequest, type WorkflowProposal } from "../workflows/preset-router.js";
 import { terminalStates } from "../workflows/state-machine.js";
+import type { Check } from "../workflows/types.js";
 import type { DefinitionSummary } from "../workflows/v2/definitions.js";
 import type { RunApprover } from "./approval-rules.js";
 import { BriefStore, type LaunchedEntry } from "./coordinator.js";
+import {
+  applyGates,
+  detectedGateRequests,
+  GateRequestSchema,
+  type GateToolContext,
+  resolveGates,
+} from "./gate-tools.js";
 import { describePrompt, type ProjectStateSource } from "./project-state.js";
 import type { ChatMode, ChatPrompt, ChatService, ChatSession } from "./sessions.js";
 
@@ -108,6 +117,8 @@ export interface ProjectLauncher {
    * runs.
    */
   control?(input: RunControl): Promise<void>;
+  /** Gives a live workflow worker the gate list a chat just saved to the project file. */
+  gatesSaved?(checks: Check[]): Promise<void>;
 }
 
 /** One control action on a run the coordinator launched; the user approved it first. */
@@ -120,6 +131,8 @@ export type RunControl =
 export interface WorkflowCatalog {
   list(): DefinitionSummary[];
   propose(request: string): WorkflowProposal;
+  /** Whether the workflow cannot start until the project has a feature gate. */
+  needsGates?(workflowId: string): boolean;
 }
 
 /** Tasks as GitHub issues, read and created with `workflows.delivery.tokenEnv`. */
@@ -204,6 +217,10 @@ function sessionState(chat: ChatService, id: string): LiveState {
   const tokens = usage.input + usage.output;
   if (state === "waiting") return { status: "waiting for you", active: true, tokens };
   if (state === "working") return { status: "working", active: true, tokens };
+  // A failed turn leaves the chat idle; the coordinator is told why instead of waiting on it.
+  const error = session.lastError;
+  if (error)
+    return { status: `failed: ${error.split("\n")[0]?.slice(0, 160)}`, active: false, tokens };
   return { status: messageCount > 1 ? "done" : "idle", active: false, tokens };
 }
 
@@ -688,6 +705,7 @@ export function launchTools(
   limits: { maxActive: number; maxTokens: number },
   workflows: WorkflowCatalog | null = null,
   workStyle: CoordinatorWorkStyle = "ask",
+  gateContext: GateToolContext | null = null,
 ) {
   const store = new BriefStore(chat.workspace, coordinator.id);
   const failed = (error: string) => ({ success: false, output: "", error });
@@ -830,7 +848,7 @@ export function launchTools(
     }),
     start_run: tool({
       description:
-        'Ask the user to run a workflow on a request, then start it. The chat shows a card "Run workflow?" with the workflow, its stages and the request; the run starts only when the user approves the card, and its own approvals stay with the user. Without `workflow`, the one BAKED proposes for the prompt (list_workflows). The run shows in Launched work with its live stage, and you get an update turn when it finishes, fails or waits.',
+        'Ask the user to run a workflow on a request, then start it. The chat shows a card "Run workflow?" with the workflow, its stages and the request; the run starts only when the user approves the card, and its own approvals stay with the user. Without `workflow`, the one BAKED proposes for the prompt (list_workflows). A workflow that needs gates gets the ones BAKED detects filled in on the card; pass `gates` to choose them yourself. The run shows in Launched work with its live stage, and you get an update turn when it finishes, fails or waits.',
       inputSchema: z.strictObject({
         prompt: z.string().trim().min(1).max(20_000),
         workflow: z.string().trim().min(1).max(100).optional(),
@@ -842,9 +860,16 @@ export function launchTools(
         issue: IssueRef.optional().describe(
           "Start from this issue: its text is the request, the prompt adds to it, and the pull request closes it",
         ),
+        gates: z
+          .array(GateRequestSchema)
+          .max(20)
+          .optional()
+          .describe(
+            "Gates to save before the run, for a workflow that needs them; left out, the detected ones are filled in. The card shows them and its approval saves them",
+          ),
         why: Why,
       }),
-      execute: async ({ prompt, workflow, feature, issue, why }) => {
+      execute: async ({ prompt, workflow, feature, issue, gates, why }) => {
         const off = offByStyle("workflow");
         if (off) return failed(off);
         if (!launcher) return failed("This server cannot start workflow runs");
@@ -852,6 +877,25 @@ export function launchTools(
         if (blocked) return failed(blocked);
         const chosen = chooseWorkflow(workflows, prompt, workflow);
         if ("problem" in chosen) return failed(chosen.problem);
+        // Missing gates are settled before the card, so approving it never ends in a refusal.
+        let added: Check[] = [];
+        if (gateContext && gates?.length) {
+          const resolved = resolveGates(gateContext, gates);
+          if (!resolved.ok) return failed(resolved.error);
+          added = resolved.checks;
+        }
+        const missing = () =>
+          gateContext !== null &&
+          chosen.id !== null &&
+          needsGates(gateContext.workspace, gateContext.config, chosen.id, added);
+        // From chat the coordinator fills the gates in itself: the detected ones go on the card,
+        // which the user approves or declines, instead of a question first.
+        if (gateContext && missing()) {
+          const detected = resolveGates(gateContext, detectedGateRequests(gateContext));
+          if (detected.ok) added = [...added, ...detected.checks];
+        }
+        if (gateContext && chosen.id && missing())
+          return failed(missingGatesProblem(gateContext, chosen.id));
         // A closed or unknown issue is refused before the user is asked.
         let task: FlowTask | undefined;
         try {
@@ -859,13 +903,21 @@ export function launchTools(
         } catch (err) {
           return failed(err instanceof Error ? err.message : String(err));
         }
-        const card = workflowCard(chosen, prompt, why, task?.ref);
+        const card = workflowCard(chosen, prompt, why, task?.ref, added.map(gateLine));
         if (!(await coordinator.proposeWorkflow(card)))
           return failed(
             workStyle === "workflows-only"
               ? `The user did not approve running workflow ${card.workflow}. Ask what to change in the run.`
               : `The user did not approve running workflow ${card.workflow}. Ask what to change, or work without a workflow: if the task has parts that can run side by side, propose_chats them as parallel chats; otherwise launch_session one chat.`,
           );
+        if (gateContext && added.length)
+          try {
+            await applyGates(gateContext, added);
+          } catch (err) {
+            return failed(
+              `The gates were not saved, so the run did not start: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
         return launch(async () => {
           const { runId } = await launcher.startRun({
             prompt,
@@ -1266,12 +1318,22 @@ export function chooseWorkflow(
   };
 }
 
-/** The "Run workflow?" card; its digest binds the approval to this workflow and request. */
+/** What `start_run` tells the model when the workflow needs gates the project lacks. */
+function missingGatesProblem(ctx: GateToolContext, workflowId: string): string {
+  return [
+    `Workflow ${workflowId} cannot start yet: the project has no feature gate (a check every run must pass, such as the build or the tests) and BAKED detected none to fill in. Nothing was shown to the user.`,
+    renderGateSetup(ctx.workspace, ctx.config, [workflowId]),
+    "Fill the gates in yourself: read the project (its manifest, README, CI workflow, Makefile) for the command that builds or tests it, and call start_run again with `gates` set to it. The run card shows them and one approval saves them and starts the run. Ask the user only when the project has no command you can run to check the work. Do not send the user to a settings screen.",
+  ].join("\n\n");
+}
+
+/** The "Run workflow?" card; its digest binds the approval to this workflow, request and gates. */
 export function workflowCard(
   chosen: { id: string | null; summary: DefinitionSummary | null; reason: string },
   prompt: string,
   why: string,
   issue?: string,
+  gates: string[] = [],
 ): WorkflowCardBody {
   const workflow = chosen.id ?? "default";
   const body = {
@@ -1284,8 +1346,18 @@ export function workflowCard(
     why,
     reason: chosen.reason,
     ...(issue ? { issue } : {}),
+    ...(gates.length ? { gates } : {}),
   };
-  return { ...body, digest: hashJson({ workflow, prompt, issue: issue ?? null }) };
+  // The digest is unchanged for a card without gates, so earlier approvals still match.
+  return {
+    ...body,
+    digest: hashJson({
+      workflow,
+      prompt,
+      issue: issue ?? null,
+      ...(gates.length ? { gates } : {}),
+    }),
+  };
 }
 
 /** The workflow list the model reads; with a request, the proposal first. */
@@ -1296,7 +1368,11 @@ export function renderWorkflows(workflows: WorkflowCatalog, request?: string): s
       d.source === "project" ? "project" : "built in",
       d.writes ? "writes files" : "read only",
     ];
-    const problems = d.problems.length ? ` CANNOT START: ${d.problems.join("; ")}` : "";
+    const problems = d.problems.length
+      ? ` CANNOT START: ${d.problems.join("; ")}`
+      : workflows.needsGates?.(d.id)
+        ? " NEEDS GATES: the project has no feature gate yet; start_run fills in the detected ones (list_gates), or pass the project's build or test command as gates"
+        : "";
     return `- ${d.id} (${flags.join(", ")}): ${d.description.replace(/\s+/g, " ").trim() || "no description"}. Stages: ${d.stages.join(" > ") || "none"}.${problems}`;
   });
   const head: string[] = [];

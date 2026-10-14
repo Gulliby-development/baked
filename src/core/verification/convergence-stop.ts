@@ -555,3 +555,27 @@ export function noteUnverifiedCriteria(
   }
   return added;
 }
+
+/**
+ * When a stopped convergence is accepted, records the criteria its last review left
+ * `inconclusive` that no accepted finding names as unverified limitations: acceptance needs every
+ * automated criterion to pass or be limited, and the accepted findings cover only the criteria they
+ * name. md-site was blocked at acceptance three rounds in a row with AC-006 inconclusive and the
+ * findings on other criteria accepted (#1109). Returns the limitations added.
+ */
+export function noteStoppedInconclusive(
+  state: Pick<RuntimeState, "limitations" | "convergence" | "spec">,
+  round: number,
+): Limitation[] {
+  const coverage = state.convergence?.coverage ?? [];
+  const limited = limitedCriteria(state);
+  const ids = coverage
+    .filter(
+      (c) =>
+        c.verdict === "inconclusive" &&
+        !limited.has(c.criterionId) &&
+        state.spec?.criteria.find((s) => s.id === c.criterionId)?.method === "automated",
+    )
+    .map((c) => c.criterionId);
+  return noteUnverifiedCriteria(state, coverage, ids, round);
+}

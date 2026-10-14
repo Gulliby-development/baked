@@ -196,7 +196,7 @@ function Details({
 
 /** The HTML artifacts every project and chat shares (docs/artifacts.md). */
 export function ArtifactsSection({ project }: SectionProps) {
-  const [list, refresh] = useLoad(() => artifacts.list(project.key), ["artifacts", project.key]);
+  const [list, refresh] = useLoad(() => artifacts.list(project.key), [project.key, "artifacts"]);
   const [picked, setPicked] = useState<string | null>(null);
   if (list.state !== "ready") return <LoadState value={list} what="artifacts" />;
   const items = list.data.items;

@@ -177,6 +177,11 @@ const inputLike = (value: string): boolean => !/^[\w.:/-]+$/.test(value);
 export interface ScanOptions {
   /** Paths whose writes the approved plan gave a reason: fewer tests or assertions are planned. */
   reasoned?: ReadonlySet<string>;
+  /**
+   * Test files a correction's own finding asks to rewrite (#1069): fewer assertions are accepted
+   * while every test case stays and the file still asserts; fewer test cases are not.
+   */
+  rewrites?: ReadonlySet<string>;
   /** Contents of test files the task can see, for literals that special-case test inputs. */
   testSources?: readonly string[];
   /** Spec and plan text: a literal they name is a requirement, not a test input. */
@@ -238,7 +243,9 @@ export function scanTestIntegrity(
         });
       const assertsBefore = count(before, ASSERTIONS);
       const assertsAfter = count(after, ASSERTIONS);
-      if (!reasoned && assertsAfter < assertsBefore)
+      const rewritten =
+        options.rewrites?.has(path) === true && testsAfter >= testsBefore && assertsAfter > 0;
+      if (!reasoned && !rewritten && assertsAfter < assertsBefore)
         findings.push({
           rule: "assertions",
           path,
@@ -337,5 +344,33 @@ export function testWriteProblems(
         (w) =>
           `Task ${task.id} would ${w.action} the existing test ${w.path} without a reason. Existing tests are read-only for implementers: remove the write, or add "reason" to it saying why the test must change (for example a behavior the request removes).`,
       ),
+  );
+}
+
+/** A finding raised by a linter or a lint rule: "ruff BLE001", "eslint no-empty". */
+const LINT_FINDING =
+  /\b(?:lint(?:er|ing)?|ruff|eslint|biome|clippy|golangci(?:-lint)?|pylint|flake8|rubocop|ktlint|checkstyle)\b|\b(?:BLE|PLW|PLR|SIM|ARG|E|W|F|B)\d{3,4}\b/;
+
+/**
+ * The test files a correction may rewrite with fewer assertions (#1069): a test file its finding
+ * names when the finding says the test contradicts a criterion (`contradicts`) or a lint rule
+ * flags it. url-shortener ded6fba8 replaced a socket-opening server test the finding said broke
+ * AC-005's port-free rule (35 assertions to 33), cfgtrace 424e275b rewrote three tests to drop
+ * broad `except` handlers (ruff BLE001, 66 to 60); the guard blocked both and opened another
+ * corrective (167k and 426k tokens). The guard's own findings never qualify.
+ */
+export function rewriteTargets(
+  findings: readonly { kind: string; file: string | null; claim: string; suggestedFix: string }[],
+): Set<string> {
+  return new Set(
+    findings
+      .filter(
+        (f) =>
+          f.file !== null &&
+          isTestPath(f.file) &&
+          !f.claim.startsWith("Test integrity") &&
+          (f.kind === "contradicts" || LINT_FINDING.test(`${f.claim}\n${f.suggestedFix}`)),
+      )
+      .map((f) => f.file as string),
   );
 }
