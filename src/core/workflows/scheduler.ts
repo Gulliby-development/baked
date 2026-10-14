@@ -42,6 +42,7 @@ import {
   earlierFindings,
   grantRound,
   noteInconclusiveReview,
+  noteStoppedInconclusive,
   noteUnverifiedCriteria,
   passesWithNotes,
   REPEAT_NOTE,
@@ -540,6 +541,8 @@ interface QueuedRequest {
  */
 const coverageRequest = (state: RuntimeState): string =>
   state.hostDependencies ? "" : state.requestText;
+/** Records that the planner was given the scope advice in this run. */
+const SCOPE_ADVICE = "plan-repairs/scope-advice.json";
 /** The planner's accepted plan that a revision by patch edits (#1058). */
 const PLAN_BASE = "revisions/base/plan.json";
 /** How often rejected approvals may send one run back to revise before a rejection only pauses it. */
@@ -1002,8 +1005,10 @@ export class WorkflowScheduler {
                   ? scopedPlanBudget(state.prompt, planner, policy)
                   : null;
               const approvalLimits = plannerApprovalLimits(policy);
-              // Scope advice is given once; a plan that keeps the writes is approved by a person.
-              let scopeAdvised = false;
+              // Scope advice is given once per run, not once per plan generation: a plan that
+              // keeps the writes is approved by a person, and a later generation that is told
+              // again only submits the same plan twice (#1111).
+              let scopeAdvised = this.store.latestArtifact(runId, SCOPE_ADVICE) !== null;
               // A criterion left uncovered again by a plan that names it is one the planner cannot
               // cover; it stops being a submission error and goes back to the spec (#780).
               const uncoveredSubmissions = new Map<string, number>();
@@ -1035,8 +1040,14 @@ export class WorkflowScheduler {
                   parsed.data.taskGraph,
                   (path) => existsSync(join(runRoot(this.store.workspace, state), path)),
                   this.baselineScaffold(runId, state),
+                  state.requestText,
                 );
-                if (advice.length) scopeAdvised = true;
+                if (advice.length) {
+                  scopeAdvised = true;
+                  this.store.transaction(() =>
+                    this.store.artifact(runId, "diagnostic", SCOPE_ADVICE, canonical({ advice })),
+                  );
+                }
                 return [...open, ...advice];
               };
               const patchedPlan = await this.patchRevision(
@@ -3503,6 +3514,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           canonical({ ...early, findingIds: findings.map((f) => f.id) }),
         );
         acceptResidual(this.store, runId, state, { findings }, "critic");
+        noteStoppedInconclusive(state, this.store.run(runId).convergence_rounds);
       });
       return "accepted";
     }
@@ -3532,6 +3544,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         const id = this.store.request(runId, "convergence", hashJson(state.manifest), body);
         this.store.decideRequest(runId, id, "accepted", { kind: "accept", automatic: true }, true);
         acceptResidual(this.store, runId, state, body, "assume");
+        noteStoppedInconclusive(state, this.store.run(runId).convergence_rounds);
       });
       return "accepted";
     }
