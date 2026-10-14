@@ -368,7 +368,13 @@ import {
   splitTestTasks,
   withTestDependencies,
 } from "./sizing.js";
-import { amendmentNote, type SpecAmendment, specAmendmentOf } from "./spec-amendment.js";
+import {
+  amendmentNote,
+  documentAmendmentOf,
+  namesRunDocument,
+  type SpecAmendment,
+  specAmendmentOf,
+} from "./spec-amendment.js";
 import { digestsSpec, READ_CRITERION, readCriterionTool } from "./spec-digest.js";
 import { forgetProgress } from "./stall.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
@@ -9923,12 +9929,16 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
   /**
    * Review findings that put the spec against the request record a spec amendment (#1034): the
    * request wins over the criteria they name, every later agent reads that with the request, and
-   * the test-integrity guard accepts the tests their correction changes.
+   * the test-integrity guard accepts the tests their correction changes. A finding on a run
+   * document (`spec.json`, `plan.md`) records one in which the implementation wins (#1066).
    */
   private amendSpec(runId: string, state: RuntimeState, findings: Review["findings"]): void {
     if (!state.spec) return;
+    const planned = (state.rootGraph?.tasks ?? []).flatMap((t) => t.writes.map((w) => w.path));
     for (const finding of findings) {
-      const amendment = specAmendmentOf(finding, state.spec);
+      const amendment = namesRunDocument(finding, planned)
+        ? documentAmendmentOf(finding, state.spec)
+        : specAmendmentOf(finding, state.spec);
       if (!amendment) continue;
       const path = `amendments/${finding.id}.json`;
       if (this.store.latestArtifact(runId, path)) continue;
