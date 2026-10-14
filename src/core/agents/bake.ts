@@ -951,15 +951,14 @@ export function createBakeAgent({
     onFetchPageApproval: async () => true,
   };
 
-  const allTools = guardWorkspaceTools(
-    {
-      ...orderedTools,
-      ...subagentTools,
-      ...buildInteractiveTools(interactiveCallbacks, { cwd, sessionId, bakeMode }),
-      ...extraTools,
-    },
-    cwd ?? process.cwd(),
-  );
+  // Interactive tools and a chat's extra tools (coordinator, peer messages) only ask the user or
+  // touch BAKED's own state. Holding the workspace mutation lease through them blocked every other
+  // chat's edits while a question waited, and failed parallel coordinator calls.
+  const allTools = {
+    ...guardWorkspaceTools({ ...orderedTools, ...subagentTools }, cwd ?? process.cwd()),
+    ...buildInteractiveTools(interactiveCallbacks, { cwd, sessionId, bakeMode }),
+    ...extraTools,
+  };
 
   // Cache breakpoints: system prompt (via instructions) + first 2 messages.
   // Total: 3 breakpoints. The system+tools prefix is the biggest stable cache.
