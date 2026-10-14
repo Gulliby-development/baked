@@ -1825,6 +1825,22 @@ export function uncontractedBuildCriteria(spec: Spec, checks: readonly CheckComm
     .map((c) => c.id);
 }
 
+// A step of how the implementer works: a command run before or after changing the work itself.
+const PROCEDURE =
+  /\b(?:runs?|ran|executes?|executed|invokes?|invoked)\b[^.;]{0,120}?\b(?:before|prior to|after)\s+(?:any\s+|each\s+|the\s+|existing\s+)*(?:editing|changing|modifying|touching|updating|writing|rewriting|adding)\b[^.;]{0,30}?\b(?:tests?|test files?|the code|source code|implementation)\b|\b(?:intermediate|interim)\s+(?:test\s+)?checkpoint\b/i;
+
+/**
+ * Criteria whose subject is how the implementer works ("cargo test is run before editing any
+ * test") rather than what the result is. Nothing after the run can observe the order of the
+ * implementer's steps, so analysis and review demand it in the plan and tasks without end
+ * (#1113: tplfill AC-007, keeplint's checkpoint task). The request still reaches the implementer.
+ */
+export function procedureCriteria(spec: Spec): string[] {
+  return spec.criteria
+    .filter((c) => PROCEDURE.test(`${c.given}\n${c.when}\n${c.then}`))
+    .map((c) => c.id);
+}
+
 /**
  * The spec defects as corrections for the spec author, who can add or relink criteria. With the
  * run's checks, a criterion that needs a check the execution contract lacks is one too.
@@ -1847,6 +1863,10 @@ export function specCoverageProblems(
     ...hostBoundCriteria(spec).map(
       (id) =>
         `criterion ${id} is automated but claims behavior on other operating systems, browsers or devices, and the run checks on one host, so nothing can prove it. Rewrite it as what this host can check (platform-neutral path, line-ending and process APIs; the tests pass here).${options.ciForbidden ? " The request wants no CI, so add no CI workflow or platform matrix." : " When the request asks for proof on other platforms, add a criterion that a CI workflow file runs the checks on a matrix of those platforms (for example ubuntu-latest, macos-latest, windows-latest), which the reviewer verifies by reading the file."} Use post-release only for a claim that needs a release or a real device.`,
+    ),
+    ...procedureCriteria(spec).map(
+      (id) =>
+        `criterion ${id} describes how the implementer works (a command run before or after changing the work), not what the result is, and nothing after the run can check the order of its steps. Remove it, and the requirement it alone covers; the implementer reads that instruction in the request. Keep a criterion about the result instead, for example that the tests pass.`,
     ),
     ...(checks ? uncontractedBuildCriteria(spec, checks) : []).map(
       (id) =>

@@ -1189,6 +1189,9 @@ export class WorkflowScheduler {
                     verifiedByRuntime: hostEdgesNote(graph, spec),
                     workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
                     hostCounts: hostCounts(graph),
+                    ...(state.analysisRaised.length
+                      ? { earlierFindings: state.analysisRaised }
+                      : {}),
                     ...(Object.keys(hostSplitParts(graph)).length
                       ? { hostSplit: hostSplitParts(graph) }
                       : {}),
@@ -1288,6 +1291,10 @@ export class WorkflowScheduler {
               // Analysis passes when no finding blocks: the rest are notes, whatever the model's verdict.
               const blocking = findings.some((f) => f.blocking);
               state.analysisPassed = !blocking && analysis.verdict !== "inconclusive";
+              // The next pass sees what this one raised, whichever way the run goes on.
+              for (const { kind, refs, description } of findings.filter((f) => f.blocking))
+                if (!state.analysisRaised.some((f) => f.description === description))
+                  state.analysisRaised.push({ kind, refs, description });
               const planOnly = state.analysisPassed ? [] : planOnlyFindings(findings);
               const stages = this.stageKinds(runId, v2);
               const plan = stages.findIndex((s) => s.kind === "plan");
