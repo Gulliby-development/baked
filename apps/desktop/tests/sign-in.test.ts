@@ -19,4 +19,12 @@ describe("CLI provider sign-in row", () => {
     expect(signInView({ ...base, login: running })).toEqual({ note: "signing in…", action: "cancel" });
     expect(signInView({ ...base, login: { ...running, state: "failed" } }).action).toBe("sign-in");
   });
+
+  test("names how the CLI is signed in, so a token in the environment is visible", () => {
+    const token = { ...base, loggedIn: true, message: "Logged in as a@b.c (oauth_token)" };
+    expect(signInView(token).note).toBe("signed in through the CLI (oauth_token)");
+    expect(signInView({ ...base, loggedIn: true, message: "Logged in" }).note).toBe(
+      "signed in through the CLI",
+    );
+  });
 });

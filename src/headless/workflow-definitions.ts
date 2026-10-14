@@ -21,7 +21,11 @@ import {
   loadDefinition,
   validateDefinition,
 } from "../core/workflows/v2/definitions.js";
-import { copyAsCustom, writeDefinitionFile } from "../core/workflows/v2/editor.js";
+import {
+  copyAsCustom,
+  removeDefinitionFile,
+  writeDefinitionFile,
+} from "../core/workflows/v2/editor.js";
 import { confirmGates, loadGateLibrary, readConfirmations } from "../core/workflows/v2/library.js";
 import type { WorkflowArgs } from "./workflow-parse.js";
 
@@ -29,6 +33,7 @@ export const DEFINITION_COMMANDS = [
   "definitions",
   "validate",
   "define",
+  "remove",
   "gates",
   "agents",
 ] as const;
@@ -147,6 +152,8 @@ export function executeDefinitionCommand(
       writeDefinitionFile(workspace, copy);
       return { result: { id, path: target, from }, exitCode: 0 };
     }
+    case "remove":
+      return { result: removeDefinitionFile(workspace, args.positional[0] ?? ""), exitCode: 0 };
     case "agents":
       return agentsCommand(args, workspace, policy);
     default:

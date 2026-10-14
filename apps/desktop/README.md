@@ -57,10 +57,14 @@ covers preload IPC, the bearer token, backend start, crash and restart, project 
 and attention streams that drop and resume with `Last-Event-ID`, without a real `baked`. The
 fake's known projects live in the file named by `FAKE_BAKED_PROJECTS`, and
 `BAKED_DESKTOP_RESTART_DELAYS_MS` shortens the restart backoff. The chat and coordinator
-scenarios (`e2e/electron/chat*.electron.ts`, `coordinator-flows.electron.ts`) run the
+scenarios (`e2e/electron/chat*.electron.ts`, `coordinator-*.electron.ts`: launched sessions,
+setup through `baked_setup`, parallel chats and hand-off to the coordinator) and the
+configuration scenarios (`config-flows.electron.ts`, with a script of no turns) run the
 repository's own `baked serve` from source instead, with `BAKED_TEST_SCRIPT` pointing at a JSON
-chat script (`launch({ script })`; the format is described in `src/core/chat/scripted-host.ts`),
-so they need `bun install` at the repository root too. Install the Electron binary first
+chat script (`launch({ script })`; the format is described in `src/core/chat/scripted-host.ts`).
+The workflow scenarios (`workflow-flows.electron.ts`) also set `BAKED_TEST_WORKFLOW`, which
+answers every run stage with `src/core/workflows/scripted-executor.ts`. All of these
+need `bun install` at the repository root too. Install the Electron binary first
 (`bun install` without `ELECTRON_SKIP_BINARY_DOWNLOAD`).
 
 `apps/desktop` is its own package with its own lockfile: the root `bun install` does not download

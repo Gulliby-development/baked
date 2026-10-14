@@ -24,6 +24,7 @@ import {
 } from "../../components/ui/dialog.js";
 import { fieldClass, Input } from "../../components/ui/input.js";
 import { Label } from "../../components/ui/label.js";
+import { Segment, SegmentGroup } from "../../components/ui/segmented.js";
 import { Textarea } from "../../components/ui/textarea.js";
 import { cn } from "../../lib/cn.js";
 import type { RunData } from "./load.js";
@@ -40,9 +41,22 @@ export function redactable(artifacts: ArtifactEntry[]): ArtifactEntry[] {
   );
 }
 
-/** The default cleanup cutoff: 90 days ago, as an ISO date for the date field. */
-export function defaultCutoff(now = Date.now()): string {
-  return new Date(now - 90 * 86_400_000).toISOString().slice(0, 10);
+/**
+ * How old an ended run must be for cleanup, in days: picked from these instead of a date field,
+ * whose calendar is the platform's. The server keeps runs of the last 30 days anyway.
+ */
+export const CLEANUP_AGES = [
+  { days: 30, label: "30 days ago" },
+  { days: 90, label: "90 days ago" },
+  { days: 182, label: "6 months ago" },
+  { days: 365, label: "a year ago" },
+] as const;
+
+/** The cleanup cutoff for an age: the start of the local day that many days ago, as ISO. */
+export function cleanupCutoff(days: number, now = Date.now()): string {
+  const day = new Date(now - days * 86_400_000);
+  day.setHours(0, 0, 0, 0);
+  return day.toISOString();
 }
 
 const FIELD = "flex flex-col gap-1";
@@ -273,7 +287,7 @@ export function RunsMaintenance({
   const [open, setOpen] = useState<Open>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [before, setBefore] = useState(defaultCutoff);
+  const [age, setAge] = useState(90);
   const [preview, setPreview] = useState<GcResult | null>(null);
   const [removed, setRemoved] = useState<GcResult | null>(null);
   const [source, setSource] = useState<ImportSource>("spec-kit");
@@ -320,7 +334,7 @@ export function RunsMaintenance({
       setBusy(false);
     }
   };
-  const cutoff = () => new Date(`${before}T00:00:00`).toISOString();
+  const cutoff = () => cleanupCutoff(age);
   const gcSubmit = () =>
     void run(async () => {
       if (!preview) {
@@ -412,7 +426,7 @@ export function RunsMaintenance({
       <FormDialog
         open={open === "gc"}
         title="Clean up old runs"
-        description="Removes completed, failed and cancelled runs last changed before the date and at least 30 days ago, with their artifacts. Runs a child run, an initiative or a lease still needs are kept."
+        description="Removes completed, failed and cancelled runs last changed longer ago than you pick, with their artifacts. Runs a child run, an initiative or a lease still needs are kept."
         error={error}
         busy={busy}
         danger={preview !== null && preview.runIds.length > 0}
@@ -428,19 +442,24 @@ export function RunsMaintenance({
         onSubmit={gcSubmit}
         onClose={() => setOpen(null)}
       >
-        <div className={FIELD}>
-          <Label htmlFor="gc-before">Last changed before</Label>
-          <Input
-            id="gc-before"
-            type="date"
-            value={before}
-            disabled={busy || removed !== null}
-            onChange={(e) => {
-              setBefore(e.target.value);
-              setPreview(null);
-            }}
-          />
-        </div>
+        <SegmentGroup aria-label="Last changed before" className={FIELD}>
+          <legend className="mb-1 text-[13px] font-semibold">Last changed before</legend>
+          <div className="flex flex-wrap">
+            {CLEANUP_AGES.map(({ days, label }) => (
+              <Segment
+                key={days}
+                aria-pressed={age === days}
+                disabled={busy || removed !== null}
+                onClick={() => {
+                  setAge(days);
+                  setPreview(null);
+                }}
+              >
+                {label}
+              </Segment>
+            ))}
+          </div>
+        </SegmentGroup>
         {preview && (
           <span role="status" className="text-[13px]">
             {preview.runIds.length === 0

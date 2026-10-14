@@ -17,6 +17,7 @@ import {
   acceptResidual,
   type ConvergenceRequestBody,
   grantRound,
+  noteStoppedInconclusive,
 } from "../verification/convergence-stop.js";
 import { hostDiff, sourceManifest } from "../verification/snapshot.js";
 import { NativeAgentExecutor } from "./agent-executor.js";
@@ -359,6 +360,7 @@ export class NativeWorkflowService implements WorkflowService {
       waitingFor: {},
       affectedTests: {},
       analysisReplans: 0,
+      analysisRaised: [],
       revisedRejections: [],
       pendingPatch: null,
       taskContinuations: {},
@@ -875,6 +877,7 @@ export class NativeWorkflowService implements WorkflowService {
     body: ConvergenceRequestBody,
   ): void {
     acceptResidual(this.store, runId, state, body, "user");
+    noteStoppedInconclusive(state, this.store.run(runId).convergence_rounds);
     const parsed = parseRunDefinition(this.store.run(runId).definition_json);
     const position = state.position;
     if (parsed.schemaVersion === 1) {

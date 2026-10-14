@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { type ApiServer, faultStatus, startApiServer } from "../src/core/api/server.js";
 import { recordProjectOpen } from "../src/core/projects/known.js";
 import { ProjectService } from "../src/core/projects/service.js";
@@ -397,6 +397,25 @@ describe("local core API", () => {
     const profiles = await call("/v1/workflow/profiles");
     expect(profiles.status).toBe(200);
     expect(Array.isArray(await profiles.json())).toBe(true);
+  });
+
+  test("deletes a project workflow and refuses a built-in one (#1101)", async () => {
+    const { fixture, call } = await setup();
+    const health = (await (await call("/v1/health")).json()) as { capabilities: string[] };
+    expect(health.capabilities).toContain("workflow-delete");
+    const file = join(fixture.service.workspace, "baked", "workflows", "mine.json");
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "{}\n");
+    const remove = (id: string) => call(`/v1/workflow/definitions/${id}`, { method: "DELETE" });
+    const removed = await remove("mine");
+    expect(removed.status).toBe(200);
+    expect(await removed.json()).toEqual({ id: "mine", path: file, restores: null });
+    expect(existsSync(file)).toBe(false);
+    expect((await remove("mine")).status).toBe(404);
+    const builtin = await remove("sdd");
+    expect(builtin.status).toBe(403);
+    expect(((await builtin.json()) as { error: { message: string } }).error.message).toContain("built-in");
+    expect((await call("/v1/workflow/definitions/sdd")).status).toBe(405);
   });
 
   test("runs the doctor and the pre-run estimate", async () => {

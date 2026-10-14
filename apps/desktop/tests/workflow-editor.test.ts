@@ -12,7 +12,7 @@ delete scope.window;
 
 describe("workflow editor client", () => {
   test("opens a preset read only, duplicates it, edits and saves the copy", async () => {
-    expect(await workflowEditor.offered("baked")).toBe(true);
+    expect(await workflowEditor.offered("baked")).toEqual({ editor: true, remove: true });
     const { view: preset } = await workflowEditor.open("baked", "quick");
     expect(preset.readOnly).not.toBeNull();
     const refused = await workflowEditor.edit("baked", preset, {
@@ -49,6 +49,20 @@ describe("workflow editor client", () => {
     expect(outcome.saved).toBe(true);
     expect(outcome.view.dirty).toBe(false);
     expect((await workflowEditor.review("baked", outcome.view)).kind).toBe("unchanged");
+  });
+
+  test("deletes a saved project workflow and refuses a built-in one (#1101)", async () => {
+    const { view: preset } = await workflowEditor.open("baked", "spike");
+    const { view: copy } = await workflowEditor.edit("baked", preset, { op: "duplicate" });
+    const outcome = await workflowEditor.save("baked", copy);
+    if (!outcome.saved) throw new Error("not saved");
+    expect(await workflowEditor.remove("baked", outcome.view.id)).toEqual({
+      id: outcome.view.id,
+      path: `baked/workflows/${outcome.view.id}.json`,
+      restores: null,
+    });
+    await expect(workflowEditor.open("baked", outcome.view.id)).rejects.toThrow("Unknown workflow");
+    await expect(workflowEditor.remove("baked", "spike")).rejects.toThrow("built-in");
   });
 
   test("an auto approval needs the typed hash prefix", async () => {
