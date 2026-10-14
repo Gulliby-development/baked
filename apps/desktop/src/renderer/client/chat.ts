@@ -49,6 +49,8 @@ export interface SessionSummary {
   mode: ChatMode;
   /** Reasoning effort of the next turn; servers without the `chat-effort` capability leave it out. */
   effort?: ChatEffort;
+  /** Reasoning efforts the session's model takes, lowest first; older servers leave it out. */
+  efforts?: Exclude<ChatEffort, "default">[];
   /** Permission mode; servers without the `permission-modes` capability leave it out. */
   permissions?: PermissionMode;
   /** The chat's context size; older servers leave it out. */
