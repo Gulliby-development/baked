@@ -215,6 +215,10 @@ function sessionState(chat: ChatService, id: string): LiveState {
   const tokens = usage.input + usage.output;
   if (state === "waiting") return { status: "waiting for you", active: true, tokens };
   if (state === "working") return { status: "working", active: true, tokens };
+  // A failed turn leaves the chat idle; the coordinator is told why instead of waiting on it.
+  const error = session.lastError;
+  if (error)
+    return { status: `failed: ${error.split("\n")[0]?.slice(0, 160)}`, active: false, tokens };
   return { status: messageCount > 1 ? "done" : "idle", active: false, tokens };
 }
 

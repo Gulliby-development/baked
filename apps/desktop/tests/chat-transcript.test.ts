@@ -321,6 +321,17 @@ describe("chat transcript", () => {
   });
 });
 
+describe("a failed turn", () => {
+  test("still says why after the page loads, until a turn runs", () => {
+    expect(fromDetail(detail({ lastError: "Claude Code lost the BAKED tools" })).notice).toEqual({
+      kind: "error",
+      text: "Claude Code lost the BAKED tools",
+    });
+    expect(fromDetail(detail({ state: "working", lastError: "old" })).notice).toBeNull();
+    expect(fromDetail(detail()).notice).toBeNull();
+  });
+});
+
 describe("undo and redo", () => {
   test("each earlier turn ends at its last answer, counted as the server counts turns", () => {
     const messages = [
