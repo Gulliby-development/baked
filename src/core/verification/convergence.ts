@@ -14,7 +14,14 @@ import {
 import { namesRunDocument } from "../workflows/spec-amendment.js";
 import type { WorkflowStore } from "../workflows/store.js";
 import type { RuntimeState, Task } from "../workflows/types.js";
-import { robustnessShapes, sweepEntryPoints, sweepStep } from "./class-sweep.js";
+import {
+  robustnessShapes,
+  sweepClass,
+  sweepEntryPoints,
+  sweepStep,
+  sweepTestFiles,
+  testSweepStep,
+} from "./class-sweep.js";
 import { findingSetHash } from "./convergence-stop.js";
 
 /**
@@ -500,12 +507,24 @@ export function appendCorrections(
   // this call, settles it (#1066).
   const plannedPaths = state.rootGraph.tasks.flatMap((t) => t.writes.map((w) => w.path));
   // With `classSweep`, the robustness findings of a review or convergence pass become one task per
-  // profile that sweeps the class across its entry points (#1160).
-  const sweeping = (finding: Review["findings"][number]): boolean =>
+  // profile that sweeps the class across its entry points (#1160), and the test-style findings one
+  // that sweeps the sibling test files (#1191).
+  const sweepOf = (finding: Review["findings"][number]): "robustness" | "tests" | null =>
     policy.classSweep === true &&
     (kind === "convergence" || reviewPass) &&
-    !checkRunFinding(finding) &&
-    robustnessShapes(finding).length > 0;
+    !checkRunFinding(finding)
+      ? sweepClass(finding)
+      : null;
+  const sweeping = (finding: Review["findings"][number]): boolean => sweepOf(finding) !== null;
+  const sweepFiles = (
+    findings: Review["findings"],
+    profileId: string,
+    base: Task,
+    root: TaskGraph,
+  ): string[] =>
+    findings.some((f) => sweepOf(f) === "tests")
+      ? sweepTestFiles(findings, root, profileId)
+      : sweepEntryPoints(findings, root, profileId, base);
   const documents = ordered.filter((f) => namesRunDocument(f, plannedPaths));
   for (const finding of ordered) {
     if (documents.includes(finding)) continue;
@@ -530,7 +549,8 @@ export function appendCorrections(
       key = groups.has(fileKey) ? fileKey : (runGroups.get(run) ?? fileKey);
       runGroups.set(run, key);
     }
-    if (sweeping(finding)) key = `${SWEEP_KEY}${base.profileId}`;
+    const sweepKind = sweepOf(finding);
+    if (sweepKind) key = `${SWEEP_KEY}${sweepKind}\n${base.profileId}`;
     const existing = groups.get(key);
     const group = existing
       ? {
@@ -602,7 +622,7 @@ export function appendCorrections(
     // assertion there (junitdigest 3e5be74b T014 could not add one to internal/cli/cli_test.go).
     // A sweep may write its entry points, and its first attempt is focused on them (#765).
     if (group.findings.some(sweeping)) {
-      const entries = sweepEntryPoints(group.findings, root, group.base.profileId, group.base);
+      const entries = sweepFiles(group.findings, group.base.profileId, group.base, root);
       for (const path of entries) join(group, path);
       for (const finding of group.findings.filter(sweeping))
         state.repairScope[finding.id] = unique([
@@ -616,12 +636,14 @@ export function appendCorrections(
   }
   const additions = [...groups].map(([key, { base, bases, findings: grouped }]) => {
     const ids = grouped.map((f) => f.id);
-    const sweep = key.startsWith(SWEEP_KEY)
-      ? sweepStep(
-          unique(grouped.flatMap(robustnessShapes)),
-          sweepEntryPoints(grouped, root, base.profileId, base),
-        )
-      : "";
+    const sweep = key.startsWith(`${SWEEP_KEY}tests\n`)
+      ? testSweepStep(sweepFiles(grouped, base.profileId, base, root))
+      : key.startsWith(SWEEP_KEY)
+        ? sweepStep(
+            unique(grouped.flatMap(robustnessShapes)),
+            sweepFiles(grouped, base.profileId, base, root),
+          )
+        : "";
     return {
       ...base,
       writes: mergeCorrectionWrites(
