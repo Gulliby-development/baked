@@ -88,6 +88,8 @@ export class ProfileRegistry {
 export function assertProfileCapabilities(profile: AgentProfile): void {
   const available = new Set([
     "read",
+    // The run's own spec criteria in full (spec-digest.ts); read-only, any role.
+    "read_criterion",
     "bake_find",
     "bake_impact",
     "navigate",

@@ -82,12 +82,12 @@ async function setup(maxActive = 3) {
 }
 
 /** Waits for the coordinator's next prompt and answers it. */
-async function answer(coordinator: { pendingPrompts: { id: string; kind: string; description?: string }[]; answer: (id: string, a: { approve: boolean }) => void }, approve: boolean): Promise<string> {
+async function answer(coordinator: { pendingPrompts: { id: string; kind: string; description?: string; digest?: string }[]; answer: (id: string, a: { approve: boolean; digest?: string }) => void }, approve: boolean): Promise<string> {
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
     const prompt = coordinator.pendingPrompts[0];
     if (prompt) {
-      coordinator.answer(prompt.id, { approve });
+      coordinator.answer(prompt.id, { approve, digest: prompt.digest });
       return prompt.description ?? "";
     }
     await Bun.sleep(10);
@@ -98,7 +98,10 @@ async function answer(coordinator: { pendingPrompts: { id: string; kind: string;
 describe("stopping and closing launched work", () => {
   test("cancelling a run asks first; a closed run no longer counts toward the active limit", async () => {
     const { fixture, chat, coordinator, tool } = await setup(1);
-    const run = await tool("start_run").execute({ prompt: "Create ready value", feature: "fixture", why: "Ship" });
+    // start_run asks first on a workflow card.
+    const starting = tool("start_run").execute({ prompt: "Create ready value", feature: "fixture", why: "Ship" });
+    await answer(coordinator, true);
+    const run = await starting;
     const runId = /run ([0-9a-f-]{36})/.exec(run.output)?.[1] ?? "";
     expect(runId).not.toBe("");
 
@@ -121,7 +124,9 @@ describe("stopping and closing launched work", () => {
     expect(entry).toMatchObject({ kind: "run", id: runId, closed: true });
     // A closed entry is not followed: no notice, no status change.
     expect(await chat.syncLaunched()).toEqual([]);
-    expect((await tool("start_run").execute({ prompt: "Another value", why: "More" })).success).toBe(true);
+    const another = tool("start_run").execute({ prompt: "Another value", why: "More" });
+    await answer(coordinator, true);
+    expect((await another).success).toBe(true);
   }, 60000);
 
   test("a launched session stops through the API, closes into the archive and reopens", async () => {

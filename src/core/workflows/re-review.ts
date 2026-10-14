@@ -4,6 +4,7 @@ import { unifiedDiff } from "./parallel.js";
 import { readKept } from "./rollback.js";
 import type { Review } from "./schemas.js";
 import type { WorkflowStore } from "./store.js";
+import type { ReviewNote } from "./types.js";
 
 /** Characters of the correction patch a rerun reviewer gets; it reads the files for the rest. */
 export const MAX_CORRECTION_PATCH_CHARS = 24_000;
@@ -30,14 +31,52 @@ export function inReviewScope(dimension: string, path: string): boolean {
 }
 
 /**
- * A review from the round before a correction stands for the next round when it passed with no
- * finding and no criterion left open, and nothing in its dimension's scope changed since.
+ * Whether a review only repeated notes: it raised findings, none started a correction, and each
+ * is a note that repeats one from an earlier round. Such a dimension already ran again after a
+ * correction and found nothing new (#1016).
  */
-export function carriesOver(dimension: string, prior: Review, changed: readonly string[]): boolean {
+export function onlyRepeatsNotes(
+  dimension: string,
+  prior: { review: Review; snapshotId: string | null },
+  notes: readonly ReviewNote[],
+): boolean {
+  const { review, snapshotId } = prior;
   return (
-    prior.verdict === "pass" &&
-    prior.findings.length === 0 &&
-    prior.coverage.every((c) => c.verdict !== "inconclusive") &&
+    snapshotId !== null &&
+    review.findings.length > 0 &&
+    review.findings.every((finding) =>
+      notes.some(
+        (n) =>
+          n.source === dimension &&
+          n.snapshotId === snapshotId &&
+          n.findingId === finding.id &&
+          n.repeatOf !== null,
+      ),
+    )
+  );
+}
+
+/**
+ * A review from the round before a correction stands for the next round when no criterion is
+ * left open and either it passed with no finding and nothing in its dimension's scope changed
+ * since, or it only repeated its notes. The converge stage still checks the whole change.
+ */
+export function carriesOver(
+  dimension: string,
+  prior: { review: Review; snapshotId: string | null },
+  changed: readonly string[],
+  notes: readonly ReviewNote[],
+): boolean {
+  const { review } = prior;
+  if (
+    review.verdict === "inconclusive" ||
+    review.coverage.some((c) => c.verdict === "inconclusive")
+  )
+    return false;
+  if (onlyRepeatsNotes(dimension, prior, notes)) return true;
+  return (
+    review.verdict === "pass" &&
+    review.findings.length === 0 &&
     !changed.some((path) => inReviewScope(dimension, path))
   );
 }

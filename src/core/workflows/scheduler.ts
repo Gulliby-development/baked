@@ -331,6 +331,7 @@ import {
   type TaskGraph,
   WorkflowSchema,
 } from "./schemas.js";
+import { specSizeNote, specSizeProblems } from "./spec-size.js";
 import {
   UNCOVERED_SUBMISSIONS,
   uncoveredCriterion,
@@ -340,6 +341,7 @@ import {
 
 type Implementation = ReturnType<typeof ImplementationSchema.parse>;
 
+import { planCostOf } from "./plan-cost.js";
 import {
   codeTaskCheckProblems,
   loopHistory,
@@ -353,6 +355,7 @@ import {
   splitTestTasks,
   withTestDependencies,
 } from "./sizing.js";
+import { digestsSpec, READ_CRITERION, readCriterionTool } from "./spec-digest.js";
 import { forgetProgress } from "./stall.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
@@ -821,6 +824,8 @@ export class WorkflowScheduler {
               break;
             }
             case "specify": {
+              // An oversized spec goes back once; the author's second submission stands (#1013).
+              let sizeAdvised = false;
               state.spec = SpecSchema.parse(
                 await this.call(
                   runId,
@@ -839,8 +844,13 @@ export class WorkflowScheduler {
                     const parsed = SpecSchema.safeParse(output);
                     if (!parsed.success) return [];
                     const questions = parsed.data.openQuestions;
+                    const size = sizeAdvised
+                      ? []
+                      : specSizeProblems(parsed.data, state.requestText || state.prompt);
+                    if (size.length) sizeAdvised = true;
                     // The host makes a host-bound criterion checkable itself (#1015).
                     return [
+                      ...size,
                       ...specCoverageProblems(
                         repairHostBoundCriteria(parsed.data).spec,
                         policy.checks,
@@ -1307,6 +1317,9 @@ export class WorkflowScheduler {
                 );
                 state.manifest.baselineSnapshotId = snapshot.id;
                 await this.measureQualityBaseline(runId, state, policy, signal);
+                // Before approval, so the person sees a required check that already fails (#934).
+                await this.recordCheckBaseline(runId, state, policy, signal);
+                const baselineFailures = this.baselineFailingChecks(runId, policy);
                 const digest = approvalDigest(state);
                 // A v2 approval stage marked human never approves on its own.
                 const humanStage =
@@ -1392,10 +1405,13 @@ export class WorkflowScheduler {
                   ...(state.activeTime ? { activeTime: state.activeTime } : {}),
                   // A plan priced above the ceiling is approved knowing where it should stop (#974).
                   ...overCeilingOf(this.store, runId),
+                  // What planning cost so far next to what the tasks should cost (#1019).
+                  planCost: planCostOf(this.store, runId),
                   ...(state.spec.deliverables
                     ? { requestCoverage: requestCoverage(state.spec, coverageRequest(state)) }
                     : {}),
                   boundedCorrection: true,
+                  ...(baselineFailures.length ? { baselineFailures } : {}),
                   // Granted walk-through capabilities are shown to the person; the frozen gates
                   // that hold them are part of the manifest the digest covers.
                   ...(v2 && acceptanceGrants(v2.gates).length
@@ -2226,7 +2242,7 @@ export class WorkflowScheduler {
     return split;
   }
   /**
-   * Before the first task of an update run, runs each feature check once on the code the run starts
+   * Before the approval of an update run, runs each feature check once on the code the run starts
    * from and stores the counts its output reports (a linter's diagnostics, a test runner's tests)
    * as `facts/check-baseline.json`. The checks stage compares the same commands with it.
    * Nothing is measured for a scaffold, after a task has started, or for output no parser reads.
@@ -2304,6 +2320,20 @@ export class WorkflowScheduler {
       `baseline_failure: required check ${check.id} failed before any change and fails the same way now (evidence ${evidenceId}); nothing the run changed affects it. Fix the check or the project setup, or revise the plan, then resume.`,
       { reason: "no_progress", checkId: check.id },
     );
+  }
+  /** The IDs of the required checks that failed before any change, from the check baseline. */
+  private baselineFailingChecks(runId: string, policy: RunPolicy): string[] {
+    const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
+    if (!artifact) return [];
+    const failures =
+      (
+        JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+          failures?: Record<string, string>;
+        }
+      ).failures ?? {};
+    return policy.checks
+      .filter((check) => check.required && commandKey(check) in failures)
+      .map((check) => check.id);
   }
   /** The diagnostics each whole-unit check reported before the run, by command key. */
   private baselineDiagnostics(runId: string): Record<string, string[]> {
@@ -2692,6 +2722,15 @@ export class WorkflowScheduler {
       task && profile.output === "implementation"
         ? this.attributeCheck(runId, state, policy, task)
         : undefined;
+    // A digested spec (#1019) comes with the tool that reads its criteria in full.
+    const digested = digestsSpec(state.spec, profile, policy);
+    const host =
+      hostTools || digested
+        ? {
+            ...(hostTools ? hostTools(attempt) : {}),
+            ...(digested && state.spec ? { [READ_CRITERION]: readCriterionTool(state.spec) } : {}),
+          }
+        : undefined;
     try {
       const result = await this.executor.execute({
         runId,
@@ -2715,7 +2754,7 @@ export class WorkflowScheduler {
         ...(this.formatHints(runId, state, profile.output, task)
           ? { formatHints: this.formatHints(runId, state, profile.output, task) }
           : {}),
-        ...(hostTools ? { hostTools: hostTools(attempt) } : {}),
+        ...(host ? { hostTools: host } : {}),
         ...(route.effort ? { effort: route.effort } : {}),
       });
       const parsed = outputSchemas[profile.output]?.safeParse(result.output);
@@ -3040,6 +3079,8 @@ export class WorkflowScheduler {
       profile.output === "spec"
         ? crossPlatformNote(state.requestText || state.prompt, runRoot(this.store.workspace, state))
         : null;
+    const specSize =
+      profile.output === "spec" ? specSizeNote(state.requestText || state.prompt) : null;
     const hardening =
       presetOf(parseRunDefinition(this.store.run(runId).definition_json)) === HARDEN_PRESET
         ? hardenNote(profile.output)
@@ -3054,6 +3095,7 @@ export class WorkflowScheduler {
         ...input,
         ...(propertyNote ? { propertyTests: propertyNote } : {}),
         ...(crossPlatform ? { crossPlatform } : {}),
+        ...(specSize ? { specSize } : {}),
         ...(hardening ? { hardening } : {}),
         ...(rules ? { learnedRules: rules } : {}),
         ...(workingSet ? { projectWorkingSet: workingSet } : {}),
@@ -3073,6 +3115,7 @@ export class WorkflowScheduler {
       },
       undefined,
       diffOnly === true,
+      diffOnly !== true && digestsSpec(state.spec, profile, policy),
     );
   }
   /**
@@ -8337,11 +8380,12 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       if (kept && kept.snapshotHash === reviewSnapshotHash && kept.verdict !== "inconclusive")
         return { reviewer, result: kept };
       // After a correction, a dimension that passed and whose files did not change keeps its
-      // review; one that runs again is told what it found and what changed (#713).
+      // review, as does one that only repeated its notes (#1016); one that runs again is told
+      // what it found and what changed (#713).
       const prior = state.priorReviews[reviewer.key];
       const changed =
         prior && state.expectedFiles ? changedSince(prior.files, state.expectedFiles) : null;
-      if (prior && changed && carriesOver(reviewer.dimension, prior.review, changed)) {
+      if (prior && changed && carriesOver(reviewer.dimension, prior, changed, state.reviewNotes)) {
         this.store.transaction(() =>
           this.store.artifact(
             runId,

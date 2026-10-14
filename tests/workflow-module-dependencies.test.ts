@@ -129,11 +129,12 @@ describe("a docs task that runs the program waits for its entry points", () => {
         described("T003", ["src/util.ts"], "Run the CLI and capture its output in a fixture."),
         task("T004", ["tests/main.test.ts"]),
         described("T005", ["README.md"], "Show sample output of the command.", ["T004"]),
-        described("T006", ["src/server.ts", "CHANGELOG.md"], "Changelog", ["T005"]),
+        described("T006", ["src/server.ts"], "Serve the notes", ["T007"]),
+        described("T007", ["docs/notes.md"], "Notes", ["T005"]),
       ),
     );
-    // T005 waits for T001 but not for T006, which depends on it already.
-    expect(deps(out)).toEqual([[], [], [], [], ["T004", "T001"], ["T005"]]);
+    // T005 waits for T001 but not for T006, which reaches it through the notes task already.
+    expect(deps(out)).toEqual([[], [], [], [], ["T004", "T001"], ["T007"], ["T005"]]);
   });
 });
 

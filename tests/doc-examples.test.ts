@@ -9,6 +9,7 @@ import {
   extractExamples,
   firstDifference,
   isDocFile,
+  placeholderOf,
   runDocExamples,
 } from "../src/core/verification/doc-examples.js";
 import { capturePreImage } from "../src/core/workflows/rollback.js";
@@ -70,6 +71,18 @@ describe("documented examples", () => {
     expect(commandArgv("app *.txt")).toBeNull();
   });
 
+  test("a command with a placeholder argument is a usage line", () => {
+    expect(placeholderOf("go run . balance FILE")).toBe("FILE");
+    expect(placeholderOf("tool add NAME AMOUNT")).toBe("NAME");
+    expect(placeholderOf("tool --out=PATH data.csv")).toBe("PATH");
+    expect(placeholderOf("tool import FILES...")).toBe("FILES...");
+    expect(placeholderOf("tool show <file>")).toBe("<file>");
+    expect(placeholderOf("tool [options] data.csv")).toBe("[options]");
+    expect(placeholderOf("go run . --help")).toBeNull();
+    expect(placeholderOf("tool balance data.csv --format json")).toBeNull();
+    expect(placeholderOf("tool --verbose X")).toBeNull();
+  });
+
   test("the first documented line that differs is reported", () => {
     expect(firstDifference("a\nb\n", "a\r\nb  \n\n")).toBeNull();
     expect(firstDifference("a\nb", "a\nc")).toEqual({ line: 2, expected: "b", actual: "c" });
@@ -125,6 +138,54 @@ describe("documented examples", () => {
     );
     expect(results.filter((r) => r.status === "match")).toHaveLength(DOC_EXAMPLE_LIMIT);
     expect(results.at(-1)?.reason).toContain(`Only ${DOC_EXAMPLE_LIMIT} examples`);
+  });
+});
+
+describe("scenario: centsplit d249b8ac, a usage line before a usage block (#1014)", () => {
+  // The README showed how to run the program with a FILE placeholder, then the usage text. The
+  // host ran `balance FILE`, got "cannot read FILE" and reported a mismatch; the reviewer turned it
+  // into two corrective tasks (0.48M tokens) on a README a person reads correctly.
+  test("the run line with a placeholder is not run against the usage block", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-doc-examples-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    writeFileSync(
+      join(root, "app.js"),
+      `const [cmd, file] = process.argv.slice(2);
+if (cmd === "--help" || !file) console.log("usage: centsplit balance FILE");
+else if (!require("fs").existsSync(file)) console.log("centsplit: " + file + ": cannot read the file");
+else console.log("balanced");`,
+    );
+    writeFileSync(join(root, "trip.csv"), "a,1\n");
+    const readme = [
+      "# centsplit",
+      "Run it on a ledger:",
+      `${fence}sh`,
+      "bun app.js balance FILE",
+      fence,
+      "Without arguments it prints:",
+      fence,
+      "usage: centsplit balance FILE",
+      fence,
+      `${fence}sh`,
+      "bun app.js balance trip.csv",
+      fence,
+      fence,
+      "balanced",
+      fence,
+    ].join("\n");
+    const results = await runDocExamples(new ProcessScope(), [{ path: "README.md", text: readme }], {
+      root,
+      files: ["app.js", "trip.csv"],
+      executables: ["bun"],
+      signal: new AbortController().signal,
+      sandbox: () => null,
+    });
+    expect(results.map((r) => [r.command, r.status])).toEqual([
+      ["bun app.js balance FILE", "not_run"],
+      ["bun app.js balance trip.csv", "match"],
+    ]);
+    expect(results[0]?.reason).toStartWith("placeholder: FILE");
+    expect(results[0]?.printed).toBeUndefined();
   });
 });
 

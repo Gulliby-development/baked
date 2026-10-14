@@ -7,6 +7,7 @@ import {
   type LaunchedView,
   launchLabel,
   launchNoteText,
+  stageTrack,
 } from "../../core/chat/coordinator-launch.js";
 import { parsePeerMessage } from "../../core/chat/peer-messages.js";
 import type { ChatPrompt } from "../../core/chat/sessions.js";
@@ -70,8 +71,9 @@ const whyBesides = (why: string, title: string | undefined): string =>
   title && why.startsWith(title) ? "" : why;
 
 /**
- * One line per open launched item: its title (or kind and id), status, tokens, task and why. With
- * `selected`, that item is marked for the stop and close keys. Closed items are counted at the end.
+ * One line per open launched item: its title (or kind and id), workflow, status, tokens, task and
+ * why; under a run its stages. With `selected`, that item is marked for the stop and close keys.
+ * Closed items are counted at the end.
  */
 export function launchedLines(
   launched: LaunchedView[],
@@ -84,16 +86,20 @@ export function launchedLines(
     const task = entry.task
       ? ` · ${entry.task.state === "local" ? "local task" : entry.task.ref}`
       : "";
+    const flow = entry.workflow ? ` [${entry.workflow}]` : "";
     const status = entry.activity ? `${entry.status} (${entry.activity})` : entry.status;
     const branch = entry.worktree ? ` · ⎇ ${entry.worktree.branch}` : "";
-    const head = `${entry.active ? "●" : "○"} ${launchLabel(entry)}: ${status} · ${tokens(entry.tokens)}${task}${branch}`;
+    const head = `${entry.active ? "●" : "○"} ${launchLabel(entry)}${flow}: ${status} · ${tokens(entry.tokens)}${task}${branch}`;
     const why = whyBesides(entry.why, entry.title);
-    return labelled(
+    const rows = labelled(
       selected === undefined ? "" : i === selected ? "› " : "  ",
       why ? `${head} · ${why}` : head,
       width,
       statusTone(entry.status, entry.active ? "accent" : "muted"),
     );
+    if (entry.progress?.stages.length)
+      rows.push(...labelled("  ", stageTrack(entry.progress), width, "muted"));
+    return rows;
   });
   if (closed) lines.push({ text: `${closed} closed`, tone: "muted" });
   return lines;
@@ -154,6 +160,8 @@ function launchNoteLines(note: LaunchNote, width: number): ViewLine[] {
 export function messageLines(messages: ChatMessage[], live: string, width: number): ViewLine[] {
   const lines: ViewLine[] = [];
   for (const message of messages) {
+    // A wake-up on launched work: its notices already show.
+    if (message.role === "user" && message.showInChat === false) continue;
     if (message.role === "user") {
       // A thread's message to the coordinator is labelled as the thread's, not the person's.
       const peer = parsePeerMessage(message.content);
@@ -194,6 +202,23 @@ export function promptLines(prompt: ChatPrompt, width: number): ViewLine[] {
         if (flow.dependsOn.length)
           lines.push(...labelled("   ", `After ${flow.dependsOn.join(", ")}`, width, "muted"));
       });
+      return lines;
+    }
+    case "workflow": {
+      const lines = labelled(
+        "Run workflow? ",
+        `${prompt.workflow}${prompt.writes ? "" : " (read only)"}: ${prompt.why}`,
+        width,
+        "warning",
+      );
+      if (prompt.stages.length)
+        lines.push(...labelled("   ", `Stages: ${prompt.stages.join(" > ")}`, width, "accent"));
+      lines.push(
+        ...labelled("   ", `Request: ${prompt.prompt.replace(/\s+/g, " ")}`, width, "muted"),
+      );
+      if (prompt.issue)
+        lines.push(...labelled("   ", `From issue ${prompt.issue}`, width, "muted"));
+      lines.push(...labelled("   ", `Why this workflow: ${prompt.reason}`, width, "muted"));
       return lines;
     }
     case "question":
@@ -239,6 +264,8 @@ export function keyHints(
       { key: "^N", label: "reject" },
       { key: "^E", label: "edit" },
     );
+  else if (prompt?.kind === "workflow")
+    hints.push({ key: "^Y", label: "run it" }, { key: "^N", label: "not now" });
   else if (prompt?.kind === "question")
     hints.push({ key: "Enter", label: "answer (number or text)" });
   else if (prompt)

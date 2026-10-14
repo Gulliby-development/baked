@@ -15,6 +15,7 @@ import { Alert } from "../../components/ui/alert.js";
 import { Button, buttonVariants } from "../../components/ui/button.js";
 import { activeTimeText } from "../../lib/active-time.js";
 import { cn } from "../../lib/cn.js";
+import { planCostText } from "../../lib/plan-cost.js";
 import { CHECK, LABEL, PANEL } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
 import {
@@ -204,6 +205,16 @@ export function ApprovalDetail({ item, onDone }: DetailProps) {
                 ))}
               </section>
             ) : null}
+            {body.baselineFailures?.length ? (
+              <p
+                className="m-0 font-semibold text-[var(--warn)]"
+                role="note"
+                data-testid="approval-baseline-failures"
+              >
+                Required checks that fail before any change: {body.baselineFailures.join(", ")}. One
+                that still fails the same way after the tasks stops the run.
+              </p>
+            ) : null}
             {body.deferredCriteria?.length ? (
               <p className={NOTE}>
                 Checked after release, not by this run: {body.deferredCriteria.join(", ")}.
@@ -212,6 +223,11 @@ export function ApprovalDetail({ item, onDone }: DetailProps) {
             {body.activeTime ? (
               <p className={NOTE} data-testid="approval-active-time">
                 {activeTimeText(body.activeTime)}.
+              </p>
+            ) : null}
+            {body.planCost ? (
+              <p className={NOTE} data-testid="approval-plan-cost">
+                {planCostText(body.planCost)}.
               </p>
             ) : null}
             {inScope.length > 0 && (

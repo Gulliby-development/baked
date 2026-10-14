@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTheme } from "../../core/theme/index.js";
 import { approvalReviewText } from "../../core/workflows/auto-approval.js";
+import { type PlanCost, planCostText } from "../../core/workflows/plan-cost.js";
 import type { ApprovalReview, Decision } from "../../core/workflows/schemas.js";
 import { activeTimeText, type SizingReport } from "../../core/workflows/sizing.js";
 import type { RequestRow } from "../../core/workflows/store.js";
@@ -17,8 +18,12 @@ interface ApprovalBody {
   checks?: Check[];
   deferredCriteria?: string[];
   assumptions?: string[];
+  /** Required checks that failed on the code the run starts from, before any task ran. */
+  baselineFailures?: string[];
   /** Plan-time sizing's active-time estimate against the active-time cap. */
   activeTime?: SizingReport["activeTime"];
+  /** What planning cost so far, by model, next to what the planned tasks should cost. */
+  planCost?: PlanCost;
   /** Present when the plan and its reserve need more than the token ceiling: where it should stop. */
   budgetWarning?: string;
   requestCoverage?: RequestCoverageRow[];
@@ -607,6 +612,11 @@ export function DecisionPrompt({
               ? `  ${body.checks.map((c) => `${c.id} (${c.executable} ${c.args.join(" ")})`).join(", ")}`
               : "  none configured"}
           </text>
+          {body.baselineFailures?.length ? (
+            <text fg={t.warning}>
+              {`  Required checks that fail before any change: ${body.baselineFailures.join(", ")}. One that still fails the same way after the tasks stops the run.`}
+            </text>
+          ) : null}
           {body.deferredCriteria?.length ? (
             <text
               fg={t.warning}
@@ -616,6 +626,9 @@ export function DecisionPrompt({
             <text
               fg={body.activeTime.estimatedMs > body.activeTime.after ? t.warning : t.textMuted}
             >{`  ${activeTimeText(body.activeTime)}.`}</text>
+          ) : null}
+          {body.planCost ? (
+            <text fg={t.textMuted}>{`  ${planCostText(body.planCost)}.`}</text>
           ) : null}
           <text fg={t.textMuted}>
             {body.sandbox

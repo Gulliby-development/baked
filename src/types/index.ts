@@ -399,6 +399,8 @@ export interface AppConfig {
     maxActive?: number;
     /** Tokens summed over everything the coordinator launched. Default: 20,000,000 */
     maxTokens?: number;
+    /** Start a coordinator turn when launched work finishes, fails or waits. Default: true */
+    wake?: boolean;
   };
   codeExecution?: boolean;
   /** Enable Anthropic's computer use tool (keyboard/mouse/screenshot). Claude-only. Default: false */

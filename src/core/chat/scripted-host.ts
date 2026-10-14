@@ -14,7 +14,9 @@ import type { ChatAgentHost, TurnAgent, TurnAgentRequest } from "./sessions.js";
  *   `{ "webSearch": "query" }` or `{ "fetchPage": "https://..." }` first asks the user through the
  *   same prompts as a real tool, and a denial fails the call;
  * - `{ "ifDenied": "..." }` after an approval streams this text only when it was denied, and
- *   `{ "ifApproved": "..." }` only when it was approved.
+ *   `{ "ifApproved": "..." }` only when it was approved;
+ * - `{ "tool": "start_run", "input": {...}, "run": true }` calls the turn's real tool of that name
+ *   (such as a coordinator's launch tools) and shows what it returned.
  * Turns after the last one answer "The test script has no more turns."
  */
 export const TEST_SCRIPT_ENV = "BAKED_TEST_SCRIPT";
@@ -33,6 +35,8 @@ export type ScriptStep =
         | { destructive: string }
         | { webSearch: string }
         | { fetchPage: string };
+      /** Call the turn's own tool of this name instead of showing `output`. */
+      run?: boolean;
     };
 
 export interface ChatScript {
@@ -120,16 +124,20 @@ export class ScriptedChatHost implements ChatAgentHost {
                     ? ((await request.callbacks.onFetchPageApproval?.(approval.fetchPage)) ?? false)
                     : await request.onApproveDestructive(approval.destructive);
           if (step.approval) lastApproval = allowed;
+          const real = step.run
+            ? (request.tools?.[step.tool] as
+                | { execute?: (input: Record<string, unknown>) => Promise<unknown> }
+                | undefined)
+            : undefined;
+          const output = !allowed
+            ? { success: false, output: "", error: "Denied by the user." }
+            : real?.execute
+              ? await real.execute(input)
+              : step.run
+                ? { success: false, output: "", error: `No tool ${step.tool} in this turn.` }
+                : { success: true, output: step.output ?? "" };
           await sleep(delay, signal);
-          yield {
-            type: "tool-result",
-            toolCallId,
-            toolName: step.tool,
-            input,
-            output: allowed
-              ? { success: true, output: step.output ?? "" }
-              : { success: false, output: "", error: "Denied by the user." },
-          };
+          yield { type: "tool-result", toolCallId, toolName: step.tool, input, output };
         }
       }
       yield {

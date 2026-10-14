@@ -5,6 +5,7 @@ import { PULL_REQUEST_BODY_LIMIT, runReport } from "../src/core/workflows/run-re
 import { parseWorkflowArgs, workflowHelp } from "../src/headless/workflow-parse.js";
 import { executeWorkflowCommand } from "../src/headless/workflow.js";
 import { formatWorkflowResult } from "../src/core/commands/workflow.js";
+import { newId } from "../src/core/workflows/store.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -71,5 +72,38 @@ describe("run report", () => {
     expect(readFileSync(written.path, "utf8")).toBe(printed.markdown);
     expect(formatWorkflowResult(written)).toBe(`Run report written to ${written.path}.`);
     await expect(executeWorkflowCommand(fx.service, parseWorkflowArgs(["report", "missing-run"]), signal)).rejects.toThrow();
+  }, 60000);
+});
+
+describe("run report models (#1017)", () => {
+  test("names the model that implemented the tasks under a stage route, and the configured one", async () => {
+    // Bench round 18, stmtsplit: `--route implement=claude-code/claude-sonnet-5-5` with an Opus run
+    // model; Sonnet wrote all 7 tasks and the report said "implemented on" Opus.
+    const fx = workflowFixture();
+    cleanups.push(() => fx.dispose());
+    const run = await fx.service.start({
+      commandId: newId(),
+      featureId: "fixture",
+      workflowId: "sdd",
+      prompt: "Create ready value",
+      ownerLabel: "test",
+      policy: fx.policy,
+      routes: { implement: "writer/model" },
+    });
+    await fx.service.drive(run.runId, new AbortController().signal);
+    await fx.approve(run.runId);
+    const done = await fx.service.drive(run.runId, new AbortController().signal);
+    expect(done.status).toBe("completed");
+    const report = runReport(fx.service.store, run.runId);
+    expect(report).toContain(
+      "Reviewed on `fixture/model` (fixture:model); implemented on `writer/model` (writer:model) (configured: `fixture/model` (fixture:model)).",
+    );
+  }, 60000);
+
+  test("without a route the implementer is the run model and nothing more is said", async () => {
+    const { fx, runId } = await completedRun();
+    expect(runReport(fx.service.store, runId)).toContain(
+      "Reviewed on `fixture/model` (fixture:model); implemented on `fixture/model` (fixture:model).",
+    );
   }, 60000);
 });

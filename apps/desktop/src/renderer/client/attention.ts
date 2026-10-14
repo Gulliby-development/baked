@@ -1,5 +1,6 @@
 import type { RunSnapshot } from "../../shared/api.js";
 import type { ActiveTime } from "../lib/active-time.js";
+import type { PlanCost } from "../lib/plan-cost.js";
 import { call } from "./api.js";
 import { workflow } from "./workflow.js";
 
@@ -26,10 +27,14 @@ export interface ApprovalBody {
   checks?: { id: string; command?: string }[];
   profiles?: string[];
   deferredCriteria?: string[];
+  /** Required checks that failed on the code the run starts from, before any task ran. */
+  baselineFailures?: string[];
   /** Defaults the agents chose instead of asking (`clarification: "assume"`). */
   assumptions?: string[];
   /** Plan-time sizing's active-time estimate against the active-time cap. */
   activeTime?: ActiveTime;
+  /** What planning cost so far, by model, next to what the planned tasks should cost. */
+  planCost?: PlanCost;
   /** Present when the plan and its reserve need more than the token ceiling: where it should stop. */
   budgetWarning?: string;
   /** Each deliverable of the request and the requirements, or the request's exclusion, covering it. */
@@ -117,6 +122,19 @@ export type ChatPrompt = { id: string; createdAt: number } & (
         /** The issue (`owner/name#N`), `new issue` or `local task`; missing from older servers. */
         task?: string;
       }[];
+      digest: string;
+    }
+  | {
+      /** The coordinator asks to run a workflow; approving it with the digest starts the run. */
+      kind: "workflow";
+      workflow: string;
+      description: string;
+      stages: string[];
+      writes: boolean;
+      prompt: string;
+      why: string;
+      reason: string;
+      issue?: string;
       digest: string;
     }
 );

@@ -371,6 +371,12 @@ export const PolicySchema = z
      */
     lowFindings: z.enum(["repair", "note"]).optional(),
     /**
+     * Whether analyze, review and converge get a digest of a large spec, with each criterion in
+     * full behind `read_criterion` (spec-digest.ts). Absent means `auto`: a spec above
+     * SPEC_DIGEST_BYTES is digested, a smaller one is sent whole. `off` always sends it whole.
+     */
+    specDigest: z.enum(["auto", "off"]).optional(),
+    /**
      * The duplication and dead-code ratchet (quality/duplication.ts). Absent means `warn`: copies
      * and unused declarations the run adds are reported, never blocking, so stored policies keep
      * their hash. `ratchet` makes them blocking findings; `off` skips the measurement.
