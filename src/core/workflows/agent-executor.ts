@@ -1305,6 +1305,8 @@ export class NativeAgentExecutor implements AgentExecutor {
                 attempt,
                 request.signal.aborted ? "cancelled" : "failed",
                 correctionTokens,
+                false,
+                error,
               ),
             );
             // A provider outage is not invalid output: the scheduler retries or falls back.

@@ -1144,6 +1144,8 @@ export const EventSchema = z.discriminatedUnion("type", [
           usedTokens: z.number().int().nonnegative().nullable(),
           /** `usedTokens` is an estimate from the request and response sizes (#1057). */
           usageEstimated: z.literal(true).optional(),
+          /** Why a failed attempt failed (#1068). */
+          error: z.object({ code: z.string().max(64), message: z.string().max(500) }).optional(),
           spend: z
             .object({
               inputTokens: z.number().int().nonnegative(),
