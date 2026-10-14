@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { type CatalogSkill, type SkillEntry, type SkillScope, setup } from "../../client/setup.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
@@ -14,6 +14,7 @@ import { Input } from "../../components/ui/input.js";
 import { Segment, SegmentGroup } from "../../components/ui/segmented.js";
 import { cn } from "../../lib/cn.js";
 import { LABEL, LEDE, PANEL } from "../../lib/styles.js";
+import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
 import {
   ACTIONS,
@@ -136,7 +137,7 @@ function InstalledGroup({
   onOpen,
 }: {
   label: string;
-  about: string;
+  about: ReactNode;
   skills: SkillEntry[];
   onOpen: (dialog: Dialogs) => void;
 }) {
@@ -157,6 +158,11 @@ function InstalledGroup({
                 {skill.description && (
                   <span className={cn(WRAP, "text-muted-foreground")}>{skill.description}</span>
                 )}
+                {skill.package && (
+                  <span className={cn(NOTE, "text-dim-foreground")}>
+                    From the package <span className="font-mono">{skill.package}</span>
+                  </span>
+                )}
               </span>
               <span className={ACTIONS}>
                 <Button
@@ -166,14 +172,16 @@ function InstalledGroup({
                 >
                   Open
                 </Button>
-                <Button
-                  variant="secondary"
-                  size="md"
-                  aria-label={`Remove ${skill.id}`}
-                  onClick={() => onOpen({ kind: "remove", skill })}
-                >
-                  Remove
-                </Button>
+                {skill.scope !== "package" && (
+                  <Button
+                    variant="secondary"
+                    size="md"
+                    aria-label={`Remove ${skill.id}`}
+                    onClick={() => onOpen({ kind: "remove", skill })}
+                  >
+                    Remove
+                  </Button>
+                )}
               </span>
             </li>
           ))}
@@ -239,7 +247,13 @@ function Catalog({
                     {skill.installs.toLocaleString()} installs
                   </span>
                   {scopes.map((scope) => (
-                    <Tag key={scope}>{scope === "project" ? "in this project" : "global"}</Tag>
+                    <Tag key={scope}>
+                      {scope === "project"
+                        ? "in this project"
+                        : scope === "package"
+                          ? "from a package"
+                          : "global"}
+                    </Tag>
                   ))}
                   <Button variant="primary" size="md" onClick={() => onInstall(skill)}>
                     Install…
@@ -309,6 +323,27 @@ export function SkillsSection({ project }: SectionProps) {
         skills={skills.filter((s) => s.scope === "global")}
         onOpen={open}
       />
+      {skills.some((s) => s.scope === "package") && (
+        <InstalledGroup
+          label="From packages"
+          about={
+            <>
+              Installed by packages into <span className="font-mono">baked/skills</span>. Workflow
+              agents whose profile names them use them; chats do not. They go when you remove the
+              package on the{" "}
+              <a
+                className="underline hover:text-foreground"
+                href={projectHref(project.key, "packages")}
+              >
+                Packages
+              </a>{" "}
+              screen.
+            </>
+          }
+          skills={skills.filter((s) => s.scope === "package")}
+          onOpen={open}
+        />
+      )}
       <Catalog
         projectKey={project.key}
         installed={skills}

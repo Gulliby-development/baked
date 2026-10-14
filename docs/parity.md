@@ -109,7 +109,7 @@ bun test tests/feature-parity.test.ts
 | Agent features: de-sloppify, verify edits, tier routing, edits that add errors | `/agent-features` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
 | Approval reviewer for chat tool approvals: a model decides low-risk cleanup first | `/agent-features` | `--approval-review` | `/v1/settings` | `settings/chat`, `project/chat` |
 | Hooks: view, add, edit, pause | `/hooks` | Not needed: hooks are files scripts edit directly | `/v1/hooks`, `/v1/hooks/session` | `project/hooks` |
-| Skills: browse, install, remove | `/skills` | Not needed: `bunx skills add` installs from scripts | `/v1/skills`, `/v1/skills/catalog`, `/v1/skills/project/:id` +1 | `project/skills` |
+| Skills: browse, install, remove | `/skills` | Not needed: `bunx skills add` installs from scripts | `/v1/skills`, `/v1/skills/catalog`, `/v1/skills/project/:id` +2 | `project/skills` |
 | Packages: install agent profiles, skills, workflows and gates from a local folder with per-file hashes | `/packages`, `/packages add`, `/packages remove` | `baked add`, `baked packages` | `/v1/packages`, `/v1/packages/inspect`, `/v1/packages/install` +1 | `project/packages` |
 | Packages: write a package's manifest with every file's hash after the install checks | `/packages pack` | `baked packages pack` | `/v1/packages/pack` | `project/packages` |
 | Ask the agent about BAKED itself (bundled docs, baked_help tool) | `key Enter` | `--headless`, `--chat` | `/v1/sessions/:id/messages` | `project/chat` |

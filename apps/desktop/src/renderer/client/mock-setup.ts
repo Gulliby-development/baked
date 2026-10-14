@@ -693,6 +693,13 @@ const SKILLS: SkillEntry[] = [
     scope: "global",
     path: "C:\\Users\\you\\.claude\\skills\\pdf\\SKILL.md",
   },
+  {
+    id: "review-notes",
+    scope: "package",
+    path: "C:\\Project\\BAKED\\baked\\skills\\review-notes\\SKILL.md",
+    description: "The checklist Acme's reviewer follows",
+    package: "acme-review",
+  },
 ];
 
 const CATALOG: CatalogSkill[] = [
@@ -740,7 +747,7 @@ function skillRoutes(request: MockRequest) {
     SKILLS.sort((a, b) => a.id.localeCompare(b.id));
     return response(200, { skill, skills: SKILLS });
   }
-  const item = /^\/v1\/skills\/(project|global)\/([^/]+)$/.exec(path);
+  const item = /^\/v1\/skills\/(project|global|package)\/([^/]+)$/.exec(path);
   if (!item) return undefined;
   const id = decodeURIComponent(item[2] ?? "");
   const at = SKILLS.findIndex((s) => s.id === id && s.scope === item[1]);
@@ -751,6 +758,12 @@ function skillRoutes(request: MockRequest) {
       ...found,
       content: `---\nname: ${id}\ndescription: ${found.description ?? ""}\n---\n\n# ${id}\n\nUse this skill when the task touches ${id.replace("-", " ")}.\n\n1. Read the relevant files first.\n2. Follow the steps below.\n`,
     });
+  if (method === "DELETE" && found.scope === "package")
+    return error(
+      409,
+      "NOT_REMOVABLE",
+      `${id} belongs to the package ${found.package}; remove the package to remove it`,
+    );
   if (method === "DELETE") {
     SKILLS.splice(at, 1);
     return response(200, { skills: SKILLS });

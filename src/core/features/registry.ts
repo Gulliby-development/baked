@@ -677,7 +677,13 @@ export const FEATURES: readonly Feature[] = [
     title: "Skills: browse, install, remove",
     tui: ["/skills"],
     cli: notNeeded("`bunx skills add` installs from scripts"),
-    api: ["/v1/skills", "/v1/skills/catalog", "/v1/skills/project/:id", "/v1/skills/global/:id"],
+    api: [
+      "/v1/skills",
+      "/v1/skills/catalog",
+      "/v1/skills/project/:id",
+      "/v1/skills/global/:id",
+      "/v1/skills/package/:id",
+    ],
     desktop: ["project/skills"],
   },
   {

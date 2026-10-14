@@ -267,9 +267,10 @@ function countText(value: Loaded<string>): string {
   return value.state === "error" ? "unavailable" : "…";
 }
 
-function scopeCounts(items: { scope: "project" | "global" }[]): string {
-  const project = items.filter((i) => i.scope === "project").length;
-  return `${project} in this project · ${items.length - project} global`;
+function scopeCounts(items: { scope: "project" | "global" | "package" }[]): string {
+  const count = (scope: string) => items.filter((i) => i.scope === scope).length;
+  const packaged = count("package");
+  return `${count("project")} in this project · ${count("global")} global${packaged ? ` · ${packaged} from packages` : ""}`;
 }
 
 /** The rest of an agent's project setup; the working set is the Files tab next to this one. */
