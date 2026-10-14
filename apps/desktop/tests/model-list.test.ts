@@ -85,4 +85,28 @@ describe("the composer's model list", () => {
     );
     expect(first).toContain("Loading models");
   });
+
+  // #1092: with the provider's list failed or missing the model, the menu said "This model takes
+  // no reasoning effort" for anthropic/claude-sonnet-4-5 and offered only Default.
+  test("the effort menu takes the session's levels for a model the list leaves out", () => {
+    const close = () => {};
+    for (const models of [
+      { providers: catalog.providers, error: null },
+      { providers: null, error: "Codex: 401 Unauthorized" },
+    ]) {
+      const menu = renderToStaticMarkup(
+        createElement(EffortMenu, {
+          model: "anthropic/claude-sonnet-4-5",
+          effort: "default",
+          models,
+          efforts: ["low", "medium", "high"],
+          onEffort: () => {},
+          close,
+        }),
+      );
+      expect(menu).toContain("High");
+      expect(menu).not.toContain("takes no reasoning effort");
+      expect(menu).not.toContain("401");
+    }
+  });
 });
