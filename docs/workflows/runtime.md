@@ -198,7 +198,7 @@ People can review and correct the memory before the next run. Each entry has a s
 - **Add** a note of your own (at most 12, 600 characters each). Notes come first in what research, spec and planning read.
 - **Accept** activates a proposed rule as recorded.
 - **Edit** rewords a note, an answer, an assumption or a rule (a reworded rule is active). A reworded entry keeps your text even when a later run records a newer answer to the same question; the original stays visible as "runs recorded". Check commands cannot be reworded: forget them or change the workspace checks.
-- **Forget** deletes a note, or hides a recorded entry from new runs. A hidden entry frees its place, so the next entry of its kind moves in.
+- **Forget** deletes a note, or hides a recorded entry from new runs. The desktop calls it Delete on a note and asks first, because a deleted note has no Forgotten entry to restore it from. A hidden entry frees its place, so the next entry of its kind moves in.
 - **Restore** brings a forgotten or reworded entry back as runs recorded it.
 
 ```sh

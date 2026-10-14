@@ -443,6 +443,8 @@ function Notifications({
   const [draft, setDraft] = useState<string | null>(null);
   const value = draft ?? url;
   const valid = /^https?:\/\/\S+$/i.test(value.trim());
+  // Only once something is typed: an empty field is how the webhook stays off.
+  const invalid = value.trim() !== "" && !valid;
   const save = (next: NotificationsConfig): Promise<boolean> => patch({ notifications: next });
   return (
     <section className={STACK} aria-label="Run notifications">
@@ -475,6 +477,8 @@ function Notifications({
             autoComplete="off"
             placeholder="https://example.com/hook"
             value={value}
+            aria-invalid={invalid || undefined}
+            aria-describedby={invalid ? "notifications-webhook-error" : undefined}
             onChange={(e) => setDraft(e.target.value)}
           />
           <Button
@@ -499,6 +503,11 @@ function Notifications({
             </Button>
           )}
         </form>
+        {invalid && (
+          <Alert tone="error" id="notifications-webhook-error">
+            Enter an http(s) URL, such as https://example.com/hook.
+          </Alert>
+        )}
         {url && (
           <label className={CHECK}>
             <input
@@ -532,7 +541,7 @@ type GlobalSection = Exclude<SettingsSection, "app" | "chat">;
 const PAGES: Record<GlobalSection, { title: string; lede: ReactNode }> = {
   providers: {
     title: "Providers and keys",
-    lede: "Sign in to the services that run the models, or give them an API key. Keys live in the system keychain or the environment, never in config files, and are never shown here.",
+    lede: "Sign in to the services that run the models, or give them an API key. Keys live in the system keychain or the environment, never in config files, and are never shown here. Where no keychain is available (Linux without secret-tool), they are kept in ~/.baked/secrets.json, readable only by you.",
   },
   routing: {
     title: "Model routing",

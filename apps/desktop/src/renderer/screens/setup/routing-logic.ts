@@ -107,6 +107,25 @@ export function routingGroups(view: RoutingOverview): RoutingGroup[] {
   ];
 }
 
+const ROW_NOUN: Record<RoutingGroup["id"], string> = {
+  classes: "model name",
+  roles: "role",
+  stages: "step",
+  profiles: "profile",
+};
+
+/**
+ * The accessible name of a row's Edit or Clear button. The table goes in the name because a
+ * role and a profile can share one ("Reviewer"), and both tables are on the same page.
+ */
+export function routeActionLabel(
+  action: "Edit" | "Clear",
+  row: RoutingRow,
+  group: RoutingGroup["id"],
+): string {
+  return `${action} ${plainName(row)} ${ROW_NOUN[group]}`;
+}
+
 /** What the built-in classes are for. */
 export const CLASS_HINTS: Readonly<Record<string, string>> = {
   $active: "The model you start the run with: the chat tab's model or --model.",

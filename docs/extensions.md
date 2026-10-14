@@ -2,7 +2,7 @@
 
 ## MCP servers
 
-BAKED connects to MCP servers and offers their tools next to the built-in ones as `mcp__<server>__<tool>`. Add `mcpServers` to the global or project config; a project entry overrides a global one with the same name.
+BAKED connects to MCP servers and offers their tools next to the built-in ones as `mcp__<server>__<tool>`. Add `mcpServers` to the global or project config; a project entry overrides a global one with the same name. The desktop MCP servers screen still lists the replaced global server, greyed out and tagged "replaced here".
 
 ```json
 {
