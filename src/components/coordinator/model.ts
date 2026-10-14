@@ -7,6 +7,7 @@ import {
   type LaunchedView,
   launchLabel,
   launchNoteText,
+  stageTrack,
 } from "../../core/chat/coordinator-launch.js";
 import { parsePeerMessage } from "../../core/chat/peer-messages.js";
 import type { ChatPrompt } from "../../core/chat/sessions.js";
@@ -68,24 +69,6 @@ function statusTone(status: string, fallback: LineTone): LineTone {
 /** The why of a launched item, unless it only repeats the title. */
 const whyBesides = (why: string, title: string | undefined): string =>
   title && why.startsWith(title) ? "" : why;
-
-const STAGE_MARKS: Record<string, string> = {
-  completed: "✓",
-  skipped: "–",
-  running: "▸",
-  waiting: "◆",
-  failed: "✗",
-  interrupted: "✗",
-};
-
-/** A run's stages as one line: `✓ spec  ▸ plan  · tasks`, then its tasks done. */
-export function stageTrack(progress: NonNullable<LaunchedView["progress"]>): string {
-  const stages = progress.stages.map((s) => `${STAGE_MARKS[s.status] ?? "·"} ${s.id}`).join("  ");
-  const tasks = progress.tasks.total
-    ? `  (tasks ${progress.tasks.done}/${progress.tasks.total})`
-    : "";
-  return `${stages}${tasks}`;
-}
 
 /**
  * One line per open launched item: its title (or kind and id), workflow, status, tokens, task and

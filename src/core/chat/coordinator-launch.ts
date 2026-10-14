@@ -153,6 +153,24 @@ export interface RunProgress {
   tasks: { done: number; total: number };
 }
 
+const STAGE_MARKS: Record<string, string> = {
+  completed: "✓",
+  skipped: "–",
+  running: "▸",
+  waiting: "◆",
+  failed: "✗",
+  interrupted: "✗",
+};
+
+/** A run's stages as one line: `✓ spec  ▸ plan  · tasks`, then its tasks done. */
+export function stageTrack(progress: RunProgress): string {
+  const stages = progress.stages.map((s) => `${STAGE_MARKS[s.status] ?? "·"} ${s.id}`).join("  ");
+  const tasks = progress.tasks.total
+    ? `  (tasks ${progress.tasks.done}/${progress.tasks.total})`
+    : "";
+  return `${stages}${tasks}`;
+}
+
 /** A launched item as it is now: its status word, whether it still runs, and its tokens. */
 export interface LiveState {
   status: string;

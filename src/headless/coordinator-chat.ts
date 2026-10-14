@@ -6,7 +6,12 @@
  */
 import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../config/index.js";
 import { LocalCoordinator, ReadonlyProjectState } from "../core/chat/coordinator-host.js";
-import { type LaunchedView, launchLabel, launchNoteText } from "../core/chat/coordinator-launch.js";
+import {
+  type LaunchedView,
+  launchLabel,
+  launchNoteText,
+  stageTrack,
+} from "../core/chat/coordinator-launch.js";
 import { BakeChatHost } from "../core/chat/host.js";
 import { scriptedHostFromEnv } from "../core/chat/scripted-host.js";
 import {
@@ -88,13 +93,13 @@ export async function answerPrompt(
   return { approve };
 }
 
-/** One line per launched item, for `launched` and the end of `send`. */
+/** One line per launched item, and its stages under a run, for `launched` and the end of `send`. */
 export function launchedLines(launched: LaunchedView[]): string[] {
   const open = launched.filter((item) => !item.closed);
-  const lines = open.map(
-    (item) =>
-      `${item.active ? "●" : "○"} ${launchLabel(item)}${item.workflow ? ` [${item.workflow}]` : ""}: ${item.status}${item.activity ? ` (${item.activity})` : ""} · ${item.tokens} tokens`,
-  );
+  const lines = open.flatMap((item) => {
+    const head = `${item.active ? "●" : "○"} ${launchLabel(item)}${item.workflow ? ` [${item.workflow}]` : ""}: ${item.status}${item.activity ? ` (${item.activity})` : ""} · ${item.tokens} tokens`;
+    return item.progress?.stages.length ? [head, `  ${stageTrack(item.progress)}`] : [head];
+  });
   const closed = launched.length - open.length;
   if (closed > 0) lines.push(`${closed} closed`);
   return lines.length > 0 ? lines : ["The coordinator has launched nothing yet."];
@@ -142,8 +147,22 @@ export async function talkToCoordinator(
     session.send(text);
     await session.settled();
     if (options.follow) {
+      // A run's stage track is printed each time it moves, so a script sees where the run is.
+      const tracks = new Map<string, string>();
+      const reportStages = (launched: LaunchedView[]) => {
+        for (const item of launched) {
+          if (item.closed || !item.progress?.stages.length) continue;
+          const track = stageTrack(item.progress);
+          if (tracks.get(item.id) === track) continue;
+          tracks.set(item.id, track);
+          if (!options.json) io.err(`${launchLabel(item)}: ${track}\n`);
+        }
+      };
       // Launched sessions and runs are hosted here, so the process stays until they finish.
-      while (chat.launched(session.id).some((item) => item.active && !item.closed)) {
+      for (;;) {
+        const launched = chat.launched(session.id);
+        reportStages(launched);
+        if (!launched.some((item) => item.active && !item.closed)) break;
         await Bun.sleep(pollMs);
         await session.settled();
       }

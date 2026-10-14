@@ -7,6 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BriefStore } from "../src/core/chat/coordinator.js";
+import type { ProjectStateSource } from "../src/core/chat/project-state.js";
 import { ScriptedChatHost } from "../src/core/chat/scripted-host.js";
 import { type ChatPrompt, ChatService, type ChatSession } from "../src/core/chat/sessions.js";
 import {
@@ -111,6 +112,47 @@ describe("coordinator send (scripted scenario)", () => {
     expect(io.out()).toContain("Started it.");
     expect(io.err()).toContain('Session "Survey auth": done');
     expect(io.err()).toContain('○ Session "Survey auth": done');
+  }, 30_000);
+});
+
+describe("coordinator send follows a launched run's stages (scripted scenario)", () => {
+  test("prints the stage track each time the run moves, and once more at the end", async () => {
+    const { root, chat } = service(new ScriptedChatHost({ delayMs: 1, turns: [{ steps: [{ text: "Running it." }] }] }));
+    const coordinator = (await chat.coordinator(true)) as ChatSession;
+    const briefs = new BriefStore(root, coordinator.id);
+    const brief = briefs.read();
+    briefs.write(
+      { ...brief, launched: [{ kind: "run", id: "r1", title: "Fix CI", workflow: "fix-ci", why: "CI is red", status: "running" }] },
+      brief.revision,
+    );
+    // Each read moves the run on: reproduce, then tasks, then completed.
+    const steps = [
+      { status: "running", stages: ["running", "pending", "pending"], done: 0 },
+      { status: "running", stages: ["completed", "running", "pending"], done: 1 },
+      { status: "completed", stages: ["completed", "completed", "completed"], done: 2 },
+    ];
+    let reads = 0;
+    const state = {
+      run: () => {
+        const step = steps[Math.min(Math.floor(reads++ / 2), steps.length - 1)] ?? steps[0];
+        return {
+          summary: { pendingKind: null, snapshot: { status: step?.status, reason: "none", tokenUsage: 10, stageId: "tasks" }, tasks: { done: step?.done, total: 2 } },
+          stages: ["reproduce", "tasks", "check"].map((id, i) => ({ id, status: step?.stages[i] })),
+        };
+      },
+    } as unknown as ProjectStateSource;
+    chat.setProjectState(state, null, 0);
+
+    const io = capture();
+    expect(await talkToCoordinator(chat, coordinator, "fix ci", { json: false, yes: false, follow: true }, io.io, 5)).toBe(0);
+    const tracks = io.err().split("\n").filter((line) => line.startsWith('Run "Fix CI": ') && line.includes("reproduce"));
+    expect(tracks).toEqual([
+      'Run "Fix CI": ▸ reproduce  · tasks  · check  (tasks 0/2)',
+      'Run "Fix CI": ✓ reproduce  ▸ tasks  · check  (tasks 1/2)',
+      'Run "Fix CI": ✓ reproduce  ✓ tasks  ✓ check  (tasks 2/2)',
+    ]);
+    expect(io.err()).toContain('Run "Fix CI": completed');
+    expect(io.err()).toContain('○ Run "Fix CI" [fix-ci]: completed · 10 tokens\n  ✓ reproduce  ✓ tasks  ✓ check  (tasks 2/2)');
   }, 30_000);
 });
 
