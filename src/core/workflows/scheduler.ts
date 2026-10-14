@@ -525,6 +525,8 @@ const REJECTION_NOTE =
   "A person rejected the approval of the previous spec and plan with this explanation. Revise the spec, the plan and the tasks so they follow it; where it contradicts an assumption, the explanation wins.";
 /** A provider asking to wait longer than this is not waited for once a route has fallback models. */
 const LONG_RETRY_AFTER_MS = 30_000;
+/** How often a driving process writes the run's active time to the run row (#1038). */
+export const ACTIVE_FLUSH_MS = 1_000;
 /** The implementer's own list of what it left unfinished, for the blocked task's message. */
 /**
  * The planned files a failed check of a corrective task names, when the task may write none of
@@ -686,6 +688,7 @@ export class WorkflowScheduler {
     const started = performance.now();
     const activeBefore = this.store.run(runId).active_ms;
     let idleMs = 0;
+    let idleFrom: number | null = null;
     const arm = () =>
       setTimeout(
         () => controller.abort(new WorkflowFault("BUDGET_EXHAUSTED", "Active deadline exhausted")),
@@ -700,13 +703,27 @@ export class WorkflowScheduler {
     this.idle = async <T>(sleep: () => Promise<T>): Promise<T> => {
       clearTimeout(timeout);
       const from = performance.now();
+      idleFrom = from;
       try {
         return await sleep();
       } finally {
+        idleFrom = null;
         idleMs += performance.now() - from;
         timeout = arm();
       }
     };
+    // The run row keeps the active time as it accrues, so a process that dies loses at most the
+    // last interval of it, not everything since the drive started (#1038).
+    let recorded = 0;
+    const recordActive = (): void => {
+      const now = performance.now();
+      const idle = idleMs + (idleFrom === null ? 0 : now - idleFrom);
+      const add = Math.ceil(now - started - idle - recorded);
+      if (add <= 0) return;
+      this.store.transaction(() => this.store.addActiveTime(runId, add));
+      recorded += add;
+    };
+    const flush = setInterval(recordActive, ACTIVE_FLUSH_MS);
     // Management commands from another process must stop this owner before the next effect.
     const poll = setInterval(() => {
       if (["paused", "cancelled"].includes(this.store.run(runId).status))
@@ -2012,6 +2029,7 @@ export class WorkflowScheduler {
     } finally {
       forgetProgress(runId);
       clearInterval(poll);
+      clearInterval(flush);
       clearTimeout(timeout);
       this.idle = (sleep) => sleep();
       this.rearmDeadline = () => {};
@@ -2019,9 +2037,7 @@ export class WorkflowScheduler {
       leaseSignal.removeEventListener("abort", leaseLost);
       await this.processes.stop();
       try {
-        this.store.transaction(() =>
-          this.store.addActiveTime(runId, performance.now() - started - idleMs),
-        );
+        recordActive();
       } finally {
         this.leases.release();
       }
