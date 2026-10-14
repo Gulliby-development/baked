@@ -167,7 +167,7 @@ import { git } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
-import { keepOutside, restoreOutside } from "./fixer-scope.js";
+import { describeChange, keepOutside, restoreOutside, unjournaledOutside } from "./fixer-scope.js";
 import {
   FORK_SEED_ARTIFACT,
   FORK_SEEDED_ARTIFACT,
@@ -4229,6 +4229,12 @@ ${note}`;
       if (await this.affectedBaseline(runId, child, state, policy, task, signal, root))
         this.store.transaction(() => this.store.saveState(runId, state));
       const before = await sourceManifest(root, generatedPaths(policy), signal);
+      // Inline, the root is the user's working copy: a change there may be the user's own edit,
+      // which is never put back, so only a worktree run reverts unjournaled changes (#1188).
+      const kept =
+        root === this.store.workspace
+          ? undefined
+          : keepOutside(root, before, new Set(task.writes.map((w) => w.path)));
       const knownEffects = new Set(this.store.effects(runId).map((e) => e.id));
       // Edits of earlier attempts of this task that are still in place (a revision, a recovery
       // or a failed attempt keeps them), by path, with the hash the path had before them.
@@ -4266,12 +4272,8 @@ ${note}`;
       );
       // The source manifest cannot see git-ignored files (a docs directory in .gitignore), but the
       // effect journal recorded every file this task changed, so it counts as well.
-      const currentChanges = async (): Promise<{
-        after: Record<string, string>;
-        changed: string[];
-      }> => {
-        const now = await sourceManifest(root, generatedPaths(policy), signal);
-        const journaled = this.store
+      const journaled = (): string[] => [
+        ...this.store
           .effects(runId)
           .filter(
             (e) =>
@@ -4280,10 +4282,17 @@ ${note}`;
               ["applied", "reconciled"].includes(e.status) &&
               e.before_hash !== e.after_hash,
           )
-          .map((e) => (JSON.parse(e.intent_json) as { path: string }).path);
+          .map((e) => (JSON.parse(e.intent_json) as { path: string }).path),
+        ...stillEdited(),
+      ];
+      const currentChanges = async (): Promise<{
+        after: Record<string, string>;
+        changed: string[];
+      }> => {
+        const now = await sourceManifest(root, generatedPaths(policy), signal);
         return {
           after: now,
-          changed: [...new Set([...changedPaths(before, now), ...journaled, ...stillEdited()])],
+          changed: [...new Set([...changedPaths(before, now), ...journaled()])],
         };
       };
       let proseEnd = false;
@@ -4384,12 +4393,26 @@ ${note}`;
       }
       if (result.outcome === "implemented")
         await this.fixTaskFiles(runId, child, root, policy, scoped, signal);
+      if (kept)
+        await this.revertUnjournaled(
+          runId,
+          child,
+          task,
+          root,
+          kept,
+          before,
+          await currentChanges(),
+          new Set(journaled()),
+        );
       const { after, changed } = await currentChanges();
       const outside = changed.filter((path) => !task.writes.some((w) => w.path === path));
       if (outside.length)
         throw new WorkflowFault(
           "INPUT_CHANGED",
-          `Task changed ${outside.length} file(s) outside its write scope: ${outside.slice(0, 5).join(", ")}${outside.length > 5 ? ", ..." : ""}`,
+          `Task changed ${outside.length} file(s) outside its write scope: ${outside
+            .slice(0, 5)
+            .map((path) => describeChange(path, before, after))
+            .join(", ")}${outside.length > 5 ? ", ..." : ""}`,
         );
       const reproduced = await this.stillReproduces(
         runId,
@@ -5382,6 +5405,7 @@ ${note}`;
     let before: Record<string, string> | undefined;
     try {
       before = await sourceManifest(root, generatedPaths(policy), signal);
+      const kept = keepOutside(root, before, new Set(task.writes.map((w) => w.path)));
       await this.affectedBaseline(runId, entry.child, state, policy, task, signal, root);
       const earlierEdits = await this.applyCarry(runId, state, entry, root);
       const currentChanges = async (): Promise<{
@@ -5443,6 +5467,16 @@ ${note}`;
         return { kind: "conflict", entry, result };
       if (result.outcome === "implemented")
         await this.fixTaskFiles(runId, entry.child, root, policy, task, signal);
+      await this.revertUnjournaled(
+        runId,
+        entry.child,
+        task,
+        root,
+        kept,
+        before,
+        await currentChanges(),
+        new Set(this.workerJournaled(runId, entry, known)),
+      );
       const { after, changed } = await currentChanges();
       const outside = changed.filter((path) => !task.writes.some((w) => w.path === path));
       if (outside.length)
@@ -5451,7 +5485,10 @@ ${note}`;
           entry,
           error: new WorkflowFault(
             "INPUT_CHANGED",
-            `Task ${task.id} changed ${outside.length} file(s) outside its write scope: ${outside.slice(0, 5).join(", ")}${outside.length > 5 ? ", ..." : ""}; its result is not integrated`,
+            `Task ${task.id} changed ${outside.length} file(s) outside its write scope: ${outside
+              .slice(0, 5)
+              .map((path) => describeChange(path, before ?? {}, after))
+              .join(", ")}${outside.length > 5 ? ", ..." : ""}; its result is not integrated`,
           ),
         };
       const reproduced = await this.stillReproduces(
@@ -5593,7 +5630,54 @@ ${note}`;
     before: Record<string, string>,
     after: Record<string, string>,
   ): string[] {
-    const journaled = this.store
+    const journaled = this.workerJournaled(runId, entry, known);
+    return [...new Set([...changedPaths(before, after), ...journaled])].sort();
+  }
+  /**
+   * Puts back the files outside the task's writes that changed without a journaled edit of this
+   * attempt, before the scope check (#1188): nothing the task wrote can have changed them, so a
+   * stop on them blames the task for a host process and a plain resume repeats it. The put-back
+   * paths are recorded with their hashes; a path with a journaled edit still fails the check.
+   */
+  private async revertUnjournaled(
+    runId: string,
+    stepId: string,
+    task: Task,
+    root: string,
+    kept: ReadonlyMap<string, Buffer>,
+    before: Record<string, string>,
+    current: { after: Record<string, string>; changed: string[] },
+    journaled: ReadonlySet<string>,
+  ): Promise<string[]> {
+    const stray = unjournaledOutside(
+      current.changed,
+      new Set(task.writes.map((w) => w.path)),
+      journaled,
+    );
+    if (!stray.length) return stray;
+    restoreOutside(root, kept, stray);
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `tasks/${task.id}/reverted-outside-${stepId}.json`,
+        canonical({
+          taskId: task.id,
+          stepId,
+          reverted: stray.map((path) => ({
+            path,
+            before: before[path] ?? null,
+            after: current.after[path] ?? null,
+          })),
+          note: "Changed outside the task's writes without a journaled edit of the attempt; put back before the scope check.",
+        }),
+      ),
+    );
+    return stray;
+  }
+  /** The paths the journaled edits of a worker's attempt changed in its worktree. */
+  private workerJournaled(runId: string, entry: BatchEntry, known: Set<string>): string[] {
+    return this.store
       .effects(runId)
       .filter(
         (e) =>
@@ -5604,7 +5688,6 @@ ${note}`;
           e.before_hash !== e.after_hash,
       )
       .map((e) => (JSON.parse(e.intent_json) as { path: string }).path);
-    return [...new Set([...changedPaths(before, after), ...journaled])].sort();
   }
   /** The edits a lost worker left in its worktree, which a restart of its task carries over. */
   private async lostWorkerEdits(
