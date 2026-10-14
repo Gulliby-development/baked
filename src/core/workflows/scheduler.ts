@@ -330,6 +330,7 @@ import {
   type TaskGraph,
   WorkflowSchema,
 } from "./schemas.js";
+import { specSizeNote, specSizeProblems } from "./spec-size.js";
 import {
   UNCOVERED_SUBMISSIONS,
   uncoveredCriterion,
@@ -820,6 +821,8 @@ export class WorkflowScheduler {
               break;
             }
             case "specify": {
+              // An oversized spec goes back once; the author's second submission stands (#1013).
+              let sizeAdvised = false;
               state.spec = SpecSchema.parse(
                 await this.call(
                   runId,
@@ -838,7 +841,12 @@ export class WorkflowScheduler {
                     const parsed = SpecSchema.safeParse(output);
                     if (!parsed.success) return [];
                     const questions = parsed.data.openQuestions;
+                    const size = sizeAdvised
+                      ? []
+                      : specSizeProblems(parsed.data, state.requestText || state.prompt);
+                    if (size.length) sizeAdvised = true;
                     return [
+                      ...size,
                       ...specCoverageProblems(parsed.data, policy.checks),
                       ...deliverableProblems(parsed.data, coverageRequest(state)),
                       ...assumeProblems(
@@ -3020,6 +3028,8 @@ export class WorkflowScheduler {
       profile.output === "spec"
         ? crossPlatformNote(state.requestText || state.prompt, runRoot(this.store.workspace, state))
         : null;
+    const specSize =
+      profile.output === "spec" ? specSizeNote(state.requestText || state.prompt) : null;
     const hardening =
       presetOf(parseRunDefinition(this.store.run(runId).definition_json)) === HARDEN_PRESET
         ? hardenNote(profile.output)
@@ -3034,6 +3044,7 @@ export class WorkflowScheduler {
         ...input,
         ...(propertyNote ? { propertyTests: propertyNote } : {}),
         ...(crossPlatform ? { crossPlatform } : {}),
+        ...(specSize ? { specSize } : {}),
         ...(hardening ? { hardening } : {}),
         ...(rules ? { learnedRules: rules } : {}),
         ...(workingSet ? { projectWorkingSet: workingSet } : {}),
