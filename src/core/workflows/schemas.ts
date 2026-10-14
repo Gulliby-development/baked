@@ -1825,6 +1825,80 @@ export function uncontractedBuildCriteria(spec: Spec, checks: readonly CheckComm
     .map((c) => c.id);
 }
 
+// A step of how the implementer works: a command run before or after changing the work itself.
+const PROCEDURE =
+  /\b(?:runs?|ran|executes?|executed|invokes?|invoked)\b[^.;]{0,120}?\b(?:before|prior to|after)\s+(?:any\s+|each\s+|the\s+|existing\s+)*(?:editing|changing|modifying|touching|updating|writing|rewriting|adding)\b[^.;]{0,30}?\b(?:tests?|test files?|the code|source code|implementation)\b|\b(?:intermediate|interim)\s+(?:test\s+)?checkpoint\b/i;
+
+/**
+ * Criteria whose subject is how the implementer works ("cargo test is run before editing any
+ * test") rather than what the result is. Nothing after the run can observe the order of the
+ * implementer's steps, so analysis and review demand it in the plan and tasks without end
+ * (#1113: tplfill AC-007, keeplint's checkpoint task). The request still reaches the implementer.
+ */
+export function procedureCriteria(spec: Spec): string[] {
+  return spec.criteria
+    .filter((c) => PROCEDURE.test(`${c.given}\n${c.when}\n${c.then}`))
+    .map((c) => c.id);
+}
+
+const SCOPE_FILLER = new Set(
+  "a an the of for to in on and or with any all new its it is be are by as at from this that these those".split(
+    " ",
+  ),
+);
+const scopeWords = (line: string): string[] =>
+  line
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}./-]+/gu, " ")
+    .split(" ")
+    .map((w) => w.replace(/^[./-]+|[./-]+$/g, "").replace(/(?<=\w{3})s$/, ""))
+    .filter((w) => w && !SCOPE_FILLER.has(w));
+
+/**
+ * `outOfScope` lines that exclude what an `inScope` line includes: every word of the exclusion is
+ * in one inclusion ("CI workflows" against "Add a GitHub Actions CI workflow that runs the checks").
+ * cfgtrace b4dc83b2 added a CI workflow to inScope and kept it in outOfScope, and analysis
+ * returned the spec for it three times (#1120).
+ */
+export function contradictoryScope(spec: Pick<Spec, "inScope" | "outOfScope">): string[] {
+  const included = spec.inScope.map((line) => new Set(scopeWords(line)));
+  return spec.outOfScope.filter((line) => {
+    const words = scopeWords(line);
+    return words.length > 0 && included.some((set) => words.every((w) => set.has(w)));
+  });
+}
+
+/** A request that says the limits the spec states must not narrow what it asks for. */
+const NON_NARROWING =
+  /\bnon[- ]?narrowing\b|\b(?:must|do|does|should|may)\s+not\s+narrow\b|\bwithout\s+narrowing\b/i;
+/** A numeric bound on input or output: "more than 50 files", "up to 4,096 characters". */
+const NUMERIC_BOUND =
+  /\b(?:more than|fewer than|less than|over|above|beyond|exceed(?:s|ing)?|larger than|longer than|greater than|up to|at most|no more than|maximum(?: of)?|limit(?:ed)? (?:of|to)|capped at)\s+~?\d[\d,._]*/i;
+/** A criterion sentence that puts inputs beyond a bound outside what the feature handles. */
+const EXCLUDES =
+  /\b(?:outside|out of scope|not (?:supported|handled|checked|required|guaranteed)|unsupported|rejected|excluded)\b/i;
+
+/**
+ * `outOfScope` lines and criteria that state a numeric bound as an exclusion while the request
+ * says limits are non-narrowing (keeplint ada519a3: 50 files and 4,096 characters in the first
+ * spec, raised by analysis on the fourth return, #1120). Such a domain belongs in the assumptions.
+ */
+export function narrowingBounds(
+  spec: Pick<Spec, "outOfScope" | "criteria">,
+  request: string,
+): { outOfScope: string[]; criteria: string[] } {
+  if (!NON_NARROWING.test(request)) return { outOfScope: [], criteria: [] };
+  return {
+    outOfScope: spec.outOfScope.filter((line) => NUMERIC_BOUND.test(line)),
+    criteria: spec.criteria
+      .filter((c) => {
+        const text = `${c.given}\n${c.when}\n${c.then}`;
+        return NUMERIC_BOUND.test(text) && EXCLUDES.test(text);
+      })
+      .map((c) => c.id),
+  };
+}
+
 /**
  * The spec defects as corrections for the spec author, who can add or relink criteria. With the
  * run's checks, a criterion that needs a check the execution contract lacks is one too.
@@ -1832,8 +1906,9 @@ export function uncontractedBuildCriteria(spec: Spec, checks: readonly CheckComm
 export function specCoverageProblems(
   spec: Spec,
   checks?: readonly CheckCommand[],
-  options: { ciForbidden?: boolean } = {},
+  options: { ciForbidden?: boolean; request?: string } = {},
 ): string[] {
+  const bounds = narrowingBounds(spec, options.request ?? "");
   return [
     ...validateSpecCoverage(spec).map((error) =>
       /^(requirement without criterion|engineering requirement deferred) /.test(error)
@@ -1847,6 +1922,22 @@ export function specCoverageProblems(
     ...hostBoundCriteria(spec).map(
       (id) =>
         `criterion ${id} is automated but claims behavior on other operating systems, browsers or devices, and the run checks on one host, so nothing can prove it. Rewrite it as what this host can check (platform-neutral path, line-ending and process APIs; the tests pass here).${options.ciForbidden ? " The request wants no CI, so add no CI workflow or platform matrix." : " When the request asks for proof on other platforms, add a criterion that a CI workflow file runs the checks on a matrix of those platforms (for example ubuntu-latest, macos-latest, windows-latest), which the reviewer verifies by reading the file."} Use post-release only for a claim that needs a release or a real device.`,
+    ),
+    ...procedureCriteria(spec).map(
+      (id) =>
+        `criterion ${id} describes how the implementer works (a command run before or after changing the work), not what the result is, and nothing after the run can check the order of its steps. Remove it, and the requirement it alone covers; the implementer reads that instruction in the request. Keep a criterion about the result instead, for example that the tests pass.`,
+    ),
+    ...contradictoryScope(spec).map(
+      (line) =>
+        `outOfScope line "${line}" excludes what inScope includes: keep each item in one list only. Remove the line from outOfScope when the request asks for the item, or remove the item from inScope (with its requirements, criteria and tasks) when it does not.`,
+    ),
+    ...bounds.outOfScope.map(
+      (line) =>
+        `outOfScope line "${line}" states a numeric bound, and the request says limits are non-narrowing. Remove it from outOfScope; record the domain only as an assumption ("<domain> Assumed: <value>, because <reason>."), which does not exclude larger inputs.`,
+    ),
+    ...bounds.criteria.map(
+      (id) =>
+        `criterion ${id} puts inputs beyond a numeric bound outside what the feature handles, and the request says limits are non-narrowing. Remove the bound and the exclusion from the criterion; record the domain only as an assumption ("<domain> Assumed: <value>, because <reason>.").`,
     ),
     ...(checks ? uncontractedBuildCriteria(spec, checks) : []).map(
       (id) =>

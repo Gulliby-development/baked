@@ -48,6 +48,8 @@ export type SettingDefinition = SettingBase &
         /** What an unset nullable value is called; default `auto`. */
         unsetLabel?: string;
         display?: SettingDisplay;
+        /** The ID of a number setting this one must stay below, e.g. a rearm level under its trigger. */
+        below?: string;
       }
     /** A model ID such as `anthropic/claude-sonnet-4-6`; null means unset. */
     | { type: "model"; default: string | null }
@@ -794,6 +796,7 @@ export const SETTINGS: readonly SettingDefinition[] = [
     max: 0.9,
     step: 0.05,
     display: { unit: "%", factor: 0.01 },
+    below: "compaction.triggerThreshold",
     enabledWhen: { id: "compaction.strategy", values: ["v1", "v2"] },
   },
   {

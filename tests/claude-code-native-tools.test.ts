@@ -1,6 +1,7 @@
 import type { LanguageModelV3CallOptions } from "@ai-sdk/provider";
 import { describe, expect, test } from "bun:test";
 import {
+  bakedToolUses,
   type ClaudeCodeProcess,
   type ClaudeCodeProcessFactory,
   ClaudeCodeNativeToolError,
@@ -117,7 +118,7 @@ describe("claude-code native tool calls", () => {
 
   test("interrupts the turn, re-sends a corrective line in the same session and sums the usage", async () => {
     const { factory, spawned } = scriptedFactory(
-      [[nativeToolUse("read"), noSuchTool("read")], [answer]],
+      [[nativeToolUse("Read"), noSuchTool("Read")], [answer]],
       [interruptedResult],
     );
     const runner = new ClaudeCodeSessionRunner(factory);
@@ -131,10 +132,10 @@ describe("claude-code native tool calls", () => {
     expect(types(spawned[0]?.sent ?? [])).toEqual(["user", "control_request", "user"]);
     const correction = (JSON.parse(spawned[0]?.sent[2] ?? "{}") as { message: { content: string } }).message.content;
     expect(correction).toContain("BAKED tools are not native tools");
-    expect(correction).toContain('"read"');
+    expect(correction).toContain('"Read"');
     // 700 tokens of the aborted attempt are charged to the answer.
     expect(result.usage.outputTokens.total).toBe(740);
-    expect(result.providerMetadata).toEqual({ "claude-code": { nativeToolAborts: ["read"] } });
+    expect(result.providerMetadata).toEqual({ "claude-code": { nativeToolAborts: ["Read"] } });
     expect(runner.sessionCount).toBe(1);
   });
 
@@ -148,7 +149,7 @@ describe("claude-code native tool calls", () => {
 
   test("retries the step in a fresh session when the correction fails", async () => {
     const { factory, spawned } = scriptedFactory(
-      [[nativeToolUse("read")], [nativeToolUse("read"), noSuchTool("read")], [answer]],
+      [[nativeToolUse("Read")], [nativeToolUse("Read"), noSuchTool("Read")], [answer]],
       [interruptedResult],
     );
     const runner = new ClaudeCodeSessionRunner(factory);
@@ -160,7 +161,7 @@ describe("claude-code native tool calls", () => {
     expect(spawned[0]?.killed).toBe(true);
     // The fresh session gets the whole transcript.
     expect(spawned[1]?.sent[0]).toContain("CONVERSATION TRANSCRIPT\\n");
-    expect(result.providerMetadata?.["claude-code"]?.nativeToolAborts).toEqual(["read", "read"]);
+    expect(result.providerMetadata?.["claude-code"]?.nativeToolAborts).toEqual(["Read", "Read"]);
     // Two interrupted results (700 each) and the answer (40).
     expect(result.usage.outputTokens.total).toBe(1440);
     runner.close();
@@ -169,8 +170,8 @@ describe("claude-code native tool calls", () => {
   test("gives up when the fresh session loses the tools too and drops both sessions", async () => {
     const { factory, spawned } = scriptedFactory(
       [
-        [nativeToolUse("read")],
-        [nativeToolUse("read"), noSuchTool("read")],
+        [nativeToolUse("Read")],
+        [nativeToolUse("Read"), noSuchTool("Read")],
         [nativeToolUse("glob")],
         [nativeToolUse("glob"), noSuchTool("glob")],
       ],
@@ -181,10 +182,61 @@ describe("claude-code native tool calls", () => {
 
     const error = await model.doGenerate(OPTIONS).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ClaudeCodeNativeToolError);
-    expect((error as ClaudeCodeNativeToolError).nativeTools).toEqual(["read", "read", "glob", "glob"]);
+    expect((error as ClaudeCodeNativeToolError).nativeTools).toEqual(["Read", "Read", "glob", "glob"]);
     expect((error as ClaudeCodeNativeToolError).usage.outputTokens.total).toBe(2800);
     expect(spawned).toHaveLength(2);
     expect(spawned.every((proc) => proc.killed)).toBe(true);
     expect(runner.sessionCount).toBe(0);
+  });
+
+  test("takes a native call of a BAKED tool as the step's tool call and starts the next step afresh", async () => {
+    const { factory, spawned } = scriptedFactory(
+      [[nativeToolUse("read"), noSuchTool("read")]],
+      [interruptedResult],
+    );
+    const runner = new ClaudeCodeSessionRunner(factory);
+    const model = createClaudeCodeLanguageModel("sonnet", runner);
+
+    const result = await model.doGenerate(OPTIONS);
+
+    expect(result.finishReason.unified).toBe("tool-calls");
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0]).toMatchObject({
+      type: "tool-call",
+      toolName: "read",
+      input: '{"path":"package.json"}',
+    });
+    // Interrupted, never corrected; the session holding the native call is closed.
+    expect(types(spawned[0]?.sent ?? [])).toEqual(["user", "control_request"]);
+    expect(spawned[0]?.killed).toBe(true);
+    expect(runner.sessionCount).toBe(0);
+    expect(result.usage.outputTokens.total).toBe(700);
+    expect(result.providerMetadata).toEqual({ "claude-code": { nativeToolAborts: ["read"] } });
+  });
+
+  test("only calls of known BAKED tools with an object input are taken", () => {
+    const names = new Set(["read", "bake_grep"]);
+    expect(bakedToolUses(nativeToolUse("read"), names)).toEqual([
+      { toolName: "read", inputJson: '{"path":"package.json"}' },
+    ]);
+    expect(bakedToolUses(nativeToolUse("Read"), names)).toEqual([]);
+    expect(bakedToolUses(noSuchTool("read"), names)).toEqual([]);
+    const mixed = {
+      type: "assistant",
+      message: {
+        content: [
+          { type: "tool_use", id: "a", name: "read", input: { path: "a" } },
+          { type: "tool_use", id: "b", name: "Bash", input: { command: "ls" } },
+        ],
+      },
+    };
+    expect(bakedToolUses(mixed, names)).toEqual([]);
+    const wrapped = {
+      type: "assistant",
+      message: { content: [{ type: "tool_use", id: "w", name: "read", input: { inputJson: '{"path":"a"}' } }] },
+    };
+    expect(bakedToolUses(wrapped, names)).toEqual([{ toolName: "read", inputJson: '{"path":"a"}' }]);
+    const noInput = { type: "assistant", message: { content: [{ type: "tool_use", id: "c", name: "read", input: "x" }] } };
+    expect(bakedToolUses(noInput, names)).toEqual([]);
   });
 });

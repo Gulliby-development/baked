@@ -1,15 +1,20 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
+  CustomCommandError,
+  deleteCustomCommand,
   expandCustomCommand,
   expandCustomCommandInput,
   listCustomCommands,
   parseCommandFile,
+  readCustomCommandDraft,
+  saveCustomCommand,
   splitArguments,
 } from "../src/core/commands/custom.js";
-import { isBuiltinCommandName } from "../src/core/commands/registry.js";
+import { handleCommand, isBuiltinCommandName } from "../src/core/commands/registry.js";
+import type { CommandContext } from "../src/core/commands/types.js";
 
 let root: string;
 let home: string;
@@ -144,5 +149,52 @@ describe("built-in names", () => {
     expect(isBuiltinCommandName("/plan")).toBe(true);
     expect(isBuiltinCommandName("/commands")).toBe(true);
     expect(isBuiltinCommandName("/fix-ci")).toBe(false);
+  });
+});
+
+// #1102: commands are written and removed from the TUI, the API and the desktop app.
+describe("writing custom commands", () => {
+  test("saves frontmatter that reads back as written", () => {
+    saveCustomCommand(cwd, "global", { name: "/review", description: '"quoted"', argumentHint: "<pr>\nnumber", body: "Review $1" }, { home });
+    const draft = readCustomCommandDraft(cwd, "global", "review", { home });
+    expect(draft).toMatchObject({ name: "/review", description: '"quoted"', argumentHint: "<pr> number", body: "Review $1" });
+    expect(listCustomCommands(cwd, { home })[0]).toMatchObject({ name: "/review", description: '"quoted"', scope: "global" });
+  });
+
+  test("edits a file whose name has capitals in place instead of writing a second file", () => {
+    write(cwd, "Deploy.md", "Old");
+    saveCustomCommand(cwd, "project", { name: "deploy", body: "New" }, { home, previous: "deploy" });
+    expect(readFileSync(join(cwd, ".baked", "commands", "Deploy.md"), "utf8")).toBe("New\n");
+    expect(listCustomCommands(cwd, { home }).map((c) => c.body)).toEqual(["New"]);
+  });
+
+  test("a project command does not block a global command of the same name", () => {
+    write(cwd, "review.md", "Project");
+    expect(() => saveCustomCommand(cwd, "global", { name: "review", body: "Global" }, { home })).not.toThrow();
+    expect(() => saveCustomCommand(cwd, "global", { name: "review", body: "Again" }, { home })).toThrow(CustomCommandError);
+    expect(() => deleteCustomCommand(cwd, "global", "nope", { home })).toThrow(/No global command \/nope/);
+  });
+
+  test("/commands add and remove write the project's command files", async () => {
+    const messages: string[] = [];
+    const ctx = {
+      cwd,
+      chat: {
+        setMessages: (update: (prev: { content: string }[]) => { content: string }[]) => {
+          messages.push(update([]).at(-1)?.content ?? "");
+        },
+      },
+    } as unknown as CommandContext;
+    await handleCommand("/commands add fix-ci Find why CI fails and fix it", ctx);
+    expect(readFileSync(join(cwd, ".baked", "commands", "fix-ci.md"), "utf8")).toBe("Find why CI fails and fix it\n");
+    expect(messages.at(-1)).toContain("Added /fix-ci [project]");
+    await handleCommand("/commands add fix-ci again", ctx);
+    expect(messages.at(-1)).toBe("A project command /fix-ci already exists");
+    await handleCommand("/commands add Bad!Name text", ctx);
+    expect(messages.at(-1)).toContain("is not a valid command name");
+    await handleCommand("/commands remove fix-ci", ctx);
+    expect(listCustomCommands(cwd, { home })).toEqual([]);
+    await handleCommand("/commands frob", ctx);
+    expect(messages.at(-1)).toContain("Usage: /commands");
   });
 });

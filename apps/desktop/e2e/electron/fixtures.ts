@@ -41,29 +41,6 @@ interface Fixtures {
   launch: (options?: LaunchOptions) => Promise<{ app: ElectronApplication; page: Page }>;
 }
 
-/**
- * Removes a test's temp folder. A backend that is still shutting down can write into the temp
- * home (its `.cache`) while it is removed, which made a passed test fail in teardown with
- * ENOTEMPTY. Retry for a few seconds, then leave the folder to the OS: it is under the temp
- * directory and no later test reads it.
- */
-export async function removeTempHome(dir: string, attempts = 20): Promise<void> {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      rmSync(dir, { recursive: true, force: true, maxRetries: 2, retryDelay: 50 });
-      return;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "ENOTEMPTY" && code !== "EBUSY" && code !== "EPERM") throw error;
-      if (attempt >= attempts) {
-        console.warn(`Left ${dir} behind: ${code} after ${attempts} attempts`);
-        return;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-  }
-}
-
 export const test = base.extend<Fixtures>({
   workspace: async ({}, use) => {
     const dir = mkdtempSync(join(tmpdir(), "baked-desktop-e2e-"));
@@ -78,7 +55,11 @@ export const test = base.extend<Fixtures>({
         return path;
       },
     });
-    await removeTempHome(dir);
+    // A backend that is still shutting down can write into the temp home while it is removed;
+    // a temp folder left behind is not a failure of the test.
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
+    } catch {}
   },
   launch: async ({ workspace }, use, testInfo) => {
     const apps: ElectronApplication[] = [];

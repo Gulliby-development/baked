@@ -300,6 +300,8 @@ export interface SessionDetail extends SessionSummary {
   /** Turns an undo dropped that a redo can put back, oldest first. */
   redo: { index: number; prompt: string }[];
   lastSeq: number;
+  /** Why the last turn failed; absent once another turn starts or when it did not fail. */
+  lastError?: string;
   /**
    * While a turn runs and its events are still buffered: the sequence just before its
    * `turn-start`. Subscribing after it replays the turn's text and tool calls streamed so far.
@@ -621,6 +623,8 @@ export class ChatSession {
   private usage: Usage;
   private context: SessionDetail["context"] = null;
   private turn: TurnState | null = null;
+  /** Why the last turn failed, until another turn starts. */
+  private turnError: string | null = null;
   /** True while an undo or redo rewrites the conversation and the files. */
   private rewinding = false;
   private compaction: TurnState | null = null;
@@ -722,6 +726,11 @@ export class ChatSession {
     this.tabCore.set(this.tabId, value);
   }
 
+  /** Why the last turn failed, or null. */
+  get lastError(): string | null {
+    return this.turnError;
+  }
+
   get busy(): boolean {
     return this.turn !== null || this.compaction !== null || this.rewinding;
   }
@@ -816,7 +825,12 @@ export class ChatSession {
         prompt: promptLine(t.messages[0]?.content ?? ""),
       })),
       lastSeq: this.seq,
-      ...(this.turnSeq !== null && (this.events[0]?.seq ?? Infinity) <= this.turnSeq + 1
+      ...(this.turnError ? { lastError: this.turnError } : {}),
+      // Only while the turn runs: once its answer is in `messages`, replaying its text would
+      // show the answer twice until `turn-done` arrives.
+      ...(this.turn !== null &&
+      this.turnSeq !== null &&
+      (this.events[0]?.seq ?? Infinity) <= this.turnSeq + 1
         ? { turnSeq: this.turnSeq }
         : {}),
     };
@@ -954,6 +968,7 @@ export class ChatSession {
       );
     const turn: TurnState = { id: crypto.randomUUID(), abort: new AbortController() };
     this.turn = turn;
+    this.turnError = null;
     this.turnDone = this.runTurn(turn, input).catch(() => {});
     return { turnId: turn.id, queued: false };
   }
@@ -1691,6 +1706,7 @@ export class ChatSession {
     };
     const notice = followUp ? this.applyPlanFollowUp(followUp) : null;
     if (!notice?.execute && this.plan) this.setPlan(null);
+    this.turnError = status === "failed" ? (error ?? "The turn failed.") : null;
     this.turn = null;
     await this.owner.persist(this);
     this.emit({

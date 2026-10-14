@@ -7,6 +7,7 @@ import {
 } from "../../client/setup.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
+import { ConfirmDialog } from "../../components/ui/confirm-dialog.js";
 import { Empty } from "../../components/ui/empty.js";
 import { cn } from "../../lib/cn.js";
 import { LABEL, LEDE, PANEL } from "../../lib/styles.js";
@@ -53,6 +54,8 @@ function EntryLine({
   onEdit: (edit: RunMemoryEdit) => Promise<boolean>;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
+  // A note is the user's own text and has no Forgotten entry to restore it from (#1107).
+  const [confirming, setConfirming] = useState(false);
   const save = async (event: FormEvent): Promise<void> => {
     event.preventDefault();
     const text = draft?.trim();
@@ -144,13 +147,30 @@ function EntryLine({
             variant="secondary"
             size="md"
             disabled={busy}
-            onClick={() => void onEdit({ action: "forget", id: entry.id })}
+            onClick={() =>
+              entry.kind === "note"
+                ? setConfirming(true)
+                : void onEdit({ action: "forget", id: entry.id })
+            }
             aria-label={`${entry.kind === "note" ? "Delete" : "Forget"} ${entry.text}`}
           >
             {entry.kind === "note" ? "Delete" : "Forget"}
           </Button>
         </span>
       )}
+      <ConfirmDialog
+        open={confirming}
+        title="Delete this note?"
+        confirmLabel="Delete"
+        danger
+        busy={busy}
+        onConfirm={() =>
+          void onEdit({ action: "forget", id: entry.id }).then((ok) => ok && setConfirming(false))
+        }
+        onClose={() => setConfirming(false)}
+      >
+        New runs stop reading it. A deleted note cannot be restored.
+      </ConfirmDialog>
     </li>
   );
 }
@@ -218,7 +238,11 @@ export function RunMemorySection({ project }: SectionProps) {
           Add note
         </Button>
       </form>
-      {error && <Alert tone="error">{error}</Alert>}
+      {error && (
+        <Alert tone="error" role="alert">
+          {error}
+        </Alert>
+      )}
 
       {view.entries.length === 0 && (
         <Empty>

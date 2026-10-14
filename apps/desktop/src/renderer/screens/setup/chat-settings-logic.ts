@@ -104,6 +104,32 @@ export function parseNumber(
   return { value: stored };
 }
 
+/**
+ * What is wrong with saving `value` given the other values in use, when a pair of number
+ * settings must keep an order (`below`), e.g. Rearm below under Compact at; null when nothing is.
+ */
+export function orderError(
+  setting: SettingDefinition,
+  value: number | null,
+  view: SettingsView,
+): string | null {
+  if (setting.type !== "number" || value === null) return null;
+  const inUse = (id: string) => view.values[id]?.value;
+  if (setting.below) {
+    const upper = view.settings.find((s) => s.id === setting.below);
+    const limit = inUse(setting.below);
+    if (upper && typeof limit === "number" && value >= limit)
+      return `Keep it below ${upper.label} (${displayNumber(upper, limit)})`;
+  }
+  for (const lower of view.settings) {
+    if (lower.type !== "number" || lower.below !== setting.id) continue;
+    const limit = inUse(lower.id);
+    if (typeof limit === "number" && value <= limit)
+      return `Keep it above ${lower.label} (${displayNumber(lower, limit)})`;
+  }
+  return null;
+}
+
 /** The number a dialog starts with, in display units. */
 export function numberDraft(setting: SettingDefinition, value: unknown): string {
   if (setting.type !== "number" || value === null || value === undefined) return "";

@@ -76,6 +76,9 @@ export const HOOKS_CAPABILITY = "hooks";
 /** `POST|PUT|DELETE /v1/hooks`: hooks saved to BAKED's own config files. */
 export const HOOKS_EDIT_CAPABILITY = "hooks-edit";
 
+/** `POST /v1/commands` and `GET|PUT|DELETE /v1/commands/SCOPE/NAME`: custom commands written from the app. */
+export const COMMANDS_EDIT_CAPABILITY = "commands-edit";
+
 /** `POST /v1/providers/ID/switch` (Switch account for Codex and Claude Code). */
 export const PROVIDER_SWITCH_CAPABILITY = "provider-switch";
 
@@ -92,6 +95,9 @@ export const MCP_CAPABILITY = "mcp";
 
 /** `POST /v1/workflow/editor*` (the Workflows section's editor). */
 export const WORKFLOW_EDITOR_CAPABILITY = "workflow-editor";
+
+/** `DELETE /v1/workflow/definitions/ID` (Delete on a project workflow). */
+export const WORKFLOW_DELETE_CAPABILITY = "workflow-delete";
 
 /** `/v1/lsp*` (the Language servers section). */
 export const LSP_CAPABILITY = "lsp";

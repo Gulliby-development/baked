@@ -16,14 +16,14 @@ import { cn } from "../../lib/cn.js";
 import { CHECK, STACK as COLUMN, LEDE, PANEL } from "../../lib/styles.js";
 import type { SettingsSection } from "../../router.js";
 import { useDesktop } from "../../store.js";
-import { commandLabel, signInView } from "./logic.js";
+import { GlobalCommands } from "./GlobalCommands.js";
+import { externalUrl, signInView } from "./logic.js";
 import { type RoutingProject, RoutingSection } from "./RoutingSection.js";
 import {
   ADD,
   errorText,
   FLUSH,
   GROW,
-  LINE,
   LINE_LOOSE,
   LIST,
   LoadState,
@@ -274,7 +274,7 @@ function ProviderRow({
         />
       )}
       {provider.keyUrl && !provider.configured && (
-        <a href={provider.keyUrl} target="_blank" rel="noreferrer">
+        <a href={externalUrl(provider.keyUrl)} target="_blank" rel="noreferrer">
           Get a key
         </a>
       )}
@@ -365,36 +365,6 @@ function Providers({ projectKey }: { projectKey: string }) {
   );
 }
 
-function GlobalCommands({ projectKey }: { projectKey: string }) {
-  const [commands] = useLoad(() => setup.commands(projectKey), [projectKey, "commands"]);
-  const global =
-    commands.state === "ready" ? commands.data.commands.filter((c) => c.scope === "global") : [];
-  return (
-    <section className={STACK} aria-label="Global commands">
-      {commands.state !== "ready" ? (
-        <LoadState value={commands} what="the command list" />
-      ) : global.length === 0 ? (
-        <Empty>No global commands.</Empty>
-      ) : (
-        <ul className={cn(PANEL, LIST, FLUSH)}>
-          {global.map((c) => (
-            <li key={c.path} className={LINE}>
-              <span className="font-mono">
-                {commandLabel(c.name)}
-                {c.argumentHint ? (
-                  <span className="text-dim-foreground"> {c.argumentHint}</span>
-                ) : null}
-              </span>
-              <span className={cn("text-dim-foreground", GROW)}>{c.description}</span>
-              <span className={cn("font-mono text-dim-foreground", NOTE)}>{c.path}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
-  );
-}
-
 function Telemetry({ config, patch, busy }: { config: ConfigView; patch: Patch; busy: boolean }) {
   const enabled = config.global.telemetry !== false;
   const url = config.effective.telemetryUrl;
@@ -443,6 +413,8 @@ function Notifications({
   const [draft, setDraft] = useState<string | null>(null);
   const value = draft ?? url;
   const valid = /^https?:\/\/\S+$/i.test(value.trim());
+  // Only once something is typed: an empty field is how the webhook stays off.
+  const invalid = value.trim() !== "" && !valid;
   const save = (next: NotificationsConfig): Promise<boolean> => patch({ notifications: next });
   return (
     <section className={STACK} aria-label="Run notifications">
@@ -475,6 +447,8 @@ function Notifications({
             autoComplete="off"
             placeholder="https://example.com/hook"
             value={value}
+            aria-invalid={invalid || undefined}
+            aria-describedby={invalid ? "notifications-webhook-error" : undefined}
             onChange={(e) => setDraft(e.target.value)}
           />
           <Button
@@ -499,6 +473,11 @@ function Notifications({
             </Button>
           )}
         </form>
+        {invalid && (
+          <Alert tone="error" id="notifications-webhook-error">
+            Enter an http(s) URL, such as https://example.com/hook.
+          </Alert>
+        )}
         {url && (
           <label className={CHECK}>
             <input
@@ -532,7 +511,7 @@ type GlobalSection = Exclude<SettingsSection, "app" | "chat">;
 const PAGES: Record<GlobalSection, { title: string; lede: ReactNode }> = {
   providers: {
     title: "Providers and keys",
-    lede: "Sign in to the services that run the models, or give them an API key. Keys live in the system keychain or the environment, never in config files, and are never shown here.",
+    lede: "Sign in to the services that run the models, or give them an API key. Keys live in the system keychain or the environment, never in config files, and are never shown here. Where no keychain is available (Linux without secret-tool), they are kept in ~/.baked/secrets.json, readable only by you.",
   },
   routing: {
     title: "Model routing",
@@ -623,7 +602,11 @@ function GlobalSettingsFor({
         <span className={cn("text-dim-foreground", NOTE)}>
           Shared by every project on this computer, in{" "}
           <span className="font-mono">
-            {config.state === "ready" ? config.data.paths.global : "~/.baked/config.json"}
+            {section === "commands"
+              ? "~/.baked/commands/"
+              : config.state === "ready"
+                ? config.data.paths.global
+                : "~/.baked/config.json"}
           </span>
           . <Tag>read through {projectName}</Tag>
         </span>

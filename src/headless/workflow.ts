@@ -56,6 +56,7 @@ import { proposeForWorkspace } from "../core/workflows/v2/propose.js";
 import { readCheckPreflight, readRoutingSummary } from "../core/workflows/view.js";
 import { worktreeView } from "../core/workflows/worktree.js";
 import type { AppConfig } from "../types/index.js";
+import { traceProcessExit } from "./exit-trace.js";
 import { followProgress } from "./progress.js";
 import { DEFINITION_COMMANDS, executeDefinitionCommand } from "./workflow-definitions.js";
 import { executeGateCommand } from "./workflow-gate.js";
@@ -779,6 +780,7 @@ export async function executeWorkflowCommand(
     case "definitions":
     case "validate":
     case "define":
+    case "remove":
     case "gates":
     case "agents":
       return executeDefinitionCommand(
@@ -846,6 +848,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
   };
   process.on("SIGINT", abort);
   process.on("SIGTERM", abort);
+  const untrace = traceProcessExit(argv[0] ?? "");
   try {
     if (argv[0] === "initiative") {
       const cwd = getCwd();
@@ -1021,5 +1024,6 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     process.removeListener("SIGINT", abort);
     process.removeListener("SIGTERM", abort);
     service?.close();
+    untrace();
   }
 }

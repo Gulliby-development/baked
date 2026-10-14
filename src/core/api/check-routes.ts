@@ -4,6 +4,7 @@
  * demand. The terminal UI's gate editor does the same through `src/core/workflows/gates.ts`.
  */
 import { z } from "zod";
+import { loadProjectConfig } from "../../config/index.js";
 import type { AppConfig } from "../../types/index.js";
 import {
   assertWorkspaceFreeForGate,
@@ -57,8 +58,10 @@ export async function checkRoute(ctx: CheckRouteContext): Promise<Response | nul
     if (new Set(checks.map((check) => check.id)).size !== checks.length)
       ctx.fail(400, "INVALID_REQUEST", "Check IDs must be unique");
     writeGates(workspace, checks, config.workflows);
-    // New runs read the in-memory policy; started runs keep the copy they froze.
-    if (config.workflows) config.workflows.policy = { ...config.workflows.policy, checks };
+    // New runs and the gate list read the in-memory policy; started runs keep the copy they
+    // froze. A project without a workflows block got the one writeGates wrote.
+    const workflows = config.workflows ?? loadProjectConfig(workspace)?.workflows;
+    if (workflows) config.workflows = { ...workflows, policy: { ...workflows.policy, checks } };
     return ctx.json(200, listing());
   }
 

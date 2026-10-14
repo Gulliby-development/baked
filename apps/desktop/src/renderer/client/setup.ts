@@ -11,6 +11,7 @@ import { invalidateRead } from "./cache.js";
 import {
   CHAT_MEMORY_CAPABILITY,
   CHECKS_CAPABILITY,
+  COMMANDS_EDIT_CAPABILITY,
   CRITIC_OUTCOMES_CAPABILITY,
   GATE_DRAFTS_CAPABILITY,
   HOOKS_CAPABILITY,
@@ -210,6 +211,14 @@ export interface SavedInstruction extends InstructionFile {
 }
 
 /** A custom slash command from `.baked/commands` of the project or the home folder. */
+/** The fields of `POST /v1/commands` and `PUT /v1/commands/SCOPE/NAME`. */
+export interface CommandDraft {
+  name: string;
+  description: string;
+  argumentHint: string;
+  body: string;
+}
+
 export interface CommandEntry {
   /** The slash name, like `/fix-ci` or `/frontend:component`. */
   name: string;
@@ -222,12 +231,16 @@ export interface CommandEntry {
 /** An installed skill (`SKILL.md` in `.baked/skills`, `.agents/skills` or `.claude/skills`). */
 export interface SkillEntry {
   id: string;
-  scope: "project" | "global";
+  /** `package`: put in `baked/skills` by an installed package; removed with the package (#1106). */
+  scope: "project" | "global" | "package";
   path: string;
   description?: string;
+  /** The package that installed a `package` skill. */
+  package?: string;
 }
 
-export type SkillScope = SkillEntry["scope"];
+/** Where a skill is installed: the project or the home folder. */
+export type SkillScope = "project" | "global";
 
 /** A skill of the skills.sh catalog. */
 export interface CatalogSkill {
@@ -752,6 +765,32 @@ export const setup = {
     withCapability(key, LIBRARY_CAPABILITY, () =>
       call<{ commands: CommandEntry[] }>(key, "GET", "/v1/commands"),
     ),
+  /** Whether the backend writes custom commands (`commands-edit`). */
+  canEditCommands: async (key: string) =>
+    offers(await capabilities(key), COMMANDS_EDIT_CAPABILITY) === true,
+  /** A command's frontmatter values as written and its prompt, for the edit form. */
+  command: (key: string, scope: CommandEntry["scope"], name: string) =>
+    call<CommandDraft & { scope: CommandEntry["scope"]; path: string }>(
+      key,
+      "GET",
+      `/v1/commands/${scope}/${encodeURIComponent(name.replace(/^\//, ""))}`,
+    ),
+  addCommand: (key: string, scope: CommandEntry["scope"], draft: CommandDraft) =>
+    call<{ commands: CommandEntry[] }>(key, "POST", "/v1/commands", { scope, ...draft }),
+  /** Rewrites the command `name`; a new `draft.name` renames its file. */
+  updateCommand: (key: string, scope: CommandEntry["scope"], name: string, draft: CommandDraft) =>
+    call<{ commands: CommandEntry[] }>(
+      key,
+      "PUT",
+      `/v1/commands/${scope}/${encodeURIComponent(name.replace(/^\//, ""))}`,
+      draft,
+    ),
+  removeCommand: (key: string, scope: CommandEntry["scope"], name: string) =>
+    call<{ commands: CommandEntry[] }>(
+      key,
+      "DELETE",
+      `/v1/commands/${scope}/${encodeURIComponent(name.replace(/^\//, ""))}`,
+    ),
   skills: (key: string) =>
     withCapability(key, LIBRARY_CAPABILITY, () =>
       call<{ skills: SkillEntry[] }>(key, "GET", "/v1/skills"),
@@ -773,13 +812,13 @@ export const setup = {
       skillId: skill.skillId,
       scope,
     }),
-  skill: (key: string, scope: SkillScope, id: string) =>
+  skill: (key: string, scope: SkillEntry["scope"], id: string) =>
     call<SkillEntry & { content: string }>(
       key,
       "GET",
       `/v1/skills/${scope}/${encodeURIComponent(id)}`,
     ),
-  removeSkill: (key: string, scope: SkillScope, id: string) =>
+  removeSkill: (key: string, scope: SkillEntry["scope"], id: string) =>
     call<{ skills: SkillEntry[] }>(key, "DELETE", `/v1/skills/${scope}/${encodeURIComponent(id)}`),
 
   config: (key: string) => call<ConfigView>(key, "GET", "/v1/config"),

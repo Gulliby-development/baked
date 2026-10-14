@@ -369,6 +369,22 @@ describe("planner scope advice", () => {
     expect(advice).toContain("authorizes every write it lists");
     expect(advice).toContain("Do not mention approval in task descriptions or rationales");
   });
+  // R22 ratesim 029a5aec: the request names the csproj edits and the placeholder delete, so the
+  // planner could only resubmit the same plan after the advice (#1111).
+  test("leaves out writes the request names and template placeholders it deletes", () => {
+    const scaffold = graph(
+      [modify("src/Ratesim/Ratesim.csproj")],
+      [modify("tests/Ratesim.Tests/Ratesim.Tests.csproj"), { path: "tests/Ratesim.Tests/UnitTest1.cs", action: "delete" }],
+    );
+    const request = "Reference the new Core project from src/Ratesim/Ratesim.csproj and Ratesim.Tests.csproj.";
+    expect(planScopeAdvice(limited, scaffold, undefined, false, request)).toEqual([]);
+    const [advice] = planScopeAdvice(limited, scaffold, undefined, false, "Add a rate simulator.");
+    expect(advice).toContain("src/Ratesim/Ratesim.csproj always needs a person");
+    expect(advice).not.toContain("UnitTest1.cs");
+    // A source file the request names is not a reason to skip a deletion of another one.
+    const [deleted] = planScopeAdvice(limited, graph([{ path: "src/c.ts", action: "delete" }]), undefined, false, request);
+    expect(deleted).toContain("src/c.ts would be deleted");
+  });
 });
 
 describe("approval remarks in tasks", () => {
@@ -409,6 +425,8 @@ describe("planner scope advice in a run", () => {
   /** Submits a plan with an extra file outside the limits, then follows the advice or keeps it. */
   class ScopedPlanner extends FixtureExecutor {
     advice: string[][] = [];
+    /** Stops the run inside the first plan generation, after its first submission. */
+    interrupt: (() => void) | null = null;
     constructor(root: string, private keep: boolean) { super(root); }
     override async execute(request: ExecutionRequest) {
       const result = await super.execute(request);
@@ -417,11 +435,17 @@ describe("planner scope advice in a run", () => {
       const [task] = plan.taskGraph.tasks;
       const wide = { ...plan, taskGraph: { ...plan.taskGraph, tasks: [{ ...task!, rationale: `${task!.rationale} store.ts requires human approval.`, writes: [...task!.writes, { path: "store.ts", action: "modify" as const }] }] } };
       this.advice.push(request.validate?.(wide) ?? []);
+      if (this.interrupt) {
+        const stop = this.interrupt;
+        this.interrupt = null;
+        stop();
+        throw request.signal.reason ?? new Error("interrupted");
+      }
       this.advice.push(request.validate?.(wide) ?? []);
       return this.keep ? { ...result, output: wide } : result;
     }
   }
-  async function run(keep: boolean) {
+  async function run(keep: boolean, interrupted = false) {
     const fixture = workflowFixture({ policy: scoped, executor: (root) => new ScopedPlanner(root, keep) });
     cleanups.push(fixture.dispose);
     writeFileSync(join(fixture.root, "store.ts"), "export {};\n");
@@ -430,7 +454,9 @@ describe("planner scope advice in a run", () => {
       const current = await fixture.service.get(started.runId);
       if (["waiting", "completed", "blocked", "failed"].includes(current.status)) break;
       if (current.status === "paused" || current.status === "created") await fixture.resume(started.runId);
-      await fixture.service.drive(started.runId, new AbortController().signal);
+      const controller = new AbortController();
+      if (interrupted && i === 0) fixture.executor.interrupt = () => controller.abort();
+      await fixture.service.drive(started.runId, controller.signal);
     }
     return { fixture, runId: started.runId };
   }
@@ -443,6 +469,17 @@ describe("planner scope advice in a run", () => {
     expect(fixture.executor.advice[1]).toEqual([]);
     const approvals = fixture.service.store.requests(runId).filter((r) => r.kind === "approval" && r.status === "accepted");
     expect(approvals[0]?.actor).toBe("auto-approval");
+  });
+  // R22 ratesim 029a5aec: each of three plan generations got the advice again and the planner
+  // paid for a second, unchanged submission every time (#1111).
+  test("a later plan generation of the run is not advised again", async () => {
+    const { fixture, runId } = await run(true, true);
+    const plans = fixture.executor.advice;
+    expect(plans[0]?.join("\n")).toContain("store.ts is outside the allowed paths");
+    // The run was stopped inside the first generation; the plan stage starts over after resume.
+    expect(plans.length).toBeGreaterThanOrEqual(2);
+    for (const later of plans.slice(1)) expect(later).toEqual([]);
+    expect((await fixture.service.get(runId)).status).toBe("waiting");
   });
   test("a plan that keeps the file waits for a person", async () => {
     const { fixture, runId } = await run(true);

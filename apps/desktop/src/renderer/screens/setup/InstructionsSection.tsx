@@ -144,7 +144,11 @@ function Editor({
           setSaved(false);
         }}
       />
-      {error && <Alert tone="error">{error}</Alert>}
+      {error && (
+        <Alert tone="error" role="alert">
+          {error}
+        </Alert>
+      )}
       {file.enabled === false && (
         <span className={`${WARN} ${NOTE}`}>
           Agents do not read this file: {file.sourceLabel ?? "its source"} is switched off below.
@@ -267,9 +271,10 @@ function countText(value: Loaded<string>): string {
   return value.state === "error" ? "unavailable" : "…";
 }
 
-function scopeCounts(items: { scope: "project" | "global" }[]): string {
-  const project = items.filter((i) => i.scope === "project").length;
-  return `${project} in this project · ${items.length - project} global`;
+function scopeCounts(items: { scope: "project" | "global" | "package" }[]): string {
+  const count = (scope: string) => items.filter((i) => i.scope === scope).length;
+  const packaged = count("package");
+  return `${count("project")} in this project · ${count("global")} global${packaged ? ` · ${packaged} from packages` : ""}`;
 }
 
 /** The rest of an agent's project setup; the working set is the Files tab next to this one. */
@@ -454,14 +459,25 @@ export function InstructionsPane({ project }: Pick<SectionProps, "project">) {
   };
 
   const canCreate = list.data.sources !== undefined;
+  // The AGENTS.md source is off by default, so the empty state must not promise it is read.
+  const agentsMdOff = list.data.sources?.find((s) => s.id === "codex")?.enabled === false;
   const fileList =
     files.length === 0 && !draft ? (
       <Empty className={STACK}>
-        <span>
-          No instruction files. Agents read <span className="font-mono">AGENTS.md</span> or{" "}
-          <span className="font-mono">baked.md</span> at the repository root, and files listed in{" "}
-          <span className="font-mono">baked/project.json</span>.
-        </span>
+        {agentsMdOff ? (
+          <span>
+            No instruction files. Agents read <span className="font-mono">baked.md</span> at the
+            repository root and files listed in{" "}
+            <span className="font-mono">baked/project.json</span>;{" "}
+            <span className="font-mono">AGENTS.md</span> is read once its source is switched on.
+          </span>
+        ) : (
+          <span>
+            No instruction files. Agents read <span className="font-mono">AGENTS.md</span> or{" "}
+            <span className="font-mono">baked.md</span> at the repository root, and files listed in{" "}
+            <span className="font-mono">baked/project.json</span>.
+          </span>
+        )}
         {canCreate && (
           <span className="flex flex-wrap justify-center gap-2">
             <Button

@@ -48,7 +48,7 @@ bun test tests/feature-parity.test.ts
 | --- | --- | --- | --- | --- |
 | Chat with the agent | `key Enter`, `/session`, `/session new` +2 | `--headless`, `--chat` | `/v1/sessions`, `/v1/sessions/:id`, `/v1/sessions/:id/messages` +3 | `project/chat` |
 | Run custom slash commands (.baked/commands) in chat | `key /` | `--headless` | `/v1/sessions/:id/messages` | `project/chat` |
-| List custom commands | `/commands` | Not needed: scripts read .baked/commands directly | `/v1/commands` | `settings/commands` |
+| List, add, edit and remove custom commands | `/commands` | Not needed: scripts read and write .baked/commands directly | `/v1/commands`, `/v1/commands/project/:id`, `/v1/commands/global/:id` | `settings/commands` |
 | Session list, resume and rename | `/session history`, `/session rename` | `--resume`, `--session`, `baked session list` | `/v1/sessions`, `/v1/sessions/:id` | `project/chat` |
 | Delete a session | `/session history` | `baked session delete` | `/v1/sessions/:id` | `project/chat` |
 | Export a chat (Markdown, JSON, clipboard) | `/session export`, `/session export json`, `/session export clipboard` | `baked session export` | `/v1/sessions/:id/export` | `project/chat` |
@@ -109,7 +109,7 @@ bun test tests/feature-parity.test.ts
 | Agent features: de-sloppify, verify edits, tier routing, edits that add errors | `/agent-features` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
 | Approval reviewer for chat tool approvals: a model decides low-risk cleanup first | `/agent-features` | `--approval-review` | `/v1/settings` | `settings/chat`, `project/chat` |
 | Hooks: view, add, edit, pause | `/hooks` | Not needed: hooks are files scripts edit directly | `/v1/hooks`, `/v1/hooks/session` | `project/hooks` |
-| Skills: browse, install, remove | `/skills` | Not needed: `bunx skills add` installs from scripts | `/v1/skills`, `/v1/skills/catalog`, `/v1/skills/project/:id` +1 | `project/skills` |
+| Skills: browse, install, remove | `/skills` | Not needed: `bunx skills add` installs from scripts | `/v1/skills`, `/v1/skills/catalog`, `/v1/skills/project/:id` +2 | `project/skills` |
 | Packages: install agent profiles, skills, workflows and gates from a local folder with per-file hashes | `/packages`, `/packages add`, `/packages remove` | `baked add`, `baked packages` | `/v1/packages`, `/v1/packages/inspect`, `/v1/packages/install` +1 | `project/packages` |
 | Packages: write a package's manifest with every file's hash after the install checks | `/packages pack` | `baked packages pack` | `/v1/packages/pack` | `project/packages` |
 | Ask the agent about BAKED itself (bundled docs, baked_help tool) | `key Enter` | `--headless`, `--chat` | `/v1/sessions/:id/messages` | `project/chat` |
@@ -160,7 +160,7 @@ bun test tests/feature-parity.test.ts
 | Gates on the run's line: what each does, blocks or advises, last result | `/workflow` | `baked workflow definitions`, `baked workflow status` | `/v1/workflow/definitions`, `/v1/workflow/runs/:id/events` | `project/runs` |
 | Each workflow's family and line, and a step-through of a run along it | `/workflow` | `baked workflow definitions` | `/v1/workflow/definitions` | `project/workflows` |
 | Compare two runs side by side (A/B of routing maps) | `/workflow` | `baked workflow compare` | `/v1/workflow/compare` | `project/runs` |
-| Workflow definition editor | `/workflow` | `baked workflow define`, `baked workflow validate` | `/v1/workflow/definitions`, `/v1/workflow/editor`, `/v1/workflow/editor/review` +1 | `project/workflows` |
+| Workflow definition editor | `/workflow` | `baked workflow define`, `baked workflow validate`, `baked workflow remove` | `/v1/workflow/definitions`, `/v1/workflow/editor`, `/v1/workflow/editor/review` +1 | `project/workflows` |
 | Agents a project brought from other tools: edit them and turn them into a workflow (shown only when the project has some) | `/agents` | `baked workflow agents` | `/v1/agents`, `/v1/agents/convert` | `project/agents`, `project/workflows` |
 | Wait stage: poll command gates until they pass or time out, with no model calls | `/workflow` | `baked workflow validate`, `baked workflow run` | `/v1/workflow/editor`, `/v1/workflow/runs/:id/events` | `project/workflows`, `project/runs` |
 | Doctor and estimate before a run | `/workflow` | `baked doctor`, `baked workflow estimate` | `/v1/workflow/doctor`, `/v1/workflow/estimate` | `project/overview` |

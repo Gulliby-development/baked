@@ -244,6 +244,8 @@ export interface SessionDetail extends SessionSummary {
   lastSeq: number;
   /** While a turn runs: the sequence before it started, to replay what it streamed so far. */
   turnSeq?: number;
+  /** Why the last turn failed, until another turn starts. */
+  lastError?: string;
 }
 
 /** A turn an undo dropped: its number and the first line of its prompt. */

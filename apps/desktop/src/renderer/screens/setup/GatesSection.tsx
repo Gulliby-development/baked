@@ -215,7 +215,12 @@ function Suggestions({
 function RunResult({ run, last }: { run: CheckRun | undefined; last: CheckRunResult | null }) {
   if (run?.kind === "running")
     return <span className={`text-dim-foreground ${NOTE}`}>Running…</span>;
-  if (run?.kind === "error") return <Alert tone="error">{run.message}</Alert>;
+  if (run?.kind === "error")
+    return (
+      <Alert tone="error" role="alert">
+        {run.message}
+      </Alert>
+    );
   const result = run?.kind === "done" ? run.result : last;
   if (!result) return null;
   const tone = result.status === "passed" ? "ok" : result.status === "cancelled" ? "" : "err";
@@ -605,7 +610,9 @@ export function GatesSection({ project }: SectionProps) {
       ))}
 
       {gates.data.problems.length > 0 && (
-        <Alert tone="error">Not used, could not be read: {gates.data.problems.join("; ")}</Alert>
+        <Alert tone="error" role="alert">
+          Not used, could not be read: {gates.data.problems.join("; ")}
+        </Alert>
       )}
       {api && !api.workflowsEnabled && (
         <Alert>
@@ -614,7 +621,7 @@ export function GatesSection({ project }: SectionProps) {
         </Alert>
       )}
       {checkList.state === "error" && (
-        <Alert tone="error">
+        <Alert tone="error" role="alert">
           The checks could not be read, so they are read-only here: {checkList.message}
         </Alert>
       )}
@@ -623,7 +630,11 @@ export function GatesSection({ project }: SectionProps) {
           Editing checks needs a newer BAKED; the list below is read-only.
         </Alert>
       )}
-      {error && <Alert tone="error">{error}</Alert>}
+      {error && (
+        <Alert tone="error" role="alert">
+          {error}
+        </Alert>
+      )}
 
       <div className={SPLIT}>
         <section aria-label="Gates" className={SPLIT_MAIN}>
