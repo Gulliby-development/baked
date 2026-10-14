@@ -2367,6 +2367,7 @@ export class WorkflowScheduler {
     result: { outcome: string; summary: string; unresolved: string[] },
     changed: string[],
     proseEnd = false,
+    reproduced: string | null = null,
   ): string | null {
     const failedEdits = failedOwnEdits(result, task.writes);
     const editRetry = failedEdits.length
@@ -2374,6 +2375,8 @@ export class WorkflowScheduler {
       : null;
     if ((state.taskRestarts[task.id] ?? 0) > 0)
       return (state.taskEditRetries[task.id] ?? 0) === 0 ? editRetry : null;
+    // A fresh session gets the repro output once; the attempt's own refusals did not move it.
+    if (reproduced) return `the host refused its result because ${reproduced}`;
     const unfinished =
       ["blocked", "failed"].includes(result.outcome) || result.unresolved.length > 0;
     if (!unfinished) return null;
@@ -4372,14 +4375,20 @@ ${note}`;
           "INPUT_CHANGED",
           `Task changed ${outside.length} file(s) outside its write scope: ${outside.slice(0, 5).join(", ")}${outside.length > 5 ? ", ..." : ""}`,
         );
-      const satisfied =
-        result.outcome === "implemented" && changed.length === 0 && task.writes.length > 0
-          ? await this.correctionSatisfied(runId, state, child, policy, task, result, signal, root)
-          : true;
+      const reproduced = await this.stillReproduces(
+        runId,
+        policy,
+        task,
+        result,
+        changed,
+        root,
+        signal,
+      );
       const correction =
-        satisfied === true
-          ? await this.stillReproduces(runId, policy, task, result, changed, root, signal)
-          : satisfied;
+        reproduced ??
+        (result.outcome === "implemented" && changed.length === 0 && task.writes.length > 0
+          ? await this.correctionSatisfied(runId, state, child, policy, task, result, signal, root)
+          : true);
       if (correction instanceof WorkflowFault) {
         this.store.transaction(() => this.store.taskStatus(runId, task.id, "blocked"));
         throw correction;
@@ -4413,8 +4422,12 @@ ${note}`;
           result,
           changed,
           proseEnd,
+          reproduced,
         );
-        const account = { summary: result.summary, unresolved: result.unresolved };
+        const account = {
+          summary: result.summary,
+          unresolved: reproduced ? [...result.unresolved, reproduced] : result.unresolved,
+        };
         // A task blocked on a file a task still to run writes waits for it; a restart now would block again.
         if (
           this.store.transaction(() => {
@@ -5425,6 +5438,15 @@ ${note}`;
             `Task ${task.id} changed ${outside.length} file(s) outside its write scope: ${outside.slice(0, 5).join(", ")}${outside.length > 5 ? ", ..." : ""}; its result is not integrated`,
           ),
         };
+      const reproduced = await this.stillReproduces(
+        runId,
+        policy,
+        task,
+        result,
+        changed,
+        root,
+        signal,
+      );
       const restartReason = this.blockedRestartReason(
         runId,
         state,
@@ -5434,8 +5456,12 @@ ${note}`;
         result,
         changed,
         proseEnd,
+        reproduced,
       );
-      const account = { summary: result.summary, unresolved: result.unresolved };
+      const account = {
+        summary: result.summary,
+        unresolved: reproduced ? [...result.unresolved, reproduced] : result.unresolved,
+      };
       const waits =
         changed.length === 0 && result.outcome === "blocked"
           ? this.missingArtifactOwnersOf(runId, state, task, result)
@@ -5450,8 +5476,9 @@ ${note}`;
           account,
         };
       const refused = takeHashRefusals(root);
-      const satisfied =
-        result.outcome === "implemented" && changed.length === 0
+      const correction =
+        reproduced ??
+        (result.outcome === "implemented" && changed.length === 0
           ? await this.correctionSatisfied(
               runId,
               state,
@@ -5462,11 +5489,7 @@ ${note}`;
               signal,
               root,
             )
-          : true;
-      const correction =
-        satisfied === true
-          ? await this.stillReproduces(runId, policy, task, result, changed, root, signal)
-          : satisfied;
+          : true);
       if (correction instanceof WorkflowFault)
         return { kind: "rejected", entry, error: correction };
       if (
@@ -6166,7 +6189,7 @@ ${note}`;
   /**
    * A corrective result that changed nothing, or reports the task already satisfied, is not
    * accepted while a finding it corrects still reproduces (#1158): the attempt's own refusals
-   * are bounded, and an executor may not run them. Returns true, or why the result is refused.
+   * are bounded, and an executor may not run them. Returns why the result is refused, or null.
    */
   private async stillReproduces(
     runId: string,
@@ -6176,15 +6199,15 @@ ${note}`;
     changed: string[],
     root: string,
     signal: AbortSignal,
-  ): Promise<true | string> {
-    if (result.taskId !== task.id) return true;
+  ): Promise<string | null> {
+    if (result.taskId !== task.id) return null;
     if (
       result.outcome !== "already_satisfied" &&
       !(result.outcome === "implemented" && changed.length === 0)
     )
-      return true;
+      return null;
     const live = (await this.reproCheck(runId, policy, task)?.(root, signal)) ?? [];
-    if (!live.length) return true;
+    if (!live.length) return null;
     return `it reported ${result.outcome.replace("_", " ")} but ${live.map((line) => line.split("\n")[0]?.replace(/^Finding /, "finding ")).join("; ")}`;
   }
   /**
