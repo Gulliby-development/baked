@@ -114,10 +114,10 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "custom-commands-list",
     group: "Chat and sessions",
-    title: "List custom commands",
-    tui: ["/commands"],
-    cli: notNeeded("scripts read .baked/commands directly"),
-    api: ["/v1/commands"],
+    title: "List, add, edit and remove custom commands",
+    tui: ["/commands: add [--global] NAME PROMPT, remove [--global] NAME"],
+    cli: notNeeded("scripts read and write .baked/commands directly"),
+    api: ["/v1/commands", "/v1/commands/project/:id", "/v1/commands/global/:id"],
     desktop: ["settings/commands"],
   },
   {
