@@ -84,7 +84,9 @@ class ScriptedExecutor implements AgentExecutor {
 }
 
 /** What the analyze stage is given for a run whose spec author returns `spec`. */
-async function analyzeSees(spec: Spec, policy: RunPolicy = { ...defaultWorkflowPolicy, clarification: "assume" }) {
+const check = { id: "check", executable: "bun", args: ["--version"], cwd: ".", timeoutMs: 10000, required: true, scope: "feature" as const, envNames: [], writes: [] };
+
+async function analyzeSees(spec: Spec, policy: RunPolicy = { ...defaultWorkflowPolicy, clarification: "assume", checks: [check] }) {
   const root = mkdtempSync(join(tmpdir(), "baked-spec-digest-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const executor = new ScriptedExecutor(spec);
@@ -94,7 +96,12 @@ async function analyzeSees(spec: Spec, policy: RunPolicy = { ...defaultWorkflowP
   const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Split a bank statement by category", ownerLabel: "test", policy });
   await service.drive(run.runId, new AbortController().signal);
   if (!executor.analysis) throw new Error("The analyze stage was not called");
-  return executor.analysis;
+  const approval = service.store
+    .requests(run.runId)
+    .find((r) => r.kind === "approval" && r.status === "pending");
+  return Object.assign(executor.analysis, {
+    approval: approval ? (JSON.parse(approval.body_json) as Record<string, unknown>) : null,
+  });
 }
 
 describe("scenario: stmtsplit e29347c1, a 43-criterion spec resent to every planning step (#1019)", () => {
@@ -118,6 +125,8 @@ describe("scenario: stmtsplit e29347c1, a 43-criterion spec resent to every plan
     expect(read.criteria).toEqual([large.criteria[6]]);
     expect(read.criteria[0]?.given).toContain(table);
     expect(read.unknown).toEqual(["AC-999"]);
+    // The plan approval names what planning cost next to what the tasks should cost.
+    expect(request.approval?.planCost).toMatchObject({ planning: { models: [] } });
   });
 
   test("a small spec is sent whole, without the tool", async () => {
@@ -128,7 +137,7 @@ describe("scenario: stmtsplit e29347c1, a 43-criterion spec resent to every plan
   });
 
   test("specDigest off sends the large spec whole", async () => {
-    const request = await analyzeSees(large, { ...defaultWorkflowPolicy, clarification: "assume", specDigest: "off" });
+    const request = await analyzeSees(large, { ...defaultWorkflowPolicy, clarification: "assume", checks: [check], specDigest: "off" });
     expect(request.prompt).toContain(table);
     expect(request.hostTools?.[READ_CRITERION]).toBeUndefined();
   });

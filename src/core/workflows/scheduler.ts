@@ -339,6 +339,7 @@ import {
 
 type Implementation = ReturnType<typeof ImplementationSchema.parse>;
 
+import { planCostOf } from "./plan-cost.js";
 import {
   codeTaskCheckProblems,
   loopHistory,
@@ -1373,6 +1374,8 @@ export class WorkflowScheduler {
                   ...(state.activeTime ? { activeTime: state.activeTime } : {}),
                   // A plan priced above the ceiling is approved knowing where it should stop (#974).
                   ...overCeilingOf(this.store, runId),
+                  // What planning cost so far next to what the tasks should cost (#1019).
+                  planCost: planCostOf(this.store, runId),
                   ...(state.spec.deliverables
                     ? { requestCoverage: requestCoverage(state.spec, coverageRequest(state)) }
                     : {}),

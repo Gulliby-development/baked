@@ -13,6 +13,7 @@ import { type TestsFirstBody, TestsFirstReview } from "../../components/TestsFir
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
 import { activeTimeText } from "../../lib/active-time.js";
+import { planCostText } from "../../lib/plan-cost.js";
 import { CHECK } from "../../lib/styles.js";
 import { href } from "../../router.js";
 import type { RunData } from "./load.js";
@@ -249,6 +250,11 @@ function Approval({
       {body.activeTime ? (
         <p className="m-0 text-soft-foreground" data-testid="approval-active-time">
           {activeTimeText(body.activeTime)}.
+        </p>
+      ) : null}
+      {body.planCost ? (
+        <p className="m-0 text-soft-foreground" data-testid="approval-plan-cost">
+          {planCostText(body.planCost)}.
         </p>
       ) : null}
       {scope.length > 0 && (

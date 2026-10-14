@@ -6,8 +6,8 @@ import { kitGuidanceFor } from "../kit/guidance.js";
 import { canonical, hashBytes } from "../specs/hash.js";
 import { WorkflowFault } from "./errors.js";
 import type { AgentProfile } from "./schemas.js";
-import type { RuntimeState } from "./types.js";
 import { specDigest } from "./spec-digest.js";
+import type { RuntimeState } from "./types.js";
 
 export function frozenInstructions(
   workspace: string,

@@ -1,5 +1,6 @@
 import type { RunRequest } from "../../client/runs.js";
 import type { ActiveTime } from "../../lib/active-time.js";
+import type { PlanCost } from "../../lib/plan-cost.js";
 
 /** Request bodies as the core writes them (`body_json`), the fields the run screens read. */
 export interface ApprovalBody {
@@ -9,6 +10,8 @@ export interface ApprovalBody {
   assumptions?: string[];
   /** Plan-time sizing's active-time estimate against the active-time cap. */
   activeTime?: ActiveTime;
+  /** What planning cost so far, by model, next to what the planned tasks should cost. */
+  planCost?: PlanCost;
   /** Present when the plan and its reserve need more than the token ceiling: where it should stop. */
   budgetWarning?: string;
   /** Each deliverable of the request and what covers it (`request-coverage.ts` in the core). */
