@@ -62,6 +62,13 @@ with `BAKED_TEST_SCRIPT` pointing at a JSON chat script, so it needs `bun instal
 repository root too. Install the Electron binary first
 (`bun install` without `ELECTRON_SKIP_BINARY_DOWNLOAD`).
 
+The Settings and Setup specs (`settings-*.electron.ts`, `setup-*.electron.ts`) also run the real
+`baked serve`, with a script that has no turns. They create, edit and delete each kind of setting
+through the app, then check the files on disk and the local API. `e2e/electron/baked-style.ts`
+holds their shared checks. `expectBakedStyle` fails on a control that opens a system popup: a
+`<select>` without the `base-select` look, a date, time or colour picker, or a `<datalist>`.
+`failOnNativeDialogs` records any native alert, confirm or prompt.
+
 `apps/desktop` is its own package with its own lockfile: the root `bun install` does not download
 Electron, and the root checks do not cover this folder.
 
