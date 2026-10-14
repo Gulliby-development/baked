@@ -779,6 +779,7 @@ export async function executeWorkflowCommand(
     case "definitions":
     case "validate":
     case "define":
+    case "remove":
     case "gates":
     case "agents":
       return executeDefinitionCommand(

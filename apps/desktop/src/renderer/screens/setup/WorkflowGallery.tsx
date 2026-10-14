@@ -120,10 +120,13 @@ function Card({
   definition,
   projectKey,
   onOpen,
+  onDelete,
 }: {
   definition: DefinitionSummary;
   projectKey: string;
   onOpen: (tab: EditorTab) => void;
+  /** Absent when the backend cannot delete workflows; only project workflows offer it. */
+  onDelete?: ((id: string) => void) | undefined;
 }) {
   const family = familyOf(definition);
   const href = projectHref(projectKey, "workflows", definition.id);
@@ -196,6 +199,17 @@ function Card({
             <Icon name="edit" size={14} />
             Edit
           </a>
+          {onDelete && definition.source === "project" && (
+            <button
+              type="button"
+              className={cn(LINK_BUTTON, "flex-none cursor-pointer")}
+              aria-label={`Delete ${definition.id}`}
+              title={`Delete baked/workflows/${definition.id}.json`}
+              onClick={() => onDelete(definition.id)}
+            >
+              <Icon name="delete" size={14} />
+            </button>
+          )}
         </div>
       </div>
     </article>
@@ -206,10 +220,12 @@ export function WorkflowGallery({
   definitions,
   projectKey,
   onOpen,
+  onDelete,
 }: {
   definitions: DefinitionSummary[];
   projectKey: string;
   onOpen: (tab: EditorTab) => void;
+  onDelete?: ((id: string) => void) | undefined;
 }) {
   const [source, setSource] = useState<Source>("all");
   const [query, setQuery] = useState("");
@@ -306,7 +322,13 @@ export function WorkflowGallery({
       ) : (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-[18px]">
           {shown.map((d) => (
-            <Card key={d.id} definition={d} projectKey={projectKey} onOpen={onOpen} />
+            <Card
+              key={d.id}
+              definition={d}
+              projectKey={projectKey}
+              onOpen={onOpen}
+              onDelete={onDelete}
+            />
           ))}
         </div>
       )}

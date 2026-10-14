@@ -5,12 +5,13 @@
  * the auto approval confirmation) lives here, so the window holds no logic of its own. Reading and
  * writing files is limited to `readEditorSource` and `writeDefinitionFile`.
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { builtinProfiles } from "../../agents/profiles/builtin.js";
 import { ProfileRegistry } from "../../agents/profiles/registry.js";
 import { writeViaTemp } from "../atomic-write.js";
 import { defaultWorkflowPolicy } from "../defaults.js";
+import { WorkflowFault } from "../errors.js";
 import {
   DEFAULT_STAGE_RANGES,
   type PastRun,
@@ -1087,6 +1088,32 @@ export function writeDefinitionFile(workspace: string, definition: WorkflowV2): 
   mkdirSync(dirname(target), { recursive: true });
   writeViaTemp(target, definitionText(parsed), { flag: "w", flush: true });
   return target;
+}
+/** What deleting a project workflow did. */
+export interface RemovedDefinition {
+  id: string;
+  path: string;
+  /** Set when the file shadowed a built-in workflow of the same ID, which new runs use again. */
+  restores: string | null;
+}
+
+/**
+ * Deletes a project workflow file in `baked/workflows/` (#1101). Built-in workflows have no file
+ * and cannot be deleted. Runs that started keep the definition they froze.
+ */
+export function removeDefinitionFile(workspace: string, id: string): RemovedDefinition {
+  const safe = SafeId.parse(id);
+  const path = definitionPath(workspace, safe);
+  const builtin = new Set<string>(["sdd", ...PRESETS]).has(safe);
+  if (!existsSync(path))
+    throw builtin
+      ? new WorkflowFault(
+          "CAPABILITY_DENIED",
+          `${safe} is a built-in workflow; only project workflows can be deleted`,
+        )
+      : new WorkflowFault("NOT_FOUND", `No project workflow ${safe} in baked/workflows`);
+  rmSync(path);
+  return { id: safe, path, restores: builtin ? safe : null };
 }
 /** The state after a successful write: the file now holds the working copy. */
 export const markSaved = (state: EditorState, text: string): EditorState => ({
