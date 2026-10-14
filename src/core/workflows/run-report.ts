@@ -396,7 +396,13 @@ function candidatesSection(facts: Facts, cap: number): string[] {
 }
 
 /** Which models and vendors reviewed the change and which implemented it (#635). */
-function reviewModels(routing: Facts["routing"]): string | null {
+/**
+ * Who reviewed and who implemented. The implementer is read from the attempts of the task steps,
+ * the models that wrote the code: a stage route (`--route implement=MODEL`) or a fallback leaves
+ * the profile's routed model unused (#1017). The profile's model is named as configured when it
+ * differs, and alone before any task ran.
+ */
+function reviewModels(routing: Facts["routing"], usage: RunUsageReport): string | null {
   if (!routing) return null;
   const models = (targets: string[]) => [
     ...new Set(routing.effective.filter((r) => targets.includes(r.target)).map((r) => r.model)),
@@ -404,9 +410,16 @@ function reviewModels(routing: Facts["routing"]): string | null {
   const named = (list: string[]) =>
     list.map((model) => `${code(model)} (${modelVendor(model)})`).join(", ");
   const review = models(["reviewer", "spec-auditor"]);
-  const implementation = models(["implementer"]);
   if (!review.length) return null;
-  return `Reviewed on ${named(review)}${implementation.length ? `; implemented on ${named(implementation)}` : ""}.`;
+  const configured = models(["implementer"]);
+  const tokens = new Map<string, number>();
+  for (const attempt of usage.attempts)
+    if (attempt.model && attempt.stage.startsWith("task-"))
+      tokens.set(attempt.model, (tokens.get(attempt.model) ?? 0) + (attempt.usedTokens ?? 0));
+  const wrote = [...tokens.entries()].sort((a, b) => b[1] - a[1]).map(([model]) => model);
+  const differs = wrote.length > 0 && configured.some((model) => !wrote.includes(model));
+  const implementation = wrote.length ? wrote : configured;
+  return `Reviewed on ${named(review)}${implementation.length ? `; implemented on ${named(implementation)}` : ""}${differs ? ` (configured: ${named(configured)})` : ""}.`;
 }
 
 interface QualityFacts {
@@ -735,7 +748,7 @@ function render(facts: Facts, cap: number): string {
 
   const open = facts.findings.filter((f) => f.status === "open" || f.status === "confirmed");
   out.push("## Findings", "");
-  const reviewedBy = reviewModels(facts.routing);
+  const reviewedBy = reviewModels(facts.routing, facts.usage);
   if (reviewedBy) out.push(reviewedBy, "");
   if (facts.findings.length) {
     out.push(`${open.length} open of ${facts.findings.length} recorded.`, "");
