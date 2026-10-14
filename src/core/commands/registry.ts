@@ -9,7 +9,14 @@ import { register as registerClaudeCode } from "./claude-code.js";
 import { register as registerCodex } from "./codex.js";
 import { matchConfigPrefix, register as registerConfig } from "./config.js";
 import { matchContextPrefix, register as registerContext } from "./context.js";
-import { expandCustomCommandInput, getCachedCustomCommands, listCustomCommands } from "./custom.js";
+import {
+  CustomCommandError,
+  deleteCustomCommand,
+  expandCustomCommandInput,
+  getCachedCustomCommands,
+  listCustomCommands,
+  saveCustomCommand,
+} from "./custom.js";
 import { register as registerDebug } from "./debug.js";
 import { matchGitPrefix, register as registerGit } from "./git.js";
 import { register as registerGraph } from "./graph.js";
@@ -84,12 +91,48 @@ export function isBuiltinCommandName(name: string): boolean {
   return false;
 }
 
-function handleListCustomCommands(_input: string, ctx: CommandContext): void {
+const COMMANDS_USAGE =
+  "Usage: /commands, /commands add [--global] NAME PROMPT, /commands remove [--global] NAME";
+
+/** `/commands add|remove`: writes or removes a command file of the project or, with --global, the home folder. */
+function editCustomCommand(args: string[], ctx: CommandContext): void {
+  const [action, ...rest] = args;
+  const global = rest[0] === "--global";
+  const [name, ...prompt] = global ? rest.slice(1) : rest;
+  const scope = global ? "global" : "project";
+  if (!name || (action === "add" && !prompt.length) || (action === "remove" && prompt.length)) {
+    sysMsg(ctx, COMMANDS_USAGE);
+    return;
+  }
+  try {
+    if (action === "add") {
+      const command = saveCustomCommand(ctx.cwd, scope, { name, body: prompt.join(" ") });
+      sysMsg(
+        ctx,
+        `Added ${command.name} [${scope}]: ${command.path}. Edit the file for frontmatter or a longer prompt.`,
+      );
+    } else {
+      deleteCustomCommand(ctx.cwd, scope, name);
+      sysMsg(ctx, `Removed the ${scope} command ${name.startsWith("/") ? name : `/${name}`}.`);
+    }
+  } catch (error) {
+    if (!(error instanceof CustomCommandError)) throw error;
+    sysMsg(ctx, error.message);
+  }
+}
+
+function handleListCustomCommands(input: string, ctx: CommandContext): void {
+  const args = input.trim().split(/\s+/).slice(1);
+  if (args.length) {
+    if (args[0] === "add" || args[0] === "remove") editCustomCommand(args, ctx);
+    else sysMsg(ctx, COMMANDS_USAGE);
+    return;
+  }
   const commands = listCustomCommands(ctx.cwd);
   if (commands.length === 0) {
     sysMsg(
       ctx,
-      "No custom commands. Add Markdown files to .baked/commands/ (project) or ~/.baked/commands/ (global); fix-ci.md becomes /fix-ci.",
+      "No custom commands. Add one with /commands add NAME PROMPT (--global for every project), or add Markdown files to .baked/commands/ (project) or ~/.baked/commands/ (global); fix-ci.md becomes /fix-ci.",
     );
     return;
   }
@@ -1011,7 +1054,7 @@ const COMMAND_DEFS: CommandDef[] = [
   {
     cmd: "/commands",
     ic: "list",
-    desc: "List custom commands from .baked/commands",
+    desc: "List, add or remove custom commands in .baked/commands",
     category: "System",
     tags: ["custom", "slash", "prompts", "templates"],
   },

@@ -28,7 +28,7 @@ Type `/` in the input or press `Ctrl+K` for the command palette. `/help` opens t
 
 ## Slash commands
 
-The tables below list the commands the palette shows, generated from `src/core/commands/registry.ts`. Some commands take arguments that are not listed: `/plan <task>`, `/mode <name>`, `/effort <level>`, `/context-size <size>`, `/permissions <manual|auto|full>`, `/checkpoint undo [N]` or `/undo [N]` (see the [user guide](guide.md#checkpoints)), `/workflow new TEXT`, `/workflow quick TEXT`, `/workflow edit ID`, `/workflow definitions`, `/workflow routing` and `/workflow usage`, `/workflow report RUN_ID`, `/workflow usage RUN_ID --format md` (see the [runtime guide](workflows/runtime.md#tui)).
+The tables below list the commands the palette shows, generated from `src/core/commands/registry.ts`. Some commands take arguments that are not listed: `/plan <task>`, `/mode <name>`, `/effort <level>`, `/context-size <size>`, `/permissions <manual|auto|full>`, `/checkpoint undo [N]` or `/undo [N]` (see the [user guide](guide.md#checkpoints)), `/workflow new TEXT`, `/workflow quick TEXT`, `/workflow edit ID`, `/workflow definitions`, `/workflow routing` and `/workflow usage`, `/workflow report RUN_ID`, `/workflow usage RUN_ID --format md` (see the [runtime guide](workflows/runtime.md#tui)), `/commands add [--global] NAME PROMPT` and `/commands remove [--global] NAME` (see [custom commands](custom-commands.md#managing-commands)).
 
 ### Session
 
@@ -179,7 +179,7 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 | --- | --- |
 | `/errors` | Browse error log |
 | `/help` | Command palette (Ctrl+K) |
-| `/commands` | List custom commands from .baked/commands |
+| `/commands` | List, add or remove custom commands in .baked/commands |
 | `/hooks` | Add, edit or pause hooks on agent events |
 | `/quit` (`/q`) | Exit baked |
 | `/exit` (`/q`) | Exit baked |
@@ -193,7 +193,7 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 
 ## Custom commands
 
-Markdown files in `<project>/.baked/commands/` and `~/.baked/commands/` become slash commands under **Custom**: `fix-ci.md` runs as `/fix-ci` and `frontend/component.md` as `/frontend:component`. `/commands` lists them with their files. Built-in commands win over custom ones with the same name. See [custom commands](custom-commands.md).
+Markdown files in `<project>/.baked/commands/` and `~/.baked/commands/` become slash commands under **Custom**: `fix-ci.md` runs as `/fix-ci` and `frontend/component.md` as `/frontend:component`. `/commands` lists them with their files, `/commands add` and `/commands remove` write and delete them. Built-in commands win over custom ones with the same name. See [custom commands](custom-commands.md).
 
 ## Shell commands
 
