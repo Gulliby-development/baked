@@ -358,6 +358,7 @@ import {
   splitTestTasks,
   withTestDependencies,
 } from "./sizing.js";
+import { amendmentNote, type SpecAmendment, specAmendmentOf } from "./spec-amendment.js";
 import { digestsSpec, READ_CRITERION, readCriterionTool } from "./spec-digest.js";
 import { forgetProgress } from "./stall.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
@@ -5982,8 +5983,16 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       .filter((path) => isTestPath(path) && !changed.includes(path))
       .slice(0, 20)
       .flatMap((path) => read(path) ?? []);
+    // A correction of a spec amendment changes the tests that served the amended wording.
+    const amendments = this.amendments(runId);
+    const amending = amendments.some((a) => task.findingIds.includes(a.findingId));
     const found = scanTestIntegrity(changes, {
-      reasoned: new Set(task.writes.filter((w) => w.reason).map((w) => w.path)),
+      reasoned: new Set([
+        ...task.writes
+          .filter((w) => w.reason || (amending && isTestPath(w.path)))
+          .map((w) => w.path),
+        ...amendments.flatMap((a) => a.paths),
+      ]),
       testSources,
       specText: `${state.spec ? canonical(state.spec) : ""}\n${state.plan ?? ""}`,
     });
@@ -6204,9 +6213,10 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         return { path, before: kept, after: read(path) };
       }),
       {
-        reasoned: new Set(
-          tasks.flatMap((t) => t.writes.filter((w) => w.reason).map((w) => w.path)),
-        ),
+        reasoned: new Set([
+          ...tasks.flatMap((t) => t.writes.filter((w) => w.reason).map((w) => w.path)),
+          ...this.amendments(runId).flatMap((a) => a.paths),
+        ]),
         specText: `${state.spec ? canonical(state.spec) : ""}\n${state.plan ?? ""}`,
       },
     );
@@ -9302,6 +9312,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         .findings(runId)
         .filter((f) => ids.has(f.id) && !["refuted", "resolved"].includes(f.status))
         .map((f) => ({ ...JSON.parse(f.body_json), id: f.id }) as Review["findings"][number]);
+      if (findings.length && target?.type === "tasks") this.amendSpec(runId, state, findings);
       if (findings.length && target?.type === "tasks")
         appendCorrections(
           this.store,
@@ -9580,6 +9591,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     scope: "round" | "task" | "review" = "round",
   ): void {
     this.store.transaction(() => {
+      this.amendSpec(runId, state, findings);
       appendCorrections(this.store, runId, state, policy, findings, kind, scope);
       // A v2 run keeps its position: a task's repair runs in the tasks stage it is in, and a
       // stage's failure goes back along the definition's repair transition (#853).
@@ -9587,6 +9599,31 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       if (parsed.schemaVersion === 1)
         state.stageIndex = parsed.definition.stages.findIndex((s) => s.kind === "task-graph");
     });
+  }
+  /**
+   * Review findings that put the spec against the request record a spec amendment (#1034): the
+   * request wins over the criteria they name, every later agent reads that with the request, and
+   * the test-integrity guard accepts the tests their correction changes.
+   */
+  private amendSpec(runId: string, state: RuntimeState, findings: Review["findings"]): void {
+    if (!state.spec) return;
+    for (const finding of findings) {
+      const amendment = specAmendmentOf(finding, state.spec);
+      if (!amendment) continue;
+      const path = `amendments/${finding.id}.json`;
+      if (this.store.latestArtifact(runId, path)) continue;
+      this.store.artifact(runId, "assumption", path, canonical(amendment));
+      // A repeated finding of a later round names the same contradiction: one note is enough.
+      if (!state.prompt.includes(amendment.claim.slice(0, 1000)))
+        state.prompt += `\n${amendmentNote(path, amendment)}`;
+    }
+  }
+  /** The run's spec amendments (`amendments/*.json`). */
+  private amendments(runId: string): SpecAmendment[] {
+    return this.store
+      .artifacts(runId)
+      .filter((a) => a.logical_path.startsWith("amendments/"))
+      .map((a) => JSON.parse(this.store.readArtifact(runId, a.id)) as SpecAmendment);
   }
   private async accept(
     runId: string,
