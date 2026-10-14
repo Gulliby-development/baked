@@ -494,7 +494,11 @@ function propertiesSection(result: PropertiesResult, cap: number): string[] {
         c.note ? `${c.status}: ${c.note}` : c.status,
         c.tests
           .filter((t) => t.property)
-          .map((t) => (t.kind === "seeded" ? `${code(t.file)} (seeded)` : code(t.file)))
+          .map((t) =>
+            t.kind === "seeded" || t.kind === "exhaustive"
+              ? `${code(t.file)} (${t.kind})`
+              : code(t.file),
+          )
           .join(", ") || "-",
       ]),
       cap,
