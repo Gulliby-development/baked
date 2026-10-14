@@ -230,8 +230,16 @@ function ServerForm({
           />
         </div>
       </div>
-      {tried && problem && <Alert tone="error">{problem}</Alert>}
-      {error && <Alert tone="error">{error}</Alert>}
+      {tried && problem && (
+        <Alert tone="error" role="alert">
+          {problem}
+        </Alert>
+      )}
+      {error && (
+        <Alert tone="error" role="alert">
+          {error}
+        </Alert>
+      )}
       <div className={FOOTER}>
         <Button type="button" variant="secondary" size="md" disabled={busy} onClick={onCancel}>
           Cancel
@@ -306,6 +314,7 @@ function ServerRow({
           <Button
             variant="secondary"
             size="md"
+            aria-label={`Edit ${server.name}`}
             disabled={busy}
             onClick={() => onOpen({ kind: "edit", server })}
           >
@@ -545,7 +554,11 @@ export function McpSection({ project }: SectionProps) {
                     " The global server with the same name takes its place."}
                 </DialogDescription>
               </DialogHeader>
-              {error && <Alert tone="error">{error}</Alert>}
+              {error && (
+                <Alert tone="error" role="alert">
+                  {error}
+                </Alert>
+              )}
               <div className={FOOTER}>
                 <Button variant="secondary" size="md" disabled={busy} onClick={close}>
                   Cancel
