@@ -160,6 +160,11 @@ export function LaunchNoteCard({
             </p>
           )
         )}
+        {note.asks && !closed && (
+          <p className="m-0 whitespace-pre-wrap text-[13px] leading-[1.45] text-foreground">
+            <span className="font-semibold">It asks:</span> {note.asks}
+          </p>
+        )}
         {note.result && <LaunchResult text={note.result} />}
       </div>
       {actions}

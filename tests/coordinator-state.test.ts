@@ -91,7 +91,7 @@ describe("coordinator project state", () => {
     const tool = tools[STATE_TOOL] as StateTool;
     expect(host.requests.at(-1)?.coordinator).toBe(true);
     // Ordinary sessions do not get the tool.
-    expect(host.requests[0]?.tools).toBeUndefined();
+    expect(Object.keys(host.requests[0]?.tools ?? {})).not.toContain(STATE_TOOL);
 
     const overview = await tool.execute({ view: "overview" });
     expect(overview.success).toBe(true);

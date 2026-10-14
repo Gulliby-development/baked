@@ -93,9 +93,10 @@ import { rebuildCoreMessages as rebuildCore } from "../sessions/rebuild.js";
 import type { SessionMeta, TabMeta } from "../sessions/types.js";
 import { watchOptions } from "../watch/config.js";
 import { WatchController, type WatchTurn, watchTurnDisplay } from "../watch/controller.js";
+import { needsGates } from "../workflows/gate-setup.js";
 import { projectDefinitions, proposeForWorkspace } from "../workflows/v2/propose.js";
 import { answerByRules } from "./approval-rules.js";
-import { COORDINATOR_MODE } from "./coordinator.js";
+import { COORDINATOR_MODE, coordinatorWorkStyle } from "./coordinator.js";
 import {
   closeLaunched,
   controlTools,
@@ -122,6 +123,7 @@ import {
   scheduleTool,
 } from "./coordinator-schedules.js";
 import { editedFiles, type SessionDiffStats, sessionDiffStats } from "./diff-stats.js";
+import { type GateToolContext, gateTools } from "./gate-tools.js";
 import { userContent } from "./images.js";
 import type { ExpandedChatInput } from "./input-expansion.js";
 import { hasInputReferences } from "./input-parse.js";
@@ -183,9 +185,12 @@ export type ChatPrompt = { id: string; createdAt: number } & (
       /** A coordinator's proposed split into flows; approving it launches them all. */
       kind: "split";
       title: string;
-      /** Independent runs in their own worktrees, or one initiative that orders dependent flows. */
-      mode: "runs" | "initiative";
-      /** `task`: the flow's issue (`owner/name#N`), `new issue` or `local task`. */
+      /**
+       * Independent runs in their own worktrees, one initiative that orders dependent flows, or
+       * parallel chat sessions without a workflow.
+       */
+      mode: "runs" | "initiative" | "chats";
+      /** `task`: the flow's issue (`owner/name#N`), `new issue`, `local task`, or for a chat what it may do. */
       flows: { id: string; title: string; paths: string[]; dependsOn: string[]; task: string }[];
       /** Binds the approval to exactly this split. */
       digest: string;
@@ -208,7 +213,9 @@ export type ChatPrompt = { id: string; createdAt: number } & (
       reason: string;
       /** The issue the run starts from. */
       issue?: string;
-      /** Binds the approval to exactly this workflow and request. */
+      /** Gates approving the card saves before the run starts, one `id: command` line each. */
+      gates?: string[];
+      /** Binds the approval to exactly this workflow, request and gates. */
       digest: string;
     }
 );
@@ -645,7 +652,7 @@ export class ChatSession {
     this.mode = modes.mode;
     this.permissions = modes.permissions;
     this.effort = tab.effort ?? "default";
-    this.contextSize = tab.contextSize ?? "default";
+    this.contextSize = meta.kind === "coordinator" ? "max" : (tab.contextSize ?? "default");
     this.usage = {
       input: tab.tokenUsage.prompt,
       output: tab.tokenUsage.completion,
@@ -737,7 +744,8 @@ export class ChatSession {
       effort: this.effort,
       permissions: this.permissions,
       contextSize: this.contextSize,
-      contextSizes: this.model ? getModelContextSizes(this.model) : [],
+      // The coordinator always runs with the largest window, so it offers no choice.
+      contextSizes: this.model && !this.isCoordinator ? getModelContextSizes(this.model) : [],
       contextTokens: this.model
         ? chatContextTokens(this.model, this.contextSize, this.sizeOptions)
         : null,
@@ -858,6 +866,11 @@ export class ChatSession {
     if (changes.model !== undefined) this.model = changes.model;
     if (changes.mode !== undefined && this.isCoordinator && changes.mode !== COORDINATOR_MODE)
       throw new ChatError("INVALID_REQUEST", "The coordinator always runs in architect mode");
+    if (changes.contextSize !== undefined && this.isCoordinator && changes.contextSize !== "max")
+      throw new ChatError(
+        "INVALID_REQUEST",
+        "The coordinator always runs with the largest context window",
+      );
     if (changes.mode !== undefined) {
       // The legacy `auto` mode is the default mode with full access.
       const modes = splitLegacyMode(changes.mode, changes.permissions ?? this.permissions);
@@ -1778,7 +1791,8 @@ export class ChatSession {
       bakeMode: this.mode,
       effort: this.effort,
       permissionMode: this.permissions,
-      contextSize: this.contextSize === "default" ? undefined : this.contextSize,
+      contextSize:
+        this.contextSize === "default" || this.isCoordinator ? undefined : this.contextSize,
       planMode: this.mode === "plan",
       tokenUsage: {
         ...this.tab.tokenUsage,
@@ -1969,7 +1983,11 @@ export class ChatService {
       list: (limit) => this.list(limit),
       messages: (id) => {
         const session = this.get(id);
-        return { title: session.title, messages: session.messages };
+        return {
+          title: session.title,
+          messages: session.messages,
+          pending: session.pendingPrompts,
+        };
       },
     };
     return {
@@ -1984,8 +2002,22 @@ export class ChatService {
         this.launcher,
         coordinatorLimits(this.options.config),
         this.workflowCatalog(),
+        coordinatorWorkStyle(this.options.config),
+        this.gateContext(coordinator),
       ),
+      ...gateTools(this.gateContext(coordinator)),
       ...controlTools(this, coordinator, this.projectState, this.launcher),
+    };
+  }
+
+  /** Where a session's gate tools save: the project, with this service's configuration. */
+  private gateContext(session: ChatSession): GateToolContext {
+    const saved = this.launcher?.gatesSaved;
+    return {
+      workspace: this.workspace,
+      config: this.options.config,
+      confirm: (text) => session.confirm(text),
+      saved: saved ? (checks) => saved(checks) : undefined,
     };
   }
 
@@ -1996,6 +2028,7 @@ export class ChatService {
     return {
       list: () => projectDefinitions(workspace, config),
       propose: (request) => proposeForWorkspace(workspace, config, request),
+      needsGates: (id) => needsGates(workspace, config, id),
     };
   }
 
@@ -2014,9 +2047,11 @@ export class ChatService {
 
   /** A coordinator thread's message tool and what it is told about its peers; none otherwise. */
   threadExtras(session: ChatSession): { tools?: Record<string, unknown>; instructions?: string } {
+    // Every chat can set the project's gates up; each save asks the person first.
+    const gates = gateTools(this.gateContext(session));
     const instructions = peerInstructions(this, session);
-    if (!instructions) return {};
-    return { tools: { [PEER_TOOL]: peerTool(this, session) }, instructions };
+    if (!instructions) return { tools: gates };
+    return { tools: { ...gates, [PEER_TOOL]: peerTool(this, session) }, instructions };
   }
 
   /** Context fills (0-1) at which a coordinator compacts itself, and below which it may again. */

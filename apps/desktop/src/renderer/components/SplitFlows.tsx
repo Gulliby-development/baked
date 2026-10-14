@@ -6,7 +6,7 @@ export function SplitFlows({
   /** Drawn on a coloured prompt card: dark text with dimmed details, in both themes. */
   onCard?: boolean;
   prompt: {
-    mode: "runs" | "initiative";
+    mode: "runs" | "initiative" | "chats";
     flows: {
       id: string;
       title: string;
@@ -26,7 +26,11 @@ export function SplitFlows({
         <li key={flow.id}>
           <span className="font-semibold">{flow.title}</span>{" "}
           <span className={`font-mono ${dim}`}>{flow.id}</span>
-          {flow.task && <div className="text-[12px]">Task: {flow.task}</div>}
+          {flow.task && (
+            <div className="text-[12px]">
+              {prompt.mode === "chats" ? flow.task : `Task: ${flow.task}`}
+            </div>
+          )}
           {flow.paths.length > 0 && (
             <div className={`font-mono text-[12px] wrap-anywhere ${dim}`}>
               {flow.paths.join(", ")}
