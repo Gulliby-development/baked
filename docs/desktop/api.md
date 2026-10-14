@@ -49,6 +49,7 @@ interface SessionSummary {
   model: string | null;   // provider/model of the next turn; null when nothing is configured
   mode: Mode;
   effort: Effort;         // reasoning effort of the next turn; "default" follows the configuration
+  efforts: Effort[];      // levels the session's model takes, lowest first; [] when it takes none (older servers leave it out)
   permissions: Permissions; // which actions wait for a prompt; defaultPermissionMode for new sessions
   contextSize: ContextSize;      // context size of the next turn (older servers leave it out)
   contextSizes: number[];        // windows in tokens the model offers, smallest first; [] when it has one
