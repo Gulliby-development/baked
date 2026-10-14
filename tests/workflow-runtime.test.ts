@@ -318,6 +318,37 @@ describe("durable SDD runtime", () => {
     const done = await service.drive(run.runId, new AbortController().signal);
     expect(done.status).toBe("completed");
   });
+  test("already_satisfied with a mistyped evidence id is repaired when the attempt changed nothing", async () => {
+    // expenses-py e0c0447d T010 (#1032): the attempt changed nothing, so the run and worktree
+    // snapshots were the same and every evidence row was offered twice. The unique-prefix repair
+    // saw two matches, kept the id with two characters swapped, and the run blocked.
+    const { service, executor, root } = setup();
+    writeFileSync(join(root, "value.txt"), "ready");
+    const original = executor.execute.bind(executor);
+    let cited = "";
+    executor.execute = async (request) => {
+      if (request.profile.output === "plan") {
+        const result = await original(request); const plan = PlanSchema.parse(result.output);
+        for (const task of plan.taskGraph.tasks) for (const write of task.writes) write.action = "modify";
+        return { ...result, output: plan };
+      }
+      if (request.profile.output !== "implementation") return original(request);
+      const files = await sourceManifest(root, generatedPaths(policy));
+      const evidenceId = service.store.transaction(() => {
+        const snapshot = service.store.putSnapshot(request.runId, files);
+        const artifact = service.store.artifact(request.runId, "read", `reads/${newId()}.json`, "{}");
+        return service.store.addEvidence(request.runId, "read", snapshot.id, artifact.id);
+      });
+      // Swaps two characters in the fourth group, as a8cc became a08c.
+      cited = `${evidenceId.slice(0, 20)}${evidenceId[21]}${evidenceId[20]}${evidenceId.slice(22)}`;
+      if (cited === evidenceId) cited = `${evidenceId.slice(0, 20)}${evidenceId[20] === "0" ? "1" : "0"}${evidenceId.slice(21)}`;
+      return { output: ImplementationSchema.parse({ schemaVersion: 1, taskId: request.task?.id, outcome: "already_satisfied", summary: "The value is in place", evidenceIds: [cited], unresolved: [] }), inputTokens: 20, outputTokens: 30 };
+    };
+    const { run } = await start(service); await service.drive(run.runId, new AbortController().signal); await approve(service, run.runId);
+    const done = await service.drive(run.runId, new AbortController().signal);
+    expect(cited).not.toBe("");
+    expect(done).toMatchObject({ status: "completed" });
+  });
   test("evidence counts for any of the snapshots given and no other", async () => {
     const { service } = setup(); const { run } = await start(service);
     const [a, b, c] = ["a", "b", "c"].map((value) => service.store.putSnapshot(run.runId, { "value.txt": value }));

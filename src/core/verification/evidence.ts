@@ -23,7 +23,10 @@ export const evidenceHandle = (index: number): string => `E${String(index + 1)}`
  * unambiguous by its first characters, the way a copy with a mistyped tail still is. A reference
  * that names nothing, or more than one entry, is returned unchanged for the validator to reject.
  */
-export function resolveEvidenceId(current: readonly EvidenceRow[], reference: string): string {
+export function resolveEvidenceId(offered: readonly EvidenceRow[], reference: string): string {
+  // The same row can be offered twice (the run and worktree snapshots of an attempt that changed
+  // nothing); it is still one entry, or the prefix repair below sees two (expenses-py T010, #1032).
+  const current = [...new Map(offered.map((e) => [e.id, e])).values()];
   const id = reference.trim();
   if (current.some((e) => e.id === id)) return id;
   const handle = /^E(\d+)$/i.exec(id);
