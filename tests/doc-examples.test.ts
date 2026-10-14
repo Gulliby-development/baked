@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -9,6 +9,7 @@ import {
   extractExamples,
   firstDifference,
   isDocFile,
+  missingBuildOutput,
   placeholderOf,
   runDocExamples,
 } from "../src/core/verification/doc-examples.js";
@@ -186,6 +187,59 @@ else console.log("balanced");`,
     ]);
     expect(results[0]?.reason).toStartWith("placeholder: FILE");
     expect(results[0]?.printed).toBeUndefined();
+  });
+});
+
+describe("scenario: pngvet a2da6c24, a run line of a build output (#1035)", () => {
+  // The README built the project, then ran the built program. The host ran the run line in a copy
+  // of the source files without building, printed "pngvet.dll does not exist" and reported a
+  // mismatch; the reviewer turned it into two corrective tasks (0.6M tokens) on a correct README.
+  const readme = [
+    "# pngvet",
+    `${fence}sh`,
+    "bun build src/cli.ts --outdir dist",
+    fence,
+    `${fence}sh`,
+    "bun dist/cli.js --help",
+    fence,
+    fence,
+    "usage: pngvet FILE",
+    fence,
+  ].join("\n");
+  const run = async (built: boolean) => {
+    const root = mkdtempSync(join(tmpdir(), "baked-doc-examples-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src", "cli.ts"), 'console.log("usage: pngvet FILE");');
+    const files = ["src/cli.ts"];
+    if (built) {
+      mkdirSync(join(root, "dist"));
+      writeFileSync(join(root, "dist", "cli.js"), 'console.log("usage: pngvet FILE");');
+      files.push("dist/cli.js");
+    }
+    return runDocExamples(new ProcessScope(), [{ path: "README.md", text: readme }], {
+      root,
+      files,
+      executables: ["bun"],
+      signal: new AbortController().signal,
+      sandbox: () => null,
+    });
+  };
+  test("an unbuilt build output is not run, so it is no mismatch", async () => {
+    const [result] = await run(false);
+    expect(result?.status).toBe("not_run");
+    expect(result?.reason).toStartWith("needs build: dist/cli.js");
+  });
+  test("a build output the workspace has is run", async () => {
+    expect((await run(true)).map((r) => r.status)).toEqual(["match"]);
+  });
+  test("only paths under a build directory count", () => {
+    expect(missingBuildOutput(["dotnet", "src/Pngvet/bin/Release/net10.0/pngvet.dll", "--help"], tmpdir())).toBe(
+      "src/Pngvet/bin/Release/net10.0/pngvet.dll",
+    );
+    expect(missingBuildOutput(["bun", "src/cli.ts"], tmpdir())).toBeNull();
+    expect(missingBuildOutput(["bun", "dist"], tmpdir())).toBeNull();
+    expect(missingBuildOutput(["bun", "--outdir=dist/x"], tmpdir())).toBeNull();
   });
 });
 
