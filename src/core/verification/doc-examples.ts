@@ -20,6 +20,8 @@ export const DOC_EXAMPLE_COPY_BYTES = 64 * 1024 * 1024;
 const OUTPUT_LIMIT = 2000;
 /** Directories a copy links instead of copying: installed dependencies a program imports. */
 const LINKED = ["node_modules", ".venv", "venv"];
+/** Directories compilers and bundlers write their output to; a source manifest never lists them. */
+const BUILD_DIRS = new Set(["bin", "obj", "target", "dist", "build", "out"]);
 const SHELL_LANGS = new Set(["", "sh", "bash", "shell", "console", "zsh", "terminal"]);
 const OUTPUT_LANGS = new Set(["", "text", "txt", "output", "plaintext", "console"]);
 
@@ -121,6 +123,21 @@ export function placeholderOf(command: string): string | null {
     // An option's own name is not a placeholder; the value after its = may be.
     const value = arg.startsWith("-") ? (arg.split("=")[1] ?? "") : arg;
     if (/^[A-Z][A-Z0-9_]*[A-Z0-9](\.\.\.)?$/.test(value)) return value;
+  }
+  return null;
+}
+
+/**
+ * The first argument of a command that is a path under a build output directory (`bin/`,
+ * `target/`, `dist/`, `build/`) and does not exist in `root`, or null. A README documents the
+ * build before such a run line, and the host runs examples without building (#1035).
+ */
+export function missingBuildOutput(argv: readonly string[], root: string): string | null {
+  for (const arg of argv) {
+    if (arg.startsWith("-") || !/[\\/]/.test(arg)) continue;
+    const segments = arg.split(/[\\/]+/).filter((s) => s && s !== ".");
+    if (!segments.slice(0, -1).some((s) => BUILD_DIRS.has(s))) continue;
+    if (!existsSync(join(root, ...segments))) return arg;
   }
   return null;
 }
@@ -334,6 +351,13 @@ export async function runDocExamples(
         if (copy === undefined) copy = copyWorkspace(options.root, options.files);
         if (copy === null) {
           skip(`The workspace is larger than ${DOC_EXAMPLE_COPY_BYTES / 1024 / 1024} MiB`);
+          continue;
+        }
+        const unbuilt = missingBuildOutput(example.argv, copy);
+        if (unbuilt) {
+          skip(
+            `needs build: ${unbuilt} is a build output that does not exist, and the host runs examples without building`,
+          );
           continue;
         }
         ran++;

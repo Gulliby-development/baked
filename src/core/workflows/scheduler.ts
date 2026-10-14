@@ -31,6 +31,7 @@ import {
   appendCorrections,
   failedCheckFindings,
   isTestOf,
+  noTestsCollected,
   pathsInOutput,
 } from "../verification/convergence.js";
 import {
@@ -272,11 +273,12 @@ import { DEFAULT_SAST_CONFIG, QUALITY_SAST, runSast, sastClaim, sastOf } from ".
 import { carriesOver, changedSince, previousRound } from "./re-review.js";
 import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery.js";
-import { deliverableProblems, requestCoverage } from "./request-coverage.js";
+import { deliverableProblems, repairDeliverables, requestCoverage } from "./request-coverage.js";
 import {
   abortableDelay,
   accountRefusal,
   endedOnProse,
+  failedOwnEdits,
   isCapacityError,
   isInputTooLarge,
   isTransient,
@@ -333,6 +335,7 @@ import {
 } from "./schemas.js";
 import { specSizeNote, specSizeProblems } from "./spec-size.js";
 import {
+  repairUncoveredCriteria,
   UNCOVERED_SUBMISSIONS,
   uncoveredCriterion,
   uncoveredFindings,
@@ -355,6 +358,7 @@ import {
   splitTestTasks,
   withTestDependencies,
 } from "./sizing.js";
+import { amendmentNote, type SpecAmendment, specAmendmentOf } from "./spec-amendment.js";
 import { digestsSpec, READ_CRITERION, readCriterionTool } from "./spec-digest.js";
 import { forgetProgress } from "./stall.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
@@ -525,6 +529,8 @@ const REJECTION_NOTE =
   "A person rejected the approval of the previous spec and plan with this explanation. Revise the spec, the plan and the tasks so they follow it; where it contradicts an assumption, the explanation wins.";
 /** A provider asking to wait longer than this is not waited for once a route has fallback models. */
 const LONG_RETRY_AFTER_MS = 30_000;
+/** How often a driving process writes the run's active time to the run row (#1038). */
+export const ACTIVE_FLUSH_MS = 1_000;
 /** The implementer's own list of what it left unfinished, for the blocked task's message. */
 /**
  * The planned files a failed check of a corrective task names, when the task may write none of
@@ -545,6 +551,8 @@ function isStoreError(error: unknown): boolean {
   const code = (error as { code?: unknown }).code;
   return error.name === "SQLiteError" || (typeof code === "string" && code.startsWith("SQLITE_"));
 }
+/** The start of the restart reason for an edit of the task's own file that did not apply. */
+const EDIT_RETRY = "an edit of its own file did not apply";
 const incompleteReason = (unresolved: string[]): string =>
   unresolved.length ? `: ${unresolved.slice(0, 3).join("; ").slice(0, 500)}` : "";
 /** Why a result that changed nothing was not accepted (#972: the message had no detail). */
@@ -686,6 +694,7 @@ export class WorkflowScheduler {
     const started = performance.now();
     const activeBefore = this.store.run(runId).active_ms;
     let idleMs = 0;
+    let idleFrom: number | null = null;
     const arm = () =>
       setTimeout(
         () => controller.abort(new WorkflowFault("BUDGET_EXHAUSTED", "Active deadline exhausted")),
@@ -700,13 +709,27 @@ export class WorkflowScheduler {
     this.idle = async <T>(sleep: () => Promise<T>): Promise<T> => {
       clearTimeout(timeout);
       const from = performance.now();
+      idleFrom = from;
       try {
         return await sleep();
       } finally {
+        idleFrom = null;
         idleMs += performance.now() - from;
         timeout = arm();
       }
     };
+    // The run row keeps the active time as it accrues, so a process that dies loses at most the
+    // last interval of it, not everything since the drive started (#1038).
+    let recorded = 0;
+    const recordActive = (): void => {
+      const now = performance.now();
+      const idle = idleMs + (idleFrom === null ? 0 : now - idleFrom);
+      const add = Math.ceil(now - started - idle - recorded);
+      if (add <= 0) return;
+      this.store.transaction(() => this.store.addActiveTime(runId, add));
+      recorded += add;
+    };
+    const flush = setInterval(recordActive, ACTIVE_FLUSH_MS);
     // Management commands from another process must stop this owner before the next effect.
     const poll = setInterval(() => {
       if (["paused", "cancelled"].includes(this.store.run(runId).status))
@@ -855,7 +878,11 @@ export class WorkflowScheduler {
                         repairHostBoundCriteria(parsed.data).spec,
                         policy.checks,
                       ),
-                      ...deliverableProblems(parsed.data, coverageRequest(state)),
+                      // The host maps a deliverable the spec names elsewhere itself (#1037).
+                      ...deliverableProblems(
+                        repairDeliverables(parsed.data, coverageRequest(state)).spec,
+                        coverageRequest(state),
+                      ),
                       ...assumeProblems(
                         policy,
                         questions,
@@ -877,6 +904,18 @@ export class WorkflowScheduler {
                     "diagnostic",
                     "spec-repairs/host-bound.json",
                     canonical({ postRelease: repair.repaired, added }),
+                  ),
+                );
+              }
+              const mapped = repairDeliverables(state.spec, coverageRequest(state));
+              if (mapped.repaired.length) {
+                state.spec = mapped.spec;
+                this.store.transaction(() =>
+                  this.store.artifact(
+                    runId,
+                    "diagnostic",
+                    "spec-repairs/deliverables.json",
+                    canonical({ mapped: mapped.repaired }),
                   ),
                 );
               }
@@ -913,7 +952,7 @@ export class WorkflowScheduler {
               // cover; it stops being a submission error and goes back to the spec (#780).
               const uncoveredSubmissions = new Map<string, number>();
               const cannotCover = new Set<string>();
-              const plan = PlanSchema.parse(
+              const submittedPlan = PlanSchema.parse(
                 await this.call(
                   runId,
                   stepId,
@@ -959,11 +998,13 @@ export class WorkflowScheduler {
                   (output) => {
                     const parsed = PlanSchema.safeParse(output);
                     if (!parsed.success) return [parsed.error.message];
+                    // The host lists a criterion on the task that implements its requirement (#1037).
+                    const submitted = repairUncoveredCriteria(spec, parsed.data).plan;
                     const problems = [
-                      ...this.planProblems(runId, spec, parsed.data, policy, profiles),
-                      ...codeTaskCheckProblems(parsed.data.taskGraph, policy),
-                      ...testWriteProblems(parsed.data.taskGraph, policy),
-                      ...testsFirstProblems(spec, parsed.data.taskGraph, policy),
+                      ...this.planProblems(runId, spec, submitted, policy, profiles),
+                      ...codeTaskCheckProblems(submitted.taskGraph, policy),
+                      ...testWriteProblems(submitted.taskGraph, policy),
+                      ...testsFirstProblems(spec, submitted.taskGraph, policy),
                     ];
                     const open = problems.filter((problem) => {
                       const id = uncoveredCriterion(problem);
@@ -987,6 +1028,17 @@ export class WorkflowScheduler {
                   scope ? { maxSteps: scope.maxSteps, maxTokens: scope.maxTokens } : undefined,
                 ),
               );
+              const listed = repairUncoveredCriteria(spec, submittedPlan);
+              const plan = listed.plan;
+              if (listed.repaired.length)
+                this.store.transaction(() =>
+                  this.store.artifact(
+                    runId,
+                    "diagnostic",
+                    "plan-repairs/uncovered.json",
+                    canonical({ listed: listed.repaired }),
+                  ),
+                );
               state.plan = plan.markdown;
               const problems = this.planProblems(runId, spec, plan, policy, profiles);
               const uncovered = problems.map(uncoveredCriterion);
@@ -2012,6 +2064,7 @@ export class WorkflowScheduler {
     } finally {
       forgetProgress(runId);
       clearInterval(poll);
+      clearInterval(flush);
       clearTimeout(timeout);
       this.idle = (sleep) => sleep();
       this.rearmDeadline = () => {};
@@ -2019,9 +2072,7 @@ export class WorkflowScheduler {
       leaseSignal.removeEventListener("abort", leaseLost);
       await this.processes.stop();
       try {
-        this.store.transaction(() =>
-          this.store.addActiveTime(runId, performance.now() - started - idleMs),
-        );
+        recordActive();
       } finally {
         this.leases.release();
       }
@@ -2072,7 +2123,12 @@ export class WorkflowScheduler {
     changed: string[],
     proseEnd = false,
   ): string | null {
-    if ((state.taskRestarts[task.id] ?? 0) > 0) return null;
+    const failedEdits = failedOwnEdits(result, task.writes);
+    const editRetry = failedEdits.length
+      ? `${EDIT_RETRY}: ${failedEdits.join(", ")}; the next attempt starts from the edits that applied`
+      : null;
+    if ((state.taskRestarts[task.id] ?? 0) > 0)
+      return (state.taskEditRetries[task.id] ?? 0) === 0 ? editRetry : null;
     const unfinished =
       ["blocked", "failed"].includes(result.outcome) || result.unresolved.length > 0;
     if (!unfinished) return null;
@@ -2087,7 +2143,7 @@ export class WorkflowScheduler {
       usage.steps.reduce((sum, step) => sum + step.toolCalls, 0) === 0
     )
       return "its session made no tool call and submitted no result, so it had no working tools";
-    if (policy.clarification !== "assume") return null;
+    if (policy.clarification !== "assume") return editRetry;
     return `the worker ended ${result.outcome === "implemented" ? "unfinished" : result.outcome} under clarification assume`;
   }
   /** The worker's own account of the attempt a restart replaces, for the fresh session's prompt. */
@@ -4801,7 +4857,11 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     carriedPaths: string[],
     account?: { summary: string; unresolved: string[] },
   ): boolean {
-    if ((state.taskRestarts[taskId] ?? 0) > 0) return false;
+    // A failed edit of the task's own file gets one attempt of its own, also after a restart (#1036).
+    const editRetry = reason.startsWith(EDIT_RETRY);
+    if (editRetry && (state.taskEditRetries[taskId] ?? 0) > 0) return false;
+    if (!editRetry && (state.taskRestarts[taskId] ?? 0) > 0) return false;
+    if (editRetry) state.taskEditRetries[taskId] = 1;
     // What the restart reuses of the attempt it replaces (#843): the files it carries and the
     // tokens that attempt spent, which count as reused only when files are carried.
     const interruptedTokens = this.store
@@ -5980,8 +6040,16 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       .filter((path) => isTestPath(path) && !changed.includes(path))
       .slice(0, 20)
       .flatMap((path) => read(path) ?? []);
+    // A correction of a spec amendment changes the tests that served the amended wording.
+    const amendments = this.amendments(runId);
+    const amending = amendments.some((a) => task.findingIds.includes(a.findingId));
     const found = scanTestIntegrity(changes, {
-      reasoned: new Set(task.writes.filter((w) => w.reason).map((w) => w.path)),
+      reasoned: new Set([
+        ...task.writes
+          .filter((w) => w.reason || (amending && isTestPath(w.path)))
+          .map((w) => w.path),
+        ...amendments.flatMap((a) => a.paths),
+      ]),
       testSources,
       specText: `${state.spec ? canonical(state.spec) : ""}\n${state.plan ?? ""}`,
     });
@@ -6202,9 +6270,10 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         return { path, before: kept, after: read(path) };
       }),
       {
-        reasoned: new Set(
-          tasks.flatMap((t) => t.writes.filter((w) => w.reason).map((w) => w.path)),
-        ),
+        reasoned: new Set([
+          ...tasks.flatMap((t) => t.writes.filter((w) => w.reason).map((w) => w.path)),
+          ...this.amendments(runId).flatMap((a) => a.paths),
+        ]),
         specText: `${state.spec ? canonical(state.spec) : ""}\n${state.plan ?? ""}`,
       },
     );
@@ -6756,8 +6825,20 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       if (t.id !== task.id && done.has(t.id))
         for (const write of t.writes)
           if (files.includes(write.path) && write.action !== "delete") owners.set(write.path, t.id);
+    // A plan that writes the tests last has none on disk yet: a test runner that collects no test
+    // then fails (pytest exit 5) without any defect in the named files (#1031).
+    const plannedTests = graph.tasks.flatMap((t) =>
+      t.writes.filter((w) => w.action !== "delete" && isTestPath(w.path)).map((w) => w.path),
+    );
+    const testsPending =
+      plannedTests.length > 0 &&
+      !plannedTests.some((path) => existsSync(workspacePath(root, path)));
     for (const check of policy.checks.filter((c) => c.required && c.scope === "feature")) {
       let checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
+      if (checked.status === "failed" && testsPending && noTestsCollected(checked.output ?? "")) {
+        ran.push({ checkId: check.id, status: "no_tests", evidenceId: checked.evidenceId });
+        continue;
+      }
       // A failure the check's fixer settles (`cargo fmt` on the named files) is no defect to route:
       // run the fixer as the checks stage does, journaled as `apply_fix`, and rerun the check
       // once; only what remains becomes a corrective task (#969).
@@ -9288,6 +9369,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         .findings(runId)
         .filter((f) => ids.has(f.id) && !["refuted", "resolved"].includes(f.status))
         .map((f) => ({ ...JSON.parse(f.body_json), id: f.id }) as Review["findings"][number]);
+      if (findings.length && target?.type === "tasks") this.amendSpec(runId, state, findings);
       if (findings.length && target?.type === "tasks")
         appendCorrections(
           this.store,
@@ -9572,6 +9654,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const fresh = findings.filter((f) => !open.has(f.id));
     if (!fresh.length) return;
     this.store.transaction(() => {
+      this.amendSpec(runId, state, fresh);
       appendCorrections(this.store, runId, state, policy, fresh, kind, scope);
       // A v2 run keeps its position: a task's repair runs in the tasks stage it is in, and a
       // stage's failure goes back along the definition's repair transition (#853).
@@ -9593,6 +9676,31 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         .filter((t) => t.origin !== "planned" && unfinished.has(t.id))
         .flatMap((t) => t.findingIds),
     );
+  }
+  /**
+   * Review findings that put the spec against the request record a spec amendment (#1034): the
+   * request wins over the criteria they name, every later agent reads that with the request, and
+   * the test-integrity guard accepts the tests their correction changes.
+   */
+  private amendSpec(runId: string, state: RuntimeState, findings: Review["findings"]): void {
+    if (!state.spec) return;
+    for (const finding of findings) {
+      const amendment = specAmendmentOf(finding, state.spec);
+      if (!amendment) continue;
+      const path = `amendments/${finding.id}.json`;
+      if (this.store.latestArtifact(runId, path)) continue;
+      this.store.artifact(runId, "assumption", path, canonical(amendment));
+      // A repeated finding of a later round names the same contradiction: one note is enough.
+      if (!state.prompt.includes(amendment.claim.slice(0, 1000)))
+        state.prompt += `\n${amendmentNote(path, amendment)}`;
+    }
+  }
+  /** The run's spec amendments (`amendments/*.json`). */
+  private amendments(runId: string): SpecAmendment[] {
+    return this.store
+      .artifacts(runId)
+      .filter((a) => a.logical_path.startsWith("amendments/"))
+      .map((a) => JSON.parse(this.store.readArtifact(runId, a.id)) as SpecAmendment);
   }
   private async accept(
     runId: string,

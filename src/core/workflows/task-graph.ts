@@ -35,15 +35,19 @@ export function readyTasks(
   );
 }
 
-/** Whether `text` names `path`: the path itself, or a module path's dotted form (`pkg.__main__`). */
+/**
+ * Whether `text` names `path`: the path itself, or a module path's dotted form (`pkg.__main__`).
+ * The dotted form followed by `/` or `.` and another component is a prefix of a longer path or
+ * module (`ignorewhy/globs.py`), so it names that, not the package's `__init__.py` (#1031).
+ */
 export function namesPath(text: string, path: string): boolean {
   if (text.includes(path)) return true;
   const stem = path.replace(/\.[^./]+$/, "");
   if (!stem.includes("/")) return false;
   const dotted = stem.replaceAll("/", ".").replace(/\.__init__$/, "");
-  return new RegExp(`(?:^|[^\\w.])${dotted.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w])`).test(
-    text,
-  );
+  return new RegExp(
+    `(?:^|[^\\w.])${dotted.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w]|[./\\\\]\\w)`,
+  ).test(text);
 }
 
 /**
@@ -247,6 +251,9 @@ export function pendingOwners(
   return [...owners];
 }
 
+/** A Rust integration test, `tests/*.rs` of a crate, which `cargo test` runs as its own binary. */
+const isRustTestFile = (path: string): boolean => /(?:^|\/)tests\/[^/]+\.rs$/.test(path);
+
 /**
  * The unfinished planned tasks that update the existing tests a failed check of `task` names, when
  * every file the output names is such a test: tests the task itself does not write and that a
@@ -267,7 +274,7 @@ export function testUpdateOwners(
   // source declaration it disagrees with in an indented line (mdtoc-update 952805a8, #972).
   const located = failingPathsInOutput(output, graph.tasks);
   const named = located.length ? located : pathsInOutput(output, graph.tasks);
-  if (!named.length || !named.every(isTestFile)) return [];
+  if (!named.length || !named.every((path) => isTestFile(path) || isRustTestFile(path))) return [];
   if (named.some((path) => task.writes.some((w) => w.path === path))) return [];
   const owners = new Set<string>();
   for (const path of named) {
