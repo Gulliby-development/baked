@@ -42,7 +42,16 @@ export function bansPropertyTests(request: string): boolean {
       request,
     ) ||
     /\b(?:only|plain|just)\s+(?:\w+\s+){0,2}example(?:[- ]based)?\s+tests?\b/i.test(request) ||
-    /\bexample(?:[- ]based)?\s+tests?\s+only\b/i.test(request)
+    /\bexample(?:[- ]based)?\s+tests?\s+only\b/i.test(request) ||
+    // A ban on random or fuzzed input forbids the generator a property test needs (#1064:
+    // cidrfold-update, "plain `testing` tests, no fuzzing, no random numbers").
+    // A bare "random" counts only right after the negation ("no random"), so "do not pick a random
+    // port" bans nothing.
+    /\b(?:no|without)\s+(?:fuzz(?:ing|er)?|random(?:ness)?)\b/i.test(request) ||
+    /\b(?:no|not|never|without|avoid|don't|do not|forbid\w*|ban\w*)\b[^.\n]{0,30}\b(?:fuzz(?:ing|ed|er)?|randomness|randomi[sz]ed\s+(?:tests?|testing|inputs?)|random\s+(?:numbers?|inputs?|data|values|tests?|testing|generators?))\b/i.test(
+      request,
+    ) ||
+    /\b(?:only\s+deterministic\s+tests?|deterministic\s+tests?\s+only)\b/i.test(request)
   );
 }
 export const propertyTestsOf = (
@@ -62,6 +71,11 @@ const LIBRARIES: readonly {
   shim: RegExp;
   /** A library-free property test: a seeded generator in the project's own test framework. */
   seeded: RegExp;
+  /**
+   * A deterministic property test: a loop over a bounded domain of at least 100 values (every
+   * mask of a byte, every host of a /24), for a request that forbids random input (#1064).
+   */
+  exhaustive: RegExp;
 }[] = [
   {
     language: "JS/TS",
@@ -70,6 +84,8 @@ const LIBRARIES: readonly {
     uses: /\bfrom\s+["']fast-check["']|require\(\s*["']fast-check["']\s*\)|\bfc\.(?:assert|property|asyncProperty)\(/,
     shim: /\btry\s*\{[^}]*(?:require|import)\(\s*["']fast-check["']/,
     seeded: /\b(?:seed|mulberry32|xorshift\w*|splitmix\w*|lcg|prng)\b[\s\S]*\bfor\s*\(/i,
+    exhaustive:
+      /\bfor\s*\(\s*(?:let|var)\s+\w+\s*=\s*-?\d+\s*;\s*\w+\s*<=?\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)/,
   },
   {
     language: "Python",
@@ -79,6 +95,8 @@ const LIBRARIES: readonly {
     shim: /\btry:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+(?:from\s+hypothesis\b|import\s+hypothesis\b)[\s\S]*?\nexcept\b[^\n]*(?:ImportError|ModuleNotFoundError|Exception)/,
     seeded:
       /\brandom\.(?:Random\(|seed\()[\s\S]*\bfor\s+\w+\s+in\b|\bfor\s+\w+\s+in\b[\s\S]*\brandom\.(?:Random\(|seed\()/,
+    exhaustive:
+      /\bfor\s+\w+\s+in\s+range\(\s*(?:-?\d+\s*,\s*)?(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)|\bitertools\.product\(/,
   },
   {
     language: "Rust",
@@ -88,6 +106,8 @@ const LIBRARIES: readonly {
     shim: /$^/,
     seeded:
       /\b(?:seed_from_u64|from_seed|wrapping_mul)\b[\s\S]*\bfor\s+\w+\s+in\b|\bfor\s+\w+\s+in\b[\s\S]*\b(?:seed_from_u64|from_seed|wrapping_mul)\b/,
+    exhaustive:
+      /\bfor\s+\w+\s+in\s+(?:\(?-?\d+(?:[iu]\d+)?\s*\.\.=?\s*(?:\d{3,}|\d+\s*<<\s*\d+|[iu]\d+::MAX)|[iu]\d+::MIN\s*\.\.=?\s*[iu]\d+::MAX)/,
   },
   {
     language: "Java/Kotlin",
@@ -96,6 +116,8 @@ const LIBRARIES: readonly {
     uses: /@Property\b|\bnet\.jqwik\b/,
     shim: /$^/,
     seeded: /\bRandom\(\s*\d+L?\s*\)[\s\S]*\b(?:for|repeat)\s*\(/,
+    exhaustive:
+      /\bfor\s*\(\s*(?:int|long|var|val)\s+\w+\s*=\s*-?\d+L?\s*;\s*\w+\s*<=?\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)|\bfor\s*\(\s*\w+\s+in\s+-?\d+\s*(?:\.\.|until)\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)/,
   },
   {
     language: "Go",
@@ -104,6 +126,8 @@ const LIBRARIES: readonly {
     uses: /\brapid\.Check\(|\bgopter\b|\bquick\.Check\(/,
     shim: /$^/,
     seeded: /\brand\.New\(\s*rand\.NewSource\(|\brand\.NewPCG\(/,
+    exhaustive:
+      /\bfor\s+\w+\s*:=\s*-?\d+\s*;\s*\w+\s*<=?\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+|math\.Max\w+)|\bfor\s+\w+\s*:=\s*range\s+(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)/,
   },
   {
     language: "C#/F#",
@@ -112,22 +136,25 @@ const LIBRARIES: readonly {
     uses: /\bFsCheck\b|\[Property\b|Prop\.ForAll/,
     shim: /$^/,
     seeded: /\bRandom\(\s*\d+\s*\)[\s\S]*\b(?:for|foreach)\s*\(/,
+    exhaustive:
+      /\bfor\s*\(\s*(?:int|long|var)\s+\w+\s*=\s*-?\d+\s*;\s*\w+\s*<=?\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)|\bfor\s+\w+\s+in\s+-?\d+\s*\.\.\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)/,
   },
 ];
 
-export type PropertyTestKind = "library" | "seeded" | "shim" | null;
+export type PropertyTestKind = "library" | "seeded" | "exhaustive" | "shim" | null;
 
 /**
  * What kind of property test a test file holds: one with the ecosystem library, a library-free
- * one with a seeded generator, a library import behind a fallback that fakes it (never counted),
- * or none.
+ * one with a seeded generator, a deterministic loop over a bounded domain, a library import behind
+ * a fallback that fakes it (never counted), or none.
  */
 export function propertyTestKind(path: string, content: string): PropertyTestKind {
   const lib = LIBRARIES.find((l) => l.files.test(path));
   if (!lib) return null;
   if (lib.shim.test(content)) return "shim";
   if (lib.uses.test(content)) return "library";
-  return lib.seeded.test(content) ? "seeded" : null;
+  if (lib.seeded.test(content)) return "seeded";
+  return lib.exhaustive.test(content) ? "exhaustive" : null;
 }
 
 /** Whether a test file holds a property-based test with the ecosystem library. */
@@ -230,11 +257,11 @@ export function propertyTestsNote(
     ? `Use the property library the project already has: ${installed.map((lib) => `${lib.library} (${lib.language})`).join(", ")}.`
     : "";
   const free = missing.length
-    ? ` Where the project has no property library (${missing.map((lib) => lib.language).join(", ")}), write a library-free property test in the project's own test framework: a generator with a fixed seed (for example random.Random(1234) or a small seeded PRNG) that produces at least 100 inputs over the whole domain, edge values included, and checks the criterion for each, printing the failing input. Do not add a dependency for it, and do not import a library behind a fallback.`
+    ? ` Where the project has no property library (${missing.map((lib) => lib.language).join(", ")}), write a library-free property test in the project's own test framework: a generator with a fixed seed (for example random.Random(1234) or a small seeded PRNG) that produces at least 100 inputs over the whole domain, edge values included, and checks the criterion for each, printing the failing input; or, where the domain is small enough, a loop over all of it (at least 100 values, such as every mask of a byte). Do not add a dependency for it, and do not import a library behind a fallback.`
     : "";
   const how = `${use}${free}`.trim();
   if (output === "spec")
-    return `Property-based tests are on. Mark each criterion whose behavior should hold for every input of a domain with "property": one of ${PROPERTY_DOMAINS.join(", ")}. Typical cases: numeric conversions and arithmetic, string handling, parsers, encode/decode or serialize/parse round trips, and invariants such as sorting keeping every element. Leave property out for criteria about one fixed example, the UI, or external services. A marked criterion never needs a new dependency: without a property library its test uses a seeded generator.`;
+    return `Property-based tests are on. Mark each criterion whose behavior should hold for every input of a domain with "property": one of ${PROPERTY_DOMAINS.join(", ")}. Typical cases: numeric conversions and arithmetic, string handling, parsers, encode/decode or serialize/parse round trips, and invariants such as sorting keeping every element. Leave property out for criteria about one fixed example, the UI, or external services. A marked criterion never needs a new dependency: without a property library its test uses a seeded generator or enumerates a bounded domain.`;
   if (output === "plan")
     return `Property-based tests are on. Each criterion with "property" needs a test task that covers it and writes a property-based test file. ${how} The host checks after the checks that each such criterion has a property test.`;
   if (output === "implementation")
@@ -284,7 +311,7 @@ export function checkPropertyTests(
       const kind = content === null ? null : propertyTestKind(file, content);
       return {
         file,
-        property: kind === "library" || kind === "seeded",
+        property: kind === "library" || kind === "seeded" || kind === "exhaustive",
         ...(kind ? { kind } : {}),
       };
     });
