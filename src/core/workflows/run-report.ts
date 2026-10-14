@@ -710,7 +710,14 @@ function render(facts: Facts, cap: number): string {
 
   if (facts.tasks.length) {
     const done = facts.tasks.filter((t) => ["implemented", "verified"].includes(t.status)).length;
-    out.push("## Tasks", "", `${done} of ${facts.tasks.length} done.`, "");
+    // A task a later plan revision cancelled is history, not work the run still owes (#1190).
+    const cancelled = facts.tasks.filter((t) => t.status === "cancelled").length;
+    out.push(
+      "## Tasks",
+      "",
+      `${done} of ${facts.tasks.length - cancelled} done${cancelled ? `; ${cancelled} cancelled by a plan revision` : ""}.`,
+      "",
+    );
     out.push(
       ...table(
         ["Task", "Title", "Status", "Origin"],
