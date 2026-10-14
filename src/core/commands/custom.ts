@@ -1,6 +1,14 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /**
  * Custom slash commands: Markdown prompt templates in `~/.baked/commands/`
@@ -216,4 +224,147 @@ export function getCachedCustomCommands(
   const commands = listCustomCommands(cwd, options);
   cache = { key, at: now, commands };
   return commands;
+}
+
+/** A command as a form edits it: the frontmatter values as written and the template body. */
+export interface CustomCommandDraft {
+  /** `fix-ci`, `/fix-ci` or `frontend:component`. */
+  name: string;
+  description?: string;
+  argumentHint?: string;
+  body: string;
+}
+
+/** Why a command could not be saved or removed; `status` is the HTTP status the API answers with. */
+export class CustomCommandError extends Error {
+  constructor(
+    message: string,
+    readonly status: 400 | 404 | 409,
+  ) {
+    super(message);
+  }
+}
+
+/** The slash name of `input` (`/fix-ci`), or an error naming what is wrong with it. */
+export function normalizeCommandName(input: string): string {
+  const raw = input.trim().replace(/^\//, "");
+  if (!raw) throw new CustomCommandError("A command needs a name", 400);
+  const segments = raw.split(":");
+  if (
+    segments.length > MAX_DEPTH + 1 ||
+    segments.some((segment) => !SEGMENT_RE.test(segment) || segment.endsWith(".md"))
+  )
+    throw new CustomCommandError(
+      `"${input.trim()}" is not a valid command name: use lowercase letters, digits, "-", "_" and "." (and ":" for a folder), such as fix-ci or frontend:component`,
+      400,
+    );
+  return `/${segments.join(":")}`;
+}
+
+/** The commands of one scope only, without the other scope's replacements. */
+function scopeCommands(
+  cwd: string,
+  scope: CustomCommandScope,
+  options: CustomCommandOptions,
+): Map<string, CustomCommand> {
+  const out = new Map<string, CustomCommand>();
+  const dir = commandDirs(cwd, options).find((d) => d.scope === scope);
+  if (dir) scanDir(dir.path, [], scope, out, 0);
+  return out;
+}
+
+/** The frontmatter values and body of a command's file as written, for an edit form. */
+export function readCustomCommandDraft(
+  cwd: string,
+  scope: CustomCommandScope,
+  name: string,
+  options: CustomCommandOptions = {},
+): CustomCommandDraft & { path: string } {
+  const slash = normalizeCommandName(name);
+  const found = scopeCommands(cwd, scope, options).get(slash);
+  if (!found) throw new CustomCommandError(`No ${scope} command ${slash}`, 404);
+  const { meta, body } = splitFrontmatter(readFileSync(found.path, "utf-8").replace(/^\uFEFF/, ""));
+  return {
+    name: slash,
+    description: meta.description ?? "",
+    argumentHint: meta["argument-hint"] ?? "",
+    body,
+    path: found.path,
+  };
+}
+
+/** One frontmatter value on one line, quoted when the parser would otherwise strip its quotes. */
+function frontmatterValue(value: string): string {
+  const line = value.replace(/\s*\r?\n\s*/g, " ").trim();
+  return /^(["']).*\1$/.test(line) ? (line.startsWith('"') ? `'${line}'` : `"${line}"`) : line;
+}
+
+/**
+ * Writes a command of `scope` as `<dir>/<segments>.md`. `previous` names the command an edit
+ * replaces: a rename moves its file. Rejects an empty or invalid name, an empty body, and a name
+ * another command of the scope already has.
+ */
+export function saveCustomCommand(
+  cwd: string,
+  scope: CustomCommandScope,
+  draft: CustomCommandDraft,
+  options: CustomCommandOptions & { previous?: string } = {},
+): CustomCommand {
+  const name = normalizeCommandName(draft.name);
+  const body = draft.body.trim();
+  if (!body) throw new CustomCommandError("A command needs a prompt", 400);
+  if (Buffer.byteLength(body) > MAX_FILE_BYTES - 1024)
+    throw new CustomCommandError("A command's prompt must stay under 63 KB", 400);
+  const existing = scopeCommands(cwd, scope, options);
+  const previous = options.previous
+    ? existing.get(normalizeCommandName(options.previous))
+    : undefined;
+  if (options.previous && !previous)
+    throw new CustomCommandError(
+      `No ${scope} command ${normalizeCommandName(options.previous)}`,
+      404,
+    );
+  const taken = existing.get(name);
+  if (taken && taken.path !== previous?.path)
+    throw new CustomCommandError(`A ${scope} command ${name} already exists`, 409);
+  const root = commandDirs(cwd, options).find((d) => d.scope === scope)?.path ?? "";
+  const path = taken?.path ?? `${join(root, ...name.slice(1).split(":"))}.md`;
+  const meta = [
+    draft.description?.trim() ? `description: ${frontmatterValue(draft.description)}` : "",
+    draft.argumentHint?.trim() ? `argument-hint: ${frontmatterValue(draft.argumentHint)}` : "",
+  ].filter(Boolean);
+  const text = `${meta.length ? `---\n${meta.join("\n")}\n---\n` : ""}${body}\n`;
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, text);
+  if (previous && previous.path !== path) removeCommandFile(previous.path, root);
+  cache = null;
+  return parseCommandFile(name, text, path, scope);
+}
+
+/** Removes a command of `scope`; empty folders it leaves under the commands folder go too. */
+export function deleteCustomCommand(
+  cwd: string,
+  scope: CustomCommandScope,
+  name: string,
+  options: CustomCommandOptions = {},
+): void {
+  const slash = normalizeCommandName(name);
+  const found = scopeCommands(cwd, scope, options).get(slash);
+  if (!found) throw new CustomCommandError(`No ${scope} command ${slash}`, 404);
+  removeCommandFile(
+    found.path,
+    commandDirs(cwd, options).find((d) => d.scope === scope)?.path ?? "",
+  );
+  cache = null;
+}
+
+function removeCommandFile(path: string, root: string): void {
+  rmSync(path, { force: true });
+  for (let dir = dirname(path); dir.startsWith(root) && dir !== root; dir = dirname(dir)) {
+    try {
+      rmdirSync(dir);
+    } catch {
+      return;
+    }
+  }
 }

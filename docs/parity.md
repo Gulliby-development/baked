@@ -48,7 +48,7 @@ bun test tests/feature-parity.test.ts
 | --- | --- | --- | --- | --- |
 | Chat with the agent | `key Enter`, `/session`, `/session new` +2 | `--headless`, `--chat` | `/v1/sessions`, `/v1/sessions/:id`, `/v1/sessions/:id/messages` +3 | `project/chat` |
 | Run custom slash commands (.baked/commands) in chat | `key /` | `--headless` | `/v1/sessions/:id/messages` | `project/chat` |
-| List custom commands | `/commands` | Not needed: scripts read .baked/commands directly | `/v1/commands` | `settings/commands` |
+| List, add, edit and remove custom commands | `/commands` | Not needed: scripts read and write .baked/commands directly | `/v1/commands`, `/v1/commands/project/:id`, `/v1/commands/global/:id` | `settings/commands` |
 | Session list, resume and rename | `/session history`, `/session rename` | `--resume`, `--session`, `baked session list` | `/v1/sessions`, `/v1/sessions/:id` | `project/chat` |
 | Delete a session | `/session history` | `baked session delete` | `/v1/sessions/:id` | `project/chat` |
 | Export a chat (Markdown, JSON, clipboard) | `/session export`, `/session export json`, `/session export clipboard` | `baked session export` | `/v1/sessions/:id/export` | `project/chat` |

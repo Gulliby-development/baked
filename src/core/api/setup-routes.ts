@@ -13,7 +13,14 @@ import {
 } from "../../config/index.js";
 import type { AppConfig } from "../../types/index.js";
 import { agentContextPreview } from "../agent-context.js";
-import { listCustomCommands } from "../commands/custom.js";
+import {
+  CustomCommandError,
+  type CustomCommandScope,
+  deleteCustomCommand,
+  listCustomCommands,
+  readCustomCommandDraft,
+  saveCustomCommand,
+} from "../commands/custom.js";
 import {
   instructionSourceStates,
   isInstructionSource,
@@ -188,6 +195,18 @@ const SkillInstallBody = z.strictObject({
   scope: z.enum(["project", "global"]),
 });
 const SKILL_ITEM = /^\/v1\/skills\/(project|global|package)\/([^/]+)$/;
+const CommandFields = {
+  name: z.string().max(200),
+  description: z.string().max(400).optional(),
+  argumentHint: z.string().max(200).optional(),
+  body: z.string().max(64 * 1024),
+};
+const CommandCreateBody = z.strictObject({
+  scope: z.enum(["project", "global"]),
+  ...CommandFields,
+});
+const CommandUpdateBody = z.strictObject(CommandFields);
+const COMMAND_ITEM = /^\/v1\/commands\/(project|global)\/([^/]+)$/;
 const KeyBody = z.strictObject({ key: z.string().trim().min(1).max(4096) });
 const PROVIDER_KEY = /^\/v1\/providers\/([a-z0-9-]+)\/key$/;
 const PROVIDER_LOGIN = /^\/v1\/providers\/([a-z0-9-]+)\/(login|logout|switch)$/;
@@ -336,18 +355,65 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
     );
   }
 
+  const commandHome = ctx.homeDir ? { home: ctx.homeDir } : {};
+  const commandList = () => ({
+    commands: listCustomCommands(workspace, commandHome).map((command) => ({
+      name: command.name,
+      scope: command.scope,
+      path: command.path,
+      description: command.description,
+      ...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
+    })),
+  });
+  /** Runs a command write; a rejected name or a missing command answers with its status. */
+  const commandWrite = <T>(write: () => T): T => {
+    try {
+      return write();
+    } catch (error) {
+      if (!(error instanceof CustomCommandError)) throw error;
+      return ctx.fail(
+        error.status,
+        error.status === 404 ? "NOT_FOUND" : error.status === 409 ? "CONFLICT" : "INVALID_COMMAND",
+        error.message,
+      );
+    }
+  };
+
   if (path === "/v1/commands") {
-    ctx.only("GET");
+    ctx.only("GET", "POST");
+    if (method === "GET") return ctx.json(200, commandList());
+    const { scope, ...draft } = CommandCreateBody.parse(await ctx.readJson());
+    const command = commandWrite(() => saveCustomCommand(workspace, scope, draft, commandHome));
+    return ctx.json(201, {
+      command: { name: command.name, scope, path: command.path },
+      ...commandList(),
+    });
+  }
+
+  const commandItem = COMMAND_ITEM.exec(path);
+  if (commandItem) {
+    ctx.only("GET", "PUT", "DELETE");
+    const scope = commandItem[1] as CustomCommandScope;
+    let name = commandItem[2] ?? "";
+    try {
+      name = decodeURIComponent(name);
+    } catch {}
+    if (method === "GET")
+      return ctx.json(200, {
+        scope,
+        ...commandWrite(() => readCustomCommandDraft(workspace, scope, name, commandHome)),
+      });
+    if (method === "DELETE") {
+      commandWrite(() => deleteCustomCommand(workspace, scope, name, commandHome));
+      return ctx.json(200, commandList());
+    }
+    const draft = CommandUpdateBody.parse(await ctx.readJson());
+    const command = commandWrite(() =>
+      saveCustomCommand(workspace, scope, draft, { ...commandHome, previous: name }),
+    );
     return ctx.json(200, {
-      commands: listCustomCommands(workspace, ctx.homeDir ? { home: ctx.homeDir } : {}).map(
-        (command) => ({
-          name: command.name,
-          scope: command.scope,
-          path: command.path,
-          description: command.description,
-          ...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
-        }),
-      ),
+      command: { name: command.name, scope, path: command.path },
+      ...commandList(),
     });
   }
 
