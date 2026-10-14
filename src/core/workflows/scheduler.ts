@@ -3383,9 +3383,24 @@ export class WorkflowScheduler {
       const plan = stages.findIndex((stage) => stage.kind === "plan");
       if (plan >= 0) {
         this.raiseBudget(runId, state, policy, report);
+        const note = splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask);
+        // Under `revision: "patch"` the planner splits the oversized tasks with edit operations;
+        // a whole new plan cost ratesim 029a5aec 170k tokens to split one skeleton task (#1112).
+        this.pendPatch(
+          state,
+          policy,
+          [
+            {
+              kind: "sizing",
+              refs: ["tasks.json", `sizing/plan-${String(state.sizingReplans)}.json`],
+              description: note,
+            },
+          ],
+          ["plan"],
+        );
         state.sizingReplans = 1;
         state.prompt += `
-${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`;
+${note}`;
         state.analysisPassed = false;
         state.stageIndex = plan;
         this.store.transaction(() => this.store.saveState(runId, state));
