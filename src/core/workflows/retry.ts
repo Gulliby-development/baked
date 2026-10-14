@@ -179,3 +179,8 @@ export function failedOwnEdits(
 export function endedOnProse(error: unknown): error is WorkflowFault {
   return error instanceof WorkflowFault && error.details.reason === "prose_end";
 }
+
+/** Whether an attempt used its token cap without submitting a result (`attemptCapFault`). */
+export function atAttemptCap(error: unknown): error is WorkflowFault {
+  return error instanceof WorkflowFault && error.details.reason === "attempt_cap";
+}

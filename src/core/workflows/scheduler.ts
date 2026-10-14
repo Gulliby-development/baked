@@ -277,6 +277,7 @@ import { deliverableProblems, repairDeliverables, requestCoverage } from "./requ
 import {
   abortableDelay,
   accountRefusal,
+  atAttemptCap,
   endedOnProse,
   failedOwnEdits,
   isCapacityError,
@@ -2084,14 +2085,55 @@ export class WorkflowScheduler {
    * tasks stopped at the cap with the work nearly done (runs 7df4e666, b0d7484c, 8e117dfa).
    */
   private continueAtCap(runId: string, state: RuntimeState, stepId: string, task: Task): boolean {
-    if ((state.taskContinuations[task.id] ?? 0) > 0) return false;
-    const record = this.lastAttemptUsage(runId, stepId);
-    // An attempt the progress watcher stopped was stuck, not short of room.
-    if (!record || record.finalizedBy === null || record.finalizedBy === "watcher") return false;
+    const record = this.capContinuable(runId, state, stepId, task);
+    if (!record) return false;
     state.taskContinuations[task.id] = 1;
     state.taskBudgets[task.id] = Math.ceil(record.maxTokens * 1.5);
     state.taskSteps[task.id] = Math.ceil(record.maxSteps * 1.5);
     return true;
+  }
+  /** The usage record of a step's latest attempt when its task may still continue at the cap. */
+  private capContinuable(
+    runId: string,
+    state: RuntimeState,
+    stepId: string,
+    task: Task,
+  ): AttemptUsageRecord | undefined {
+    if ((state.taskContinuations[task.id] ?? 0) > 0) return undefined;
+    const record = this.lastAttemptUsage(runId, stepId);
+    // An attempt the progress watcher stopped was stuck, not short of room.
+    if (!record || record.finalizedBy === null || record.finalizedBy === "watcher")
+      return undefined;
+    return record;
+  }
+  /**
+   * The result of an implementer attempt that used its token cap without submitting (#1056). The
+   * forced final submit needs room an attempt ending exactly at the cap may not have, so the same
+   * attempt either restarted its task or stopped the run (bench round 20: 3 of 9 runs). When the
+   * task may still continue at the cap and the attempt changed files, it is a blocked result, so
+   * the task continues on its edits like a capped attempt that submitted, and the other tasks of
+   * its batch are integrated. Otherwise the fault stops the run as before.
+   */
+  private async capEndResult(
+    runId: string,
+    state: RuntimeState,
+    stepId: string,
+    task: Task,
+    fault: WorkflowFault,
+    currentPaths: () => Promise<string[]>,
+  ): Promise<Implementation> {
+    if (!this.capContinuable(runId, state, stepId, task) || !(await currentPaths()).length)
+      throw fault;
+    return {
+      schemaVersion: 1,
+      taskId: task.id,
+      outcome: "blocked",
+      summary: fault.message.slice(0, 15000),
+      evidenceIds: [],
+      unresolved: [
+        "The attempt used its token cap before it submitted a result; the next attempt continues from its edits.",
+      ],
+    };
   }
   /** The usage record of the latest attempt of a step, when the executor wrote one. */
   private lastAttemptUsage(runId: string, stepId: string): AttemptUsageRecord | undefined {
@@ -4003,6 +4045,15 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           signal,
           scoped,
         ).catch(async (error: unknown) => {
+          if (atAttemptCap(error))
+            return this.capEndResult(
+              runId,
+              state,
+              child,
+              task,
+              error,
+              async () => (await currentChanges()).changed,
+            );
           if (!endedOnProse(error)) throw error;
           proseEnd = true;
           return this.proseEndResult(
@@ -4305,9 +4356,14 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           batch.map((entry) => this.runTaskWorker(runId, state, policy, entry, checks, signal)),
         );
         // A stopped run integrates nothing: its unintegrated tasks are invalidated on recovery.
-        // A rejected task does not keep the others of its batch out of the run worktree.
+        // A rejected task does not keep the others of its batch out of the run worktree. Neither
+        // does one stopped at its attempt cap: the run itself can go on, and the resume would
+        // otherwise run its finished siblings again (#1056).
         const fatal = outcomes.find((outcome) => outcome.kind === "fatal");
         if (fatal) failure = fatal.error;
+        const integrate = outcomes.every(
+          (outcome) => outcome.kind !== "fatal" || atAttemptCap(outcome.error),
+        );
         for (const outcome of outcomes) {
           if (outcome.kind === "fatal") continue;
           const error = await this.settleOutcome(
@@ -4316,7 +4372,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             policy,
             profiles,
             outcome,
-            !!fatal,
+            !integrate,
             lost,
             signal,
           );
@@ -5032,6 +5088,15 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           undefined,
           { root, attemptId: entry.attemptId },
         ).catch(async (error: unknown) => {
+          if (atAttemptCap(error))
+            return this.capEndResult(
+              runId,
+              state,
+              entry.child,
+              task,
+              error,
+              async () => (await currentChanges()).changed,
+            );
           if (!endedOnProse(error)) throw error;
           proseEnd = true;
           return this.proseEndResult(
