@@ -61,7 +61,7 @@ export function promptLine(prompt: ChatPrompt): string {
     }
     case "split": {
       const flows = prompt.flows.map((f) => `\n  - ${f.title} (${f.task})`).join("");
-      return `Split "${prompt.title}" into ${prompt.flows.length} ${prompt.mode === "initiative" ? "flows of one initiative" : "runs"}:${flows}`;
+      return `Split "${prompt.title}" into ${prompt.flows.length} ${prompt.mode === "initiative" ? "flows of one initiative" : prompt.mode === "chats" ? "parallel chats" : "runs"}:${flows}`;
     }
   }
 }

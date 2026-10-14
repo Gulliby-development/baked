@@ -120,6 +120,8 @@ export interface LaunchNote {
   worktree?: SessionWorktree;
   /** For a session whose turn ended: its last answer, shortened. */
   result?: string;
+  /** For a session waiting for the person: what it asks, such as its question and options. */
+  asks?: string;
   /** For `auto-answered`: what the coordinator approved by one of the person's rules. */
   answered?: string;
   /**
@@ -184,7 +186,7 @@ export type ChatPrompt = { id: string; createdAt: number } & (
   | {
       kind: "split";
       title: string;
-      mode: "runs" | "initiative";
+      mode: "runs" | "initiative" | "chats";
       flows: {
         id: string;
         title: string;
