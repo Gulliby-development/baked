@@ -27,6 +27,11 @@ export interface SpecAmendment {
    * it, #1066). Absent in amendments recorded before #1066, which are all "request".
    */
   authority?: "request" | "implementation";
+  /**
+   * Where it was found: a review (absent), or an analysis finding on the spec that survived the
+   * last return before implement and was settled for the request (#1120).
+   */
+  source?: "analysis";
 }
 
 /** The finding sets the spec against what the request (the brief) states. */
@@ -103,10 +108,41 @@ export function documentAmendmentOf(
   };
 }
 
+/** A reference of an analysis finding that names the spec rather than the plan or the tasks. */
+const SPEC_REF = /(?:^|[\\/])spec\.json\b|^(?:AC|FR)-\d+$|\b(?:inScope|outOfScope|assumptions)\b/;
+
+/**
+ * The amendment an analysis finding on the spec records when it survived the last return and the
+ * request settles it (#1120): cfgtrace b4dc83b2 started implement with a CI workflow still in
+ * `outOfScope`, review raised the same finding against `spec.json` at the end, and the run blocked
+ * `input_changed` with three reproduced defects open. With the amendment, every later agent reads
+ * that the request wins over the spec on this point. Null for a finding about the plan or tasks.
+ */
+export function analysisAmendmentOf(
+  finding: { id: string; refs: string[]; description: string },
+  spec: Pick<Spec, "criteria" | "requirements">,
+): SpecAmendment | null {
+  if (!finding.refs.some((ref) => SPEC_REF.test(ref.trim()))) return null;
+  const named = (id: string) =>
+    finding.refs.includes(id) || new RegExp(`\\b${id}\\b`).test(finding.description);
+  return {
+    findingId: `analysis-${finding.id}`,
+    criterionIds: spec.criteria.map((c) => c.id).filter(named),
+    requirementIds: spec.requirements.map((r) => r.id).filter(named),
+    paths: [],
+    claim: finding.description,
+    suggestedFix: "Read the spec as the request states on this point",
+    authority: "request",
+    source: "analysis",
+  };
+}
+
 /** The line every later agent reads with the request. */
 export function amendmentNote(path: string, amendment: SpecAmendment): string {
   const ids = [...amendment.criterionIds, ...amendment.requirementIds];
   const scope = ids.length ? ids.join(", ") : "the spec, the plan and the tasks";
+  if (amendment.source === "analysis")
+    return `Spec amendment (${path}): analysis found that the approved spec still disagrees with the request after its last revision: ${amendment.claim.slice(0, 1000)} The request is authoritative over ${scope} on this point; spec.json is not rewritten. The plan, tasks, code and tests follow the request, and reviews and convergence judge ${scope} by what the request states and do not raise this point of the spec again.`;
   if (amendment.authority === "implementation")
     return `Spec amendment (${path}): a review found that the approved spec or plan no longer matches what a correction deliberately implemented: ${amendment.claim.slice(0, 1000)} The implementation is authoritative over ${scope} on this point (${amendment.suggestedFix.slice(0, 600)}); the run documents are not rewritten. Reviews and convergence judge ${scope} by the implementation on this point and do not raise the departure from the spec or plan again.`;
   return `Spec amendment (${path}): a review found that the approved spec contradicts the request: ${amendment.claim.slice(0, 1000)} The request is authoritative over ${scope}: read them as the request states (${amendment.suggestedFix.slice(0, 600)}). Code and tests follow the request; a test that only served the contradicting wording is changed or removed, and that is not a weakened test. Reviews and convergence judge ${scope} by what the request states and do not raise the contradicting wording again.`;
