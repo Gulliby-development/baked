@@ -153,7 +153,15 @@ export function GraphSection({ project }: SectionProps) {
   const handlers = useRef({ onUnit, collapse });
   handlers.current = { onUnit, collapse };
 
+  // The canvas is replaced by the indexing and empty states; each new canvas gets its engine.
+  const canvasShown = !(
+    loaded.kind === "missing" ||
+    loaded.kind === "error" ||
+    (loaded.kind === "answer" && loaded.answer.state !== "ready")
+  );
+
   // The engine lives as long as the canvas.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new canvas element needs a new engine.
   useEffect(() => {
     const svg = svgRef.current;
     if (!svg) return;
@@ -172,14 +180,15 @@ export function GraphSection({ project }: SectionProps) {
       engine.destroy();
       engineRef.current = null;
     };
-  }, []);
+  }, [canvasShown]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new engine draws the current view.
   useEffect(() => {
     if (!view || !engineRef.current) return;
     const fit = fitRef.current;
     fitRef.current = undefined;
     engineRef.current.setView(view, stateRef.current, fit);
-  }, [view]);
+  }, [view, canvasShown]);
 
   useEffect(() => {
     engineRef.current?.paint(state);
