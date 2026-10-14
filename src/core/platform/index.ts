@@ -242,7 +242,8 @@ export function commandExists(bin: string): boolean {
       stdio: ["ignore", "ignore", "ignore"],
       windowsHide: true,
     });
-    return result.status === 0;
+    // `where` can miss its deadline on a loaded machine; the PATH walk still answers.
+    return result.status === 0 || walkWindowsPath(bin) !== null;
   }
   // POSIX: shell-free PATH walk — invoking `sh -c \`command -v ${bin}\`` lets
   // a crafted bin name execute arbitrary shell. We feed registry names from
@@ -314,6 +315,19 @@ export function bunShellArgs(commandLine: string): string[] {
   return ["sh", "-c", commandLine];
 }
 
+/** The first `Path` entry holding `bin` with one of the `PATHEXT` extensions, without spawning `where`. */
+function walkWindowsPath(bin: string): string | null {
+  const path = process.env.Path ?? process.env.PATH ?? "";
+  const exts = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD;.PS1").split(";");
+  for (const dir of path.split(delimiter)) {
+    if (!dir) continue;
+    for (const ext of ["", ...exts]) {
+      const candidate = join(dir, bin + ext);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return null;
+}
 export function findOnPath(bin: string): string | null {
   if (!bin) return null;
   // Conservative allowlist — `sh -c` shell metacharacters never need to land
@@ -329,15 +343,7 @@ export function findOnPath(bin: string): string | null {
       const first = result.stdout.split(/\r?\n/).find((l) => l.trim().length > 0);
       return first ? first.trim() : null;
     }
-    const path = process.env.Path ?? process.env.PATH ?? "";
-    const exts = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD;.PS1").split(";");
-    for (const dir of path.split(delimiter)) {
-      for (const ext of ["", ...exts]) {
-        const candidate = join(dir, bin + ext);
-        if (existsSync(candidate)) return candidate;
-      }
-    }
-    return null;
+    return walkWindowsPath(bin);
   }
   // POSIX: shell-free PATH walk. Replaces the prior `sh -c command -v ${bin}`
   // which was injectable.
