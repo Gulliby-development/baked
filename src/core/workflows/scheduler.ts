@@ -3859,15 +3859,20 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     task: Task,
     checking: boolean,
   ): Promise<void> {
+    const firstRun = this.store.tasks(runId).find((t) => t.id === task.id)?.status === "pending";
     const child = this.store.transaction(() => {
       if (!checking) this.store.taskStatus(runId, task.id, "running");
       return this.store.beginStep(runId, `task-${task.id}`, stepId);
     });
     let integrity: Review["findings"] = [];
     let reported: { summary: string; unresolved: string[] } | undefined;
-    if (!checking && task.writes.length === 0) {
-      // A task that may not write has nothing for a model to do: its task checks decide it,
-      // and the checks stage covers the rest.
+    if (
+      !checking &&
+      (task.writes.length === 0 ||
+        (firstRun && (await this.correctionPassing(runId, child, state, policy, task, signal))))
+    ) {
+      // A task that may not write, or a correction whose failing checks already pass, has nothing
+      // for a model to do: its task checks decide it, and the checks stage covers the rest.
       await this.snapshot(runId, state, policy, signal);
       this.store.transaction(() => {
         this.store.taskStatus(runId, task.id, "implemented", state.snapshotId);
@@ -5783,6 +5788,58 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       const named = checked.output ? pathsInOutput(checked.output, state.graph?.tasks ?? []) : [];
       return `it changed none of its files and check ${check.id} still fails${named.length ? ` on ${named.slice(0, 5).join(", ")}` : ""} (evidence ${checked.evidenceId})`;
     }
+    return true;
+  }
+  /**
+   * Whether a correction's failing checks pass before its first attempt: another correction
+   * already fixed the cause, so a worker would only confirm it (expenses-py e0c0447d T009 and
+   * T010, 110k and 140k tokens for `already_satisfied`, #1033). Only a correction whose findings
+   * are all failed required checks qualifies; the passing runs are kept as its evidence.
+   */
+  private async correctionPassing(
+    runId: string,
+    child: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    if (task.origin === "planned" || !task.findingIds.length) return false;
+    if (uncommittedEdits(this.store, runId, task.id).length) return false;
+    const findings = this.store.findings(runId).filter((f) => task.findingIds.includes(f.id));
+    const named = findings.map((f) => {
+      const claim = (JSON.parse(f.body_json) as { claim?: unknown }).claim;
+      return typeof claim === "string"
+        ? (/^Required check (\S+) failed$/.exec(claim)?.[1] ?? taskCheckOfClaim(claim))
+        : null;
+    });
+    if (findings.length !== task.findingIds.length || named.some((id) => !id)) return false;
+    // Only files that changed since the failures can have fixed them; a correction that starts
+    // right after its failure would only run the check a second time.
+    const failedOn = new Map(this.store.evidence(runId).map((e) => [e.id, e.snapshot_id]));
+    const changedSince = findings.every((f) => {
+      const evidence = (JSON.parse(f.body_json) as { evidenceIds?: string[] }).evidenceIds ?? [];
+      const snapshots = evidence.map((id) => failedOn.get(id)).filter(Boolean);
+      return snapshots.length > 0 && !snapshots.includes(state.snapshotId ?? "");
+    });
+    if (!changedSince) return false;
+    const checks = policy.checks.filter((c) => c.required && named.includes(c.id));
+    if (checks.length !== new Set(named).size) return false;
+    const root = runRoot(this.store.workspace, state);
+    const evidenceIds: string[] = [];
+    for (const check of checks) {
+      const checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
+      if (checked.status !== "passed") return false;
+      evidenceIds.push(checked.evidenceId);
+    }
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `tasks/${task.id}/already-passing.json`,
+        canonical({ taskId: task.id, checks: checks.map((c) => c.id), evidenceIds }),
+      ),
+    );
     return true;
   }
   /**
@@ -9598,15 +9655,35 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     kind: "repair" | "convergence",
     scope: "round" | "task" | "review" = "round",
   ): void {
+    // During the implement stage a finding that already has a corrective task waiting or running
+    // gets no second one: several test tasks reporting one source defect recorded the same finding
+    // four times, and each report opened its own corrective task (expenses-py e0c0447d, #1033).
+    const open = scope === "task" ? this.openCorrections(runId, state) : new Set<string>();
+    const fresh = findings.filter((f) => !open.has(f.id));
+    if (!fresh.length) return;
     this.store.transaction(() => {
-      this.amendSpec(runId, state, findings);
-      appendCorrections(this.store, runId, state, policy, findings, kind, scope);
+      this.amendSpec(runId, state, fresh);
+      appendCorrections(this.store, runId, state, policy, fresh, kind, scope);
       // A v2 run keeps its position: a task's repair runs in the tasks stage it is in, and a
       // stage's failure goes back along the definition's repair transition (#853).
       const parsed = parseRunDefinition(this.store.run(runId).definition_json);
       if (parsed.schemaVersion === 1)
         state.stageIndex = parsed.definition.stages.findIndex((s) => s.kind === "task-graph");
     });
+  }
+  /** The findings of corrective tasks that have not finished: pending, running or interrupted. */
+  private openCorrections(runId: string, state: RuntimeState): Set<string> {
+    const unfinished = new Set(
+      this.store
+        .tasks(runId)
+        .filter((t) => ["pending", "running", "interrupted"].includes(t.status))
+        .map((t) => t.id),
+    );
+    return new Set(
+      (state.graph?.tasks ?? [])
+        .filter((t) => t.origin !== "planned" && unfinished.has(t.id))
+        .flatMap((t) => t.findingIds),
+    );
   }
   /**
    * Review findings that put the spec against the request record a spec amendment (#1034): the
