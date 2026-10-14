@@ -188,6 +188,7 @@ export {
 } from "./prompt.js";
 export type { ClaudeCodeProcess, ClaudeCodeProcessFactory, ClaudeCodeRunner } from "./session.js";
 export {
+  bakedToolUses,
   ClaudeCodeNativeToolError,
   ClaudeCodeSessionRunner,
   nativeToolInEvent,
