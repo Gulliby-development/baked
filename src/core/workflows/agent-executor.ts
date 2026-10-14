@@ -80,6 +80,7 @@ import { ProcessScope } from "./process-scope.js";
 import { isTargetedRead, outlineLargeReads } from "./read-outline.js";
 import { settleInterruptedEdits } from "./recovery.js";
 import { isTransient } from "./retry.js";
+import { RevisionSchema } from "./revision-patch.js";
 import {
   AnalysisSchema,
   ApprovalReviewSchema,
@@ -129,6 +130,7 @@ export const outputSchemas: Record<string, z.ZodType> = {
   critique: CritiqueSchema,
   mutants: MutantProposalSchema,
   distinction: DistinctionSchema,
+  revision: RevisionSchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;
 /** Submissions refused because a written file does not parse; the next one is accepted (#977). */
