@@ -572,6 +572,29 @@ function isStoreError(error: unknown): boolean {
 }
 /** The start of the restart reason for an edit of the task's own file that did not apply. */
 const EDIT_RETRY = "an edit of its own file did not apply";
+const CHECK_FAILURE = /fail|error|violation|assert|does not pass|not passing/i;
+const CHECK_KIND =
+  /test|lint|ruff|eslint|biome|clippy|flake8|mypy|pyright|tsc|typecheck|type check/i;
+/** A linter rule code such as Ruff's ISC004 or ESLint-style E501: naming one reports a violation. */
+const RULE_CODE = /\b[A-Z]{1,4}\d{3,4}\b/;
+/**
+ * A task that changed its files and reports, as unresolved, only failing tests or lint findings in
+ * those files has done its work: the failures go to a corrective task like a failed task check,
+ * instead of a rejection that restarts the task and blocks the run when the second attempt reports
+ * the same (#1110, keeplint T004: two attempts, 592k tokens, two failing tests of its own).
+ */
+export function ownCheckFailures(
+  task: Task,
+  result: { taskId: string; outcome: string; unresolved: string[] },
+  changed: string[],
+): boolean {
+  if (result.taskId !== task.id || result.outcome !== "implemented" || !changed.length)
+    return false;
+  if (!result.unresolved.length || result.unresolved.length > 5) return false;
+  return result.unresolved.every(
+    (item) => (CHECK_FAILURE.test(item) && CHECK_KIND.test(item)) || RULE_CODE.test(item),
+  );
+}
 const incompleteReason = (unresolved: string[]): string =>
   unresolved.length ? `: ${unresolved.slice(0, 3).join("; ").slice(0, 500)}` : "";
 /** Why a result that changed nothing was not accepted (#972: the message had no detail). */
@@ -3987,6 +4010,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     });
     let integrity: Review["findings"] = [];
     let reported: { summary: string; unresolved: string[] } | undefined;
+    let unresolvedAccount: { summary: string; unresolved: string[] } | undefined;
     if (
       !checking &&
       (task.writes.length === 0 ||
@@ -4174,10 +4198,11 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         this.store.transaction(() => this.store.taskStatus(runId, task.id, "blocked"));
         throw correction;
       }
+      const ownFailures = ownCheckFailures(task, result, changed);
       if (
         result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
-        result.unresolved.length > 0 ||
+        (result.unresolved.length > 0 && !ownFailures) ||
         correction !== true
       ) {
         if (narrow) {
@@ -4268,6 +4293,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       if (result.outcome === "already_satisfied")
         this.validateSatisfiedEvidence(runId, state, after, result);
       reported = { summary: result.summary, unresolved: result.unresolved };
+      if (ownFailures) unresolvedAccount = reported;
       await this.snapshot(runId, state, policy, signal);
       const beforeHashes = Object.fromEntries(
         changed.map((p) => [p, earlier.has(p) ? (earlier.get(p) ?? null) : (before[p] ?? null)]),
@@ -4324,6 +4350,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         checkEvidence,
       );
     this.inconclusiveTaskCheck(inconclusive, taskFailures);
+    if (unresolvedAccount && !taskFailures.length && !taskResults.length)
+      taskFailures.push(...this.unresolvedFindings(runId, state, task, unresolvedAccount));
     await this.critique(
       runId,
       child,
@@ -4336,7 +4364,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       signal,
     );
     this.settleTask(runId, state, policy, task, child, taskFailures, checkEvidence);
-    if (!taskFailures.length && reported)
+    if (!taskFailures.length && reported && !unresolvedAccount)
       await this.routeReportedDefect(runId, state, policy, task, child, reported, signal, taskRoot);
   }
   /**
@@ -5254,7 +5282,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       if (
         result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
-        result.unresolved.length > 0 ||
+        (result.unresolved.length > 0 && !ownCheckFailures(task, result, changed)) ||
         correction !== true
       )
         return {
@@ -5496,6 +5524,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     ))
       inconclusive ??= this.applyTaskCheck(runId, state, task, check, checked, failures, evidence);
     this.inconclusiveTaskCheck(inconclusive, failures);
+    if (outcome.account.unresolved.length && !failures.length && !results.length)
+      failures.push(...this.unresolvedFindings(runId, state, task, outcome.account));
     await this.critique(
       runId,
       entry.child,
@@ -5508,7 +5538,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       signal,
     );
     this.settleTask(runId, state, policy, task, entry.child, failures, evidence);
-    if (!failures.length)
+    if (!failures.length && !outcome.account.unresolved.length)
       await this.routeReportedDefect(
         runId,
         state,
@@ -6177,6 +6207,51 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
    * `tasks/TASK_ID/integrity.json`; under `testIntegrity: "block"` (the default) each becomes a
    * task failure that a repair must undo, under `warn` it stays a record.
    */
+  /** Every path the task graph writes, for telling a task's own files from the others. */
+  private plannedPaths(state: RuntimeState): string[] {
+    return [...new Set((state.graph?.tasks ?? []).flatMap((t) => t.writes.map((w) => w.path)))];
+  }
+  /**
+   * The failing tests or lint findings a task reported unresolved in its own files, as findings
+   * of a corrective task when no task check ran to show them (#1110). The account is the evidence.
+   */
+  private unresolvedFindings(
+    runId: string,
+    state: RuntimeState,
+    task: Task,
+    account: { summary: string; unresolved: string[] },
+  ): Review["findings"] {
+    const writes = task.writes.filter((w) => w.action !== "delete").map((w) => w.path);
+    // A failure that names another task's file (a README assertion before the README task ran)
+    // is left to the checks and review of the whole feature: the task cannot fix it in its files.
+    const others = this.plannedPaths(state).filter((path) => !writes.includes(path));
+    const items = account.unresolved.filter(
+      (item) => !others.some((path) => namesPath(item, path)),
+    );
+    if (!items.length) return [];
+    const evidenceId = this.store.transaction(() => {
+      const artifact = this.store.artifact(
+        runId,
+        "diff",
+        `tasks/${task.id}/unresolved.json`,
+        canonical({ taskId: task.id, ...account }),
+      );
+      return this.store.addEvidence(runId, "diff", state.snapshotId ?? "", artifact.id);
+    });
+    return items.map((item) => ({
+      id: newId(),
+      kind: "partial" as const,
+      severity: "medium" as const,
+      requirementIds: task.requirementIds,
+      criterionIds: task.criterionIds,
+      file: writes.find((path) => namesPath(item, path)) ?? writes[0] ?? null,
+      symbol: null,
+      evidenceIds: [evidenceId],
+      claim: `Task ${task.id} reported unresolved in its own files: ${item.slice(0, 1500)}`,
+      impact: "The task's own tests or lint fail, so its work is not done",
+      suggestedFix: `Run the failing tests or lint of ${task.id}'s files, fix the cause and rerun them. Keep every test that matches the spec as written.`,
+    }));
+  }
   private integrityFailures(
     runId: string,
     state: RuntimeState,
