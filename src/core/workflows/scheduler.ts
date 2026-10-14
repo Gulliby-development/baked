@@ -429,19 +429,28 @@ type Severity = Review["findings"][number]["severity"];
 const ALL_SEVERITIES: readonly Severity[] = ["critical", "high", "medium", "low"];
 const SERIOUS: readonly Severity[] = ["critical", "high"];
 
+const NOT_LOW: readonly Severity[] = ["critical", "high", "medium"];
+
 /**
  * The severities that start a correction. After the first repair or convergence round, medium and
  * low findings are recorded in the review artifact but no longer start another round: runs
  * de6cf1ab and 2fa658c0 spent their rounds on ever deeper medium findings while every check passed.
+ * With the policy's `lowFindings: "note"` low findings are notes from the first round on: a low
+ * README wording finding cost structpad 6d048155 663k tokens and an attempt cap stop (#1001).
  */
-const repairSeverities = (run: {
-  repair_rounds: number;
-  review_rounds?: number;
-  convergence_rounds: number;
-}) =>
+const repairSeverities = (
+  run: {
+    repair_rounds: number;
+    review_rounds?: number;
+    convergence_rounds: number;
+  },
+  policy: Pick<RunPolicy, "lowFindings">,
+) =>
   run.repair_rounds + (run.review_rounds ?? 0) + run.convergence_rounds > 0
     ? SERIOUS
-    : ALL_SEVERITIES;
+    : policy.lowFindings === "note"
+      ? NOT_LOW
+      : ALL_SEVERITIES;
 
 /**
  * A finding the severity floor does not demote once the host reproduces it: it is based on the
@@ -1670,7 +1679,7 @@ export class WorkflowScheduler {
                 for (const item of review.coverage)
                   this.store.criterion(runId, state.snapshotId ?? "", item);
               });
-              const severities = repairSeverities(this.store.run(runId));
+              const severities = repairSeverities(this.store.run(runId), policy);
               const failing = new Set(
                 review.coverage
                   .filter(
@@ -8281,7 +8290,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       throw new WorkflowFault("ARTIFACT_MISSING", "Review snapshot missing");
     const findings: Review["findings"] = [];
     const owners = new Map<string, Reviewer>();
-    const severities = repairSeverities(this.store.run(runId));
+    const severities = repairSeverities(this.store.run(runId), policy);
     const reviewSpec = state.spec;
     const reviewSnapshotId = state.snapshotId;
     const reviewSnapshotHash = state.workspaceHash;
