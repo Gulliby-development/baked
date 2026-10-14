@@ -6592,6 +6592,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const example = first && writesOnlyDocs(task) && namesExampleRule(report);
     const assume = first && (example || namesRequestSide(report));
     const tests = first && !assume ? this.conflictingTests(runId, state, task, report) : [];
+    const own =
+      first && !assume && !tests.length ? this.ownRunTests(runId, state, task, report) : [];
     this.store.transaction(() => {
       this.store.artifact(
         runId,
@@ -6620,6 +6622,25 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     }
     if (assume) {
       state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the spec or its tests contradict the request: ${report.slice(0, 1500)} The request is authoritative: follow what it states. Where a criterion, a requirement or a test says otherwise, the request wins; a test that contradicts the request is changed to what the request states, and no other test is weakened.`;
+      return;
+    }
+    if (own.length) {
+      // md-site a652d8fc (bench round 22): a correction met a test this run generated and could
+      // rewrite, but stopped rather than change a test. Two things the run wrote are never a
+      // question for a person: the spec and the request win, and the task corrects its test.
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "assumption",
+          assumedPath,
+          canonical({
+            ...account,
+            assumed: `The approved spec and the request win over ${own.join(", ")}, which this run wrote`,
+            tests: own,
+          }),
+        ),
+      );
+      state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that tests this run wrote contradict the approved spec: ${report.slice(0, 1500)} The approved spec and the request win over ${own.join(", ")}, which this run wrote and ${task.id} may write: change only the assertions there that contradict them to what they state, keep every other assertion and test, and make the code pass.`;
       return;
     }
     if (tests.length) {
@@ -6676,6 +6697,28 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       ],
       specConflict: account,
     });
+  }
+  /**
+   * The test files a conflict report names that the task itself may write and that this run
+   * created: absent from the baseline snapshot (or, without one, created by a task of the plan).
+   * Tests written first and approved by a person, and tests that existed before the run, stay a
+   * question.
+   */
+  private ownRunTests(runId: string, state: RuntimeState, task: Task, report: string): string[] {
+    const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [task];
+    const baselineId = state.manifest.baselineSnapshotId;
+    const baseline = baselineId ? this.store.snapshotFiles(runId, baselineId) : null;
+    const created = (path: string) =>
+      baseline
+        ? !(path in baseline)
+        : tasks.some((t) => t.writes.some((w) => w.path === path && w.action === "create"));
+    return pathsInOutput(report, [task]).filter(
+      (path) =>
+        isTestPath(path) &&
+        task.writes.some((w) => w.path === path && w.action !== "delete") &&
+        !state.testsFirst?.files.includes(path) &&
+        created(path),
+    );
   }
   /**
    * The test files a conflict report names that the task cannot write and that an implemented test
