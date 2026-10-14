@@ -5,7 +5,7 @@ const scope = globalThis as { window?: unknown };
 scope.window = {};
 const { ApiError } = await import("../src/renderer/client/api.ts");
 const { runMaintenance, runs } = await import("../src/renderer/client/runs.ts");
-const { defaultCutoff, redactable } = await import("../src/renderer/screens/runs/Maintenance.tsx");
+const { cleanupCutoff, CLEANUP_AGES, redactable } = await import("../src/renderer/screens/runs/Maintenance.tsx");
 delete scope.window;
 
 const RUN = "run-settings-dark-mode";
@@ -68,7 +68,10 @@ describe("maintenance helpers", () => {
     expect(redactable(list).map((a) => a.id)).toEqual(["spec-1"]);
   });
 
-  test("the cleanup cutoff defaults to 90 days ago", () => {
-    expect(defaultCutoff(Date.parse("2026-10-12T12:00:00Z"))).toBe("2026-07-14");
+  test("the cleanup cutoff is the start of the day the picked age ago", () => {
+    const cutoff = new Date(cleanupCutoff(90, Date.parse("2026-10-12T12:00:00")));
+    expect([cutoff.getFullYear(), cutoff.getMonth() + 1, cutoff.getDate()]).toEqual([2026, 7, 14]);
+    expect([cutoff.getHours(), cutoff.getMinutes()]).toEqual([0, 0]);
+    expect(CLEANUP_AGES.every(({ days }) => days >= 30)).toBe(true);
   });
 });
