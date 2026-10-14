@@ -172,6 +172,48 @@ describe("baseline comparison in update runs", () => {
     expect(tasks.every((t) => t.origin === "planned")).toBe(true);
   });
 
+  // #1055, mouse-mover-update 3d7389cf: the baseline printed the run worktree in its stack trace and
+  // the later run printed a task worktree, so the same failure got a 364k corrective task.
+  test("a baseline failure is recognised when its stack trace names another worktree", async () => {
+    const stale = {
+      ...lint,
+      id: "test",
+      args: [
+        "-e",
+        "const at = [process.cwd(), '.baked', 'worktrees', 'run', `T${process.pid}`, 'src', 'cursor.test.ts'].join('/'); console.error(`TypeError: screen is undefined\\n    at ${at}:12:3`); process.exit(1)",
+      ],
+    };
+    const fixture = workflowFixture({ policy: { ...fixturePolicy, checks: [...fixturePolicy.checks, stale] } });
+    cleanups.push(fixture.dispose);
+    writeFileSync(join(fixture.root, "README.md"), "# App\n");
+    const run = await fixture.start();
+    await fixture.service.drive(run.runId, signal());
+    await fixture.approve(run.runId);
+    await fixture.service.drive(run.runId, signal());
+
+    expect(baseline(fixture, run.runId)?.failures).toMatchObject({
+      [commandKey(stale)]: "TypeError: screen is undefined\n    at <root>/src/cursor.test.ts:12:3",
+    });
+    const status = await fixture.service.get(run.runId);
+    expect(status.status).toBe("blocked");
+    expect(status.reason).toBe("no_progress");
+    const tasks = fixture.service.store.tasks(run.runId).map((t) => JSON.parse(t.definition_json) as { origin: string });
+    expect(tasks.every((t) => t.origin === "planned")).toBe(true);
+  });
+
+  test("a failure signature names every worktree of the project as the workspace", () => {
+    const at = (path: string) => `Error: boom\n    at ${path}/src/a.ts:3:7`;
+    const unix = "/work/app/.baked/worktrees/3d7389cf";
+    const win = "C:\\Project\\app\\.baked\\worktrees\\3d7389cf";
+    const expected = "Error: boom\n    at <root>/src/a.ts:3:7";
+    expect(failureSignature(at(`${unix}/main`), `${unix}/main`)).toBe(expected);
+    expect(failureSignature(at(`${unix}/T005`), `${unix}/main`)).toBe(expected);
+    expect(failureSignature(at("/work/app"), `${unix}/main`)).toBe(expected);
+    expect(failureSignature(at(`${win}\\T005`), `${win}\\main`)).toBe(
+      failureSignature(at(`${win}\\main`), `${win}\\main`),
+    );
+  });
+
   test("a failure signature leaves out colours, durations and the workspace path", () => {
     expect(failureSignature("\u001b[31merror\u001b[0m in 12ms at /work/app/a.ts", "/work/app")).toBe("error in <duration> at <root>/a.ts");
   });
