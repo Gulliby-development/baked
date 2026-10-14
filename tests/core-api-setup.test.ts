@@ -483,6 +483,52 @@ describe("local API setup and workflow additions", () => {
     expect(skills[0]?.description).toBeUndefined();
   });
 
+  // #1102: Settings > Global commands creates, edits and removes commands in ~/.baked/commands.
+  test("global commands are created, edited, renamed and removed in the home folder", async () => {
+    const { get, send, post, call, homeDir } = await setup();
+    const dir = join(homeDir, ".baked", "commands");
+    const created = await post("/v1/commands", {
+      scope: "global",
+      name: "frontend:component",
+      description: "Add a component",
+      argumentHint: "<name>",
+      body: "Create the component $1.",
+    });
+    expect(created.status).toBe(201);
+    expect(readFileSync(join(dir, "frontend", "component.md"), "utf8")).toBe(
+      "---\ndescription: Add a component\nargument-hint: <name>\n---\nCreate the component $1.\n",
+    );
+    type Listed = { commands: { name: string; scope: string; description: string; argumentHint?: string }[] };
+    expect((await get<Listed>("/v1/commands")).commands).toEqual([
+      expect.objectContaining({ name: "/frontend:component", scope: "global", description: "Add a component", argumentHint: "<name>" }),
+    ]);
+    const draft = await get<{ name: string; description: string; argumentHint: string; body: string }>(
+      "/v1/commands/global/frontend:component",
+    );
+    expect(draft).toMatchObject({ name: "/frontend:component", description: "Add a component", argumentHint: "<name>", body: "Create the component $1." });
+
+    // An empty, invalid or taken name is refused.
+    expect((await post("/v1/commands", { scope: "global", name: " ", body: "x" })).status).toBe(400);
+    expect((await post("/v1/commands", { scope: "global", name: "Fix CI", body: "x" })).status).toBe(400);
+    expect((await post("/v1/commands", { scope: "global", name: "/frontend:component", body: "x" })).status).toBe(409);
+    expect((await post("/v1/commands", { scope: "global", name: "empty", body: "  " })).status).toBe(400);
+
+    // A rename moves the file and removes the folder it leaves empty.
+    const renamed = await send("PUT", "/v1/commands/global/frontend:component", { name: "component", body: "Create $1." });
+    expect(renamed.status).toBe(200);
+    expect((await get<Listed>("/v1/commands")).commands.map((c) => [c.name, c.description])).toEqual([["/component", "Create $1."]]);
+    expect(readFileSync(join(dir, "component.md"), "utf8")).toBe("Create $1.\n");
+    expect(() => readFileSync(join(dir, "frontend", "component.md"))).toThrow();
+    await post("/v1/commands", { scope: "global", name: "standup", body: "Write a standup." });
+    expect((await send("PUT", "/v1/commands/global/standup", { name: "component", body: "x" })).status).toBe(409);
+    expect((await send("PUT", "/v1/commands/global/missing", { name: "missing", body: "x" })).status).toBe(404);
+
+    expect((await call("/v1/commands/global/component", { method: "DELETE" })).status).toBe(200);
+    expect((await call("/v1/commands/global/component", { method: "DELETE" })).status).toBe(404);
+    expect((await get<Listed>("/v1/commands")).commands.map((c) => c.name)).toEqual(["/standup"]);
+    expect((await get<{ capabilities: string[] }>("/v1/health")).capabilities).toContain("commands-edit");
+  });
+
   test("a waiting run adopts changed instructions through a candidate and a revision", async () => {
     const { post, get, send, fixture } = await setup();
     writeFileSync(join(fixture.root, "baked.md"), "# Rules\n");

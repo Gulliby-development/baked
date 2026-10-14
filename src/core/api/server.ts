@@ -177,6 +177,7 @@ export const CAPABILITIES = [
   "lsp-diagnose",
   "workflow-editor",
   "custom-commands",
+  "commands-edit",
   "settings",
   "git",
   "git-graph",

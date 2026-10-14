@@ -76,6 +76,9 @@ export const HOOKS_CAPABILITY = "hooks";
 /** `POST|PUT|DELETE /v1/hooks`: hooks saved to BAKED's own config files. */
 export const HOOKS_EDIT_CAPABILITY = "hooks-edit";
 
+/** `POST /v1/commands` and `GET|PUT|DELETE /v1/commands/SCOPE/NAME`: custom commands written from the app. */
+export const COMMANDS_EDIT_CAPABILITY = "commands-edit";
+
 /** `POST /v1/providers/ID/switch` (Switch account for Codex and Claude Code). */
 export const PROVIDER_SWITCH_CAPABILITY = "provider-switch";
 

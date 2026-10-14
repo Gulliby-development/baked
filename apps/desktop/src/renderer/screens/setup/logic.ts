@@ -313,3 +313,35 @@ export function signInView(signIn: CliSignIn): {
   if (signIn.loggedIn) return { note: "signed in through the CLI", action: "sign-out" };
   return { note: "not signed in", action: "sign-in" };
 }
+
+/** The fields of the global command form (`POST|PUT /v1/commands`). */
+export interface CommandForm {
+  name: string;
+  description: string;
+  argumentHint: string;
+  body: string;
+}
+
+export const BLANK_COMMAND: CommandForm = { name: "", description: "", argumentHint: "", body: "" };
+
+const COMMAND_SEGMENT = /^[a-z0-9_][a-z0-9_.-]*$/;
+
+/** The slash name a form's name field stands for: `fix-ci` and `/fix-ci` are both `/fix-ci`. */
+export function commandSlashName(input: string): string {
+  return `/${input.trim().replace(/^\//, "")}`;
+}
+
+/**
+ * Why the form cannot be saved yet, as the backend would answer (an empty, invalid or taken name,
+ * or an empty prompt), or null. `taken` are the slash names of the scope's other commands.
+ */
+export function commandFormProblem(form: CommandForm, taken: readonly string[]): string | null {
+  const name = form.name.trim().replace(/^\//, "");
+  if (!name) return "Give the command a name.";
+  const segments = name.split(":");
+  if (segments.length > 5 || segments.some((s) => !COMMAND_SEGMENT.test(s) || s.endsWith(".md")))
+    return 'Use lowercase letters, digits, "-", "_" and ".", with ":" for a folder (frontend:component).';
+  if (taken.includes(commandSlashName(name))) return `${commandSlashName(name)} already exists.`;
+  if (!form.body.trim()) return "Write the prompt the command sends.";
+  return null;
+}
