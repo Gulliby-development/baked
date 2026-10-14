@@ -171,7 +171,7 @@ export function CoordinatorView({ visible, open, onClose }: Props) {
     }
     if (evt.ctrl && prompt && (evt.name === "y" || evt.name === "n")) {
       const yes = evt.name === "y";
-      if (prompt.kind === "split")
+      if (prompt.kind === "split" || prompt.kind === "workflow")
         answer(prompt, yes ? { approve: true, digest: prompt.digest } : { approve: false });
       else if (prompt.kind === "plan-review")
         answer(prompt, { action: yes ? "execute" : "cancel" });

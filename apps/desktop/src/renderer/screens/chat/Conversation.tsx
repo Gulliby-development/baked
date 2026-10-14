@@ -11,6 +11,7 @@ import type {
 import { Icon } from "../../components/Icon.js";
 import { SplitFlows } from "../../components/SplitFlows.js";
 import { Button } from "../../components/ui/button.js";
+import { WorkflowProposal } from "../../components/WorkflowProposal.js";
 import { cn } from "../../lib/cn.js";
 import { LaunchNoteCard } from "../coordinator/LaunchNote.js";
 import { messageSender, newestLaunchNotes } from "../coordinator/model.js";
@@ -622,13 +623,15 @@ function PromptCard({
         ? prompt.question
         : prompt.kind === "split"
           ? prompt.title
-          : prompt.kind === "outside-cwd"
-            ? prompt.path
-            : prompt.kind === "destructive"
-              ? prompt.description
-              : prompt.kind === "web-search"
-                ? prompt.query
-                : prompt.url;
+          : prompt.kind === "workflow"
+            ? `Run workflow ${prompt.workflow}`
+            : prompt.kind === "outside-cwd"
+              ? prompt.path
+              : prompt.kind === "destructive"
+                ? prompt.description
+                : prompt.kind === "web-search"
+                  ? prompt.query
+                  : prompt.url;
     return (
       <p className={RESOLVED}>
         <span className={`flex-none font-medium ${OUTCOME_TONE[outcome] ?? ""}`}>
@@ -681,6 +684,35 @@ function PromptCard({
               Edit
             </Button>
           )}
+        </div>
+      </section>
+    );
+  }
+  if (prompt.kind === "workflow") {
+    return (
+      <section
+        className={`${PROMPT_CARD} gap-[10px] bg-fill-info text-soft-foreground animate-rise motion-reduce:animate-none`}
+        aria-label="Workflow proposal"
+      >
+        <p className={PROMPT_TITLE}>Run workflow {prompt.workflow}?</p>
+        <WorkflowProposal prompt={prompt} onCard />
+        <div className={ROW}>
+          <Button
+            variant="primary"
+            size="md"
+            disabled={busy}
+            onClick={() => onApprove(prompt.id, true, prompt.digest)}
+          >
+            Run workflow
+          </Button>
+          <Button
+            variant="secondary"
+            size="md"
+            disabled={busy}
+            onClick={() => onApprove(prompt.id, false)}
+          >
+            Not now
+          </Button>
         </div>
       </section>
     );
@@ -821,10 +853,12 @@ export function Conversation({
   const reviewing = prompts.some((p) => p.prompt.kind === "plan-review");
   const plan = transcript.plan && !reviewing ? transcript.plan : null;
   const ends = onRewind ? turnEnds(messages) : null;
+  // A coordinator's wake-up on launched work is not shown; its notices are.
+  const shown = messages.filter((m) => m.role !== "user" || m.showInChat !== false);
   const newestNotes = launchActions ? newestLaunchNotes(messages) : null;
   return (
     <>
-      {messages.map((message) =>
+      {shown.map((message) =>
         message.role === "user" ? (
           <UserBubble
             key={message.id}

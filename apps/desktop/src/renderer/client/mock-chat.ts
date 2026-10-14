@@ -27,7 +27,8 @@ import { type MockRoute, type MockStream, response } from "./mock-routes.js";
  * conversation like the mockup, and a scripted reply to every message that streams text, reasoning
  * and tool calls and waits for an approval and a question like a real turn. In plan mode the
  * reply proposes a plan and waits for its review; an accepted plan runs in a turn of its own.
- * The project coordinator answers with a split card and records what it launches in its brief.
+ * The project coordinator answers with a split card (a "Run workflow?" card for a fix) and records
+ * what it launches in its brief.
  */
 
 const MINUTE = 60_000;
@@ -518,12 +519,98 @@ function mockBrief(): ProjectBrief {
   };
 }
 
+const MOCK_STAGES = ["research", "spec", "plan", "tasks", "check", "review"];
+/** When each mock workflow run started; its stages advance every few seconds. */
+const workflowRuns = new Map<string, number>();
+
 function launchedNow(brief: ProjectBrief): LaunchedView[] {
-  return brief.launched.map((entry, i) => ({
-    ...entry,
-    active: !entry.closed && !/^(completed|done|failed|cancelled|paused)/.test(entry.status),
-    tokens: 120_000 * (i + 1),
-  }));
+  return brief.launched.map((entry, i) => {
+    const started = workflowRuns.get(entry.id);
+    if (started === undefined)
+      return {
+        ...entry,
+        active: !entry.closed && !/^(completed|done|failed|cancelled|paused)/.test(entry.status),
+        tokens: 120_000 * (i + 1),
+      };
+    const at = Math.min(MOCK_STAGES.length, Math.floor((Date.now() - started) / 4000));
+    const done = at >= MOCK_STAGES.length;
+    return {
+      ...entry,
+      status: done ? "completed" : "running",
+      active: !done,
+      tokens: 40_000 * (at + 1),
+      progress: {
+        stage: done ? null : (MOCK_STAGES[at] ?? null),
+        stages: MOCK_STAGES.map((id, s) => ({
+          id,
+          status: s < at ? "completed" : s === at ? "running" : "pending",
+        })),
+        tasks: { done: Math.max(0, at - 3) * 2, total: at >= 3 ? 4 : 0 },
+      },
+    };
+  });
+}
+
+/** The coordinator's turn on a fix: proposes a workflow run and launches it when approved. */
+async function workflowScript(session: MockSession, turn: MockTurn, text: string) {
+  const entry = coordinators.get(session.key);
+  await say(session, turn, "This changes code in several places, so a workflow fits better.\n\n");
+  await say(session, turn, "I'd run **sdd**: research, a spec and a plan before the change.\n\n");
+  const approved = await ask(session, turn, {
+    id: nextId("prompt"),
+    createdAt: Date.now(),
+    kind: "workflow",
+    workflow: "sdd",
+    description: "Spec-driven development: research, spec, plan, tasks, checks and review.",
+    stages: MOCK_STAGES,
+    writes: true,
+    prompt: text,
+    why: "The fix touches several modules and needs a plan",
+    reason: "a failing check: reproduce it, fix and rerun the same checks",
+    digest: "w".repeat(64),
+  });
+  if (approved !== true || !entry) {
+    await say(session, turn, "Okay, nothing started. I can look into it here instead.");
+    return;
+  }
+  const id = nextId("run");
+  workflowRuns.set(id, Date.now());
+  // The panel follows the run live, as the server's `launched` events let it.
+  const follow = setInterval(() => {
+    const launched = launchedNow(entry.brief);
+    emit(session, { type: "launched", launched });
+    if (launched.some((l) => l.id === id && l.active)) return;
+    clearInterval(follow);
+    emit(session, {
+      type: "notice",
+      message: {
+        id: nextId("m"),
+        role: "system",
+        content: `Launched run ${id}: completed (The fix touches several modules)`,
+        timestamp: Date.now(),
+      },
+    });
+  }, 1000);
+  entry.brief = {
+    ...entry.brief,
+    revision: entry.brief.revision + 1,
+    updatedAt: Date.now(),
+    launched: [
+      ...entry.brief.launched,
+      {
+        kind: "run",
+        id,
+        why: "The fix touches several modules",
+        status: "started",
+        workflow: "sdd",
+      },
+    ],
+  };
+  await say(
+    session,
+    turn,
+    "Started the sdd run. I'll follow it on the right and pick up when it finishes.",
+  );
 }
 
 /** Stop and Close on a launched item, as `/v1/coordinator/launched/stop` and `/close` do. */
@@ -569,6 +656,7 @@ function controlLaunched(
 
 /** The coordinator's turn: proposes splitting the request and launches it when approved. */
 async function coordinatorScript(session: MockSession, turn: MockTurn, text: string) {
+  if (/\b(fix|bug|broken|failing)\b/i.test(text)) return workflowScript(session, turn, text);
   const entry = coordinators.get(session.key);
   if (text === SUMMARY_TEXT) {
     const launched = entry ? launchedNow(entry.brief) : [];

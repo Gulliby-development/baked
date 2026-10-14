@@ -29,6 +29,8 @@ function promptText(prompt: ChatPrompt): string {
       return `Plan to review: ${prompt.title}`;
     case "split":
       return `Split to approve: ${prompt.title}`;
+    case "workflow":
+      return `Asks to run the ${prompt.workflow} workflow`;
     case "destructive":
       return `Asks to allow: ${prompt.description}`;
     case "outside-cwd":

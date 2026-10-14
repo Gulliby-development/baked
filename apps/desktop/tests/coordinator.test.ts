@@ -91,7 +91,62 @@ describe("coordinator client", () => {
   });
 });
 
+describe("coordinator workflows", () => {
+  test("a fix gets a Run workflow card, and the approved run shows its stages live", async () => {
+    const session = await coordinator.open("docs");
+    const events: string[] = [];
+    const stop = chat.subscribe("docs", session.id, (await chat.get("docs", session.id)).lastSeq, (e) => {
+      events.push(e.type);
+    });
+    await chat.send("docs", session.id, "Fix the failing link check");
+    const waiting = await until(
+      () => chat.get("docs", session.id),
+      (detail) => detail.prompts.some((p) => p.kind === "workflow"),
+    );
+    const card = waiting.prompts.find((p) => p.kind === "workflow");
+    if (!card || card.kind !== "workflow") throw new Error("no workflow card");
+    expect(card.workflow).toBe("sdd");
+    expect(card.stages[0]).toBe("research");
+    await chat.approve("docs", session.id, card.id, true, card.digest);
+    const { launched } = await until(
+      () => coordinator.launched("docs"),
+      (view) => view.launched.some((l) => l.workflow === "sdd"),
+    );
+    const run = launched.find((l) => l.workflow === "sdd");
+    expect(run?.progress?.stages.map((s) => s.id)).toEqual(card.stages);
+    await until(
+      async () => events,
+      (seen) => seen.includes("launched"),
+    );
+    stop();
+  });
+});
+
 describe("coordinator screen model", () => {
+  test("shows where a launched run is", () => {
+    const progress = {
+      stage: "plan",
+      stages: [
+        { id: "research", status: "completed" },
+        { id: "spec", status: "skipped" },
+        { id: "plan", status: "running" },
+        { id: "tasks", status: "pending" },
+      ],
+      tasks: { done: 2, total: 5 },
+    };
+    expect(model.stageLooks(progress, true)).toEqual(["done", "skipped", "current", "ahead"]);
+    expect(model.stageLooks({ ...progress, stage: null }, false)).toEqual([
+      "done",
+      "skipped",
+      "failed",
+      "ahead",
+    ]);
+    expect(model.stageLine(progress)).toBe("Stage 3 of 4: plan · tasks 2/5");
+    expect(model.stageLine({ ...progress, stage: null, tasks: { done: 0, total: 0 } })).toBe(
+      "1 of 4 stages done",
+    );
+  });
+
   test("has its own project section", () => {
     expect(parseRoute(projectHref("baked", "coordinator"))).toEqual({
       name: "project",

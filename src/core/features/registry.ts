@@ -175,6 +175,25 @@ export const FEATURES: readonly Feature[] = [
     ],
   },
   {
+    id: "coordinator-workflows",
+    group: "Chat and sessions",
+    title: "Coordinator suggests, runs and follows workflows",
+    tui: ["/coordinator: Run workflow? card (Ctrl+Y/Ctrl+N), launched runs with their stages"],
+    cli: [
+      "baked session coordinator send: answers the workflow card (--yes or a terminal) and follows the run",
+      "baked session coordinator launched: runs with their workflow",
+    ],
+    api: [
+      "/v1/sessions/:id/prompts: answers the workflow prompt",
+      "/v1/sessions/:id/events: launched events",
+      "/v1/coordinator/launched: run progress",
+    ],
+    desktop: [
+      "project/coordinator: Run workflow card, live stages in Launched work",
+      "attention: workflow run proposals",
+    ],
+  },
+  {
     id: "coordinator-session-worktrees",
     group: "Chat and sessions",
     title: "Editing sessions the coordinator launches work in their own Git worktree and branch",
