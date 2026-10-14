@@ -280,7 +280,7 @@ test("project workflows list from disk and built-in ones stay read only", async 
     .getByRole("button", { name: "Write file" })
     .click();
   const file = join(root, "baked", "workflows", "quick-custom.json");
-  await expect(page.getByText("baked/workflows/quick-custom.json")).toBeVisible();
+  await expect(page.getByText("baked/workflows/quick-custom.json", { exact: true })).toBeVisible();
   expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ id: "quick-custom" });
 
   await page.getByRole("link", { name: "← All workflows" }).click();
