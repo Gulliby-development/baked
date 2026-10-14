@@ -607,7 +607,14 @@ const launchScript = {
       steps: [
         {
           tool: "propose_chats",
-          input: { chats: [{ title: "Page", brief: "Add the page" }] },
+          input: {
+            title: "Settings page",
+            why: "The page and its route can be built side by side",
+            chats: [
+              { id: "page", title: "Page", brief: "Add the page" },
+              { id: "route", title: "Route", brief: "Add the route" },
+            ],
+          },
           run: true,
         },
       ],
