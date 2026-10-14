@@ -3081,6 +3081,13 @@ export class WorkflowScheduler {
         : null;
     const specSize =
       profile.output === "spec" ? specSizeNote(state.requestText || state.prompt) : null;
+    // Under assume the authors settle questions with defaults in their first submission instead of
+    // learning it from a rejection: three blocking questions per spec cost a retry each (#1046).
+    const assumeDefaults =
+      policy.clarification === "assume" &&
+      (profile.output === "spec" || profile.output === "research")
+        ? `No person answers questions in this run. For a question that would block: ${ASSUME_NOTE}`
+        : null;
     const hardening =
       presetOf(parseRunDefinition(this.store.run(runId).definition_json)) === HARDEN_PRESET
         ? hardenNote(profile.output)
@@ -3096,6 +3103,7 @@ export class WorkflowScheduler {
         ...(propertyNote ? { propertyTests: propertyNote } : {}),
         ...(crossPlatform ? { crossPlatform } : {}),
         ...(specSize ? { specSize } : {}),
+        ...(assumeDefaults ? { assumeDefaults } : {}),
         ...(hardening ? { hardening } : {}),
         ...(rules ? { learnedRules: rules } : {}),
         ...(workingSet ? { projectWorkingSet: workingSet } : {}),
