@@ -27,7 +27,7 @@ baked doctor                                     # check keys, models, checks an
 | `fix-ci` | Reproduce failing checks, research the failure, plan, approve, fix and rerun the same checks ([Fix CI](fix-ci.md)) |
 | `harden` | Strengthen the tests of existing code without changing it, until the tests kill the module's mutants ([Harden](harden.md)) |
 
-`baked workflow definitions` lists them with the project's own definitions from `baked/workflows/`; `baked workflow define ID --from PRESET` copies one to edit.
+`baked workflow definitions` lists them with the project's own definitions from `baked/workflows/`; `baked workflow define ID --from PRESET` copies one to edit, and `baked workflow remove ID` deletes a project definition.
 
 ## Pages
 

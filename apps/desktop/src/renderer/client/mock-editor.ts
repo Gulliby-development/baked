@@ -1,8 +1,8 @@
 /**
  * Sample answers of the workflow editor (`POST /v1/workflow/editor*`). A small stand-in for
  * src/core/workflows/v2/editor-service.ts: presets open read only, Duplicate makes an editable
- * `ID-custom` copy, gates and transitions can be added, removed, moved and switched, and saving
- * writes nothing but marks the copy saved.
+ * `ID-custom` copy, gates and transitions can be added, removed, moved and switched, saving
+ * writes nothing but marks the copy saved, and deleting forgets a saved copy.
  */
 import { type MockRequest, type MockRoute, response } from "./mock-routes.js";
 import type {
@@ -476,7 +476,25 @@ interface Body {
 
 const HASH = "9f3c51a2b7d04e6c8a1f2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708";
 
+/** `DELETE /v1/workflow/definitions/ID`: a copy saved in this window goes; presets stay. */
+function removeRoute(path: string) {
+  const id = decodeURIComponent(path.slice("/v1/workflow/definitions/".length));
+  if (saved.delete(id))
+    return response(200, { id, path: `baked/workflows/${id}.json`, restores: null });
+  return PRESETS.includes(id)
+    ? response(403, {
+        error: {
+          code: "CAPABILITY_DENIED",
+          message: `${id} is a built-in workflow; only project workflows can be deleted`,
+        },
+      })
+    : response(404, {
+        error: { code: "NOT_FOUND", message: `No project workflow ${id} in baked/workflows` },
+      });
+}
+
 export const editorRoutes: MockRoute = ({ method, path, body }: MockRequest) => {
+  if (method === "DELETE" && path.startsWith("/v1/workflow/definitions/")) return removeRoute(path);
   if (method !== "POST" || !path.startsWith("/v1/workflow/editor")) return undefined;
   const request = (body ?? {}) as Body;
   const base = opened(request.from);

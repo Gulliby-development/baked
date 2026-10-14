@@ -41,6 +41,7 @@ const commands = [
   "definitions",
   "validate",
   "define",
+  "remove",
   "gates",
   "agents",
   "gate",
@@ -229,6 +230,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   definitions: [],
   validate: ["file"],
   define: ["from"],
+  remove: [],
   gates: ["all"],
   agents: ["from", "stages", "remove"],
   gate: ["text", "kind", "id", "model", "from-criteria", "save", "file", "json", "workflow", "at"],
@@ -676,6 +678,7 @@ recover RUN_ID --request ID --effect ID --resolution record-applied|record-not-a
 definitions               list workflow definitions: sdd, the presets and baked/workflows/*.json
 validate (ID | --file FILE)   check a definition against the gate library; exit 1 with problems
 define ID --from PRESET   copy a preset or definition to baked/workflows/ID.json as a custom workflow
+remove ID                 delete the project workflow baked/workflows/ID.json; built-in workflows stay
 agents                    list the project's custom agents from other tools (Claude Code, Copilot, OpenCode, Roo)
 agents convert ID [--from PRESET] [--stages NAME=STAGE,...] [--remove]
   make workflow ID from them: each agent fills a stage (research, specify, plan, implement, review, skip);
