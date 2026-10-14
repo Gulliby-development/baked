@@ -388,11 +388,14 @@ export class InitiativeService {
             : `The split cannot be edited while the initiative is ${row.status}`,
         );
       const latest = this.store.plan(this.store.revision(id, row.plan_revision));
-      const next = this.fitWorkflows(
-        applySplitEdit(latest, parsed),
-        this.store.settings(row),
-        false,
+      const edited = applySplitEdit(latest, parsed);
+      // Features the edit left as they were keep their settings, also those of a plan stored
+      // before features had workflows, so their runs are not superseded; the others are fitted.
+      const before = new Map(latest.features.map((f) => [f.id, featureDigest(f)] as const));
+      const keep = new Set(
+        edited.features.filter((f) => before.get(f.id) === featureDigest(f)).map((f) => f.id),
       );
+      const next = this.fitWorkflows(edited, this.store.settings(row), false, keep);
       this.propose(id, next, "user", parsed);
     });
   }
@@ -793,11 +796,15 @@ export class InitiativeService {
     plan: InitiativePlan,
     settings: InitiativeSettings,
     replaceInvalid: boolean,
+    keep?: ReadonlySet<string>,
   ): InitiativePlan {
     const choices = featureWorkflowChoices(this.workflows.workspace, settings.basePolicy, {
       tiered: settings.featureAutoApproval !== null,
     });
-    const fitted = assignFeatureWorkflows(plan, choices, settings.workflowId, { replaceInvalid });
+    const fitted = assignFeatureWorkflows(plan, choices, settings.workflowId, {
+      replaceInvalid,
+      ...(keep ? { keep } : {}),
+    });
     const problems = planWorkflowProblems(fitted, choices);
     if (problems.length) throw new WorkflowFault("INVALID_DEFINITION", problems.join("\n"));
     return fitted;

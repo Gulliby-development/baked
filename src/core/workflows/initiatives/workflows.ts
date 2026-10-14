@@ -100,15 +100,18 @@ const featureText = (f: InitiativeFeature): string =>
  * `replaceInvalid`, for a decomposer's split) with one that cannot run it, gets the proposal for
  * its text among the workflows that can; a feature other features depend on only gets one that
  * writes a spec, and a risky one keeps `defaultWorkflow`. When no proposal fits, `defaultWorkflow`.
- * A feature without a size gets the size `assessRequest` gives its text.
+ * A feature without a size gets the size `assessRequest` gives its text. Features in `keep` are
+ * left as they are.
  */
 export function assignFeatureWorkflows(
   plan: InitiativePlan,
   choices: readonly FeatureWorkflow[],
   defaultWorkflow: string,
-  options: { replaceInvalid: boolean },
+  options: { replaceInvalid: boolean; keep?: ReadonlySet<string> },
 ): InitiativePlan {
   const features = plan.features.map((feature) => {
+    // A feature of an earlier revision keeps what it had, so its run is not superseded.
+    if (options.keep?.has(feature.id)) return feature;
     const named = feature.workflow;
     const keep =
       named && (!options.replaceInvalid || !featureWorkflowProblem(plan, feature, named, choices));

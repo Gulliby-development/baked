@@ -33,6 +33,7 @@ import {
 } from "../src/headless/workflow-initiative.js";
 import { workflowHelp } from "../src/headless/workflow-parse.js";
 import { mergedBase } from "../src/core/workflows/worktree.js";
+import { assignFeatureWorkflows } from "../src/core/workflows/initiatives/workflows.js";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -313,6 +314,16 @@ describe("initiative feature workflows", () => {
       (JSON.parse(t.workflows.store.run(t.featureOf(view, featureId).runId ?? "").definition_json) as { id: string }).id;
     expect([workflowOf("core"), workflowOf("api"), workflowOf("docs")]).toEqual(["sdd", "quick", "quick"]);
     expect(t.featureOf(view, "docs").state).toBe("accepted");
+  });
+
+  test("features an edit leaves alone keep what they had, also without a workflow", () => {
+    const choices = [
+      { id: "sdd", description: "", schemaVersion: 1 as const, contract: true, execution: "inline" as const },
+      { id: "quick", description: "", schemaVersion: 2 as const, contract: false, execution: "inline" as const },
+    ];
+    const fitted = assignFeatureWorkflows(threeFeatures, choices, "sdd", { replaceInvalid: false, keep: new Set(["core", "api"]) });
+    expect(fitted.features.map((f) => f.workflow)).toEqual([undefined, undefined, "quick"]);
+    expect(featureDigest(fitted.features[0] ?? feature("x"))).toBe(featureDigest(threeFeatures.features[0] ?? feature("x")));
   });
 
   test("a decomposer's workflow that cannot run its feature is replaced", async () => {
