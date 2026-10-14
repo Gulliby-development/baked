@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 process.env.BAKED_NO_REPOMAP = "1";
 
@@ -69,26 +69,30 @@ describe("tools of an agent in its own worktree", () => {
     expect(list.output).toContain("src/");
     expect(list.output).toContain("docs/");
 
-    const shell = await call(tools, "shell", { command: "pwd", description: "Print the directory" });
-    expect(shell.output.trim()).toContain(dir);
+    // Works the same in bash, cmd and PowerShell.
+    const shell = await call(tools, "shell", { command: "echo shell> shell.txt", description: "Write a file" });
+    expect(shell.success).toBe(true);
+    expect(existsSync(join(dir, "shell.txt"))).toBe(true);
+    expect(existsSync(join(getCwd(), "shell.txt"))).toBe(false);
   });
 
   test("relative paths become absolute under the worktree; others stay as they are", () => {
-    const dir = "/work/tree";
+    const dir = resolve("/work/tree");
     expect(scopeToolArgs("edit_file", { path: "a.md", newString: "x" }, dir)).toEqual({
-      path: "/work/tree/a.md",
+      path: join(dir, "a.md"),
       newString: "x",
     });
     expect(scopeToolArgs("read", { files: '[{"path":"a.ts"}]' }, dir)).toEqual({
-      files: [{ path: "/work/tree/a.ts" }],
+      files: [{ path: join(dir, "a.ts") }],
     });
-    expect(scopeToolArgs("read", { files: ["a.ts", "/abs/b.ts"] }, dir)).toEqual({
-      files: ["/work/tree/a.ts", "/abs/b.ts"],
+    const other = resolve("/abs/b.ts");
+    expect(scopeToolArgs("read", { files: ["a.ts", other] }, dir)).toEqual({
+      files: [join(dir, "a.ts"), other],
     });
     expect(scopeToolArgs("grep", { pattern: "x" }, dir)).toEqual({ pattern: "x", path: dir });
     expect(scopeToolArgs("shell", { command: "ls", cwd: "src" }, dir)).toEqual({
       command: "ls",
-      cwd: "/work/tree/src",
+      cwd: join(dir, "src"),
     });
     expect(scopeToolArgs("bake_vision", { path: "https://example.com/a.png" }, dir)).toEqual({
       path: "https://example.com/a.png",
