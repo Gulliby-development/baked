@@ -13,7 +13,7 @@ import {
   parseSplitParts,
   splitEditable,
 } from "./forms.js";
-import { type SplitEdit, SplitEditSchema } from "./plan.js";
+import { FEATURE_SIZES, type FeatureSize, type SplitEdit, SplitEditSchema } from "./plan.js";
 import type { FeatureView, InitiativeService, InitiativeView, PendingDecision } from "./service.js";
 
 /** One row of the initiative list. */
@@ -295,6 +295,40 @@ export function initiativeActions(
             if (!others.length)
               throw new WorkflowFault("INVALID_DEFINITION", "Name at least one feature to merge");
             return edit({ op: "merge", featureIds: [feature.id, ...others], id: feature.id });
+          },
+        },
+      },
+      {
+        key: "W",
+        label: "workflow",
+        action: edit({ op: "workflow", featureId: feature.id, workflow: feature.workflowId }),
+        confirm: null,
+        input: {
+          question: `Workflow of feature ${feature.id} (now ${feature.workflowId}). A feature others depend on needs one that writes a spec, such as sdd.`,
+          placeholder: feature.workflowId,
+          initial: feature.workflowId,
+          build: (text) =>
+            edit({
+              op: "workflow",
+              featureId: feature.id,
+              workflow: required(text, "Name a workflow"),
+            }),
+        },
+      },
+      {
+        key: "Z",
+        label: "size",
+        action: edit({ op: "size", featureId: feature.id, size: feature.size }),
+        confirm: null,
+        input: {
+          question: `Size of feature ${feature.id}: small, medium or large (now ${feature.size}). Its budget share follows it.`,
+          placeholder: feature.size,
+          initial: feature.size,
+          build: (text) => {
+            const size = text.trim().toLowerCase();
+            if (!FEATURE_SIZES.includes(size as FeatureSize))
+              throw new WorkflowFault("INVALID_DEFINITION", "Size is small, medium or large");
+            return edit({ op: "size", featureId: feature.id, size: size as FeatureSize });
           },
         },
       },

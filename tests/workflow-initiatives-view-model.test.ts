@@ -65,7 +65,7 @@ describe("initiative view model", () => {
       next: { kind: "await_split_approval", featureId: null, runId: null, message: "Approve the split" },
     });
     expect(keys(awaiting)).toEqual(["approve", "reject", "extend"]);
-    expect(keys(awaiting, false, featureView("core", { state: "proposed" }))).toEqual(["approve", "reject", "edit", "edit", "edit", "edit", "extend"]);
+    expect(keys(awaiting, false, featureView("core", { state: "proposed" }))).toEqual(["approve", "reject", "edit", "edit", "edit", "edit", "edit", "edit", "extend"]);
     const approve = initiativeActions(awaiting, false)[0];
     expect(approve?.action).toEqual({ kind: "approve", expectedRevision: 3, requestId: "split-1", digest: "e".repeat(64) });
     expect(approve?.confirm).toContain("Approve plan revision 1");
@@ -75,7 +75,7 @@ describe("initiative view model", () => {
     const withRun = featureView("core", { runId: "r1", runStatus: "waiting", state: "needs_decision" });
     const replan = initiativeActions(initiativeView(), true, withRun).find((a) => a.action.kind === "replan");
     expect(replan?.confirm).toContain("Re-plan core");
-    expect(keys(initiativeView({ status: "paused" }), false, withRun)).toEqual(["resume", "edit", "edit", "edit", "edit", "replan", "extend"]);
+    expect(keys(initiativeView({ status: "paused" }), false, withRun)).toEqual(["resume", "edit", "edit", "edit", "edit", "edit", "edit", "replan", "extend"]);
     // A running feature cannot be re-planned; the core would refuse it.
     expect(keys(initiativeView(), true, { ...withRun, runStatus: "running" })).toEqual(["pause", "extend"]);
     expect(keys(initiativeView({ status: "completed" }), false, withRun)).toEqual([]);
