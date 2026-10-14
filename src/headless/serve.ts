@@ -3,6 +3,7 @@ import { loadConfig, loadProjectConfig, mergeConfigs } from "../config/index.js"
 import { startApiServer } from "../core/api/server.js";
 import { getCwd } from "../core/cwd.js";
 import { scaffoldProjectQuietly } from "../core/projects/scaffold.js";
+import { scriptedExecutorFromEnv } from "../core/workflows/scripted-executor.js";
 import { NativeWorkflowService } from "../core/workflows/service.js";
 
 export const serveHelp = `baked serve [--port N] [--token-file FILE] [--allow-origin ORIGIN]... [--cwd DIR]
@@ -68,7 +69,8 @@ export async function runServeCli(argv: string[]): Promise<number> {
   // The desktop app opens a project by serving its folder, so the folder is set up here.
   scaffoldProjectQuietly(cwd);
   const config = mergeConfigs(loadConfig(), loadProjectConfig(cwd));
-  const service = new NativeWorkflowService(cwd, config);
+  // BAKED_TEST_WORKFLOW (tests only) answers every run stage without a model.
+  const service = new NativeWorkflowService(cwd, config, scriptedExecutorFromEnv(cwd));
   let server: Awaited<ReturnType<typeof startApiServer>>;
   try {
     server = await startApiServer({
