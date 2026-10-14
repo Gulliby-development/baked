@@ -157,6 +157,8 @@ export const FEATURES: readonly Feature[] = [
     ],
     cli: [
       "baked session coordinator: prints the brief",
+      "baked session coordinator send: a turn that answers its cards and follows launched work",
+      "baked session coordinator launched",
       "baked session coordinator stop",
       "baked session coordinator close",
     ],
@@ -177,11 +179,10 @@ export const FEATURES: readonly Feature[] = [
     group: "Chat and sessions",
     title: "Coordinator suggests, runs and follows workflows",
     tui: ["/coordinator: Run workflow? card (Ctrl+Y/Ctrl+N), launched runs with their stages"],
-    cli: partial(
-      ["baked session coordinator: launched runs with their workflow in the brief"],
-      890,
-      "the CLI cannot message the coordinator or answer its cards",
-    ),
+    cli: [
+      "baked session coordinator send: answers the workflow card (--yes or a terminal) and follows the run",
+      "baked session coordinator launched: runs with their workflow",
+    ],
     api: [
       "/v1/sessions/:id/prompts: answers the workflow prompt",
       "/v1/sessions/:id/events: launched events",

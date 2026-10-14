@@ -79,7 +79,7 @@ The rules live in `.baked/sessions/ID/approval-rules.json` next to the brief and
 | Surface | How |
 | --- | --- |
 | Local API | `GET/POST /v1/coordinator`, `GET/PUT /v1/coordinator/brief`, `GET /v1/coordinator/launched`, `POST /v1/coordinator/summary`, `GET/PUT /v1/coordinator/approval-rules`, `POST /v1/coordinator/launched/stop` and `/close`, `/v1/coordinator/schedules`, then the usual `/v1/sessions/ID/...` endpoints ([contract](desktop/api.md#project-coordinator)) |
-| Headless CLI | `baked session coordinator [--json]` prints the session id and the brief; `baked session coordinator rules` shows and changes the [approval rules](#approval-rules); `baked session coordinator schedules` lists the schedules and `baked session coordinator schedule add --name NAME --when WHEN --prompt TEXT`, `pause ID`, `resume ID` and `remove ID` change them; `baked session coordinator stop run|initiative ID` and `close KIND ID [--feature F] [--reopen]` stop and close launched work ([headless](headless.md)) |
+| Headless CLI | `baked session coordinator [--json]` prints the session id and the brief; `baked session coordinator send TEXT` runs a turn, answers its prompts and follows what it launched, and `baked session coordinator launched` lists that work ([below](#headless-cli)); `baked session coordinator rules` shows and changes the [approval rules](#approval-rules); `baked session coordinator schedules` lists the schedules and `baked session coordinator schedule add --name NAME --when WHEN --prompt TEXT`, `pause ID`, `resume ID` and `remove ID` change them; `baked session coordinator stop run|initiative ID` and `close KIND ID [--feature F] [--reopen]` stop and close launched work ([headless](headless.md)) |
 | Desktop app | the Coordinator section, the first item of each project and the screen a project opens on (conversation, schedules, launched work and brief), with What's happening in its header (Stop, Pause and Close on launch cards and in the launched list, Reopen under its closed items), and Hand to coordinator in the chat menu ([desktop app](desktop/app.md#screens)) |
 | Terminal UI | `/coordinator` (first in the command palette), `/coordinator summary` and `/coordinator rules`; switching project with `/projects` opens the new project on its coordinator, and `baked --coordinator` starts on it ([below](#terminal-ui)) |
 
@@ -95,3 +95,15 @@ The rules live in `.baked/sessions/ID/approval-rules.json` next to the brief and
 - **Leaving.** `Esc` stops a running turn; when nothing runs it closes the view. The coordinator keeps following launched work and firing its schedules while the terminal UI runs, and stops when it exits.
 
 The terminal UI and a running `baked serve` can host the coordinator of the same project at once. Both follow the same brief, which refuses an edit made against an older revision, but each answers only the prompts of its own turns.
+
+## Headless CLI
+
+`baked session coordinator send TEXT` runs one coordinator turn in the CLI process and prints the reply as it streams; tool calls, prompts and launch notes go to stderr. It opens the project's coordinator the first time, with `--model MODEL` or `defaultModel`. The turn's prompts never leave it hanging:
+
+- `--yes` approves every approval, split card and [workflow card](#workflows) (a split or workflow card with its digest).
+- Otherwise an interactive terminal asks for each one (`y` allows; a question takes an option's number or text). A workflow card reads `Run the workflow NAME (STAGES): WHY` with the request under it.
+- Without a terminal an approval is denied and a question is skipped, or takes its first option when it cannot be skipped.
+
+The CLI hosts the coordinator the way the terminal UI does, so the sessions and runs it launches run in this process. `send` therefore keeps following them after the reply and prints each launch note until none is active, then lists them. `Ctrl+C` stops the running turn. With `--no-follow` it returns after the reply: a run it started resumes later with `baked workflow resume`, and a launched session's turn stops when the process exits. `--json` prints `{sessionId, reply, launched, error?}` at the end instead. A failed turn exits 1.
+
+`baked session coordinator launched [--json]` lists what the coordinator launched with a run's workflow, its live status, the tool a session is in and its tokens (`●` active, `○` not), and counts closed items. It starts nothing; `--json` prints `{sessionId, launched}` as `GET /v1/coordinator/launched` does.
