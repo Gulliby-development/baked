@@ -759,7 +759,7 @@ export function createSetupTool(options: SetupToolOptions) {
   return tool({
     description: [
       "Read and change how BAKED is set up for this project, the same settings as the Setup screens: workflows, agent_context (AGENTS.md and other instruction files every agent reads), memory (chat memory: pin, hide, edit, share with runs; write new memories with the memory tool), skill (create your own SKILL.md; install from skills.sh with the skills tool), package, hook, mcp (MCP servers) and lsp (language servers).",
-      "Use it when the user asks you to set something up, and set up what a request needs before starting it. Look first (list/show), then change: every change is shown to the user on an approval card and nothing is written until they approve it.",
+      "Use it when the user asks you to set something up, and set up what a request needs before starting it. Look first (list/show), then fill in every value yourself from the project and the conversation and make the change; do not ask the user for the values first. The change is shown to the user on one approval card with everything filled in, and nothing is written until they approve it.",
       "Workflows are how this project customizes work: create one from an existing workflow (from) and adjust it with editor ops; never suggest a custom agent instead. Gate bindings are not edited here.",
     ].join(" "),
     inputSchema: SetupInput,
