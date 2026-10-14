@@ -83,6 +83,11 @@ class ParallelExecutor implements AgentExecutor {
   capped = new Set<string>();
   /** Tasks whose first attempt edits its files and is then stopped by its token cap (#935). */
   capFault = new Set<string>();
+  /**
+   * Attempts per task that edit a file, end exactly at their token cap with the forced finalize
+   * step spent and no submit, and throw the cap fault as the executor does (#1056).
+   */
+  capAtLimit: Record<string, number> = {};
   /** Tasks whose first attempt reports its edit tool unavailable and submits no change. */
   lostTool = new Set<string>();
   /** Tasks whose first attempt ends blocked with this summary and no change. */
@@ -154,6 +159,12 @@ class ParallelExecutor implements AgentExecutor {
           inputTokens: 25,
           outputTokens: 25,
         };
+      if ((this.capAtLimit[task.id] ?? 0) > 0) {
+        this.capAtLimit[task.id] = (this.capAtLimit[task.id] ?? 0) - 1;
+        await write(first, "partial");
+        service.store.artifact(request.runId, "usage", `attempts/${request.attemptId}/usage.json`, JSON.stringify({ schemaVersion: 1, profileId: request.profile.id, taskId: task.id, maxSteps: request.maxSteps, maxTokens: 1000, stopReason: "tokens", finalizedBy: "tokens", totalTokens: 1000, steps: [] }));
+        throw attemptCapFault(request.profile.id, 1000, 1000);
+      }
       if (this.capFault.delete(task.id)) {
         for (const path of Object.keys(plan?.files ?? {})) {
           await write(path, "partial");
@@ -296,6 +307,44 @@ describe("workflow parallel writers", () => {
     expect(fx.store.state(run.runId).taskContinuations).toEqual({ T001: 1 });
     expect(fx.store.state(run.runId).taskCarry).toEqual({});
     expect(readFileSync(join(fx.tree(run.runId), "a.txt"), "utf8")).toBe("A");
+  });
+
+  test("an attempt that ends exactly at its token cap continues its task instead of stopping the run (#1056)", async () => {
+    // Bench R20 colfit 0149cea7: the forced finalize step used the last of the cap and nothing was
+    // submitted, so the run stopped with attempt_cap and the resume ran the finished siblings again.
+    const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }], { "a.txt": "A", "b.txt": "B" });
+    fx.executor.capAtLimit.T001 = 1;
+    const run = await fx.start(2);
+    const done = await fx.complete(run.runId);
+    expect(done.status).toBe("completed");
+    const attempts = fx.executor.earlier.filter((e) => e.taskId === "T001");
+    expect(attempts).toHaveLength(2);
+    // The continuing attempt starts from the capped attempt's edit.
+    expect(attempts[1]?.content).toBe("partial");
+    expect(fx.store.state(run.runId).taskContinuations).toEqual({ T001: 1 });
+    // The sibling ran once.
+    expect(fx.executor.started.filter((s) => s.taskId === "T002")).toHaveLength(1);
+    expect(readFileSync(join(fx.tree(run.runId), "a.txt"), "utf8")).toBe("A");
+  });
+
+  test("a second capped attempt stops the run but keeps the finished sibling for the resume (#1056)", async () => {
+    // T001 is capped in the first batch (it continues) and again in the second, next to T003.
+    const fx = setup(
+      [{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }, { id: "T003", files: { "c.txt": "C" }, dependsOn: ["T002"] }],
+      { "a.txt": "A", "b.txt": "B", "c.txt": "C" },
+    );
+    fx.executor.capAtLimit.T001 = 2;
+    const run = await fx.start(2);
+    const blocked = await fx.complete(run.runId);
+    expect(blocked).toMatchObject({ status: "blocked", reason: "attempt_cap" });
+    expect(fx.batches(run.runId).map((b) => b.tasks)).toEqual([["T001", "T002"], ["T001", "T003"]]);
+    // The sibling that finished next to the stopped task is integrated, not invalidated.
+    expect(fx.status("T003", run.runId)).toBe("implemented");
+    await fx.service.resume(run.runId, { commandId: newId(), expectedRevision: fx.store.run(run.runId).revision });
+    const done = await fx.drive(run.runId);
+    expect(done.status).toBe("completed");
+    expect(fx.executor.started.filter((s) => s.taskId === "T003")).toHaveLength(1);
+    expect(readFileSync(join(fx.tree(run.runId), "c.txt"), "utf8")).toBe("C");
   });
 
   test("a plain resume after an attempt-cap stop lets the rebuilt task write its files again", async () => {
