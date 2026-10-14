@@ -1,17 +1,15 @@
-<a href="docs/assets/video/baked-promo-v2.mp4"><img alt="The first 22 seconds of the BAKED promo: an idea is typed into the coordinator, which splits it into two parallel runs" src="docs/assets/video/baked-promo-v2-preview.gif" width="100%"></a>
-
-<p align="center"><a href="docs/assets/video/baked-promo-v2.mp4"><b>▶ Watch the full 88-second video with sound</b></a></p>
-
-# BAKED
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/wordmark-dark.svg">
+  <img alt="BAKED" src="docs/assets/brand/wordmark-light.svg" height="72">
+</picture>
 
 **A coding agent that knows your code's structure, asks before it writes, and keeps its work on your machine.**
 
 BAKED reads your repository through language servers and tree-sitter, so it moves through code by symbols and imports instead of grepping raw text. It edits files, runs your checks and commits, asking first whenever it is about to write. Sessions, memory and workflow state stay local in SQLite.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/chat-dark.png">
-  <img alt="A BAKED chat in the desktop app: the agent explains a bug, shows its diff and the test it ran" src="docs/assets/screenshots/chat-light.png">
-</picture>
+<a href="docs/assets/video/baked-promo-v2.mp4"><img alt="The first 22 seconds of the BAKED promo: an idea is typed into the coordinator, which splits it into two parallel runs" src="docs/assets/video/baked-promo-v2-preview.gif" width="100%"></a>
+
+<p align="center"><a href="docs/assets/video/baked-promo-v2.mp4"><b>▶ Watch the full 88-second video with sound</b></a></p>
 
 > **Status: pre-release.** Releases are published on [GitHub](https://github.com/Gulliby-development/baked/releases) only, not on npm.
 
@@ -47,6 +45,7 @@ BAKED comes as a **desktop app**, a **terminal app**, and a **headless CLI** for
     <td width="50%"><img alt="The code graph of the BAKED repository" src="docs/assets/screenshots/code-graph.png"><br><b>Code graph.</b> Folders, key files and the links between them.</td>
   </tr>
   <tr>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/chat-dark.png"><img alt="A BAKED chat: the agent explains a bug, shows its diff and the test it ran" src="docs/assets/screenshots/chat-light.png"></picture><br><b>Chat.</b> Every edit as a diff, every tool call on its own line, and undo for any turn.</td>
     <td width="50%"><img alt="Needs you: approvals and questions from every open project" src="docs/assets/screenshots/needs-you.png"><br><b>Needs you.</b> Approvals and questions from every open project in one list.</td>
     <td width="50%"><img alt="Usage: tokens and cost by stage and by model" src="docs/assets/screenshots/usage.png"><br><b>Usage.</b> Tokens, cache hits and cost by stage and by model.</td>
   </tr>
