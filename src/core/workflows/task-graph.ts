@@ -35,15 +35,19 @@ export function readyTasks(
   );
 }
 
-/** Whether `text` names `path`: the path itself, or a module path's dotted form (`pkg.__main__`). */
+/**
+ * Whether `text` names `path`: the path itself, or a module path's dotted form (`pkg.__main__`).
+ * The dotted form followed by `/` or `.` and another component is a prefix of a longer path or
+ * module (`ignorewhy/globs.py`), so it names that, not the package's `__init__.py` (#1031).
+ */
 export function namesPath(text: string, path: string): boolean {
   if (text.includes(path)) return true;
   const stem = path.replace(/\.[^./]+$/, "");
   if (!stem.includes("/")) return false;
   const dotted = stem.replaceAll("/", ".").replace(/\.__init__$/, "");
-  return new RegExp(`(?:^|[^\\w.])${dotted.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w])`).test(
-    text,
-  );
+  return new RegExp(
+    `(?:^|[^\\w.])${dotted.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w]|[./\\\\]\\w)`,
+  ).test(text);
 }
 
 /**

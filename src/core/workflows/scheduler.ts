@@ -31,6 +31,7 @@ import {
   appendCorrections,
   failedCheckFindings,
   isTestOf,
+  noTestsCollected,
   pathsInOutput,
 } from "../verification/convergence.js";
 import {
@@ -6699,8 +6700,20 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       if (t.id !== task.id && done.has(t.id))
         for (const write of t.writes)
           if (files.includes(write.path) && write.action !== "delete") owners.set(write.path, t.id);
+    // A plan that writes the tests last has none on disk yet: a test runner that collects no test
+    // then fails (pytest exit 5) without any defect in the named files (#1031).
+    const plannedTests = graph.tasks.flatMap((t) =>
+      t.writes.filter((w) => w.action !== "delete" && isTestPath(w.path)).map((w) => w.path),
+    );
+    const testsPending =
+      plannedTests.length > 0 &&
+      !plannedTests.some((path) => existsSync(workspacePath(root, path)));
     for (const check of policy.checks.filter((c) => c.required && c.scope === "feature")) {
       let checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
+      if (checked.status === "failed" && testsPending && noTestsCollected(checked.output ?? "")) {
+        ran.push({ checkId: check.id, status: "no_tests", evidenceId: checked.evidenceId });
+        continue;
+      }
       // A failure the check's fixer settles (`cargo fmt` on the named files) is no defect to route:
       // run the fixer as the checks stage does, journaled as `apply_fix`, and rerun the check
       // once; only what remains becomes a corrective task (#969).
