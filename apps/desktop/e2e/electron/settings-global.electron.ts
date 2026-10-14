@@ -525,6 +525,50 @@ test("global commands list the Markdown templates of the home folder", async ({
   expect(dialogs).toEqual([]);
 });
 
+// #1102: a global command is created, renamed and deleted from the page, in the home folder.
+test("a global command is created, edited and deleted in the home folder", async ({
+  workspace,
+  launch,
+}) => {
+  workspace.project("gamma");
+  const commands = join(homeOf(workspace.dir), ".baked", "commands");
+  const { page } = await launch(backend);
+  const dialogs = failOnNativeDialogs(page);
+  await openProject(page);
+  await openScreen(page, "Global commands");
+  await page.getByRole("button", { name: "New command" }).click();
+  const form = page.getByRole("dialog");
+  await form.getByLabel("Name").fill("fix-ci");
+  await form.getByLabel("Argument hint").fill("<job>");
+  await form.getByLabel("Description").fill("Fix the failing CI job");
+  await form.getByLabel("Prompt").fill("Fix $ARGUMENTS.");
+  await expectBakedStyle(page);
+  await form.getByRole("button", { name: "Add command" }).click();
+  await expect(form).toBeHidden();
+  const list = page.getByRole("region", { name: "Global commands" });
+  await expect(list.getByRole("listitem")).toContainText("/fix-ci <job>");
+  expect(readFileSync(join(commands, "fix-ci.md"), "utf8")).toBe(
+    "---\ndescription: Fix the failing CI job\nargument-hint: <job>\n---\nFix $ARGUMENTS.\n",
+  );
+
+  await list.getByRole("button", { name: "Edit /fix-ci" }).click();
+  await expect(form.getByLabel("Prompt")).toHaveValue("Fix $ARGUMENTS.");
+  await form.getByLabel("Name").fill("ci:fix");
+  await form.getByRole("button", { name: "Save changes" }).click();
+  await expect(form).toBeHidden();
+  await expect(list.getByRole("listitem")).toContainText("/ci:fix <job>");
+  expect(existsSync(join(commands, "ci", "fix.md"))).toBe(true);
+  expect(existsSync(join(commands, "fix-ci.md"))).toBe(false);
+
+  await list.getByRole("button", { name: "Delete /ci:fix" }).click();
+  const confirm = page.getByRole("dialog", { name: "Delete /ci:fix?" });
+  await expectBakedStyle(page);
+  await confirm.getByRole("button", { name: "Delete" }).click();
+  await expect(list).toContainText("No global commands.");
+  expect(existsSync(join(commands, "ci"))).toBe(false);
+  expect(dialogs).toEqual([]);
+});
+
 test("global commands show an empty state, and project commands stay off the page", async ({
   workspace,
   launch,
