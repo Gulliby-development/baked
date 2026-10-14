@@ -78,7 +78,8 @@ export type SettingPageId =
   | "baked-map"
   | "compaction"
   | "limits"
-  | "code-quality";
+  | "code-quality"
+  | "coordinator";
 
 export interface SettingPage {
   id: SettingPageId;
@@ -144,6 +145,13 @@ export const SETTING_PAGES: readonly SettingPage[] = [
     description:
       "Quality gates of workflow runs. New runs take these defaults and keep them until they finish.",
     command: "/code-quality",
+  },
+  {
+    id: "coordinator",
+    title: "Coordinator",
+    description:
+      "How the project coordinator proposes work: workflow runs, parallel chats, or asking each time.",
+    command: "/coordinator style",
   },
 ];
 
@@ -1031,6 +1039,39 @@ export const SETTINGS: readonly SettingDefinition[] = [
     scopes: BOTH,
     type: "library-docs",
     default: null,
+  },
+  {
+    id: "coordinator.workStyle",
+    page: "coordinator",
+    section: "Proposing work",
+    label: "Work style",
+    help: "How the coordinator proposes work that is more than a quick answer. With a preference it goes that way without asking which; with only, it never offers the other way.",
+    scopes: BOTH,
+    type: "enum",
+    default: "ask",
+    options: [
+      {
+        value: "workflows-only",
+        label: "Workflows only",
+        help: "Always a workflow run; never parallel chats.",
+      },
+      {
+        value: "prefer-workflows",
+        label: "Mostly workflows",
+        help: "A workflow run; chats only when you ask for them.",
+      },
+      {
+        value: "ask",
+        label: "Not set",
+        help: "Offer a workflow; when you decline it, offer parallel chats.",
+      },
+      {
+        value: "prefer-chats",
+        label: "Mostly chats",
+        help: "Parallel chats, or one chat; a workflow only when you ask for one.",
+      },
+      { value: "chats-only", label: "Chats only", help: "Always chats; never a workflow run." },
+    ],
   },
 ];
 

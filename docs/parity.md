@@ -54,6 +54,8 @@ bun test tests/feature-parity.test.ts
 | Export a chat (Markdown, JSON, clipboard) | `/session export`, `/session export json`, `/session export clipboard` | `baked session export` | `/v1/sessions/:id/export` | `project/chat` |
 | Project coordinator chat with a durable project brief and read access to the project | `/coordinator`, `/projects` | `baked session coordinator`, `baked session coordinator send`, `baked session coordinator launched` +2 | `/v1/coordinator`, `/v1/coordinator/brief`, `/v1/coordinator/launched` +2 | `project/coordinator`, `project/chat` |
 | Coordinator suggests, runs and follows workflows | `/coordinator` | `baked session coordinator send`, `baked session coordinator launched` | `/v1/sessions/:id/prompts`, `/v1/sessions/:id/events`, `/v1/coordinator/launched` | `project/coordinator`, `attention` |
+| Coordinator assesses a task and, without a workflow, splits it into parallel chats | `/coordinator` | `baked session coordinator send` | `/v1/sessions/:id/prompts`, `/v1/sessions/:id/events` | `project/coordinator`, `attention` |
+| Coordinator work style: workflows only, mostly workflows, not set, mostly chats, chats only | `/coordinator style` | Not needed: set coordinator.workStyle in config.json; the CLI coordinator reads it | `/v1/settings` | `settings/chat` |
 | Editing sessions the coordinator launches work in their own Git worktree and branch | `/coordinator` | Not needed: the headless CLI does not launch coordinator sessions | `/v1/coordinator/launched`, `/v1/sessions` | `project/coordinator` |
 | Coordinator schedules: prompts that start a coordinator turn on their own | `/coordinator` | `baked session coordinator schedules`, `baked session coordinator schedule` | `/v1/coordinator/schedules` | `project/coordinator` |
 | Coordinator answers routine approvals by rules | `/coordinator rules` | `baked session coordinator rules` | `/v1/coordinator/approval-rules` | `project/coordinator` |
@@ -72,7 +74,7 @@ bun test tests/feature-parity.test.ts
 | Files changed in a session and diff stats | `/changes` | `--diff` | `/v1/sessions/:id/diff` | `project/chat` |
 | Reasoning effort per chat | `/effort` | `--effort` | `/v1/sessions/:id`, `/v1/models` | `project/chat` |
 | Permission mode per chat: manual, auto or full access | `/permissions` | `--permissions` | `/v1/sessions/:id` | `project/chat`, `project/coordinator` |
-| Context window size per chat; the coordinator defaults to the largest | `/context-size` | `--context` | `/v1/sessions/:id`, `/v1/models` | `project/chat`, `project/coordinator` |
+| Context window size per chat; the coordinator always runs with the largest | `/context-size` | `--context` | `/v1/sessions/:id`, `/v1/models` | `project/chat` |
 | Context and cost dashboard for a chat | `/context`, `/context clear`, `/status` | Not needed: --json reports usage of a one-shot run | `/v1/sessions/:id` | `project/chat` |
 
 ### Models and providers
@@ -142,6 +144,7 @@ bun test tests/feature-parity.test.ts
 | Revise a run after its instructions change | `/workflow` | `baked workflow candidate`, `baked workflow revise` | `/v1/workflow/runs/:id/candidate`, `/v1/workflow/runs/:id/revise` | `project/runs` |
 | Approval reviewer: a model decides low-risk plans outside the auto approval limits | `/workflow` | `baked workflow run`, `baked quick`, `approval-review` | `/v1/workflow/runs` | `project/runs` |
 | Checks: list, edit, run now, suggestions | `/workflow` | `baked doctor` | `/v1/workflow/checks`, `/v1/workflow/checks/suggestions`, `/v1/workflow/checks/:id/run` | `project/gates` |
+| Gates from chat: list detected gates, save them on an approval, set them up with a run | `/coordinator` | `baked session`, `baked session coordinator send` | `/v1/sessions/:id/prompts` | `project/chat`, `project/coordinator` |
 | Gates: list and confirm | `/workflow` | `baked workflow gates` | `/v1/workflow/gates`, `/v1/workflow/gates/confirm` | `project/gates` |
 | Duplication and dead-code ratchet | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | Anti-slop rule pack on the lines a run adds | `/code-quality`, `/workflow` | Not needed: rule choices and ast-grep files live in quality of config.json; baked workflow report shows the findings | `/v1/settings`, `/v1/workflow/runs/:id/report` | `settings/chat` |

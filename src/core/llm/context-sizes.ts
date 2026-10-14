@@ -41,9 +41,9 @@ function pick(options: ContextSizeOption[], size: "max" | number): ContextSizeOp
 }
 
 /**
- * The model ID a chat's turns run with for its context size. `default` keeps the chosen model,
- * except for the coordinator, which takes the largest window its model offers. A model with one
- * size runs as chosen whatever the size says.
+ * The model ID a chat's turns run with for its context size. `default` keeps the chosen model.
+ * The coordinator always takes the largest window its model offers, whatever the size says. A
+ * model with one size runs as chosen.
  */
 export function withContextSize(
   modelId: string,
@@ -52,7 +52,7 @@ export function withContextSize(
 ): string {
   const choices = getModelContextOptions(modelId);
   if (choices.length === 0) return modelId;
-  const wanted = !size || size === "default" ? (options.coordinator ? "max" : null) : size;
+  const wanted = options.coordinator ? "max" : !size || size === "default" ? null : size;
   if (wanted === null) return modelId;
   return pick(choices, wanted)?.modelId ?? modelId;
 }

@@ -61,8 +61,9 @@ export const test = base.extend<Fixtures>({
       rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
     } catch {}
   },
-  launch: async ({ workspace }, use) => {
+  launch: async ({ workspace }, use, testInfo) => {
     const apps: ElectronApplication[] = [];
+    let output = "";
     await use(async (options = {}) => {
       const home = join(workspace.dir, "home");
       const config = join(home, ".config");
@@ -119,11 +120,28 @@ export const test = base.extend<Fixtures>({
         env,
       });
       apps.push(app);
+      // The backend's and the main process's output, printed when the test fails.
+      for (const stream of [app.process().stdout, app.process().stderr])
+        stream?.on("data", (chunk: Buffer) => {
+          output = (output + chunk.toString()).slice(-6000);
+        });
       expect(await app.evaluate(({ app }) => app.getPath("userData"))).toBe(userData);
       const page = await app.firstWindow();
       await expect(page.getByRole("heading", { name: "All projects", level: 1 })).toBeVisible();
       return { app, page };
     });
+    if (testInfo.status !== testInfo.expectedStatus) {
+      // CI artifacts are not always at hand: the window and the process output go to the log.
+      for (const app of apps) {
+        const snapshot = await app
+          .windows()[0]
+          ?.locator("main")
+          .ariaSnapshot({ timeout: 2000 })
+          .catch((error: unknown) => String(error));
+        console.log(`--- window at failure ---\n${snapshot?.slice(0, 6000)}`);
+      }
+      console.log(`--- app output ---\n${output}`);
+    }
     for (const app of apps) await app.close();
   },
 });

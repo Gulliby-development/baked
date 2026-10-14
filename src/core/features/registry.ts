@@ -178,9 +178,11 @@ export const FEATURES: readonly Feature[] = [
     id: "coordinator-workflows",
     group: "Chat and sessions",
     title: "Coordinator suggests, runs and follows workflows",
-    tui: ["/coordinator: Run workflow? card (Ctrl+Y/Ctrl+N), launched runs with their stages"],
+    tui: [
+      "/coordinator: Run workflow? card (Ctrl+Y/Ctrl+N) with the gates it sets up, launched runs with their stages",
+    ],
     cli: [
-      "baked session coordinator send: answers the workflow card (--yes or a terminal) and follows the run's stages",
+      "baked session coordinator send: answers the workflow card (--yes or a terminal), with the gates it sets up, and follows the run's stages",
       "baked session coordinator launched: runs with their workflow and stages",
     ],
     api: [
@@ -189,9 +191,38 @@ export const FEATURES: readonly Feature[] = [
       "/v1/coordinator/launched: run progress",
     ],
     desktop: [
-      "project/coordinator: Run workflow card, live stages in Launched work",
+      "project/coordinator: Run workflow card with the gates it sets up, live stages in Launched work",
       "attention: workflow run proposals",
     ],
+  },
+  {
+    id: "coordinator-parallel-chats",
+    group: "Chat and sessions",
+    title: "Coordinator assesses a task and, without a workflow, splits it into parallel chats",
+    tui: [
+      "/coordinator: parallel chats card (Ctrl+Y/Ctrl+N), a waiting session's question on its launch note",
+    ],
+    cli: [
+      "baked session coordinator send: answers the parallel chats card (--yes or a terminal) and follows the chats",
+    ],
+    api: [
+      "/v1/sessions/:id/prompts: answers the split prompt with mode chats",
+      "/v1/sessions/:id/events: launch notes with asks",
+    ],
+    desktop: [
+      "project/coordinator: parallel chats card, a waiting session's question on its launch card",
+      "attention: parallel chats proposals",
+    ],
+  },
+  {
+    id: "coordinator-work-style",
+    group: "Chat and sessions",
+    title:
+      "Coordinator work style: workflows only, mostly workflows, not set, mostly chats, chats only",
+    tui: ["/coordinator style"],
+    cli: notNeeded("set coordinator.workStyle in config.json; the CLI coordinator reads it"),
+    api: ["/v1/settings: coordinator page"],
+    desktop: ["settings/chat: Coordinator page"],
   },
   {
     id: "coordinator-session-worktrees",
@@ -367,11 +398,11 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "context-size",
     group: "Chat and sessions",
-    title: "Context window size per chat; the coordinator defaults to the largest",
+    title: "Context window size per chat; the coordinator always runs with the largest",
     tui: ["/context-size: per tab, shown in the header"],
     cli: ["--context"],
     api: ["/v1/sessions/:id: contextSize, contextSizes", "/v1/models: contextSizes"],
-    desktop: ["project/chat: context size picker", "project/coordinator: context size picker"],
+    desktop: ["project/chat: context size picker"],
   },
   {
     id: "context-dashboard",
@@ -976,6 +1007,21 @@ export const FEATURES: readonly Feature[] = [
     cli: ["baked doctor"],
     api: ["/v1/workflow/checks", "/v1/workflow/checks/suggestions", "/v1/workflow/checks/:id/run"],
     desktop: ["project/gates"],
+  },
+  {
+    id: "gates-from-chat",
+    group: "Workflow runs",
+    title: "Gates from chat: list detected gates, save them on an approval, set them up with a run",
+    tui: ["/coordinator: list_gates, save_gates and the gates on the Run workflow? card"],
+    cli: [
+      "baked session: list_gates and save_gates",
+      "baked session coordinator send: list_gates, save_gates and the gates on the workflow card",
+    ],
+    api: ["/v1/sessions/:id/prompts: answers the save_gates approval and the workflow card"],
+    desktop: [
+      "project/chat: list_gates and save_gates",
+      "project/coordinator: Run workflow card with the gates it sets up",
+    ],
   },
   {
     id: "gates",

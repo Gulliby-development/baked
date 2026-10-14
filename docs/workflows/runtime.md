@@ -6,7 +6,7 @@ The runtime is available through `baked workflow` and `/workflow` in the TUI. It
 
 Workflows need no setup: without a `workflows` block a run uses the default policy below with no checks, and `enabled` defaults to `true`. Select a configured BAKED model; `defaultModel: "none"` does not allow starting a workflow. To change the policy, add `workflows` to `.baked/config.json` (or the global config) and keep the other settings; to turn workflows off, set `"enabled": false`. The full example is below; `policy` is required in a `workflows` block and unknown fields are rejected.
 
-Default checks are not written for you. A check is a command that runs as a trusted gate, so commands taken from a cloned repository's `package.json` become checks only after someone adds them in the gates window (G in `/workflow`), the desktop's Gates and checks screen or `.baked/config.json`. Gates in the repository's `baked/gates` still need the first-use confirmation.
+Default checks are not written for you. A check is a command that runs as a trusted gate, so commands taken from a cloned repository's `package.json` become checks only after someone adds them in the gates window (G in `/workflow`), the desktop's Gates and checks screen, a chat ([below](#gates-from-chat)) or `.baked/config.json`. Gates in the repository's `baked/gates` still need the first-use confirmation.
 
 ```json
 {
@@ -354,6 +354,10 @@ A gate is one entry of `workflows.policy.checks` in `.baked/config.json`. `/work
 - Saving writes only `workflows.policy.checks` and keeps every other setting of the project config. A project without a `workflows` block gets one with the default policy and `enabled: true`.
 - A run takes a copy of the policy when it starts. Changing gates affects the runs created afterwards. Changing the gates of a started run still goes through `candidate` and `revise`.
 - Run now goes through the workflow worker, so the interface stays responsive; Esc stops the process tree. It uses the same safe environment and timeout as a run. It records no evidence. It is refused while a run holds the workspace, because the command could change the files that run is checking. It needs workflows to be enabled, so a disabled project starts no worker.
+
+### Gates from chat
+
+Every chat session (the desktop chat, `baked session`, and the coordinator in the desktop app, the terminal UI and `baked session coordinator send`) has two gate tools. `list_gates` shows the configured gates, the ones BAKED detects in the project and the workflows that cannot start until a feature gate exists; it runs nothing. `save_gates` adds, replaces (same ID) or removes gates: a detected gate by its ID alone takes its command, timeout and fixer, any other gate needs a command. Each save shows an approval prompt listing the commands and writes nothing unless you approve it. Saving writes `workflows.policy.checks` like the gates window and gives new runs of the same process (the server, the terminal UI's workflow worker) the new list; started runs keep theirs. The coordinator also sets missing gates up together with a run, on its Run workflow card ([coordinator](../coordinator.md#workflows)).
 
 ### Baseline comparison in update runs
 

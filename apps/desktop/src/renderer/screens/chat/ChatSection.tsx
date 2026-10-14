@@ -187,8 +187,8 @@ function useStickToBottom(dependency: unknown) {
 const COORDINATOR_MODES: readonly ChatMode[] = ["architect"];
 
 /**
- * One chat session. As the project `coordinator` it has no chat switcher, fork, undo or mode
- * choice, and its split cards offer Edit.
+ * One chat session. As the project `coordinator` it has no chat switcher, fork, undo, mode or
+ * context size choice, and its split cards offer Edit.
  */
 export function SessionView({
   project,
@@ -724,7 +724,7 @@ export function SessionView({
                 onPermissions: (permissions: PermissionMode) => update({ permissions }),
               }
             : {})}
-          {...(!draft && session?.contextSizes && session.contextSizes.length > 1
+          {...(!draft && !coordinator && session?.contextSizes && session.contextSizes.length > 1
             ? {
                 contextSize: {
                   sizes: session.contextSizes,

@@ -57,11 +57,12 @@ export function promptLine(prompt: ChatPrompt): string {
       return `Run the plan "${prompt.title}"`;
     case "workflow": {
       const stages = prompt.stages.length ? ` (${prompt.stages.join(" > ")})` : "";
-      return `Run the workflow ${prompt.workflow}${stages}: ${prompt.why}\n  Request: ${prompt.prompt.replace(/\s+/g, " ")}`;
+      const gates = (prompt.gates ?? []).map((g) => `\n  Gate: ${g}`).join("");
+      return `Run the workflow ${prompt.workflow}${stages}: ${prompt.why}\n  Request: ${prompt.prompt.replace(/\s+/g, " ")}${gates}`;
     }
     case "split": {
       const flows = prompt.flows.map((f) => `\n  - ${f.title} (${f.task})`).join("");
-      return `Split "${prompt.title}" into ${prompt.flows.length} ${prompt.mode === "initiative" ? "flows of one initiative" : "runs"}:${flows}`;
+      return `Split "${prompt.title}" into ${prompt.flows.length} ${prompt.mode === "initiative" ? "flows of one initiative" : prompt.mode === "chats" ? "parallel chats" : "runs"}:${flows}`;
     }
   }
 }
