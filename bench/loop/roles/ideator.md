@@ -74,7 +74,7 @@ Append each to `ledger/ideas.jsonl` as `{"round": N, "kind": "update", "repo": "
 
 ## Difficulty ladder
 
-The orchestrator tells you the level (1-5). Start at 1; it goes up under the orchestrator's difficulty rule. Level 5 is the ceiling: never propose anything above it. The level is defined by the size of the work BAKED plans (tasks in its plan, source files), not by the domain; token figures are what rounds 1-15 measured on codex and grow roughly with the square of the task count.
+The orchestrator tells you the level (1-5). The loop starts at level 3 and climbs one level after each round without errors (the orchestrator's level ladder rule). Level 5 is the ceiling: never propose anything above it. The level is defined by the size of the work BAKED plans (tasks in its plan, source files), not by the domain; token figures are what rounds 1-15 measured on codex and grow roughly with the square of the task count.
 
 | Level | Typical shape | Size | Expected tokens per new app | What usually breaks |
 |---|---|---|---|---|

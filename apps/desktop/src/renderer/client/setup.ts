@@ -100,6 +100,8 @@ export interface GatePlaces {
   workflowId: string;
   /** A built-in workflow is copied under this ID when a gate is bound to it. */
   copyTo: string | null;
+  /** Set when a check stage has no checks yet, which keeps the gate out of the other places. */
+  needsChecks?: string | null;
   places: { key: string; label: string; bound: boolean; disabled: string | null }[];
 }
 

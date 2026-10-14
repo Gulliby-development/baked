@@ -218,6 +218,39 @@ export function noTestsCollected(output: string): boolean {
 }
 
 /**
+ * A corrective task's title: what its first finding claims, not the finding's id. Reports listed
+ * tasks such as "Correct 2f2d7618-1056-452e-a487-c9c888b7e163" that said nothing (#1146).
+ */
+export function correctionTitle(
+  findings: Pick<Review["findings"][number], "claim" | "file">[],
+): string {
+  const [first] = findings;
+  if (!first) return "Correct findings";
+  const claim = first.claim.replace(/\s+/g, " ").trim();
+  const where = first.file && !claim.includes(first.file) ? ` (${first.file})` : "";
+  const text = `${claim}${where}`;
+  const short = text.length > 120 ? `${text.slice(0, 119)}…` : text;
+  const more = findings.length > 1 ? ` and ${findings.length - 1} more` : "";
+  return `Correct: ${short}${more}`;
+}
+
+/**
+ * Whether open findings already name every failing test of a check's output. A task that reports
+ * a defect while other tasks' failures are still being corrected sees the same red check; those
+ * failures are not its to answer again (cimatrix 5670e55c: a README task opened a third and a
+ * fourth corrective task for two defects already in correction, #1146).
+ */
+export function failuresCovered(
+  output: string,
+  open: Pick<Review["findings"][number], "claim" | "impact">[],
+): boolean {
+  const failing = failureSignature(output).split(" | ").filter(Boolean);
+  if (!failing.length || !open.length) return false;
+  const named = open.map((f) => `${f.claim}\n${f.impact}`).join("\n");
+  return failing.every((line) => named.includes(line));
+}
+
+/**
  * Findings for a failed run-level check. Run 6931efd6: ruff flagged three test files of three
  * tasks, but the one finding (no file) went to the first task with the check, whose correction
  * could not edit the other two files. When the output names planned files, each task that
@@ -568,7 +601,7 @@ export function appendCorrections(
       ),
       checkIds: unique(bases.flatMap((b) => correctionChecks(b, root))),
       id: `T${String(next++).padStart(3, "0")}`,
-      title: `Correct ${ids.join(", ")}`,
+      title: correctionTitle(grouped),
       description: grouped
         .map(
           (finding) =>

@@ -30,6 +30,7 @@ import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification
 import {
   appendCorrections,
   failedCheckFindings,
+  failuresCovered,
   isTestOf,
   noTestsCollected,
   pathsInOutput,
@@ -5971,7 +5972,8 @@ ${note}`;
    * run). The checks are the task's own and the ones its findings name. A planned task counts
    * only on a rerun (generation above 0): a repair invalidated it though it was already correct
    * (md-site 2707d602 T004 generation 3 blocked the run), while a first run that changed nothing
-   * did not do its work. Otherwise it returns why the result is not accepted, for the message.
+   * did not do its work. A rerun with no such check counts when its files are unchanged since its
+   * last implementation. Otherwise it returns why the result is not accepted, for the message.
    */
   private async correctionSatisfied(
     runId: string,
@@ -6009,7 +6011,9 @@ ${note}`;
       ...this.gatedChecks(state, policy, task, root).filter((c) => c.id === regression),
     ];
     if (!checks.length)
-      return "it changed none of its files and no required check of it confirms the work is already done";
+      return rerun && (await this.unchangedSinceImplemented(runId, task, policy, root, signal))
+        ? true
+        : "it changed none of its files and no required check of it confirms the work is already done";
     for (const check of checks) {
       const checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
       if (checked.status === "passed") continue;
@@ -6027,6 +6031,36 @@ ${note}`;
       return `it changed none of its files and check ${check.id} still fails${named.length ? ` on ${named.slice(0, 5).join(", ")}` : ""} (evidence ${checked.evidenceId})`;
     }
     return true;
+  }
+  /**
+   * Whether every file a rerun task writes is still what an earlier implementation of it left:
+   * a repair invalidated the task for a change elsewhere, so its work is already done. Covers the
+   * tasks with no required check to confirm it, such as a README and licence task (cimatrix
+   * 5670e55c T010 stopped the run with an empty rerun, #1144).
+   */
+  private async unchangedSinceImplemented(
+    runId: string,
+    task: Task,
+    policy: RunPolicy,
+    root: string,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const written = task.writes.filter((w) => w.action !== "delete").map((w) => w.path);
+    if (!written.length) return false;
+    const left = new Map<string, string | null>();
+    const diffs = this.store
+      .artifacts(runId)
+      .filter((a) => a.logical_path === `tasks/${task.id}/diff.json`)
+      .sort((a, b) => a.revision - b.revision);
+    for (const row of diffs) {
+      const diff = JSON.parse(this.store.readArtifact(runId, row.id)) as {
+        after?: Record<string, string | null>;
+      };
+      for (const [path, hash] of Object.entries(diff.after ?? {})) left.set(path, hash);
+    }
+    if (!written.every((path) => left.get(path))) return false;
+    const now = await sourceManifest(root, generatedPaths(policy), signal);
+    return written.every((path) => now[path] === left.get(path));
   }
   /**
    * Whether a correction's failing checks pass before its first attempt: another correction
@@ -7197,6 +7231,13 @@ ${note}`;
     const testsPending =
       plannedTests.length > 0 &&
       !plannedTests.some((path) => existsSync(workspacePath(root, path)));
+    // Findings not yet resolved, in correction (`confirmed`) or waiting for it: a failure they name is not
+    // charged to this report again (#1146).
+    const open = this.store
+      .findings(runId)
+      .filter((f) => f.status === "open" || f.status === "confirmed")
+      .map((f) => JSON.parse(f.body_json) as Review["findings"][number]);
+    const covered: { checkId: string; findingIds: string[] }[] = [];
     for (const check of policy.checks.filter((c) => c.required && c.scope === "feature")) {
       let checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
       if (checked.status === "failed" && testsPending && noTestsCollected(checked.output ?? "")) {
@@ -7223,6 +7264,22 @@ ${note}`;
         ...(fixed ? { fixed: true as const } : {}),
       });
       if (checked.status !== "failed") continue;
+      const claim = `Required check ${check.id} failed`;
+      if (failuresCovered(checked.output ?? "", open)) {
+        covered.push({ checkId: check.id, findingIds: open.map((f) => f.id) });
+        continue;
+      }
+      // A file whose failure of this check is already an open finding is in correction.
+      const pending = files.filter(
+        (file) => !open.some((f) => f.claim === claim && f.file === file),
+      );
+      if (!pending.length) {
+        covered.push({
+          checkId: check.id,
+          findingIds: open.filter((f) => f.claim === claim).map((f) => f.id),
+        });
+        continue;
+      }
       const failed = failedCheckFindings(
         check,
         checked.evidenceId,
@@ -7234,12 +7291,26 @@ ${note}`;
       );
       // Output that names planned files decides who owns the failure; output that names none
       // (a bare assertion) is the reporting task's account of where the defect is.
-      const named = failed.filter((f) => f.file !== null && files.includes(f.file));
+      const named = failed.filter((f) => f.file !== null && pending.includes(f.file));
       const unnamed = failed.every((f) => f.file === null);
+      // A failure placed on a named file is the file's owner's, with its requirements: the
+      // reporting task wrote none of it.
+      const owned = (file: string, f: Review["findings"][number]) => {
+        const owner = graph.tasks.find((t) => t.id === owners.get(file));
+        return owner
+          ? {
+              ...f,
+              id: newId(),
+              file,
+              requirementIds: owner.requirementIds,
+              criterionIds: owner.criterionIds,
+            }
+          : { ...f, id: newId(), file };
+      };
       findings.push(
         ...(named.length || !unnamed
           ? named
-          : files.flatMap((file) => failed.map((f) => ({ ...f, id: newId(), file })))),
+          : pending.flatMap((file) => failed.map((f) => owned(file, f)))),
       );
     }
     this.store.transaction(() =>
@@ -7247,7 +7318,13 @@ ${note}`;
         runId,
         "diagnostic",
         `tasks/defects/${task.id}.json`,
-        canonical({ taskId: task.id, files, checks: ran, findings: findings.map((f) => f.id) }),
+        canonical({
+          taskId: task.id,
+          files,
+          checks: ran,
+          findings: findings.map((f) => f.id),
+          ...(covered.length ? { covered } : {}),
+        }),
       ),
     );
     if (!findings.length) return;
