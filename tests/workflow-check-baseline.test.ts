@@ -130,6 +130,9 @@ describe("baseline comparison in update runs", () => {
 
     // Only which required checks fail before any change is recorded (#934).
     expect(baseline(fixture, run.runId)).toMatchObject({ counts: {}, diagnostics: {} });
+    const approval = fixture.service.store.requests(run.runId).find((r) => r.kind === "approval");
+    // value.txt does not exist yet, so the fixture's check fails before the tasks write it.
+    expect(JSON.parse(approval?.body_json ?? "{}").baselineFailures).toEqual(["check"]);
     expect((await fixture.service.get(run.runId)).status).toBe("completed");
   });
 
@@ -144,7 +147,15 @@ describe("baseline comparison in update runs", () => {
     const fixture = workflowFixture({ policy: { ...fixturePolicy, checks: [...fixturePolicy.checks, stale] } });
     cleanups.push(fixture.dispose);
     writeFileSync(join(fixture.root, "README.md"), "# App\n");
-    const run = await driveToChecks(fixture);
+    const run = await fixture.start();
+    await fixture.service.drive(run.runId, signal());
+    // The approval already names it, before any task runs.
+    const approval = fixture.service.store
+      .requests(run.runId)
+      .find((r) => r.kind === "approval" && r.status === "pending");
+    expect(JSON.parse(approval?.body_json ?? "{}").baselineFailures).toEqual(["check", "build"]);
+    await fixture.approve(run.runId);
+    await fixture.service.drive(run.runId, signal());
 
     expect(baseline(fixture, run.runId)?.failures).toMatchObject({
       [commandKey(stale)]: 'Could not resolve entry module "index.html".',

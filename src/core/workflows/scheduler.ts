@@ -1287,6 +1287,9 @@ export class WorkflowScheduler {
                 );
                 state.manifest.baselineSnapshotId = snapshot.id;
                 await this.measureQualityBaseline(runId, state, policy, signal);
+                // Before approval, so the person sees a required check that already fails (#934).
+                await this.recordCheckBaseline(runId, state, policy, signal);
+                const baselineFailures = this.baselineFailingChecks(runId, policy);
                 const digest = approvalDigest(state);
                 // A v2 approval stage marked human never approves on its own.
                 const humanStage =
@@ -1376,6 +1379,7 @@ export class WorkflowScheduler {
                     ? { requestCoverage: requestCoverage(state.spec, coverageRequest(state)) }
                     : {}),
                   boundedCorrection: true,
+                  ...(baselineFailures.length ? { baselineFailures } : {}),
                   // Granted walk-through capabilities are shown to the person; the frozen gates
                   // that hold them are part of the manifest the digest covers.
                   ...(v2 && acceptanceGrants(v2.gates).length
@@ -2206,7 +2210,7 @@ export class WorkflowScheduler {
     return split;
   }
   /**
-   * Before the first task of an update run, runs each feature check once on the code the run starts
+   * Before the approval of an update run, runs each feature check once on the code the run starts
    * from and stores the counts its output reports (a linter's diagnostics, a test runner's tests)
    * as `facts/check-baseline.json`. The checks stage compares the same commands with it.
    * Nothing is measured for a scaffold, after a task has started, or for output no parser reads.
@@ -2284,6 +2288,20 @@ export class WorkflowScheduler {
       `baseline_failure: required check ${check.id} failed before any change and fails the same way now (evidence ${evidenceId}); nothing the run changed affects it. Fix the check or the project setup, or revise the plan, then resume.`,
       { reason: "no_progress", checkId: check.id },
     );
+  }
+  /** The IDs of the required checks that failed before any change, from the check baseline. */
+  private baselineFailingChecks(runId: string, policy: RunPolicy): string[] {
+    const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
+    if (!artifact) return [];
+    const failures =
+      (
+        JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+          failures?: Record<string, string>;
+        }
+      ).failures ?? {};
+    return policy.checks
+      .filter((check) => check.required && commandKey(check) in failures)
+      .map((check) => check.id);
   }
   /** The diagnostics each whole-unit check reported before the run, by command key. */
   private baselineDiagnostics(runId: string): Record<string, string[]> {

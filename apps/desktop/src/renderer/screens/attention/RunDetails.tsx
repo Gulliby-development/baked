@@ -204,6 +204,16 @@ export function ApprovalDetail({ item, onDone }: DetailProps) {
                 ))}
               </section>
             ) : null}
+            {body.baselineFailures?.length ? (
+              <p
+                className="m-0 font-semibold text-[var(--warn)]"
+                role="note"
+                data-testid="approval-baseline-failures"
+              >
+                Required checks that fail before any change: {body.baselineFailures.join(", ")}. One
+                that still fails the same way after the tasks stops the run.
+              </p>
+            ) : null}
             {body.deferredCriteria?.length ? (
               <p className={NOTE}>
                 Checked after release, not by this run: {body.deferredCriteria.join(", ")}.
