@@ -709,6 +709,7 @@ export function SessionView({
           model={draft ? draftModel : (session?.model ?? null)}
           mode={draft ? draftMode : (session?.mode ?? "default")}
           effort={draft ? draftEffort : (session?.effort ?? "default")}
+          {...(!draft && session?.efforts ? { efforts: session.efforts } : {})}
           autoFocusKey={sessionId}
           initialText={seed.n > 0 ? seed.text : initialText}
           onSend={send}
