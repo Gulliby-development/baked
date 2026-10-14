@@ -180,8 +180,8 @@ export const FEATURES: readonly Feature[] = [
     title: "Coordinator suggests, runs and follows workflows",
     tui: ["/coordinator: Run workflow? card (Ctrl+Y/Ctrl+N), launched runs with their stages"],
     cli: [
-      "baked session coordinator send: answers the workflow card (--yes or a terminal) and follows the run",
-      "baked session coordinator launched: runs with their workflow",
+      "baked session coordinator send: answers the workflow card (--yes or a terminal) and follows the run's stages",
+      "baked session coordinator launched: runs with their workflow and stages",
     ],
     api: [
       "/v1/sessions/:id/prompts: answers the workflow prompt",
