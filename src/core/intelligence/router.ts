@@ -404,7 +404,13 @@ export class CodeIntelligenceRouter {
         }
         if (item.depth < MAX_DEPTH) {
           for (const entry of entries) {
-            if (entry.isDirectory() && !SKIP.has(entry.name) && !entry.name.startsWith(".")) {
+            if (
+              entry.isDirectory() &&
+              !SKIP.has(entry.name) &&
+              !entry.name.startsWith(".") &&
+              // The root `baked/` folder holds BAKED's own project files, not the project's code.
+              !(item.depth === 0 && entry.name === "baked")
+            ) {
               queue.push({ dir: join(item.dir, entry.name), depth: item.depth + 1 });
             }
           }
@@ -818,7 +824,13 @@ export async function detectProjectLanguages(
       }
       if (item.depth < MAX_DEPTH) {
         for (const entry of entries) {
-          if (entry.isDirectory() && !SKIP.has(entry.name) && !entry.name.startsWith(".")) {
+          if (
+            entry.isDirectory() &&
+            !SKIP.has(entry.name) &&
+            !entry.name.startsWith(".") &&
+            // The root `baked/` folder holds BAKED's own project files, not the project's code.
+            !(item.depth === 0 && entry.name === "baked")
+          ) {
             queue.push({ dir: join(item.dir, entry.name), depth: item.depth + 1 });
           }
         }

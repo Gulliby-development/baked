@@ -96,6 +96,9 @@ export const MCP_CAPABILITY = "mcp";
 /** `POST /v1/workflow/editor*` (the Workflows section's editor). */
 export const WORKFLOW_EDITOR_CAPABILITY = "workflow-editor";
 
+/** `DELETE /v1/workflow/definitions/ID` (Delete on a project workflow). */
+export const WORKFLOW_DELETE_CAPABILITY = "workflow-delete";
+
 /** `/v1/lsp*` (the Language servers section). */
 export const LSP_CAPABILITY = "lsp";
 

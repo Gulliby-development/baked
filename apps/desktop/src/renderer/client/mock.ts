@@ -97,6 +97,7 @@ const FULL_CAPABILITIES = [
   "worktrees",
   "lsp-diagnose",
   "workflow-editor",
+  "workflow-delete",
   "custom-commands",
   "commands-edit",
   "settings",

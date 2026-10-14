@@ -176,6 +176,7 @@ export const CAPABILITIES = [
   "worktrees",
   "lsp-diagnose",
   "workflow-editor",
+  "workflow-delete",
   "custom-commands",
   "commands-edit",
   "settings",
@@ -1148,6 +1149,19 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       return json(
         200,
         await execute({ command: "compare", positional: [a, b], flags: {} }),
+        origin,
+      );
+    }
+    const definition = /^\/v1\/workflow\/definitions\/([^/]+)$/.exec(path);
+    if (definition) {
+      only("DELETE");
+      return json(
+        200,
+        await execute({
+          command: "remove",
+          positional: [decodeURIComponent(definition[1] ?? "")],
+          flags: {},
+        }),
         origin,
       );
     }

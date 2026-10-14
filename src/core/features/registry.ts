@@ -1177,15 +1177,17 @@ export const FEATURES: readonly Feature[] = [
     id: "workflow-editor",
     group: "Workflow runs",
     title: "Workflow definition editor",
-    tui: ["/workflow: definition editor"],
-    cli: ["baked workflow define", "baked workflow validate"],
+    tui: ["/workflow: definition editor, remove ID"],
+    cli: ["baked workflow define", "baked workflow validate", "baked workflow remove"],
     api: [
       "/v1/workflow/definitions",
       "/v1/workflow/editor",
       "/v1/workflow/editor/review",
       "/v1/workflow/editor/save",
     ],
-    desktop: ["project/workflows: gallery, Watch walkthrough, Edit graph with station panel"],
+    desktop: [
+      "project/workflows: gallery, Watch walkthrough, Edit graph with station panel, Delete on a project workflow",
+    ],
   },
   {
     id: "project-agents",

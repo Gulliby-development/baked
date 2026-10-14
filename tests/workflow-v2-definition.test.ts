@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sddWorkflow } from "../src/core/workflows/builtin/sdd.js";
@@ -488,5 +488,25 @@ describe("definition commands", () => {
     expect((run(["definitions"]).result as { id: string }[]).map((d) => d.id)).toContain("copy-of-sdd");
     const gates = run(["gates"]).result as { gates: { id: string; source: string }[] };
     expect(gates.gates.find((g) => g.id === "tests")?.source).toBe("policy");
+  });
+
+  test("remove deletes a project workflow and leaves the built-in ones (#1101)", async () => {
+    const { executeDefinitionCommand } = await import("../src/headless/workflow-definitions.js");
+    const { parseWorkflowArgs } = await import("../src/headless/workflow-parse.js");
+    const root = workspace();
+    const run = (argv: string[]) => executeDefinitionCommand(parseWorkflowArgs(argv), root, policy);
+    run(["define", "mine", "--from", "quick-fix"]);
+    run(["define", "quick", "--from", "quick-fix"]);
+    const file = join(root, "baked", "workflows", "mine.json");
+    expect(run(["remove", "mine"]).result).toEqual({ id: "mine", path: file, restores: null });
+    expect(existsSync(file)).toBe(false);
+    expect((run(["definitions"]).result as { id: string }[]).map((d) => d.id)).not.toContain("mine");
+    // A project file that shadowed a built-in workflow gives the built-in one back.
+    expect(run(["remove", "quick"]).result).toMatchObject({ id: "quick", restores: "quick" });
+    const quick = (run(["definitions"]).result as { id: string; source: string }[]).find((d) => d.id === "quick");
+    expect(quick?.source).toBe("builtin");
+    expect(() => run(["remove", "quick"])).toThrow("built-in workflow");
+    expect(() => run(["remove", "mine"])).toThrow("No project workflow mine");
+    expect(() => run(["remove", "../escape"])).toThrow();
   });
 });
