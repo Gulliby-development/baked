@@ -66,7 +66,10 @@ class ScriptedExecutor implements AgentExecutor {
         const task = request.task;
         this.implemented.push(task?.id ?? "");
         if (task?.writes.some((w) => w.path === "src/cli.ts")) writeFileSync(join(this.root, "src/cli.ts"), `console.log("${OUTPUT}");\n`);
-        else {
+        else if (task?.writes.some((w) => w.path === "tests/readme.test.ts")) {
+          mkdirSync(join(this.root, "tests"), { recursive: true });
+          writeFileSync(join(this.root, "tests/readme.test.ts"), "// checks README.md\n");
+        } else {
           // The worker can only paste the output when the command exists.
           const ran = existsSync(join(this.root, "src/cli.ts"));
           writeFileSync(join(this.root, "README.md"), `# mdtoc\n\n${ran ? OUTPUT : "(output to be captured)"}\n`);
@@ -104,6 +107,7 @@ async function runScenario(tasks?: Task[]) {
     expect(done.status).toBe("completed");
     expect(service.store.run(run.runId).corrective_tasks).toBe(0);
     expect(readFileSync(join(root, "README.md"), "utf8")).toContain(OUTPUT);
+    return { service, runId: run.runId, executor };
 }
 
 describe("scenario: cfgtrace 49dbf63b, a README whose criterion asks for the CLI's output (#973)", () => {
@@ -118,6 +122,20 @@ describe("scenario: cfgtrace 49dbf63b, a README whose criterion asks for the CLI
 describe("scenario: cfgtrace 6474504a, a plan whose code task depends on the README (#1012)", () => {
   test("the host reverses the edge, so the CLI runs first and the README pastes real output", async () => {
     await runScenario([docs, { ...cli, dependsOn: ["T001"] }]);
+  }, 60000);
+});
+
+// Scenario of bench round 20, statevet a93faa86 (#1054): the README docs test T012 reads README.md
+// and the planner gave it `dependsOn: ["T011"]` (the README). The rule above dropped the edge as
+// code waiting for its README, so the stored graph lacked it and the analyzer raised the missing
+// edge for five generations; the run never left analyze ($8.65, 0 of 13 tasks).
+const docsTest: Task = { id: "T003", title: "Test the README examples", description: "Run the README examples and compare their output.", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: ["T001"], profileId: "implementer", writes: [{ path: "tests/readme.test.ts", action: "create" }], readHints: ["README.md"], checkIds: [], origin: "planned", findingIds: [], rationale: "Tests" };
+describe("scenario: statevet a93faa86, a README test that reads the README (#1054)", () => {
+  test("the test keeps its edge to the README task and runs after it", async () => {
+    const { service, runId, executor } = await runScenario([docs, cli, docsTest]);
+    const stored = service.store.state(runId).graph?.tasks.find((t) => t.id === "T003");
+    expect(stored?.dependsOn).toEqual(["T001"]);
+    expect(executor.implemented).toEqual(["T002", "T001", "T003"]);
   }, 60000);
 });
 
@@ -138,6 +156,10 @@ describe("withCommandDependencies reads the criteria a docs task covers", () => 
   test("a code edge onto a README that shows no output is kept", () => {
     const plain = { ...spec, criteria: spec.criteria.map((c) => (c.id === "AC-002" ? { ...c, then: "it lists the options and the license" } : c)) };
     expect(deps(withCommandDependencies(graph(docs, { ...cli, dependsOn: ["T001"] }), plain))).toEqual([[], ["T001"]]);
+  });
+  test("a task that reads the README keeps its edge to it", () => {
+    expect(deps(withCommandDependencies(graph(docs, cli, docsTest), spec))).toEqual([["T002"], [], ["T001"]]);
+    expect(deps(withCommandDependencies(graph(docs, cli, { ...docsTest, readHints: [] }), spec))).toEqual([["T002"], [], []]);
   });
   test("a read hint that names captured output adds the edge", () => {
     const hinted = { ...docs, readHints: ["examples/sample-output.txt"] };

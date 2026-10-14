@@ -31,11 +31,14 @@ describe("active time of a run (#1038)", () => {
     cleanups.push(() => fx.dispose());
     fx.executor.store = fx.service.store;
     const run = await fx.start();
+    const started = performance.now();
     await fx.service.drive(run.runId, new AbortController().signal);
+    const wall = performance.now() - started;
     expect(fx.executor.seen).toBeGreaterThanOrEqual(ACTIVE_FLUSH_MS * 2 - 50);
-    // The figure at the end is still the whole drive, counted once.
+    // The figure at the end is still the whole drive, counted once: never more than the drive's
+    // own wall time, however slow the runner is.
     const total = fx.service.store.run(run.runId).active_ms;
     expect(total).toBeGreaterThanOrEqual(ACTIVE_FLUSH_MS * 2.5 - 50);
-    expect(total).toBeLessThan(ACTIVE_FLUSH_MS * 2.5 + 5_000);
+    expect(total).toBeLessThanOrEqual(Math.ceil(wall) + 1);
   }, 30000);
 });
