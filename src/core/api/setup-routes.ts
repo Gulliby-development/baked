@@ -31,12 +31,14 @@ import {
 } from "../instruction-files.js";
 import { buildInstructionPrompt, loadInstructions } from "../instructions.js";
 import {
+  CliLoginCodeError,
   cancelCliLogin,
   cliSignInStatus,
   getCliLogin,
   isCliLoginProvider,
   logoutCli,
   startCliLogin,
+  submitCliLoginCode,
   switchCliAccount,
 } from "../llm/cli-login.js";
 import {
@@ -210,6 +212,8 @@ const COMMAND_ITEM = /^\/v1\/commands\/(project|global)\/([^/]+)$/;
 const KeyBody = z.strictObject({ key: z.string().trim().min(1).max(4096) });
 const PROVIDER_KEY = /^\/v1\/providers\/([a-z0-9-]+)\/key$/;
 const PROVIDER_LOGIN = /^\/v1\/providers\/([a-z0-9-]+)\/(login|logout|switch)$/;
+const PROVIDER_LOGIN_CODE = /^\/v1\/providers\/([a-z0-9-]+)\/login\/code$/;
+const LoginCodeBody = z.strictObject({ code: z.string().trim().min(1).max(4096) });
 
 /** Answers a setup request, or returns null when the path is not a setup endpoint. */
 export async function setupRoute(ctx: SetupRouteContext): Promise<Response | null> {
@@ -653,6 +657,20 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
         };
       }),
     });
+  }
+  const codeMatch = PROVIDER_LOGIN_CODE.exec(path);
+  if (codeMatch?.[1]) {
+    const id = codeMatch[1];
+    if (!isCliLoginProvider(id))
+      ctx.fail(404, "NOT_FOUND", `Provider ${id} does not sign in through a CLI`);
+    ctx.only("POST");
+    const body = LoginCodeBody.parse(await ctx.readJson());
+    try {
+      return ctx.json(202, { login: submitCliLoginCode(id, body.code) });
+    } catch (error) {
+      if (error instanceof CliLoginCodeError) ctx.fail(409, "CONFLICT", error.message);
+      throw error;
+    }
   }
   const loginMatch = PROVIDER_LOGIN.exec(path);
   if (loginMatch?.[1]) {

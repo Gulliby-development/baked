@@ -192,9 +192,14 @@ export function logoutClaudeCode(): ClaudeCodeLogoutResult {
 export function runClaudeCodeLogin(onLine?: (line: string) => void): {
   promise: Promise<void>;
   abort: () => void;
+  /**
+   * Sends the code the manual sign-in page shows to the CLI's "Paste code here" prompt. The CLI
+   * waits for it and for its own localhost callback at once, so either finishes the sign-in.
+   */
+  submitCode: (code: string) => void;
 } {
   const child = spawn(claudeCodeCommand(), ["auth", "login"], {
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
   trackProcess(child);
@@ -209,6 +214,8 @@ export function runClaudeCodeLogin(onLine?: (line: string) => void): {
   };
   child.stdout?.on("data", forward);
   child.stderr?.on("data", forward);
+  // A write after the CLI exits fails with EPIPE; the exit already settles the login.
+  child.stdin?.on("error", () => {});
 
   const promise = new Promise<void>((resolve, reject) => {
     child.once("error", (error) => reject(error));
@@ -229,6 +236,11 @@ export function runClaudeCodeLogin(onLine?: (line: string) => void): {
     promise,
     abort: () => {
       if (child.exitCode === null) child.kill();
+    },
+    submitCode: (code) => {
+      const clean = code.trim();
+      if (!clean || child.exitCode !== null || !child.stdin?.writable) return;
+      child.stdin.write(`${clean}\n`);
     },
   };
 }

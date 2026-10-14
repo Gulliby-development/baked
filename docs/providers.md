@@ -5,7 +5,7 @@ Pick a provider and model with `Ctrl+L` or `/models`. Models are named `provider
 | Connection | Provider ID | Authentication |
 | --- | --- | --- |
 | Claude | `anthropic` | `ANTHROPIC_API_KEY` or `/keys` |
-| Claude Code | `claude-code` | Claude subscription through the `claude` CLI: `/claude-code login` (`/claude-code logout`, `/claude-code status`) or `baked login claude-code`, see below |
+| Claude Code | `claude-code` | Claude subscription through the `claude` CLI: `/claude-code login` (`/claude-code code`, `/claude-code logout`, `/claude-code status`) or `baked login claude-code`, see below |
 | OpenAI API | `openai` | `OPENAI_API_KEY` or `/keys` |
 | OpenAI Codex | `codex` | ChatGPT account: `/codex login` (`/codex switch`, `/codex logout`, `/codex status`), `baked login codex`, or Sign in and Switch account in the desktop app's settings |
 | GitHub Copilot | `copilot` | An existing Copilot sign-in in VS Code, JetBrains or Neovim is found automatically; or `COPILOT_API_KEY`, `/keys`, `--set-key copilot`, see below |
@@ -55,7 +55,7 @@ The terminal sets it per tab with `/context-size` (a picker, or `/context-size 1
 The Claude Code connection runs Claude models through the official `claude` CLI and the account it is signed in to, so a Claude subscription works without an API key.
 
 1. Install Claude Code. BAKED finds `claude` as described in [Finding the CLIs](#finding-the-clis). On Windows use the native build (`claude.exe`, `claude install`); the npm `claude.cmd` shim cannot be started directly. `BAKED_CLAUDE_CODE_PATH` points BAKED at another executable.
-2. Sign in with `/claude-code login` (it runs `claude auth login` and opens the browser), with Sign in under Settings > All projects > Providers and keys in the desktop app, or run `claude auth login` in a terminal.
+2. Sign in with `/claude-code login` (it runs `claude auth login` and opens the browser), with Sign in under Settings > All projects > Providers and keys in the desktop app, or run `claude auth login` in a terminal. When the browser the CLI opened is not used, the printed sign-in page ends on a code: run `/claude-code code CODE` in the terminal UI (closing the login popup keeps the sign-in running), paste it into the desktop's code field and press Send code, or paste it into `baked login claude-code`.
 3. Pick a model: `claude-code/opus`, `claude-code/sonnet`, `claude-code/haiku` or `claude-code/fable` follow the newest model of each family. Any model name Claude Code accepts also works, for example `claude-code/claude-opus-4-8` or `claude-code/sonnet[1m]` for the 1M context window where the plan allows it.
 
 BAKED keeps one `claude -p --input-format stream-json` process per conversation, with all of Claude Code's built-in tools, MCP servers, hooks, skills and project `CLAUDE.md` turned off. BAKED's tool list and adapter rules become the Claude Code system prompt, and each agent step sends only the messages added since the previous step. The opening of a conversation that BAKED marks for the cache (the system prompt and, in a workflow attempt, the run's documents) goes into that system prompt too, which Claude Code caches, so the attempts of a run share it. Claude Code puts its prompt-cache breakpoints on that growing conversation, so later steps read the earlier context from the cache; usage records cache reads and cache writes separately. A step whose transcript does not continue an open conversation (after compaction, a retry, or a changed tool list) starts a new process. Idle processes stop after 10 minutes, and at most four stay open.

@@ -551,6 +551,13 @@ const COMMAND_DEFS: CommandDef[] = [
     tags: ["claude", "claude-code", "auth", "browser", "subscription"],
   },
   {
+    cmd: "/claude-code code",
+    ic: "model",
+    desc: "Finish a Claude Code login with the code the sign-in page shows",
+    category: "Models",
+    tags: ["claude", "claude-code", "auth", "code", "paste"],
+  },
+  {
     cmd: "/claude-code logout",
     ic: "model",
     desc: "Log out of the current Claude Code account",

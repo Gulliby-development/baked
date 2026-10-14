@@ -476,6 +476,7 @@ function mockLogin(provider: ProviderStatus, method: string): ApiResponse {
         state: "running",
         lines: ["Opening browser to sign in…", "Waiting for the sign-in to finish in the browser."],
         url: "https://example.com/sign-in",
+        ...(provider.id === "claude-code" ? { acceptsCode: true } : {}),
         startedAt: new Date().toISOString(),
       };
     }
@@ -2057,6 +2058,15 @@ export const setupRoutes: MockRoute = (request) => {
       else s.project = { ...s.project, modelRouting: next };
       return response(200, routingOverview(s, edit.workflow ?? null));
     }
+  }
+  const loginCode = /^\/v1\/providers\/([a-z0-9-]+)\/login\/code$/.exec(path);
+  if (loginCode) {
+    const login = providers.find((p) => p.id === loginCode[1])?.signIn?.login;
+    if (!login?.acceptsCode || login.state !== "running")
+      return error(409, "CONFLICT", "No sign-in that takes a code is running");
+    login.lines.push("Code sent; waiting for the CLI to finish signing in.");
+    loginPolls.set(loginCode[1] ?? "", LOGIN_POLLS - 1);
+    return response(202, { login });
   }
   const providerSignIn = /^\/v1\/providers\/([a-z0-9-]+)\/(login|logout|switch)$/.exec(path);
   if (providerSignIn) {
