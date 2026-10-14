@@ -6,6 +6,7 @@ import { Badge } from "../../components/ui/badge.js";
 import { buttonVariants } from "../../components/ui/button.js";
 import { tokens as formatTokens } from "../../format.js";
 import { cn } from "../../lib/cn.js";
+import { CLAMPED, Markdown } from "../chat/Markdown.js";
 import { emptyTranscript, reduceTranscript, type Transcript } from "../chat/transcript.js";
 import { type ThreadView, threadView } from "./thread.js";
 
@@ -155,9 +156,11 @@ export function ThreadCard({
         </p>
       )}
       {view.answer && view.state !== "working" && (
-        <p className="m-0 ml-11 line-clamp-3 whitespace-pre-wrap border-l-[3px] border-l-border pl-3 text-[13px] leading-[1.5] text-foreground">
-          {view.answer}
-        </p>
+        <Markdown
+          text={view.answer}
+          compact
+          className={cn("ml-11 border-l-[3px] border-l-border pl-3 text-foreground", CLAMPED)}
+        />
       )}
     </article>
   );

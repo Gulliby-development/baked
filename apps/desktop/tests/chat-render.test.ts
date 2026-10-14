@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { parseInline, parseMarkdown } from "../src/renderer/screens/chat/markdown-parse.ts";
+import {
+  parseInline,
+  parseMarkdown,
+  trimPartialMarkdown,
+} from "../src/renderer/screens/chat/markdown-parse.ts";
 import { toolDiff, toolIcon, toolTitle } from "../src/renderer/screens/chat/tools.ts";
 import {
   forkReportLines,
@@ -127,9 +131,72 @@ describe("markdown", () => {
     ]);
     expect(blocks[1]).toEqual({
       type: "paragraph",
-      children: [{ type: "text", text: "First line second line" }],
+      children: [{ type: "text", text: "First line" }, { type: "break" }, { type: "text", text: "second line" }],
     });
     expect(blocks[4]).toEqual({ type: "code", lang: "ts", text: "const x = 1;" });
+  });
+
+  test("parses GitHub tables with alignment and inline Markdown in cells", () => {
+    const [table] = parseMarkdown(
+      "| Idea | What you get |\n|:---|---:|\n| Check `site` | **List** of links |\n| Plan | Next tasks |",
+    );
+    expect(table).toEqual({
+      type: "table",
+      align: ["left", "right"],
+      header: [[{ type: "text", text: "Idea" }], [{ type: "text", text: "What you get" }]],
+      rows: [
+        [
+          [{ type: "text", text: "Check " }, { type: "code", text: "site" }],
+          [{ type: "strong", children: [{ type: "text", text: "List" }] }, { type: "text", text: " of links" }],
+        ],
+        [[{ type: "text", text: "Plan" }], [{ type: "text", text: "Next tasks" }]],
+      ],
+    });
+  });
+
+  test("a table right after a paragraph line is still a table", () => {
+    expect(parseMarkdown("We can do this:\n| a | b |\n|---|---|\n| 1 | 2 |").map((b) => b.type)).toEqual([
+      "paragraph",
+      "table",
+    ]);
+  });
+
+  test("parses nested lists, task items, strikethrough and bare links", () => {
+    const [list] = parseMarkdown("- [x] done\n- [ ] todo\n  - nested ~~old~~ https://x.dev");
+    expect(list?.type).toBe("list");
+    if (list?.type !== "list") return;
+    expect(list.items.map((item) => item.checked)).toEqual([true, false]);
+    const nested = list.items[1]?.children[1];
+    expect(nested?.type).toBe("list");
+    if (nested?.type !== "list") return;
+    expect(nested.items[0]?.children[0]).toEqual({
+      type: "paragraph",
+      children: [
+        { type: "text", text: "nested " },
+        { type: "del", children: [{ type: "text", text: "old" }] },
+        { type: "text", text: " " },
+        { type: "link", href: "https://x.dev", children: [{ type: "text", text: "https://x.dev" }] },
+      ],
+    });
+  });
+
+  test("keeps raw HTML blocks and images as text or links, never markup", () => {
+    expect(parseMarkdown("<div onclick=x>hi</div>")).toEqual([
+      { type: "paragraph", children: [{ type: "text", text: "<div onclick=x>hi</div>" }] },
+    ]);
+    expect(parseInline("![logo](https://x.dev/a.png)")).toEqual([
+      { type: "link", href: "https://x.dev/a.png", children: [{ type: "text", text: "logo" }] },
+    ]);
+  });
+
+  test("hides a link that is still streaming in", () => {
+    expect(trimPartialMarkdown("Done.\n\n[")).toBe("Done.\n\n");
+    expect(trimPartialMarkdown("See [AI harness](https://baked-ai")).toBe("See ");
+    expect(trimPartialMarkdown("See [docs](https://x.dev) now")).toBe("See [docs](https://x.dev) now");
+    expect(parseMarkdown("Done.\n\n[", { streaming: true })).toEqual([
+      { type: "paragraph", children: [{ type: "text", text: "Done." }] },
+    ]);
+    expect(parseMarkdown("Done.\n\n[")).toHaveLength(2);
   });
 });
 

@@ -55,6 +55,7 @@
     "d3-zoom": "3.0.0",
     "electron": "44.6.0",
     "electron-builder": "26.17.0",
+    "marked": "18.1.0",
     "playwright-core": "1.63.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
