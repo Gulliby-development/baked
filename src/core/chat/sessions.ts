@@ -161,7 +161,12 @@ const API_TAB = "desktop";
 
 export type ChatPrompt = { id: string; createdAt: number } & (
   | { kind: "outside-cwd"; tool: string; path: string }
-  | { kind: "destructive"; description: string }
+  | {
+      kind: "destructive";
+      description: string;
+      /** A step the agent asks a person to approve (a coordinator launch), not a command. */
+      confirm?: true;
+    }
   | { kind: "web-search"; query: string }
   | { kind: "fetch-page"; url: string }
   | {
@@ -295,6 +300,11 @@ export interface SessionDetail extends SessionSummary {
   /** Turns an undo dropped that a redo can put back, oldest first. */
   redo: { index: number; prompt: string }[];
   lastSeq: number;
+  /**
+   * While a turn runs and its events are still buffered: the sequence just before its
+   * `turn-start`. Subscribing after it replays the turn's text and tool calls streamed so far.
+   */
+  turnSeq?: number;
 }
 
 /** What an undo or redo did: the turn count left and the file rollback report. */
@@ -624,6 +634,8 @@ export class ChatSession {
   private executingPlan: Plan | null = null;
   private events: ChatEvent[] = [];
   private seq = 0;
+  /** The sequence before the running turn's `turn-start`, or null between turns. */
+  private turnSeq: number | null = null;
   private readonly listeners = new Set<(event: ChatEvent) => void>();
   /** The `source` of the session's first SessionStart when it is not `startup` or `resume`. */
   startSource: SessionStartSource | null = null;
@@ -804,6 +816,9 @@ export class ChatSession {
         prompt: promptLine(t.messages[0]?.content ?? ""),
       })),
       lastSeq: this.seq,
+      ...(this.turnSeq !== null && (this.events[0]?.seq ?? Infinity) <= this.turnSeq + 1
+        ? { turnSeq: this.turnSeq }
+        : {}),
     };
   }
 
@@ -831,6 +846,8 @@ export class ChatSession {
     if (body.type === "tool-call") this.currentTool = body.tool;
     else if (body.type === "tool-result" || body.type === "turn-done") this.currentTool = null;
     const event = { ...body, seq: ++this.seq, at: Date.now() } as ChatEvent;
+    if (body.type === "turn-start") this.turnSeq = event.seq - 1;
+    else if (body.type === "turn-done") this.turnSeq = null;
     this.events.push(event);
     if (this.events.length > this.owner.bufferSize)
       this.events.splice(0, this.events.length - this.owner.bufferSize);
@@ -1212,7 +1229,7 @@ export class ChatSession {
 
   /** Asks a person to approve an action of this session's running turn, as a destructive prompt. */
   async confirm(description: string): Promise<boolean> {
-    return (await this.ask({ kind: "destructive", description })) === true;
+    return (await this.ask({ kind: "destructive", description, confirm: true })) === true;
   }
 
   /** Asks a person to approve a coordinator's split as one card; true when they approve it. */
