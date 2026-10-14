@@ -1112,6 +1112,13 @@ export class WorkflowStore {
         if (!graph.tasks.some((t) => t.id === task.id))
           this.taskStatus(runId, task.id, "cancelled");
     }
+    // A plan revision replaces the graph before anything ran: the tasks it dropped never existed
+    // for the run, so their rows go instead of staying pending in the report (#1190).
+    else
+      for (const task of this.tasks(runId))
+        if (task.status === "pending" && !graph.tasks.some((t) => t.id === task.id)) {
+          this.db.run("DELETE FROM tasks WHERE run_id=? AND id=?", [runId, task.id]);
+        }
     const rows = new Map(this.tasks(runId).map((row) => [row.id, row]));
     for (const task of graph.tasks) {
       this.db.run(

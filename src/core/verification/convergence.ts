@@ -476,7 +476,14 @@ export function appendCorrections(
         }))
       : findings;
   const predecessorsBefore = { ...state.repairPredecessors };
-  let next = Math.max(...state.graph.tasks.map((t) => Number(t.id.slice(1)))) + 1;
+  // Above every id a row of the run has used, so a correction never takes over the row (and the
+  // status) of a task an earlier plan revision cancelled (#1190).
+  let next =
+    Math.max(
+      ...[...state.graph.tasks, ...store.tasks(runId)]
+        .map((t) => Number(t.id.slice(1)))
+        .filter(Number.isFinite),
+    ) + 1;
   // Findings against the same task and file become one corrective task: each task reads the
   // files again from scratch, so three failed checks of one task were three full rereads. The
   // findings of one failing check run (they cite the same evidence) of tasks with one profile

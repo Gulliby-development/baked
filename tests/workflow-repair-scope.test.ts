@@ -50,6 +50,7 @@ const store = {
   run: () => ({ repair_rounds: 0, convergence_rounds: 0, corrective_tasks: 0 }),
   artifact: () => ({ content_hash: "h".repeat(64) }),
   syncTasks: () => undefined,
+  tasks: () => [],
   findingStatus: () => undefined,
   addRound: () => undefined,
 } as unknown as WorkflowStore;
