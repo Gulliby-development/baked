@@ -46,6 +46,7 @@ describe("scripted workflow executor (BAKED_TEST_WORKFLOW)", () => {
         await service.shutdown();
         service.close();
       }
-    });
+      // A whole sdd run with its checks takes over 30 seconds on the Windows runners.
+    }, 120_000);
   }
 });
