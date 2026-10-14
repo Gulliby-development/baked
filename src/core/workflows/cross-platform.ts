@@ -8,6 +8,16 @@ const PLATFORMS =
 /** "CI" only as the capitalized abbreviation, so words such as "ci" in identifiers do not count. */
 const CI = /\bCI\b/;
 
+/**
+ * A request that turns CI down ("No CI workflow is wanted", "without GitHub Actions"). Such a
+ * request may still name other operating systems, and then a CI matrix is not the way to prove
+ * them (#1015, stmtsplit e29347c1).
+ */
+const NO_CI =
+  /\bno (?:CI|continuous integration|github actions|(?:ci )?workflow files?)\b|\b(?:CI|continuous integration|github actions|workflow files?)\b[^.]*\b(?:is|are) not (?:wanted|needed|required)\b|\b(?:don't|do not|without|never)\b[^.]*\b(?:add|write|create|set up|use)?\s*(?:a )?(?:CI|continuous integration|github actions)\b/i;
+/** Whether the request says it wants no CI. */
+export const forbidsCi = (request: string): boolean => NO_CI.test(request);
+
 /** Whether the project has a CI configuration the host can see. */
 export function hasCi(root: string): boolean {
   try {
@@ -31,5 +41,8 @@ export function crossPlatformNote(request: string, root: string): string | null 
   const asked = PLATFORMS.test(request) || CI.test(request);
   const ci = hasCi(root);
   if (!asked && !ci) return null;
+  // One host proves only what it can run: platform-neutral code and tests that pass here (#1015).
+  if (forbidsCi(request))
+    return "The request names other operating systems but wants no CI: write criteria this host can check (the code uses platform-neutral path, line-ending and process APIs; the tests pass here), never an automated criterion that claims behavior on Windows, macOS or Linux, and add no CI workflow or platform matrix.";
   return `${asked ? "The request names CI or other operating systems" : "The project already runs CI"}: add a criterion that the product's tests pass on Windows, macOS and Linux, so delivered tests do not assume one operating system.`;
 }

@@ -1757,7 +1757,41 @@ export function hostBoundCriteria(spec: Spec): string[] {
     .map((c) => c.id);
 }
 
-// A criterion that the project's build succeeds, or a build command named outright.
+/**
+ * The spec with every host-bound criterion made checkable instead of sent back to the author: the
+ * claim about other platforms stays as a post-release criterion, and a requirement it leaves
+ * without a criterion this run can check gets one about what this host proves. A 51 KB spec was
+ * written twice over one such criterion (#1015, stmtsplit e29347c1: $1.72 and 128k tokens).
+ */
+export function repairHostBoundCriteria(spec: Spec): { spec: Spec; repaired: string[] } {
+  const repaired = hostBoundCriteria(spec);
+  if (!repaired.length) return { spec, repaired };
+  const criteria: Spec["criteria"] = spec.criteria.map((c) =>
+    repaired.includes(c.id) ? { ...c, method: "post-release" } : c,
+  );
+  let next = Math.max(0, ...spec.criteria.map((c) => Number(c.id.slice(3)) || 0));
+  for (const id of repaired) {
+    const original = spec.criteria.find((c) => c.id === id);
+    if (!original) continue;
+    const uncovered = original.requirementIds.filter(
+      (r) => !criteria.some((c) => c.method !== "post-release" && c.requirementIds.includes(r)),
+    );
+    if (!uncovered.length) continue;
+    next += 1;
+    criteria.push({
+      id: `AC-${String(next).padStart(3, "0")}`,
+      requirementIds: uncovered,
+      given: original.given,
+      when: "the run's checks run on this host",
+      // biome-ignore lint/suspicious/noThenProperty: Given/When/Then is the versioned acceptance-criterion contract.
+      then: `the code uses platform-neutral path, line-ending and process APIs and the tests pass here (${id} keeps the claim about other platforms for after release)`,
+      method: "automated",
+    });
+  }
+  return { spec: { ...spec, criteria }, repaired };
+}
+
+// A criterion that the project's build succeeds, or a build command named outright.// A criterion that the project's build succeeds, or a build command named outright.
 const BUILD_CLAIM =
   /\b(?:production|release|project|package|app(?:lication)?|the) build (?:succeeds|passes|completes|works|runs)\b|\bbuilds? (?:successfully|cleanly|without (?:errors?|warnings?))\b|\b(?:npm|bun|pnpm|yarn) run build\b|\b(?:cargo|go|dotnet|gradlew?) build\b|\bmvn (?:package|install|verify)\b/i;
 /** What a check runs, for the spec checks that compare criteria with the execution contract. */
@@ -1783,7 +1817,11 @@ export function uncontractedBuildCriteria(spec: Spec, checks: readonly CheckComm
  * The spec defects as corrections for the spec author, who can add or relink criteria. With the
  * run's checks, a criterion that needs a check the execution contract lacks is one too.
  */
-export function specCoverageProblems(spec: Spec, checks?: readonly CheckCommand[]): string[] {
+export function specCoverageProblems(
+  spec: Spec,
+  checks?: readonly CheckCommand[],
+  options: { ciForbidden?: boolean } = {},
+): string[] {
   return [
     ...validateSpecCoverage(spec).map((error) =>
       /^(requirement without criterion|engineering requirement deferred) /.test(error)
@@ -1796,7 +1834,7 @@ export function specCoverageProblems(spec: Spec, checks?: readonly CheckCommand[
     ),
     ...hostBoundCriteria(spec).map(
       (id) =>
-        `criterion ${id} is automated but claims behavior on other operating systems, browsers or devices, and the run checks on one host, so nothing can prove it. Rewrite it as what this host can check (platform-neutral path, line-ending and process APIs; the tests pass here). When the request asks for proof on other platforms, add a criterion that a CI workflow file runs the checks on a matrix of those platforms (for example ubuntu-latest, macos-latest, windows-latest), which the reviewer verifies by reading the file. Use post-release only for a claim that needs a release or a real device.`,
+        `criterion ${id} is automated but claims behavior on other operating systems, browsers or devices, and the run checks on one host, so nothing can prove it. Rewrite it as what this host can check (platform-neutral path, line-ending and process APIs; the tests pass here).${options.ciForbidden ? " The request wants no CI, so add no CI workflow or platform matrix." : " When the request asks for proof on other platforms, add a criterion that a CI workflow file runs the checks on a matrix of those platforms (for example ubuntu-latest, macos-latest, windows-latest), which the reviewer verifies by reading the file."} Use post-release only for a claim that needs a release or a real device.`,
     ),
     ...(checks ? uncontractedBuildCriteria(spec, checks) : []).map(
       (id) =>

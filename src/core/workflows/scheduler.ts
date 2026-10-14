@@ -324,6 +324,7 @@ import {
   type Review,
   ReviewSchema,
   type RunPolicy,
+  repairHostBoundCriteria,
   type Spec,
   SpecSchema,
   specCoverageProblems,
@@ -847,9 +848,13 @@ export class WorkflowScheduler {
                       ? []
                       : specSizeProblems(parsed.data, state.requestText || state.prompt);
                     if (size.length) sizeAdvised = true;
+                    // The host makes a host-bound criterion checkable itself (#1015).
                     return [
                       ...size,
-                      ...specCoverageProblems(parsed.data, policy.checks),
+                      ...specCoverageProblems(
+                        repairHostBoundCriteria(parsed.data).spec,
+                        policy.checks,
+                      ),
                       ...deliverableProblems(parsed.data, coverageRequest(state)),
                       ...assumeProblems(
                         policy,
@@ -860,6 +865,21 @@ export class WorkflowScheduler {
                   },
                 ),
               );
+              const repair = repairHostBoundCriteria(state.spec);
+              if (repair.repaired.length) {
+                const added = repair.spec.criteria
+                  .slice(state.spec.criteria.length)
+                  .map((c) => c.id);
+                state.spec = repair.spec;
+                this.store.transaction(() =>
+                  this.store.artifact(
+                    runId,
+                    "diagnostic",
+                    "spec-repairs/host-bound.json",
+                    canonical({ postRelease: repair.repaired, added }),
+                  ),
+                );
+              }
               // The run owns the feature ID; a spec author that renames it changes nothing.
               if (state.spec.featureId !== run.feature_id)
                 state.spec = { ...state.spec, featureId: run.feature_id };
