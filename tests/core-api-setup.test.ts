@@ -494,6 +494,31 @@ describe("local API setup and workflow additions", () => {
     expect(skills[0]?.description).toBeUndefined();
   });
 
+  // #1106: skills a package put in baked/skills show with the package that installed them.
+  test("skills installed by a package are listed with their package and cannot be removed alone", async () => {
+    const { get, call, fixture } = await setup();
+    mkdirSync(join(fixture.root, "baked", "skills", "review-notes"), { recursive: true });
+    writeFileSync(
+      join(fixture.root, "baked", "skills", "review-notes", "SKILL.md"),
+      "---\nname: review-notes\ndescription: The review checklist\n---\nCheck the diff.",
+    );
+    const files = ["baked/skills/review-notes/SKILL.md", "baked/skills/gone/SKILL.md"].map((path) => ({ path, sha256: "a".repeat(64) }));
+    writeFileSync(
+      join(fixture.root, "baked", "packages.json"),
+      JSON.stringify({ schemaVersion: 1, packages: [{ name: "acme-review", version: "1.0.0", installedAt: "2026-10-14T00:00:00Z", files }] }),
+    );
+    const { skills } = await get<{ skills: { id: string; scope: string; package?: string; description?: string }[] }>("/v1/skills");
+    expect(skills).toEqual([
+      expect.objectContaining({ id: "review-notes", scope: "package", package: "acme-review", description: "The review checklist" }),
+    ]);
+    const item = await get<{ content: string; package: string }>("/v1/skills/package/review-notes");
+    expect(item).toMatchObject({ package: "acme-review", content: expect.stringContaining("Check the diff.") });
+    const removed = await call("/v1/skills/package/review-notes", { method: "DELETE" });
+    expect(removed.status).toBe(409);
+    expect(((await removed.json()) as { error: { message: string } }).error.message).toContain("remove the package");
+    expect((await call("/v1/skills/package/gone")).status).toBe(404);
+  });
+
   // #1102: Settings > Global commands creates, edits and removes commands in ~/.baked/commands.
   test("global commands are created, edited, renamed and removed in the home folder", async () => {
     const { get, send, post, call, homeDir } = await setup();

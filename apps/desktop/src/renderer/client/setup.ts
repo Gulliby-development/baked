@@ -229,12 +229,16 @@ export interface CommandEntry {
 /** An installed skill (`SKILL.md` in `.baked/skills`, `.agents/skills` or `.claude/skills`). */
 export interface SkillEntry {
   id: string;
-  scope: "project" | "global";
+  /** `package`: put in `baked/skills` by an installed package; removed with the package (#1106). */
+  scope: "project" | "global" | "package";
   path: string;
   description?: string;
+  /** The package that installed a `package` skill. */
+  package?: string;
 }
 
-export type SkillScope = SkillEntry["scope"];
+/** Where a skill is installed: the project or the home folder. */
+export type SkillScope = "project" | "global";
 
 /** A skill of the skills.sh catalog. */
 export interface CatalogSkill {
@@ -806,13 +810,13 @@ export const setup = {
       skillId: skill.skillId,
       scope,
     }),
-  skill: (key: string, scope: SkillScope, id: string) =>
+  skill: (key: string, scope: SkillEntry["scope"], id: string) =>
     call<SkillEntry & { content: string }>(
       key,
       "GET",
       `/v1/skills/${scope}/${encodeURIComponent(id)}`,
     ),
-  removeSkill: (key: string, scope: SkillScope, id: string) =>
+  removeSkill: (key: string, scope: SkillEntry["scope"], id: string) =>
     call<{ skills: SkillEntry[] }>(key, "DELETE", `/v1/skills/${scope}/${encodeURIComponent(id)}`),
 
   config: (key: string) => call<ConfigView>(key, "GET", "/v1/config"),
