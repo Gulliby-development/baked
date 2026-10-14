@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { hashBytes, hashJson } from "../specs/hash.js";
 import { WorkflowStore } from "./store.js";
@@ -10,7 +10,8 @@ import type { AgentExecutor, ExecutionRequest, ExecutionResponse } from "./types
  * BAKED_TEST_WORKFLOW environment variable is set; no config file can turn it on.
  *
  * Every run gets one requirement, one criterion and one task that writes `BAKED_TEST_WORKFLOW`'s
- * value as the file path (`e2e-output.txt` for `1`) with the text `ready`; reviews pass with the
+ * value as the file path (`e2e-output.txt` for `1`; `{run}` in it becomes the run ID, so each
+ * run of an initiative writes a file of its own) with the text `ready`; reviews pass with the
  * run's evidence. An initiative's split is always the same four features (`SCRIPTED_SPLIT`).
  * `BAKED_TEST_WORKFLOW_DELAY_MS` delays each agent call, so a test can watch a
  * run while it works.
@@ -116,6 +117,7 @@ export class ScriptedWorkflowExecutor implements AgentExecutor {
       }
     })();
     const evidence = data.extra?.evidence?.map((e) => e.id) ?? [];
+    const file = this.file.replaceAll("{run}", request.runId);
     const featureId = this.feature(request.runId);
     const spec = {
       schemaVersion: 1,
@@ -124,7 +126,7 @@ export class ScriptedWorkflowExecutor implements AgentExecutor {
       title: "Scripted feature",
       problem: "The output file is missing",
       outcome: "The output file says ready",
-      inScope: [`Write ${this.file}`],
+      inScope: [`Write ${file}`],
       outOfScope: [],
       assumptions: [],
       openQuestions: [],
@@ -167,7 +169,7 @@ export class ScriptedWorkflowExecutor implements AgentExecutor {
           facts: [],
           unknowns: [],
           constraints: [],
-          suggestedScope: [this.file],
+          suggestedScope: [file],
         };
         break;
       case "spec":
@@ -177,11 +179,11 @@ export class ScriptedWorkflowExecutor implements AgentExecutor {
         const markdown = [
           "# Plan",
           "## Context",
-          `Write ${this.file}.`,
+          `Write ${file}.`,
           "## Decisions",
           "DEC-001: FR-001 needs the word ready.",
           "## Components",
-          this.file,
+          file,
           "## Data",
           "Text",
           "## Verification",
@@ -207,7 +209,15 @@ export class ScriptedWorkflowExecutor implements AgentExecutor {
                 criterionIds: ["AC-001"],
                 dependsOn: [],
                 profileId: "implementer",
-                writes: [{ path: this.file, action: "create" }],
+                // A later feature of an initiative in the same working copy finds the file.
+                writes: [
+                  {
+                    path: file,
+                    action: existsSync(join(request.root ?? this.workspace, file))
+                      ? "modify"
+                      : "create",
+                  },
+                ],
                 readHints: [],
                 checkIds: [],
                 origin: "planned",
@@ -226,14 +236,14 @@ export class ScriptedWorkflowExecutor implements AgentExecutor {
         output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] };
         break;
       case "implementation": {
-        const target = join(request.root ?? this.workspace, this.file);
+        const target = join(request.root ?? this.workspace, file);
         mkdirSync(dirname(target), { recursive: true });
         writeFileSync(target, "ready");
         output = {
           schemaVersion: 1,
           taskId: request.task?.id,
           outcome: "implemented",
-          summary: `Wrote ${this.file}`,
+          summary: `Wrote ${file}`,
           evidenceIds: [],
           unresolved: [],
         };

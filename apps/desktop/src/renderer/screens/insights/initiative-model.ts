@@ -25,6 +25,33 @@ export function initiativeStatus(status: InitiativeStatus): { label: string; ton
   return STATUS[status] ?? { label: status, tone: "muted" };
 }
 
+/**
+ * Whether the backend moves an initiative on its own: while it splits or runs, the screen reads
+ * it again every few seconds, as the terminal UI does. A split waiting for approval, a paused,
+ * completed or refused initiative changes only through the person.
+ */
+export const initiativeIsLive = (status: InitiativeStatus): boolean =>
+  status === "decomposing" || status === "active";
+
+/** How often a live initiative and the list are read again. */
+export const INITIATIVE_REFRESH_MS = 2000;
+
+/**
+ * The status shown on the initiative: a split the person rejected waits for their edits, not for
+ * an approval, until an edit proposes a new revision.
+ */
+export function detailStatus(view: Pick<InitiativeView, "status" | "pendingDecisions">): {
+  label: string;
+  tone: Tone;
+} {
+  if (
+    view.status === "awaiting_approval" &&
+    !view.pendingDecisions.some((d) => d.scope === "initiative")
+  )
+    return { label: "split rejected", tone: "warn" };
+  return initiativeStatus(view.status);
+}
+
 /** The second line of a list item: its status and what happens next. */
 export function initiativeLine(item: InitiativeListItem): string {
   const { label } = initiativeStatus(item.status);
