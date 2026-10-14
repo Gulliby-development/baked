@@ -2826,11 +2826,12 @@ export class WorkflowScheduler {
           runId,
           attempt,
           "completed",
-          result.usageComplete === false
+          result.usageComplete === false && !result.usageEstimated
             ? null
             : result.inputTokens === null || result.outputTokens === null
               ? this.store.recordedUsage(runId, attempt)
               : result.inputTokens + result.outputTokens,
+          result.usageEstimated === true,
         );
         this.store.artifact(
           runId,

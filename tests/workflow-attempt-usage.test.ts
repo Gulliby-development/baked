@@ -218,15 +218,17 @@ describe("attempts whose provider reports no tokens", () => {
     suggestedScope: [],
   };
 
-  test("a submit step that reports zero tokens leaves the attempt's usage unknown", async () => {
+  test("a submit step that reports zero tokens is charged an estimate from the sizes (#1057)", async () => {
     // Codex reports a response's usage only after its tool call is answered, so an attempt that
     // ends at its only call (the submit) sees zero input and zero output tokens.
     scriptModel([step(0, 0, { name: "submit_result", input: result })]);
-    const { executor, request } = await nativeAttempt();
-    await expect(executor.execute(request)).resolves.toMatchObject({
-      output: result,
-      usageComplete: false,
-    });
+    const { executor, request, usageRecord } = await nativeAttempt();
+    const response = await executor.execute(request);
+    expect(response).toMatchObject({ output: result, usageComplete: false, usageEstimated: true });
+    const promptTokens = Math.ceil(Buffer.byteLength(request.prompt) / 4);
+    expect(response.inputTokens).toBe(promptTokens);
+    expect(response.outputTokens).toBeGreaterThanOrEqual(Math.ceil(Buffer.byteLength(JSON.stringify(result)) / 4));
+    expect(usageRecord()?.estimatedUsage).toEqual({ inputTokens: response.inputTokens ?? 0, outputTokens: response.outputTokens ?? 0 });
   });
 
   test("an attempt with reported tokens stays complete", async () => {
@@ -238,6 +240,7 @@ describe("attempts whose provider reports no tokens", () => {
     const response = await executor.execute(request);
     expect(response).toMatchObject({ inputTokens: 5_000, outputTokens: 100 });
     expect(response.usageComplete).toBeUndefined();
+    expect(response.usageEstimated).toBeUndefined();
   });
 });
 

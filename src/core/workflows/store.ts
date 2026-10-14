@@ -1302,6 +1302,8 @@ export class WorkflowStore {
     id: string,
     status: "completed" | "failed" | "cancelled" | "interrupted",
     usedTokens: number | null,
+    /** The tokens are an estimate because the provider reported none (#1057). */
+    estimated = false,
   ): void {
     const update = this.db.run(
       "UPDATE attempts SET status=?,used_tokens=?,usage_complete=?,ended_at=? WHERE run_id=? AND id=? AND status='running'",
@@ -1320,8 +1322,9 @@ export class WorkflowStore {
       payload: {
         attemptId: id,
         status,
-        usageComplete: usedTokens !== null,
+        usageComplete: usedTokens !== null && !estimated,
         usedTokens,
+        ...(estimated ? { usageEstimated: true } : {}),
         ...(spend ? { spend } : {}),
       },
     });

@@ -493,6 +493,11 @@ export interface ExecutionResponse {
    * unknown: the attempt keeps its reservation instead of being counted as free.
    */
   usageComplete?: boolean;
+  /**
+   * With `usageComplete: false`: `inputTokens` and `outputTokens` are an estimate from the sizes of
+   * the request and the response, which the attempt is charged instead (#1057).
+   */
+  usageEstimated?: boolean;
 }
 export interface AgentExecutor {
   execute(request: ExecutionRequest): Promise<ExecutionResponse>;

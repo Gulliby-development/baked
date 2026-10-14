@@ -131,6 +131,8 @@ export interface EventPayloads {
     status: string;
     usageComplete: boolean;
     usedTokens: number | null;
+    /** `usedTokens` is estimated because the provider reported no usage. */
+    usageEstimated?: true;
   };
   "attempt.advisory": {
     attemptId: string;

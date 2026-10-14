@@ -33,6 +33,8 @@ export interface AttemptUsageRow {
   tools: ToolStepTokens[];
   /** Model responses whose usage the provider never reported, so the tokens are low (#820). */
   unreportedResponses: number;
+  /** The provider reported no usage, so the tokens are estimated from the sizes (#1057). */
+  usageEstimated: boolean;
 }
 
 /**
@@ -105,8 +107,8 @@ export function runUsage(
         peakInputTokens: usage
           ? Math.max(0, ...usage.steps.map((step) => step.inputTokens ?? 0))
           : null,
-        inputTokens: sum((step) => step.inputTokens),
-        outputTokens: sum((step) => step.outputTokens),
+        inputTokens: usage?.estimatedUsage?.inputTokens ?? sum((step) => step.inputTokens),
+        outputTokens: usage?.estimatedUsage?.outputTokens ?? sum((step) => step.outputTokens),
         cacheReadTokens: sum((step) => step.cacheReadTokens),
         cacheWriteTokens: sum((step) => step.cacheWriteTokens ?? null),
         costUsd: attemptCost(attempt.model_id, usage),
@@ -117,6 +119,7 @@ export function runUsage(
         toolBackends: usage?.toolBackends ?? [],
         tools: usage ? stepToolTokens(usage.steps) : [],
         unreportedResponses: usage?.unreportedResponses ?? 0,
+        usageEstimated: usage?.estimatedUsage !== undefined,
       };
     });
   const byStage = new Map<string, RunUsageReport["stages"][number]>();
@@ -390,8 +393,8 @@ export function attemptSpend(
   const sum = (pick: (step: AttemptUsageRecord["steps"][number]) => number | null | undefined) =>
     usage.steps.reduce((total, step) => total + (pick(step) ?? 0), 0);
   return {
-    inputTokens: sum((step) => step.inputTokens),
-    outputTokens: sum((step) => step.outputTokens),
+    inputTokens: usage.estimatedUsage?.inputTokens ?? sum((step) => step.inputTokens),
+    outputTokens: usage.estimatedUsage?.outputTokens ?? sum((step) => step.outputTokens),
     cacheReadTokens: sum((step) => step.cacheReadTokens),
     cacheWriteTokens: sum((step) => step.cacheWriteTokens),
     costUsd: attemptCost(model, usage),
@@ -408,7 +411,10 @@ export function attemptCost(
   if (!usage) return null;
   const pricing = findPricing(model)?.pricing;
   if (!pricing) return null;
-  let cost = 0;
+  let cost = usage.estimatedUsage
+    ? usage.estimatedUsage.inputTokens * pricing.input +
+      usage.estimatedUsage.outputTokens * pricing.output
+    : 0;
   for (const step of usage.steps) {
     const input = step.inputTokens ?? 0;
     const cacheRead = Math.min(step.cacheReadTokens ?? 0, input);
