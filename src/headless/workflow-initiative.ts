@@ -53,6 +53,7 @@ const commandFlags: Record<InitiativeCommand, string[]> = {
     "max-tasks",
     "max-files",
     "confirm-auto-approval",
+    "worktree",
     "command-id",
   ],
   show: [],
@@ -73,7 +74,7 @@ const commandFlags: Record<InitiativeCommand, string[]> = {
   extend: ["tokens", "calls", "time-ms", ...mutation],
   reroute: ["model", "resume", ...mutation],
 };
-const booleanFlags = new Set(["json", "help", "tiered-approval", "resume"]);
+const booleanFlags = new Set(["json", "help", "tiered-approval", "resume", "worktree"]);
 const integerFlags = new Set([
   "expected-revision",
   "after",
@@ -199,11 +200,14 @@ export async function executeInitiativeCommand(
         ...(args.flags.plan
           ? { plan: InitiativePlanSchema.parse(JSON.parse(readFlagFile("plan"))) }
           : {}),
-        policy: PolicySchema.parse(
-          args.flags.policy
-            ? JSON.parse(readFlagFile("policy"))
-            : (workflows.config.workflows?.policy ?? defaultWorkflowPolicy),
-        ),
+        policy: PolicySchema.parse({
+          ...PolicySchema.parse(
+            args.flags.policy
+              ? JSON.parse(readFlagFile("policy"))
+              : (workflows.config.workflows?.policy ?? defaultWorkflowPolicy),
+          ),
+          ...(args.flags.worktree ? { executionMode: "worktree" } : {}),
+        }),
         workflowId: stringFlag(
           args,
           "workflow",
@@ -370,11 +374,12 @@ export const initiativeHelp = `baked workflow initiative <command> [options]
 
 start ID (--prompt TEXT | --prompt-file FILE) [--plan FILE] [--workflow sdd] [--policy FILE]
     [--budget-tokens N --budget-calls N --budget-time-ms N] [--tiered-approval [--max-tasks 5] [--max-files 10]]
-    [--confirm-auto-approval HASH] [--model ID]
+    [--confirm-auto-approval HASH] [--model ID] [--worktree]
   Split a large request into 3..12 features. Without --plan the decomposer proposes the split;
   a split above 12 features is refused with a request to split the work into stages. Each
   feature runs its own workflow (--workflow is the default for a feature that names none) and
-  takes a budget share weighted by its size.
+  takes a budget share weighted by its size. --worktree runs feature runs in worktrees, so
+  independent features run side by side.
 show ID | list | events ID [--after SEQ] [--limit 200]
 merge ID --features A,B[,C] [--id NEW] [--title TEXT] --expected-revision N
 split ID --feature F --parts FILE --expected-revision N   (FILE: [{"id","title","scope?","paths?","contract?"}, ...])

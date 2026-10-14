@@ -184,7 +184,15 @@ export type ChatPrompt = { id: string; createdAt: number } & (
        */
       mode: "runs" | "initiative" | "chats";
       /** `task`: the flow's issue (`owner/name#N`), `new issue`, `local task`, or for a chat what it may do. */
-      flows: { id: string; title: string; paths: string[]; dependsOn: string[]; task: string }[];
+      flows: {
+        id: string;
+        title: string;
+        paths: string[];
+        dependsOn: string[];
+        task: string;
+        /** The workflow the flow runs; absent for chats. */
+        workflow?: string;
+      }[];
       /** Binds the approval to exactly this split. */
       digest: string;
     }

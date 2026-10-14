@@ -14,6 +14,8 @@ export function SplitFlows({
       dependsOn: string[];
       /** The issue (`owner/name#N`), `new issue` or `local task`; missing from older servers. */
       task?: string;
+      /** The workflow the flow runs; missing for chats and from older servers. */
+      workflow?: string;
     }[];
   };
 }) {
@@ -26,6 +28,9 @@ export function SplitFlows({
         <li key={flow.id}>
           <span className="font-semibold">{flow.title}</span>{" "}
           <span className={`font-mono ${dim}`}>{flow.id}</span>
+          {flow.workflow && (
+            <span className={`font-mono text-[12px] ${dim}`}> · {flow.workflow}</span>
+          )}
           {flow.task && (
             <div className="text-[12px]">
               {prompt.mode === "chats" ? flow.task : `Task: ${flow.task}`}

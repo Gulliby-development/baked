@@ -31,6 +31,8 @@ export const InitiativeStartInputSchema = z.strictObject({
   confirmAutoApproval: z.string().min(1).optional(),
   /** The GitHub issue of each feature of `plan`, by feature ID; delivery of its runs closes it. */
   featureIssues: z.record(FeatureKey, IssueSourceSchema).optional(),
+  /** Feature runs execute in worktrees, so independent features run side by side. */
+  worktree: z.boolean().optional(),
 });
 export type InitiativeStartInput = z.infer<typeof InitiativeStartInputSchema>;
 
@@ -52,7 +54,10 @@ export function initiativeStartRequest(
     initiativeId: form.initiativeId,
     prompt: form.prompt,
     ...(form.plan ? { plan: form.plan } : {}),
-    policy: PolicySchema.parse(form.policy ?? config.workflows?.policy ?? defaultWorkflowPolicy),
+    policy: PolicySchema.parse({
+      ...PolicySchema.parse(form.policy ?? config.workflows?.policy ?? defaultWorkflowPolicy),
+      ...(form.worktree ? { executionMode: "worktree" } : {}),
+    }),
     workflowId: form.workflow ?? config.workflows?.defaultWorkflow ?? "sdd",
     budget: form.budget
       ? {

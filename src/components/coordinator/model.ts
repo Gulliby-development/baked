@@ -196,7 +196,12 @@ export function promptLines(prompt: ChatPrompt, width: number): ViewLine[] {
       );
       prompt.flows.forEach((flow, i) => {
         lines.push(
-          ...labelled(`${i + 1}. `, `${flow.title} [${flow.id}] · ${flow.task}`, width, "accent"),
+          ...labelled(
+            `${i + 1}. `,
+            `${flow.title} [${flow.id}]${flow.workflow ? ` · ${flow.workflow}` : ""} · ${flow.task}`,
+            width,
+            "accent",
+          ),
         );
         if (flow.paths.length)
           lines.push(...labelled("   ", flow.paths.join(", "), width, "muted"));
