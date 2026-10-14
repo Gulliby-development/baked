@@ -24,6 +24,7 @@ import {
   type RunPolicy,
   TaskSchema,
 } from "./schemas.js";
+import type { SpecAmendment } from "./spec-amendment.js";
 import type { ArtifactRow, CriticOutcomeRow, WorkflowStore } from "./store.js";
 import { type RunUsageReport, runUsage, toolBackendLine, toolTokensLine } from "./usage.js";
 import { parseRunDefinition } from "./v2/runtime.js";
@@ -204,6 +205,7 @@ function collect(store: WorkflowStore, runId: string) {
         return null;
       }
     };
+    const amendments: SpecAmendment[] = [];
     for (const artifact of store.artifacts(runId)) {
       if (/^tasks\/[^/]+\/selection\.json$/.test(artifact.logical_path)) {
         const record = parse<SelectionRecord | null>(readQuietly(artifact.id), null);
@@ -212,6 +214,10 @@ function collect(store: WorkflowStore, runId: string) {
       if (/^tasks\/[^/]+\/candidates\/\d+\.json$/.test(artifact.logical_path)) {
         const record = parse<CandidateRecord | null>(readQuietly(artifact.id), null);
         if (record) candidates.push(record);
+      }
+      if (artifact.logical_path.startsWith("amendments/")) {
+        const record = parse<SpecAmendment | null>(readQuietly(artifact.id), null);
+        if (record) amendments.push(record);
       }
       if (/^tasks\/[^/]+\/critique\.json$/.test(artifact.logical_path))
         critiques.push(
@@ -322,6 +328,7 @@ function collect(store: WorkflowStore, runId: string) {
       critiques,
       selections,
       candidates,
+      amendments,
       outcomes: store.criticOutcomes(runId),
       usage: stagesInRunOrder(store, runUsage(store, runId)),
       artifacts: [...latestArtifacts.values()].filter((a) => !internalArtifact(a.logical_path)),
@@ -874,7 +881,7 @@ function render(facts: Facts, cap: number): string {
   const decided = facts.requests.filter((r) => r.status !== "pending");
   const pending = facts.requests.filter((r) => r.status === "pending");
   const assumptions = spec?.assumptions ?? [];
-  if (decided.length || pending.length || assumptions.length) {
+  if (decided.length || pending.length || assumptions.length || facts.amendments.length) {
     out.push("## Decisions", "");
     if (decided.length || pending.length)
       out.push(
@@ -896,6 +903,20 @@ function render(facts: Facts, cap: number): string {
         "",
         ...list(
           assumptions.map((a) => `- ${cell(a)}`),
+          cap,
+        ),
+        "",
+      );
+    // Review findings that put the spec against the request: the request won (#1034).
+    if (facts.amendments.length)
+      out.push(
+        "Spec amendments (the request wins over the spec):",
+        "",
+        ...list(
+          facts.amendments.map(
+            (a) =>
+              `- ${[...a.criterionIds, ...a.requirementIds].join(", ") || "spec"}: ${cell(a.claim)} (finding ${a.findingId})`,
+          ),
           cap,
         ),
         "",
