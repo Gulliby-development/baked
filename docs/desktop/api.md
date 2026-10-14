@@ -49,6 +49,7 @@ interface SessionSummary {
   model: string | null;   // provider/model of the next turn; null when nothing is configured
   mode: Mode;
   effort: Effort;         // reasoning effort of the next turn; "default" follows the configuration
+  efforts: Effort[];      // levels the session's model takes, lowest first; [] when it takes none (older servers leave it out)
   permissions: Permissions; // which actions wait for a prompt; defaultPermissionMode for new sessions
   contextSize: ContextSize;      // context size of the next turn (older servers leave it out)
   contextSizes: number[];        // windows in tokens the model offers, smallest first; [] when it has one
@@ -70,6 +71,7 @@ interface SessionDetail extends SessionSummary {
   plan: Plan | null;        // the plan being reviewed or carried out
   redo: { index: number; prompt: string }[];   // undone turns Redo puts back, oldest first
   lastSeq: number;          // subscribe to events with ?after=lastSeq to miss nothing
+  turnSeq?: number;         // while a turn runs: subscribe with ?after=turnSeq to replay what it streamed so far
 }
 
 interface ChatMessage {          // as stored in messages.jsonl (src/types/index.ts)
@@ -91,7 +93,7 @@ interface ChatMessage {          // as stored in messages.jsonl (src/types/index
 
 type Prompt = { id: string; createdAt: number } & (
   | { kind: "outside-cwd"; tool: string; path: string }          // approve or deny
-  | { kind: "destructive"; description: string }                 // approve or deny
+  | { kind: "destructive"; description: string; confirm?: true } // approve or deny; confirm: a step to approve, not a command
   | { kind: "web-search"; query: string }                        // approve or deny
   | { kind: "fetch-page"; url: string }                          // approve or deny
   | { kind: "question"; question: string; allowSkip: boolean;
