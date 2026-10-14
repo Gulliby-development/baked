@@ -103,6 +103,22 @@ export function completeReview(
     review.verdict = review.findings.length ? "changes_requested" : "pass";
 }
 
+/** Criteria a review marks `fail` that none of its findings names (#1143). */
+export function unnamedFailures(review: Pick<Review, "coverage" | "findings">): string[] {
+  return review.coverage
+    .filter(
+      (c) =>
+        c.verdict === "fail" &&
+        !review.findings.some((f) => f.criterionIds.includes(c.criterionId)),
+    )
+    .map((c) => c.criterionId);
+}
+
+/** The correction for a review that fails criteria without a finding that names them. */
+export function unnamedFailureAdvice(criterionIds: readonly string[]): string {
+  return `Criteria ${criterionIds.join(", ")} have the verdict fail, but no finding names them, so nothing can repair them. For each, add a finding whose criterionIds include it, with the file and the claim your explanation gives; or change the verdict to pass when the criterion is met, or to inconclusive when this environment cannot establish it. Then call submit_result again with the complete review.`;
+}
+
 /** What `validateReview` rejects, as correction messages for the agent that submitted it. */
 export function reviewProblems(
   store: WorkflowStore,

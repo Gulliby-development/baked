@@ -82,7 +82,13 @@ import {
   runProbe,
   runRepro,
 } from "../verification/repro.js";
-import { completeReview, reviewProblems, validateReview } from "../verification/review.js";
+import {
+  completeReview,
+  reviewProblems,
+  unnamedFailureAdvice,
+  unnamedFailures,
+  validateReview,
+} from "../verification/review.js";
 import { addReviewNotes, noteReason } from "../verification/review-notes.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
 import { baselineKeys, taskErrors } from "../verification/task-end-check.js";
@@ -1805,6 +1811,7 @@ export class WorkflowScheduler {
                 });
               const previous = state.convergence ?? undefined;
               let reproAdvised = false;
+              let failAdvised = false;
               const review = ReviewSchema.parse(
                 await this.call(
                   runId,
@@ -1842,10 +1849,19 @@ export class WorkflowScheduler {
                       output as Review,
                       false,
                     );
-                    // Asked once: a walker that still has no repro after the advice is not blocked.
-                    if (problems.length || reproAdvised || !canRepro) return problems;
-                    const advice = missingReproAdvice(output as Review, executables, previous);
-                    if (advice.length) reproAdvised = true;
+                    if (problems.length) return problems;
+                    // Each advice is given once: a walker that keeps its answer is not blocked.
+                    const advice: string[] = [];
+                    const unnamed = failAdvised ? [] : unnamedFailures(output as Review);
+                    if (unnamed.length) {
+                      failAdvised = true;
+                      advice.push(unnamedFailureAdvice(unnamed));
+                    }
+                    if (!reproAdvised && canRepro) {
+                      const missing = missingReproAdvice(output as Review, executables, previous);
+                      if (missing.length) reproAdvised = true;
+                      advice.push(...missing);
+                    }
                     return advice;
                   },
                   undefined,
@@ -1865,7 +1881,13 @@ export class WorkflowScheduler {
               const omitted = state.spec.criteria.filter(
                 (criterion) => !review.coverage.some((item) => item.criterionId === criterion.id),
               );
-              if (omitted.length) {
+              // A criterion the walker still fails without a finding after the advice gets one from
+              // the walker's own explanation, so it is repaired; it ended mdtoc-update 20f81464
+              // invalid_output with every check green (#1143).
+              const unnamed = unnamedFailures(review);
+              let reportEvidence: string | null = null;
+              const coverageEvidence = (): string => {
+                if (reportEvidence) return reportEvidence;
                 const report = this.store.transaction(() =>
                   this.store.artifact(
                     runId,
@@ -1874,9 +1896,31 @@ export class WorkflowScheduler {
                     canonical(review),
                   ),
                 );
-                const evidenceId = this.store.transaction(() =>
+                reportEvidence = this.store.transaction(() =>
                   this.store.addEvidence(runId, "review", state.snapshotId ?? "", report.id),
                 );
+                return reportEvidence;
+              };
+              for (const id of unnamed) {
+                const item = review.coverage.find((c) => c.criterionId === id);
+                const criterion = state.spec.criteria.find((c) => c.id === id);
+                review.findings.push({
+                  id: newId(),
+                  kind: "contradicts",
+                  severity: "high",
+                  requirementIds: criterion?.requirementIds ?? [],
+                  criterionIds: [id],
+                  file: null,
+                  symbol: null,
+                  evidenceIds: item?.evidenceIds.length ? item.evidenceIds : [coverageEvidence()],
+                  claim: item?.explanation || `Criterion ${id} fails`,
+                  impact: `Criterion ${id} fails, so acceptance cannot be established`,
+                  suggestedFix: `Make ${id} pass within approved task scope and repeat checks.`,
+                });
+              }
+              if (unnamed.length) review.verdict = "changes_requested";
+              if (omitted.length) {
+                const evidenceId = coverageEvidence();
                 for (const criterion of omitted) {
                   review.coverage.push({
                     criterionId: criterion.id,
