@@ -49,7 +49,7 @@ import {
   type WorkflowV2,
   worktreeRefusal,
 } from "./v2/definition.js";
-import { type LoadedDefinition, loadDefinition } from "./v2/definitions.js";
+import { type LoadedDefinition, lacksFeatureChecks, loadDefinition } from "./v2/definitions.js";
 import { describeGate, gateToCheck, loadGateLibrary, unconfirmedGates } from "./v2/library.js";
 import {
   autoApprovalHash,
@@ -187,7 +187,7 @@ export async function prepareStart(
   } else {
     // A shipped preset bound to a project without feature checks has a check stage with no gates;
     // refuse here so every front end reports it instead of a run that blocks at once.
-    if (!loaded.path && loaded.definition.stages.some((s) => s.type === "check" && !s.gates.length))
+    if (lacksFeatureChecks(loaded))
       throw new WorkflowFault("INVALID_DEFINITION", missingFeatureChecks(request.workflowId), {
         missingFeatureChecks: true,
       });

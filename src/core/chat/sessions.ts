@@ -95,6 +95,7 @@ import type { SessionMeta, TabMeta } from "../sessions/types.js";
 import { createSetupTool, SETUP_TOOL } from "../tools/baked-setup.js";
 import { watchOptions } from "../watch/config.js";
 import { WatchController, type WatchTurn, watchTurnDisplay } from "../watch/controller.js";
+import { needsGates } from "../workflows/gate-setup.js";
 import { projectDefinitions, proposeForWorkspace } from "../workflows/v2/propose.js";
 import { answerByRules } from "./approval-rules.js";
 import { COORDINATOR_MODE, coordinatorWorkStyle } from "./coordinator.js";
@@ -124,6 +125,7 @@ import {
   scheduleTool,
 } from "./coordinator-schedules.js";
 import { editedFiles, type SessionDiffStats, sessionDiffStats } from "./diff-stats.js";
+import { type GateToolContext, gateTools } from "./gate-tools.js";
 import { userContent } from "./images.js";
 import type { ExpandedChatInput } from "./input-expansion.js";
 import { hasInputReferences } from "./input-parse.js";
@@ -208,7 +210,9 @@ export type ChatPrompt = { id: string; createdAt: number } & (
       reason: string;
       /** The issue the run starts from. */
       issue?: string;
-      /** Binds the approval to exactly this workflow and request. */
+      /** Gates approving the card saves before the run starts, one `id: command` line each. */
+      gates?: string[];
+      /** Binds the approval to exactly this workflow, request and gates. */
       digest: string;
     }
 );
@@ -1990,7 +1994,9 @@ export class ChatService {
         coordinatorLimits(this.options.config),
         this.workflowCatalog(),
         coordinatorWorkStyle(this.options.config),
+        this.gateContext(coordinator),
       ),
+      ...gateTools(this.gateContext(coordinator)),
       ...controlTools(this, coordinator, this.projectState, this.launcher),
       // Setup changes ask the person on a card, as launches do; reading needs no approval.
       [SETUP_TOOL]: createSetupTool({
@@ -2003,6 +2009,17 @@ export class ChatService {
     };
   }
 
+  /** Where a session's gate tools save: the project, with this service's configuration. */
+  private gateContext(session: ChatSession): GateToolContext {
+    const saved = this.launcher?.gatesSaved;
+    return {
+      workspace: this.workspace,
+      config: this.options.config,
+      confirm: (text) => session.confirm(text),
+      saved: saved ? (checks) => saved(checks) : undefined,
+    };
+  }
+
   /** The workflows of this project as the coordinator lists and proposes them. */
   private workflowCatalog(): WorkflowCatalog {
     const { workspace } = this;
@@ -2010,6 +2027,7 @@ export class ChatService {
     return {
       list: () => projectDefinitions(workspace, config),
       propose: (request) => proposeForWorkspace(workspace, config, request),
+      needsGates: (id) => needsGates(workspace, config, id),
     };
   }
 
@@ -2028,9 +2046,11 @@ export class ChatService {
 
   /** A coordinator thread's message tool and what it is told about its peers; none otherwise. */
   threadExtras(session: ChatSession): { tools?: Record<string, unknown>; instructions?: string } {
+    // Every chat can set the project's gates up; each save asks the person first.
+    const gates = gateTools(this.gateContext(session));
     const instructions = peerInstructions(this, session);
-    if (!instructions) return {};
-    return { tools: { [PEER_TOOL]: peerTool(this, session) }, instructions };
+    if (!instructions) return { tools: gates };
+    return { tools: { ...gates, [PEER_TOOL]: peerTool(this, session) }, instructions };
   }
 
   /** Context fills (0-1) at which a coordinator compacts itself, and below which it may again. */
