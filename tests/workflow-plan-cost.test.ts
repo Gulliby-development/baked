@@ -73,6 +73,7 @@ function makeStore(
   return {
     steps: () => steps,
     attempts: () => rows,
+    attemptTaskGenerations: () => new Map(),
     artifacts: () => artifacts,
     latestArtifact: (_id: string, path: string) => artifacts.find((a) => a.logical_path === path) ?? null,
     readArtifact: (_id: string, id: string) => {

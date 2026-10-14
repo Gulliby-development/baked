@@ -244,6 +244,10 @@ export interface AttemptUsageRow {
   costUsd?: number | null;
   /** The reasoning effort the attempt sent; null when none, absent on older backends. */
   effort?: string | null;
+  /** The task of a task step's attempt; null for other steps, absent on older backends. */
+  taskId?: string | null;
+  /** The task's generation when the attempt started: 0 first, one more per repair rerun. */
+  taskGeneration?: number | null;
 }
 
 /** `GET /v1/workflow/runs/:id/usage`, as `baked workflow usage RUN_ID` prints it. */

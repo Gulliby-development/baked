@@ -867,6 +867,38 @@ export class WorkflowStore {
         }),
       );
   }
+  /**
+   * The task generation each attempt of a task step started in, by attempt ID (#936): reruns of a
+   * task after a repair invalidated it are told apart from its first implementation.
+   */
+  attemptTaskGenerations(id: string): Map<string, { taskId: string; generation: number }> {
+    const taskOfStep = new Map(
+      this.steps(id).flatMap((step) =>
+        step.stage_id.startsWith("task-") ? [[step.id, step.stage_id.slice(5)] as const] : [],
+      ),
+    );
+    const current = new Map<string, number>();
+    const result = new Map<string, { taskId: string; generation: number }>();
+    const rows = this.db
+      .query<{ type: string; payload_json: string }, [string]>(
+        "SELECT type,payload_json FROM events WHERE run_id=? AND type IN ('task.state_changed','attempt.started') ORDER BY seq",
+      )
+      .all(id);
+    for (const row of rows) {
+      const payload = JSON.parse(row.payload_json) as {
+        taskId?: string;
+        generation?: number;
+        attemptId?: string;
+        stepId?: string;
+      };
+      if (row.type === "task.state_changed" && payload.taskId !== undefined)
+        current.set(payload.taskId, payload.generation ?? 0);
+      const taskId = payload.stepId ? taskOfStep.get(payload.stepId) : undefined;
+      if (row.type === "attempt.started" && payload.attemptId && taskId !== undefined)
+        result.set(payload.attemptId, { taskId, generation: current.get(taskId) ?? 0 });
+    }
+    return result;
+  }
   artifacts(id: string): ArtifactRow[] {
     return this.db
       .query<ArtifactRow, [string]>("SELECT * FROM artifacts WHERE run_id=? ORDER BY created_at,id")

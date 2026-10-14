@@ -82,6 +82,7 @@ function makeStore(
   return {
     steps: () => steps,
     attempts: () => attempts,
+    attemptTaskGenerations: () => new Map(),
     latestArtifact: (_id, path) => artifacts.get(path) ?? null,
     readArtifact: (_id, id) => {
       const content = contents.get(id);
