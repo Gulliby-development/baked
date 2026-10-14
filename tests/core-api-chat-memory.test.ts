@@ -76,8 +76,20 @@ describe("chat memory over the local API", () => {
     expect((await call("/v1/memory", { method: "POST", body: JSON.stringify({ action: "edit", scope: "project", id: project.id, summary: " " }) })).status).toBe(400);
     expect((await call("/v1/memory", { method: "DELETE" })).status).toBe(405);
 
+    // An edit to another memory's text is refused in words, without the store's IDs and columns.
+    const twin = seed.write("project", { summary: "Run the linter", details: "", category: null, source: "user" }).record;
+    const duplicate = await call("/v1/memory", {
+      method: "POST",
+      body: JSON.stringify({ action: "edit", scope: "project", id: twin.id, summary: "Use bun for everything", details: "" }),
+    });
+    expect(duplicate.status).toBe(409);
+    expect(((await duplicate.json()) as { error: { code: string; message: string } }).error).toMatchObject({
+      code: "DUPLICATE_MEMORY",
+      message: "Another project memory already has this summary and details",
+    });
+
     const purged = await send<ChatMemoryView & { cleared: number }>("POST", "/v1/memory", { action: "purge", scope: "project" });
-    expect(purged.cleared).toBe(1);
+    expect(purged.cleared).toBe(2);
     expect(purged.entries.map((e) => e.scope)).toEqual(["global"]);
   });
 

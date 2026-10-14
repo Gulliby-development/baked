@@ -69,9 +69,14 @@ export async function chatMemoryRoute(ctx: ChatMemoryRouteContext): Promise<Resp
     let found: boolean;
     try {
       found = editChatMemory(memory, edit);
-    } catch (error) {
-      // The only write failure an edit can hit: another memory already holds the same text.
-      ctx.fail(409, "DUPLICATE_MEMORY", error instanceof Error ? error.message : String(error));
+    } catch {
+      // The only write failure an edit can hit: another memory already holds the same text. The
+      // store's own message names internal IDs and columns, so the person gets a sentence instead.
+      ctx.fail(
+        409,
+        "DUPLICATE_MEMORY",
+        `Another ${edit.scope} memory already has this summary and details`,
+      );
     }
     if (!found) ctx.fail(404, "NOT_FOUND", `No ${edit.scope} memory ${edit.id}`);
     return ctx.json(200, chatMemoryView(memory));
