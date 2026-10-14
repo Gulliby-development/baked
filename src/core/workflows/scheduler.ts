@@ -30,6 +30,7 @@ import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification
 import {
   appendCorrections,
   failedCheckFindings,
+  failuresCovered,
   isTestOf,
   noTestsCollected,
   pathsInOutput,
@@ -7191,6 +7192,13 @@ ${note}`;
     const testsPending =
       plannedTests.length > 0 &&
       !plannedTests.some((path) => existsSync(workspacePath(root, path)));
+    // Findings not yet resolved, in correction (`confirmed`) or waiting for it: a failure they name is not
+    // charged to this report again (#1146).
+    const open = this.store
+      .findings(runId)
+      .filter((f) => f.status === "open" || f.status === "confirmed")
+      .map((f) => JSON.parse(f.body_json) as Review["findings"][number]);
+    const covered: { checkId: string; findingIds: string[] }[] = [];
     for (const check of policy.checks.filter((c) => c.required && c.scope === "feature")) {
       let checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
       if (checked.status === "failed" && testsPending && noTestsCollected(checked.output ?? "")) {
@@ -7217,6 +7225,22 @@ ${note}`;
         ...(fixed ? { fixed: true as const } : {}),
       });
       if (checked.status !== "failed") continue;
+      const claim = `Required check ${check.id} failed`;
+      if (failuresCovered(checked.output ?? "", open)) {
+        covered.push({ checkId: check.id, findingIds: open.map((f) => f.id) });
+        continue;
+      }
+      // A file whose failure of this check is already an open finding is in correction.
+      const pending = files.filter(
+        (file) => !open.some((f) => f.claim === claim && f.file === file),
+      );
+      if (!pending.length) {
+        covered.push({
+          checkId: check.id,
+          findingIds: open.filter((f) => f.claim === claim).map((f) => f.id),
+        });
+        continue;
+      }
       const failed = failedCheckFindings(
         check,
         checked.evidenceId,
@@ -7228,12 +7252,26 @@ ${note}`;
       );
       // Output that names planned files decides who owns the failure; output that names none
       // (a bare assertion) is the reporting task's account of where the defect is.
-      const named = failed.filter((f) => f.file !== null && files.includes(f.file));
+      const named = failed.filter((f) => f.file !== null && pending.includes(f.file));
       const unnamed = failed.every((f) => f.file === null);
+      // A failure placed on a named file is the file's owner's, with its requirements: the
+      // reporting task wrote none of it.
+      const owned = (file: string, f: Review["findings"][number]) => {
+        const owner = graph.tasks.find((t) => t.id === owners.get(file));
+        return owner
+          ? {
+              ...f,
+              id: newId(),
+              file,
+              requirementIds: owner.requirementIds,
+              criterionIds: owner.criterionIds,
+            }
+          : { ...f, id: newId(), file };
+      };
       findings.push(
         ...(named.length || !unnamed
           ? named
-          : files.flatMap((file) => failed.map((f) => ({ ...f, id: newId(), file })))),
+          : pending.flatMap((file) => failed.map((f) => owned(file, f)))),
       );
     }
     this.store.transaction(() =>
@@ -7241,7 +7279,13 @@ ${note}`;
         runId,
         "diagnostic",
         `tasks/defects/${task.id}.json`,
-        canonical({ taskId: task.id, files, checks: ran, findings: findings.map((f) => f.id) }),
+        canonical({
+          taskId: task.id,
+          files,
+          checks: ran,
+          findings: findings.map((f) => f.id),
+          ...(covered.length ? { covered } : {}),
+        }),
       ),
     );
     if (!findings.length) return;
