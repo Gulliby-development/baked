@@ -313,6 +313,8 @@ export interface CliLogin {
   state: CliLoginState;
   lines: string[];
   url?: string;
+  /** The CLI also takes the code a manual sign-in page shows (`POST .../login/code`). */
+  acceptsCode?: boolean;
   error?: string;
   startedAt: string;
   endedAt?: string;
@@ -848,6 +850,8 @@ export const setup = {
     noteLogin(provider, result.login);
     return result;
   },
+  submitLoginCode: (key: string, provider: string, code: string) =>
+    call<{ login: CliLogin }>(key, "POST", `/v1/providers/${json(provider)}/login/code`, { code }),
   cancelLogin: (key: string, provider: string) =>
     call<{ login: CliLogin | null }>(key, "DELETE", `/v1/providers/${json(provider)}/login`),
   logout: (key: string, provider: string) =>

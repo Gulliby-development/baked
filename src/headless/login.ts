@@ -1,3 +1,4 @@
+import { createInterface } from "node:readline";
 import {
   CLI_LOGIN_PROVIDERS,
   type CliLogin,
@@ -8,6 +9,7 @@ import {
   isCliLoginProvider,
   logoutCli,
   startCliLogin,
+  submitCliLoginCode,
 } from "../core/llm/cli-login.js";
 
 const help = `Usage: baked login [codex|claude-code] [--json]
@@ -15,7 +17,7 @@ const help = `Usage: baked login [codex|claude-code] [--json]
 
 login signs the provider's own CLI in with your subscription, as /codex login and
 /claude-code login do in the terminal UI: it prints the CLI's progress and the sign-in page to
-open, and waits until the sign-in ends. An already signed-in CLI succeeds at once. Without a
+open, and waits until the sign-in ends. When the page ends on a code, paste it and press Enter. An already signed-in CLI succeeds at once. Without a
 provider it prints whether each CLI is installed and signed in. logout runs the CLI's own logout.
 BAKED never reads or stores the CLI's tokens.
 
@@ -42,18 +44,36 @@ async function follow(provider: (typeof CLI_LOGIN_PROVIDERS)[number]): Promise<C
     if (login.url && !urlShown) {
       urlShown = true;
       process.stderr.write(`Open ${login.url} to sign in\n`);
+      if (login.acceptsCode && reader)
+        process.stderr.write("If the page ends on a code, paste it here and press Enter.\n");
     }
     return login;
   };
-  let current = flush();
-  while (current?.state === "running") {
-    await Promise.race([
-      cliLoginSettled(provider),
-      new Promise((resolve) => setTimeout(resolve, POLL_MS)),
-    ]);
-    current = flush();
+  // In a terminal the pasted code goes to the CLI, as its own prompt would take it.
+  const reader = process.stdin.isTTY
+    ? createInterface({ input: process.stdin, terminal: false })
+    : null;
+  reader?.on("line", (line) => {
+    if (!line.trim()) return;
+    try {
+      submitCliLoginCode(provider, line);
+    } catch (error) {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    }
+  });
+  try {
+    let current = flush();
+    while (current?.state === "running") {
+      await Promise.race([
+        cliLoginSettled(provider),
+        new Promise((resolve) => setTimeout(resolve, POLL_MS)),
+      ]);
+      current = flush();
+    }
+    return current;
+  } finally {
+    reader?.close();
   }
-  return current;
 }
 
 export async function runLoginCli(command: "login" | "logout", argv: string[]): Promise<number> {

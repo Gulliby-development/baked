@@ -98,6 +98,7 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | `/codex status` | Show Codex login status |
 | `/claude-code` | Show Claude Code login status |
 | `/claude-code login` | Log in to Claude Code with your Claude subscription |
+| `/claude-code code` | Finish a Claude Code login with the code the sign-in page shows |
 | `/claude-code logout` | Log out of the current Claude Code account |
 | `/claude-code status` | Show Claude Code login status |
 | `/model-scope` | Set model scope (project/global) |

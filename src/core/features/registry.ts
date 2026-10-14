@@ -451,11 +451,12 @@ export const FEATURES: readonly Feature[] = [
       "/codex status",
       "/claude-code",
       "/claude-code login",
+      "/claude-code code",
       "/claude-code logout",
       "/claude-code status",
     ],
     cli: ["baked login", "baked logout"],
-    api: ["/v1/providers/:id/login", "/v1/providers/:id/logout"],
+    api: ["/v1/providers/:id/login", "/v1/providers/:id/login/code", "/v1/providers/:id/logout"],
     desktop: ["settings/providers"],
   },
   {
