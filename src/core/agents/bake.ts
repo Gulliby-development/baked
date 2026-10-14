@@ -786,6 +786,8 @@ export function createBakeAgent({
     onApproveDestructive: effectiveApproveDestructive,
     // A deploy sends a page off the machine, so it asks even in auto mode.
     ...(onApproveDestructive ? { onApproveArtifactDeploy: onApproveDestructive } : {}),
+    // A setup change outlives the session, so the person approves it even in auto mode.
+    ...(onApproveDestructive ? { onApproveSetup: onApproveDestructive } : {}),
     tabId: tabId ?? contextManager.getTabId() ?? undefined,
     tabLabel: tabLabel ?? contextManager.getTabLabel() ?? undefined,
     activeDeferredTools,
@@ -836,6 +838,7 @@ export function createBakeAgent({
     // Memory & skills
     "memory",
     "skills",
+    "baked_setup",
     "baked_help",
     "artifact",
     // Tool management

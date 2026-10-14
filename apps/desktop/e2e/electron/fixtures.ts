@@ -124,7 +124,31 @@ export const test = base.extend<Fixtures>({
         });
       expect(await app.evaluate(({ app }) => app.getPath("userData"))).toBe(userData);
       const page = await app.firstWindow();
+      page.on("console", (entry) => {
+        output = (output + `[renderer ${entry.type()}] ${entry.text()}\n`).slice(-6000);
+      });
+      page.on("pageerror", (error) => {
+        output = (output + `[renderer error] ${error.message}\n`).slice(-6000);
+      });
       await expect(page.getByRole("heading", { name: "All projects", level: 1 })).toBeVisible();
+      // Backend state changes and navigations, for the log of a failed test.
+      await page.evaluate(() => {
+        const log = (line: string) => console.debug(`[${Math.round(performance.now())}ms] ${line}`);
+        const bridge = (window as unknown as {
+          baked: { onProjects(listener: (list: DesktopProjectLike[]) => void): void };
+        }).baked;
+        type DesktopProjectLike = { name: string; backend: { kind: string } };
+        bridge.onProjects((list) =>
+          log(`projects ${list.map((p) => `${p.name}:${p.backend.kind}`).join(" ")}`),
+        );
+        window.addEventListener("hashchange", () => log(`hash ${window.location.hash}`));
+        let prompt: Element | null = null;
+        new MutationObserver(() => {
+          const now = document.getElementById("chat-prompt");
+          if (now !== prompt) log(now ? "composer mounted" : "composer removed");
+          prompt = now;
+        }).observe(document.body, { childList: true, subtree: true });
+      });
       return { app, page };
     });
     if (testInfo.status !== testInfo.expectedStatus) {
@@ -135,7 +159,9 @@ export const test = base.extend<Fixtures>({
           ?.locator("main")
           .ariaSnapshot({ timeout: 2000 })
           .catch((error: unknown) => String(error));
-        console.log(`--- window at failure ---\n${snapshot?.slice(0, 6000)}`);
+        console.log(
+          `--- window at failure (${app.windows()[0]?.url()}) ---\n${snapshot?.slice(0, 6000)}`,
+        );
       }
       console.log(`--- app output ---\n${output}`);
     }
