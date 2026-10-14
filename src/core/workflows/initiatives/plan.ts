@@ -6,6 +6,7 @@
 import { z } from "zod";
 import { hashJson } from "../../specs/hash.js";
 import { WorkflowFault } from "../errors.js";
+import { SafeId } from "../schemas.js";
 
 /** An initiative holds at least this many features; a smaller request is a single run. */
 export const MIN_FEATURES = 3;
@@ -46,6 +47,10 @@ export const InitiativeFeatureSchema = z
     dependsOn: z.array(FeatureKey),
     /** The initiative completes only when every mandatory feature has an accepted result. */
     mandatory: z.boolean(),
+    /** The workflow this feature's runs use; omitted, the initiative's default workflow. */
+    workflow: SafeId.optional(),
+    /** How much work the feature is; its budget share is weighted by it. Omitted, medium. */
+    size: z.enum(["small", "medium", "large"]).optional(),
   })
   .strict();
 export type InitiativeFeature = z.infer<typeof InitiativeFeatureSchema>;
@@ -61,6 +66,13 @@ export const InitiativePlanSchema = z
   })
   .strict();
 export type InitiativePlan = z.infer<typeof InitiativePlanSchema>;
+
+export type FeatureSize = NonNullable<InitiativeFeature["size"]>;
+export const FEATURE_SIZES: readonly FeatureSize[] = ["small", "medium", "large"];
+/** Budget weight of a feature size: a medium feature takes the policy's per-run limits. */
+const SIZE_WEIGHTS: Record<FeatureSize, number> = { small: 1, medium: 2, large: 4 };
+export const sizeWeight = (feature: Pick<InitiativeFeature, "size">): number =>
+  SIZE_WEIGHTS[feature.size ?? "medium"];
 
 /**
  * Problems of the dependency graph and identifiers. These go back to the decomposer at
@@ -159,6 +171,8 @@ export function featureDigest(feature: InitiativeFeature): string {
     contract: feature.contract,
     dependsOn: [...feature.dependsOn].sort(),
     mandatory: feature.mandatory,
+    // Another workflow is another run; the size only weighs the next budget share.
+    ...(feature.workflow ? { workflow: feature.workflow } : {}),
   });
 }
 
@@ -197,10 +211,27 @@ export const SplitEditSchema = z.discriminatedUnion("op", [
   z
     .object({ op: z.literal("rename"), featureId: FeatureKey, title: z.string().min(1).max(200) })
     .strict(),
+  /** The workflow a feature runs; the initiative checks that it can run the feature. */
+  z.object({ op: z.literal("workflow"), featureId: FeatureKey, workflow: SafeId }).strict(),
+  z
+    .object({
+      op: z.literal("size"),
+      featureId: FeatureKey,
+      size: z.enum(["small", "medium", "large"]),
+    })
+    .strict(),
 ]);
 export type SplitEdit = z.infer<typeof SplitEditSchema>;
 
 const unique = <T>(values: T[]): T[] => [...new Set(values)];
+
+/** A merged feature keeps the workflow of its largest part; its size is the parts' total. */
+function largestOf(features: InitiativeFeature[]): Pick<InitiativeFeature, "workflow" | "size"> {
+  const largest = features.reduce((a, b) => (sizeWeight(b) > sizeWeight(a) ? b : a));
+  const total = features.reduce((sum, f) => sum + sizeWeight(f), 0);
+  const size: FeatureSize = total <= 1 ? "small" : total <= 2 ? "medium" : "large";
+  return { ...(largest.workflow ? { workflow: largest.workflow } : {}), size };
+}
 
 /**
  * Applies one edit and returns the new plan. The result is validated as a whole: an edit that
@@ -219,6 +250,13 @@ export function applySplitEdit(plan: InitiativePlan, edit: SplitEdit): Initiativ
       features = plan.features.map((f) =>
         f.id === edit.featureId ? { ...f, title: edit.title } : f,
       );
+      break;
+    }
+    case "workflow":
+    case "size": {
+      find(edit.featureId);
+      const change = edit.op === "workflow" ? { workflow: edit.workflow } : { size: edit.size };
+      features = plan.features.map((f) => (f.id === edit.featureId ? { ...f, ...change } : f));
       break;
     }
     case "remove": {
@@ -247,6 +285,7 @@ export function applySplitEdit(plan: InitiativePlan, edit: SplitEdit): Initiativ
         contract: merged.map((f) => f.contract).join("\n"),
         dependsOn: unique(merged.flatMap((f) => f.dependsOn)).filter((d) => !ids.has(d)),
         mandatory: merged.some((f) => f.mandatory),
+        ...largestOf(merged),
       };
       const position = plan.features.findIndex((f) => ids.has(f.id));
       features = [];
@@ -278,6 +317,7 @@ export function applySplitEdit(plan: InitiativePlan, edit: SplitEdit): Initiativ
         contract: part.contract ?? original.contract,
         dependsOn: original.dependsOn,
         mandatory: original.mandatory,
+        ...(original.workflow ? { workflow: original.workflow } : {}),
       }));
       features = plan.features.flatMap((f) =>
         f.id === original.id

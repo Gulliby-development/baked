@@ -169,6 +169,7 @@ import {
   MIN_FEATURES,
   planStructureProblems,
 } from "./initiatives/plan.js";
+import { featureWorkflowChoices } from "./initiatives/workflows.js";
 import { changeReach, repairChangedFiles } from "./invalidation.js";
 import {
   commandMayBeRunning,
@@ -1679,7 +1680,12 @@ export class WorkflowScheduler {
                   state,
                   policy,
                   this.requireProfile(profile),
-                  { initiativeBounds: { minFeatures: MIN_FEATURES, maxFeatures: MAX_FEATURES } },
+                  {
+                    initiativeBounds: { minFeatures: MIN_FEATURES, maxFeatures: MAX_FEATURES },
+                    featureWorkflows: featureWorkflowChoices(this.store.workspace, policy, {
+                      tiered: false,
+                    }).map((w) => ({ id: w.id, description: w.description, spec: w.contract })),
+                  },
                   signal,
                   undefined,
                   0,
