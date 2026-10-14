@@ -1,4 +1,5 @@
 import { mkdirSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { forwardAnthropicContainerIdFromLastStep } from "@ai-sdk/anthropic";
 import type { ModelMessage, ProviderOptions } from "@ai-sdk/provider-utils";
 import type { LanguageModel } from "ai";
@@ -38,6 +39,7 @@ import {
   type PermissionMode,
   withManualApproval,
 } from "../security/permission-mode.js";
+import { scopeToolsToCwd } from "../tools/cwd-scope.js";
 import {
   buildInteractiveTools,
   buildTools,
@@ -768,7 +770,7 @@ export function createBakeAgent({
   const onDemandEnabled = !disabledTools?.has("request_tools") && !isRestricted && !planExecution;
   const activeDeferredTools = onDemandEnabled ? new Set<string>() : undefined;
 
-  const directTools = buildTools(undefined, effectiveApproveWebSearch, {
+  const directTools = buildTools(cwd, effectiveApproveWebSearch, {
     codeExecution: canUseCodeExecution,
     computerUse: computerUse && isAnthropic && toolVersions.computerUse != null,
     anthropicTextEditor: anthropicTextEditor && isAnthropic && toolVersions.textEditor != null,
@@ -957,8 +959,15 @@ export function createBakeAgent({
   // Interactive tools and a chat's extra tools (coordinator, peer messages) only ask the user or
   // touch BAKED's own state. Holding the workspace mutation lease through them blocked every other
   // chat's edits while a question waited, and failed parallel coordinator calls.
+  const workspaceTools = guardWorkspaceTools(
+    { ...orderedTools, ...subagentTools },
+    cwd ?? process.cwd(),
+  );
+  // An agent working outside the process's workspace (a chat session's worktree) gets tools that
+  // resolve its paths and run its commands there.
+  const ownDir = cwd !== undefined && resolve(cwd) !== getCwd() ? cwd : null;
   const allTools = {
-    ...guardWorkspaceTools({ ...orderedTools, ...subagentTools }, cwd ?? process.cwd()),
+    ...(ownDir ? scopeToolsToCwd(workspaceTools, ownDir) : workspaceTools),
     ...buildInteractiveTools(interactiveCallbacks, { cwd, sessionId, bakeMode }),
     ...extraTools,
   };

@@ -30,7 +30,6 @@ import {
 import { memoryHintComposite } from "../memory/hints.js";
 import { truncateWithTee } from "./tee.js";
 
-const cwd = getCwd();
 const MAX_GIT_OUTPUT = 32_000;
 
 async function capGitOutput(output: string, label: string): Promise<string> {
@@ -52,7 +51,7 @@ function getOtherTabClaimWarning(tabId?: string): string | null {
     const paths: string[] = [];
     for (const [absPath, claim] of tabClaims) {
       tabLabel = claim.tabLabel;
-      paths.push(relative(cwd, absPath) || absPath);
+      paths.push(relative(getCwd(), absPath) || absPath);
     }
     const shown = paths.slice(0, 5);
     const extra = paths.length > 5 ? ` (+${String(paths.length - 5)} more)` : "";
@@ -257,7 +256,7 @@ export const gitTool = {
       const coordinator = getWorkspaceCoordinator();
       const myClaims = coordinator.getClaimsForTab(tabId);
       if (myClaims.size > 0) {
-        const paths = [...myClaims.keys()].map((p) => relative(cwd, p) || p);
+        const paths = [...myClaims.keys()].map((p) => relative(getCwd(), p) || p);
         result = {
           ...result,
           output: `${result.output}\n\nFiles you edited this session: ${paths.join(", ")}`,
@@ -270,7 +269,7 @@ export const gitTool = {
 };
 
 async function execStatus(): Promise<ToolResult> {
-  const s = await getGitStatus(cwd);
+  const s = await getGitStatus(getCwd());
   if (!s.isRepo) return { success: false, output: "Not a git repository", error: "not a repo" };
   const lines = [`Branch: ${s.branch ?? "detached"}`];
   if (s.staged.length > 0)
@@ -293,7 +292,7 @@ let lastDiffStaged: boolean | undefined;
 async function execDiff(staged?: boolean, flags?: string[]): Promise<ToolResult> {
   const args = staged ? ["diff", "--cached"] : ["diff"];
   if (flags) args.push(...flags);
-  const { stdout } = await run(args, cwd);
+  const { stdout } = await run(args, getCwd());
   const output = stdout || "No changes.";
   // Skip dedup cache when custom flags are used
   if (!flags && output === lastDiffOutput && staged === lastDiffStaged) {
@@ -315,11 +314,11 @@ async function execLog(count?: number, flags?: string[]): Promise<ToolResult> {
   if (flags) {
     // Custom flags bypass structured parsing — run raw
     const args = ["log", `-n`, String(count ?? 10), ...flags];
-    const { ok, stdout } = await run(args, cwd);
+    const { ok, stdout } = await run(args, getCwd());
     if (!ok) return { success: false, output: stdout || "Log failed", error: "log failed" };
     return { success: true, output: await capGitOutput(stdout || "No commits found.", "log") };
   }
-  const entries = await getGitLog(cwd, count ?? 10);
+  const entries = await getGitLog(getCwd(), count ?? 10);
   if (entries.length === 0) return { success: true, output: "No commits found." };
   return {
     success: true,
@@ -329,11 +328,11 @@ async function execLog(count?: number, flags?: string[]): Promise<ToolResult> {
 
 async function execCommit(message: string, files?: string[], amend?: boolean): Promise<ToolResult> {
   if (files && files.length > 0) {
-    const ok = await gitAdd(cwd, files);
+    const ok = await gitAdd(getCwd(), files);
     if (!ok) return { success: false, output: "Failed to stage files", error: "staging failed" };
   }
   if (!amend) {
-    const diff = await getGitDiff(cwd, true);
+    const diff = await getGitDiff(getCwd(), true);
     if (!diff) {
       return {
         success: false,
@@ -342,9 +341,9 @@ async function execCommit(message: string, files?: string[], amend?: boolean): P
       };
     }
   }
-  const result = await gitCommit(cwd, message, amend);
+  const result = await gitCommit(getCwd(), message, amend);
   if (!result.ok) return { success: false, output: result.output, error: "commit failed" };
-  const diff = await getGitDiff(cwd, true);
+  const diff = await getGitDiff(getCwd(), true);
   const diffLines = (diff || "").split("\n");
   const statLines = diffLines.filter((l) => l.startsWith("+++") || l.startsWith("---")).length;
   const additions = diffLines.filter((l) => l.startsWith("+") && !l.startsWith("+++")).length;
@@ -357,12 +356,12 @@ async function execCommit(message: string, files?: string[], amend?: boolean): P
 }
 
 async function execPush(flags?: string[]): Promise<ToolResult> {
-  const result = await gitPush(cwd, flags);
+  const result = await gitPush(getCwd(), flags);
   return { success: result.ok, output: result.output };
 }
 
 async function execPull(flags?: string[]): Promise<ToolResult> {
-  const result = await gitPull(cwd, flags);
+  const result = await gitPull(getCwd(), flags);
   return { success: result.ok, output: result.output };
 }
 
@@ -374,25 +373,25 @@ async function execStash(
   const action = subAction ?? "push";
   switch (action) {
     case "list": {
-      const { ok, entries } = await gitStashList(cwd);
+      const { ok, entries } = await gitStashList(getCwd());
       if (!ok)
         return { success: false, output: "Failed to list stashes", error: "stash list failed" };
       return { success: true, output: entries.length > 0 ? entries.join("\n") : "No stashes." };
     }
     case "show": {
-      const { ok, output } = await gitStashShow(cwd, index ?? 0);
+      const { ok, output } = await gitStashShow(getCwd(), index ?? 0);
       return { success: ok, output: await capGitOutput(output || "Empty stash.", "stash-show") };
     }
     case "drop": {
-      const { ok, output } = await gitStashDrop(cwd, index ?? 0);
+      const { ok, output } = await gitStashDrop(getCwd(), index ?? 0);
       return { success: ok, output };
     }
     case "pop": {
-      const result = await gitStashPop(cwd);
+      const result = await gitStashPop(getCwd());
       return { success: result.ok, output: result.output };
     }
     default: {
-      const result = await gitStash(cwd, message);
+      const result = await gitStash(getCwd(), message);
       return { success: result.ok, output: result.output };
     }
   }
@@ -407,22 +406,22 @@ async function execBranch(
   switch (action) {
     case "list": {
       const args = ["branch", "-vv", ...(flags ?? [])];
-      const { ok, stdout } = await run(args, cwd);
+      const { ok, stdout } = await run(args, getCwd());
       return { success: ok, output: stdout || "No branches." };
     }
     case "create": {
       if (!name) return { success: false, output: "Branch name required", error: "missing name" };
-      const { ok, output } = await gitCreateBranch(cwd, name);
+      const { ok, output } = await gitCreateBranch(getCwd(), name);
       return { success: ok, output: output || `Created and switched to ${name}` };
     }
     case "switch": {
       if (!name) return { success: false, output: "Branch name required", error: "missing name" };
-      const { ok, output } = await gitSwitchBranch(cwd, name);
+      const { ok, output } = await gitSwitchBranch(getCwd(), name);
       return { success: ok, output: output || `Switched to ${name}` };
     }
     case "delete": {
       if (!name) return { success: false, output: "Branch name required", error: "missing name" };
-      const { ok, stdout } = await run(["branch", "-d", name], cwd);
+      const { ok, stdout } = await run(["branch", "-d", name], getCwd());
       return { success: ok, output: stdout || `Deleted ${name}` };
     }
     default:
@@ -433,10 +432,10 @@ async function execBranch(
 async function execShow(ref?: string, flags?: string[]): Promise<ToolResult> {
   if (flags) {
     const args = ["show", ...(flags ?? []), ref ?? "HEAD"];
-    const { ok, stdout } = await run(args, cwd);
+    const { ok, stdout } = await run(args, getCwd());
     return { success: ok, output: await capGitOutput(stdout, "show") };
   }
-  const result = await gitShow(cwd, ref ?? "HEAD");
+  const result = await gitShow(getCwd(), ref ?? "HEAD");
   return { success: result.ok, output: await capGitOutput(result.output, "show") };
 }
 
@@ -444,7 +443,7 @@ async function execUnstage(files?: string[]): Promise<ToolResult> {
   if (!files || files.length === 0) {
     return { success: false, output: "Specify files to unstage", error: "missing files" };
   }
-  const result = await gitUnstage(cwd, files);
+  const result = await gitUnstage(getCwd(), files);
   return { success: result.ok, output: result.output };
 }
 
@@ -452,13 +451,13 @@ async function execRestore(files?: string[]): Promise<ToolResult> {
   if (!files || files.length === 0) {
     return { success: false, output: "Specify files to restore", error: "missing files" };
   }
-  const result = await gitRestore(cwd, files);
+  const result = await gitRestore(getCwd(), files);
   return { success: result.ok, output: result.output };
 }
 
 async function execStage(files?: string[]): Promise<ToolResult> {
   const targets = files && files.length > 0 ? files : ["-A"];
-  const ok = await gitAdd(cwd, targets);
+  const ok = await gitAdd(getCwd(), targets);
   if (!ok) return { success: false, output: "Failed to stage files", error: "staging failed" };
   const label = targets[0] === "-A" ? "all files" : `${String(files?.length ?? 0)} file(s)`;
   return { success: true, output: `Staged ${label}` };
@@ -470,13 +469,13 @@ async function execTag(
   message?: string,
   ref?: string,
 ): Promise<ToolResult> {
-  const result = await gitTag(cwd, subAction, name, message, ref);
+  const result = await gitTag(getCwd(), subAction, name, message, ref);
   return { success: result.ok, output: result.output, error: result.ok ? undefined : "tag failed" };
 }
 
 async function execCherryPick(ref?: string, flags?: string[]): Promise<ToolResult> {
   if (!ref) return { success: false, output: "Commit ref required", error: "missing ref" };
-  const result = await gitCherryPick(cwd, ref, flags);
+  const result = await gitCherryPick(getCwd(), ref, flags);
   return {
     success: result.ok,
     output: result.output,
@@ -485,7 +484,7 @@ async function execCherryPick(ref?: string, flags?: string[]): Promise<ToolResul
 }
 
 async function execRebase(subAction?: string, ref?: string, flags?: string[]): Promise<ToolResult> {
-  const result = await gitRebase(cwd, subAction, ref, flags);
+  const result = await gitRebase(getCwd(), subAction, ref, flags);
   return {
     success: result.ok,
     output: result.output,
@@ -494,7 +493,7 @@ async function execRebase(subAction?: string, ref?: string, flags?: string[]): P
 }
 
 async function execReset(ref?: string, mode?: string, files?: string[]): Promise<ToolResult> {
-  const result = await gitReset(cwd, ref, mode, files);
+  const result = await gitReset(getCwd(), ref, mode, files);
   return {
     success: result.ok,
     output: result.output,
@@ -504,7 +503,7 @@ async function execReset(ref?: string, mode?: string, files?: string[]): Promise
 
 async function execBlame(file?: string, startLine?: number, endLine?: number): Promise<ToolResult> {
   if (!file) return { success: false, output: "File path required", error: "missing file" };
-  const result = await gitBlame(cwd, file, startLine, endLine);
+  const result = await gitBlame(getCwd(), file, startLine, endLine);
   return {
     success: result.ok,
     output: await capGitOutput(result.output, "blame"),

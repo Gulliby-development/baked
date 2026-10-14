@@ -370,7 +370,7 @@ export const shellTool = {
   execute: async (args: ShellArgs, abortSignal?: AbortSignal): Promise<ToolResult> => {
     assertWorkspaceMutationAllowed(getCwd());
     const command = injectCoAuthor(args.command);
-    const cwd = args.cwd ?? process.cwd();
+    const cwd = args.cwd ?? getCwd();
 
     const blocked = checkShellForbidden(command);
     if (blocked) {
