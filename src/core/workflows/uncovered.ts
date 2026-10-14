@@ -1,4 +1,5 @@
-import type { Spec } from "./schemas.js";
+import type { Spec, TaskGraph } from "./schemas.js";
+import { isTestTask } from "./tests-first.js";
 
 /**
  * A criterion the planner cannot cover. R11 (url-shortener 6735ff55): the spec author added a
@@ -49,4 +50,48 @@ export function uncoveredFindings(spec: Spec, ids: readonly string[], markdown: 
     description: `${describe(spec, id, markdown)} Remove it from the spec, or say how a task may verify it.`,
     blocking: true,
   }));
+}
+
+/** A planner submission: its markdown and task graph. */
+type Plan = { markdown: string; taskGraph: TaskGraph };
+
+const words = (text: string): Set<string> =>
+  new Set(text.toLowerCase().match(/[a-z0-9]{4,}/g) ?? []);
+
+/**
+ * The plan with each uncovered criterion appended to a task that already implements one of its
+ * requirements, instead of a whole new plan from the planner: the criterion was left out of the
+ * task's list, not the work (R19 cronsay-update: AC-006 and AC-007, 4 plan attempts and 317k
+ * tokens; #1037). An automated criterion goes to a test task when one covers the requirement,
+ * then to the task whose title, description and files share most words with it, then to the
+ * last. A criterion whose requirements no task implements stays uncovered: the planner may not
+ * be able to cover it at all (#780).
+ */
+export function repairUncoveredCriteria<P extends Plan>(
+  spec: Pick<Spec, "criteria">,
+  plan: P,
+): { plan: P; repaired: { criterionId: string; taskId: string }[] } {
+  const tasks = plan.taskGraph.tasks.map((t) => ({ ...t, criterionIds: [...t.criterionIds] }));
+  const repaired: { criterionId: string; taskId: string }[] = [];
+  for (const criterion of spec.criteria) {
+    if (criterion.method === "post-release") continue;
+    if (tasks.some((t) => t.criterionIds.includes(criterion.id))) continue;
+    const candidates = tasks.filter((t) =>
+      t.requirementIds.some((r) => criterion.requirementIds.includes(r)),
+    );
+    if (!candidates.length) continue;
+    const tests = candidates.filter(isTestTask);
+    const pool = criterion.method === "automated" && tests.length ? tests : candidates;
+    const wanted = words(`${criterion.given} ${criterion.when} ${criterion.then}`);
+    const score = (t: (typeof tasks)[number]): number =>
+      [...words(`${t.title} ${t.description} ${t.writes.map((w) => w.path).join(" ")}`)].filter(
+        (w) => wanted.has(w),
+      ).length;
+    // Highest score wins; on a tie the later task, which usually finishes the requirement.
+    const task = pool.reduce((best, t) => (score(t) >= score(best) ? t : best));
+    task.criterionIds.push(criterion.id);
+    repaired.push({ criterionId: criterion.id, taskId: task.id });
+  }
+  if (!repaired.length) return { plan, repaired };
+  return { plan: { ...plan, taskGraph: { ...plan.taskGraph, tasks } }, repaired };
 }

@@ -273,7 +273,7 @@ import { DEFAULT_SAST_CONFIG, QUALITY_SAST, runSast, sastClaim, sastOf } from ".
 import { carriesOver, changedSince, previousRound } from "./re-review.js";
 import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery.js";
-import { deliverableProblems, requestCoverage } from "./request-coverage.js";
+import { deliverableProblems, repairDeliverables, requestCoverage } from "./request-coverage.js";
 import {
   abortableDelay,
   accountRefusal,
@@ -335,6 +335,7 @@ import {
 } from "./schemas.js";
 import { specSizeNote, specSizeProblems } from "./spec-size.js";
 import {
+  repairUncoveredCriteria,
   UNCOVERED_SUBMISSIONS,
   uncoveredCriterion,
   uncoveredFindings,
@@ -876,7 +877,11 @@ export class WorkflowScheduler {
                         repairHostBoundCriteria(parsed.data).spec,
                         policy.checks,
                       ),
-                      ...deliverableProblems(parsed.data, coverageRequest(state)),
+                      // The host maps a deliverable the spec names elsewhere itself (#1037).
+                      ...deliverableProblems(
+                        repairDeliverables(parsed.data, coverageRequest(state)).spec,
+                        coverageRequest(state),
+                      ),
                       ...assumeProblems(
                         policy,
                         questions,
@@ -898,6 +903,18 @@ export class WorkflowScheduler {
                     "diagnostic",
                     "spec-repairs/host-bound.json",
                     canonical({ postRelease: repair.repaired, added }),
+                  ),
+                );
+              }
+              const mapped = repairDeliverables(state.spec, coverageRequest(state));
+              if (mapped.repaired.length) {
+                state.spec = mapped.spec;
+                this.store.transaction(() =>
+                  this.store.artifact(
+                    runId,
+                    "diagnostic",
+                    "spec-repairs/deliverables.json",
+                    canonical({ mapped: mapped.repaired }),
                   ),
                 );
               }
@@ -934,7 +951,7 @@ export class WorkflowScheduler {
               // cover; it stops being a submission error and goes back to the spec (#780).
               const uncoveredSubmissions = new Map<string, number>();
               const cannotCover = new Set<string>();
-              const plan = PlanSchema.parse(
+              const submittedPlan = PlanSchema.parse(
                 await this.call(
                   runId,
                   stepId,
@@ -980,11 +997,13 @@ export class WorkflowScheduler {
                   (output) => {
                     const parsed = PlanSchema.safeParse(output);
                     if (!parsed.success) return [parsed.error.message];
+                    // The host lists a criterion on the task that implements its requirement (#1037).
+                    const submitted = repairUncoveredCriteria(spec, parsed.data).plan;
                     const problems = [
-                      ...this.planProblems(runId, spec, parsed.data, policy, profiles),
-                      ...codeTaskCheckProblems(parsed.data.taskGraph, policy),
-                      ...testWriteProblems(parsed.data.taskGraph, policy),
-                      ...testsFirstProblems(spec, parsed.data.taskGraph, policy),
+                      ...this.planProblems(runId, spec, submitted, policy, profiles),
+                      ...codeTaskCheckProblems(submitted.taskGraph, policy),
+                      ...testWriteProblems(submitted.taskGraph, policy),
+                      ...testsFirstProblems(spec, submitted.taskGraph, policy),
                     ];
                     const open = problems.filter((problem) => {
                       const id = uncoveredCriterion(problem);
@@ -1008,6 +1027,17 @@ export class WorkflowScheduler {
                   scope ? { maxSteps: scope.maxSteps, maxTokens: scope.maxTokens } : undefined,
                 ),
               );
+              const listed = repairUncoveredCriteria(spec, submittedPlan);
+              const plan = listed.plan;
+              if (listed.repaired.length)
+                this.store.transaction(() =>
+                  this.store.artifact(
+                    runId,
+                    "diagnostic",
+                    "plan-repairs/uncovered.json",
+                    canonical({ listed: listed.repaired }),
+                  ),
+                );
               state.plan = plan.markdown;
               const problems = this.planProblems(runId, spec, plan, policy, profiles);
               const uncovered = problems.map(uncoveredCriterion);
