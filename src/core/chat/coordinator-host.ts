@@ -13,6 +13,7 @@ import type { InitiativeStartInput } from "../workflows/initiatives/forms.js";
 import { InitiativeService, type InitiativeView } from "../workflows/initiatives/service.js";
 import type { InitiativeAction } from "../workflows/initiatives/view-model.js";
 import { NativeWorkflowService } from "../workflows/service.js";
+import type { Check } from "../workflows/types.js";
 import { usageSummary } from "../workflows/usage.js";
 import { githubTasks, type ProjectLauncher, type RunControl } from "./coordinator-launch.js";
 import { BakeChatHost } from "./host.js";
@@ -26,6 +27,8 @@ export interface CoordinatorWorkflowClient {
   initiativeAction(initiativeId: string, action: InitiativeAction): Promise<InitiativeView>;
   /** Cancels a run at its current revision; without it the coordinator cannot cancel runs. */
   action?(runId: string, action: "cancel"): Promise<unknown>;
+  /** Gives new runs a saved gate list without restarting the worker. */
+  updateGates?(checks: Check[]): Promise<void>;
 }
 
 /**
@@ -188,6 +191,9 @@ export function clientLauncher(
           .then(() => resolve(), reject);
       }),
     tasks: githubTasks(options.workspace, options.config),
+    ...(client.updateGates
+      ? { gatesSaved: (checks: Check[]) => client.updateGates?.(checks) ?? Promise.resolve() }
+      : {}),
     // As /workflow approve, reject and cancel do; an approved run goes on through the worker.
     ...(options.revision
       ? {

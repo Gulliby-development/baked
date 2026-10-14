@@ -61,6 +61,18 @@ export type LoadedDefinition =
   | { schemaVersion: 1; id: string; definition: WorkflowDefinition; path: string | null }
   | { schemaVersion: 2; id: string; definition: WorkflowV2; path: string | null };
 
+/**
+ * Whether a shipped preset has a check stage without gates: bound to a project without feature
+ * checks, it cannot start (`prepareStart` refuses it).
+ */
+export function lacksFeatureChecks(loaded: LoadedDefinition): boolean {
+  return (
+    loaded.schemaVersion === 2 &&
+    !loaded.path &&
+    loaded.definition.stages.some((s) => s.type === "check" && !s.gates.length)
+  );
+}
+
 export interface DefinitionSummary {
   id: string;
   schemaVersion: 1 | 2;

@@ -219,6 +219,8 @@ export function promptLines(prompt: ChatPrompt, width: number): ViewLine[] {
       );
       if (prompt.issue)
         lines.push(...labelled("   ", `From issue ${prompt.issue}`, width, "muted"));
+      for (const gate of prompt.gates ?? [])
+        lines.push(...labelled("   Gate: ", gate, width, "accent"));
       lines.push(...labelled("   ", `Why this workflow: ${prompt.reason}`, width, "muted"));
       return lines;
     }
