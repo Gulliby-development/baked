@@ -47,7 +47,7 @@ Agents often leave code that passes the tests but hides failures. The rule pack 
 | Rule | Severity | Finds | Languages |
 | --- | --- | --- | --- |
 | `empty-catch` | error | `catch` with an empty block | JS/TS, Java, Kotlin, C#, PHP, Swift, Dart, Scala |
-| `catch-return-default` | error | a `catch` whose only statement returns `null`, `undefined`, `[]`, `{}`, `""`, `false`, `0` or `-1` | same |
+| `catch-return-default` | error | a `catch` whose only statement returns `null`, `undefined`, `[]`, `{}`, `""`, `false`, `0` or `-1`, unless the enclosing function's declared return type announces that value: `null` from a function typed `: T \| null` (or Kotlin `T?`), `undefined` from one typed with `undefined`, `false` from one returning `boolean` or `bool` | same |
 | `promise-catch-ignore` | error | `.catch(() => {})` and handlers that return `undefined` or `null` | JS/TS |
 | `python-swallowed-exception` | error | an `except` clause that only does `pass`, `...`, `return`, `return None` or `continue` | Python |
 | `go-empty-error-check` | error | `if err != nil {}` with an empty block | Go |
