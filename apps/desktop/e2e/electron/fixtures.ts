@@ -55,8 +55,13 @@ export const test = base.extend<Fixtures>({
         return path;
       },
     });
-    // A backend that is still shutting down can write into the temp home while it is removed.
-    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    // A backend that is still shutting down can write into the temp home while it is removed;
+    // a leftover temp folder is not a test failure.
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    } catch (error) {
+      console.warn(`Could not remove ${dir}: ${String(error)}`);
+    }
   },
   launch: async ({ workspace }, use, testInfo) => {
     const apps: ElectronApplication[] = [];
