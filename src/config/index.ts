@@ -4,7 +4,7 @@ import { mergeModelRouting } from "../core/llm/model-routing.js";
 import { configDir } from "../core/platform/index.js";
 import { activeProject } from "../core/projects/resolve.js";
 import { ensurebakedDir } from "../core/utils/ensure-baked-dir.js";
-import { WorkflowConfigSchema } from "../core/workflows/schemas.js";
+import { parseWorkflowConfig } from "../core/workflows/config-policy.js";
 import type { AppConfig, MCPServerConfig, TaskRouter } from "../types";
 
 export function mergeMCPServers(
@@ -79,7 +79,7 @@ export function loadConfig(): AppConfig {
   if (Object.keys(userPatch).length > 0) {
     merged = applyConfigPatch(merged, userPatch) as AppConfig;
   }
-  if (merged.workflows) merged.workflows = WorkflowConfigSchema.parse(merged.workflows);
+  if (merged.workflows) merged.workflows = parseWorkflowConfig(merged.workflows, configFile);
   return merged;
 }
 
@@ -212,7 +212,10 @@ export function mergeConfigs(global: AppConfig, project: Partial<AppConfig> | nu
     };
     if (routing) merged.modelRouting = routing;
   }
-  if (merged.workflows) merged.workflows = WorkflowConfigSchema.parse(merged.workflows);
+  if (merged.workflows) {
+    const source = project?.workflows ? ".baked/config.json" : "the global config";
+    merged.workflows = parseWorkflowConfig(merged.workflows, source);
+  }
   return merged;
 }
 
