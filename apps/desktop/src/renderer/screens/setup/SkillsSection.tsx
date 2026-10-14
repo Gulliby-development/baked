@@ -116,7 +116,11 @@ function InstallSkill({
           Installing through the skills CLI; this can take up to half a minute…
         </span>
       )}
-      {error && <Alert tone="error">{error}</Alert>}
+      {error && (
+        <Alert tone="error" role="alert">
+          {error}
+        </Alert>
+      )}
       <div className={FOOTER}>
         <Button variant="secondary" size="md" disabled={busy} onClick={onCancel}>
           Cancel
@@ -344,7 +348,11 @@ export function SkillsSection({ project }: SectionProps) {
                   {dialog.skill.scope === "global" ? " for every project." : " from this project."}
                 </DialogDescription>
               </DialogHeader>
-              {error && <Alert tone="error">{error}</Alert>}
+              {error && (
+                <Alert tone="error" role="alert">
+                  {error}
+                </Alert>
+              )}
               <div className={FOOTER}>
                 <Button variant="secondary" size="md" disabled={busy} onClick={close}>
                   Cancel

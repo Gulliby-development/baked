@@ -9,7 +9,7 @@ import { Hint } from "../../components/ui/tooltip.js";
 import { cn } from "../../lib/cn.js";
 import { LABEL, LEDE, PANEL } from "../../lib/styles.js";
 import type { SectionProps } from "../sections.js";
-import { CreatePackageDialog, InstallPackageDialog } from "./PackageDialogs.js";
+import { CreatePackageDialog, InstallPackageDialog, removeSummary } from "./PackageDialogs.js";
 import {
   errorText,
   GROW,
@@ -24,7 +24,7 @@ import {
   WRAP,
 } from "./shared.js";
 
-export { installSummary } from "./PackageDialogs.js";
+export { installSummary, removeSummary } from "./PackageDialogs.js";
 
 const ACTION =
   "group flex w-full cursor-pointer items-center gap-3.5 rounded-base border-2 border-border bg-background px-4 py-3.5 text-left [font:inherit] text-foreground shadow-shadow transition-transform duration-150 hover:translate-x-boxShadowX hover:translate-y-boxShadowY hover:shadow-none focus-visible:outline-2 focus-visible:outline-ring motion-reduce:transition-none";
@@ -191,9 +191,7 @@ export function PackagesSection({ project }: SectionProps) {
             .remove(project.key, removing.name)
             .then((result) => {
               setRemoving(null);
-              setNote(
-                `Removed ${result.name} ${result.version}: ${result.removed.length} files deleted${result.kept.length ? `; kept ${result.kept.length} edited: ${result.kept.join(", ")}` : ""}.`,
-              );
+              setNote(removeSummary(result));
               refresh();
             })
             .catch((e: unknown) => setError(errorText(e)))
