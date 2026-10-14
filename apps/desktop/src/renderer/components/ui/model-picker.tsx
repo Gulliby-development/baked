@@ -128,7 +128,7 @@ export function ModelPicker({
     }
   };
   return (
-    <div className="flex flex-col gap-1">
+    <div className="relative flex flex-col gap-1">
       <div className="flex gap-2">
         <Input
           id={id}
@@ -186,7 +186,9 @@ export function ModelPicker({
           id={listId}
           role="listbox"
           aria-label="Models"
-          className="flex max-h-64 flex-col gap-1 overflow-y-auto rounded-base border-2 border-border bg-raised p-2 text-[13px]"
+          // Floats over what follows: a list in the flow would move the buttons below it when
+          // the field's blur closes it, so a click on one of them would miss.
+          className="absolute top-full right-0 left-0 z-50 mt-1 flex max-h-64 flex-col gap-1 overflow-y-auto rounded-base border-2 border-border bg-raised p-2 text-[13px] shadow-shadow"
           onMouseDown={(e) => e.preventDefault()}
         >
           {error && <p className="m-1 text-[12px] text-[var(--err)]">{error}</p>}

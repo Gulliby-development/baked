@@ -201,6 +201,14 @@ export function gateMark(
   }
 }
 
+/**
+ * A link a provider gives as a bare host and path (`platform.openai.com`, how the terminal shows
+ * it) made absolute, so the desktop opens it in the browser instead of resolving it as a file.
+ */
+export function externalUrl(url: string): string {
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(url) ? url : `https://${url.replace(/^\/+/, "")}`;
+}
+
 /** A custom command as typed in chat; older backends listed names without the slash. */
 export function commandLabel(name: string): string {
   return name.startsWith("/") ? name : `/${name}`;
