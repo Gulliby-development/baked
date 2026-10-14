@@ -120,6 +120,24 @@ describe("language server service", () => {
     expect(status.uncovered).toEqual(["python"]);
   });
 
+  test("BAKED's own baked/ and .baked/ files do not count as project languages", async () => {
+    const { workspace, global } = project();
+    mkdirSync(join(workspace, "baked", "workflows"), { recursive: true });
+    mkdirSync(join(workspace, ".baked"), { recursive: true });
+    writeFileSync(join(workspace, "baked", "project.json"), "{}\n");
+    writeFileSync(join(workspace, "baked", "workflows", "sdd-custom.json"), "{}\n");
+    writeFileSync(join(workspace, ".baked", "state.json"), "{}\n");
+    const { deps } = machine(true);
+    const status = await lspStatus({ workspace, files: { global }, deps });
+    expect(status.languages).not.toContain("json");
+    expect(status.languages).toEqual(expect.arrayContaining(["go", "python"]));
+
+    mkdirSync(join(workspace, "cmd", "baked"), { recursive: true });
+    writeFileSync(join(workspace, "cmd", "baked", "fixture.json"), "{}\n");
+    const nested = await lspStatus({ workspace, files: { global }, deps });
+    expect(nested.languages).toContain("json");
+  });
+
   test("disable writes the command, enable removes it and older package names", async () => {
     const { workspace, global } = project();
     const { deps, restarts } = machine(true);
