@@ -42,6 +42,7 @@ import {
   serverFilter,
   stageKey,
   summarizeUsage,
+  taskGenerationUsage,
 } from "../src/renderer/screens/insights/usage-model.ts";
 
 const none = { stage: null, model: null };
@@ -80,6 +81,32 @@ const RUNS = [
   ]),
   run("b", [attempt("review", "gpt", 200, 100), attempt("checks", null, null, null)]),
 ];
+
+describe("taskGenerationUsage", () => {
+  // Bench round 24 (#936): a task's reruns after repairs were folded into one row.
+  const report = run("a", [
+    attempt("task-T008", "sonnet", 300, 100, { attemptId: "1", taskId: "T008", taskGeneration: 0, costUsd: 1 }),
+    attempt("task-T008", "sonnet", 200, 50, { attemptId: "2", taskId: "T008", taskGeneration: 1, costUsd: 0.5 }),
+    attempt("task-T008", null, 0, 0, { attemptId: "3", taskId: "T008", taskGeneration: 1, costUsd: 0 }),
+    attempt("task-T010", "sonnet", 50, 0, { attemptId: "4", taskId: "T010", taskGeneration: 0, costUsd: 0.1 }),
+    attempt("review", "gpt", 400, 0, { attemptId: "5", taskId: null, taskGeneration: null }),
+  ]);
+
+  test("each task generation is its own row, in task then generation order", () => {
+    const slices = taskGenerationUsage([report], none);
+    expect(slices.map((s) => [s.taskId, s.generation, s.tokens, s.attempts, s.costUsd])).toEqual([
+      ["T008", 0, 300, 1, 1],
+      ["T008", 1, 200, 2, 0.5],
+      ["T010", 0, 50, 1, 0.1],
+    ]);
+  });
+
+  test("the model filter applies and another stage leaves no task rows", () => {
+    expect(taskGenerationUsage([report], { stage: null, model: "(host)" })).toHaveLength(1);
+    expect(taskGenerationUsage([report], { stage: "review", model: null })).toEqual([]);
+    expect(taskGenerationUsage([run("b", [attempt("task-T001", "x", 5, 0)])], none)).toEqual([]);
+  });
+});
 
 describe("aggregateUsage", () => {
   test("totals, cache share and task stages folded into implement", () => {

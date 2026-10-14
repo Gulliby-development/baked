@@ -5,6 +5,13 @@ import type { WorkflowStore } from "./store.js";
 export interface AttemptUsageRow {
   attemptId: string;
   stage: string;
+  /** The task of a task step's attempt; null for attempts of other steps. */
+  taskId: string | null;
+  /**
+   * The task's generation when the attempt started: 0 for its first implementation, one more for
+   * each repair that invalidated it (#936). Null for attempts of other steps.
+   */
+  taskGeneration: number | null;
   /** The model the attempt ran on; host attempts (checks, publication) have none. */
   model: string | null;
   status: string;
@@ -60,6 +67,18 @@ export interface RunUsageReport {
   stages: Array<{ stage: string; attempts: number; tokens: number; steps: number | null }>;
   /** Usage per model, most tokens first; host attempts are grouped as `(host)`. */
   models: Array<{ model: string; attempts: number; tokens: number; steps: number | null }>;
+  /**
+   * Usage of each task by generation, in task then generation order, so the cost of a rerun
+   * after a repair reads apart from the first implementation (#936).
+   */
+  tasks: Array<{
+    taskId: string;
+    generation: number;
+    attempts: number;
+    tokens: number;
+    /** Null when an attempt of the generation has no known cost. */
+    costUsd: number | null;
+  }>;
   /** Tool calls of every attempt by backend and server, most calls first. */
   toolBackends: ToolBackendCount[];
   /** Model tool calls of every attempt by tool, most tokens first. */
@@ -79,6 +98,7 @@ export function runUsage(
   modelFilter?: string,
 ): RunUsageReport {
   const stages = new Map(store.steps(runId).map((step) => [step.id, step.stage_id]));
+  const generations = store.attemptTaskGenerations(runId);
   const attempts = store
     .attempts(runId)
     .filter(
@@ -100,6 +120,8 @@ export function runUsage(
       return {
         attemptId: attempt.id,
         stage: stages.get(attempt.step_id) ?? attempt.step_id,
+        taskId: generations.get(attempt.id)?.taskId ?? null,
+        taskGeneration: generations.get(attempt.id)?.generation ?? null,
         model: attempt.model_id,
         status: attempt.status,
         usedTokens: attempt.used_tokens,
@@ -144,6 +166,23 @@ export function runUsage(
     if (attempt.steps !== null) entry.steps = (entry.steps ?? 0) + attempt.steps;
     byModel.set(model, entry);
   }
+  const byTask = new Map<string, RunUsageReport["tasks"][number]>();
+  for (const attempt of attempts) {
+    if (attempt.taskId === null || attempt.taskGeneration === null) continue;
+    const key = JSON.stringify([attempt.taskId, attempt.taskGeneration]);
+    const entry = byTask.get(key) ?? {
+      taskId: attempt.taskId,
+      generation: attempt.taskGeneration,
+      attempts: 0,
+      tokens: 0,
+      costUsd: 0,
+    };
+    entry.attempts++;
+    entry.tokens += attempt.usedTokens ?? 0;
+    entry.costUsd =
+      entry.costUsd === null || attempt.costUsd === null ? null : entry.costUsd + attempt.costUsd;
+    byTask.set(key, entry);
+  }
   const sumReported = (pick: (attempt: AttemptUsageRow) => number | null): number | null => {
     let total = 0;
     let reported = false;
@@ -168,6 +207,10 @@ export function runUsage(
     stages: [...byStage.values()],
     models: [...byModel.values()].sort(
       (a, b) => b.tokens - a.tokens || a.model.localeCompare(b.model),
+    ),
+    tasks: [...byTask.values()].sort(
+      (a, b) =>
+        a.taskId.localeCompare(b.taskId, "en", { numeric: true }) || a.generation - b.generation,
     ),
     toolBackends: mergeToolBackends(attempts.flatMap((attempt) => attempt.toolBackends)),
     tools: mergeToolTokens(attempts.flatMap((attempt) => attempt.tools)),

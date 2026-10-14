@@ -79,6 +79,59 @@ export interface UsageReport {
 }
 
 export const HOST_MODEL = "(host)";
+
+/** One generation of one task: its first implementation (0) or a rerun after a repair. */
+export interface TaskGenerationSlice extends UsageSlice {
+  taskId: string;
+  generation: number;
+}
+
+/**
+ * Usage of each task by generation, from per-attempt reports, in task then generation order, so
+ * a rerun after a repair reads apart from the first implementation. Attempts from a backend that
+ * does not report the task are left out; the model filter applies, the stage filter is implement.
+ */
+export function taskGenerationUsage(
+  reports: readonly RunUsageReport[],
+  filter: UsageFilter,
+): TaskGenerationSlice[] {
+  if (filter.stage !== null && filter.stage !== IMPLEMENT_STAGE) return [];
+  const rows = new Map<string, { taskId: string; generation: number; acc: Accumulator }>();
+  for (const run of reports)
+    for (const attempt of run.attempts) {
+      const { taskId, taskGeneration } = attempt;
+      if (!taskId || taskGeneration === null || taskGeneration === undefined) continue;
+      if (filter.model !== null && filter.model !== (attempt.model ?? HOST_MODEL)) continue;
+      const key = `${taskId} generation ${String(taskGeneration)}`;
+      const row = rows.get(key) ?? {
+        taskId,
+        generation: taskGeneration,
+        acc: accumulator(key, new Set()),
+      };
+      add(row.acc, {
+        tokens: attempt.usedTokens ?? 0,
+        cached: attempt.cacheReadTokens ?? 0,
+        input: attempt.inputTokens,
+        output: attempt.outputTokens,
+        attempts: 1,
+        cost: attempt.costUsd,
+        unpriced:
+          attempt.costUsd === undefined
+            ? undefined
+            : attempt.costUsd === null
+              ? (attempt.usedTokens ?? 0)
+              : 0,
+        runId: run.runId,
+      });
+      rows.set(key, row);
+    }
+  return [...rows.values()]
+    .map(({ taskId, generation, acc }) => ({ ...slice(acc), taskId, generation }))
+    .sort(
+      (a, b) =>
+        a.taskId.localeCompare(b.taskId, "en", { numeric: true }) || a.generation - b.generation,
+    );
+}
 /** The stage every task step (`task-T001`) is shown under. */
 export const IMPLEMENT_STAGE = "implement";
 
