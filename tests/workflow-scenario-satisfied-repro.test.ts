@@ -73,5 +73,6 @@ describe("scenario: stmtsplit-update T007/T008, already_satisfied with a live re
     expect(checks.length).toBeGreaterThan(0);
     const first = JSON.parse(service.store.readArtifact(run.runId, checks[0]!.id)) as { outcomes: { status: string }[] };
     expect(first.outcomes[0]?.status).toBe("reproduced");
-  });
+    // A whole run with a repair round and host repros; Windows runners take over 30 s for it.
+  }, 90_000);
 });
