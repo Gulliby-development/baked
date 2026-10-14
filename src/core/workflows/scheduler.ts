@@ -8317,11 +8317,12 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       if (kept && kept.snapshotHash === reviewSnapshotHash && kept.verdict !== "inconclusive")
         return { reviewer, result: kept };
       // After a correction, a dimension that passed and whose files did not change keeps its
-      // review; one that runs again is told what it found and what changed (#713).
+      // review, as does one that only repeated its notes (#1016); one that runs again is told
+      // what it found and what changed (#713).
       const prior = state.priorReviews[reviewer.key];
       const changed =
         prior && state.expectedFiles ? changedSince(prior.files, state.expectedFiles) : null;
-      if (prior && changed && carriesOver(reviewer.dimension, prior.review, changed)) {
+      if (prior && changed && carriesOver(reviewer.dimension, prior, changed, state.reviewNotes)) {
         this.store.transaction(() =>
           this.store.artifact(
             runId,

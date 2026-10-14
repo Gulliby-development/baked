@@ -551,9 +551,9 @@ export function appendCorrections(
   state.manifest.effectiveGraphHash = hashJson(graph);
   // The reviews this correction supersedes, with what they reviewed, for the next round.
   if (state.expectedFiles) {
-    const files = state.expectedFiles;
+    const { expectedFiles: files, snapshotId } = state;
     state.priorReviews = Object.fromEntries(
-      Object.entries(state.reviews).map(([key, review]) => [key, { review, files }]),
+      Object.entries(state.reviews).map(([key, review]) => [key, { review, files, snapshotId }]),
     );
   }
   state.reviews = {};
