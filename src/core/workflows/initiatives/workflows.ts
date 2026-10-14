@@ -4,10 +4,10 @@
  * proposes for its text. Only workflows that write files can run a feature, and a feature other
  * features depend on needs one that produces a spec: its accepted spec is the contract they pin.
  */
-import { proposeWorkflow } from "../preset-router.js";
+import { assessRequest, proposeWorkflow } from "../preset-router.js";
 import { executionModeOf, type RunPolicy } from "../schemas.js";
 import { asV2, listDefinitions, loadDefinition } from "../v2/definitions.js";
-import type { FeatureSize, InitiativeFeature, InitiativePlan } from "./plan.js";
+import type { InitiativeFeature, InitiativePlan } from "./plan.js";
 
 /** What the initiative needs to know about a workflow to run a feature with it. */
 export interface FeatureWorkflow {
@@ -99,7 +99,8 @@ const featureText = (f: InitiativeFeature): string =>
  * The plan with a workflow and a size on every feature. A feature without a workflow, or (with
  * `replaceInvalid`, for a decomposer's split) with one that cannot run it, gets the proposal for
  * its text among the workflows that can; a feature other features depend on only gets one that
- * writes a spec. When no proposal fits, `defaultWorkflow`. A size comes from the same proposal.
+ * writes a spec, and a risky one keeps `defaultWorkflow`. When no proposal fits, `defaultWorkflow`.
+ * A feature without a size gets the size `assessRequest` gives its text.
  */
 export function assignFeatureWorkflows(
   plan: InitiativePlan,
@@ -114,17 +115,19 @@ export function assignFeatureWorkflows(
     const fitting = choices
       .filter((c) => c.contract || !hasDependents(plan, feature))
       .map((c) => c.id);
-    const proposal = proposeWorkflow(featureText(feature), fitting, defaultWorkflow);
-    const size: FeatureSize =
-      proposal.kind === "small" || proposal.kind === "docs"
-        ? "small"
-        : proposal.kind === "large"
-          ? "large"
-          : "medium";
+    const text = featureText(feature);
+    const proposal = proposeWorkflow(text, fitting, defaultWorkflow);
+    const assessment = assessRequest(text, proposal);
+    // A risky change keeps the thorough default even when its text reads small.
+    const light = !choices.find((c) => c.id === proposal.workflowId)?.contract;
+    const proposed =
+      assessment.risk === "high" && light && fitting.includes(defaultWorkflow)
+        ? defaultWorkflow
+        : proposal.workflowId;
     return {
       ...feature,
-      workflow: keep ? named : proposal.workflowId,
-      size: feature.size ?? size,
+      workflow: keep ? named : proposed,
+      size: feature.size ?? assessment.size,
     };
   });
   return { ...plan, features };
