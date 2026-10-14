@@ -84,6 +84,7 @@ import { baselineKeys, taskErrors } from "../verification/task-end-check.js";
 import { affectedTestCheck, affectedTestsFor } from "./affected-tests.js";
 import { outputSchemas } from "./agent-executor.js";
 import {
+  asksUnsupportedMethod,
   assumable,
   DEFECT_NOTE,
   hostCounts,
@@ -98,6 +99,7 @@ import {
   persistentDefect,
   REQUEST_NOTE,
   restrictsRequest,
+  VERIFICATION_METHODS,
 } from "./analysis-notes.js";
 import { approvalDigest } from "./approval.js";
 import { writeViaTemp } from "./atomic-write.js";
@@ -1234,6 +1236,14 @@ export class WorkflowScheduler {
                 if (finding.blocking && isCountNit(finding.description)) {
                   finding.blocking = false;
                   finding.description = `Counts are computed by the host (${String(counts.tasks)} tasks, ${String(counts.files)} distinct files); kept as a note: ${finding.description}`;
+                }
+              }
+              // The spec schema has three verification methods; a finding that asks for another one
+              // cannot be satisfied by the spec author, so it is a note (#1065).
+              for (const finding of analysis.findings) {
+                if (finding.blocking && asksUnsupportedMethod(finding.description)) {
+                  finding.blocking = false;
+                  finding.description = `Asks for a verification method the spec schema does not have (only ${VERIFICATION_METHODS.join(", ")}; automated covers the reviewer reading a file); kept as a note: ${finding.description}`;
                 }
               }
               // The host adds some dependsOn edges after planning; plan.md cannot mention them and the
