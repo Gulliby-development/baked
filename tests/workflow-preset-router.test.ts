@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { proposeWorkflow } from "../src/core/workflows/preset-router.js";
+import { assessRequest, proposeWorkflow } from "../src/core/workflows/preset-router.js";
 import { runReport } from "../src/core/workflows/run-report.js";
 import type { RunSnapshot } from "../src/core/workflows/schemas.js";
 import { executeWorkflowCommand } from "../src/headless/workflow.js";
@@ -13,6 +13,17 @@ afterEach(async () => {
 
 const ALL = ["sdd", "quick", "quick-fix", "standard", "full", "spike", "review-only", "fix-ci"];
 const propose = (text: string, available = ALL) => proposeWorkflow(text, available, "sdd");
+
+describe("assessing a request", () => {
+  const assess = (text: string) => assessRequest(text, propose(text));
+  test("size, risk and the parts it lists", () => {
+    expect(assess("Fix a typo in the README")).toMatchObject({ size: "small", risk: "medium", parts: 0 });
+    expect(assess("Review the auth changes on this branch")).toMatchObject({ kind: "review", risk: "low" });
+    expect(assess("Migrate the database schema to v2")).toMatchObject({ size: "large", risk: "high" });
+    const listed = assess("Polish the site:\n- home page\n- docs pages\n1. pricing\n2) footer");
+    expect(listed).toMatchObject({ size: "large", parts: 4 });
+  });
+});
 
 describe("proposing a workflow from the request", () => {
   test("each kind of request gets its preset and budget", () => {

@@ -5,19 +5,23 @@ import { LocalCoordinator } from "../core/chat/coordinator-host.js";
 import type { LaunchedView } from "../core/chat/coordinator-launch.js";
 import { type Schedule, ScheduleStore } from "../core/chat/coordinator-schedules.js";
 import type { ChatPrompt, ChatSession, SessionState } from "../core/chat/sessions.js";
-import type { ChatMessage } from "../types/index.js";
+import type { AppConfig, ChatMessage, CoordinatorWorkStyle } from "../types/index.js";
 import { workflowSession } from "./useWorkflow.js";
 
 /** The coordinator of each workspace, opened on first use and kept until the TUI exits. */
 const opened = new Map<string, Promise<LocalCoordinator>>();
+/** The config each open coordinator reads its turns from. */
+const configs = new Map<string, AppConfig>();
 
 /** Opens the project's coordinator; runs it starts go through the TUI's workflow worker. */
 export function coordinatorFor(workspace: string, model: () => string): Promise<LocalCoordinator> {
   let pending = opened.get(workspace);
   if (!pending) {
+    const config = mergeConfigs(loadConfig(), loadEffectiveProjectConfig(workspace));
+    configs.set(workspace, config);
     pending = LocalCoordinator.open({
       workspace,
-      config: mergeConfigs(loadConfig(), loadEffectiveProjectConfig(workspace)),
+      config,
       client: workflowSession(workspace),
       model,
     });
@@ -26,6 +30,12 @@ export function coordinatorFor(workspace: string, model: () => string): Promise<
     pending.catch(() => opened.delete(workspace));
   }
   return pending;
+}
+
+/** Applies a work style saved by `/coordinator style` to an open coordinator from its next turn. */
+export function setCoordinatorWorkStyle(workspace: string, workStyle: CoordinatorWorkStyle): void {
+  const config = configs.get(workspace);
+  if (config) config.coordinator = { ...config.coordinator, workStyle };
 }
 
 /** Set by `/coordinator summary`: the view asks for a summary the next time it opens. */
@@ -46,6 +56,7 @@ export function takeSummaryOnOpen(): boolean {
 export async function stopCoordinators(): Promise<void> {
   const all = [...opened.values()];
   opened.clear();
+  configs.clear();
   await Promise.allSettled(all.map(async (pending) => (await pending).close()));
 }
 

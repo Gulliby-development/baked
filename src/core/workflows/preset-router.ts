@@ -151,6 +151,42 @@ export function proposeWorkflow(
   };
 }
 
+const RISKY =
+  /\b(delete|deletes|deleting|drop|migrat\w*|schema|database|auth\w*|security|secrets?|credentials?|payments?|billing|release|deploy\w*|production|prod|permissions?|encrypt\w*)\b/g;
+
+/** How big and how risky a request looks, and how many parts it lists, from its text alone. */
+export interface RequestAssessment {
+  kind: RequestKind;
+  size: "small" | "medium" | "large";
+  /** high: it names data, security, release or deletion; medium: it changes code; low: read only. */
+  risk: "low" | "medium" | "high";
+  /** List items in the request (`- `, `* `, `1. `); two or more may run side by side. */
+  parts: number;
+  signals: string[];
+}
+
+/** The assessment the coordinator states before it proposes a workflow or parallel chats. */
+export function assessRequest(request: string, proposal: WorkflowProposal): RequestAssessment {
+  const text = request.toLowerCase().replace(/\s+/g, " ").trim();
+  const risky = matches(text, RISKY);
+  const reads = proposal.kind === "review" || proposal.kind === "research";
+  const parts = request
+    .split("\n")
+    .filter((line) => /^\s*(?:[-*•]|\d+[.)])\s+\S/.test(line)).length;
+  return {
+    kind: proposal.kind,
+    size:
+      proposal.kind === "large" || parts >= 4
+        ? "large"
+        : (proposal.kind === "small" || proposal.kind === "docs") && parts < 2
+          ? "small"
+          : "medium",
+    risk: reads ? "low" : risky.length ? "high" : "medium",
+    parts,
+    signals: [...proposal.signals, ...risky],
+  };
+}
+
 /** The record of a run started with `--auto-preset`; `chosen` is the workflow the person kept. */
 export function presetChoice(proposal: WorkflowProposal, chosen: string): PresetChoice {
   return {

@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { processTreeAlive } from "../platform/index.js";
 import { canonical } from "../specs/hash.js";
 import { WorkflowFault } from "./errors.js";
@@ -334,6 +334,13 @@ export function assertWorkspaceMutationAllowed(workspace: string): void {
   }
 }
 
+/**
+ * The tail of the mutations this process runs per workspace. A tool call that mutates waits for
+ * the ones before it instead of failing on their lease: parallel tool calls of one chat and
+ * parallel chats of one project run in the same process.
+ */
+const localMutations = new Map<string, Promise<void>>();
+
 export async function withWorkspaceMutation<T>(
   workspace: string,
   action: () => Promise<T>,
@@ -342,6 +349,24 @@ export async function withWorkspaceMutation<T>(
     assertWorkspaceMutationAllowed(workspace);
     return action();
   }
+  const key = resolve(workspace);
+  const previous = localMutations.get(key) ?? Promise.resolve();
+  let finish = () => {};
+  const gate = new Promise<void>((done) => {
+    finish = done;
+  });
+  const tail = previous.then(() => gate);
+  localMutations.set(key, tail);
+  try {
+    await previous;
+    return await leasedMutation(workspace, action);
+  } finally {
+    finish();
+    if (localMutations.get(key) === tail) localMutations.delete(key);
+  }
+}
+
+async function leasedMutation<T>(workspace: string, action: () => Promise<T>): Promise<T> {
   const store = new WorkflowStore(workspace);
   const leases = new WorkspaceLeases(store);
   try {

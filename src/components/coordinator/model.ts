@@ -144,6 +144,7 @@ function launchNoteLines(note: LaunchNote, width: number): ViewLine[] {
     lines.push(
       ...labelled("    ", `⎇ ${note.worktree.branch} in ${note.worktree.path}`, width, "muted"),
     );
+  if (note.asks && !closed) lines.push(...labelled("    ? ", note.asks, width, "warning"));
   if (note.result) {
     const bar = "    │ ";
     const result = wrap(note.result, width - bar.length).map(
@@ -189,7 +190,7 @@ export function promptLines(prompt: ChatPrompt, width: number): ViewLine[] {
     case "split": {
       const lines = labelled(
         "Split: ",
-        `${prompt.title} (${prompt.mode === "runs" ? "parallel runs" : "one initiative"})`,
+        `${prompt.title} (${prompt.mode === "runs" ? "parallel runs" : prompt.mode === "chats" ? "parallel chats" : "one initiative"})`,
         width,
         "warning",
       );
@@ -218,6 +219,8 @@ export function promptLines(prompt: ChatPrompt, width: number): ViewLine[] {
       );
       if (prompt.issue)
         lines.push(...labelled("   ", `From issue ${prompt.issue}`, width, "muted"));
+      for (const gate of prompt.gates ?? [])
+        lines.push(...labelled("   Gate: ", gate, width, "accent"));
       lines.push(...labelled("   ", `Why this workflow: ${prompt.reason}`, width, "muted"));
       return lines;
     }

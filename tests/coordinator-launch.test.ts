@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { ModelMessage } from "ai";
 import { startApiServer } from "../src/core/api/server.js";
-import { BriefStore } from "../src/core/chat/coordinator.js";
+import { BriefStore, coordinatorInstructions } from "../src/core/chat/coordinator.js";
 import {
+  chatsProblem,
   type FlowTask,
   githubTasks,
   pathsOverlap,
@@ -10,10 +11,12 @@ import {
   splitShape,
   syncLaunched,
   type TaskTracker,
+  wakeLine,
 } from "../src/core/chat/coordinator-launch.js";
 import { PEER_TOOL, parsePeerMessage } from "../src/core/chat/peer-messages.js";
-import type { ProjectStateSource } from "../src/core/chat/project-state.js";
+import { describePrompt, type ProjectStateSource, renderState } from "../src/core/chat/project-state.js";
 import { type ChatAgentHost, ChatService, type ChatSession, type TurnAgentRequest } from "../src/core/chat/sessions.js";
+import type { CoordinatorWorkStyle } from "../src/types/index.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
 
 class RecordingHost implements ChatAgentHost {
@@ -23,9 +26,20 @@ class RecordingHost implements ChatAgentHost {
     return {
       contextWindow: 1000,
       agent: {
-        stream: async (_args: { messages: ModelMessage[]; abortSignal: AbortSignal }) => ({
+        stream: async ({ messages }: { messages: ModelMessage[]; abortSignal: AbortSignal }) => ({
           stream: (async function* () {
-            yield { type: "text-delta", text: "done" };
+            // A brief with "[ask]" asks the person a question mid-turn, as a session's ask tool does.
+            if (JSON.stringify(messages.at(-1)?.content ?? "").includes("[ask]")) {
+              const picked = await request.callbacks.onAskUser(
+                "Which palette?",
+                [
+                  { label: "Warm", value: "warm" },
+                  { label: "Cool", value: "cool" },
+                ],
+                false,
+              );
+              yield { type: "text-delta", text: `picked ${picked}` };
+            } else yield { type: "text-delta", text: "done" };
             yield { type: "finish-step", usage: { inputTokens: 10, outputTokens: 1 } };
           })(),
           responseMessages: Promise.resolve([]),
@@ -45,12 +59,12 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-async function setup(maxActive = 3, tasks?: TaskTracker, wake = false) {
+async function setup(maxActive = 3, tasks?: TaskTracker, wake = false, workStyle?: CoordinatorWorkStyle) {
   const fixture = workflowFixture();
   const host = new RecordingHost();
   const chat = new ChatService({
     workspace: fixture.root,
-    config: { ...fixture.service.config, defaultModel: "openai/gpt-test", coordinator: { maxActive, wake } },
+    config: { ...fixture.service.config, defaultModel: "openai/gpt-test", coordinator: { maxActive, wake, ...(workStyle ? { workStyle } : {}) } },
     host,
     homeDir: fixture.root,
   });
@@ -134,10 +148,13 @@ describe("coordinator launches", () => {
 
     const stranger = await chat.create({ title: "Other" });
     expect(await send.execute({ to: stranger.id, text: "Hi" })).toMatchObject({ success: false });
-    // An ordinary chat gets no message tool.
+    // An ordinary chat gets no message tool, only the gate tools every chat has.
     stranger.send("Hello");
     await stranger.settled();
-    expect(host.requests.filter((r) => r.sessionId === stranger.id).at(-1)?.tools).toBeUndefined();
+    expect(Object.keys(host.requests.filter((r) => r.sessionId === stranger.id).at(-1)?.tools ?? {})).toEqual([
+      "list_gates",
+      "save_gates",
+    ]);
     for (let i = 0; i < 3; i++) await send.execute({ to: "coordinator", text: `note ${i}` });
     expect((await send.execute({ to: "coordinator", text: "too many" })).error).toContain("At most 5");
     await coordinator.settled();
@@ -285,6 +302,134 @@ const split = (flows: ReturnType<typeof flow>[]): SplitRequest => ({
   completionCriteria: ["Checkout works end to end"],
   flows,
   why: "Too large for one run",
+});
+
+/** Waits until `session` has a pending prompt. */
+async function promptOf(session: ChatSession) {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const prompt = session.pendingPrompts[0];
+    if (prompt) return prompt;
+    if (Date.now() > deadline) throw new Error("no prompt");
+    await Bun.sleep(10);
+  }
+}
+
+describe("coordinator relays a session's question", () => {
+  test("the launch note and project_state carry the question; answer_session passes the user's answer", async () => {
+    const { chat, coordinator, tool } = await setup();
+    const out = await tool("launch_session").execute({ title: "UI audit", brief: "Audit the UI [ask]", mode: "architect", why: "Audit" });
+    const id = /session ([0-9a-f-]{36})/.exec(out.output)?.[1] ?? "";
+    const session = chat.get(id);
+    const prompt = await promptOf(session);
+
+    expect(await noticeFor(chat, /waiting for you/)).toBe('Session "UI audit": waiting for you');
+    const note = coordinator.messages.filter((m) => m.launch?.id === id).at(-1)?.launch;
+    expect(note?.asks).toBe("Question: Which palette? Options: Warm; Cool.");
+    expect(note && wakeLine(note)).toContain("It asks: Question: Which palette?");
+
+    const view = renderState("session", id, null, {
+      list: () => [],
+      messages: () => ({ title: session.title, messages: session.messages, pending: session.pendingPrompts }),
+    });
+    expect(view).toContain(`- prompt ${prompt.id}: Question: Which palette? Options: Warm; Cool.`);
+
+    const stranger = await chat.create({ title: "Other" });
+    expect(await tool("answer_session").execute({ id: stranger.id, answer: "Warm" })).toMatchObject({ success: false });
+    const answering = tool("answer_session").execute({ id, answer: "warm" });
+    const confirm = await promptOf(coordinator);
+    expect(confirm).toMatchObject({ kind: "destructive" });
+    coordinator.answer(confirm.id, { approve: true });
+    expect(await answering).toMatchObject({ success: true });
+    await session.settled();
+    expect(session.messages.at(-1)?.content).toBe("picked warm");
+    expect(await tool("answer_session").execute({ id, answer: "Cool" })).toMatchObject({
+      success: false,
+      error: expect.stringContaining("waits for no answer"),
+    });
+  }, 60000);
+
+  test("describePrompt names permissions and plans, which stay with the session", () => {
+    const base = { id: "p", createdAt: 0 };
+    expect(describePrompt({ ...base, kind: "destructive", description: "rm -rf dist" })).toBe("Permission: rm -rf dist");
+    expect(
+      describePrompt({ ...base, kind: "plan-review", title: "Fix nav", depth: "light", steps: [{ id: "1", label: "Edit nav" }], planFile: "p.md", content: "" }),
+    ).toBe("Plan to review: Fix nav. Steps: Edit nav.");
+  });
+});
+
+describe("coordinator starts parallel chats", () => {
+  const chats = (paths: [string[], string[]], mode: "default" | "architect" = "default") => ({
+    title: "Polish the site",
+    why: "The user wants chats, not a workflow",
+    chats: [
+      { id: "home", title: "Home page", brief: "Polish the home page", mode, paths: paths[0] },
+      { id: "docs", title: "Docs pages", brief: "Polish the docs pages", mode, paths: paths[1] },
+    ],
+  });
+
+  test("editing chats must not write the same paths; reading chats may", () => {
+    expect(chatsProblem(chats([["src/home/**"], ["src/docs/**"]]))).toBeNull();
+    expect(chatsProblem(chats([["src/**"], ["src/docs/**"]]))).toContain("both write");
+    expect(chatsProblem(chats([["src/**"], ["src/docs/**"]], "architect"))).toBeNull();
+  });
+
+  test("an approved card starts every chat and the coordinator follows them", async () => {
+    const { fixture, chat, coordinator, tool } = await setup(5);
+    git(fixture.root, "init", "-q", "-b", "main");
+    git(fixture.root, "-c", "user.name=T", "-c", "user.email=t@example.test", "commit", "-q", "--allow-empty", "-m", "Initial");
+
+    const rejected = tool("propose_chats").execute(chats([["src/home/**"], ["src/docs/**"]]));
+    const card = await promptOf(coordinator);
+    if (card.kind !== "split") throw new Error("no chats card");
+    expect(card).toMatchObject({ mode: "chats", title: "Polish the site" });
+    expect(card.flows.map((f) => f.task)).toEqual(["chat, edits files", "chat, edits files"]);
+    coordinator.answer(card.id, { approve: false });
+    expect(await rejected).toMatchObject({ success: false });
+    const store = new BriefStore(chat.workspace, coordinator.id);
+    expect(store.read().launched).toEqual([]);
+
+    const approved = tool("propose_chats").execute(chats([["src/home/**"], ["src/docs/**"]]));
+    const second = await promptOf(coordinator);
+    if (second.kind !== "split") throw new Error("no chats card");
+    coordinator.answer(second.id, { approve: true, digest: second.digest });
+    expect(await approved).toMatchObject({ success: true });
+    const launched = store.read().launched;
+    expect(launched.map((l) => [l.kind, l.title])).toEqual([
+      ["session", "Home page"],
+      ["session", "Docs pages"],
+    ]);
+    for (const entry of launched) {
+      const session = chat.get(entry.id);
+      expect(session.summary().worktree?.branch).toBeTruthy();
+      await session.settled();
+    }
+    expect(await noticeFor(chat, /Docs pages/)).toBe('Session "Docs pages": done');
+  }, 60000);
+
+  test("the work style turns off the other way of working and is in the instructions", async () => {
+    const chatsOnly = await setup(5, undefined, false, "chats-only");
+    expect(await chatsOnly.tool("start_run").execute({ prompt: "Fix the tests", why: "CI is red" })).toMatchObject({
+      success: false,
+      error: expect.stringContaining("only through chats"),
+    });
+    const brief = new BriefStore(chatsOnly.chat.workspace, chatsOnly.coordinator.id).read();
+    expect(coordinatorInstructions(brief, "chats-only")).toContain("The user works only through chats");
+    expect(coordinatorInstructions(brief)).toContain("The user has not set a work style");
+    const workflowsOnly = await setup(5, undefined, false, "workflows-only");
+    expect(await workflowsOnly.tool("propose_chats").execute(chats([["a/**"], ["b/**"]]))).toMatchObject({
+      success: false,
+      error: expect.stringContaining("only through workflows"),
+    });
+  }, 60000);
+
+  test("the limit on active work counts every chat", async () => {
+    const { tool } = await setup(1);
+    expect(await tool("propose_chats").execute(chats([["a/**"], ["b/**"]]))).toMatchObject({
+      success: false,
+      error: expect.stringContaining("limit 1"),
+    });
+  }, 60000);
 });
 
 describe("coordinator splits", () => {
