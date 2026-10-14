@@ -364,6 +364,14 @@ export const PolicySchema = z
      */
     freshRestartAfter: z.number().int().min(1).max(5).optional(),
     /**
+     * `true` makes the correction of a review or convergence finding about input robustness (deep
+     * nesting, huge numbers, long input, invalid encoding, empty input) one task per profile that
+     * runs the whole battery of input shapes against every planned source file next to the
+     * reported one and may write them (verification/class-sweep.ts, #1160). Absent means off, so
+     * stored policies keep their hash.
+     */
+    classSweep: z.boolean().optional(),
+    /**
      * How many corrections in a row a task's own failed checks (a task check, a lint or
      * test-integrity finding during the implement stage) may start: a task and the corrections of
      * its corrections. They are not repair rounds, which count checks-stage and review passes
