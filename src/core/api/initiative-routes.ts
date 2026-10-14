@@ -106,6 +106,12 @@ export async function initiativeRoute(ctx: InitiativeRouteContext): Promise<Resp
     ctx.only("GET");
     return ctx.json(200, initiatives.view(id));
   }
+  if (action === "estimate") {
+    ctx.only("GET");
+    const estimate = initiatives.estimate(id);
+    if (!estimate) ctx.fail(409, "NO_SPLIT", "The initiative has no split to estimate yet");
+    return ctx.json(200, estimate);
+  }
   if (action === "events") {
     ctx.only("GET");
     const query = ctx.query(EventsQuery);

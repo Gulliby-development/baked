@@ -115,6 +115,35 @@ export interface InitiativeView {
 }
 
 /** Feature runs within these limits are approved without a person. */
+export interface TokenSpan {
+  low: number;
+  high: number;
+}
+/** How an estimate was measured: finished feature runs, runs of the workflow, any run, or defaults. */
+export type EstimateBasis = "initiative-history" | "workflow-history" | "history" | "defaults";
+/** `GET /v1/initiatives/ID/estimate`: the level and token range of the split, from run history. */
+export interface InitiativeEstimate {
+  level: 1 | 2 | 3 | 4 | 5;
+  tasks: TokenSpan;
+  tokens: TokenSpan;
+  withMargin: number;
+  margin: number;
+  budget: { maxTotalTokens: number; fits: "yes" | "maybe" | "no" };
+  basis: EstimateBasis;
+  features: {
+    featureId: string;
+    title: string;
+    workflowId: string;
+    size: FeatureSize;
+    tokens: TokenSpan;
+    tasks: TokenSpan;
+    basis: EstimateBasis;
+    samples: number;
+  }[];
+  notes: string[];
+  label: string;
+}
+
 export interface TieredApproval {
   maxTasks: number;
   maxFiles: number;
@@ -273,6 +302,9 @@ export const insights = {
   initiatives: async (key: string): Promise<InitiativeListItem[]> =>
     (await call<{ initiatives: InitiativeListItem[] }>(key, "GET", "/v1/initiatives")).initiatives,
   initiative: (key: string, id: string) => call<InitiativeView>(key, "GET", initiativePath(id)),
+  /** The estimate of the split; 409 `NO_SPLIT` before one exists. */
+  estimateInitiative: (key: string, id: string) =>
+    call<InitiativeEstimate>(key, "GET", initiativePath(id, "estimate")),
   pauseInitiative: (key: string, view: Pick<InitiativeView, "initiativeId" | "revision">) =>
     call<InitiativeView>(key, "POST", initiativePath(view.initiativeId, "pause"), command(view)),
   resumeInitiative: (key: string, view: Pick<InitiativeView, "initiativeId" | "revision">) =>

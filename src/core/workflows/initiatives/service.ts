@@ -11,6 +11,7 @@ import { hashJson } from "../../specs/hash.js";
 import { type BudgetLimits, budgetUsage, limitsOf } from "../budget.js";
 import { type AcceptedContract, acceptedContract } from "../dependencies.js";
 import { WorkflowFault } from "../errors.js";
+import { estimateHistory, type PastRun } from "../estimate.js";
 import {
   type CommandIdentity,
   DEFAULT_MAX_PARALLEL_RUNS,
@@ -29,6 +30,7 @@ import { loadDefinition } from "../v2/definitions.js";
 import { autoApprovalPolicy } from "../v2/runtime.js";
 import { mergedBase } from "../worktree.js";
 import { DECOMPOSE_WORKFLOW_ID } from "./decompose.js";
+import { estimateInitiative, type FeatureRunSample, type InitiativeEstimate } from "./estimate.js";
 import {
   applySplitEdit,
   featureDigest,
@@ -1049,6 +1051,75 @@ export class InitiativeService {
   events(id: string, after = 0, limit = 200): InitiativeEvent[] {
     this.store.get(id);
     return this.store.events(id, after, limit);
+  }
+
+  /**
+   * The estimate of the initiative's split (the approved plan, else the latest revision): a level
+   * and a token range per feature and in total, from this project's run history. Null before a
+   * split exists.
+   */
+  estimate(id: string): InitiativeEstimate | null {
+    const row = this.store.get(id);
+    const settings = this.store.settings(row);
+    const latest = row.plan_revision ? this.store.revision(id, row.plan_revision) : null;
+    const plan = this.approvedPlan(row) ?? (latest ? this.store.plan(latest) : null);
+    if (!plan) return null;
+    const facts = this.workflowFacts(settings);
+    const models = settings.model ? [settings.model] : [];
+    const features = plan.features.map((feature) => {
+      const workflowId = featureWorkflowId(settings, feature);
+      return {
+        id: feature.id,
+        title: feature.title,
+        workflowId,
+        size: feature.size ?? "medium",
+        stages: (facts(workflowId)?.stages ?? []).map((stage) => ({ ...stage, models })),
+      };
+    });
+    const history = estimateHistory(
+      this.workflows.store,
+      this.workflows.workspace,
+      settings.basePolicy,
+      // Asked for rarely and right after runs finish, so it reads the store fresh.
+      0,
+    );
+    return estimateInitiative({
+      features,
+      history,
+      samples: this.featureRunSamples(history),
+      maxTotalTokens: this.limits(row).maxTotalTokens,
+    });
+  }
+
+  /** Finished feature runs of every initiative in this store, with the size their plan gave them. */
+  private featureRunSamples(history: PastRun[]): FeatureRunSample[] {
+    const runs = new Map(history.map((run) => [run.runId, run]));
+    return this.store.list().flatMap((row) => {
+      const settings = this.store.settings(row);
+      const plans = new Map<number, InitiativePlan>();
+      return this.store.links(row.id).flatMap((link) => {
+        const run = runs.get(link.run_id);
+        if (run?.status !== "completed") return [];
+        if (!plans.has(link.plan_revision))
+          plans.set(
+            link.plan_revision,
+            this.store.plan(this.store.revision(row.id, link.plan_revision)),
+          );
+        const feature = plans
+          .get(link.plan_revision)
+          ?.features.find((f) => f.id === link.feature_id);
+        if (!feature) return [];
+        return [
+          {
+            runId: run.runId,
+            workflowId: featureWorkflowId(settings, feature),
+            size: feature.size ?? "medium",
+            tokens: run.tokens,
+            taskCount: run.taskCount,
+          },
+        ];
+      });
+    });
   }
 
   /** What the initiative is, where every feature stands and why, and what happens next. */

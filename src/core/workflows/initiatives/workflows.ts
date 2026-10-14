@@ -17,6 +17,8 @@ export interface FeatureWorkflow {
   /** It produces a spec, so features may depend on its result. */
   contract: boolean;
   execution: "inline" | "worktree";
+  /** Its stages, for estimates. */
+  stages: { id: string; type: string }[];
 }
 
 /** Facts of one workflow, or null when it is unknown or does not parse. */
@@ -36,6 +38,7 @@ export function featureWorkflow(
       execution:
         (loaded.schemaVersion === 2 ? loaded.definition.execution : undefined) ??
         executionModeOf(policy),
+      stages: v2.stages.map((s) => ({ id: s.id, type: s.type })),
     };
   } catch {
     return null;

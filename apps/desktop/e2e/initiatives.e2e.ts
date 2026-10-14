@@ -28,3 +28,13 @@ test("a new initiative starts in the coordinator with the idea", async ({ app })
     "Plan this as an initiative: Ship offline mode",
   );
 });
+
+test("Estimate gives the split's level and tokens against the budget", async ({ app }) => {
+  const page = await app("#/p/baked/initiatives/headless-automation");
+  await page.getByRole("button", { name: "Estimate", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Estimate" });
+  await expect(panel.getByText(/^Level [1-5]$/)).toBeVisible();
+  await expect(panel).toContainText("plan for");
+  await expect(panel).toContainText("shared budget");
+  await expect(panel).toContainText("JSON output for every command");
+});

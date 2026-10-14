@@ -316,10 +316,37 @@ describe("initiative feature workflows", () => {
     expect(t.featureOf(view, "docs").state).toBe("accepted");
   });
 
+  test("the estimate prices the split from history once a feature run finished", async () => {
+    const t = setup();
+    let view = await t.start({ plan: threeFeatures });
+    const before = t.initiatives.estimate("values");
+    expect(before?.features.map((f) => [f.featureId, f.workflowId, f.size])).toEqual([
+      ["core", "sdd", "medium"],
+      ["api", "sdd", "medium"],
+      ["docs", "quick", "small"],
+    ]);
+    expect(before?.basis).toBe("defaults");
+    expect(before?.budget.maxTotalTokens).toBe(view.budget.limits.maxTotalTokens);
+    expect(before?.withMargin).toBe(Math.round((before?.tokens.high ?? 0) * 1.25));
+    await t.approveSplit();
+    for (let i = 0; i < 12 && view.status !== "completed"; i++) {
+      view = await t.drive();
+      const waiting = view.pendingDecisions.find((d) => d.scope === "feature" && d.kind === "approval");
+      if (waiting?.featureId) await t.approveFeature(waiting.featureId);
+    }
+    expect(view.status).toBe("completed");
+    // The finished medium features now measure the medium ones; a small one has its own sample.
+    const after = t.initiatives.estimate("values");
+    expect(after?.features.map((f) => f.basis)).toEqual(["initiative-history", "initiative-history", "initiative-history"]);
+    const core = t.workflows.store.history().find((r) => r.runId === t.featureOf(view, "core").runId);
+    expect(after?.features[0]?.samples).toBe(2);
+    expect(after?.features[0]?.tokens.high).toBeGreaterThanOrEqual(core?.tokens ?? 0);
+  });
+
   test("features an edit leaves alone keep what they had, also without a workflow", () => {
     const choices = [
-      { id: "sdd", description: "", schemaVersion: 1 as const, contract: true, execution: "inline" as const },
-      { id: "quick", description: "", schemaVersion: 2 as const, contract: false, execution: "inline" as const },
+      { id: "sdd", description: "", schemaVersion: 1 as const, contract: true, execution: "inline" as const, stages: [] },
+      { id: "quick", description: "", schemaVersion: 2 as const, contract: false, execution: "inline" as const, stages: [] },
     ];
     const fitted = assignFeatureWorkflows(threeFeatures, choices, "sdd", { replaceInvalid: false, keep: new Set(["core", "api"]) });
     expect(fitted.features.map((f) => f.workflow)).toEqual([undefined, undefined, "quick"]);

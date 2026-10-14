@@ -145,6 +145,9 @@ const ctx = createWorkerHandler(
       if (result.drive) driveInitiative(id);
       return result.view;
     },
+    // The estimate of an initiative's split, computed only when someone asks for it.
+    initiativeEstimate: (initiativeId) =>
+      currentInitiatives().estimate(InitiativeId.parse(initiativeId)),
     // Starts an initiative from the TUI form, then splits and drives it in the background.
     async startInitiative(input) {
       const service = currentInitiatives();
