@@ -144,7 +144,11 @@ function Editor({
           setSaved(false);
         }}
       />
-      {error && <Alert tone="error">{error}</Alert>}
+      {error && (
+        <Alert tone="error" role="alert">
+          {error}
+        </Alert>
+      )}
       {file.enabled === false && (
         <span className={`${WARN} ${NOTE}`}>
           Agents do not read this file: {file.sourceLabel ?? "its source"} is switched off below.

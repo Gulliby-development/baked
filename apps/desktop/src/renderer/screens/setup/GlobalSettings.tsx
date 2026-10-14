@@ -17,7 +17,7 @@ import { CHECK, STACK as COLUMN, LEDE, PANEL } from "../../lib/styles.js";
 import type { SettingsSection } from "../../router.js";
 import { useDesktop } from "../../store.js";
 import { GlobalCommands } from "./GlobalCommands.js";
-import { signInView } from "./logic.js";
+import { externalUrl, signInView } from "./logic.js";
 import { type RoutingProject, RoutingSection } from "./RoutingSection.js";
 import {
   ADD,
@@ -274,7 +274,7 @@ function ProviderRow({
         />
       )}
       {provider.keyUrl && !provider.configured && (
-        <a href={provider.keyUrl} target="_blank" rel="noreferrer">
+        <a href={externalUrl(provider.keyUrl)} target="_blank" rel="noreferrer">
           Get a key
         </a>
       )}
