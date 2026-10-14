@@ -32,6 +32,11 @@ const MergeBody = Command.extend({
 const SplitBody = Command.extend({ feature: SafeId, parts: z.unknown() }).strict();
 const FeatureBody = Command.extend({ feature: SafeId }).strict();
 const RenameBody = Command.extend({ feature: SafeId, title: z.string().min(1) }).strict();
+/** One setting of a feature per call: the workflow its runs use, or its size. */
+const ConfigureBody = z.union([
+  Command.extend({ feature: SafeId, workflow: SafeId }).strict(),
+  Command.extend({ feature: SafeId, size: z.enum(["small", "medium", "large"]) }).strict(),
+]);
 const ApproveBody = Command.extend({ requestId: SafeId, digest: z.string().min(1) }).strict();
 const RejectBody = Command.extend({ requestId: SafeId, reason: z.string().min(1) }).strict();
 const ExtendBody = Command.extend({
@@ -53,6 +58,7 @@ const ACTIONS = new Set([
   "split",
   "remove",
   "rename",
+  "configure",
   "replan",
   "approve",
   "reject",
@@ -171,6 +177,19 @@ export async function initiativeRoute(ctx: InitiativeRouteContext): Promise<Resp
           featureId: body.feature,
           title: body.title,
         }),
+      );
+    }
+    case "configure": {
+      const body = ConfigureBody.parse(raw);
+      return ctx.json(
+        200,
+        await initiatives.edit(
+          id,
+          identity(body),
+          "workflow" in body
+            ? { op: "workflow", featureId: body.feature, workflow: body.workflow }
+            : { op: "size", featureId: body.feature, size: body.size },
+        ),
       );
     }
     case "replan": {
