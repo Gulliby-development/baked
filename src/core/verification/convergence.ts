@@ -197,6 +197,9 @@ export function failureSignature(output: string): string {
       line
         .replace(/\[[\d.]+\s*m?s\]/gi, "")
         .replace(/\(\d+(?:\.\d+)?\s*m?s\)/gi, "")
+        // Go's package line ends with its elapsed time (`FAIL\tpkg\t0.212s`), which differs
+        // between runs of the same failure (aclvet 5684de0e, #1189).
+        .replace(/^(\s*(?:FAIL|ok)\s.*?)\s+\d+(?:\.\d+)?m?s(?:\s+\(cached\))?\s*$/, "$1")
         .replace(/(?:[A-Za-z]:)?(?:\/[\w.@-]+)+\/([\w.-]+)/g, "$1")
         .replace(/:\d+(?::\d+)?/g, "")
         .replace(/\s+/g, " ")
