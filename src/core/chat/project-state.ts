@@ -19,7 +19,7 @@ import {
   readWorkflowSummary,
   readWorkflowView,
 } from "../workflows/view.js";
-import type { SessionSummary } from "./sessions.js";
+import type { ChatPrompt, SessionSummary } from "./sessions.js";
 
 export const STATE_TOOL = "project_state";
 
@@ -47,7 +47,8 @@ export interface RunDetail {
 /** Chat sessions as the coordinator sees them; the service itself implements it. */
 export interface SessionSource {
   list(limit: number): SessionSummary[];
-  messages(id: string): { title: string; messages: ChatMessage[] };
+  /** `pending`: the prompts the session waits on now, such as a question its turn asked. */
+  messages(id: string): { title: string; messages: ChatMessage[]; pending?: ChatPrompt[] };
 }
 
 const RUN_LIMIT = 15;
@@ -55,6 +56,7 @@ const SESSION_LIMIT = 15;
 const LAST_MESSAGES = 6;
 const MESSAGE_CHARS = 400;
 const USAGE_DAYS = 7;
+const PROMPT_CHARS = 1500;
 
 const isActive = (summary: RunSummary): boolean =>
   !terminalStates.includes(summary.snapshot.status);
@@ -91,6 +93,42 @@ function attentionLine(a: AttentionItem): string {
         : `run ${a.runId}`;
   const request = a.requestId ? ` request ${a.requestId}` : "";
   return `- ${where}: ${a.kind}${request}${a.blocking ? "" : " (advisory)"}${a.title ? ` (${short(a.title, 80)})` : ""}`;
+}
+
+/**
+ * What a session's open prompt asks, so the coordinator can relay it: a question with its
+ * options, a plan to review, or an approval. A turn's question is not a message yet, so the
+ * session's messages alone do not show it.
+ */
+export function describePrompt(prompt: ChatPrompt, max = PROMPT_CHARS): string {
+  switch (prompt.kind) {
+    case "question": {
+      const options = prompt.options
+        .map((o) => (o.description ? `${o.label} (${o.description})` : o.label))
+        .join("; ");
+      return short(
+        `Question: ${prompt.question}${options ? ` Options: ${options}.` : ""}${prompt.allowSkip ? " Can be skipped." : ""}`,
+        max,
+      );
+    }
+    case "plan-review":
+      return short(
+        `Plan to review: ${prompt.title}. Steps: ${prompt.steps.map((s) => s.label).join("; ") || "none"}.`,
+        max,
+      );
+    case "outside-cwd":
+      return short(`Permission: ${prompt.tool} on ${prompt.path}, outside the project`, max);
+    case "destructive":
+      return short(`Permission: ${prompt.description}`, max);
+    case "web-search":
+      return short(`Permission: search the web for "${prompt.query}"`, max);
+    case "fetch-page":
+      return short(`Permission: fetch ${prompt.url}`, max);
+    case "split":
+      return short(`Split to approve: ${prompt.title} (${prompt.flows.length} parts)`, max);
+    case "workflow":
+      return short(`Workflow run to approve: ${prompt.workflow}: ${prompt.why}`, max);
+  }
 }
 
 function sessionLine(s: SessionSummary, now: number): string {
@@ -207,12 +245,21 @@ export function renderState(
         "No sessions yet.",
       );
     case "session": {
-      const { title, messages } = sessions.messages(need());
+      const { title, messages, pending = [] } = sessions.messages(need());
       const last = messages
         .filter((m) => m.role === "user" || m.role === "assistant")
         .slice(-LAST_MESSAGES)
         .map((m) => `- ${m.role}: ${short(m.content || "(tool calls only)", MESSAGE_CHARS)}`);
-      return section(`Last messages of "${short(title, 100)}"`, last, "No messages yet.");
+      const history = section(`Last messages of "${short(title, 100)}"`, last, "No messages yet.");
+      if (!pending.length) return history;
+      return [
+        history,
+        section(
+          "Waiting for an answer",
+          pending.map((p) => `- prompt ${p.id}: ${describePrompt(p)}`),
+          "Nothing.",
+        ),
+      ].join("\n\n");
     }
     case "attention":
       return section(
@@ -230,7 +277,7 @@ export function renderState(
 export function stateTool(state: ProjectStateSource | null, sessions: SessionSource) {
   return tool({
     description:
-      "Read the project's state: overview (what runs and what waits for a person), runs, run (id), initiatives, initiative (id), sessions, session (id: its last messages), attention or usage (tokens and estimated cost of workflow runs by model and stage over the last `days` days, default 7). Read-only; answers are compact summaries.",
+      "Read the project's state: overview (what runs and what waits for a person), runs, run (id), initiatives, initiative (id), sessions, session (id: its last messages and the question or approval it waits on), attention or usage (tokens and estimated cost of workflow runs by model and stage over the last `days` days, default 7). Read-only; answers are compact summaries.",
     inputSchema: z.strictObject({
       view: z.enum([
         "overview",

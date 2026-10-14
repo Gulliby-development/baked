@@ -95,7 +95,7 @@ import { watchOptions } from "../watch/config.js";
 import { WatchController, type WatchTurn, watchTurnDisplay } from "../watch/controller.js";
 import { projectDefinitions, proposeForWorkspace } from "../workflows/v2/propose.js";
 import { answerByRules } from "./approval-rules.js";
-import { COORDINATOR_MODE } from "./coordinator.js";
+import { COORDINATOR_MODE, coordinatorWorkStyle } from "./coordinator.js";
 import {
   closeLaunched,
   controlTools,
@@ -178,9 +178,12 @@ export type ChatPrompt = { id: string; createdAt: number } & (
       /** A coordinator's proposed split into flows; approving it launches them all. */
       kind: "split";
       title: string;
-      /** Independent runs in their own worktrees, or one initiative that orders dependent flows. */
-      mode: "runs" | "initiative";
-      /** `task`: the flow's issue (`owner/name#N`), `new issue` or `local task`. */
+      /**
+       * Independent runs in their own worktrees, one initiative that orders dependent flows, or
+       * parallel chat sessions without a workflow.
+       */
+      mode: "runs" | "initiative" | "chats";
+      /** `task`: the flow's issue (`owner/name#N`), `new issue`, `local task`, or for a chat what it may do. */
       flows: { id: string; title: string; paths: string[]; dependsOn: string[]; task: string }[];
       /** Binds the approval to exactly this split. */
       digest: string;
@@ -1952,7 +1955,11 @@ export class ChatService {
       list: (limit) => this.list(limit),
       messages: (id) => {
         const session = this.get(id);
-        return { title: session.title, messages: session.messages };
+        return {
+          title: session.title,
+          messages: session.messages,
+          pending: session.pendingPrompts,
+        };
       },
     };
     return {
@@ -1967,6 +1974,7 @@ export class ChatService {
         this.launcher,
         coordinatorLimits(this.options.config),
         this.workflowCatalog(),
+        coordinatorWorkStyle(this.options.config),
       ),
       ...controlTools(this, coordinator, this.projectState, this.launcher),
     };

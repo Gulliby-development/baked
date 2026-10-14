@@ -279,6 +279,9 @@ describe("workflow choice", () => {
   test("the workflow list names stages, writes and problems, with the proposal first", () => {
     const text = renderWorkflows(catalog, "tests are failing");
     expect(text.split("\n")[0]).toBe(
+      "Assessment: ci-fix request, size medium, risk medium (signals: tests, failing).",
+    );
+    expect(text.split("\n")[1]).toBe(
       "Proposed for this request: fix-ci (a failing check: reproduce it, fix and rerun the same checks; high confidence, budget standard)",
     );
     expect(text).toContain("- sdd (built in, writes files): The sdd workflow. Stages: spec > plan > tasks > check.");
