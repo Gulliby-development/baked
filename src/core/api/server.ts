@@ -1582,6 +1582,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     ownMemory ??= new MemoryManager(service.workspace, options.configDir);
     return ownMemory;
   };
+  chat.setMemorySource(chatMemory);
   const stop = (): Promise<void> => {
     stopping ??= (async () => {
       shutdown.abort(new Error("API server shutdown"));

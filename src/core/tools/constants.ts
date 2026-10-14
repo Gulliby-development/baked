@@ -18,6 +18,8 @@ export const TOOL_CATALOG: Record<string, string> = {
   release_tools: "Let the agent unload tools it no longer needs",
   skills: "Let the agent search, install, and load skills from skills.sh",
   baked_help: "Search and read BAKED's own bundled documentation",
+  baked_setup:
+    "Read and change BAKED's setup: workflows, agent context, memory, skills, packages, hooks, MCP, LSP",
   artifact: "Save, read and list HTML artifacts shared by every project; deploy one to your Vercel",
   read: "Read file contents with optional line range or symbol target",
   edit_file: "Edit, create, or write files with line-anchored matching",
@@ -85,6 +87,7 @@ export const RESTRICTED_TOOL_NAMES: string[] = [
  */
 export const RESTRICTED_TOOL_ACTIONS: Readonly<Record<string, readonly string[]>> = {
   artifact: ["list", "read"],
+  baked_setup: ["list", "show", "inspect"],
   git: ["status", "diff", "log", "show", "blame", "branch", "stash"],
 };
 

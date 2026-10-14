@@ -29,6 +29,7 @@ import { bakeGrepTool } from "./bake-grep.js";
 import { bakeImpactTool } from "./bake-impact.js";
 import { bakeQueryTool } from "./bake-query.js";
 import { createBakedHelpTool } from "./baked-help.js";
+import { createSetupTool, SETUP_TOOL } from "./baked-setup.js";
 import { CORE_TOOL_NAMES, getToolCatalog } from "./constants.js";
 import { discoverPatternTool } from "./discover-pattern.js";
 import { editFileTool } from "./edit-file";
@@ -456,6 +457,8 @@ export function buildTools(
     onApproveDestructive?: ApproveDestructive;
     /** Asked before every artifact deploy; without it the artifact tool refuses deploys. */
     onApproveArtifactDeploy?: (question: string) => Promise<boolean>;
+    /** Asked before every change to BAKED's setup (`baked_setup`); without it the tool only reads. */
+    onApproveSetup?: (description: string) => Promise<boolean>;
     tabId?: string;
     tabLabel?: string;
     activeDeferredTools?: Set<string>;
@@ -1216,6 +1219,11 @@ export function buildTools(
 
     memory: memoryTool,
     ...(skillsTool ? { skills: skillsTool } : {}),
+    [SETUP_TOOL]: createSetupTool({
+      cwd: effectiveCwd,
+      memory: () => mm,
+      ...(opts?.onApproveSetup ? { approve: opts.onApproveSetup } : {}),
+    }),
     baked_help: { ...createBakedHelpTool(), ...TEXT_OUTPUT },
     artifact: {
       ...createArtifactTool({
