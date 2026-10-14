@@ -42,6 +42,7 @@ import {
   earlierFindings,
   grantRound,
   noteInconclusiveReview,
+  noteStoppedInconclusive,
   noteUnverifiedCriteria,
   passesWithNotes,
   REPEAT_NOTE,
@@ -3503,6 +3504,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           canonical({ ...early, findingIds: findings.map((f) => f.id) }),
         );
         acceptResidual(this.store, runId, state, { findings }, "critic");
+        noteStoppedInconclusive(state, this.store.run(runId).convergence_rounds);
       });
       return "accepted";
     }
@@ -3532,6 +3534,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         const id = this.store.request(runId, "convergence", hashJson(state.manifest), body);
         this.store.decideRequest(runId, id, "accepted", { kind: "accept", automatic: true }, true);
         acceptResidual(this.store, runId, state, body, "assume");
+        noteStoppedInconclusive(state, this.store.run(runId).convergence_rounds);
       });
       return "accepted";
     }
