@@ -109,6 +109,22 @@ export function commandArgv(command: string): string[] | null {
   return words;
 }
 
+/**
+ * The first placeholder argument of a command line (`FILE`, `<file>`, `[options]`, `--out=PATH`),
+ * or null. A line with one is a usage line, and the block after it is not what it prints (#1014).
+ */
+export function placeholderOf(command: string): string | null {
+  const bracketed = /(?:^|\s)(<[^<>\s]+>|\[[^[\]\s]+\])(?=\s|$)/.exec(command);
+  if (bracketed) return bracketed[1] as string;
+  const [, ...args] = commandArgv(command) ?? [];
+  for (const arg of args) {
+    // An option's own name is not a placeholder; the value after its = may be.
+    const value = arg.startsWith("-") ? (arg.split("=")[1] ?? "") : arg;
+    if (/^[A-Z][A-Z0-9_]*[A-Z0-9](\.\.\.)?$/.test(value)) return value;
+  }
+  return null;
+}
+
 interface Fence {
   lang: string;
   /** 1-based line of the first content line. */
@@ -293,6 +309,13 @@ export async function runDocExamples(
           documented: example.documented.slice(0, OUTPUT_LIMIT),
         };
         const skip = (reason: string) => results.push({ ...base, status: "not_run", reason });
+        const placeholder = placeholderOf(example.command);
+        if (placeholder) {
+          skip(
+            `placeholder: ${placeholder} stands for a value the reader supplies, so the block after the command is not its output`,
+          );
+          continue;
+        }
         if (!example.argv) {
           skip("The command needs a shell (a pipe, redirect, variable or glob)");
           continue;
