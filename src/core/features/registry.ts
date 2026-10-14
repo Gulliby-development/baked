@@ -194,6 +194,25 @@ export const FEATURES: readonly Feature[] = [
     ],
   },
   {
+    id: "coordinator-parallel-chats",
+    group: "Chat and sessions",
+    title: "Coordinator assesses a task and, without a workflow, splits it into parallel chats",
+    tui: [
+      "/coordinator: parallel chats card (Ctrl+Y/Ctrl+N), a waiting session's question on its launch note",
+    ],
+    cli: [
+      "baked session coordinator send: answers the parallel chats card (--yes or a terminal) and follows the chats",
+    ],
+    api: [
+      "/v1/sessions/:id/prompts: answers the split prompt with mode chats",
+      "/v1/sessions/:id/events: launch notes with asks",
+    ],
+    desktop: [
+      "project/coordinator: parallel chats card, a waiting session's question on its launch card",
+      "attention: parallel chats proposals",
+    ],
+  },
+  {
     id: "coordinator-session-worktrees",
     group: "Chat and sessions",
     title: "Editing sessions the coordinator launches work in their own Git worktree and branch",

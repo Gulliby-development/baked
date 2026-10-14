@@ -180,6 +180,8 @@ export interface LaunchNote {
   worktree?: { path: string; branch: string };
   /** For a session whose turn ended: its last answer, cut to `LAUNCH_RESULT_MAX` characters. */
   result?: string;
+  /** For a session waiting for a person: what it asks, such as its question and options. */
+  asks?: string;
   /** For `auto-answered`: what the coordinator approved by one of the user's rules. */
   answered?: string;
   /**

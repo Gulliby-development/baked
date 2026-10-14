@@ -40,7 +40,11 @@ export function promptSummary(prompt: ChatPrompt): string {
       })`;
     case "split":
       return `The coordinator proposes splitting "${prompt.title}" into ${prompt.flows.length} ${
-        prompt.mode === "runs" ? "parallel runs" : "features of one initiative"
+        prompt.mode === "runs"
+          ? "parallel runs"
+          : prompt.mode === "chats"
+            ? "parallel chats"
+            : "features of one initiative"
       }`;
     case "workflow":
       return `The coordinator asks to run workflow ${prompt.workflow}`;
