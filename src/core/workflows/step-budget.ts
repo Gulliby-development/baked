@@ -45,6 +45,19 @@ export function stepTokens(usage: StepUsageLike, fallback: number): number {
   return (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
 }
 
+/**
+ * What a step counts against an attempt's token cap: its input less the cache reads, plus its
+ * output. A cached prefix replayed by every step costs a fraction of new input, and counting it
+ * in full ended 37 of 85 codex task attempts at the cap in bench round 21, with cache reads at
+ * 71 percent of their tokens (#1070). A step whose provider reports no cache split counts whole.
+ */
+export function capTokens(usage: StepUsageLike, fallback: number): number {
+  const cacheRead = usage.inputTokenDetails?.cacheReadTokens;
+  if (cacheRead === undefined || usage.inputTokens === undefined)
+    return stepTokens(usage, fallback);
+  return Math.max(0, usage.inputTokens - cacheRead) + (usage.outputTokens ?? 0);
+}
+
 /** `watcher`: the progress watcher ended a stuck attempt early (`progress-watch.ts`). */
 export type FinalizeReason = "steps" | "tokens" | "watcher";
 /** Steps after a steering message before the same stuck pattern ends the attempt. */
@@ -221,11 +234,17 @@ export interface AttemptUsageRecord {
   profileId: string;
   taskId: string | null;
   maxSteps: number;
+  /** The cap on `cappedTokens` after the step floor. */
   maxTokens: number;
   /** `error` and `aborted`: the loop threw or was cancelled; the steps before it are recorded. */
   stopReason: "submitted" | "steps" | "tokens" | "no_submission" | "error" | "aborted";
   finalizedBy: FinalizeReason | null;
   totalTokens: number;
+  /**
+   * Tokens counted against the cap (`capTokens`: cache reads left out); absent in records
+   * written before the cap left them out, which counted `totalTokens`.
+   */
+  cappedTokens?: number;
   /** Sum of the steps' model requests; absent when the provider reports none. */
   modelRequests?: number;
   /**
@@ -318,7 +337,10 @@ export class AttemptStepController {
        * average step cost so far, up to `ceilingTokens`.
        */
       minSteps?: number;
-      /** Hard limit the step floor never passes, such as what the run budget still allows. */
+      /**
+       * Hard limit on all tokens, cache reads included, such as what the run budget still allows:
+       * the step floor never passes it and the attempt finalizes before it.
+       */
       ceilingTokens?: number;
       /** The profile's compaction settings; unset compacts from the first step. */
       compaction?: ProfileCompaction;
@@ -339,8 +361,23 @@ export class AttemptStepController {
   tokenCap(steps: ReadonlyArray<{ usage: StepUsageLike }>): number {
     const { maxTokens, minSteps, ceilingTokens } = this.options;
     if (!minSteps || steps.length === 0) return maxTokens;
-    const floor = Math.ceil((this.consumed(steps) / steps.length) * minSteps);
+    const floor = Math.ceil((this.capped(steps) / steps.length) * minSteps);
     return Math.max(maxTokens, Math.min(floor, ceilingTokens ?? maxTokens));
+  }
+  /** Tokens the steps count against the cap; see `capTokens`. */
+  capped(steps: ReadonlyArray<{ usage: StepUsageLike }>): number {
+    return steps.reduce(
+      (sum, step) => sum + capTokens(step.usage, this.options.fallbackStepTokens),
+      0,
+    );
+  }
+  /** Whether the steps used the cap, or all the tokens the ceiling allows. */
+  private atCap(steps: ReadonlyArray<{ usage: StepUsageLike }>): boolean {
+    const ceiling = this.options.ceilingTokens;
+    return (
+      this.capped(steps) >= this.tokenCap(steps) ||
+      (ceiling !== undefined && this.consumed(steps) >= ceiling)
+    );
   }
   /**
    * Tokens the attempt holds once the next step runs: its spend so far plus an estimate of that
@@ -371,7 +408,7 @@ export class AttemptStepController {
     );
   }
   overBudget(steps: ReadonlyArray<{ usage: StepUsageLike }>): boolean {
-    return this.consumed(steps) >= this.tokenCap(steps);
+    return this.atCap(steps);
   }
   prepare(input: {
     stepNumber: number;
@@ -384,13 +421,25 @@ export class AttemptStepController {
     messages: ModelMessage[];
   }): { messages?: ModelMessage[]; activeTools?: string[]; toolChoice?: "required" } {
     const last = input.steps[input.steps.length - 1];
-    this.finalizedBy ??= finalizeReason({
-      stepNumber: input.stepNumber,
-      maxSteps: this.options.maxSteps,
-      consumed: this.consumed(input.steps),
-      lastStepTokens: last ? stepTokens(last.usage, this.options.fallbackStepTokens) : 0,
-      maxTokens: this.tokenCap(input.steps),
-    });
+    const fallback = this.options.fallbackStepTokens;
+    const ceiling = this.options.ceilingTokens;
+    this.finalizedBy ??=
+      finalizeReason({
+        stepNumber: input.stepNumber,
+        maxSteps: this.options.maxSteps,
+        consumed: this.capped(input.steps),
+        lastStepTokens: last ? capTokens(last.usage, fallback) : 0,
+        maxTokens: this.tokenCap(input.steps),
+      }) ??
+      (ceiling !== undefined
+        ? finalizeReason({
+            stepNumber: input.stepNumber,
+            maxSteps: this.options.maxSteps,
+            consumed: this.consumed(input.steps),
+            lastStepTokens: last ? stepTokens(last.usage, fallback) : 0,
+            maxTokens: ceiling,
+          })
+        : null);
     const watch = this.options.watch;
     let steer: WatchFinding | null = null;
     // One steering message per attempt; the stop follows only when the steered pattern goes on.
@@ -420,7 +469,7 @@ export class AttemptStepController {
       (compaction?.startAtShare !== undefined
         ? compaction.startAtShare * this.options.maxTokens
         : 0);
-    this.compacting ||= this.consumed(input.steps) >= startAt;
+    this.compacting ||= this.capped(input.steps) >= startAt;
     const compacted = this.compacting
       ? compactToolHistory(input.messages, compaction?.keepRecent)
       : { messages: input.messages, savedBytes: 0 };
@@ -475,6 +524,7 @@ export class AttemptStepController {
     failure?: "error" | "aborted",
   ): AttemptUsageRecord {
     const totalTokens = this.consumed(steps);
+    const cappedTokens = this.capped(steps);
     const maxTokens = this.tokenCap(steps);
     const requests = steps.map(stepModelRequests);
     const reported = requests.filter((r): r is number => r !== undefined);
@@ -490,13 +540,14 @@ export class AttemptStepController {
         ? failure
         : submitted
           ? "submitted"
-          : totalTokens >= maxTokens
+          : this.atCap(steps)
             ? "tokens"
             : steps.length >= this.options.maxSteps
               ? "steps"
               : "no_submission",
       finalizedBy: this.finalizedBy,
       totalTokens,
+      cappedTokens,
       ...(reported.length ? { modelRequests: reported.reduce((a, b) => a + b, 0) } : {}),
       ...(lost ? { unreportedResponses: lost } : {}),
       steps: steps.map((step, index) => ({

@@ -4,6 +4,7 @@ import { Icon, type IconName } from "../../components/Icon.js";
 import { Badge } from "../../components/ui/badge.js";
 import { buttonVariants } from "../../components/ui/button.js";
 import { cn } from "../../lib/cn.js";
+import { CLAMPED, Markdown } from "../chat/Markdown.js";
 import {
   type LaunchTone,
   launchKind,
@@ -54,14 +55,7 @@ function LaunchResult({ text }: { text: string }) {
   const long = text.length > 280 || text.split("\n").length > 4;
   return (
     <div className="mt-1 flex flex-col gap-1 border-l-[3px] border-l-border pl-3">
-      <p
-        className={cn(
-          "m-0 whitespace-pre-wrap wrap-anywhere text-[13px] leading-[1.5] text-foreground",
-          !open && "line-clamp-4",
-        )}
-      >
-        {text}
-      </p>
+      <Markdown text={text} compact className={cn("text-foreground", !open && long && CLAMPED)} />
       {long && (
         <button
           type="button"

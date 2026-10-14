@@ -494,7 +494,11 @@ function propertiesSection(result: PropertiesResult, cap: number): string[] {
         c.note ? `${c.status}: ${c.note}` : c.status,
         c.tests
           .filter((t) => t.property)
-          .map((t) => (t.kind === "seeded" ? `${code(t.file)} (seeded)` : code(t.file)))
+          .map((t) =>
+            t.kind === "seeded" || t.kind === "exhaustive"
+              ? `${code(t.file)} (${t.kind})`
+              : code(t.file),
+          )
           .join(", ") || "-",
       ]),
       cap,
@@ -907,20 +911,31 @@ function render(facts: Facts, cap: number): string {
         ),
         "",
       );
-    // Review findings that put the spec against the request: the request won (#1034).
-    if (facts.amendments.length)
-      out.push(
-        "Spec amendments (the request wins over the spec):",
-        "",
-        ...list(
-          facts.amendments.map(
-            (a) =>
-              `- ${[...a.criterionIds, ...a.requirementIds].join(", ") || "spec"}: ${cell(a.claim)} (finding ${a.findingId})`,
+    // Review findings that put the spec against the request: the request won (#1034). Findings
+    // on a run document after a deliberate departure: the implementation won (#1066).
+    const amendmentList = (title: string, amendments: SpecAmendment[]) => {
+      if (amendments.length)
+        out.push(
+          title,
+          "",
+          ...list(
+            amendments.map(
+              (a) =>
+                `- ${[...a.criterionIds, ...a.requirementIds].join(", ") || "spec"}: ${cell(a.claim)} (finding ${a.findingId})`,
+            ),
+            cap,
           ),
-          cap,
-        ),
-        "",
-      );
+          "",
+        );
+    };
+    amendmentList(
+      "Spec amendments (the request wins over the spec):",
+      facts.amendments.filter((a) => a.authority !== "implementation"),
+    );
+    amendmentList(
+      "Spec amendments (the implementation wins over the spec):",
+      facts.amendments.filter((a) => a.authority === "implementation"),
+    );
   }
 
   const usage = facts.usage;

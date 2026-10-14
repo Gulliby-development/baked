@@ -1,6 +1,7 @@
 import { Empty } from "../../components/ui/empty.js";
 import { cn } from "../../lib/cn.js";
 import { LEDE, PANEL, TABLE } from "../../lib/styles.js";
+import { Markdown } from "../chat/Markdown.js";
 import type { RunData } from "./load.js";
 import { type Finding, type RunTrace, taskCount, taskState } from "./model.js";
 import { Pill, TONE_TEXT } from "./parts.js";
@@ -86,14 +87,9 @@ export function PlanView({ data }: { data: RunData }) {
   const plan = data.artifacts.plan;
   if (!plan) return <Empty>No plan yet. Plan writes it.</Empty>;
   return (
-    <pre
-      className={cn(
-        PANEL,
-        "m-0 whitespace-pre-wrap font-mono text-[12.5px] leading-[1.6] text-soft-foreground [overflow-wrap:anywhere]",
-      )}
-    >
-      {plan}
-    </pre>
+    <div className={PANEL}>
+      <Markdown text={plan} />
+    </div>
   );
 }
 

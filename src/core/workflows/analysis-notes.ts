@@ -126,6 +126,25 @@ export function isCountNit(description: string): boolean {
   return !/\b(FR|NFR|AC|SC)-\d+/.test(rest) && !/\bT\d{3,}\b/.test(rest);
 }
 
+/** The verification methods the spec schema allows (schemas.ts). */
+export const VERIFICATION_METHODS = ["automated", "manual", "post-release"] as const;
+
+const OTHER_METHOD =
+  /\b(inspection|demonstration|analysis|review|reviewer[- ]inspection|visual[- ]inspection)\b[\s'"`]*(?:verification\s+)?method\b|\b(?:method|verification)\s+(?:to\s+|of\s+|=\s*|:\s*)?['"`]?(inspection|demonstration|review|reviewer[- ]inspection|visual[- ]inspection)\b/i;
+
+/**
+ * A finding that asks for a verification method the spec schema cannot hold ("set both to the
+ * schema's inspection method"). The spec author cannot satisfy it, so it returns the spec until a
+ * person settles it (#1065, indentree: 4 returns and 2 questions). Automated already covers the
+ * reviewer reading a file.
+ */
+export function asksUnsupportedMethod(description: string): boolean {
+  const match = description.match(OTHER_METHOD);
+  if (!match) return false;
+  const named = (match[1] ?? match[2] ?? "").toLowerCase();
+  return !(VERIFICATION_METHODS as readonly string[]).includes(named);
+}
+
 /**
  * Marks research statements as superseded by an answer to an analysis clarification, so the
  * analyzer stops reading the fact the answer contradicts. The statement names the finding the
