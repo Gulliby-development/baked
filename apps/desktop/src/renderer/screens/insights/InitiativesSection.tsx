@@ -1,6 +1,11 @@
 import { useEffect, useId, useState } from "react";
 import { chat } from "../../client/chat.js";
-import type { FeatureSize, InitiativeFeature, InitiativeView } from "../../client/insights.js";
+import type {
+  FeatureSize,
+  InitiativeEstimate,
+  InitiativeFeature,
+  InitiativeView,
+} from "../../client/insights.js";
 import { insights } from "../../client/insights.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Badge } from "../../components/ui/badge.js";
@@ -32,6 +37,8 @@ import {
   canSwitchModel,
   configurableFeatures,
   detailStatus,
+  estimateBasisText,
+  estimateFit,
   featureCounts,
   featureRow,
   featureSteps,
@@ -351,6 +358,85 @@ function useLiveRefresh(live: boolean, reload: () => void): void {
   }, [live, reload]);
 }
 
+/**
+ * The estimate of the split, asked for with a button: a level from 1 to 5 by planned tasks and a
+ * token range per feature and in total, measured from this project's runs.
+ */
+function EstimatePanel({ projectKey, view }: { projectKey: string; view: InitiativeView }) {
+  const [estimate, setEstimate] = useState<InitiativeEstimate | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = async (): Promise<void> => {
+    setLoading(true);
+    setError(null);
+    try {
+      setEstimate(await insights.estimateInitiative(projectKey, view.initiativeId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+  if (!estimate)
+    return (
+      <div className="flex flex-wrap items-center gap-3">
+        <Button variant="secondary" size="sm" disabled={loading} onClick={() => void run()}>
+          {loading ? "Estimating…" : "Estimate"}
+        </Button>
+        <span className="text-[12px] text-dim-foreground">
+          The difficulty level and the tokens this split will likely need.
+        </span>
+        {error && <Alert tone="error">{error}</Alert>}
+      </div>
+    );
+  const fit = estimateFit(estimate);
+  return (
+    <section
+      className={`flex max-w-[760px] flex-col gap-2 shadow-sm-hard ${PANEL} border-border bg-background`}
+      aria-label="Estimate"
+    >
+      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+        <span className="font-mono text-[22px] font-semibold text-foreground">
+          Level {estimate.level}
+        </span>
+        <span className="text-[13px] text-muted-foreground">
+          about {estimate.tasks.low}–{estimate.tasks.high} tasks · {tokens(estimate.tokens.low)}–
+          {tokens(estimate.tokens.high)} tokens · plan for {tokens(estimate.withMargin)}
+        </span>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="ml-auto h-7"
+          disabled={loading}
+          onClick={() => void run()}
+        >
+          Refresh
+        </Button>
+      </div>
+      <p className={`m-0 text-[13px] ${TONE_TEXT[fit.tone]}`}>
+        {fit.text} ({tokens(estimate.budget.maxTotalTokens)} tokens).
+      </p>
+      <ul className="m-0 grid list-none grid-cols-[minmax(0,1fr)_auto_auto] gap-x-4 gap-y-1 p-0 text-[12px]">
+        {estimate.features.map((f) => (
+          <li key={f.featureId} className="contents">
+            <span className="min-w-0 truncate text-foreground">{f.title}</span>
+            <span className="font-mono text-dim-foreground">
+              {f.workflowId} · {f.size}
+            </span>
+            <span className="font-mono text-muted-foreground">
+              {tokens(f.tokens.low)}–{tokens(f.tokens.high)}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p className="m-0 text-[12px] text-dim-foreground">
+        {estimateBasisText(estimate)} An estimate, not a limit.
+      </p>
+      {error && <Alert tone="error">{error}</Alert>}
+    </section>
+  );
+}
+
 function Detail({ projectKey, id }: { projectKey: string; id: string }) {
   const { state, reload } = useLoad(
     () => insights.initiative(projectKey, id),
@@ -532,6 +618,9 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
           }
           open={setDialog}
         />
+      )}
+      {counts.total > 0 && (
+        <EstimatePanel key={view.planRevision} projectKey={projectKey} view={view} />
       )}
       <ModelSwitch projectKey={projectKey} view={view} onDone={reload} />
       <div className="flex flex-wrap items-center gap-3">

@@ -2,8 +2,11 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
+  rmdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -79,7 +82,13 @@ import {
   runProbe,
   runRepro,
 } from "../verification/repro.js";
-import { completeReview, reviewProblems, validateReview } from "../verification/review.js";
+import {
+  completeReview,
+  reviewProblems,
+  unnamedFailureAdvice,
+  unnamedFailures,
+  validateReview,
+} from "../verification/review.js";
 import { addReviewNotes, noteReason } from "../verification/review-notes.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
 import { baselineKeys, taskErrors } from "../verification/task-end-check.js";
@@ -456,6 +465,8 @@ import {
 
 /** Severity of a review finding. */
 type Severity = Review["findings"][number]["severity"];
+/** The task worktree an advisory mutation gate runs in beside the review (#1147). */
+const MUTATION_COPY = "quality-mutation";
 const ALL_SEVERITIES: readonly Severity[] = ["critical", "high", "medium", "low"];
 const SERIOUS: readonly Severity[] = ["critical", "high"];
 
@@ -705,6 +716,11 @@ export class WorkflowScheduler {
     configuredMcpCall(this.store.workspace, server, tool, args);
   /** Best-of-N candidate steps that run on a model of `candidateModels` instead of their route. */
   private stepModels = new Map<string, string>();
+  /** Advisory mutation gates running beside the review in a copy of the run (#1147), by run. */
+  private backgroundMutations = new Map<
+    string,
+    { controller: AbortController; done: Promise<void> }
+  >();
   constructor(
     private store: WorkflowStore,
     private leases: WorkspaceLeases,
@@ -807,6 +823,7 @@ export class WorkflowScheduler {
           if (parsed.schemaVersion === 1) {
             const current = parsed.definition.stages[state.stageIndex];
             if (!current) {
+              await this.settleMutation(runId, false);
               await this.accept(runId, state, policy, signal);
               return;
             }
@@ -820,6 +837,7 @@ export class WorkflowScheduler {
               );
             const gates = this.frozenGates(runId);
             if (position.stageId === "done") {
+              await this.settleMutation(runId, false);
               await this.acceptV2(runId, state, policy, parsed.definition, gates, signal);
               return;
             }
@@ -1793,6 +1811,7 @@ export class WorkflowScheduler {
                 });
               const previous = state.convergence ?? undefined;
               let reproAdvised = false;
+              let failAdvised = false;
               const review = ReviewSchema.parse(
                 await this.call(
                   runId,
@@ -1830,10 +1849,19 @@ export class WorkflowScheduler {
                       output as Review,
                       false,
                     );
-                    // Asked once: a walker that still has no repro after the advice is not blocked.
-                    if (problems.length || reproAdvised || !canRepro) return problems;
-                    const advice = missingReproAdvice(output as Review, executables, previous);
-                    if (advice.length) reproAdvised = true;
+                    if (problems.length) return problems;
+                    // Each advice is given once: a walker that keeps its answer is not blocked.
+                    const advice: string[] = [];
+                    const unnamed = failAdvised ? [] : unnamedFailures(output as Review);
+                    if (unnamed.length) {
+                      failAdvised = true;
+                      advice.push(unnamedFailureAdvice(unnamed));
+                    }
+                    if (!reproAdvised && canRepro) {
+                      const missing = missingReproAdvice(output as Review, executables, previous);
+                      if (missing.length) reproAdvised = true;
+                      advice.push(...missing);
+                    }
                     return advice;
                   },
                   undefined,
@@ -1853,7 +1881,13 @@ export class WorkflowScheduler {
               const omitted = state.spec.criteria.filter(
                 (criterion) => !review.coverage.some((item) => item.criterionId === criterion.id),
               );
-              if (omitted.length) {
+              // A criterion the walker still fails without a finding after the advice gets one from
+              // the walker's own explanation, so it is repaired; it ended mdtoc-update 20f81464
+              // invalid_output with every check green (#1143).
+              const unnamed = unnamedFailures(review);
+              let reportEvidence: string | null = null;
+              const coverageEvidence = (): string => {
+                if (reportEvidence) return reportEvidence;
                 const report = this.store.transaction(() =>
                   this.store.artifact(
                     runId,
@@ -1862,9 +1896,31 @@ export class WorkflowScheduler {
                     canonical(review),
                   ),
                 );
-                const evidenceId = this.store.transaction(() =>
+                reportEvidence = this.store.transaction(() =>
                   this.store.addEvidence(runId, "review", state.snapshotId ?? "", report.id),
                 );
+                return reportEvidence;
+              };
+              for (const id of unnamed) {
+                const item = review.coverage.find((c) => c.criterionId === id);
+                const criterion = state.spec.criteria.find((c) => c.id === id);
+                review.findings.push({
+                  id: newId(),
+                  kind: "contradicts",
+                  severity: "high",
+                  requirementIds: criterion?.requirementIds ?? [],
+                  criterionIds: [id],
+                  file: null,
+                  symbol: null,
+                  evidenceIds: item?.evidenceIds.length ? item.evidenceIds : [coverageEvidence()],
+                  claim: item?.explanation || `Criterion ${id} fails`,
+                  impact: `Criterion ${id} fails, so acceptance cannot be established`,
+                  suggestedFix: `Make ${id} pass within approved task scope and repeat checks.`,
+                });
+              }
+              if (unnamed.length) review.verdict = "changes_requested";
+              if (omitted.length) {
+                const evidenceId = coverageEvidence();
                 for (const criterion of omitted) {
                   review.coverage.push({
                     criterionId: criterion.id,
@@ -2206,6 +2262,11 @@ export class WorkflowScheduler {
       this.rearmDeadline = () => {};
       outerSignal.removeEventListener("abort", abort);
       leaseSignal.removeEventListener("abort", leaseLost);
+      // A run that waits keeps its gate's result; one that stopped or failed will change the code.
+      await this.settleMutation(
+        runId,
+        !["waiting", "completed"].includes(this.store.run(runId).status),
+      );
       await this.processes.stop();
       try {
         recordActive();
@@ -7941,6 +8002,9 @@ ${note}`;
     const files = harden
       ? await this.hardenModule(state)
       : await this.changedFiles(runId, state, isCodePath);
+    // Nothing waits for an advisory score, so the review starts while it runs in a copy (#1147).
+    if (mode === "advisory" && !harden && (await this.mutateBeside(runId, state, policy, files)))
+      return [];
     // A harden run compares its score with the module's before it, so both use the same mutants.
     let result = await this.mutate(runId, state, policy, mode, files, signal, {
       ...(mode === "required" && !harden ? { proposeIn: stepId } : {}),
@@ -7985,6 +8049,88 @@ ${note}`;
     }
     return this.mutantFindings(state, blocking.slice(0, MAX_MUTANTS), evidenceId, result.engine);
   }
+  /**
+   * Starts the advisory mutation gate in a task worktree checked out from the run's current
+   * content, so mutants planted there never reach the files the review reads. Returns false
+   * when no copy can be made (no Git history, say); the caller then runs the gate in place. A
+   * gate already running for the run is stopped: its code is about to change.
+   */
+  private async mutateBeside(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    files: ChangedFile[],
+  ): Promise<boolean> {
+    await this.settleMutation(runId, true);
+    const root = runRoot(this.store.workspace, state);
+    // The copy checks out the whole repository, so it stands in for the run only at its top.
+    const top = await git(root, ["rev-parse", "--show-toplevel"]);
+    if (top.code !== 0 || realpathSync.native(top.stdout.trim()) !== realpathSync.native(root))
+      return false;
+    let path: string;
+    try {
+      const base = await runContentCommit(this.store, runId, {
+        path: relative(this.store.workspace, root),
+      });
+      path = await createTaskWorktree(this.store, runId, MUTATION_COPY, base);
+    } catch {
+      return false;
+    }
+    const copy = join(this.store.workspace, path);
+    for (const name of [".venv", "venv"]) {
+      const source = join(root, name);
+      if (existsSync(source) && !existsSync(join(copy, name)))
+        try {
+          symlinkSync(source, join(copy, name), process.platform === "win32" ? "junction" : "dir");
+        } catch {
+          // Without the link the copy's baseline test run fails and the gate says so.
+        }
+    }
+    const controller = new AbortController();
+    const done = (async () => {
+      try {
+        const result = await this.mutate(
+          runId,
+          state,
+          policy,
+          "advisory",
+          files,
+          controller.signal,
+          { root: copy },
+        );
+        this.store.transaction(() => {
+          const artifact = this.store.artifact(
+            runId,
+            "quality",
+            QUALITY_MUTATION,
+            canonical(result),
+          );
+          this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
+        });
+      } catch {
+        // Stopped with its run, or failed: an advisory score is only missing from the report.
+      } finally {
+        await removeTaskWorktree(this.store.workspace, path);
+        // An inline run leaves no worktree folder behind; rmdir only removes an empty folder.
+        for (const folder of [dirname(copy), dirname(dirname(copy))])
+          try {
+            rmdirSync(folder);
+          } catch {
+            break;
+          }
+      }
+    })();
+    this.backgroundMutations.set(runId, { controller, done });
+    return true;
+  }
+  /** Waits for the run's background mutation gate, stopping it first when `stop` is set. */
+  private async settleMutation(runId: string, stop: boolean): Promise<void> {
+    const job = this.backgroundMutations.get(runId);
+    if (!job) return;
+    if (stop) job.controller.abort(new Error("The run's code changes"));
+    await job.done;
+    if (this.backgroundMutations.get(runId) === job) this.backgroundMutations.delete(runId);
+  }
   /** The module a harden run tests, read whole: every line of it may take a mutant. */
   private async hardenModule(state: RuntimeState): Promise<ChangedFile[]> {
     const targets = hardenTargets((state.rootGraph ?? state.graph)?.tasks ?? []);
@@ -8004,9 +8150,11 @@ ${note}`;
     mode: MutationMode,
     changed: ChangedFile[],
     signal: AbortSignal,
-    options: { proposeIn?: string } = {},
+    options: { proposeIn?: string; root?: string } = {},
   ): Promise<MutationResult> {
-    const root = runRoot(this.store.workspace, state);
+    // A copy of the run (`root`) is thrown away afterwards, so nothing needs restoring after a crash.
+    const copy = options.root !== undefined;
+    const root = options.root ?? runRoot(this.store.workspace, state);
     const tests = policy.checks.filter((check) => check.required && isTestCheck(check));
     const scope = new ProcessScope();
     const toolScope = new ProcessScope();
@@ -8015,6 +8163,7 @@ ${note}`;
     let fallback: string | null = null;
     // Kept until the gate restores the files, so a host that stops mid-mutant restores them on the next drive.
     const pending = (files: Map<string, Buffer>) =>
+      copy ||
       this.store.transaction(() =>
         this.store.artifact(
           runId,
@@ -8085,6 +8234,45 @@ ${note}`;
         : { mutants: [] };
     const mutants = [...operators, ...proposed.mutants];
     const originals = read([...new Set(mutants.map((m) => m.file))]);
+    const runTests = async (
+      timeLeftMs: number,
+    ): Promise<{ status: "passed" | "timeout" } | { status: "failed"; check: string }> => {
+      for (const check of tests) {
+        const outcome = await executeCheckCommand(
+          scope,
+          check.executable === "bun" ? process.execPath : check.executable,
+          check.args,
+          {
+            cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+            env: buildCheckEnv(check),
+            timeoutMs: Math.max(1000, Math.min(check.timeoutMs, timeLeftMs)),
+            signal,
+            sandbox: runSandbox(policy, root, {
+              gitWrite: root !== this.store.workspace,
+            }),
+          },
+        );
+        if (outcome.timedOut) return { status: "timeout" };
+        if (outcome.exitCode !== 0) return { status: "failed", check: check.id };
+      }
+      return { status: "passed" };
+    };
+    // In a copy, files Git ignores (a build, a virtualenv) may be missing: tests that fail there
+    // without a mutant would count every mutant as killed.
+    const budgetMs = policy.mutationBudgetMs ?? DEFAULT_MUTATION_BUDGET_MS;
+    const baseline = copy && mutants.length && tests.length ? await runTests(budgetMs) : null;
+    if (baseline && baseline.status !== "passed") {
+      await scope.stop();
+      return {
+        schemaVersion: 1,
+        mode,
+        engine: "built-in",
+        tests: tests.map((check) => check.id),
+        mutants: [],
+        score: null,
+        note: `${baseline.status === "failed" ? `check ${baseline.check} fails` : "the tests time out"} in a copy of the run without any mutant, so no mutant ran`,
+      };
+    }
     let result: MutationResult;
     if (originals.size) pending(originals);
     try {
@@ -8100,27 +8288,7 @@ ${note}`;
                 const bytes = originals.get(path);
                 if (bytes) writeFileSync(workspacePath(root, path), bytes);
               },
-              test: async (timeLeftMs) => {
-                for (const check of tests) {
-                  const outcome = await executeCheckCommand(
-                    scope,
-                    check.executable === "bun" ? process.execPath : check.executable,
-                    check.args,
-                    {
-                      cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
-                      env: buildCheckEnv(check),
-                      timeoutMs: Math.max(1000, Math.min(check.timeoutMs, timeLeftMs)),
-                      signal,
-                      sandbox: runSandbox(policy, root, {
-                        gitWrite: root !== this.store.workspace,
-                      }),
-                    },
-                  );
-                  if (outcome.timedOut) return { status: "timeout" };
-                  if (outcome.exitCode !== 0) return { status: "failed", check: check.id };
-                }
-                return { status: "passed" };
-              },
+              test: runTests,
               now: () => Date.now(),
             },
             {

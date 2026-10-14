@@ -134,6 +134,8 @@ export interface StartEstimate {
 const k = (n: number): string =>
   n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : `${Math.round(n / 1000)}k`;
 export const rangeText = (r: TokenRange): string => `${k(r.low)}–${k(r.high)}`;
+/** A token count as the estimates write it: 840k, 2.4M. */
+export const tokenText = k;
 function basisText(p: Prices): string {
   return p.basis === "history"
     ? `from ${p.samples} earlier run${p.samples === 1 ? "" : "s"} in this project`

@@ -2,6 +2,7 @@ import { randomUUID as newId } from "node:crypto";
 import type { AppConfig } from "../../types/index.js";
 import type { PastRun } from "../workflows/estimate.js";
 import type { GateRunResult } from "../workflows/gates.js";
+import type { InitiativeEstimate } from "../workflows/initiatives/estimate.js";
 import type { InitiativeStartInput } from "../workflows/initiatives/forms.js";
 import type { InitiativeView } from "../workflows/initiatives/service.js";
 import type { InitiativeAction, InitiativeListView } from "../workflows/initiatives/view-model.js";
@@ -147,6 +148,10 @@ export class WorkflowClient extends WorkerClient {
   /** Runs one initiative command; approve, resume and continue keep driving in the worker. */
   initiativeAction(initiativeId: string, action: InitiativeAction): Promise<InitiativeView> {
     return this.callWithTimeout<InitiativeView>(null, "initiativeAction", initiativeId, action);
+  }
+  /** The estimate of an initiative's split; null before a split exists. */
+  initiativeEstimate(initiativeId: string): Promise<InitiativeEstimate | null> {
+    return this.call<InitiativeEstimate | null>("initiativeEstimate", initiativeId);
   }
   /** Starts an initiative; the worker splits and drives it in the background. */
   startInitiative(input: InitiativeStartInput): Promise<InitiativeView> {

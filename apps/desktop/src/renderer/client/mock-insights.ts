@@ -1,10 +1,14 @@
+import type { ApiResponse } from "../../shared/api.js";
 import type {
   AttemptUsageRow,
+  FeatureSize,
   FeatureState,
+  InitiativeEstimate,
   InitiativeFeature,
   InitiativeStatus,
   InitiativeView,
   RunUsageReport,
+  TokenSpan,
   UsageDimension,
   UsageFigures,
   UsageGroup,
@@ -366,6 +370,64 @@ function command(view: InitiativeView, action: string | undefined, body: Body) {
   }
 }
 
+/** Mock tokens of one feature by size, as a project without history would see them. */
+const MOCK_FEATURE_TOKENS: Record<FeatureSize, TokenSpan> = {
+  small: { low: 300_000, high: 900_000 },
+  medium: { low: 600_000, high: 1_800_000 },
+  large: { low: 1_200_000, high: 3_600_000 },
+};
+const MOCK_FEATURE_TASKS: Record<FeatureSize, TokenSpan> = {
+  small: { low: 1, high: 3 },
+  medium: { low: 2, high: 6 },
+  large: { low: 4, high: 12 },
+};
+function estimated(view: InitiativeView): ApiResponse {
+  if (!view.features.length)
+    return response(409, {
+      error: { code: "NO_SPLIT", message: "The initiative has no split to estimate yet" },
+    });
+  const features = view.features.map((f) => {
+    const size = f.size ?? "medium";
+    return {
+      featureId: f.id,
+      title: f.title,
+      workflowId: f.workflowId ?? view.workflowId ?? "sdd",
+      size,
+      tokens: MOCK_FEATURE_TOKENS[size],
+      tasks: MOCK_FEATURE_TASKS[size],
+      basis: "defaults" as const,
+      samples: 0,
+    };
+  });
+  const span = (pick: (f: (typeof features)[number]) => TokenSpan): TokenSpan =>
+    features.reduce((sum, f) => ({ low: sum.low + pick(f).low, high: sum.high + pick(f).high }), {
+      low: 0,
+      high: 0,
+    });
+  const tokens = span((f) => f.tokens);
+  const tasks = span((f) => f.tasks);
+  const middle = (tasks.low + tasks.high) / 2;
+  const level = (1 + [8, 12.5, 18.5, 26].filter((t) => middle >= t).length) as 1 | 2 | 3 | 4 | 5;
+  const withMargin = Math.round(tokens.high * 1.25);
+  const limit = view.budget.limits.maxTotalTokens;
+  const estimate: InitiativeEstimate = {
+    level,
+    tasks,
+    tokens,
+    withMargin,
+    margin: 0.25,
+    budget: {
+      maxTotalTokens: limit,
+      fits: withMargin <= limit ? "yes" : tokens.low <= limit ? "maybe" : "no",
+    },
+    basis: "defaults",
+    features,
+    notes: ["This project has no finished runs yet, so the ranges are generic."],
+    label: "",
+  };
+  return response(200, estimate);
+}
+
 const initiativeRoutes: MockRoute = ({ key, method, path, body }) => {
   if (method === "POST" && path === "/v1/initiatives") {
     const view = started((body ?? {}) as Body);
@@ -395,6 +457,7 @@ const initiativeRoutes: MockRoute = ({ key, method, path, body }) => {
   if (!view) return response(404, { error: { code: "NOT_FOUND", message: "No such initiative" } });
   const action = match[2];
   if (method === "GET" && action === undefined) return response(200, view);
+  if (method === "GET" && action === "estimate") return estimated(view);
   if (method !== "POST") return undefined;
   const answer = command(view, action, (body ?? {}) as Body);
   if (typeof answer === "string") return refuse(answer);
