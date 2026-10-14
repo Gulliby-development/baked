@@ -823,7 +823,7 @@ function render(facts: Facts, cap: number): string {
     out.push(
       "## Known limitations",
       "",
-      `${state.limitations.length} finding(s) were accepted instead of repaired, so the criteria they name may not hold in every case: a stopped convergence accepted by a person or the assume rule, or a low partial finding about test or documentation strength behind verified behavior (notes), or a convergence claim below high severity that its repro did not show (repro gate), or an automated criterion only another environment can prove (for example another operating system), which the run could not verify.`,
+      `${state.limitations.length} finding(s) were accepted instead of repaired, so the criteria they name may not hold in every case: a stopped convergence accepted by a person or the assume rule, or a low partial finding about test or documentation strength behind verified behavior (notes), or a convergence claim below high severity that its repro did not show (repro gate), or a review finding below high severity left when the review rounds were used up with every required check passing (review round limit), or an automated criterion only another environment can prove (for example another operating system), which the run could not verify.`,
       "",
       ...table(
         ["Finding", "Severity", "Criteria", "Where", "Claim", "Accepted by"],
@@ -843,7 +843,9 @@ function render(facts: Facts, cap: number): string {
                   ? "rule pack (same match after its correction)"
                   : l.decidedBy === "repro"
                     ? "repro gate (claim not reproduced)"
-                    : "user",
+                    : l.decidedBy === "review"
+                      ? "review round limit (checks passed, below high)"
+                      : "user",
         ]),
         cap,
       ),

@@ -59,7 +59,7 @@ export const LimitationSchema = z
      * low `partial` finding behind verified behavior, accepted without a decision), or `rule`: a
      * deterministic quality rule that still matched the same text after its correction.
      */
-    decidedBy: z.enum(["user", "assume", "notes", "critic", "rule", "repro"]),
+    decidedBy: z.enum(["user", "assume", "notes", "critic", "rule", "repro", "review"]),
     /** Convergence rounds the run had used when the finding was accepted. */
     round: z.number().int().nonnegative(),
   })
