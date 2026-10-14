@@ -93,3 +93,56 @@ export const SAFE_SPAWN_OPTS: Pick<SpawnOptions, "stdio" | "detached" | "windows
   detached: true,
   windowsHide: true,
 };
+
+/**
+ * How long output is still read after a command exited. A process it started that inherited the
+ * output pipes keeps them open for as long as it runs; on Windows a timeout kill cannot reach it
+ * once its parent is gone, so waiting for the pipes to close could last forever.
+ */
+export const OUTPUT_GRACE_MS = 2000;
+
+async function drain(stream: ReadableStream<Uint8Array>, stop: Promise<void>): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  void stop.then(() => reader.cancel().catch(() => {}));
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+    }
+  } catch {
+    // A cancelled or broken pipe ends the output; what was read is kept.
+  }
+  return Buffer.concat(chunks);
+}
+
+/**
+ * The exit code and piped output of a `Bun.spawn` process. Reading stops `OUTPUT_GRACE_MS` after
+ * the process exited, so a descendant holding the pipes cannot keep the caller waiting.
+ */
+export async function processOutput(proc: {
+  stdout: ReadableStream<Uint8Array>;
+  stderr: ReadableStream<Uint8Array>;
+  exited: Promise<number>;
+}): Promise<{ code: number; stdout: Uint8Array; stderr: Uint8Array }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let finished = false;
+  const stop = proc.exited.then(
+    () =>
+      new Promise<void>((resolve) => {
+        if (!finished) timer = setTimeout(resolve, OUTPUT_GRACE_MS);
+      }),
+  );
+  try {
+    const [stdout, stderr, code] = await Promise.all([
+      drain(proc.stdout, stop),
+      drain(proc.stderr, stop),
+      proc.exited,
+    ]);
+    return { code, stdout, stderr };
+  } finally {
+    finished = true;
+    if (timer) clearTimeout(timer);
+  }
+}

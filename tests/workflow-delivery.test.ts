@@ -610,7 +610,7 @@ async function followUpScenario() {
     if (planned.status !== "waiting") throw new Error(`Fixture run stopped ${planned.status} ${JSON.stringify(planned)}`.slice(0, 600));
     await fx.approve(run.runId);
     const done = await fx.service.drive(run.runId, new AbortController().signal);
-    if (done.status !== "completed") throw new Error(`Fixture run ended ${done.status}`);
+    if (done.status !== "completed") throw new Error(`Fixture run ended ${done.status}: ${done.reason ?? "no reason"} at ${done.stageId ?? "no stage"}`);
     return run.runId;
   };
   const provider = new FakePullRequests();

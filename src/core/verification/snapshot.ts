@@ -3,8 +3,11 @@ import { createReadStream, existsSync } from "node:fs";
 import { lstat, readdir, readFile, readlink } from "node:fs/promises";
 import { join } from "node:path";
 import ignore from "ignore";
+import { processOutput } from "../spawn.js";
 import { hashBytes, hashJson } from "../specs/hash.js";
 import { WorkflowFault } from "../workflows/errors.js";
+
+const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
 
 export async function gitBaseline(
   workspace: string,
@@ -16,11 +19,8 @@ export async function gitBaseline(
       stderr: "pipe",
       timeout: 10000,
     });
-    const [output, error, code] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
+    const result = await processOutput(proc);
+    const [output, error, code] = [decode(result.stdout), decode(result.stderr), result.code];
     if (code !== 0 && !allowFailure) throw new Error(`Cannot read repository baseline: ${error}`);
     return code === 0 ? output : "";
   }
@@ -49,11 +49,8 @@ export async function hostDiff(workspace: string): Promise<{ text: string; files
       stderr: "pipe",
       timeout: 10000,
     });
-    const [output, error, code] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
+    const result = await processOutput(proc);
+    const [output, error, code] = [decode(result.stdout), decode(result.stderr), result.code];
     if (code !== 0) throw new WorkflowFault("INVALID_DEFINITION", `Cannot read the diff: ${error}`);
     return output;
   }

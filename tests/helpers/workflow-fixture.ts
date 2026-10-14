@@ -71,8 +71,11 @@ export function workflowFixture<E extends FixtureExecutor = FixtureExecutor>(
   const service = new NativeWorkflowService(root, config, executor);
   return {
     root, executor, service, config, policy,
-    /** Closes the service and removes the workspace, waiting out Windows handles still being released. */
-    dispose: async () => { service.close(); await removeTempDir(root); },
+    /**
+     * Stops a run a timed-out test left active, closes the service and removes the workspace,
+     * waiting out Windows handles still being released.
+     */
+    dispose: async () => { await service.shutdown(); service.close(); await removeTempDir(root); },
     async start(featureId = "fixture") {
       return service.start({ commandId: newId(), featureId, workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy });
     },

@@ -1,5 +1,5 @@
 /** Git plumbing for delivery. Nothing here touches the checkout, the index or HEAD of the user. */
-import { buildSafeEnv } from "../spawn.js";
+import { buildSafeEnv, processOutput } from "../spawn.js";
 
 export interface GitResult {
   code: number;
@@ -20,13 +20,13 @@ export async function git(
     env: { ...buildSafeEnv(), ...options.env } as Record<string, string>,
     timeout: options.timeoutMs ?? 60000,
   });
-  const [buffer, stderr, code] = await Promise.all([
-    new Response(proc.stdout).arrayBuffer(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  const bytes = new Uint8Array(buffer);
-  return { code, bytes, stdout: new TextDecoder().decode(bytes), stderr };
+  const { code, stdout: bytes, stderr } = await processOutput(proc);
+  return {
+    code,
+    bytes,
+    stdout: new TextDecoder().decode(bytes),
+    stderr: new TextDecoder().decode(stderr),
+  };
 }
 
 /** Why a push or remote query failed, read from Git's own messages. */
