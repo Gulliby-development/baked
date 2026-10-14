@@ -196,6 +196,35 @@ export const FEATURES: readonly Feature[] = [
     ],
   },
   {
+    id: "coordinator-parallel-chats",
+    group: "Chat and sessions",
+    title: "Coordinator assesses a task and, without a workflow, splits it into parallel chats",
+    tui: [
+      "/coordinator: parallel chats card (Ctrl+Y/Ctrl+N), a waiting session's question on its launch note",
+    ],
+    cli: [
+      "baked session coordinator send: answers the parallel chats card (--yes or a terminal) and follows the chats",
+    ],
+    api: [
+      "/v1/sessions/:id/prompts: answers the split prompt with mode chats",
+      "/v1/sessions/:id/events: launch notes with asks",
+    ],
+    desktop: [
+      "project/coordinator: parallel chats card, a waiting session's question on its launch card",
+      "attention: parallel chats proposals",
+    ],
+  },
+  {
+    id: "coordinator-work-style",
+    group: "Chat and sessions",
+    title:
+      "Coordinator work style: workflows only, mostly workflows, not set, mostly chats, chats only",
+    tui: ["/coordinator style"],
+    cli: notNeeded("set coordinator.workStyle in config.json; the CLI coordinator reads it"),
+    api: ["/v1/settings: coordinator page"],
+    desktop: ["settings/chat: Coordinator page"],
+  },
+  {
     id: "coordinator-session-worktrees",
     group: "Chat and sessions",
     title: "Editing sessions the coordinator launches work in their own Git worktree and branch",
@@ -369,11 +398,11 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "context-size",
     group: "Chat and sessions",
-    title: "Context window size per chat; the coordinator defaults to the largest",
+    title: "Context window size per chat; the coordinator always runs with the largest",
     tui: ["/context-size: per tab, shown in the header"],
     cli: ["--context"],
     api: ["/v1/sessions/:id: contextSize, contextSizes", "/v1/models: contextSizes"],
-    desktop: ["project/chat: context size picker", "project/coordinator: context size picker"],
+    desktop: ["project/chat: context size picker"],
   },
   {
     id: "context-dashboard",

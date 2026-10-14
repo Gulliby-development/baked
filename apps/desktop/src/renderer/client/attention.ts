@@ -113,7 +113,7 @@ export type ChatPrompt = { id: string; createdAt: number } & (
   | {
       kind: "split";
       title: string;
-      mode: "runs" | "initiative";
+      mode: "runs" | "initiative" | "chats";
       flows: {
         id: string;
         title: string;

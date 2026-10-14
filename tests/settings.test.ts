@@ -212,3 +212,18 @@ describe("terminal library docs editor", () => {
     expect(describeLibraryDocs(null)).toBe("not set");
   });
 });
+
+describe("coordinator work style", () => {
+  test("a project work style keeps the global coordinator limits and refuses unknown styles", () => {
+    const merged = mergeConfigs(
+      { ...DEFAULT_CONFIG, coordinator: { maxActive: 6 } },
+      { coordinator: { workStyle: "prefer-chats" } },
+    );
+    expect(merged.coordinator).toEqual({ maxActive: 6, workStyle: "prefer-chats" });
+    const plan = planSettingsChange({}, { scope: "project", set: { "coordinator.workStyle": "chats-only" } });
+    expect(plan.layer).toEqual({ coordinator: { workStyle: "chats-only" } });
+    expect(() => planSettingsChange({}, { scope: "project", set: { "coordinator.workStyle": "sometimes" } })).toThrow(
+      SettingsChangeError,
+    );
+  });
+});

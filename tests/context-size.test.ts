@@ -33,13 +33,17 @@ describe("context size per chat", () => {
     expect(getModelContextSizes("no-slash")).toEqual([]);
   });
 
-  test("default keeps the model, except for the coordinator, which takes the largest", () => {
+  test("default keeps the model; the coordinator always takes the largest", () => {
     expect(withContextSize("claude-code/opus", "default")).toBe("claude-code/opus");
     expect(withContextSize("claude-code/opus[1m]", "default")).toBe("claude-code/opus[1m]");
     expect(withContextSize("claude-code/opus", "default", { coordinator: true })).toBe(
       "claude-code/opus[1m]",
     );
     expect(withContextSize("claude-code/opus", undefined, { coordinator: true })).toBe(
+      "claude-code/opus[1m]",
+    );
+    // A size given to the coordinator does not shrink its window.
+    expect(withContextSize("claude-code/opus", 200_000, { coordinator: true })).toBe(
       "claude-code/opus[1m]",
     );
     expect(withContextSize("claude-code/opus[1m]", 200_000)).toBe("claude-code/opus");
@@ -56,6 +60,7 @@ describe("context size per chat", () => {
   test("the window a chat runs with, for pickers", () => {
     expect(chatContextTokens("claude-code/sonnet", "default")).toBe(200_000);
     expect(chatContextTokens("claude-code/sonnet", "default", { coordinator: true })).toBe(1_000_000);
+    expect(chatContextTokens("claude-code/sonnet", 200_000, { coordinator: true })).toBe(1_000_000);
     expect(chatContextTokens("claude-code/sonnet[1m]", "default")).toBe(1_000_000);
     expect(chatContextTokens("openai/gpt-5", "max")).toBeNull();
   });

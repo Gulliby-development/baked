@@ -193,7 +193,7 @@ describe("local API chat sessions", () => {
     expect(plain.effort).toBe("default");
   });
 
-  test("a session's context size picks the model variant; the coordinator takes the largest", async () => {
+  test("a session's context size picks the model variant; the coordinator always takes the largest", async () => {
     const { host, chat, send, post, detail } = await setup();
     const created = await post("/v1/sessions", { text: "Hello", model: "claude-code/opus" });
     const session = (await created.json()) as SessionDetail;
@@ -217,15 +217,20 @@ describe("local API chat sessions", () => {
     expect(plain).toMatchObject({ contextSize: "max", contextSizes: [], contextTokens: null });
 
     const coordinator = await chat.create({ model: "claude-code/sonnet", kind: "coordinator" });
-    expect(coordinator.summary()).toMatchObject({ contextSize: "default", contextTokens: 1_000_000 });
+    // The coordinator offers no sizes to pick and refuses a smaller one.
+    expect(coordinator.summary()).toMatchObject({
+      contextSize: "max",
+      contextSizes: [],
+      contextTokens: 1_000_000,
+    });
     coordinator.send("Plan the week");
     await until(
       async () => coordinator.detail(),
       (d) => d.state === "idle" && d.messages.length === 2,
     );
     expect(host.seen.at(-1)?.modelId).toBe("claude-code/sonnet[1m]");
-    coordinator.update({ contextSize: 200_000 });
-    expect(coordinator.summary().contextTokens).toBe(200_000);
+    expect(() => coordinator.update({ contextSize: 200_000 })).toThrow("largest context window");
+    expect(coordinator.summary().contextTokens).toBe(1_000_000);
   });
 
   test("mentions answers with the host's @ completions", async () => {
