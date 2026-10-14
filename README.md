@@ -3,25 +3,24 @@
   <img alt="BAKED" src="docs/assets/brand/wordmark-light.svg" height="72">
 </picture>
 
-# BAKED
-
 **A coding agent that knows your code's structure, asks before it writes, and keeps its work on your machine.**
 
 BAKED reads your repository through language servers and tree-sitter, so it moves through code by symbols and imports instead of grepping raw text. It edits files, runs your checks and commits, asking first whenever it is about to write. Sessions, memory and workflow state stay local in SQLite.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/chat-dark.png">
-  <img alt="A BAKED chat in the desktop app: the agent explains a bug, shows its diff and the test it ran" src="docs/assets/screenshots/chat-light.png">
-</picture>
+<a href="docs/assets/video/baked-promo-v2.mp4"><img alt="The first 22 seconds of the BAKED promo: an idea is typed into the coordinator, which splits it into two parallel runs" src="docs/assets/video/baked-promo-v2-preview.gif" width="100%"></a>
+
+<p align="center"><a href="docs/assets/video/baked-promo-v2.mp4"><b>▶ Watch the full 88-second video with sound</b></a></p>
 
 > **Status: pre-release.** Releases are published on [GitHub](https://github.com/Gulliby-development/baked/releases) only, not on npm.
 
 ## What you can do with it
 
-- **Chat with an agent about your code.** Ask a question or a change; BAKED finds the right files, shows each edit as a diff, and you can undo any turn.
+- **Start from the coordinator.** Each project opens on its coordinator: describe an idea, and it suggests a workflow, splits big work into parallel runs and keeps an eye on each one.
+- **Chat with an agent about your code.** Ask a question or a change; BAKED finds the right files, shows each edit as a diff, and you can undo any turn. Pick how much it may do on its own (Manual, Auto or Full access) and its mode (Default, Architect or Plan first) per chat.
 - **Hand off a whole feature.** A workflow run goes through research, spec, plan, implementation, checks and review on its own, and stops only where it needs your decision.
 - **Keep several projects going at once.** Each open folder is a project with its own chats, runs and settings; *Needs you* collects everything waiting for an answer.
-- **See your codebase and your spend.** A live code graph shows how folders and files depend on each other; the usage screen shows tokens and cost per stage and model.
+- **Plan big ideas as initiatives.** An initiative splits an idea into features, each with its own workflow run, budget and progress.
+- **See your codebase, your Git and your spend.** A live code graph shows how folders and files depend on each other; the Git screen stages, commits, pushes and switches branches over a commit graph; the usage screen shows tokens and cost per stage and model.
 - **Use the model you already pay for.** Claude, OpenAI, Codex, GitHub Copilot and GitHub Models are supported ([providers](docs/providers.md)).
 
 BAKED comes as a **desktop app**, a **terminal app**, and a **headless CLI** for scripts and CI. All three run the same agent.
@@ -30,16 +29,29 @@ BAKED comes as a **desktop app**, a **terminal app**, and a **headless CLI** for
 
 <table>
   <tr>
-    <td width="50%"><img alt="A workflow run waiting for approval of its spec, plan and tasks" src="docs/assets/screenshots/run.png"><br><b>Workflow runs.</b> Every stage on one line; the run waits for you only where it has to.</td>
+    <td width="50%"><img alt="The coordinator proposes splitting an idea into two parallel runs" src="docs/assets/screenshots/coordinator.png"><br><b>Coordinator.</b> Describe an idea; it proposes a split, launches the runs and tracks them on the right.</td>
+    <td width="50%"><img alt="The Workflows screen: the sdd conveyor and the built-in workflows" src="docs/assets/screenshots/workflows.png"><br><b>Workflows.</b> Watch how a run moves station by station, or open a workflow in the editor.</td>
+  </tr>
+  <tr>
+    <td width="50%"><img alt="Workflow runs on their lines, two waiting for approval" src="docs/assets/screenshots/runs.png"><br><b>Workflow runs.</b> Every stage on one line; the run waits for you only where it has to.</td>
+    <td width="50%"><img alt="The Git screen: changes, commit box, branches and the commit graph" src="docs/assets/screenshots/git.png"><br><b>Git.</b> Changes, commit, push and pull, branches by kind and the commit history.</td>
+  </tr>
+  <tr>
+    <td width="50%"><img alt="The permission menu of a chat: Manual, Auto, Full access" src="docs/assets/screenshots/permission-modes.png"><br><b>Permission modes.</b> Manual asks for every edit and command, Auto asks only for risky ones, Full access asks for nothing.</td>
+    <td width="50%"><img alt="The mode menu of a chat: Default, Architect, Plan first" src="docs/assets/screenshots/agent-modes.png"><br><b>Agent modes.</b> Default edits and runs, Architect stays read-only, Plan first proposes a plan before acting.</td>
+  </tr>
+  <tr>
+    <td width="50%"><img alt="An initiative split into features with their state and budget" src="docs/assets/screenshots/initiatives.png"><br><b>Initiatives.</b> A big idea as features, each with its own run, size and state.</td>
     <td width="50%"><img alt="The code graph of the BAKED repository" src="docs/assets/screenshots/code-graph.png"><br><b>Code graph.</b> Folders, key files and the links between them.</td>
   </tr>
   <tr>
+    <td width="50%"><img alt="A BAKED chat: the agent explains a bug, shows its diff and the test it ran" src="docs/assets/screenshots/chat.png"><br><b>Chat.</b> Every edit as a diff, every tool call on its own line, and undo for any turn.</td>
     <td width="50%"><img alt="Needs you: approvals and questions from every open project" src="docs/assets/screenshots/needs-you.png"><br><b>Needs you.</b> Approvals and questions from every open project in one list.</td>
     <td width="50%"><img alt="Usage: tokens and cost by stage and by model" src="docs/assets/screenshots/usage.png"><br><b>Usage.</b> Tokens, cache hits and cost by stage and by model.</td>
   </tr>
 </table>
 
-Screenshots show the desktop app with sample data.
+Screenshots show the desktop app in its dark theme with sample data.
 
 ## Install
 
