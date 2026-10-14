@@ -1513,7 +1513,7 @@ export interface StartRequest {
   candidates?: number;
   /**
    * The run model overrides the configured model routes for this run (CLI `--model-strict`);
-   * without it only the `active` class follows the run model.
+   * without it only the `active` class follows an explicit run model.
    */
   modelStrict?: boolean;
   /** What blocking questions do in this run (CLI `--clarification MODE`); it overrides the policy. */

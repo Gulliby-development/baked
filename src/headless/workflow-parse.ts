@@ -583,8 +583,9 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   and names the feature issue-N-TITLE unless --feature is given; the delivery pull request says
   Closes #N, so merging it closes the issue. #N reads the origin remote's repository
   --route sends every agent of a stage to a model or a modelRouting class ($name) for this run
-  --model applies to the active class only: a configured modelRouting class, role or stage route
-  still wins, and the start warns which agents run on another model. --model-strict makes the
+  --model serves the active class (also over modelRouting.classes.active, keeping its effort); any
+  other configured class, role or stage route still wins, and the start warns which agents run on
+  another model. --model-strict makes the
   model serve every class, role and stage of this run (only --route still overrides it)
   --worktree runs the tasks in .baked/worktrees/RUN_ID/main on branch baked/wf/RUN_ID; your working copy is not changed
   --writers N (1..4, with --worktree) implements up to N independent tasks at once, each in .baked/worktrees/RUN_ID/TASK_ID

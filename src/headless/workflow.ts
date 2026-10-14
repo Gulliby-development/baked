@@ -37,7 +37,12 @@ import {
   projectMemoryView,
 } from "../core/workflows/project-memory.js";
 import { ROLLBACK_ARTIFACT_KIND } from "../core/workflows/rollback.js";
-import { explainRoute, type RouteExplanation, routedProfiles } from "../core/workflows/routing.js";
+import {
+  explainRoute,
+  explicitModelConfig,
+  type RouteExplanation,
+  routedProfiles,
+} from "../core/workflows/routing.js";
 import { runReport } from "../core/workflows/run-report.js";
 import {
   type Decision,
@@ -116,6 +121,12 @@ export function quickRunArgs(service: NativeWorkflowService, args: WorkflowArgs)
 }
 const modelFlag = (args: WorkflowArgs, config: AppConfig): string =>
   typeof args.flags.model === "string" ? args.flags.model : config.defaultModel;
+/** Profiles as a run with these flags would route them: an explicit `--model` serves `$active`. */
+const flagProfiles = (cwd: string, args: WorkflowArgs, config: AppConfig) => {
+  const model = modelFlag(args, config);
+  const explicit = typeof args.flags.model === "string" && args.flags.model.trim() !== "";
+  return routedProfiles(cwd, explicit ? explicitModelConfig(config, model) : config, model);
+};
 const routeRequest = (args: WorkflowArgs, config: AppConfig) => ({
   workflowId:
     (typeof args.flags.workflow === "string" ? args.flags.workflow : undefined) ??
@@ -548,11 +559,7 @@ export async function executeWorkflowCommand(
       } as Decision);
     }
     case "profiles":
-      return routedProfiles(
-        service.workspace,
-        service.config,
-        modelFlag(args, service.config),
-      ).list();
+      return flagProfiles(service.workspace, args, service.config).list();
     case "artifacts":
       return args.flags.file
         ? {
@@ -875,9 +882,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
       "compare",
     ].includes(args.command);
     if (args.command === "profiles") {
-      process.stdout.write(
-        `${JSON.stringify(routedProfiles(cwd, config, modelFlag(args, config)).list(), null, 2)}\n`,
-      );
+      process.stdout.write(`${JSON.stringify(flagProfiles(cwd, args, config).list(), null, 2)}\n`);
       return 0;
     }
     if (args.command === "models") {

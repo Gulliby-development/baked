@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { parseModelRouting } from "../src/core/llm/model-routing.js";
+import { explainRoute, rerouteRecord } from "../src/core/workflows/routing.js";
 import { newId } from "../src/core/workflows/store.js";
 import { readRoutingSummary } from "../src/core/workflows/view.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
@@ -14,10 +15,18 @@ const GLOBAL_ROUTING = {
   classes: { coding: "codex/gpt-6-luna", review: "codex/gpt-6.1-sol" },
 };
 
-async function start(extra: { model?: string; modelStrict?: boolean }) {
+// The #1172 shape: the profile also routes the active class, with an effort for it.
+const ACTIVE_ROUTING = {
+  classes: { active: { model: "codex/gpt-6-luna", effort: "high" }, review: "codex/gpt-6.1-sol" },
+};
+
+async function start(
+  extra: { model?: string; modelStrict?: boolean },
+  routing: unknown = GLOBAL_ROUTING,
+) {
   const fixture = workflowFixture();
   cleanups.push(fixture.dispose);
-  fixture.config.modelRouting = parseModelRouting(GLOBAL_ROUTING);
+  fixture.config.modelRouting = parseModelRouting(routing);
   const run = await fixture.service.start({
     commandId: newId(),
     featureId: "fixture",
@@ -27,7 +36,7 @@ async function start(extra: { model?: string; modelStrict?: boolean }) {
     policy: fixture.policy,
     ...extra,
   });
-  return readRoutingSummary(fixture.service.store, run.runId);
+  return { ...readRoutingSummary(fixture.service.store, run.runId), fixture };
 }
 
 describe("an explicit run model shadowed by class routing", () => {
@@ -56,5 +65,45 @@ describe("an explicit run model shadowed by class routing", () => {
     expect(summary?.strict).toBe(true);
     expect(summary?.warnings).toEqual([]);
     expect([...new Set(summary?.effective.map((row) => row.model))]).toEqual(["claude-code/sonnet"]);
+  });
+});
+
+describe("an explicit run model with a configured active class (#1172)", () => {
+  test("--model serves the active class and keeps its effort", async () => {
+    const summary = await start({ model: "claude-code/sonnet" }, ACTIVE_ROUTING);
+    const byTarget = Object.fromEntries(summary.effective.map((row) => [row.target, row.model]));
+    expect(byTarget.researcher).toBe("claude-code/sonnet");
+    expect(byTarget["spec-author"]).toBe("claude-code/sonnet");
+    expect(byTarget.reviewer).toBe("codex/gpt-6.1-sol");
+    const text = summary.warnings.join("\n");
+    expect(text).not.toContain("modelRouting.classes.active");
+    expect(text).toContain("use codex/gpt-6.1-sol (modelRouting.classes.review)");
+  });
+
+  test("without --model the configured active class still applies", async () => {
+    const summary = await start({}, ACTIVE_ROUTING);
+    const byTarget = Object.fromEntries(summary.effective.map((row) => [row.target, row.model]));
+    expect(byTarget.researcher).toBe("codex/gpt-6-luna");
+    expect(summary.warnings).toEqual([]);
+  });
+
+  test("the route preview and a reroute follow the explicit model too", async () => {
+    const summary = await start({ model: "claude-code/sonnet" }, ACTIVE_ROUTING);
+    const { root, config } = summary.fixture;
+    const explained = explainRoute(root, config, { workflowId: "sdd", model: "claude-code/sonnet" });
+    expect(explained.profiles.researcher?.model).toBe("claude-code/sonnet");
+    expect(explained.profiles.researcher?.effort).toBe("high");
+    const previous = {
+      schemaVersion: 1 as const,
+      runModel: "claude-code/sonnet",
+      profiles: {},
+      stages: {},
+      explicitModel: true,
+    };
+    const rerouted = rerouteRecord(root, config, previous, "sdd", [], ["researcher"], {});
+    expect(rerouted.profiles.researcher?.model).toBe("claude-code/sonnet");
+    expect(rerouted.explicitModel).toBe(true);
+    const implicit = rerouteRecord(root, config, { ...previous, explicitModel: undefined }, "sdd", [], ["researcher"], {});
+    expect(implicit.profiles.researcher?.model).toBe("codex/gpt-6-luna");
   });
 });
