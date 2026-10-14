@@ -454,14 +454,25 @@ export function InstructionsPane({ project }: Pick<SectionProps, "project">) {
   };
 
   const canCreate = list.data.sources !== undefined;
+  // The AGENTS.md source is off by default, so the empty state must not promise it is read.
+  const agentsMdOff = list.data.sources?.find((s) => s.id === "codex")?.enabled === false;
   const fileList =
     files.length === 0 && !draft ? (
       <Empty className={STACK}>
-        <span>
-          No instruction files. Agents read <span className="font-mono">AGENTS.md</span> or{" "}
-          <span className="font-mono">baked.md</span> at the repository root, and files listed in{" "}
-          <span className="font-mono">baked/project.json</span>.
-        </span>
+        {agentsMdOff ? (
+          <span>
+            No instruction files. Agents read <span className="font-mono">baked.md</span> at the
+            repository root and files listed in{" "}
+            <span className="font-mono">baked/project.json</span>;{" "}
+            <span className="font-mono">AGENTS.md</span> is read once its source is switched on.
+          </span>
+        ) : (
+          <span>
+            No instruction files. Agents read <span className="font-mono">AGENTS.md</span> or{" "}
+            <span className="font-mono">baked.md</span> at the repository root, and files listed in{" "}
+            <span className="font-mono">baked/project.json</span>.
+          </span>
+        )}
         {canCreate && (
           <span className="flex flex-wrap justify-center gap-2">
             <Button

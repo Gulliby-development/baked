@@ -50,6 +50,8 @@ import {
   effortLabel,
   layerValue,
   plainName,
+  type RoutingGroup,
+  routeActionLabel,
   routingGroups,
   unresolvedText,
 } from "./routing-logic.js";
@@ -327,6 +329,7 @@ function RoutingTables({
                     key={row.path}
                     view={view}
                     row={row}
+                    group={group.id}
                     scope={scope}
                     busy={busy}
                     selected={row.path === editingPath}
@@ -389,6 +392,7 @@ function RouteCell({ value, active }: { value: string; active: boolean }) {
 function RouteRow({
   view,
   row,
+  group,
   scope,
   busy,
   selected,
@@ -397,6 +401,7 @@ function RouteRow({
 }: {
   view: RoutingOverview;
   row: RoutingRow;
+  group: RoutingGroup["id"];
   scope: RoutingScope;
   busy: boolean;
   selected: boolean;
@@ -441,7 +446,7 @@ function RouteRow({
             size="sm"
             disabled={busy}
             onClick={onEdit}
-            aria-label={`Edit ${plainName(row)}`}
+            aria-label={routeActionLabel("Edit", row, group)}
           >
             Edit
           </Button>
@@ -451,7 +456,7 @@ function RouteRow({
               size="sm"
               disabled={busy}
               onClick={onClear}
-              aria-label={`Clear ${plainName(row)}`}
+              aria-label={routeActionLabel("Clear", row, group)}
             >
               Clear
             </Button>

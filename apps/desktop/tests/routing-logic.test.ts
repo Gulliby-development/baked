@@ -9,6 +9,7 @@ import {
   layerValue,
   parseFallback,
   plainName,
+  routeActionLabel,
   routingGroups,
   unresolvedText,
 } from "../src/renderer/screens/setup/routing-logic.ts";
@@ -82,5 +83,14 @@ describe("model routing section", () => {
     expect(effortLabel(null)).toBe("inherit");
     expect(effortLabel("default")).toBe("model default");
     expect(effortLabel("xhigh")).toBe("xhigh");
+  });
+
+  test("a row's action names its table, so a role and a profile of one name differ", () => {
+    const reviewer = row({ label: "reviewer" });
+    expect(routeActionLabel("Edit", reviewer, "roles")).toBe("Edit Reviewer role");
+    expect(routeActionLabel("Edit", reviewer, "profiles")).toBe("Edit Reviewer profile");
+    expect(routeActionLabel("Clear", row({ target: { kind: "class", name: "fast" }, label: "$fast" }), "classes")).toBe(
+      "Clear $fast model name",
+    );
   });
 });
