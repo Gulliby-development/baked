@@ -450,7 +450,11 @@ export function Composer({
   useEffect(() => () => recorder.current?.cancel(), []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: refocus when the session changes
   useEffect(() => {
-    area.current?.focus();
+    const el = area.current;
+    if (!el) return;
+    el.focus();
+    // After seeded text (such as "Change the split: "), typing goes on from its end.
+    el.setSelectionRange(el.value.length, el.value.length);
   }, [autoFocusKey]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: resize whenever the text changes
   useEffect(() => {
