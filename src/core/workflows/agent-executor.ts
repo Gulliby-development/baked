@@ -135,6 +135,8 @@ export const outputSchemas: Record<string, z.ZodType> = {
 const MAX_SEMANTIC_CORRECTIONS = 2;
 /** Submissions refused because a written file does not parse; the next one is accepted (#977). */
 const MAX_SYNTAX_REFUSALS = 2;
+/** Submissions refused because a finding the task corrects still reproduces (#1158). */
+const MAX_REPRO_REFUSALS = 2;
 /** Refusals of one path by the file-hash check after which an attempt stops (#954). */
 const MAX_HASH_REFUSALS = 3;
 
@@ -847,6 +849,7 @@ export class NativeAgentExecutor implements AgentExecutor {
       let editsNoted = false;
       let syntaxRefusals = 0;
       let lastSyntaxRefusal = "";
+      let reproRefusals = 0;
       const submitResult = tool({
         description:
           "Submit the final typed result. Evidence IDs must come from the host context or tools.",
@@ -941,6 +944,26 @@ export class NativeAgentExecutor implements AgentExecutor {
                 instruction:
                   "The project's type check reports these errors in the files this task writes. Fix them, then call submit_result again with the complete result. This check runs once; the next submission is accepted.",
               };
+          }
+          // A correction that reports its finding fixed while the finding's repro still shows it
+          // goes back here, not to another repair round (stmtsplit-update T007 and T008 ended
+          // already_satisfied twice for 546k tokens with the defect still there).
+          if (
+            !errors.length &&
+            request.reproCheck &&
+            reproRefusals < MAX_REPRO_REFUSALS &&
+            (outcome === "implemented" || outcome === "already_satisfied")
+          ) {
+            const live = await request.reproCheck(root, request.signal);
+            if (live.length) {
+              reproRefusals++;
+              return {
+                accepted: false,
+                errors: live,
+                instruction:
+                  "The host ran the repro of each finding this task corrects on the files as they are now, and these still show the reported behavior, so the task is not done. Fix the cause with BAKED's edit tools, then call submit_result again with the complete result. If the fix needs a file outside this task's write scope, submit blocked and name that file in unresolved.",
+              };
+            }
           }
           submitted = parsed;
           return { accepted: true };
