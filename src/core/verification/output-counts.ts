@@ -143,16 +143,26 @@ export function baselineRegression(
   return null;
 }
 
+/** A path into one of BAKED's worktrees, `.../.baked/worktrees/RUN/main` or `.../RUN/T005`. */
+const WORKTREE_PATH =
+  /(?:[A-Za-z]:)?(?:[\\/][^\\/\s"'`()<>:]+)*[\\/]\.baked[\\/]worktrees[\\/][^\\/\s"'`()<>:]+[\\/][^\\/\s"'`()<>:]+/g;
+
 /**
  * The output of a failing check with what changes between two runs of the same failure left out
  * (colours, durations, timestamps, the workspace path), so the checks stage can tell a required
- * check that still fails exactly as it did on the code the run started from (#934).
+ * check that still fails exactly as it did on the code the run started from (#934). Every
+ * worktree path counts as the workspace: the baseline is measured in the run worktree and a later
+ * check may run in a task worktree (mouse-mover-update 3d7389cf, #1055).
  */
 export function failureSignature(output: string, root: string): string {
+  const project = root.replace(/[\\/]\.baked[\\/]worktrees[\\/].*$/, "");
   const text = output
     // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI colour codes
     .replace(/\u001b\[[0-9;]*m/g, "")
+    .replace(WORKTREE_PATH, "<root>")
     .split(root)
+    .join("<root>")
+    .split(project)
     .join("<root>")
     .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?/g, "<time>")
     .replace(/\d+(\.\d+)?\s*(ms|s|sec|seconds|m)\b/g, "<duration>")
