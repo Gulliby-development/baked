@@ -36,3 +36,28 @@ export function restoreOutside(
     else if (existsSync(target)) unlinkSync(target);
   }
 }
+
+/**
+ * The files outside a task's writes that changed in its worktree although no journaled edit of
+ * the attempt wrote them: a host process (a whole-unit formatter run by a probe or a check) did,
+ * not the task's own edits. The scope check puts them back instead of stopping the run on them
+ * (bench round 25, bytelens T002: T001's unformatted `src/schema.rs` was rewritten in T002's
+ * worktree, the run stopped `input_changed`, and a plain resume stopped on it again).
+ */
+export function unjournaledOutside(
+  changed: readonly string[],
+  writes: ReadonlySet<string>,
+  journaled: ReadonlySet<string>,
+): string[] {
+  return changed.filter((path) => !writes.has(path) && !journaled.has(path));
+}
+
+/** A changed path with the short hashes it had before and after, for a stop's detail. */
+export function describeChange(
+  path: string,
+  before: Record<string, string>,
+  after: Record<string, string>,
+): string {
+  const short = (hash: string | undefined) => (hash ? hash.slice(0, 6) : "none");
+  return `${path} (${short(before[path])} -> ${short(after[path])})`;
+}
