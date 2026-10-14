@@ -26,6 +26,8 @@ export interface ApprovalBody {
   checks?: { id: string; command?: string }[];
   profiles?: string[];
   deferredCriteria?: string[];
+  /** Required checks that failed on the code the run starts from, before any task ran. */
+  baselineFailures?: string[];
   /** Defaults the agents chose instead of asking (`clarification: "assume"`). */
   assumptions?: string[];
   /** Plan-time sizing's active-time estimate against the active-time cap. */
