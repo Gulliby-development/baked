@@ -572,7 +572,14 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
           }),
         );
       },
-      startInitiative: async ({ initiativeId, prompt, plan, approveSplit, featureIssues }) => {
+      startInitiative: async ({
+        initiativeId,
+        prompt,
+        plan,
+        approveSplit,
+        featureIssues,
+        worktree,
+      }) => {
         let view = await initiatives.start(
           initiativeStartRequest(
             {
@@ -580,6 +587,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
               prompt,
               ...(plan ? { plan } : {}),
               ...(featureIssues ? { featureIssues } : {}),
+              ...(worktree ? { worktree } : {}),
             },
             service.config,
             {

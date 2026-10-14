@@ -7,6 +7,7 @@ import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import {
   applySplitEdit,
+  featureDigest,
   type InitiativePlan,
   planSizeProblem,
   planStructureProblems,
@@ -32,6 +33,7 @@ import {
 } from "../src/headless/workflow-initiative.js";
 import { workflowHelp } from "../src/headless/workflow-parse.js";
 import { mergedBase } from "../src/core/workflows/worktree.js";
+import { assignFeatureWorkflows } from "../src/core/workflows/initiatives/workflows.js";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -46,7 +48,7 @@ const feature = (id: string, dependsOn: string[] = [], paths: string[] = [`${id}
   dependsOn,
   mandatory: true,
 });
-const plan = (features: ReturnType<typeof feature>[]): InitiativePlan => ({
+const plan = (features: InitiativePlan["features"]): InitiativePlan => ({
   schemaVersion: 1,
   title: "Values",
   goals: ["Every value exists"],
@@ -268,6 +270,77 @@ describe("initiative plan", () => {
   });
 });
 
+describe("initiative feature workflows", () => {
+  test("workflow and size edits, and a merge keeps its largest part's workflow", () => {
+    const four = plan([feature("a"), feature("b", ["a"]), feature("c"), feature("d")]);
+    const withWorkflow = applySplitEdit(four, { op: "workflow", featureId: "c", workflow: "quick" });
+    expect(withWorkflow.features.find((f) => f.id === "c")?.workflow).toBe("quick");
+    const sized = applySplitEdit(withWorkflow, { op: "size", featureId: "d", size: "large" });
+    expect(sized.features.find((f) => f.id === "d")?.size).toBe("large");
+    const merged = applySplitEdit(sized, { op: "merge", featureIds: ["c", "d"], id: "cd" });
+    expect(merged.features.find((f) => f.id === "cd")).toMatchObject({ size: "large" });
+    expect(merged.features.find((f) => f.id === "cd")?.workflow).toBeUndefined();
+    // A workflow change is a new run; a size change is not.
+    expect(featureDigest(sized.features[2] ?? feature("x"))).not.toBe(featureDigest(four.features[2] ?? feature("x")));
+    expect(featureDigest(sized.features[3] ?? feature("x"))).toBe(featureDigest(four.features[3] ?? feature("x")));
+  });
+
+  test("each feature gets the workflow that fits it, and a feature others depend on keeps a spec", async () => {
+    const t = setup();
+    let view = await t.start({ plan: threeFeatures });
+    // docs is a small docs change with no dependents; core is depended on, so it needs a spec.
+    expect(view.features.map((f) => [f.id, f.workflowId, f.size])).toEqual([
+      ["core", "sdd", "medium"],
+      ["api", "sdd", "medium"],
+      ["docs", "quick", "small"],
+    ]);
+    await expect(t.initiatives.edit("values", t.id(), { op: "workflow", featureId: "core", workflow: "quick" })).rejects.toThrow("needs a workflow that writes a spec");
+    await expect(t.initiatives.edit("values", t.id(), { op: "workflow", featureId: "docs", workflow: "nope" })).rejects.toThrow("cannot run a feature here");
+    view = await t.initiatives.edit("values", t.id(), { op: "workflow", featureId: "api", workflow: "quick" });
+    expect(t.featureOf(view, "api").workflowId).toBe("quick");
+    await t.approveSplit();
+    view = t.initiatives.view("values");
+    // Shares follow size: medium 2, medium 2, small 1.
+    const remaining = view.budget.remaining.tokens;
+    expect(t.featureOf(view, "core").share?.tokens).toBe(Math.floor((remaining * 2) / 5));
+    expect(t.featureOf(view, "docs").share?.tokens).toBe(Math.floor(remaining / 5));
+    for (let i = 0; i < 12 && view.status !== "completed"; i++) {
+      view = await t.drive();
+      const waiting = view.pendingDecisions.find((d) => d.scope === "feature" && d.kind === "approval");
+      if (waiting?.featureId) await t.approveFeature(waiting.featureId);
+    }
+    expect(view.status).toBe("completed");
+    const workflowOf = (featureId: string) =>
+      (JSON.parse(t.workflows.store.run(t.featureOf(view, featureId).runId ?? "").definition_json) as { id: string }).id;
+    expect([workflowOf("core"), workflowOf("api"), workflowOf("docs")]).toEqual(["sdd", "quick", "quick"]);
+    expect(t.featureOf(view, "docs").state).toBe("accepted");
+  });
+
+  test("features an edit leaves alone keep what they had, also without a workflow", () => {
+    const choices = [
+      { id: "sdd", description: "", schemaVersion: 1 as const, contract: true, execution: "inline" as const },
+      { id: "quick", description: "", schemaVersion: 2 as const, contract: false, execution: "inline" as const },
+    ];
+    const fitted = assignFeatureWorkflows(threeFeatures, choices, "sdd", { replaceInvalid: false, keep: new Set(["core", "api"]) });
+    expect(fitted.features.map((f) => f.workflow)).toEqual([undefined, undefined, "quick"]);
+    expect(featureDigest(fitted.features[0] ?? feature("x"))).toBe(featureDigest(threeFeatures.features[0] ?? feature("x")));
+  });
+
+  test("a decomposer's workflow that cannot run its feature is replaced", async () => {
+    const split = plan([
+      { ...feature("core"), workflow: "quick" },
+      feature("api", ["core"]),
+      { ...feature("docs"), workflow: "missing-workflow" },
+    ]);
+    const t = setup(split);
+    await t.start();
+    const view = await t.drive();
+    expect(view.status).toBe("awaiting_approval");
+    expect(t.featureOf(view, "core").workflowId).toBe("sdd");
+    expect(t.featureOf(view, "docs").workflowId).toBe("quick");
+  });
+});
+
 describe("initiative runtime", () => {
   test("the decomposer proposes the split; an edit changes the approval digest", async () => {
     const t = setup();
@@ -383,12 +456,13 @@ describe("initiative runtime", () => {
     ]);
   }, 30000);
 
-  test("the shared budget is split equally between features that have not started", async () => {
-    const t = setup(threeFeatures, 1000);
+  test("the shared budget is split equally between features of the same size", async () => {
+    const medium = plan(threeFeatures.features.map((f) => ({ ...f, size: "medium" as const })));
+    const t = setup(medium, 1000);
     // A share must hold a plan step's reservation (its prompt plus the profile's output cap,
     // about 28000 tokens), with room for the profiles' instructions to grow.
     const budget = { maxTotalTokens: 180000, maxAgentCalls: 90, maxActiveMs: 900000 };
-    let view = await t.start({ plan: threeFeatures, budget });
+    let view = await t.start({ plan: medium, budget });
     expect(view.budget.limits).toEqual(budget);
     await t.approveSplit();
     view = t.initiatives.view("values");

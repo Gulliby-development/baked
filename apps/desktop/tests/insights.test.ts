@@ -17,8 +17,12 @@ import {
   canReplanFeature,
   canSplitFeature,
   canSwitchModel,
+  configurableFeatures,
   featureCounts,
   featureRow,
+  featureSteps,
+  featureWorkflow,
+  featureWorkflowChoices,
   initiativeLine,
   isInitiativeKey,
   mergeProblem,
@@ -654,6 +658,41 @@ async function mock(method: MockRequest["method"], path: string, body?: object) 
   throw new Error(`no mock route answered ${method} ${path}`);
 }
 
+describe("initiative board", () => {
+  const f = (id: string, dependsOn: string[] = []) => ({ id, dependsOn });
+  test("columns follow the dependency steps and keep the split order", () => {
+    const steps = featureSteps([
+      f("docs"),
+      f("api", ["core"]),
+      f("core"),
+      f("ui", ["api"]),
+      f("cli", ["core"]),
+    ]);
+    expect(steps.map((column) => column.map((x) => x.id))).toEqual([
+      ["docs", "core"],
+      ["api", "cli"],
+      ["ui"],
+    ]);
+    // An unknown dependency counts as done; a cycle does not loop.
+    expect(featureSteps([f("a", ["gone"]), f("b", ["c"]), f("c", ["b"])]).flat()).toHaveLength(3);
+  });
+
+  test("a feature runs its own workflow, or the initiative's on an older backend", () => {
+    expect(featureWorkflow({ workflowId: "sdd" }, { workflowId: "quick" })).toBe("quick");
+    expect(featureWorkflow({ workflowId: "full" }, {})).toBe("full");
+    expect(featureWorkflow({}, {})).toBe("sdd");
+    const old = { features: [{ ...feature("proposed"), size: undefined }] };
+    expect(configurableFeatures(old as Pick<InitiativeView, "features">)).toBe(false);
+    expect(
+      featureWorkflowChoices([
+        { id: "sdd", problems: [], writes: true },
+        { id: "spike", problems: [], writes: false },
+        { id: "broken", problems: ["bad gate"], writes: true },
+      ]).map((d) => d.id),
+    ).toEqual(["sdd"]);
+  });
+});
+
 describe("mock initiative backend", () => {
   test("starts, edits, extends and rejects", async () => {
     const startedAnswer = await mock("POST", "/v1/initiatives", {
@@ -690,6 +729,16 @@ describe("mock initiative backend", () => {
     const renamed = (await mock("POST", `${path}/rename`, { feature: "core", title: "Core" }))
       .body as InitiativeView;
     expect(renamed.features[0]?.title).toBe("Core");
+    const quick = (await mock("POST", `${path}/configure`, { feature: "ui-tui", workflow: "quick" }))
+      .body as InitiativeView;
+    expect(quick.features.find((f) => f.id === "ui-tui")?.workflowId).toBe("quick");
+    // core is built on by api, so it keeps a workflow that writes a spec.
+    expect(
+      (await mock("POST", `${path}/configure`, { feature: "core", workflow: "quick" })).status,
+    ).toBe(400);
+    const large = (await mock("POST", `${path}/configure`, { feature: "ui-tui", size: "large" }))
+      .body as InitiativeView;
+    expect(large.features.find((f) => f.id === "ui-tui")?.size).toBe("large");
     const extended = (await mock("POST", `${path}/extend`, { tokens: 9_000_000 }))
       .body as InitiativeView;
     expect(extended.budget.limits.maxTotalTokens).toBe(9_000_000);

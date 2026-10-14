@@ -556,7 +556,7 @@ export function InitiativeDetail({
       </text>
       <text fg={t.textMuted}>
         {clip(
-          `Plan ${plan} · ${view.workflowId} · ${view.model ?? "default model"}${view.featureAutoApproval ? " · tiered approval" : ""}${view.parallelRuns > 1 ? ` · up to ${view.parallelRuns} features at once` : ""}`,
+          `Plan ${plan} · default workflow ${view.workflowId} · ${view.model ?? "default model"}${view.featureAutoApproval ? " · tiered approval" : ""}${view.parallelRuns > 1 ? ` · up to ${view.parallelRuns} features at once` : ""}`,
           width,
         )}
       </text>
@@ -571,7 +571,7 @@ export function InitiativeDetail({
       </text>
       {split ? (
         <Hint kind="warn">
-          {`Split approval pending for plan revision ${view.planRevision} (digest ${split.digest.slice(0, 12)}). A approves it, N rejects it; on the selected feature E renames, S splits, G merges and D removes.`}
+          {`Split approval pending for plan revision ${view.planRevision}. A approves it, N rejects it; the keys below edit the selected feature.`}
         </Hint>
       ) : null}
       {driveError ? <text fg={t.error}>{clip(`✗ ${driveError}`, width)}</text> : null}
@@ -599,8 +599,8 @@ export function InitiativeDetail({
           : "no run yet";
         const deps = f.dependsOn.length ? ` ← ${f.dependsOn.join(", ")}` : "";
         const rest = narrow
-          ? f.state.replace("_", " ")
-          : `${f.state.replace("_", " ")} · ${run}${deps}`;
+          ? `${f.state.replace("_", " ")} · ${f.workflowId}`
+          : `${f.state.replace("_", " ")} · ${f.workflowId} · ${run}${deps}`;
         // The selected feature shows its details under its row; FocusTarget keeps them in view.
         return (
           <FocusTarget key={f.id} active={isSelected}>
@@ -626,6 +626,14 @@ export function InitiativeDetail({
                     width - 4,
                   )}
                 </text>
+                {narrow ? null : (
+                  <text fg={t.textMuted}>
+                    {clip(
+                      `Workflow ${f.workflowId} · ${f.size}${f.share ? ` · starts with ${formatTokens(f.share.tokens)} tokens` : ""}`,
+                      width - 4,
+                    )}
+                  </text>
+                )}
                 {f.issue ? (
                   <text fg={t.textMuted}>
                     {clip(

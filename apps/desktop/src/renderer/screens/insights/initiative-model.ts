@@ -341,3 +341,63 @@ export function startBody(
   }
   return { ok: true, body };
 }
+
+/**
+ * The board's columns: features grouped by how many steps of dependencies come before them, so
+ * a column runs once the columns to its left are done. Features keep their split order inside a
+ * column; a dependency the split does not have counts as done.
+ */
+export function featureSteps<F extends Pick<InitiativeFeature, "id" | "dependsOn">>(
+  features: readonly F[],
+): F[][] {
+  const byId = new Map(features.map((f) => [f.id, f] as const));
+  const step = new Map<string, number>();
+  const stepOf = (feature: F, seen: Set<string>): number => {
+    const known = step.get(feature.id);
+    if (known !== undefined) return known;
+    // A cycle cannot pass the core's validation; this only keeps a bad view from looping.
+    if (seen.has(feature.id)) return 0;
+    seen.add(feature.id);
+    const before = feature.dependsOn
+      .map((id) => byId.get(id))
+      .filter((f): f is F => f !== undefined)
+      .map((f) => stepOf(f, seen) + 1);
+    const value = Math.max(0, ...before);
+    step.set(feature.id, value);
+    return value;
+  };
+  const columns: F[][] = [];
+  for (const feature of features) {
+    const index = stepOf(feature, new Set());
+    const column = columns[index] ?? [];
+    column.push(feature);
+    columns[index] = column;
+  }
+  return columns.filter((column) => column.length > 0);
+}
+
+/** The workflow a feature runs: its own, or the initiative's on an older backend. */
+export const featureWorkflow = (
+  view: Pick<InitiativeView, "workflowId">,
+  feature: Pick<InitiativeFeature, "workflowId">,
+): string => feature.workflowId ?? view.workflowId ?? "sdd";
+
+/** Whether the backend reports per-feature workflows and sizes, so they can be changed. */
+export const configurableFeatures = (view: Pick<InitiativeView, "features">): boolean =>
+  view.features.length > 0 && view.features.every((f) => f.size !== undefined);
+
+/** The workflows a feature can run: they start without problems and change files. */
+export function featureWorkflowChoices<D extends { problems: string[]; writes: boolean }>(
+  definitions: readonly D[],
+): D[] {
+  return definitions.filter((d) => d.problems.length === 0 && d.writes);
+}
+
+/** Whether other features of the split build on this one, so it needs a workflow with a spec. */
+export const hasDependents = (
+  view: Pick<InitiativeView, "features">,
+  feature: Pick<InitiativeFeature, "id">,
+): boolean => view.features.some((f) => f.dependsOn.includes(feature.id));
+
+/** What the coordinator gets when a person starts an initiative from this screen. */
+export const COORDINATOR_INITIATIVE_PREFIX = "Plan this as an initiative: ";

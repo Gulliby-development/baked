@@ -39,6 +39,7 @@ import {
   planSizeProblem,
   type SplitEdit,
   SplitEditSchema,
+  sizeWeight,
   topologicalOrder,
   validateInitiativePlan,
 } from "./plan.js";
@@ -50,6 +51,13 @@ import {
   type InitiativeSettings,
   InitiativeStore,
 } from "./store.js";
+import {
+  assignFeatureWorkflows,
+  type FeatureWorkflow,
+  featureWorkflow,
+  featureWorkflowChoices,
+  planWorkflowProblems,
+} from "./workflows.js";
 
 export interface InitiativeStartRequest {
   commandId: string;
@@ -60,7 +68,7 @@ export interface InitiativeStartRequest {
   plan?: InitiativePlan;
   /** The policy every feature run starts from before its budget share. */
   policy: RunPolicy;
-  /** The workflow each feature runs; defaults to `sdd`. */
+  /** The workflow of a feature that names none; defaults to `sdd`. */
   workflowId?: string;
   /** The shared budget; omitted, it is derived from the policy (see `planBudget`). */
   budget?: BudgetLimits | null;
@@ -118,6 +126,11 @@ export interface FeatureView {
   dependsOn: string[];
   boundary: InitiativeFeature["boundary"];
   contract: string;
+  /** The workflow this feature's runs use: its own, or the initiative's default. */
+  workflowId: string;
+  size: NonNullable<InitiativeFeature["size"]>;
+  /** The budget share the feature starts with now; null once it has a run or before approval. */
+  share: UsageView | null;
   /** The workflow feature ID of this feature's runs. */
   runFeatureId: string;
   /** The GitHub issue the feature's runs start from and their delivery closes; null without one. */
@@ -170,13 +183,14 @@ export interface InitiativeView {
   planDigest: string | null;
   goals: string[];
   completionCriteria: string[];
+  /** The workflow of a feature that names none. */
   workflowId: string;
   /** The model feature runs start with; null uses the configured default model. */
   model: string | null;
   featureAutoApproval: InitiativeSettings["featureAutoApproval"];
   /**
-   * Feature runs that execute at once: 1 when the feature workflow runs inline, up to
-   * `workflows.maxParallelRuns` when it runs in worktrees.
+   * Feature runs that execute at once: 1 when a feature workflow runs inline, up to
+   * `workflows.maxParallelRuns` when every feature runs in a worktree.
    */
   parallelRuns: number;
   decompose: { runId: string; status: string; reason: string } | null;
@@ -188,8 +202,9 @@ export interface InitiativeView {
     /** Limits of open runs not spent yet; they are held back from the shares of later features. */
     reserved: UsageView;
     remaining: UsageView;
-    /** Features in the approved plan without a run yet; each gets an equal share. */
+    /** Features in the approved plan without a run yet; they share what remains by size. */
     unstartedFeatures: number;
+    /** The share of the next feature to start. */
     nextShare: UsageView | null;
     rule: string;
   };
@@ -212,17 +227,18 @@ export const runFeatureId = (initiativeId: string, featureId: string): string =>
 const decomposeFeatureId = (initiativeId: string): string => `${initiativeId}__decompose`;
 
 /**
- * The shared budget when the user sets none: the per-run limits of the policy times the number
- * of features plus one (the decompose run and later re-plans take the extra share).
+ * The shared budget when the user sets none: the per-run limits of the policy for every medium
+ * feature (half for a small one, double for a large one), plus one more (the decompose run and
+ * later re-plans take it).
  */
 export function planBudget(settings: InitiativeSettings, plan: InitiativePlan): BudgetLimitsValue {
   if (settings.budget) return settings.budget;
-  const factor = plan.features.length + 1;
+  const factor = plan.features.reduce((sum, f) => sum + sizeWeight(f), 0) / 2 + 1;
   const base = settings.basePolicy;
   return {
-    maxTotalTokens: base.maxTotalTokens * factor,
-    maxAgentCalls: base.maxAgentCalls * factor,
-    maxActiveMs: base.maxActiveMs * factor,
+    maxTotalTokens: Math.floor(base.maxTotalTokens * factor),
+    maxAgentCalls: Math.floor(base.maxAgentCalls * factor),
+    maxActiveMs: Math.floor(base.maxActiveMs * factor),
   };
 }
 
@@ -230,7 +246,7 @@ export function planBudget(settings: InitiativeSettings, plan: InitiativePlan): 
 export const MIN_SHARE = { maxTotalTokens: 1000, maxAgentCalls: 1, maxActiveMs: 1000 } as const;
 
 export const BUDGET_RULE =
-  "Each feature run starts with an equal share of the remaining shared budget, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included), divided by the features of the approved plan without a run. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000.";
+  "Each feature run starts with a share of the remaining shared budget weighted by its size (small 1, medium 2, large 4), rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included), times the feature's weight, divided by the weights of the features of the approved plan without a run. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000.";
 
 /** Digest a person approves for a plan revision: the plan, the budget and the frozen settings. */
 export function splitDigest(
@@ -255,10 +271,11 @@ export function splitDigest(
   });
 }
 
-const share = (remaining: UsageView, parts: number): UsageView => ({
-  tokens: Math.floor(remaining.tokens / parts),
-  calls: Math.floor(remaining.calls / parts),
-  activeMs: Math.floor(remaining.activeMs / parts),
+/** `weight` parts of `remaining` split into `parts` parts, rounded down. */
+const share = (remaining: UsageView, parts: number, weight = 1): UsageView => ({
+  tokens: Math.floor((remaining.tokens * weight) / parts),
+  calls: Math.floor((remaining.calls * weight) / parts),
+  activeMs: Math.floor((remaining.activeMs * weight) / parts),
 });
 const zero = (): UsageView => ({ tokens: 0, calls: 0, activeMs: 0 });
 const add = (a: UsageView, b: UsageView): UsageView => ({
@@ -311,9 +328,10 @@ export class InitiativeService {
         `Feature issues name features the split does not have: ${unknown.join(", ")}`,
       );
     if (request.plan) {
-      const plan = InitiativePlanSchema.parse(request.plan);
-      const problems = validateInitiativePlan(plan);
+      const given = InitiativePlanSchema.parse(request.plan);
+      const problems = validateInitiativePlan(given);
       if (problems.length) throw new WorkflowFault("INVALID_DEFINITION", problems.join("\n"));
+      const plan = this.fitWorkflows(given, settings, false);
       return this.store.transaction(() => {
         this.store.create({
           id,
@@ -370,7 +388,15 @@ export class InitiativeService {
             : `The split cannot be edited while the initiative is ${row.status}`,
         );
       const latest = this.store.plan(this.store.revision(id, row.plan_revision));
-      this.propose(id, applySplitEdit(latest, parsed), "user", parsed);
+      const edited = applySplitEdit(latest, parsed);
+      // Features the edit left as they were keep their settings, also those of a plan stored
+      // before features had workflows, so their runs are not superseded; the others are fitted.
+      const before = new Map(latest.features.map((f) => [f.id, featureDigest(f)] as const));
+      const keep = new Set(
+        edited.features.filter((f) => before.get(f.id) === featureDigest(f)).map((f) => f.id),
+      );
+      const next = this.fitWorkflows(edited, this.store.settings(row), false, keep);
+      this.propose(id, next, "user", parsed);
     });
   }
 
@@ -706,12 +732,7 @@ export class InitiativeService {
     let started = false;
     for (;;) {
       const ready = view.features.find((f) => f.state === "ready");
-      if (
-        !ready ||
-        runnable(view).length >= view.parallelRuns ||
-        shareTooSmall(view.budget.nextShare)
-      )
-        break;
+      if (!ready || runnable(view).length >= view.parallelRuns || shareTooSmall(ready.share)) break;
       await this.startFeature(id, ready.id);
       started = true;
       view = this.view(id);
@@ -728,28 +749,65 @@ export class InitiativeService {
     );
   }
 
-  /** 1 when the feature workflow runs inline; the workspace's parallel run cap in worktrees. */
-  private parallelRuns(settings: InitiativeSettings): number {
-    return this.executionMode(settings) === "worktree"
+  /**
+   * The workspace's parallel run cap when every feature runs in a worktree; 1 when any feature
+   * runs inline, since inline runs share the working copy.
+   */
+  private parallelRuns(
+    settings: InitiativeSettings,
+    plan: InitiativePlan | null,
+    facts: WorkflowFacts,
+  ): number {
+    const ids = plan?.features.length
+      ? plan.features.map((f) => featureWorkflowId(settings, f))
+      : [settings.workflowId];
+    return ids.every((wf) => this.executionMode(settings, wf, facts) === "worktree")
       ? (this.workflows.config.workflows?.maxParallelRuns ?? DEFAULT_MAX_PARALLEL_RUNS)
       : 1;
   }
 
-  /** The feature runs' execution mode, as `start` resolves it: the definition, then the policy. */
-  private executionMode(settings: InitiativeSettings): "inline" | "worktree" {
-    try {
-      const loaded = loadDefinition(
-        this.workflows.workspace,
-        settings.workflowId,
-        settings.basePolicy,
-      );
-      return (
-        (loaded.schemaVersion === 2 ? loaded.definition.execution : undefined) ??
-        executionModeOf(settings.basePolicy)
-      );
-    } catch {
-      return executionModeOf(settings.basePolicy);
-    }
+  /** A feature run's execution mode, as `start` resolves it: the definition, then the policy. */
+  private executionMode(
+    settings: InitiativeSettings,
+    workflowId: string,
+    facts: WorkflowFacts = this.workflowFacts(settings),
+  ): "inline" | "worktree" {
+    return facts(workflowId)?.execution ?? executionModeOf(settings.basePolicy);
+  }
+
+  /** Facts of the workflows feature runs use, read once per call site. */
+  private workflowFacts(settings: InitiativeSettings): WorkflowFacts {
+    const known = new Map<string, FeatureWorkflow | null>();
+    return (workflowId) => {
+      if (!known.has(workflowId))
+        known.set(
+          workflowId,
+          featureWorkflow(this.workflows.workspace, settings.basePolicy, workflowId),
+        );
+      return known.get(workflowId) ?? null;
+    };
+  }
+
+  /**
+   * The plan with a workflow and a size on every feature, refused when a workflow cannot run its
+   * feature. A decomposer's split (`replaceInvalid`) has a workflow that cannot run replaced.
+   */
+  private fitWorkflows(
+    plan: InitiativePlan,
+    settings: InitiativeSettings,
+    replaceInvalid: boolean,
+    keep?: ReadonlySet<string>,
+  ): InitiativePlan {
+    const choices = featureWorkflowChoices(this.workflows.workspace, settings.basePolicy, {
+      tiered: settings.featureAutoApproval !== null,
+    });
+    const fitted = assignFeatureWorkflows(plan, choices, settings.workflowId, {
+      replaceInvalid,
+      ...(keep ? { keep } : {}),
+    });
+    const problems = planWorkflowProblems(fitted, choices);
+    if (problems.length) throw new WorkflowFault("INVALID_DEFINITION", problems.join("\n"));
+    return fitted;
   }
 
   /**
@@ -762,7 +820,11 @@ export class InitiativeService {
     feature: InitiativeFeature,
     settings: InitiativeSettings,
   ): Promise<string | undefined> {
-    if (this.executionMode(settings) !== "worktree" || !feature.dependsOn.length) return undefined;
+    if (
+      this.executionMode(settings, featureWorkflowId(settings, feature)) !== "worktree" ||
+      !feature.dependsOn.length
+    )
+      return undefined;
     const commits = feature.dependsOn.map((upstream) => {
       const link = this.store.current(id, upstream);
       const commit = link ? this.workflows.store.state(link.run_id).worktree?.commit : null;
@@ -799,9 +861,17 @@ export class InitiativeService {
     const state = this.workflows.store.state(row.decompose_run_id ?? "");
     if (!state.initiativePlan)
       throw new WorkflowFault("ARTIFACT_MISSING", "The decompose run has no initiative plan");
-    const plan = InitiativePlanSchema.parse(JSON.parse(state.initiativePlan));
+    const proposed = InitiativePlanSchema.parse(JSON.parse(state.initiativePlan));
+    const settings = this.store.settings(row);
+    let plan = proposed;
+    let unfit: string | null = null;
+    try {
+      plan = this.fitWorkflows(proposed, settings, true);
+    } catch (error) {
+      unfit = error instanceof Error ? error.message : String(error);
+    }
     this.store.transaction(() => {
-      const size = planSizeProblem(plan);
+      const size = planSizeProblem(plan) ?? unfit;
       if (size) {
         this.store.emit(id, "split.refused", {
           reason: size,
@@ -822,7 +892,7 @@ export class InitiativeService {
     if (!plan || !feature) throw new WorkflowFault("NOT_FOUND", `Unknown feature ${featureId}`);
     const settings = this.store.settings(row);
     const upstream = this.upstreamContracts(id, feature);
-    const share = this.view(id).budget.nextShare;
+    const share = this.view(id).features.find((f) => f.id === featureId)?.share;
     if (!share) throw new WorkflowFault("BUDGET_EXHAUSTED", "No budget share is available");
     const previous = this.store.links(id).filter((l) => l.feature_id === featureId).length;
     const runFeature = runFeatureId(id, featureId);
@@ -830,7 +900,7 @@ export class InitiativeService {
     // A derived command ID makes a start after a crash return the same run instead of a second one.
     const snapshot = await this.workflows.start({
       commandId: `i-${hashJson({ id, featureId, previous, revision: row.approved_plan_revision }).slice(0, 48)}`,
-      workflowId: settings.workflowId,
+      workflowId: featureWorkflowId(settings, feature),
       featureId: runFeature,
       prompt: featurePrompt(row, plan, feature, upstream),
       policy: featurePolicy(settings, share, feature, false),
@@ -895,19 +965,26 @@ export class InitiativeService {
         this.workflows.store.invalidateEvidence(link.run_id, oldState.snapshotId, "input_changed");
     });
     // The rebased run shares what is left with the features that have not started yet.
-    const budget = this.view(id).budget;
-    const rebaseShare = share(budget.remaining, budget.unstartedFeatures + 1);
+    const current = this.view(id);
+    const unstartedWeight = current.features
+      .filter((f) => f.share !== null)
+      .reduce((sum, f) => sum + sizeWeight(f), 0);
+    const rebaseShare = share(
+      current.budget.remaining,
+      unstartedWeight + sizeWeight(feature),
+      sizeWeight(feature),
+    );
     const dependencies = upstream.map((u) => ({
       featureId: u.contract.featureId,
       contractHash: u.contract.contractHash,
     }));
     const baseCommit = await this.featureBase(id, feature, settings);
-    const current = this.workflows.store.run(link.run_id);
+    const open = this.workflows.store.run(link.run_id);
     const snapshot = await this.workflows.rebase(
       link.run_id,
       {
         commandId: `r-${hashJson({ runId: link.run_id, dependencies }).slice(0, 48)}`,
-        expectedRevision: current.revision,
+        expectedRevision: open.revision,
       },
       {
         dependencies,
@@ -982,7 +1059,8 @@ export class InitiativeService {
     const latestPlan = latest ? this.store.plan(latest) : null;
     const approved = this.approvedPlan(row);
     const plan = approved ?? latestPlan;
-    const features = plan ? this.featureViews(row, plan, approved !== null) : [];
+    const facts = this.workflowFacts(settings);
+    const features = plan ? this.featureViews(row, plan, approved !== null, facts) : [];
     const decompose = row.decompose_run_id ? this.workflows.store.run(row.decompose_run_id) : null;
     const runIds = [
       ...(decompose ? [decompose.id] : []),
@@ -996,8 +1074,14 @@ export class InitiativeService {
       calls: Math.max(0, limits.maxAgentCalls - committed.calls),
       activeMs: Math.max(0, limits.maxActiveMs - committed.activeMs),
     };
-    const unstarted = approved ? features.filter((f) => f.runId === null).length : 0;
-    const nextShare = unstarted ? share(remaining, unstarted) : null;
+    // Features without a run share what remains, each by the weight of its size.
+    const waitingForRun = approved ? features.filter((f) => f.runId === null) : [];
+    const weights = waitingForRun.reduce((sum, f) => sum + sizeWeight(f), 0);
+    for (const feature of waitingForRun)
+      feature.share = share(remaining, weights, sizeWeight(feature));
+    const unstarted = waitingForRun.length;
+    const nextShare =
+      (waitingForRun.find((f) => f.state === "ready") ?? waitingForRun[0])?.share ?? null;
     const pendingDecisions: PendingDecision[] = [
       ...this.store
         .requests(id)
@@ -1029,7 +1113,7 @@ export class InitiativeService {
       workflowId: settings.workflowId,
       model: settings.model,
       featureAutoApproval: settings.featureAutoApproval,
-      parallelRuns: this.parallelRuns(settings),
+      parallelRuns: this.parallelRuns(settings, plan, facts),
       decompose: decompose
         ? { runId: decompose.id, status: decompose.status, reason: decompose.reason }
         : null,
@@ -1138,7 +1222,7 @@ export class InitiativeService {
       if (feature.state === "stale")
         return action("rebase", `Rebase ${feature.id} on the changed upstream contract`, feature);
       if (feature.state !== "ready") continue;
-      const share = view.budget.nextShare;
+      const share = feature.share;
       if (shareTooSmall(share))
         return action(
           "blocked",
@@ -1157,10 +1241,17 @@ export class InitiativeService {
     );
   }
 
-  private featureViews(row: InitiativeRow, plan: InitiativePlan, approved: boolean): FeatureView[] {
+  private featureViews(
+    row: InitiativeRow,
+    plan: InitiativePlan,
+    approved: boolean,
+    facts: WorkflowFacts,
+  ): FeatureView[] {
     const views = new Map<string, FeatureView>();
-    const issues = this.store.settings(row).featureIssues;
+    const settings = this.store.settings(row);
+    const issues = settings.featureIssues;
     for (const feature of topologicalOrder(plan)) {
+      const workflowId = featureWorkflowId(settings, feature);
       const runFeature = runFeatureId(row.id, feature.id);
       const runs = this.store.links(row.id).filter((l) => l.feature_id === feature.id);
       const view: FeatureView = {
@@ -1170,6 +1261,9 @@ export class InitiativeService {
         dependsOn: feature.dependsOn,
         boundary: feature.boundary,
         contract: feature.contract,
+        workflowId,
+        size: feature.size ?? "medium",
+        share: null,
         runFeatureId: runFeature,
         issue: issues[feature.id] ?? null,
         state: "proposed",
@@ -1214,8 +1308,11 @@ export class InitiativeService {
           (u) =>
             `${u.id}'s contract changed since this run was planned; the plan must be re-approved`,
         );
+      // A workflow without a spec gives no contract; nothing depends on such a feature, so its
+      // verified result is its acceptance.
+      const specless = facts(workflowId)?.contract === false;
       if (run.status === "completed") {
-        const accepted = acceptedContract(this.workflows.store, runFeature);
+        const accepted = specless ? null : acceptedContract(this.workflows.store, runFeature);
         if (waiting.length) {
           view.state = "waiting";
           view.blockers = [
@@ -1225,6 +1322,10 @@ export class InitiativeService {
         } else if (changed.length) {
           view.state = "stale";
           view.blockers = changed;
+        } else if (specless) {
+          view.state = run.verificationState === "current" ? "accepted" : "stale";
+          if (view.state === "stale")
+            view.blockers = [`the result's verification is ${run.verificationState}`];
         } else if (accepted?.runId !== link.run_id) {
           view.state = "blocked";
           view.blockers = [
@@ -1386,6 +1487,12 @@ export class InitiativeService {
     });
   }
 }
+
+type WorkflowFacts = (workflowId: string) => FeatureWorkflow | null;
+
+/** The workflow a feature's runs use: its own, or the initiative's default. */
+const featureWorkflowId = (settings: InitiativeSettings, feature: InitiativeFeature): string =>
+  feature.workflow ?? settings.workflowId;
 
 function describe(view: FeatureView): string {
   switch (view.state) {

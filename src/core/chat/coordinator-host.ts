@@ -156,12 +156,20 @@ export function clientLauncher(
             },
           );
       }),
-    startInitiative: async ({ initiativeId, prompt, plan, approveSplit, featureIssues }) => {
+    startInitiative: async ({
+      initiativeId,
+      prompt,
+      plan,
+      approveSplit,
+      featureIssues,
+      worktree,
+    }) => {
       let view = await client.startInitiative({
         initiativeId,
         prompt,
         ...(plan ? { plan } : {}),
         ...(featureIssues ? { featureIssues } : {}),
+        ...(worktree ? { worktree } : {}),
       });
       const split = view.pendingDecisions.find((d) => d.kind === "split_approval");
       if (approveSplit && split)

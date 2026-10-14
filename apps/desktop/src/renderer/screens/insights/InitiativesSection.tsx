@@ -1,14 +1,18 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { chat } from "../../client/chat.js";
-import type { InitiativeFeature, InitiativeView } from "../../client/insights.js";
+import type { FeatureSize, InitiativeFeature, InitiativeView } from "../../client/insights.js";
 import { insights } from "../../client/insights.js";
 import { Alert } from "../../components/ui/alert.js";
+import { Badge } from "../../components/ui/badge.js";
 import { Button } from "../../components/ui/button.js";
 import { Empty } from "../../components/ui/empty.js";
 import { ModelPicker, useModelCatalog } from "../../components/ui/model-picker.js";
+import { Segment, SegmentGroup } from "../../components/ui/segmented.js";
+import { Textarea } from "../../components/ui/textarea.js";
 import { tokens } from "../../format.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
+import { putDraft } from "../start/drafts.js";
 import {
   ExtendDialog,
   FormDialog,
@@ -16,16 +20,21 @@ import {
   RejectDialog,
   RenameDialog,
   SplitDialog,
+  WorkflowDialog,
 } from "./InitiativeDialogs.js";
 import {
+  COORDINATOR_INITIATIVE_PREFIX,
   canEditSplit,
   canExtendBudget,
   canRemoveFeature,
   canReplanFeature,
   canSplitFeature,
   canSwitchModel,
+  configurableFeatures,
   featureCounts,
   featureRow,
+  featureSteps,
+  featureWorkflow,
   initiativeLine,
   initiativeStatus,
   splitApproval,
@@ -130,7 +139,7 @@ function ModelSwitch({
 /** The dialog the initiative detail shows, if any. */
 type Open =
   | { kind: "reject" | "merge" | "extend" }
-  | { kind: "rename" | "split" | "remove" | "replan"; feature: InitiativeFeature };
+  | { kind: "rename" | "split" | "remove" | "replan" | "workflow"; feature: InitiativeFeature };
 
 /** The actions of one feature row: split edits while the split is editable, then re-plan. */
 function FeatureActions({
@@ -145,7 +154,7 @@ function FeatureActions({
   const editable = canEditSplit(view);
   const replan = canReplanFeature(view, feature);
   if (!editable && !replan) return null;
-  const action = (kind: "rename" | "split" | "remove" | "replan", label: string) => (
+  const action = (kind: "rename" | "split" | "remove" | "replan" | "workflow", label: string) => (
     <Button
       variant="secondary"
       size="sm"
@@ -158,11 +167,175 @@ function FeatureActions({
   );
   return (
     <span className="flex flex-wrap gap-1.5">
+      {editable && configurableFeatures(view) && action("workflow", "Workflow")}
       {editable && action("rename", "Rename")}
       {editable && canSplitFeature(view) && action("split", "Split")}
       {editable && canRemoveFeature(view) && action("remove", "Remove")}
       {replan && action("replan", "Re-plan")}
     </span>
+  );
+}
+
+const SIZES: readonly FeatureSize[] = ["small", "medium", "large"];
+
+/** One feature on the board: what it is, the workflow it runs, where it stands and what to do. */
+function FeatureCard({
+  projectKey,
+  view,
+  feature,
+  picked,
+  busy,
+  onPick,
+  onSize,
+  open,
+}: {
+  projectKey: string;
+  view: InitiativeView;
+  feature: InitiativeFeature;
+  /** Whether it is selected for a merge; null while the split cannot be edited. */
+  picked: boolean | null;
+  busy: boolean;
+  onPick: (on: boolean) => void;
+  onSize: (size: FeatureSize) => void;
+  open: (dialog: Open) => void;
+}) {
+  const row = featureRow(feature);
+  const configurable = picked !== null && configurableFeatures(view);
+  return (
+    <li
+      className={`flex flex-col gap-2 shadow-sm-hard ${PANEL} ${TONE_TEXT[row.tone]} ${FEATURE_TONE[row.tone]}`}
+      aria-label={feature.title}
+    >
+      <div className="flex items-start gap-2">
+        {picked !== null && (
+          <input
+            type="checkbox"
+            className="mt-[3px] size-4"
+            checked={picked}
+            aria-label={`Select ${feature.title} to merge`}
+            onChange={(e) => onPick(e.target.checked)}
+          />
+        )}
+        <span
+          className={`font-mono ${row.tone === "busy" ? "text-[color:var(--accent)]" : ""}`}
+          aria-hidden="true"
+        >
+          {row.mark}
+        </span>
+        <span className={`min-w-0 flex-1 ${row.tone === "muted" ? "" : "text-foreground"}`}>
+          {feature.title}
+          {!feature.mandatory && <span className="text-dim-foreground"> (optional)</span>}
+          <span className="block font-mono text-[12px] text-dim-foreground">{feature.id}</span>
+        </span>
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Badge tone={featureWorkflow(view, feature) === "sdd" ? "neutral" : "info"}>
+          {featureWorkflow(view, feature)}
+        </Badge>
+        {feature.size && !configurable && <Badge>{feature.size}</Badge>}
+        <span className="text-[12px]">{row.label}</span>
+      </div>
+      {configurable && feature.size && (
+        <SegmentGroup aria-label={`Size of ${feature.title}`}>
+          {SIZES.map((size) => (
+            <Segment
+              key={size}
+              className="min-h-[26px] px-[10px] text-[12px]"
+              aria-pressed={feature.size === size}
+              disabled={busy}
+              onClick={() => feature.size !== size && onSize(size)}
+            >
+              {size}
+            </Segment>
+          ))}
+        </SegmentGroup>
+      )}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px]">
+        {feature.usage.tokens > 0 && (
+          <span className="font-mono text-dim-foreground">{tokens(feature.usage.tokens)} used</span>
+        )}
+        {feature.share && feature.usage.tokens === 0 && (
+          <span className="font-mono text-dim-foreground">
+            starts with {tokens(feature.share.tokens)}
+          </span>
+        )}
+        {feature.issue && (
+          <a
+            className="font-mono"
+            href={feature.issue.url}
+            target="_blank"
+            rel="noreferrer"
+            aria-label={`Issue of ${feature.title}`}
+          >
+            {`${feature.issue.repository}#${feature.issue.number}`}
+          </a>
+        )}
+        {row.link && feature.runId && (
+          <a
+            className="text-[13px]"
+            href={projectHref(projectKey, "runs", feature.runId)}
+            aria-label={`${row.link}: ${feature.title}`}
+          >
+            {row.link}
+          </a>
+        )}
+      </div>
+      <FeatureActions view={view} feature={feature} open={open} />
+    </li>
+  );
+}
+
+/**
+ * The features as a board: one column per step of the dependency graph, so a column starts once
+ * the columns to its left are done, and features in one column can run side by side.
+ */
+function FeatureBoard({
+  projectKey,
+  view,
+  selected,
+  busy,
+  onPick,
+  onSize,
+  open,
+}: {
+  projectKey: string;
+  view: InitiativeView;
+  /** Features selected for a merge; null while the split cannot be edited. */
+  selected: readonly string[] | null;
+  busy: boolean;
+  onPick: (featureId: string, on: boolean) => void;
+  onSize: (feature: InitiativeFeature, size: FeatureSize) => void;
+  open: (dialog: Open) => void;
+}) {
+  const steps = featureSteps(view.features);
+  return (
+    <section
+      className="grid auto-cols-[minmax(240px,1fr)] grid-flow-col gap-4 overflow-x-auto pb-2"
+      aria-label="Features"
+    >
+      {steps.map((column, index) => (
+        <section key={column[0]?.id ?? index} className="flex min-w-0 flex-col gap-2">
+          <h3 className="m-0 font-mono text-[11px] font-semibold uppercase tracking-wider text-dim-foreground">
+            {index === 0 ? "Step 1 · starts first" : `Step ${index + 1} · after step ${index}`}
+          </h3>
+          <ol className="m-0 flex list-none flex-col gap-2 p-0">
+            {column.map((feature) => (
+              <FeatureCard
+                key={feature.id}
+                projectKey={projectKey}
+                view={view}
+                feature={feature}
+                picked={selected ? selected.includes(feature.id) : null}
+                busy={busy}
+                onPick={(on) => onPick(feature.id, on)}
+                onSize={(size) => onSize(feature, size)}
+                open={open}
+              />
+            ))}
+          </ol>
+        </section>
+      ))}
+    </section>
   );
 }
 
@@ -332,72 +505,19 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
       {counts.total === 0 ? (
         <Empty>{view.next.message || "No features yet."}</Empty>
       ) : (
-        <ol className="m-0 flex max-w-[900px] list-none flex-col gap-2 p-0" aria-label="Features">
-          {view.features.map((feature) => {
-            const row = featureRow(feature);
-            return (
-              <li
-                key={feature.id}
-                className={`flex flex-wrap items-center gap-3 shadow-sm-hard ${PANEL} ${TONE_TEXT[row.tone]} ${FEATURE_TONE[row.tone]}`}
-              >
-                {editable && (
-                  <input
-                    type="checkbox"
-                    className="size-4"
-                    checked={selected.includes(feature.id)}
-                    aria-label={`Select ${feature.title} to merge`}
-                    onChange={(e) =>
-                      setPicked(
-                        e.target.checked
-                          ? [...selected, feature.id]
-                          : selected.filter((fid) => fid !== feature.id),
-                      )
-                    }
-                  />
-                )}
-                <span
-                  className={`font-mono ${row.tone === "busy" ? "text-[color:var(--accent)]" : ""}`}
-                  aria-hidden="true"
-                >
-                  {row.mark}
-                </span>
-                <span
-                  className={`min-w-[200px] flex-1 ${row.tone === "muted" ? "" : "text-foreground"}`}
-                >
-                  {feature.title}{" "}
-                  <span className="font-mono text-[12px] text-dim-foreground">{feature.id}</span>
-                </span>
-                <span className="text-[12px]">{row.label}</span>
-                {feature.usage.tokens > 0 && (
-                  <span className="font-mono text-[12px] text-dim-foreground">
-                    {tokens(feature.usage.tokens)}
-                  </span>
-                )}
-                {feature.issue && (
-                  <a
-                    className="font-mono text-[12px]"
-                    href={feature.issue.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    aria-label={`Issue of ${feature.title}`}
-                  >
-                    {`${feature.issue.repository}#${feature.issue.number}`}
-                  </a>
-                )}
-                {row.link && feature.runId && (
-                  <a
-                    className="text-[13px]"
-                    href={projectHref(projectKey, "runs", feature.runId)}
-                    aria-label={`${row.link}: ${feature.title}`}
-                  >
-                    {row.link}
-                  </a>
-                )}
-                <FeatureActions view={view} feature={feature} open={setDialog} />
-              </li>
-            );
-          })}
-        </ol>
+        <FeatureBoard
+          projectKey={projectKey}
+          view={view}
+          selected={editable ? selected : null}
+          busy={busy}
+          onPick={(fid, on) =>
+            setPicked(on ? [...selected, fid] : selected.filter((other) => other !== fid))
+          }
+          onSize={(feature, size) =>
+            void act((v) => insights.configureFeature(projectKey, v, feature.id, { size }))()
+          }
+          open={setDialog}
+        />
       )}
       <ModelSwitch projectKey={projectKey} view={view} onDone={reload} />
       <div className="flex flex-wrap items-center gap-3">
@@ -430,6 +550,14 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
       )}
       {dialog?.kind === "rename" && (
         <RenameDialog
+          projectKey={projectKey}
+          view={view}
+          feature={dialog.feature}
+          onClose={close}
+        />
+      )}
+      {dialog?.kind === "workflow" && (
+        <WorkflowDialog
           projectKey={projectKey}
           view={view}
           feature={dialog.feature}
@@ -472,64 +600,134 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
   );
 }
 
+/**
+ * Where an initiative starts: the person describes the big idea and the coordinator plans it as
+ * an initiative, so it can ask what is unclear first. Starting without the coordinator opens the
+ * full form (workflow, model, budget, tiered approval).
+ */
+function IdeaBox({
+  projectKey,
+  onDirect,
+  onCancel,
+}: {
+  projectKey: string;
+  onDirect: () => void;
+  onCancel?: () => void;
+}) {
+  const id = useId();
+  const [idea, setIdea] = useState("");
+  const plan = (): void => {
+    putDraft("coordinator", projectKey, `${COORDINATOR_INITIATIVE_PREFIX}${idea.trim()}`);
+    window.location.hash = projectHref(projectKey, "coordinator");
+  };
+  return (
+    <form
+      className={`flex max-w-[760px] flex-col gap-3 shadow-sm-hard ${PANEL} border-border bg-background`}
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (idea.trim()) plan();
+      }}
+    >
+      <label htmlFor={id} className="text-[15px] font-semibold text-foreground">
+        What is the big idea?
+      </label>
+      <p className="m-0 text-[13px] text-muted-foreground leading-[1.6]">
+        An initiative takes one large goal, splits it into features of a good size, and runs each
+        under the workflow that fits it: a light one for small changes, a thorough one for risky
+        work. Independent features run side by side. You approve the split before anything runs.
+      </p>
+      <Textarea
+        id={id}
+        rows={4}
+        value={idea}
+        placeholder="Describe the outcome and how you will know it works."
+        onChange={(e) => setIdea(e.target.value)}
+      />
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="submit" variant="primary" size="md" disabled={!idea.trim()}>
+          Plan it with the coordinator
+        </Button>
+        <Button type="button" variant="secondary" size="md" onClick={onDirect}>
+          Start without the coordinator
+        </Button>
+        {onCancel && (
+          <Button type="button" variant="secondary" size="md" onClick={onCancel}>
+            Cancel
+          </Button>
+        )}
+      </div>
+    </form>
+  );
+}
+
 export function InitiativesSection({ project, id }: SectionProps) {
   const { state, reload } = useLoad(
     () => insights.initiatives(project.key),
     [project.key, "initiatives"],
   );
   const [creating, setCreating] = useState(false);
+  const [direct, setDirect] = useState(false);
   if (state.kind !== "ready") return <LoadState state={state} what="Initiatives" />;
   const items = state.data;
-  const newDialog = creating && (
+  const newDialog = direct && (
     <NewInitiativeDialog
       projectKey={project.key}
       onClose={(done) => {
-        setCreating(false);
+        setDirect(false);
         if (done) reload();
       }}
     />
   );
-  const newButton = (
-    <Button variant="primary" size="md" className="self-start" onClick={() => setCreating(true)}>
-      New initiative
-    </Button>
-  );
   if (items.length === 0)
     return (
-      <Empty>
-        <span className="flex flex-col items-center gap-3">
-          No initiatives in this project yet. An initiative splits a large request into features
-          that run as separate workflow runs.
-          {newButton}
-        </span>
+      <>
+        <IdeaBox projectKey={project.key} onDirect={() => setDirect(true)} />
         {newDialog}
-      </Empty>
+      </>
     );
   const selected = id ?? items[0]?.initiativeId ?? null;
   return (
-    <div className="flex flex-wrap items-start gap-6">
+    <div className="flex flex-col gap-6">
       {newDialog}
-      <nav
-        className="flex max-w-[340px] flex-[1_1_260px] flex-col gap-[10px]"
-        aria-label="Initiatives"
-      >
-        {newButton}
-        {items.map((item) => {
-          const tone = initiativeStatus(item.status).tone;
-          return (
-            <a
-              key={item.initiativeId}
-              className={`flex flex-col gap-1 ${PANEL} border-border bg-background text-soft-foreground no-underline hover:bg-hover hover:text-soft-foreground aria-[current=page]:bg-hover aria-[current=page]:shadow-sm-hard`}
-              href={projectHref(project.key, "initiatives", item.initiativeId)}
-              aria-current={item.initiativeId === selected ? "page" : undefined}
+      {creating && (
+        <IdeaBox
+          projectKey={project.key}
+          onDirect={() => setDirect(true)}
+          onCancel={() => setCreating(false)}
+        />
+      )}
+      <div className="flex flex-wrap items-start gap-6">
+        <nav
+          className="flex max-w-[340px] flex-[1_1_260px] flex-col gap-[10px]"
+          aria-label="Initiatives"
+        >
+          {!creating && (
+            <Button
+              variant="primary"
+              size="md"
+              className="self-start"
+              onClick={() => setCreating(true)}
             >
-              <span className="font-semibold text-foreground">{item.title}</span>
-              <span className={`text-[12px] ${TONE_TEXT[tone]}`}>{initiativeLine(item)}</span>
-            </a>
-          );
-        })}
-      </nav>
-      {selected && <Detail projectKey={project.key} id={selected} />}
+              New initiative
+            </Button>
+          )}
+          {items.map((item) => {
+            const tone = initiativeStatus(item.status).tone;
+            return (
+              <a
+                key={item.initiativeId}
+                className={`flex flex-col gap-1 ${PANEL} border-border bg-background text-soft-foreground no-underline hover:bg-hover hover:text-soft-foreground aria-[current=page]:bg-hover aria-[current=page]:shadow-sm-hard`}
+                href={projectHref(project.key, "initiatives", item.initiativeId)}
+                aria-current={item.initiativeId === selected ? "page" : undefined}
+              >
+                <span className="font-semibold text-foreground">{item.title}</span>
+                <span className={`text-[12px] ${TONE_TEXT[tone]}`}>{initiativeLine(item)}</span>
+              </a>
+            );
+          })}
+        </nav>
+        {selected && <Detail projectKey={project.key} id={selected} />}
+      </div>
     </div>
   );
 }

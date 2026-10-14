@@ -196,6 +196,8 @@ export type ChatPrompt = { id: string; createdAt: number } & (
         dependsOn: string[];
         /** The issue (`owner/name#N`), `new issue` or `local task`; missing from older servers. */
         task?: string;
+        /** The workflow the flow runs; missing for chats and from older servers. */
+        workflow?: string;
       }[];
       digest: string;
     }

@@ -455,7 +455,7 @@ describe("coordinator starts parallel chats", () => {
 });
 
 describe("coordinator splits", () => {
-  test("independent flows run in parallel worktrees; any dependency makes one initiative", () => {
+  test("two independent flows run in parallel worktrees; three or more make one initiative", () => {
     expect(pathsOverlap("src/api/**", "src/api/cart.ts")).toBe(true);
     expect(pathsOverlap("src/api/**", "src/ui/**")).toBe(false);
     expect(pathsOverlap("**/*.ts", "docs/a.md")).toBe(true);
@@ -465,6 +465,8 @@ describe("coordinator splits", () => {
     expect(splitShape(split([flow("api", ["src/api/**"]), flow("ui", ["src/ui/**"], ["api"])]))).toMatchObject({ problem: expect.stringContaining("at least 3") });
     expect(splitShape(split([flow("api", ["src/api/**"]), flow("ui", ["src/ui/**"], ["api"]), flow("docs", ["docs/**"])]))).toMatchObject({ mode: "initiative" });
     expect(splitShape(split([flow("api", ["a"], ["ui"]), flow("ui", ["b"], ["api"]), flow("docs", ["c"])]))).toMatchObject({ problem: expect.stringContaining("ycle") });
+    // Independent flows too: the initiative runs them side by side, each under its own workflow.
+    expect(splitShape(split([flow("api", ["src/api/**"]), flow("ui", ["src/ui/**"]), flow("docs", ["docs/**"])]))).toMatchObject({ mode: "initiative" });
   });
 
   test("an approved split starts its flows and records the decision; a stale digest is refused", async () => {
@@ -504,20 +506,28 @@ describe("coordinator splits", () => {
   test("a split with dependencies starts one initiative whose split is already approved", async () => {
     const { chat, coordinator, tool, server } = await setup(5);
     const pending = tool("propose_split").execute(
-      split([flow("api", ["src/api/**"]), flow("ui", ["src/ui/**"], ["api"]), flow("docs", ["docs/**"])]) as unknown as Record<string, unknown>,
+      split([flow("api", ["src/api/**"]), flow("ui", ["src/ui/**"], ["api"]), { ...flow("docs", ["docs/**"]), workflow: "quick" }]) as unknown as Record<string, unknown>,
     );
     await Bun.sleep(10);
     const card = coordinator.pendingPrompts[0];
     if (!card || card.kind !== "split") throw new Error("no split card");
     expect(card.mode).toBe("initiative");
+    expect(card.flows.find((f) => f.id === "docs")?.workflow).toBe("quick");
     coordinator.answer(card.id, { approve: true, digest: card.digest });
     expect(await pending).toMatchObject({ success: true });
     const launched = new BriefStore(chat.workspace, coordinator.id).read().launched;
     expect(launched.map((l) => [l.kind, l.id])).toEqual([["initiative", "checkout"]]);
     const view = (await (
       await fetch(`${server.url}/v1/initiatives/checkout`, { headers: { Authorization: `Bearer ${server.token}` } })
-    ).json()) as { approvedPlanRevision: number | null; pendingDecisions: { kind: string }[] };
+    ).json()) as {
+      approvedPlanRevision: number | null;
+      pendingDecisions: { kind: string }[];
+      features: { id: string; workflowId: string }[];
+    };
     expect(view.approvedPlanRevision).not.toBeNull();
+    // The flow's own workflow is kept; flows that name none get the one that fits them.
+    expect(view.features.find((f) => f.id === "docs")?.workflowId).toBe("quick");
+    expect(view.features.find((f) => f.id === "api")?.workflowId).toBe("sdd");
     expect(view.pendingDecisions.filter((d) => d.kind === "split_approval")).toEqual([]);
   }, 60000);
 });

@@ -4,7 +4,7 @@ import type { FeatureView, InitiativeView } from "../../src/core/workflows/initi
 export function featureView(id: string, extra: Partial<FeatureView> = {}): FeatureView {
   return {
     id, title: `Feature ${id}`, mandatory: true, dependsOn: [], boundary: { scope: id, paths: [`${id}.txt`] },
-    contract: `${id}.txt exists`, runFeatureId: `big_${id}`, state: "ready", runId: null, runStatus: null, runReason: null,
+    contract: `${id}.txt exists`, workflowId: "sdd", size: "medium", share: null, runFeatureId: `big_${id}`, state: "ready", runId: null, runStatus: null, runReason: null,
     pinned: [], contractHash: null, blockers: [], pendingRequests: [], usage: { tokens: 0, calls: 0, activeMs: 0 }, runIds: [], ...extra,
   };
 }

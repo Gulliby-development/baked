@@ -1,10 +1,10 @@
 /**
- * Text typed on the project home that another screen picks up: the chat composer, the new run
- * form or the quick task form. Kept in sessionStorage per project, because a query string after
+ * Text typed on one screen that another screen picks up: the chat or coordinator composer, the
+ * new run form or the quick task form. Kept in sessionStorage per project, because a query string after
  * the hash route would not survive the router; a screen takes the draft once.
  */
 
-export type DraftTarget = "chat" | "run" | "quick";
+export type DraftTarget = "chat" | "coordinator" | "run" | "quick";
 
 const storageKey = (target: DraftTarget, projectKey: string): string =>
   `baked.draft.${target}.${projectKey}`;

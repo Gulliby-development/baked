@@ -1,6 +1,7 @@
 import { type FormEvent, type ReactNode, useId, useState } from "react";
 import type { InitiativeFeature, InitiativeView, PendingDecision } from "../../client/insights.js";
 import { insights } from "../../client/insights.js";
+import { start } from "../../client/start.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
 import {
@@ -14,10 +15,15 @@ import { Input } from "../../components/ui/input.js";
 import { Label } from "../../components/ui/label.js";
 import { Textarea } from "../../components/ui/textarea.js";
 import { HINT, HINT_ERR } from "../start/form.js";
+import { RecipeChoice } from "../start/NewRunScreen.js";
+import { message, useLoad } from "../start/panels.js";
 import {
   type BudgetFields,
   budgetExtension,
   budgetFields,
+  featureWorkflow,
+  featureWorkflowChoices,
+  hasDependents,
   mergeProblem,
   type SplitRow,
   splitProblem,
@@ -136,6 +142,47 @@ export function RejectDialog({
           onChange={(e) => setReason(e.target.value)}
         />
       </div>
+    </FormDialog>
+  );
+}
+
+/**
+ * Picks the workflow a feature's runs use. A feature other features build on needs one that writes
+ * a spec, since its accepted spec is their contract; the core refuses others with that reason.
+ */
+export function WorkflowDialog({
+  projectKey,
+  view,
+  feature,
+  onClose,
+}: Props & { feature: InitiativeFeature }) {
+  const current = featureWorkflow(view, feature);
+  const [workflow, setWorkflow] = useState(current);
+  const definitions = useLoad(projectKey, "definitions", start.definitions);
+  const choices = featureWorkflowChoices(definitions.value ?? []);
+  return (
+    <FormDialog
+      title="Feature workflow"
+      description={
+        <>
+          The workflow <span className="font-mono">{feature.id}</span> runs under.
+          {hasDependents(view, feature)
+            ? " Other features build on its spec, so pick one that writes a spec, such as sdd."
+            : " Pick a light one for a small, low-risk change and a thorough one for risky work."}
+        </>
+      }
+      submitLabel="Use workflow"
+      problem={workflow === current ? "Pick another workflow to change it." : null}
+      onSubmit={() => insights.configureFeature(projectKey, view, feature.id, { workflow })}
+      onClose={onClose}
+    >
+      {definitions.error ? (
+        <span className={HINT_ERR}>Workflows: {message(definitions.error)}</span>
+      ) : definitions.value ? (
+        <RecipeChoice definitions={choices} value={workflow} onChange={(d) => setWorkflow(d.id)} />
+      ) : (
+        <span className={HINT}>Loading workflows…</span>
+      )}
     </FormDialog>
   );
 }

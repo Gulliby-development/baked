@@ -100,6 +100,8 @@ export interface ProjectLauncher {
     approveSplit?: boolean;
     /** The issue of each feature of `plan`; its runs start from it and delivery closes it. */
     featureIssues?: Record<string, IssueSource>;
+    /** Feature runs execute in worktrees, so independent features run side by side. */
+    worktree?: boolean;
   }): Promise<{ initiativeId: string }>;
   /** Issues for flows; without it every flow gets a local task. */
   tasks?: TaskTracker;
@@ -622,8 +624,10 @@ export function pathsOverlap(a: string, b: string): boolean {
 }
 
 /**
- * How a split runs, or why it cannot: flows without dependencies become runs in their own
- * worktrees and must not write the same paths; any dependency makes the split one initiative.
+ * How a split runs, or why it cannot. Three or more flows are one initiative: it orders flows
+ * that depend on each other, runs independent ones side by side in worktrees and gives each the
+ * workflow that fits it. Two independent flows become runs in their own worktrees and must not
+ * write the same paths.
  */
 export function splitShape(
   split: SplitRequest,
@@ -637,13 +641,11 @@ export function splitShape(
   };
   const problems = planStructureProblems(plan);
   if (problems.length) return { problem: problems.join("; ") };
-  if (split.flows.some((flow) => flow.dependsOn.length)) {
-    if (split.flows.length < MIN_FEATURES)
-      return {
-        problem: `Flows that depend on each other run as an initiative of at least ${MIN_FEATURES}; merge them into one run or add flows`,
-      };
-    return { mode: "initiative", plan };
-  }
+  if (split.flows.length >= MIN_FEATURES) return { mode: "initiative", plan };
+  if (split.flows.some((flow) => flow.dependsOn.length))
+    return {
+      problem: `Flows that depend on each other run as an initiative of at least ${MIN_FEATURES}; merge them into one run or add flows`,
+    };
   for (const [i, a] of split.flows.entries())
     for (const b of split.flows.slice(i + 1)) {
       if (!a.boundary.paths.length || !b.boundary.paths.length)
@@ -969,7 +971,7 @@ export function launchTools(
     }),
     start_initiative: tool({
       description:
-        "Start an initiative that splits a large goal into features, as `baked workflow initiative start` does. The user approves its split.",
+        "Start an initiative on one big idea when you cannot see its features yet: BAKED's decomposer splits it into 3 to 12 features, gives each the workflow and size that fit it, and the user approves the split on the Initiatives screen. When you can name the features, propose_split instead.",
       inputSchema: z.strictObject({
         id: z
           .string()
@@ -1127,7 +1129,7 @@ export function launchTools(
     }),
     propose_split: tool({
       description:
-        "Propose splitting a large request into flows the user approves as one card. Flows without dependsOn run as parallel workflow runs, each in its own worktree and branch, and must have disjoint boundary paths; if any flow depends on another, the whole split runs as one initiative (3 to 12 flows) that orders them. Waits for the user's answer, then launches everything at once.",
+        "Propose splitting a large request into flows the user approves as one card. Three to twelve flows run as one initiative: it orders flows by dependsOn, runs independent ones side by side in worktrees, and gives each flow the workflow that fits it (name one per flow with `workflow`, such as quick for a small low-risk change, and its `size` small, medium or large for its budget share; a flow others depend on needs a workflow that writes a spec, such as sdd). Two flows without dependsOn run as parallel workflow runs, each in its own worktree and branch, with disjoint boundary paths. Waits for the user's answer, then launches everything at once.",
       inputSchema: SplitInput,
       execute: async (split: SplitRequest) => {
         const off = offByStyle("workflow");
@@ -1163,6 +1165,7 @@ export function launchTools(
             paths: flow.boundary.paths,
             dependsOn: flow.dependsOn,
             task: taskLabel(planned[i] ?? "local"),
+            ...(flow.workflow ? { workflow: flow.workflow } : {}),
           })),
           digest,
         });
@@ -1214,6 +1217,8 @@ export function launchTools(
               prompt: split.title,
               plan: shape.plan,
               approveSplit: true,
+              // Independent features run side by side, as the runs of a split would.
+              worktree: true,
               ...(Object.keys(featureIssues).length ? { featureIssues } : {}),
             });
             entries.push({
@@ -1247,6 +1252,7 @@ export function launchTools(
               const issue = task && task.state !== "local" ? task.ref : undefined;
               const { runId } = await launcher.startRun({
                 prompt: flowPrompt(flow, split),
+                ...(flow.workflow ? { workflow: flow.workflow } : {}),
                 // From an issue the run is named after it, so reruns of the task group together.
                 ...(issue ? { issue } : { feature: `${split.id}-${flow.id}`.slice(0, 96) }),
                 worktree: true,
