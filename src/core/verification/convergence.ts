@@ -136,16 +136,43 @@ export function pathsInOutput(output: string, tasks: Task[]): string[] {
  * Planned files a check's output reports a failure in: the paths that start an unindented line,
  * as a compiler error (`tests/cli.test.ts(258,45): error TS2769`, `src/a.go:3:1: ...`), a test
  * runner's file header (`tests/cli.test.ts:`) or a `FAILED`/`FAIL` line. Indented lines (related
- * information, stack frames, code excerpts) only explain a failure located elsewhere.
+ * information, stack frames, code excerpts) only explain a failure located elsewhere, except the
+ * two forms test runners locate assertions with: `go test`'s indented `cli_test.go:42:` under a
+ * `--- FAIL`, and a Rust test's `panicked at tests/cli.rs:12:5`.
  */
 export function failingPathsInOutput(output: string, tasks: Task[]): string[] {
   const text = output.replaceAll("\\", "/");
   const paths = unique(tasks.flatMap((t) => t.writes.map((w) => w.path)));
-  return paths.filter((path) =>
-    new RegExp(
-      `^(?:(?:FAILED|FAIL|ERROR|error)[:\\s]\\s*)?(?:[A-Za-z]:)?(?:[^\\s:()]*/)?${escapeRegExp(path)}(?:[:(]|\\s|$)`,
-      "m",
-    ).test(text),
+  return paths.filter(
+    (path) =>
+      new RegExp(
+        `^(?:(?:FAILED|FAIL|ERROR|error)[:\\s]\\s*)?(?:[A-Za-z]:)?(?:[^\\s:()]*/)?${escapeRegExp(path)}(?:[:(]|\\s|$)`,
+        "m",
+      ).test(text) ||
+      new RegExp(`panicked at (?:[A-Za-z]:)?(?:[^\\s:]*/)?${escapeRegExp(path)}:\\d+`).test(text) ||
+      goAssertionIn(text, path, paths),
+  );
+}
+
+/**
+ * Whether `go test` output locates an assertion in the Go test file `path`. Go prints the file's
+ * base name only (`    cli_test.go:42: usage mismatch`), so the file counts when no other
+ * planned file has that name, or when a `FAIL` package line ends in the file's directory
+ * (centsplit-update 21e03a4e: the help test a dependent task updates became a corrective, #972).
+ */
+function goAssertionIn(text: string, path: string, paths: string[]): boolean {
+  if (!path.endsWith("_test.go")) return false;
+  const slash = path.lastIndexOf("/");
+  const name = path.slice(slash + 1);
+  if (!new RegExp(`^\\s+${escapeRegExp(name)}:\\d+:`, "m").test(text)) return false;
+  const namesakes = paths.filter((p) => p === name || p.endsWith(`/${name}`));
+  if (namesakes.length === 1) return true;
+  // Several planned files share the name: the `FAIL` package line (an import path) picks the one
+  // in that directory; a root-level file stays ambiguous.
+  if (slash < 0) return false;
+  const dir = path.slice(0, slash);
+  return [...text.matchAll(/^FAIL[ \t]+(\S+)/gm)].some(
+    (m) => m[1] === dir || m[1]?.endsWith(`/${dir}`),
   );
 }
 
