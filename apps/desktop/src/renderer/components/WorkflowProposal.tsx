@@ -2,7 +2,7 @@ import { StageChips } from "./WorkflowStages.js";
 
 /**
  * What a coordinator's "Run workflow?" card proposes: why, the workflow's stages, the request the
- * run starts with and why this workflow fits it.
+ * run starts with, the gates approving it saves, and why this workflow fits it.
  */
 export function WorkflowProposal({
   prompt,
@@ -17,6 +17,7 @@ export function WorkflowProposal({
     why: string;
     reason: string;
     issue?: string;
+    gates?: string[];
   };
   /** Drawn on a coloured prompt card: dark text with dimmed details, in both themes. */
   onCard?: boolean;
@@ -32,6 +33,18 @@ export function WorkflowProposal({
       >
         {prompt.prompt}
       </blockquote>
+      {prompt.gates && prompt.gates.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <p className="m-0 text-[12px] font-heading">Gates this run sets up</p>
+          <ul className="m-0 flex list-none flex-col gap-0.5 p-0 font-mono text-[12px]">
+            {prompt.gates.map((gate) => (
+              <li key={gate} className="wrap-anywhere">
+                {gate}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <p className={`m-0 text-[12px] ${dim}`}>
         {prompt.issue ? `From issue ${prompt.issue}. ` : ""}
         {prompt.writes ? "Changes files" : "Read only"}; why this workflow: {prompt.reason}. The run
