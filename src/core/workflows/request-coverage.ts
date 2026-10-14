@@ -99,3 +99,59 @@ export function deliverableProblems(spec: Spec, request: string): string[] {
   }
   return problems;
 }
+
+// A request sentence that turns something down: "No CI workflow is wanted", "without a GUI".
+const NEGATION = /\b(?:no|not|without|never|don't|do not|nor|skip|out of scope)\b/i;
+const sentences = (text: string): string[] =>
+  text
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+const contentWords = (text: string): string[] => [
+  ...new Set(normalize(text).match(/[a-z0-9]{4,}/g) ?? []),
+];
+
+/**
+ * The spec with each deliverable that has neither requirements nor an exclusion mapped by the
+ * host, instead of a whole new spec from the author (R19 logslice-update: "deliverable maps to no
+ * requirement" twice; #1037). An entry of the spec's outOfScope that quotes the request and names
+ * the deliverable becomes its exclusion; otherwise the requirements whose text holds the
+ * deliverable's words (all of them for a short quote, at least two) cover it; otherwise a
+ * sentence of the request that turns those words down becomes its exclusion. A deliverable none
+ * of these fits stays for the author.
+ */
+export function repairDeliverables(
+  spec: Spec,
+  request: string,
+): { spec: Spec; repaired: string[] } {
+  if (!request.trim() || !spec.deliverables?.length) return { spec, repaired: [] };
+  const repaired: string[] = [];
+  const deliverables = spec.deliverables.map((d) => {
+    if (d.requirementIds.length || d.outOfScope !== undefined) return d;
+    const wanted = contentWords(d.quote);
+    if (!wanted.length) return d;
+    const needed = Math.min(2, wanted.length);
+    const shared = (text: string): number => {
+      const have = new Set(contentWords(text));
+      return wanted.filter((w) => have.has(w)).length;
+    };
+    const exclusion = spec.outOfScope.find(
+      (entry) => quotesRequest(entry, request) && shared(entry) >= needed,
+    );
+    if (exclusion) {
+      repaired.push(d.quote);
+      return { ...d, outOfScope: exclusion };
+    }
+    const covering = spec.requirements.filter((r) => shared(r.text) >= needed).map((r) => r.id);
+    if (covering.length) {
+      repaired.push(d.quote);
+      return { ...d, requirementIds: covering };
+    }
+    const declined = sentences(request).find((s) => NEGATION.test(s) && shared(s) >= needed);
+    if (!declined) return d;
+    repaired.push(d.quote);
+    return { ...d, outOfScope: declined };
+  });
+  return repaired.length ? { spec: { ...spec, deliverables }, repaired } : { spec, repaired };
+}
