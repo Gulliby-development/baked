@@ -70,7 +70,7 @@ const kb = (bytes: number): string =>
 
 function TaskBox({ projectKey }: { projectKey: string }) {
   const [text, setText] = useState("");
-  const go = (target: DraftTarget): void => {
+  const go = (target: Exclude<DraftTarget, "coordinator">): void => {
     putDraft(target, projectKey, text);
     window.location.hash =
       target === "chat"

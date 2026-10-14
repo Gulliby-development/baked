@@ -74,7 +74,15 @@ export interface InitiativeFeature {
   contract?: string;
   /** The GitHub issue its runs start from and their delivery closes; absent on older backends. */
   issue?: { repository: string; number: number; url: string; title: string } | null;
+  /** The workflow its runs use; absent on older backends, where every feature uses the view's. */
+  workflowId?: string;
+  /** Its budget share is weighted by it; absent on older backends. */
+  size?: FeatureSize;
+  /** The share it starts with, while it has no run yet; absent on older backends. */
+  share?: UsageTotals | null;
 }
+
+export type FeatureSize = "small" | "medium" | "large";
 
 /** `GET /v1/initiatives/:id`, as `baked workflow initiative show` prints it. */
 export interface InitiativeView {
@@ -86,7 +94,7 @@ export interface InitiativeView {
   planRevision: number;
   /** The plan revision the split approval accepted; null before it. Absent on older backends. */
   approvedPlanRevision?: number | null;
-  /** The workflow each feature run uses; absent on older backends. */
+  /** The workflow of a feature that names none; absent on older backends. */
   workflowId?: string;
   /** Tiered approval of feature runs; null when every run waits for a person. */
   featureAutoApproval?: TieredApproval | null;
@@ -312,6 +320,13 @@ export const insights = {
     post(key, view, "remove", { feature }),
   renameFeature: (key: string, view: Ref, feature: string, title: string) =>
     post(key, view, "rename", { feature, title }),
+  /** Sets the workflow a feature runs, or its size; one per call. */
+  configureFeature: (
+    key: string,
+    view: Ref,
+    feature: string,
+    setting: { workflow: string } | { size: FeatureSize },
+  ) => post(key, view, "configure", { feature, ...setting }),
   /** Supersedes a feature's run with a new one under the approved plan. */
   replanFeature: (key: string, view: Ref, feature: string) =>
     post(key, view, "replan", { feature }),

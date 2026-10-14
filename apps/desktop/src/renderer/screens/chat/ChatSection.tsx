@@ -237,13 +237,17 @@ export function SessionView({
   const [rewindReport, setRewindReport] = useState<string[] | null>(null);
   // Undo of the last turn waits for the in-app confirmation.
   const [confirmUndo, setConfirmUndo] = useState(false);
-  // A task typed on the project home ("Ask in chat") starts the new session's composer.
-  const [initialText] = useState(() => (draft ? peekDraft("chat", key) : ""));
+  // A task typed on the project home ("Ask in chat") starts the new session's composer; a big
+  // idea from the Initiatives screen starts the coordinator's.
+  const [initialText] = useState(() =>
+    draft ? peekDraft("chat", key) : coordinator ? peekDraft("coordinator", key) : "",
+  );
   // Text put into the composer later, such as Edit on a split card; `n` remounts the composer.
   const [seed, setSeed] = useState({ text: "", n: 0 });
   useEffect(() => {
     if (draft) takeDraft("chat", key);
-  }, [draft, key]);
+    else if (coordinator) takeDraft("coordinator", key);
+  }, [draft, coordinator, key]);
 
   // Load the session and follow its events; a `reset` bumps the generation to start over.
   // biome-ignore lint/correctness/useExhaustiveDependencies: generation restarts the subscription

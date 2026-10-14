@@ -30,6 +30,9 @@ function feature(
     blockers: [],
     pendingRequests: [],
     usage: { tokens: started ? 240_000 : 0, calls: started ? 12 : 0, activeMs: 0 },
+    workflowId: "sdd",
+    size: "medium",
+    share: null,
     ...extra,
   };
 }
@@ -110,9 +113,14 @@ const INITIATIVES: Record<string, InitiativeView[]> = {
             },
           ],
         }),
-        feature("usage-reports", "Usage reports", "waiting", { dependsOn: ["run-view"] }),
+        feature("usage-reports", "Usage reports", "waiting", {
+          dependsOn: ["run-view"],
+          workflowId: "quick",
+          size: "small",
+        }),
         feature("installers", "Installers for Windows, macOS, Linux", "waiting", {
           dependsOn: ["app-shell"],
+          size: "large",
         }),
       ],
       "Waiting for a decision on run-view",
@@ -124,7 +132,10 @@ const INITIATIVES: Record<string, InitiativeView[]> = {
       ["Every workflow command scriptable from CI with JSON output and stable exit codes."],
       [
         feature("json-output", "JSON output for every command", "proposed"),
-        feature("exit-codes", "Stable exit codes", "proposed"),
+        feature("exit-codes", "Stable exit codes", "proposed", {
+          workflowId: "quick",
+          size: "small",
+        }),
         feature("ci-recipes", "CI recipes", "proposed", { dependsOn: ["json-output"] }),
         feature("non-interactive", "Non-interactive approvals", "proposed"),
       ],
@@ -245,6 +256,22 @@ function edited(view: InitiativeView, action: string, body: Body): InitiativeFea
           ? []
           : [{ ...f, dependsOn: f.dependsOn.map((d) => (ids.includes(d) ? id : d)) }],
     );
+  } else if (action === "configure") {
+    const target = find(body.feature);
+    const workflow = text(body.workflow);
+    const size = text(body.size);
+    if (!target || (!workflow && !size)) return "Name a feature and a workflow or a size";
+    if (workflow && workflow !== "sdd" && features.some((f) => f.dependsOn.includes(target.id)))
+      return `${target.id}: other features depend on it, so it needs a workflow that writes a spec (sdd), not ${workflow}`;
+    next = features.map((f) =>
+      f === target
+        ? {
+            ...f,
+            ...(workflow ? { workflowId: workflow } : {}),
+            ...(size ? { size: size as NonNullable<InitiativeFeature["size"]> } : {}),
+          }
+        : f,
+    );
   } else if (action === "split") {
     const target = find(body.feature);
     const parts = Array.isArray(body.parts) ? (body.parts as { id: string; title: string }[]) : [];
@@ -267,7 +294,8 @@ function command(view: InitiativeView, action: string | undefined, body: Body) {
     case "merge":
     case "split":
     case "remove":
-    case "rename": {
+    case "rename":
+    case "configure": {
       const features = edited(view, action, body);
       if (typeof features === "string") return features;
       return {

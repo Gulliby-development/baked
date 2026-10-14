@@ -42,7 +42,7 @@ export function NewInitiativeDialog({
   return (
     <FormDialog
       title="New initiative"
-      description="BAKED splits a large request into 3 to 12 features with contracts and dependencies. You approve the split before any feature run starts."
+      description="BAKED splits a large request into 3 to 12 features with contracts and dependencies, and picks the workflow and size of each. You approve the split before any feature run starts."
       submitLabel="Start initiative"
       problem={parsed.ok ? null : parsed.error}
       onSubmit={async () => {
@@ -74,7 +74,10 @@ export function NewInitiativeDialog({
         <span className={HINT}>Lowercase letters, digits and -, at most 40 characters.</span>
       </div>
       <div className={FIELD}>
-        <span className="text-sm font-heading leading-none">Workflow of each feature</span>
+        <span className="text-sm font-heading leading-none">Default workflow</span>
+        <span className={HINT}>
+          Each feature gets the workflow that fits it; a feature that names none uses this one.
+        </span>
         {definitions.error ? (
           <span className={HINT_ERR}>Workflows: {message(definitions.error)}</span>
         ) : definitions.value ? (
@@ -116,7 +119,8 @@ export function NewInitiativeDialog({
           <BudgetInputs value={budget} onChange={setBudget} idPrefix={`${ids}-budget`} />
         ) : (
           <span className={HINT}>
-            The policy's per-run limits times the number of features plus one.
+            The policy's per-run limits for each medium feature (half for a small one, double for a
+            large one), plus one more. Each feature's share follows its size.
           </span>
         )}
       </fieldset>
