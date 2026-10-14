@@ -45,13 +45,13 @@ BAKED comes as a **desktop app**, a **terminal app**, and a **headless CLI** for
     <td width="50%"><img alt="The code graph of the BAKED repository" src="docs/assets/screenshots/code-graph.png"><br><b>Code graph.</b> Folders, key files and the links between them.</td>
   </tr>
   <tr>
-    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/chat-dark.png"><img alt="A BAKED chat: the agent explains a bug, shows its diff and the test it ran" src="docs/assets/screenshots/chat-light.png"></picture><br><b>Chat.</b> Every edit as a diff, every tool call on its own line, and undo for any turn.</td>
+    <td width="50%"><img alt="A BAKED chat: the agent explains a bug, shows its diff and the test it ran" src="docs/assets/screenshots/chat.png"><br><b>Chat.</b> Every edit as a diff, every tool call on its own line, and undo for any turn.</td>
     <td width="50%"><img alt="Needs you: approvals and questions from every open project" src="docs/assets/screenshots/needs-you.png"><br><b>Needs you.</b> Approvals and questions from every open project in one list.</td>
     <td width="50%"><img alt="Usage: tokens and cost by stage and by model" src="docs/assets/screenshots/usage.png"><br><b>Usage.</b> Tokens, cache hits and cost by stage and by model.</td>
   </tr>
 </table>
 
-Screenshots show the desktop app with sample data.
+Screenshots show the desktop app in its dark theme with sample data.
 
 ## Install
 
