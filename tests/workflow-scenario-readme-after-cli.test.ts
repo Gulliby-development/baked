@@ -48,7 +48,10 @@ const cli: Task = { id: "T002", title: "Implement the CLI", description: "Parse 
 
 class ScriptedExecutor implements AgentExecutor {
   implemented: string[] = [];
-  constructor(private root: string) {}
+  constructor(
+    private root: string,
+    private tasks: Task[] = [docs, cli],
+  ) {}
   async execute(request: ExecutionRequest) {
     const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as { inputHash: string; snapshotHash: string; extra: { evidence?: { id: string }[] } };
     let output: unknown;
@@ -56,7 +59,7 @@ class ScriptedExecutor implements AgentExecutor {
       case "research": output = { schemaVersion: 1, summary: "Empty", facts: [], unknowns: [], constraints: [], suggestedScope: ["src/cli.ts"] }; break;
       case "spec": output = spec; break;
       case "plan":
-        output = { schemaVersion: 1, markdown, taskGraph: { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown), tasks: [docs, cli] } };
+        output = { schemaVersion: 1, markdown, taskGraph: { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown), tasks: this.tasks } };
         break;
       case "analysis": output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] }; break;
       case "implementation": {
@@ -82,12 +85,11 @@ class ScriptedExecutor implements AgentExecutor {
   }
 }
 
-describe("scenario: cfgtrace 49dbf63b, a README whose criterion asks for the CLI's output (#973)", () => {
-  test("the README task runs after the CLI task and pastes real output without a correction", async () => {
+async function runScenario(tasks?: Task[]) {
     const root = mkdtempSync(join(tmpdir(), "baked-readme-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));
     mkdirSync(join(root, "src"));
-    const executor = new ScriptedExecutor(root);
+    const executor = new ScriptedExecutor(root, tasks);
     const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } };
     const service = new NativeWorkflowService(root, config, executor);
     cleanups.push(() => service.close());
@@ -102,6 +104,20 @@ describe("scenario: cfgtrace 49dbf63b, a README whose criterion asks for the CLI
     expect(done.status).toBe("completed");
     expect(service.store.run(run.runId).corrective_tasks).toBe(0);
     expect(readFileSync(join(root, "README.md"), "utf8")).toContain(OUTPUT);
+}
+
+describe("scenario: cfgtrace 49dbf63b, a README whose criterion asks for the CLI's output (#973)", () => {
+  test("the README task runs after the CLI task and pastes real output without a correction", async () => {
+    await runScenario();
+  }, 60000);
+});
+
+// Scenario of bench round 18, cfgtrace 6474504a (#1012): the planner wrote the edge the wrong way
+// round (the code after its README), the cycle guard declined the right edge, and the README ran
+// first and stopped the run with 0 of 12 tasks done.
+describe("scenario: cfgtrace 6474504a, a plan whose code task depends on the README (#1012)", () => {
+  test("the host reverses the edge, so the CLI runs first and the README pastes real output", async () => {
+    await runScenario([docs, { ...cli, dependsOn: ["T001"] }]);
   }, 60000);
 });
 
@@ -115,6 +131,13 @@ describe("withCommandDependencies reads the criteria a docs task covers", () => 
     expect(deps(withCommandDependencies(graph(docs, cli)))).toEqual([[], []]);
     const plain = { ...spec, criteria: spec.criteria.map((c) => (c.id === "AC-002" ? { ...c, then: "it lists the options and the license" } : c)) };
     expect(deps(withCommandDependencies(graph(docs, cli), plain))).toEqual([[], []]);
+  });
+  test("a planner edge from the code to the README is reversed", () => {
+    expect(deps(withCommandDependencies(graph(docs, { ...cli, dependsOn: ["T001"] }), spec))).toEqual([["T002"], []]);
+  });
+  test("a code edge onto a README that shows no output is kept", () => {
+    const plain = { ...spec, criteria: spec.criteria.map((c) => (c.id === "AC-002" ? { ...c, then: "it lists the options and the license" } : c)) };
+    expect(deps(withCommandDependencies(graph(docs, { ...cli, dependsOn: ["T001"] }), plain))).toEqual([[], ["T001"]]);
   });
   test("a read hint that names captured output adds the edge", () => {
     const hinted = { ...docs, readHints: ["examples/sample-output.txt"] };

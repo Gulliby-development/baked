@@ -68,7 +68,10 @@ export function withModuleDependencies(graph: TaskGraph): TaskGraph {
     ...graph,
     tasks: graph.tasks.map((task) => {
       const next = deps.get(task.id) ?? task.dependsOn;
-      return next.length === task.dependsOn.length ? task : { ...task, dependsOn: next };
+      return next.length === task.dependsOn.length &&
+        next.every((id, index) => id === task.dependsOn[index])
+        ? task
+        : { ...task, dependsOn: next };
     }),
   };
 }
@@ -120,7 +123,10 @@ export function withReadDependencies(graph: TaskGraph): TaskGraph {
     ...graph,
     tasks: graph.tasks.map((task) => {
       const next = deps.get(task.id) ?? task.dependsOn;
-      return next.length === task.dependsOn.length ? task : { ...task, dependsOn: next };
+      return next.length === task.dependsOn.length &&
+        next.every((id, index) => id === task.dependsOn[index])
+        ? task
+        : { ...task, dependsOn: next };
     }),
   };
 }
@@ -292,8 +298,11 @@ function taskAsk(task: TaskGraph["tasks"][number], spec?: Pick<Spec, "requiremen
  * ask is read from the task's text and read hints and from the criteria and requirements it
  * covers, and a licence beside the README keeps it a documentation task: "Write README and MIT
  * license" whose AC-009 asks for the reference example's output got no edge (round 16, cfgtrace
- * 49dbf63b and logclump 6d6d1350). A dependency that would close a
- * cycle is not added.
+ * 49dbf63b and logclump 6d6d1350). Such a task is never a prerequisite of code or tests, so a
+ * planner edge from a task that writes them to it is dropped first: cfgtrace 6474504a planned
+ * `T001.dependsOn = ["T012"]` (the package after its README), the cycle guard then declined the
+ * right edge, and the README ran first and stopped the run with 0 of 12 tasks done (#1012). A
+ * dependency that would still close a cycle is not added.
  */
 export function withCommandDependencies(
   graph: TaskGraph,
@@ -306,15 +315,21 @@ export function withCommandDependencies(
     seen.add(from);
     return (deps.get(from) ?? []).some((id) => reaches(id, to, seen));
   };
-  for (const task of graph.tasks) {
-    if (!writesOnlyDocs(task)) continue;
+  const showsOutput = graph.tasks.filter((task) => {
+    if (!writesOnlyDocs(task)) return false;
     const ask = taskAsk(task, spec);
-    if (
-      !RUNS_PROGRAM.test(ask.own) &&
-      !SHOWS_OUTPUT.test(ask.own) &&
-      !SHOWS_OUTPUT.test(ask.covered)
-    )
-      continue;
+    return (
+      RUNS_PROGRAM.test(ask.own) || SHOWS_OUTPUT.test(ask.own) || SHOWS_OUTPUT.test(ask.covered)
+    );
+  });
+  const docs = new Set(showsOutput.map((task) => task.id));
+  for (const other of graph.tasks)
+    if (!writesOnlyDocs(other) && other.writes.some((w) => w.action !== "delete"))
+      deps.set(
+        other.id,
+        (deps.get(other.id) ?? []).filter((id) => !docs.has(id)),
+      );
+  for (const task of showsOutput) {
     for (const other of graph.tasks) {
       if (other.id === task.id || reaches(task.id, other.id) || reaches(other.id, task.id))
         continue;
@@ -326,7 +341,10 @@ export function withCommandDependencies(
     ...graph,
     tasks: graph.tasks.map((task) => {
       const next = deps.get(task.id) ?? task.dependsOn;
-      return next.length === task.dependsOn.length ? task : { ...task, dependsOn: next };
+      return next.length === task.dependsOn.length &&
+        next.every((id, index) => id === task.dependsOn[index])
+        ? task
+        : { ...task, dependsOn: next };
     }),
   };
 }
