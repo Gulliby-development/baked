@@ -261,7 +261,9 @@ describe("baked_setup areas", () => {
 describe("baked_setup surfaces", () => {
   test("the chat builds it, lists it for request_tools and allows only reading in restricted modes", () => {
     const workspace = temp("baked-setup-chat-");
-    const tools = buildTools(workspace) as Record<string, unknown>;
+    const memoryManager = new MemoryManager(workspace, temp("baked-setup-chat-global-"));
+    cleanups.push(() => memoryManager.close());
+    const tools = buildTools(workspace, undefined, { memoryManager }) as Record<string, unknown>;
     expect(tools[SETUP_TOOL]).toBeDefined();
     expect(TOOL_CATALOG[SETUP_TOOL]).toBeDefined();
     expect(RESTRICTED_TOOL_ACTIONS[SETUP_TOOL]).toEqual(["list", "show", "inspect"]);
