@@ -187,6 +187,14 @@ const RESTRICTS =
   /\b(restrict\w*|narrow\w*|exclud\w*|limit(?:s|ed|ing|ation)?|reject\w*|out[- ]of[- ]scope|outOfScope|unrequested|not requested|stricter|only (?:supports?|accepts?|allows?))\b/i;
 const DROPS =
   /\b(omits?|omitted|drops?|dropped|missing|uncovered|not covered|no (?:task|criterion|requirement|test) (?:covers?|implements?|exercises?)|does not (?:cover|implement|mention))\b/i;
+/**
+ * A drop that is the effect of the spec's own exclusion ("assumptions exclude inputs outside the
+ * stated test domains, which drops required rejection cases"): the fix is deleting the exclusion,
+ * so the finding is a restriction the request settles, not a request clause the spec left out
+ * (#1159, cfgtrace a657dc4d: one intervention under assume).
+ */
+const EXCLUSION_DROPS =
+  /\b(?:exclu\w*|restrict\w*|narrow\w*|limit(?:s|ed|ing)?|out[- ]of[- ]scope|outOfScope)\b[^.;]*?(?:,\s*|\s+)(?:which|that|thereby|so (?:it|they|this)|and (?:so|thus))\s+(?:\w+\s+){0,2}?(?:drops?|dropped|omits?|omitted|removes?|removed|loses?|lost)\b/gi;
 /** Wording of a finding that says the spec adds something the request never asked for. */
 const ADDS =
   /\b(?:(?:request|brief|prompt|user)\s+(?:does not|doesn't|did not|never)\s+(?:ask|request|require|mention|state|contain|include|name)\w*|not (?:asked|requested|required|mentioned|stated) (?:for )?(?:by|in) the (?:request|brief)|absent from the (?:request|brief)|beyond (?:the|what the) (?:request|brief)|invent\w*|added scope|scope (?:creep|expansion))\b/i;
@@ -254,7 +262,9 @@ export function restrictsRequest(finding: {
     !(finding.id ?? "").startsWith("COVERAGE") &&
     (RESTRICTS.test(finding.description) || ADDS.test(finding.description)) &&
     // "The request does not mention CI" names the request, not a clause the spec drops.
-    !DROPS.test(finding.description.replace(new RegExp(ADDS.source, "gi"), " "))
+    !DROPS.test(
+      finding.description.replace(new RegExp(ADDS.source, "gi"), " ").replace(EXCLUSION_DROPS, " "),
+    )
   );
 }
 
