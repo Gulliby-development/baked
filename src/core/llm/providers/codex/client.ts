@@ -339,8 +339,13 @@ export async function startCodexAppServerSession(
     timeoutMs = 300_000,
   ) =>
     new Promise<T>((resolve, reject) => {
+      if (closed || ended) {
+        reject(new Error("Codex app-server connection closed"));
+        return;
+      }
       const timer = setTimeout(() => {
         listeners.delete(listener);
+        closeListeners.delete(onClosed);
         reject(new Error(`Codex app-server notification ${method} timed out`));
       }, timeoutMs);
 
@@ -350,10 +355,19 @@ export async function startCodexAppServerSession(
         if (!predicate(params)) return;
         clearTimeout(timer);
         listeners.delete(listener);
+        closeListeners.delete(onClosed);
         resolve(params);
+      };
+      // A closed or exited app-server sends nothing more; without this a cancelled sign-in
+      // waited for its notification until the timeout (#1178).
+      const onClosed = (error: Error) => {
+        clearTimeout(timer);
+        listeners.delete(listener);
+        reject(error);
       };
 
       listeners.add(listener);
+      closeListeners.add(onClosed);
     });
 
   try {
