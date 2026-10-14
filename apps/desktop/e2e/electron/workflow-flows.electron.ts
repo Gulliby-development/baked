@@ -156,7 +156,7 @@ test("a workflow duplicated in the editor is saved to the project and runs", asy
   await expect(page.getByRole("heading", { name: "quick-custom", level: 2 })).toBeVisible();
   await page.getByRole("button", { name: "Save…" }).click();
   await page.getByRole("dialog", { name: "Write the workflow file?" }).getByRole("button", { name: "Write file" }).click();
-  await expect(page.getByText("baked/workflows/quick-custom.json")).toBeVisible();
+  await expect(page.getByText("baked/workflows/quick-custom.json", { exact: true })).toBeVisible();
   expect(existsSync(join(root, "baked", "workflows", "quick-custom.json"))).toBe(true);
 
   await nav(page).getByRole("link", { name: "New run" }).click();
