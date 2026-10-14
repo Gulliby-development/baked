@@ -71,14 +71,18 @@ function writeConfigFile(path: string, text: string): void {
 
 /**
  * Reads and parses the global config. A file another process is replacing can read as empty or
- * cut short for a moment, so a parse failure is retried before it is reported.
+ * cut short for a moment, or, on Windows, refuse to open while the rename lands, so a parse or
+ * sharing failure is retried before it is reported.
  */
 function readConfigFile(path: string): Partial<AppConfig> {
   for (let attempt = 1; ; attempt++) {
     try {
       return JSON.parse(readFileSync(path, "utf-8")) as Partial<AppConfig>;
     } catch (error) {
-      if (attempt >= 20 || !(error instanceof SyntaxError)) throw error;
+      const code = (error as NodeJS.ErrnoException).code ?? "";
+      const transient =
+        error instanceof SyntaxError || ["EPERM", "EACCES", "EBUSY", "ENOENT"].includes(code);
+      if (attempt >= 20 || !transient) throw error;
       Bun.sleepSync(25);
     }
   }

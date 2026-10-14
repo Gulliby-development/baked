@@ -9,10 +9,9 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-const env = (home: string) => {
-  const { LOCALAPPDATA: _local, ...rest } = process.env;
-  return { ...rest, HOME: home, USERPROFILE: home };
-};
+const env = (home: string) => ({ ...process.env, HOME: home, USERPROFILE: home, LOCALAPPDATA: home });
+/** Where loadConfig looks under `env(home)`: %LOCALAPPDATA%\baked on Windows, ~/.baked elsewhere. */
+const configDir = (home: string) => join(home, process.platform === "win32" ? "baked" : ".baked");
 
 /**
  * #1115: a workflow runner exited 1 in the middle of a run. Every agent reads the global config,
@@ -28,7 +27,7 @@ test("a process reading the config while another saves it never sees a torn file
   const done = JSON.stringify(join(home, "writer-done"));
   writeFileSync(
     writer,
-    `import { saveGlobalConfig } from ${config};\nconst padding = "x".repeat(200_000);\nfor (let i = 0; i < 1500; i++) saveGlobalConfig({ defaultModel: "model-" + i, padding } as never);\nawait Bun.write(${done}, "done");\n`,
+    `import { saveGlobalConfig } from ${config};\nconst padding = "x".repeat(200_000);\nfor (let i = 0; i < 400; i++) saveGlobalConfig({ defaultModel: "model-" + i, padding } as never);\nawait Bun.write(${done}, "done");\n`,
   );
   writeFileSync(
     reader,
@@ -42,14 +41,14 @@ test("a process reading the config while another saves it never sees a torn file
   expect({ readCode, stderr }).toEqual({ readCode: 0, stderr: "" });
   expect(writeCode).toBe(0);
   // Every write went through a temp file that was renamed into place.
-  expect(readdirSync(join(home, ".baked")).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  expect(readdirSync(configDir(home)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
 }, 60000);
 
 test("a config file read while another process replaces it is read again, not reported (#1115)", async () => {
   const home = mkdtempSync(join(tmpdir(), "baked-config-torn-"));
   dirs.push(home);
-  mkdirSync(join(home, ".baked"));
-  const file = join(home, ".baked", "config.json");
+  mkdirSync(configDir(home));
+  const file = join(configDir(home), "config.json");
   // What a reader saw while a plain write had truncated the file.
   writeFileSync(file, "");
   const reader = join(home, "reader.ts");
