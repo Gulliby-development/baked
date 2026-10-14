@@ -10,16 +10,17 @@ import {
   renderGateReport,
 } from "../verification/gate-report.js";
 import { validateChecks } from "./check-policy.js";
+import { parseWorkflowConfig, type WorkflowConfig } from "./config-policy.js";
 import { defaultWorkflowPolicy } from "./defaults.js";
 import { WorkflowFault } from "./errors.js";
 import { dotnetFiles } from "./language.js";
 import { ProcessScope } from "./process-scope.js";
 import { redactSecrets } from "./redaction.js";
-import { CheckSchema, SafeId, WorkflowConfigSchema } from "./schemas.js";
+import { CheckSchema, SafeId } from "./schemas.js";
 import type { Check } from "./types.js";
 
 /** Gates are the project's `workflows.policy.checks`; this module is the only editor of that list. */
-export type WorkflowConfig = NonNullable<ReturnType<typeof WorkflowConfigSchema.parse>>;
+export type { WorkflowConfig };
 
 const OUTPUT_TAIL_LINES = 40;
 
@@ -65,12 +66,13 @@ export function formatCommandLine(executable: string, args: string[]): string {
 
 export function readGates(workspace: string, fallback?: WorkflowConfig): Check[] {
   const project = loadProjectConfig(workspace)?.workflows;
-  return (project ?? fallback)?.policy.checks ?? [];
+  return (project ?? fallback)?.policy?.checks ?? [];
 }
 
 /**
  * Writes the gate list into the project's `.baked/config.json` and keeps every other setting.
- * A project without a `workflows` block gets one with the default policy.
+ * A project without a `workflows` block gets one with the default policy; a partial policy stays
+ * partial on disk and is checked merged over the defaults.
  * Runs that already started keep the policy they froze; only new runs read this list.
  */
 export function writeGates(workspace: string, checks: Check[], fallback?: WorkflowConfig): void {
@@ -83,7 +85,8 @@ export function writeGates(workspace: string, checks: Check[], fallback?: Workfl
       defaultWorkflow: "sdd",
       policy: defaultWorkflowPolicy,
     };
-  const next = WorkflowConfigSchema.parse({ ...base, policy: { ...base.policy, checks: parsed } });
+  const next = { ...base, policy: { ...base.policy, checks: parsed } };
+  parseWorkflowConfig(next, ".baked/config.json");
   saveProjectConfig(workspace, { workflows: next });
 }
 

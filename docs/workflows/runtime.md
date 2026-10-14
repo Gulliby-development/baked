@@ -287,7 +287,7 @@ Tests written by the implementers share their wrong assumptions; failing tests w
 
 ### Auto approval
 
-Auto approval is off by default. Enabling it is a human act: set `workflows.policy.autoApproval` in `.baked/config.json`, or pass it in a policy file or a revision candidate. The policy is part of the approval digest, so the setting is frozen with the run.
+Auto approval is off by default. Enabling it is a human act: set `workflows.policy.autoApproval` in `.baked/config.json`, or pass it in a policy file or a revision candidate. The policy is part of the approval digest, so the setting is frozen with the run. A `workflows.policy` in a config file may name only the fields it changes: the rest come from the default policy, nested objects such as `reviewProfiles` merge field by field, and lists such as `checks` replace the default. An invalid field stops the command with one line naming the file and the field.
 
 ```json
 "autoApproval": {
