@@ -106,13 +106,18 @@ export const RuntimeStateSchema = z
     reviews: z.record(z.string(), ReviewSchema),
     /**
      * The reviews of the round before the last correction, by reviewer key, with the source
-     * manifest they reviewed: a later round skips a dimension that passed and whose files did not
-     * change, and tells a rerun reviewer what it found and what changed since.
+     * manifest and the snapshot they reviewed: a later round skips a dimension that passed and
+     * whose files did not change, or one that only repeated its notes, and tells a rerun reviewer
+     * what it found and what changed since.
      */
     priorReviews: z
       .record(
         z.string(),
-        z.object({ review: ReviewSchema, files: z.record(z.string(), z.string()) }),
+        z.object({
+          review: ReviewSchema,
+          files: z.record(z.string(), z.string()),
+          snapshotId: z.string().nullable().default(null),
+        }),
       )
       .default({}),
     /**
