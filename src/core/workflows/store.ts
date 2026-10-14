@@ -289,6 +289,19 @@ function historyOf(db: Database, only?: string): PastRun[] {
     past.stageTokens[row.stage] = (past.stageTokens[row.stage] ?? 0) + row.tokens;
     if (row.leaf.startsWith("task-")) past.taskTokens += row.tokens;
   }
+  // The model a run spent most on keys the history by model (#936).
+  const spentOn = new Map<string, number>();
+  for (const row of db
+    .query<{ run_id: string; model: string; tokens: number }, []>(
+      `SELECT run_id, model_id AS model, SUM(COALESCE(used_tokens,0)) AS tokens FROM attempts
+       WHERE model_id IS NOT NULL GROUP BY run_id, model_id`,
+    )
+    .all()) {
+    const past = byRun.get(row.run_id);
+    if (!past || row.tokens <= (spentOn.get(row.run_id) ?? -1)) continue;
+    spentOn.set(row.run_id, row.tokens);
+    past.model = row.model;
+  }
   for (const row of db
     .query<{ run_id: string; n: number }, []>(
       "SELECT run_id, COUNT(*) AS n FROM tasks WHERE status<>'invalidated' GROUP BY run_id",
