@@ -1899,6 +1899,32 @@ export function narrowingBounds(
   };
 }
 
+/** A clause that puts inputs beyond a criterion's domain outside it: "larger inputs are outside this criterion's checked domain". */
+const DOMAIN_EXCLUSION =
+  /\boutside\b[^.;]*\bdomain\b|\b(?:larger|longer|bigger|greater|deeper|more|higher|wider)\b[^.;]*\b(?:are|is)\s+(?:outside|not covered)\b|\bnot covered\b/i;
+const boundNumbers = (text: string): string[] =>
+  (text.match(/\d[\d,._]*/g) ?? []).map((n) => n.replace(/[,._]+$/, "").replace(/[,_]/g, ""));
+
+/**
+ * Criteria whose Given, When or Then narrow the criterion with a domain exclusion the request does not
+ * state. stmtsplit-update cae4291d ended each Given with "...; larger inputs are outside this
+ * criterion's checked domain" and no analysis caught it (#1161). A clause is kept when every
+ * number it names is in the request, so a bound the request sets may stay.
+ */
+export function domainExclusions(spec: Pick<Spec, "criteria">, request: string): string[] {
+  const requested = new Set(boundNumbers(request));
+  return spec.criteria
+    .filter((c) =>
+      `${c.given}\n${c.when}\n${c.then}`.split(/(?<=[.;\n])\s*/).some((clause) => {
+        if (!DOMAIN_EXCLUSION.test(clause)) return false;
+        // The bound usually sits in the clause before the exclusion ("up to 20 arguments; larger ...").
+        const numbers = boundNumbers(`${c.given}\n${c.when}\n${c.then}`);
+        return !numbers.length || numbers.some((n) => !requested.has(n));
+      }),
+    )
+    .map((c) => c.id);
+}
+
 /**
  * The spec defects as corrections for the spec author, who can add or relink criteria. With the
  * run's checks, a criterion that needs a check the execution contract lacks is one too.
@@ -1909,6 +1935,9 @@ export function specCoverageProblems(
   options: { ciForbidden?: boolean; request?: string } = {},
 ): string[] {
   const bounds = narrowingBounds(spec, options.request ?? "");
+  const exclusions = domainExclusions(spec, options.request ?? "").filter(
+    (id) => !bounds.criteria.includes(id),
+  );
   return [
     ...validateSpecCoverage(spec).map((error) =>
       /^(requirement without criterion|engineering requirement deferred) /.test(error)
@@ -1938,6 +1967,10 @@ export function specCoverageProblems(
     ...bounds.criteria.map(
       (id) =>
         `criterion ${id} puts inputs beyond a numeric bound outside what the feature handles, and the request says limits are non-narrowing. Remove the bound and the exclusion from the criterion; record the domain only as an assumption ("<domain> Assumed: <value>, because <reason>.").`,
+    ),
+    ...exclusions.map(
+      (id) =>
+        `criterion ${id} narrows its Given, When or Then with a domain exclusion the request does not state (inputs beyond it "outside this criterion's checked domain" or "not covered"). The request is authoritative: remove the exclusion so the criterion holds for the inputs the request names; a domain you want to keep may be recorded only as a non-narrowing assumption ("<domain> Assumed: <value>, because <reason>."), never as an exclusion.`,
     ),
     ...(checks ? uncontractedBuildCriteria(spec, checks) : []).map(
       (id) =>
