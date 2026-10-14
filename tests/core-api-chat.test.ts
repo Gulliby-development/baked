@@ -193,6 +193,16 @@ describe("local API chat sessions", () => {
     expect(plain.effort).toBe("default");
   });
 
+  // #1092: the effort menu said "takes no reasoning effort" for a model the provider's list left out.
+  test("a session reports the efforts its own model takes", async () => {
+    const { send, post } = await setup();
+    const created = await post("/v1/sessions", { model: "anthropic/claude-sonnet-4-5" });
+    const session = (await created.json()) as SessionDetail & { efforts: string[] };
+    expect(session.efforts).toEqual(["low", "medium", "high"]);
+    const patched = await send("PATCH", `/v1/sessions/${session.id}`, { model: "anthropic/claude-haiku-4-5" });
+    expect(await patched.json()).toMatchObject({ efforts: [] });
+  });
+
   test("a session's context size picks the model variant; the coordinator always takes the largest", async () => {
     const { host, chat, send, post, detail } = await setup();
     const created = await post("/v1/sessions", { text: "Hello", model: "claude-code/opus" });
