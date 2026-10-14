@@ -1,4 +1,6 @@
-<a href="docs/assets/video/baked-promo-v2.mp4"><img alt="BAKED in 88 seconds: watch the promo video" src="docs/assets/video/baked-promo-v2.jpg"></a>
+<a href="docs/assets/video/baked-promo-v2.mp4"><img alt="The first 22 seconds of the BAKED promo: an idea is typed into the coordinator, which splits it into two parallel runs" src="docs/assets/video/baked-promo-v2-preview.gif" width="100%"></a>
+
+<p align="center"><a href="docs/assets/video/baked-promo-v2.mp4"><b>▶ Watch the full 88-second video with sound</b></a></p>
 
 # BAKED
 

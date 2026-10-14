@@ -15,7 +15,7 @@ Everything follows the neobrutalist look of the desktop app: 2 px ink outlines, 
 | --- | --- |
 | `docs/assets/brand/app-icon.svg` | The oven tile: orange body, dark door, cream knobs, hard shadow. |
 | `docs/assets/brand/wordmark-dark.svg`, `wordmark-light.svg` | Tile and `BAKED` letters for dark and light backgrounds; pick one with `<picture>`. |
-| `docs/assets/video/baked-promo-v2.mp4`, `baked-promo-v2.jpg` | The 88-second promo video (720p) and its poster with a play button; the README opens with the poster linking to the video. |
+| `docs/assets/video/baked-promo-v2.mp4`, `baked-promo-v2-preview.gif` | The 88-second promo video (720p) and an animated preview of its first 22 seconds; the README opens with the preview linking to the video. |
 | `apps/desktop/build/icon.svg` → `icon.png` | App icon, 1024 px. electron-builder derives the `.ico`, `.icns` and Linux icons from the PNG. |
 | `apps/desktop/build/tray.svg` → `tray.png`, `tray@2x.png` | Tray icon on Windows and Linux, 16 and 32 px: orange oven with dark cut-outs. |
 | `apps/desktop/build/trayTemplate.svg` → `trayTemplate.png`, `trayTemplate@2x.png` | macOS menu bar template: black with transparent cut-outs, recoloured by the system. |
