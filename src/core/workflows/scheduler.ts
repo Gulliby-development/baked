@@ -4178,6 +4178,7 @@ ${note}`;
       // The task as this attempt may write it: a correction's first attempt only where its
       // findings point.
       const scoped: Task = narrow ? { ...task, writes: narrow } : task;
+      const quick = quickFixLimits(this.store, runId, state, policy, task, focus.files);
       const preloaded = await preloadTaskFiles(
         root,
         focus.files.length ? focusFirst(scoped.writes, focus.files) : scoped.writes,
@@ -4233,8 +4234,17 @@ ${note}`;
                 }
               : {}),
             unresolvedMeans: UNRESOLVED_MEANING,
-            ...(await this.libraryDocsContext(runId, policy, root, task)),
+            ...(quick ? {} : await this.libraryDocsContext(runId, policy, root, task)),
             ...this.previousAttempt(runId, task.id),
+            ...(quick
+              ? {
+                  quickFix: {
+                    maxTokens: quick.maxTokens,
+                    maxSteps: quick.maxSteps,
+                    note: "This is a quick-fix attempt with a small budget: make the smallest change that resolves the findings in the focus files and run their check. If the fix needs more than that, report blocked and say why in unresolved; the next attempt runs as a full correction with this attempt's edits.",
+                  },
+                }
+              : {}),
             ...(focus.files.length
               ? {
                   correctionFocus: {
@@ -4273,7 +4283,12 @@ ${note}`;
           },
           signal,
           scoped,
+          0,
+          undefined,
+          quick ?? undefined,
         ).catch(async (error: unknown) => {
+          // A quick fix that used its small cap falls back to the full correction below.
+          if (quick && atAttemptCap(error)) return quickFixCapResult(task, error);
           if (atAttemptCap(error))
             return this.capEndResult(
               runId,
@@ -4319,6 +4334,27 @@ ${note}`;
         throw correction;
       }
       const ownFailures = ownCheckFailures(task, result, changed);
+      if (
+        quick &&
+        (result.taskId !== task.id ||
+          ["blocked", "failed"].includes(result.outcome) ||
+          result.unresolved.length > 0 ||
+          correction !== true)
+      ) {
+        // The quick fix did not settle the findings, or its own check still fails: the next
+        // attempt is the full correction, with every file of its scope, and keeps these edits.
+        this.store.transaction(() => {
+          state.quickFixFallbacks.push(task.id);
+          if (narrow) state.widenedCorrections.push(task.id);
+          this.store.taskStatus(runId, task.id, "interrupted", null, {
+            cause: "quick_fix_fallback",
+            detail: (result.unresolved[0] ?? result.summary).slice(0, 2000),
+          });
+          this.store.finishStep(runId, child, "failed");
+          this.store.saveState(runId, state);
+        });
+        return;
+      }
       if (
         result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
@@ -10534,6 +10570,61 @@ export function narrowCorrectionWrites(
     (w) => focus.includes(w.path) || (tests && focus.some((source) => isTestOf(w.path, source))),
   );
   return narrow.length && narrow.length < task.writes.length ? narrow : null;
+}
+
+/** Default caps of a quick-fix attempt (#1001), when the policy's `quickFix` names none. */
+export const QUICK_FIX_TOKENS = 150_000;
+export const QUICK_FIX_STEPS = 16;
+
+/**
+ * The caps of a correction's quick-fix attempt (#1001), or null when the attempt runs as a full
+ * correction. With the policy's `quickFix`, a corrective task whose findings are all low or medium
+ * and point at one source file (with or without its tests) first runs under small caps: bench
+ * rounds 17 to 24 paid 170k to 1.08M tokens for one-function and one-sentence fixes at the cap of
+ * the task they corrected. A quick fix that fails falls back to the full correction.
+ */
+export function quickFixLimits(
+  store: WorkflowStore,
+  runId: string,
+  state: RuntimeState,
+  policy: RunPolicy,
+  task: Task,
+  focus: string[],
+): { maxSteps: number; maxTokens: number } | null {
+  if (
+    !policy.quickFix ||
+    task.origin === "planned" ||
+    !task.findingIds.length ||
+    !focus.length ||
+    state.quickFixFallbacks.includes(task.id) ||
+    state.widenedCorrections.includes(task.id)
+  )
+    return null;
+  if (focus.filter((path) => !isTestPath(path)).length > 1) return null;
+  const findings = store.findings(runId).filter((f) => task.findingIds.includes(f.id));
+  const small = (f: (typeof findings)[number]): boolean => {
+    const severity = (JSON.parse(f.body_json) as { severity?: string }).severity;
+    return severity === "low" || severity === "medium";
+  };
+  if (!findings.length || !findings.every(small)) return null;
+  const steps = policy.quickFix.maxSteps ?? QUICK_FIX_STEPS;
+  const own = taskSize(state, task, "taskSteps");
+  return {
+    maxSteps: own ? Math.min(own, steps) : steps,
+    maxTokens: policy.quickFix.attemptTokens ?? QUICK_FIX_TOKENS,
+  };
+}
+
+/** The result of a quick-fix attempt that used its cap without submitting (#1001). */
+function quickFixCapResult(task: Task, fault: WorkflowFault): Implementation {
+  return {
+    schemaVersion: 1,
+    taskId: task.id,
+    outcome: "blocked",
+    summary: fault.message.slice(0, 15000),
+    evidenceIds: [],
+    unresolved: ["The quick-fix attempt used its token cap before it submitted a result."],
+  };
 }
 
 /** The writes with the given paths first, in their order, then the rest in plan order. */

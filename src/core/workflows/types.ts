@@ -170,6 +170,8 @@ export const RuntimeStateSchema = z
      * their next attempts may write the full scope of the tasks they correct (#765).
      */
     widenedCorrections: z.array(z.string()).default([]),
+    /** Corrective tasks whose quick-fix attempt failed: they run as full corrections (#1001). */
+    quickFixFallbacks: z.array(z.string()).default([]),
     /** Attempt token cap per planned task, set by plan-time sizing; corrections use their base's. */
     taskBudgets: z.record(z.string(), z.number().int().positive()).default({}),
     /** Step cap per planned task from plan-time sizing (test tasks); corrections use their base's. */

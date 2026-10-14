@@ -378,6 +378,18 @@ export const PolicySchema = z
      */
     lowFindings: z.enum(["repair", "note"]).optional(),
     /**
+     * Quick-fix attempts for small corrections (#1001): the first attempt of a corrective task whose
+     * findings are low or medium and point at one source file runs under these caps, and a failed
+     * one falls back to the full correction. Absent means off, so stored policies keep their hash.
+     */
+    quickFix: z
+      .object({
+        attemptTokens: z.number().int().min(10_000).max(2_000_000).optional(),
+        maxSteps: z.number().int().min(4).max(200).optional(),
+      })
+      .strict()
+      .optional(),
+    /**
      * Whether analyze, review and converge get a digest of a large spec, with each criterion in
      * full behind `read_criterion` (spec-digest.ts). Absent means `auto`: a spec above
      * SPEC_DIGEST_BYTES is digested, a smaller one is sent whole. `off` always sends it whole.
@@ -648,13 +660,15 @@ export const StepStatus = z.enum([
 ]);
 /**
  * Why a task step ended `interrupted` (#843): a restart in a fresh session, a continuation at its
- * step cap, a correction widened to its whole scope, a wait for a file a later task writes, a
+ * step cap, a correction widened to its whole scope, a quick fix that fell back to the full
+ * correction, a wait for a file a later task writes, a
  * spec conflict, or a worker or worktree lease that was lost.
  */
 export const InterruptCause = z.enum([
   "restart",
   "continue_at_cap",
   "widened_correction",
+  "quick_fix_fallback",
   "waits_for_artifact",
   "spec_conflict",
   "worker_lost",
