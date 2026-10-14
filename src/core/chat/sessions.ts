@@ -34,6 +34,7 @@ import type {
   ChatContextSize,
   ChatEffort,
   ChatMessage,
+  EffortLevel,
   ImageAttachment,
   InputContextItem,
   InteractiveCallbacks,
@@ -83,6 +84,7 @@ import {
   withHookContext,
 } from "../hooks/lifecycle.js";
 import { chatContextTokens, getModelContextSizes, withContextSize } from "../llm/context-sizes.js";
+import { getModelEffortLevels } from "../llm/provider-options.js";
 import type { MemoryManager } from "../memory/manager.js";
 import {
   DEFAULT_PERMISSION_MODE,
@@ -240,6 +242,11 @@ export interface SessionSummary {
   mode: ChatMode;
   /** Reasoning effort for this chat's turns; `default` follows the global setting. */
   effort: ChatEffort;
+  /**
+   * Reasoning efforts the chat's model takes, lowest first; empty when it takes none. The effort
+   * menu reads them here when the provider's model list leaves the model out (#1092).
+   */
+  efforts: EffortLevel[];
   /** How much the chat runs without asking: manual, auto or full. */
   permissions: PermissionMode;
   /**
@@ -732,6 +739,7 @@ export class ChatSession {
       model: this.model,
       mode: this.mode,
       effort: this.effort,
+      efforts: this.model ? getModelEffortLevels(this.model) : [],
       permissions: this.permissions,
       contextSize: this.contextSize,
       // The coordinator always runs with the largest window, so it offers no choice.
@@ -2094,6 +2102,7 @@ export class ChatService {
         model: null,
         mode: "default",
         effort: "default",
+        efforts: [],
         permissions: this.defaultPermissions,
         contextSize: "default",
         contextSizes: [],
