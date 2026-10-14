@@ -469,6 +469,10 @@ test("routing policies and a project layer route are saved to their own files", 
   const critic = page.getByRole("group", { name: "Critic" });
   await critic.getByRole("button", { name: "advise" }).click();
   await expect.poll(routing).toMatchObject({ critic: "advise" });
+  const sonnet = page.getByRole("group", { name: "Specify on Sonnet" });
+  await expect(page.getByText("Opus runs write their spec on Sonnet. In effect: off.")).toBeVisible();
+  await sonnet.getByRole("button", { name: "on" }).click();
+  await expect.poll(routing).toMatchObject({ specifyOnSonnet: true });
 
   await page.reload();
   await expect(review.getByRole("button", { name: "warn" })).toHaveAttribute("aria-pressed", "true");
@@ -480,7 +484,8 @@ test("routing policies and a project layer route are saved to their own files", 
     "aria-pressed",
     "true",
   );
-  for (const group of [review, confidence, critic])
+  await expect(sonnet.getByRole("button", { name: "on" })).toHaveAttribute("aria-pressed", "true");
+  for (const group of [review, confidence, critic, sonnet])
     await group.getByRole("button", { name: "inherit" }).click();
   await expect.poll(routing).toBeUndefined();
 

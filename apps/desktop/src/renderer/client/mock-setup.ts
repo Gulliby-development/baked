@@ -516,6 +516,7 @@ function mergeRouting(base?: ModelRouting, layer?: ModelRouting): ModelRouting |
   const independentReview = layer.independentReview ?? base.independentReview;
   const reviewMinConfidence = layer.reviewMinConfidence ?? base.reviewMinConfidence;
   const critic = layer.critic ?? base.critic;
+  const specifyOnSonnet = layer.specifyOnSonnet ?? base.specifyOnSonnet;
   return {
     classes: { ...base.classes, ...layer.classes },
     roles: { ...base.roles, ...layer.roles },
@@ -524,6 +525,7 @@ function mergeRouting(base?: ModelRouting, layer?: ModelRouting): ModelRouting |
     ...(independentReview ? { independentReview } : {}),
     ...(reviewMinConfidence !== undefined ? { reviewMinConfidence } : {}),
     ...(critic ? { critic } : {}),
+    ...(specifyOnSonnet !== undefined ? { specifyOnSonnet } : {}),
   };
 }
 
@@ -1013,6 +1015,11 @@ function routingOverview(s: SetupState, workflow: string | null): RoutingOvervie
       global: global?.critic ?? null,
       project: project?.critic ?? null,
       effective: effective?.critic ?? null,
+    },
+    specifyOnSonnet: {
+      global: global?.specifyOnSonnet ?? null,
+      project: project?.specifyOnSonnet ?? null,
+      effective: effective?.specifyOnSonnet ?? false,
     },
     warnings: route.warnings,
     error: null,
@@ -1998,6 +2005,7 @@ export const setupRoutes: MockRoute = (request) => {
           independentReview: IndependentReview | null;
           reviewMinConfidence: number | null;
           critic: CriticMode | null;
+          specifyOnSonnet: boolean | null;
         }
       >(request);
       const scope = edit.scope === "global" ? "global" : "project";
@@ -2009,6 +2017,10 @@ export const setupRoutes: MockRoute = (request) => {
         next = edit.independentReview
           ? { ...rest, independentReview: edit.independentReview }
           : rest;
+      } else if (edit.specifyOnSonnet !== undefined) {
+        const { specifyOnSonnet: _previous, ...rest } = current ?? {};
+        next =
+          edit.specifyOnSonnet === null ? rest : { ...rest, specifyOnSonnet: edit.specifyOnSonnet };
       } else if (edit.critic !== undefined) {
         const { critic: _previous, ...rest } = current ?? {};
         next = edit.critic === null ? rest : { ...rest, critic: edit.critic };

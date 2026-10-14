@@ -365,6 +365,7 @@ function RoutingTables({
         onChange={onChange}
         projectKey={projectKey}
       />
+      <SpecifySonnetRow view={view} scope={scope} busy={busy} onChange={onChange} />
       {view.warnings.length > 0 && (
         <ul className={cn("m-0 list-none p-0", WARN, NOTE)}>
           {view.warnings.map((w) => (
@@ -737,6 +738,62 @@ function ReviewConfidenceRow({
             }
           >
             {value ?? "inherit"}
+          </Segment>
+        ))}
+      </SegmentGroup>
+    </div>
+  );
+}
+
+const SPECIFY_SONNET_CHOICES: { value: boolean | null; label: string }[] = [
+  { value: null, label: "inherit" },
+  { value: false, label: "off" },
+  { value: true, label: "on" },
+];
+
+function SpecifySonnetRow({
+  view,
+  scope,
+  busy,
+  onChange,
+}: {
+  view: RoutingOverview;
+  scope: RoutingScope;
+  busy: boolean;
+  onChange: (change: RoutingChange, what: string) => Promise<void>;
+}) {
+  const own = view.specifyOnSonnet?.[scope] ?? null;
+  return (
+    <div className={cn(PANEL, ROW)}>
+      <span className={cn(GROW, COLUMN)}>
+        <span className="flex items-center">
+          Specify on Sonnet
+          <Hint label="specify on Sonnet">
+            When the run model is a Claude Code Opus model, the specify stage writes the spec on
+            claude-code/sonnet and every other stage keeps Opus. A stage route or a route given for
+            the run still decides the specify model. Off by default while the bench loop measures
+            whether specs stay as good.
+          </Hint>
+        </span>
+        <span className={cn("text-dim-foreground", NOTE)}>
+          Opus runs write their spec on Sonnet. In effect:{" "}
+          <span className="font-mono">{view.specifyOnSonnet?.effective ? "on" : "off"}</span>.
+        </span>
+      </span>
+      <SegmentGroup aria-label="Specify on Sonnet">
+        {SPECIFY_SONNET_CHOICES.map(({ value, label }) => (
+          <Segment
+            key={label}
+            aria-pressed={own === value}
+            disabled={busy}
+            onClick={() =>
+              void onChange(
+                { specifyOnSonnet: value },
+                value === null ? "Cleared specify on Sonnet" : `Set specify on Sonnet ${label}`,
+              )
+            }
+          >
+            {label}
           </Segment>
         ))}
       </SegmentGroup>
