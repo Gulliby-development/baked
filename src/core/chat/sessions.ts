@@ -95,7 +95,7 @@ import { watchOptions } from "../watch/config.js";
 import { WatchController, type WatchTurn, watchTurnDisplay } from "../watch/controller.js";
 import { projectDefinitions, proposeForWorkspace } from "../workflows/v2/propose.js";
 import { answerByRules } from "./approval-rules.js";
-import { COORDINATOR_MODE } from "./coordinator.js";
+import { COORDINATOR_MODE, coordinatorWorkStyle } from "./coordinator.js";
 import {
   closeLaunched,
   controlTools,
@@ -1974,6 +1974,7 @@ export class ChatService {
         this.launcher,
         coordinatorLimits(this.options.config),
         this.workflowCatalog(),
+        coordinatorWorkStyle(this.options.config),
       ),
       ...controlTools(this, coordinator, this.projectState, this.launcher),
     };

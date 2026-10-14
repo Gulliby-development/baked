@@ -47,6 +47,20 @@ Workflows are how a project customizes work, so the coordinator knows them and p
 
 Workflows are the default for work that changes code, but you can always say no. When you decline the workflow card or ask for chats, the coordinator assesses whether the task splits into parts that can run side by side (parts that write different files, or only read). If it does, it says in a line how it would split it and proposes [parallel chats](#what-exists-now), for example five chats for five independent screens; you approve them on one card and they all start. If it does not, it launches one session with the whole brief. It follows the chats like runs: it relays what each one finished or asks, and when all are done it tells you the combined result and what is left, such as merging their branches.
 
+### Work style
+
+The work style says how the coordinator proposes work, so it does not ask you every time. Set it in the desktop app under Settings > Coordinator, with `/coordinator style` in the terminal UI, as `coordinator.workStyle` in the global or project config, or through `PATCH /v1/settings`. It applies from the next coordinator turn.
+
+| Style | What the coordinator does |
+| --- | --- |
+| Workflows only (`workflows-only`) | Always proposes a workflow run. `propose_chats` is refused; when you decline a workflow card it asks what to change in the run. |
+| Mostly workflows (`prefer-workflows`) | Goes straight to the workflow card and offers chats only when you ask for them. |
+| Not set (`ask`, the default) | Offers a workflow and, when you decline it, parallel chats, as described above. |
+| Mostly chats (`prefer-chats`) | Skips the workflow card: parallel chats when the task splits, otherwise one chat. A workflow only when you ask for one. |
+| Chats only (`chats-only`) | Always works through chats. `start_run`, `start_initiative` and `propose_split` are refused. |
+
+The style changes only how work is proposed: the cards that start work, and the approvals of what runs, still come to you.
+
 ### Taking control back
 
 When something the coordinator launched finishes, fails, is cancelled or waits for a person, the coordinator gets a turn of its own with the news. The chat shows the notices, not that message. The coordinator tells you in a line or two what happened (it reads the run with `project_state` when it needs the result) and continues: it starts the next step of the work, proposes what is left, or says the work is done. A request the run waits for stays your decision. The wake-up waits behind a running turn and is dropped when that turn is stopped. Set `coordinator.wake` to `false` ([configuration](configuration.md#common-settings)) to keep the notices without the turns.
@@ -87,7 +101,7 @@ The rules live in `.baked/sessions/ID/approval-rules.json` next to the brief and
 | Local API | `GET/POST /v1/coordinator`, `GET/PUT /v1/coordinator/brief`, `GET /v1/coordinator/launched`, `POST /v1/coordinator/summary`, `GET/PUT /v1/coordinator/approval-rules`, `POST /v1/coordinator/launched/stop` and `/close`, `/v1/coordinator/schedules`, then the usual `/v1/sessions/ID/...` endpoints ([contract](desktop/api.md#project-coordinator)) |
 | Headless CLI | `baked session coordinator [--json]` prints the session id and the brief; `baked session coordinator send TEXT` runs a turn, answers its prompts and follows what it launched, and `baked session coordinator launched` lists that work ([below](#headless-cli)); `baked session coordinator rules` shows and changes the [approval rules](#approval-rules); `baked session coordinator schedules` lists the schedules and `baked session coordinator schedule add --name NAME --when WHEN --prompt TEXT`, `pause ID`, `resume ID` and `remove ID` change them; `baked session coordinator stop run|initiative ID` and `close KIND ID [--feature F] [--reopen]` stop and close launched work ([headless](headless.md)) |
 | Desktop app | the Coordinator section, the first item of each project and the screen a project opens on (conversation, schedules, launched work and brief), with What's happening in its header (Stop, Pause and Close on launch cards and in the launched list, Reopen under its closed items), and Hand to coordinator in the chat menu ([desktop app](desktop/app.md#screens)) |
-| Terminal UI | `/coordinator` (first in the command palette), `/coordinator summary` and `/coordinator rules`; switching project with `/projects` opens the new project on its coordinator, and `baked --coordinator` starts on it ([below](#terminal-ui)) |
+| Terminal UI | `/coordinator` (first in the command palette), `/coordinator summary`, `/coordinator rules` and `/coordinator style`; switching project with `/projects` opens the new project on its coordinator, and `baked --coordinator` starts on it ([below](#terminal-ui)) |
 
 ## Terminal UI
 

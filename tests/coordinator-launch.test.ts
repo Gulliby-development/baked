@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { ModelMessage } from "ai";
 import { startApiServer } from "../src/core/api/server.js";
-import { BriefStore } from "../src/core/chat/coordinator.js";
+import { BriefStore, coordinatorInstructions } from "../src/core/chat/coordinator.js";
 import {
   chatsProblem,
   type FlowTask,
@@ -16,6 +16,7 @@ import {
 import { PEER_TOOL, parsePeerMessage } from "../src/core/chat/peer-messages.js";
 import { describePrompt, type ProjectStateSource, renderState } from "../src/core/chat/project-state.js";
 import { type ChatAgentHost, ChatService, type ChatSession, type TurnAgentRequest } from "../src/core/chat/sessions.js";
+import type { CoordinatorWorkStyle } from "../src/types/index.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
 
 class RecordingHost implements ChatAgentHost {
@@ -58,12 +59,12 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-async function setup(maxActive = 3, tasks?: TaskTracker, wake = false) {
+async function setup(maxActive = 3, tasks?: TaskTracker, wake = false, workStyle?: CoordinatorWorkStyle) {
   const fixture = workflowFixture();
   const host = new RecordingHost();
   const chat = new ChatService({
     workspace: fixture.root,
-    config: { ...fixture.service.config, defaultModel: "openai/gpt-test", coordinator: { maxActive, wake } },
+    config: { ...fixture.service.config, defaultModel: "openai/gpt-test", coordinator: { maxActive, wake, ...(workStyle ? { workStyle } : {}) } },
     host,
     homeDir: fixture.root,
   });
@@ -401,6 +402,22 @@ describe("coordinator starts parallel chats", () => {
       await session.settled();
     }
     expect(await noticeFor(chat, /Docs pages/)).toBe('Session "Docs pages": done');
+  }, 60000);
+
+  test("the work style turns off the other way of working and is in the instructions", async () => {
+    const chatsOnly = await setup(5, undefined, false, "chats-only");
+    expect(await chatsOnly.tool("start_run").execute({ prompt: "Fix the tests", why: "CI is red" })).toMatchObject({
+      success: false,
+      error: expect.stringContaining("only through chats"),
+    });
+    const brief = new BriefStore(chatsOnly.chat.workspace, chatsOnly.coordinator.id).read();
+    expect(coordinatorInstructions(brief, "chats-only")).toContain("The user works only through chats");
+    expect(coordinatorInstructions(brief)).toContain("The user has not set a work style");
+    const workflowsOnly = await setup(5, undefined, false, "workflows-only");
+    expect(await workflowsOnly.tool("propose_chats").execute(chats([["a/**"], ["b/**"]]))).toMatchObject({
+      success: false,
+      error: expect.stringContaining("only through workflows"),
+    });
   }, 60000);
 
   test("the limit on active work counts every chat", async () => {

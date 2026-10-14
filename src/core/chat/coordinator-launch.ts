@@ -8,7 +8,13 @@
  */
 import { tool } from "ai";
 import { z } from "zod";
-import type { AppConfig, ChatMessage, LaunchNote, PermissionMode } from "../../types/index.js";
+import type {
+  AppConfig,
+  ChatMessage,
+  CoordinatorWorkStyle,
+  LaunchNote,
+  PermissionMode,
+} from "../../types/index.js";
 import { hashJson } from "../specs/hash.js";
 import {
   InitiativeFeatureSchema,
@@ -679,9 +685,17 @@ export function launchTools(
   launcher: ProjectLauncher | null,
   limits: { maxActive: number; maxTokens: number },
   workflows: WorkflowCatalog | null = null,
+  workStyle: CoordinatorWorkStyle = "ask",
 ) {
   const store = new BriefStore(chat.workspace, coordinator.id);
   const failed = (error: string) => ({ success: false, output: "", error });
+  /** Why the user's work style turns a tool off, or null. */
+  const offByStyle = (needs: "workflow" | "chats"): string | null =>
+    needs === "workflow" && workStyle === "chats-only"
+      ? "The user works only through chats (Settings > Coordinator, work style chats only): propose_chats or launch_session instead. A workflow needs that setting changed."
+      : needs === "chats" && workStyle === "workflows-only"
+        ? "The user works only through workflows (Settings > Coordinator, work style workflows only): start_run instead. Chats need that setting changed."
+        : null;
   const tracker = launcher?.tasks ?? null;
   /** The task an issue reference names; read from GitHub when this server can. */
   const linkTask = async (reference: string): Promise<FlowTask> => {
@@ -829,6 +843,8 @@ export function launchTools(
         why: Why,
       }),
       execute: async ({ prompt, workflow, feature, issue, why }) => {
+        const off = offByStyle("workflow");
+        if (off) return failed(off);
         if (!launcher) return failed("This server cannot start workflow runs");
         const blocked = overLimit(chat, state, store.read().launched, limits);
         if (blocked) return failed(blocked);
@@ -844,7 +860,9 @@ export function launchTools(
         const card = workflowCard(chosen, prompt, why, task?.ref);
         if (!(await coordinator.proposeWorkflow(card)))
           return failed(
-            `The user did not approve running workflow ${card.workflow}. Ask what to change, or work without a workflow: if the task has parts that can run side by side, propose_chats them as parallel chats; otherwise launch_session one chat.`,
+            workStyle === "workflows-only"
+              ? `The user did not approve running workflow ${card.workflow}. Ask what to change in the run.`
+              : `The user did not approve running workflow ${card.workflow}. Ask what to change, or work without a workflow: if the task has parts that can run side by side, propose_chats them as parallel chats; otherwise launch_session one chat.`,
           );
         return launch(async () => {
           const { runId } = await launcher.startRun({
@@ -909,6 +927,8 @@ export function launchTools(
         why: Why,
       }),
       execute: async ({ id, prompt, why }) => {
+        const off = offByStyle("workflow");
+        if (off) return failed(off);
         if (!launcher) return failed("This server cannot start initiatives");
         return launch(async () => {
           const { initiativeId } = await launcher.startInitiative({ initiativeId: id, prompt });
@@ -989,6 +1009,8 @@ export function launchTools(
         "Propose working without a workflow: split a task into parallel chat sessions the user approves as one card, then start them all. Use it when the user does not want a workflow run and the task has parts that can run side by side. Each chat gets its own brief; an editing chat works in its own Git worktree and branch, and two editing chats must not write the same paths. You get a note here as each one finishes or asks something.",
       inputSchema: ChatsInput,
       execute: async (request: ChatsRequest) => {
+        const off = offByStyle("chats");
+        if (off) return failed(off);
         const problem = chatsProblem(request);
         if (problem) return failed(problem);
         const blocked = overLimit(chat, state, store.read().launched, limits, request.chats.length);
@@ -1056,6 +1078,8 @@ export function launchTools(
         "Propose splitting a large request into flows the user approves as one card. Flows without dependsOn run as parallel workflow runs, each in its own worktree and branch, and must have disjoint boundary paths; if any flow depends on another, the whole split runs as one initiative (3 to 12 flows) that orders them. Waits for the user's answer, then launches everything at once.",
       inputSchema: SplitInput,
       execute: async (split: SplitRequest) => {
+        const off = offByStyle("workflow");
+        if (off) return failed(off);
         if (!launcher) return failed("This server cannot start workflow runs");
         const shape = splitShape(split);
         if ("problem" in shape) return failed(shape.problem);

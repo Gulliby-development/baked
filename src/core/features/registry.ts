@@ -213,6 +213,16 @@ export const FEATURES: readonly Feature[] = [
     ],
   },
   {
+    id: "coordinator-work-style",
+    group: "Chat and sessions",
+    title:
+      "Coordinator work style: workflows only, mostly workflows, not set, mostly chats, chats only",
+    tui: ["/coordinator style"],
+    cli: notNeeded("set coordinator.workStyle in config.json; the CLI coordinator reads it"),
+    api: ["/v1/settings: coordinator page"],
+    desktop: ["settings/chat: Coordinator page"],
+  },
+  {
     id: "coordinator-session-worktrees",
     group: "Chat and sessions",
     title: "Editing sessions the coordinator launches work in their own Git worktree and branch",

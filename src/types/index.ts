@@ -164,6 +164,15 @@ export interface ChatMessage {
   launch?: LaunchNote;
 }
 
+export const COORDINATOR_WORK_STYLES = [
+  "workflows-only",
+  "prefer-workflows",
+  "ask",
+  "prefer-chats",
+  "chats-only",
+] as const;
+export type CoordinatorWorkStyle = (typeof COORDINATOR_WORK_STYLES)[number];
+
 /** What a coordinator notice says about one item it launched. */
 export interface LaunchNote {
   kind: "session" | "run" | "initiative";
@@ -403,6 +412,11 @@ export interface AppConfig {
     maxTokens?: number;
     /** Start a coordinator turn when launched work finishes, fails or waits. Default: true */
     wake?: boolean;
+    /**
+     * How the coordinator proposes work: through workflow runs, parallel chats, or `ask` (offer a
+     * workflow, then chats when the user declines it). Default: `ask`
+     */
+    workStyle?: CoordinatorWorkStyle;
   };
   codeExecution?: boolean;
   /** Enable Anthropic's computer use tool (keyboard/mouse/screenshot). Claude-only. Default: false */
