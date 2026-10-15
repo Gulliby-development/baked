@@ -6,6 +6,12 @@
 
 import type { z } from "zod";
 import { modelVendor } from "../llm/model-vendor.js";
+import {
+  type BaselineCount,
+  CHECK_BASELINE_PATH,
+  commandKey,
+  testCount,
+} from "../verification/output-counts.js";
 import { type DependencyResult, QUALITY_DEPENDENCIES } from "./quality/dependencies.js";
 import {
   type DuplicationResult,
@@ -26,6 +32,7 @@ import {
 } from "./schemas.js";
 import type { SpecAmendment } from "./spec-amendment.js";
 import type { ArtifactRow, CriticOutcomeRow, WorkflowStore } from "./store.js";
+import type { Check } from "./types.js";
 import { type RunUsageReport, runUsage, toolBackendLine, toolTokensLine } from "./usage.js";
 import { HOST_SPEC_OUTCOME, parseRunDefinition } from "./v2/runtime.js";
 import { changesOf, type FileChange, readRoutingSummary } from "./view.js";
@@ -80,6 +87,15 @@ function quote(text: string, limit: number): string[] {
   const cut = trimmed.length > limit ? `${trimmed.slice(0, limit).trimEnd()}…` : trimmed;
   return cut.split("\n").map((line) => (line ? `> ${line}` : ">"));
 }
+const signed = (n: number): string => (n > 0 ? `+${n}` : String(n));
+
+const testsCell = (tests: TestsCount | null): string =>
+  !tests
+    ? ""
+    : tests.before === null
+      ? String(tests.after)
+      : `${tests.before} → ${tests.after} (${signed(tests.after - tests.before)})`;
+
 function duration(ms: number): string {
   const seconds = Math.round(ms / 1000);
   if (seconds < 60) return `${seconds}s`;
@@ -94,6 +110,15 @@ function parse<T>(json: string | null, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+/**
+ * Tests a check ran on its last passing run, against the same command before any change when
+ * the run measured a baseline (#1251): an update's added tests can be compared with a brief.
+ */
+interface TestsCount {
+  after: number;
+  before: number | null;
 }
 
 interface TaskDiff {
@@ -252,8 +277,10 @@ function collect(store: WorkflowStore, runId: string) {
     }
     const checks = new Map<
       string,
-      { status: string; validity: string; runs: number; ms: number }
+      { status: string; validity: string; runs: number; ms: number; tests: TestsCount | null }
     >();
+    // The evidence of each check's last passing run, whose output carries its test count.
+    const lastPassed = new Map<string, string>();
     for (const row of store.checkDetails(runId)) {
       const known = checks.get(row.check_id);
       checks.set(row.check_id, {
@@ -261,7 +288,29 @@ function collect(store: WorkflowStore, runId: string) {
         validity: row.validity,
         runs: (known?.runs ?? 0) + 1,
         ms: (known?.ms ?? 0) + row.duration_ms,
+        tests: null,
       });
+      if (row.status === "passed") lastPassed.set(row.check_id, row.artifact_id);
+    }
+    const baseline = parse<{ counts?: Record<string, BaselineCount[]> }>(
+      (() => {
+        const row = latestArtifacts.get(CHECK_BASELINE_PATH);
+        return row ? readQuietly(row.id) : null;
+      })(),
+      {},
+    );
+    for (const [id, artifactId] of lastPassed) {
+      const record = parse<{ definition?: Check; output?: string } | null>(
+        readQuietly(artifactId),
+        null,
+      );
+      const now = record?.output ? testCount(record.output) : null;
+      const entry = checks.get(id);
+      if (!now || !entry || !record?.definition) continue;
+      const before = baseline.counts?.[commandKey(record.definition)]?.find(
+        (count) => count.kind === "tests" && count.tool === now.tool,
+      );
+      entry.tests = { after: now.count, before: before?.count ?? null };
     }
     const readJson = <T>(path: string): T | null => {
       const row = latestArtifacts.get(path);
@@ -743,16 +792,33 @@ function render(facts: Facts, cap: number): string {
   if (facts.selections.length) out.push("## Best-of-N", "", ...candidatesSection(facts, cap));
 
   out.push("## Checks", "");
-  if (facts.checks.length)
+  if (facts.checks.length) {
+    // The Tests column appears only when some passing run reported a test count.
+    const counted = facts.checks.some((c) => c.tests);
     out.push(
       ...table(
-        ["Check", "Status", "Validity", "Runs", "Time"],
-        facts.checks.map((c) => [code(c.id), c.status, c.validity, c.runs, duration(c.ms)]),
+        ["Check", "Status", "Validity", "Runs", "Time", ...(counted ? ["Tests"] : [])],
+        facts.checks.map((c) => [
+          code(c.id),
+          c.status,
+          c.validity,
+          c.runs,
+          duration(c.ms),
+          ...(counted ? [testsCell(c.tests)] : []),
+        ]),
         cap,
       ),
       "",
     );
-  else out.push("No checks ran.", "");
+    const added = facts.checks.flatMap((c) =>
+      c.tests && c.tests.before !== null ? [c.tests.after - c.tests.before] : [],
+    );
+    if (added.length)
+      out.push(
+        `Tests added against the code the run started from: ${signed(added.reduce((a, b) => a + b, 0))}.`,
+        "",
+      );
+  } else out.push("No checks ran.", "");
 
   if (Object.values(facts.quality).some(Boolean))
     out.push("## Code quality", "", ...qualitySection(facts.quality, cap));
