@@ -5,12 +5,22 @@ import { ProfileSchema } from "../../workflows/schemas.js";
 // contract fixes (a TextReader, a string, a dict of variables): only the real entry point decodes
 // those bytes, so only a test that starts the program can show them (lockorder 8ce14645 accepted
 // invalid UTF-8 on stdin while 211 tests drove Cli.Run with in-memory readers, #1249).
+// A request or spec that keeps the tests hermetic outranks the process test: the planner kept
+// process tests against such a brief and the analysis raised the conflict seven times (pgnvet
+// 3f03497b), or nothing caught it (idpeek a270ff5a, #1297).
+const HERMETIC_CLAUSE =
+  "When the request or the accepted spec says the tests are hermetic, run in memory or start no other program, that brief wins: no test starts the program; instead the code that decodes the real channel is a function of its own (for example decodeStdin(bytes)) that the entry point calls, and a test passes it those exact bytes.";
 export const INPUT_BYTES_PLAN_RULE =
-  "When a criterion is about the raw bytes or encoding of an input channel (standard input, the bytes of a file, the environment), such as invalid UTF-8, a byte order mark or a NUL byte, and the design hands that input to the code through an in-memory abstraction (a reader, stream or string parameter), the task that tests the criterion also adds one test that starts the built program as a process and passes it those bytes on that channel, and its description says so: a test through the abstraction cannot produce bytes it never decodes.";
+  "When a criterion is about the raw bytes or encoding of an input channel (standard input, the bytes of a file, the environment), such as invalid UTF-8, a byte order mark or a NUL byte, and the design hands that input to the code through an in-memory abstraction (a reader, stream or string parameter), the task that tests the criterion also adds one test that starts the built program as a process and passes it those bytes on that channel, and its description says so: a test through the abstraction cannot produce bytes it never decodes. " +
+  HERMETIC_CLAUSE;
 export const INPUT_BYTES_TEST_RULE =
-  "When a criterion is about the raw bytes or encoding of standard input, a file or the environment (invalid UTF-8, a byte order mark, a NUL byte) and the code receives that input through a reader, stream or string, write at least one test that starts the program as a process and writes those exact bytes to that channel, and assert its exit code and message: a test that passes an in-memory reader never reaches the decoding of the real entry point.";
+  "When a criterion is about the raw bytes or encoding of standard input, a file or the environment (invalid UTF-8, a byte order mark, a NUL byte) and the code receives that input through a reader, stream or string, write at least one test that starts the program as a process and writes those exact bytes to that channel, and assert its exit code and message: a test that passes an in-memory reader never reaches the decoding of the real entry point. " +
+  HERMETIC_CLAUSE;
 export const INPUT_BYTES_REVIEW_RULE =
-  "When a criterion is about the raw bytes or encoding of standard input, a file or the environment and the tests reach the code only through an in-memory reader, stream or string, the real entry point's decoding is untested: check how that entry point reads the channel (a lenient decoder replaces invalid bytes instead of failing), and when run_repro is offered, show it with a repro that starts the program with those bytes; a channel whose decoding differs from the one the criterion requires (a file rejected, standard input accepted) is a correctness finding.";
+  "When a criterion is about the raw bytes or encoding of standard input, a file or the environment and the tests reach the code only through an in-memory reader, stream or string, the real entry point's decoding is untested: check how that entry point reads the channel (a lenient decoder replaces invalid bytes instead of failing), and when run_repro is offered, show it with a repro that starts the program with those bytes; a channel whose decoding differs from the one the criterion requires (a file rejected, standard input accepted) is a correctness finding. When the request or the accepted spec says the tests are hermetic or that no test starts a program, a missing process test is not a finding; the decoding function of the real channel still needs a test with the exact bytes.";
+
+export const INPUT_BYTES_ANALYZE_RULE =
+  "A task that starts the built program as a process to test the raw bytes of an input channel is planned by a built-in rule; it is right only when the request and the spec allow tests that start a program. When they say the tests are hermetic, run in memory or start no other program, such a task contradicts the request: report it as a blocking inconsistency on tasks.json that asks to test the decoding function with the exact bytes instead, and never report the absence of a process test as a finding then.";
 
 export const builtinProfiles = ProfileSchema.array().parse([
   {
@@ -32,13 +42,14 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "spec-reviewer",
-    version: "1.11.0",
+    version: "1.12.0",
     description: "Check document consistency",
     role: "planner",
     model: "$review",
     context: "planning",
     instructions:
-      "Find ambiguities and contradictions between the spec, plan and task graph. Reference the artifacts for every finding: spec.json or requirement and criterion IDs for the spec, plan.md or tasks.json for the plan. Mark a finding blocking only when the spec or plan must change before implementation can be approved. Compare the spec with the request too: when inScope or outOfScope drops something the request asks for or describes as the product, report a blocking scope finding that refers to spec.json and quotes the request. Report every finding in this one analysis, so a person sees all of them in one request; a finding left for the next round costs another specify, plan and analyze cycle. Read the whole spec, plan and task graph before you submit, and report every blocking finding they hold, including ones an earlier version already had. extra.earlierFindings, when present, lists the blocking findings of earlier passes, which the artifacts were revised for: report one again only when the revised artifacts still have it, and report every other blocking finding in this same pass, because the returns are limited and a finding first raised on the last one is settled without another revision. The checks in executionContract.checks are the authoritative verification: a check that runs a superset of a command the spec names (for example the whole test suite for one test file) satisfies it, and a check from project instructions that concerns files no task writes (for example locale validation when no locale file changes) does not apply. The checks are the verification the operator chose for this run: when they are narrower than the project's usual verification (one test file instead of the whole suite, no build), that is deliberate and not a finding. Checks run after implementation, so missing check outcomes are never a finding. extra.workspaceFacts is the host inventory of the workspace and outranks research prose: never report that a file it lists does not exist, and treat research that says project files are absent as stale against it. extra.hostCounts holds the task and file counts the host computed from tasks.json: never report a difference between a count in plan.md and the task graph. A requirement's verification and a criterion's method take only automated, manual or post-release; automated covers a test, a command check and the reviewer reading a file or the code, so a criterion checked by reading a file is correctly automated and never a finding, and never ask for any other method (inspection, review, demonstration, analysis). extra.hostSplit, when present, maps a planned task to the parts the host split it into by file after planning: plan.md names only the planned task, so never report a part as missing from plan.md, as a duplicate of its siblings or as lacking a test file of its own. Mark a finding blocking only when the spec or plan must change; everything else is a note, and a user answer in the request supersedes the research statement it contradicts. Return AnalysisSchema.",
+      "Find ambiguities and contradictions between the spec, plan and task graph. Reference the artifacts for every finding: spec.json or requirement and criterion IDs for the spec, plan.md or tasks.json for the plan. Mark a finding blocking only when the spec or plan must change before implementation can be approved. Compare the spec with the request too: when inScope or outOfScope drops something the request asks for or describes as the product, report a blocking scope finding that refers to spec.json and quotes the request. Report every finding in this one analysis, so a person sees all of them in one request; a finding left for the next round costs another specify, plan and analyze cycle. Read the whole spec, plan and task graph before you submit, and report every blocking finding they hold, including ones an earlier version already had. extra.earlierFindings, when present, lists the blocking findings of earlier passes, which the artifacts were revised for: report one again only when the revised artifacts still have it, and report every other blocking finding in this same pass, because the returns are limited and a finding first raised on the last one is settled without another revision. The checks in executionContract.checks are the authoritative verification: a check that runs a superset of a command the spec names (for example the whole test suite for one test file) satisfies it, and a check from project instructions that concerns files no task writes (for example locale validation when no locale file changes) does not apply. The checks are the verification the operator chose for this run: when they are narrower than the project's usual verification (one test file instead of the whole suite, no build), that is deliberate and not a finding. Checks run after implementation, so missing check outcomes are never a finding. extra.workspaceFacts is the host inventory of the workspace and outranks research prose: never report that a file it lists does not exist, and treat research that says project files are absent as stale against it. extra.hostCounts holds the task and file counts the host computed from tasks.json: never report a difference between a count in plan.md and the task graph. A requirement's verification and a criterion's method take only automated, manual or post-release; automated covers a test, a command check and the reviewer reading a file or the code, so a criterion checked by reading a file is correctly automated and never a finding, and never ask for any other method (inspection, review, demonstration, analysis). extra.hostSplit, when present, maps a planned task to the parts the host split it into by file after planning: plan.md names only the planned task, so never report a part as missing from plan.md, as a duplicate of its siblings or as lacking a test file of its own. Mark a finding blocking only when the spec or plan must change; everything else is a note, and a user answer in the request supersedes the research statement it contradicts. Return AnalysisSchema. " +
+      INPUT_BYTES_ANALYZE_RULE,
     skills: [],
     allowedTools: ["read", "read_criterion", "submit_result"],
     output: "analysis",
@@ -114,7 +125,7 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "planner",
-    version: "1.10.0",
+    version: "1.11.0",
     description: "Plan and task dependencies",
     role: "planner",
     model: "$active",
@@ -154,7 +165,7 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "implementer",
-    version: "1.16.0",
+    version: "1.17.0",
     description: "Implement one task",
     role: "implementer",
     model: "$coding",
@@ -181,7 +192,7 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "reviewer",
-    version: "1.14.0",
+    version: "1.15.0",
     description: "Correctness review",
     role: "reviewer",
     model: "$review",

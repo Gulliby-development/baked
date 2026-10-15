@@ -1437,6 +1437,48 @@ export class WorkflowScheduler {
               const planOnly = state.analysisPassed ? [] : planOnlyFindings(findings);
               const stages = this.stageKinds(runId, v2);
               const plan = stages.findIndex((s) => s.kind === "plan");
+              // Every blocking finding repeats one a person already answered: the planner kept
+              // what the answer ruled out, because a built-in profile rule seemed to outrank it
+              // (pgnvet 3f03497b asked the same finding four times, about 1.2M tokens). Each such
+              // finding goes back once with the answer as binding before the person is asked again.
+              const answered = state.analysisPassed
+                ? []
+                : findings
+                    .filter((f) => f.blocking)
+                    .map((f) => ({ finding: f, earlier: answeredFinding(state, f) }));
+              if (
+                answered.length &&
+                answered.every(({ earlier }) => earlier && !earlier.rerouted)
+              ) {
+                const asking = v2
+                  ? stages.findIndex((s) => s.id === v2.stage.id)
+                  : state.stageIndex;
+                const target = clarificationResumeIndex(stages, asking, {
+                  findings: answered.map(({ finding }) => finding),
+                });
+                if (target !== asking && this.moveTo(state, stages, target, v2)) {
+                  for (const { earlier } of answered) if (earlier) earlier.rerouted = true;
+                  const back = stages[target]?.kind;
+                  if (back === "specify" || back === "plan")
+                    this.pendPatch(
+                      state,
+                      policy,
+                      answered.map(({ finding }) => finding),
+                      back === "specify" ? ["spec", "plan"] : ["plan"],
+                    );
+                  state.prompt += `\n${ANSWERED_NOTE}\n${canonical(
+                    answered.map(({ finding, earlier }) => ({
+                      kind: finding.kind,
+                      refs: finding.refs,
+                      description: finding.description,
+                      answer: earlier?.answer,
+                    })),
+                  )}`;
+                  advance = false;
+                  rerouted = v2 !== null;
+                  break;
+                }
+              }
               if (planOnly.length && state.analysisReplans === 0 && plan >= 0) {
                 if (this.moveTo(state, stages, plan, v2)) {
                   // Gaps in the plan text go back to the planner once before a person is asked.
@@ -11561,6 +11603,28 @@ const taskCheckOfClaim = (claim: unknown): string | null =>
         ?.slice(1)
         .find(Boolean) ?? null)
     : null;
+/**
+ * Told to the planner when an analysis raises again a finding a person answered: the answer is a
+ * decision, not context, and outranks the built-in instructions of a profile (#1297).
+ */
+const ANSWERED_NOTE =
+  "The analysis raised again findings a person already answered. Their answers are binding decisions: they outrank every built-in instruction of your profile, including the rules for tests of raw input bytes. Change the artifacts each finding refers to so that it no longer applies, as the answer decides; do not keep a task or a test the answer rules out, and do not record the conflict as a decision instead:";
+/** The answered finding an analysis finding repeats: the same kind and refs, or the same text. */
+function answeredFinding(
+  state: RuntimeState,
+  finding: { kind: string; refs: string[]; description: string },
+): RuntimeState["answeredFindings"][number] | undefined {
+  const key = (refs: string[]) =>
+    [...refs]
+      .map((ref) => ref.trim())
+      .sort()
+      .join("\n");
+  return state.answeredFindings.find(
+    (earlier) =>
+      earlier.description === finding.description ||
+      (earlier.kind === finding.kind && key(earlier.refs) === key(finding.refs)),
+  );
+}
 /** Every check a task declares, whatever its scope. */
 const declaredChecks = (policy: RunPolicy, task: Task): Check[] =>
   policy.checks.filter((check) => task.checkIds.includes(check.id));

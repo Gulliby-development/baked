@@ -364,6 +364,7 @@ export class NativeWorkflowService implements WorkflowService {
       affectedTests: {},
       analysisReplans: 0,
       analysisRaised: [],
+      answeredFindings: [],
       revisedRejections: [],
       pendingPatch: null,
       taskContinuations: {},
@@ -1089,6 +1090,29 @@ export class NativeWorkflowService implements WorkflowService {
               decision.answers,
             ),
           );
+        }
+        // The answered blocking findings, so a repeat of one is not asked again (#1297).
+        if (asking?.kind === "analyze" && Array.isArray(body.findings)) {
+          const answer = canonical(decision.answers);
+          for (const finding of body.findings as {
+            kind?: unknown;
+            refs?: unknown;
+            description?: unknown;
+            blocking?: unknown;
+          }[])
+            if (
+              finding.blocking === true &&
+              typeof finding.kind === "string" &&
+              typeof finding.description === "string" &&
+              Array.isArray(finding.refs)
+            )
+              state.answeredFindings.push({
+                kind: finding.kind,
+                refs: finding.refs.filter((ref): ref is string => typeof ref === "string"),
+                description: finding.description,
+                answer,
+                rerouted: false,
+              });
         }
         if (answerInvalidatesAnalysis(asking?.kind)) state.analysisPassed = false;
         const resume = clarificationResumeIndex(stages, askingIndex, body);
