@@ -6,6 +6,7 @@ import {
   type CriticMode,
   type Effort,
   type IndependentReview,
+  type RouteContext,
   type RoutingChange,
   type RoutingOverview,
   type RoutingRow,
@@ -42,12 +43,15 @@ import { cn } from "../../lib/cn.js";
 import { STACK as COLUMN, LABEL, LEDE, PANEL } from "../../lib/styles.js";
 import {
   CLASS_HINTS,
+  CONTEXT_CHOICES,
   classSuggestions,
+  contextLabel,
   describeResolved,
   describeRoute,
   draftOf,
   EFFORT_CHOICES,
   effortLabel,
+  formatContext,
   layerValue,
   plainName,
   type RoutingGroup,
@@ -367,6 +371,7 @@ function RoutingTables({
       />
       <SpecifySonnetRow view={view} scope={scope} busy={busy} onChange={onChange} />
       <CodeWebSearchRow view={view} scope={scope} busy={busy} onChange={onChange} />
+      <ContextRow view={view} scope={scope} busy={busy} onChange={onChange} />
       {view.warnings.length > 0 && (
         <ul className={cn("m-0 list-none p-0", WARN, NOTE)}>
           {view.warnings.map((w) => (
@@ -488,7 +493,13 @@ function RouteForm({
   models: Models;
   problems: string[];
   onSave: (
-    draft: { name: string; model: string; effort: Effort | null; fallback: string[] },
+    draft: {
+      name: string;
+      model: string;
+      effort: Effort | null;
+      fallback: string[];
+      context: RouteContext | null;
+    },
     create: boolean,
   ) => void;
   onCancel: () => void;
@@ -498,6 +509,9 @@ function RouteForm({
   const [model, setModel] = useState(initial.model);
   const [effort, setEffort] = useState<Effort | null>(initial.effort);
   const [fallback, setFallback] = useState(initial.fallback);
+  const [context, setContext] = useState<RouteContext | null>(initial.context ?? null);
+  const contextChoices =
+    typeof initial.context === "number" ? [...CONTEXT_CHOICES, initial.context] : CONTEXT_CHOICES;
   const create = row === null;
   const isClass = target.kind === "class";
   // A class names a model, so only other routes offer the model names.
@@ -513,7 +527,7 @@ function RouteForm({
   }, [view]);
   const submit = (e: FormEvent): void => {
     e.preventDefault();
-    onSave({ name: name.trim(), model, effort, fallback }, create);
+    onSave({ name: name.trim(), model, effort, fallback, context }, create);
   };
   const id = (field: string) => `route-${field}`;
   const layer = scope === "global" ? "All projects" : "This project";
@@ -600,6 +614,34 @@ function RouteForm({
               ))}
             </select>
           </div>
+        </div>
+        <div className="flex flex-col gap-1">
+          <Label htmlFor={id("context")} className="flex items-center">
+            Context window
+            <Hint label="context window">
+              For models with more than one window, such as Claude Code Opus and Sonnet (200k or
+              1M). Largest window always runs the 1M one; larger when it does not fit starts on the
+              model as named and moves only a step whose context does not fit to the largest window.
+              A larger window costs more per call. Inherit leaves it to the routing-wide setting
+              below.
+            </Hint>
+          </Label>
+          <select
+            id={id("context")}
+            value={context === null ? "" : String(context)}
+            onChange={(e) => {
+              const value = e.target.value;
+              setContext(
+                value === "" ? null : /^\d+$/.test(value) ? Number(value) : (value as RouteContext),
+              );
+            }}
+          >
+            {contextChoices.map((value) => (
+              <option key={value ?? "unset"} value={value === null ? "" : String(value)}>
+                {contextLabel(value)}
+              </option>
+            ))}
+          </select>
         </div>
         <div className="flex flex-col gap-1">
           <Label htmlFor={id("fallback")} className="flex items-center">
@@ -847,6 +889,67 @@ function CodeWebSearchRow({
             {label}
           </Segment>
         ))}
+      </SegmentGroup>
+    </div>
+  );
+}
+
+function ContextRow({
+  view,
+  scope,
+  busy,
+  onChange,
+}: {
+  view: RoutingOverview;
+  scope: RoutingScope;
+  busy: boolean;
+  onChange: (change: RoutingChange, what: string) => Promise<void>;
+}) {
+  const own = view.context?.[scope] ?? null;
+  const effective = view.context?.effective ?? null;
+  const choices = typeof own === "number" ? [...CONTEXT_CHOICES, own] : CONTEXT_CHOICES;
+  return (
+    <div className={cn(PANEL, ROW)}>
+      <span className={cn(GROW, COLUMN)}>
+        <span className="flex items-center">
+          Context window
+          <Hint label="context window">
+            The window of every route that does not set its own, for models with more than one
+            (Claude Code Opus and Sonnet: 200k or 1M). max always runs the largest window; auto
+            starts on the model as named and moves only a step whose context does not fit to the
+            largest window, before any fallback model. A larger window costs more per call. Unset
+            runs every model as named.
+          </Hint>
+        </span>
+        <span className={cn("text-dim-foreground", NOTE)}>
+          Which window a model with several runs with. In effect:{" "}
+          <span className="font-mono">
+            {effective === null ? "default" : formatContext(effective)}
+          </span>
+          .
+        </span>
+      </span>
+      <SegmentGroup aria-label="Context window">
+        {choices.map((value) => {
+          const label = value === null ? "inherit" : formatContext(value);
+          return (
+            <Segment
+              key={label}
+              aria-pressed={own === value}
+              disabled={busy}
+              onClick={() =>
+                void onChange(
+                  { context: value },
+                  value === null
+                    ? "Cleared the context window"
+                    : `Set the context window to ${label}`,
+                )
+              }
+            >
+              {label}
+            </Segment>
+          );
+        })}
       </SegmentGroup>
     </div>
   );

@@ -35,6 +35,7 @@ import type {
   ProjectSummary,
   ProviderStatus,
   Route,
+  RouteContext,
   RouteDraft,
   RouteExplanation,
   RoutingOverview,
@@ -518,6 +519,7 @@ function mergeRouting(base?: ModelRouting, layer?: ModelRouting): ModelRouting |
   const critic = layer.critic ?? base.critic;
   const specifyOnSonnet = layer.specifyOnSonnet ?? base.specifyOnSonnet;
   const codeWebSearch = layer.codeWebSearch ?? base.codeWebSearch;
+  const context = layer.context ?? base.context;
   return {
     classes: { ...base.classes, ...layer.classes },
     roles: { ...base.roles, ...layer.roles },
@@ -528,6 +530,7 @@ function mergeRouting(base?: ModelRouting, layer?: ModelRouting): ModelRouting |
     ...(critic ? { critic } : {}),
     ...(specifyOnSonnet !== undefined ? { specifyOnSonnet } : {}),
     ...(codeWebSearch !== undefined ? { codeWebSearch } : {}),
+    ...(context !== undefined ? { context } : {}),
   };
 }
 
@@ -1027,6 +1030,11 @@ function routingOverview(s: SetupState, workflow: string | null): RoutingOvervie
       global: global?.codeWebSearch ?? null,
       project: project?.codeWebSearch ?? null,
       effective: effective?.codeWebSearch ?? false,
+    },
+    context: {
+      global: global?.context ?? null,
+      project: project?.context ?? null,
+      effective: effective?.context ?? null,
     },
     warnings: route.warnings,
     error: null,
@@ -2014,6 +2022,7 @@ export const setupRoutes: MockRoute = (request) => {
           critic: CriticMode | null;
           specifyOnSonnet: boolean | null;
           codeWebSearch: boolean | null;
+          context: RouteContext | null;
         }
       >(request);
       const scope = edit.scope === "global" ? "global" : "project";
@@ -2032,6 +2041,9 @@ export const setupRoutes: MockRoute = (request) => {
       } else if (edit.codeWebSearch !== undefined) {
         const { codeWebSearch: _previous, ...rest } = current ?? {};
         next = edit.codeWebSearch === null ? rest : { ...rest, codeWebSearch: edit.codeWebSearch };
+      } else if (edit.context !== undefined) {
+        const { context: _previous, ...rest } = current ?? {};
+        next = edit.context === null ? rest : { ...rest, context: edit.context };
       } else if (edit.critic !== undefined) {
         const { critic: _previous, ...rest } = current ?? {};
         next = edit.critic === null ? rest : { ...rest, critic: edit.critic };
@@ -2044,11 +2056,12 @@ export const setupRoutes: MockRoute = (request) => {
       } else if (edit.target) {
         const draft = edit.route ?? null;
         const route: Route | null = draft
-          ? draft.effort || draft.fallback.length
+          ? draft.effort || draft.fallback.length || draft.context
             ? {
                 model: draft.model.trim(),
                 ...(draft.effort ? { effort: draft.effort } : {}),
                 ...(draft.fallback.length ? { fallback: draft.fallback } : {}),
+                ...(draft.context ? { context: draft.context } : {}),
               }
             : draft.model.trim()
           : null;

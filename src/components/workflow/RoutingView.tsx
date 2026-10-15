@@ -4,15 +4,18 @@ import {
   type ModelRouting,
   mergeModelRouting,
   ROUTED_ROLES,
+  type RouteContext,
   type RoutingInputs,
 } from "../../core/llm/model-routing.js";
 import { useTheme } from "../../core/theme/index.js";
 import type { RouteExplanation } from "../../core/workflows/routing.js";
 import {
   applyRoutingChange,
+  CONTEXT_CHOICES,
   describeRoute,
   draftOf,
   EFFORT_CHOICES,
+  formatRouteContext,
   type IndependentReviewMode,
   parseFallback,
   type RoutingScope,
@@ -24,6 +27,7 @@ import {
   setCritic,
   setIndependentReview,
   setReviewMinConfidence,
+  setRoutingContext,
   setSpecifyOnSonnet,
   targetPath,
 } from "../../core/workflows/routing-edit.js";
@@ -70,7 +74,7 @@ export const ROUTING_HINTS: Record<RoutingMode, { key: string; label: string }[]
   edit: [
     { key: "↑↓/Tab", label: "field" },
     { key: "Enter", label: "model list" },
-    { key: "←→", label: "effort" },
+    { key: "←→", label: "effort, context" },
     { key: "Ctrl+S", label: "save" },
     { key: "Esc", label: "cancel" },
   ],
@@ -91,15 +95,17 @@ type Row =
   | { kind: "critic" }
   | { kind: "specify" }
   | { kind: "search" }
+  | { kind: "context" }
   | { kind: "note"; text: string; tone: "muted" | "error" };
 
-type Field = "name" | "model" | "effort" | "fallback";
+type Field = "name" | "model" | "effort" | "context" | "fallback";
 interface Form {
   target: RoutingTarget;
   isNew: boolean;
   name: string;
   model: string;
   effort: (typeof EFFORT_CHOICES)[number];
+  context: RouteContext | null;
   fallback: string;
   field: Field;
 }
@@ -110,6 +116,12 @@ interface Shown {
   source: string;
   effort?: string | null | undefined;
   fallback?: string[] | undefined;
+  context?: RouteContext | null | undefined;
+}
+
+/** The context choices a form cycles through, with a window the route already names. */
+function contextChoices(current: RouteContext | null): (RouteContext | null)[] {
+  return typeof current === "number" ? [...CONTEXT_CHOICES, current] : [...CONTEXT_CHOICES];
 }
 
 const REVIEW_MODES = [null, "off", "warn", "require", "provider"] as const;
@@ -128,7 +140,8 @@ function selectable(row: Row | undefined): boolean {
       row.kind === "confidence" ||
       row.kind === "critic" ||
       row.kind === "specify" ||
-      row.kind === "search")
+      row.kind === "search" ||
+      row.kind === "context")
   );
 }
 
@@ -244,6 +257,7 @@ export function RoutingView({
     for (const id of Object.keys(explained.data?.profiles ?? {}).sort())
       out.push({ kind: "route", target: { kind: "profile", id }, label: id });
     out.push({ kind: "search" });
+    out.push({ kind: "context" });
     out.push({ kind: "header", title: "Independent review" });
     out.push({ kind: "review" });
     out.push({ kind: "confidence" });
@@ -273,6 +287,7 @@ export function RoutingView({
     [
       r.model,
       ...(r.effort ? [r.effort] : []),
+      ...(r.context ? [`context ${formatRouteContext(r.context)}`] : []),
       ...(r.fallback?.length ? [`→ ${r.fallback.join(", ")}`] : []),
     ].join(" · ");
 
@@ -300,6 +315,7 @@ export function RoutingView({
       name: "",
       model: draft.model,
       effort: draft.effort,
+      context: draft.context ?? null,
       fallback: draft.fallback.join(", "),
       field: isNew ? "name" : "model",
     });
@@ -308,7 +324,12 @@ export function RoutingView({
 
   const submit = (f: Form): void => {
     const target: RoutingTarget = f.isNew ? { kind: "class", name: f.name.trim() } : f.target;
-    const draft = { model: f.model, effort: f.effort, fallback: parseFallback(f.fallback) };
+    const draft = {
+      model: f.model,
+      effort: f.effort,
+      context: f.context,
+      fallback: parseFallback(f.fallback),
+    };
     const { routing: next, problems } = applyRoutingChange(layers, scope, {
       target,
       route: draft,
@@ -335,8 +356,8 @@ export function RoutingView({
   };
 
   const fields: Field[] = form?.isNew
-    ? ["name", "model", "effort", "fallback"]
-    : ["model", "effort", "fallback"];
+    ? ["name", "model", "effort", "context", "fallback"]
+    : ["model", "effort", "context", "fallback"];
 
   const pick = (id: string): void => {
     setPicking(null);
@@ -370,6 +391,14 @@ export function RoutingView({
         const i = EFFORT_CHOICES.indexOf(form.effort);
         const step = key === "left" ? EFFORT_CHOICES.length - 1 : 1;
         setForm({ ...form, effort: EFFORT_CHOICES[(i + step) % EFFORT_CHOICES.length] ?? null });
+        return;
+      }
+      if (form.field === "context" && (key === "left" || key === "right" || key === "space")) {
+        evt.preventDefault();
+        const choices = contextChoices(form.context);
+        const i = choices.indexOf(form.context);
+        const step = key === "left" ? choices.length - 1 : 1;
+        setForm({ ...form, context: choices[(i + step) % choices.length] ?? null });
         return;
       }
       if (key === "return" && (form.field === "model" || form.field === "fallback")) {
@@ -471,6 +500,24 @@ export function RoutingView({
         setCodeWebSearch(layers[scope], next),
         next === null ? "Cleared codeWebSearch" : `Set codeWebSearch to ${next ? "on" : "off"}`,
       );
+      return;
+    }
+    if (current.kind === "context" && (key === "left" || key === "right" || key === "space")) {
+      evt.preventDefault();
+      const choices = contextChoices(layers[scope]?.context ?? null);
+      const i = choices.indexOf(layers[scope]?.context ?? null);
+      const next =
+        choices[(i + (key === "left" ? choices.length - 1 : 1)) % choices.length] ?? null;
+      save(
+        setRoutingContext(layers[scope], next),
+        next === null ? "Cleared context" : `Set context to ${formatRouteContext(next)}`,
+      );
+      return;
+    }
+    if ((key === "d" || key === "delete" || key === "backspace") && current.kind === "context") {
+      evt.preventDefault();
+      if (layers[scope]?.context === undefined) return;
+      save(setRoutingContext(layers[scope], null), "Cleared context");
       return;
     }
     if ((key === "d" || key === "delete" || key === "backspace") && current.kind === "search") {
@@ -649,6 +696,13 @@ export function RoutingView({
           </text>,
         )}
         {line(
+          "context",
+          "Context",
+          <text fg={form.field === "context" ? t.brand : t.textPrimary}>
+            {`‹ ${form.context === null ? "unset" : formatRouteContext(form.context)} ›`}
+          </text>,
+        )}
+        {line(
           "fallback",
           "Fallback",
           input("fallback", form.fallback, "up to 3 model IDs, comma separated", (v) =>
@@ -657,9 +711,11 @@ export function RoutingView({
         )}
         <text fg={t.textFaint}>
           {clip(
-            form.effort === null
-              ? "Effort unset: a class reference brings its class's effort, otherwise the provider setting applies."
-              : "Effort replaces performance.effort for these agents' calls; default sends none.",
+            form.field === "context"
+              ? "Context: max runs the largest window the model offers; auto moves a step that does not fit to it."
+              : form.effort === null
+                ? "Effort unset: a class reference brings its class's effort, otherwise the provider setting applies."
+                : "Effort replaces performance.effort for these agents' calls; default sends none.",
             width,
           )}
         </text>
@@ -720,6 +776,15 @@ export function RoutingView({
         ? { value: `‹ ${own ? "on" : "off"} ›`, tone: "set" }
         : { value: `‹ unset › = ${effective?.codeWebSearch ? "on" : "off"}`, tone: "default" };
     }
+    if (row.kind === "context") {
+      const own = layers[scope]?.context;
+      return own !== undefined
+        ? { value: `‹ ${formatRouteContext(own)} ›`, tone: "set" }
+        : {
+            value: `‹ unset › = ${effective?.context ? formatRouteContext(effective.context) : "default"}`,
+            tone: "default",
+          };
+    }
     if (row.kind === "confidence") {
       const own = layers[scope]?.reviewMinConfidence;
       return own !== undefined
@@ -770,6 +835,10 @@ export function RoutingView({
     detail.push("On: implementer and acceptance-writer attempts on a Codex model may use Codex's");
     detail.push("web search. Checks, tests and linters keep the policy's network. Off by default.");
     detail.push("←→ or Space switch it, D clears it.");
+  } else if (current?.kind === "context") {
+    detail.push("The context window of routes without their own: max runs the largest window");
+    detail.push("a model offers (Claude Code [1m]); auto keeps the model as named and moves a");
+    detail.push("step whose context does not fit to it. ←→ or Space switch it, D clears it.");
   } else if (current?.kind === "confidence") {
     detail.push(`Effective: ${confidence}. Review findings below this confidence stay notes`);
     detail.push("and start no correction. ←→ change it by 0.05, D clears it.");
@@ -811,7 +880,9 @@ export function RoutingView({
                       ? "specify on Sonnet"
                       : row.kind === "search"
                         ? "code web search"
-                        : "independentReview";
+                        : row.kind === "context"
+                          ? "context window"
+                          : "independentReview";
           const { value, tone } = rowText(row);
           return (
             <text key={`r-${index}`} bg={bg}>

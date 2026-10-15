@@ -6,6 +6,7 @@ import type {
   Effort,
   ResolvedRoute,
   Route,
+  RouteContext,
   RouteDraft,
   RoutingOverview,
   RoutingRow,
@@ -13,18 +14,45 @@ import type {
 } from "../../client/setup.js";
 
 export function draftOf(route: Route | null | undefined): RouteDraft {
-  if (route === null || route === undefined) return { model: "", effort: null, fallback: [] };
-  if (typeof route === "string") return { model: route, effort: null, fallback: [] };
-  return { model: route.model, effort: route.effort ?? null, fallback: route.fallback ?? [] };
+  if (route === null || route === undefined)
+    return { model: "", effort: null, fallback: [], context: null };
+  if (typeof route === "string") return { model: route, effort: null, fallback: [], context: null };
+  return {
+    model: route.model,
+    effort: route.effort ?? null,
+    fallback: route.fallback ?? [],
+    context: route.context ?? null,
+  };
 }
 
-/** One line for a route as configured: `model · effort · → fallback, fallback`. */
+/** A context value as the form shows it: `1m` and `200k` for windows, the keyword otherwise. */
+export function formatContext(context: RouteContext): string {
+  if (typeof context !== "number") return context;
+  if (context % 1_000_000 === 0) return `${context / 1_000_000}m`;
+  if (context % 1_000 === 0) return `${context / 1_000}k`;
+  return String(context);
+}
+
+/** The context choices of the form: unset (inherit), then each keyword. */
+export const CONTEXT_CHOICES: readonly (RouteContext | null)[] = [null, "default", "max", "auto"];
+
+/** The label of a context choice in the form and the routing row. */
+export function contextLabel(context: RouteContext | null): string {
+  if (context === null) return "inherit";
+  if (context === "default") return "model as named";
+  if (context === "max") return "largest window";
+  if (context === "auto") return "larger when it does not fit";
+  return `${formatContext(context)} window`;
+}
+
+/** One line for a route as configured: `model · effort · context 1m · → fallback, fallback`. */
 export function describeRoute(route: Route | null | undefined): string {
   if (route === null || route === undefined) return "";
   const draft = draftOf(route);
   return [
     draft.model,
     ...(draft.effort ? [draft.effort] : []),
+    ...(draft.context ? [`context ${formatContext(draft.context)}`] : []),
     ...(draft.fallback.length ? [`→ ${draft.fallback.join(", ")}`] : []),
   ].join(" · ");
 }
@@ -35,6 +63,7 @@ export function describeResolved(resolved: ResolvedRoute | null): string {
   return [
     resolved.model,
     ...(resolved.effort && resolved.effort !== "default" ? [resolved.effort] : []),
+    ...(resolved.context ? [`context ${formatContext(resolved.context)}`] : []),
     ...(resolved.fallback?.length ? [`→ ${resolved.fallback.join(", ")}`] : []),
   ].join(" · ");
 }

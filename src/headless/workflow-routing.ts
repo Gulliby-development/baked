@@ -11,16 +11,22 @@ import {
   routingConfigFiles,
   saveRoutingChange,
 } from "../core/workflows/routing-config.js";
-import type { RoutingChange, RoutingScope, RoutingTarget } from "../core/workflows/routing-edit.js";
+import {
+  parseRouteContext,
+  type RoutingChange,
+  type RoutingScope,
+  type RoutingTarget,
+} from "../core/workflows/routing-edit.js";
 
 export const routingHelp = `Usage: baked workflow routing [show] [--json]
-       baked workflow routing set TARGET MODEL [--effort LEVEL] [--fallback ID,ID] [--scope project|global]
+       baked workflow routing set TARGET MODEL [--effort LEVEL] [--fallback ID,ID] [--context SIZE] [--scope project|global]
        baked workflow routing clear TARGET [--scope project|global]
        baked workflow routing review off|warn|require|provider|unset [--scope project|global]
        baked workflow routing confidence 0..1|unset [--scope project|global]
        baked workflow routing critic off|advise|unset [--scope project|global]
        baked workflow routing specify-sonnet on|off|unset [--scope project|global]
        baked workflow routing web-search on|off|unset [--scope project|global]
+       baked workflow routing context default|max|auto|SIZE|unset [--scope project|global]
 
 Changes modelRouting in the project config (.baked/config.json, the default) or the global one
 (--scope global), with the checks of the routing screen and the local API: nothing is written
@@ -35,6 +41,9 @@ critic sets whether a critic scores every task attempt (unset: only on another v
 specify-sonnet on runs the specify stage of a Claude Code Opus run on claude-code/sonnet (off by
 default); web-search on lets implementer and acceptance-writer attempts on a Codex model use
 Codex's web search (codeWebSearch, off by default; checks keep the policy's network setting);
+context sets the context window of every route without its own, and --context that of one route:
+default runs the model as named, max its largest window, SIZE (1m, 200k) that window, auto the
+model as named until a step does not fit, then its largest window for that step;
 unset removes any of them. show prints the modelRouting of both files; "baked workflow route" shows
 what each stage resolves to.
 `;
@@ -123,7 +132,7 @@ export function runRoutingCli(argv: string[], configDir?: string): number {
   const scope: RoutingScope = scopeText;
   let change: RoutingChange;
   if (command === "set") {
-    only(flags, ["scope", "effort", "fallback", "json"]);
+    only(flags, ["scope", "effort", "fallback", "context", "json"]);
     const [target, model, ...rest] = args;
     if (!target || model === undefined || rest.length)
       throw new WorkflowFault("INVALID_DEFINITION", "set takes TARGET MODEL");
@@ -134,6 +143,10 @@ export function runRoutingCli(argv: string[], configDir?: string): number {
         "INVALID_DEFINITION",
         `--effort is one of ${RouteEffort.options.join(", ")}`,
       );
+    const contextText = flags.get("context");
+    const context = contextText === undefined ? null : parseRouteContext(contextText);
+    if (contextText !== undefined && context === null)
+      throw new WorkflowFault("INVALID_DEFINITION", "--context is default, max, auto or a size");
     change = {
       target: parseRoutingTarget(target),
       route: {
@@ -143,6 +156,7 @@ export function runRoutingCli(argv: string[], configDir?: string): number {
           .split(",")
           .map((id) => id.trim())
           .filter(Boolean),
+        context,
       },
     };
   } else if (command === "clear") {
@@ -182,6 +196,16 @@ export function runRoutingCli(argv: string[], configDir?: string): number {
     if (rest.length || !value || !["on", "off", "unset"].includes(value))
       throw new WorkflowFault("INVALID_DEFINITION", "web-search takes on, off or unset");
     change = { codeWebSearch: value === "unset" ? null : value === "on" };
+  } else if (command === "context") {
+    only(flags, ["scope", "json"]);
+    const [value, ...rest] = args;
+    const context = value === undefined || value === "unset" ? null : parseRouteContext(value);
+    if (rest.length || !value || (value !== "unset" && context === null))
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        "context takes default, max, auto, a size such as 1m, or unset",
+      );
+    change = { context };
   } else if (command === "confidence") {
     only(flags, ["scope", "json"]);
     const [value, ...rest] = args;

@@ -80,6 +80,24 @@ describe("baked workflow routing", () => {
     expect(() => run(["web-search", "yes"])).toThrow(/on, off or unset/);
   });
 
+  test("context sets the routing-wide window and --context one route's (#1256)", () => {
+    const { run, project } = setup();
+    expect(run(["context", "auto"]).code).toBe(0);
+    expect(project()).toEqual({ modelRouting: { context: "auto" } });
+    expect(run(["set", "role:reviewer", "claude-code/opus", "--context", "1m"]).code).toBe(0);
+    expect(project()).toEqual({
+      modelRouting: {
+        context: "auto",
+        roles: { reviewer: { model: "claude-code/opus", context: 1_000_000 } },
+      },
+    });
+    expect(run(["context", "unset"]).code).toBe(0);
+    expect(() => run(["context", "huge"])).toThrow(/default, max, auto/);
+    expect(() => run(["set", "role:reviewer", "claude-code/opus", "--context", "x"])).toThrow(
+      /--context/,
+    );
+  });
+
   test("specify-sonnet turns the opt-in specify route on, off and unset (#1173)", () => {
     const { run, project } = setup();
     expect(run(["specify-sonnet", "on"]).code).toBe(0);

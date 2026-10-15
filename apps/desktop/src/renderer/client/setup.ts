@@ -257,7 +257,14 @@ export interface CatalogSkill {
 export type Effort = "default" | "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORTS: readonly Effort[] = ["default", "low", "medium", "high", "xhigh", "max"];
 
-export type Route = string | { model: string; effort?: Effort; fallback?: string[] };
+/**
+ * A route's context window (#1256): `default` runs the model as named, `max` its largest window,
+ * a number that window in tokens, `auto` the largest window only for a step that does not fit.
+ */
+export type RouteContext = "default" | "max" | "auto" | number;
+export type Route =
+  | string
+  | { model: string; effort?: Effort; fallback?: string[]; context?: RouteContext };
 export type IndependentReview = "off" | "warn" | "require" | "provider";
 export type CriticMode = "off" | "advise" | "select" | "earlyStop";
 
@@ -273,6 +280,8 @@ export interface ModelRouting {
   specifyOnSonnet?: boolean;
   /** Opt-in: Codex code attempts may use Codex's web search (#1239). */
   codeWebSearch?: boolean;
+  /** The context window of every route without its own (#1256). */
+  context?: RouteContext;
 }
 
 /** The config keys the setup screens read; the files hold many more, kept as they are. */
@@ -385,6 +394,7 @@ export interface ResolvedRoute {
   source: string;
   effort?: string | null;
   fallback?: string[];
+  context?: RouteContext | null;
 }
 
 export interface RoutingRow {
@@ -424,6 +434,12 @@ export interface RoutingOverview {
   specifyOnSonnet?: { global: boolean | null; project: boolean | null; effective: boolean };
   /** Codex's web search for implementer and acceptance-writer attempts; false when unset. */
   codeWebSearch?: { global: boolean | null; project: boolean | null; effective: boolean };
+  /** The context window of routes without their own; `effective` is null when unset. */
+  context?: {
+    global: RouteContext | null;
+    project: RouteContext | null;
+    effective: RouteContext | null;
+  };
   warnings: string[];
   error: string | null;
 }
@@ -433,6 +449,8 @@ export interface RouteDraft {
   model: string;
   effort: Effort | null;
   fallback: string[];
+  /** The route's context window; `null` or absent leaves it unset. */
+  context?: RouteContext | null;
 }
 
 export type RoutingChange =
@@ -441,7 +459,8 @@ export type RoutingChange =
   | { reviewMinConfidence: number | null }
   | { critic: CriticMode | null }
   | { specifyOnSonnet: boolean | null }
-  | { codeWebSearch: boolean | null };
+  | { codeWebSearch: boolean | null }
+  | { context: RouteContext | null };
 
 // --- Calls --------------------------------------------------------------------------------------
 
