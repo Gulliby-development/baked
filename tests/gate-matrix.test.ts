@@ -13,6 +13,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
 import { failureSignature } from "../src/core/verification/output-counts.js";
+import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { isStaticCheck, isWholeUnitCheck } from "../src/core/workflows/check-policy.js";
 import { detectGates, executeGate } from "../src/core/workflows/gates.js";
 import { addedDependencies } from "../src/core/workflows/quality/dependencies.js";
@@ -737,6 +738,19 @@ for (const stack of STACKS) {
       expect(expected).toContain("<root>");
       for (const root of [setup.workspace, ...setup.roots.map((r) => r.root)])
         expect(failureSignature(failure(root), run)).toBe(expected);
+    });
+
+    // Under staticBaseline "relative" a diagnostic from before the run is debt in every worktree,
+    // whichever one printed its absolute path; one in a file the run changes never is (#1222).
+    cell(stack, "worktree: baseline-debt", () => {
+      const run = setup.roots.find((r) => r.name === "run")?.root ?? "";
+      const lint = (root: string) => `${join(root, "lib", "old.py")}:1:1: E501 Line too long\nFound 1 error.`;
+      const baseline = baselineKeys(lint(run), run);
+      expect(baseline).toEqual(["lib/old.py|E# Line too long"]);
+      for (const root of [setup.workspace, ...setup.roots.map((r) => r.root)]) {
+        expect(baselineDebt(lint(root), run, { baseline, changed: [], summary: 1 })).toEqual(baseline);
+        expect(baselineDebt(lint(root), run, { baseline, changed: ["lib/old.py"], summary: 1 })).toBeNull();
+      }
     });
 
     // A linter that fails on an unplanned file before the run still fails the same way after a task

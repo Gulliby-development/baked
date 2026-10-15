@@ -308,6 +308,14 @@ export const PolicySchema = z
      */
     projectMemory: z.boolean().optional(),
     /**
+     * How a required static check (linter, formatter, type checker) that already failed before
+     * the run is judged (#1222). Absent means `stop`: a failure the run did not change stops it
+     * with `baseline_failure`. `relative` passes the check when every diagnostic it reports was
+     * in the baseline run and none is in a file the run may change (task-end-check.ts
+     * `baselineDebt`), so lint debt elsewhere in the repository does not block a run.
+     */
+    staticBaseline: z.enum(["stop", "relative"]).optional(),
+    /**
      * What the test-integrity guard does with what it finds in a task's diff (test-integrity.ts):
      * `block` makes each finding a repair, `warn` records it only. Absent means `block`; only
      * `warn` is stored, so stored policies keep their hash.

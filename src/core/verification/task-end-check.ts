@@ -20,6 +20,10 @@ const LOCATED = /^\s*(.+?\.[A-Za-z0-9]+)(?:\(\d+,\d+\)|:\d+(?::\d+)?)\s*(?::|-)\
 const UNRESOLVED =
   /cannot find|can't find|not found|unresolved|undefined|undeclared|no exported member|could not import|has no attribute|no module named|E0583|E0432|E0433|E0412|E0425|TS2305|TS2307|TS2304/i;
 
+/** A Biome diagnostic header: `src/a.ts:3:7 lint/style/useConst FIXABLE ━━━` or `biome.json format ━━━`. */
+const BIOME =
+  /^\s*(\S+?\.[A-Za-z0-9]+)(?::\d+:\d+)?\s+((?:lint|format|assist|parse|organizeImports)\S*)[^━]*━/;
+
 const normalizePath = (path: string): string =>
   path.trim().replaceAll("\\", "/").replace(/^\.\//, "");
 
@@ -38,6 +42,11 @@ export function diagnostics(output: string): Diagnostic[] {
       header = null;
       continue;
     }
+    const biome = BIOME.exec(line);
+    if (biome?.[1] && biome[2]) {
+      found.push({ path: normalizePath(biome[1]), text: biome[2] });
+      continue;
+    }
     const located = LOCATED.exec(line);
     if (located?.[1] && located[2] && !/^\s*note\b/i.test(located[2]))
       found.push({ path: normalizePath(located[1]), text: located[2].trim() });
@@ -52,19 +61,52 @@ export const diagnosticKey = (d: Diagnostic): string => `${d.path}|${d.text.repl
 const samePath = (reported: string, path: string): boolean =>
   reported === path || reported.endsWith(`/${path}`);
 
+/** A path into one of BAKED's worktrees, up to the workspace-relative part. */
+const WORKTREE_PREFIX = /^.*?\/\.baked\/worktrees\/[^/]+\/[^/]+\//;
+
+/** The located diagnostics of a check run in `root`, with absolute paths made workspace-relative. */
+const relativeDiagnostics = (output: string, root: string): Diagnostic[] => {
+  const prefix = `${normalizePath(root).replace(/\/$/, "")}/`;
+  // The working copy behind the run's worktrees counts as the workspace too.
+  const project = prefix.replace(/\.baked\/worktrees\/.*$/, "");
+  return diagnostics(output).map((d) => ({
+    path: d.path.startsWith(prefix)
+      ? d.path.slice(prefix.length)
+      : WORKTREE_PREFIX.test(d.path)
+        ? d.path.replace(WORKTREE_PREFIX, "")
+        : d.path.startsWith(project)
+          ? d.path.slice(project.length)
+          : d.path,
+    text: d.text,
+  }));
+};
+
 /** Diagnostic keys of a baseline run in `root`, with absolute paths made workspace-relative. */
 export function baselineKeys(output: string, root: string): string[] {
-  const prefix = `${normalizePath(root).replace(/\/$/, "")}/`;
-  return [
-    ...new Set(
-      diagnostics(output).map((d) =>
-        diagnosticKey({
-          path: d.path.startsWith(prefix) ? d.path.slice(prefix.length) : d.path,
-          text: d.text,
-        }),
-      ),
-    ),
-  ];
+  return [...new Set(relativeDiagnostics(output, root).map(diagnosticKey))];
+}
+
+/**
+ * The diagnostics of a failing static check that are all debt from before the run (#1222): each
+ * one was in the baseline run, none is in a file the run may change, and together they account
+ * for the tool's whole summary count, so no diagnostic the parser missed can hide behind them.
+ * Null when any of that does not hold and the check fails as usual.
+ */
+export function baselineDebt(
+  output: string,
+  root: string,
+  options: { baseline: readonly string[]; changed: readonly string[]; summary: number | null },
+): string[] | null {
+  const found = relativeDiagnostics(output, root);
+  if (!found.length || options.summary === null || found.length < options.summary) return null;
+  const baseline = new Set(options.baseline);
+  const debt: string[] = [];
+  for (const d of found) {
+    const key = diagnosticKey(d);
+    if (!baseline.has(key) || options.changed.some((path) => samePath(d.path, path))) return null;
+    if (!debt.includes(key)) debt.push(key);
+  }
+  return debt;
 }
 
 /**
