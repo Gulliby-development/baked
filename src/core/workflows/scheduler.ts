@@ -61,7 +61,12 @@ import {
   validateEvidence,
   validEvidenceNote,
 } from "../verification/evidence.js";
-import { findingBlocks, fingerprint, requiresSecurityReview } from "../verification/findings.js";
+import {
+  confidenceOnlyNote,
+  findingBlocks,
+  fingerprint,
+  requiresSecurityReview,
+} from "../verification/findings.js";
 import {
   type BaselineCount,
   baselineRegression,
@@ -82,6 +87,7 @@ import {
   reproTool,
   runProbe,
   runRepro,
+  unconfidentReproAdvice,
 } from "../verification/repro.js";
 import {
   completeReview,
@@ -324,6 +330,7 @@ import {
   type Critique,
   CritiqueSchema,
   DEFAULT_MAX_PARALLEL_RUNS,
+  DEFAULT_REVIEW_MIN_CONFIDENCE,
   type Distinction,
   DistinctionSchema,
   executionModeOf,
@@ -1827,6 +1834,7 @@ export class WorkflowScheduler {
                   }),
                 });
               const previous = state.convergence ?? undefined;
+              const minConfidence = policy.reviewMinConfidence ?? DEFAULT_REVIEW_MIN_CONFIDENCE;
               let reproAdvised = false;
               let failAdvised = false;
               const review = ReviewSchema.parse(
@@ -1875,7 +1883,10 @@ export class WorkflowScheduler {
                       advice.push(unnamedFailureAdvice(unnamed));
                     }
                     if (!reproAdvised && canRepro) {
-                      const missing = missingReproAdvice(output as Review, executables, previous);
+                      const missing = [
+                        ...missingReproAdvice(output as Review, executables, previous),
+                        ...unconfidentReproAdvice(output as Review, minConfidence),
+                      ];
                       if (missing.length) reproAdvised = true;
                       advice.push(...missing);
                     }
@@ -2000,10 +2011,22 @@ export class WorkflowScheduler {
               // Below high severity, a correctness claim the host does not reproduce, and any claim
               // its repro refutes, is a note: cfgtrace2 e88a14dd spent about 1.1M on two corrective
               // tasks for static medium claims the walker could not run (#930).
+              // A claim kept a note only for its confidence repairs when its repro shows it (#1210).
               const outcomes = new Map<string, ReproOutcome>();
               for (const finding of review.findings)
-                if (convergenceReproGated(finding) && finding.repro && executables.length)
+                if (
+                  (convergenceReproGated(finding) || confidenceOnlyNote(finding, minConfidence)) &&
+                  finding.repro &&
+                  executables.length
+                )
                   outcomes.set(finding.id, await repro(finding.repro));
+              const blocks = (f: Review["findings"][number]): boolean =>
+                findingBlocks(
+                  f,
+                  minConfidence,
+                  confidenceOnlyNote(f, minConfidence) &&
+                    outcomes.get(f.id)?.status === "reproduced",
+                );
               if (outcomes.size)
                 this.store.transaction(() =>
                   this.store.artifact(
@@ -2032,7 +2055,7 @@ export class WorkflowScheduler {
                 );
               };
               const repairing = (f: Review["findings"][number]): boolean =>
-                (severities.includes(f.severity) && findingBlocks(f, policy.reviewMinConfidence)) ||
+                (severities.includes(f.severity) && blocks(f)) ||
                 f.criterionIds.some((id) => failing.has(id));
               const noted = review.findings.filter((f) => notes.has(f.id) && repairing(f));
               for (const id of [...failing]) if (noteOnly(id)) failing.delete(id);
@@ -2057,8 +2080,7 @@ export class WorkflowScheduler {
                 (f) =>
                   !notes.has(f.id) &&
                   !unreproduced.has(f.id) &&
-                  ((severities.includes(f.severity) &&
-                    findingBlocks(f, policy.reviewMinConfidence)) ||
+                  ((severities.includes(f.severity) && blocks(f)) ||
                     f.criterionIds.some((id) => failing.has(id))),
               );
               const findings = this.recordFindings(runId, review, repair);
