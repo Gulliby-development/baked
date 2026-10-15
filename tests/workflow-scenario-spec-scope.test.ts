@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
-import { contradictoryScope, domainExclusions, narrowingBounds, type RunPolicy, type Spec } from "../src/core/workflows/schemas.js";
+import { contradictoryScope, domainExclusions, inventedBounds, narrowingBounds, type RunPolicy, type Spec } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
@@ -99,6 +99,44 @@ describe("domain exclusions in a criterion at spec acceptance (#1161)", () => {
     expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");
     const errors = executor.specErrors[0] ?? [];
     expect(errors.filter((e) => e.includes("with a domain exclusion the request does not state")).map((e) => e.split(" ")[1])).toEqual(["AC-002", "AC-003"]);
+    expect(service.store.state(run.runId).spec?.criteria.map((c) => c.id)).toEqual(["AC-001"]);
+  });
+});
+
+// Bench round 27 (#1227). expenses-py 617fef26 wrote "up to 100,000 rows", "source lines up to
+// 1 MiB" and "files up to 100 MiB" into criteria for a brief that names no size; reviewers tested
+// those extremes, three correctives (1.63M tokens) chased them and the run blocked no_progress.
+describe("size bounds a criterion invents at spec acceptance (#1227)", () => {
+  const given = (id: string, text: string) => ({ ...criterion(id, ["FR-001"], "the expenses are summarized"), given: text });
+  const bounded: Spec = {
+    ...fixed,
+    criteria: [
+      ...fixed.criteria,
+      given("AC-002", "a CSV of up to 100,000 rows whose source lines are up to 1 MiB"),
+      given("AC-003", "an input file up to 100 MiB"),
+      given("AC-004", "a category name of 1 through 256 characters"),
+      given("AC-005", "a CSV with 3 rows"),
+      given("AC-006", "files up to 10 MB"),
+    ],
+  };
+
+  test("are found unless the request names the number", () => {
+    expect(inventedBounds(bounded, "Summarize the expenses in a CSV file.")).toEqual(["AC-002", "AC-003", "AC-004", "AC-006"]);
+    expect(inventedBounds(bounded, "Summarize the expenses. Accept files up to 10 MB.")).toEqual(["AC-002", "AC-003", "AC-004"]);
+  });
+
+  test("send the spec back to its author before the planner sees it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-spec-bounds-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const executor = new SpecExecutor(bounded);
+    const policy: RunPolicy = { ...defaultWorkflowPolicy, checks: [{ id: "check", executable: "bun", args: ["-e", "process.exit(0)"], cwd: ".", timeoutMs: 10000, required: true, scope: "feature", envNames: [], writes: [] }] };
+    const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } };
+    const service = new NativeWorkflowService(root, config, executor);
+    cleanups.push(() => service.close());
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Summarize the expenses in a CSV file.", ownerLabel: "test", policy });
+    expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");
+    const errors = executor.specErrors[0] ?? [];
+    expect(errors.filter((e) => e.includes("states a size or count bound")).map((e) => e.split(" ")[1])).toEqual(["AC-002", "AC-003", "AC-004", "AC-006"]);
     expect(service.store.state(run.runId).spec?.criteria.map((c) => c.id)).toEqual(["AC-001"]);
   });
 });
