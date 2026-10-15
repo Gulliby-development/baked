@@ -7,6 +7,7 @@ import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import type { Check, RunPolicy, Spec, Task } from "../src/core/workflows/schemas.js";
 import { importedFiles } from "../src/core/workflows/invalidation.js";
+import { runReport } from "../src/core/workflows/run-report.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
@@ -89,6 +90,9 @@ describe("scenario: md-site 337d16db, corrective of a failed property test (#128
     expect(done.status).toBe("completed");
     expect(readFileSync(join(root, "src/slug.ts"), "utf8")).toContain("toLowerCase");
     expect(executor.corrections).toEqual([["src/render.ts", "src/slug.ts", "tests/render.test.ts"]]);
+    // The report shows the first attempt's scope next to the full one, which a later attempt
+    // would get: the corrective's task lists all four files of T001 and T002.
+    expect(runReport(service.store, run.runId)).toMatch(/\| T003 \|[^\n]*\| 3 of 4 first \|/);
   }, 60000);
 });
 
