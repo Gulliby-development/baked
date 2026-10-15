@@ -6664,10 +6664,16 @@ ${note}`;
   ): void {
     const run = state.snapshotId ?? "";
     const current = this.store.transaction(() => this.store.putSnapshot(runId, worktree)).id;
-    result.evidenceIds = resolveEvidenceIds(
+    const resolved = resolveEvidenceIds(
       [...currentEvidence(this.store, runId, run), ...currentEvidence(this.store, runId, current)],
       result.evidenceIds,
     );
+    // An id that names no evidence of the run at all, such as the provider's id of the worker's
+    // own probe call (md-site 337d16db T013 cited `exec-...`, #1281), is dropped when another id
+    // still backs the result; a stale entry of the run is still rejected.
+    const known = new Set(this.store.evidence(runId).map((e) => e.id));
+    const rows = resolved.filter((id) => known.has(id));
+    result.evidenceIds = rows.length ? rows : resolved;
     validateEvidence(this.store, runId, [run, current], result.evidenceIds);
   }
   /**
