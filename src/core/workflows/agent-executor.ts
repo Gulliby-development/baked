@@ -18,6 +18,7 @@ import { SharedRootContext } from "../context/shared-root.js";
 import { recordModelCall } from "../diagnostics/model-events.js";
 import { hasToolHooks } from "../hooks/index.js";
 import { formatSyntaxErrors, syntaxCheckable, syntaxErrors } from "../intelligence/syntax-check.js";
+import { knownModelContextWindow } from "../llm/models.js";
 import { resolveModel } from "../llm/provider.js";
 import {
   buildProviderOptions,
@@ -362,14 +363,17 @@ export class NativeAgentExecutor implements AgentExecutor {
       );
       const webSearch = codeWebSearchFor(policy, request.profile);
       if (webSearch) provider.providerOptions = withCodexWebSearch(provider.providerOptions);
+      // Only a known window stops the attempt here; for a model nothing names, the 128k default is
+      // a guess, and the provider's own rejection of an oversized input is handled by the scheduler.
+      const window = knownModelContextWindow(request.profile.model);
       if (
-        provider.contextWindow > 0 &&
+        window !== null &&
         Math.ceil(Buffer.byteLength(request.prompt) / 3) + request.profile.maxOutputTokens >
-          provider.contextWindow * 0.8
+          window * 0.8
       )
         throw new WorkflowFault(
           "BUDGET_EXHAUSTED",
-          `Workflow context exceeds the window of ${request.profile.model}`,
+          `Workflow context exceeds the ${window}-token window of ${request.profile.model}`,
           { reason: "context_window" },
         );
       const writer =

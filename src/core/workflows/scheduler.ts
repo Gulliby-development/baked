@@ -19,6 +19,7 @@ import {
   RoutingRecordSchema,
 } from "../llm/model-routing.js";
 import { modelVendor } from "../llm/model-vendor.js";
+import { knownModelContextWindow } from "../llm/models.js";
 import { runSandbox } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
@@ -3256,7 +3257,38 @@ export class WorkflowScheduler {
     const route = this.route(runId, stepId, stageProfile);
     const fallbackIndex = placement.fallbackIndex ?? 0;
     const profile = this.routed(runId, stepId, stageProfile, fallbackIndex);
-    const prompt = this.promptFor(runId, state, policy, profile, extra);
+    let prompt: string;
+    try {
+      prompt = this.promptFor(runId, state, policy, profile, extra);
+    } catch (error) {
+      // A context too large for this model's window goes to the next model of the route, as a
+      // window the provider rejects does below.
+      if (
+        isContextWindowFault(error) &&
+        route.models[fallbackIndex + 1] !== undefined &&
+        !signal.aborted
+      )
+        return this.call(
+          runId,
+          stepId,
+          state,
+          policy,
+          stageProfile,
+          extra,
+          signal,
+          task,
+          0,
+          validate,
+          limits,
+          hostTools,
+          {
+            ...(placement.root ? { root: placement.root } : {}),
+            fallbackIndex: fallbackIndex + 1,
+            primaryError: placement.primaryError ?? error,
+          },
+        );
+      throw error;
+    }
     const inputHash = this.store.run(runId).input_hash;
     // A batch of parallel tasks reserves its attempts before any of them starts.
     const attempt =
@@ -3518,11 +3550,7 @@ export class WorkflowScheduler {
       }
       // A model that keeps failing, or whose window cannot hold the prompt, hands the step to the
       // next model of its route. Nothing is handed over once the attempt has changed files.
-      const windowTooSmall =
-        (error instanceof WorkflowFault &&
-          error.code === "BUDGET_EXHAUSTED" &&
-          error.details.reason === "context_window") ||
-        isInputTooLarge(error);
+      const windowTooSmall = isContextWindowFault(error) || isInputTooLarge(error);
       if (next !== undefined && !signal.aborted && !wrote && (isTransient(error) || windowTooSmall))
         return again(0, fallbackIndex + 1, placement.primaryError ?? error);
       // A request too large for the provider is an error of the prompt, not a lost worker: a
@@ -3687,7 +3715,7 @@ export class WorkflowScheduler {
           policy: { allowedTools: policy.allowedTools, network: policy.network },
         },
       },
-      undefined,
+      knownModelContextWindow(profile.model),
       diffOnly === true,
       diffOnly !== true && digestsSpec(state.spec, profile, policy),
     );
@@ -11215,4 +11243,12 @@ type WorkerOutcome =
 function thrownStack(error: unknown): string | undefined {
   if (!(error instanceof WorkflowFault)) return error instanceof Error ? error.stack : undefined;
   return typeof error.details.stack === "string" ? error.details.stack : undefined;
+}
+
+function isContextWindowFault(error: unknown): boolean {
+  return (
+    error instanceof WorkflowFault &&
+    error.code === "BUDGET_EXHAUSTED" &&
+    error.details.reason === "context_window"
+  );
 }
