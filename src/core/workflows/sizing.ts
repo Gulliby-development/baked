@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { isTestOf } from "../verification/convergence.js";
 import { MAX_EXTENDED_MS } from "./budget.js";
 import { DEFAULT_STAGE_RANGES, historyStorePaths, rangeOf, type TokenRange } from "./estimate.js";
 import { extendToOf, type RunPolicy, type TaskGraph } from "./schemas.js";
@@ -787,8 +788,9 @@ export function codeTaskCheckProblems(graph: TaskGraph, policy: RunPolicy): stri
  * Splits each oversized test task into one task per test file, so the plan needs no second round
  * for it: test files rarely depend on each other, and a planner told to split a test task did not
  * (expenses-py-r4). The first file keeps the task's ID and the others get new ones; every part
- * keeps the task's criteria, checks and dependencies, and a task that depended on it depends on
- * every part. Returns null when no test task is oversized.
+ * keeps the task's checks and dependencies, and a task that depended on it depends on every part.
+ * A part keeps only the task's criteria that the code tasks writing its tested file cover (see
+ * `partCriteria`). Returns null when no test task is oversized.
  */
 export function splitTestTasks(graph: TaskGraph, report: SizingReport): TaskGraph | null {
   const oversized = new Set(
@@ -801,14 +803,25 @@ export function splitTestTasks(graph: TaskGraph, report: SizingReport): TaskGrap
     if (!oversized.has(task.id)) return [task];
     const files = task.writes.filter((write) => write.action !== "delete");
     const deletes = task.writes.filter((write) => write.action === "delete");
+    const criteria = partCriteria(
+      graph,
+      task,
+      files.map((write) => write.path),
+    );
     const split = files.map((write, index) => {
       const id = index === 0 ? task.id : `T${String(next++).padStart(3, "0")}`;
       const siblings = files.filter((other) => other !== write).map((other) => other.path);
+      const own = criteria[index] ?? task.criterionIds;
+      const others = task.criterionIds.filter((c) => !own.includes(c));
+      const scope = others.length
+        ? ` Cover only ${own.join(", ")} in it; ${others.join(", ")} are covered by the other parts' files, so do not test them here.`
+        : "";
       return {
         ...task,
         id,
+        criterionIds: own,
         writes: index === 0 ? [write, ...deletes] : [write],
-        description: `${task.description}\nSizing split this task by file: write only ${write.path}; ${siblings.join(", ")} belong to the other parts of ${task.id}.`,
+        description: `${task.description}\nSizing split this task by file: write only ${write.path}; ${siblings.join(", ")} belong to the other parts of ${task.id}.${scope}`,
       };
     });
     parts.set(
@@ -831,6 +844,37 @@ export function splitTestTasks(graph: TaskGraph, report: SizingReport): TaskGrap
       ],
     })),
   };
+}
+
+/**
+ * The criteria of `task` each of its test files covers, in the order of `files`: those of the code
+ * tasks that write the file a test file is named after (`tests/test_schema.py` for
+ * `cfgtrace/schema.py`). A file whose source no code task writes, or whose code tasks share none
+ * of the criteria, keeps every criterion, and a criterion no part gets goes to those parts, or to
+ * the first part when every part matched. cfgtrace b4427c85 gave all 14 one-file parts their
+ * group's whole criteria list: each wrote a file that tried to cover the group, the parts cost
+ * 7.65M tokens and three of them contradicted the spec (#1245).
+ */
+export function partCriteria(graph: TaskGraph, task: Task, files: string[]): string[][] {
+  const matched = files.map((file) => {
+    const covered = new Set(
+      graph.tasks
+        .filter((t) => t.id !== task.id && t.writes.some((w) => isTestOf(file, w.path)))
+        .flatMap((t) => t.criterionIds),
+    );
+    const own = task.criterionIds.filter((c) => covered.has(c));
+    return own.length ? own : null;
+  });
+  const assigned = new Set(matched.flatMap((own) => own ?? []));
+  const rest = task.criterionIds.filter((c) => !assigned.has(c));
+  const open = matched.some((own) => own === null);
+  return matched.map((own, index) =>
+    own === null
+      ? task.criterionIds
+      : !open && index === 0 && rest.length
+        ? task.criterionIds.filter((c) => own.includes(c) || rest.includes(c))
+        : own,
+  );
 }
 
 /** The note that sends an oversized plan back to the planner once. */
