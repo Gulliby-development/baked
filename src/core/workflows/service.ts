@@ -17,6 +17,7 @@ import {
   acceptResidual,
   type ConvergenceRequestBody,
   grantRound,
+  noteRejectedManual,
   noteStoppedInconclusive,
 } from "../verification/convergence-stop.js";
 import { hostDiff, sourceManifest } from "../verification/snapshot.js";
@@ -961,6 +962,8 @@ export class NativeWorkflowService implements WorkflowService {
       const state = this.store.state(runId);
       const body = JSON.parse(request.body_json) as Record<string, unknown>;
       let accepted = true;
+      // A manual criterion the person could not confirm is settled as a known limitation.
+      let settled = false;
       const testsFirst = request.kind === "approval" && "testsFirst" in body;
       if (testsFirst && (decision.kind === "approve" || decision.kind === "reject")) {
         if (state.testsFirst?.digest !== request.digest)
@@ -1083,6 +1086,13 @@ export class NativeWorkflowService implements WorkflowService {
           );
           const evidenceId = this.store.addEvidence(runId, "manual", state.snapshotId, artifact.id);
           state.manualCriteria[decision.criterionId] = { evidenceId, snapshotId: state.snapshotId };
+        } else if (!accepted) {
+          settled = noteRejectedManual(
+            state,
+            decision.criterionId,
+            decision.evidence,
+            this.store.run(runId).convergence_rounds,
+          );
         }
       } else if (decision.kind === "recovery") {
         const effect = this.store.effects(runId).find((entry) => entry.id === decision.effectId);
@@ -1187,7 +1197,7 @@ export class NativeWorkflowService implements WorkflowService {
         this.store.transition(
           runId,
           pending ? "waiting" : "paused",
-          accepted ? "none" : "user_pause",
+          accepted || settled ? "none" : "user_pause",
         );
     });
   }

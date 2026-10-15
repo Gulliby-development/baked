@@ -281,6 +281,24 @@ describe("durable SDD runtime", () => {
     await service.decide(run.runId, { commandId: newId(), expectedRevision: waiting.revision }, { kind: "manual-evidence", requestId: pending.id, criterionId: "AC-001", evidence: "Inspected the value in the fixture", accepted: true });
     expect((await service.drive(run.runId, new AbortController().signal)).status).toBe("completed");
   });
+  // mouse-mover-update fa6acd16 (bench round 29, #1273): the person answered "NOT OBSERVED" for a
+  // criterion only a real Electron launch shows, and the run asked the identical question again.
+  test("a rejected manual criterion becomes a known limitation instead of the same request again", async () => {
+    const { service, executor } = setup();
+    const original = executor.execute.bind(executor);
+    executor.execute = async (request) => { const result = await original(request); if (request.profile.output === "spec") result.output = { ...spec, requirements: spec.requirements.map((r) => ({ ...r, verification: "manual" })), criteria: spec.criteria.map((c) => ({ ...c, method: "manual" })) }; return result; };
+    const { run } = await start(service);
+    await service.drive(run.runId, new AbortController().signal); await approve(service, run.runId);
+    const waiting = await service.drive(run.runId, new AbortController().signal);
+    expect(waiting.reason).toBe("manual_evidence");
+    const pending = service.store.requests(run.runId).find((r) => r.kind === "manual_evidence")!;
+    const decided = await service.decide(run.runId, { commandId: newId(), expectedRevision: waiting.revision }, { kind: "manual-evidence", requestId: pending.id, criterionId: "AC-001", evidence: "NOT OBSERVED: the app cannot be launched here", accepted: false });
+    expect(decided.reason).toBe("none");
+    const done = await service.drive(run.runId, new AbortController().signal);
+    expect(service.store.requests(run.runId).filter((r) => r.kind === "manual_evidence")).toHaveLength(1);
+    expect(done.status).toBe("completed");
+    expect(service.store.state(run.runId).limitations).toEqual([expect.objectContaining({ findingId: "unverified-AC-001", criterionIds: ["AC-001"], decidedBy: "user", claim: expect.stringContaining("NOT OBSERVED") })]);
+  });
   test("missing convergence coverage creates an authorized correction", async () => {
     const { service, executor } = setup(); const original = executor.execute.bind(executor); let convergence = 0;
     executor.execute = async (request) => {

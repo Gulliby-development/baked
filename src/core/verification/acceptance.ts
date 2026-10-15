@@ -179,6 +179,7 @@ function acceptance(
   for (const criterion of state.spec.criteria) {
     if (!convergence) {
       // Without a reflection stage the required checks cover the automated criteria.
+      if (criterion.method === "manual" && limited.has(criterion.id)) continue;
       if (criterion.method === "manual") {
         const manual = state.manualCriteria[criterion.id];
         if (!manual || manual.snapshotId !== state.snapshotId)
@@ -207,6 +208,8 @@ function acceptance(
     )
       continue;
     if (criterion.method === "manual") {
+      // A criterion the person could not confirm was accepted as a known limitation.
+      if (limited.has(criterion.id)) continue;
       const manual = state.manualCriteria[criterion.id];
       if (!manual || manual.snapshotId !== state.snapshotId)
         throw new WorkflowFault(

@@ -601,6 +601,39 @@ export function noteUnverifiedCriteria(
 }
 
 /**
+ * Records a manual criterion of the spec whose evidence request the person rejected as a known
+ * limitation decided by the user, with their answer: the run completes with it in the report
+ * instead of asking the same question again on the same snapshot. mouse-mover-update fa6acd16
+ * waited on a second identical AC-005 request (a real Electron launch nobody in the workspace
+ * could observe) after the person answered "NOT OBSERVED" (#1273). Returns whether it recorded
+ * one; a gate or dependency confirmation is not a spec criterion and is left to the caller.
+ */
+export function noteRejectedManual(
+  state: Pick<RuntimeState, "limitations" | "spec">,
+  criterionId: string,
+  answer: string,
+  round: number,
+): boolean {
+  const criterion = state.spec?.criteria.find((c) => c.id === criterionId);
+  if (criterion?.method !== "manual") return false;
+  const findingId = `unverified-${criterionId}`;
+  if (state.limitations.some((l) => l.findingId === findingId)) return true;
+  state.limitations.push({
+    findingId,
+    severity: "low",
+    kind: "unverified",
+    criterionIds: [criterionId],
+    file: null,
+    symbol: null,
+    claim: `Criterion ${criterionId} was not confirmed by a person: ${answer.replace(/\s+/g, " ").trim().slice(0, 400)}`,
+    impact: "The behavior needs a person to observe it outside the run",
+    decidedBy: "user",
+    round,
+  });
+  return true;
+}
+
+/**
  * When a stopped convergence is accepted, records the criteria its last review left
  * `inconclusive` that no accepted finding names as unverified limitations: acceptance needs every
  * automated criterion to pass or be limited, and the accepted findings cover only the criteria they
