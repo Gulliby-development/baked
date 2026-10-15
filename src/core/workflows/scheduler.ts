@@ -105,7 +105,12 @@ import {
 import { addReviewNotes, noteReason } from "../verification/review-notes.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
 import { baselineDebt, baselineKeys, taskErrors } from "../verification/task-end-check.js";
-import { affectedTestCheck, affectedTestsFor } from "./affected-tests.js";
+import {
+  affectedTestCheck,
+  affectedTestsFor,
+  isTestFile,
+  writtenTestsCheck,
+} from "./affected-tests.js";
 import { outputSchemas } from "./agent-executor.js";
 import {
   asksUnsupportedMethod,
@@ -4969,7 +4974,7 @@ ${note}`;
     let inconclusive: string | undefined;
     const taskRoot = runRoot(this.store.workspace, state);
     const taskResults: WorkerCheck[] = [];
-    for (const check of this.gatedChecks(state, policy, task, taskRoot)) {
+    for (const check of this.gatedChecks(runId, state, policy, task, taskRoot)) {
       const checked = await this.runTaskCheck(runId, child, check, policy, signal, taskRoot);
       taskResults.push({ check, checked });
     }
@@ -5976,7 +5981,7 @@ ${note}`;
       if (result.outcome === "already_satisfied")
         this.validateSatisfiedEvidence(runId, state, after, result);
       const results: WorkerCheck[] = [];
-      for (const check of this.gatedChecks(state, policy, task, root)) {
+      for (const check of this.gatedChecks(runId, state, policy, task, root)) {
         const checked = await checks.run(() =>
           this.runTaskCheck(runId, entry.child, check, policy, signal, root),
         );
@@ -6336,7 +6341,7 @@ ${note}`;
     root: string,
   ): Promise<WorkerCheck[]> {
     const results: WorkerCheck[] = [];
-    for (const check of this.gatedChecks(state, policy, entry.task, root)) {
+    for (const check of this.gatedChecks(runId, state, policy, entry.task, root)) {
       const checked = await this.runTaskCheck(runId, entry.child, check, policy, signal, root);
       results.push({ check, checked });
     }
@@ -6681,7 +6686,7 @@ ${note}`;
         (c) =>
           c.required && (named.has(c.id) || taskChecks(policy, task).some((t) => t.id === c.id)),
       ),
-      ...this.gatedChecks(state, policy, task, root).filter((c) => c.id === regression),
+      ...this.gatedChecks(runId, state, policy, task, root).filter((c) => c.id === regression),
     ];
     if (!checks.length)
       return rerun && (await this.unchangedSinceImplemented(runId, task, policy, root, signal))
@@ -6918,17 +6923,66 @@ ${note}`;
    * The task checks run after a task: its own, and the affected-test check, required, when it
    * passed before the task's first attempt and the task's checks do not already run that suite.
    */
-  private gatedChecks(state: RuntimeState, policy: RunPolicy, task: Task, root: string): Check[] {
+  private gatedChecks(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    root: string,
+  ): Check[] {
     const own = taskChecks(policy, task);
+    const written = this.writtenTestsCheck(runId, state, policy, task, root, own);
+    const gated = written ? [...own, written] : own;
     const record = this.affectedRecord(state, task);
-    if (record?.baseline !== "passed" || !record.checkId) return own;
+    if (record?.baseline !== "passed" || !record.checkId) return gated;
     const suite = record.checkId.replace(/-affected$/, "");
-    if (own.some((c) => c.id === suite)) return own;
+    if (own.some((c) => c.id === suite)) return gated;
     const gate = affectedTestCheck(
       policy.checks,
       record.paths.filter((path) => existsSync(workspacePath(root, path))),
     );
-    return gate ? [...own, { ...gate, required: true }] : own;
+    return gate ? [...gated, { ...gate, required: true }] : gated;
+  }
+  /**
+   * The test files a task writes, run on their own and required after it (#1271). url-shortener
+   * aa8fbd5d (bench round 29): three test tasks had only typecheck and lint, so the property test
+   * one of them wrote first ran in the final 300 s `tests` check, failed on its own size guard and
+   * hung there, and the run blocked without a repair. A failing or hanging file now becomes a
+   * correction of the task that wrote it, with a short timeout. Not under tests first, where the
+   * new tests are meant to fail, and not while another task still writes code they may import.
+   */
+  private writtenTestsCheck(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    root: string,
+    own: readonly Check[],
+  ): Check | null {
+    if (this.testsPending(state, policy)) return null;
+    const gate = writtenTestsCheck(root, policy.checks, task.writes);
+    if (!gate) return null;
+    const suite = gate.id.replace(/-written$/, "");
+    if (own.some((c) => c.id === suite)) return null;
+    const rows = this.store.tasks(runId);
+    const done = (id: string): boolean =>
+      rows.some(
+        (r) =>
+          r.id === id &&
+          (r.status === "verified" ||
+            (r.status === "implemented" && hasTaskGate(r, state.taskGates))),
+      );
+    const sources = (state.rootGraph ?? state.graph)?.tasks ?? [];
+    if (
+      sources.some(
+        (t) =>
+          t.id !== task.id &&
+          !done(t.id) &&
+          t.writes.some((w) => w.action !== "delete" && !isTestFile(w.path)),
+      )
+    )
+      return null;
+    return gate;
   }
   /**
    * Docs for the locked versions of the libraries a task uses, from the run's `libraryDocs`
