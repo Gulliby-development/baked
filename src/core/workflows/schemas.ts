@@ -2161,6 +2161,29 @@ export function inventedBounds(spec: Pick<Spec, "criteria">, request: string): s
     .map((c) => c.id);
 }
 
+/** A file length: "543 lines", "a 400-line file", "line count", "file size". */
+const LENGTH =
+  /\b(?:\d[\d,]*[- ]?lines?|lines? (?:long|count)|line count|file[- ]size|file length)\b/i;
+/** The words of a missed target: "target", "guideline", "exceeding", "above", "too long". */
+const TARGET =
+  /\b(?:targets?|guidelines?|hint|budget|limit|exceed(?:s|ing|ed)?|above|below|over|longer than|too long|shorter)\b/i;
+/** Words of a functional gap, which no size target excuses. */
+const DEFECT =
+  /\b(?:fail(?:s|ed|ing|ure)?|errors?|broken|crash(?:es|ed)?|missing|not (?:yet )?implemented|unimplemented|incomplete|todo|wrong|incorrect|bug)\b/i;
+
+/**
+ * Whether an unresolved item of an implementation only reports a missed file-size or length
+ * target. ecfit 25614519 (bench round 30) submitted "internal/config/glob.go is 543 lines,
+ * exceeding the requested approximate 400-line file-size target" for a task whose checks passed;
+ * the item made the result unfinished, the restart came back blocked on trimming the file, and
+ * the run cost 2.4M tokens and two resumes (#1282). Paths are stripped first, so a file named
+ * test_errors.py does not read as a defect.
+ */
+export function advisorySizeTarget(item: string): boolean {
+  const prose = item.replace(/\S*[/\\]\S*|\S+\.[A-Za-z]\w*\b/g, " ");
+  return LENGTH.test(prose) && TARGET.test(prose) && !DEFECT.test(prose);
+}
+
 /**
  * The spec defects as corrections for the spec author, who can add or relink criteria. With the
  * run's checks, a criterion that needs a check the execution contract lacks is one too.
