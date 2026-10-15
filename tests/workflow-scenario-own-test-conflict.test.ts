@@ -15,7 +15,8 @@ const TEST = "tests/test_value.py";
  * md-site a652d8fc (bench round 22, #1114): a test this run generated contradicted the spec, and
  * the task that met it could write that test but stopped with spec_conflict, which asked a person.
  */
-test("under assume, a spec conflict over a test the run wrote and the task may write is settled for the spec (#1114)", async () => {
+/** Runs the #1114 scenario with the conflict report the implementer submits. */
+async function settledForSpec(report: string): Promise<void> {
   const check = { ...fixturePolicy.checks[0]!, args: ["-e", "const f = Bun.file('value.txt'); if ((await f.exists()) && (await f.text()) !== 'ready') process.exit(1)"] };
   const fixture = workflowFixture({ policy: { ...fixturePolicy, clarification: "assume", checks: [check] } });
   cleanups.push(fixture.dispose);
@@ -46,7 +47,7 @@ test("under assume, a spec conflict over a test the run wrote and the task may w
     if (!JSON.stringify(request).includes("which this run wrote")) {
       conflicts++;
       return {
-        output: { schemaVersion: 1, taskId: task?.id, outcome: "spec_conflict", summary: `${TEST} expects the value to be not ready, while FR-001 of the approved spec says the value is ready. Which one is right? It may not weaken the tests.`, evidenceIds: [], unresolved: [] },
+        output: { schemaVersion: 1, taskId: task?.id, outcome: "spec_conflict", summary: report, evidenceIds: [], unresolved: [] },
         inputTokens: 25,
         outputTokens: 25,
       };
@@ -75,7 +76,15 @@ test("under assume, a spec conflict over a test the run wrote and the task may w
     tests: [TEST],
   });
   expect(finished.status).toBe("completed");
-});
+}
+
+test("under assume, a spec conflict over a test the run wrote and the task may write is settled for the spec (#1114)", () =>
+  settledForSpec(`${TEST} expects the value to be not ready, while FR-001 of the approved spec says the value is ready. Which one is right? It may not weaken the tests.`));
+
+test("a conflict report that names the test in a Markdown code span is settled for the spec too (#1207)", () =>
+  // cfgtrace T005 (bench round 26): models write paths in backticks, often with a `::test` suffix;
+  // the path after the backtick went unmatched and the run waited for a person.
+  settledForSpec(`Resolve the conflict between \`${TEST}::test_value_is_ready\` (requires the value to be not ready) and FR-001 (the value is ready).`));
 
 test("a spec conflict over a test that existed before the run still asks a person (#1114)", async () => {
   const fixture = workflowFixture({ policy: { ...fixturePolicy, clarification: "assume" } });
