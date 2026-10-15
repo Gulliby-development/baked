@@ -431,6 +431,7 @@ import {
   pendingOwners,
   pendingWriters,
   readyTasks,
+  siblingCorrections,
   testUpdateOwners,
 } from "./task-graph.js";
 import {
@@ -7693,6 +7694,18 @@ ${note}`;
             checked.output,
           )
         : [];
+    // A corrective task that fails only on test files other correctives are fixing waits for them
+    // instead of opening a corrective of itself (#1285).
+    if (!owners.length && checked.status === "failed" && checked.output)
+      owners.push(
+        ...siblingCorrections(
+          state.graph,
+          this.store.tasks(runId),
+          task,
+          checked.output,
+          state.repairPredecessors,
+        ),
+      );
     if (owners.length) {
       // contrastgrid d372ea22: main.tsx imported App.tsx of a task that had not run, and a repair
       // agent started for a failure the owner resolves. The check runs again when the owners are done.
