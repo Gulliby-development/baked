@@ -239,6 +239,11 @@ export const RuntimeStateSchema = z
      * own files that did not apply (#1036); granted once even after the task's restart.
      */
     taskEditRetries: z.record(z.string(), z.number().int().nonnegative()).default({}),
+    /**
+     * Corrections started as a quick fix (`quickFix: "on"`, #1001): `quick` while the first,
+     * small attempt runs, `full` once it fell back to the usual budget and scope.
+     */
+    quickFixes: z.record(z.string(), z.enum(["quick", "full"])).default({}),
     /** Times a run blocked with `owner_lost` was resumed without a person (`clarification: assume`). */
     ownerLostResumes: z.number().int().nonnegative().default(0),
     /** Times a run blocked with `step_stalled` resumed by itself (`workflows.stall.autoResumes`). */

@@ -4621,6 +4621,19 @@ ${note}`;
         (result.unresolved.length > 0 && !ownFailures) ||
         correction !== true
       ) {
+        if (this.fallBackFromQuickFix(state, task)) {
+          // The quick fix did not finish: the next attempt has the usual budget and every file of
+          // the correction, and keeps this attempt's edits.
+          this.store.transaction(() => {
+            this.store.taskStatus(runId, task.id, "interrupted", null, {
+              cause: "widened_correction",
+              detail: "quick fix did not finish",
+            });
+            this.store.finishStep(runId, child, "failed");
+            this.store.saveState(runId, state);
+          });
+          return;
+        }
         if (narrow) {
           // The fix may need another file of the correction's scope: the next attempt may write
           // all of them, and keeps this attempt's edits.
@@ -5381,9 +5394,10 @@ ${note}`;
         this.store.finishStep(runId, entry.child, "interrupted");
       });
     } else if (outcome.kind === "rejected") {
-      const cause: InterruptCause | null =
-        outcome.blocked !== undefined &&
-        this.deferOnMissingArtifact(runId, state, entry.child, entry.task, outcome.blocked, [])
+      const cause: InterruptCause | null = this.fallBackFromQuickFix(state, entry.task)
+        ? "widened_correction"
+        : outcome.blocked !== undefined &&
+            this.deferOnMissingArtifact(runId, state, entry.child, entry.task, outcome.blocked, [])
           ? "waits_for_artifact"
           : outcome.edits !== undefined && this.continueAtCap(runId, state, entry.child, entry.task)
             ? "continue_at_cap"
@@ -10804,12 +10818,58 @@ ${note}`;
     this.store.transaction(() => {
       this.amendSpec(runId, state, fresh);
       appendCorrections(this.store, runId, state, policy, fresh, kind, scope);
+      this.markQuickFixes(runId, state, policy, fresh);
       // A v2 run keeps its position: a task's repair runs in the tasks stage it is in, and a
       // stage's failure goes back along the definition's repair transition (#853).
       const parsed = parseRunDefinition(this.store.run(runId).definition_json);
       if (parsed.schemaVersion === 1)
         state.stageIndex = parsed.definition.stages.findIndex((s) => s.kind === "task-graph");
     });
+  }
+  /**
+   * A correction whose findings are all low, or all point at one file, starts as a quick fix when
+   * the policy asks for it (#1001): its first attempt gets a small step and token cap and only the
+   * files the findings name. A low README sentence cost 546k tokens as a full correction
+   * (stmtsplit-update cae4291d). A correction of a quick fix whose check then failed is a full one.
+   */
+  private markQuickFixes(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    findings: Review["findings"],
+  ): void {
+    if (policy.quickFix !== "on") return;
+    const ids = new Set(findings.map((f) => f.id));
+    for (const task of state.graph?.tasks ?? []) {
+      if (task.origin === "planned" || state.quickFixes[task.id]) continue;
+      if (!task.findingIds.length || !task.findingIds.every((id) => ids.has(id))) continue;
+      const own = findings.filter((f) => task.findingIds.includes(f.id));
+      const afterQuick = task.findingIds.some((id) => {
+        const predecessor = state.repairPredecessors[id];
+        return predecessor !== undefined && state.quickFixes[predecessor] !== undefined;
+      });
+      if (afterQuick) continue;
+      const focus = correctionFocus(this.store, runId, state, task).files;
+      if (!own.every((f) => f.severity === "low") && focus.length !== 1) continue;
+      state.quickFixes[task.id] = "quick";
+      state.taskSteps[task.id] = Math.min(QUICK_FIX_STEPS, policy.maxAgentSteps);
+      state.taskBudgets[task.id] = Math.min(
+        QUICK_FIX_TOKENS,
+        policy.maxAttemptTokens ?? QUICK_FIX_TOKENS,
+      );
+    }
+  }
+  /**
+   * A quick fix that did not finish falls back once to a full attempt: the usual step and token
+   * cap of the task it corrects, and every file of the correction (#1001).
+   */
+  private fallBackFromQuickFix(state: RuntimeState, task: Task): boolean {
+    if (state.quickFixes[task.id] !== "quick") return false;
+    state.quickFixes[task.id] = "full";
+    delete state.taskSteps[task.id];
+    delete state.taskBudgets[task.id];
+    if (!state.widenedCorrections.includes(task.id)) state.widenedCorrections.push(task.id);
+    return true;
   }
   /** The findings of corrective tasks that have not finished: pending, running or interrupted. */
   private openCorrections(runId: string, state: RuntimeState): Set<string> {
@@ -11005,6 +11065,9 @@ function taskSize(
 /** The checks run after a task, in policy order: its task-scope checks and the static ones covering its code. */
 const taskChecks = (policy: RunPolicy, task: Task): Check[] => taskCheckList(policy, task);
 /** The check a host finding says a task failed (`applyTaskCheck`), or null for another claim. */
+/** The step and token cap of a quick fix's attempt (#1001). */
+const QUICK_FIX_STEPS = 16;
+const QUICK_FIX_TOKENS = 150_000;
 const STATIC_DIAGNOSTICS =
   "Every finding is a linter, formatter or type checker diagnostic in these files. Fix the reported lines and rerun the check; do not probe the task's criteria, change behavior, or add or rewrite tests.";
 

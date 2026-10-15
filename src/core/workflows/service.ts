@@ -365,6 +365,7 @@ export class NativeWorkflowService implements WorkflowService {
       pendingPatch: null,
       taskContinuations: {},
       taskEditRetries: {},
+      quickFixes: {},
       taskRestarts: {},
       ownerLostResumes: 0,
       stallResumes: 0,
@@ -1388,6 +1389,7 @@ export class NativeWorkflowService implements WorkflowService {
         state.correctionHashes = [];
         state.repairPredecessors = {};
         state.widenedCorrections = [];
+        state.quickFixes = {};
         state.taskGates = {};
         state.affectedTests = {};
         state.previousFindingSet = null;
@@ -1825,6 +1827,7 @@ export class NativeWorkflowService implements WorkflowService {
       state.manifest.rootGraphHash = state.graph ? hashJson(state.graph) : null;
       state.repairPredecessors = {};
       state.widenedCorrections = [];
+      state.quickFixes = {};
       state.taskGates = {};
       state.affectedTests = {};
       state.previousFindingSet = null;
