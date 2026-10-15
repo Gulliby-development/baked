@@ -8405,6 +8405,31 @@ ${note}`;
       changedPaths(before, await sourceManifest(root, generated)).filter(
         (path) => !owners.has(path),
       );
+    // The pre-image of every owner file, kept current across the pass: a fixer that formats more
+    // than its path (`cargo fmt -- <path>` formats the whole crate) rewrites later files in an
+    // earlier file's run, and each of those changes is journaled with its true before hash. A
+    // pre-image taken right before a file's own run already held the formatted content, so its
+    // edit read before == after and a restarted task saw the file as changed outside it (#1269).
+    const images = new Map(
+      paths.map((path) => [path, capturePreImage(this.store, runId, workspacePath(root, path))]),
+    );
+    const journal = (path: string, check: Check, preImage: string | null) =>
+      this.store.transaction(() =>
+        this.store.prepareEffect(
+          runId,
+          attempt,
+          "file_patch",
+          {
+            path,
+            tool: "apply_fix",
+            checkId: check.id,
+            taskId: owners.get(path),
+            ...rootField(this.store.workspace, root),
+          },
+          preImage,
+          null,
+        ),
+      );
     try {
       try {
         for (const check of fixable) {
@@ -8413,23 +8438,8 @@ ${note}`;
               signal.throwIfAborted();
               this.leases.assert(lease);
               const target = workspacePath(root, path);
-              const preImage = capturePreImage(this.store, runId, target);
-              const effectId = this.store.transaction(() =>
-                this.store.prepareEffect(
-                  runId,
-                  attempt,
-                  "file_patch",
-                  {
-                    path,
-                    tool: "apply_fix",
-                    checkId: check.id,
-                    taskId: owners.get(path),
-                    ...rootField(this.store.workspace, root),
-                  },
-                  preImage,
-                  null,
-                ),
-              );
+              const preImage = images.get(path) ?? null;
+              const effectId = journal(path, check, preImage);
               try {
                 // A fixer that cannot fix everything exits non-zero; the rerun check decides.
                 const command = fixerCommand(fix, path);
@@ -8447,7 +8457,23 @@ ${note}`;
                 );
                 const after = fileHash(target);
                 this.store.transaction(() => this.store.finishFileEffect(runId, effectId, after));
-                if (after !== preImage) changed = true;
+                if (after !== preImage) {
+                  changed = true;
+                  images.set(path, capturePreImage(this.store, runId, target));
+                }
+                for (const other of paths) {
+                  if (other === path) continue;
+                  const otherTarget = workspacePath(root, other);
+                  const otherAfter = fileHash(otherTarget);
+                  const otherBefore = images.get(other) ?? null;
+                  if (otherAfter === otherBefore) continue;
+                  const otherId = journal(other, check, otherBefore);
+                  this.store.transaction(() =>
+                    this.store.finishFileEffect(runId, otherId, otherAfter),
+                  );
+                  images.set(other, capturePreImage(this.store, runId, otherTarget));
+                  changed = true;
+                }
               } catch (error) {
                 this.store.transaction(() => this.store.effectStatus(runId, effectId, "unknown"));
                 throw error;

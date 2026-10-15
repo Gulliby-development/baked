@@ -156,7 +156,8 @@ export class WorkflowToolPolicy {
     const reverted =
       inherited !== undefined &&
       existing !== inherited.after_hash &&
-      this.lineageHashes(writes, inherited).has(existing);
+      (this.lineageHashes(writes, inherited).has(existing) ||
+        this.fixedElsewhere(path).has(existing));
     const ownEffect =
       writes.filter((effect) => effect.attempt_id === this.attemptId).at(-1) ??
       (reverted ? undefined : inherited);
@@ -224,6 +225,27 @@ export class WorkflowToolPolicy {
       if (!effect || !lineage.has(effect.id)) break;
       hashes.add(effect.before_hash);
       hashes.add(effect.after_hash);
+    }
+    return hashes;
+  }
+  /**
+   * The states a check fixer gave this task's file in another root. A task restarted in a root
+   * rebuilt from the integration root inherits the file as the checks stage's fixer left it there
+   * (a whole-crate `cargo fmt`), which is the task's own lineage, not an outside change (#1269).
+   */
+  private fixedElsewhere(path: string): Set<string | null> {
+    const hashes = new Set<string | null>();
+    if (!this.task) return hashes;
+    const root = rootField(this.store.workspace, this.root).root ?? "";
+    for (const effect of uncommittedEdits(this.store, this.runId, this.task.id)) {
+      const intent = JSON.parse(effect.intent_json) as { path?: string; tool?: string };
+      if (
+        intent.tool === "apply_fix" &&
+        intent.path === path &&
+        intentRoot(effect.intent_json) !== root &&
+        ["applied", "reconciled"].includes(effect.status)
+      )
+        hashes.add(effect.after_hash);
     }
     return hashes;
   }
