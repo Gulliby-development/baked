@@ -11,7 +11,7 @@ import {
   WORKING_SET_ARTIFACT,
 } from "../projects/working-set.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
-import { validatePackage } from "../specs/validate.js";
+import { validatePackage, workspacePath } from "../specs/validate.js";
 import { appendCorrections } from "../verification/convergence.js";
 import {
   acceptResidual,
@@ -81,7 +81,7 @@ import {
   renderProjectMemory,
 } from "./project-memory.js";
 import { abortableDelay } from "./retry.js";
-import { runWrittenHash, undoRunEdits } from "./rollback.js";
+import { REFUSED_EDIT_PREFIX, runWrittenHash, undoRunEdits } from "./rollback.js";
 import {
   independenceWarnings,
   independentReviewMode,
@@ -791,6 +791,7 @@ export class NativeWorkflowService implements WorkflowService {
     return this.store.command(runId, command, body, () => {
       assertMutable(this.store.run(runId).status);
       if (outside) this.acceptOutsideChanges(runId, outside);
+      else this.assertNoRefusedEdit(runId);
       if (this.store.requests(runId).some(blocksRun))
         throw new WorkflowFault("STALE_DECISION", "Resolve pending requests before resuming");
       assertFrozenInputs(this.store.state(runId));
@@ -822,6 +823,38 @@ export class NativeWorkflowService implements WorkflowService {
           this.store.taskStatus(runId, task.id, "pending");
       this.store.transition(runId, "paused", "none");
     });
+  }
+  /**
+   * A plain resume after a stop by repeated hash refusals (#954) would start an attempt whose edits
+   * of that file are refused again, while the run root still holds the refused content: that is a
+   * decision for a person, keep the file or restore it (#1269). A file in a task worktree is
+   * rebuilt on resume, so only a refusal in the run root is held.
+   */
+  private assertNoRefusedEdit(runId: string): void {
+    const run = this.store.run(runId);
+    if (run.status !== "blocked" || run.reason !== "input_changed") return;
+    const diagnostic = this.store
+      .artifacts(runId)
+      .filter((a) => a.logical_path.startsWith("errors/"))
+      .at(-1);
+    const last = diagnostic
+      ? this.store.latestArtifact(runId, `${REFUSED_EDIT_PREFIX}${diagnostic.id}.json`)
+      : null;
+    if (!last) return;
+    const refused = JSON.parse(this.store.readArtifact(runId, last.id)) as {
+      path: string;
+      root: string;
+      hash: string | null;
+    };
+    const state = this.store.state(runId);
+    if (refused.root !== (state.worktree?.path ?? "")) return;
+    if (fileHash(workspacePath(runRoot(this.workspace, state), refused.path)) !== refused.hash)
+      return;
+    throw new WorkflowFault(
+      "STALE_DECISION",
+      `${refused.path} still differs from what the run recorded, so its edits would be refused again. Keep it with \`baked workflow resume ${runId} --accept-workspace\`, or put back the content the run wrote and resume`,
+      { path: refused.path },
+    );
   }
   /**
    * The source files that differ from what the run expects and that none of the run's own

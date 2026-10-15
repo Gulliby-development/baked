@@ -420,8 +420,13 @@ export class NativeAgentExecutor implements AgentExecutor {
             watch.abort(
               new WorkflowFault(
                 "INPUT_CHANGED",
-                `Edits to ${path} were refused ${String(count)} times in attempt ${request.attemptId}: File changed outside this attempt`,
-                { path, refusals: count },
+                `Edits to ${path} were refused ${String(count)} times in attempt ${request.attemptId}: File changed outside this attempt. Keep the file as it is with \`baked workflow resume ${request.runId} --accept-workspace\`, or put back the content the run wrote and resume`,
+                {
+                  path,
+                  refusals: count,
+                  root: rootPath,
+                  hash: fileHash(workspacePath(root, path)),
+                },
               ),
             );
         },

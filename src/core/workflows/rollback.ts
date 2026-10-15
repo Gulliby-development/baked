@@ -97,6 +97,13 @@ export function capturePreImage(
   return hashBytes(bytes);
 }
 
+/**
+ * Where a stop by repeated hash refusals records the refused file (`path`, `root`, `hash`), named
+ * after the stop's diagnostic artifact: a plain resume is refused while the run root still holds
+ * that content (#1269).
+ */
+export const REFUSED_EDIT_PREFIX = "refused-edits/";
+
 /** The hash a path has after these edits, or undefined when one of them has an unknown outcome. */
 function hashAfter(edits: EffectRow[], start: string | null): string | null | undefined {
   let hash = start;
