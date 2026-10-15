@@ -356,8 +356,8 @@ export function RoutingView({
   };
 
   const fields: Field[] = form?.isNew
-    ? ["name", "model", "effort", "context", "fallback"]
-    : ["model", "effort", "context", "fallback"];
+    ? ["name", "model", "effort", "fallback", "context"]
+    : ["model", "effort", "fallback", "context"];
 
   const pick = (id: string): void => {
     setPicking(null);
@@ -696,29 +696,32 @@ export function RoutingView({
           </text>,
         )}
         {line(
-          "context",
-          "Context",
-          <text fg={form.field === "context" ? t.brand : t.textPrimary}>
-            {`‹ ${form.context === null ? "unset" : formatRouteContext(form.context)} ›`}
-          </text>,
-        )}
-        {line(
           "fallback",
           "Fallback",
           input("fallback", form.fallback, "up to 3 model IDs, comma separated", (v) =>
             setForm((f) => (f ? { ...f, fallback: v } : f)),
           ),
         )}
-        <text fg={t.textFaint}>
-          {clip(
-            form.field === "context"
-              ? "Context: max runs the largest window the model offers; auto moves a step that does not fit to it."
-              : form.effort === null
-                ? "Effort unset: a class reference brings its class's effort, otherwise the provider setting applies."
-                : "Effort replaces performance.effort for these agents' calls; default sends none.",
-            width,
-          )}
-        </text>
+        {line(
+          "context",
+          "Context",
+          <text fg={form.field === "context" ? t.brand : t.textPrimary}>
+            {`‹ ${form.context === null ? "unset" : formatRouteContext(form.context)} ›`}
+          </text>,
+        )}
+        {/* A small terminal keeps the room for the reasons a save was refused. */}
+        {compact && formProblems.length ? null : (
+          <text fg={t.textFaint}>
+            {clip(
+              form.field === "context"
+                ? "Context: max runs the largest window the model offers; auto moves a step that does not fit to it."
+                : form.effort === null
+                  ? "Effort unset: a class reference brings its class's effort, otherwise the provider setting applies."
+                  : "Effort replaces performance.effort for these agents' calls; default sends none.",
+              width,
+            )}
+          </text>
+        )}
         {compact ? null : (
           <text fg={t.textFaint}>
             {clip(
