@@ -153,15 +153,18 @@ export class WorkflowToolPolicy {
     // the task's own writes passed through, such as the integrated file of an earlier attempt or
     // the first attempt's content (#991). Either way nothing outside the run made it, so the path
     // counts as untouched by this attempt and the baseline check below is skipped.
+    // A root rebuilt from the integration root can also hold the run's baseline of the path, which
+    // another task or a check fixer gave it after this task's last write (#1269).
+    const baseline = this.store.state(this.runId).expectedFiles;
     const reverted =
       inherited !== undefined &&
       existing !== inherited.after_hash &&
       (this.lineageHashes(writes, inherited).has(existing) ||
-        this.fixedElsewhere(path).has(existing));
+        this.fixedElsewhere(path).has(existing) ||
+        (baseline !== null && path in baseline && baseline[path] === existing));
     const ownEffect =
       writes.filter((effect) => effect.attempt_id === this.attemptId).at(-1) ??
       (reverted ? undefined : inherited);
-    const baseline = this.store.state(this.runId).expectedFiles;
     // The baseline lists the files the snapshot can see. A file that exists but is not listed is
     // git-ignored and untracked (for example a docs directory in .gitignore): the snapshot has no
     // reference hash for it, so there is nothing to compare, and refusing it would make an approved

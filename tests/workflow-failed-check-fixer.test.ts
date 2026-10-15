@@ -1,9 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hashBytes } from "../src/core/specs/hash.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
+import { removeTempDir } from "./helpers/temp-dir.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -170,4 +172,71 @@ test("a whole-unit fixer that rewrites a later file through an earlier file's ru
     .effects(run.runId)
     .filter((e) => e.kind === "file_patch" && JSON.parse(e.intent_json).tool === "apply_fix" && JSON.parse(e.intent_json).path === "value.txt");
   expect(fixes.some((e) => e.before_hash === hashBytes(Buffer.from("ready  \n")) && e.after_hash === hashBytes(Buffer.from("ready")))).toBe(true);
+});
+
+// Bench round 29, seqtext ead875e0 (#1269): the checks' `cargo fmt` ran once per planned file, and
+// each run formatted the whole crate again. A whole-unit formatter now runs once for all the code
+// files of the pass, and each file is still journaled as its own edit.
+test.skipIf(process.platform === "win32")("a whole-unit formatter runs once for all the files of a fixer pass", async () => {
+  const bin = mkdtempSync(join(tmpdir(), "baked-fake-cargo-"));
+  cleanups.push(() => removeTempDir(bin));
+  const log = join(bin, "calls.log");
+  const script = join(bin, "fmt.js");
+  // Logs its arguments and trims every file after `--`, as `cargo fmt -- <files>` formats the crate.
+  writeFileSync(
+    script,
+    `const fs = require("node:fs"); const args = process.argv.slice(2); fs.appendFileSync(${JSON.stringify(log)}, args.join(" ") + "\\n"); for (const f of args.slice(args.indexOf("--") + 1)) fs.writeFileSync(f, fs.readFileSync(f, "utf8").trim());`,
+  );
+  const cargo = join(bin, "cargo");
+  writeFileSync(cargo, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(script)} "$@"\n`, { mode: 0o755 });
+  const crate: RunPolicy = {
+    ...fixturePolicy,
+    checks: [
+      {
+        id: "fmt",
+        executable: "bun",
+        args: ["-e", "for (const f of ['a.rs', 'b.rs']) { const t = await Bun.file(f).text(); if (t !== t.trim()) process.exit(1) }"],
+        cwd: ".",
+        timeoutMs: 10000,
+        required: true,
+        scope: "task",
+        envNames: [],
+        writes: [],
+        fix: { executable: cargo, args: ["fmt"] },
+      },
+      ...fixturePolicy.checks,
+    ],
+  };
+  const fixture = workflowFixture({ policy: crate });
+  cleanups.push(fixture.dispose);
+  const { executor, root } = fixture;
+  const original = executor.execute.bind(executor);
+  executor.execute = async (request: ExecutionRequest) => {
+    const out = await original(request);
+    if (request.profile.output === "plan") {
+      const task = (out.output as { taskGraph: { tasks: { checkIds: string[]; writes: { path: string; action: string }[] }[] } }).taskGraph.tasks[0];
+      if (task) {
+        task.checkIds = ["fmt"];
+        task.writes.unshift({ path: "a.rs", action: "create" }, { path: "b.rs", action: "create" });
+      }
+    }
+    if (request.profile.output === "implementation") {
+      writeFileSync(join(root, "a.rs"), "fn a() {}  \n");
+      writeFileSync(join(root, "b.rs"), "fn b() {}  \n");
+    }
+    return out;
+  };
+  const run = await runToEnd(fixture);
+  expect((await fixture.service.get(run.runId)).status).toBe("completed");
+  expect(readFileSync(join(root, "a.rs"), "utf8")).toBe("fn a() {}");
+  expect(readFileSync(join(root, "b.rs"), "utf8")).toBe("fn b() {}");
+  expect(readFileSync(log, "utf8").trim().split("\n")).toEqual(["fmt -- a.rs b.rs"]);
+  const fixes = fixture.service.store
+    .effects(run.runId)
+    .filter((e) => e.kind === "file_patch" && JSON.parse(e.intent_json).tool === "apply_fix")
+    .map((e) => [JSON.parse(e.intent_json).path, e.before_hash, e.after_hash]);
+  expect(fixes).toEqual([
+    ["a.rs", hashBytes(Buffer.from("fn a() {}  \n")), hashBytes(Buffer.from("fn a() {}"))],
+    ["b.rs", hashBytes(Buffer.from("fn b() {}  \n")), hashBytes(Buffer.from("fn b() {}"))],
+  ]);
 });

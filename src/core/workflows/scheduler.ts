@@ -160,9 +160,11 @@ import {
   isCodePath,
   isStaticCheck,
   isWholeUnitCheck,
+  isWholeUnitFixer,
   isWholeUnitFormatter,
   taskCheckList,
   validateChecks,
+  wholeUnitFixerCommand,
   withCoveringChecks,
   writtenCodePaths,
 } from "./check-policy.js";
@@ -8492,52 +8494,67 @@ ${note}`;
     try {
       try {
         for (const check of fixable) {
-          for (const fix of fixerTiers(check))
-            for (const path of paths) {
-              signal.throwIfAborted();
-              this.leases.assert(lease);
-              const target = workspacePath(root, path);
-              const preImage = images.get(path) ?? null;
-              const effectId = journal(path, check, preImage);
-              try {
-                // A fixer that cannot fix everything exits non-zero; the rerun check decides.
-                const command = fixerCommand(fix, path);
-                await executeCheckCommand(
-                  scope,
-                  command.executable === "bun" ? process.execPath : command.executable,
-                  command.args,
-                  {
-                    cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
-                    env: buildCheckEnv(check),
-                    timeoutMs: check.timeoutMs,
-                    signal,
-                    sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
-                  },
-                );
-                const after = fileHash(target);
-                this.store.transaction(() => this.store.finishFileEffect(runId, effectId, after));
-                if (after !== preImage) {
-                  changed = true;
-                  images.set(path, capturePreImage(this.store, runId, target));
-                }
-                for (const other of paths) {
-                  if (other === path) continue;
-                  const otherTarget = workspacePath(root, other);
-                  const otherAfter = fileHash(otherTarget);
-                  const otherBefore = images.get(other) ?? null;
-                  if (otherAfter === otherBefore) continue;
-                  const otherId = journal(other, check, otherBefore);
-                  this.store.transaction(() =>
-                    this.store.finishFileEffect(runId, otherId, otherAfter),
-                  );
-                  images.set(other, capturePreImage(this.store, runId, otherTarget));
-                  changed = true;
-                }
-              } catch (error) {
-                this.store.transaction(() => this.store.effectStatus(runId, effectId, "unknown"));
-                throw error;
-              }
+          // One fixer run on `targets`, each journaled with its pre-image; a change it makes to
+          // another owner file is journaled too, with that file's true before hash.
+          const run = async (
+            command: { executable: string; args: string[] },
+            targets: string[],
+          ) => {
+            signal.throwIfAborted();
+            this.leases.assert(lease);
+            const effects = targets.map((path) => ({
+              path,
+              id: journal(path, check, images.get(path) ?? null),
+            }));
+            try {
+              // A fixer that cannot fix everything exits non-zero; the rerun check decides.
+              await executeCheckCommand(
+                scope,
+                command.executable === "bun" ? process.execPath : command.executable,
+                command.args,
+                {
+                  cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+                  env: buildCheckEnv(check),
+                  timeoutMs: check.timeoutMs,
+                  signal,
+                  sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
+                },
+              );
+            } catch (error) {
+              for (const effect of effects)
+                this.store.transaction(() => this.store.effectStatus(runId, effect.id, "unknown"));
+              throw error;
             }
+            for (const effect of effects) {
+              const target = workspacePath(root, effect.path);
+              const after = fileHash(target);
+              this.store.transaction(() => this.store.finishFileEffect(runId, effect.id, after));
+              if (after === (images.get(effect.path) ?? null)) continue;
+              changed = true;
+              images.set(effect.path, capturePreImage(this.store, runId, target));
+            }
+            for (const other of paths) {
+              if (targets.includes(other)) continue;
+              const otherTarget = workspacePath(root, other);
+              const otherAfter = fileHash(otherTarget);
+              const otherBefore = images.get(other) ?? null;
+              if (otherAfter === otherBefore) continue;
+              const otherId = journal(other, check, otherBefore);
+              this.store.transaction(() => this.store.finishFileEffect(runId, otherId, otherAfter));
+              images.set(other, capturePreImage(this.store, runId, otherTarget));
+              changed = true;
+            }
+          };
+          for (const fix of fixerTiers(check)) {
+            // A whole-unit formatter (`cargo fmt`) rewrites the whole crate whatever file it is
+            // given: one run for all the code files instead of one per file (#1269, #842).
+            if (isWholeUnitFixer(fix)) {
+              const code = paths.filter(isCodePath);
+              if (code.length) await run(wholeUnitFixerCommand(fix, code), code);
+              continue;
+            }
+            for (const path of paths) await run(fixerCommand(fix, path), [path]);
+          }
         }
       } finally {
         // Also when a fixer run throws: a whole-crate formatter may already have rewritten files.
