@@ -297,10 +297,33 @@ function progressOf(store: WorkflowStore, runId: string) {
 }
 
 /**
+ * With a dollar cap (`maxCostUsd`), the tokens the run can still pay for: what it has used and
+ * reserved, plus the cap's unspent dollars at the run's measured price per token. Null without a
+ * cap or before anything is priced. Raw tokens price a codex run at about $0.9 per million (cache
+ * reads) and a claude-code run at about $3.9, so a token limit cannot stand in for the cap:
+ * cfgtrace 14b1da41 stopped at its 12M token hard limit with $1.45 of its $12 cap left and its
+ * last corrective task unstarted (#1206).
+ */
+function affordableTokens(store: WorkflowStore, runId: string, policy: RunPolicy): number | null {
+  const cap = policy.maxCostUsd;
+  if (cap === null) return null;
+  const row = store.run(runId);
+  const { spentUsd, reservedUsd } = store.costUsage(runId);
+  const rate = costRate(spentUsd > 0 ? spentUsd : null, row.token_usage, null);
+  if (rate <= 0) return null;
+  const reserved = store
+    .attempts(runId)
+    .filter((a) => !a.usage_complete)
+    .reduce((sum, a) => sum + a.reserved_tokens, 0);
+  return Math.floor(row.token_usage + reserved + Math.max(0, cap - spentUsd - reservedUsd) / rate);
+}
+
+/**
  * A run at its sizing ceiling under `clarification: "assume"` grows past it, up to
  * `sizing.extendToTokens` (1.5 times the ceiling when unset, `extendToOf`), without a person,
  * while it still makes progress: since the last extension (or the start of the run) a task
- * finished or a finding was resolved. Each extension
+ * finished or a finding was resolved. With a dollar cap it may grow further, to what the cap
+ * still pays for (`affordableTokens`): the cap then stops the run, as a cost stop. Each extension
  * covers the call and adds at least a quarter of the ceiling, about one review round, and is
  * recorded as `kind: "auto-extend"`. junitdigest 3e5be74b stopped twice at the ceiling and was
  * cleared both times by an operator `extend` with no other choice to make (#747).
@@ -311,9 +334,10 @@ function extendUnderAssume(
   policy: RunPolicy,
   projected: number,
 ): boolean {
-  const hard = extendToOf(policy);
+  const tokenHard = extendToOf(policy);
   const ceiling = policy.sizing?.maxRunTokens ?? null;
-  if (hard === null || ceiling === null || policy.clarification !== "assume") return false;
+  if (tokenHard === null || ceiling === null || policy.clarification !== "assume") return false;
+  const hard = Math.max(tokenHard, affordableTokens(store, runId, policy) ?? 0);
   if (policy.maxTotalTokens >= hard || projected > hard) return false;
   const progress = progressOf(store, runId);
   const last = store
@@ -375,6 +399,15 @@ export function assertAttemptFits(
   if (policy.sizing?.maxRunTokens == null) return;
   const left = store.remainingTokens(runId, policy, attemptId);
   if (left >= attemptTokens) return;
+  // With a dollar cap the cap is the limit that stops the run when it cannot pay for the attempt.
+  const affordable = affordableTokens(store, runId, policy);
+  if (affordable !== null && committed + attemptTokens > affordable)
+    throw new WorkflowFault("BUDGET_EXHAUSTED", "The next attempt would pass the run's cost cap", {
+      reason: "cost",
+      ...store.costUsage(runId, attemptId),
+      attemptTokens,
+      maxCostUsd: policy.maxCostUsd,
+    });
   throw new WorkflowFault(
     "BUDGET_EXHAUSTED",
     "The next attempt needs more tokens than the run budget has left",
