@@ -72,6 +72,7 @@ import {
   baselineRegression,
   CHECK_BASELINE_PATH,
   commandKey,
+  diagnosticCount,
   failureSignature,
   outputCounts,
   TEST_FILE,
@@ -98,7 +99,7 @@ import {
 } from "../verification/review.js";
 import { addReviewNotes, noteReason } from "../verification/review-notes.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
-import { baselineKeys, taskErrors } from "../verification/task-end-check.js";
+import { baselineDebt, baselineKeys, taskErrors } from "../verification/task-end-check.js";
 import { affectedTestCheck, affectedTestsFor } from "./affected-tests.js";
 import { outputSchemas } from "./agent-executor.js";
 import {
@@ -2617,6 +2618,8 @@ export class WorkflowScheduler {
     const diagnostics: Record<string, string[]> = {};
     // The output of each required check that fails before any change, by command key.
     const failures: Record<string, string> = {};
+    // The diagnostics of each failing static check, for `staticBaseline: "relative"` (#1222).
+    const debt: Record<string, string[]> = {};
     if (fresh)
       for (const check of feature) {
         const root = runRoot(this.store.workspace, state);
@@ -2628,6 +2631,16 @@ export class WorkflowScheduler {
         );
         if (result.status === "failed" && check.required && !result.truncated)
           failures[commandKey(check)] = failureSignature(result.output, root);
+        if (
+          policy.staticBaseline === "relative" &&
+          result.status === "failed" &&
+          check.required &&
+          isStaticCheck(check) &&
+          !isTestCheck(check)
+        ) {
+          const keys = baselineKeys(result.output, root);
+          if (keys.length) debt[commandKey(check)] = keys;
+        }
         if (scaffold) continue;
         if (result.status === "failed" && isWholeUnitCheck(check))
           diagnostics[commandKey(check)] = baselineKeys(result.output, root);
@@ -2640,7 +2653,14 @@ export class WorkflowScheduler {
         runId,
         "facts",
         CHECK_BASELINE_PATH,
-        canonical({ schemaVersion: 1, measured: fresh, counts, diagnostics, failures }),
+        canonical({
+          schemaVersion: 1,
+          measured: fresh,
+          counts,
+          diagnostics,
+          failures,
+          ...(Object.keys(debt).length ? { debt } : {}),
+        }),
       ),
     );
   }
@@ -2662,6 +2682,48 @@ export class WorkflowScheduler {
       `baseline_failure: required check ${check.id} failed before any change and fails the same way now (evidence ${evidenceId}); nothing the run changed affects it. Fix the check or the project setup, or revise the plan, then resume.`,
       { reason: "no_progress", checkId: check.id },
     );
+  }
+  /**
+   * The baseline debt a failing required static check reports under `staticBaseline: "relative"`
+   * (#1222): its diagnostics were all there before the run and none is in a file a task of the
+   * plan writes. Recorded as an artifact when found; null when the check fails as usual.
+   */
+  private staticDebt(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy | undefined,
+    check: Check,
+    output: string,
+    evidenceId: string,
+  ): string[] | null {
+    if (policy?.staticBaseline !== "relative" || !isStaticCheck(check) || isTestCheck(check))
+      return null;
+    const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
+    if (!artifact) return null;
+    const baseline = (
+      JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+        debt?: Record<string, string[]>;
+      }
+    ).debt?.[commandKey(check)];
+    if (!baseline?.length) return null;
+    const changed = ((state.rootGraph ?? state.graph)?.tasks ?? []).flatMap((t) =>
+      t.writes.map((w) => w.path),
+    );
+    const debt = baselineDebt(output, runRoot(this.store.workspace, state), {
+      baseline,
+      changed,
+      summary: diagnosticCount(output)?.count ?? null,
+    });
+    if (!debt) return null;
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `checks/baseline-debt/${check.id}-${newId()}.json`,
+        canonical({ checkId: check.id, evidenceId, debt }),
+      ),
+    );
+    return debt;
   }
   /** Whether a required check fails exactly as it did before any change (#934). */
   private failsAsBaseline(
@@ -4625,6 +4687,7 @@ ${note}`;
         checked,
         taskFailures,
         checkEvidence,
+        policy,
       );
     this.inconclusiveTaskCheck(inconclusive, taskFailures);
     if (unresolvedAccount && !taskFailures.length && !taskResults.length)
@@ -5873,7 +5936,16 @@ ${note}`;
       signal,
       mainRoot,
     ))
-      inconclusive ??= this.applyTaskCheck(runId, state, task, check, checked, failures, evidence);
+      inconclusive ??= this.applyTaskCheck(
+        runId,
+        state,
+        task,
+        check,
+        checked,
+        failures,
+        evidence,
+        policy,
+      );
     this.inconclusiveTaskCheck(inconclusive, failures);
     if (outcome.account.unresolved.length && !failures.length && !results.length)
       failures.push(...this.unresolvedFindings(runId, state, task, outcome.account));
@@ -7181,9 +7253,16 @@ ${note}`;
     checked: { status: "passed" | "failed" | "inconclusive"; evidenceId: string; output?: string },
     taskFailures: Review["findings"],
     checkEvidence: string[],
+    policy?: RunPolicy,
   ): string | undefined {
     if (checked.status === "passed") checkEvidence.push(checked.evidenceId);
     if (!check.required || checked.status === "passed") return undefined;
+    if (
+      checked.status === "failed" &&
+      checked.output &&
+      this.staticDebt(runId, state, policy, check, checked.output, checked.evidenceId)
+    )
+      return undefined;
     // The check fails exactly as before any change and names no file the task writes: the task
     // did not cause it and a correction could not reach it (dur 741547f0: Biome rejected the
     // scaffold's `biome.json`, which no task writes; T004 spent 38k tokens on `src/duration.ts`,
@@ -7878,6 +7957,14 @@ ${note}`;
           : null;
       if (result.status === "passed" && !regression) passedIds.push(check.id);
       if (result.status === "inconclusive" && check.required) inconclusive ??= check.id;
+      if (
+        result.status === "failed" &&
+        check.required &&
+        this.staticDebt(runId, state, policy, check, result.output, result.evidenceId)
+      ) {
+        passedIds.push(check.id);
+        continue;
+      }
       if ((result.status === "failed" || regression) && check.required) {
         if (!regression)
           this.assertNotBaselineFailure(runId, state, check, result.output, result.evidenceId);
