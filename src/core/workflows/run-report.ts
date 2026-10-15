@@ -12,6 +12,7 @@ import {
   commandKey,
   testCount,
 } from "../verification/output-counts.js";
+import { type CostForecast, forecastProgress } from "./cost-forecast.js";
 import { type DependencyResult, QUALITY_DEPENDENCIES } from "./quality/dependencies.js";
 import {
   type DuplicationResult,
@@ -380,6 +381,8 @@ function collect(store: WorkflowStore, runId: string) {
       amendments,
       outcomes: store.criticOutcomes(runId),
       usage: stagesInRunOrder(store, runUsage(store, runId)),
+      forecasts: forecastProgress(store, runId),
+      forecastStopped: store.artifacts(runId).some((a) => a.kind === "cost-forecast"),
       artifacts: [...latestArtifacts.values()].filter((a) => !internalArtifact(a.logical_path)),
       internalArtifacts: [...latestArtifacts.values()].filter((a) =>
         internalArtifact(a.logical_path),
@@ -388,6 +391,23 @@ function collect(store: WorkflowStore, runId: string) {
   });
 }
 type Facts = ReturnType<typeof collect>;
+
+/**
+ * The cost forecast of a capped run (#1246): what it projected at the first and the last count of
+ * finished tasks, against the cap, and whether it stopped the run; null when it never forecast.
+ */
+function forecastLine(forecasts: CostForecast[], stopped: boolean): string | null {
+  const first = forecasts[0];
+  const last = forecasts.at(-1);
+  if (!first || !last) return null;
+  const at = (f: CostForecast) =>
+    `about $${f.projectedUsd.toFixed(2)} at ${String(f.measuredTasks)} finished tasks (${f.ratio.toFixed(1)} times their price)`;
+  const ceiling =
+    last.ceilingUsd > last.capUsd
+      ? `the $${last.ceilingUsd.toFixed(2)} ceiling ($${last.capUsd.toFixed(2)} cap and its tolerance)`
+      : `the $${last.capUsd.toFixed(2)} cap`;
+  return `Cost forecast: ${forecasts.length > 1 ? `${at(first)}, then ${at(last)}` : at(last)}, against ${ceiling}; ${stopped ? "it stopped the run for a decision" : "it did not stop the run"}.`;
+}
 /** A stored `tasks/TASK/critique.json`: a critique, or the error of a critic that failed. */
 interface CritiqueRecord {
   taskId: string;
@@ -1056,6 +1076,8 @@ function render(facts: Facts, cap: number): string {
       ),
       "",
     );
+  const forecast = forecastLine(facts.forecasts, facts.forecastStopped);
+  if (forecast) out.push(forecast, "");
   const backends = toolBackendLine(usage.toolBackends ?? []);
   if (backends) out.push(`Code intelligence: ${backends}.`, "");
   const tools = toolTokensLine(usage.tools ?? []);

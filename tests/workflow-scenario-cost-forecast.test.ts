@@ -2,7 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { findPricing } from "../src/core/llm/pricing.js";
 import { canonical } from "../src/core/specs/hash.js";
 import { budgetLimitText, canExtend } from "../src/components/workflow/format.js";
-import { assertForecastFits, costForecast } from "../src/core/workflows/cost-forecast.js";
+import { assertForecastFits, costForecast, forecastProgress } from "../src/core/workflows/cost-forecast.js";
+import { runReport } from "../src/core/workflows/run-report.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
 import type { RunPolicy, Task } from "../src/core/workflows/schemas.js";
 import type { AttemptUsageRecord } from "../src/core/workflows/step-budget.js";
@@ -80,7 +81,12 @@ async function midRun(options: { perTask: number[]; costForecast?: "ask" | "off"
     spend(store, runId, `task-${id}`, policy, tokens);
     store.transaction(() => store.taskStatus(runId, id, "implemented"));
   });
-  return { store, runId, policy, service: made.service };
+  /** Finishes one more planned task that used this many tokens. */
+  const stage = (id: string, tokens: number) => {
+    spend(store, runId, `task-${id}`, policy, tokens);
+    store.transaction(() => store.taskStatus(runId, id, "implemented"));
+  };
+  return { store, runId, policy, service: made.service, stage };
 }
 
 const OVER = [550_000, 820_000, 1_470_000, 640_000, 910_000, 700_000, 600_000];
@@ -152,5 +158,25 @@ describe("scenario: cfgtrace b4427c85, a forecast past the dollar cap stops the 
     expect(canExtend(view)).toBe(true);
     const extended = await service.extendBudget(runId, { commandId: newId(), expectedRevision: (await service.get(runId)).revision });
     expect(extended.maxCostUsd).toBe(CAP * 2);
+  });
+
+  // Bench round 30 (#1246 follow-up): no run recorded any forecast, because only a stop wrote one.
+  test("a forecast that does not stop the run is kept once per finished task count and reported", async () => {
+    const { store, runId, policy, stage } = await midRun({ perTask: Array(7).fill(250_000) });
+    assertForecastFits(store, runId, policy);
+    assertForecastFits(store, runId, policy);
+    expect(forecastProgress(store, runId)).toHaveLength(1);
+    expect(forecastProgress(store, runId)[0]).toMatchObject({ measuredTasks: 7, openTasks: 16, capUsd: CAP });
+    stage("T008", 250_000);
+    assertForecastFits(store, runId, policy);
+    expect(forecastProgress(store, runId).map((f) => f.measuredTasks)).toEqual([7, 8]);
+    expect(runReport(store, runId)).toMatch(/Cost forecast: about \$[\d.]+ at 7 finished tasks .*, then about \$[\d.]+ at 8 finished tasks .*it did not stop the run\./);
+  });
+
+  test("`costForecast: off` records no forecast", async () => {
+    const { store, runId, policy } = await midRun({ perTask: OVER, costForecast: "off" });
+    assertForecastFits(store, runId, policy);
+    expect(forecastProgress(store, runId)).toHaveLength(0);
+    expect(runReport(store, runId)).not.toContain("Cost forecast");
   });
 });

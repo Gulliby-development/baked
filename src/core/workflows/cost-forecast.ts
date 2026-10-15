@@ -112,6 +112,30 @@ export function askedForecast(store: WorkflowStore, runId: string, capUsd: numbe
   return typeof asked?.projectedUsd === "number" ? asked.projectedUsd : null;
 }
 
+/** Where the forecast at a count of finished priced tasks is kept. */
+const progressPath = (measuredTasks: number): string =>
+  `forecasts/progress-${String(measuredTasks).padStart(3, "0")}.json`;
+
+/**
+ * Keeps the forecast once for each count of finished priced tasks, whether or not it stops the
+ * run, so a run that finished under its cap still shows what was projected along the way: bench
+ * round 30 had no record of any forecast because only a stop wrote one.
+ */
+function recordProgress(store: WorkflowStore, runId: string, forecast: CostForecast): void {
+  const path = progressPath(forecast.measuredTasks);
+  if (store.latestArtifact(runId, path)) return;
+  store.artifact(runId, "cost-forecast-progress", path, canonical(forecast));
+}
+
+/** The forecasts the run recorded as its tasks finished, oldest first. */
+export function forecastProgress(store: WorkflowStore, runId: string): CostForecast[] {
+  return store
+    .artifacts(runId)
+    .filter((a) => a.kind === "cost-forecast-progress")
+    .sort((a, b) => a.logical_path.localeCompare(b.logical_path))
+    .map((a) => JSON.parse(store.readArtifact(runId, a.id)) as CostForecast);
+}
+
 /** How the message of a forecast stop begins. */
 export const FORECAST_STOP = "The run is forecast to cost about";
 
@@ -128,6 +152,7 @@ const usd = (n: number): string => `$${n.toFixed(2)}`;
 export function assertForecastFits(store: WorkflowStore, runId: string, policy: RunPolicy): void {
   if (policy.costForecast === "off" || policy.maxCostUsd === null) return;
   const forecast = costForecast(store, runId, policy);
+  if (forecast) recordProgress(store, runId, forecast);
   if (!forecast || forecast.projectedUsd <= forecast.ceilingUsd) return;
   if (askedForecast(store, runId, forecast.capUsd) !== null) return;
   const n = store.artifacts(runId).filter((a) => a.kind === "cost-forecast").length;
