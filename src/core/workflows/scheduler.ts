@@ -48,6 +48,7 @@ import {
   convergenceStop,
   earlierFindings,
   grantRound,
+  limitedCriteria,
   noteInconclusiveReview,
   noteStoppedInconclusive,
   noteUnverifiedCriteria,
@@ -2191,10 +2192,14 @@ export class WorkflowScheduler {
                     this.store.run(runId).convergence_rounds,
                   );
                 }
+                // A criterion the person could not confirm is a known limitation, not a new
+                // request with the same question (#1273).
+                const limited = limitedCriteria(state);
                 const unanswered = () =>
                   state.spec?.criteria.filter(
                     (c) =>
                       c.method === "manual" &&
+                      !limited.has(c.id) &&
                       state.manualCriteria[c.id]?.snapshotId !== state.snapshotId,
                   ) ?? [];
                 const measured = await this.measureLayout(
