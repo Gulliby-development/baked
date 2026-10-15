@@ -8144,6 +8144,13 @@ ${note}`;
         // Also when a fixer run throws: a whole-crate formatter may already have rewritten files.
         restoreOutside(root, kept, await changedOutside());
       }
+      // Judged on the whole pass too: `cargo fmt -- <path>` formats the whole crate, so the run on
+      // an already formatted file can rewrite a later one, whose own run then finds nothing to do
+      // (bytelens-update a11ea789 T004, #1228).
+      if (!changed)
+        changed = changedPaths(before, await sourceManifest(root, generated, signal)).some((path) =>
+          owners.has(path),
+        );
       const outside = await changedOutside();
       if (outside.length)
         throw new WorkflowFault(
