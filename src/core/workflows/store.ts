@@ -7,6 +7,7 @@ import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { writeViaTemp } from "./atomic-write.js";
 import { costRate, growBudgetOnProgress } from "./budget.js";
+import { costCeilingUsd } from "./cost-tolerance.js";
 import { WorkflowFault } from "./errors.js";
 import type { PastRun } from "./estimate.js";
 import { migration001 } from "./migrations/001.js";
@@ -514,6 +515,7 @@ export class WorkflowStore {
       activeMs: row.active_ms,
       estimatedCostUsd: this.costOf(id, row.estimated_cost_microusd),
       ...costCapOf(row.policy_json),
+      ...this.costCeilingOf(id, row.policy_json),
       verificationState: state.verificationState,
       limitations: { count: limitationIds.length, ids: limitationIds },
       reviewNotes: { count: noteIds.length, ids: noteIds },
@@ -1475,9 +1477,9 @@ export class WorkflowStore {
     return { spentUsd: spent ?? 0, reservedUsd };
   }
   /**
-   * Refuses a model call the dollar cap (`maxCostUsd`) no longer covers: the cost spent, the cost
-   * other open attempts reserve and this call's tokens at the run's rate. A model without a price
-   * is refused too, so it can never spend outside the cap.
+   * Refuses a model call the dollar cap (`maxCostUsd`, plus its `costTolerance`) no longer covers:
+   * the cost spent, the cost other open attempts reserve and this call's tokens at the run's rate.
+   * A model without a price is refused too, so it can never spend outside the cap.
    */
   private assertCostFits(
     runId: string,
@@ -1486,13 +1488,13 @@ export class WorkflowStore {
     tokens: number,
     attemptId?: string,
   ): void {
-    const cap = policy.maxCostUsd;
+    const cap = costCeilingUsd(this, runId, policy);
     if (cap === null) return;
     if (findPricing(model) === null)
       throw new WorkflowFault(
         "BUDGET_EXHAUSTED",
         `No price is known for ${model}, so the run's cost cap cannot hold`,
-        { reason: "cost", model, maxCostUsd: cap },
+        { reason: "cost", model, maxCostUsd: policy.maxCostUsd },
       );
     const { spentUsd, reservedUsd } = this.costUsage(runId, attemptId);
     const row = this.run(runId);
@@ -1501,9 +1503,26 @@ export class WorkflowStore {
     if (spentUsd + reservedUsd + requestedUsd > cap)
       throw new WorkflowFault(
         "BUDGET_EXHAUSTED",
-        "The next model call would pass the run's cost cap",
-        { reason: "cost", spentUsd, reservedUsd, requestedUsd, maxCostUsd: cap },
+        cap > (policy.maxCostUsd ?? cap)
+          ? "The next model call would pass the run's cost ceiling (its cap and tolerance)"
+          : "The next model call would pass the run's cost cap",
+        {
+          reason: "cost",
+          spentUsd,
+          reservedUsd,
+          requestedUsd,
+          maxCostUsd: policy.maxCostUsd,
+          ceilingUsd: cap,
+        },
       );
+  }
+  /** The snapshot field of the cap's tolerance ceiling, left out when the run has no band. */
+  private costCeilingOf(runId: string, policyJson: string): { costCeilingUsd?: number } {
+    const policy = JSON.parse(policyJson) as RunPolicy;
+    if (typeof policy.maxCostUsd !== "number" || (policy.costTolerance ?? "off") === "off")
+      return {};
+    const ceiling = costCeilingUsd(this, runId, policy);
+    return ceiling !== null && ceiling > policy.maxCostUsd ? { costCeilingUsd: ceiling } : {};
   }
   /** Tokens an executor recorded for the attempt so far, or null when none reported any. */
   recordedUsage(runId: string, attemptId: string): number | null {

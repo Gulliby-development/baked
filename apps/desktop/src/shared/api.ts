@@ -104,6 +104,8 @@ export interface RunSnapshot {
   estimatedCostUsd: number | null;
   /** The run's dollar cap (`policy.maxCostUsd`); present only when the run has one. */
   maxCostUsd?: number;
+  /** The cap plus its `costTolerance` band, where every cost check stops; present only with a band. */
+  costCeilingUsd?: number;
   pendingRequestIds: string[];
   /** Findings the run is accepted with; absent from servers before the field existed. */
   limitations?: { count: number; ids: string[] };

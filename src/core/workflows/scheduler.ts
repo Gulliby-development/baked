@@ -171,6 +171,7 @@ import {
   scopedPlanBudget,
 } from "./clarification.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
+import { inCostWrapUp } from "./cost-tolerance.js";
 import { coverageFinding } from "./coverage.js";
 import { type CriticCalibration, calibrateCritic, criticExamples } from "./critic-calibration.js";
 import { crossPlatformNote } from "./cross-platform.js";
@@ -497,6 +498,8 @@ const NOT_LOW: readonly Severity[] = ["critical", "high", "medium"];
  * de6cf1ab and 2fa658c0 spent their rounds on ever deeper medium findings while every check passed.
  * With the policy's `lowFindings: "note"` low findings are notes from the first round on: a low
  * README wording finding cost structpad 6d048155 663k tokens and an attempt cap stop (#1001).
+ * A run winding up inside its cost tolerance band (`inCostWrapUp`) repairs only serious findings,
+ * so the band pays for finishing the work rather than for polishing it (#1263).
  */
 const repairSeverities = (
   run: {
@@ -505,8 +508,9 @@ const repairSeverities = (
     convergence_rounds: number;
   },
   policy: Pick<RunPolicy, "lowFindings">,
+  wrapUp = false,
 ) =>
-  run.repair_rounds + (run.review_rounds ?? 0) + run.convergence_rounds > 0
+  wrapUp || run.repair_rounds + (run.review_rounds ?? 0) + run.convergence_rounds > 0
     ? SERIOUS
     : policy.lowFindings === "note"
       ? NOT_LOW
@@ -2028,7 +2032,11 @@ export class WorkflowScheduler {
                 for (const item of review.coverage)
                   this.store.criterion(runId, state.snapshotId ?? "", item);
               });
-              const severities = repairSeverities(this.store.run(runId), policy);
+              const severities = repairSeverities(
+                this.store.run(runId),
+                policy,
+                inCostWrapUp(this.store, runId, policy),
+              );
               const failing = new Set(
                 review.coverage
                   .filter(
@@ -9609,7 +9617,11 @@ ${note}`;
       throw new WorkflowFault("ARTIFACT_MISSING", "Review snapshot missing");
     const findings: Review["findings"] = [];
     const owners = new Map<string, Reviewer>();
-    const severities = repairSeverities(this.store.run(runId), policy);
+    const severities = repairSeverities(
+      this.store.run(runId),
+      policy,
+      inCostWrapUp(this.store, runId, policy),
+    );
     const reviewSpec = state.spec;
     const reviewSnapshotId = state.snapshotId;
     const reviewSnapshotHash = state.workspaceHash;
