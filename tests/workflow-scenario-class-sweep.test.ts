@@ -34,10 +34,13 @@ const planned = (id: string, path: string): Task => ({ id, title: `Write ${path}
 /** Prints the documented error once the file is robust, else the crash the reviewer saw. */
 const probe = (path: string, actual: string) => ({ executable: "bun", args: ["-e", `console.log((await Bun.file('${path}').text()).includes('robust') ? 'E107' : ${JSON.stringify(actual)})`], expected: "E107", actual });
 
+// The CLI calls the format parser, so the parser shares the CLI's input path (#1226).
+const SOURCES: Record<string, string> = { [CLI]: "fragile\nfrom cfgtrace.formats import load\n", [FORMATS]: "fragile\n" };
+
 class ScriptedExecutor implements AgentExecutor {
   reviews = 0;
   corrections: Task[] = [];
-  constructor(private root: string) {}
+  constructor(private root: string, private others: string[] = []) {}
   private fragile(path: string): boolean {
     return readFileSync(join(this.root, path), "utf8").includes("fragile");
   }
@@ -49,14 +52,15 @@ class ScriptedExecutor implements AgentExecutor {
       case "research": output = { schemaVersion: 1, summary: "A fixture workspace", facts: [], unknowns: [], constraints: [], suggestedScope: [CLI] }; break;
       case "spec": output = spec; break;
       case "plan":
-        output = { schemaVersion: 1, markdown, taskGraph: { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown), tasks: [planned("T001", CLI), planned("T002", FORMATS)] } };
+        output = { schemaVersion: 1, markdown, taskGraph: { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown), tasks: [planned("T001", CLI), planned("T002", FORMATS), ...this.others.map((path, i) => planned(`T${String(i + 3).padStart(3, "0")}`, path))] } };
         break;
       case "analysis": output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] }; break;
       case "implementation": {
         const task = request.task as Task;
         if (task.origin === "planned") {
           mkdirSync(join(this.root, "cfgtrace"), { recursive: true });
-          writeFileSync(join(this.root, task.writes[0]?.path ?? ""), "fragile\n");
+          const path = task.writes[0]?.path ?? "";
+          writeFileSync(join(this.root, path), SOURCES[path] ?? "VERSION = 1\n");
         } else {
           // A corrective repairs the site its finding names, and with a class sweep every entry
           // point the host lists, as long as the task may write it.
@@ -86,11 +90,11 @@ class ScriptedExecutor implements AgentExecutor {
   }
 }
 
-async function runScenario(classSweep: boolean) {
+async function runScenario(classSweep: boolean, others: string[] = []) {
   const root = mkdtempSync(join(tmpdir(), "baked-cfgtrace-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const policy: RunPolicy = { ...defaultWorkflowPolicy, maxRepairRounds: 1, checks: [tests], ...(classSweep ? { classSweep } : {}) };
-  const executor = new ScriptedExecutor(root);
+  const executor = new ScriptedExecutor(root, others);
   const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } };
   const service = new NativeWorkflowService(root, config, executor);
   cleanups.push(() => service.close());
@@ -112,10 +116,26 @@ describe("scenario: cfgtrace a657dc4d, one robustness class found one site per r
     expect(executor.corrections).toHaveLength(1);
     const [sweep] = executor.corrections;
     expect(sweep?.description).toContain("Class sweep");
-    expect(sweep?.description).toContain("- huge numbers (reported)");
+    expect(sweep?.description).toContain("- huge numbers (reported, every entry point)");
     expect(sweep?.description).toContain(`- ${FORMATS}`);
     expect(sweep?.writes.map((w) => w.path).sort()).toEqual([CLI, FORMATS]);
     expect(readFileSync(join(root, FORMATS), "utf8")).toBe("robust\n");
+  }, 60000);
+
+  // cfgtrace eff0ebe7 (bench round 27): the sweep listed 12 planned source files against the whole
+  // battery, about 60 probes for one attempt, and its corrective cost 3.96M tokens over three
+  // attempts. Modules the reported file does not import and no criterion names are not swept, and
+  // the shapes not reported are probed only where the defect was found.
+  test("the sweep lists only the entry points tied to the reported file (#1226)", async () => {
+    const others = ["cfgtrace/report.py", "cfgtrace/colors.py", "cfgtrace/version.py", "cfgtrace/paths.py", "cfgtrace/env.py", "cfgtrace/diff.py"];
+    const { done, executor } = await runScenario(true, others);
+    expect(done.status).toBe("completed");
+    const [sweep] = executor.corrections;
+    expect(sweep?.description).toContain(`- ${CLI}\n- ${FORMATS}`);
+    for (const path of others) expect(sweep?.description).not.toContain(`- ${path}`);
+    expect(sweep?.description).toContain("- huge numbers (reported, every entry point)");
+    expect(sweep?.description).toContain(`- deep nesting (only ${CLI})`);
+    expect(sweep?.writes.map((w) => w.path).sort()).toEqual([CLI, FORMATS]);
   }, 60000);
 
   test("without it each corrective repairs one site and the round budget stops the run", async () => {
