@@ -138,6 +138,8 @@ const MAX_SEMANTIC_CORRECTIONS = 2;
 const MAX_SYNTAX_REFUSALS = 2;
 /** Submissions refused because a finding the task corrects still reproduces (#1158). */
 const MAX_REPRO_REFUSALS = 2;
+/** Submissions refused because the test files leave out a case the criteria quote (#1250). */
+const MAX_CASE_REFUSALS = 2;
 /** Refusals of one path by the file-hash check after which an attempt stops (#954). */
 const MAX_HASH_REFUSALS = 3;
 
@@ -855,6 +857,8 @@ export class NativeAgentExecutor implements AgentExecutor {
       let editsNoted = false;
       let syntaxRefusals = 0;
       let lastSyntaxRefusal = "";
+      let caseRefusals = 0;
+      let lastCaseRefusal = "";
       let reproRefusals = 0;
       const submitResult = tool({
         description:
@@ -933,6 +937,35 @@ export class NativeAgentExecutor implements AgentExecutor {
                   instruction:
                     "These files written by this task do not parse. Fix each listed line, then call submit_result again with the complete result. If the code is valid and only newer than the syntax checker, submit again unchanged: the same errors are not refused twice.",
                 };
+            }
+          }
+          // A case the criteria quote that the task's tests leave out goes back here, not to a
+          // review finding and a corrective task after integration (leaguetab, cochange-update).
+          if (
+            !errors.length &&
+            request.caseCheck &&
+            caseRefusals < MAX_CASE_REFUSALS &&
+            outcome === "implemented"
+          ) {
+            const missing = await request.caseCheck(root);
+            const key = missing.join("\n");
+            if (missing.length && key !== lastCaseRefusal) {
+              caseRefusals++;
+              lastCaseRefusal = key;
+              this.store.transaction(() =>
+                this.store.artifact(
+                  request.runId,
+                  "diagnostic",
+                  `attempts/${request.attemptId}/cases-${crypto.randomUUID()}.json`,
+                  canonical({ missing }),
+                ),
+              );
+              return {
+                accepted: false,
+                errors: missing,
+                instruction:
+                  "The criteria this task covers quote these cases, and the test files it writes do not contain them. Add a test for each one that checks the exact expected output and exit code, then call submit_result again with the complete result. If a case is already tested in another spelling, submit again unchanged: the same list is not refused twice.",
+              };
             }
           }
           if (

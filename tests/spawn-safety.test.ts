@@ -125,20 +125,31 @@ describe("subprocess stdin isolation", () => {
 
 	it("git command fails cleanly instead of prompting when auth is missing", async () => {
 		const { spawn } = await import("node:child_process");
-		const env = buildSafeEnv();
-		env.GIT_ASKPASS = "/bin/false";
-		const proc = spawn("git", ["ls-remote", "https://github.com/nonexistent/nonexistent.git"], {
-			stdio: SAFE_STDIO,
-			env,
-			timeout: 10_000,
+		// A local server that demands credentials keeps the test off the network, where a slow
+		// runner could hit the spawn timeout and report a kill instead of git's own failure.
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: () => new Response("Unauthorized", { status: 401, headers: { "WWW-Authenticate": 'Basic realm="test"' } }),
 		});
-		const stderr: string[] = [];
-		proc.stderr?.on("data", (d: Buffer) => stderr.push(d.toString()));
-		const code = await new Promise<number | null>((resolve) => {
-			proc.on("close", resolve);
-		});
-		expect(code).not.toBe(null);
-		expect(code).not.toBe(0);
+		try {
+			const env = buildSafeEnv();
+			env.GIT_ASKPASS = "/bin/false";
+			const proc = spawn("git", ["ls-remote", `http://127.0.0.1:${server.port}/missing.git`], {
+				stdio: SAFE_STDIO,
+				env,
+				timeout: 30_000,
+			});
+			const stderr: string[] = [];
+			proc.stderr?.on("data", (d: Buffer) => stderr.push(d.toString()));
+			const code = await new Promise<number | null>((resolve) => {
+				proc.on("close", resolve);
+			});
+			expect(code).not.toBe(null);
+			expect(code).not.toBe(0);
+		} finally {
+			server.stop(true);
+		}
 	});
 
 	it("interactive command gets EOF instead of hanging", async () => {

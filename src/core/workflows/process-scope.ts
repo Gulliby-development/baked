@@ -80,6 +80,8 @@ export class ProcessScope {
        * "required" with no backend throws SandboxUnavailableError before anything starts.
        */
       sandbox: SandboxRequest | null;
+      /** Written to standard input, which is then closed; without it standard input is ignored. */
+      stdin?: string;
     },
   ): Promise<ProcessResult> {
     options.signal.throwIfAborted();
@@ -113,9 +115,14 @@ export class ProcessScope {
         // The launcher's own argument is one base64 word; only an unwrapped line goes verbatim.
         windowsVerbatimArguments: verbatim && !wrapped,
         detached: process.platform !== "win32",
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: [options.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       });
       this.children.set(child, scope);
+      if (options.stdin !== undefined && child.stdin) {
+        // A program that exits without reading its input closes the pipe; that is not an error.
+        child.stdin.on("error", () => {});
+        child.stdin.end(options.stdin);
+      }
       let output = Buffer.alloc(0);
       const stdout: Buffer[] = [];
       const stderr: Buffer[] = [];

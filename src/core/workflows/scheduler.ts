@@ -57,6 +57,7 @@ import {
   reversalCandidates,
   reviewLimitAccepts,
 } from "../verification/convergence-stop.js";
+import { caseCheck as criteriaCaseCheck } from "../verification/criteria-cases.js";
 import { type DocExampleResult, isDocFile, runDocExamples } from "../verification/doc-examples.js";
 import {
   currentEvidence,
@@ -359,6 +360,7 @@ import {
   ReviewSchema,
   type RunPolicy,
   repairHostBoundCriteria,
+  repairLayoutCriteria,
   type Spec,
   SpecSchema,
   specCoverageProblems,
@@ -935,6 +937,11 @@ export class WorkflowScheduler {
             case "specify": {
               // An oversized spec goes back once; the author's second submission stands (#1013).
               let sizeAdvised = false;
+              // Without a browser gate the host settles a layout criterion itself (#1247).
+              const browser =
+                !!v2 && acceptanceGrants(v2.gates).some((g) => g.driver === "browser");
+              const hostRepairs = (spec: Spec): Spec =>
+                repairLayoutCriteria(repairHostBoundCriteria(spec).spec, { browser }).spec;
               const validateSpec = (output: unknown): string[] => {
                 const parsed = SpecSchema.safeParse(output);
                 if (!parsed.success) return [];
@@ -946,13 +953,9 @@ export class WorkflowScheduler {
                 // The host makes a host-bound criterion checkable itself (#1015).
                 return [
                   ...size,
-                  ...specCoverageProblems(
-                    repairHostBoundCriteria(parsed.data).spec,
-                    policy.checks,
-                    {
-                      request: state.requestText || state.prompt,
-                    },
-                  ),
+                  ...specCoverageProblems(hostRepairs(parsed.data), policy.checks, {
+                    request: state.requestText || state.prompt,
+                  }),
                   // The host maps a deliverable the spec names elsewhere itself (#1037).
                   ...deliverableProblems(
                     repairDeliverables(parsed.data, coverageRequest(state)).spec,
@@ -1010,6 +1013,21 @@ export class WorkflowScheduler {
                     "diagnostic",
                     "spec-repairs/host-bound.json",
                     canonical({ postRelease: repair.repaired, added }),
+                  ),
+                );
+              }
+              const layout = repairLayoutCriteria(state.spec, { browser });
+              if (layout.repaired.length) {
+                const added = layout.spec.criteria
+                  .slice(state.spec.criteria.length)
+                  .map((c) => c.id);
+                state.spec = layout.spec;
+                this.store.transaction(() =>
+                  this.store.artifact(
+                    runId,
+                    "diagnostic",
+                    "spec-repairs/layout.json",
+                    canonical({ postRelease: layout.repaired, added }),
                   ),
                 );
               }
@@ -3360,6 +3378,8 @@ export class WorkflowScheduler {
       task && profile.output === "implementation"
         ? this.reproCheck(runId, policy, task)
         : undefined;
+    const caseCheck =
+      task && profile.output === "implementation" ? criteriaCaseCheck(state.spec, task) : undefined;
     // A digested spec (#1019) comes with the tool that reads its criteria in full.
     const digested = digestsSpec(state.spec, profile, policy);
     const host =
@@ -3389,6 +3409,7 @@ export class WorkflowScheduler {
         ...(validate ? { validate } : {}),
         ...(taskEndCheck ? { taskEndCheck } : {}),
         ...(reproCheck ? { reproCheck } : {}),
+        ...(caseCheck ? { caseCheck } : {}),
         ...(attributeCheck ? { attributeCheck } : {}),
         ...(this.formatHints(runId, state, profile.output, task)
           ? { formatHints: this.formatHints(runId, state, profile.output, task) }
@@ -8046,8 +8067,11 @@ ${note}`;
             if (!candidate.dependsOn.some((id) => invalid.has(id))) continue;
             const row = rows.find((entry) => entry.id === candidate.id);
             const finished = row && ["implemented", "verified"].includes(row.status);
-            // A task only reached through an import keeps its implementation too when it has task
-            // checks: the host runs them first, and a failure becomes a repair of that task.
+            // A task only reached through an import keeps its implementation too when a check
+            // guards it: its own checks of any scope, or a required feature check, which the checks
+            // stage runs on the result; a failure becomes a repair. Rerunning its agent repeats
+            // work the import did not change (cfgtrace b4427c85: one file of T024 reran five
+            // tasks for 2.0M tokens, one with an empty diff, #1248).
             const reach =
               finished && changedFiles ? changeReach(root, candidate, changedFiles) : null;
             // A task whose every written file a corrective task rewrote is superseded there: its
@@ -8063,7 +8087,9 @@ ${note}`;
             if (
               reach === "none" ||
               superseded ||
-              (reach === "imports" && taskChecks(policy, candidate).length > 0)
+              (reach === "imports" &&
+                (declaredChecks(policy, candidate).length > 0 ||
+                  policy.checks.some((check) => check.scope === "feature" && check.required)))
             )
               recheck.add(candidate.id);
             else invalid.add(candidate.id);

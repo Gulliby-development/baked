@@ -6,8 +6,9 @@ import { parseWorkflowArgs, workflowHelp } from "../src/headless/workflow-parse.
 import { executeWorkflowCommand } from "../src/headless/workflow.js";
 import { formatWorkflowResult } from "../src/core/commands/workflow.js";
 import { newId } from "../src/core/workflows/store.js";
-import type { ExecutionRequest } from "../src/core/workflows/types.js";
-import { workflowFixture } from "./helpers/workflow-fixture.js";
+import type { Check, ExecutionRequest } from "../src/core/workflows/types.js";
+import { CHECK_BASELINE_PATH, commandKey } from "../src/core/verification/output-counts.js";
+import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -137,5 +138,49 @@ describe("run report summary of an unfinished run (#1219)", () => {
     const summary = report.slice(report.indexOf("## Summary"), report.indexOf("## Changes"));
     expect(summary).toContain(`Goal: ${fx.service.store.state(runId).spec?.outcome}`);
     expect(summary).not.toContain("did not complete");
+  }, 60000);
+});
+
+describe("run report test counts (#1251)", () => {
+  // Reports 5 tests once the task wrote value.txt, 3 before; passes either way.
+  const counting: Check = {
+    ...fixturePolicy.checks[0]!,
+    args: ["-e", "const ready = await Bun.file('value.txt').exists(); console.log(`Ran ${ready ? 5 : 3} tests across 1 file.`)"],
+  };
+  async function countedRun(baseline: boolean) {
+    const fx = workflowFixture({ policy: { ...fixturePolicy, checks: [counting] } });
+    cleanups.push(() => fx.dispose());
+    const run = await fx.start();
+    if (baseline)
+      fx.service.store.artifact(
+        run.runId,
+        "facts",
+        CHECK_BASELINE_PATH,
+        JSON.stringify({ schemaVersion: 1, measured: true, counts: { [commandKey(counting)]: [{ kind: "tests", tool: "bun", count: 3 }] }, diagnostics: {}, failures: {} }),
+      );
+    await fx.service.drive(run.runId, new AbortController().signal);
+    await fx.approve(run.runId);
+    const done = await fx.service.drive(run.runId, new AbortController().signal);
+    if (done.status !== "completed") throw new Error(`Fixture run ended ${done.status}`);
+    return runReport(fx.service.store, run.runId);
+  }
+
+  test("shows the tests before and after a change and the tests added", async () => {
+    const report = await countedRun(true);
+    expect(report).toContain("| Check | Status | Validity | Runs | Time | Tests |");
+    expect(report).toMatch(/\| `check` \| passed \| current \| \d+ \| [^|]+ \| 3 → 5 \(\+2\) \|/);
+    expect(report).toContain("Tests added against the code the run started from: +2.");
+  }, 60000);
+
+  test("without a baseline it shows the count alone", async () => {
+    const report = await countedRun(false);
+    expect(report).toMatch(/\| `check` \| passed \| current \| \d+ \| [^|]+ \| 5 \|/);
+    expect(report).not.toContain("Tests added");
+  }, 60000);
+
+  test("a check without a test summary adds no column", async () => {
+    const { fx, runId } = await completedRun();
+    const report = runReport(fx.service.store, runId);
+    expect(report).toContain("| Check | Status | Validity | Runs | Time |\n");
   }, 60000);
 });

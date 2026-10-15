@@ -569,6 +569,26 @@ describe("task-end check", () => {
     expect(response.output).toMatchObject({ summary: "first" });
   });
 
+  // R28 leaguetab and cochange-update (#1250): tests that left out a case the criteria quote.
+  test("a result whose tests leave out a quoted case goes back, and the same list is not refused twice", async () => {
+    scriptModel([
+      step(1000, 50, { name: "submit_result", input: implemented("first") }),
+      step(1000, 50, { name: "submit_result", input: implemented("second") }),
+      step(1000, 50, { name: "submit_result", input: implemented("third") }),
+    ]);
+    const { executor, request } = await nativeAttempt(fixturePolicy, "implementation", codeTask);
+    let runs = 0;
+    const response = await executor.execute({
+      ...request,
+      caseCheck: async () => {
+        runs++;
+        return ['AC-001 names "--path SRC", and no test file this task writes (tests/test_cli.py) contains it.'];
+      },
+    });
+    expect(runs).toBe(2);
+    expect(response.output).toMatchObject({ summary: "second" });
+  });
+
   test("a clean check accepts the first submission", async () => {
     scriptModel([step(1000, 50, { name: "submit_result", input: implemented("first") })]);
     const { executor, request } = await nativeAttempt(fixturePolicy, "implementation", codeTask);
