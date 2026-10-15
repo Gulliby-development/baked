@@ -145,6 +145,45 @@ export function pathsInOutput(output: string, tasks: Task[]): string[] {
   );
 }
 
+/** Source extensions whose files are named by class in test runner output (JVM, .NET). */
+const CLASS_FILE = /\.(?:java|kt|kts|scala|groovy|cs|fs|vb)$/;
+
+/**
+ * Planned files a test runner names by class rather than by path (#1270). Maven Surefire prints
+ * `[ERROR]   QueryTest.depthCuts:42 expected...` and `Tests run: 3, Failures: 1, ... in
+ * com.acme.engine.QueryTest`, and JVM stack frames `at com.acme.engine.Query.cut(Query.java:57)`:
+ * none carries the file's path, so `pathsInOutput` finds nothing and the correction gets the
+ * files of the tasks that cover the finding's criteria instead of the failing ones (plainbooks
+ * 2d0a6a57 T024 could not edit Query.java or QueryTest.java). A fully qualified class matches the
+ * file at that package path; a simple class name or a `Name.java:line` frame matches only a
+ * planned file no other planned file shares the name with.
+ */
+export function classFilesInOutput(output: string, tasks: Task[]): string[] {
+  const paths = unique(tasks.flatMap((t) => t.writes.map((w) => w.path))).filter((path) =>
+    CLASS_FILE.test(path),
+  );
+  if (!paths.length) return [];
+  const stem = (path: string) => path.slice(path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
+  const unambiguous = (name: string) => {
+    const named = paths.filter((path) => stem(path) === name);
+    return named.length === 1 ? named : [];
+  };
+  const found = new Set<string>();
+  // `(Query.java:57)` in a stack frame, `QueryTest.java:42` in a compiler or assertion line.
+  for (const m of output.matchAll(/\b([A-Z]\w*)\.(?:java|kt|scala|groovy|cs|fs|vb):\d+/g))
+    for (const path of unambiguous(m[1] ?? "")) found.add(path);
+  // A fully qualified class, `com.acme.engine.QueryTest` (a nested `$Inner` names its file).
+  for (const m of output.matchAll(/\b((?:[a-z_]\w*\.)+)([A-Z]\w*)\b/g)) {
+    const suffix = `${(m[1] ?? "").replaceAll(".", "/")}${m[2] ?? ""}`;
+    for (const path of paths)
+      if (path.replace(/\.[^.]+$/, "").endsWith(`/${suffix}`)) found.add(path);
+  }
+  // Surefire's failure list, `[ERROR]   QueryTest.method:42` or `[ERROR] QueryTest.method »`.
+  for (const m of output.matchAll(/^\[(?:ERROR|FAIL\w*)\]\s+([A-Z]\w*)\.\w+(?::\d+|\s+»)/gm))
+    for (const path of unambiguous(m[1] ?? "")) found.add(path);
+  return paths.filter((path) => found.has(path));
+}
+
 /**
  * Planned files a check's output reports a failure in: the paths that start an unindented line,
  * as a compiler error (`tests/cli.test.ts(258,45): error TS2769`, `src/a.go:3:1: ...`), a test
@@ -301,9 +340,22 @@ export function failedCheckFindings(
   // A failing property's shrunk input is the reproduction the correction starts from (#637).
   const counterexample = counterexampleOf(output);
   const owners = new Map<string, { task: Task; file: string }>();
-  for (const path of pathsInOutput(output, tasks)) {
+  const named = unique([...pathsInOutput(output, tasks), ...classFilesInOutput(output, tasks)]);
+  // The code a failing test exercises is where its fix usually goes (plainbooks 2d0a6a57: the
+  // failing QueryTest needed Query.java), so the planned subjects of the named tests count too
+  // (#1270).
+  const planned = unique(tasks.flatMap((t) => t.writes.map((w) => w.path)));
+  const subjects = planned.filter((source) => named.some((test) => isTestOf(test, source)));
+  for (const path of named) {
     const task = tasks.find((t) => t.writes.some((w) => w.path === path));
     if (task && !owners.has(task.id)) owners.set(task.id, { task, file: path });
+  }
+  // A subject gets its own finding even when its owner already has one, so the correction's first
+  // attempt, which starts from the findings' files, may write it.
+  for (const path of subjects) {
+    const task = tasks.find((t) => t.writes.some((w) => w.path === path));
+    if (task && ![...owners.values()].some((o) => o.file === path))
+      owners.set(`${task.id}\n${path}`, { task, file: path });
   }
   if (!owners.size) return [finding(null, fallback)];
   return [...owners.values()].map(({ task, file }) => finding(file, task));
