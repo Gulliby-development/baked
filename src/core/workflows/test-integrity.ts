@@ -115,6 +115,46 @@ const SKIPS = new RegExp(
   ].join("|"),
   "g",
 );
+/**
+ * What a capability guard checks before it skips: the platform, or a call that needs a privilege,
+ * a tool or a module the machine may lack (symbolic links on unprivileged Windows, a missing
+ * binary, an optional import).
+ */
+const CAPABILITY = new RegExp(
+  [
+    String.raw`\bruntime\.GOOS\b`,
+    String.raw`\bsys\.platform\b`,
+    String.raw`\bos\.name\b`,
+    String.raw`\bplatform\.system\s*\(`,
+    String.raw`\bprocess\.platform\b`,
+    String.raw`\b(?:RuntimeInformation\.IsOSPlatform|OperatingSystem\.Is\w+)\s*\(`,
+    String.raw`\b(?:os\.)?[Ss]ymlink(?:Sync)?\s*\(`,
+    String.raw`\bos\.[Ll]ink\s*\(`,
+    String.raw`\b(?:exec\.LookPath|shutil\.which)\s*\(`,
+    String.raw`\b(?:ImportError|ModuleNotFoundError|PermissionError)\b`,
+    String.raw`\b(?:ErrPermission|EPERM|EACCES)\b`,
+    String.raw`\b(?:os\.)?[Gg]ete?uid\s*\(`,
+  ].join("|"),
+);
+/** Lines above a skip that its guard condition may span. */
+const GUARD_LINES = 3;
+
+/**
+ * New skips that are not capability guards (#1284): a skip taken only when the platform or the
+ * machine cannot do what the test needs keeps the test running where it can, so it is not a
+ * skipped failing test. A guard names the capability on the skip's line or in the lines above.
+ */
+function unguardedSkips(lines: readonly string[]): number {
+  let total = 0;
+  lines.forEach((line, index) => {
+    const skips = line.match(SKIPS)?.length ?? 0;
+    if (!skips) return;
+    const guard = lines.slice(Math.max(0, index - GUARD_LINES), index + 1).join("\n");
+    if (!CAPABILITY.test(guard)) total += skips;
+  });
+  return total;
+}
+
 const SUPPRESSIONS = new RegExp(
   [
     String.raw`@ts-(?:ignore|nocheck|expect-error)\b`,
@@ -184,7 +224,7 @@ export interface ScanOptions {
   rewrites?: ReadonlySet<string>;
   /** Contents of test files the task can see, for literals that special-case test inputs. */
   testSources?: readonly string[];
-  /** Spec and plan text: a literal they name is a requirement, not a test input. */
+  /** Request, spec and plan text: a literal they name is a requirement, not a test input. */
   specText?: string;
 }
 
@@ -251,7 +291,7 @@ export function scanTestIntegrity(
           path,
           detail: `assertions dropped from ${String(assertsBefore)} to ${String(assertsAfter)} (removed or commented out)`,
         });
-      const skips = grew(SKIPS);
+      const skips = unguardedSkips(after) - unguardedSkips(before);
       if (skips > 0)
         findings.push({
           rule: "skip",
@@ -281,7 +321,7 @@ export function scanTestIntegrity(
           detail: `compares with test input literal(s) ${special
             .slice(0, 3)
             .map(([value]) => JSON.stringify(value))
-            .join(", ")} that the spec does not name`,
+            .join(", ")} that the request, spec and plan do not name`,
         });
     }
     if (change.after === null || DOC_FILE.test(path)) continue;

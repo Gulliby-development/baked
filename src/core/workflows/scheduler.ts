@@ -587,6 +587,19 @@ interface QueuedRequest {
 }
 
 /**
+ * What the test-integrity guard reads as requirements: the request (its fenced examples
+ * included), the spec and the plan. A literal any of them names is prescribed, not a test input:
+ * the compact spec drops exact messages and directives a brief prescribes (#1284).
+ */
+function integrityRequirementText(state: RuntimeState): string {
+  return [
+    state.requestText || state.prompt,
+    state.spec ? canonical(state.spec) : "",
+    state.plan ?? "",
+  ].join("\n");
+}
+
+/**
  * The request a spec's deliverables are checked against. A feature of an initiative has its
  * boundary approved with the split, not the request, so it is checked against nothing.
  */
@@ -7170,7 +7183,7 @@ ${note}`;
         ...amendments.flatMap((a) => a.paths),
       ]),
       testSources,
-      specText: `${state.spec ? canonical(state.spec) : ""}\n${state.plan ?? ""}`,
+      specText: integrityRequirementText(state),
     });
     if (!found.length) return [];
     const mode = testIntegrityOf(policy);
@@ -7403,7 +7416,7 @@ ${note}`;
           ...tasks.flatMap((t) => t.writes.filter((w) => w.reason).map((w) => w.path)),
           ...this.amendments(runId).flatMap((a) => a.paths),
         ]),
-        specText: `${state.spec ? canonical(state.spec) : ""}\n${state.plan ?? ""}`,
+        specText: integrityRequirementText(state),
       },
     );
     if (!found.length) return [];
