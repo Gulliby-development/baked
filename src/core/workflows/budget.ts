@@ -213,7 +213,7 @@ function recordGrowth(
   runId: string,
   policy: RunPolicy,
   maxTotalTokens: number,
-  kind: "auto-growth" | "planning-floor" | "auto-extend",
+  kind: "auto-growth" | "planning-floor" | "planning-growth" | "auto-extend",
   detail: Record<string, unknown>,
 ): void {
   const before = hashJson(policy);
@@ -267,7 +267,7 @@ export function growBudgetOnProgress(
   const finished = store
     .tasks(runId)
     .filter((t) => t.status === "implemented" || t.status === "verified").length;
-  if (finished === 0) return false;
+  if (finished === 0) return growWhilePlanning(store, runId, policy, projected, ceiling);
   const next = Math.min(
     ceiling,
     Math.max(projected, Math.ceil(policy.maxTotalTokens * (1 + GROWTH_STEP))),
@@ -282,6 +282,53 @@ export function growBudgetOnProgress(
   // the same rules: md-site eaeb51d6 grew to 6,000,000 for an attempt that needed 6,039,774 and
   // stopped `budget_exhausted` with the 9,000,000 hard limit unused (#1187).
   return policy.maxTotalTokens >= ceiling && extendUnderAssume(store, runId, policy, projected);
+}
+
+/**
+ * Before the first task finishes, `growBudgetOnProgress` has no progress to see: the run sits at
+ * its planning floor (the start estimate's high end) while specify, plan and analyze rounds
+ * repeat. pgnvet 3f03497b used 1.26M of its 1.48M floor in seven analysis rounds and
+ * blocked `budget_exhausted` at plan with its 20M ceiling unused (#1296). A model attempt that
+ * completed since the last such growth counts as progress here: the budget grows by the same step,
+ * up to the ceiling, recorded as `kind: "planning-growth"`. A planning phase whose attempts keep
+ * failing does not grow it.
+ */
+function growWhilePlanning(
+  store: WorkflowStore,
+  runId: string,
+  policy: RunPolicy,
+  projected: number,
+  ceiling: number,
+): boolean {
+  if (store.taskCompletions(runId) > 0) return false;
+  const completedAttempts = store
+    .attempts(runId)
+    .filter((a) => a.model_id !== null && a.status === "completed").length;
+  const last = store
+    .artifacts(runId)
+    .filter(
+      (a) => a.kind === "policy-revision" && a.logical_path.startsWith("policy-revisions/auto-"),
+    )
+    .map(
+      (a) =>
+        JSON.parse(store.readArtifact(runId, a.id)) as {
+          kind?: string;
+          completedAttempts?: number;
+        },
+    )
+    .filter((r) => r.kind === "planning-growth")
+    .at(-1);
+  if (completedAttempts <= (last?.completedAttempts ?? 0)) return false;
+  const next = Math.min(
+    ceiling,
+    Math.max(projected, Math.ceil(policy.maxTotalTokens * (1 + GROWTH_STEP))),
+  );
+  if (next <= policy.maxTotalTokens) return false;
+  recordGrowth(store, runId, policy, next, "planning-growth", {
+    projectedTokens: projected,
+    completedAttempts,
+  });
+  return projected <= policy.maxTotalTokens;
 }
 
 /** Share of the sizing ceiling one extension past it adds, at least: about one review round. */
@@ -419,11 +466,12 @@ export function assertAttemptFits(
     });
   throw new WorkflowFault(
     "BUDGET_EXHAUSTED",
-    "The next attempt needs more tokens than the run budget has left",
+    `The next attempt needs more tokens than the run budget has left (${String(left)} of ${String(policy.maxTotalTokens)}; the policy's sizing ceiling is ${String(policy.sizing.maxRunTokens)})`,
     {
       remainingTokens: left,
       attemptTokens,
       maxTotalTokens: policy.maxTotalTokens,
+      ceilingTokens: policy.sizing.maxRunTokens,
     },
   );
 }
