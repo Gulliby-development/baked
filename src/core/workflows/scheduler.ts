@@ -110,6 +110,7 @@ import {
   namesRequestSide,
   persistentDefect,
   REQUEST_NOTE,
+  repeatedFacet,
   restrictsRequest,
   VERIFICATION_METHODS,
 } from "./analysis-notes.js";
@@ -1355,6 +1356,8 @@ export class WorkflowScheduler {
               // Analysis passes when no finding blocks: the rest are notes, whatever the model's verdict.
               const blocking = findings.some((f) => f.blocking);
               state.analysisPassed = !blocking && analysis.verdict !== "inconclusive";
+              // What earlier passes raised, before this pass adds to it (#1209).
+              const earlierRaised = [...state.analysisRaised];
               // The next pass sees what this one raised, whichever way the run goes on.
               for (const { kind, refs, description } of findings.filter((f) => f.blocking))
                 if (!state.analysisRaised.some((f) => f.description === description))
@@ -1424,7 +1427,13 @@ export class WorkflowScheduler {
                 policy.clarification === "assume" &&
                 state.analysisReplans >= 2 &&
                 analysis.verdict !== "inconclusive" &&
-                findings.every((f) => !f.blocking || assumable(f) || restrictsRequest(f))
+                findings.every(
+                  (f) =>
+                    !f.blocking ||
+                    assumable(f) ||
+                    restrictsRequest(f) ||
+                    repeatedFacet(f, earlierRaised),
+                )
               ) {
                 const assumed = findings.filter((f) => f.blocking);
                 this.store.transaction(() =>
@@ -1456,7 +1465,7 @@ export class WorkflowScheduler {
                     ? {
                         ...f,
                         blocking: false,
-                        description: `Assumed under clarification assume (assumptions/analysis.json): ${f.description}`,
+                        description: `${repeatedFacet(f, earlierRaised) ? "Assumed under clarification assume with the first alternative the finding offers, as another facet of a defect an earlier pass raised" : "Assumed under clarification assume"} (assumptions/analysis.json): ${f.description}`,
                       }
                     : f,
                 );
