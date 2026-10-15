@@ -472,6 +472,14 @@ export interface SizingReport {
   };
 }
 
+/** Tokens the final review and convergence are priced at, on top of the tasks. */
+export function verificationTokens(): number {
+  return (
+    ((DEFAULT_STAGE_RANGES.review?.high ?? 0) + (DEFAULT_STAGE_RANGES.converge?.high ?? 0)) *
+    VERIFICATION_FACTOR
+  );
+}
+
 /** One task's price: the per-file rate of each file it writes, by its kind and action, summed. */
 export function priceTask(task: Pick<Task, "writes">, rates: Rates): TokenRange {
   return written(task).reduce(
@@ -547,9 +555,7 @@ export function sizePlan(input: {
         oversized: files > 1 && estimate.high > maxAttemptTokens,
       };
     });
-  const verification =
-    ((DEFAULT_STAGE_RANGES.review?.high ?? 0) + (DEFAULT_STAGE_RANGES.converge?.high ?? 0)) *
-    VERIFICATION_FACTOR;
+  const verification = verificationTokens();
   const taskTokens = taskTotal(tasks.map((task) => task.estimate));
   const priced = taskTokens.price + verification;
   const runTokens = Math.round(input.spent + priced);

@@ -56,6 +56,7 @@ import {
   writtenCodePaths,
 } from "./check-policy.js";
 import { splitWorkflowContext } from "./context.js";
+import { assertForecastFits } from "./cost-forecast.js";
 import { fileHash, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { keepOutside, restoreOutside } from "./fixer-scope.js";
@@ -982,7 +983,9 @@ export class NativeAgentExecutor implements AgentExecutor {
         request.maxTokens ?? Number.POSITIVE_INFINITY,
         request.attemptTokens ?? policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS,
       );
-      // An attempt starts only when the run budget, grown if it may, still covers its cap.
+      // An attempt starts only while the run's forecast fits its dollar cap, or the person chose
+      // to go on, and while the run budget, grown if it may, still covers its cap.
+      assertForecastFits(this.store, request.runId, policy);
       assertAttemptFits(this.store, request.runId, request.attemptId, policy, attemptCap);
       // The run budget still free bounds every token of the attempt, so an attempt started close
       // to the run limit finalizes and submits instead of failing on the run cap mid-loop.

@@ -4,6 +4,7 @@ import { renderSpec } from "../specs/render.js";
 import { workspacePath } from "../specs/validate.js";
 import { BUDGET_PRESETS, type BudgetPresetId, budgetUsage } from "./budget.js";
 import { CHECK_PREFLIGHT_ARTIFACT, type CheckSmoke } from "./check-preflight.js";
+import { askedForecast, FORECAST_STOP } from "./cost-forecast.js";
 import { fileHash } from "./effects.js";
 import {
   compareWithActual,
@@ -175,7 +176,13 @@ export interface BudgetView {
   checkpointTokens?: number | null;
   nextCheckpoint?: number | null;
   /** The dollar cap (`maxCostUsd`) with the cost spent and reserved against it, when set. */
-  cost?: { spentUsd: number; reservedUsd: number; maxCostUsd: number };
+  cost?: {
+    spentUsd: number;
+    reservedUsd: number;
+    maxCostUsd: number;
+    /** The forecast total the run stopped on at this cap (`assertForecastFits`), when it did. */
+    forecastUsd?: number;
+  };
 }
 export interface CriterionView {
   id: string;
@@ -320,8 +327,19 @@ function budgetOf(store: WorkflowStore, row: RunRow): BudgetView {
     checkpointTokens: policy.checkpointTokens ?? null,
     nextCheckpoint: store.checkpointBoundary(row.id, policy),
     ...(typeof policy.maxCostUsd === "number"
-      ? { cost: { ...store.costUsage(row.id), maxCostUsd: policy.maxCostUsd } }
+      ? { cost: costView(store, row.id, policy.maxCostUsd) }
       : {}),
+  };
+}
+function costView(store: WorkflowStore, runId: string, maxCostUsd: number) {
+  // Only while the forecast is what stopped the run: a later stop at the cap is a cap stop.
+  const forecastUsd = lastErrorOf(store, runId)?.startsWith(FORECAST_STOP)
+    ? askedForecast(store, runId, maxCostUsd)
+    : null;
+  return {
+    ...store.costUsage(runId),
+    maxCostUsd,
+    ...(forecastUsd === null ? {} : { forecastUsd }),
   };
 }
 function lastErrorOf(store: WorkflowStore, runId: string): string | null {

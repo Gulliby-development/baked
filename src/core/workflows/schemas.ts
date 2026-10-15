@@ -408,6 +408,12 @@ export const PolicySchema = z
      */
     lowFindings: z.enum(["repair", "note"]).optional(),
     /**
+     * With a dollar cap, `ask` stops the run for a decision once the forecast of its total, from
+     * what its finished tasks cost against their price, passes the cap; `off` spends to the cap.
+     * Absent means `ask`, so stored policies keep their hash.
+     */
+    costForecast: z.enum(["ask", "off"]).optional(),
+    /**
      * `on` starts a correction whose findings are all low, or all point at one file, with a quick
      * fix: one attempt with a small step and token cap on the files the findings name. When it
      * does not finish the fix, the correction continues with the usual budget and all its files.
