@@ -42,8 +42,16 @@ export function readyTasks(
       t.origin !== "planned" &&
       (statuses.get(t.id) === "running" || ready.some((r) => r.id === t.id)),
   );
+  // So does a planned task whose earlier implementation passed its gate and that declares checks:
+  // its checks run in the host before its agent, and a whole-project check (`pytest -q`,
+  // `go test ./...`) stays red until the other correctives land, so the agent reran tasks that
+  // were already right (zonevet cc41bbb9, ecfit 25614519: 1.07M tokens, #1248).
+  const settledByChecks = (t: Task): boolean =>
+    t.origin === "planned" && t.checkIds.length > 0 && gates[t.id]?.definitionHash === hashJson(t);
   return correcting
-    ? ready.filter((t) => !(statuses.get(t.id) === "invalidated" && documentsOnly(t)))
+    ? ready.filter(
+        (t) => !(statuses.get(t.id) === "invalidated" && (documentsOnly(t) || settledByChecks(t))),
+      )
     : ready;
 }
 

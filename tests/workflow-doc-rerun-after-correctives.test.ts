@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { hashJson } from "../src/core/specs/hash.js";
 import type { TaskGraph } from "../src/core/workflows/schemas.js";
 import type { TaskRow } from "../src/core/workflows/store.js";
 import { documentsOnly, readyTasks } from "../src/core/workflows/task-graph.js";
@@ -75,5 +76,17 @@ describe("documentsOnly", () => {
     expect(documentsOnly(task("T2", ["README.md", "src/cli.py"]))).toBe(false);
     expect(documentsOnly(task("T3", []))).toBe(false);
     expect(documentsOnly(task("T4", ["README.md"], { origin: "repair" }))).toBe(false);
+  });
+
+  // zonevet cc41bbb9 (#1248): a whole-project check stays red until the other correctives land.
+  test("a source task its checks can settle waits too, one without a passed gate does not", () => {
+    const lib = task("T002", ["src/cfgtrace/lib.py"], { dependsOn: ["T001"], checkIds: ["pytest"] });
+    const all = graph([cli, lib, fix1]);
+    const rows = [row(cli, "verified"), row(lib, "invalidated", 1), row(fix1, "pending")];
+    const gate = { generation: 0, snapshotId: "s", definitionHash: hashJson(lib), evidenceIds: [] };
+    expect(ids(readyTasks(all, rows, { T002: gate }))).toEqual(["T013"]);
+    expect(ids(readyTasks(all, rows))).toEqual(["T002", "T013"]);
+    const landed = [row(cli, "verified"), row(lib, "invalidated", 1), row(fix1, "verified")];
+    expect(ids(readyTasks(all, landed, { T002: gate }))).toEqual(["T002"]);
   });
 });
