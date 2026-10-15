@@ -140,6 +140,13 @@ export const RuntimeStateSchema = z
     noProgressRounds: z.number().int(),
     /** Convergence rounds a person allowed beyond `maxConvergenceRounds` ("one more round"). */
     extraConvergenceRounds: z.number().int().nonnegative().default(0),
+    /**
+     * Repair rounds the checks stage got beyond `maxRepairRounds` because a review or convergence
+     * correction ran since its last repair round (#1272).
+     */
+    extraRepairRounds: z.number().int().nonnegative().default(0),
+    /** A review or convergence correction ran since the checks stage's last repair round. */
+    correctedSinceRepair: z.boolean().default(false),
     /** Corrective tasks a person allowed beyond `maxCorrectiveTasks` with that decision. */
     extraCorrectiveTasks: z.number().int().nonnegative().default(0),
     /** Rounds the `assume` rule granted by itself after a contradiction stop (at most one). */

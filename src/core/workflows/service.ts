@@ -340,6 +340,8 @@ export class NativeWorkflowService implements WorkflowService {
       previousFindingSet: null,
       noProgressRounds: 0,
       extraConvergenceRounds: 0,
+      extraRepairRounds: 0,
+      correctedSinceRepair: false,
       extraCorrectiveTasks: 0,
       decidedFindings: [],
       autoExtensions: 0,
@@ -1396,6 +1398,8 @@ export class NativeWorkflowService implements WorkflowService {
         state.previousFindingSet = null;
         state.noProgressRounds = 0;
         state.extraConvergenceRounds = 0;
+        state.extraRepairRounds = 0;
+        state.correctedSinceRepair = false;
         state.extraCorrectiveTasks = 0;
         state.decidedFindings = [];
         state.autoExtensions = 0;
@@ -1834,6 +1838,8 @@ export class NativeWorkflowService implements WorkflowService {
       state.previousFindingSet = null;
       state.noProgressRounds = 0;
       state.extraConvergenceRounds = 0;
+      state.extraRepairRounds = 0;
+      state.correctedSinceRepair = false;
       state.extraCorrectiveTasks = 0;
       state.decidedFindings = [];
       state.autoExtensions = 0;

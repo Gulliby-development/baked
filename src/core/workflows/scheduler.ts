@@ -10713,10 +10713,15 @@ ${note}`;
       }
       if (transition.loop) {
         const count = (position.loops[transition.id] ?? 0) + 1;
-        // "One more round" at a convergence decision allows the loop one more pass as well.
+        // "One more round" at a convergence decision allows the loop one more pass as well, and
+        // so does a checks repair round granted for a regression after a correction (#1272).
         const bound =
           transition.loop.maxIterations +
-          (position.repairKind === "convergence" ? state.extraConvergenceRounds : 0);
+          (position.repairKind === "convergence"
+            ? state.extraConvergenceRounds
+            : stageKind(v2.stage) === "checks"
+              ? (state.extraRepairRounds ?? 0)
+              : 0);
         if (count > bound)
           throw new WorkflowFault(
             "RECOVERY_REQUIRED",
