@@ -286,12 +286,18 @@ export function growBudgetOnProgress(
 /** Share of the sizing ceiling one extension past it adds, at least: about one review round. */
 const EXTEND_STEP = 0.25;
 
-/** Tasks finished and findings resolved so far: what an extension past the ceiling must see grow. */
+/**
+ * Progress so far: what an extension past the ceiling must see grow. `taskCompletions` counts
+ * task finishes from events, because current states can go back: corrective T014 of cfgtrace
+ * eff0ebe7 finished and invalidated T005 and T011 in the same transaction, so the count of
+ * finished tasks stayed at 13, and the run blocked with $3.20 of its $12 cap left (#1224).
+ */
 function progressOf(store: WorkflowStore, runId: string) {
   return {
     finishedTasks: store
       .tasks(runId)
       .filter((t) => t.status === "implemented" || t.status === "verified").length,
+    taskCompletions: store.taskCompletions(runId),
     resolvedFindings: store.findings(runId).filter((f) => f.status === "resolved").length,
   };
 }
@@ -322,7 +328,7 @@ function affordableTokens(store: WorkflowStore, runId: string, policy: RunPolicy
  * A run at its sizing ceiling under `clarification: "assume"` grows past it, up to
  * `sizing.extendToTokens` (1.5 times the ceiling when unset, `extendToOf`), without a person,
  * while it still makes progress: since the last extension (or the start of the run) a task
- * finished or a finding was resolved. With a dollar cap it may grow further, to what the cap
+ * finished (counted from events, `progressOf`) or a finding was resolved. With a dollar cap it may grow further, to what the cap
  * still pays for (`affordableTokens`): the cap then stops the run, as a cost stop. Each extension
  * covers the call and adds at least a quarter of the ceiling, about one review round, and is
  * recorded as `kind: "auto-extend"`. junitdigest 3e5be74b stopped twice at the ceiling and was
@@ -349,18 +355,18 @@ function extendUnderAssume(
       (a) =>
         JSON.parse(store.readArtifact(runId, a.id)) as {
           kind?: string;
-          finishedTasks?: number;
+          taskCompletions?: number;
           resolvedFindings?: number;
         },
     )
     .filter((r) => r.kind === "auto-extend")
     .at(-1);
   const before = {
-    finishedTasks: last?.finishedTasks ?? 0,
+    taskCompletions: last?.taskCompletions ?? 0,
     resolvedFindings: last?.resolvedFindings ?? 0,
   };
   if (
-    progress.finishedTasks <= before.finishedTasks &&
+    progress.taskCompletions <= before.taskCompletions &&
     progress.resolvedFindings <= before.resolvedFindings
   )
     return false;
