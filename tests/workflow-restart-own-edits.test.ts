@@ -218,3 +218,59 @@ test("a restarted task edits its file when the rebuilt worktree holds a check fi
   expect(errors).toEqual([]);
   expect(readFileSync(file, "utf8")).toBe("fn main() { run(); }\n");
 });
+
+test("a restarted task edits its file when the rebuilt worktree holds the run's baseline of it", async () => {
+  // #1269: a root rebuilt from the integration root holds the file as the run's baseline records it,
+  // changed after this task's last write by another task or a fixer whose edit is not in the
+  // task's lineage. It is the run's own content, so the restarted task may edit it.
+  const fixture = workflowFixture({ policy: { ...fixturePolicy, clarification: "assume" } });
+  cleanups.push(fixture.dispose);
+  const { service, executor, root } = fixture;
+  const file = join(root, "cli.rs");
+  const errors: string[] = [];
+  let attempts = 0;
+  const original = executor.execute.bind(executor);
+  executor.execute = async (request: ExecutionRequest) => {
+    if (request.profile.output !== "implementation") {
+      const out = await original(request);
+      if (request.profile.output === "plan") {
+        const plan = out.output as { taskGraph: { tasks: { writes: { path: string; action: string }[] }[] } };
+        plan.taskGraph.tasks[0]?.writes.unshift({ path: "cli.rs", action: "create" });
+      }
+      return out;
+    }
+    attempts++;
+    if (attempts === 2) {
+      // The integration root's version, recorded as the run's baseline; nothing journaled it for this task.
+      writeFileSync(file, "fn main() {}\n");
+      const state = service.store.state(request.runId);
+      if (!state.expectedFiles) throw new Error("No baseline");
+      state.expectedFiles["cli.rs"] = hashBytes(Buffer.from("fn main() {}\n"));
+      service.store.transaction(() => service.store.saveState(request.runId, state));
+    }
+    const policy = JSON.parse(service.store.run(request.runId).policy_json) as RunPolicy;
+    const guard = new WorkflowToolPolicy(service.store, service.leases, request.runId, request.attemptId, request.profile, policy, request.task);
+    try {
+      if (attempts === 1) await guard.execute("edit_file", { path: "cli.rs" }, async () => writeFileSync(file, "fn main(){}"));
+      else {
+        await guard.execute("edit_file", { path: "cli.rs" }, async () => writeFileSync(file, "fn main() { run(); }\n"));
+        await guard.execute("edit_file", { path: "value.txt" }, async () => writeFileSync(join(root, "value.txt"), "ready"));
+      }
+    } catch (error) {
+      errors.push((error as Error).message);
+    }
+    return {
+      output: { schemaVersion: 1, taskId: request.task?.id, outcome: attempts === 1 ? "blocked" : "implemented", summary: attempts === 1 ? "Ran out of steps" : "Wrote value", evidenceIds: [], unresolved: attempts === 1 ? ["value is a draft"] : [] },
+      inputTokens: 25,
+      outputTokens: 25,
+    };
+  };
+  const run = await fixture.start();
+  await service.drive(run.runId, signal());
+  await fixture.approve(run.runId);
+  await fixture.resume(run.runId);
+  await service.drive(run.runId, signal());
+  expect(attempts).toBe(2);
+  expect(errors).toEqual([]);
+  expect(readFileSync(file, "utf8")).toBe("fn main() { run(); }\n");
+});

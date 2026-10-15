@@ -196,6 +196,34 @@ test("undo can be limited to one path", async () => {
   expect(readFileSync(join(root, "usage.txt"), "utf8")).toBe("usage by the run\n");
 });
 
+test("undo restores a file its task root holds as a check fixer left it in another root", async () => {
+  // Bench R29, seqtext ead875e0 (#1269): `cargo fmt` rewrote the task's file in the integration
+  // root and the task root was rebuilt from it; `undo --path` kept the file as "changed outside the
+  // run after its last edit".
+  const fixture = journaledFixture({ afterEdits: () => "blocked" });
+  const { service, root } = fixture;
+  const run = await fixture.start();
+  await service.drive(run.runId, signal());
+  await fixture.approve(run.runId);
+  await fixture.resume(run.runId);
+  expect(await service.drive(run.runId, signal())).toMatchObject({ status: "blocked", reason: "invalid_output" });
+  const step = service.store.steps(run.runId).find((s) => !s.stage_id.startsWith("task-"));
+  if (!step) throw new Error("No run-level step");
+  const host = service.store.beginHostAttempt(run.runId, step.id);
+  const effect = service.store.transaction(() =>
+    service.store.prepareEffect(run.runId, host, "file_patch", { path: "usage.txt", tool: "apply_fix", checkId: "fmt", taskId: "T001", root: ".baked/worktrees/run/main" }, hashBytes("usage by the run\n"), null),
+  );
+  service.store.transaction(() => service.store.finishFileEffect(run.runId, effect, hashBytes("usage, formatted\n")));
+  service.store.transaction(() => service.store.finishAttempt(run.runId, host, "completed", 0));
+  writeFileSync(join(root, "usage.txt"), "usage, formatted\n");
+
+  await undo(fixture, run.runId, ["usage.txt"]);
+  expect(readFileSync(join(root, "usage.txt"), "utf8")).toBe("original usage\n");
+  const [report] = rollbacks(fixture, run.runId);
+  expect(report?.restored.map((r) => r.path)).toEqual(["usage.txt"]);
+  expect(report?.kept.map((k) => k.reason)).not.toContain("changed outside the run after its last edit; left as is");
+});
+
 test("an interrupted attempt's own edits do not block the resumed run as outside changes", async () => {
   const controller = new AbortController();
   const fixture = journaledFixture({

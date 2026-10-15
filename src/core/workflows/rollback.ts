@@ -234,6 +234,15 @@ export function rollbackEdits(
     const key = `${intentRoot(edit.intent_json)}\0${pathOf(edit)}`;
     byPath.set(key, [...(byPath.get(key) ?? []), edit]);
   }
+  // A check fixer's output in one root reaches a task root rebuilt from it (#1269): there it is
+  // the run's own content, not a change made outside the run.
+  const fixed = new Map<string, Set<string | null>>();
+  for (const edit of edits)
+    if (
+      JSON.parse(edit.intent_json).tool === "apply_fix" &&
+      (edit.status === "applied" || edit.status === "reconciled")
+    )
+      fixed.set(pathOf(edit), (fixed.get(pathOf(edit)) ?? new Set()).add(edit.after_hash));
   const report: RollbackReport = { reason, effectIds: [], restored: [], kept: [] };
   for (const pathEdits of byPath.values()) {
     const first = pathEdits[0];
@@ -269,7 +278,7 @@ export function rollbackEdits(
       report.effectIds.push(...ids);
       continue;
     }
-    if (current !== written) {
+    if (current !== written && !fixed.get(path)?.has(current)) {
       report.effectIds.push(...ids);
       report.kept.push({ path, reason: "changed outside the run after its last edit; left as is" });
       continue;
