@@ -367,6 +367,48 @@ describe("durable SDD runtime", () => {
     expect(cited).not.toBe("");
     expect(done).toMatchObject({ status: "completed" });
   });
+  test("already_satisfied that also cites an id which names no evidence is accepted on its valid evidence", async () => {
+    // md-site 337d16db T013 (bench round 30, #1281): the result cited two evidence ids and the
+    // provider's id of its own probe call (`exec-...`), and the run blocked with invalid_output.
+    const { service, executor, root } = setup();
+    writeFileSync(join(root, "value.txt"), "ready");
+    const original = executor.execute.bind(executor);
+    executor.execute = async (request) => {
+      if (request.profile.output === "plan") {
+        const result = await original(request); const plan = PlanSchema.parse(result.output);
+        for (const task of plan.taskGraph.tasks) for (const write of task.writes) write.action = "modify";
+        return { ...result, output: plan };
+      }
+      if (request.profile.output !== "implementation") return original(request);
+      const files = await sourceManifest(root, generatedPaths(policy));
+      const evidenceId = service.store.transaction(() => {
+        const snapshot = service.store.putSnapshot(request.runId, files);
+        const artifact = service.store.artifact(request.runId, "read", `reads/${newId()}.json`, "{}");
+        return service.store.addEvidence(request.runId, "read", snapshot.id, artifact.id);
+      });
+      return { output: ImplementationSchema.parse({ schemaVersion: 1, taskId: request.task?.id, outcome: "already_satisfied", summary: "The value is in place", evidenceIds: [evidenceId, "exec-fc4047fe-dd8a-437e-a9bf-6081a60fecc4"], unresolved: [] }), inputTokens: 20, outputTokens: 30 };
+    };
+    const { run } = await start(service); await service.drive(run.runId, new AbortController().signal); await approve(service, run.runId);
+    const done = await service.drive(run.runId, new AbortController().signal);
+    expect(done).toMatchObject({ status: "completed" });
+  });
+  test("already_satisfied that cites only ids which name no evidence is still rejected", async () => {
+    const { service, executor, root } = setup();
+    writeFileSync(join(root, "value.txt"), "ready");
+    const original = executor.execute.bind(executor);
+    executor.execute = async (request) => {
+      if (request.profile.output === "plan") {
+        const result = await original(request); const plan = PlanSchema.parse(result.output);
+        for (const task of plan.taskGraph.tasks) for (const write of task.writes) write.action = "modify";
+        return { ...result, output: plan };
+      }
+      if (request.profile.output !== "implementation") return original(request);
+      return { output: ImplementationSchema.parse({ schemaVersion: 1, taskId: request.task?.id, outcome: "already_satisfied", summary: "The value is in place", evidenceIds: ["exec-fc4047fe-dd8a-437e-a9bf-6081a60fecc4"], unresolved: [] }), inputTokens: 20, outputTokens: 30 };
+    };
+    const { run } = await start(service); await service.drive(run.runId, new AbortController().signal); await approve(service, run.runId);
+    const done = await service.drive(run.runId, new AbortController().signal);
+    expect(done).toMatchObject({ status: "blocked", reason: "invalid_output" });
+  });
   test("evidence counts for any of the snapshots given and no other", async () => {
     const { service } = setup(); const { run } = await start(service);
     const [a, b, c] = ["a", "b", "c"].map((value) => service.store.putSnapshot(run.runId, { "value.txt": value }));
