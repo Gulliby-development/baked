@@ -17,7 +17,11 @@ const shard = files.filter((_, i) => i % count === index - 1).map((file) => `./$
 console.log(`Shard ${index}/${count}: ${shard.length} of ${files.length} test files`);
 if (shard.length === 0) process.exit(0);
 
-const proc = Bun.spawn(["bun", "test", "--timeout", "30000", ...shard], {
+// Windows starts processes and creates files several times slower than Linux: a workflow scenario
+// that takes 1 s on Linux takes 5-25 s on a Windows runner, and a busy runner stretches that past
+// 30 s at random (#1177). The tests are the same; only the time they may take differs.
+const timeout = process.platform === "win32" ? "90000" : "30000";
+const proc = Bun.spawn(["bun", "test", "--timeout", timeout, ...shard], {
   stdio: ["inherit", "inherit", "inherit"],
 });
 process.exit(await proc.exited);

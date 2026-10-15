@@ -259,6 +259,11 @@ export class CheckRunner {
           : {}),
       };
     }
+    // The test setup turns this on in CI, so a check that is slow only on one runner shows in the log (#1177).
+    if (process.env.BAKED_TRACE_RUN_BLOCKS === "1" && result.durationMs > 3000)
+      process.stderr.write(
+        `[slow-check] ${check.id} ${result.durationMs}ms exit=${result.exitCode} timedOut=${result.timedOut} ${result.output.slice(0, 300)}\n`,
+      );
     const note = passedOutputNote(result.output, result.exitCode);
     if (note) result = { ...result, output: `${result.output}\n\n${note}` };
     const after = await sourceManifest(root, generated);

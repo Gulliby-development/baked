@@ -19,6 +19,12 @@ process.env.BAKED_LOGIN_SHELL_PATH = "0";
 // Workflow workers raise native notifications when a run waits; a test run must not reach the
 // developer's notification centre. Workers inherit the environment.
 process.env.BAKED_NO_SYSTEM_NOTIFICATIONS = "1";
+// Workflow stores skip the per-commit disk flush: a test's database is thrown away, and on a CI
+// runner with a throttled disk the flush made every event take seconds (#1177).
+process.env.BAKED_WORKFLOW_DB_SYNC = "normal";
+// In CI a workflow run that blocks prints its reason and latest events, so a block that happens
+// only on one runner names its cause in the log (#1177).
+if (process.env.CI) process.env.BAKED_TRACE_RUN_BLOCKS = "1";
 
 // Workflow tests drive whole runs with real check processes; on a loaded CI runner they take
 // several seconds, so Bun's 5 s default fails them at random. A preload's setDefaultTimeout

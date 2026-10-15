@@ -353,7 +353,11 @@ export class WorkflowStore {
     this.db = new Database(this.path, { readonly, create: !readonly, strict: true });
     try {
       this.db.exec("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
-      if (!readonly) this.db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;");
+      // FULL flushes the disk on every commit, so a run survives a power loss. The test setup asks
+      // for NORMAL (still safe against a crash of the process): on a CI runner whose disk is
+      // throttled, a flush per event slowed workflow tests from milliseconds to seconds (#1177).
+      const sync = process.env.BAKED_WORKFLOW_DB_SYNC === "normal" ? "NORMAL" : "FULL";
+      if (!readonly) this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=${sync};`);
       const table = this.db
         .query("SELECT name FROM sqlite_master WHERE name='schema_migrations'")
         .get();

@@ -74,7 +74,7 @@ A contract is a schema name from `ContractId` (`src/core/workflows/v2/definition
 | Contract | Produced by | Notes |
 | --- | --- | --- |
 | `report` | an `agent` stage with the new `reporter` profile, or `learn` | Findings and a recommendation for a Spike; never a task graph |
-| `diff` | the host, at the start of a review-only run | A frozen diff with its hash; an agent cannot submit it |
+| `diff` | the host, at the start of a review-only run | A frozen diff with its hash, without BAKED's own `.baked/` files; an agent cannot submit it |
 | `decision` | an `approval` stage | The digest, the actor (`user` or `auto-approval`) and the covered stages |
 | `gates` | a `check` stage | The recorded results of its gates |
 

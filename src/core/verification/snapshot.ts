@@ -54,11 +54,24 @@ export async function hostDiff(workspace: string): Promise<{ text: string; files
     if (code !== 0) throw new WorkflowFault("INVALID_DEFINITION", `Cannot read the diff: ${error}`);
     return output;
   }
-  let text = await git(["diff", "--no-color", "--no-ext-diff", "HEAD"]);
-  let files = (await git(["diff", "--name-only", "-z", "HEAD"])).split("\0").filter(Boolean);
+  // BAKED's own state (`.baked/`, the workflow database and its WAL) is never part of the change,
+  // even in a repository that tracks it (#1177).
+  const own = ["--", ".", ":(exclude).baked"];
+  let text = await git(["diff", "--no-color", "--no-ext-diff", "HEAD", ...own]);
+  let files = (await git(["diff", "--name-only", "-z", "HEAD", ...own]))
+    .split("\0")
+    .filter(Boolean);
   if (!text.trim()) {
-    text = await git(["show", "--no-color", "--no-ext-diff", "--format=", "--patch", "HEAD"]);
-    files = (await git(["show", "--format=", "--name-only", "-z", "HEAD"]))
+    text = await git([
+      "show",
+      "--no-color",
+      "--no-ext-diff",
+      "--format=",
+      "--patch",
+      "HEAD",
+      ...own,
+    ]);
+    files = (await git(["show", "--format=", "--name-only", "-z", "HEAD", ...own]))
       .split("\0")
       .map((f) => f.trim())
       .filter(Boolean);

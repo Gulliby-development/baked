@@ -539,11 +539,28 @@ export class NativeWorkflowService implements WorkflowService {
   async drive(runId: string, signal: AbortSignal): Promise<RunSnapshot> {
     for (;;) {
       const snapshot = await this.driveOnce(runId, signal);
+      if (process.env.BAKED_TRACE_RUN_BLOCKS === "1") this.traceBlock(runId);
       if (await this.resumeOwnerLost(runId, signal)) continue;
       if (await this.resumeStalled(runId, signal)) continue;
       if (await this.resumeProviderOutage(runId, signal)) continue;
       return snapshot;
     }
+  }
+  /**
+   * Prints why a drive stopped on a block, with the run's latest events, to stderr. The test setup
+   * turns it on in CI (`BAKED_TRACE_RUN_BLOCKS=1`), so a run that blocks only on one platform and
+   * then waits out a test names its fault in the log (#1177).
+   */
+  private traceBlock(runId: string, label = "run-block"): void {
+    const run = this.store.run(runId);
+    if (label === "run-block" && run.status !== "blocked") return;
+    const recent = this.store
+      .events(runId, 0, 100_000)
+      .slice(-15)
+      .map((e) => `  ${e.seq} ${e.at} ${e.type} ${JSON.stringify(e.payload).slice(0, 1500)}`);
+    process.stderr.write(
+      `[${label}] ${runId} ${run.status}: ${run.reason}\n${recent.join("\n")}\n`,
+    );
   }
   /**
    * A run that blocked with `owner_lost` under `clarification: assume` resumes itself after a
@@ -2019,6 +2036,8 @@ export class NativeWorkflowService implements WorkflowService {
     await Promise.allSettled([...this.active.values()].map((active) => active.promise));
   }
   close(): void {
+    if (this.active.size && process.env.BAKED_TRACE_RUN_BLOCKS === "1")
+      for (const runId of this.active.keys()) this.traceBlock(runId, "run-active-at-close");
     if (this.active.size)
       throw new WorkflowFault(
         "WORKSPACE_BUSY",
