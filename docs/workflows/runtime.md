@@ -781,6 +781,8 @@ Before each step of an approved run the runtime compares the workspace with the 
 - Restore the files and resume as usual.
 - Fork the run, or cancel it.
 
+An attempt whose edits of one file were refused three times (the file differs from what the run recorded for it; see the edit check above) stops the run the same way, and the stop names the file and both choices. While the run's root still holds the refused content, a plain resume is refused with `STALE_DECISION` instead of starting another attempt that would be refused again: keep the file with `--accept-workspace`, or put back the content the run wrote and resume. A refused file in a task worktree does not hold the resume, because the resumed task gets a worktree rebuilt from the run's content.
+
 Accepting covers the workspace only. A changed instruction file, gate or skill the run froze still needs a revised plan (see [decisions and revisions](#decisions-and-revisions)).
 
 ### Stalls, deadlines and automatic resume

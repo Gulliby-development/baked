@@ -334,6 +334,7 @@ import {
 import {
   capturePreImage,
   createdByRunLineage,
+  REFUSED_EDIT_PREFIX,
   readKept,
   runWrittenHash,
   uncommittedEdits,
@@ -2364,7 +2365,7 @@ export class WorkflowScheduler {
                       : code === "STALE_DECISION" || code === "ARTIFACT_MISSING"
                         ? "host_state"
                         : "invalid_output";
-        this.store.artifact(
+        const diagnostic = this.store.artifact(
           runId,
           "diagnostic",
           `errors/${newId()}.txt`,
@@ -2375,6 +2376,25 @@ export class WorkflowScheduler {
               ? fault.message
               : String(fault),
         );
+        // An attempt stopped by repeated hash refusals: the file stays as it is until someone
+        // decides, so a plain resume would only be refused again (#1269). Named after the
+        // diagnostic of this stop.
+        if (
+          fault instanceof WorkflowFault &&
+          fault.code === "INPUT_CHANGED" &&
+          typeof fault.details.refusals === "number" &&
+          typeof fault.details.path === "string"
+        )
+          this.store.artifact(
+            runId,
+            "recovery",
+            `${REFUSED_EDIT_PREFIX}${diagnostic.id}.json`,
+            canonical({
+              path: fault.details.path,
+              root: fault.details.root ?? "",
+              hash: fault.details.hash ?? null,
+            }),
+          );
         this.store.transition(
           runId,
           outerSignal.aborted ? "paused" : "blocked",
