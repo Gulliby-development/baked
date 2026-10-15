@@ -497,6 +497,11 @@ export interface ExecutionRequest {
    */
   reproCheck?: (root: string, signal: AbortSignal) => Promise<string[]>;
   /**
+   * The cases the task's criteria quote that its test files do not contain (#1250): run on a
+   * submission that reports the task implemented. The same list is not refused twice.
+   */
+  caseCheck?: (root: string) => Promise<string[]>;
+  /**
    * The errors of a failed `request_check` run that belong to the task, for a whole-unit check
    * that runs in the checks stage rather than after the task (#799); null for any other check.
    */
