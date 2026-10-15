@@ -97,6 +97,18 @@ export function applyProviderContextOverride(
  * Used internally and as fallback when async fetch times out.
  */
 export function getModelContextInfoSync(modelId: string): ContextWindowResult {
+  return knownContextInfo(modelId) ?? { tokens: DEFAULT_CONTEXT_TOKENS, source: "fallback" };
+}
+
+/**
+ * The window a model is known to have, from the user's override, the provider's model list or a
+ * pattern table; null when nothing names it and only the default would be a guess.
+ */
+export function knownModelContextWindow(modelId: string): number | null {
+  return knownContextInfo(modelId)?.tokens ?? null;
+}
+
+function knownContextInfo(modelId: string): ContextWindowResult | null {
   const slashIdx = modelId.indexOf("/");
   const providerId = slashIdx >= 0 ? modelId.slice(0, slashIdx) : "";
   const model = slashIdx >= 0 ? modelId.slice(slashIdx + 1) : modelId;
@@ -153,7 +165,7 @@ export function getModelContextInfoSync(modelId: string): ContextWindowResult {
       }
     }
   }
-  return { tokens: DEFAULT_CONTEXT_TOKENS, source: "fallback" };
+  return null;
 }
 
 /**
