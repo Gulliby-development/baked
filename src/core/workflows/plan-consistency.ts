@@ -12,6 +12,7 @@ export const PLAN_CONSISTENCY_CHECKS = [
   "every read hint exists or is created by the task or an earlier task",
   "every task reference exists or is created by an earlier task",
   "a task that writes a module index (lib.rs, main.rs, mod.rs, __init__.py, index.ts) runs after the tasks that create the module files beside it",
+  "a task with checks that creates a Rust module file also writes the lib.rs, main.rs or mod.rs that declares it, so its checks compile it",
   "code created after a task creates the entry point (main, cli, app, server, program) is wired in by a task that writes the entry point and runs after it",
   "a documentation task that runs the program to capture its output runs after the tasks that write the program's entry points",
 ];
@@ -193,6 +194,39 @@ function ancestorsOf(graph: TaskGraph, id: string): Set<string> {
     pending.push(...(graph.tasks.find((t) => t.id === next)?.dependsOn ?? []));
   }
   return ancestors;
+}
+
+/**
+ * Rust module files that the task creating them does not declare. Cargo compiles only the files
+ * reachable from `lib.rs` or `main.rs` through `mod` lines, so a module that a later task
+ * registers is not built by the creating task's checks. idpeek a270ff5a (bench round 31) gave
+ * every `pub mod` line to its last source task: per-task clippy never compiled six modules and
+ * found 11 errors at once, a 1.15M-token corrective (#1299).
+ */
+export function undeclaredRustModules(workspace: string, graph: TaskGraph): string[] {
+  const written = new Set(
+    graph.tasks.flatMap((t) => t.writes.filter((w) => w.action !== "delete").map((w) => w.path)),
+  );
+  const present = (path: string): boolean =>
+    written.has(path) || existsSync(workspacePath(workspace, path));
+  const problems: string[] = [];
+  for (const task of graph.tasks) {
+    if (!task.checkIds.length) continue;
+    for (const write of task.writes) {
+      const file = write.path;
+      if (write.action !== "create" || !file.endsWith(".rs") || isTestFile(file)) continue;
+      if (MODULE_INDEX.test(file) && !/(?:^|\/)mod\.rs$/.test(file)) continue;
+      const dir = dirOf(/(?:^|\/)mod\.rs$/.test(file) ? dirOf(file) : file);
+      const indexes = ["lib.rs", "main.rs", "mod.rs"]
+        .map((name) => (dir ? `${dir}/${name}` : name))
+        .filter((index) => declaredBy(index, file) && present(index));
+      if (!indexes.length || task.writes.some((w) => indexes.includes(w.path))) continue;
+      problems.push(
+        `${task.id} creates the Rust module ${file} but does not write ${indexes.join(" or ")}, which declares it, so ${task.id}'s checks (${task.checkIds.join(", ")}) never compile it and its errors surface only after the task that adds the mod line. Add ${indexes[0]} to ${task.id}'s writes and declare the module there; the host orders tasks that write the same index.`,
+      );
+    }
+  }
+  return problems;
 }
 
 /** A file a program starts from, which has to construct or register the components it runs. */
@@ -439,5 +473,6 @@ export function planConsistencyProblems(
           );
       }
   problems.push(...unwiredEntryPoints(graph));
+  problems.push(...undeclaredRustModules(workspace, graph));
   return problems;
 }
