@@ -403,7 +403,8 @@ export function correctionBase(
 function reproStep(repro: Review["findings"][number]["repro"]): string {
   if (!repro) return "";
   const command = [repro.executable, ...repro.args].map((a) => JSON.stringify(a)).join(" ");
-  return `\nReproduce first: run ${command} with run_probe before editing. The review saw it print ${JSON.stringify(repro.actual)} where the spec needs ${JSON.stringify(repro.expected)}. After the fix, run it again and confirm it prints the expected output.`;
+  // run_repro runs it with its input files and stdin; run_probe takes only a command line (#1283).
+  return `\nReproduce first: run_repro runs ${command}${repro.files?.length || repro.stdin !== undefined ? " with its input files and stdin" : ""} as the host does before it accepts the task. Call it before editing. The review saw it print ${JSON.stringify(repro.actual)} where the spec needs ${JSON.stringify(repro.expected)}. After the fix, run it again and confirm it no longer reproduces.`;
 }
 
 /**

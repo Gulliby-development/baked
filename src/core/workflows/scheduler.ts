@@ -3119,7 +3119,7 @@ export class WorkflowScheduler {
         .filter(({ outcome }) => outcome.status === "reproduced")
         .map(
           ({ findingId, repro, outcome }) =>
-            `Finding ${findingId} still reproduces: \`${[repro.executable, ...repro.args].join(" ")}\` prints "${repro.actual}" where "${repro.expected}" is expected. Output:\n${outcome.output.slice(-1500)}`,
+            `Finding ${findingId} still reproduces: \`${[repro.executable, ...repro.args].join(" ")}\` prints "${repro.actual}" where "${repro.expected}" is expected.${reproInputs(repro)} Output:\n${outcome.output.slice(-1500)}`,
         );
     };
   }
@@ -11400,6 +11400,27 @@ export function correctionFocus(
       add(files, path);
   }
   return { files: files.filter((path) => task.writes.some((w) => w.path === path)), symbols };
+}
+/** Characters of each repro input file or stdin a corrective worker is shown. */
+const REPRO_INPUT_CHARS = 8000;
+
+/**
+ * The input a repro runs on, for the worker that must make it pass (#1283): the reviewer's
+ * program is often a file in a temporary directory (`go -C {files} run .` with a main.go), which
+ * the command line alone does not show.
+ */
+export function reproInputs(repro: Repro): string {
+  const cut = (text: string) =>
+    text.length > REPRO_INPUT_CHARS
+      ? `${text.slice(0, REPRO_INPUT_CHARS)}\n[${text.length - REPRO_INPUT_CHARS} more characters]`
+      : text;
+  const files = (repro.files ?? []).map(
+    (file) => `\n{files}/${file.name}:\n\`\`\`\n${cut(file.content)}\n\`\`\``,
+  );
+  const stdin = repro.stdin === undefined ? [] : [`\nstdin:\n\`\`\`\n${cut(repro.stdin)}\n\`\`\``];
+  if (!files.length && !stdin.length) return "";
+  const where = files.length ? " {files} is a temporary directory holding the files below." : "";
+  return `${where}${files.join("")}${stdin.join("")}\n`;
 }
 /**
  * The writes of a correction's first attempt (#765): the files its findings point at and their

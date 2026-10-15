@@ -40,6 +40,7 @@ import {
   modelCheckOutput,
 } from "../verification/check-runner.js";
 import {
+  PROBE_TRIES,
   probeTool,
   reproExecutables,
   runProbe,
@@ -752,6 +753,34 @@ export class NativeAgentExecutor implements AgentExecutor {
           execute: async (input: unknown) => guard.host("run_probe", () => probe.execute(input)),
         });
       }
+      // A correction runs the repros of its findings itself, the way the host checks them at
+      // submit (#1283): ecfit 25614519 T029 spent 4.08M tokens on a reviewer's `go -C {files} run .`
+      // program that run_probe could not start, learning each verdict only from a refused submit.
+      const reproCheck = request.reproCheck;
+      if (
+        !request.hostTools &&
+        reproCheck &&
+        request.profile.role === "implementer" &&
+        request.profile.allowedTools.includes("run_probe")
+      ) {
+        let runs = 0;
+        available.run_repro = tool({
+          description: `Run the repro of each finding this task corrects, exactly as the host runs it before it accepts submit_result: the reviewer's program, arguments, input files and stdin, on the files as they are now. Returns the findings that still show the reported behavior, with the program's output, or none when the fix holds. Use it after editing instead of guessing what the host will see. At most ${PROBE_TRIES} runs.`,
+          inputSchema: z.object({}).strict(),
+          execute: async () =>
+            guard.host("run_repro", async () => {
+              if (++runs > PROBE_TRIES)
+                return {
+                  status: "refused",
+                  reason: `Only ${PROBE_TRIES} repro runs are allowed per attempt`,
+                };
+              const live = await reproCheck(root, request.signal);
+              return live.length
+                ? { status: "reproduced", findings: live }
+                : { status: "fixed", findings: [] };
+            }),
+        });
+      }
       const fixable = policy.checks.filter((c) => c.fix);
       if (
         !request.hostTools &&
@@ -1009,7 +1038,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                 accepted: false,
                 errors: live,
                 instruction:
-                  "The host ran the repro of each finding this task corrects on the files as they are now, and these still show the reported behavior, so the task is not done. Fix the cause with BAKED's edit tools, then call submit_result again with the complete result. If the fix needs a file outside this task's write scope, submit blocked and name that file in unresolved.",
+                  "The host ran the repro of each finding this task corrects on the files as they are now, and these still show the reported behavior, so the task is not done. Fix the cause with BAKED's edit tools, confirm with run_repro that no finding reproduces, then call submit_result again with the complete result. If the fix needs a file outside this task's write scope, submit blocked and name that file in unresolved.",
               };
             }
           }
