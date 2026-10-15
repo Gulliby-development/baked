@@ -890,9 +890,12 @@ describe("workflow v2 scheduler", () => {
     git("config", "user.email", "test@example.com");
     git("config", "user.name", "Test");
     writeFileSync(join(root, "value.txt"), "old");
+    // A repository that tracks BAKED's own state: its changes are not part of the review (#1177).
+    writeFileSync(join(root, ".baked", "tracked.txt"), "old");
     git("add", ".");
     git("commit", "-qm", "base");
     writeFileSync(join(root, "value.txt"), "ready");
+    writeFileSync(join(root, ".baked", "tracked.txt"), "changed");
     const run = await start("review-only", "Review the value change");
     const final = await complete(run.runId);
     expect(final.status).toBe("completed");
