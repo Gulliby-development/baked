@@ -186,7 +186,7 @@ describe("a repair task restoring its predecessor", () => {
     const pytest = { id: "tests", executable: "pytest", args: ["-q"], cwd: ".", timeoutMs: 10000, required: false, scope: "feature" as const, envNames: [], writes: [] };
     const reader = task("T005", ["tests/a.test.ts"], { dependsOn: ["T001"], checkIds: ["tests"] });
     const { store, runId } = await scenario(["src/diff.ts"], false, [reader], [pytest], true);
-    expect(statuses(store, runId)).toMatchObject({ T002: "invalidated", T005: "implemented" });
+    expect(statuses(store, runId)).toMatchObject({ T005: "implemented" });
   });
 
   // R6 md-site a586cde0: corrections rewrote src/site.ts and src/cli.ts, then their planned owner
@@ -216,6 +216,22 @@ describe("a repair task restoring its predecessor", () => {
   test("a dependent without task checks is invalidated even when the repair rewrote its files", async () => {
     const owner = task("T005", ["src/diff.ts"], { dependsOn: ["T001"], checkIds: [] });
     const { store, runId } = await scenario(["src/diff.ts"], true, [owner]);
+    expect(statuses(store, runId)).toMatchObject({ T005: "invalidated" });
+  });
+
+  // R31 idpeek a270ff5a: the README and licence task reads the CLI it documents; a lint
+  // corrective and two later ones changed only the CLI's error handling, and its agent reran
+  // twice for 645k tokens, the second time reporting already_satisfied (#1211).
+  test("a documentation task whose files the repair left alone is rechecked, not rerun", async () => {
+    const readme = task("T005", ["README.md", "LICENSE"], { dependsOn: ["T001"], readHints: ["src/diff.ts"] });
+    const { store, runId, state } = await scenario(["src/diff.ts"], false, [readme]);
+    expect(statuses(store, runId)).toMatchObject({ T005: "implemented" });
+    expect(state.taskGates.T005).toBeUndefined();
+  });
+
+  test("a documentation task whose README the repair changed is still invalidated", async () => {
+    const readme = task("T005", ["README.md", "LICENSE"], { dependsOn: ["T001"], readHints: ["src/diff.ts"] });
+    const { store, runId } = await scenario(["src/diff.ts", "README.md"], false, [readme]);
     expect(statuses(store, runId)).toMatchObject({ T005: "invalidated" });
   });
 

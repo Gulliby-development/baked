@@ -425,6 +425,7 @@ import { forgetProgress } from "./stall.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
 import {
+  documentsOnly,
   hasTaskGate,
   missingArtifactOwners,
   namesPath,
@@ -8359,6 +8360,16 @@ ${note}`;
             // (md-site a586cde0 T003 ran three times, T006 four). Its checks decide instead.
             // Any declared check counts: a test task whose only check is a feature-scope build or
             // test command (Java `verify`) is protected by it too (propdrift 90c09da7 T006, 114k).
+            // A documentation task is rechecked unless the repair changed a file it writes: the
+            // README reads the code it documents, and its agent reran after correctives that left
+            // the documented usage as it was (idpeek a270ff5a T021: 645k tokens across two reruns,
+            // one only reporting already_satisfied, #1211). The review stages still read the
+            // README and run its examples in the host.
+            const documented =
+              finished &&
+              changedFiles !== null &&
+              documentsOnly(candidate) &&
+              !candidate.writes.some((write) => changedFiles.has(write.path));
             const superseded =
               reach === "named" &&
               rewritten !== null &&
@@ -8366,6 +8377,7 @@ ${note}`;
               ownsOnly(candidate, rewritten);
             if (
               reach === "none" ||
+              documented ||
               superseded ||
               (reach === "imports" &&
                 (declaredChecks(policy, candidate).length > 0 ||
