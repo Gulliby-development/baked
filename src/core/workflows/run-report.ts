@@ -27,7 +27,7 @@ import {
 import type { SpecAmendment } from "./spec-amendment.js";
 import type { ArtifactRow, CriticOutcomeRow, WorkflowStore } from "./store.js";
 import { type RunUsageReport, runUsage, toolBackendLine, toolTokensLine } from "./usage.js";
-import { parseRunDefinition } from "./v2/runtime.js";
+import { HOST_SPEC_OUTCOME, parseRunDefinition } from "./v2/runtime.js";
 import { changesOf, type FileChange, readRoutingSummary } from "./view.js";
 
 /** GitHub refuses pull request bodies over 65,536 characters; delivery keeps a margin. */
@@ -644,6 +644,15 @@ function duplicationSection(result: DuplicationResult, cap: number): string[] {
   return out;
 }
 
+/** The first line of an unfinished run's summary: its status, reason, stage and task count. */
+function unfinished(facts: Facts): string {
+  const { run } = facts;
+  const status = run.status.charAt(0).toUpperCase() + run.status.slice(1);
+  const live = facts.tasks.filter((t) => t.status !== "cancelled");
+  const done = live.filter((t) => ["implemented", "verified"].includes(t.status)).length;
+  return `**${status}**${run.reason !== "none" ? ` (${run.reason})` : ""}${run.stage_id ? ` at ${code(run.stage_id)}` : ""}${live.length ? `: ${done} of ${live.length} tasks done` : ""}. The run did not complete, so the request is not done.`;
+}
+
 function render(facts: Facts, cap: number): string {
   const { run, state, report } = facts;
   const spec = state.spec;
@@ -670,7 +679,10 @@ function render(facts: Facts, cap: number): string {
       "",
     );
   out.push("## Summary", "");
-  if (spec) out.push(spec.outcome, "");
+  // The spec outcome is the goal, not the result: a blocked run must not open its summary with it,
+  // and a host-made spec only restates the request (741547f0, #1219).
+  if (run.status !== "completed") out.push(unfinished(facts), "");
+  if (spec && spec.outcome !== HOST_SPEC_OUTCOME) out.push(`Goal: ${spec.outcome}`, "");
   if (report) {
     out.push(report.summary, "");
     out.push(`Recommendation (${report.recommendation.kind}): ${report.recommendation.text}`, "");
@@ -710,7 +722,14 @@ function render(facts: Facts, cap: number): string {
 
   if (facts.tasks.length) {
     const done = facts.tasks.filter((t) => ["implemented", "verified"].includes(t.status)).length;
-    out.push("## Tasks", "", `${done} of ${facts.tasks.length} done.`, "");
+    // A task a later plan revision cancelled is history, not work the run still owes (#1190).
+    const cancelled = facts.tasks.filter((t) => t.status === "cancelled").length;
+    out.push(
+      "## Tasks",
+      "",
+      `${done} of ${facts.tasks.length - cancelled} done${cancelled ? `; ${cancelled} cancelled by a plan revision` : ""}.`,
+      "",
+    );
     out.push(
       ...table(
         ["Task", "Title", "Status", "Origin"],
@@ -823,7 +842,7 @@ function render(facts: Facts, cap: number): string {
     out.push(
       "## Known limitations",
       "",
-      `${state.limitations.length} finding(s) were accepted instead of repaired, so the criteria they name may not hold in every case: a stopped convergence accepted by a person or the assume rule, or a low partial finding about test or documentation strength behind verified behavior (notes), or a convergence claim below high severity that its repro did not show (repro gate), or an automated criterion only another environment can prove (for example another operating system), which the run could not verify.`,
+      `${state.limitations.length} finding(s) were accepted instead of repaired, so the criteria they name may not hold in every case: a stopped convergence accepted by a person or the assume rule, or a low partial finding about test or documentation strength behind verified behavior (notes), or a convergence claim below high severity that its repro did not show (repro gate), or a review finding below high severity left when the review rounds were used up with every required check passing (review round limit), or an automated criterion only another environment can prove (for example another operating system), which the run could not verify.`,
       "",
       ...table(
         ["Finding", "Severity", "Criteria", "Where", "Claim", "Accepted by"],
@@ -843,7 +862,9 @@ function render(facts: Facts, cap: number): string {
                   ? "rule pack (same match after its correction)"
                   : l.decidedBy === "repro"
                     ? "repro gate (claim not reproduced)"
-                    : "user",
+                    : l.decidedBy === "review"
+                      ? "review round limit (checks passed, below high)"
+                      : "user",
         ]),
         cap,
       ),

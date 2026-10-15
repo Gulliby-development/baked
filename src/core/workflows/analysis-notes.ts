@@ -281,6 +281,31 @@ export function assumable(finding: { kind: string; blocking: boolean }): boolean
   return finding.kind !== "scope" && finding.kind !== "inconsistency";
 }
 
+/** A finding text that offers the spec author a choice: "permit X, or define Y". */
+const OFFERS_ALTERNATIVES = /\b(?:or|either)\b/i;
+
+/**
+ * A blocking inconsistency that names the same refs as a different one an earlier analysis pass of
+ * the run raised, and offers alternatives: another facet of one defect, which the run settles with
+ * the default the finding offers instead of asking a person. url-shortener 7277eb0c raised one
+ * "usable as the Location header" contract over three passes (newlines, spaces, non-Latin-1), and
+ * the survivor asked for an answer that was the finding's own first option (#1209).
+ */
+export function repeatedFacet(
+  finding: { kind: string; blocking: boolean; refs: string[]; description: string },
+  earlier: readonly { kind: string; refs: string[]; description: string }[],
+): boolean {
+  if (!finding.blocking || finding.kind !== "inconsistency") return false;
+  if (!OFFERS_ALTERNATIVES.test(finding.description)) return false;
+  const refs = [...new Set(finding.refs)].sort().join("\n");
+  return earlier.some(
+    (e) =>
+      e.kind === "inconsistency" &&
+      e.description !== finding.description &&
+      [...new Set(e.refs)].sort().join("\n") === refs,
+  );
+}
+
 /** Whether a blocking finding is a defect the analysis must see fixed rather than assumed. */
 export function persistentDefect(finding: {
   kind: string;

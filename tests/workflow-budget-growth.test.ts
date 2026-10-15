@@ -123,6 +123,48 @@ describe("automatic budget growth", () => {
     expect(JSON.parse(store.run(run.runId).policy_json).maxTotalTokens).toBe(1_000_000);
   });
 
+  // md-site eaeb51d6 (bench round 25, #1187): growth reached the 6M ceiling from 5,773,892 for an
+  // attempt that needed 6,039,774, and the run stopped budget_exhausted with 1 of 8 tasks left and
+  // the 9M hard limit unused, because only a call that started at the ceiling tried an extension.
+  test("a call that reaches the ceiling from below and still falls short extends past it", async () => {
+    const policy = { ...fixturePolicy, clarification: "assume" as const, sizing: { maxRunTokens: 6_000_000 } };
+    const fixture = workflowFixture({ policy });
+    cleanups.push(fixture.dispose);
+    const run = await fixture.start();
+    expect((await drive(fixture, run.runId)).status).toBe("completed");
+    const store = fixture.service.store;
+    const current = { ...JSON.parse(store.run(run.runId).policy_json), maxTotalTokens: 5_773_892 };
+    store.setPolicy(run.runId, current);
+    expect(growBudgetOnProgress(store, run.runId, current, 6_039_774)).toBe(true);
+    expect(current.maxTotalTokens).toBeGreaterThanOrEqual(6_039_774);
+    expect(current.maxTotalTokens).toBeLessThanOrEqual(9_000_000);
+    const kinds = store
+      .artifacts(run.runId)
+      .filter((a) => a.logical_path.startsWith("policy-revisions/auto-"))
+      .map((a) => JSON.parse(store.readArtifact(run.runId, a.id)))
+      .map((b) => [b.kind, b.next.maxTotalTokens] as [string, number])
+      // Both revisions can share a timestamp, so the listing order between them is not fixed.
+      .sort((a, b) => a[1] - b[1]);
+    expect(kinds.slice(-2)).toEqual([
+      ["auto-growth", 6_000_000],
+      ["auto-extend", current.maxTotalTokens],
+    ]);
+    expect(JSON.parse(store.run(run.runId).policy_json).maxTotalTokens).toBe(current.maxTotalTokens);
+  });
+
+  test("without assume a call that reaches the ceiling from below stops there", async () => {
+    const policy = { ...fixturePolicy, sizing: { maxRunTokens: 6_000_000 } };
+    const fixture = workflowFixture({ policy });
+    cleanups.push(fixture.dispose);
+    const run = await fixture.start();
+    expect((await drive(fixture, run.runId)).status).toBe("completed");
+    const store = fixture.service.store;
+    const current = { ...JSON.parse(store.run(run.runId).policy_json), maxTotalTokens: 5_773_892 };
+    store.setPolicy(run.runId, current);
+    expect(growBudgetOnProgress(store, run.runId, current, 6_039_774)).toBe(false);
+    expect(current.maxTotalTokens).toBe(6_000_000);
+  });
+
   test("the planning budget starts at the start estimate's high end, up to the ceiling", async () => {
     const policy = { ...fixturePolicy, maxTotalTokens: 300000, sizing: { maxRunTokens: 900000 } };
     const fixture = workflowFixture({ policy });

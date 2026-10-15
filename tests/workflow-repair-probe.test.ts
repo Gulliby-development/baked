@@ -80,6 +80,7 @@ const store = {
   }),
   latestArtifact: () => null,
   syncTasks: () => undefined,
+  tasks: () => [],
   findingStatus: () => undefined,
   addRound: () => undefined,
 } as unknown as WorkflowStore;

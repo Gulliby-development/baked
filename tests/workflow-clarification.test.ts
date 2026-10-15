@@ -17,6 +17,7 @@ import {
   planOnlyFindings,
   researchBudget,
 } from "../src/core/workflows/clarification.js";
+import { repeatedFacet } from "../src/core/workflows/analysis-notes.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import type { RunPolicy, Spec } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
@@ -149,7 +150,8 @@ const markdown = "# Plan\n## Context\nCreate value.txt.\n## Decisions\nDEC-001: 
 class ScriptedExecutor implements AgentExecutor {
   calls: string[] = [];
   requests: ExecutionRequest[] = [];
-  constructor(private script: { researchUnknowns?: { question: string; blocking: boolean }[]; planFinding?: number; specQuestion?: boolean; findingRefs?: string[]; findingKind?: string; findingText?: string; nonBlocking?: boolean }) {}
+  constructor(private script: { researchUnknowns?: { question: string; blocking: boolean }[]; planFinding?: number; specQuestion?: boolean; findingRefs?: string[]; findingKind?: string; findingText?: string; findingTexts?: string[]; nonBlocking?: boolean }) {}
+  private analyses = 0;
   async execute(request: ExecutionRequest) {
     this.calls.push(request.profile.output);
     this.requests.push(request);
@@ -171,9 +173,10 @@ class ScriptedExecutor implements AgentExecutor {
       case "plan": output = { schemaVersion: 1, markdown, taskGraph: { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown), tasks: [{ id: "T001", title: "Create value", description: "Write ready", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: [{ path: "value.txt", action: "create" }], readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior" }] } }; break;
       case "analysis": {
         const ask = (this.script.planFinding ?? 0) > 0;
+        const text = this.script.findingTexts?.[this.analyses++] ?? this.script.findingText;
         this.script.planFinding = Math.max(0, (this.script.planFinding ?? 0) - 1);
         output = ask
-          ? { schemaVersion: 1, inputHash: data.inputHash, verdict: "needs_revision", findings: [{ id: "F1", kind: this.script.findingKind ?? "coverage", refs: this.script.findingRefs ?? ["tasks.json"], description: this.script.findingText ?? "Task order unclear", blocking: !this.script.nonBlocking }] }
+          ? { schemaVersion: 1, inputHash: data.inputHash, verdict: "needs_revision", findings: [{ id: "F1", kind: this.script.findingKind ?? "coverage", refs: this.script.findingRefs ?? ["tasks.json"], description: text ?? "Task order unclear", blocking: !this.script.nonBlocking }] }
           : { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] };
         break;
       }
@@ -346,6 +349,42 @@ describe("answering a clarification", () => {
       const run = await startAssume(service);
       expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("clarification");
       expect(service.store.artifacts(run.runId).some((a) => a.logical_path === "assumptions/analysis.json")).toBe(false);
+    });
+    // url-shortener 7277eb0c (bench round 26, #1209): three passes raised one "usable unchanged as
+    // the Location header" contract with the same refs, one facet each, and the survivor asked a
+    // person for the default the finding itself offered.
+    const refs = ["spec.json:FR-003", "spec.json:AC-002", "plan.md:DEC-005", "tasks.json:T002"];
+    const facets = [
+      "An accepted URL with an embedded newline or control character cannot be used unchanged as the Location header",
+      "An accepted URL with surrounding ASCII spaces cannot be used unchanged as the Location header",
+      "An accepted URL with an emoji fails the ByteString conversion of the Location header: permit a URL-serialized, percent-encoded Location, or define an explicit header-representable acceptance restriction",
+    ];
+    test("another facet of an earlier inconsistency that offers alternatives is settled with its default, not asked", async () => {
+      const executor = new ScriptedExecutor({ planFinding: 3, findingKind: "inconsistency", findingRefs: refs, findingTexts: facets });
+      const service = setup(executor);
+      const run = await startAssume(service);
+      expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");
+      expect(service.store.requests(run.runId).some((r) => r.kind === "clarification")).toBe(false);
+      const assumed = service.store.latestArtifact(run.runId, "assumptions/analysis.json");
+      if (!assumed) throw new Error("No assumptions artifact");
+      expect(service.store.readArtifact(run.runId, assumed.id)).toContain("percent-encoded Location");
+    });
+    test("a repeated facet without alternatives, or under ask, still goes to a person", async () => {
+      const plain = facets.map((f) => f.replace(/: permit .*$/, ""));
+      const service = setup(new ScriptedExecutor({ planFinding: 3, findingKind: "inconsistency", findingRefs: refs, findingTexts: plain }));
+      expect((await service.drive((await startAssume(service)).runId, new AbortController().signal)).reason).toBe("clarification");
+      const asking = setup(new ScriptedExecutor({ planFinding: 3, findingKind: "inconsistency", findingRefs: refs, findingTexts: facets }));
+      const run = await asking.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy });
+      expect((await asking.drive(run.runId, new AbortController().signal)).reason).toBe("clarification");
+    });
+    test("only a different inconsistency with the same refs counts as another facet", () => {
+      const finding = { kind: "inconsistency", blocking: true, refs, description: facets[2] ?? "" };
+      const earlier = [{ kind: "inconsistency", refs: [...refs].reverse(), description: facets[0] ?? "" }];
+      expect(repeatedFacet(finding, earlier)).toBe(true);
+      expect(repeatedFacet(finding, [{ ...earlier[0], refs: ["spec.json:FR-001"] } as (typeof earlier)[number]])).toBe(false);
+      expect(repeatedFacet(finding, [{ ...earlier[0], kind: "scope" } as (typeof earlier)[number]])).toBe(false);
+      expect(repeatedFacet(finding, [{ ...earlier[0], description: finding.description } as (typeof earlier)[number]])).toBe(false);
+      expect(repeatedFacet({ ...finding, blocking: false }, earlier)).toBe(false);
     });
     // md-site, url B and zoneslot (round 06): the spec's domain became a restriction the request lacks.
     const restriction = "FR-003 restricts the accepted ISO 8601 forms to extended date-times; the request names no such limit";

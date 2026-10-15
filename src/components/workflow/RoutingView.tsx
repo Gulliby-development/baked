@@ -23,6 +23,7 @@ import {
   setCritic,
   setIndependentReview,
   setReviewMinConfidence,
+  setSpecifyOnSonnet,
   targetPath,
 } from "../../core/workflows/routing-edit.js";
 import { DEFAULT_REVIEW_MIN_CONFIDENCE } from "../../core/workflows/schemas.js";
@@ -87,6 +88,7 @@ type Row =
   | { kind: "review" }
   | { kind: "confidence" }
   | { kind: "critic" }
+  | { kind: "specify" }
   | { kind: "note"; text: string; tone: "muted" | "error" };
 
 type Field = "name" | "model" | "effort" | "fallback";
@@ -122,7 +124,8 @@ function selectable(row: Row | undefined): boolean {
       row.kind === "new-class" ||
       row.kind === "review" ||
       row.kind === "confidence" ||
-      row.kind === "critic")
+      row.kind === "critic" ||
+      row.kind === "specify")
   );
 }
 
@@ -233,6 +236,7 @@ export function RoutingView({
           target: { kind: "stage", workflowId: workflow, stageId: stage.stageId },
           label: stage.stageId,
         });
+    out.push({ kind: "specify" });
     out.push({ kind: "header", title: "Profiles" });
     for (const id of Object.keys(explained.data?.profiles ?? {}).sort())
       out.push({ kind: "route", target: { kind: "profile", id }, label: id });
@@ -441,6 +445,23 @@ export function RoutingView({
       const step = key === "left" ? CRITIC_MODES.length - 1 : 1;
       const next = CRITIC_MODES[(i + step) % CRITIC_MODES.length] ?? null;
       save(setCritic(layers[scope], next), next ? `Set critic to ${next}` : "Cleared critic");
+      return;
+    }
+    if (current.kind === "specify" && (key === "left" || key === "right" || key === "space")) {
+      evt.preventDefault();
+      const values = [null, true, false] as const;
+      const i = values.indexOf(layers[scope]?.specifyOnSonnet ?? null);
+      const next = values[(i + (key === "left" ? values.length - 1 : 1)) % values.length] ?? null;
+      save(
+        setSpecifyOnSonnet(layers[scope], next),
+        next === null ? "Cleared specifyOnSonnet" : `Set specifyOnSonnet to ${next ? "on" : "off"}`,
+      );
+      return;
+    }
+    if ((key === "d" || key === "delete" || key === "backspace") && current.kind === "specify") {
+      evt.preventDefault();
+      if (layers[scope]?.specifyOnSonnet === undefined) return;
+      save(setSpecifyOnSonnet(layers[scope], null), "Cleared specifyOnSonnet");
       return;
     }
     if ((key === "d" || key === "delete" || key === "backspace") && current.kind === "critic") {
@@ -666,6 +687,12 @@ export function RoutingView({
         ? { value: `‹ ${own} ›`, tone: "set" }
         : { value: `‹ unset › = ${effective?.critic ?? "on another vendor"}`, tone: "default" };
     }
+    if (row.kind === "specify") {
+      const own = layers[scope]?.specifyOnSonnet;
+      return own !== undefined
+        ? { value: `‹ ${own ? "on" : "off"} ›`, tone: "set" }
+        : { value: `‹ unset › = ${effective?.specifyOnSonnet ? "on" : "off"}`, tone: "default" };
+    }
     if (row.kind === "confidence") {
       const own = layers[scope]?.reviewMinConfidence;
       return own !== undefined
@@ -708,6 +735,10 @@ export function RoutingView({
     detail.push("The critic scores every task attempt. advise only shows the score; select");
     detail.push("keeps the best attempt and earlyStop ends a passing correction loop, once");
     detail.push("/workflow outcomes calibrates it. Unset runs it on another vendor; off never.");
+  } else if (current?.kind === "specify") {
+    detail.push("On: a run on a Claude Code Opus model writes its spec on claude-code/sonnet,");
+    detail.push("unless a stage route or --route names the specify model. Off by default.");
+    detail.push("←→ or Space switch it, D clears it.");
   } else if (current?.kind === "confidence") {
     detail.push(`Effective: ${confidence}. Review findings below this confidence stay notes`);
     detail.push("and start no correction. ←→ change it by 0.05, D clears it.");
@@ -745,7 +776,9 @@ export function RoutingView({
                   ? "reviewMinConfidence"
                   : row.kind === "critic"
                     ? "critic"
-                    : "independentReview";
+                    : row.kind === "specify"
+                      ? "specify on Sonnet"
+                      : "independentReview";
           const { value, tone } = rowText(row);
           return (
             <text key={`r-${index}`} bg={bg}>

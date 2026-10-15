@@ -4,6 +4,7 @@ import { getClaudeCodeLoginStatus, logoutClaudeCode } from "../llm/providers/cla
 import { getProvider } from "../llm/providers/index.js";
 import { getThemeTokens } from "../theme/index.js";
 import type { CommandContext, CommandHandler } from "./types.js";
+import { sysMsg } from "./utils.js";
 
 const TITLE = "Claude Code";
 
@@ -43,6 +44,17 @@ async function handleLogin(): Promise<void> {
   await provider.onRequestAuth();
 }
 
+async function handleCode(input: string, ctx: CommandContext): Promise<void> {
+  const code = input.trim().split(/\s+/).slice(2).join("");
+  if (!code) {
+    sysMsg(ctx, "Usage: /claude-code code CODE, with the code the sign-in page shows.");
+    return;
+  }
+  const { submitClaudeCodeAuthCode } = await import("../llm/providers/claude-code/auth.js");
+  if (!submitClaudeCodeAuthCode(code))
+    sysMsg(ctx, "No Claude Code sign-in is running; start one with /claude-code login.");
+}
+
 async function handleLogout(_input: string, ctx: CommandContext): Promise<void> {
   const theme = getThemeTokens();
   const result = logoutClaudeCode();
@@ -76,5 +88,6 @@ export function register(map: Map<string, CommandHandler>): void {
   map.set("/claude-code", handleStatus);
   map.set("/claude-code status", handleStatus);
   map.set("/claude-code login", handleLogin);
+  map.set("/claude-code code", handleCode);
   map.set("/claude-code logout", handleLogout);
 }

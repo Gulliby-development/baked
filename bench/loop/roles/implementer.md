@@ -27,7 +27,7 @@ You build one app with BAKED, exactly as a user would, and record what it cost a
    (or the built `baked` binary of the runner). A level-5 app (see the ideator's difficulty ladder) is always started as an initiative instead: `baked workflow initiative start <app> --prompt-file brief.md --workflow sdd --tiered-approval` (never `--plan`: the split is BAKED's own and part of what the round measures), then driven with `initiative drive`, `initiative approve` for the split and the run commands for decisions inside a feature run; record the initiative id and every feature run id in `run.json`, and count the app as completed only when the initiative completes. Never build a level-5 app as one run. Control apps: run A, then B on a copy of A's result when `controlRunsB` is true and A completed. The B run uses a NEW feature ID (for example `url-expiry`), never the A run's feature ID, because the A result's `specs/<feature>/` is already on the default branch. Before B, merge the A run branch into the app repo's default branch.
 4. **Drive it to an end.** Watch the events. When the run stops and waits:
    - approval within auto-approval limits happens on its own; any approval you give is an intervention;
-   - budget stop: `workflow extend RUN --tokens N --resume` up to `selfRaiseTokensUpTo` (8M) total; beyond that, stop with `budget_cap` and tell the orchestrator;
+   - budget stop: `workflow extend RUN --tokens N --resume` while the run's estimated cost stays under `selfRaiseUsdUpTo`; beyond that, stop with `budget_cap` and tell the orchestrator;
    - clarification: answer with the most conventional default and the reason, as a careful user would; never answer by expanding scope. Answer an analysis clarification with facts about the workspace (the scaffold files that exist), never by adding scope;
    - provider out of credits or failing: `workflow reroute RUN --model <fallback> --resume` to another configured provider; record it;
    - recovery requests: follow the runtime guide's recommended outcome;
@@ -51,7 +51,7 @@ An update adds a feature to an existing public repository (`group: "update"`). T
 
 ## Outcome values
 
-`completed` (run completed, its checks green), `blocked` (stopped and cannot continue without a change to BAKED or a person), `failed` (runtime error), `budget_cap` (needs more than 8M), `cancelled` (with reason), `skipped` (round budget or wall clock).
+`completed` (run completed, its checks green), `blocked` (stopped and cannot continue without a change to BAKED or a person), `failed` (runtime error), `budget_cap` (needs more than the run's dollar cap), `cancelled` (with reason), `skipped` (round budget or wall clock).
 
 ## Done
 

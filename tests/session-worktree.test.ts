@@ -19,8 +19,10 @@ class EditingHost implements ChatAgentHost {
       contextWindow: 1000,
       agent: {
         stream: async (_args: { messages: ModelMessage[]; abortSignal: AbortSignal }) => {
-          // A launched session's agent edits notes.txt where it works, as a write tool would.
-          if (!request.coordinator) writeFileSync(join(request.cwd, "notes.txt"), `by ${request.sessionId}\n`);
+          // A launched session's agent edits notes.txt where it works, as a write tool would. An
+          // architect session only reads: it shares the project folder with an opt-out session,
+          // and a write from its concurrent turn could land last (#1185).
+          if (!request.coordinator && request.mode !== "architect") writeFileSync(join(request.cwd, "notes.txt"), `by ${request.sessionId}\n`);
           return {
             stream: (async function* () {
               yield { type: "text-delta", text: "done" };
@@ -80,7 +82,9 @@ async function setup(repo: boolean) {
     const pending = tools.launch_session?.execute({ brief: "Edit notes.txt", why: "Edit", ...input });
     if (!pending) throw new Error("no launch_session tool");
     if (input.mode !== "architect") {
-      await Bun.sleep(10);
+      // The confirmation appears once the tool reaches it; a fixed wait raced a slow runner.
+      const deadline = Date.now() + 10_000;
+      while (!coordinator.pendingPrompts[0] && Date.now() < deadline) await Bun.sleep(5);
       const prompt = coordinator.pendingPrompts[0];
       if (!prompt) throw new Error("no confirmation prompt");
       coordinator.answer(prompt.id, { approve: true });

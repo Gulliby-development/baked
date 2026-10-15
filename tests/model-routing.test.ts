@@ -3,6 +3,7 @@ import { DEFAULT_CONFIG } from "../src/config/index.js";
 import {
   mergeModelRouting,
   parseModelRouting,
+  isClaudeCodeOpus,
   parseRouteOverrides,
   RoutingRecordSchema,
   resolveProfileModel,
@@ -102,6 +103,47 @@ describe("stage routes", () => {
     expect(() => parseWorkflowArgs(["run", "--feature", "f", "--prompt", "p", "--route", "plan="])).toThrow(/STAGE=MODEL/);
     expect(parseWorkflowArgs(["route", "sdd", "--route", "plan=$deep"]).flags.route).toBe("plan=$deep");
     expect(() => parseWorkflowArgs(["route", "a", "b"])).toThrow(/at most one workflow/);
+  });
+});
+
+describe("specify on Sonnet (#1173)", () => {
+  const stages = ["research", "specify", "plan"];
+  const opus = { runModel: "claude-code/opus" };
+  const on = parseModelRouting({ specifyOnSonnet: true });
+
+  test("is off by default: a Claude Code Opus run keeps Opus for specify", () => {
+    expect(resolveStageRoutes("sdd", stages, undefined, opus)).toEqual([]);
+    const off = parseModelRouting({ specifyOnSonnet: false });
+    expect(resolveStageRoutes("sdd", stages, undefined, { ...opus, routing: off })).toEqual([]);
+  });
+
+  test("when on, only the specify stage of a Claude Code Opus run moves to Sonnet", () => {
+    for (const runModel of ["claude-code/opus", "claude-code/claude-opus-5-5", "claude-code/opus[1m]"])
+      expect(resolveStageRoutes("sdd", stages, undefined, { runModel, routing: on })).toEqual([
+        { stageId: "specify", model: "claude-code/sonnet", source: "modelRouting.specifyOnSonnet" },
+      ]);
+    for (const runModel of ["claude-code/sonnet", "anthropic/claude-opus-4-8", "codex/gpt-5.5", "claude-code/fable"])
+      expect(resolveStageRoutes("sdd", stages, undefined, { runModel, routing: on })).toEqual([]);
+    // A workflow without a specify stage is untouched.
+    expect(resolveStageRoutes("quick", ["plan", "implement"], undefined, { ...opus, routing: on })).toEqual([]);
+  });
+
+  test("a configured stage route or --route still decides the specify model", () => {
+    const configured = parseModelRouting({ specifyOnSonnet: true, workflows: { sdd: { stages: { specify: "claude-code/haiku" } } } });
+    expect(resolveStageRoutes("sdd", stages, undefined, { ...opus, routing: configured })).toEqual([
+      { stageId: "specify", model: "claude-code/haiku", source: "modelRouting.workflows.sdd.stages.specify" },
+    ]);
+    expect(resolveStageRoutes("sdd", stages, { specify: "claude-code/opus" }, { ...opus, routing: on })).toEqual([
+      { stageId: "specify", model: "claude-code/opus", source: "route override specify" },
+    ]);
+  });
+
+  test("the project layer overrides the global one, and Opus models are recognized", () => {
+    expect(mergeModelRouting({ specifyOnSonnet: true }, { specifyOnSonnet: false })?.specifyOnSonnet).toBe(false);
+    expect(mergeModelRouting({ specifyOnSonnet: true }, { critic: "off" })?.specifyOnSonnet).toBe(true);
+    expect(isClaudeCodeOpus("claude-code/claude-opus-4-8")).toBe(true);
+    expect(isClaudeCodeOpus("claude-code/sonnet")).toBe(false);
+    expect(isClaudeCodeOpus("openrouter/anthropic/claude-opus-4")).toBe(false);
   });
 });
 

@@ -40,16 +40,24 @@ export interface CliLogin {
   lines: string[];
   /** The sign-in page to open, once the CLI has printed or returned one. */
   url?: string;
+  /**
+   * The CLI also takes the code the sign-in page shows ({@link submitCliLoginCode}): the page at
+   * `url` may end on a code to paste instead of returning to the CLI by itself.
+   */
+  acceptsCode?: boolean;
   error?: string;
   startedAt: string;
   endedAt?: string;
 }
 
-/** A started CLI login: `onLine` gets progress, `onUrl` the sign-in page. */
+/**
+ * A started CLI login: `onLine` gets progress, `onUrl` the sign-in page. `submitCode` passes the
+ * code a manual sign-in page shows to a CLI that prompts for it.
+ */
 export type CliLoginRunner = (
   onLine: (line: string) => void,
   onUrl: (url: string) => void,
-) => { promise: Promise<void>; abort: () => void };
+) => { promise: Promise<void>; abort: () => void; submitCode?: (code: string) => void };
 
 export interface CliLoginBackend {
   status(): CliSignInStatus;
@@ -59,6 +67,7 @@ export interface CliLoginBackend {
 
 const MAX_LINES = 200;
 const URL_PATTERN = /https:\/\/[^\s"'<>]+/;
+const PASTE_PROMPT = /^Paste code here if prompted\s*>?/i;
 
 const backends: Record<CliLoginProvider, CliLoginBackend> = {
   "claude-code": {
@@ -75,7 +84,9 @@ const backends: Record<CliLoginProvider, CliLoginBackend> = {
       runClaudeCodeLogin((line) => {
         const url = URL_PATTERN.exec(line)?.[0];
         if (url) onUrl(url);
-        onLine(line);
+        // The prompt has no place to type into here; the code field takes its role.
+        const shown = line.replace(PASTE_PROMPT, "").trim();
+        if (shown) onLine(shown);
       }),
     logout: () => logoutClaudeCode(),
   },
@@ -98,6 +109,7 @@ interface Active {
   login: CliLogin;
   abort: () => void;
   done: Promise<void>;
+  submitCode?: (code: string) => void;
 }
 
 const logins = new Map<CliLoginProvider, Active>();
@@ -186,6 +198,7 @@ export function startCliLogin(provider: CliLoginProvider): CliLogin {
       else finish("failed", error instanceof Error ? error.message : String(error));
     },
   );
+  if (handle.submitCode) login.acceptsCode = true;
   logins.set(provider, {
     login,
     abort: () => {
@@ -193,8 +206,34 @@ export function startCliLogin(provider: CliLoginProvider): CliLogin {
       handle.abort();
     },
     done,
+    ...(handle.submitCode ? { submitCode: handle.submitCode } : {}),
   });
   return snapshot(login);
+}
+
+/** Why {@link submitCliLoginCode} refused a code. */
+export class CliLoginCodeError extends Error {}
+
+/**
+ * Passes the code a manual sign-in page shows to the running login of `provider`, as pasting it
+ * at the CLI's prompt would. The login then ends as the CLI decides: signed in, or failed with
+ * the CLI's message for a wrong or expired code.
+ */
+export function submitCliLoginCode(provider: CliLoginProvider, code: string): CliLogin {
+  const active = logins.get(provider);
+  if (active?.login.state !== "running")
+    throw new CliLoginCodeError("No sign-in is running; start one first.");
+  if (!active.submitCode)
+    throw new CliLoginCodeError(
+      `${provider} finishes its sign-in in the browser; it takes no code.`,
+    );
+  const clean = code.trim();
+  if (!clean || /\s/.test(clean))
+    throw new CliLoginCodeError("Paste the code the sign-in page shows, without spaces.");
+  active.submitCode(clean);
+  if (active.login.lines.length >= MAX_LINES) active.login.lines.shift();
+  active.login.lines.push("Code sent; waiting for the CLI to finish signing in.");
+  return snapshot(active.login);
 }
 
 /** Stops a running login. Returns the login's state, or null when none was started. */

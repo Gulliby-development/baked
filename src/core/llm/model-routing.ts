@@ -84,6 +84,11 @@ export const ModelRoutingSchema = z
      * policy (`critic`).
      */
     critic: z.enum(CRITIC_MODES).optional(),
+    /**
+     * Opt-in (#1173): when the run model is a Claude Code Opus model, the `specify` stage runs on
+     * `claude-code/sonnet` unless a stage route or `--route` names its model. Off by default.
+     */
+    specifyOnSonnet: z.boolean().optional(),
   })
   .strict();
 export type ModelRouting = z.infer<typeof ModelRoutingSchema>;
@@ -227,13 +232,32 @@ export function resolveStageRoutes(
   for (const stageId of stageIds) {
     const override = overrides?.[stageId];
     const ref = override ?? configured[stageId];
-    if (!ref) continue;
+    if (!ref) {
+      const sonnet = stageId === "specify" ? specifySonnetRoute(inputs) : undefined;
+      if (sonnet) routes.push({ stageId, ...sonnet });
+      continue;
+    }
     const origin = override
       ? `route override ${stageId}`
       : `modelRouting.workflows.${workflowId}.stages.${stageId}`;
     routes.push({ stageId, ...resolveRef(ref, origin, inputs) });
   }
   return routes;
+}
+
+/** The Sonnet model `specifyOnSonnet` routes a Claude Code Opus run's `specify` stage to. */
+export const SPECIFY_SONNET_MODEL = "claude-code/sonnet";
+
+/** Whether a run model is a Claude Code Opus model (`claude-code/opus`, `claude-code/claude-opus-5-5`). */
+export function isClaudeCodeOpus(model: string): boolean {
+  const [provider, ...rest] = model.trim().split("/");
+  return provider === "claude-code" && /(?:^|[-/.])opus(?:$|[-.[])/i.test(rest.join("/"));
+}
+
+function specifySonnetRoute(inputs: RoutingInputs): Resolved | undefined {
+  if (inputs.routing?.specifyOnSonnet !== true || !isClaudeCodeOpus(inputs.runModel))
+    return undefined;
+  return { model: SPECIFY_SONNET_MODEL, source: "modelRouting.specifyOnSonnet" };
 }
 
 /** Merges a project layer over the global one, section by section and workflow by workflow. */
@@ -249,6 +273,7 @@ export function mergeModelRouting(
   const independentReview = layer.independentReview ?? base.independentReview;
   const reviewMinConfidence = layer.reviewMinConfidence ?? base.reviewMinConfidence;
   const critic = layer.critic ?? base.critic;
+  const specifyOnSonnet = layer.specifyOnSonnet ?? base.specifyOnSonnet;
   return {
     classes: { ...base.classes, ...layer.classes },
     roles: { ...base.roles, ...layer.roles },
@@ -257,6 +282,7 @@ export function mergeModelRouting(
     ...(independentReview ? { independentReview } : {}),
     ...(reviewMinConfidence !== undefined ? { reviewMinConfidence } : {}),
     ...(critic ? { critic } : {}),
+    ...(specifyOnSonnet !== undefined ? { specifyOnSonnet } : {}),
   };
 }
 
@@ -282,6 +308,8 @@ export const RoutingRecordSchema = z
     warnings: z.array(z.string()).optional(),
     /** The run model overrides the configured routes (`--model-strict`); a reroute keeps it. */
     strict: z.boolean().optional(),
+    /** The run model was given explicitly (`--model`), so it serves the `active` class; a reroute keeps it. */
+    explicitModel: z.boolean().optional(),
   })
   .strict();
 export type RoutingRecord = z.infer<typeof RoutingRecordSchema>;

@@ -5,6 +5,7 @@ import { buildSafeEnv } from "../spawn.js";
 import type { ProcessScope } from "../workflows/process-scope.js";
 import { ProbeSchema, type Repro, ReproSchema, type Review } from "../workflows/schemas.js";
 import type { HostTool } from "../workflows/types.js";
+import { confidenceOnlyNote } from "./findings.js";
 import { changedPaths, sourceManifest } from "./snapshot.js";
 
 /** Time a repro may run; it shows one input, not a test suite. */
@@ -205,6 +206,21 @@ export function missingReproAdvice(
       `Correctness finding(s) ${unseen.map((f) => f.id).join(", ")} say no tool was available to reproduce them, but this review offers run_repro, which starts ${programs.join(", ")} with your arguments in the workspace root. Try the claim with run_repro and attach the repro; keep noRepro only for a reason a command cannot overcome. Then call submit_result again with the complete review.`,
     );
   return advice;
+}
+
+/**
+ * Advice for a convergence review whose missing or correctness findings on behavior the request
+ * names fall below the confidence threshold without a repro: such a finding is a note unless a
+ * repro shows it, so the walker is asked once to try it (#1210).
+ */
+export function unconfidentReproAdvice(review: Review, minConfidence: number): string[] {
+  const unshown = review.findings.filter(
+    (f) => !f.repro && !f.noRepro && confidenceOnlyNote(f, minConfidence),
+  );
+  if (!unshown.length) return [];
+  return [
+    `Finding(s) ${unshown.map((f) => f.id).join(", ")} are below the confidence threshold (${minConfidence}) and would be kept as notes, but they name behavior the request or spec asks for. For each, run the command the request describes with run_repro on the input the claim names and attach the repro when it prints actual: a reproduced claim starts a correction whatever its confidence. When it does not reproduce, leave the finding without a repro. Then call submit_result again with the complete review.`,
+  ];
 }
 
 /**

@@ -51,6 +51,8 @@ import {
   passesWithNotes,
   REPEAT_NOTE,
   requiredChecksPass,
+  reversalCandidates,
+  reviewLimitAccepts,
 } from "../verification/convergence-stop.js";
 import { type DocExampleResult, isDocFile, runDocExamples } from "../verification/doc-examples.js";
 import {
@@ -60,12 +62,18 @@ import {
   validateEvidence,
   validEvidenceNote,
 } from "../verification/evidence.js";
-import { findingBlocks, fingerprint, requiresSecurityReview } from "../verification/findings.js";
+import {
+  confidenceOnlyNote,
+  findingBlocks,
+  fingerprint,
+  requiresSecurityReview,
+} from "../verification/findings.js";
 import {
   type BaselineCount,
   baselineRegression,
   CHECK_BASELINE_PATH,
   commandKey,
+  diagnosticCount,
   failureSignature,
   outputCounts,
   TEST_FILE,
@@ -81,6 +89,7 @@ import {
   reproTool,
   runProbe,
   runRepro,
+  unconfidentReproAdvice,
 } from "../verification/repro.js";
 import {
   completeReview,
@@ -91,7 +100,7 @@ import {
 } from "../verification/review.js";
 import { addReviewNotes, noteReason } from "../verification/review-notes.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
-import { baselineKeys, taskErrors } from "../verification/task-end-check.js";
+import { baselineDebt, baselineKeys, taskErrors } from "../verification/task-end-check.js";
 import { affectedTestCheck, affectedTestsFor } from "./affected-tests.js";
 import { outputSchemas } from "./agent-executor.js";
 import {
@@ -109,6 +118,7 @@ import {
   namesRequestSide,
   persistentDefect,
   REQUEST_NOTE,
+  repeatedFacet,
   restrictsRequest,
   VERIFICATION_METHODS,
 } from "./analysis-notes.js";
@@ -166,7 +176,7 @@ import { git } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
-import { keepOutside, restoreOutside } from "./fixer-scope.js";
+import { describeChange, keepOutside, restoreOutside, unjournaledOutside } from "./fixer-scope.js";
 import {
   FORK_SEED_ARTIFACT,
   FORK_SEEDED_ARTIFACT,
@@ -322,7 +332,9 @@ import {
   ApprovalReviewSchema,
   type Critique,
   CritiqueSchema,
+  clarificationOf,
   DEFAULT_MAX_PARALLEL_RUNS,
+  DEFAULT_REVIEW_MIN_CONFIDENCE,
   type Distinction,
   DistinctionSchema,
   executionModeOf,
@@ -1357,6 +1369,8 @@ export class WorkflowScheduler {
               // Analysis passes when no finding blocks: the rest are notes, whatever the model's verdict.
               const blocking = findings.some((f) => f.blocking);
               state.analysisPassed = !blocking && analysis.verdict !== "inconclusive";
+              // What earlier passes raised, before this pass adds to it (#1209).
+              const earlierRaised = [...state.analysisRaised];
               // The next pass sees what this one raised, whichever way the run goes on.
               for (const { kind, refs, description } of findings.filter((f) => f.blocking))
                 if (!state.analysisRaised.some((f) => f.description === description))
@@ -1426,7 +1440,13 @@ export class WorkflowScheduler {
                 policy.clarification === "assume" &&
                 state.analysisReplans >= 2 &&
                 analysis.verdict !== "inconclusive" &&
-                findings.every((f) => !f.blocking || assumable(f) || restrictsRequest(f))
+                findings.every(
+                  (f) =>
+                    !f.blocking ||
+                    assumable(f) ||
+                    restrictsRequest(f) ||
+                    repeatedFacet(f, earlierRaised),
+                )
               ) {
                 const assumed = findings.filter((f) => f.blocking);
                 this.store.transaction(() =>
@@ -1458,7 +1478,7 @@ export class WorkflowScheduler {
                     ? {
                         ...f,
                         blocking: false,
-                        description: `Assumed under clarification assume (assumptions/analysis.json): ${f.description}`,
+                        description: `${repeatedFacet(f, earlierRaised) ? "Assumed under clarification assume with the first alternative the finding offers, as another facet of a defect an earlier pass raised" : "Assumed under clarification assume"} (assumptions/analysis.json): ${f.description}`,
                       }
                     : f,
                 );
@@ -1729,7 +1749,29 @@ export class WorkflowScheduler {
                 v2 ? this.v2Reviewers(runId, state, v2) : this.v1Reviewers(state, policy),
                 !v2 || v2.definition.stages.some((s) => s.type === "reflection"),
               );
-              if (failures.length) {
+              // With the review rounds used up and every required check green, findings below
+              // high are known limitations rather than a no_progress stop: stmtsplit-update
+              // cae4291d and cfgtrace a657dc4d ended blocked on one low or medium finding (#1157).
+              if (
+                failures.length &&
+                reviewLimitAccepts(
+                  this.store.run(runId).review_rounds ?? 0,
+                  policy,
+                  failures,
+                  requiredChecksPass(this.store, runId, state, policy),
+                )
+              )
+                this.store.transaction(() =>
+                  acceptResidual(this.store, runId, state, { findings: failures }, "review"),
+                );
+              else if (
+                failures.length &&
+                (await this.reversedFixes(runId, state, policy, failures, signal))
+              )
+                this.store.transaction(() =>
+                  acceptResidual(this.store, runId, state, { findings: failures }, "assume"),
+                );
+              else if (failures.length) {
                 repairFindings = { findings: failures, kind: "repair" };
                 advance = false;
               }
@@ -1814,6 +1856,7 @@ export class WorkflowScheduler {
                   }),
                 });
               const previous = state.convergence ?? undefined;
+              const minConfidence = policy.reviewMinConfidence ?? DEFAULT_REVIEW_MIN_CONFIDENCE;
               let reproAdvised = false;
               let failAdvised = false;
               const review = ReviewSchema.parse(
@@ -1862,7 +1905,10 @@ export class WorkflowScheduler {
                       advice.push(unnamedFailureAdvice(unnamed));
                     }
                     if (!reproAdvised && canRepro) {
-                      const missing = missingReproAdvice(output as Review, executables, previous);
+                      const missing = [
+                        ...missingReproAdvice(output as Review, executables, previous),
+                        ...unconfidentReproAdvice(output as Review, minConfidence),
+                      ];
                       if (missing.length) reproAdvised = true;
                       advice.push(...missing);
                     }
@@ -1987,10 +2033,22 @@ export class WorkflowScheduler {
               // Below high severity, a correctness claim the host does not reproduce, and any claim
               // its repro refutes, is a note: cfgtrace2 e88a14dd spent about 1.1M on two corrective
               // tasks for static medium claims the walker could not run (#930).
+              // A claim kept a note only for its confidence repairs when its repro shows it (#1210).
               const outcomes = new Map<string, ReproOutcome>();
               for (const finding of review.findings)
-                if (convergenceReproGated(finding) && finding.repro && executables.length)
+                if (
+                  (convergenceReproGated(finding) || confidenceOnlyNote(finding, minConfidence)) &&
+                  finding.repro &&
+                  executables.length
+                )
                   outcomes.set(finding.id, await repro(finding.repro));
+              const blocks = (f: Review["findings"][number]): boolean =>
+                findingBlocks(
+                  f,
+                  minConfidence,
+                  confidenceOnlyNote(f, minConfidence) &&
+                    outcomes.get(f.id)?.status === "reproduced",
+                );
               if (outcomes.size)
                 this.store.transaction(() =>
                   this.store.artifact(
@@ -2019,7 +2077,7 @@ export class WorkflowScheduler {
                 );
               };
               const repairing = (f: Review["findings"][number]): boolean =>
-                (severities.includes(f.severity) && findingBlocks(f, policy.reviewMinConfidence)) ||
+                (severities.includes(f.severity) && blocks(f)) ||
                 f.criterionIds.some((id) => failing.has(id));
               const noted = review.findings.filter((f) => notes.has(f.id) && repairing(f));
               for (const id of [...failing]) if (noteOnly(id)) failing.delete(id);
@@ -2044,8 +2102,7 @@ export class WorkflowScheduler {
                 (f) =>
                   !notes.has(f.id) &&
                   !unreproduced.has(f.id) &&
-                  ((severities.includes(f.severity) &&
-                    findingBlocks(f, policy.reviewMinConfidence)) ||
+                  ((severities.includes(f.severity) && blocks(f)) ||
                     f.criterionIds.some((id) => failing.has(id))),
               );
               const findings = this.recordFindings(runId, review, repair);
@@ -2573,6 +2630,8 @@ export class WorkflowScheduler {
     const diagnostics: Record<string, string[]> = {};
     // The output of each required check that fails before any change, by command key.
     const failures: Record<string, string> = {};
+    // The diagnostics of each failing static check, for `staticBaseline: "relative"` (#1222).
+    const debt: Record<string, string[]> = {};
     if (fresh)
       for (const check of feature) {
         const root = runRoot(this.store.workspace, state);
@@ -2584,6 +2643,16 @@ export class WorkflowScheduler {
         );
         if (result.status === "failed" && check.required && !result.truncated)
           failures[commandKey(check)] = failureSignature(result.output, root);
+        if (
+          policy.staticBaseline === "relative" &&
+          result.status === "failed" &&
+          check.required &&
+          isStaticCheck(check) &&
+          !isTestCheck(check)
+        ) {
+          const keys = baselineKeys(result.output, root);
+          if (keys.length) debt[commandKey(check)] = keys;
+        }
         if (scaffold) continue;
         if (result.status === "failed" && isWholeUnitCheck(check))
           diagnostics[commandKey(check)] = baselineKeys(result.output, root);
@@ -2596,7 +2665,14 @@ export class WorkflowScheduler {
         runId,
         "facts",
         CHECK_BASELINE_PATH,
-        canonical({ schemaVersion: 1, measured: fresh, counts, diagnostics, failures }),
+        canonical({
+          schemaVersion: 1,
+          measured: fresh,
+          counts,
+          diagnostics,
+          failures,
+          ...(Object.keys(debt).length ? { debt } : {}),
+        }),
       ),
     );
   }
@@ -2612,21 +2688,132 @@ export class WorkflowScheduler {
     output: string,
     evidenceId: string,
   ): void {
-    const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
-    if (!artifact) return;
-    const before = (
-      JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
-        failures?: Record<string, string>;
-      }
-    ).failures?.[commandKey(check)];
-    const root = runRoot(this.store.workspace, state);
-    // A failure without output tells nothing about its cause, so it is never matched.
-    if (!before || before !== failureSignature(output, root)) return;
+    if (!this.failsAsBaseline(runId, state, check, output)) return;
     throw new WorkflowFault(
       "RECOVERY_REQUIRED",
       `baseline_failure: required check ${check.id} failed before any change and fails the same way now (evidence ${evidenceId}); nothing the run changed affects it. Fix the check or the project setup, or revise the plan, then resume.`,
       { reason: "no_progress", checkId: check.id },
     );
+  }
+  /**
+   * The baseline debt a failing required static check reports under `staticBaseline: "relative"`
+   * (#1222): its diagnostics were all there before the run and none is in a file a task of the
+   * plan writes. Recorded as an artifact when found; null when the check fails as usual.
+   */
+  private staticDebt(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy | undefined,
+    check: Check,
+    output: string,
+    evidenceId: string,
+  ): string[] | null {
+    if (policy?.staticBaseline !== "relative" || !isStaticCheck(check) || isTestCheck(check))
+      return null;
+    const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
+    if (!artifact) return null;
+    const baseline = (
+      JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+        debt?: Record<string, string[]>;
+      }
+    ).debt?.[commandKey(check)];
+    if (!baseline?.length) return null;
+    const changed = ((state.rootGraph ?? state.graph)?.tasks ?? []).flatMap((t) =>
+      t.writes.map((w) => w.path),
+    );
+    const debt = baselineDebt(output, runRoot(this.store.workspace, state), {
+      baseline,
+      changed,
+      summary: diagnosticCount(output)?.count ?? null,
+    });
+    if (!debt) return null;
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `checks/baseline-debt/${check.id}-${newId()}.json`,
+        canonical({ checkId: check.id, evidenceId, debt }),
+      ),
+    );
+    return debt;
+  }
+  /**
+   * Whether the review findings left after the last review round only reverse earlier fixes
+   * (#1234), so another correction would undo one of them. expenses-py 617fef26: the repair of
+   * F004 (an unterminated quote swallowed the valid rows after it) made F005 (a valid multiline
+   * field with a record-shaped line is split); both repros cannot pass, and the run blocked
+   * `no_progress` after a round that could not succeed. Under `clarification: assume`, with every
+   * required check passing and no critical finding, each finding must sit where a correction of
+   * an earlier finding changed the code, and that earlier finding's repro must no longer
+   * reproduce: its fix holds and the new finding is the other side of the trade-off. The pair is
+   * recorded in `review/reversals-<round>.json`, and the findings become known limitations.
+   */
+  private async reversedFixes(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    findings: Review["findings"],
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    if (
+      clarificationOf(policy) !== "assume" ||
+      (this.store.run(runId).review_rounds ?? 0) < policy.maxRepairRounds ||
+      findings.some((f) => f.severity === "critical") ||
+      !requiredChecksPass(this.store, runId, state, policy)
+    )
+      return false;
+    const candidates = reversalCandidates(this.store, runId, findings);
+    if (candidates.some((c) => !c.earlier.length)) return false;
+    const root = runRoot(this.store.workspace, state);
+    const executables = reproExecutables(policy.checks);
+    const pairs: { findingId: string; earlierId: string; earlierClaim: string }[] = [];
+    for (const candidate of candidates) {
+      let held: { id: string; claim: string } | undefined;
+      for (const earlier of candidate.earlier) {
+        const repro = ReproSchema.safeParse(earlier.body.repro);
+        if (!repro.success) continue;
+        const outcome = await runRepro(this.processes, repro.data, {
+          root,
+          executables,
+          generated: generatedPaths(policy),
+          signal,
+          sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
+        });
+        if (outcome.status === "refuted") {
+          held = { id: earlier.id, claim: earlier.body.claim ?? "" };
+          break;
+        }
+      }
+      if (!held) return false;
+      pairs.push({ findingId: candidate.findingId, earlierId: held.id, earlierClaim: held.claim });
+    }
+    const round = this.store.run(runId).review_rounds ?? 0;
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `review/reversals-${String(round)}.json`,
+        canonical({ round, pairs }),
+      ),
+    );
+    return true;
+  }
+  /** Whether a required check fails exactly as it did before any change (#934). */
+  private failsAsBaseline(
+    runId: string,
+    state: RuntimeState,
+    check: Check,
+    output: string,
+  ): boolean {
+    const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
+    if (!artifact) return false;
+    const before = (
+      JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+        failures?: Record<string, string>;
+      }
+    ).failures?.[commandKey(check)];
+    // A failure without output tells nothing about its cause, so it is never matched.
+    return !!before && before === failureSignature(output, runRoot(this.store.workspace, state));
   }
   /** The IDs of the required checks that failed before any change, from the check baseline. */
   private baselineFailingChecks(runId: string, policy: RunPolicy): string[] {
@@ -4220,6 +4407,12 @@ ${note}`;
       if (await this.affectedBaseline(runId, child, state, policy, task, signal, root))
         this.store.transaction(() => this.store.saveState(runId, state));
       const before = await sourceManifest(root, generatedPaths(policy), signal);
+      // Inline, the root is the user's working copy: a change there may be the user's own edit,
+      // which is never put back, so only a worktree run reverts unjournaled changes (#1188).
+      const kept =
+        root === this.store.workspace
+          ? undefined
+          : keepOutside(root, before, new Set(task.writes.map((w) => w.path)));
       const knownEffects = new Set(this.store.effects(runId).map((e) => e.id));
       // Edits of earlier attempts of this task that are still in place (a revision, a recovery
       // or a failed attempt keeps them), by path, with the hash the path had before them.
@@ -4257,12 +4450,8 @@ ${note}`;
       );
       // The source manifest cannot see git-ignored files (a docs directory in .gitignore), but the
       // effect journal recorded every file this task changed, so it counts as well.
-      const currentChanges = async (): Promise<{
-        after: Record<string, string>;
-        changed: string[];
-      }> => {
-        const now = await sourceManifest(root, generatedPaths(policy), signal);
-        const journaled = this.store
+      const journaled = (): string[] => [
+        ...this.store
           .effects(runId)
           .filter(
             (e) =>
@@ -4271,10 +4460,17 @@ ${note}`;
               ["applied", "reconciled"].includes(e.status) &&
               e.before_hash !== e.after_hash,
           )
-          .map((e) => (JSON.parse(e.intent_json) as { path: string }).path);
+          .map((e) => (JSON.parse(e.intent_json) as { path: string }).path),
+        ...stillEdited(),
+      ];
+      const currentChanges = async (): Promise<{
+        after: Record<string, string>;
+        changed: string[];
+      }> => {
+        const now = await sourceManifest(root, generatedPaths(policy), signal);
         return {
           after: now,
-          changed: [...new Set([...changedPaths(before, now), ...journaled, ...stillEdited()])],
+          changed: [...new Set([...changedPaths(before, now), ...journaled()])],
         };
       };
       let proseEnd = false;
@@ -4375,12 +4571,26 @@ ${note}`;
       }
       if (result.outcome === "implemented")
         await this.fixTaskFiles(runId, child, root, policy, scoped, signal);
+      if (kept)
+        await this.revertUnjournaled(
+          runId,
+          child,
+          task,
+          root,
+          kept,
+          before,
+          await currentChanges(),
+          new Set(journaled()),
+        );
       const { after, changed } = await currentChanges();
       const outside = changed.filter((path) => !task.writes.some((w) => w.path === path));
       if (outside.length)
         throw new WorkflowFault(
           "INPUT_CHANGED",
-          `Task changed ${outside.length} file(s) outside its write scope: ${outside.slice(0, 5).join(", ")}${outside.length > 5 ? ", ..." : ""}`,
+          `Task changed ${outside.length} file(s) outside its write scope: ${outside
+            .slice(0, 5)
+            .map((path) => describeChange(path, before, after))
+            .join(", ")}${outside.length > 5 ? ", ..." : ""}`,
         );
       const reproduced = await this.stillReproduces(
         runId,
@@ -4554,6 +4764,7 @@ ${note}`;
         checked,
         taskFailures,
         checkEvidence,
+        policy,
       );
     this.inconclusiveTaskCheck(inconclusive, taskFailures);
     if (unresolvedAccount && !taskFailures.length && !taskResults.length)
@@ -5373,6 +5584,7 @@ ${note}`;
     let before: Record<string, string> | undefined;
     try {
       before = await sourceManifest(root, generatedPaths(policy), signal);
+      const kept = keepOutside(root, before, new Set(task.writes.map((w) => w.path)));
       await this.affectedBaseline(runId, entry.child, state, policy, task, signal, root);
       const earlierEdits = await this.applyCarry(runId, state, entry, root);
       const currentChanges = async (): Promise<{
@@ -5434,6 +5646,16 @@ ${note}`;
         return { kind: "conflict", entry, result };
       if (result.outcome === "implemented")
         await this.fixTaskFiles(runId, entry.child, root, policy, task, signal);
+      await this.revertUnjournaled(
+        runId,
+        entry.child,
+        task,
+        root,
+        kept,
+        before,
+        await currentChanges(),
+        new Set(this.workerJournaled(runId, entry, known)),
+      );
       const { after, changed } = await currentChanges();
       const outside = changed.filter((path) => !task.writes.some((w) => w.path === path));
       if (outside.length)
@@ -5442,7 +5664,10 @@ ${note}`;
           entry,
           error: new WorkflowFault(
             "INPUT_CHANGED",
-            `Task ${task.id} changed ${outside.length} file(s) outside its write scope: ${outside.slice(0, 5).join(", ")}${outside.length > 5 ? ", ..." : ""}; its result is not integrated`,
+            `Task ${task.id} changed ${outside.length} file(s) outside its write scope: ${outside
+              .slice(0, 5)
+              .map((path) => describeChange(path, before ?? {}, after))
+              .join(", ")}${outside.length > 5 ? ", ..." : ""}; its result is not integrated`,
           ),
         };
       const reproduced = await this.stillReproduces(
@@ -5584,7 +5809,54 @@ ${note}`;
     before: Record<string, string>,
     after: Record<string, string>,
   ): string[] {
-    const journaled = this.store
+    const journaled = this.workerJournaled(runId, entry, known);
+    return [...new Set([...changedPaths(before, after), ...journaled])].sort();
+  }
+  /**
+   * Puts back the files outside the task's writes that changed without a journaled edit of this
+   * attempt, before the scope check (#1188): nothing the task wrote can have changed them, so a
+   * stop on them blames the task for a host process and a plain resume repeats it. The put-back
+   * paths are recorded with their hashes; a path with a journaled edit still fails the check.
+   */
+  private async revertUnjournaled(
+    runId: string,
+    stepId: string,
+    task: Task,
+    root: string,
+    kept: ReadonlyMap<string, Buffer>,
+    before: Record<string, string>,
+    current: { after: Record<string, string>; changed: string[] },
+    journaled: ReadonlySet<string>,
+  ): Promise<string[]> {
+    const stray = unjournaledOutside(
+      current.changed,
+      new Set(task.writes.map((w) => w.path)),
+      journaled,
+    );
+    if (!stray.length) return stray;
+    restoreOutside(root, kept, stray);
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `tasks/${task.id}/reverted-outside-${stepId}.json`,
+        canonical({
+          taskId: task.id,
+          stepId,
+          reverted: stray.map((path) => ({
+            path,
+            before: before[path] ?? null,
+            after: current.after[path] ?? null,
+          })),
+          note: "Changed outside the task's writes without a journaled edit of the attempt; put back before the scope check.",
+        }),
+      ),
+    );
+    return stray;
+  }
+  /** The paths the journaled edits of a worker's attempt changed in its worktree. */
+  private workerJournaled(runId: string, entry: BatchEntry, known: Set<string>): string[] {
+    return this.store
       .effects(runId)
       .filter(
         (e) =>
@@ -5595,7 +5867,6 @@ ${note}`;
           e.before_hash !== e.after_hash,
       )
       .map((e) => (JSON.parse(e.intent_json) as { path: string }).path);
-    return [...new Set([...changedPaths(before, after), ...journaled])].sort();
   }
   /** The edits a lost worker left in its worktree, which a restart of its task carries over. */
   private async lostWorkerEdits(
@@ -5742,7 +6013,16 @@ ${note}`;
       signal,
       mainRoot,
     ))
-      inconclusive ??= this.applyTaskCheck(runId, state, task, check, checked, failures, evidence);
+      inconclusive ??= this.applyTaskCheck(
+        runId,
+        state,
+        task,
+        check,
+        checked,
+        failures,
+        evidence,
+        policy,
+      );
     this.inconclusiveTaskCheck(inconclusive, failures);
     if (outcome.account.unresolved.length && !failures.length && !results.length)
       failures.push(...this.unresolvedFindings(runId, state, task, outcome.account));
@@ -7050,9 +7330,27 @@ ${note}`;
     checked: { status: "passed" | "failed" | "inconclusive"; evidenceId: string; output?: string },
     taskFailures: Review["findings"],
     checkEvidence: string[],
+    policy?: RunPolicy,
   ): string | undefined {
     if (checked.status === "passed") checkEvidence.push(checked.evidenceId);
     if (!check.required || checked.status === "passed") return undefined;
+    if (
+      checked.status === "failed" &&
+      checked.output &&
+      this.staticDebt(runId, state, policy, check, checked.output, checked.evidenceId)
+    )
+      return undefined;
+    // The check fails exactly as before any change and names no file the task writes: the task
+    // did not cause it and a correction could not reach it (dur 741547f0: Biome rejected the
+    // scaffold's `biome.json`, which no task writes; T004 spent 38k tokens on `src/duration.ts`,
+    // #1218). The checks stage still runs the check and stops with `baseline_failure`.
+    if (
+      checked.status === "failed" &&
+      checked.output &&
+      !pathsInOutput(checked.output, [task]).length &&
+      this.failsAsBaseline(runId, state, check, checked.output)
+    )
+      return undefined;
     const owners =
       checked.status === "failed" && task.origin === "planned" && checked.output
         ? pendingOwners(
@@ -7736,6 +8034,14 @@ ${note}`;
           : null;
       if (result.status === "passed" && !regression) passedIds.push(check.id);
       if (result.status === "inconclusive" && check.required) inconclusive ??= check.id;
+      if (
+        result.status === "failed" &&
+        check.required &&
+        this.staticDebt(runId, state, policy, check, result.output, result.evidenceId)
+      ) {
+        passedIds.push(check.id);
+        continue;
+      }
       if ((result.status === "failed" || regression) && check.required) {
         if (!regression)
           this.assertNotBaselineFailure(runId, state, check, result.output, result.evidenceId);
@@ -7915,6 +8221,13 @@ ${note}`;
         // Also when a fixer run throws: a whole-crate formatter may already have rewritten files.
         restoreOutside(root, kept, await changedOutside());
       }
+      // Judged on the whole pass too: `cargo fmt -- <path>` formats the whole crate, so the run on
+      // an already formatted file can rewrite a later one, whose own run then finds nothing to do
+      // (bytelens-update a11ea789 T004, #1228).
+      if (!changed)
+        changed = changedPaths(before, await sourceManifest(root, generated, signal)).some((path) =>
+          owners.has(path),
+        );
       const outside = await changedOutside();
       if (outside.length)
         throw new WorkflowFault(

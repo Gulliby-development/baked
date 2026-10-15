@@ -156,6 +156,21 @@ export function runUsageMarkdown(report: RunUsageReport): string {
   const total = empty();
   const byStage = new Map<string, Row>();
   const byModel = new Map<string, Row>();
+  // A task's reruns after repairs are their own rows, in task then generation order (#936).
+  const byGeneration = new Map<string, Row>();
+  const generationRows = [...report.attempts]
+    .filter((attempt) => attempt.taskId && attempt.taskGeneration !== null)
+    .sort(
+      (a, b) =>
+        (a.taskId ?? "").localeCompare(b.taskId ?? "", "en", { numeric: true }) ||
+        (a.taskGeneration ?? 0) - (b.taskGeneration ?? 0),
+    );
+  for (const attempt of generationRows) {
+    const key = `${attempt.taskId} generation ${attempt.taskGeneration}`;
+    const row = byGeneration.get(key) ?? empty();
+    add(row, attempt);
+    byGeneration.set(key, row);
+  }
   for (const attempt of report.attempts) {
     add(total, attempt);
     for (const [map, key] of [
@@ -228,6 +243,7 @@ export function runUsageMarkdown(report: RunUsageReport): string {
   else
     out.push(
       ...section("By stage", "Stage", byStage, false),
+      ...(byGeneration.size ? section("By task generation", "Task", byGeneration, false) : []),
       ...section("By model", "Model", byModel, true),
     );
   const tools = report.tools ?? [];
