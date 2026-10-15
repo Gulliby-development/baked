@@ -39,6 +39,27 @@ export function strictRoutingConfig(config: AppConfig): AppConfig {
 }
 
 /**
+ * The configuration of a run whose model was given explicitly (`--model`): the run model serves the
+ * `active` class even when `modelRouting.classes.active` names another model. The class keeps its
+ * effort and fallback models; every other configured route still applies.
+ */
+export function explicitModelConfig(config: AppConfig, model: string): AppConfig {
+  const routing = parseModelRouting(config.modelRouting);
+  const active = routing?.classes?.active;
+  if (!routing || !active) return config;
+  return {
+    ...config,
+    modelRouting: {
+      ...routing,
+      classes: {
+        ...routing.classes,
+        active: typeof active === "string" ? model : { ...active, model },
+      },
+    },
+  };
+}
+
+/**
  * Warnings for an explicit run model that configured routes override: only the `active` class
  * follows the run model, so a configured class, role, profile or stage route silently wins unless
  * the operator is told. One line per route source, naming what runs on another model.
@@ -183,7 +204,7 @@ export interface RouteExplanation {
 /** The models a run of this workflow would use, without starting it (`baked workflow route`). */
 export function explainRoute(
   workspace: string,
-  config: AppConfig,
+  configured: AppConfig,
   request: {
     workflowId: string;
     model?: string | undefined;
@@ -192,12 +213,13 @@ export function explainRoute(
     availableModels?: readonly string[];
   },
 ): RouteExplanation {
-  const model = request.model ?? config.defaultModel;
+  const model = request.model ?? configured.defaultModel;
   if (!model?.trim() || model.trim() === "none")
     throw new WorkflowFault(
       "INVALID_DEFINITION",
       "Select a model (--model ID) to route a workflow",
     );
+  const config = request.model?.trim() ? explicitModelConfig(configured, model) : configured;
   const policy = PolicySchema.parse(config.workflows?.policy ?? defaultWorkflowPolicy);
   let loaded: LoadedDefinition;
   try {
@@ -603,7 +625,12 @@ export function rerouteRecord(
   request: RerouteRequest,
 ): RoutingRecord {
   const model = request.model?.trim() || previous.runModel;
-  const config = previous.strict ? strictRoutingConfig(configured) : configured;
+  const explicit = Boolean(request.model?.trim()) || previous.explicitModel === true;
+  const config = previous.strict
+    ? strictRoutingConfig(configured)
+    : explicit
+      ? explicitModelConfig(configured, model)
+      : configured;
   const moved = (id: string): string => (id === previous.runModel ? model : id);
   const carried: Record<string, string> = {};
   for (const [stageId, entry] of Object.entries(previous.stages))
@@ -622,6 +649,7 @@ export function rerouteRecord(
     profiles,
     stages: fresh.stages,
     ...(previous.strict ? { strict: true } : {}),
+    ...(explicit && !previous.strict ? { explicitModel: true } : {}),
   };
 }
 

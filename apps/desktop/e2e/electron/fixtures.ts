@@ -126,6 +126,13 @@ export const test = base.extend<Fixtures>({
           output = (output + chunk.toString()).slice(-6000);
         });
       expect(await app.evaluate(({ app }) => app.getPath("userData"))).toBe(userData);
+      // The main process's quit steps, for the log of an app that does not quit.
+      await app.evaluate(({ app }) => {
+        const log = (line: string) => console.log(`[main ${new Date().toISOString()}] ${line}`);
+        for (const event of ["before-quit", "window-all-closed", "will-quit", "quit"] as const)
+          app.on(event as "quit", () => log(event));
+        process.on("uncaughtExceptionMonitor", (error) => log(`uncaught ${error.stack ?? error}`));
+      });
       const page = await app.firstWindow();
       page.on("console", (entry) => {
         output = (output + `[renderer ${entry.type()}] ${entry.text()}\n`).slice(-6000);
@@ -168,8 +175,38 @@ export const test = base.extend<Fixtures>({
       }
       console.log(`--- app output ---\n${output}`);
     }
-    for (const app of apps) await app.close();
+    for (const app of apps) {
+      if (await closeWithin(app, CLOSE_TIMEOUT_MS)) continue;
+      // The app did not quit: its output says what the main process was doing. The process is
+      // killed so the worker can go on; the backend it started was already stopped or orphaned.
+      console.log(
+        `--- app did not quit within ${CLOSE_TIMEOUT_MS}ms, killed (${testInfo.title}) ---\n${output}`,
+      );
+      testInfo.annotations.push({ type: "app-close-timeout", description: `${CLOSE_TIMEOUT_MS}ms` });
+      app.process().kill("SIGKILL");
+      await closeWithin(app, 5000);
+    }
   },
 });
+
+/** Long enough for the app to stop its backends (5 s grace each) and quit. */
+const CLOSE_TIMEOUT_MS = 20_000;
+
+/** Closes the app and reports whether its process exited in time. */
+async function closeWithin(app: ElectronApplication, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+  });
+  const closed = app.close().then(
+    () => true,
+    () => true,
+  );
+  try {
+    return await Promise.race([closed, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export { expect };

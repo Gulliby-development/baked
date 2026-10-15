@@ -40,6 +40,8 @@ import {
   serverFilter,
   stageLabel,
   summarizeUsage,
+  type TaskGenerationSlice,
+  taskGenerationUsage,
   type UsageFilter,
   type UsageReport,
   type UsageSlice,
@@ -66,6 +68,7 @@ const SECTIONS = {
   stage: { title: "Tokens by stage", icon: "usage", tone: "accent" },
   model: { title: "By model", icon: "model", tone: "warn" },
   cross: { title: "By stage and model", icon: "workflows", tone: "info" },
+  tasks: { title: "By task generation", icon: "implement", tone: "ok" },
 } as const satisfies Record<string, { title: string; icon: IconName; tone: Tone }>;
 type SectionId = keyof typeof SECTIONS;
 
@@ -570,6 +573,47 @@ function StageModelTable({ slices, step }: { slices: StageModelSlice[]; step: nu
   );
 }
 
+/** A task's generation: its first implementation, or the nth rerun after a repair. */
+export function generationLabel(generation: number): string {
+  return generation === 0 ? "First run" : `Rerun ${String(generation)}`;
+}
+
+function TaskGenerationTable({ slices, step }: { slices: TaskGenerationSlice[]; step: number }) {
+  const grown = useGrown();
+  const columns = columnsOf(slices);
+  const max = Math.max(0, ...slices.map((s) => s.tokens));
+  return (
+    <Section
+      id="tasks"
+      step={step}
+      about="Each task's first implementation and every rerun after a repair invalidated it, so the cost of a rerun reads on its own."
+    >
+      <div className="overflow-x-auto">
+        <table className={TABLE} aria-label="By task generation">
+          <thead>
+            <tr>
+              <th>Task</th>
+              <th>Generation</th>
+              <FigureHeads columns={columns} />
+            </tr>
+          </thead>
+          <tbody className="font-mono">
+            {slices.map((s, i) => (
+              <tr key={s.key}>
+                <td className="text-foreground">
+                  {i > 0 && slices[i - 1]?.taskId === s.taskId ? "" : s.taskId}
+                </td>
+                <td>{generationLabel(s.generation)}</td>
+                <FigureCells slice={s} columns={columns} max={max} grown={grown} fill={FILL.ok} />
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Section>
+  );
+}
+
 function costNote(report: UsageReport, source: Source): string {
   if (report.costPartial) return `partial: ${tokens(report.unpricedTokens ?? 0)} tokens not priced`;
   if (report.costUsd !== null)
@@ -755,6 +799,14 @@ export function UsageSection({ project, id }: SectionProps) {
         return aggregateUsage(source.reports, source.costs, filter);
     }
   }, [state, filter, exact]);
+  // Only one run's report has its tasks; a project range mixes unrelated runs.
+  const generations = useMemo(
+    () =>
+      state.kind === "ready" && state.data.kind === "runs" && !state.data.fallback
+        ? taskGenerationUsage(state.data.reports, filter)
+        : [],
+    [state, filter],
+  );
   const pick = (next: Scope): void => {
     setScope(next);
     setFilter({ stage: null, model: null });
@@ -868,6 +920,12 @@ export function UsageSection({ project, id }: SectionProps) {
           <ModelTable slices={report.byModel} step={2} />
           {report.byStageModel.length > 1 && (
             <StageModelTable slices={report.byStageModel} step={3} />
+          )}
+          {generations.length > 0 && (
+            <TaskGenerationTable
+              slices={generations}
+              step={report.byStageModel.length > 1 ? 4 : 3}
+            />
           )}
         </>
       )}

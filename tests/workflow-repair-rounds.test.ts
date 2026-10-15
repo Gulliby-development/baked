@@ -45,6 +45,7 @@ function fakeStore() {
       return { content_hash: "h".repeat(64) };
     },
     syncTasks: () => undefined,
+    tasks: () => [],
     findingStatus: () => undefined,
     addRound: (_run: string, kind: "repair" | "review" | "convergence", count: number) => {
       counts[`${kind}_rounds`]++;

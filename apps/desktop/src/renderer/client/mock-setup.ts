@@ -476,6 +476,7 @@ function mockLogin(provider: ProviderStatus, method: string): ApiResponse {
         state: "running",
         lines: ["Opening browser to sign in…", "Waiting for the sign-in to finish in the browser."],
         url: "https://example.com/sign-in",
+        ...(provider.id === "claude-code" ? { acceptsCode: true } : {}),
         startedAt: new Date().toISOString(),
       };
     }
@@ -515,6 +516,7 @@ function mergeRouting(base?: ModelRouting, layer?: ModelRouting): ModelRouting |
   const independentReview = layer.independentReview ?? base.independentReview;
   const reviewMinConfidence = layer.reviewMinConfidence ?? base.reviewMinConfidence;
   const critic = layer.critic ?? base.critic;
+  const specifyOnSonnet = layer.specifyOnSonnet ?? base.specifyOnSonnet;
   return {
     classes: { ...base.classes, ...layer.classes },
     roles: { ...base.roles, ...layer.roles },
@@ -523,6 +525,7 @@ function mergeRouting(base?: ModelRouting, layer?: ModelRouting): ModelRouting |
     ...(independentReview ? { independentReview } : {}),
     ...(reviewMinConfidence !== undefined ? { reviewMinConfidence } : {}),
     ...(critic ? { critic } : {}),
+    ...(specifyOnSonnet !== undefined ? { specifyOnSonnet } : {}),
   };
 }
 
@@ -1012,6 +1015,11 @@ function routingOverview(s: SetupState, workflow: string | null): RoutingOvervie
       global: global?.critic ?? null,
       project: project?.critic ?? null,
       effective: effective?.critic ?? null,
+    },
+    specifyOnSonnet: {
+      global: global?.specifyOnSonnet ?? null,
+      project: project?.specifyOnSonnet ?? null,
+      effective: effective?.specifyOnSonnet ?? false,
     },
     warnings: route.warnings,
     error: null,
@@ -1997,6 +2005,7 @@ export const setupRoutes: MockRoute = (request) => {
           independentReview: IndependentReview | null;
           reviewMinConfidence: number | null;
           critic: CriticMode | null;
+          specifyOnSonnet: boolean | null;
         }
       >(request);
       const scope = edit.scope === "global" ? "global" : "project";
@@ -2008,6 +2017,10 @@ export const setupRoutes: MockRoute = (request) => {
         next = edit.independentReview
           ? { ...rest, independentReview: edit.independentReview }
           : rest;
+      } else if (edit.specifyOnSonnet !== undefined) {
+        const { specifyOnSonnet: _previous, ...rest } = current ?? {};
+        next =
+          edit.specifyOnSonnet === null ? rest : { ...rest, specifyOnSonnet: edit.specifyOnSonnet };
       } else if (edit.critic !== undefined) {
         const { critic: _previous, ...rest } = current ?? {};
         next = edit.critic === null ? rest : { ...rest, critic: edit.critic };
@@ -2057,6 +2070,15 @@ export const setupRoutes: MockRoute = (request) => {
       else s.project = { ...s.project, modelRouting: next };
       return response(200, routingOverview(s, edit.workflow ?? null));
     }
+  }
+  const loginCode = /^\/v1\/providers\/([a-z0-9-]+)\/login\/code$/.exec(path);
+  if (loginCode) {
+    const login = providers.find((p) => p.id === loginCode[1])?.signIn?.login;
+    if (!login?.acceptsCode || login.state !== "running")
+      return error(409, "CONFLICT", "No sign-in that takes a code is running");
+    login.lines.push("Code sent; waiting for the CLI to finish signing in.");
+    loginPolls.set(loginCode[1] ?? "", LOGIN_POLLS - 1);
+    return response(202, { login });
   }
   const providerSignIn = /^\/v1\/providers\/([a-z0-9-]+)\/(login|logout|switch)$/.exec(path);
   if (providerSignIn) {

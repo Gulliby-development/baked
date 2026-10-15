@@ -203,6 +203,13 @@ export const AutoApprovalSchema = z
      * any reviewer failure, still waits for a person.
      */
     modelReview: z.boolean().optional(),
+    /**
+     * Opt-in (#1229): an edit of an existing package manifest that the dependency check reads
+     * (package.json, pyproject.toml, requirements*.txt, Cargo.toml, go.mod, .csproj/.fsproj/.vbproj,
+     * pom.xml) and that the request names by path or file name no longer needs a person. A package
+     * the edit adds still blocks the run unless the request or spec names it (#802).
+     */
+    requestedManifestEdits: z.boolean().optional(),
   })
   .strict()
   .refine((value) => value.renewal || value.limits !== null, "Auto approval requires limits")
@@ -308,6 +315,14 @@ export const PolicySchema = z
      */
     projectMemory: z.boolean().optional(),
     /**
+     * How a required static check (linter, formatter, type checker) that already failed before
+     * the run is judged (#1222). Absent means `stop`: a failure the run did not change stops it
+     * with `baseline_failure`. `relative` passes the check when every diagnostic it reports was
+     * in the baseline run and none is in a file the run may change (task-end-check.ts
+     * `baselineDebt`), so lint debt elsewhere in the repository does not block a run.
+     */
+    staticBaseline: z.enum(["stop", "relative"]).optional(),
+    /**
      * What the test-integrity guard does with what it finds in a task's diff (test-integrity.ts):
      * `block` makes each finding a repair, `warn` records it only. Absent means `block`; only
      * `warn` is stored, so stored policies keep their hash.
@@ -363,6 +378,14 @@ export const PolicySchema = z
      * the run stops. Absent means `DEFAULT_FRESH_RESTART_AFTER`, so stored policies keep their hash.
      */
     freshRestartAfter: z.number().int().min(1).max(5).optional(),
+    /**
+     * `true` makes the correction of a review or convergence finding about input robustness (deep
+     * nesting, huge numbers, long input, invalid encoding, empty input) one task per profile that
+     * runs the whole battery of input shapes against every planned source file next to the
+     * reported one and may write them (verification/class-sweep.ts, #1160). Absent means off, so
+     * stored policies keep their hash.
+     */
+    classSweep: z.boolean().optional(),
     /**
      * How many corrections in a row a task's own failed checks (a task check, a lint or
      * test-integrity finding during the implement stage) may start: a task and the corrections of
@@ -1512,7 +1535,7 @@ export interface StartRequest {
   candidates?: number;
   /**
    * The run model overrides the configured model routes for this run (CLI `--model-strict`);
-   * without it only the `active` class follows the run model.
+   * without it only the `active` class follows an explicit run model.
    */
   modelStrict?: boolean;
   /** What blocking questions do in this run (CLI `--clarification MODE`); it overrides the policy. */
@@ -1906,6 +1929,59 @@ export function narrowingBounds(
   };
 }
 
+/** A clause that puts inputs beyond a criterion's domain outside it: "larger inputs are outside this criterion's checked domain". */
+const DOMAIN_EXCLUSION =
+  /\boutside\b[^.;]*\bdomain\b|\b(?:larger|longer|bigger|greater|deeper|more|higher|wider)\b[^.;]*\b(?:are|is)\s+(?:outside|not covered)\b|\bnot covered\b/i;
+const boundNumbers = (text: string): string[] =>
+  (text.match(/\d[\d,._]*/g) ?? []).map((n) => n.replace(/[,._]+$/, "").replace(/[,_]/g, ""));
+
+/**
+ * Criteria whose Given, When or Then narrow the criterion with a domain exclusion the request does not
+ * state. stmtsplit-update cae4291d ended each Given with "...; larger inputs are outside this
+ * criterion's checked domain" and no analysis caught it (#1161). A clause is kept when every
+ * number it names is in the request, so a bound the request sets may stay.
+ */
+export function domainExclusions(spec: Pick<Spec, "criteria">, request: string): string[] {
+  const requested = new Set(boundNumbers(request));
+  return spec.criteria
+    .filter((c) =>
+      `${c.given}\n${c.when}\n${c.then}`.split(/(?<=[.;\n])\s*/).some((clause) => {
+        if (!DOMAIN_EXCLUSION.test(clause)) return false;
+        // The bound usually sits in the clause before the exclusion ("up to 20 arguments; larger ...").
+        const numbers = boundNumbers(`${c.given}\n${c.when}\n${c.then}`);
+        return !numbers.length || numbers.some((n) => !requested.has(n));
+      }),
+    )
+    .map((c) => c.id);
+}
+
+/** A size or count unit of input or output: rows, lines, characters, bytes, MiB, digits. */
+const SIZE_UNIT =
+  "(?:rows?|lines?|files?|characters?|chars?|bytes?|[KMGT]i?B|digits?|entries|entry|items?|records?|columns?|fields?|elements?|arguments?|nodes?|levels?)";
+/** A bound phrase with a number and a size unit: "up to 100,000 rows", "1 through 256 characters". */
+const SIZE_BOUND = new RegExp(
+  `\\b(?:up to|at most|no more than|maximum(?: of)?|max|as many as|limit(?:ed)? (?:of|to)|capped at|through|between \\S+ and)\\s+~?(\\d[\\d,._]*)\\s*${SIZE_UNIT}\\b`,
+  "gi",
+);
+
+/**
+ * Criteria whose Given, When or Then state a size or count bound with a unit that the request
+ * never states. expenses-py 617fef26 (bench round 27) wrote "up to 100,000 rows", "source lines
+ * up to 1 MiB" and "files up to 100 MiB" into a brief that names no size; reviewers tested those
+ * extremes and three correctives (1.63M tokens) chased them until the run blocked (#1227). A bound
+ * whose number the request names may stay.
+ */
+export function inventedBounds(spec: Pick<Spec, "criteria">, request: string): string[] {
+  const requested = new Set(boundNumbers(request));
+  return spec.criteria
+    .filter((c) =>
+      [...`${c.given}\n${c.when}\n${c.then}`.matchAll(SIZE_BOUND)].some(
+        (match) => !requested.has(boundNumbers(match[1] ?? "")[0] ?? ""),
+      ),
+    )
+    .map((c) => c.id);
+}
+
 /**
  * The spec defects as corrections for the spec author, who can add or relink criteria. With the
  * run's checks, a criterion that needs a check the execution contract lacks is one too.
@@ -1916,6 +1992,12 @@ export function specCoverageProblems(
   options: { ciForbidden?: boolean; request?: string } = {},
 ): string[] {
   const bounds = narrowingBounds(spec, options.request ?? "");
+  const exclusions = domainExclusions(spec, options.request ?? "").filter(
+    (id) => !bounds.criteria.includes(id),
+  );
+  const invented = inventedBounds(spec, options.request ?? "").filter(
+    (id) => !bounds.criteria.includes(id) && !exclusions.includes(id),
+  );
   return [
     ...validateSpecCoverage(spec).map((error) =>
       /^(requirement without criterion|engineering requirement deferred) /.test(error)
@@ -1945,6 +2027,14 @@ export function specCoverageProblems(
     ...bounds.criteria.map(
       (id) =>
         `criterion ${id} puts inputs beyond a numeric bound outside what the feature handles, and the request says limits are non-narrowing. Remove the bound and the exclusion from the criterion; record the domain only as an assumption ("<domain> Assumed: <value>, because <reason>.").`,
+    ),
+    ...exclusions.map(
+      (id) =>
+        `criterion ${id} narrows its Given, When or Then with a domain exclusion the request does not state (inputs beyond it "outside this criterion's checked domain" or "not covered"). The request is authoritative: remove the exclusion so the criterion holds for the inputs the request names; a domain you want to keep may be recorded only as a non-narrowing assumption ("<domain> Assumed: <value>, because <reason>."), never as an exclusion.`,
+    ),
+    ...invented.map(
+      (id) =>
+        `criterion ${id} states a size or count bound in its Given, When or Then (such as "up to 100,000 rows" or "lines up to 1 MiB") that the request never states, so reviewers test that extreme and the implementation gets repaired for a limit nobody asked for. The request is authoritative: remove the bound so the criterion holds for the inputs the request names. When a test needs a concrete size, record the smallest one the request's own examples need only as an assumption ("<domain> Assumed: <value>, because <reason>."), never in the criterion.`,
     ),
     ...(checks ? uncontractedBuildCriteria(spec, checks) : []).map(
       (id) =>

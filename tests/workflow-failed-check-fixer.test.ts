@@ -117,3 +117,50 @@ test("the unsafe fixer tier runs after the safe one and fixes what it left", asy
   // One journaled run per tier.
   expect(fixes).toHaveLength(2);
 });
+
+// Bench round 27, bytelens-update a11ea789 T004 (#1228): `cargo fmt -- <path>` formats the whole
+// crate. Its run on an already formatted file rewrote a later planned file, whose own run then
+// changed nothing, so the check was not rerun and a model corrective spent 112k tokens on a tree
+// that was already formatted.
+test("a whole-unit fixer that rewrites a later file through an earlier file's run reruns the check", async () => {
+  const wholeUnit: RunPolicy = {
+    ...policy,
+    checks: policy.checks.map((c) =>
+      c.id === "fmt"
+        ? {
+            ...c,
+            fix: {
+              executable: "bun",
+              // Trims every planned file whatever path it is given, as `cargo fmt` formats the crate.
+              args: ["-e", "for (const f of ['a.txt', 'value.txt']) await Bun.write(f, (await Bun.file(f).text()).trim())"],
+            },
+          }
+        : c,
+    ),
+  };
+  const fixture = workflowFixture({ policy: wholeUnit });
+  cleanups.push(fixture.dispose);
+  const { executor, root } = fixture;
+  const original = executor.execute.bind(executor);
+  executor.execute = async (request: ExecutionRequest) => {
+    const out = await original(request);
+    if (request.profile.output === "plan") {
+      const task = (out.output as { taskGraph: { tasks: { checkIds: string[]; writes: { path: string; action: string }[] }[] } }).taskGraph.tasks[0];
+      if (task) {
+        task.checkIds = ["fmt"];
+        // The already formatted file comes first, so its fixer run is the one that rewrites value.txt.
+        task.writes.unshift({ path: "a.txt", action: "create" });
+      }
+    }
+    if (request.profile.output === "implementation") {
+      writeFileSync(join(root, "a.txt"), "a");
+      writeFileSync(join(root, "value.txt"), "ready  \n");
+    }
+    return out;
+  };
+  const run = await runToEnd(fixture);
+  expect((await fixture.service.get(run.runId)).status).toBe("completed");
+  expect(readFileSync(join(root, "value.txt"), "utf8")).toBe("ready");
+  expect(executor.calls.filter((call) => call === "implementation")).toHaveLength(1);
+  expect(fixture.service.store.tasks(run.runId).map((t) => t.id)).toEqual(["T001"]);
+});

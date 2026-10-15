@@ -14,6 +14,16 @@ import {
 import { namesRunDocument } from "../workflows/spec-amendment.js";
 import type { WorkflowStore } from "../workflows/store.js";
 import type { RuntimeState, Task } from "../workflows/types.js";
+import { runRoot } from "../workflows/worktree.js";
+import {
+  robustnessShapes,
+  sweepClass,
+  sweepEntryPoints,
+  sweepRelation,
+  sweepStep,
+  sweepTestFiles,
+  testSweepStep,
+} from "./class-sweep.js";
 import { findingSetHash } from "./convergence-stop.js";
 
 /**
@@ -123,13 +133,15 @@ const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/
 
 /**
  * Planned files a check's output names, in plan order. Linters and compilers print the paths
- * they reject, often absolute and with backslashes on Windows.
+ * they reject, often absolute and with backslashes on Windows. Model reports write them in
+ * Markdown: in a code span or emphasis, a link, a list or an assignment (`` `tests/a.py::t` ``,
+ * `**a.py**`, `[a.py](a.py)`, `path=a.py`, `<a.py>`), so those may precede a path too (#1207).
  */
 export function pathsInOutput(output: string, tasks: Task[]): string[] {
   const text = output.replaceAll("\\", "/");
   const paths = unique(tasks.flatMap((t) => t.writes.map((w) => w.path)));
   return paths.filter((path) =>
-    new RegExp(`(?:^|[\\s/"'(:])${escapeRegExp(path)}(?![\\w.-])`, "m").test(text),
+    new RegExp(`(?:^|[\\s/"'(:\`*[,=<])${escapeRegExp(path)}(?![\\w.-])`, "m").test(text),
   );
 }
 
@@ -196,6 +208,9 @@ export function failureSignature(output: string): string {
       line
         .replace(/\[[\d.]+\s*m?s\]/gi, "")
         .replace(/\(\d+(?:\.\d+)?\s*m?s\)/gi, "")
+        // Go's package line ends with its elapsed time (`FAIL\tpkg\t0.212s`), which differs
+        // between runs of the same failure (aclvet 5684de0e, #1189).
+        .replace(/^(\s*(?:FAIL|ok)\s.*?)\s+\d+(?:\.\d+)?m?s(?:\s+\(cached\))?\s*$/, "$1")
         .replace(/(?:[A-Za-z]:)?(?:\/[\w.@-]+)+\/([\w.-]+)/g, "$1")
         .replace(/:\d+(?::\d+)?/g, "")
         .replace(/\s+/g, " ")
@@ -207,12 +222,13 @@ export function failureSignature(output: string): string {
 
 /**
  * Whether a test check's output says the runner collected no test at all: pytest's exit 5
- * ("no tests ran", "collected 0 items"), or "No tests found" / "No test files found" of the
- * JavaScript runners and Go's "no test files". A plan that writes the tests last has this state
- * until its test tasks run, and it is no defect of the code (#1031).
+ * ("no tests ran", "collected 0 items", or only "No files were found in testpaths" when the
+ * configured `testpaths` directory does not exist yet), or "No tests found" / "No test files found"
+ * of the JavaScript runners and Go's "no test files". A plan that writes the tests last has this
+ * state until its test tasks run, and it is no defect of the code (#1031, #1208).
  */
 export function noTestsCollected(output: string): boolean {
-  return /\bno tests ran\b|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b/i.test(
+  return /\bno tests ran\b|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b/i.test(
     output,
   );
 }
@@ -341,10 +357,14 @@ function reproStep(repro: Review["findings"][number]["repro"]): string {
 /**
  * The last step of a correction for a reviewer's finding (#943): the reviewer shows one case, and
  * the same defect often sits in sibling code paths (todo-cli: `add --help` was repaired, then the
- * re-review found `tag` and `untag`, and the run stopped). One repair should cover them all.
+ * re-review found `tag` and `untag`, and the run stopped). One repair should cover them all. It
+ * goes to the corrections of review passes too, not only of convergence (#1160).
  */
 const SIBLING_STEP =
   "\nThe review shows one case. Look for the same defect in sibling code paths (other commands, options, branches or callers that share the faulty pattern) and fix every case you find, checking each one as you checked the reported one.";
+
+/** The group key prefix of a class sweep's findings (#1160). */
+const SWEEP_KEY = "sweep\n";
 
 const SEVERITY_ORDER = ["critical", "high", "medium", "low"];
 
@@ -471,7 +491,14 @@ export function appendCorrections(
         }))
       : findings;
   const predecessorsBefore = { ...state.repairPredecessors };
-  let next = Math.max(...state.graph.tasks.map((t) => Number(t.id.slice(1)))) + 1;
+  // Above every id a row of the run has used, so a correction never takes over the row (and the
+  // status) of a task an earlier plan revision cancelled (#1190).
+  let next =
+    Math.max(
+      ...[...state.graph.tasks, ...store.tasks(runId)]
+        .map((t) => Number(t.id.slice(1)))
+        .filter(Number.isFinite),
+    ) + 1;
   // Findings against the same task and file become one corrective task: each task reads the
   // files again from scratch, so three failed checks of one task were three full rereads. The
   // findings of one failing check run (they cite the same evidence) of tasks with one profile
@@ -494,6 +521,47 @@ export function appendCorrections(
   // A finding on a run document has no task to correct it: its spec amendment, recorded before
   // this call, settles it (#1066).
   const plannedPaths = state.rootGraph.tasks.flatMap((t) => t.writes.map((w) => w.path));
+  // With `classSweep`, the robustness findings of a review or convergence pass become one task per
+  // profile that sweeps the class across its entry points (#1160), and the test-style findings one
+  // that sweeps the sibling test files (#1191).
+  const sweepOf = (finding: Review["findings"][number]): "robustness" | "tests" | null =>
+    policy.classSweep === true &&
+    (kind === "convergence" || reviewPass) &&
+    !checkRunFinding(finding)
+      ? sweepClass(finding)
+      : null;
+  const sweeping = (finding: Review["findings"][number]): boolean => sweepOf(finding) !== null;
+  const sweepFiles = (
+    findings: Review["findings"],
+    profileId: string,
+    base: Task,
+    root: TaskGraph,
+  ): string[] =>
+    findings.some((f) => sweepOf(f) === "tests")
+      ? sweepTestFiles(findings, root, profileId)
+      : sweepEntryPoints(
+          findings,
+          root,
+          profileId,
+          base,
+          sweepRelation(
+            runRoot(store.workspace, state),
+            findings.map((f) => f.file).filter((f): f is string => Boolean(f)),
+            criteriaText(findings),
+          ),
+        );
+  // The criteria of the findings and their requirements, as one text an entry point may be named in.
+  const criteriaText = (findings: Review["findings"]): string => {
+    const spec = state.spec;
+    if (!spec) return "";
+    const ids = new Set(findings.flatMap((f) => f.criterionIds));
+    const criteria = spec.criteria.filter((c) => ids.has(c.id));
+    const requirements = new Set(criteria.flatMap((c) => c.requirementIds));
+    return [
+      ...criteria.map((c) => `${c.given}\n${c.when}\n${c.then}`),
+      ...spec.requirements.filter((r) => requirements.has(r.id)).map((r) => r.text),
+    ].join("\n");
+  };
   const documents = ordered.filter((f) => namesRunDocument(f, plannedPaths));
   for (const finding of ordered) {
     if (documents.includes(finding)) continue;
@@ -518,6 +586,8 @@ export function appendCorrections(
       key = groups.has(fileKey) ? fileKey : (runGroups.get(run) ?? fileKey);
       runGroups.set(run, key);
     }
+    const sweepKind = sweepOf(finding);
+    if (sweepKind) key = `${SWEEP_KEY}${sweepKind}\n${base.profileId}`;
     const existing = groups.get(key);
     const group = existing
       ? {
@@ -587,12 +657,31 @@ export function appendCorrections(
     }
     // The planned tests of the files the correction writes: a fix often needs its regression
     // assertion there (junitdigest 3e5be74b T014 could not add one to internal/cli/cli_test.go).
+    // A sweep may write its entry points, and its first attempt is focused on them (#765).
+    if (group.findings.some(sweeping)) {
+      const entries = sweepFiles(group.findings, group.base.profileId, group.base, root);
+      for (const path of entries) join(group, path);
+      for (const finding of group.findings.filter(sweeping))
+        state.repairScope[finding.id] = unique([
+          ...(state.repairScope[finding.id] ?? []),
+          ...entries,
+        ]);
+    }
     const written = writable(group);
     for (const path of planned)
       if (written.some((source) => isTestOf(path, source))) join(group, path);
   }
-  const additions = [...groups.values()].map(({ base, bases, findings: grouped }) => {
+  const additions = [...groups].map(([key, { base, bases, findings: grouped }]) => {
     const ids = grouped.map((f) => f.id);
+    const sweep = key.startsWith(`${SWEEP_KEY}tests\n`)
+      ? testSweepStep(sweepFiles(grouped, base.profileId, base, root))
+      : key.startsWith(SWEEP_KEY)
+        ? sweepStep(
+            unique(grouped.flatMap(robustnessShapes)),
+            sweepFiles(grouped, base.profileId, base, root),
+            unique(grouped.flatMap((f) => (f.file ? [f.file] : []))),
+          )
+        : "";
     return {
       ...base,
       writes: mergeCorrectionWrites(
@@ -605,9 +694,10 @@ export function appendCorrections(
       description: grouped
         .map(
           (finding) =>
-            `${grouped.length > 1 ? `Finding ${finding.id}: ` : ""}${finding.claim}\nImpact: ${finding.impact}\nProposed fix: ${finding.suggestedFix}${reproStep(finding.repro)}${kind === "convergence" && !checkRunFinding(finding) ? SIBLING_STEP : ""}`,
+            `${grouped.length > 1 ? `Finding ${finding.id}: ` : ""}${finding.claim}\nImpact: ${finding.impact}\nProposed fix: ${finding.suggestedFix}${reproStep(finding.repro)}${(kind === "convergence" || reviewPass) && !sweep && !checkRunFinding(finding) ? SIBLING_STEP : ""}`,
         )
-        .join("\n\n"),
+        .join("\n\n")
+        .concat(sweep),
       dependsOn: [],
       origin: kind,
       findingIds: ids,

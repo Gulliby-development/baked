@@ -867,6 +867,53 @@ export class WorkflowStore {
         }),
       );
   }
+  /**
+   * The task generation each attempt of a task step started in, by attempt ID (#936): reruns of a
+   * task after a repair invalidated it are told apart from its first implementation.
+   */
+  attemptTaskGenerations(id: string): Map<string, { taskId: string; generation: number }> {
+    const taskOfStep = new Map(
+      this.steps(id).flatMap((step) =>
+        step.stage_id.startsWith("task-") ? [[step.id, step.stage_id.slice(5)] as const] : [],
+      ),
+    );
+    const current = new Map<string, number>();
+    const result = new Map<string, { taskId: string; generation: number }>();
+    const rows = this.db
+      .query<{ type: string; payload_json: string }, [string]>(
+        "SELECT type,payload_json FROM events WHERE run_id=? AND type IN ('task.state_changed','attempt.started') ORDER BY seq",
+      )
+      .all(id);
+    for (const row of rows) {
+      const payload = JSON.parse(row.payload_json) as {
+        taskId?: string;
+        generation?: number;
+        attemptId?: string;
+        stepId?: string;
+      };
+      if (row.type === "task.state_changed" && payload.taskId !== undefined)
+        current.set(payload.taskId, payload.generation ?? 0);
+      const taskId = payload.stepId ? taskOfStep.get(payload.stepId) : undefined;
+      if (row.type === "attempt.started" && payload.attemptId && taskId !== undefined)
+        result.set(payload.attemptId, { taskId, generation: current.get(taskId) ?? 0 });
+    }
+    return result;
+  }
+  /**
+   * How many times a task of the run has reached `implemented` or `verified`, from its events: a
+   * finish still counts after a later corrective invalidates the task (#1224).
+   */
+  taskCompletions(id: string): number {
+    return (
+      this.db
+        .query<{ n: number }, [string]>(
+          `SELECT COUNT(*) AS n FROM events WHERE run_id=? AND type='task.state_changed'
+           AND json_extract(payload_json,'$.to') IN ('implemented','verified')
+           AND json_extract(payload_json,'$.from') NOT IN ('implemented','verified')`,
+        )
+        .get(id)?.n ?? 0
+    );
+  }
   artifacts(id: string): ArtifactRow[] {
     return this.db
       .query<ArtifactRow, [string]>("SELECT * FROM artifacts WHERE run_id=? ORDER BY created_at,id")
@@ -1080,6 +1127,13 @@ export class WorkflowStore {
         if (!graph.tasks.some((t) => t.id === task.id))
           this.taskStatus(runId, task.id, "cancelled");
     }
+    // A plan revision replaces the graph before anything ran: the tasks it dropped never existed
+    // for the run, so their rows go instead of staying pending in the report (#1190).
+    else
+      for (const task of this.tasks(runId))
+        if (task.status === "pending" && !graph.tasks.some((t) => t.id === task.id)) {
+          this.db.run("DELETE FROM tasks WHERE run_id=? AND id=?", [runId, task.id]);
+        }
     const rows = new Map(this.tasks(runId).map((row) => [row.id, row]));
     for (const task of graph.tasks) {
       this.db.run(

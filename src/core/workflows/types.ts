@@ -59,7 +59,7 @@ export const LimitationSchema = z
      * low `partial` finding behind verified behavior, accepted without a decision), or `rule`: a
      * deterministic quality rule that still matched the same text after its correction.
      */
-    decidedBy: z.enum(["user", "assume", "notes", "critic", "rule", "repro"]),
+    decidedBy: z.enum(["user", "assume", "notes", "critic", "rule", "repro", "review"]),
     /** Convergence rounds the run had used when the finding was accepted. */
     round: z.number().int().nonnegative(),
   })
@@ -490,6 +490,12 @@ export interface ExecutionRequest {
    * agent once; the next submission is accepted without running it again.
    */
   taskEndCheck?: (root: string, signal: AbortSignal) => Promise<string[]>;
+  /**
+   * The repros of the findings a corrective task fixes (#1158): run on a submission that reports
+   * the task implemented or already satisfied, in the attempt's directory. The findings they
+   * still reproduce go back to the agent, a bounded number of times.
+   */
+  reproCheck?: (root: string, signal: AbortSignal) => Promise<string[]>;
   /**
    * The errors of a failed `request_check` run that belong to the task, for a whole-unit check
    * that runs in the checks stage rather than after the task (#799); null for any other check.

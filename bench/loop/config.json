@@ -21,12 +21,12 @@
     "writers": 3,
     "clarification": "assume",
     "sizing": { "maxAttemptTokens": 600000, "maxRunTokens": 4000000 },
-    "selfRaiseTokensUpTo": 8000000,
+    "selfRaiseUsdUpTo": 12,
     "referenceModel": null,
     "rotateNewAppProviders": true
   },
   "budgets": {
-    "roundRunTokens": 30000000,
+    "roundRunUsd": 40,
     "maxFixIssuesPerRound": 6,
     "minBroadFeaturesPerRound": 1
   },

@@ -13,6 +13,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
 import { failureSignature } from "../src/core/verification/output-counts.js";
+import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { isStaticCheck, isWholeUnitCheck } from "../src/core/workflows/check-policy.js";
 import { detectGates, executeGate } from "../src/core/workflows/gates.js";
 import { addedDependencies } from "../src/core/workflows/quality/dependencies.js";
@@ -454,6 +455,33 @@ const STUBS: Record<Stack, { path: string; placeholder: string; ordinary: string
   },
 };
 
+/**
+ * A catch that returns the null or false its function's declared type announces, and one that
+ * returns a default the type does not announce, in each stack with brace catches (#1192).
+ */
+const FALLBACKS: Partial<Record<Stack, { path: string; typed: string; silent: string }>> = {
+  bun: {
+    path: "src/url.ts",
+    typed: "export function parseUrl(raw: string): URL | null {\n  try {\n    return new URL(raw);\n  } catch {\n    return null;\n  }\n}",
+    silent: "export function parseUrl(raw: string) {\n  try {\n    return new URL(raw);\n  } catch {\n    return null;\n  }\n}",
+  },
+  npm: {
+    path: "src/url.js",
+    typed: "/** @returns {boolean} */\nexport function isUrl(raw) {\n  try { new URL(raw); return true; } catch { return false; }\n}",
+    silent: "export function isUrl(raw) {\n  try { new URL(raw); return true; } catch { return false; }\n}",
+  },
+  maven: {
+    path: "src/main/java/fixture/Urls.java",
+    typed: "    static boolean isUrl(String raw) {\n        try {\n            new java.net.URI(raw);\n            return true;\n        } catch (Exception e) {\n            return false;\n        }\n    }",
+    silent: "    static String host(String raw) {\n        try {\n            return new java.net.URI(raw).getHost();\n        } catch (Exception e) {\n            return \"\";\n        }\n    }",
+  },
+  dotnet: {
+    path: "src/Urls.cs",
+    typed: "    static bool IsUrl(string raw) {\n        try {\n            new Uri(raw);\n            return true;\n        } catch (Exception) {\n            return false;\n        }\n    }",
+    silent: "    static string Host(string raw) {\n        try {\n            return new Uri(raw).Host;\n        } catch (Exception) {\n            return \"\";\n        }\n    }",
+  },
+};
+
 for (const stack of STACKS) {
   const stub = STUBS[stack];
   const placeholders = (line: string) =>
@@ -465,6 +493,18 @@ for (const stack of STACKS) {
       expect(placeholders(stub.placeholder).map((f) => f.blocking)).toEqual([true]);
       expect(placeholders(stub.ordinary)).toEqual([]);
     });
+
+    const fallback = FALLBACKS[stack];
+    if (fallback)
+      cell(stack, "rule-pack: catch-return-default", () => {
+        const found = (content: string) =>
+          checkBuiltinRules([{ path: fallback.path, content: `${content}\n`, before: null }], {})
+            .filter((f) => f.rule === "catch-return-default")
+            .map((f) => f.blocking);
+        // A JSDoc type is not a declared return type: plain JavaScript keeps the finding.
+        expect(found(fallback.typed)).toEqual(stack === "npm" ? [true] : []);
+        expect(found(fallback.silent)).toEqual([true]);
+      });
 
     // A correction that leaves the same match is kept as a limitation instead of asking again;
     // the earlier round's claim must read back to the same key, wherever the line moved (#845).
@@ -698,6 +738,30 @@ for (const stack of STACKS) {
       expect(expected).toContain("<root>");
       for (const root of [setup.workspace, ...setup.roots.map((r) => r.root)])
         expect(failureSignature(failure(root), run)).toBe(expected);
+    });
+
+    // Under staticBaseline "relative" a diagnostic from before the run is debt in every worktree,
+    // whichever one printed its absolute path; one in a file the run changes never is (#1222).
+    cell(stack, "worktree: baseline-debt", () => {
+      const run = setup.roots.find((r) => r.name === "run")?.root ?? "";
+      const lint = (root: string) => `${join(root, "lib", "old.py")}:1:1: E501 Line too long\nFound 1 error.`;
+      const baseline = baselineKeys(lint(run), run);
+      expect(baseline).toEqual(["lib/old.py|E# Line too long"]);
+      for (const root of [setup.workspace, ...setup.roots.map((r) => r.root)]) {
+        expect(baselineDebt(lint(root), run, { baseline, changed: [], summary: 1 })).toEqual(baseline);
+        expect(baselineDebt(lint(root), run, { baseline, changed: ["lib/old.py"], summary: 1 })).toBeNull();
+      }
+    });
+
+    // A linter that fails on an unplanned file before the run still fails the same way after a task
+    // adds files: its summary count is not part of the failure (dur 741547f0, #1218).
+    cell(stack, "worktree: baseline-signature lint summary", () => {
+      const run = setup.roots.find((r) => r.name === "run")?.root ?? "";
+      const lint = (root: string, files: number) =>
+        `${join(root, "biome.json")} format\n  × Formatter would have printed the following content:\nChecked ${files} files in 3ms. No fixes applied.\nFound 1 error.`;
+      const expected = failureSignature(lint(run, 1), run);
+      for (const root of [setup.workspace, ...setup.roots.map((r) => r.root)])
+        expect(failureSignature(lint(root, 4), run)).toBe(expected);
     });
   });
 }

@@ -120,6 +120,60 @@ const placeholderLine = lineRule(
 
 const DEFAULT_VALUE = /^return(?:\s+(?:null|undefined|\[\]|\{\}|""|''|``|false|0|-1|None))?\s*;?$/;
 
+/**
+ * The line that opens the function enclosing `index`, found by walking back over balanced
+ * braces, or -1. Blocks that are not functions (`try`, `if`, a class body) are passed through.
+ */
+function enclosingFunction(lines: readonly string[], index: number): number {
+  let depth = 0;
+  for (let i = index - 1; i >= 0; i--) {
+    const line = lines[i] ?? "";
+    for (let c = line.length - 1; c >= 0; c--) {
+      if (line[c] === "}") depth++;
+      else if (line[c] === "{" && --depth < 0) {
+        if (
+          /\bfunction\b|=>|\bfun\s|\)\s*(?::[^{]*)?\{\s*$/.test(line) &&
+          !/^\s*(?:\}\s*)?(?:if|for|while|switch|catch|try|else|do)\b/.test(line)
+        )
+          return i;
+        depth = 0;
+      }
+    }
+  }
+  return -1;
+}
+
+/**
+ * Whether the enclosing function declares that it returns the value a catch returns: a parse
+ * helper typed `: URL | null` (or Kotlin `URL?`) that returns null for bad input, or a check
+ * typed `: boolean` that returns false, gives a result the caller already tells apart from
+ * success (#1192).
+ */
+function declaredFallback(lines: readonly string[], index: number, statement: string): boolean {
+  const value = /^return\s+(null|undefined|false)\b/.exec(statement)?.[1];
+  if (!value) return false;
+  const header = enclosingFunction(lines, index);
+  if (header < 0) return false;
+  const text = lines[header] ?? "";
+  // Java, C# and Dart name the type before the method: `boolean isValid(String s) {`.
+  if (value === "false" && /\b(?:boolean|bool)\s+\w+\s*\(/.test(text)) return true;
+  const type = /\)\s*:\s*([^{]+?)\s*(?:=>\s*)?\{\s*$/.exec(text)?.[1];
+  if (!type) return false;
+  if (value === "false") return /\b(?:boolean|Boolean|false)\b/.test(type);
+  if (value === "undefined") return /\bundefined\b/.test(type);
+  return /\bnull\b/.test(type) || /\?\s*>?$/.test(type);
+}
+
+/** `catchBlock(DEFAULT_VALUE)`, except where the function's return type declares the value. */
+function catchReturnDefault(lines: readonly string[], index: number): number[] | null {
+  const match = catchBlock(DEFAULT_VALUE)(lines, index);
+  if (!match) return null;
+  const line = lines[index] ?? "";
+  const inline = /\bcatch\b[^{]*\{(.*)\}/.exec(line)?.[1];
+  const statement = (inline ?? lines[match[1] ?? index] ?? "").trim();
+  return declaredFallback(lines, index, statement) ? null : match;
+}
+
 export const BUILTIN_RULES: readonly QualityRule[] = [
   {
     id: "empty-catch",
@@ -139,7 +193,7 @@ export const BUILTIN_RULES: readonly QualityRule[] = [
     inTests: false,
     message: "A catch block that only returns a default value turns a failure into a silent result",
     fix: "Let the error propagate, or return a result the caller can tell apart from success.",
-    match: catchBlock(DEFAULT_VALUE),
+    match: catchReturnDefault,
   },
   {
     id: "promise-catch-ignore",

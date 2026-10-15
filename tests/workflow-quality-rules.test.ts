@@ -37,6 +37,66 @@ describe("anti-slop rule pack", () => {
     expect(rulesOf([created("app/run.py", handled)])).toEqual([]);
   });
 
+  test("a catch returning the null or false its function declares is not a silent default (#1192)", () => {
+    // The url-shortener helpers: a parse that returns null for bad input, typed to say so.
+    const helpers = [
+      "export function parseUrl(raw: string): URL | null {",
+      "  try {",
+      "    return new URL(raw);",
+      "  } catch {",
+      "    return null;",
+      "  }",
+      "}",
+      "const readBody = async (req: Request): Promise<Body | null> => {",
+      "  try { return (await req.json()) as Body; } catch { return null; }",
+      "};",
+      "function isUrl(raw: string): boolean {",
+      "  try {",
+      "    new URL(raw);",
+      "    return true;",
+      "  } catch (error) {",
+      "    return false;",
+      "  }",
+      "}",
+      "",
+    ].join("\n");
+    expect(rulesOf([created("src/app.ts", helpers)])).toEqual([]);
+    const kotlin = "fun parse(raw: String): Url? {\n    try {\n        return Url(raw)\n    } catch (e: Exception) {\n        return null\n    }\n}\n";
+    expect(rulesOf([created("src/Parse.kt", kotlin)])).toEqual([]);
+    const java = "static boolean isUrl(String raw) {\n    try {\n        new URL(raw);\n        return true;\n    } catch (Exception e) {\n        return false;\n    }\n}\n";
+    expect(rulesOf([created("src/Urls.java", java)])).toEqual([]);
+    // A default the declared type does not announce is still a silent fallback.
+    const silent = [
+      "export function load(path: string): Config {",
+      "  try {",
+      "    return parse(read(path));",
+      "  } catch {",
+      "    return {};",
+      "  }",
+      "}",
+      "export function find(id: string): Item | null {",
+      "  try {",
+      "    return lookup(id);",
+      "  } catch {",
+      "    return [];",
+      "  }",
+      "}",
+      "export function count(path: string) {",
+      "  try {",
+      "    return lines(path).length;",
+      "  } catch {",
+      "    return null;",
+      "  }",
+      "}",
+      "",
+    ].join("\n");
+    expect(rulesOf([created("src/load.ts", silent)])).toEqual([
+      "catch-return-default:4:block",
+      "catch-return-default:11:block",
+      "catch-return-default:18:block",
+    ]);
+  });
+
   test("Go, Rust, suppressions and placeholders", () => {
     const go = "func f() {\n\tif err != nil {\n\t}\n\t_ = file.Close()\n}\n";
     expect(rulesOf([created("cmd/f.go", go)])).toEqual(["go-empty-error-check:2:block", "go-ignored-error:4:note"]);
@@ -184,6 +244,52 @@ describe("anti-slop rules in a run", () => {
       expect(claims.some((f) => f.claim.includes("lint-suppression"))).toBe(false);
       expect(fixture.executor.implementations).toBe(2);
       expect(runReport(service.store, run.runId)).toContain("Anti-slop rules: 0 blocking, 0 noted");
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  /** url-shortener in rounds 14 to 25 (#1192): a typed parse-or-null helper raised a corrective. */
+  class ParseHelperExecutor extends FixtureExecutor {
+    implementations = 0;
+    constructor(private readonly dir: string) {
+      super(dir);
+    }
+    override async execute(request: ExecutionRequest) {
+      if (request.profile.output === "plan") {
+        const result = await super.execute(request);
+        const plan = result.output as { taskGraph: { tasks: { writes: { path: string; action: string }[] }[] } };
+        plan.taskGraph.tasks[0]?.writes.push({ path: "src/app.ts", action: "create" });
+        return result;
+      }
+      if (request.profile.output === "implementation") {
+        this.implementations++;
+        writeFileSync(
+          join(this.dir, "src/app.ts"),
+          "export function parseUrl(raw: string): URL | null {\n  try {\n    return new URL(raw);\n  } catch {\n    return null;\n  }\n}\n",
+        );
+      }
+      return super.execute(request);
+    }
+  }
+
+  test("a parse helper typed to return null finishes without a rule corrective (#1192)", async () => {
+    const fixture = workflowFixture({
+      executor: (root) => {
+        mkdirSync(join(root, "src"), { recursive: true });
+        return new ParseHelperExecutor(root);
+      },
+    });
+    try {
+      const { service } = fixture;
+      const run = await fixture.start();
+      await service.drive(run.runId, new AbortController().signal);
+      await fixture.approve(run.runId);
+      const done = await service.drive(run.runId, new AbortController().signal);
+      expect(done.status).toBe("completed");
+      const claims = service.store.findings(run.runId).map((f) => JSON.parse(f.body_json).claim as string);
+      expect(claims.filter((claim) => claim.includes("catch-return-default"))).toEqual([]);
+      expect(fixture.executor.implementations).toBe(1);
     } finally {
       await fixture.dispose();
     }

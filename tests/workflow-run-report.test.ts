@@ -6,6 +6,7 @@ import { parseWorkflowArgs, workflowHelp } from "../src/headless/workflow-parse.
 import { executeWorkflowCommand } from "../src/headless/workflow.js";
 import { formatWorkflowResult } from "../src/core/commands/workflow.js";
 import { newId } from "../src/core/workflows/store.js";
+import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -105,5 +106,36 @@ describe("run report models (#1017)", () => {
     expect(runReport(fx.service.store, runId)).toContain(
       "Reviewed on `fixture/model` (fixture:model); implemented on `fixture/model` (fixture:model).",
     );
+  }, 60000);
+});
+
+// Cloud smoke 2026-10-15, run 741547f0 (#1219): a `quick` run blocked with no task done printed
+// "The request is done as stated." under Summary, the outcome of its host-made spec.
+describe("run report summary of an unfinished run (#1219)", () => {
+  test("opens with the status, reason, stage and tasks, and leaves out the host-made outcome", async () => {
+    const fx = workflowFixture();
+    cleanups.push(() => fx.dispose());
+    const execute = fx.executor.execute.bind(fx.executor);
+    fx.executor.execute = async (request: ExecutionRequest) =>
+      request.profile.output === "implementation" ? { output: { broken: true }, inputTokens: 20, outputTokens: 30 } : execute(request);
+    const run = await fx.service.start({ commandId: newId(), featureId: "fixture", workflowId: "quick", prompt: "Create ready value", ownerLabel: "test", policy: fx.policy });
+    let snapshot = await fx.service.drive(run.runId, new AbortController().signal);
+    for (let round = 0; round < 4 && snapshot.status === "waiting"; round++) {
+      await fx.approve(run.runId);
+      snapshot = await fx.service.drive(run.runId, new AbortController().signal);
+    }
+    expect(snapshot.status).toBe("blocked");
+    const report = runReport(fx.service.store, run.runId);
+    const summary = report.slice(report.indexOf("## Summary"), report.indexOf("## Changes"));
+    expect(summary).not.toContain("The request is done as stated.");
+    expect(summary).toMatch(/\*\*Blocked\*\* \(\w+\) at `\w+`: 0 of \d+ tasks done\. The run did not complete/);
+  }, 60000);
+
+  test("a completed run's spec outcome is labelled as its goal", async () => {
+    const { fx, runId } = await completedRun();
+    const report = runReport(fx.service.store, runId);
+    const summary = report.slice(report.indexOf("## Summary"), report.indexOf("## Changes"));
+    expect(summary).toContain(`Goal: ${fx.service.store.state(runId).spec?.outcome}`);
+    expect(summary).not.toContain("did not complete");
   }, 60000);
 });

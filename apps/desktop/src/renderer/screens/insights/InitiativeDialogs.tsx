@@ -125,7 +125,7 @@ export function RejectDialog({
   return (
     <FormDialog
       title="Reject the split"
-      description="The initiative stops with this reason. Start a new one with a clearer request to try again."
+      description="The split comes back to you with this reason. Edit it to propose a new revision, which waits for approval again."
       submitLabel="Reject split"
       danger
       problem={reason.trim() ? null : "Give a reason."}
@@ -412,7 +412,7 @@ export function ExtendDialog({ projectKey, view, onClose }: Props) {
   return (
     <FormDialog
       title="Extend budget"
-      description="Raises the shared budget's limits; a limit can only go up. Features started later get an equal share of what remains."
+      description="Raises the shared budget's limits; a limit can only go up. Features started later get a share of what remains, weighted by their size."
       submitLabel="Extend"
       problem={extension.ok ? null : extension.error}
       onSubmit={() =>

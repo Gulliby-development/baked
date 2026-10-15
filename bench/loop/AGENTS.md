@@ -139,12 +139,12 @@ Defaults below. The owner may change any value; roles read it at the start of ea
     "writers": 3,
     "clarification": "assume",
     "sizing": { "maxAttemptTokens": 600000, "maxRunTokens": 4000000 },
-    "selfRaiseTokensUpTo": 8000000,
+    "selfRaiseUsdUpTo": 12,
     "referenceModel": null,
     "rotateNewAppProviders": true
   },
   "budgets": {
-    "roundRunTokens": 30000000,
+    "roundRunUsd": 40,
     "maxFixIssuesPerRound": 6,
     "minBroadFeaturesPerRound": 1
   },
@@ -279,7 +279,7 @@ Until round 6 the loop built only Python and TypeScript (Bun) projects. From rou
 The orchestrator keeps the current level in `state.json` (`difficulty`, 1-5; the level definitions with sizes and expected costs are in `roles/ideator.md`). Since the owner's decision of 2026-10-14 the loop climbs one level at a time, quality first:
 
 - **Start.** The loop runs at level 3 until a level-3 round has no errors.
-- **No errors.** A round at level L has no errors when, for the new apps of that round, every new app of level L was built, passed verification and (when `publish.mode` allows) was published, and the round's analysts filed no new P0 or P1 finding. Controls, updates and the other probes are still run and analysed, but only these two conditions decide the level. Infrastructure resumes (a provider outage, a reboot, a rate limit) do not count as errors; a manual approval that policy always requires (a new project file, a CI file) does not either, but is still a finding when it was avoidable.
+- **No errors.** A round at level L has no errors when, for the new apps of that round, every new app of level L was built, passed verification and (when `publish.mode` allows) was published, and the round's analysts filed no new P0 or P1 finding. Both conditions cover the whole round: new P0 or P1 findings from the updates, the controls and the probes count as errors exactly like those from the new apps (owner's decision of 2026-10-14). Infrastructure resumes (a provider outage, a reboot, a rate limit) do not count as errors; a manual approval that policy always requires (a new project file, a CI file) does not either, but is still a finding when it was avoidable.
 - **Climb.** A round with no errors at level L sets the next round's level to L+1 (at most 5). A round with errors repeats level L: the fixes of its findings are measured by the next round at the same level.
 - **Level 5.** A level-5 app is always built as a BAKED initiative (`baked workflow initiative start`), never as one run. After a level-5 round with no errors the loop stays at level 5 until the owner decides what comes next.
 - **What stays.** One new app of every round is still built on the claude-code series (Opus for plan, spec and review, Sonnet for code, `revision: patch`) and one update per round still runs on the `quick` preset; the update picks, the controls and the cfgtrace-style probe keep their rules and levels (updates stay at difficulty 2). The new app of the other series is built at the same level.
@@ -297,7 +297,7 @@ Besides new apps, each round improves existing public projects of the organizati
 - **Build.** The implementer clones the repository fresh, adds the BAKED project config, records the baseline test result and runs `workflow run sdd` with the same fixed settings as every other app.
 - **Verify and ship.** The verifier checks the whole test suite and the diff against the brief, and that the listed extras exist and are correct. The publisher opens a pull request in the repository, merges it after green CI and then applies topics and description with `gh repo edit` (see `roles/publisher.md`).
 - **Metrics.** Update runs use `group: "update"` and are tracked separately from new apps and control apps in `ledger/metrics.csv`, `run.json` and the round report. They are never averaged with greenfield runs. Their findings are tagged `brownfield`.
-- **Budget.** Update runs are small, but they count toward `roundRunTokens`. Each has the policy sizing as its run budget, like every other app.
+- **Budget.** Update runs are small, but they count toward `roundRunUsd`. Each has the policy sizing as its run budget, like every other app.
 
 ## Comparability
 
@@ -324,14 +324,14 @@ Most runs use one implementation model and one review model, so a habit of that 
 
 | Budget | Default | On reaching it |
 |---|---|---|
-| One BAKED run | starts at the policy budget; the implementer may raise it up to `selfRaiseTokensUpTo` (8M) on its own at levels 1-3 and up to 15M at levels 4 and 5 (owner's decision of 2026-10-14) | above the cap only with the owner's OK; otherwise stop the run and record `budget_cap` |
-| All BAKED runs in a round | `roundRunTokens` 30M at levels 1-3, 45M at levels 4 and 5 | finish runs in progress, skip unbuilt new apps and updates (record them), go to phase 6; a level that needs more is reported, not shrunk |
+| One BAKED run | starts at the policy budget (tokens); the implementer may raise it on its own while the run's estimated cost stays under `selfRaiseUsdUpTo` ($12 at levels 1-3, $22 at levels 4 and 5; owner's decisions of 2026-10-14) | above the cap only with the owner's OK; otherwise stop the run and record `budget_cap`. Every run also carries the policy field `maxCostUsd` set to the cap, so BAKED itself stops the run |
+| All BAKED runs in a round | `roundRunUsd` $40 at levels 1-3, $60 at levels 4 and 5 (the sum of the runs' estimated cost from `baked workflow usage RUN_ID --json`) | finish runs in progress, skip unbuilt new apps and updates (record them), go to phase 6; a level that needs more is reported, not shrunk |
 | Fix work per round | `maxFixIssuesPerRound` 6 issues, at least `minBroadFeaturesPerRound` 1 broad feature when one is open (the top-ranked `idea` counts; the backlog role ranks ideas, the owner does not pick) | the rest stays on the board for later rounds |
 | One fix PR | `maxPrAttemptsPerIssue` 3 CI rounds | leave the PR open with a comment on what fails, take the next issue |
 | Round wall clock | `maxWallClockHours` 30 | finish the current step, write the report with what is done |
 | Orchestrator and role tokens | not capped by the loop; the harness's own limits apply | if the harness is rate-limited, wait and resume, don't skip phases |
 
-Token counts come from `baked workflow usage RUN_ID --json`, never from estimates. Over-budget rounds are reported, not hidden.
+Costs and token counts come from `baked workflow usage RUN_ID --json` (per-attempt `costUsd` and tokens), never from estimates. Tokens stay a reported metric; the caps are in dollars because raw tokens mix cheap cache reads with expensive output (owner's decision of 2026-10-14). Over-budget rounds are reported, not hidden.
 
 ## Approval gates and what never happens without the owner
 
@@ -341,7 +341,7 @@ The loop is autonomous except at these points:
 |---|---|
 | Creating a public repository | `publish.mode = auto` (default): none; standing authorization, see below. `approve-per-round` (optional, owner's switch): the owner's typed approval ("yes", in any language) on that round's batch. Either way only apps whose `verify.json` passes. |
 | Making a repository public (`gh repo edit --visibility public`) | same as creating it, and only after CI is green on all three operating systems |
-| Raising one run above its level's cap (8M at levels 1-3, 15M at levels 4 and 5) | the owner's OK for that run |
+| Raising one run above its level's cap ($12 at levels 1-3, $22 at levels 4 and 5) | the owner's OK for that run |
 | Merging a fix PR into BAKED `main` | none when `fix.mergeAfterGreenCi` is true and CI is green (owner's standing authorization of 2026-10-09). False: leave PRs for the owner. |
 | Merging a verified update PR into a published repository | none when `publish.mode` is `auto` and the repository's CI is green on all three operating systems (standing authorization of 2026-10-11, same as creating the repositories) |
 | Tags, releases, version bumps | never; the owner pushes tags |
@@ -360,13 +360,13 @@ In `approve-per-round` mode the publish gate never blocks the loop: a batch wait
 - `STOP` exists, or the owner says stop.
 - Every configured provider refuses for credits or auth.
 - BAKED `main` does not build or its CI is red, and the fixer could not fix it in `maxPrAttemptsPerIssue` attempts.
-- `maxRoundsOverBudget` rounds in a row went over `roundRunTokens`.
+- `maxRoundsOverBudget` rounds in a row went over `roundRunUsd`.
 - A secret or private data is found in a published repository (also: make the repo private if possible, and report at once).
 - Disk below 10 GB free after cleaning old run worktrees (`baked workflow` retention, old `baked-bench` rounds beyond the last 3).
 
 **Pause and ask** (keep the session alive, report once, continue other phases that don't depend on the answer):
 - The device's permission mode refuses a command the loop needs.
-- A run needs more than its level's cap (8M at levels 1-3, 15M at levels 4 and 5).
+- A run needs more than its level's cap ($12 at levels 1-3, $22 at levels 4 and 5).
 - An issue labelled `needs-gulliby` blocks work (accounts, money, organization settings). Scout ideas never wait for the owner; the backlog role triages them.
 - A finding is a security issue in BAKED itself (report it privately to the owner; don't file a public detail if the repo becomes public).
 

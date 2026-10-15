@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useId, useState } from "react";
 import { bridge } from "../../client/bridge.js";
 import {
   type CliLogin,
@@ -66,6 +66,8 @@ function CliSignInControls({
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [code, setCode] = useState("");
+  const codeId = useId();
   const running = login?.state === "running";
 
   useEffect(() => {
@@ -190,6 +192,36 @@ function CliSignInControls({
           Install the {provider.name} CLI, then sign in here or run{" "}
           <code className="font-mono">{signIn.command}</code> in a terminal.
         </span>
+      )}
+      {running && login?.acceptsCode && (
+        <form
+          className={cn(ADD, "basis-full")}
+          onSubmit={(e) => {
+            e.preventDefault();
+            const value = code.trim();
+            if (!value) return;
+            void act(async () => {
+              setLogin((await setup.submitLoginCode(projectKey, provider.id, value)).login);
+              setCode("");
+            });
+          }}
+        >
+          <label htmlFor={codeId} className="sr-only">
+            {provider.name} sign-in code
+          </label>
+          <input
+            id={codeId}
+            className={KEY_INPUT}
+            autoComplete="off"
+            spellCheck={false}
+            placeholder="If the sign-in page shows a code, paste it here"
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+          />
+          <Button type="submit" variant="primary" size="md" disabled={busy || !code.trim()}>
+            Send code
+          </Button>
+        </form>
       )}
       {running && shown.length > 0 && (
         <pre

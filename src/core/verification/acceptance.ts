@@ -137,12 +137,24 @@ function acceptance(
     if (!row || !["implemented", "verified"].includes(row.status))
       throw new WorkflowFault("OUTPUT_INVALID", `Task ${task.id} is not implemented`);
   }
+  // A static check that failed only on debt from before the run under `staticBaseline:
+  // "relative"` (#1222) counts as passed; the checks stage recorded which run that was.
+  const debt = new Set(
+    store
+      .artifacts(runId)
+      .filter((a) => a.logical_path.startsWith("checks/baseline-debt/"))
+      .map(
+        (a) => (JSON.parse(store.readArtifact(runId, a.id)) as { evidenceId: string }).evidenceId,
+      ),
+  );
   for (const checkId of required.checks) {
     const last = store
       .checks(runId)
       .filter((c) => c.check_id === checkId && c.snapshot_id === state.snapshotId)
       .at(-1);
-    if (last?.status !== "passed" || last.validity !== "current")
+    const passed =
+      last?.status === "passed" || (last?.status === "failed" && debt.has(last.evidence_id));
+    if (!last || !passed || last.validity !== "current")
       throw new WorkflowFault(
         "OUTPUT_INVALID",
         `Required check ${checkId} has not passed on current sources`,

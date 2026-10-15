@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { attemptCapFault } from "../src/core/workflows/agent-executor.js";
@@ -401,19 +401,72 @@ describe("workflow parallel writers", () => {
 
   test("a task that changes a file outside its writes is rejected and not integrated", async () => {
     const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }], { "a.txt": "A", "b.txt": "B" });
-    // The first task in graph order strays; the task after it is still integrated.
-    fx.executor.hooks = { T001: (request) => writeFileSync(join(request.root ?? "", "stray.txt"), "stray") };
+    // The first task in graph order strays with a journaled edit; the task after it is still integrated.
+    fx.executor.hooks = {
+      T001: (request) => {
+        const root = request.root ?? "";
+        writeFileSync(join(root, "stray.txt"), "stray");
+        const effect = fx.store.prepareEffect(request.runId, request.attemptId, "file_patch", { tool: "edit_file", path: "stray.txt", root: relative(fx.root, root).replaceAll("\\", "/") }, null, hashBytes("stray"));
+        fx.store.effectStatus(request.runId, effect, "applied");
+      },
+    };
     const run = await fx.start(2);
     const blocked = await fx.complete(run.runId);
     expect(blocked.status).toBe("blocked");
     expect(blocked.reason).toBe("input_changed");
-    expect(fx.lastError(run.runId)).toContain("outside its write scope: stray.txt");
+    expect(fx.lastError(run.runId)).toContain("outside its write scope: stray.txt (none -> ");
     expect(fx.status("T001", run.runId)).toBe("blocked");
     expect(fx.status("T002", run.runId)).toBe("implemented");
     expect(readFileSync(join(fx.tree(run.runId), "b.txt"), "utf8")).toBe("B");
     expect(existsSync(join(fx.tree(run.runId), "a.txt"))).toBe(false);
     expect(existsSync(join(fx.tree(run.runId), "stray.txt"))).toBe(false);
     expect(existsSync(join(fx.root, "stray.txt"))).toBe(false);
+  });
+
+  test("a sibling file a host process rewrote without a journaled edit is put back, not blamed on the task (#1188)", async () => {
+    // Bench R25, bytelens T002: T001's unformatted file was rewritten in T002's worktree by an
+    // unjournaled whole-unit formatter pass; the run stopped input_changed, and so did the resume.
+    const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }], { "a.txt": "A", "b.txt": "B" });
+    fx.executor.hooks = {
+      T002: (request) => {
+        const root = request.root ?? "";
+        writeFileSync(join(root, "shared.txt"), "one\ntwo\nformatted\n");
+        writeFileSync(join(root, "stray.txt"), "stray");
+      },
+    };
+    const run = await fx.start(2);
+    const done = await fx.complete(run.runId);
+    expect(fx.lastError(run.runId)).not.toContain("outside its write scope");
+    expect(done.status).toBe("completed");
+    expect(readFileSync(join(fx.tree(run.runId), "shared.txt"), "utf8").replace(/\r\n/g, "\n")).toBe("one\ntwo\n");
+    expect(existsSync(join(fx.tree(run.runId), "stray.txt"))).toBe(false);
+    const record = fx.store.artifacts(run.runId).find((a) => a.logical_path.startsWith("tasks/T002/reverted-outside-"));
+    const reverted = JSON.parse(fx.store.readArtifact(run.runId, record?.id ?? "")) as { reverted: { path: string; before: string | null; after: string | null }[] };
+    expect(reverted.reverted.map((r) => r.path)).toEqual(["shared.txt", "stray.txt"]);
+    expect(reverted.reverted[0]?.after).toBe(hashBytes("one\ntwo\nformatted\n"));
+    expect(reverted.reverted[1]?.before).toBeNull();
+  });
+
+  test("a serial task in the run worktree also gets an unjournaled sibling change put back (#1188)", async () => {
+    const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }], { "a.txt": "A", "b.txt": "B" });
+    fx.executor.hooks = { T002: (request) => writeFileSync(join(request.root ?? "", "shared.txt"), "reformatted\n") };
+    const run = await fx.start(1);
+    const done = await fx.complete(run.runId);
+    expect(fx.lastError(run.runId)).not.toContain("outside its write scope");
+    expect(done.status).toBe("completed");
+    expect(readFileSync(join(fx.tree(run.runId), "shared.txt"), "utf8").replace(/\r\n/g, "\n")).toBe("one\ntwo\n");
+    expect(fx.store.artifacts(run.runId).some((a) => a.logical_path.startsWith("tasks/T002/reverted-outside-"))).toBe(true);
+  });
+
+  test("inline, an unjournaled change outside the task's writes still stops the run and is kept (#1188)", async () => {
+    // Inline the root is the user's working copy: the change may be the user's own edit.
+    const fx = setup([{ id: "T001", files: { "a.txt": "A" } }], { "a.txt": "A" });
+    fx.executor.hooks = { T001: (request) => writeFileSync(join(request.root ?? "", "shared.txt"), "user edit\n") };
+    const run = await fx.start(1, "inline");
+    const blocked = await fx.complete(run.runId);
+    expect(blocked).toMatchObject({ status: "blocked", reason: "input_changed" });
+    expect(fx.lastError(run.runId)).toContain("outside its write scope: shared.txt (");
+    expect(readFileSync(join(fx.root, "shared.txt"), "utf8")).toBe("user edit\n");
   });
 
   test("losing one task's worker interrupts only that task; resume runs it again", async () => {

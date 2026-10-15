@@ -26,8 +26,11 @@ afterEach(() => {
 const spec: Spec = { schemaVersion: 1, featureId: "fixture", revision: 1, title: "Ignore why", problem: "Globs are missing", outcome: "Globs exist", inScope: ["Create the package"], outOfScope: [], assumptions: [], openQuestions: [], requirements: [{ id: "FR-001", text: "Globs match", priority: "must", verification: "automated", sourceRefs: [] }], criteria: [{ id: "AC-001", requirementIds: ["FR-001"], given: "a workspace", when: "the tests run", then: "globs match", method: "automated" }], dependencies: [] };
 const markdown = "# Plan\n## Context\nA package and its tests.\n## Decisions\nDEC-001: FR-001 is tested last.\n## Components\npkg/__init__.py, pkg/globs.py, tests/test_globs.py\n## Data\nText\n## Verification\nTests\n## Risks\nNone for fixture";
 // pytest without a test file: "no tests ran" and exit code 5.
-const pytest: Check = { id: "tests", executable: "bun", args: ["-e", "if (!(await Bun.file('tests/test_globs.py').exists())) { console.log('collected 0 items\\n\\n===== no tests ran in 0.01s ====='); process.exit(5) } console.log('1 passed')"], cwd: ".", timeoutMs: 10000, required: true, scope: "feature", envNames: [], writes: [] };
-const policy: RunPolicy = { ...defaultWorkflowPolicy, maxRepairRounds: 2, checks: [pytest] };
+const pytestCheck = (noTests: string): Check => ({ id: "tests", executable: "bun", args: ["-e", `if (!(await Bun.file('tests/test_globs.py').exists())) { console.log(${JSON.stringify(noTests)}); process.exit(5) } console.log('1 passed')`], cwd: ".", timeoutMs: 10000, required: true, scope: "feature", envNames: [], writes: [] });
+const pytest = pytestCheck("collected 0 items\n\n===== no tests ran in 0.01s =====");
+// pytest with `testpaths = ["tests"]` and no tests/ directory yet: only a config warning (#1208).
+const pytestTestpaths = pytestCheck("===== warnings summary =====\n../_pytest/config/__init__.py:1474\n  PytestConfigWarning: No files were found in testpaths; consider removing or adjusting your testpaths configuration. Searching recursively from the current directory instead.\n\n===== 1 warning in 0.01s =====");
+const basePolicy: RunPolicy = { ...defaultWorkflowPolicy, maxRepairRounds: 2, checks: [pytest] };
 const planned = (id: string, path: string, dependsOn: string[] = []): Task => ({ id, title: `Write ${path}`, description: `Write ${path}`, requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn, profileId: "implementer", writes: [{ path, action: "create" }], readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior" });
 
 class ScriptedExecutor implements AgentExecutor {
@@ -65,7 +68,7 @@ class ScriptedExecutor implements AgentExecutor {
   }
 }
 
-async function runScenario(moduleSummary: string) {
+async function runScenario(moduleSummary: string, policy: RunPolicy = basePolicy) {
   const root = mkdtempSync(join(tmpdir(), "baked-ignorewhy-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const executor = new ScriptedExecutor(root, moduleSummary);
@@ -102,6 +105,18 @@ describe("scenario: ignorewhy 84f2692e, __init__.py named by a module path and n
     expect(record.checks.map((c) => c.status)).toEqual(["no_tests"]);
     expect(record.findings).toEqual([]);
   });
+
+  test("pytest that only warns about missing testpaths routes no defect (#1208)", async () => {
+    const policy = { ...basePolicy, checks: [pytestTestpaths] };
+    const { service, runId, done, executor } = await runScenario("Created pkg/globs.py; pkg/__init__.py should re-export match_glob, which T001 owns.", policy);
+    expect(done.status).toBe("completed");
+    expect(service.store.run(runId).corrective_tasks).toBe(0);
+    expect(executor.implemented).toEqual(["T001", "T002", "T003"]);
+    const defects = service.store.latestArtifact(runId, "tasks/defects/T002.json");
+    const record = JSON.parse(service.store.readArtifact(runId, defects?.id ?? "")) as { checks: { status: string }[]; findings: string[] };
+    expect(record.checks.map((c) => c.status)).toEqual(["no_tests"]);
+    expect(record.findings).toEqual([]);
+  });
 });
 
 describe("namesPath and noTestsCollected (#1031)", () => {
@@ -119,6 +134,7 @@ describe("namesPath and noTestsCollected (#1031)", () => {
     expect(noTestsCollected("No tests found, exiting with code 1")).toBe(true);
     expect(noTestsCollected("No test files found, exiting with code 1")).toBe(true);
     expect(noTestsCollected("?   \texample.com/pkg\t[no test files]")).toBe(true);
+    expect(noTestsCollected("PytestConfigWarning: No files were found in testpaths; consider removing or adjusting your testpaths configuration.\n1 warning in 0.01s")).toBe(true);
     expect(noTestsCollected("FAILED tests/test_globs.py::test_star - AssertionError")).toBe(false);
   });
 });

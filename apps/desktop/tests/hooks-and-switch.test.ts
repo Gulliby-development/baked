@@ -100,3 +100,18 @@ describe("account switch client", () => {
     expect(refused).toBeInstanceOf(ApiError);
   });
 });
+
+describe("sign-in code client (#1182)", () => {
+  test("a Claude Code sign-in takes the code the page shows; Codex takes none", async () => {
+    const started = await setup.startLogin("baked", "claude-code");
+    expect(started.login.acceptsCode).toBe(true);
+    const sent = await setup.submitLoginCode("baked", "claude-code", "abc#def");
+    expect(sent.login.lines.at(-1)).toContain("Code sent");
+    await setup.cancelLogin("baked", "claude-code");
+    const codex = await setup.startLogin("baked", "codex");
+    expect(codex.login.acceptsCode).toBeUndefined();
+    const refused = await setup.submitLoginCode("baked", "codex", "abc").catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(ApiError);
+    await setup.cancelLogin("baked", "codex");
+  });
+});

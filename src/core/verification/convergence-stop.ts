@@ -196,6 +196,29 @@ export function contradictions(
 }
 
 /**
+ * For each finding, the earlier findings a correction of the run already addressed at the same
+ * location that carry a repro: the candidates whose fix the finding may reverse (#1234). Whether
+ * it does is decided by running their repros, which the caller does. A finding without a file, or
+ * without such an earlier finding, maps to an empty list.
+ */
+export function reversalCandidates(
+  store: WorkflowStore,
+  runId: string,
+  findings: Review["findings"],
+): { findingId: string; earlier: { id: string; body: Partial<Finding> }[] }[] {
+  const live = new Set(findings.map((f) => f.id));
+  const earlier = store
+    .findings(runId)
+    .filter((row) => row.repair_task_id && !live.has(row.id))
+    .map((row) => ({ id: row.id, body: JSON.parse(row.body_json) as Partial<Finding> }))
+    .filter((e) => e.body.repro);
+  return findings.map((finding) => ({
+    findingId: finding.id,
+    earlier: finding.file ? earlier.filter((e) => sameLocation(e.body, finding)) : [],
+  }));
+}
+
+/**
  * The earlier findings a reviewer can name in `repeatOf`: those a correction of the run already
  * addressed. Capped so a long run does not grow the prompt.
  */
@@ -275,6 +298,27 @@ export function requiredChecksPass(
       .at(-1);
     return last?.status === "passed" && last.validity === "current";
   });
+}
+
+/**
+ * Whether a review pass's findings become known limitations instead of a correction (#1157): the
+ * review rounds (`maxRepairRounds`) are used, every required check passed on the current
+ * snapshot, and no finding is critical or high. Such a correction would be refused as
+ * `no_progress`, yet each round of cfgtrace a657dc4d resolved what it was given and the next pass
+ * found a new medium case; a fixed count cannot tell that from a loop.
+ */
+export function reviewLimitAccepts(
+  reviewRounds: number,
+  policy: RunPolicy,
+  findings: Pick<Finding, "severity">[],
+  checksPass: boolean,
+): boolean {
+  return (
+    checksPass &&
+    findings.length > 0 &&
+    reviewRounds >= policy.maxRepairRounds &&
+    findings.every((f) => f.severity === "medium" || f.severity === "low")
+  );
 }
 
 /** Distinct findings: a finding that repeats another counts with it. */

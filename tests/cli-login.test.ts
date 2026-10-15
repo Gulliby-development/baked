@@ -10,6 +10,7 @@ import {
   cliLoginSettled,
   setCliLoginBackend,
   startCliLogin,
+  submitCliLoginCode,
   switchCliAccount,
 } from "../src/core/llm/cli-login.js";
 import { removeTempDir } from "./helpers/temp-dir.js";
@@ -21,10 +22,11 @@ afterEach(async () => {
 });
 
 /** A CLI login that prints a URL and ends when the test says so. */
-function fakeBackend(state: { installed?: boolean; loggedIn?: boolean } = {}) {
+function fakeBackend(state: { installed?: boolean; loggedIn?: boolean; takesCode?: boolean } = {}) {
   let finish: (error?: Error) => void = () => {};
   let aborted = false;
   let loggedOut = false;
+  const codes: string[] = [];
   const backend: CliLoginBackend = {
     status: () => ({
       installed: state.installed ?? true,
@@ -45,6 +47,7 @@ function fakeBackend(state: { installed?: boolean; loggedIn?: boolean } = {}) {
           aborted = true;
           finish(new Error("killed"));
         },
+        ...(state.takesCode ? { submitCode: (code: string) => void codes.push(code) } : {}),
       };
     },
     logout: () => {
@@ -58,6 +61,7 @@ function fakeBackend(state: { installed?: boolean; loggedIn?: boolean } = {}) {
     fail: (message: string) => finish(new Error(message)),
     aborted: () => aborted,
     loggedOut: () => loggedOut,
+    codes,
   };
 }
 
@@ -105,6 +109,29 @@ describe("CLI provider sign-in", () => {
   });
 });
 
+describe("CLI sign-in code (#1182)", () => {
+  test("a login whose CLI takes a code passes the pasted code to it", async () => {
+    const fake = useFake("claude-code", { takesCode: true });
+    expect(startCliLogin("claude-code").acceptsCode).toBe(true);
+    const sent = submitCliLoginCode("claude-code", "  abc123#state  ");
+    expect(fake.codes).toEqual(["abc123#state"]);
+    expect(sent.lines.at(-1)).toBe("Code sent; waiting for the CLI to finish signing in.");
+    fake.succeed();
+    expect((await cliLoginSettled("claude-code"))?.state).toBe("succeeded");
+  });
+
+  test("a code is refused without a running login, for a CLI that takes none, and with spaces", async () => {
+    useFake("claude-code", { takesCode: true });
+    expect(() => submitCliLoginCode("claude-code", "abc")).toThrow(/No sign-in is running/);
+    startCliLogin("claude-code");
+    expect(() => submitCliLoginCode("claude-code", "two words")).toThrow(/without spaces/);
+    const codex = useFake("codex");
+    expect(startCliLogin("codex").acceptsCode).toBeUndefined();
+    expect(() => submitCliLoginCode("codex", "abc")).toThrow(/takes no code/);
+    expect(codex.codes).toEqual([]);
+  });
+});
+
 describe("local API: CLI provider sign-in", () => {
   async function serve() {
     const fixture = workflowFixture();
@@ -117,9 +144,30 @@ describe("local API: CLI provider sign-in", () => {
       await removeTempDir(configDir);
       await removeTempDir(homeDir);
     });
-    return (path: string, method = "GET") =>
-      fetch(`${server.url}${path}`, { method, headers: { Authorization: `Bearer ${server.token}` } });
+    return (path: string, method = "GET", body?: unknown) =>
+      fetch(`${server.url}${path}`, {
+        method,
+        headers: { Authorization: `Bearer ${server.token}`, "Content-Type": "application/json" },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
   }
+
+  test("POST /v1/providers/ID/login/code sends the code to the running sign-in", async () => {
+    const fake = useFake("claude-code", { takesCode: true });
+    useFake("codex");
+    const call = await serve();
+    expect((await call("/v1/providers/claude-code/login/code", "POST", { code: "abc" })).status).toBe(409);
+    const started = (await (await call("/v1/providers/claude-code/login", "POST")).json()) as { login: CliLogin };
+    expect(started.login.acceptsCode).toBe(true);
+    const sent = await call("/v1/providers/claude-code/login/code", "POST", { code: "abc#def" });
+    expect(sent.status).toBe(202);
+    expect(fake.codes).toEqual(["abc#def"]);
+    expect((await call("/v1/providers/claude-code/login/code", "POST", {})).status).toBe(400);
+    expect((await call("/v1/providers/claude-code/login/code")).status).toBe(405);
+    await call("/v1/providers/codex/login", "POST");
+    expect((await call("/v1/providers/codex/login/code", "POST", { code: "abc" })).status).toBe(409);
+    expect((await call("/v1/providers/openai/login/code", "POST", { code: "abc" })).status).toBe(404);
+  });
 
   test("sign-in starts, is polled, is listed with the provider and signs out", async () => {
     const fake = useFake("claude-code");

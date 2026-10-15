@@ -169,6 +169,44 @@ describe("auto approval", () => {
     expect(evaluateAutoApproval(anywhere, manifest, spec, graph([{ path: "package.json", action: "delete" }]), [], [], { ...present, scaffold: true }).approval).toBeNull();
     expect(evaluateAutoApproval(anywhere, manifest, spec, graph([modify("bun.lock"), modify("AGENTS.md")]), [], [], { ...present, scaffold: true }).approval).toBeNull();
   });
+  // lockorder 6487b225 (R27): a multi-project .NET plan references its new Core project from the
+  // scaffold's console and test projects, which the request names (#1229).
+  describe("manifest edits the request names (requestedManifestEdits)", () => {
+    const request = "Add a Core library. Reference it from src/Lockorder/Lockorder.csproj and from Lockorder.Tests.csproj; keep package.json as is.";
+    const edits = graph([modify("src/Lockorder/Lockorder.csproj"), create("src/Lockorder.Core/Lockorder.Core.csproj")], [modify("tests/Lockorder.Tests/Lockorder.Tests.csproj")]);
+    const present = { exists: (path: string) => !path.includes("Core"), scaffold: false, request };
+    const covered: Spec = { ...spec, deliverables: [{ quote: "a Core library", requirementIds: ["FR-001"] }] };
+    const optedIn: RunPolicy = { ...anywhere, autoApproval: { renewal: false, limits: { ...limits, allowedPaths: ["**"], maxFiles: 10 }, requestedManifestEdits: true } };
+    test("needs a person by default", () => {
+      const off: RunPolicy = { ...optedIn, autoApproval: { renewal: false, limits: { ...limits, allowedPaths: ["**"], maxFiles: 10 } } };
+      const reasons = evaluateAutoApproval(off, manifest, covered, edits, [], [], present).reasons.join("\n");
+      expect(reasons).toContain("src/Lockorder/Lockorder.csproj always needs a person");
+      expect(reasons).toContain("tests/Lockorder.Tests/Lockorder.Tests.csproj always needs a person");
+    });
+    test("is approved within the limits when opted in", () => {
+      expect(PolicySchema.parse(optedIn).autoApproval?.requestedManifestEdits).toBe(true);
+      const result = evaluateAutoApproval(optedIn, manifest, covered, edits, [], [], present);
+      expect(result.reasons).toEqual([]);
+      expect(result.approval?.mode).toBe("limits");
+    });
+    test("a manifest the request does not name, a delete, a lock file or a tool config still needs a person", () => {
+      for (const write of [modify("src/Other/Other.csproj"), { path: "src/Lockorder/Lockorder.csproj", action: "delete" as const }, modify("packages.lock.json"), modify("Directory.Packages.props"), modify("tsconfig.json")]) {
+        const named = `${request} Also touch ${write.path}.`;
+        const unnamed = write.path === "src/Other/Other.csproj" ? request : named;
+        expect(evaluateAutoApproval(optedIn, manifest, covered, graph([write]), [], [], { ...present, request: unnamed }).approval).toBeNull();
+      }
+    });
+    test("renewal still needs an earlier human approval", () => {
+      const renewOnly: RunPolicy = { ...defaultWorkflowPolicy, autoApproval: { renewal: true, limits: null, requestedManifestEdits: true } };
+      const result = evaluateAutoApproval(renewOnly, manifest, covered, edits, [], [], present);
+      expect(result.approval).toBeNull();
+      expect(result.reasons.join("\n")).not.toContain("always needs a person");
+    });
+    test("the planner is told the request may name manifest edits", () => {
+      expect(plannerApprovalLimits(optedIn)?.alwaysHuman).toContain("or one the request names");
+      expect(plannerApprovalLimits(anywhere)?.alwaysHuman).not.toContain("or one the request names");
+    });
+  });
   test("creating a lock file, a CI file or project instructions still needs a person", () => {
     for (const path of ["bun.lock", ".github/workflows/ci.yml", "AGENTS.md", ".env"])
       expect(evaluateAutoApproval(anywhere, manifest, spec, graph([create(path)]), [], [], { exists: () => false }).approval).toBeNull();

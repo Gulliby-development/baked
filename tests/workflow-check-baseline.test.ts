@@ -11,7 +11,9 @@ import {
   testCount,
 } from "../src/core/verification/output-counts.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
-import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
+import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
+import type { ExecutionRequest } from "../src/core/workflows/types.js";
+import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
@@ -199,6 +201,145 @@ describe("baseline comparison in update runs", () => {
     expect(status.reason).toBe("no_progress");
     const tasks = fixture.service.store.tasks(run.runId).map((t) => JSON.parse(t.definition_json) as { origin: string });
     expect(tasks.every((t) => t.origin === "planned")).toBe(true);
+  });
+
+  // #1218, dur 741547f0: Biome rejected the scaffold's own biome.json before any change. After
+  // T001 its summary said "Checked 2 files" instead of "Checked 1 file", so the task-end check was
+  // not recognised and corrective T004 spent 38k tokens on a file it could not fix.
+  test("a task check that fails on an unplanned file as it did before any change opens no correction", async () => {
+    const biome = {
+      ...lint,
+      id: "biome",
+      args: [
+        "-e",
+        "const n = require('node:fs').readdirSync('.').filter((f) => !f.startsWith('.')).length; console.error('biome.json format ━━━━━━━━━━\\n\\n  × Formatter would have printed the following content:'); console.log(`Checked ${n} file${n === 1 ? '' : 's'} in 3ms. No fixes applied.`); console.log('Found 1 error.'); process.exit(1)",
+      ],
+    };
+    class ScriptedExecutor extends FixtureExecutor {
+      override async execute(request: ExecutionRequest) {
+        const result = await super.execute(request);
+        if (request.profile.output === "implementation") {
+          mkdirSync(join(fixture.root, "src"), { recursive: true });
+          writeFileSync(join(fixture.root, "src", "duration.ts"), "export const ms = 1;\n");
+        }
+        if (request.profile.output !== "plan") return result;
+        // T001 writes code, so the static feature check covers it at task end.
+        const output = result.output as { taskGraph: { tasks: { writes: { path: string; action: string }[] }[] } };
+        for (const task of output.taskGraph.tasks) task.writes.push({ path: "src/duration.ts", action: "create" });
+        return result;
+      }
+    }
+    const fixture = workflowFixture({
+      policy: { ...fixturePolicy, checks: [...fixturePolicy.checks, biome] },
+      executor: (root) => new ScriptedExecutor(root),
+    });
+    cleanups.push(fixture.dispose);
+    writeFileSync(join(fixture.root, "biome.json"), '{ "formatter": { "enabled": true } }');
+    const run = await driveToChecks(fixture);
+
+    expect(baseline(fixture, run.runId)?.failures[commandKey(biome)]).toContain("Checked <n> file in");
+    const tasks = fixture.service.store.tasks(run.runId).map((t) => JSON.parse(t.definition_json) as { origin: string });
+    expect(tasks.every((t) => t.origin === "planned")).toBe(true);
+    const status = await fixture.service.get(run.runId);
+    expect(status.status).toBe("blocked");
+    const errors = fixture.service.store
+      .artifacts(run.runId)
+      .filter((a) => a.logical_path.startsWith("errors/"))
+      .map((a) => fixture.service.store.readArtifact(run.runId, a.id));
+    expect(errors.join("\n")).toContain("baseline_failure: required check biome failed before any change");
+  });
+
+  // #1222: under `staticBaseline: "relative"` the same pre-existing debt in a file no task writes
+  // passes the check, so the run completes instead of stopping with baseline_failure.
+  describe("with staticBaseline: relative", () => {
+    const biomeCheck = (diagnostics: string) => ({
+      ...lint,
+      id: "biome",
+      args: [
+        "-e",
+        `const d = ${JSON.stringify(diagnostics)}.split(",").filter(Boolean); for (const f of d) console.error(f + " ━━━━━━━━━━\\n\\n  × Formatter would have printed the following content:"); console.log("Checked 2 files in 3ms. No fixes applied."); if (d.length) { console.log("Found " + d.length + " errors."); process.exit(1) }`,
+      ],
+    });
+    class ScriptedExecutor extends FixtureExecutor {
+      override async execute(request: ExecutionRequest) {
+        const result = await super.execute(request);
+        if (request.profile.output !== "plan") return result;
+        const output = result.output as { taskGraph: { tasks: { writes: { path: string; action: string }[] }[] } };
+        for (const task of output.taskGraph.tasks) task.writes.push({ path: "src/duration.ts", action: "create" });
+        return result;
+      }
+    }
+    const scenario = async (diagnostics: string) => {
+      const biome = biomeCheck(diagnostics);
+      const fixture = workflowFixture({
+        policy: { ...fixturePolicy, staticBaseline: "relative", checks: [...fixturePolicy.checks, biome] },
+        executor: (root) => {
+          const executor = new ScriptedExecutor(root);
+          const execute = executor.execute.bind(executor);
+          executor.execute = async (request) => {
+            if (request.profile.output === "implementation") {
+              mkdirSync(join(root, "src"), { recursive: true });
+              writeFileSync(join(root, "src", "duration.ts"), "export const ms = 1;\n");
+            }
+            return execute(request);
+          };
+          return executor;
+        },
+      });
+      cleanups.push(fixture.dispose);
+      writeFileSync(join(fixture.root, "biome.json"), '{ "formatter": { "enabled": true } }');
+      const run = await driveToChecks(fixture);
+      return { fixture, run, biome };
+    };
+
+    test("debt in a file no task writes passes the check and the run completes", async () => {
+      const { fixture, run, biome } = await scenario("biome.json format");
+      expect(baseline(fixture, run.runId)?.debt).toEqual({ [commandKey(biome)]: ["biome.json|format"] });
+      const st = await fixture.service.get(run.runId);
+      expect(st.status).toBe("completed");
+      const tasks = fixture.service.store.tasks(run.runId).map((t) => JSON.parse(t.definition_json) as { origin: string });
+      expect(tasks.every((t) => t.origin === "planned")).toBe(true);
+      const debt = fixture.service.store
+        .artifacts(run.runId)
+        .filter((a) => a.logical_path.startsWith("checks/baseline-debt/biome-"));
+      expect(debt.length).toBeGreaterThan(0);
+    });
+
+    test("debt needs the whole summary count and only baseline diagnostics", () => {
+      const out = "biome.json format ━━━━\nsrc/a.ts:3:7 lint/style/useConst FIXABLE ━━━━\nFound 2 errors.";
+      const baseline = baselineKeys(out, "/w");
+      expect(baseline).toEqual(["biome.json|format", "src/a.ts|lint/style/useConst"]);
+      expect(baselineDebt(out, "/w", { baseline, changed: [], summary: 2 })).toEqual(baseline);
+      // The tool counted more than the parser found: an unlisted diagnostic may be new.
+      expect(baselineDebt(out, "/w", { baseline, changed: [], summary: 3 })).toBeNull();
+      expect(baselineDebt(out, "/w", { baseline, changed: [], summary: null })).toBeNull();
+      expect(baselineDebt(out, "/w", { baseline: ["biome.json|format"], changed: [], summary: 2 })).toBeNull();
+    });
+
+    test("the same diagnostic in a file a task writes still fails the check", async () => {
+      const { fixture, run } = await scenario("src/duration.ts format");
+      const findings = fixture.service.store.findings(run.runId).map((f) => JSON.parse(f.body_json) as { claim: string });
+      expect(findings.some((f) => /check biome failed$/.test(f.claim))).toBe(true);
+      expect(
+        fixture.service.store.artifacts(run.runId).some((a) => a.logical_path.startsWith("checks/baseline-debt/")),
+      ).toBe(false);
+    });
+  });
+
+  test("a failure signature leaves out linter summary counts but keeps the diagnostics", () => {
+    const biome = (files: number, file: string) =>
+      `${file} format\n  × Formatter would have printed the following content:\nChecked ${files} file${files === 1 ? "" : "s"} in 3ms. No fixes applied.\nFound 1 error.`;
+    expect(failureSignature(biome(2, "biome.json"), "/w")).toBe(failureSignature(biome(1, "biome.json"), "/w"));
+    expect(failureSignature(biome(2, "src/a.ts"), "/w")).not.toBe(failureSignature(biome(1, "biome.json"), "/w"));
+    expect(failureSignature("src/a.ts(1,1): error TS1005\nFound 1 error in 1 file.", "/w")).toBe(
+      failureSignature("src/a.ts(1,1): error TS1005\nFound 2 errors in 3 files.", "/w"),
+    );
+    expect(failureSignature("a.py:1:1: E501\nFound 1 error.\n3 files checked", "/w")).toBe(
+      failureSignature("a.py:1:1: E501\nFound 1 error.\n4 files checked", "/w"),
+    );
+    expect(failureSignature("✖ 2 problems (2 errors, 0 warnings)", "/w")).toBe(
+      failureSignature("✖ 3 problems (3 errors, 0 warnings)", "/w"),
+    );
   });
 
   test("a failure signature names every worktree of the project as the workspace", () => {

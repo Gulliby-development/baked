@@ -55,10 +55,10 @@ Cross-model confirmations: <tokens used> / <confirm.maxTokensPerRound>
 |---|---|---|
 
 ## Budget
-Run tokens: <used> / <roundRunTokens> · wall clock: <h> · fix PRs: <n>
+Run cost: <usd used> / <roundRunUsd> (tokens <used>) · wall clock: <h> · fix PRs: <n>
 
 ## Retro (retro rounds only)
 <one line: changes made with PR links, changes reverted, the owner proposal that matters most; link to `retro.md`>
 
 ## Waiting on the owner
-<`needs-gulliby` items, runs above 8M, blockers; publish batches only when `publish.mode` is `approve-per-round`>
+<`needs-gulliby` items, runs above their dollar cap, blockers; publish batches only when `publish.mode` is `approve-per-round`>
