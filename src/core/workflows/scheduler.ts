@@ -51,6 +51,7 @@ import {
   passesWithNotes,
   REPEAT_NOTE,
   requiredChecksPass,
+  reversalCandidates,
   reviewLimitAccepts,
 } from "../verification/convergence-stop.js";
 import { type DocExampleResult, isDocFile, runDocExamples } from "../verification/doc-examples.js";
@@ -331,6 +332,7 @@ import {
   ApprovalReviewSchema,
   type Critique,
   CritiqueSchema,
+  clarificationOf,
   DEFAULT_MAX_PARALLEL_RUNS,
   DEFAULT_REVIEW_MIN_CONFIDENCE,
   type Distinction,
@@ -1759,6 +1761,13 @@ export class WorkflowScheduler {
                 this.store.transaction(() =>
                   acceptResidual(this.store, runId, state, { findings: failures }, "review"),
                 );
+              else if (
+                failures.length &&
+                (await this.reversedFixes(runId, state, policy, failures, signal))
+              )
+                this.store.transaction(() =>
+                  acceptResidual(this.store, runId, state, { findings: failures }, "assume"),
+                );
               else if (failures.length) {
                 repairFindings = { findings: failures, kind: "repair" };
                 advance = false;
@@ -2724,6 +2733,67 @@ export class WorkflowScheduler {
       ),
     );
     return debt;
+  }
+  /**
+   * Whether the review findings left after the last review round only reverse earlier fixes
+   * (#1234), so another correction would undo one of them. expenses-py 617fef26: the repair of
+   * F004 (an unterminated quote swallowed the valid rows after it) made F005 (a valid multiline
+   * field with a record-shaped line is split); both repros cannot pass, and the run blocked
+   * `no_progress` after a round that could not succeed. Under `clarification: assume`, with every
+   * required check passing and no critical finding, each finding must sit where a correction of
+   * an earlier finding changed the code, and that earlier finding's repro must no longer
+   * reproduce: its fix holds and the new finding is the other side of the trade-off. The pair is
+   * recorded in `review/reversals-<round>.json`, and the findings become known limitations.
+   */
+  private async reversedFixes(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    findings: Review["findings"],
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    if (
+      clarificationOf(policy) !== "assume" ||
+      (this.store.run(runId).review_rounds ?? 0) < policy.maxRepairRounds ||
+      findings.some((f) => f.severity === "critical") ||
+      !requiredChecksPass(this.store, runId, state, policy)
+    )
+      return false;
+    const candidates = reversalCandidates(this.store, runId, findings);
+    if (candidates.some((c) => !c.earlier.length)) return false;
+    const root = runRoot(this.store.workspace, state);
+    const executables = reproExecutables(policy.checks);
+    const pairs: { findingId: string; earlierId: string; earlierClaim: string }[] = [];
+    for (const candidate of candidates) {
+      let held: { id: string; claim: string } | undefined;
+      for (const earlier of candidate.earlier) {
+        const repro = ReproSchema.safeParse(earlier.body.repro);
+        if (!repro.success) continue;
+        const outcome = await runRepro(this.processes, repro.data, {
+          root,
+          executables,
+          generated: generatedPaths(policy),
+          signal,
+          sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
+        });
+        if (outcome.status === "refuted") {
+          held = { id: earlier.id, claim: earlier.body.claim ?? "" };
+          break;
+        }
+      }
+      if (!held) return false;
+      pairs.push({ findingId: candidate.findingId, earlierId: held.id, earlierClaim: held.claim });
+    }
+    const round = this.store.run(runId).review_rounds ?? 0;
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `review/reversals-${String(round)}.json`,
+        canonical({ round, pairs }),
+      ),
+    );
+    return true;
   }
   /** Whether a required check fails exactly as it did before any change (#934). */
   private failsAsBaseline(
