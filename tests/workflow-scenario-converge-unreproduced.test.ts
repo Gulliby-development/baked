@@ -37,6 +37,8 @@ class ScriptedExecutor implements AgentExecutor {
   constructor(
     private root: string,
     private claim: Partial<Review["findings"][number]>,
+    /** lockorder 6487b225 (#1225): a repair round first, then an inconclusive convergence. */
+    private afterRepair = false,
   ) {}
   async execute(request: ExecutionRequest) {
     const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as { inputHash: string; snapshotHash: string; extra: { evidence?: { id: string }[] } };
@@ -52,19 +54,19 @@ class ScriptedExecutor implements AgentExecutor {
       case "implementation": {
         const task = request.task;
         this.implemented.push(task?.id ?? "");
-        writeFileSync(join(this.root, "value.txt"), task?.origin === "planned" ? "ready" : "ready big");
+        writeFileSync(join(this.root, "value.txt"), task?.origin !== "planned" ? "ready big" : this.afterRepair ? "pending" : "ready");
         output = { schemaVersion: 1, taskId: task?.id, outcome: "implemented", summary: "Wrote value.txt", evidenceIds: [], unresolved: [] };
         break;
       }
       case "review": output = { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", coverage: [{ criterionId: "AC-001", verdict: "pass", evidenceIds, explanation: "Checks pass" }], findings: [] }; break;
       case "convergence": {
         this.convergence.push(request);
-        if (readFileSync(join(this.root, "value.txt"), "utf8").includes("big")) {
+        if (!this.afterRepair && readFileSync(join(this.root, "value.txt"), "utf8").includes("big")) {
           output = { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", coverage: [{ criterionId: "AC-001", verdict: "pass", evidenceIds, explanation: "Checks pass" }], findings: [] };
           break;
         }
         const finding = { id: "F-003", kind: "correctness", severity: "medium", basis: "spec", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "value.txt", symbol: null, evidenceIds, claim: "A valid unquoted decimal integer can raise an uncaught ValueError", impact: "Parsing a long integer fails", suggestedFix: "Handle integers above the conversion limit", ...this.claim };
-        output = { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "changes_requested", coverage: [{ criterionId: "AC-001", verdict: "fail", evidenceIds, explanation: "Long integers raise" }], findings: [finding] };
+        output = { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "changes_requested", coverage: [{ criterionId: "AC-001", verdict: this.afterRepair ? "inconclusive" : "fail", evidenceIds, explanation: "Long integers raise" }], findings: [finding] };
         // The agent executor runs the stage's validation on submit_result; the walker keeps its
         // answer after the advice, as the cfgtrace2 walker would have.
         this.advice.push(...(request.validate?.(output) ?? []));
@@ -76,10 +78,10 @@ class ScriptedExecutor implements AgentExecutor {
   }
 }
 
-async function run(claim: Partial<Review["findings"][number]>) {
+async function run(claim: Partial<Review["findings"][number]>, afterRepair = false) {
   const root = mkdtempSync(join(tmpdir(), "baked-cfgtrace2-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
-  const executor = new ScriptedExecutor(root, claim);
+  const executor = new ScriptedExecutor(root, claim, afterRepair);
   const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } };
   const service = new NativeWorkflowService(root, config, executor);
   cleanups.push(() => service.close());
@@ -114,6 +116,18 @@ describe("scenario: cfgtrace2 e88a14dd, unreproduced convergence findings (#930)
     expect(done.status).toBe("completed");
     expect(service.store.run(runId).corrective_tasks).toBe(0);
     expect(service.store.state(runId).limitations.map((l) => l.decidedBy)).toEqual(["repro"]);
+  });
+
+  test("after a repair round, the only unreproduced claim on an inconclusive criterion is a limitation (#1225)", async () => {
+    // lockorder 6487b225 (bench round 27): medium is below the repair floor after the first round
+    // (here a failed check's repair), so the claim repaired only through its inconclusive
+    // criterion. That criterion left the failing set before the claim was recorded, and acceptance
+    // threw "Criterion AC-005 did not pass" after all 17 tasks were done.
+    const { done, service, runId } = await run({ confidence: 0.99, noRepro: "the runner accepts only dotnet arguments, not stdin content" }, true);
+    expect(service.store.run(runId).corrective_tasks).toBe(1);
+    expect(done.status).toBe("completed");
+    const limitations = service.store.state(runId).limitations;
+    expect(limitations.map((l) => [l.decidedBy, l.criterionIds])).toEqual([["repro", ["AC-001"]]]);
   });
 
   test("a medium claim the host reproduces still starts a correction", async () => {
