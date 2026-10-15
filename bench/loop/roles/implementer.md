@@ -49,6 +49,16 @@ An update adds a feature to an existing public repository (`group: "update"`). T
 4. **Extras.** BAKED builds the feature. A logo, topics and description named in the brief are produced by the publisher, not by the BAKED run; a `LICENSE` or workflow file named in the brief is part of the run.
 5. **Record.** Same files as a new app. `run.json` has `group: "update"`, `repo`, and `baseline`; metrics rows use `group` `update`.
 
+## Level-5 apps (initiatives)
+
+A level-5 app is started and driven as an initiative, not as one run (see the level ladder rule in `AGENTS.md`):
+
+1. `baked workflow initiative start ID --prompt-file BRIEF --worktree --tiered-approval --max-tasks 5 --max-files 10 --budget-tokens 30000000 --budget-calls 400 --budget-time-ms 21600000` in the workspace. It runs the decomposer and waits for the split approval.
+2. `baked workflow initiative show ID --json` and `baked workflow initiative estimate ID`: read the split (feature IDs, boundaries, contracts, sizes) and the estimate. Record both in the app's folder.
+3. Approve with the digest of the pending `split_approval` request (`initiative approve ID --request REQ --digest SHA --expected-revision N`); this is the one intervention a clean initiative needs. Do not edit the split unless it is invalid or exceeds 12 features, and say why in `interventions.jsonl`.
+4. `initiative drive ID` until it completes, waits or blocks. Feature runs are ordinary runs (`workflow status RUN_ID`): answer their requests as for any run, and log each action.
+5. Track the cost yourself: the sum of `estimatedCostUsd` of all runs of the initiative. Pause the initiative at the cap and report.
+
 ## Outcome values
 
 `completed` (run completed, its checks green), `blocked` (stopped and cannot continue without a change to BAKED or a person), `failed` (runtime error), `budget_cap` (needs more than the run's dollar cap), `cancelled` (with reason), `skipped` (round budget or wall clock).
