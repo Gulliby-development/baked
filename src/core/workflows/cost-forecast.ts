@@ -1,0 +1,135 @@
+import { canonical } from "../specs/hash.js";
+import { costRate } from "./budget.js";
+import { WorkflowFault } from "./errors.js";
+import type { RunPolicy } from "./schemas.js";
+import { type SizingReport, verificationTokens } from "./sizing.js";
+import type { WorkflowStore } from "./store.js";
+
+/** Finished priced tasks a forecast needs before it measures how far the plan's price is off. */
+const MIN_MEASURED_TASKS = 3;
+
+/**
+ * Where a run with a dollar cap is heading (#1246): what it spent, plus the planned tasks still
+ * open at their price times how far the finished tasks of the same kind went over theirs, plus
+ * the final review and convergence, in dollars at the run's measured price per token.
+ */
+export interface CostForecast {
+  capUsd: number;
+  spentUsd: number;
+  projectedUsd: number;
+  /** Tokens the finished priced tasks used over their priced midpoints, all kinds together. */
+  ratio: number;
+  measuredTasks: number;
+  openTasks: number;
+  /** Tokens still expected: the open tasks at the measured ratio, and the verification. */
+  remainingTokens: number;
+}
+
+const FINISHED = new Set(["implemented", "verified"]);
+
+/** The latest plan sizing, or null before the plan is priced. */
+function latestSizing(store: WorkflowStore, runId: string): Partial<SizingReport> | null {
+  const latest = store
+    .artifacts(runId)
+    .filter((a) => a.kind === "sizing" && a.logical_path.startsWith("sizing/plan-"))
+    .at(-1);
+  return latest
+    ? (JSON.parse(store.readArtifact(runId, latest.id)) as Partial<SizingReport>)
+    : null;
+}
+
+/**
+ * The run's forecast, or null without a dollar cap, a priced plan, a measured price per token,
+ * `MIN_MEASURED_TASKS` finished priced tasks, or a priced task still open.
+ */
+export function costForecast(
+  store: WorkflowStore,
+  runId: string,
+  policy: RunPolicy,
+): CostForecast | null {
+  const cap = policy.maxCostUsd;
+  if (cap === null) return null;
+  const sized = latestSizing(store, runId)?.tasks ?? [];
+  if (!sized.length) return null;
+  const status = new Map(store.tasks(runId).map((t) => [t.id, t.status]));
+  // Tokens each task's attempts used, over every generation: a rerun after an invalidation is
+  // part of what the task cost.
+  const stageOf = new Map(store.steps(runId).map((step) => [step.id, step.stage_id]));
+  const used = new Map<string, number>();
+  for (const attempt of store.attempts(runId)) {
+    const stage = stageOf.get(attempt.step_id) ?? "";
+    if (!stage.startsWith("task-")) continue;
+    const taskId = stage.slice(5);
+    used.set(taskId, (used.get(taskId) ?? 0) + (attempt.used_tokens ?? 0));
+  }
+  const mid = (t: (typeof sized)[number]) => (t.estimate.low + t.estimate.high) / 2;
+  const measured = sized.filter((t) => FINISHED.has(status.get(t.taskId) ?? "") && mid(t) > 0);
+  const open = sized.filter((t) => {
+    const s = status.get(t.taskId);
+    return s !== undefined && !FINISHED.has(s) && s !== "cancelled";
+  });
+  if (measured.length < MIN_MEASURED_TASKS || !open.length) return null;
+  const ratioOf = (tasks: typeof sized): number => {
+    const priced = tasks.reduce((sum, t) => sum + mid(t), 0);
+    return priced > 0 ? tasks.reduce((sum, t) => sum + (used.get(t.taskId) ?? 0), 0) / priced : 0;
+  };
+  const ratio = ratioOf(measured);
+  const byKind = new Map<string, number>();
+  for (const kind of new Set(measured.map((t) => t.kind)))
+    byKind.set(kind, ratioOf(measured.filter((t) => t.kind === kind)));
+  const remainingTokens = Math.round(
+    open.reduce((sum, t) => sum + mid(t) * (byKind.get(t.kind) ?? ratio), 0) + verificationTokens(),
+  );
+  const row = store.run(runId);
+  const { spentUsd, reservedUsd } = store.costUsage(runId);
+  const rate = costRate(spentUsd > 0 ? spentUsd : null, row.token_usage, null);
+  if (rate <= 0) return null;
+  return {
+    capUsd: cap,
+    spentUsd,
+    projectedUsd: spentUsd + reservedUsd + remainingTokens * rate,
+    ratio,
+    measuredTasks: measured.length,
+    openTasks: open.length,
+    remainingTokens,
+  };
+}
+
+/**
+ * The forecast total the run stopped on at this cap, or null when it has not stopped on one: the
+ * run screens name it as what stopped the run.
+ */
+export function askedForecast(store: WorkflowStore, runId: string, capUsd: number): number | null {
+  const asked = store
+    .artifacts(runId)
+    .filter((a) => a.kind === "cost-forecast")
+    .map((a) => JSON.parse(store.readArtifact(runId, a.id)) as Partial<CostForecast>)
+    .find((f) => f.capUsd === capUsd);
+  return typeof asked?.projectedUsd === "number" ? asked.projectedUsd : null;
+}
+
+/** How the message of a forecast stop begins. */
+export const FORECAST_STOP = "The run is forecast to cost about";
+
+const usd = (n: number): string => `$${n.toFixed(2)}`;
+
+/**
+ * Checked before each attempt. When the forecast passes the dollar cap the run stops on its
+ * budget while most of the money is unspent, and the person decides: extend it with a higher cap
+ * (`extend --max-cost-usd`) or stop. Spending on to the cap left cfgtrace with tasks unfinished
+ * and no review at $8.80 and $11.92 of $12 in two rounds, unfinishable from about $5.60 on. A cap
+ * is asked about once: after an extension the forecast is checked against the new cap.
+ */
+export function assertForecastFits(store: WorkflowStore, runId: string, policy: RunPolicy): void {
+  if (policy.costForecast === "off" || policy.maxCostUsd === null) return;
+  const forecast = costForecast(store, runId, policy);
+  if (!forecast || forecast.projectedUsd <= forecast.capUsd) return;
+  if (askedForecast(store, runId, forecast.capUsd) !== null) return;
+  const n = store.artifacts(runId).filter((a) => a.kind === "cost-forecast").length;
+  store.artifact(runId, "cost-forecast", `forecasts/cost-${n + 1}.json`, canonical(forecast));
+  throw new WorkflowFault(
+    "BUDGET_EXHAUSTED",
+    `${FORECAST_STOP} ${usd(forecast.projectedUsd)}, above its ${usd(forecast.capUsd)} cap: ${usd(forecast.spentUsd)} spent, ${forecast.measuredTasks} finished tasks used ${forecast.ratio.toFixed(1)} times their price, ${forecast.openTasks} tasks and the final review still to run. Extend the run with a cap of at least ${usd(Math.ceil(forecast.projectedUsd))} to finish it, resume it to spend on to the current cap, or cancel it.`,
+    { reason: "cost-forecast", ...forecast },
+  );
+}
