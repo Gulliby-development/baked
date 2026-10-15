@@ -2076,7 +2076,14 @@ export class WorkflowScheduler {
               const repairing = (f: Review["findings"][number]): boolean =>
                 (severities.includes(f.severity) && blocks(f)) ||
                 f.criterionIds.some((id) => failing.has(id));
+              // Both are taken while `failing` still holds the criteria they explain: the loop below
+              // drops a criterion only these findings name, and an unreproduced claim that was the
+              // only one naming an inconclusive criterion then left it unlimited, so acceptance
+              // threw after all the work was done (lockorder 6487b225, #1225).
               const noted = review.findings.filter((f) => notes.has(f.id) && repairing(f));
+              // An unreproduced claim that would have repaired is a known limitation, so the criterion
+              // it fails is accepted with it and the run report names the claim.
+              const unshown = review.findings.filter((f) => unreproduced.has(f.id) && repairing(f));
               for (const id of [...failing]) if (noteOnly(id)) failing.delete(id);
               if (noted.length) {
                 const recorded = this.recordFindings(runId, review, noted);
@@ -2084,9 +2091,6 @@ export class WorkflowScheduler {
                   acceptResidual(this.store, runId, state, { findings: recorded }, "notes"),
                 );
               }
-              // An unreproduced claim that would have repaired is a known limitation, so the criterion
-              // it fails is accepted with it and the run report names the claim.
-              const unshown = review.findings.filter((f) => unreproduced.has(f.id) && repairing(f));
               if (unshown.length) {
                 const recorded = this.recordFindings(runId, review, unshown);
                 this.store.transaction(() =>
