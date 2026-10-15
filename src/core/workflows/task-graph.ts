@@ -5,6 +5,7 @@ import { isTestFile } from "./affected-tests.js";
 import { writtenCodePaths } from "./check-policy.js";
 import type { TaskGraph } from "./schemas.js";
 import type { TaskRow } from "./store.js";
+import { isTestPath } from "./test-integrity.js";
 import type { RuntimeState, Task } from "./types.js";
 export function hasTaskGate(row: TaskRow, gates: RuntimeState["taskGates"]): boolean {
   const gate = gates[row.id];
@@ -339,4 +340,62 @@ export function pendingWriters(
         !done(t.id),
     )
     .map((t) => t.id);
+}
+
+/**
+ * The planned tasks a corrective task corrects, following correctives of correctives through the
+ * predecessors of their findings.
+ */
+export function correctedTasks(
+  graph: TaskGraph,
+  task: Task,
+  predecessors: RuntimeState["repairPredecessors"],
+  seen = new Set<string>(),
+): Task[] {
+  if (task.origin === "planned") return [task];
+  if (seen.has(task.id)) return [];
+  seen.add(task.id);
+  return task.findingIds.flatMap((id) => {
+    const base = graph.tasks.find((t) => t.id === predecessors[id]);
+    return base && base.id !== task.id ? correctedTasks(graph, base, predecessors, seen) : [];
+  });
+}
+
+/**
+ * The other corrective tasks still to finish that are correcting every test file a corrective
+ * task's failed check names, or none. Parallel correctives of test tasks that share one test
+ * command each ran the others' failing tests and opened a corrective of themselves for defects
+ * their siblings were still fixing (md-site 337d16db: T011 to T013, 1.45M tokens, #1285). Such a
+ * check runs again once those correctives are done. A failure in a test file of the task's own
+ * planned tasks, or in one no other corrective is fixing, is the task's own.
+ */
+export function siblingCorrections(
+  graph: TaskGraph | null | undefined,
+  rows: TaskRow[],
+  task: Task,
+  output: string,
+  predecessors: RuntimeState["repairPredecessors"],
+): string[] {
+  if (!graph || task.origin === "planned") return [];
+  const named = pathsInOutput(output, graph.tasks).filter(isTestPath);
+  if (!named.length) return [];
+  const writes = (tasks: Task[], path: string) =>
+    tasks.some((t) => t.writes.some((w) => w.path === path && w.action !== "delete"));
+  if (named.some((path) => writes(correctedTasks(graph, task, predecessors), path))) return [];
+  // Only correctives whose agent has still to finish: one that is implemented and waits for its
+  // checks is in the same position, and two of them waiting for each other would wait forever.
+  const status = new Map(rows.map((r) => [r.id, r.status]));
+  const running = graph.tasks.filter(
+    (t) =>
+      t.id !== task.id &&
+      t.origin !== "planned" &&
+      ["pending", "running", "invalidated", "interrupted"].includes(status.get(t.id) ?? "pending"),
+  );
+  const siblings = new Set<string>();
+  for (const path of named) {
+    const fixing = running.filter((t) => writes(correctedTasks(graph, t, predecessors), path));
+    if (!fixing.length) return [];
+    for (const t of fixing) siblings.add(t.id);
+  }
+  return [...siblings];
 }
