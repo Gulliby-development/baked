@@ -386,7 +386,7 @@ describe("the affected-test regression gate", () => {
       store: WorkflowStore;
       runTaskCheck: (...args: unknown[]) => Promise<Checked>;
       affectedBaseline(...args: unknown[]): Promise<boolean>;
-      gatedChecks(state: RuntimeState, policy: RunPolicy, task: Task, root: string): Check[];
+      gatedChecks(runId: string, state: RuntimeState, policy: RunPolicy, task: Task, root: string): Check[];
       applyTaskCheck(...args: unknown[]): string | undefined;
     };
     scheduler.store = {
@@ -432,12 +432,12 @@ describe("the affected-test regression gate", () => {
     expect(await scheduler.affectedBaseline("run", "step", state, policy, lib, signal, root)).toBe(false);
     expect(ran).toHaveLength(1);
 
-    const gate = scheduler.gatedChecks(state, policy, lib, root).find((c) => c.id === "test-affected");
+    const gate = scheduler.gatedChecks("run", state, policy, lib, root).find((c) => c.id === "test-affected");
     expect(gate).toMatchObject({ required: true, args: ["test", "./tests/store.test.ts"] });
     // The task that repairs it inherits the gate.
     state.repairPredecessors.F1 = "T001";
     const repair = plannedTask("T009", "src/store.ts", { origin: "repair", findingIds: ["F1"] });
-    expect(scheduler.gatedChecks(state, policy, repair, root).map((c) => c.id)).toContain("test-affected");
+    expect(scheduler.gatedChecks("run", state, policy, repair, root).map((c) => c.id)).toContain("test-affected");
   });
 
   test("adds no gate when the affected tests already failed before the task", async () => {
@@ -445,14 +445,14 @@ describe("the affected-test regression gate", () => {
     const { scheduler, state } = subject({ status: "failed", evidenceId: "E1" });
     await scheduler.affectedBaseline("run", "step", state, policy, lib, signal, root);
     expect(state.affectedTests.T001?.baseline).toBe("failed");
-    expect(scheduler.gatedChecks(state, policy, lib, root).map((c) => c.id)).not.toContain("test-affected");
+    expect(scheduler.gatedChecks("run", state, policy, lib, root).map((c) => c.id)).not.toContain("test-affected");
   });
 
   test("a test outside the task's files that the task broke blocks it for a repair", async () => {
     const root = workspace(files);
     const { scheduler, state } = subject({ status: "passed", evidenceId: "E1" });
     await scheduler.affectedBaseline("run", "step", state, policy, lib, signal, root);
-    const gate = scheduler.gatedChecks(state, policy, lib, root).find((c) => c.id === "test-affected") as Check;
+    const gate = scheduler.gatedChecks("run", state, policy, lib, root).find((c) => c.id === "test-affected") as Check;
     const failures: Review["findings"] = [];
     // tests/store.test.ts belongs to a task of another profile: an ordinary check failing only
     // there would stop the run as out of scope.

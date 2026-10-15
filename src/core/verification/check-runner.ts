@@ -92,6 +92,13 @@ export function modelCheckOutput(
   };
 }
 
+/** Whether the output of a check that timed out names a failed test before it stopped. */
+export function timedOutFailure(output: string): boolean {
+  return output.split("\n").some((line) => FAILED_TEST.test(line));
+}
+// A failed test as runners print it; a bare ERROR line may be the application's own log.
+const FAILED_TEST = /^\s*(?:FAILED\b|\(fail\)|--- FAIL|not ok\b|[✗✕✘×]\s)|\.\.\. FAILED\s*$/;
+
 export class CheckRunner {
   constructor(
     private store: WorkflowStore,
@@ -275,7 +282,16 @@ export class CheckRunner {
           ? "passed"
           : "failed";
     if (unstable) reason = "source_changed";
-    else if (result.timedOut) reason = "timeout";
+    else if (result.timedOut && timedOutFailure(result.output)) {
+      // A test failed before the run hung (url-shortener aa8fbd5d, #1271): the failure is real, so
+      // it repairs like any failed check instead of ending the run as inconclusive.
+      status = "failed";
+      reason = "timeout_after_failure";
+      result = {
+        ...result,
+        output: `${result.output}\n\nNote: ${check.id} timed out after ${check.timeoutMs} ms, after the failure above. Run the failing test file alone first and fix what keeps it from finishing (an unbounded loop, an open handle, a pending promise) together with the failure.`,
+      };
+    } else if (result.timedOut) reason = "timeout";
     else if (result.cancelled) reason = "cancelled";
     else if (check.report === "json" && reason === "exit") {
       const report = readGateReport(result.output);

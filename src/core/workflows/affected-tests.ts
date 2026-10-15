@@ -12,7 +12,7 @@
  * The module is pure over the file system: it reads files and returns paths and commands; the
  * scheduler decides when to run them.
  */
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { isStaticCheck } from "./check-policy.js";
 import type { Check } from "./types.js";
@@ -325,5 +325,31 @@ export function affectedTestsFor(
       checks,
       tests.map((t) => t.path),
     ),
+  };
+}
+
+/** How long the test files a task wrote may run on their own after it (#1271). */
+export const WRITTEN_TESTS_TIMEOUT_MS = 60_000;
+
+/**
+ * The check that runs only the test files a task writes, required and with a short timeout
+ * (#1271), or null when no test check of the policy takes test files.
+ */
+export function writtenTestsCheck(
+  root: string,
+  checks: readonly Check[],
+  writes: readonly { path: string; action: string }[],
+): Check | null {
+  const files = writes
+    .filter((w) => w.action !== "delete" && isTestFile(w.path))
+    .map((w) => w.path)
+    .filter((path) => existsSync(join(root, path)));
+  const gate = affectedTestCheck(checks, files);
+  if (!gate) return null;
+  return {
+    ...gate,
+    id: gate.id.replace(/-affected$/, "-written"),
+    required: true,
+    timeoutMs: Math.min(gate.timeoutMs, WRITTEN_TESTS_TIMEOUT_MS),
   };
 }

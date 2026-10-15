@@ -46,7 +46,7 @@ import {
   writesDocumentation,
 } from "../verification/repro.js";
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
-import { affectedTestsFor } from "./affected-tests.js";
+import { affectedTestsFor, writtenTestsCheck } from "./affected-tests.js";
 import { assertAttemptFits } from "./budget.js";
 import {
   fixerCommand,
@@ -649,10 +649,13 @@ export class NativeAgentExecutor implements AgentExecutor {
           execute: async ({ checkId }) => {
             const task = request.task;
             // The affected-tests check (#634) runs only the tests that reach the task's files.
+            // So is the check of the test files the task writes (#1271).
             const affected =
               task && checkId.endsWith("-affected")
                 ? affectedTestsFor(root, policy.checks, task.writes).check
-                : null;
+                : task && checkId.endsWith("-written")
+                  ? writtenTestsCheck(root, policy.checks, task.writes)
+                  : null;
             const check =
               affected?.id === checkId ? affected : policy.checks.find((c) => c.id === checkId);
             if (!check || (check !== affected && !task?.checkIds.includes(checkId)))
