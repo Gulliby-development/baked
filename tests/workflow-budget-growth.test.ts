@@ -165,6 +165,37 @@ describe("automatic budget growth", () => {
     expect(current.maxTotalTokens).toBe(6_000_000);
   });
 
+  // pgnvet 3f03497b (bench round 31, #1296): specify, plan and analyze rounds used the planning
+  // floor before any task existed, and the run blocked at plan with its 20M ceiling unused.
+  test("a run with a ceiling grows its budget during planning, before any task finishes", async () => {
+    const policy = { ...fixturePolicy, maxTotalTokens: 300000, sizing: { maxRunTokens: 10_000_000 } };
+    const planning = (output: string): number =>
+      ["implementation", "review", "convergence"].includes(output) ? 50 : 1_500_000;
+    const fixture = workflowFixture({ policy, tokensPerCall: planning });
+    cleanups.push(fixture.dispose);
+    const run = await fixture.start();
+    const last = await drive(fixture, run.runId);
+    const store = fixture.service.store;
+    expect(last.status).toBe("completed");
+    const growth = store
+      .artifacts(run.runId)
+      .filter((a) => a.logical_path.startsWith("policy-revisions/auto-"))
+      .map((a) => JSON.parse(store.readArtifact(run.runId, a.id)));
+    expect(growth.find((b) => b.kind === "planning-growth")).toMatchObject({ approvedBy: "sizing", ceiling: 10_000_000 });
+  });
+
+  test("planning growth needs a completed attempt since the last one", async () => {
+    const policy = { ...fixturePolicy, maxTotalTokens: 300000, sizing: { maxRunTokens: 10_000_000 } };
+    const fixture = workflowFixture({ policy });
+    cleanups.push(fixture.dispose);
+    const run = await fixture.start();
+    const store = fixture.service.store;
+    const current = JSON.parse(store.run(run.runId).policy_json);
+    // Nothing has completed yet: no progress, no growth.
+    expect(growBudgetOnProgress(store, run.runId, current, 400000)).toBe(false);
+    expect(current.maxTotalTokens).toBe(300000);
+  });
+
   test("the planning budget starts at the start estimate's high end, up to the ceiling", async () => {
     const policy = { ...fixturePolicy, maxTotalTokens: 300000, sizing: { maxRunTokens: 900000 } };
     const fixture = workflowFixture({ policy });
