@@ -899,6 +899,21 @@ export class WorkflowStore {
     }
     return result;
   }
+  /**
+   * How many times a task of the run has reached `implemented` or `verified`, from its events: a
+   * finish still counts after a later corrective invalidates the task (#1224).
+   */
+  taskCompletions(id: string): number {
+    return (
+      this.db
+        .query<{ n: number }, [string]>(
+          `SELECT COUNT(*) AS n FROM events WHERE run_id=? AND type='task.state_changed'
+           AND json_extract(payload_json,'$.to') IN ('implemented','verified')
+           AND json_extract(payload_json,'$.from') NOT IN ('implemented','verified')`,
+        )
+        .get(id)?.n ?? 0
+    );
+  }
   artifacts(id: string): ArtifactRow[] {
     return this.db
       .query<ArtifactRow, [string]>("SELECT * FROM artifacts WHERE run_id=? ORDER BY created_at,id")

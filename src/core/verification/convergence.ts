@@ -14,10 +14,12 @@ import {
 import { namesRunDocument } from "../workflows/spec-amendment.js";
 import type { WorkflowStore } from "../workflows/store.js";
 import type { RuntimeState, Task } from "../workflows/types.js";
+import { runRoot } from "../workflows/worktree.js";
 import {
   robustnessShapes,
   sweepClass,
   sweepEntryPoints,
+  sweepRelation,
   sweepStep,
   sweepTestFiles,
   testSweepStep,
@@ -537,7 +539,29 @@ export function appendCorrections(
   ): string[] =>
     findings.some((f) => sweepOf(f) === "tests")
       ? sweepTestFiles(findings, root, profileId)
-      : sweepEntryPoints(findings, root, profileId, base);
+      : sweepEntryPoints(
+          findings,
+          root,
+          profileId,
+          base,
+          sweepRelation(
+            runRoot(store.workspace, state),
+            findings.map((f) => f.file).filter((f): f is string => Boolean(f)),
+            criteriaText(findings),
+          ),
+        );
+  // The criteria of the findings and their requirements, as one text an entry point may be named in.
+  const criteriaText = (findings: Review["findings"]): string => {
+    const spec = state.spec;
+    if (!spec) return "";
+    const ids = new Set(findings.flatMap((f) => f.criterionIds));
+    const criteria = spec.criteria.filter((c) => ids.has(c.id));
+    const requirements = new Set(criteria.flatMap((c) => c.requirementIds));
+    return [
+      ...criteria.map((c) => `${c.given}\n${c.when}\n${c.then}`),
+      ...spec.requirements.filter((r) => requirements.has(r.id)).map((r) => r.text),
+    ].join("\n");
+  };
   const documents = ordered.filter((f) => namesRunDocument(f, plannedPaths));
   for (const finding of ordered) {
     if (documents.includes(finding)) continue;
@@ -655,6 +679,7 @@ export function appendCorrections(
         ? sweepStep(
             unique(grouped.flatMap(robustnessShapes)),
             sweepFiles(grouped, base.profileId, base, root),
+            unique(grouped.flatMap((f) => (f.file ? [f.file] : []))),
           )
         : "";
     return {
