@@ -82,6 +82,9 @@ export function stageProfileId(stage: Stage): string | undefined {
 export const produces = (definition: WorkflowV2, contract: Stage["produces"]): boolean =>
   definition.stages.some((s) => s.produces === contract);
 
+/** The outcome of a host-made spec: the request restated, not a result (#1219). */
+export const HOST_SPEC_OUTCOME = "The request is done as stated.";
+
 /**
  * The specification of a definition without a spec stage. Quick fix, Spike and Review only have
  * no specification, but the plan validation, the reviewers and acceptance work on requirement and
@@ -97,7 +100,7 @@ export function hostSpec(featureId: string, prompt: string, automated: boolean):
     revision: 1,
     title,
     problem: text,
-    outcome: "The request is done as stated.",
+    outcome: HOST_SPEC_OUTCOME,
     inScope: [text],
     outOfScope: [],
     assumptions: ["The request is the whole specification; this definition has no spec stage."],
