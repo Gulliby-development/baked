@@ -27,7 +27,7 @@ import {
 import type { SpecAmendment } from "./spec-amendment.js";
 import type { ArtifactRow, CriticOutcomeRow, WorkflowStore } from "./store.js";
 import { type RunUsageReport, runUsage, toolBackendLine, toolTokensLine } from "./usage.js";
-import { parseRunDefinition } from "./v2/runtime.js";
+import { HOST_SPEC_OUTCOME, parseRunDefinition } from "./v2/runtime.js";
 import { changesOf, type FileChange, readRoutingSummary } from "./view.js";
 
 /** GitHub refuses pull request bodies over 65,536 characters; delivery keeps a margin. */
@@ -644,6 +644,15 @@ function duplicationSection(result: DuplicationResult, cap: number): string[] {
   return out;
 }
 
+/** The first line of an unfinished run's summary: its status, reason, stage and task count. */
+function unfinished(facts: Facts): string {
+  const { run } = facts;
+  const status = run.status.charAt(0).toUpperCase() + run.status.slice(1);
+  const live = facts.tasks.filter((t) => t.status !== "cancelled");
+  const done = live.filter((t) => ["implemented", "verified"].includes(t.status)).length;
+  return `**${status}**${run.reason !== "none" ? ` (${run.reason})` : ""}${run.stage_id ? ` at ${code(run.stage_id)}` : ""}${live.length ? `: ${done} of ${live.length} tasks done` : ""}. The run did not complete, so the request is not done.`;
+}
+
 function render(facts: Facts, cap: number): string {
   const { run, state, report } = facts;
   const spec = state.spec;
@@ -670,7 +679,10 @@ function render(facts: Facts, cap: number): string {
       "",
     );
   out.push("## Summary", "");
-  if (spec) out.push(spec.outcome, "");
+  // The spec outcome is the goal, not the result: a blocked run must not open its summary with it,
+  // and a host-made spec only restates the request (741547f0, #1219).
+  if (run.status !== "completed") out.push(unfinished(facts), "");
+  if (spec && spec.outcome !== HOST_SPEC_OUTCOME) out.push(`Goal: ${spec.outcome}`, "");
   if (report) {
     out.push(report.summary, "");
     out.push(`Recommendation (${report.recommendation.kind}): ${report.recommendation.text}`, "");
