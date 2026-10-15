@@ -54,6 +54,13 @@ describe("provider account refusals", () => {
     expect(reportsLostTool(blocked("Tests fail on the read path"))).toBe(false);
   });
 
+  // ecfit 25614519 T003 (bench round 30, #1286): a Codex worker said the session had no edit tool.
+  test("a session that says it has no edit tool is a lost tool", () => {
+    expect(reportsLostTool({ outcome: "blocked", summary: "This session has no baked edit_file or multi_edit tool", unresolved: [] })).toBe(true);
+    expect(reportsLostTool({ outcome: "blocked", summary: "Cannot edit src/report.go", unresolved: ["The session exposes no permitted baked edit tool; only the disallowed apply_patch tool is available for file edits."] })).toBe(true);
+    expect(reportsLostTool({ outcome: "blocked", summary: "The change needs no edit to the config", unresolved: ["FR-003 conflicts with FR-004"] })).toBe(false);
+  });
+
   test("block the run with provider_account after one call", async () => {
     const root = mkdtempSync(join(tmpdir(), "baked-account-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));

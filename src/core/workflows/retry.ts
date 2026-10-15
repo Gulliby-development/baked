@@ -158,14 +158,22 @@ const TOOLS =
   "(?:edit_file|write_file|apply_patch|create_file|read_file|`?(?:read|glob|grep)`? tool|edit tool|write tool|editing tools?)";
 const UNAVAILABLE =
   "(?:unavailable|not available|missing|not exposed|not provided|no access|not accessible)";
+/**
+ * A session that says it has no edit tool at all: ecfit 25614519 T003 (#1286) submitted blocked
+ * with "This session has no baked edit_file or multi_edit tool" and "exposes no permitted baked
+ * edit tool", which name no tool next to one of the words above.
+ */
+const NO_EDIT_TOOL =
+  "\\b(?:has|have|exposes?|with|offers?) no (?:[\\w-]+ ){0,3}(?:edit_file|multi_edit|write_file|edit(?:ing)? tools?|write tools?)\\b";
 const LOST_TOOL = new RegExp(
-  `${TOOLS}[^.\n]{0,80}${UNAVAILABLE}|${UNAVAILABLE}[^.\n]{0,40}${TOOLS}|no such tool`,
+  `${TOOLS}[^.\n]{0,80}${UNAVAILABLE}|${UNAVAILABLE}[^.\n]{0,40}${TOOLS}|no such tool|${NO_EDIT_TOOL}`,
   "i",
 );
 
 /**
  * An implementation that ended blocked or failed because a session lost a tool it needs
- * (run fc9951d5: `edit_file` unavailable). The next session has the tool, so one restart helps.
+ * (run fc9951d5: `edit_file` unavailable; ecfit 25614519: no edit tool exposed). The next session
+ * has the tool, so one restart helps.
  */
 export function reportsLostTool(result: {
   outcome: string;
