@@ -59,7 +59,11 @@ function specifiers(source: string): string[] {
  */
 export type Reach = "named" | "imports" | "unknown" | "none";
 
-export function changeReach(root: string, task: Task, changed: ReadonlySet<string>): Reach {
+export function changeReach(
+  root: string,
+  task: Pick<Task, "writes" | "readHints">,
+  changed: ReadonlySet<string>,
+): Reach {
   const named = new Set([...task.writes.map((w) => w.path), ...task.readHints]);
   if ([...changed].some((path) => named.has(path))) return "named";
   const stems = new Map([...changed].map((path) => [stem(path), path] as const));
@@ -100,4 +104,36 @@ export function changeReach(root: string, task: Task, changed: ReadonlySet<strin
 /** Whether a change reaches a task at all; the answer errs toward rerunning. */
 export function readsChangedFile(root: string, task: Task, changed: ReadonlySet<string>): boolean {
   return changeReach(root, task, changed) !== "none";
+}
+
+/**
+ * The `candidates` that `files` import, directly or through other candidates up to `depth` hops,
+ * read from the files under `root`: the planned sources a failing test reaches (#1285).
+ */
+export function importedFiles(
+  root: string,
+  files: readonly string[],
+  candidates: readonly string[],
+  depth = 2,
+): string[] {
+  const found: string[] = [];
+  let frontier = [...files];
+  for (let hop = 0; hop < depth && frontier.length; hop++) {
+    const next = candidates.filter(
+      (path) =>
+        !found.includes(path) &&
+        !files.includes(path) &&
+        frontier.some(
+          (from) =>
+            changeReach(
+              root,
+              { writes: [{ path: from, action: "modify" }], readHints: [] },
+              new Set([path]),
+            ) === "imports",
+        ),
+    );
+    found.push(...next);
+    frontier = next;
+  }
+  return found;
 }

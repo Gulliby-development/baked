@@ -204,7 +204,7 @@ import {
   planStructureProblems,
 } from "./initiatives/plan.js";
 import { featureWorkflowChoices } from "./initiatives/workflows.js";
-import { changeReach, repairChangedFiles } from "./invalidation.js";
+import { changeReach, importedFiles, repairChangedFiles } from "./invalidation.js";
 import {
   commandMayBeRunning,
   mutationLeaseFor,
@@ -7756,8 +7756,28 @@ ${note}`;
       !regression && isStaticCheck(check) && !isTestCheck(check)
         ? named.filter((path) => task.writes.some((w) => w.path === path))
         : [];
-    const scope = [...diagnosed, ...owned];
     const findingId = newId();
+    // A failing test of the task reaches the code it tests through its imports: the correction's
+    // first attempt writes the failing tests and those planned sources, not every file of the
+    // related tasks (md-site 337d16db: three correctives with 8 or 9 paths each, #1285).
+    const failingTests =
+      !regression && isTestCheck(check)
+        ? named.filter((path) => isTestPath(path) && task.writes.some((w) => w.path === path))
+        : [];
+    const sources = failingTests.length
+      ? importedFiles(runRoot(this.store.workspace, state), failingTests, [
+          ...new Set(
+            rootTasks.flatMap((t) =>
+              t.writes
+                .filter((w) => w.action !== "delete" && !isTestPath(w.path))
+                .map((w) => w.path),
+            ),
+          ),
+        ])
+      : [];
+    const scope = [
+      ...new Set([...diagnosed, ...owned, ...(sources.length ? failingTests : []), ...sources]),
+    ];
     if (scope.length) state.repairScope[findingId] = scope;
     taskFailures.push({
       id: findingId,
