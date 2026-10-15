@@ -372,6 +372,8 @@ export async function prepareStart(
     });
   if (reviewSettings?.critic && policy.critic === undefined)
     policy = PolicySchema.parse({ ...policy, critic: reviewSettings.critic });
+  if (reviewSettings?.codeWebSearch === true && policy.codeWebSearch === undefined)
+    policy = PolicySchema.parse({ ...policy, codeWebSearch: true });
   const instructions = frozenInstructions(workspace, config.instructionFiles);
   const skillHashes: Record<string, string> = {};
   for (const profile of profiles)

@@ -101,6 +101,12 @@ describe("local API model routing", () => {
     const sonnet = await patch({ scope: "global", specifyOnSonnet: true });
     expect(((await sonnet.json()) as RoutingOverview).specifyOnSonnet).toEqual({ global: true, project: null, effective: true });
     expect(readFile(join(configDir, "config.json")).modelRouting).toMatchObject({ specifyOnSonnet: true });
+
+    // The opt-in code web search (#1239): off until a layer turns it on.
+    expect((await get()).codeWebSearch).toEqual({ global: null, project: null, effective: false });
+    const search = await patch({ scope: "project", codeWebSearch: true });
+    expect(((await search.json()) as RoutingOverview).codeWebSearch).toEqual({ global: null, project: true, effective: true });
+    expect(((await (await patch({ scope: "project", codeWebSearch: null })).json()) as RoutingOverview).codeWebSearch.effective).toBe(false);
   });
 
   test("changes a run start would refuse are not written", async () => {

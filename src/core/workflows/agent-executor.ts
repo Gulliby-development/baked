@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
-import type { ModelMessage } from "@ai-sdk/provider-utils";
+import type { ModelMessage, ProviderOptions } from "@ai-sdk/provider-utils";
 import {
   generateText,
   isStepCount,
@@ -360,6 +360,8 @@ export class NativeAgentExecutor implements AgentExecutor {
         request.profile.model,
         withRouteEffort(request.profile.model, this.config, request.effort),
       );
+      const webSearch = codeWebSearchFor(policy, request.profile);
+      if (webSearch) provider.providerOptions = withCodexWebSearch(provider.providerOptions);
       if (
         provider.contextWindow > 0 &&
         Math.ceil(Buffer.byteLength(request.prompt) / 3) + request.profile.maxOutputTokens >
@@ -1030,6 +1032,7 @@ export class NativeAgentExecutor implements AgentExecutor {
               ...usage,
               ...(backends.size ? { toolBackends: [...backends.values()] } : {}),
               ...(effort ? { effort } : {}),
+              ...(webSearch ? { webSearch } : {}),
             }),
           ),
         );
@@ -1421,6 +1424,27 @@ export class NativeAgentExecutor implements AgentExecutor {
  * The reasoning effort a call sends, whichever provider reads it: `effort` (Anthropic, Claude
  * Code) or `reasoningEffort` (OpenAI, Codex) in its provider options (#936).
  */
+/**
+ * Whether an attempt may use Codex's own web search: `codeWebSearch` in the run policy, a writing
+ * profile (implementer or acceptance-writer) and a Codex model (#1239). Checks, tests and linters
+ * run outside the model and keep the policy's network setting.
+ */
+export function codeWebSearchFor(
+  policy: Pick<RunPolicy, "codeWebSearch">,
+  profile: { role: string; model: string },
+): boolean {
+  return (
+    policy.codeWebSearch === true &&
+    (profile.role === "implementer" || profile.role === "acceptance-writer") &&
+    profile.model.startsWith("codex/")
+  );
+}
+
+/** Provider options with Codex's web search on, read by the Codex adapter (`codexWebSearch`). */
+export function withCodexWebSearch(options: ProviderOptions): ProviderOptions {
+  return { ...options, codex: { ...options.codex, webSearch: true } };
+}
+
 export function sentEffort(
   options: Record<string, Record<string, unknown> | undefined> | undefined,
 ): string | undefined {

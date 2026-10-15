@@ -141,6 +141,9 @@ describe("specify on Sonnet (#1173)", () => {
   test("the project layer overrides the global one, and Opus models are recognized", () => {
     expect(mergeModelRouting({ specifyOnSonnet: true }, { specifyOnSonnet: false })?.specifyOnSonnet).toBe(false);
     expect(mergeModelRouting({ specifyOnSonnet: true }, { critic: "off" })?.specifyOnSonnet).toBe(true);
+    expect(mergeModelRouting({ codeWebSearch: true }, { codeWebSearch: false })?.codeWebSearch).toBe(false);
+    expect(mergeModelRouting({ codeWebSearch: true }, { critic: "off" })?.codeWebSearch).toBe(true);
+    expect(parseModelRouting({ codeWebSearch: true })?.codeWebSearch).toBe(true);
     expect(isClaudeCodeOpus("claude-code/claude-opus-4-8")).toBe(true);
     expect(isClaudeCodeOpus("claude-code/sonnet")).toBe(false);
     expect(isClaudeCodeOpus("openrouter/anthropic/claude-opus-4")).toBe(false);

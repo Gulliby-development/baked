@@ -352,6 +352,13 @@ export const PolicySchema = z
      */
     critic: z.enum(["off", "advise", "select", "earlyStop"]).optional(),
     /**
+     * Opt-in (#1239): implementer and acceptance-writer attempts on a Codex model may use Codex's
+     * own web search; every other attempt, and every check, test and linter, keeps `network`.
+     * Absent means off, so stored policies keep their hash; a run start copies
+     * `modelRouting.codeWebSearch: true` here.
+     */
+    codeWebSearch: z.boolean().optional(),
+    /**
      * Best-of-N (#642): how many times each planned task that writes files is implemented, each
      * candidate in its own worktree, before one is selected and integrated (candidates.ts). Needs
      * `executionMode: "worktree"`. Absent means 1, so stored policies keep their hash; a run start

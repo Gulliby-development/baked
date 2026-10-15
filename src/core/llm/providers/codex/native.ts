@@ -14,7 +14,8 @@ import { cliReasoningEffort } from "../cli-effort.js";
 import { imageUrl, promptImages } from "../prompt-images.js";
 import { type CodexAppServerConnection, startCodexAppServerSession } from "./client.js";
 import {
-  CODEX_ADAPTER_CONFIG,
+  codexAdapterConfig,
+  codexWebSearch,
   collectWarnings,
   getFunctionTools,
   renderMessageContent,
@@ -43,6 +44,10 @@ const ADAPTER_PREAMBLE = [
   "Never use Codex built-in tools such as apply_patch or a shell of your own: only the baked tools are connected to the user's workspace.",
   "Change files only with baked's edit tools. A read-only sandbox refusal comes from a Codex tool, never from baked's tools, and is no reason to stop.",
 ].join("\n");
+
+/** Added to the preamble when the call turns Codex's web search on (#1239). */
+const WEB_SEARCH_NOTE =
+  "Codex's web search is available: use it to check current library documentation, API signatures and versions instead of guessing them.";
 
 interface TokenTotals {
   inputTokens: number;
@@ -79,6 +84,8 @@ export interface CodexNativeRequest {
   outputSchema?: unknown;
   /** Reasoning effort for this turn; the thread's default when absent. */
   effort?: string;
+  /** Codex's own web search is on for the thread (`providerOptions.codex.webSearch`, #1239). */
+  webSearch?: boolean;
 }
 
 /**
@@ -128,10 +135,15 @@ export function buildCodexNativeRequest(
     inputSchema: tool.inputSchema,
   }));
   const effort = cliReasoningEffort(options.providerOptions, "codex");
+  const webSearch = codexWebSearch(options.providerOptions);
   return {
     modelId,
     ...(effort ? { effort } : {}),
-    instructions: [ADAPTER_PREAMBLE, ...system].join("\n\n"),
+    ...(webSearch ? { webSearch } : {}),
+    instructions: [
+      webSearch ? `${ADAPTER_PREAMBLE}\n${WEB_SEARCH_NOTE}` : ADAPTER_PREAMBLE,
+      ...system,
+    ].join("\n\n"),
     dynamicTools,
     conversation,
     keys: conversation.map(messageKey),
@@ -216,6 +228,8 @@ interface StepSink {
   usageWait: ReturnType<typeof setTimeout> | null;
   /** Responses of dropped threads whose usage Codex will never report (see `abandoned`). */
   unreported: number;
+  /** Queries of the web searches Codex ran during this step. */
+  webSearches: string[];
 }
 
 interface NativeThread {
@@ -223,6 +237,8 @@ interface NativeThread {
   modelId: string;
   instructions: string;
   toolsKey: string;
+  /** The thread was started with Codex's web search on; a thread never changes it. */
+  webSearch: boolean;
   /** Conversation keys Codex holds, as of the request that started the current step. */
   keys: string[];
   /**
@@ -398,6 +414,7 @@ export class CodexAppServerSessions {
           responses: 0,
           usageWait: null,
           unreported: this.abandoned,
+          webSearches: [],
         };
         this.abandoned = 0;
         thread.sink = sink;
@@ -463,7 +480,8 @@ export class CodexAppServerSessions {
     for (const thread of [...this.threads]) {
       if (thread.modelId !== request.modelId || thread.instructions !== request.instructions)
         continue;
-      if (thread.toolsKey !== toolsKey) continue;
+      if (thread.toolsKey !== toolsKey || thread.webSearch !== (request.webSearch === true))
+        continue;
       if (thread.state === "running" || thread.state === "broken") continue;
       const known = thread.keys.length;
       if (known > request.keys.length) continue;
@@ -547,7 +565,7 @@ export class CodexAppServerSessions {
       sandbox: "read-only",
       ephemeral: true,
       baseInstructions: request.instructions,
-      config: CODEX_ADAPTER_CONFIG,
+      config: codexAdapterConfig(request.webSearch === true),
       dynamicTools: request.dynamicTools,
     })) as { thread?: { id?: unknown } } | undefined;
     const threadId = result?.thread?.id;
@@ -558,6 +576,7 @@ export class CodexAppServerSessions {
       modelId: request.modelId,
       instructions: request.instructions,
       toolsKey: JSON.stringify(request.dynamicTools),
+      webSearch: request.webSearch === true,
       keys: [],
       state: "running",
       turnId: null,
@@ -737,9 +756,13 @@ export class CodexAppServerSessions {
       }
       controller.enqueue({ type: "reasoning-delta", id, delta });
     } else if (method === "item/completed") {
-      const item = params.item as { type?: string; id?: unknown; text?: unknown } | undefined;
+      const item = params.item as
+        | { type?: string; id?: unknown; text?: unknown; query?: unknown }
+        | undefined;
       const itemId = String(item?.id ?? "");
-      if (item?.type === "agentMessage") {
+      if (item?.type === "webSearch") {
+        sink.webSearches.push(typeof item.query === "string" ? item.query : "");
+      } else if (item?.type === "agentMessage") {
         const id = sink.openText.get(itemId);
         if (id) {
           controller.enqueue({ type: "text-end", id });
@@ -833,6 +856,9 @@ export class CodexAppServerSessions {
           responses: sink.responses,
           ...(sink.unreported ? { unreportedResponses: sink.unreported } : {}),
           ...(lateReports ? { lateResponses: lateReports } : {}),
+          ...(sink.webSearches.length
+            ? { webSearches: sink.webSearches.length, webSearchQueries: sink.webSearches }
+            : {}),
         },
       },
     });

@@ -20,6 +20,7 @@ export const routingHelp = `Usage: baked workflow routing [show] [--json]
        baked workflow routing confidence 0..1|unset [--scope project|global]
        baked workflow routing critic off|advise|unset [--scope project|global]
        baked workflow routing specify-sonnet on|off|unset [--scope project|global]
+       baked workflow routing web-search on|off|unset [--scope project|global]
 
 Changes modelRouting in the project config (.baked/config.json, the default) or the global one
 (--scope global), with the checks of the routing screen and the local API: nothing is written
@@ -32,7 +33,9 @@ models. review sets independentReview (provider moves reviewers to another vendo
 confidence sets reviewMinConfidence, below which review findings stay notes (0.8 by default);
 critic sets whether a critic scores every task attempt (unset: only on another vendor);
 specify-sonnet on runs the specify stage of a Claude Code Opus run on claude-code/sonnet (off by
-default); unset removes any of them. show prints the modelRouting of both files; "baked workflow route" shows
+default); web-search on lets implementer and acceptance-writer attempts on a Codex model use
+Codex's web search (codeWebSearch, off by default; checks keep the policy's network setting);
+unset removes any of them. show prints the modelRouting of both files; "baked workflow route" shows
 what each stage resolves to.
 `;
 
@@ -173,6 +176,12 @@ export function runRoutingCli(argv: string[], configDir?: string): number {
     if (rest.length || !value || !["on", "off", "unset"].includes(value))
       throw new WorkflowFault("INVALID_DEFINITION", "specify-sonnet takes on, off or unset");
     change = { specifyOnSonnet: value === "unset" ? null : value === "on" };
+  } else if (command === "web-search") {
+    only(flags, ["scope", "json"]);
+    const [value, ...rest] = args;
+    if (rest.length || !value || !["on", "off", "unset"].includes(value))
+      throw new WorkflowFault("INVALID_DEFINITION", "web-search takes on, off or unset");
+    change = { codeWebSearch: value === "unset" ? null : value === "on" };
   } else if (command === "confidence") {
     only(flags, ["scope", "json"]);
     const [value, ...rest] = args;

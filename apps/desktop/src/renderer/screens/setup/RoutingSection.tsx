@@ -366,6 +366,7 @@ function RoutingTables({
         projectKey={projectKey}
       />
       <SpecifySonnetRow view={view} scope={scope} busy={busy} onChange={onChange} />
+      <CodeWebSearchRow view={view} scope={scope} busy={busy} onChange={onChange} />
       {view.warnings.length > 0 && (
         <ul className={cn("m-0 list-none p-0", WARN, NOTE)}>
           {view.warnings.map((w) => (
@@ -745,7 +746,7 @@ function ReviewConfidenceRow({
   );
 }
 
-const SPECIFY_SONNET_CHOICES: { value: boolean | null; label: string }[] = [
+const ON_OFF_CHOICES: { value: boolean | null; label: string }[] = [
   { value: null, label: "inherit" },
   { value: false, label: "off" },
   { value: true, label: "on" },
@@ -781,7 +782,7 @@ function SpecifySonnetRow({
         </span>
       </span>
       <SegmentGroup aria-label="Specify on Sonnet">
-        {SPECIFY_SONNET_CHOICES.map(({ value, label }) => (
+        {ON_OFF_CHOICES.map(({ value, label }) => (
           <Segment
             key={label}
             aria-pressed={own === value}
@@ -790,6 +791,56 @@ function SpecifySonnetRow({
               void onChange(
                 { specifyOnSonnet: value },
                 value === null ? "Cleared specify on Sonnet" : `Set specify on Sonnet ${label}`,
+              )
+            }
+          >
+            {label}
+          </Segment>
+        ))}
+      </SegmentGroup>
+    </div>
+  );
+}
+
+function CodeWebSearchRow({
+  view,
+  scope,
+  busy,
+  onChange,
+}: {
+  view: RoutingOverview;
+  scope: RoutingScope;
+  busy: boolean;
+  onChange: (change: RoutingChange, what: string) => Promise<void>;
+}) {
+  const own = view.codeWebSearch?.[scope] ?? null;
+  return (
+    <div className={cn(PANEL, ROW)}>
+      <span className={cn(GROW, COLUMN)}>
+        <span className="flex items-center">
+          Code web search
+          <Hint label="code web search">
+            Implementer and acceptance-writer attempts on a Codex model may use Codex's own web
+            search, for current library documentation and API signatures. Every other attempt keeps
+            it off, and checks, tests and linters keep the run policy's network setting. Each
+            attempt's usage records how many searches it ran. Off by default.
+          </Hint>
+        </span>
+        <span className={cn("text-dim-foreground", NOTE)}>
+          Codex code attempts may search the web. In effect:{" "}
+          <span className="font-mono">{view.codeWebSearch?.effective ? "on" : "off"}</span>.
+        </span>
+      </span>
+      <SegmentGroup aria-label="Code web search">
+        {ON_OFF_CHOICES.map(({ value, label }) => (
+          <Segment
+            key={label}
+            aria-pressed={own === value}
+            disabled={busy}
+            onClick={() =>
+              void onChange(
+                { codeWebSearch: value },
+                value === null ? "Cleared code web search" : `Set code web search ${label}`,
               )
             }
           >

@@ -227,6 +227,8 @@ export interface AttemptStepUsage {
   modelRequests?: number;
   /** Earlier model responses whose usage the provider will never report (Codex app-server). */
   unreportedResponses?: number;
+  /** Web searches the model ran in the step (Codex's own search, #1239); absent when none. */
+  webSearches?: number;
 }
 
 export interface AttemptUsageRecord {
@@ -256,6 +258,12 @@ export interface AttemptUsageRecord {
   toolBackends?: ToolBackendCount[];
   /** The reasoning effort sent to the provider; absent when none was sent (#936). */
   effort?: string;
+  /** The attempt ran with Codex's own web search on (`codeWebSearch`, #1239). */
+  webSearch?: boolean;
+  /** Web searches the model ran, summed over the steps; absent when none. */
+  webSearches?: number;
+  /** Their queries in order, each cut to 200 characters, at most 50; absent when none. */
+  webSearchQueries?: string[];
   /**
    * The provider reported no tokens for any step, so these are estimated from the sizes of the
    * request and the response (about 4 bytes a token); absent when the provider reported usage.
@@ -298,6 +306,14 @@ export function stepModelRequests(step: Pick<StepLike, "providerMetadata">): num
   const requests = (step.providerMetadata as { codex?: { responses?: unknown } } | undefined)?.codex
     ?.responses;
   return typeof requests === "number" ? requests : undefined;
+}
+
+/** Queries of the web searches a step ran, when the provider reports them (Codex, #1239). */
+export function stepWebSearchQueries(step: Pick<StepLike, "providerMetadata">): string[] {
+  const codex = (step.providerMetadata as { codex?: { webSearchQueries?: unknown } } | undefined)
+    ?.codex;
+  const queries = codex?.webSearchQueries;
+  return Array.isArray(queries) ? queries.map((q) => (typeof q === "string" ? q : "")) : [];
 }
 
 /**
@@ -530,6 +546,8 @@ export class AttemptStepController {
     const reported = requests.filter((r): r is number => r !== undefined);
     const unreported = steps.map(stepUnreportedResponses);
     const lost = unreported.reduce<number>((sum, n) => sum + (n ?? 0), 0);
+    const searches = steps.map(stepWebSearchQueries);
+    const queries = searches.flat();
     return {
       schemaVersion: 1,
       profileId: meta.profileId,
@@ -550,6 +568,12 @@ export class AttemptStepController {
       cappedTokens,
       ...(reported.length ? { modelRequests: reported.reduce((a, b) => a + b, 0) } : {}),
       ...(lost ? { unreportedResponses: lost } : {}),
+      ...(queries.length
+        ? {
+            webSearches: queries.length,
+            webSearchQueries: queries.slice(0, 50).map((q) => q.slice(0, 200)),
+          }
+        : {}),
       steps: steps.map((step, index) => ({
         inputTokens: step.usage.inputTokens ?? null,
         outputTokens: step.usage.outputTokens ?? null,
@@ -560,6 +584,7 @@ export class AttemptStepController {
         compactedBytes: this.compactedBytes[index] ?? 0,
         ...(requests[index] !== undefined ? { modelRequests: requests[index] } : {}),
         ...(unreported[index] !== undefined ? { unreportedResponses: unreported[index] } : {}),
+        ...(searches[index]?.length ? { webSearches: searches[index]?.length } : {}),
       })),
     };
   }

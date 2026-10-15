@@ -35,11 +35,15 @@ export interface CodexRunnerCall {
   abortSignal?: AbortSignal;
   /** Reasoning effort (`model_reasoning_effort`); Codex's default when absent. */
   effort?: string;
+  /** Codex's own web search is on for this call (#1239). */
+  webSearch?: boolean;
 }
 
 export interface CodexRunnerResult {
   text: string;
   usage: LanguageModelV2Usage;
+  /** Queries of the web searches Codex ran; absent when it ran none. */
+  webSearches?: string[];
 }
 
 export interface CodexRunner {
@@ -370,6 +374,26 @@ export const CODEX_ADAPTER_CONFIG: Record<string, string | boolean | number> = {
   "features.skill_search": false,
 };
 
+/** Codex's `web_search` mode when a call turns its web search on (#1239). */
+export const CODEX_WEB_SEARCH = "live";
+
+/**
+ * The adapter config of a thread or `codex exec` call: Codex's own web search stays disabled
+ * unless the caller turned it on (`providerOptions.codex.webSearch`); its other tools stay off.
+ */
+export function codexAdapterConfig(webSearch = false): Record<string, string | boolean | number> {
+  return webSearch
+    ? { ...CODEX_ADAPTER_CONFIG, web_search: CODEX_WEB_SEARCH }
+    : CODEX_ADAPTER_CONFIG;
+}
+
+/** Whether a call's provider options turn on Codex's own web search. */
+export function codexWebSearch(
+  providerOptions: Record<string, Record<string, unknown> | undefined> | undefined,
+): boolean {
+  return providerOptions?.codex?.webSearch === true;
+}
+
 export function codexConfigArgs(config: Record<string, string | boolean | number>): string[] {
   return Object.entries(config).flatMap(([key, value]) => [
     "--config",
@@ -404,7 +428,7 @@ export class CodexCliRunner implements CodexRunner {
       "--color",
       "never",
       ...codexConfigArgs({
-        ...CODEX_ADAPTER_CONFIG,
+        ...codexAdapterConfig(call.webSearch === true),
         model_instructions_file: instructionsPath,
         ...(call.effort ? { model_reasoning_effort: call.effort } : {}),
       }),
@@ -467,6 +491,7 @@ async function runCodexProcess(
   };
   let turnFailure: string | null = null;
   let streamFailure: string | null = null;
+  const webSearches: string[] = [];
 
   try {
     for await (const line of rl) {
@@ -480,9 +505,11 @@ async function runCodexProcess(
       }
 
       if (event.type === "item.completed") {
-        const item = event.item as { type?: string; text?: string } | undefined;
+        const item = event.item as { type?: string; text?: string; query?: unknown } | undefined;
         if (item?.type === "agent_message" && typeof item.text === "string") {
           finalText = item.text;
+        } else if (item?.type === "web_search") {
+          webSearches.push(typeof item.query === "string" ? item.query : "");
         }
       } else if (event.type === "turn.completed") {
         const rawUsage = event.usage as
@@ -519,7 +546,7 @@ async function runCodexProcess(
     if (!finalText) {
       throw new Error("Codex exec returned no final agent message");
     }
-    return { text: finalText, usage };
+    return { text: finalText, usage, ...(webSearches.length ? { webSearches } : {}) };
   } finally {
     rl.close();
     child.removeAllListeners();
@@ -550,6 +577,7 @@ export function createCodexLanguageModel(
         schema: buildCodexSchema(options),
         abortSignal: options.abortSignal,
         effort: cliReasoningEffort(options.providerOptions, "codex"),
+        ...(codexWebSearch(options.providerOptions) ? { webSearch: true } : {}),
       });
 
       const parsed = parseCodexResponse(result.text);
@@ -558,6 +586,16 @@ export function createCodexLanguageModel(
         finishReason: parsed.finishReason,
         usage: result.usage,
         warnings,
+        ...(result.webSearches?.length
+          ? {
+              providerMetadata: {
+                codex: {
+                  webSearches: result.webSearches.length,
+                  webSearchQueries: result.webSearches,
+                },
+              },
+            }
+          : {}),
       };
     },
     async doStream(options) {
@@ -584,6 +622,7 @@ export function createCodexLanguageModel(
             type: "finish",
             finishReason: generated.finishReason,
             usage: generated.usage,
+            ...(generated.providerMetadata ? { providerMetadata: generated.providerMetadata } : {}),
           });
           controller.close();
         },
