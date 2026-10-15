@@ -54,6 +54,7 @@ import {
   reversalCandidates,
   reviewLimitAccepts,
 } from "../verification/convergence-stop.js";
+import { caseCheck as criteriaCaseCheck } from "../verification/criteria-cases.js";
 import { type DocExampleResult, isDocFile, runDocExamples } from "../verification/doc-examples.js";
 import {
   currentEvidence,
@@ -3280,6 +3281,8 @@ export class WorkflowScheduler {
       task && profile.output === "implementation"
         ? this.reproCheck(runId, policy, task)
         : undefined;
+    const caseCheck =
+      task && profile.output === "implementation" ? criteriaCaseCheck(state.spec, task) : undefined;
     // A digested spec (#1019) comes with the tool that reads its criteria in full.
     const digested = digestsSpec(state.spec, profile, policy);
     const host =
@@ -3309,6 +3312,7 @@ export class WorkflowScheduler {
         ...(validate ? { validate } : {}),
         ...(taskEndCheck ? { taskEndCheck } : {}),
         ...(reproCheck ? { reproCheck } : {}),
+        ...(caseCheck ? { caseCheck } : {}),
         ...(attributeCheck ? { attributeCheck } : {}),
         ...(this.formatHints(runId, state, profile.output, task)
           ? { formatHints: this.formatHints(runId, state, profile.output, task) }
