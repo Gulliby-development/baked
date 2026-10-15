@@ -177,6 +177,11 @@ export const RuntimeStateSchema = z
      * their next attempts may write the full scope of the tasks they correct (#765).
      */
     widenedCorrections: z.array(z.string()).default([]),
+    /**
+     * The files the first attempt of a corrective task could write, by task ID, when that attempt
+     * was limited to where its findings point; the run report shows them next to the full scope.
+     */
+    narrowedCorrections: z.record(z.string(), z.array(z.string())).default({}),
     /** Attempt token cap per planned task, set by plan-time sizing; corrections use their base's. */
     taskBudgets: z.record(z.string(), z.number().int().positive()).default({}),
     /** Step cap per planned task from plan-time sizing (test tasks); corrections use their base's. */

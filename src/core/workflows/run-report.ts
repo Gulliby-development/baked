@@ -97,6 +97,19 @@ const testsCell = (tests: TestsCount | null): string =>
       ? String(tests.after)
       : `${tests.before} → ${tests.after} (${signed(tests.after - tests.before)})`;
 
+/**
+ * How many files a task may write. A correction whose first attempt was limited to where its
+ * findings point shows that number first (#1285): its full scope is only for a later attempt.
+ */
+const writesCell = (t: {
+  writes: string[];
+  narrowed: string[] | null;
+  widened: boolean;
+}): string =>
+  t.narrowed
+    ? `${t.narrowed.length} of ${t.writes.length} first${t.widened ? ", then all" : ""}`
+    : String(t.writes.length);
+
 function duration(ms: number): string {
   const seconds = Math.round(ms / 1000);
   if (seconds < 60) return `${seconds}s`;
@@ -351,6 +364,8 @@ function collect(store: WorkflowStore, runId: string) {
                 ? task.data.origin
                 : null,
           writes: task.success ? task.data.writes.map((w) => w.path) : [],
+          narrowed: state?.narrowedCorrections?.[row.id] ?? null,
+          widened: state?.widenedCorrections?.includes(row.id) ?? false,
         };
       }),
       checks: [...checks].map(([id, c]) => ({ id, ...c })),
@@ -801,8 +816,8 @@ function render(facts: Facts, cap: number): string {
     );
     out.push(
       ...table(
-        ["Task", "Title", "Status", "Origin"],
-        facts.tasks.map((t) => [t.id, t.title, t.status, t.origin]),
+        ["Task", "Title", "Status", "Origin", "Writes"],
+        facts.tasks.map((t) => [t.id, t.title, t.status, t.origin, writesCell(t)]),
         cap,
       ),
       "",

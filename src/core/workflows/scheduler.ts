@@ -4735,6 +4735,7 @@ ${note}`;
       // The task as this attempt may write it: a correction's first attempt only where its
       // findings point.
       const scoped: Task = narrow ? { ...task, writes: narrow } : task;
+      if (narrow) state.narrowedCorrections[task.id] ??= narrow.map((w) => w.path);
       const preloaded = await preloadTaskFiles(
         root,
         focus.files.length ? focusFirst(scoped.writes, focus.files) : scoped.writes,
