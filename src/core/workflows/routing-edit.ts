@@ -129,6 +129,7 @@ function compact(routing: ModelRouting): ModelRouting | undefined {
     next.reviewMinConfidence = routing.reviewMinConfidence;
   if (routing.critic) next.critic = routing.critic;
   if (routing.specifyOnSonnet !== undefined) next.specifyOnSonnet = routing.specifyOnSonnet;
+  if (routing.codeWebSearch !== undefined) next.codeWebSearch = routing.codeWebSearch;
   return Object.keys(next).length ? next : undefined;
 }
 
@@ -204,6 +205,15 @@ export function setSpecifyOnSonnet(
 ): ModelRouting | undefined {
   const { specifyOnSonnet: _previous, ...rest } = routing ?? {};
   return compact(value === null ? rest : { ...rest, specifyOnSonnet: value });
+}
+
+/** Sets (or, with `null`, removes) the opt-in web search of Codex code attempts of a layer (#1239). */
+export function setCodeWebSearch(
+  routing: ModelRouting | undefined,
+  value: boolean | null,
+): ModelRouting | undefined {
+  const { codeWebSearch: _previous, ...rest } = routing ?? {};
+  return compact(value === null ? rest : { ...rest, codeWebSearch: value });
 }
 
 type ClassRoute = NonNullable<ModelRouting["classes"]>[string];
@@ -299,7 +309,8 @@ export type RoutingChange =
   | { independentReview: IndependentReviewMode | null }
   | { reviewMinConfidence: number | null }
   | { critic: CriticMode | null }
-  | { specifyOnSonnet: boolean | null };
+  | { specifyOnSonnet: boolean | null }
+  | { codeWebSearch: boolean | null };
 
 /**
  * Applies a change to one layer and lists what would stop it: the draft's own problems, then what
@@ -318,6 +329,8 @@ export function applyRoutingChange(
   if ("critic" in change) return { routing: setCritic(current, change.critic), problems: [] };
   if ("specifyOnSonnet" in change)
     return { routing: setSpecifyOnSonnet(current, change.specifyOnSonnet), problems: [] };
+  if ("codeWebSearch" in change)
+    return { routing: setCodeWebSearch(current, change.codeWebSearch), problems: [] };
   if ("reviewMinConfidence" in change) {
     const value = change.reviewMinConfidence;
     if (value !== null && !(value >= 0 && value <= 1))
@@ -427,6 +440,12 @@ export interface RoutingOverview {
     project: boolean | null;
     effective: boolean;
   };
+  /** Codex's web search for implementer and acceptance-writer attempts; `effective` is false when unset. */
+  codeWebSearch: {
+    global: boolean | null;
+    project: boolean | null;
+    effective: boolean;
+  };
   /** Reviews that would share a model with the implementation. */
   warnings: string[];
   /** Why the workflow's stages and profiles could not be explained, such as no run model. */
@@ -492,6 +511,11 @@ export function routingOverview(input: {
       global: layers.global?.specifyOnSonnet ?? null,
       project: layers.project?.specifyOnSonnet ?? null,
       effective: routing?.specifyOnSonnet ?? false,
+    },
+    codeWebSearch: {
+      global: layers.global?.codeWebSearch ?? null,
+      project: layers.project?.codeWebSearch ?? null,
+      effective: routing?.codeWebSearch ?? false,
     },
     warnings: explanation?.warnings ?? [],
     error: input.error ?? null,

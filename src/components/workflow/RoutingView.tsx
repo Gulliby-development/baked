@@ -20,6 +20,7 @@ import {
   resolveTarget,
   routeAt,
   routingClasses,
+  setCodeWebSearch,
   setCritic,
   setIndependentReview,
   setReviewMinConfidence,
@@ -89,6 +90,7 @@ type Row =
   | { kind: "confidence" }
   | { kind: "critic" }
   | { kind: "specify" }
+  | { kind: "search" }
   | { kind: "note"; text: string; tone: "muted" | "error" };
 
 type Field = "name" | "model" | "effort" | "fallback";
@@ -125,7 +127,8 @@ function selectable(row: Row | undefined): boolean {
       row.kind === "review" ||
       row.kind === "confidence" ||
       row.kind === "critic" ||
-      row.kind === "specify")
+      row.kind === "specify" ||
+      row.kind === "search")
   );
 }
 
@@ -240,6 +243,7 @@ export function RoutingView({
     out.push({ kind: "header", title: "Profiles" });
     for (const id of Object.keys(explained.data?.profiles ?? {}).sort())
       out.push({ kind: "route", target: { kind: "profile", id }, label: id });
+    out.push({ kind: "search" });
     out.push({ kind: "header", title: "Independent review" });
     out.push({ kind: "review" });
     out.push({ kind: "confidence" });
@@ -456,6 +460,23 @@ export function RoutingView({
         setSpecifyOnSonnet(layers[scope], next),
         next === null ? "Cleared specifyOnSonnet" : `Set specifyOnSonnet to ${next ? "on" : "off"}`,
       );
+      return;
+    }
+    if (current.kind === "search" && (key === "left" || key === "right" || key === "space")) {
+      evt.preventDefault();
+      const values = [null, true, false] as const;
+      const i = values.indexOf(layers[scope]?.codeWebSearch ?? null);
+      const next = values[(i + (key === "left" ? values.length - 1 : 1)) % values.length] ?? null;
+      save(
+        setCodeWebSearch(layers[scope], next),
+        next === null ? "Cleared codeWebSearch" : `Set codeWebSearch to ${next ? "on" : "off"}`,
+      );
+      return;
+    }
+    if ((key === "d" || key === "delete" || key === "backspace") && current.kind === "search") {
+      evt.preventDefault();
+      if (layers[scope]?.codeWebSearch === undefined) return;
+      save(setCodeWebSearch(layers[scope], null), "Cleared codeWebSearch");
       return;
     }
     if ((key === "d" || key === "delete" || key === "backspace") && current.kind === "specify") {
@@ -693,6 +714,12 @@ export function RoutingView({
         ? { value: `‹ ${own ? "on" : "off"} ›`, tone: "set" }
         : { value: `‹ unset › = ${effective?.specifyOnSonnet ? "on" : "off"}`, tone: "default" };
     }
+    if (row.kind === "search") {
+      const own = layers[scope]?.codeWebSearch;
+      return own !== undefined
+        ? { value: `‹ ${own ? "on" : "off"} ›`, tone: "set" }
+        : { value: `‹ unset › = ${effective?.codeWebSearch ? "on" : "off"}`, tone: "default" };
+    }
     if (row.kind === "confidence") {
       const own = layers[scope]?.reviewMinConfidence;
       return own !== undefined
@@ -739,6 +766,10 @@ export function RoutingView({
     detail.push("On: a run on a Claude Code Opus model writes its spec on claude-code/sonnet,");
     detail.push("unless a stage route or --route names the specify model. Off by default.");
     detail.push("←→ or Space switch it, D clears it.");
+  } else if (current?.kind === "search") {
+    detail.push("On: implementer and acceptance-writer attempts on a Codex model may use Codex's");
+    detail.push("web search. Checks, tests and linters keep the policy's network. Off by default.");
+    detail.push("←→ or Space switch it, D clears it.");
   } else if (current?.kind === "confidence") {
     detail.push(`Effective: ${confidence}. Review findings below this confidence stay notes`);
     detail.push("and start no correction. ←→ change it by 0.05, D clears it.");
@@ -778,7 +809,9 @@ export function RoutingView({
                     ? "critic"
                     : row.kind === "specify"
                       ? "specify on Sonnet"
-                      : "independentReview";
+                      : row.kind === "search"
+                        ? "code web search"
+                        : "independentReview";
           const { value, tone } = rowText(row);
           return (
             <text key={`r-${index}`} bg={bg}>

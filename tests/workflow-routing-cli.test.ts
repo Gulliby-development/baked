@@ -69,6 +69,17 @@ describe("baked workflow routing", () => {
     expect(existsSync(join(home, "config.json"))).toBe(false);
   });
 
+  test("web-search turns the opt-in code web search on, off and unset (#1239)", () => {
+    const { run, project } = setup();
+    expect(run(["web-search", "on"]).code).toBe(0);
+    expect(project()).toEqual({ modelRouting: { codeWebSearch: true } });
+    expect(run(["web-search", "off"]).code).toBe(0);
+    expect(project()).toEqual({ modelRouting: { codeWebSearch: false } });
+    expect(run(["web-search", "unset"]).code).toBe(0);
+    expect(project()).toEqual({});
+    expect(() => run(["web-search", "yes"])).toThrow(/on, off or unset/);
+  });
+
   test("specify-sonnet turns the opt-in specify route on, off and unset (#1173)", () => {
     const { run, project } = setup();
     expect(run(["specify-sonnet", "on"]).code).toBe(0);

@@ -89,6 +89,12 @@ export const ModelRoutingSchema = z
      * `claude-code/sonnet` unless a stage route or `--route` names its model. Off by default.
      */
     specifyOnSonnet: z.boolean().optional(),
+    /**
+     * Opt-in (#1239): implementer and acceptance-writer attempts on a Codex model may use Codex's
+     * own web search. Checks, tests and linters keep the policy's network setting. A run freezes
+     * it into its policy (`codeWebSearch`). Off by default.
+     */
+    codeWebSearch: z.boolean().optional(),
   })
   .strict();
 export type ModelRouting = z.infer<typeof ModelRoutingSchema>;
@@ -274,6 +280,7 @@ export function mergeModelRouting(
   const reviewMinConfidence = layer.reviewMinConfidence ?? base.reviewMinConfidence;
   const critic = layer.critic ?? base.critic;
   const specifyOnSonnet = layer.specifyOnSonnet ?? base.specifyOnSonnet;
+  const codeWebSearch = layer.codeWebSearch ?? base.codeWebSearch;
   return {
     classes: { ...base.classes, ...layer.classes },
     roles: { ...base.roles, ...layer.roles },
@@ -283,6 +290,7 @@ export function mergeModelRouting(
     ...(reviewMinConfidence !== undefined ? { reviewMinConfidence } : {}),
     ...(critic ? { critic } : {}),
     ...(specifyOnSonnet !== undefined ? { specifyOnSonnet } : {}),
+    ...(codeWebSearch !== undefined ? { codeWebSearch } : {}),
   };
 }
 

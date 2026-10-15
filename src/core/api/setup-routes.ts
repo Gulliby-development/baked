@@ -185,6 +185,12 @@ const RoutingBody = z.union([
     model: z.string().min(1).max(200).optional(),
     specifyOnSonnet: z.boolean().nullable(),
   }),
+  z.strictObject({
+    scope: z.enum(["global", "project"]),
+    workflow: z.string().min(1).max(200).optional(),
+    model: z.string().min(1).max(200).optional(),
+    codeWebSearch: z.boolean().nullable(),
+  }),
 ]);
 const SkillQuery = z.strictObject({ q: z.string().max(200).optional() });
 const SkillInstallBody = z.strictObject({
@@ -604,15 +610,17 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
             ? { critic: body.critic }
             : "specifyOnSonnet" in body
               ? { specifyOnSonnet: body.specifyOnSonnet }
-              : {
-                  target: body.target,
-                  route: body.route && {
-                    model: body.route.model,
-                    effort: body.route.effort ?? null,
-                    fallback: body.route.fallback ?? [],
-                  },
-                  ...(body.create ? { create: true } : {}),
-                };
+              : "codeWebSearch" in body
+                ? { codeWebSearch: body.codeWebSearch }
+                : {
+                    target: body.target,
+                    route: body.route && {
+                      model: body.route.model,
+                      effort: body.route.effort ?? null,
+                      fallback: body.route.fallback ?? [],
+                    },
+                    ...(body.create ? { create: true } : {}),
+                  };
     let problems: string[];
     try {
       ({ problems } = saveRoutingChange(

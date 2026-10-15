@@ -15,6 +15,7 @@ import type { CodexAppServerConnection } from "../src/core/llm/providers/codex/c
 import {
   buildCodexPromptParts,
   CODEX_ADAPTER_CONFIG,
+  codexAdapterConfig,
   codexConfigArgs,
 } from "../src/core/llm/providers/codex/runner.js";
 import {
@@ -311,6 +312,28 @@ describe("codex provider", () => {
     expect(auto.messages.map((message) => message.role)).toEqual(["system", "user"]);
     const prompt = serializeCodexPrompt({ ...BASE_OPTIONS, tools, toolChoice: { type: "auto" } });
     expect(prompt.indexOf("Read package.json")).toBeLessThan(prompt.indexOf("CURRENT STEP"));
+  });
+
+  test("exec turns on web search only when the call asks for it and reports its queries (#1239)", async () => {
+    const calls: Array<{ webSearch?: boolean }> = [];
+    const model = createCodexLanguageModel("gpt-5.2-codex", {
+      async run(call) {
+        calls.push({ ...(call.webSearch !== undefined ? { webSearch: call.webSearch } : {}) });
+        return {
+          text: JSON.stringify({ finishReason: "stop", reasoning: "", text: "OK", toolCalls: [] }),
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          ...(call.webSearch ? { webSearches: ["zod 4 discriminatedUnion"] } : {}),
+        };
+      },
+    });
+    const plain = await model.doGenerate(BASE_OPTIONS);
+    const searched = await model.doGenerate({ ...BASE_OPTIONS, providerOptions: { codex: { webSearch: true } } });
+    expect(calls).toEqual([{}, { webSearch: true }]);
+    expect(plain.providerMetadata).toBeUndefined();
+    expect(searched.providerMetadata).toEqual({ codex: { webSearches: 1, webSearchQueries: ["zod 4 discriminatedUnion"] } });
+    expect(codexAdapterConfig().web_search).toBe("disabled");
+    expect(codexAdapterConfig(true).web_search).toBe("live");
+    expect(codexAdapterConfig(true)["features.shell_tool"]).toBe(false);
   });
 
   test("renders adapter config as codex --config overrides", () => {
@@ -785,6 +808,28 @@ describe("codex app-server native model", () => {
     });
     expect(fake.count("thread/start")).toBe(1);
     expect(second.usage).toMatchObject({ inputTokens: 1500, outputTokens: 40 });
+  });
+
+  test("starts a thread with web search only when the call asks for it and counts searches (#1239)", async () => {
+    const { fake, model } = setup();
+    fake.onTurnStart = (threadId) => {
+      if (fake.count("thread/start") === 2)
+        fake.emit("item/completed", { threadId, turnId: fake.turnIdFor.get(threadId), item: { type: "webSearch", id: "ws1", query: "bun sqlite wal" } });
+      fake.text(threadId, "m1", "Done");
+      fake.complete(threadId);
+    };
+    const plain = await model.doGenerate({ prompt: userPrompt, tools: READ_TOOL });
+    const searched = await model.doGenerate({ prompt: userPrompt, tools: READ_TOOL, providerOptions: { codex: { webSearch: true } } });
+    const starts = fake.requests.filter((r) => r.method === "thread/start");
+    // A thread keeps the web search it started with, so the second call does not reuse the first.
+    expect(starts).toHaveLength(2);
+    expect((starts[0]?.params.config as Record<string, unknown>).web_search).toBe("disabled");
+    expect((starts[1]?.params.config as Record<string, unknown>).web_search).toBe("live");
+    expect(String(starts[0]?.params.baseInstructions)).not.toContain("web search is available");
+    expect(String(starts[1]?.params.baseInstructions)).toContain("web search is available");
+    expect(plain.providerMetadata).toEqual({ codex: { responses: 0 } });
+    expect(searched.providerMetadata).toEqual({ codex: { responses: 0, webSearches: 1, webSearchQueries: ["bun sqlite wal"] } });
+    expect(buildCodexNativeRequest("gpt-5.5", { prompt: userPrompt }).webSearch).toBeUndefined();
   });
 
   test("sends the chat's reasoning effort on the turn", async () => {

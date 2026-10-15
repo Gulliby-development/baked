@@ -99,6 +99,14 @@ describe("cross-provider review", () => {
     const { fixture, config } = routed(undefined);
     const prepared = await prepareStart(fixture.root, config, { workflowId: "sdd", policy: fixture.policy });
     expect("reviewMinConfidence" in prepared.policy).toBe(false);
+    expect("codeWebSearch" in prepared.policy).toBe(false);
+  });
+
+  test("a start freezes code web search into the policy only when a layer turns it on (#1239)", async () => {
+    const on = routed({ codeWebSearch: true });
+    expect((await prepareStart(on.fixture.root, on.config, { workflowId: "sdd", policy: on.fixture.policy })).policy.codeWebSearch).toBe(true);
+    const off = routed({ codeWebSearch: false });
+    expect("codeWebSearch" in (await prepareStart(off.fixture.root, off.config, { workflowId: "sdd", policy: off.fixture.policy })).policy).toBe(false);
   });
 });
 

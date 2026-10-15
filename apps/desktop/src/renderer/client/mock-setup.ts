@@ -517,6 +517,7 @@ function mergeRouting(base?: ModelRouting, layer?: ModelRouting): ModelRouting |
   const reviewMinConfidence = layer.reviewMinConfidence ?? base.reviewMinConfidence;
   const critic = layer.critic ?? base.critic;
   const specifyOnSonnet = layer.specifyOnSonnet ?? base.specifyOnSonnet;
+  const codeWebSearch = layer.codeWebSearch ?? base.codeWebSearch;
   return {
     classes: { ...base.classes, ...layer.classes },
     roles: { ...base.roles, ...layer.roles },
@@ -526,6 +527,7 @@ function mergeRouting(base?: ModelRouting, layer?: ModelRouting): ModelRouting |
     ...(reviewMinConfidence !== undefined ? { reviewMinConfidence } : {}),
     ...(critic ? { critic } : {}),
     ...(specifyOnSonnet !== undefined ? { specifyOnSonnet } : {}),
+    ...(codeWebSearch !== undefined ? { codeWebSearch } : {}),
   };
 }
 
@@ -1020,6 +1022,11 @@ function routingOverview(s: SetupState, workflow: string | null): RoutingOvervie
       global: global?.specifyOnSonnet ?? null,
       project: project?.specifyOnSonnet ?? null,
       effective: effective?.specifyOnSonnet ?? false,
+    },
+    codeWebSearch: {
+      global: global?.codeWebSearch ?? null,
+      project: project?.codeWebSearch ?? null,
+      effective: effective?.codeWebSearch ?? false,
     },
     warnings: route.warnings,
     error: null,
@@ -2006,6 +2013,7 @@ export const setupRoutes: MockRoute = (request) => {
           reviewMinConfidence: number | null;
           critic: CriticMode | null;
           specifyOnSonnet: boolean | null;
+          codeWebSearch: boolean | null;
         }
       >(request);
       const scope = edit.scope === "global" ? "global" : "project";
@@ -2021,6 +2029,9 @@ export const setupRoutes: MockRoute = (request) => {
         const { specifyOnSonnet: _previous, ...rest } = current ?? {};
         next =
           edit.specifyOnSonnet === null ? rest : { ...rest, specifyOnSonnet: edit.specifyOnSonnet };
+      } else if (edit.codeWebSearch !== undefined) {
+        const { codeWebSearch: _previous, ...rest } = current ?? {};
+        next = edit.codeWebSearch === null ? rest : { ...rest, codeWebSearch: edit.codeWebSearch };
       } else if (edit.critic !== undefined) {
         const { critic: _previous, ...rest } = current ?? {};
         next = edit.critic === null ? rest : { ...rest, critic: edit.critic };

@@ -271,6 +271,8 @@ export interface ModelRouting {
   critic?: CriticMode;
   /** Opt-in: Claude Code Opus runs write their spec on claude-code/sonnet (#1173). */
   specifyOnSonnet?: boolean;
+  /** Opt-in: Codex code attempts may use Codex's web search (#1239). */
+  codeWebSearch?: boolean;
 }
 
 /** The config keys the setup screens read; the files hold many more, kept as they are. */
@@ -420,6 +422,8 @@ export interface RoutingOverview {
   };
   /** The opt-in specify route to Sonnet on Claude Code Opus runs; `effective` is false when unset. */
   specifyOnSonnet?: { global: boolean | null; project: boolean | null; effective: boolean };
+  /** Codex's web search for implementer and acceptance-writer attempts; false when unset. */
+  codeWebSearch?: { global: boolean | null; project: boolean | null; effective: boolean };
   warnings: string[];
   error: string | null;
 }
@@ -436,7 +440,8 @@ export type RoutingChange =
   | { independentReview: IndependentReview | null }
   | { reviewMinConfidence: number | null }
   | { critic: CriticMode | null }
-  | { specifyOnSonnet: boolean | null };
+  | { specifyOnSonnet: boolean | null }
+  | { codeWebSearch: boolean | null };
 
 // --- Calls --------------------------------------------------------------------------------------
 

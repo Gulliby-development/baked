@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { LanguageModelV3, LanguageModelV3GenerateResult } from "@ai-sdk/provider";
 import { MockLanguageModelV3 } from "ai/test";
 import { getProvider } from "../src/core/llm/providers/index.js";
-import { NativeAgentExecutor } from "../src/core/workflows/agent-executor.js";
+import { codeWebSearchFor, NativeAgentExecutor } from "../src/core/workflows/agent-executor.js";
 import { WorkspaceLeases } from "../src/core/workflows/leases.js";
 import { type AgentProfile, ProfileSchema } from "../src/core/workflows/schemas.js";
 import { AttemptStepController, type AttemptUsageRecord } from "../src/core/workflows/step-budget.js";
@@ -32,13 +32,18 @@ function step(input: number, output: number, call?: { name: string; input: unkno
 }
 
 /** Route `openai/*` to a scripted model; every script entry is one step, a function throws. */
-function scriptModel(script: Array<LanguageModelV3GenerateResult | (() => never)>): void {
-  const provider = getProvider("openai");
-  if (!provider) throw new Error("openai provider missing");
+function scriptModel(
+  script: Array<LanguageModelV3GenerateResult | (() => never)>,
+  providerId = "openai",
+  calls: Array<Record<string, unknown> | undefined> = [],
+): void {
+  const provider = getProvider(providerId);
+  if (!provider) throw new Error(`${providerId} provider missing`);
   const original = provider.createModel;
   let index = 0;
   const model = new MockLanguageModelV3({
-    doGenerate: async () => {
+    doGenerate: async (options) => {
+      calls.push(options.providerOptions as Record<string, unknown> | undefined);
       const next = script[index++];
       if (!next) throw new Error("script exhausted");
       return typeof next === "function" ? next() : next;
@@ -50,7 +55,12 @@ function scriptModel(script: Array<LanguageModelV3GenerateResult | (() => never)
   });
 }
 
-async function nativeAttempt(policy = fixturePolicy, role: "research" | "implementation" = "research", task?: Task) {
+async function nativeAttempt(
+  policy = fixturePolicy,
+  role: "research" | "implementation" = "research",
+  task?: Task,
+  model = "openai/fixture-model",
+) {
   const fixture = workflowFixture({ policy });
   cleanups.push(fixture.dispose);
   const { store } = fixture.service;
@@ -59,7 +69,7 @@ async function nativeAttempt(policy = fixturePolicy, role: "research" | "impleme
   const profiles = ProfileSchema.array().parse(JSON.parse(store.run(run.runId).profiles_json));
   const researcher = profiles.find((p) => p.output === role);
   if (!researcher) throw new Error(`${role} profile missing`);
-  const profile: AgentProfile = { ...researcher, model: "openai/fixture-model" };
+  const profile: AgentProfile = { ...researcher, model };
   const stepId = store.beginStep(run.runId, "fixture");
   const attemptId = store.reserve(run.runId, stepId, profile.model, 2000, policy);
   const executor = new NativeAgentExecutor(store, new WorkspaceLeases(store), {
@@ -449,6 +459,37 @@ describe("task-end check", () => {
     findingIds: [],
     rationale: "parse",
   };
+
+  test("code web search reaches a Codex implementer attempt and its searches are counted (#1239)", async () => {
+    const calls: Array<Record<string, unknown> | undefined> = [];
+    const searched = {
+      ...step(1000, 50, { name: "submit_result", input: implemented("done") }),
+      providerMetadata: { codex: { responses: 1, webSearches: 2, webSearchQueries: ["zod 4 refine", "bun:sqlite prepare"] } },
+    };
+    scriptModel([searched], "codex", calls);
+    const { executor, request, usageRecord } = await nativeAttempt({ ...fixturePolicy, codeWebSearch: true }, "implementation", codeTask, "codex/fixture-model");
+    await executor.execute(request);
+    expect((calls[0]?.codex as { webSearch?: unknown } | undefined)?.webSearch).toBe(true);
+    const usage = usageRecord();
+    expect(usage?.webSearch).toBe(true);
+    expect(usage?.webSearches).toBe(2);
+    expect(usage?.webSearchQueries).toEqual(["zod 4 refine", "bun:sqlite prepare"]);
+    expect(usage?.steps[0]?.webSearches).toBe(2);
+  });
+
+  test("code web search stays off without the policy setting and for other profiles (#1239)", async () => {
+    const off: Array<Record<string, unknown> | undefined> = [];
+    scriptModel([step(1000, 50, { name: "submit_result", input: implemented("done") })], "codex", off);
+    const plain = await nativeAttempt(fixturePolicy, "implementation", codeTask, "codex/fixture-model");
+    await plain.executor.execute(plain.request);
+    expect((off[0]?.codex as { webSearch?: unknown } | undefined)?.webSearch).toBeUndefined();
+    expect(plain.usageRecord()?.webSearch).toBeUndefined();
+    expect(codeWebSearchFor({ codeWebSearch: true }, { role: "implementer", model: "codex/gpt-6-luna" })).toBe(true);
+    expect(codeWebSearchFor({ codeWebSearch: true }, { role: "acceptance-writer", model: "codex/gpt-6-luna" })).toBe(true);
+    expect(codeWebSearchFor({ codeWebSearch: true }, { role: "reviewer", model: "codex/gpt-6-luna" })).toBe(false);
+    expect(codeWebSearchFor({ codeWebSearch: true }, { role: "implementer", model: "claude-code/sonnet" })).toBe(false);
+    expect(codeWebSearchFor({}, { role: "implementer", model: "codex/gpt-6-luna" })).toBe(false);
+  });
 
   test("its errors go back once, and the next submission is accepted without running it again", async () => {
     scriptModel([
