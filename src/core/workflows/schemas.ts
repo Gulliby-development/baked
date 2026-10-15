@@ -743,6 +743,26 @@ export const ReproSchema = z
     args: z.array(z.string().max(4096)).max(32),
     expected: z.string().min(1).max(2000),
     actual: z.string().min(1).max(2000),
+    /** Text the program reads on standard input; without it standard input is empty. */
+    stdin: z.string().max(65_536).optional(),
+    /**
+     * Input files written to a fresh temporary directory before the run, outside the workspace;
+     * `{files}` in an argument stands for that directory (`{files}/trace.txt`).
+     */
+    files: z
+      .array(
+        z
+          .object({
+            name: z
+              .string()
+              .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/)
+              .max(128),
+            content: z.string().max(65_536),
+          })
+          .strict(),
+      )
+      .max(8)
+      .optional(),
   })
   .strict();
 export type Repro = z.infer<typeof ReproSchema>;

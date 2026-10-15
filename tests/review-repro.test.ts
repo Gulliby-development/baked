@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -12,7 +12,7 @@ import {
   runRepro,
 } from "../src/core/verification/repro.js";
 import { ProcessScope } from "../src/core/workflows/process-scope.js";
-import type { Review } from "../src/core/workflows/schemas.js";
+import { ReproSchema, type Review } from "../src/core/workflows/schemas.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
@@ -97,6 +97,40 @@ describe("review finding repro", () => {
     const outcome = await run(["-e", "require('node:fs').writeFileSync('source.txt', 'x'); console.log('true')"]);
     expect(outcome.status).toBe("inconclusive");
     expect(outcome.reason).toContain("changed source files");
+  });
+
+  // Bench round 27, lockorder 6487b225: a CLI that reads its trace from standard input got
+  // noRepro ("the available runner accepts only arguments, not stdin content") and the true
+  // finding stayed a note (#528).
+  test("a repro gives a program its standard input and input files outside the workspace", async () => {
+    const root = workspace();
+    const stdin = await runRepro(
+      new ProcessScope(),
+      {
+        executable: "bun",
+        args: ["-e", "console.log((await Bun.stdin.text()).trim().toUpperCase())"],
+        stdin: "lk103 thread\n",
+        expected: "LK103 THREAD",
+        actual: "LK103 THREAD",
+      },
+      { root, executables: ["bun"], generated: [], signal: new AbortController().signal, sandbox: null },
+    );
+    expect(stdin.status).toBe("reproduced");
+    const file = await runRepro(
+      new ProcessScope(),
+      {
+        executable: "bun",
+        args: ["-e", "console.log(require('node:fs').readFileSync(process.argv[1], 'utf8').length)", "{files}/trace.txt"],
+        files: [{ name: "trace.txt", content: "abc" }],
+        expected: "4",
+        actual: "3",
+      },
+      { root, executables: ["bun"], generated: [], signal: new AbortController().signal, sandbox: null },
+    );
+    expect(file.status).toBe("reproduced");
+    // The files went to a temporary directory: the workspace holds only what it held before.
+    expect(readdirSync(root)).toEqual(["source.txt"]);
+    expect(() => ReproSchema.parse({ ...regexRepro, files: [{ name: "../escape", content: "" }] })).toThrow();
   });
 
   test("the output matches whole lines, or a block for a multi-line value", () => {

@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import type { SandboxRequest } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
@@ -86,16 +87,22 @@ export async function runRepro(
     };
   const before = await sourceManifest(options.root, options.generated, options.signal);
   const executable = repro.executable === "bun" ? process.execPath : repro.executable;
+  // Input files live outside the workspace, so a repro still changes no source file (#528).
+  const files = repro.files?.length ? mkdtempSync(join(tmpdir(), "baked-repro-files-")) : null;
+  for (const file of repro.files ?? []) writeFileSync(join(files ?? "", file.name), file.content);
+  const args = files ? repro.args.map((arg) => arg.replaceAll("{files}", files)) : repro.args;
   let result: Awaited<ReturnType<ProcessScope["execute"]>>;
   try {
-    result = await processes.execute(executable, repro.args, {
+    result = await processes.execute(executable, args, {
       cwd: options.root,
       env: reproEnv(options.root),
       timeoutMs: REPRO_TIMEOUT_MS,
       signal: options.signal,
       sandbox: options.sandbox,
+      ...(repro.stdin !== undefined ? { stdin: repro.stdin } : {}),
     });
   } catch (error) {
+    if (files) rmSync(files, { recursive: true, force: true });
     options.signal.throwIfAborted();
     return {
       status: "inconclusive",
@@ -104,6 +111,7 @@ export async function runRepro(
       output: "",
     };
   }
+  if (files) rmSync(files, { recursive: true, force: true });
   const output = result.output.slice(-OUTPUT_LIMIT);
   const after = await sourceManifest(options.root, options.generated);
   const inconclusive = (reason: string): ReproOutcome => ({
@@ -246,7 +254,7 @@ export function reproTool(
 ): HostTool {
   let tries = 0;
   return {
-    description: `Run a repro the way the runtime will run it for a finding: the program (one of ${executables.join(", ")}) and its arguments, without a shell, in the workspace root, for up to ${REPRO_TIMEOUT_MS / 1000} s. It must print the observed value on its own line and change no file. Returns reproduced when a line of the output equals actual, refuted when it exits 0 without printing actual, inconclusive otherwise, with the output. At most ${REPRO_TRIES} runs.`,
+    description: `Run a repro the way the runtime will run it for a finding: the program (one of ${executables.join(", ")}) and its arguments, without a shell, in the workspace root, for up to ${REPRO_TIMEOUT_MS / 1000} s. For a program that reads its input, give the text as stdin, or input files as files (name and content), written to a temporary directory that {files} in an argument names. It must print the observed value on its own line and change no file. Returns reproduced when a line of the output equals actual, refuted when it exits 0 without printing actual, inconclusive otherwise, with the output. At most ${REPRO_TRIES} runs.`,
     inputSchema: ReproSchema,
     execute: async (input) => {
       if (++tries > REPRO_TRIES)
