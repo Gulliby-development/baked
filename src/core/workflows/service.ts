@@ -744,6 +744,7 @@ export class NativeWorkflowService implements WorkflowService {
         new NativeAgentExecutor(this.store, leases, this.config, this.rootContext),
     );
     lane.browserDriver = this.scheduler.browserDriver;
+    lane.layoutProbe = this.scheduler.layoutProbe;
     lane.registryFetch = this.scheduler.registryFetch;
     lane.semgrep = this.scheduler.semgrep;
     lane.waitClock = this.scheduler.waitClock;

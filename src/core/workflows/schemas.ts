@@ -238,6 +238,34 @@ export const MAX_CONCURRENT_WRITERS = 4;
 export const DEFAULT_FRESH_RESTART_AFTER = 2;
 /** Corrections in a row a task's own failed checks may start before the run stops (#839). */
 export const DEFAULT_MAX_TASK_REPAIRS = 2;
+/** How the host serves the app to measure layout criteria in a browser (#1262, layout-check.ts). */
+export const LayoutCheckSchema = z
+  .object({
+    /** Started without a shell in a process group the run owns, and stopped after the measure. */
+    start: z
+      .object({
+        executable: z.string().min(1).max(512),
+        args: z.array(z.string().max(2048)).max(64),
+        cwd: z.union([z.literal("."), RelativePath]),
+        envNames: UniqueStrings,
+      })
+      .strict(),
+    /** The loopback address the app serves; each page is a path under it. */
+    url: z
+      .string()
+      .max(512)
+      .regex(/^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):\d{1,5}(?:\/[^\s]*)?$/),
+    pages: z
+      .array(z.string().regex(/^\/[^\s]{0,511}$/))
+      .min(1)
+      .max(20),
+    width: z.number().int().min(320).max(3840),
+    height: z.number().int().min(240).max(2160),
+    timeoutMs: z.number().int().min(1000).max(600000),
+  })
+  .strict();
+export type LayoutCheck = z.infer<typeof LayoutCheckSchema>;
+
 export const PolicySchema = z
   .object({
     maxConcurrentReadAgents: z.number().int().min(1).max(8),
@@ -322,6 +350,12 @@ export const PolicySchema = z
      * `baselineDebt`), so lint debt elsewhere in the repository does not block a run.
      */
     staticBaseline: z.enum(["stop", "relative"]).optional(),
+    /**
+     * Opt-in: the host settles the spec's layout criteria by measuring the served pages in a
+     * headless browser at convergence instead of asking a person (#1262). Absent means no
+     * measurement, so stored policies keep their hash.
+     */
+    layoutCheck: LayoutCheckSchema.optional(),
     /**
      * What the test-integrity guard does with what it finds in a task's diff (test-integrity.ts):
      * `block` makes each finding a repair, `warn` records it only. Absent means `block`; only
@@ -1922,15 +1956,28 @@ export function prescribedLayoutCss(spec: Pick<Spec, "criteria">, request: strin
  */
 export function repairLayoutCriteria(
   spec: Spec,
-  options: { browser?: boolean } = {},
-): { spec: Spec; repaired: string[] } {
-  if (options.browser) return { spec, repaired: [] };
-  const repaired = layoutCriteria(spec).filter((id) => {
+  options: { browser?: boolean; measured?: boolean } = {},
+): { spec: Spec; repaired: string[]; method: "manual" | "post-release" } {
+  if (options.browser) return { spec, repaired: [], method: "post-release" };
+  const unmeasured = (c: Spec["criteria"][number]): boolean =>
+    c.method === "manual" || !BROWSER_TEST.test(`${c.given}\n${c.when}\n${c.then}`);
+  const layout = layoutCriteria(spec);
+  // With the policy's layoutCheck the host measures a manual layout criterion itself (#1262).
+  if (options.measured) {
+    const repaired = layout.filter((id) => {
+      const c = spec.criteria.find((criterion) => criterion.id === id);
+      return !!c && c.method !== "manual" && unmeasured(c);
+    });
+    const criteria: Spec["criteria"] = spec.criteria.map((c) =>
+      repaired.includes(c.id) ? { ...c, method: "manual" } : c,
+    );
+    return { spec: repaired.length ? { ...spec, criteria } : spec, repaired, method: "manual" };
+  }
+  const repaired = layout.filter((id) => {
     const c = spec.criteria.find((criterion) => criterion.id === id);
-    if (!c || c.method === "post-release") return false;
-    return c.method === "manual" || !BROWSER_TEST.test(`${c.given}\n${c.when}\n${c.then}`);
+    return !!c && c.method !== "post-release" && unmeasured(c);
   });
-  if (!repaired.length) return { spec, repaired };
+  if (!repaired.length) return { spec, repaired, method: "post-release" };
   const criteria: Spec["criteria"] = spec.criteria.map((c) =>
     repaired.includes(c.id) ? { ...c, method: "post-release" } : c,
   );
@@ -1953,7 +2000,7 @@ export function repairLayoutCriteria(
       method: "automated",
     });
   }
-  return { spec: { ...spec, criteria }, repaired };
+  return { spec: { ...spec, criteria }, repaired, method: "post-release" };
 }
 
 // A criterion that the project's build succeeds, or a build command named outright.// A criterion that the project's build succeeds, or a build command named outright.
