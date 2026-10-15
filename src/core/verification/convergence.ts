@@ -424,6 +424,7 @@ export function appendCorrections(
       )
     : 0;
   const reviewPass = kind === "repair" && scope === "review";
+  const checksRound = kind === "repair" && scope === "round";
   // The counter this correction spends and the name its artifact and correction record carry.
   const roundKind = reviewPass ? "review" : kind;
   const round = taskLevel
@@ -437,7 +438,7 @@ export function appendCorrections(
   const limit = taskLevel
     ? (policy.maxTaskRepairs ?? DEFAULT_MAX_TASK_REPAIRS)
     : kind === "repair"
-      ? policy.maxRepairRounds
+      ? policy.maxRepairRounds + (checksRound ? (state.extraRepairRounds ?? 0) : 0)
       : policy.maxConvergenceRounds + state.extraConvergenceRounds;
   const cap = policy.maxCorrectiveTasks + state.extraCorrectiveTasks;
   const findingSet = findingSetHash(findings);
@@ -458,9 +459,21 @@ export function appendCorrections(
   const after =
     kind === "repair" && !taskLevel ? (policy.freshRestartAfter ?? DEFAULT_FRESH_RESTART_AFTER) : 0;
   const fresh = kind === "repair" && !taskLevel && repeats === after;
+  // A checks failure after a review or convergence correction gets one repair round of its own
+  // when early failures spent the budget: md-site 2f949017 used both rounds on two generated
+  // property tests, and a regression the last convergence corrective made in another test was
+  // refused with 13 of 13 tasks done (#1272). The same findings repeating still stop the run.
+  const regression = checksRound && state.correctedSinceRepair === true && round > limit;
   // The fresh-context attempt is the restart of a repeated failure, not another repair round, so
   // the round limit does not refuse it; the corrective task cap still applies.
-  const overRounds = round > limit && !fresh;
+  const overRounds = round > limit && !fresh && !regression;
+  const countRound = (tasks: number): void => {
+    store.addRound(runId, roundKind, tasks);
+    if (checksRound) {
+      if (regression) state.extraRepairRounds = (state.extraRepairRounds ?? 0) + 1;
+      state.correctedSinceRepair = false;
+    } else if (kind === "convergence" || reviewPass) state.correctedSinceRepair = true;
+  };
   const refuse = (setting: string, value: number, count: number): never => {
     // Not BUDGET_EXHAUSTED: `workflow extend` raises tokens, calls and time, none of which helps.
     throw new WorkflowFault(
@@ -472,7 +485,8 @@ export function appendCorrections(
   if (overRounds)
     refuse(
       taskLevel ? "maxTaskRepairs" : kind === "repair" ? "maxRepairRounds" : "maxConvergenceRounds",
-      limit,
+      // The setting a person would raise, without the rounds granted for regressions.
+      kind === "repair" && !taskLevel ? policy.maxRepairRounds : limit,
       findings.length,
     );
   if (repeats > after)
@@ -614,7 +628,7 @@ export function appendCorrections(
     if (!taskLevel) {
       state.noProgressRounds = repeats;
       state.previousFindingSet = findingSet;
-      store.addRound(runId, roundKind, 0);
+      countRound(0);
     }
     return;
   }
@@ -757,7 +771,7 @@ export function appendCorrections(
     }
   }
   if (taskLevel) store.addCorrectiveTasks(runId, additions.length);
-  else store.addRound(runId, roundKind, additions.length);
+  else countRound(additions.length);
 }
 
 /**

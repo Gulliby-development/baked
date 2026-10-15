@@ -127,7 +127,11 @@ describe("repair rounds and task-level corrections", () => {
     expect(() =>
       appendCorrections(store, "run", state, policy, [finding("R3", "c.py", "E5", "A third defect")], "repair", "review"),
     ).toThrow("maxRepairRounds (2)");
-    expect(() => appendCorrections(store, "run", state, policy, [finding("C3", "c.py", "E6")], "repair")).toThrow(
+    // A checks failure after the review's corrections gets one round of its own (#1272), then the
+    // checks stage's budget refuses again.
+    appendCorrections(store, "run", state, policy, [finding("C3", "c.py", "E6")], "repair");
+    expect(counts.repair_rounds).toBe(3);
+    expect(() => appendCorrections(store, "run", state, policy, [finding("C4", "d.py", "E7")], "repair")).toThrow(
       "maxRepairRounds (2)",
     );
   });
@@ -179,5 +183,22 @@ describe("repair rounds and task-level corrections", () => {
     ).toThrow("maxCorrectiveTasks (1)");
     expect(state.repairPredecessors).toEqual({});
     expect(state.graph?.tasks).toHaveLength(files.length);
+  });
+
+  // md-site 2f949017 (#1272): two early checks failures used both rounds, and a regression the
+  // convergence corrective made was refused.
+  test("a checks failure after a convergence correction gets one more repair round", () => {
+    const { store, counts } = fakeStore();
+    const state = stateOf();
+    appendCorrections(store, "run", state, policy, [finding("C1", "a.py", "E1")], "repair");
+    appendCorrections(store, "run", state, policy, [finding("C2", "b.py", "E2")], "repair");
+    const stop = () =>
+      appendCorrections(store, "run", state, policy, [finding("C4", "d.py", "E4")], "repair");
+    appendCorrections(store, "run", state, policy, [finding("V1", "c.py", "E3", "Nested emphasis is wrong")], "convergence");
+    appendCorrections(store, "run", state, policy, [finding("C3", "c.py", "E5")], "repair");
+    expect(counts.repair_rounds).toBe(3);
+    expect(state.extraRepairRounds).toBe(1);
+    // The next failure without a correction before it is refused again.
+    expect(stop).toThrow("maxRepairRounds (2)");
   });
 });
