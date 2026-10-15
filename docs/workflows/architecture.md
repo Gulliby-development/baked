@@ -279,7 +279,7 @@ ProfileRegistry looks up the built-in definitions, then global ones, then projec
 | researcher | Reading, navigation, impact; web by policy | Research report |
 | spec-author | Reading and submit_artifact | Spec candidate |
 | planner | Reading and submit_artifact | Plan and TaskGraph |
-| implementer | Allowed edits and request_check; run_probe in a repair task | ImplementationResult |
+| implementer | Allowed edits and request_check; run_probe in a repair task, and run_repro when its findings carry repros | ImplementationResult |
 | reviewer | Reading the snapshot and evidence, run_repro, submit_review | Review |
 | spec-auditor | Reading requirements and code, submit_review | Criterion coverage |
 

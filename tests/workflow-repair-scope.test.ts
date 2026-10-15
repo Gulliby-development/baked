@@ -276,7 +276,7 @@ describe("a correction of a finding with a repro", () => {
 
   test("is told to run the repro before editing and after the fix", () => {
     const description = correct(finding({ executable: "cargo", args: ["run", "--", "a,b"], expected: "2", actual: "1" }));
-    expect(description).toContain('Reproduce first: run "cargo" "run" "--" "a,b" with run_probe before editing.');
+    expect(description).toContain('Reproduce first: run_repro runs "cargo" "run" "--" "a,b" as the host does before it accepts the task.');
     expect(description).toContain('print "1" where the spec needs "2"');
   });
 
