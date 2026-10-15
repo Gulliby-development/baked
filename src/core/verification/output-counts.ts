@@ -148,6 +148,17 @@ const WORKTREE_PATH =
   /(?:[A-Za-z]:)?(?:[\\/][^\\/\s"'`()<>:]+)*[\\/]\.baked[\\/]worktrees[\\/][^\\/\s"'`()<>:]+[\\/][^\\/\s"'`()<>:]+/g;
 
 /**
+ * A linter's or type checker's summary count: "Checked 2 files", "Found 3 errors", "in 2 files",
+ * "5 files checked". Each file a run adds changes it while the diagnostics stay the same (dur
+ * 741547f0: Biome failed on `biome.json` before and after T001 wrote `src/duration.ts`, #1218).
+ */
+const SUMMARY_COUNT =
+  /\b(Checked|Found|in|Scanned) \d+ (files?|errors?|warnings?|infos?|problems?|diagnostics?)\b/g;
+const singular = (noun: string): string => noun.replace(/s$/, "");
+const FILES_DONE =
+  /\b\d+ (files?) (checked|scanned|formatted|left unchanged|would be reformatted)\b/g;
+
+/**
  * The output of a failing check with what changes between two runs of the same failure left out
  * (colours, durations, timestamps, the workspace path), so the checks stage can tell a required
  * check that still fails exactly as it did on the code the run started from (#934). Every
@@ -167,6 +178,9 @@ export function failureSignature(output: string, root: string): string {
     .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?/g, "<time>")
     .replace(/\d+(\.\d+)?\s*(ms|s|sec|seconds|m)\b/g, "<duration>")
     .replace(/\[\d+(\.\d+)?(ms|s)\]/g, "<duration>")
+    .replace(SUMMARY_COUNT, (_, verb: string, noun: string) => `${verb} <n> ${singular(noun)}`)
+    .replace(FILES_DONE, (_, noun: string, verb: string) => `<n> ${singular(noun)} ${verb}`)
+    .replace(/✖ \d+ problems? \(\d+ errors?, \d+ warnings?\)/g, "✖ <n> problems")
     .split("\n")
     .map((line) => line.trimEnd())
     .filter(Boolean)

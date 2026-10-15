@@ -392,6 +392,7 @@ describe("the affected-test regression gate", () => {
     scheduler.store = {
       transaction: (fn: () => unknown) => fn(),
       taskStatus: () => undefined,
+      latestArtifact: () => undefined,
       tasks: () => [lib, testsTask].map((t) => ({ id: t.id, status: "verified", generation: 0 })),
     } as unknown as WorkflowStore;
     scheduler.runTaskCheck = async (_run, _child, ranCheck) => {

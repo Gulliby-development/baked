@@ -2656,21 +2656,29 @@ export class WorkflowScheduler {
     output: string,
     evidenceId: string,
   ): void {
-    const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
-    if (!artifact) return;
-    const before = (
-      JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
-        failures?: Record<string, string>;
-      }
-    ).failures?.[commandKey(check)];
-    const root = runRoot(this.store.workspace, state);
-    // A failure without output tells nothing about its cause, so it is never matched.
-    if (!before || before !== failureSignature(output, root)) return;
+    if (!this.failsAsBaseline(runId, state, check, output)) return;
     throw new WorkflowFault(
       "RECOVERY_REQUIRED",
       `baseline_failure: required check ${check.id} failed before any change and fails the same way now (evidence ${evidenceId}); nothing the run changed affects it. Fix the check or the project setup, or revise the plan, then resume.`,
       { reason: "no_progress", checkId: check.id },
     );
+  }
+  /** Whether a required check fails exactly as it did before any change (#934). */
+  private failsAsBaseline(
+    runId: string,
+    state: RuntimeState,
+    check: Check,
+    output: string,
+  ): boolean {
+    const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
+    if (!artifact) return false;
+    const before = (
+      JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+        failures?: Record<string, string>;
+      }
+    ).failures?.[commandKey(check)];
+    // A failure without output tells nothing about its cause, so it is never matched.
+    return !!before && before === failureSignature(output, runRoot(this.store.workspace, state));
   }
   /** The IDs of the required checks that failed before any change, from the check baseline. */
   private baselineFailingChecks(runId: string, policy: RunPolicy): string[] {
@@ -7176,6 +7184,17 @@ ${note}`;
   ): string | undefined {
     if (checked.status === "passed") checkEvidence.push(checked.evidenceId);
     if (!check.required || checked.status === "passed") return undefined;
+    // The check fails exactly as before any change and names no file the task writes: the task
+    // did not cause it and a correction could not reach it (dur 741547f0: Biome rejected the
+    // scaffold's `biome.json`, which no task writes; T004 spent 38k tokens on `src/duration.ts`,
+    // #1218). The checks stage still runs the check and stops with `baseline_failure`.
+    if (
+      checked.status === "failed" &&
+      checked.output &&
+      !pathsInOutput(checked.output, [task]).length &&
+      this.failsAsBaseline(runId, state, check, checked.output)
+    )
+      return undefined;
     const owners =
       checked.status === "failed" && task.origin === "planned" && checked.output
         ? pendingOwners(

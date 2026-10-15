@@ -53,6 +53,7 @@ const store = {
   tasks: () => [],
   findingStatus: () => undefined,
   addRound: () => undefined,
+  latestArtifact: () => undefined,
 } as unknown as WorkflowStore;
 const stateOf = (): RuntimeState =>
   ({

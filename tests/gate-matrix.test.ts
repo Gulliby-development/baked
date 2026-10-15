@@ -738,6 +738,17 @@ for (const stack of STACKS) {
       for (const root of [setup.workspace, ...setup.roots.map((r) => r.root)])
         expect(failureSignature(failure(root), run)).toBe(expected);
     });
+
+    // A linter that fails on an unplanned file before the run still fails the same way after a task
+    // adds files: its summary count is not part of the failure (dur 741547f0, #1218).
+    cell(stack, "worktree: baseline-signature lint summary", () => {
+      const run = setup.roots.find((r) => r.name === "run")?.root ?? "";
+      const lint = (root: string, files: number) =>
+        `${join(root, "biome.json")} format\n  × Formatter would have printed the following content:\nChecked ${files} files in 3ms. No fixes applied.\nFound 1 error.`;
+      const expected = failureSignature(lint(run, 1), run);
+      for (const root of [setup.workspace, ...setup.roots.map((r) => r.root)])
+        expect(failureSignature(lint(root, 4), run)).toBe(expected);
+    });
   });
 }
 

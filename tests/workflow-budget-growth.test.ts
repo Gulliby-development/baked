@@ -142,7 +142,9 @@ describe("automatic budget growth", () => {
       .artifacts(run.runId)
       .filter((a) => a.logical_path.startsWith("policy-revisions/auto-"))
       .map((a) => JSON.parse(store.readArtifact(run.runId, a.id)))
-      .map((b) => [b.kind, b.next.maxTotalTokens]);
+      .map((b) => [b.kind, b.next.maxTotalTokens] as [string, number])
+      // Both revisions can share a timestamp, so the listing order between them is not fixed.
+      .sort((a, b) => a[1] - b[1]);
     expect(kinds.slice(-2)).toEqual([
       ["auto-growth", 6_000_000],
       ["auto-extend", current.maxTotalTokens],
