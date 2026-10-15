@@ -408,6 +408,12 @@ export const PolicySchema = z
      */
     lowFindings: z.enum(["repair", "note"]).optional(),
     /**
+     * With a dollar cap, `ask` stops the run for a decision once the forecast of its total, from
+     * what its finished tasks cost against their price, passes the cap; `off` spends to the cap.
+     * Absent means `ask`, so stored policies keep their hash.
+     */
+    costForecast: z.enum(["ask", "off"]).optional(),
+    /**
      * `on` starts a correction whose findings are all low, or all point at one file, with a quick
      * fix: one attempt with a small step and token cap on the files the findings name. When it
      * does not finish the fix, the correction continues with the usual budget and all its files.
@@ -1860,6 +1866,96 @@ export function repairHostBoundCriteria(spec: Spec): { spec: Spec; repaired: str
   return { spec: { ...spec, criteria }, repaired };
 }
 
+// A criterion that pages fit a viewport: "fit a 1280 px wide viewport without horizontal scrolling".
+const LAYOUT_VIEWPORT = /\bviewport\b|\b\d{3,4}\s?px\b/i;
+const LAYOUT_OVERFLOW =
+  /\bhorizontal(?:ly)?[- ]scroll|\bscroll ?width\b|\boverflow-x\b|\boverflows? horizontally\b/i;
+// A browser test the repository runs, which can measure the page itself.
+const BROWSER_TEST = /\b(?:playwright|puppeteer|cypress|webdriver|selenium|browser tests?)\b/i;
+// A CSS declaration or length a criterion prescribes: "max-width 80rem", "white-space: pre-wrap".
+const CSS_PROPERTY =
+  /\b(max-width|min-width|max-height|min-height|margin|padding|overflow-wrap|overflow-x|white-space|word-break|word-wrap|box-sizing|flex-wrap|grid-template-columns)\b|\b(width|height|display|overflow)\s*:/gi;
+const CSS_LENGTH = /\b\d+(?:\.\d+)?(?:rem|em|vw|vh|ch)\b/i;
+
+/** Criteria that a page fits a viewport width without horizontal scrolling. */
+export function layoutCriteria(spec: Pick<Spec, "criteria">): string[] {
+  return spec.criteria
+    .filter((c) => {
+      const text = `${c.given}\n${c.when}\n${c.then}`;
+      return LAYOUT_VIEWPORT.test(text) && LAYOUT_OVERFLOW.test(text);
+    })
+    .map((c) => c.id);
+}
+
+/**
+ * Layout criteria that prescribe CSS the request never names. md-site 630b42cc (bench round 28)
+ * turned "pages fit 1280 px" into `body` width 100%, max-width 80rem, padding 1rem and
+ * `pre` white-space pre-wrap; analysis then sent the plan back twice over that invented design
+ * (#1247). The criterion states the outcome; how the styles reach it is the implementer's choice.
+ */
+export function prescribedLayoutCss(spec: Pick<Spec, "criteria">, request: string): string[] {
+  const asked = request.toLowerCase();
+  return spec.criteria
+    .filter((c) => layoutCriteria({ criteria: [c] }).length)
+    .filter((c) => {
+      const text = `${c.given}\n${c.when}\n${c.then}`;
+      const properties = [...text.matchAll(CSS_PROPERTY)].map((m) =>
+        (m[1] ?? m[2] ?? "").toLowerCase(),
+      );
+      const length = text.match(CSS_LENGTH)?.[0]?.toLowerCase();
+      return (
+        properties.some((p) => !asked.includes(p)) ||
+        (length !== undefined && !asked.includes(length))
+      );
+    })
+    .map((c) => c.id);
+}
+
+/**
+ * The spec with every layout criterion made something this run can settle, when no gate of the
+ * run drives a browser. The sdd workflow renders no page, so a manual layout criterion stopped
+ * zoneslot-update 129e4cd7 AC-008 on a manual_evidence request until a person measured
+ * scrollWidth, and an automated one sent md-site's plan back until it promised a measurement the
+ * run cannot take (#1247). The claim stays as a post-release criterion for a browser after the
+ * run; a requirement it leaves without a criterion gets one the reviewer checks by reading the
+ * styles. A criterion that a repository browser test (Playwright, Cypress) measures stays.
+ */
+export function repairLayoutCriteria(
+  spec: Spec,
+  options: { browser?: boolean } = {},
+): { spec: Spec; repaired: string[] } {
+  if (options.browser) return { spec, repaired: [] };
+  const repaired = layoutCriteria(spec).filter((id) => {
+    const c = spec.criteria.find((criterion) => criterion.id === id);
+    if (!c || c.method === "post-release") return false;
+    return c.method === "manual" || !BROWSER_TEST.test(`${c.given}\n${c.when}\n${c.then}`);
+  });
+  if (!repaired.length) return { spec, repaired };
+  const criteria: Spec["criteria"] = spec.criteria.map((c) =>
+    repaired.includes(c.id) ? { ...c, method: "post-release" } : c,
+  );
+  let next = Math.max(0, ...spec.criteria.map((c) => Number(c.id.slice(3)) || 0));
+  for (const id of repaired) {
+    const original = spec.criteria.find((c) => c.id === id);
+    if (!original) continue;
+    const uncovered = original.requirementIds.filter(
+      (r) => !criteria.some((c) => c.method !== "post-release" && c.requirementIds.includes(r)),
+    );
+    if (!uncovered.length) continue;
+    next += 1;
+    criteria.push({
+      id: `AC-${String(next).padStart(3, "0")}`,
+      requirementIds: uncovered,
+      given: original.given,
+      when: "the reviewer reads the page's markup and styles",
+      // biome-ignore lint/suspicious/noThenProperty: Given/When/Then is the versioned acceptance-criterion contract.
+      then: `no element outside a deliberate scrolling region has a fixed width, min-width or unwrapped content wider than the viewport the criterion names (${id} keeps the browser measurement for after the run)`,
+      method: "automated",
+    });
+  }
+  return { spec: { ...spec, criteria }, repaired };
+}
+
 // A criterion that the project's build succeeds, or a build command named outright.// A criterion that the project's build succeeds, or a build command named outright.
 const BUILD_CLAIM =
   /\b(?:production|release|project|package|app(?:lication)?|the) build (?:succeeds|passes|completes|works|runs)\b|\bbuilds? (?:successfully|cleanly|without (?:errors?|warnings?))\b|\b(?:npm|bun|pnpm|yarn) run build\b|\b(?:cargo|go|dotnet|gradlew?) build\b|\bmvn (?:package|install|verify)\b/i;
@@ -2062,6 +2158,10 @@ export function specCoverageProblems(
     ...invented.map(
       (id) =>
         `criterion ${id} states a size or count bound in its Given, When or Then (such as "up to 100,000 rows" or "lines up to 1 MiB") that the request never states, so reviewers test that extreme and the implementation gets repaired for a limit nobody asked for. The request is authoritative: remove the bound so the criterion holds for the inputs the request names. When a test needs a concrete size, record the smallest one the request's own examples need only as an assumption ("<domain> Assumed: <value>, because <reason>."), never in the criterion.`,
+    ),
+    ...prescribedLayoutCss(spec, options.request ?? "").map(
+      (id) =>
+        `criterion ${id} prescribes CSS (property names or lengths such as max-width, padding, white-space or 80rem) that the request never names. State only the outcome: the pages fit the viewport width without horizontal scrolling outside a region the request makes deliberate. How the styles reach it is the implementer's choice, and reviewers would otherwise hold the work to a design nobody asked for.`,
     ),
     ...(checks ? uncontractedBuildCriteria(spec, checks) : []).map(
       (id) =>

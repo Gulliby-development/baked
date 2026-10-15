@@ -12,8 +12,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
+import { largerContextModel } from "../llm/context-sizes.js";
 import {
   ROUTING_ARTIFACT,
+  type RouteContext,
   type RouteEffort,
   type RoutingRecord,
   RoutingRecordSchema,
@@ -55,6 +57,7 @@ import {
   reversalCandidates,
   reviewLimitAccepts,
 } from "../verification/convergence-stop.js";
+import { caseCheck as criteriaCaseCheck } from "../verification/criteria-cases.js";
 import { type DocExampleResult, isDocFile, runDocExamples } from "../verification/doc-examples.js";
 import {
   currentEvidence,
@@ -357,6 +360,7 @@ import {
   ReviewSchema,
   type RunPolicy,
   repairHostBoundCriteria,
+  repairLayoutCriteria,
   type Spec,
   SpecSchema,
   specCoverageProblems,
@@ -933,6 +937,11 @@ export class WorkflowScheduler {
             case "specify": {
               // An oversized spec goes back once; the author's second submission stands (#1013).
               let sizeAdvised = false;
+              // Without a browser gate the host settles a layout criterion itself (#1247).
+              const browser =
+                !!v2 && acceptanceGrants(v2.gates).some((g) => g.driver === "browser");
+              const hostRepairs = (spec: Spec): Spec =>
+                repairLayoutCriteria(repairHostBoundCriteria(spec).spec, { browser }).spec;
               const validateSpec = (output: unknown): string[] => {
                 const parsed = SpecSchema.safeParse(output);
                 if (!parsed.success) return [];
@@ -944,13 +953,9 @@ export class WorkflowScheduler {
                 // The host makes a host-bound criterion checkable itself (#1015).
                 return [
                   ...size,
-                  ...specCoverageProblems(
-                    repairHostBoundCriteria(parsed.data).spec,
-                    policy.checks,
-                    {
-                      request: state.requestText || state.prompt,
-                    },
-                  ),
+                  ...specCoverageProblems(hostRepairs(parsed.data), policy.checks, {
+                    request: state.requestText || state.prompt,
+                  }),
                   // The host maps a deliverable the spec names elsewhere itself (#1037).
                   ...deliverableProblems(
                     repairDeliverables(parsed.data, coverageRequest(state)).spec,
@@ -1008,6 +1013,21 @@ export class WorkflowScheduler {
                     "diagnostic",
                     "spec-repairs/host-bound.json",
                     canonical({ postRelease: repair.repaired, added }),
+                  ),
+                );
+              }
+              const layout = repairLayoutCriteria(state.spec, { browser });
+              if (layout.repaired.length) {
+                const added = layout.spec.criteria
+                  .slice(state.spec.criteria.length)
+                  .map((c) => c.id);
+                state.spec = layout.spec;
+                this.store.transaction(() =>
+                  this.store.artifact(
+                    runId,
+                    "diagnostic",
+                    "spec-repairs/layout.json",
+                    canonical({ postRelease: layout.repaired, added }),
                   ),
                 );
               }
@@ -3102,7 +3122,7 @@ export class WorkflowScheduler {
     runId: string,
     stepId: string,
     profile: AgentProfile,
-  ): { models: string[]; effort?: RouteEffort } {
+  ): { models: string[]; effort?: RouteEffort; context?: RouteContext } {
     const candidate = this.stepModels.get(stepId);
     if (candidate) return { models: [candidate] };
     return this.stageRoute(runId, this.store.rootStage(runId, stepId), profile);
@@ -3111,7 +3131,7 @@ export class WorkflowScheduler {
     runId: string,
     stage: string | null | undefined,
     profile: AgentProfile,
-  ): { models: string[]; effort?: RouteEffort } {
+  ): { models: string[]; effort?: RouteEffort; context?: RouteContext } {
     const routing = this.routingRecord(runId);
     if (!routing)
       return { models: [profile.model], ...(profile.effort ? { effort: profile.effort } : {}) };
@@ -3123,6 +3143,7 @@ export class WorkflowScheduler {
     return {
       models: [staged?.model ?? own?.model ?? profile.model, ...(entry?.fallback ?? [])],
       ...(entry?.effort || profile.effort ? { effort: entry?.effort ?? profile.effort } : {}),
+      ...(entry?.context !== undefined ? { context: entry.context } : {}),
     };
   }
   /** The run's frozen routing record, cached; null for runs started before routing. */
@@ -3137,9 +3158,19 @@ export class WorkflowScheduler {
     }
     return routing;
   }
-  /** The profile running on the model at `index` of its route's chain. */
-  private routed(runId: string, stepId: string, profile: AgentProfile, index = 0): AgentProfile {
-    const model = this.route(runId, stepId, profile).models[index] ?? profile.model;
+  /**
+   * The profile running on the model at `index` of its route's chain; `larger` runs that model
+   * with the largest window it offers (`context: auto`, #1256).
+   */
+  private routed(
+    runId: string,
+    stepId: string,
+    profile: AgentProfile,
+    index = 0,
+    larger = false,
+  ): AgentProfile {
+    const named = this.route(runId, stepId, profile).models[index] ?? profile.model;
+    const model = larger ? (largerContextModel(named) ?? named) : named;
     return model === profile.model ? profile : { ...profile, model };
   }
   /**
@@ -3252,19 +3283,54 @@ export class WorkflowScheduler {
       primaryError?: unknown;
       /** Set on the one retry that follows an attempt that ended at its step cap unsubmitted. */
       stepRetry?: boolean;
+      /** The model runs with its largest window: its context did not fit (`context: auto`). */
+      largerWindow?: boolean;
       /** The context did not fit and nothing larger is left: its run-level documents are shortened. */
       compact?: boolean;
     } = {},
   ): Promise<unknown> {
     const route = this.route(runId, stepId, stageProfile);
     const fallbackIndex = placement.fallbackIndex ?? 0;
-    const profile = this.routed(runId, stepId, stageProfile, fallbackIndex);
+    const largerWindow = placement.largerWindow === true;
+    const profile = this.routed(runId, stepId, stageProfile, fallbackIndex, largerWindow);
+    // Under `context: auto` a step whose context does not fit tries the model's largest window
+    // once, before the next model of the route (#1256).
+    const upgrade = (): Promise<unknown> | null =>
+      route.context === "auto" &&
+      !largerWindow &&
+      !signal.aborted &&
+      largerContextModel(profile.model) !== null
+        ? this.call(
+            runId,
+            stepId,
+            state,
+            policy,
+            stageProfile,
+            extra,
+            signal,
+            task,
+            0,
+            validate,
+            limits,
+            hostTools,
+            {
+              ...(placement.root ? { root: placement.root } : {}),
+              ...(fallbackIndex ? { fallbackIndex } : {}),
+              ...(placement.primaryError !== undefined
+                ? { primaryError: placement.primaryError }
+                : {}),
+              largerWindow: true,
+            },
+          )
+        : null;
     const compact = placement.compact === true;
     let prompt: string;
     try {
       prompt = this.promptFor(runId, state, policy, profile, extra, compact);
     } catch (error) {
       if (!isContextWindowFault(error) || signal.aborted) throw error;
+      const larger = upgrade();
+      if (larger) return larger;
       // A context too large for this model's window goes to the next model of the route, as a
       // window the provider rejects does below.
       if (route.models[fallbackIndex + 1] !== undefined)
@@ -3329,6 +3395,8 @@ export class WorkflowScheduler {
       task && profile.output === "implementation"
         ? this.reproCheck(runId, policy, task)
         : undefined;
+    const caseCheck =
+      task && profile.output === "implementation" ? criteriaCaseCheck(state.spec, task) : undefined;
     // A digested spec (#1019) comes with the tool that reads its criteria in full.
     const digested =
       digestsSpec(state.spec, profile, policy) ||
@@ -3360,6 +3428,7 @@ export class WorkflowScheduler {
         ...(validate ? { validate } : {}),
         ...(taskEndCheck ? { taskEndCheck } : {}),
         ...(reproCheck ? { reproCheck } : {}),
+        ...(caseCheck ? { caseCheck } : {}),
         ...(attributeCheck ? { attributeCheck } : {}),
         ...(this.formatHints(runId, state, profile.output, task)
           ? { formatHints: this.formatHints(runId, state, profile.output, task) }
@@ -3491,6 +3560,7 @@ export class WorkflowScheduler {
             ...(placement.primaryError !== undefined
               ? { primaryError: placement.primaryError }
               : {}),
+            ...(largerWindow ? { largerWindow } : {}),
             stepRetry: true,
           },
         );
@@ -3529,6 +3599,7 @@ export class WorkflowScheduler {
             ...(placement.primaryError !== undefined
               ? { primaryError: placement.primaryError }
               : {}),
+            ...(largerWindow ? { largerWindow } : {}),
             stepRetry: true,
           },
         );
@@ -3561,6 +3632,7 @@ export class WorkflowScheduler {
             ...(placement.root ? { root: placement.root } : {}),
             ...(index ? { fallbackIndex: index } : {}),
             ...(primaryError !== undefined ? { primaryError } : {}),
+            ...(largerWindow && index === fallbackIndex ? { largerWindow } : {}),
           },
         );
       if (delay !== null && !signal.aborted && !wrote) {
@@ -3570,6 +3642,8 @@ export class WorkflowScheduler {
       // A model that keeps failing, or whose window cannot hold the prompt, hands the step to the
       // next model of its route. Nothing is handed over once the attempt has changed files.
       const windowTooSmall = isContextWindowFault(error) || isInputTooLarge(error);
+      const larger = windowTooSmall && !wrote ? upgrade() : null;
+      if (larger) return larger;
       if (next !== undefined && !signal.aborted && !wrote && (isTransient(error) || windowTooSmall))
         return again(0, fallbackIndex + 1, placement.primaryError ?? error);
       // A request too large for the provider is an error of the prompt, not a lost worker: a
@@ -3596,6 +3670,7 @@ export class WorkflowScheduler {
               ...(placement.primaryError !== undefined
                 ? { primaryError: placement.primaryError }
                 : {}),
+              ...(largerWindow ? { largerWindow } : {}),
               stepRetry: true,
               // The fresh session also gets the shortened documents (#1244).
               compact: true,

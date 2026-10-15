@@ -1,9 +1,11 @@
 import type { AppConfig } from "../../types/index.js";
 import { ProfileRegistry, type RegisteredProfile } from "../agents/profiles/registry.js";
 import type { AgentProfile } from "../agents/profiles/schema.js";
+import { withContextSize } from "../llm/context-sizes.js";
 import {
   type IndependentReview,
   parseModelRouting,
+  type RouteContext,
   type RoutingEntry,
   type RoutingInputs,
   type RoutingRecord,
@@ -150,8 +152,11 @@ export function routingRecord(
   stageIds: string[],
   overrides: Record<string, string> | undefined,
 ): RoutingRecord {
-  const stages = resolveStageRoutes(workflowId, stageIds, overrides, inputs(config, model));
-  const chained = withModelFallback(config);
+  const routing = inputs(config, model);
+  const stages = resolveStageRoutes(workflowId, stageIds, overrides, routing);
+  const fallback = withModelFallback(config);
+  const sized = withRouteContext(routing.routing?.context);
+  const chained = (entry: RoutingEntry) => sized(fallback(entry));
   return {
     schemaVersion: 1,
     runModel: model,
@@ -179,6 +184,30 @@ function withModelFallback(config: AppConfig): (entry: RoutingEntry) => RoutingE
   };
 }
 
+/**
+ * A route's context window (#1256), with `modelRouting.context` for routes without their own:
+ * `max` and a token count become the model IDs that ask for that window, fallback models too, so
+ * the run keeps them on resume. `auto` keeps the models as named; the scheduler moves a step that
+ * does not fit to the largest window. `default` and an unset context leave the entry as it is.
+ */
+function withRouteContext(
+  fallback: RouteContext | undefined,
+): (entry: RoutingEntry) => RoutingEntry {
+  return (entry) => {
+    const context = entry.context ?? fallback;
+    if (context === undefined || context === "default") return entry;
+    if (context === "auto") return { ...entry, context };
+    return {
+      ...entry,
+      model: withContextSize(entry.model, context),
+      ...(entry.fallback?.length
+        ? { fallback: entry.fallback.map((id) => withContextSize(id, context)) }
+        : {}),
+      context,
+    };
+  };
+}
+
 export interface RouteExplanation {
   workflowId: string;
   runModel: string;
@@ -192,6 +221,8 @@ export interface RouteExplanation {
     source: string | null;
     effort: string | null;
     fallback: string[];
+    /** The route's context window setting (#1256), or null when it sets none. */
+    context: RoutingEntry["context"] | null;
   }[];
   profiles: RoutingRecord["profiles"];
   /**
@@ -263,6 +294,7 @@ export function explainRoute(
         source: routed?.source ?? null,
         effort: routed?.effort ?? null,
         fallback: routed?.fallback ?? [],
+        context: routed?.context ?? null,
       };
     }),
     profiles: record.profiles,

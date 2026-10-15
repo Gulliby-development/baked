@@ -107,6 +107,13 @@ describe("local API model routing", () => {
     const search = await patch({ scope: "project", codeWebSearch: true });
     expect(((await search.json()) as RoutingOverview).codeWebSearch).toEqual({ global: null, project: true, effective: true });
     expect(((await (await patch({ scope: "project", codeWebSearch: null })).json()) as RoutingOverview).codeWebSearch.effective).toBe(false);
+
+    // The context window of every route without its own, and of one route (#1256).
+    expect((await get()).context).toEqual({ global: null, project: null, effective: null });
+    const context = await patch({ scope: "project", context: "max" });
+    expect(((await context.json()) as RoutingOverview).context).toEqual({ global: null, project: "max", effective: "max" });
+    const routed = await patch({ scope: "project", target: { kind: "role", role: "reviewer" }, route: { model: "claude-code/opus", context: "auto" } });
+    expect(((await routed.json()) as RoutingOverview).layers.project?.roles?.reviewer).toEqual({ model: "claude-code/opus", context: "auto" });
   });
 
   test("changes a run start would refuse are not written", async () => {

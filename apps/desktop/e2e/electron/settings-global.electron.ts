@@ -477,6 +477,10 @@ test("routing policies and a project layer route are saved to their own files", 
   await expect(page.getByText("Codex code attempts may search the web. In effect: off.")).toBeVisible();
   await search.getByRole("button", { name: "on" }).click();
   await expect.poll(routing).toMatchObject({ codeWebSearch: true });
+  const context = page.getByRole("group", { name: "Context window" });
+  await expect(page.getByText("Which window a model with several runs with. In effect: default.")).toBeVisible();
+  await context.getByRole("button", { name: "auto" }).click();
+  await expect.poll(routing).toMatchObject({ context: "auto" });
 
   await page.reload();
   await expect(review.getByRole("button", { name: "warn" })).toHaveAttribute("aria-pressed", "true");
@@ -490,7 +494,8 @@ test("routing policies and a project layer route are saved to their own files", 
   );
   await expect(sonnet.getByRole("button", { name: "on" })).toHaveAttribute("aria-pressed", "true");
   await expect(search.getByRole("button", { name: "on" })).toHaveAttribute("aria-pressed", "true");
-  for (const group of [review, confidence, critic, sonnet, search])
+  await expect(context.getByRole("button", { name: "auto" })).toHaveAttribute("aria-pressed", "true");
+  for (const group of [review, confidence, critic, sonnet, search, context])
     await group.getByRole("button", { name: "inherit" }).click();
   await expect.poll(routing).toBeUndefined();
 

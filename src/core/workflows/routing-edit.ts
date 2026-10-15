@@ -1,3 +1,4 @@
+import { parseContextSize } from "../llm/context-sizes.js";
 import {
   BUILTIN_CLASSES,
   type CriticMode,
@@ -6,6 +7,7 @@ import {
   mergeModelRouting,
   ROUTED_ROLES,
   type Route,
+  RouteContext,
   type RoutedRole,
   RouteEffort,
   type RoutingInputs,
@@ -32,6 +34,24 @@ export interface RouteDraft {
   model: string;
   effort: RouteEffort | null;
   fallback: string[];
+  /** The route's context window (#1256); `null` or absent leaves it unset. */
+  context?: RouteContext | null;
+}
+
+/** The context choices of the edit form besides a window in tokens; `null` means unset. */
+export const CONTEXT_CHOICES: readonly (RouteContext | null)[] = [null, "default", "max", "auto"];
+
+/** A context value as the screens show it: `1m` and `200k` for windows, the keyword otherwise. */
+export function formatRouteContext(context: RouteContext): string {
+  if (typeof context !== "number") return context;
+  if (context % 1_000_000 === 0) return `${context / 1_000_000}m`;
+  if (context % 1_000 === 0) return `${context / 1_000}k`;
+  return String(context);
+}
+
+/** Parses `default`, `max`, `auto`, a token count or a short form such as `1m`; null otherwise. */
+export function parseRouteContext(text: string): RouteContext | null {
+  return text.trim().toLowerCase() === "auto" ? "auto" : parseContextSize(text);
 }
 
 /** The effort choices of the edit form, in order; `null` means unset. */
@@ -69,30 +89,38 @@ export function routeAt(
 }
 
 export function draftOf(route: Route | undefined): RouteDraft {
-  if (route === undefined) return { model: "", effort: null, fallback: [] };
-  if (typeof route === "string") return { model: route, effort: null, fallback: [] };
-  return { model: route.model, effort: route.effort ?? null, fallback: route.fallback ?? [] };
+  if (route === undefined) return { model: "", effort: null, fallback: [], context: null };
+  if (typeof route === "string") return { model: route, effort: null, fallback: [], context: null };
+  return {
+    model: route.model,
+    effort: route.effort ?? null,
+    fallback: route.fallback ?? [],
+    context: route.context ?? null,
+  };
 }
 
-/** The shortest route for a draft: a plain string unless it sets effort or fallback models. */
+/** The shortest route for a draft: a plain string unless it sets effort, fallback or context. */
 export function routeOf(draft: RouteDraft): Route {
   const model = draft.model.trim();
   const fallback = draft.fallback.map((id) => id.trim()).filter(Boolean);
-  if (!draft.effort && !fallback.length) return model;
+  const context = draft.context ?? null;
+  if (!draft.effort && !fallback.length && context === null) return model;
   return {
     model,
     ...(draft.effort ? { effort: draft.effort } : {}),
     ...(fallback.length ? { fallback } : {}),
+    ...(context !== null ? { context } : {}),
   };
 }
 
-/** One line for a route: `model · effort · → fallback, fallback`. */
+/** One line for a route: `model · effort · context 1m · → fallback, fallback`. */
 export function describeRoute(route: Route | undefined): string {
   if (route === undefined) return "";
   const draft = draftOf(route);
   return [
     draft.model,
     ...(draft.effort ? [draft.effort] : []),
+    ...(draft.context ? [`context ${formatRouteContext(draft.context)}`] : []),
     ...(draft.fallback.length ? [`→ ${draft.fallback.join(", ")}`] : []),
   ].join(" · ");
 }
@@ -130,6 +158,7 @@ function compact(routing: ModelRouting): ModelRouting | undefined {
   if (routing.critic) next.critic = routing.critic;
   if (routing.specifyOnSonnet !== undefined) next.specifyOnSonnet = routing.specifyOnSonnet;
   if (routing.codeWebSearch !== undefined) next.codeWebSearch = routing.codeWebSearch;
+  if (routing.context !== undefined) next.context = routing.context;
   return Object.keys(next).length ? next : undefined;
 }
 
@@ -216,6 +245,15 @@ export function setCodeWebSearch(
   return compact(value === null ? rest : { ...rest, codeWebSearch: value });
 }
 
+/** Sets (or, with `null`, removes) the context window of every route without its own (#1256). */
+export function setRoutingContext(
+  routing: ModelRouting | undefined,
+  value: RouteContext | null,
+): ModelRouting | undefined {
+  const { context: _previous, ...rest } = routing ?? {};
+  return compact(value === null ? rest : { ...rest, context: value });
+}
+
 type ClassRoute = NonNullable<ModelRouting["classes"]>[string];
 const CLASS_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 
@@ -240,6 +278,12 @@ export function draftProblems(target: RoutingTarget, draft: RouteDraft): string[
     problems.push("Fallbacks name models, not classes");
   if (fallback.includes(model)) problems.push("A fallback repeats the primary model");
   if (new Set(fallback).size !== fallback.length) problems.push("A fallback model is listed twice");
+  if (
+    draft.context !== undefined &&
+    draft.context !== null &&
+    !RouteContext.safeParse(draft.context).success
+  )
+    problems.push("Context is default, max, auto or a window in tokens");
   return problems;
 }
 
@@ -310,7 +354,8 @@ export type RoutingChange =
   | { reviewMinConfidence: number | null }
   | { critic: CriticMode | null }
   | { specifyOnSonnet: boolean | null }
-  | { codeWebSearch: boolean | null };
+  | { codeWebSearch: boolean | null }
+  | { context: RouteContext | null };
 
 /**
  * Applies a change to one layer and lists what would stop it: the draft's own problems, then what
@@ -331,6 +376,14 @@ export function applyRoutingChange(
     return { routing: setSpecifyOnSonnet(current, change.specifyOnSonnet), problems: [] };
   if ("codeWebSearch" in change)
     return { routing: setCodeWebSearch(current, change.codeWebSearch), problems: [] };
+  if ("context" in change) {
+    if (change.context !== null && !RouteContext.safeParse(change.context).success)
+      return {
+        routing: current,
+        problems: ["context is default, max, auto or a window in tokens"],
+      };
+    return { routing: setRoutingContext(current, change.context), problems: [] };
+  }
   if ("reviewMinConfidence" in change) {
     const value = change.reviewMinConfidence;
     if (value !== null && !(value >= 0 && value <= 1))
@@ -360,6 +413,7 @@ export interface ResolvedRoute {
   source: string;
   effort?: string | null | undefined;
   fallback?: string[] | undefined;
+  context?: RouteContext | null | undefined;
 }
 
 /**
@@ -446,6 +500,12 @@ export interface RoutingOverview {
     project: boolean | null;
     effective: boolean;
   };
+  /** The context window of routes without their own (#1256); `effective` is null when unset. */
+  context: {
+    global: RouteContext | null;
+    project: RouteContext | null;
+    effective: RouteContext | null;
+  };
   /** Reviews that would share a model with the implementation. */
   warnings: string[];
   /** Why the workflow's stages and profiles could not be explained, such as no run model. */
@@ -516,6 +576,11 @@ export function routingOverview(input: {
       global: layers.global?.codeWebSearch ?? null,
       project: layers.project?.codeWebSearch ?? null,
       effective: routing?.codeWebSearch ?? false,
+    },
+    context: {
+      global: layers.global?.context ?? null,
+      project: layers.project?.context ?? null,
+      effective: routing?.context ?? null,
     },
     warnings: explanation?.warnings ?? [],
     error: input.error ?? null,

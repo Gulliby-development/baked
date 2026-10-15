@@ -183,6 +183,8 @@ export function budgetLimitText(budget: BudgetView): string {
   if (budget.activeMs >= budget.maxActiveMs)
     return `the active time limit of ${formatDuration(budget.maxActiveMs)} is reached`;
   const cost = budget.cost;
+  if (cost?.forecastUsd !== undefined)
+    return `the run is forecast to cost about ${usd(cost.forecastUsd)}, above its ${usd(cost.maxCostUsd)} cap, with ${usd(cost.spentUsd + cost.reservedUsd)} spent; raise the cap to finish it, or resume to spend on to it`;
   const cap = costCapFor(budget);
   if (cost && cap !== null && cap > cost.maxCostUsd)
     return `the next agent step would pass the cost cap: about ${usd(cost.spentUsd + cost.reservedUsd)} of ${usd(cost.maxCostUsd)} is spent or reserved`;

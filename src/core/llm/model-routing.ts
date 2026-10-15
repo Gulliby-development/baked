@@ -28,8 +28,20 @@ const ModelId = z
   .trim()
   .min(1)
   .refine((v) => !v.startsWith("$"), { message: "Name a model here, not a class" });
+/**
+ * The context window a route runs with, for models that offer several (Claude Code's `[1m]`):
+ * `default` runs the model as named, `max` its largest window, a number the window of that many
+ * tokens, and `auto` the model as named until a step's context does not fit, then its largest
+ * window for that step.
+ */
+export const RouteContext = z.union([
+  z.enum(["default", "max", "auto"]),
+  z.number().int().positive(),
+]);
+export type RouteContext = z.infer<typeof RouteContext>;
 const RouteOptions = {
   effort: RouteEffort.optional(),
+  context: RouteContext.optional(),
   /** Models tried in order when the model keeps failing with transient provider errors. */
   fallback: z.array(ModelId).max(3).optional(),
 };
@@ -95,6 +107,8 @@ export const ModelRoutingSchema = z
      * it into its policy (`codeWebSearch`). Off by default.
      */
     codeWebSearch: z.boolean().optional(),
+    /** The context window of every route that does not set its own `context` (#1256). */
+    context: RouteContext.optional(),
   })
   .strict();
 export type ModelRouting = z.infer<typeof ModelRoutingSchema>;
@@ -119,15 +133,21 @@ export interface Resolved {
   source: string;
   effort?: RouteEffort;
   fallback?: string[];
+  context?: RouteContext;
 }
 
 function withOptions(
   resolved: Resolved,
-  options: { effort?: RouteEffort | undefined; fallback?: string[] | undefined },
+  options: {
+    effort?: RouteEffort | undefined;
+    fallback?: string[] | undefined;
+    context?: RouteContext | undefined;
+  },
 ): Resolved {
   return {
     ...resolved,
     ...(options.effort ? { effort: options.effort } : {}),
+    ...(options.context !== undefined ? { context: options.context } : {}),
     ...(options.fallback?.length ? { fallback: options.fallback } : {}),
   };
 }
@@ -281,6 +301,7 @@ export function mergeModelRouting(
   const critic = layer.critic ?? base.critic;
   const specifyOnSonnet = layer.specifyOnSonnet ?? base.specifyOnSonnet;
   const codeWebSearch = layer.codeWebSearch ?? base.codeWebSearch;
+  const context = layer.context ?? base.context;
   return {
     classes: { ...base.classes, ...layer.classes },
     roles: { ...base.roles, ...layer.roles },
@@ -291,6 +312,7 @@ export function mergeModelRouting(
     ...(critic ? { critic } : {}),
     ...(specifyOnSonnet !== undefined ? { specifyOnSonnet } : {}),
     ...(codeWebSearch !== undefined ? { codeWebSearch } : {}),
+    ...(context !== undefined ? { context } : {}),
   };
 }
 
@@ -300,6 +322,7 @@ const RecordEntry = z
     source: z.string(),
     effort: RouteEffort.optional(),
     fallback: z.array(z.string()).optional(),
+    context: RouteContext.optional(),
   })
   .strict();
 export type RoutingEntry = z.infer<typeof RecordEntry>;
@@ -330,5 +353,6 @@ export function recordEntry(resolved: Resolved): RoutingEntry {
     source: resolved.source,
     ...(resolved.effort ? { effort: resolved.effort } : {}),
     ...(resolved.fallback?.length ? { fallback: resolved.fallback } : {}),
+    ...(resolved.context !== undefined ? { context: resolved.context } : {}),
   };
 }

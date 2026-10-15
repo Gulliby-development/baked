@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../config/index.js";
 import { getCwd } from "../core/cwd.js";
 import { loadModelCatalog } from "../core/llm/model-catalog.js";
-import { parseRouteOverrides } from "../core/llm/model-routing.js";
+import { parseRouteOverrides, type RoutingEntry } from "../core/llm/model-routing.js";
 import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
 import { withModelReview } from "../core/workflows/auto-approval.js";
 import { type BudgetLimits, type BudgetPresetId, presetPolicy } from "../core/workflows/budget.js";
@@ -140,11 +140,22 @@ const routeRequest = (args: WorkflowArgs, config: AppConfig) => ({
 });
 /** A table of stages and profiles with their models and the source of each choice. */
 export function formatRoute(route: RouteExplanation): string {
-  const extras = (entry: { effort?: string | null; fallback?: string[] } | undefined): string[] => [
+  type Entry = {
+    effort?: string | null;
+    fallback?: string[];
+    context?: RoutingEntry["context"] | null;
+  };
+  // The CONTEXT column shows only when a route sets a context window (#1256).
+  const sized =
+    route.stages.some((s) => s.context != null) ||
+    Object.values(route.profiles).some((p) => p.context !== undefined);
+  const extras = (entry: Entry | undefined): string[] => [
     entry?.effort ?? "",
     entry?.fallback?.length ? entry.fallback.join(", ") : "",
+    ...(sized ? [entry?.context == null ? "" : String(entry.context)] : []),
   ];
-  const rows: string[][] = [["STAGE", "KIND", "MODEL", "SOURCE", "EFFORT", "FALLBACK"]];
+  const head = ["MODEL", "SOURCE", "EFFORT", "FALLBACK", ...(sized ? ["CONTEXT"] : [])];
+  const rows: string[][] = [["STAGE", "KIND", ...head]];
   for (const stage of route.stages) {
     const own = stage.profileId ? route.profiles[stage.profileId] : undefined;
     rows.push([
@@ -155,7 +166,7 @@ export function formatRoute(route: RouteExplanation): string {
       ...extras(stage.model ? stage : own),
     ]);
   }
-  rows.push([], ["PROFILE", "", "MODEL", "SOURCE", "EFFORT", "FALLBACK"]);
+  rows.push([], ["PROFILE", "", ...head]);
   for (const [id, entry] of Object.entries(route.profiles).sort(([a], [b]) => a.localeCompare(b)))
     rows.push([id, "", entry.model, entry.source, ...extras(entry)]);
   const columns = rows[0]?.length ?? 0;
