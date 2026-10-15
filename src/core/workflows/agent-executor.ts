@@ -48,7 +48,7 @@ import {
 } from "../verification/repro.js";
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
 import { affectedTestsFor, writtenTestsCheck } from "./affected-tests.js";
-import { assertAttemptFits } from "./budget.js";
+import { assertAttemptFits, growBudgetOnProgress } from "./budget.js";
 import {
   fixerCommand,
   fixerTiers,
@@ -80,6 +80,7 @@ import {
   recordingPath,
 } from "./model-recording.js";
 import { ProcessScope } from "./process-scope.js";
+import { EDIT_TOOLS } from "./progress-watch.js";
 import { isTargetedRead, outlineLargeReads } from "./read-outline.js";
 import { settleInterruptedEdits } from "./recovery.js";
 import { isTransient } from "./retry.js";
@@ -110,6 +111,7 @@ import {
   type StepLike,
   stepTokens,
   type ToolBackendCount,
+  toolCallName,
 } from "./step-budget.js";
 import type { EffectRow, WorkflowStore } from "./store.js";
 import { pureWorkflowTools, WorkflowToolPolicy } from "./tool-policy.js";
@@ -1064,6 +1066,7 @@ export class NativeAgentExecutor implements AgentExecutor {
       // The run budget still free bounds every token of the attempt, so an attempt started close
       // to the run limit finalizes and submits instead of failing on the run cap mid-loop.
       const remaining = this.store.remainingTokens(request.runId, policy, request.attemptId);
+      const elsewhere = policy.maxTotalTokens - remaining;
       const budget = new AttemptStepController({
         maxSteps: request.maxSteps,
         // The cap leaves cache reads out (#1070); the ceiling, the run's free budget, counts them.
@@ -1072,6 +1075,12 @@ export class NativeAgentExecutor implements AgentExecutor {
         // take a minimum number of steps at its own step cost, within what the run allows.
         minSteps: Math.min(request.maxSteps, MIN_ATTEMPT_STEPS),
         ceilingTokens: remaining,
+        // What the run committed elsewhere when the attempt started stays committed; the budget
+        // grows by what this attempt still needs (#1298).
+        growCeiling: (tokens) => {
+          growBudgetOnProgress(this.store, request.runId, policy, elsewhere + tokens);
+          return this.store.remainingTokens(request.runId, policy, request.attemptId);
+        },
         submitTools,
         fallbackStepTokens:
           request.profile.maxOutputTokens + Math.ceil(Buffer.byteLength(request.prompt) / 2),
@@ -1335,6 +1344,29 @@ export class NativeAgentExecutor implements AgentExecutor {
           request.profile.id,
           usage.cappedTokens ?? usage.totalTokens,
           usage.maxTokens,
+        );
+      // An attempt that had to edit and was finalized by the run's free budget before any edit
+      // did not fail its task: the budget stopped it, and an extension lets the task go on
+      // instead of the run ending `invalid_output` with its budget unused (#1298).
+      const outcome = (submitted as { outcome?: unknown } | undefined)?.outcome;
+      if (
+        budget.stoppedByCeiling &&
+        request.profile.role === "implementer" &&
+        request.task?.writes.length &&
+        (outcome === "failed" || outcome === "blocked") &&
+        !result.steps.some((step) =>
+          step.toolCalls.some((call) => EDIT_TOOLS.has(toolCallName(call))),
+        )
+      )
+        throw new WorkflowFault(
+          "BUDGET_EXHAUSTED",
+          `Task ${request.task.id} was stopped by the run budget before its first edit`,
+          {
+            reason: "budget_exhausted",
+            usedTokens: usage.totalTokens,
+            remainingTokens: this.store.remainingTokens(request.runId, policy, request.attemptId),
+            maxTotalTokens: policy.maxTotalTokens,
+          },
         );
       if (submitted === undefined) {
         // Nothing to reformat: a correction pass over empty text would invent a result. The

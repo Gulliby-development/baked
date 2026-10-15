@@ -287,7 +287,7 @@ export interface StepLike {
 }
 
 /** The tool name of a step's tool call, as the AI SDK reports it; `unknown` when it has none. */
-function toolCallName(call: unknown): string {
+export function toolCallName(call: unknown): string {
   const name = (call as { toolName?: unknown } | null)?.toolName;
   return typeof name === "string" ? name : "unknown";
 }
@@ -336,6 +336,10 @@ export class AttemptStepController {
   private compacting = false;
   /** Serialized size of the messages sent with each step, to estimate the next one. */
   private readonly sentBytes: number[] = [];
+  /** The ceiling on all tokens, which `growCeiling` may raise during the attempt. */
+  private ceiling: number | undefined;
+  /** Whether the ceiling, not the attempt's own cap, finalized the attempt. */
+  private ceilingStop = false;
   constructor(
     private readonly options: {
       maxSteps: number;
@@ -358,6 +362,12 @@ export class AttemptStepController {
        * the step floor never passes it and the attempt finalizes before it.
        */
       ceilingTokens?: number;
+      /**
+       * Asked when the ceiling alone would finalize the attempt, with the tokens the attempt needs
+       * for two more steps like its last: the run budget may grow to cover them. Returns the
+       * ceiling now, all tokens included.
+       */
+      growCeiling?: (tokens: number) => number;
       /** The profile's compaction settings; unset compacts from the first step. */
       compaction?: ProfileCompaction;
       /**
@@ -369,16 +379,22 @@ export class AttemptStepController {
         onSignal: (finding: WatchFinding, action: "steered" | "stopped") => void;
       };
     },
-  ) {}
+  ) {
+    this.ceiling = options.ceilingTokens;
+  }
   get maxTokens(): number {
     return this.options.maxTokens;
   }
+  /** Whether the run's free budget, not the attempt's cap or steps, ended the attempt early. */
+  get stoppedByCeiling(): boolean {
+    return this.ceilingStop;
+  }
   /** The token cap after the step floor, given the steps taken so far. */
   tokenCap(steps: ReadonlyArray<{ usage: StepUsageLike }>): number {
-    const { maxTokens, minSteps, ceilingTokens } = this.options;
+    const { maxTokens, minSteps } = this.options;
     if (!minSteps || steps.length === 0) return maxTokens;
     const floor = Math.ceil((this.capped(steps) / steps.length) * minSteps);
-    return Math.max(maxTokens, Math.min(floor, ceilingTokens ?? maxTokens));
+    return Math.max(maxTokens, Math.min(floor, this.ceiling ?? maxTokens));
   }
   /** Tokens the steps count against the cap; see `capTokens`. */
   capped(steps: ReadonlyArray<{ usage: StepUsageLike }>): number {
@@ -389,7 +405,7 @@ export class AttemptStepController {
   }
   /** Whether the steps used the cap, or all the tokens the ceiling allows. */
   private atCap(steps: ReadonlyArray<{ usage: StepUsageLike }>): boolean {
-    const ceiling = this.options.ceilingTokens;
+    const ceiling = this.ceiling;
     return (
       this.capped(steps) >= this.tokenCap(steps) ||
       (ceiling !== undefined && this.consumed(steps) >= ceiling)
@@ -417,6 +433,36 @@ export class AttemptStepController {
     const output = Math.min(maxOutput, Math.max(MIN_OUTPUT_ESTIMATE, 2 * largestOutput));
     return this.consumed(steps) + input + output;
   }
+  /**
+   * Whether the ceiling finalizes the next step. The attempt's cap leaves cache reads out and the
+   * ceiling counts them, so an attempt the run admitted on its cap could be finalized after one
+   * step it had not the budget to repeat: md-site T012 started with 546k left, its first step
+   * cost 186k, and it submitted failed without an edit (#1298). The run budget grows first,
+   * on the same rules as any call past it.
+   */
+  private ceilingReason(
+    stepNumber: number,
+    steps: ReadonlyArray<{ usage: StepUsageLike }>,
+  ): FinalizeReason | null {
+    if (this.ceiling === undefined) return null;
+    const last = steps[steps.length - 1];
+    const lastStepTokens = last ? stepTokens(last.usage, this.options.fallbackStepTokens) : 0;
+    const consumed = this.consumed(steps);
+    const reason = (maxTokens: number) =>
+      finalizeReason({
+        stepNumber,
+        maxSteps: this.options.maxSteps,
+        consumed,
+        lastStepTokens,
+        maxTokens,
+      });
+    if (reason(this.ceiling) !== "tokens") return reason(this.ceiling);
+    const grow = this.options.growCeiling;
+    if (grow) this.ceiling = Math.max(this.ceiling, grow(consumed + 2 * lastStepTokens));
+    const final = reason(this.ceiling);
+    this.ceilingStop = final === "tokens";
+    return final;
+  }
   consumed(steps: ReadonlyArray<{ usage: StepUsageLike }>): number {
     return steps.reduce(
       (sum, step) => sum + stepTokens(step.usage, this.options.fallbackStepTokens),
@@ -438,7 +484,6 @@ export class AttemptStepController {
   }): { messages?: ModelMessage[]; activeTools?: string[]; toolChoice?: "required" } {
     const last = input.steps[input.steps.length - 1];
     const fallback = this.options.fallbackStepTokens;
-    const ceiling = this.options.ceilingTokens;
     this.finalizedBy ??=
       finalizeReason({
         stepNumber: input.stepNumber,
@@ -446,16 +491,7 @@ export class AttemptStepController {
         consumed: this.capped(input.steps),
         lastStepTokens: last ? capTokens(last.usage, fallback) : 0,
         maxTokens: this.tokenCap(input.steps),
-      }) ??
-      (ceiling !== undefined
-        ? finalizeReason({
-            stepNumber: input.stepNumber,
-            maxSteps: this.options.maxSteps,
-            consumed: this.consumed(input.steps),
-            lastStepTokens: last ? stepTokens(last.usage, fallback) : 0,
-            maxTokens: ceiling,
-          })
-        : null);
+      }) ?? this.ceilingReason(input.stepNumber, input.steps);
     const watch = this.options.watch;
     let steer: WatchFinding | null = null;
     // One steering message per attempt; the stop follows only when the steered pattern goes on.
