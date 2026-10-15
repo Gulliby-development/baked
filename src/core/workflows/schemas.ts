@@ -203,6 +203,13 @@ export const AutoApprovalSchema = z
      * any reviewer failure, still waits for a person.
      */
     modelReview: z.boolean().optional(),
+    /**
+     * Opt-in (#1229): an edit of an existing package manifest that the dependency check reads
+     * (package.json, pyproject.toml, requirements*.txt, Cargo.toml, go.mod, .csproj/.fsproj/.vbproj,
+     * pom.xml) and that the request names by path or file name no longer needs a person. A package
+     * the edit adds still blocks the run unless the request or spec names it (#802).
+     */
+    requestedManifestEdits: z.boolean().optional(),
   })
   .strict()
   .refine((value) => value.renewal || value.limits !== null, "Auto approval requires limits")

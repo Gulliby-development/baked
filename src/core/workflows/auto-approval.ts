@@ -1,5 +1,6 @@
 import { canonical, hashJson } from "../specs/hash.js";
 import { WorkflowFault } from "./errors.js";
+import { isManifestPath } from "./quality/manifests.js";
 import { unmappedDeliverables } from "./request-coverage.js";
 import {
   type ApprovalReview,
@@ -131,7 +132,10 @@ export function evaluateAutoApproval(
   const writes = graph.tasks.flatMap((task) => task.writes);
   const common: string[] = [];
   for (const write of writes)
-    if (needsPerson(write, context.exists, context.scaffold))
+    if (
+      needsPerson(write, context.exists, context.scaffold) &&
+      !(config.requestedManifestEdits && requestedManifestEdit(write, context.request ?? ""))
+    )
       common.push(`${write.path} always needs a person`);
   // Under `clarification: assume` the run already decides what it may on its own; the deferral is
   // recorded in the approval body and the run report, so it is visible without a person.
@@ -223,8 +227,7 @@ export function plannerApprovalLimits(policy: RunPolicy): {
     maxFiles: limits.maxFiles,
     allowedPaths: limits.allowedPaths,
     allowDelete: limits.allowDelete,
-    alwaysHuman:
-      "repository metadata (.git, .github and other CI folders, .baked, specs), agent instructions, package manifests that already exist (creating one is allowed, and editing one on a workspace without source files), lockfiles, tool configs (tsconfig, biome), .env files and keys",
+    alwaysHuman: `repository metadata (.git, .github and other CI folders, .baked, specs), agent instructions, package manifests that already exist (creating one is allowed, and editing one on a workspace without source files${policy.autoApproval?.requestedManifestEdits ? " or one the request names" : ""}), lockfiles, tool configs (tsconfig, biome), .env files and keys`,
   };
 }
 
@@ -241,6 +244,20 @@ function requiredByRequest(write: Write, request: string): boolean {
   const path = write.path.toLowerCase();
   const name = path.split("/").at(-1) ?? path;
   return text.includes(path) || (name.includes(".") && text.includes(name));
+}
+
+/**
+ * An edit of an existing package manifest that the request names, under
+ * `autoApproval.requestedManifestEdits` (#1229). A multi-project .NET, JVM or Rust workspace plan
+ * must reference its new project from the scaffold's manifests. Only manifests the dependency
+ * check reads qualify: with `allowNewDependencies` false a package the edit adds still blocks the
+ * run unless the request or spec names it (#802). Deletes, lockfiles, tool configs and
+ * `Directory.Packages.props` keep needing a person.
+ */
+function requestedManifestEdit(write: Write, request: string): boolean {
+  return (
+    write.action !== "delete" && isManifestPath(write.path) && requiredByRequest(write, request)
+  );
 }
 
 /**
