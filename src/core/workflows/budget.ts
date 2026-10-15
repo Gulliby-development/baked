@@ -1,6 +1,7 @@
 import type { RoutingRecord } from "../llm/model-routing.js";
 import { findPricing } from "../llm/pricing.js";
 import { canonical, hashJson } from "../specs/hash.js";
+import { costCeilingUsd } from "./cost-tolerance.js";
 import { defaultWorkflowPolicy } from "./defaults.js";
 import { WorkflowFault } from "./errors.js";
 import { type AgentProfile, extendToOf, PolicySchema, type RunPolicy } from "./schemas.js";
@@ -311,7 +312,8 @@ function progressOf(store: WorkflowStore, runId: string) {
  * last corrective task unstarted (#1206).
  */
 function affordableTokens(store: WorkflowStore, runId: string, policy: RunPolicy): number | null {
-  const cap = policy.maxCostUsd;
+  // The cap's tolerance band (`costTolerance`) is part of what the run may pay for (#1263).
+  const cap = costCeilingUsd(store, runId, policy);
   if (cap === null) return null;
   const row = store.run(runId);
   const { spentUsd, reservedUsd } = store.costUsage(runId);
@@ -413,6 +415,7 @@ export function assertAttemptFits(
       ...store.costUsage(runId, attemptId),
       attemptTokens,
       maxCostUsd: policy.maxCostUsd,
+      ceilingUsd: costCeilingUsd(store, runId, policy),
     });
   throw new WorkflowFault(
     "BUDGET_EXHAUSTED",

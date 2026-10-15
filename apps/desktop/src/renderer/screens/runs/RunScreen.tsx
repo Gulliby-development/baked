@@ -287,8 +287,10 @@ function Budget({
         <Meter
           label="Cost cap"
           value={run.estimatedCostUsd ?? 0}
-          limit={run.maxCostUsd}
-          text={`${usd(run.estimatedCostUsd)} / ${usd(run.maxCostUsd)}`}
+          limit={run.costCeilingUsd ?? run.maxCostUsd}
+          text={`${usd(run.estimatedCostUsd)} / ${usd(run.maxCostUsd)}${
+            run.costCeilingUsd !== undefined ? ` (up to ${usd(run.costCeilingUsd)} to finish)` : ""
+          }`}
         />
       )}
       <Meter
@@ -620,7 +622,8 @@ function RunMeter({
         <span className="font-mono">
           {tokens(run.tokenUsage)}
           {limit ? ` / ${tokens(limit)}` : ""} · {usd(run.estimatedCostUsd)}
-          {run.maxCostUsd !== undefined ? ` of ${usd(run.maxCostUsd)}` : ""} ·{" "}
+          {run.maxCostUsd !== undefined ? ` of ${usd(run.maxCostUsd)}` : ""}
+          {run.costCeilingUsd !== undefined ? ` (≤ ${usd(run.costCeilingUsd)})` : ""} ·{" "}
           {duration(run.activeMs)} active
         </span>
         {model && (

@@ -448,6 +448,13 @@ export const PolicySchema = z
      */
     costForecast: z.enum(["ask", "off"]).optional(),
     /**
+     * With a dollar cap, how far past it the run may go to finish its work (see
+     * cost-tolerance.ts): a share of the cap (0 to 0.5), or `auto`, which takes 10% to 30% by the
+     * number of planned tasks. Past the cap the run winds up: only critical and high findings
+     * start corrections. Absent means `off`, so stored policies keep their hash.
+     */
+    costTolerance: z.union([z.enum(["auto", "off"]), z.number().min(0).max(0.5)]).optional(),
+    /**
      * `on` starts a correction whose findings are all low, or all point at one file, with a quick
      * fix: one attempt with a small step and token cap on the files the findings name. When it
      * does not finish the fix, the correction continues with the usual budget and all its files.
@@ -1532,6 +1539,8 @@ export interface RunSnapshot {
   estimatedCostUsd: number | null;
   /** The run's dollar cap (`policy.maxCostUsd`); present only when the run has one. */
   maxCostUsd?: number;
+  /** The cap plus its `costTolerance` band, where every cost check stops; present only with a band. */
+  costCeilingUsd?: number;
   verificationState: "not_verified" | "current" | "stale" | "invalid";
   /**
    * Findings the run is accepted with (known limitations): a completed run with any is not

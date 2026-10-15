@@ -5,6 +5,7 @@ import { workspacePath } from "../specs/validate.js";
 import { BUDGET_PRESETS, type BudgetPresetId, budgetUsage } from "./budget.js";
 import { CHECK_PREFLIGHT_ARTIFACT, type CheckSmoke } from "./check-preflight.js";
 import { askedForecast, FORECAST_STOP } from "./cost-forecast.js";
+import { costCeilingUsd, inCostWrapUp } from "./cost-tolerance.js";
 import { fileHash } from "./effects.js";
 import {
   compareWithActual,
@@ -182,6 +183,10 @@ export interface BudgetView {
     maxCostUsd: number;
     /** The forecast total the run stopped on at this cap (`assertForecastFits`), when it did. */
     forecastUsd?: number;
+    /** The hard ceiling with the policy's `costTolerance` band, when the band is above 0. */
+    ceilingUsd?: number;
+    /** Spent and reserved past the cap inside the band: only serious findings start repairs. */
+    wrapUp?: boolean;
   };
 }
 export interface CriterionView {
@@ -327,11 +332,13 @@ function budgetOf(store: WorkflowStore, row: RunRow): BudgetView {
     checkpointTokens: policy.checkpointTokens ?? null,
     nextCheckpoint: store.checkpointBoundary(row.id, policy),
     ...(typeof policy.maxCostUsd === "number"
-      ? { cost: costView(store, row.id, policy.maxCostUsd) }
+      ? { cost: costView(store, row.id, { ...policy, maxCostUsd: policy.maxCostUsd }) }
       : {}),
   };
 }
-function costView(store: WorkflowStore, runId: string, maxCostUsd: number) {
+function costView(store: WorkflowStore, runId: string, policy: RunPolicy & { maxCostUsd: number }) {
+  const maxCostUsd = policy.maxCostUsd;
+  const ceilingUsd = costCeilingUsd(store, runId, policy) ?? maxCostUsd;
   // Only while the forecast is what stopped the run: a later stop at the cap is a cap stop.
   const forecastUsd = lastErrorOf(store, runId)?.startsWith(FORECAST_STOP)
     ? askedForecast(store, runId, maxCostUsd)
@@ -340,6 +347,7 @@ function costView(store: WorkflowStore, runId: string, maxCostUsd: number) {
     ...store.costUsage(runId),
     maxCostUsd,
     ...(forecastUsd === null ? {} : { forecastUsd }),
+    ...(ceilingUsd > maxCostUsd ? { ceilingUsd, wrapUp: inCostWrapUp(store, runId, policy) } : {}),
   };
 }
 function lastErrorOf(store: WorkflowStore, runId: string): string | null {

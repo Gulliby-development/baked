@@ -177,6 +177,12 @@ export function costCapFor(budget: BudgetView): number | null {
     budget,
   );
 }
+/** The cap as the run holds to it: with a tolerance band, the ceiling and the cap it extends. */
+export function capText(cost: NonNullable<BudgetView["cost"]>): string {
+  return cost.ceilingUsd !== undefined
+    ? `${usd(cost.ceilingUsd)} ceiling (the ${usd(cost.maxCostUsd)} cap and its tolerance)`
+    : `${usd(cost.maxCostUsd)} cap`;
+}
 /** Which limit stopped the run, with the numbers that explain it. */
 export function budgetLimitText(budget: BudgetView): string {
   if (budget.calls >= budget.maxCalls) return `all ${budget.maxCalls} agent calls are used`;
@@ -184,10 +190,10 @@ export function budgetLimitText(budget: BudgetView): string {
     return `the active time limit of ${formatDuration(budget.maxActiveMs)} is reached`;
   const cost = budget.cost;
   if (cost?.forecastUsd !== undefined)
-    return `the run is forecast to cost about ${usd(cost.forecastUsd)}, above its ${usd(cost.maxCostUsd)} cap, with ${usd(cost.spentUsd + cost.reservedUsd)} spent; raise the cap to finish it, or resume to spend on to it`;
+    return `the run is forecast to cost about ${usd(cost.forecastUsd)}, above its ${capText(cost)}, with ${usd(cost.spentUsd + cost.reservedUsd)} spent; raise the cap to finish it, or resume to spend on to it`;
   const cap = costCapFor(budget);
   if (cost && cap !== null && cap > cost.maxCostUsd)
-    return `the next agent step would pass the cost cap: about ${usd(cost.spentUsd + cost.reservedUsd)} of ${usd(cost.maxCostUsd)} is spent or reserved`;
+    return `the next agent step would pass the ${cost.ceilingUsd !== undefined ? "cost ceiling" : "cost cap"}: about ${usd(cost.spentUsd + cost.reservedUsd)} of ${usd(cost.ceilingUsd ?? cost.maxCostUsd)} is spent or reserved`;
   const taken = budget.tokens + budget.heldTokens + budget.inFlightTokens;
   return `the next agent step needs more tokens than remain: ${formatTokens(taken)} of ${formatTokens(budget.maxTokens)} are used or held, ${formatTokens(Math.max(0, budget.maxTokens - taken))} left`;
 }

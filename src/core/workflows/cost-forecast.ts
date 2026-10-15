@@ -1,5 +1,6 @@
 import { canonical } from "../specs/hash.js";
 import { costRate } from "./budget.js";
+import { costCeilingUsd } from "./cost-tolerance.js";
 import { WorkflowFault } from "./errors.js";
 import type { RunPolicy } from "./schemas.js";
 import { type SizingReport, verificationTokens } from "./sizing.js";
@@ -15,6 +16,8 @@ const MIN_MEASURED_TASKS = 3;
  */
 export interface CostForecast {
   capUsd: number;
+  /** What the forecast is held to: the cap plus its `costTolerance` band (#1263). */
+  ceilingUsd: number;
   spentUsd: number;
   projectedUsd: number;
   /** Tokens the finished priced tasks used over their priced midpoints, all kinds together. */
@@ -86,6 +89,7 @@ export function costForecast(
   if (rate <= 0) return null;
   return {
     capUsd: cap,
+    ceilingUsd: costCeilingUsd(store, runId, policy) ?? cap,
     spentUsd,
     projectedUsd: spentUsd + reservedUsd + remainingTokens * rate,
     ratio,
@@ -114,7 +118,8 @@ export const FORECAST_STOP = "The run is forecast to cost about";
 const usd = (n: number): string => `$${n.toFixed(2)}`;
 
 /**
- * Checked before each attempt. When the forecast passes the dollar cap the run stops on its
+ * Checked before each attempt. When the forecast passes the dollar cap (with its tolerance band,
+ * `costTolerance`, when the policy sets one) the run stops on its
  * budget while most of the money is unspent, and the person decides: extend it with a higher cap
  * (`extend --max-cost-usd`) or stop. Spending on to the cap left cfgtrace with tasks unfinished
  * and no review at $8.80 and $11.92 of $12 in two rounds, unfinishable from about $5.60 on. A cap
@@ -123,13 +128,13 @@ const usd = (n: number): string => `$${n.toFixed(2)}`;
 export function assertForecastFits(store: WorkflowStore, runId: string, policy: RunPolicy): void {
   if (policy.costForecast === "off" || policy.maxCostUsd === null) return;
   const forecast = costForecast(store, runId, policy);
-  if (!forecast || forecast.projectedUsd <= forecast.capUsd) return;
+  if (!forecast || forecast.projectedUsd <= forecast.ceilingUsd) return;
   if (askedForecast(store, runId, forecast.capUsd) !== null) return;
   const n = store.artifacts(runId).filter((a) => a.kind === "cost-forecast").length;
   store.artifact(runId, "cost-forecast", `forecasts/cost-${n + 1}.json`, canonical(forecast));
   throw new WorkflowFault(
     "BUDGET_EXHAUSTED",
-    `${FORECAST_STOP} ${usd(forecast.projectedUsd)}, above its ${usd(forecast.capUsd)} cap: ${usd(forecast.spentUsd)} spent, ${forecast.measuredTasks} finished tasks used ${forecast.ratio.toFixed(1)} times their price, ${forecast.openTasks} tasks and the final review still to run. Extend the run with a cap of at least ${usd(Math.ceil(forecast.projectedUsd))} to finish it, resume it to spend on to the current cap, or cancel it.`,
+    `${FORECAST_STOP} ${usd(forecast.projectedUsd)}, above its ${forecast.ceilingUsd > forecast.capUsd ? `${usd(forecast.ceilingUsd)} ceiling (the ${usd(forecast.capUsd)} cap and its tolerance)` : `${usd(forecast.capUsd)} cap`}: ${usd(forecast.spentUsd)} spent, ${forecast.measuredTasks} finished tasks used ${forecast.ratio.toFixed(1)} times their price, ${forecast.openTasks} tasks and the final review still to run. Extend the run with a cap of at least ${usd(Math.ceil(forecast.projectedUsd))} to finish it, resume it to spend on to the current cap, or cancel it.`,
     { reason: "cost-forecast", ...forecast },
   );
 }
