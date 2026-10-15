@@ -41,7 +41,8 @@ describe("formatting a file in a task worktree", () => {
     expect(formatRoot(join(main, "src", "a.ts"))).toBe(main);
   });
 
-  // Runs Biome twice; a loaded Windows runner needs more than the default 10s.
+  // Runs Biome twice, and formatFile allows each run 30 s for a cold start on a loaded Windows
+  // runner (#1177), so the test needs room for both.
   it("formats from the worktree even when called from the main checkout", async () => {
     const file = join(task, "src", "a.ts");
     writeFileSync(file, "export const a = {b:1}\n");
@@ -52,5 +53,5 @@ describe("formatting a file in a task worktree", () => {
     writeFileSync(edited, "export const b = {c:2}\n");
     expect(await autoFormatAfterEdit(edited)).toBe(true);
     expect(readFileSync(edited, "utf8")).toBe("export const b = { c: 2 };\n");
-  }, 30_000);
+  }, 90_000);
 });
