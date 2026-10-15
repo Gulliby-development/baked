@@ -1,5 +1,6 @@
 import { hashJson } from "../specs/hash.js";
 import { failingPathsInOutput, pathsInOutput } from "../verification/convergence.js";
+import { isDocFile } from "../verification/doc-examples.js";
 import { isTestFile } from "./affected-tests.js";
 import { writtenCodePaths } from "./check-policy.js";
 import type { TaskGraph } from "./schemas.js";
@@ -21,7 +22,7 @@ export function readyTasks(
   waitingFor: RuntimeState["waitingFor"] = {},
 ): Task[] {
   const statuses = new Map(rows.map((r) => [r.id, r.status]));
-  return graph.tasks.filter(
+  const ready = graph.tasks.filter(
     (t) =>
       ["pending", "invalidated", "interrupted"].includes(statuses.get(t.id) ?? "pending") &&
       [...t.dependsOn, ...(waitingFor[t.id] ?? [])].every((dep) =>
@@ -32,6 +33,32 @@ export function readyTasks(
               (row.status === "implemented" && hasTaskGate(row, gates))),
         ),
       ),
+  );
+  // A documentation task a corrective invalidated waits until the correctives that are running
+  // or ready have finished, then reruns once: a README rerun after each source corrective is
+  // redone by the next one (cfgtrace 14b1da41 T011 ran four times for 902k tokens, #1211).
+  const correcting = graph.tasks.some(
+    (t) =>
+      t.origin !== "planned" &&
+      (statuses.get(t.id) === "running" || ready.some((r) => r.id === t.id)),
+  );
+  return correcting
+    ? ready.filter((t) => !(statuses.get(t.id) === "invalidated" && documentsOnly(t)))
+    : ready;
+}
+
+/** Whether a task writes only documentation: Markdown, a README, a licence or a changelog. */
+export function documentsOnly(task: Task): boolean {
+  return (
+    task.origin === "planned" &&
+    task.writes.length > 0 &&
+    task.writes.every(
+      (w) =>
+        isDocFile(w.path) ||
+        /^(licen[cs]e|copying|notice|changelog|authors)(\.[a-z]+)?$/i.test(
+          w.path.split("/").at(-1) ?? "",
+        ),
+    )
   );
 }
 
