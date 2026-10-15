@@ -47,6 +47,22 @@ export function digestsSpec(
   );
 }
 
+/**
+ * Whether a shortened context (#1244) may send the digest: as `digestsSpec`, at any spec size.
+ */
+export function mayDigestSpec(
+  spec: Spec | null | undefined,
+  profile: Pick<AgentProfile, "context" | "output" | "allowedTools">,
+  policy: Pick<RunPolicy, "specDigest">,
+): spec is Spec {
+  return (
+    !!spec &&
+    policy.specDigest !== "off" &&
+    judgesSpec(profile) &&
+    profile.allowedTools.includes(READ_CRITERION)
+  );
+}
+
 /** The first line of a text, cut to `DIGEST_LINE_CHARS`; `cut` tells whether anything was left out. */
 function oneLine(text: string): { line: string; cut: boolean } {
   const first = text.split("\n").find((part) => part.trim()) ?? "";
