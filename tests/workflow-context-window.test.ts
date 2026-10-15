@@ -23,35 +23,43 @@ const policy: RunPolicy = { ...defaultWorkflowPolicy, checks: [] };
 // About 120k tokens at the check's three bytes per token: above 80 percent of 128k.
 const LARGE_REQUEST = `Add greet.\n${"Context line for the request.\n".repeat(12_000)}`;
 
+// Research under the 256 KiB result limit and a long request: together about 110k tokens, more
+// than the spec author's context may hold in 128k; without the research about 35k.
+const LARGE_FACTS = Array.from({ length: 25 }, (_, i) => ({ statement: `Fact ${i}: ${"detail ".repeat(1_250)}`, paths: [] }));
+const LONG_REQUEST = `Add greet.\n${"Context line for the request.\n".repeat(3_500)}`;
+
 class ResearchOnly implements AgentExecutor {
   prompts: string[] = [];
   models: string[] = [];
+  outputs: string[] = [];
   readonly stop = new AbortController();
+  constructor(private facts: { statement: string; paths: string[] }[] = []) {}
   async execute(request: ExecutionRequest) {
     this.prompts.push(request.prompt);
     this.models.push(request.profile.model);
+    this.outputs.push(request.profile.output);
     if (request.profile.output !== "research") {
       this.stop.abort();
       throw new Error("stop after research");
     }
     return {
-      output: { schemaVersion: 1, summary: "A module", facts: [], unknowns: [], constraints: [], suggestedScope: ["src/greet.ts"] },
+      output: { schemaVersion: 1, summary: "A module", facts: this.facts, unknowns: [], constraints: [], suggestedScope: ["src/greet.ts"] },
       inputTokens: 20,
       outputTokens: 30,
     };
   }
 }
 
-async function research(model: string, modelFallback: Record<string, string[]> = {}) {
+async function research(model: string, modelFallback: Record<string, string[]> = {}, request = LARGE_REQUEST, facts: { statement: string; paths: string[] }[] = []) {
   const root = mkdtempSync(join(tmpdir(), "baked-window-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, "src"));
   writeFileSync(join(root, "src/greet.ts"), "export const greet = () => \"\";\n");
-  const executor = new ResearchOnly();
+  const executor = new ResearchOnly(facts);
   const config = { ...DEFAULT_CONFIG, defaultModel: model, modelFallback, workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } };
   const service = new NativeWorkflowService(root, config, executor);
   cleanups.push(() => service.close());
-  const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: LARGE_REQUEST, ownerLabel: "test", policy });
+  const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: request, ownerLabel: "test", policy });
   await service.drive(run.runId, executor.stop.signal);
   const snapshot = JSON.stringify(await service.get(run.runId));
   return { executor, service, runId: run.runId, snapshot };
@@ -74,7 +82,14 @@ describe("workflow context window (#1244)", () => {
     const diagnostic = service.store.artifacts(runId).filter((a) => a.kind === "diagnostic").at(-1);
     if (!diagnostic) throw new Error("No diagnostic");
     const text = String(service.store.readArtifact(runId, diagnostic.id));
-    expect(text).toContain("128000-token window of openai/gpt-4o");
+    expect(text).toContain("128000-token window of openai/gpt-4o even shortened");
+    expect(text).toContain("its largest part is the request");
+  }, 60000);
+
+  test("a context that fits only shortened runs without the research instead of stopping", async () => {
+    const { executor } = await research("openai/gpt-4o", {}, LONG_REQUEST, LARGE_FACTS);
+    expect(executor.outputs).toEqual(["research", "spec"]);
+    expect(executor.prompts[1]).not.toContain("Fact 0:");
   }, 60000);
 
   test("a context too large for the routed model goes to the next model of the route", async () => {

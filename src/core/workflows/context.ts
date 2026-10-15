@@ -76,6 +76,11 @@ export function buildWorkflowContext(
   diffOnly = false,
   /** Send a digest of the spec, its criteria in full behind `read_criterion` (spec-digest.ts). */
   digestSpec = false,
+  /**
+   * The context did not fit any window left to the step: send the research to nobody and the task
+   * graph by what each task writes, as an implementer gets them (#1244).
+   */
+  compact = false,
 ): string {
   const implementation = profile.context === "implementation";
   // The run-level documents come first and the attempt's own input last, so attempts of a run
@@ -88,13 +93,16 @@ export function buildWorkflowContext(
     : {
         request: state.prompt,
         research:
-          profile.context === "review" || profile.context === "convergence" || implementation
+          compact ||
+          profile.context === "review" ||
+          profile.context === "convergence" ||
+          implementation
             ? null
             : state.research,
         spec: digestSpec && state.spec ? specDigest(state.spec) : state.spec,
         plan: state.plan,
         graph:
-          implementation && state.graph
+          (implementation || compact) && state.graph
             ? {
                 ...state.graph,
                 tasks: state.graph.tasks.map((t) => ({
@@ -125,11 +133,20 @@ export function buildWorkflowContext(
   if (
     contextWindow !== null &&
     Math.ceil(Buffer.byteLength(text) / 3) + profile.maxOutputTokens > contextWindow * 0.8
-  )
+  ) {
+    const parts: [string, number][] = [
+      ...Object.entries(documents).map(([name, value]): [string, number] => [
+        name,
+        Buffer.byteLength(canonical(value ?? null)),
+      ]),
+      ["attempt input", Buffer.byteLength(canonical(attempt))],
+    ];
+    const [largest, bytes] = parts.reduce((a, b) => (b[1] > a[1] ? b : a));
     throw new WorkflowFault(
       "BUDGET_EXHAUSTED",
-      `Required workflow context exceeds the ${contextWindow}-token window of ${profile.model}; split the feature or select a larger-context model`,
-      { reason: "context_window" },
+      `Required workflow context exceeds the ${contextWindow}-token window of ${profile.model}${compact ? " even shortened" : ""}; its largest part is the ${largest} (${bytes} bytes). Split the feature or select a larger-context model`,
+      { reason: "context_window", ...(compact ? { compacted: true } : {}) },
     );
+  }
   return text;
 }

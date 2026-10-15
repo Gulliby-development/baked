@@ -410,7 +410,7 @@ import {
   type SpecAmendment,
   specAmendmentOf,
 } from "./spec-amendment.js";
-import { digestsSpec, READ_CRITERION, readCriterionTool } from "./spec-digest.js";
+import { digestsSpec, mayDigestSpec, READ_CRITERION, readCriterionTool } from "./spec-digest.js";
 import { forgetProgress } from "./stall.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
@@ -3356,6 +3356,8 @@ export class WorkflowScheduler {
       stepRetry?: boolean;
       /** The model runs with its largest window: its context did not fit (`context: auto`). */
       largerWindow?: boolean;
+      /** The context did not fit and nothing larger is left: its run-level documents are shortened. */
+      compact?: boolean;
     } = {},
   ): Promise<unknown> {
     const route = this.route(runId, stepId, stageProfile);
@@ -3392,19 +3394,17 @@ export class WorkflowScheduler {
             },
           )
         : null;
+    const compact = placement.compact === true;
     let prompt: string;
     try {
-      prompt = this.promptFor(runId, state, policy, profile, extra);
+      prompt = this.promptFor(runId, state, policy, profile, extra, compact);
     } catch (error) {
-      const larger = isContextWindowFault(error) ? upgrade() : null;
+      if (!isContextWindowFault(error) || signal.aborted) throw error;
+      const larger = upgrade();
       if (larger) return larger;
       // A context too large for this model's window goes to the next model of the route, as a
       // window the provider rejects does below.
-      if (
-        isContextWindowFault(error) &&
-        route.models[fallbackIndex + 1] !== undefined &&
-        !signal.aborted
-      )
+      if (route.models[fallbackIndex + 1] !== undefined)
         return this.call(
           runId,
           stepId,
@@ -3424,7 +3424,24 @@ export class WorkflowScheduler {
             primaryError: placement.primaryError ?? error,
           },
         );
-      throw error;
+      // Nothing larger is left: the step runs with its run-level documents shortened before the
+      // run stops for the window (#1244).
+      if (compact) throw error;
+      return this.call(
+        runId,
+        stepId,
+        state,
+        policy,
+        stageProfile,
+        extra,
+        signal,
+        task,
+        retry,
+        validate,
+        limits,
+        hostTools,
+        { ...placement, compact: true },
+      );
     }
     const inputHash = this.store.run(runId).input_hash;
     // A batch of parallel tasks reserves its attempts before any of them starts.
@@ -3452,7 +3469,9 @@ export class WorkflowScheduler {
     const caseCheck =
       task && profile.output === "implementation" ? criteriaCaseCheck(state.spec, task) : undefined;
     // A digested spec (#1019) comes with the tool that reads its criteria in full.
-    const digested = digestsSpec(state.spec, profile, policy);
+    const digested =
+      digestsSpec(state.spec, profile, policy) ||
+      (compact && mayDigestSpec(state.spec, profile, policy));
     const host =
       hostTools || digested
         ? {
@@ -3724,6 +3743,8 @@ export class WorkflowScheduler {
                 : {}),
               ...(largerWindow ? { largerWindow } : {}),
               stepRetry: true,
+              // The fresh session also gets the shortened documents (#1244).
+              compact: true,
             },
           );
         throw new WorkflowFault(
@@ -3758,12 +3779,28 @@ export class WorkflowScheduler {
     }
   }
   /** The prompt an agent call gets: the run context, the stage input and the execution contract. */
+  /** The prompt a step will send, for a reservation: shortened when the whole one does not fit. */
+  private estimatePrompt(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    profile: AgentProfile,
+    extra: unknown,
+  ): string {
+    try {
+      return this.promptFor(runId, state, policy, profile, extra);
+    } catch (error) {
+      if (!isContextWindowFault(error)) throw error;
+      return this.promptFor(runId, state, policy, profile, extra, true);
+    }
+  }
   private promptFor(
     runId: string,
     state: RuntimeState,
     policy: RunPolicy,
     profile: AgentProfile,
     extra: unknown,
+    compact = false,
   ): string {
     // The agents that start a run see the project's working set; later ones get the research.
     const workingSet =
@@ -3863,7 +3900,10 @@ export class WorkflowScheduler {
       },
       knownModelContextWindow(profile.model),
       diffOnly === true,
-      diffOnly !== true && digestsSpec(state.spec, profile, policy),
+      diffOnly !== true &&
+        (digestsSpec(state.spec, profile, policy) ||
+          (compact && mayDigestSpec(state.spec, profile, policy))),
+      compact,
     );
   }
   /**
@@ -5713,7 +5753,7 @@ ${note}`;
         ...this.previousAttempt(runId, task.id),
       };
       const needed = reserveTokens(
-        this.promptFor(runId, state, policy, profile, extra),
+        this.estimatePrompt(runId, state, policy, profile, extra),
         profile,
         policy,
       );
