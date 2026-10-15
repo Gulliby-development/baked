@@ -344,6 +344,7 @@ import {
   AnalysisSchema,
   type ApprovalReview,
   ApprovalReviewSchema,
+  advisorySizeTarget,
   type Critique,
   CritiqueSchema,
   clarificationOf,
@@ -2541,6 +2542,33 @@ export class WorkflowScheduler {
     if (policy.clarification !== "assume") return editRetry;
     return `the worker ended ${result.outcome === "implemented" ? "unfinished" : result.outcome} under clarification assume`;
   }
+  /**
+   * Unresolved items of an implemented result that only report a missed size target ("543 lines,
+   * exceeding the approximate 400-line target") do not leave it unfinished: they move to its summary
+   * for the reviewers and to `tasks/size-targets/<task>.json`, and the task's checks still decide
+   * it. Without this the items made it unfinished and the restart trimmed lines it could not
+   * count (#1282). A blocked or failed result stays as it is.
+   */
+  private settleSizeTargets<T extends { outcome: string; summary: string; unresolved: string[] }>(
+    runId: string,
+    taskId: string,
+    result: T,
+  ): T {
+    if (result.outcome !== "implemented" || !result.unresolved.length) return result;
+    const advisory = result.unresolved.filter(advisorySizeTarget);
+    if (!advisory.length) return result;
+    this.store.artifact(
+      runId,
+      "recovery",
+      `tasks/size-targets/${taskId}.json`,
+      canonical({ taskId, advisory }),
+    );
+    return {
+      ...result,
+      summary: `${result.summary}\nAdvisory size targets not met (not blocking): ${advisory.join("; ")}`,
+      unresolved: result.unresolved.filter((item) => !advisory.includes(item)),
+    };
+  }
   /** The worker's own account of the attempt a restart replaces, for the fresh session's prompt. */
   private previousAttempt(
     runId: string,
@@ -4725,95 +4753,99 @@ ${note}`;
       };
       let proseEnd = false;
       const fresh = this.freshStart(runId, state, task);
-      const result = ImplementationSchema.parse(
-        await this.call(
-          runId,
-          child,
-          state,
-          policy,
-          this.requireProfile(profiles.find((p) => p.id === task.profileId)),
-          {
-            task: scoped,
-            // A planned task needs the earlier tasks' changes, not their check logs; a repair
-            // task gets the logs of the checks it fixes.
-            evidence: this.evidenceContext(runId, state, {
-              reads: false,
-              commands: task.origin !== "planned",
-              ...(fresh.only ? { only: fresh.only } : {}),
-            }),
-            ...fresh.extra,
-            ...(preloaded
-              ? {
-                  taskFiles: {
-                    content: preloaded,
-                    note: "The files this task modifies, as the read tool shows them: small files whole with line numbers, large ones as outlines followed by the spans of the symbols the task names. Edit them directly; read them again only for other spans of an outlined file or to cite evidence.",
-                  },
-                }
-              : {}),
-            unresolvedMeans: UNRESOLVED_MEANING,
-            ...(await this.libraryDocsContext(runId, policy, root, task)),
-            ...this.previousAttempt(runId, task.id),
-            ...(focus.files.length
-              ? {
-                  correctionFocus: {
-                    files: focus.files,
-                    symbols: focus.symbols,
-                    note: "The findings this task corrects point at these files and symbols; they come first in taskFiles. Start the fix there and read the other written files only when the fix needs them.",
-                    ...(diagnostics
-                      ? {
-                          diagnostics: STATIC_DIAGNOSTICS,
-                        }
-                      : {}),
-                    ...(narrow
-                      ? {
-                          scope: {
-                            writable: narrow.map((w) => w.path),
-                            later: task.writes
-                              .filter((w) => !narrow.includes(w))
-                              .map((w) => w.path),
-                            note: "This attempt may write only the writable files. If the fix needs a file in later, it is unresolved (unlike other files outside your write scope): report blocked and name that file in unresolved. The next attempt may write all of them.",
-                          },
-                        }
-                      : {}),
-                  },
-                }
-              : {}),
-            ...this.affectedTestsContext(root, state, policy, task),
-            ...(inherited.length
-              ? {
-                  earlierEdits: {
-                    paths: inherited,
-                    patch: earlierPatch,
-                    note: "These files already contain the edits in the patch, from an earlier attempt of this task in this run; keep what is correct. Read only the spans you still have to change.",
-                  },
-                }
-              : {}),
-          },
-          signal,
-          scoped,
-        ).catch(async (error: unknown) => {
-          if (atAttemptCap(error))
-            return this.capEndResult(
+      const result = this.settleSizeTargets(
+        runId,
+        task.id,
+        ImplementationSchema.parse(
+          await this.call(
+            runId,
+            child,
+            state,
+            policy,
+            this.requireProfile(profiles.find((p) => p.id === task.profileId)),
+            {
+              task: scoped,
+              // A planned task needs the earlier tasks' changes, not their check logs; a repair
+              // task gets the logs of the checks it fixes.
+              evidence: this.evidenceContext(runId, state, {
+                reads: false,
+                commands: task.origin !== "planned",
+                ...(fresh.only ? { only: fresh.only } : {}),
+              }),
+              ...fresh.extra,
+              ...(preloaded
+                ? {
+                    taskFiles: {
+                      content: preloaded,
+                      note: "The files this task modifies, as the read tool shows them: small files whole with line numbers, large ones as outlines followed by the spans of the symbols the task names. Edit them directly; read them again only for other spans of an outlined file or to cite evidence.",
+                    },
+                  }
+                : {}),
+              unresolvedMeans: UNRESOLVED_MEANING,
+              ...(await this.libraryDocsContext(runId, policy, root, task)),
+              ...this.previousAttempt(runId, task.id),
+              ...(focus.files.length
+                ? {
+                    correctionFocus: {
+                      files: focus.files,
+                      symbols: focus.symbols,
+                      note: "The findings this task corrects point at these files and symbols; they come first in taskFiles. Start the fix there and read the other written files only when the fix needs them.",
+                      ...(diagnostics
+                        ? {
+                            diagnostics: STATIC_DIAGNOSTICS,
+                          }
+                        : {}),
+                      ...(narrow
+                        ? {
+                            scope: {
+                              writable: narrow.map((w) => w.path),
+                              later: task.writes
+                                .filter((w) => !narrow.includes(w))
+                                .map((w) => w.path),
+                              note: "This attempt may write only the writable files. If the fix needs a file in later, it is unresolved (unlike other files outside your write scope): report blocked and name that file in unresolved. The next attempt may write all of them.",
+                            },
+                          }
+                        : {}),
+                    },
+                  }
+                : {}),
+              ...this.affectedTestsContext(root, state, policy, task),
+              ...(inherited.length
+                ? {
+                    earlierEdits: {
+                      paths: inherited,
+                      patch: earlierPatch,
+                      note: "These files already contain the edits in the patch, from an earlier attempt of this task in this run; keep what is correct. Read only the spans you still have to change.",
+                    },
+                  }
+                : {}),
+            },
+            signal,
+            scoped,
+          ).catch(async (error: unknown) => {
+            if (atAttemptCap(error))
+              return this.capEndResult(
+                runId,
+                state,
+                child,
+                task,
+                error,
+                async () => (await currentChanges()).changed,
+              );
+            if (!endedOnProse(error)) throw error;
+            proseEnd = true;
+            return this.proseEndResult(
               runId,
-              state,
               child,
+              policy,
               task,
+              root,
+              signal,
               error,
               async () => (await currentChanges()).changed,
             );
-          if (!endedOnProse(error)) throw error;
-          proseEnd = true;
-          return this.proseEndResult(
-            runId,
-            child,
-            policy,
-            task,
-            root,
-            signal,
-            error,
-            async () => (await currentChanges()).changed,
-          );
-        }),
+          }),
+        ),
       );
       if (result.outcome === "spec_conflict" && result.taskId === task.id) {
         this.specConflict(runId, state, policy, child, task, result);
@@ -5859,52 +5891,56 @@ ${note}`;
         return { after: now, changed: this.workerChanges(runId, entry, known, before ?? {}, now) };
       };
       let proseEnd = false;
-      const result = ImplementationSchema.parse(
-        await this.call(
-          runId,
-          entry.child,
-          state,
-          policy,
-          entry.profile,
-          entry.extra && typeof entry.extra === "object"
-            ? {
-                ...entry.extra,
-                ...(await this.correctionContext(runId, state, policy, root, task)),
-                ...(await this.libraryDocsContext(runId, policy, root, task)),
-                ...(earlierEdits ? { earlierEdits } : {}),
-                ...this.affectedTestsContext(root, state, policy, task),
-              }
-            : entry.extra,
-          signal,
-          task,
-          0,
-          undefined,
-          undefined,
-          undefined,
-          { root, attemptId: entry.attemptId },
-        ).catch(async (error: unknown) => {
-          if (atAttemptCap(error))
-            return this.capEndResult(
+      const result = this.settleSizeTargets(
+        runId,
+        task.id,
+        ImplementationSchema.parse(
+          await this.call(
+            runId,
+            entry.child,
+            state,
+            policy,
+            entry.profile,
+            entry.extra && typeof entry.extra === "object"
+              ? {
+                  ...entry.extra,
+                  ...(await this.correctionContext(runId, state, policy, root, task)),
+                  ...(await this.libraryDocsContext(runId, policy, root, task)),
+                  ...(earlierEdits ? { earlierEdits } : {}),
+                  ...this.affectedTestsContext(root, state, policy, task),
+                }
+              : entry.extra,
+            signal,
+            task,
+            0,
+            undefined,
+            undefined,
+            undefined,
+            { root, attemptId: entry.attemptId },
+          ).catch(async (error: unknown) => {
+            if (atAttemptCap(error))
+              return this.capEndResult(
+                runId,
+                state,
+                entry.child,
+                task,
+                error,
+                async () => (await currentChanges()).changed,
+              );
+            if (!endedOnProse(error)) throw error;
+            proseEnd = true;
+            return this.proseEndResult(
               runId,
-              state,
               entry.child,
+              policy,
               task,
+              root,
+              signal,
               error,
               async () => (await currentChanges()).changed,
             );
-          if (!endedOnProse(error)) throw error;
-          proseEnd = true;
-          return this.proseEndResult(
-            runId,
-            entry.child,
-            policy,
-            task,
-            root,
-            signal,
-            error,
-            async () => (await currentChanges()).changed,
-          );
-        }),
+          }),
+        ),
       );
       if (result.outcome === "spec_conflict" && result.taskId === task.id)
         return { kind: "conflict", entry, result };
