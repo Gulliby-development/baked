@@ -14,6 +14,7 @@ import {
   DEFAULT_PER_FILE,
   MIN_HISTORY_SAMPLES,
   fileKind,
+  partCriteria,
   perFileRates,
   plannerSizing,
   REPAIR_RESERVE,
@@ -484,6 +485,15 @@ describe("runtime split of test tasks", () => {
     expect(isHostSplitNit({ refs: ["T001", "T003"], description: "T003 tests code T001 never writes" }, parts)).toBe(false);
     expect(isHostSplitNit({ refs: ["T002"], description: "T002 has no test file" }, parts)).toBe(false);
     expect(hostSplitParts(g)).toEqual({});
+  });
+  test("a part keeps the criteria of its tested module; an unmatched part keeps them all (#1245)", () => {
+    const code = (id: string, path: string, criterionIds: string[]) => ({ ...task(id, [path]), criterionIds });
+    const tests = { ...task("T003", ["tests/test_a.py", "tests/test_b.py", "tests/test_misc.py"]), criterionIds: ["AC-001", "AC-002", "AC-003"] };
+    const g = graph(code("T001", "src/a.py", ["AC-001"]), code("T002", "src/b.py", ["AC-002"]), tests);
+    const files = tests.writes.map((w) => w.path);
+    expect(partCriteria(g, tests, files)).toEqual([["AC-001"], ["AC-002"], ["AC-001", "AC-002", "AC-003"]]);
+    // Every part matched: the criterion none of them covers stays with the first part.
+    expect(partCriteria(g, tests, files.slice(0, 2))).toEqual([["AC-001", "AC-003"], ["AC-002"]]);
   });
   test("code tasks and test tasks within one attempt are left to the planner", () => {
     const g = graph(task("T001", ["src/a.ts", "src/b.ts"]), task("T002", ["tests/a.test.ts"]));
