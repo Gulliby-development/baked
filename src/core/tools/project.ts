@@ -1092,7 +1092,9 @@ export async function formatFile(filePath: string, cwd?: string): Promise<boolea
   // `/var` is `/private/var`) would look outside the project to it.
   const command = `${profile.formatFile} ${shellQuote(realPath(filePath))}`;
   try {
-    const result = await runBoundedShell(command, { cwd: effectiveCwd, timeoutMs: 10_000 });
+    // A formatter's first start on Windows (`bunx` resolving it, the antivirus scanning the
+    // binary) took over 10 s on CI runners; later runs take well under a second (#1177).
+    const result = await runBoundedShell(command, { cwd: effectiveCwd, timeoutMs: 30_000 });
     return !result.timedOut && result.exitCode === 0;
   } catch {
     return false;
