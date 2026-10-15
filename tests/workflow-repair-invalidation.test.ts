@@ -100,7 +100,14 @@ describe("readsChangedFile", () => {
 // jsondelta 9fbc18e7: a repair of one function in src/diff.ts restored T001 and invalidated T002,
 // T003 and T004, whose reruns cost 494k of 1.94M tokens.
 describe("a repair task restoring its predecessor", () => {
-  async function scenario(changed: string[] | null, withChecks = false, dependents: Task[] = [], checks: RunPolicy["checks"] = []) {
+  async function scenario(
+    changed: string[] | null,
+    withChecks = false,
+    dependents: Task[] = [],
+    checks: RunPolicy["checks"] = [],
+    // Drops the fixture's feature checks: nothing guards a dependent reached through an import.
+    unguarded = false,
+  ) {
     const fixture = workflowFixture();
     cleanups.push(fixture.dispose);
     const { service, root } = fixture;
@@ -140,7 +147,7 @@ describe("a repair task restoring its predecessor", () => {
       settleTask(...args: unknown[]): void;
     };
     const policy = JSON.parse(store.run(run.runId).policy_json) as RunPolicy;
-    policy.checks = [...policy.checks, ...checks];
+    policy.checks = [...policy.checks.filter((c) => !unguarded || c.scope !== "feature"), ...checks];
     if (withChecks)
       policy.checks = [...policy.checks, { id: "unit", executable: "bun", args: ["-e", "0"], cwd: ".", timeoutMs: 10000, required: true, scope: "task", envNames: [], writes: [] }];
     scheduler.settleTask(run.runId, state, policy, t4, child, [], ["E1"]);
@@ -150,7 +157,7 @@ describe("a repair task restoring its predecessor", () => {
     Object.fromEntries(store.tasks(runId).map((t) => [t.id, t.status]));
 
   test("only the dependent that reads the changed file is invalidated; the other reruns its checks", async () => {
-    const { store, runId, state } = await scenario(["src/diff.ts"]);
+    const { store, runId, state } = await scenario(["src/diff.ts"], false, [], [], true);
     expect(statuses(store, runId)).toMatchObject({
       T001: "implemented",
       T002: "invalidated",
@@ -163,6 +170,23 @@ describe("a repair task restoring its predecessor", () => {
     const { store, runId, state } = await scenario(["src/diff.ts"], true);
     expect(statuses(store, runId)).toMatchObject({ T002: "implemented", T003: "implemented" });
     expect(state.taskGates.T002).toBeUndefined();
+  });
+
+  // R28 cfgtrace b4427c85: a one-file correction of cfgtrace/values.py reran five tasks that import
+  // it with their agents (2.0M tokens, one with an empty diff); the run declared only feature-scope
+  // checks (`ruff check .`, `pytest -q`), so no task had task checks (#1248).
+  test("a dependent reached only through an import keeps its implementation when a required feature check guards the run", async () => {
+    const pytest = { id: "tests", executable: "pytest", args: ["-q"], cwd: ".", timeoutMs: 10000, required: true, scope: "feature" as const, envNames: [], writes: [] };
+    const { store, runId, state } = await scenario(["src/diff.ts"], false, [], [pytest], true);
+    expect(statuses(store, runId)).toMatchObject({ T002: "implemented", T003: "implemented" });
+    expect(state.taskGates.T002).toBeUndefined();
+  });
+
+  test("a dependent reached only through an import keeps its implementation when it declares a feature check", async () => {
+    const pytest = { id: "tests", executable: "pytest", args: ["-q"], cwd: ".", timeoutMs: 10000, required: false, scope: "feature" as const, envNames: [], writes: [] };
+    const reader = task("T005", ["tests/a.test.ts"], { dependsOn: ["T001"], checkIds: ["tests"] });
+    const { store, runId } = await scenario(["src/diff.ts"], false, [reader], [pytest], true);
+    expect(statuses(store, runId)).toMatchObject({ T002: "invalidated", T005: "implemented" });
   });
 
   // R6 md-site a586cde0: corrections rewrote src/site.ts and src/cli.ts, then their planned owner

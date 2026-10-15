@@ -7964,8 +7964,11 @@ ${note}`;
             if (!candidate.dependsOn.some((id) => invalid.has(id))) continue;
             const row = rows.find((entry) => entry.id === candidate.id);
             const finished = row && ["implemented", "verified"].includes(row.status);
-            // A task only reached through an import keeps its implementation too when it has task
-            // checks: the host runs them first, and a failure becomes a repair of that task.
+            // A task only reached through an import keeps its implementation too when a check
+            // guards it: its own checks of any scope, or a required feature check, which the checks
+            // stage runs on the result; a failure becomes a repair. Rerunning its agent repeats
+            // work the import did not change (cfgtrace b4427c85: one file of T024 reran five
+            // tasks for 2.0M tokens, one with an empty diff, #1248).
             const reach =
               finished && changedFiles ? changeReach(root, candidate, changedFiles) : null;
             // A task whose every written file a corrective task rewrote is superseded there: its
@@ -7981,7 +7984,9 @@ ${note}`;
             if (
               reach === "none" ||
               superseded ||
-              (reach === "imports" && taskChecks(policy, candidate).length > 0)
+              (reach === "imports" &&
+                (declaredChecks(policy, candidate).length > 0 ||
+                  policy.checks.some((check) => check.scope === "feature" && check.required)))
             )
               recheck.add(candidate.id);
             else invalid.add(candidate.id);
