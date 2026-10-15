@@ -84,3 +84,14 @@ export function parseContextSize(value: string): ChatContextSize | null {
   const tokens = Math.round(Number(match[1]) * scale);
   return Number.isFinite(tokens) && tokens > 0 ? tokens : null;
 }
+
+/**
+ * The model ID of the largest window a model offers, when it runs with a smaller one; null when it
+ * offers one size or already runs with the largest. Workflow routes with `context: auto` move a
+ * step whose context does not fit to it (#1256).
+ */
+export function largerContextModel(modelId: string): string | null {
+  const largest = getModelContextOptions(modelId).at(-1);
+  if (!largest || largest.modelId.toLowerCase() === modelId.toLowerCase()) return null;
+  return largest.modelId;
+}

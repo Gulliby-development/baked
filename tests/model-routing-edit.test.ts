@@ -17,8 +17,13 @@ describe("editing modelRouting one route at a time", () => {
     expect(routeOf({ model: " a/model ", effort: null, fallback: [] })).toBe("a/model");
     const full = routeOf({ model: "a/model", effort: "high", fallback: ["b/one", " "] });
     expect(full).toEqual({ model: "a/model", effort: "high", fallback: ["b/one"] });
-    expect(draftOf(full)).toEqual({ model: "a/model", effort: "high", fallback: ["b/one"] });
-    expect(draftOf(undefined)).toEqual({ model: "", effort: null, fallback: [] });
+    expect(draftOf(full)).toEqual({
+      model: "a/model",
+      effort: "high",
+      fallback: ["b/one"],
+      context: null,
+    });
+    expect(draftOf(undefined)).toEqual({ model: "", effort: null, fallback: [], context: null });
     expect(describeRoute(full)).toBe("a/model · high · → b/one");
     expect(parseFallback("b/one, c/two  d/three")).toEqual(["b/one", "c/two", "d/three"]);
   });

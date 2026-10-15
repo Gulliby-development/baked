@@ -45,6 +45,7 @@ import {
   CRITIC_MODES,
   INDEPENDENT_REVIEW_MODES,
   ROUTED_ROLES,
+  RouteContext as RouteContextSchema,
   RouteEffort,
 } from "../llm/model-routing.js";
 import { checkProviders } from "../llm/provider.js";
@@ -157,6 +158,7 @@ const RoutingBody = z.union([
         model: z.string().max(200),
         effort: RouteEffort.nullable().optional(),
         fallback: z.array(z.string().max(200)).max(10).optional(),
+        context: RouteContextSchema.nullable().optional(),
       })
       .nullable(),
     create: z.boolean().optional(),
@@ -190,6 +192,12 @@ const RoutingBody = z.union([
     workflow: z.string().min(1).max(200).optional(),
     model: z.string().min(1).max(200).optional(),
     codeWebSearch: z.boolean().nullable(),
+  }),
+  z.strictObject({
+    scope: z.enum(["global", "project"]),
+    workflow: z.string().min(1).max(200).optional(),
+    model: z.string().min(1).max(200).optional(),
+    context: RouteContextSchema.nullable(),
   }),
 ]);
 const SkillQuery = z.strictObject({ q: z.string().max(200).optional() });
@@ -612,15 +620,18 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
               ? { specifyOnSonnet: body.specifyOnSonnet }
               : "codeWebSearch" in body
                 ? { codeWebSearch: body.codeWebSearch }
-                : {
-                    target: body.target,
-                    route: body.route && {
-                      model: body.route.model,
-                      effort: body.route.effort ?? null,
-                      fallback: body.route.fallback ?? [],
-                    },
-                    ...(body.create ? { create: true } : {}),
-                  };
+                : "context" in body
+                  ? { context: body.context }
+                  : {
+                      target: body.target,
+                      route: body.route && {
+                        model: body.route.model,
+                        effort: body.route.effort ?? null,
+                        fallback: body.route.fallback ?? [],
+                        context: body.route.context ?? null,
+                      },
+                      ...(body.create ? { create: true } : {}),
+                    };
     let problems: string[];
     try {
       ({ problems } = saveRoutingChange(

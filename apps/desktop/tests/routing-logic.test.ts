@@ -52,7 +52,12 @@ describe("model routing section", () => {
       model: "a/b",
       effort: null,
       fallback: ["c/d"],
+      context: null,
     });
+    expect(describeRoute({ model: "claude-code/opus", context: 1_000_000 })).toBe(
+      "claude-code/opus · context 1m",
+    );
+    expect(draftOf({ model: "claude-code/opus", context: "auto" }).context).toBe("auto");
     expect(parseFallback(" a/b, c/d  e/f,")).toEqual(["a/b", "c/d", "e/f"]);
   });
 
