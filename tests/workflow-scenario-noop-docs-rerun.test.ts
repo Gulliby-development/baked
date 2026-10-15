@@ -14,6 +14,8 @@ import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/type
 // the CLI it documents and has no required check of its own. A correction of the CLI invalidated
 // it; its rerun found nothing to change, and the run stopped because no required check confirmed
 // the work was done, though the files were exactly what its first implementation wrote.
+// Since #1211 such a correction no longer reruns the README task's agent; a rerun that does
+// happen (its README changed) is still accepted when nothing changed since its first implementation.
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -98,13 +100,18 @@ describe("scenario: cimatrix 5670e55c, a no-op rerun of a README task without a 
     await service.decide(run.runId, { commandId: newId(), expectedRevision: snapshot.revision }, { kind: "approve", requestId: approval.id, digest: approval.digest });
     const done = await service.drive(run.runId, new AbortController().signal);
     const docsRow = service.store.tasks(run.runId).find((t) => t.id === "T002");
-    // The correction of the CLI invalidated the README task, and its agent ran again.
-    expect(docsRow?.generation).toBeGreaterThan(0);
-    expect(executor.implemented.filter((id) => id === "T002").length).toBeGreaterThan(1);
+    // The correction of the CLI changed none of the README task's files: the task kept its
+    // implementation and its agent ran once (idpeek a270ff5a reran it twice for 645k tokens, #1211).
+    expect(executor.implemented.some((id) => !["T001", "T002"].includes(id))).toBe(true);
+    expect(docsRow?.generation).toBe(0);
+    expect(executor.implemented.filter((id) => id === "T002")).toHaveLength(1);
     expect(done.status).toBe("completed");
     expect(readFileSync(join(root, "README.md"), "utf8")).toContain("Usage");
 
-    // A file changed since the task wrote it still needs a check to show the work is done.
+    // A rerun that does happen (a corrective changed its README) and finds the files as its
+    // first implementation wrote them is accepted; a file changed since the task wrote it still
+    // needs a check to show the work is done.
+    service.store.taskStatus(run.runId, "T002", "invalidated");
     const satisfied = () => {
       const child = service.store.beginStep(run.runId, "implement-rerun");
       return (service.scheduler as unknown as { correctionSatisfied: (...args: unknown[]) => Promise<true | string> })
