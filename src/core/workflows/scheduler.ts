@@ -356,6 +356,7 @@ import {
   ReviewSchema,
   type RunPolicy,
   repairHostBoundCriteria,
+  repairLayoutCriteria,
   type Spec,
   SpecSchema,
   specCoverageProblems,
@@ -932,6 +933,11 @@ export class WorkflowScheduler {
             case "specify": {
               // An oversized spec goes back once; the author's second submission stands (#1013).
               let sizeAdvised = false;
+              // Without a browser gate the host settles a layout criterion itself (#1247).
+              const browser =
+                !!v2 && acceptanceGrants(v2.gates).some((g) => g.driver === "browser");
+              const hostRepairs = (spec: Spec): Spec =>
+                repairLayoutCriteria(repairHostBoundCriteria(spec).spec, { browser }).spec;
               const validateSpec = (output: unknown): string[] => {
                 const parsed = SpecSchema.safeParse(output);
                 if (!parsed.success) return [];
@@ -943,13 +949,9 @@ export class WorkflowScheduler {
                 // The host makes a host-bound criterion checkable itself (#1015).
                 return [
                   ...size,
-                  ...specCoverageProblems(
-                    repairHostBoundCriteria(parsed.data).spec,
-                    policy.checks,
-                    {
-                      request: state.requestText || state.prompt,
-                    },
-                  ),
+                  ...specCoverageProblems(hostRepairs(parsed.data), policy.checks, {
+                    request: state.requestText || state.prompt,
+                  }),
                   // The host maps a deliverable the spec names elsewhere itself (#1037).
                   ...deliverableProblems(
                     repairDeliverables(parsed.data, coverageRequest(state)).spec,
@@ -1007,6 +1009,21 @@ export class WorkflowScheduler {
                     "diagnostic",
                     "spec-repairs/host-bound.json",
                     canonical({ postRelease: repair.repaired, added }),
+                  ),
+                );
+              }
+              const layout = repairLayoutCriteria(state.spec, { browser });
+              if (layout.repaired.length) {
+                const added = layout.spec.criteria
+                  .slice(state.spec.criteria.length)
+                  .map((c) => c.id);
+                state.spec = layout.spec;
+                this.store.transaction(() =>
+                  this.store.artifact(
+                    runId,
+                    "diagnostic",
+                    "spec-repairs/layout.json",
+                    canonical({ postRelease: layout.repaired, added }),
                   ),
                 );
               }
