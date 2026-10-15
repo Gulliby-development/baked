@@ -16,6 +16,7 @@ import { failureSignature } from "../src/core/verification/output-counts.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { isStaticCheck, isWholeUnitCheck } from "../src/core/workflows/check-policy.js";
 import { detectGates, executeGate } from "../src/core/workflows/gates.js";
+import { type LayoutResult, layoutVerdict } from "../src/core/workflows/layout-check.js";
 import { addedDependencies } from "../src/core/workflows/quality/dependencies.js";
 import {
   detectMutationTool,
@@ -586,6 +587,35 @@ for (const stack of STACKS) {
       const errors = await syntaxErrors(sample.path, sample.broken);
       expect(errors.length).toBeGreaterThan(0);
       expect(errors[0]?.line).toBe(sample.line);
+    });
+  });
+}
+
+// --- Layout check (#1262) --------------------------------------------------------------------
+
+/** The layout check's decision on a measured page; it does not depend on the stack serving it. */
+const page = (scrollWidth: number, httpStatus: number | null = 200): LayoutResult => ({
+  status: "measured",
+  width: 1280,
+  height: 800,
+  pages: [{ path: "/", httpStatus, scrollWidth, clientWidth: 1265, overflowing: [] }],
+});
+
+for (const stack of STACKS) {
+  describe(`gate matrix: ${stack} layout check`, () => {
+    cell(stack, "layout check: page that fits passes", () => {
+      expect(layoutVerdict(page(1265)).passed).toBe(true);
+    });
+    cell(stack, "layout check: page wider than the viewport fails", () => {
+      expect(layoutVerdict(page(1266))).toMatchObject({ passed: false });
+    });
+    cell(stack, "layout check: error page fails", () => {
+      expect(layoutVerdict(page(1265, 500)).passed).toBe(false);
+    });
+    cell(stack, "layout check: no browser is not a pass", () => {
+      expect(layoutVerdict({ status: "unavailable", reason: "missing dependency" }).passed).toBe(
+        false,
+      );
     });
   });
 }

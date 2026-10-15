@@ -173,3 +173,93 @@ function playwrightPage(page: PwPage, browser: PwBrowser): BrowserPage {
     close: () => browser.close(),
   };
 }
+
+/** What a layout measurement reads on one page (layout-check.ts). */
+export interface LayoutReading {
+  scrollWidth: number;
+  clientWidth: number;
+  /** The widest elements past the viewport's right edge outside a scrolling container. */
+  overflowing: { element: string; right: number }[];
+}
+
+/** A page at a fixed viewport, for the host's layout measurement. */
+export interface LayoutPage {
+  goto(url: string, timeoutMs: number): Promise<number | null>;
+  read(): Promise<LayoutReading>;
+  /** A PNG screenshot of the viewport, base64. */
+  screenshot(): Promise<string>;
+  close(): Promise<void>;
+}
+
+// Runs in the page: document width against the viewport, and the elements that stick out of it
+// without a scrolling ancestor that contains them.
+const READ_LAYOUT = `(() => {
+  const doc = document.documentElement;
+  const width = doc.clientWidth;
+  const scrolls = (el) => { for (let p = el.parentElement; p; p = p.parentElement) { const x = getComputedStyle(p).overflowX; if (x === "auto" || x === "scroll" || x === "hidden" || x === "clip") return true; } return false; };
+  const name = (el) => el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + (typeof el.className === "string" && el.className.trim() ? "." + el.className.trim().split(/\\s+/).slice(0, 2).join(".") : "");
+  const overflowing = [];
+  for (const el of document.body ? document.body.querySelectorAll("*") : []) {
+    const right = el.getBoundingClientRect().right + window.scrollX;
+    if (right > width + 0.5 && !scrolls(el)) overflowing.push({ element: name(el), right: Math.round(right) });
+  }
+  overflowing.sort((a, b) => b.right - a.right);
+  return { scrollWidth: doc.scrollWidth, clientWidth: width, overflowing: overflowing.slice(0, 10) };
+})()`;
+
+const LOOPBACK_URL = /^(?:https?|wss?):\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:\/|$)/;
+
+/**
+ * Opens a headless Chromium page at the viewport for the layout measurement. Requests to anything
+ * but loopback are aborted, so the measured app cannot reach the network through the browser.
+ */
+export async function launchLayoutPage(
+  workspace: string,
+  viewport: { width: number; height: number },
+): Promise<LayoutPage> {
+  const chromium = await loadChromium(workspace);
+  if (!chromium) throw new Error(MISSING_PLAYWRIGHT);
+  const browser = await chromium.launch({ headless: true, executablePath: browserExecutable() });
+  try {
+    const context = (await browser.newContext({
+      viewport,
+      serviceWorkers: "block",
+      acceptDownloads: false,
+    })) as unknown as {
+      route(
+        pattern: string,
+        handler: (route: {
+          request(): { url(): string };
+          continue(): Promise<void>;
+          abort(): Promise<void>;
+        }) => Promise<void>,
+      ): Promise<void>;
+      newPage(): Promise<
+        PwPage & {
+          evaluate<T>(expression: string): Promise<T>;
+          screenshot(options: { type: "png" }): Promise<Uint8Array>;
+        }
+      >;
+    };
+    await context.route("**/*", (route) =>
+      LOOPBACK_URL.test(route.request().url()) || route.request().url().startsWith("data:")
+        ? route.continue()
+        : route.abort(),
+    );
+    const page = await context.newPage();
+    return {
+      async goto(url, timeoutMs) {
+        const response = await page.goto(url, { timeout: timeoutMs, waitUntil: "load" });
+        return response?.status() ?? null;
+      },
+      read: () => page.evaluate<LayoutReading>(READ_LAYOUT),
+      async screenshot() {
+        return Buffer.from(await page.screenshot({ type: "png" })).toString("base64");
+      },
+      close: () => browser.close(),
+    };
+  } catch (error) {
+    await browser.close();
+    throw error;
+  }
+}

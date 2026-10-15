@@ -342,6 +342,7 @@ import {
   generatedPaths,
   ImplementationSchema,
   type InterruptCause,
+  layoutCriteria,
   type MutantProposal,
   MutantProposalSchema,
   PlanSchema,
@@ -375,6 +376,7 @@ import {
 
 type Implementation = ReturnType<typeof ImplementationSchema.parse>;
 
+import { browserLayoutProbe, type LayoutProbe, layoutVerdict } from "./layout-check.js";
 import { planCostOf } from "./plan-cost.js";
 import {
   applyRevision,
@@ -708,6 +710,8 @@ export class WorkflowScheduler {
   maxParallelRuns = DEFAULT_MAX_PARALLEL_RUNS;
   /** The browser driver of AI acceptance gates; Playwright when unset. Tests inject a fake. */
   browserDriver: BrowserDriverOptions | undefined;
+  /** The layout measurement of `layoutCheck` (#1262); Playwright when unset. Tests inject a fake. */
+  layoutProbe: LayoutProbe | undefined;
   /** Registry lookups of the dependency check; `fetch` when unset. Tests inject a fake. */
   registryFetch: RegistryFetch | undefined;
   /** The Semgrep executable (null: not installed); detected when unset. Tests inject one. */
@@ -935,10 +939,12 @@ export class WorkflowScheduler {
               // An oversized spec goes back once; the author's second submission stands (#1013).
               let sizeAdvised = false;
               // Without a browser gate the host settles a layout criterion itself (#1247).
-              const browser =
-                !!v2 && acceptanceGrants(v2.gates).some((g) => g.driver === "browser");
+              const layoutRepair = {
+                browser: !!v2 && acceptanceGrants(v2.gates).some((g) => g.driver === "browser"),
+                measured: !!policy.layoutCheck,
+              };
               const hostRepairs = (spec: Spec): Spec =>
-                repairLayoutCriteria(repairHostBoundCriteria(spec).spec, { browser }).spec;
+                repairLayoutCriteria(repairHostBoundCriteria(spec).spec, layoutRepair).spec;
               const validateSpec = (output: unknown): string[] => {
                 const parsed = SpecSchema.safeParse(output);
                 if (!parsed.success) return [];
@@ -1013,7 +1019,7 @@ export class WorkflowScheduler {
                   ),
                 );
               }
-              const layout = repairLayoutCriteria(state.spec, { browser });
+              const layout = repairLayoutCriteria(state.spec, layoutRepair);
               if (layout.repaired.length) {
                 const added = layout.spec.criteria
                   .slice(state.spec.criteria.length)
@@ -1024,7 +1030,11 @@ export class WorkflowScheduler {
                     runId,
                     "diagnostic",
                     "spec-repairs/layout.json",
-                    canonical({ postRelease: layout.repaired, added }),
+                    canonical(
+                      layout.method === "manual"
+                        ? { measured: layout.repaired }
+                        : { postRelease: layout.repaired, added },
+                    ),
                   ),
                 );
               }
@@ -2165,17 +2175,29 @@ export class WorkflowScheduler {
                     this.store.run(runId).convergence_rounds,
                   );
                 }
-                const pending = state.spec.criteria.filter(
-                  (c) =>
-                    c.method === "manual" &&
-                    state.manualCriteria[c.id]?.snapshotId !== state.snapshotId,
+                const unanswered = () =>
+                  state.spec?.criteria.filter(
+                    (c) =>
+                      c.method === "manual" &&
+                      state.manualCriteria[c.id]?.snapshotId !== state.snapshotId,
+                  ) ?? [];
+                const measured = await this.measureLayout(
+                  runId,
+                  state,
+                  policy,
+                  unanswered(),
+                  signal,
                 );
+                const pending = unanswered();
                 if (pending.length) {
                   for (const criterion of pending)
                     this.wait("manual_evidence", state, {
                       criterionId: criterion.id,
                       snapshotId: state.snapshotId,
                       criterion,
+                      ...(measured?.criteria.includes(criterion.id)
+                        ? { layoutCheck: measured.record }
+                        : {}),
                     });
                   advance = false;
                 }
@@ -2821,6 +2843,47 @@ export class WorkflowScheduler {
     return true;
   }
   /** Whether a required check fails exactly as it did before any change (#934). */
+  /**
+   * Settles the pending manual layout criteria with the policy's `layoutCheck` (#1262): the host
+   * serves the app, measures each page in a headless browser and records the result as the
+   * criterion's evidence on the current snapshot. A pass answers the criterion as a person's
+   * evidence would; a failure or a missing browser leaves it to the person, with the record.
+   */
+  private async measureLayout(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    pending: Spec["criteria"],
+    signal: AbortSignal,
+  ): Promise<{ criteria: string[]; record: unknown } | null> {
+    const check = policy.layoutCheck;
+    const snapshotId = state.snapshotId;
+    const ids = layoutCriteria({ criteria: pending });
+    if (!check || !snapshotId || !ids.length) return null;
+    const result = await (this.layoutProbe ?? browserLayoutProbe).measure(
+      runRoot(this.store.workspace, state),
+      check,
+      signal,
+    );
+    const verdict = layoutVerdict(result);
+    const { screenshot, ...measurement } =
+      result.status === "measured" ? result : { ...result, screenshot: undefined };
+    const record = { criteria: ids, ...verdict, measurement };
+    this.store.transaction(() => {
+      const artifact = this.store.artifact(
+        runId,
+        "diagnostic",
+        `layout/${snapshotId}.json`,
+        canonical(record),
+      );
+      if (screenshot)
+        this.store.artifact(runId, "diagnostic", `layout/${snapshotId}.png.b64`, screenshot);
+      if (!verdict.passed) return;
+      const evidenceId = this.store.addEvidence(runId, "command", snapshotId, artifact.id);
+      for (const id of ids) state.manualCriteria[id] = { evidenceId, snapshotId };
+    });
+    return { criteria: ids, record };
+  }
   private failsAsBaseline(
     runId: string,
     state: RuntimeState,
