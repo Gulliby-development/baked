@@ -54,4 +54,10 @@ describe("failed check findings", () => {
     expect(pathsInOutput("tests/test_cli.pyc is stale", tasks)).toEqual([]);
     expect(pathsInOutput("old/tests/test_cli.py:1", tasks)).toEqual(["tests/test_cli.py"]);
   });
+
+  test("a path written in Markdown is matched (#1207)", () => {
+    for (const text of ["between `tests/test_cli.py::test_x` (requires", "**tests/test_cli.py**", "[tests/test_cli.py](x)", "a,tests/test_cli.py", "path=tests/test_cli.py", "<tests/test_cli.py>"])
+      expect(pathsInOutput(text, tasks)).toEqual(["tests/test_cli.py"]);
+    expect(pathsInOutput("`tests/test_cli.pyc`", tasks)).toEqual([]);
+  });
 });

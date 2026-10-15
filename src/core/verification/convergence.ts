@@ -131,13 +131,15 @@ const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/
 
 /**
  * Planned files a check's output names, in plan order. Linters and compilers print the paths
- * they reject, often absolute and with backslashes on Windows.
+ * they reject, often absolute and with backslashes on Windows. Model reports write them in
+ * Markdown: in a code span or emphasis, a link, a list or an assignment (`` `tests/a.py::t` ``,
+ * `**a.py**`, `[a.py](a.py)`, `path=a.py`, `<a.py>`), so those may precede a path too (#1207).
  */
 export function pathsInOutput(output: string, tasks: Task[]): string[] {
   const text = output.replaceAll("\\", "/");
   const paths = unique(tasks.flatMap((t) => t.writes.map((w) => w.path)));
   return paths.filter((path) =>
-    new RegExp(`(?:^|[\\s/"'(:])${escapeRegExp(path)}(?![\\w.-])`, "m").test(text),
+    new RegExp(`(?:^|[\\s/"'(:\`*[,=<])${escapeRegExp(path)}(?![\\w.-])`, "m").test(text),
   );
 }
 
