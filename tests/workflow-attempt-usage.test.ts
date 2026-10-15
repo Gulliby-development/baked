@@ -256,6 +256,73 @@ describe("an attempt whose steps replay a cached context (#1070)", () => {
   });
 });
 
+// Bench round 31, md-site T012 (#1298): a corrective admitted on its cap (cache reads left out)
+// was finalized by the run's free budget (cache reads counted) after one 186k step, with 546k
+// left, and its "failed" result ended the run invalid_output with 7.3M of 15M used.
+describe("scenario: a corrective admitted on its cap and finalized by the run budget (#1298)", () => {
+  const corrective: Task = {
+    id: "T012",
+    title: "Fix closing markers",
+    description: "Correct the reported findings",
+    requirementIds: ["FR-001"],
+    criterionIds: ["AC-001"],
+    dependsOn: [],
+    profileId: "implementer",
+    writes: [{ path: "value.txt", action: "modify" }],
+    readHints: [],
+    checkIds: [],
+    origin: "corrective",
+    findingIds: [],
+    rationale: "corrective",
+  };
+  const finished: Task = { ...corrective, id: "T001", title: "Parse input", origin: "planned", rationale: "parse" };
+  const result = (outcome: "implemented" | "failed") => ({
+    schemaVersion: 1,
+    taskId: "T012",
+    outcome,
+    summary: outcome === "failed" ? "No corrective edits were completed before the work was stopped" : "Fixed",
+    evidenceIds: [],
+    unresolved: outcome === "failed" ? ["closing markers"] : [],
+  });
+  /** A sized run with 300k free for the attempt: each 120k step is mostly cache reads. */
+  async function corrective31(withFinishedTask: boolean) {
+    const policy = { ...fixturePolicy, maxTotalTokens: 1_000_000, sizing: { maxRunTokens: 4_000_000 } };
+    const attempt = await nativeAttempt(policy, "implementation", corrective);
+    const { store, run } = attempt;
+    const graph = { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [finished, corrective] };
+    store.transaction(() => store.syncTasks(run.runId, graph as never));
+    if (withFinishedTask) store.transaction(() => store.taskStatus(run.runId, "T001", "implemented"));
+    const other = store.beginStep(run.runId, "other");
+    store.reserve(run.runId, other, "openai/fixture-model", 700_000, policy);
+    return { ...attempt, request: { ...attempt.request, attemptTokens: 100_000 } };
+  }
+  const probe = () => cachedStep(120_000, 110_000, 500, { name: "unknown_tool", input: {} });
+
+  test("the run budget grows so the attempt keeps working instead of submitting after one step", async () => {
+    scriptModel([probe(), probe(), probe(), cachedStep(120_000, 110_000, 500, { name: "submit_result", input: result("implemented") })]);
+    const { store, run, executor, request, usageRecord } = await corrective31(true);
+    await expect(executor.execute(request)).resolves.toMatchObject({ output: { outcome: "implemented" } });
+    expect(usageRecord()).toMatchObject({ stopReason: "submitted", finalizedBy: null, totalTokens: 482_000 });
+    const growth = store
+      .artifacts(run.runId)
+      .filter((a) => a.logical_path.startsWith("policy-revisions/auto-"))
+      .map((a) => JSON.parse(store.readArtifact(run.runId, a.id)));
+    expect(growth[0]).toMatchObject({ kind: "auto-growth", previous: { maxTotalTokens: 1_000_000 } });
+  });
+
+  test("a budget that cannot grow stops the run on its budget, not on the task's failed result", async () => {
+    scriptModel([probe(), cachedStep(120_000, 110_000, 500, { name: "submit_result", input: result("failed") })]);
+    const { executor, request, usageRecord } = await corrective31(false);
+    const error = await executor.execute(request).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(usageRecord()).toMatchObject({ stopReason: "submitted", finalizedBy: "tokens" });
+    expect(error).toMatchObject({ code: "BUDGET_EXHAUSTED", details: { reason: "budget_exhausted" } });
+    expect(String(error)).toContain("Task T012 was stopped by the run budget before its first edit");
+  });
+});
+
 describe("attempts whose provider reports no tokens", () => {
   const result = {
     schemaVersion: 1,

@@ -17,7 +17,7 @@ export interface WatchStep {
 }
 
 const READ_TOOLS = new Set(["read", "navigate", "bake_find", "bake_impact"]);
-const EDIT_TOOLS = new Set([
+export const EDIT_TOOLS = new Set([
   "edit_file",
   "multi_edit",
   "delete_file",
