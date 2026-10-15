@@ -40,6 +40,8 @@ export interface SizingSample {
   tokens: number;
   /** The model that spent most of the task's own tokens; null in history without attempts. */
   model: string | null;
+  /** The acceptance criteria the planned task covered; absent in older history. */
+  criteria?: number;
 }
 
 /**
@@ -160,7 +162,8 @@ export function samplesFrom(
         .all(id)
         .map((row) => ({
           id: row.id,
-          ...(JSON.parse(row.definition_json) as Pick<Task, "writes" | "origin">),
+          ...(JSON.parse(row.definition_json) as Pick<Task, "writes" | "origin"> &
+            Partial<Pick<Task, "criterionIds">>),
         }));
       const byModel = db
         .query<{ stage: string; model: string; tokens: number | null }, [string]>(
@@ -204,6 +207,7 @@ export function samplesFrom(
             files,
             tokens,
             model: modelOf.get(`task-${task.id}`)?.model ?? null,
+            criteria: task.criterionIds?.length ?? 0,
           });
       }
     }
@@ -426,6 +430,8 @@ export interface SizingReport {
   /** The model the tasks were priced for; null when none was known. */
   model: string | null;
   rates: Rates;
+  /** Tokens per criterion that price test tasks (`criterionRate`); null without that history. */
+  criterionRate: CriterionRate | null;
   tasks: TaskSize[];
   /**
    * Tokens the run is expected to need in total, from what it spent so far: the tasks' midpoints
@@ -481,15 +487,61 @@ export function verificationTokens(): number {
   );
 }
 
-/** One task's price: the per-file rate of each file it writes, by its kind and action, summed. */
-export function priceTask(task: Pick<Task, "writes">, rates: Rates): TokenRange {
-  return written(task).reduce(
+/** Tokens per covered criterion of finished test tasks, and how many tasks measured it. */
+export interface CriterionRate {
+  perCriterion: TokenRange;
+  samples: number;
+  /** As in `KindRate`: this project's own test tasks, or every store's. */
+  basis: "project" | "history";
+  model: string | null;
+}
+
+/**
+ * Tokens per criterion of the finished test tasks in history, or null with fewer than
+ * `MIN_PROJECT_SAMPLES` of them. A test task's work grows with the criteria it covers (each needs
+ * its cases and exact outputs) more than with its file count: a one-file part of a split test task
+ * that covered five criteria was priced at a per-file rate of 180k and used 547k on average
+ * (cfgtrace b4427c85, #1265). Measured, never a constant, so it holds for any provider.
+ */
+export function criterionRate(
+  samples: SizingSample[],
+  model: string | null = null,
+): CriterionRate | null {
+  const tests = samples.filter((s) => s.kind === "test" && (s.criteria ?? 0) > 0);
+  const own = model ? tests.filter((s) => s.model === model) : [];
+  const ofModel = own.length >= MIN_MODEL_SAMPLES ? model : null;
+  const pool = ofModel ? own : tests;
+  const project = pool.filter((s) => s.source === "project");
+  const basis = project.length >= MIN_PROJECT_SAMPLES ? "project" : "history";
+  const chosen = basis === "project" ? project : pool;
+  if (chosen.length < MIN_PROJECT_SAMPLES) return null;
+  const range = rangeOf(chosen.map((s) => s.tokens / (s.criteria ?? 1)));
+  return range ? { perCriterion: range, samples: chosen.length, basis, model: ofModel } : null;
+}
+
+/**
+ * One task's price: the per-file rate of each file it writes, by its kind and action, summed. A
+ * test task is priced at least at its criteria times the measured rate per criterion, when history
+ * has one.
+ */
+export function priceTask(
+  task: Pick<Task, "writes"> & Partial<Pick<Task, "criterionIds">>,
+  rates: Rates,
+  perCriterion: CriterionRate | null = null,
+): TokenRange {
+  const byFile = written(task).reduce(
     (total, { path, action }) => {
       const rate = rates[fileKind(path)][action].perFile;
       return { low: total.low + rate.low, high: total.high + rate.high };
     },
     { low: 0, high: 0 },
   );
+  const criteria = task.criterionIds?.length ?? 0;
+  if (!perCriterion || !criteria || taskKind(task) !== "test") return byFile;
+  return {
+    low: Math.max(byFile.low, criteria * perCriterion.perCriterion.low),
+    high: Math.max(byFile.high, criteria * perCriterion.perCriterion.high),
+  };
 }
 
 /**
@@ -537,6 +589,7 @@ export function sizePlan(input: {
   tokenRates?: readonly number[];
 }): SizingReport {
   const rates = perFileRates(input.samples, input.model ?? null);
+  const perCriterion = criterionRate(input.samples, input.model ?? null);
   const maxAttemptTokens = input.policy.sizing?.maxAttemptTokens ?? DEFAULT_MAX_SIZED_ATTEMPT;
   const maxRunTokens = input.policy.sizing?.maxRunTokens ?? null;
   const floor = input.policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS;
@@ -544,7 +597,7 @@ export function sizePlan(input: {
   const tasks = input.graph.tasks
     .filter((task) => writtenFiles(task).length > 0)
     .map((task): TaskSize => {
-      const estimate = priceTask(task, rates);
+      const estimate = priceTask(task, rates, perCriterion);
       const files = writtenFiles(task).length;
       return {
         taskId: task.id,
@@ -644,6 +697,7 @@ export function sizePlan(input: {
     schemaVersion: 3,
     model: input.model ?? null,
     rates,
+    criterionRate: perCriterion,
     tasks,
     runTokens,
     taskTokens: { low: taskTokens.low, expected: taskTokens.expected, high: taskTokens.high },
@@ -720,12 +774,13 @@ export function plannerSizing(
   model: string | null = null,
 ): { maxCodeFilesPerTask: number; note: string } {
   const rates = perFileRates(samples, model);
+  const perCriterion = criterionRate(samples, model);
   const maxAttemptTokens = policy.sizing?.maxAttemptTokens ?? DEFAULT_MAX_SIZED_ATTEMPT;
   const maxCodeFilesPerTask = Math.max(1, Math.floor(maxAttemptTokens / highest(rates, "code")));
   const k = (kind: FileKind) => `${Math.round(highest(rates, kind) / 1000)}k`;
   return {
     maxCodeFilesPerTask,
-    note: `Give every task that writes code the policy's typecheck check, so its errors show in that task. Put tests in tasks of their own: a test file costs about ${k("test")} tokens, a code file about ${k("code")}, a documentation file about ${k("docs")}, a project manifest or solution file about ${k("manifest")}. Keep each code task to at most ${maxCodeFilesPerTask} files. Give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel and are merged afterwards; a test task depends on the code tasks whose criteria it covers. A test task above one attempt is split into one task per test file.`,
+    note: `Give every task that writes code the policy's typecheck check, so its errors show in that task. Put tests in tasks of their own: a test file costs about ${k("test")} tokens, a code file about ${k("code")}, a documentation file about ${k("docs")}, a project manifest or solution file about ${k("manifest")}.${perCriterion ? ` A test task costs at least about ${Math.round(perCriterion.perCriterion.high / 1000)}k per criterion it covers.` : ""} Keep each code task to at most ${maxCodeFilesPerTask} files. Give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel and are merged afterwards; a test task depends on the code tasks whose criteria it covers. A test task above one attempt is split into one task per test file.`,
   };
 }
 
