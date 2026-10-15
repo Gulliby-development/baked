@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { hashBytes } from "../src/core/specs/hash.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
@@ -163,4 +164,10 @@ test("a whole-unit fixer that rewrites a later file through an earlier file's ru
   expect(readFileSync(join(root, "value.txt"), "utf8")).toBe("ready");
   expect(executor.calls.filter((call) => call === "implementation")).toHaveLength(1);
   expect(fixture.service.store.tasks(run.runId).map((t) => t.id)).toEqual(["T001"]);
+  // Bench round 29, seqtext ead875e0 (#1269): the rewrite of value.txt by a.txt's run is journaled
+  // with its true before hash, so the journal ends where the disk is; it read before == after.
+  const fixes = fixture.service.store
+    .effects(run.runId)
+    .filter((e) => e.kind === "file_patch" && JSON.parse(e.intent_json).tool === "apply_fix" && JSON.parse(e.intent_json).path === "value.txt");
+  expect(fixes.some((e) => e.before_hash === hashBytes(Buffer.from("ready  \n")) && e.after_hash === hashBytes(Buffer.from("ready")))).toBe(true);
 });
