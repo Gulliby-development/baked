@@ -300,6 +300,22 @@ export const RuntimeStateSchema = z
     analysisRaised: z
       .array(z.object({ kind: z.string(), refs: z.array(z.string()), description: z.string() }))
       .default([]),
+    /**
+     * Blocking analysis findings a person answered, with the answers: when the next analysis
+     * raises one again, the plan did not apply the answer and goes back to the planner once with
+     * the answer as binding instead of asking the person the same question (#1297).
+     */
+    answeredFindings: z
+      .array(
+        z.object({
+          kind: z.string(),
+          refs: z.array(z.string()),
+          description: z.string(),
+          answer: z.string(),
+          rerouted: z.boolean().default(false),
+        }),
+      )
+      .default([]),
     taskGates: z
       .record(
         z.string(),
