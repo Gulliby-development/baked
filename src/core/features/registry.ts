@@ -1309,7 +1309,8 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "initiative-feature-workflows",
     group: "Initiatives",
-    title: "Each feature runs its own workflow, with a budget share by estimated need (by size without history)",
+    title:
+      "Each feature runs its own workflow, with a budget share by estimated need (by size without history)",
     tui: ["/workflow: initiatives, W sets a feature's workflow and Z its size"],
     cli: ["baked workflow initiative set-workflow", "baked workflow initiative set-size"],
     api: ["/v1/initiatives/:id/configure"],
