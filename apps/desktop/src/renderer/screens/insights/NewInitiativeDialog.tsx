@@ -34,6 +34,7 @@ export function NewInitiativeDialog({
   const [workflow, setWorkflow] = useState("sdd");
   const [model, setModel] = useState("");
   const [budget, setBudget] = useState<BudgetFields | null>(null);
+  const [budgetUsd, setBudgetUsd] = useState("");
   const [tiered, setTiered] = useState<{ maxTasks: string; maxFiles: string } | null>(null);
   const [forecastStop, setForecastStop] = useState(false);
   const definitions = useLoad(projectKey, "definitions", start.definitions);
@@ -45,6 +46,7 @@ export function NewInitiativeDialog({
     workflow,
     model,
     budget,
+    budgetUsd,
     tiered,
     forecastStop,
   });
@@ -132,6 +134,23 @@ export function NewInitiativeDialog({
             large one), plus one more. Each feature's share follows its size.
           </span>
         )}
+        <div className={FIELD}>
+          <Label htmlFor={`${ids}-usd`} className="text-[12px]">
+            Dollar cap
+          </Label>
+          <Input
+            id={`${ids}-usd`}
+            inputMode="decimal"
+            className="font-mono"
+            value={budgetUsd}
+            placeholder="like 40; empty sets none"
+            onChange={(e) => setBudgetUsd(e.target.value)}
+          />
+          <span className={HINT}>
+            Feature runs share it like the tokens. Once a feature is accepted, no feature starts
+            while the projected total is above it.
+          </span>
+        </div>
       </fieldset>
       <div className="flex flex-col gap-2">
         <div className="flex items-center gap-2.5">

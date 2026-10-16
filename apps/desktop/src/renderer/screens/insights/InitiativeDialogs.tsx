@@ -408,11 +408,13 @@ export function BudgetInputs({
 export function ExtendDialog({ projectKey, view, onClose }: Props) {
   const id = useId();
   const [fields, setFields] = useState(() => budgetFields(view));
-  const extension = budgetExtension(view, fields);
+  const cap = view.budget.cost?.capUsd ?? null;
+  const [dollars, setDollars] = useState(() => (cap === null ? "" : String(cap)));
+  const extension = budgetExtension(view, fields, dollars);
   return (
     <FormDialog
       title="Extend budget"
-      description="Raises the shared budget's limits; a limit can only go up. Features started later get a share of what remains, weighted by their size."
+      description="Raises the shared budget's limits; a limit can only go up. Features started later get a share of what remains, weighted by their estimated need (by size without history)."
       submitLabel="Extend"
       problem={extension.ok ? null : extension.error}
       onSubmit={() =>
@@ -423,6 +425,19 @@ export function ExtendDialog({ projectKey, view, onClose }: Props) {
       onClose={onClose}
     >
       <BudgetInputs value={fields} onChange={setFields} idPrefix={id} />
+      <div className={FIELD}>
+        <Label htmlFor={`${id}-usd`} className="text-[12px]">
+          Dollar cap
+        </Label>
+        <Input
+          id={`${id}-usd`}
+          inputMode="decimal"
+          className="font-mono"
+          value={dollars}
+          placeholder={cap === null ? "like 40; empty sets none" : `above ${cap}`}
+          onChange={(e) => setDollars(e.target.value)}
+        />
+      </div>
     </FormDialog>
   );
 }

@@ -9,6 +9,7 @@ import { newId } from "../store.js";
 import {
   canExtendBudget,
   canReplanFeature,
+  costText,
   parseBudgetText,
   parseSplitParts,
   splitEditable,
@@ -26,6 +27,8 @@ export interface InitiativeSummary {
   total: number;
   tokensUsed: number;
   tokensLimit: number;
+  /** The initiative's dollars in one line (`costText`); null without a cap or spending. */
+  cost: string | null;
   /** Decisions waiting for a person: the split approval and the decisions of feature runs. */
   pending: number;
   /** Features that cannot continue now, plus a blocked next step of the initiative itself. */
@@ -60,6 +63,7 @@ export function summarizeInitiative(view: InitiativeView): InitiativeSummary {
     total: mandatory.length,
     tokensUsed: view.budget.used.tokens,
     tokensLimit: view.budget.limits.maxTotalTokens,
+    cost: costText(view.budget.cost),
     pending: view.pendingDecisions.length,
     blockers: blockers.length,
     needsYou:
@@ -132,6 +136,7 @@ export const InitiativeActionSchema = z.discriminatedUnion("kind", [
       maxTotalTokens: z.number().int().min(1).optional(),
       maxAgentCalls: z.number().int().min(1).optional(),
       maxActiveMs: z.number().int().min(1).optional(),
+      maxCostUsd: z.number().positive().optional(),
     })
     .strict(),
   z.object({ kind: z.literal("drive") }).strict(),
@@ -363,14 +368,14 @@ export function initiativeActions(
       confirm: `Switch initiative ${view.initiativeId} from ${view.model ?? "the default model"} to ${model} and continue? Features started from now on use it, and its stopped runs move to it; finished work stays. Y confirms; N keeps the current model.`,
     });
   if (canExtendBudget(view)) {
-    const { limits } = view.budget;
+    const { limits, cost } = view.budget;
     options.push({
       key: "B",
       label: "extend budget",
       action: { kind: "extend", expectedRevision },
       confirm: null,
       input: {
-        question: `Raise the shared budget: tokens [calls [time]], such as 8M 400 4h; - keeps a limit. Now ${limits.maxTotalTokens} tokens, ${limits.maxAgentCalls} calls, ${Math.round(limits.maxActiveMs / 60_000)}m.`,
+        question: `Raise the shared budget: tokens [calls [time]] [$dollars], such as 8M 400 4h $40; - keeps a limit. Now ${limits.maxTotalTokens} tokens, ${limits.maxAgentCalls} calls, ${Math.round(limits.maxActiveMs / 60_000)}m${cost?.capUsd ? `, $${cost.capUsd.toFixed(2)}` : ""}.`,
         placeholder: `${Math.ceil((limits.maxTotalTokens * 1.5) / 1_000_000)}M`,
         initial: "",
         build: (text) => {

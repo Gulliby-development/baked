@@ -25,7 +25,7 @@ const initiative = {
   featureAutoApproval: null, decompose: null,
   features: ["core", "api", "docs"].map((id, i) => ({ id, title: `Feature ${id}`, mandatory: true, dependsOn: i === 1 ? ["core"] : [], boundary: { scope: id, paths: [] }, contract: `${id} contract`, runFeatureId: `values_${id}`, state: "proposed", runId: null, runStatus: null, runReason: null, pinned: [], contractHash: null, blockers: [], pendingRequests: [], usage: { tokens: 0, calls: 0, activeMs: 0 }, runIds: [] })),
   pendingDecisions: [{ scope: "initiative", featureId: null, runId: null, requestId: "split", kind: "split_approval", digest: "e".repeat(64) }],
-  budget: { limits: { maxTotalTokens: 1600000, maxAgentCalls: 320, maxActiveMs: 14400000 }, used: { tokens: 0, calls: 0, activeMs: 0 }, reserved: { tokens: 0, calls: 0, activeMs: 0 }, remaining: { tokens: 1600000, calls: 320, activeMs: 14400000 }, unstartedFeatures: 0, nextShare: null, rule: "" },
+  budget: { limits: { maxTotalTokens: 1600000, maxAgentCalls: 320, maxActiveMs: 14400000 }, used: { tokens: 0, calls: 0, activeMs: 0 }, reserved: { tokens: 0, calls: 0, activeMs: 0 }, remaining: { tokens: 1600000, calls: 320, activeMs: 14400000 }, unstartedFeatures: 0, nextShare: null, cost: { capUsd: null, tolerance: 0, ceilingUsd: null, spentUsd: 0, reservedUsd: 0, remainingUsd: null, forecastUsd: null }, rule: "" },
   next: { kind: "await_split_approval", featureId: null, runId: null, message: "Approve the split (plan revision 1) or edit it." },
 };
 const approvalRequest = { id: "approval", kind: "approval", digest: "c".repeat(64), body_json: JSON.stringify({ writes: task.writes, checks: [{ id: "tests", executable: "bun", args: ["test"] }] }), status: "pending", answer_json: null };

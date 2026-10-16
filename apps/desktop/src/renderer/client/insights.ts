@@ -80,6 +80,24 @@ export interface InitiativeFeature {
   size?: FeatureSize;
   /** The share it starts with, while it has no run yet; absent on older backends. */
   share?: UsageTotals | null;
+  /** The dollars it starts with under a dollar cap; null without one, absent on older backends. */
+  shareUsd?: number | null;
+  /** The dollars its runs spent; absent on older backends. */
+  spentUsd?: number;
+}
+
+/** The initiative's dollars (`budget.cost`); absent on older backends. */
+export interface InitiativeCost {
+  /** The dollar cap; null without one. */
+  capUsd: number | null;
+  tolerance: number;
+  /** The cap plus its tolerance band; null without a cap. */
+  ceilingUsd: number | null;
+  spentUsd: number;
+  reservedUsd: number;
+  remainingUsd: number | null;
+  /** The projected total once a feature is accepted; null before that or without a cap. */
+  forecastUsd: number | null;
 }
 
 export type FeatureSize = "small" | "medium" | "large";
@@ -110,6 +128,7 @@ export interface InitiativeView {
     used: UsageTotals;
     /** What later feature runs can still get; absent on older backends. */
     remaining?: UsageTotals;
+    cost?: InitiativeCost;
   };
   next: InitiativeNext;
 }
@@ -170,6 +189,8 @@ export interface StartInitiativeBody {
   model?: string;
   /** The shared budget; all three limits or none (then it follows from the policy). */
   budget?: { tokens: number; calls: number; timeMs: number };
+  /** The dollar cap feature runs share; absent leaves dollars to each run's policy. */
+  budgetUsd?: number;
   tieredApproval?: TieredApproval;
   /** Hold feature starts while the estimate's low end is above the shared budget. */
   forecastStop?: boolean;
@@ -189,6 +210,8 @@ export interface BudgetExtension {
   tokens?: number;
   calls?: number;
   timeMs?: number;
+  /** A higher dollar cap. */
+  costUsd?: number;
 }
 
 export type UsageDimension = "model" | "stage" | "day";

@@ -274,6 +274,8 @@ describe("local API setup and workflow additions", () => {
     const { get, post, call } = await setup();
     expect(await get("/v1/initiatives")).toEqual({ initiatives: [] });
     expect((await post("/v1/initiatives", { commandId: newId(), initiativeId: "big", prompt: "x", budget: { tokens: 1 } })).status).toBe(400);
+    expect((await post("/v1/initiatives", { commandId: newId(), initiativeId: "big", prompt: "x", budgetUsd: -1 })).status).toBe(400);
+    expect((await post("/v1/initiatives", { commandId: newId(), initiativeId: "big", prompt: "x", budgetUsd: 5, costTolerance: 0.9 })).status).toBe(400);
     expect((await call("/v1/initiatives/missing")).status).toBe(404);
     expect((await post("/v1/initiatives/missing/pause", { commandId: newId(), expectedRevision: 0 })).status).toBe(404);
     expect((await post("/v1/initiatives/missing/explode", {})).status).toBe(404);

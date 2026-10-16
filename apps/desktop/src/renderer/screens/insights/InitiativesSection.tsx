@@ -36,6 +36,7 @@ import {
   canSplitFeature,
   canSwitchModel,
   configurableFeatures,
+  costLine,
   detailStatus,
   estimateBasisText,
   estimateFit,
@@ -267,6 +268,12 @@ function FeatureCard({
         {feature.share && feature.usage.tokens === 0 && (
           <span className="font-mono text-dim-foreground">
             starts with {tokens(feature.share.tokens)}
+            {typeof feature.shareUsd === "number" && ` and $${feature.shareUsd.toFixed(2)}`}
+          </span>
+        )}
+        {(feature.spentUsd ?? 0) > 0 && (
+          <span className="font-mono text-dim-foreground">
+            ${(feature.spentUsd ?? 0).toFixed(2)} spent
           </span>
         )}
         {feature.issue && (
@@ -629,7 +636,8 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
       <div className="flex flex-wrap items-center gap-3">
         <p className="m-0 text-[12px] text-dim-foreground">
           Shared budget: {tokens(view.budget.used.tokens)} of{" "}
-          {tokens(view.budget.limits.maxTotalTokens)} tokens · plan revision {view.planRevision}
+          {tokens(view.budget.limits.maxTotalTokens)} tokens
+          {costLine(view) && ` · ${costLine(view)}`} · plan revision {view.planRevision}
           {(view.parallelRuns ?? 1) > 1 && ` · up to ${view.parallelRuns} features at once`}
           {view.next.message && ` · ${view.next.message}`}
         </p>

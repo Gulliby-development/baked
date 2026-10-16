@@ -1334,6 +1334,23 @@ export const FEATURES: readonly Feature[] = [
     api: ["/v1/initiatives/:id"],
     desktop: ["project/initiatives: the shared budget line shows up to N features at once"],
   },
+  {
+    id: "initiative-dollar-budget",
+    group: "Initiatives",
+    title: "A dollar cap the feature runs share, with a tolerance and a forecast stop",
+    tui: [
+      "/workflow: initiatives, $N in the start form's budget and B, dollars on the budget line",
+    ],
+    cli: [
+      "baked workflow initiative start",
+      "baked workflow initiative extend",
+      "baked workflow initiative show",
+    ],
+    api: ["/v1/initiatives", "/v1/initiatives/:id", "/v1/initiatives/:id/extend"],
+    desktop: [
+      "project/initiatives: Dollar cap in New initiative and Extend budget, dollars on the shared budget line",
+    ],
+  },
 
   // Projects and setup
   {

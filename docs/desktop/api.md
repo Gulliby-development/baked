@@ -364,7 +364,7 @@ The `baked workflow initiative` commands over HTTP. Mutations take `commandId` a
 | Method and path | Body | CLI |
 | --- | --- | --- |
 | `GET /v1/initiatives` | | `list` |
-| `POST /v1/initiatives` | `commandId`, `initiativeId`, `prompt`, `plan?`, `workflow?` (the default for features that name none), `policy?`, `model?`, `owner?`, `budget?: {tokens, calls, timeMs}`, `tieredApproval?: {maxTasks, maxFiles}`, `confirmAutoApproval?`, `featureIssues?: {FEATURE: {repository, number, url, title}}` (needs `plan`; each feature's runs start from its issue and their delivery closes it; the feature view's `issue` shows it), `worktree?` (feature runs execute in worktrees), `forecastStop?` (hold feature starts while the estimate's low end is above the shared budget) | `start`; 202 with the view, planning is driven in the background like a run |
+| `POST /v1/initiatives` | `commandId`, `initiativeId`, `prompt`, `plan?`, `workflow?` (the default for features that name none), `policy?`, `model?`, `owner?`, `budget?: {tokens, calls, timeMs}`, `budgetUsd?` (a [dollar cap](../workflows/runtime.md#initiatives) the feature runs share), `costTolerance?` (`auto`, `off` or 0 to 0.5), `tieredApproval?: {maxTasks, maxFiles}`, `confirmAutoApproval?`, `featureIssues?: {FEATURE: {repository, number, url, title}}` (needs `plan`; each feature's runs start from its issue and their delivery closes it; the feature view's `issue` shows it), `worktree?` (feature runs execute in worktrees), `forecastStop?` (hold feature starts while the estimate's low end is above the shared budget) | `start`; 202 with the view, planning is driven in the background like a run |
 | `GET /v1/initiatives/ID` | | `show`; the view's `parallelRuns` is how many feature runs execute at once (1 inline); each feature has `workflowId`, `size` (`small`, `medium`, `large`) and `share` (the budget it starts with, null once it has a run) |
 | `GET /v1/initiatives/ID/estimate` | | `estimate`: `{level, tasks, tokens, withMargin, margin, budget: {maxTotalTokens, fits}, basis, features[] (each with spent, and criteria once its spec is written), progress: {spent, accepted, ratio}, perCriterion, notes, label}`; `basis` is `measured` or `calibrated` once features are accepted. 409 `NO_SPLIT` before a split exists |
 | `GET /v1/initiatives/ID/events` | `?after=` | `events` as SSE, or JSON with `Accept: application/json` |
@@ -374,7 +374,7 @@ The `baked workflow initiative` commands over HTTP. Mutations take `commandId` a
 | `POST /v1/initiatives/ID/configure` | `feature` and either `workflow` or `size` | `set-workflow`, `set-size` |
 | `POST /v1/initiatives/ID/approve`, `/reject` | `requestId` and `digest`, or `requestId` and `reason` | same; approve drives in the background |
 | `POST /v1/initiatives/ID/resume`, `/pause` | | same; resume drives in the background; a feature run resumed with `POST /v1/workflow/runs/RUN_ID/resume` continues its active initiative in the background once it stops, unless another of its runs is still driven |
-| `POST /v1/initiatives/ID/extend` | `tokens?`, `calls?`, `timeMs?` | `extend` |
+| `POST /v1/initiatives/ID/extend` | `tokens?`, `calls?`, `timeMs?`, `costUsd?` (a higher dollar cap) | `extend` |
 | `POST /v1/initiatives/ID/reroute` | `model`, `resume?` | `reroute`; with `resume: true` it drives in the background |
 
 Initiative requests also appear in `GET /v1/attention` with `source: "initiative"` and `initiativeId`.
