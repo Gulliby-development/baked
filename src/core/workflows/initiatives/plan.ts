@@ -4,6 +4,7 @@
  * person may apply before approving the split. Nothing here runs a model or a command.
  */
 import { z } from "zod";
+import { matchGlob } from "../../platform/index.js";
 import { hashJson } from "../../specs/hash.js";
 import { WorkflowFault } from "../errors.js";
 import { SafeId } from "../schemas.js";
@@ -140,6 +141,64 @@ function findCycle(plan: InitiativePlan): string[] | null {
       if (found) return found;
     }
   return null;
+}
+
+const GLOB = /[*?[\]{}]/;
+/**
+ * Whether two boundary patterns name a common file: the same pattern, or a literal path of one
+ * that the other's glob matches. Two different globs are not compared.
+ */
+function patternsMeet(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (!GLOB.test(a) && GLOB.test(b)) return matchGlob(a, b);
+  if (!GLOB.test(b) && GLOB.test(a)) return matchGlob(b, a);
+  return false;
+}
+
+/** The boundary patterns of `a` that meet one of `b`'s. */
+export function sharedPaths(a: InitiativeFeature, b: InitiativeFeature): string[] {
+  return a.boundary.paths.filter((p) => b.boundary.paths.some((q) => patternsMeet(p, q)));
+}
+
+/**
+ * The plan with features that may write a common file put in order: the later one in plan order
+ * depends on the nearest earlier one it shares a file with, unless a dependency path already
+ * joins them. Siblings that each add a line to one registration file (lib.rs, mod.rs, an index)
+ * otherwise run side by side and their accepted results cannot be merged (sketchfold: hll,
+ * frequent, hist and member each added `pub mod` to src/lib.rs, #1336). Features in `fixed`
+ * (those with a run) keep their dependencies.
+ */
+export function sequenceSharedPaths(
+  plan: InitiativePlan,
+  fixed: ReadonlySet<string> = new Set(),
+): { plan: InitiativePlan; added: { featureId: string; dependsOn: string; paths: string[] }[] } {
+  const features = plan.features.map((f) => ({ ...f, dependsOn: [...f.dependsOn] }));
+  const byId = new Map(features.map((f) => [f.id, f] as const));
+  const reaches = (from: string, to: string): boolean => {
+    const seen = new Set<string>();
+    const stack = [from];
+    while (stack.length) {
+      const id = stack.pop() ?? "";
+      if (id === to) return true;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      stack.push(...(byId.get(id)?.dependsOn ?? []));
+    }
+    return false;
+  };
+  const added: { featureId: string; dependsOn: string; paths: string[] }[] = [];
+  for (const [j, later] of features.entries()) {
+    if (fixed.has(later.id)) continue;
+    for (let i = j - 1; i >= 0; i--) {
+      const earlier = features[i];
+      if (!earlier) continue;
+      const paths = sharedPaths(later, earlier);
+      if (!paths.length || reaches(later.id, earlier.id) || reaches(earlier.id, later.id)) continue;
+      later.dependsOn.push(earlier.id);
+      added.push({ featureId: later.id, dependsOn: earlier.id, paths });
+    }
+  }
+  return added.length ? { plan: { ...plan, features }, added } : { plan, added };
 }
 
 /**

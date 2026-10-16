@@ -11,6 +11,7 @@ import {
   type InitiativePlan,
   planSizeProblem,
   planStructureProblems,
+  sequenceSharedPaths,
   topologicalOrder,
   validateInitiativePlan,
 } from "../src/core/workflows/initiatives/plan.js";
@@ -244,6 +245,31 @@ function setup(split: unknown = threeFeatures, tokens = 100) {
 }
 
 describe("initiative plan", () => {
+  test("features sharing a file are chained in plan order, unless already joined or already running (#1336)", () => {
+    const lib = (id: string, dependsOn: string[] = []) => feature(id, dependsOn, [`src/${id}.rs`, "src/lib.rs"]);
+    const split = plan([lib("core"), lib("hll", ["core"]), lib("frequent", ["core"]), lib("hist", ["core"]), feature("docs", [], ["docs/**"]), feature("readme", [], ["docs/guide.md"])]);
+    const { plan: sequenced, added } = sequenceSharedPaths(split);
+    expect(sequenced.features.map((f) => [f.id, f.dependsOn])).toEqual([
+      ["core", []],
+      ["hll", ["core"]],
+      ["frequent", ["core", "hll"]],
+      ["hist", ["core", "frequent"]],
+      ["docs", []],
+      ["readme", ["docs"]],
+    ]);
+    expect(added.map((a) => [a.featureId, a.dependsOn, a.paths])).toEqual([
+      ["frequent", "hll", ["src/lib.rs"]],
+      ["hist", "frequent", ["src/lib.rs"]],
+      ["readme", "docs", ["docs/guide.md"]],
+    ]);
+    expect(planStructureProblems(sequenced)).toEqual([]);
+    // A feature with a run keeps its dependencies; the input plan is not changed.
+    expect(sequenceSharedPaths(split, new Set(["frequent"])).added.map((a) => [a.featureId, a.dependsOn])).toEqual([["hist", "frequent"], ["hist", "hll"], ["readme", "docs"]]);
+    expect(split.features[2]?.dependsOn).toEqual(["core"]);
+    // Two different globs are not compared.
+    expect(sequenceSharedPaths(plan([feature("a", [], ["src/*.rs"]), feature("b", [], ["src/**"]), feature("c")])).added).toEqual([]);
+  });
+
   test("validates the DAG: unique IDs, known dependencies, no cycles", () => {
     expect(planStructureProblems(threeFeatures)).toEqual([]);
     expect(planStructureProblems(plan([feature("a"), feature("a"), feature("b")]))).toContain("duplicate feature ID a");
@@ -824,6 +850,54 @@ describe("initiative runtime", () => {
     // The working copy is never written.
     expect(existsSync(join(t.root, "a.txt"))).toBe(false);
     expect(git(t.root, "status", "--porcelain")).toBe("");
+  }, 30000);
+
+  test("siblings that share a file run in order, so a dependent's merge of their results succeeds (#1336)", async () => {
+    // Bench round 34, sketchfold: hll, frequent, hist and member each added a `pub mod` line to
+    // src/lib.rs with no dependency between them; their accepted results conflicted when sketch
+    // started, and 3.8M tokens of their runs were redone. Siblings sharing a file now run in order.
+    const shared = plan([feature("a", [], ["a.txt", "shared.txt"]), feature("b", [], ["b.txt", "shared.txt"]), feature("c", ["a", "b"])]);
+    const t = setup(shared);
+    repository(t.root);
+    t.executor.extraWrites = { a: "shared.txt", b: "shared.txt" };
+    const worktreePolicy: RunPolicy = { ...policy, executionMode: "worktree" };
+    await t.start({ plan: shared, policy: worktreePolicy, featureAutoApproval: { maxTasks: 5, maxFiles: 5 } });
+    let view = await t.approveSplit();
+    expect(t.featureOf(view, "b").dependsOn).toEqual(["a"]);
+    expect(t.initiatives.events("values").find((e) => e.type === "split.sequenced")?.payload).toMatchObject({
+      added: [{ featureId: "b", dependsOn: "a", paths: ["shared.txt"] }],
+    });
+    view = await t.drive();
+    expect(view.status).toBe("completed");
+    // b started from a's result and changed its shared.txt; c merged both without a conflict.
+    expect(t.executor.seen.b).toEqual(["a.txt", "shared.txt"]);
+    const cRun = t.featureOf(view, "c").runId ?? "";
+    expect(git(t.root, "show", `baked/wf/${cRun}:shared.txt`)).toBe("ready v1 (write 2)");
+  }, 30000);
+
+  test("conflicting upstream results block the dependent feature with the repair instead of failing every drive (#1336)", async () => {
+    // Different globs are not compared, so these siblings still run side by side.
+    const overlapping = plan([feature("a", [], ["a.txt", "s*.txt"]), feature("b", [], ["b.txt", "sh*.txt"]), feature("c", ["a", "b"])]);
+    const t = setup(overlapping);
+    repository(t.root);
+    t.executor.extraWrites = { a: "shared.txt", b: "shared.txt" };
+    const worktreePolicy: RunPolicy = { ...policy, executionMode: "worktree" };
+    await t.start({ plan: overlapping, policy: worktreePolicy, featureAutoApproval: { maxTasks: 5, maxFiles: 5 } });
+    await t.approveSplit();
+    let view = await t.drive();
+    expect(t.featureOf(view, "a").state).toBe("accepted");
+    expect(t.featureOf(view, "b").state).toBe("accepted");
+    const c = t.featureOf(view, "c");
+    expect(c.state).toBe("blocked");
+    expect(c.runId).toBeNull();
+    expect(c.blockers[0]).toContain("conflict in shared.txt");
+    expect(c.blockers[0]).toContain("baked workflow initiative merge --features a,b");
+    expect(view.next).toMatchObject({ kind: "blocked" });
+    expect(view.next.message).toContain("conflict in shared.txt");
+    // Driving again reports the same block; nothing is thrown and nothing starts.
+    view = await t.drive();
+    expect(t.featureOf(view, "c").state).toBe("blocked");
+    expect(t.initiatives.events("values").filter((e) => e.type === "feature.upstream_conflict").length).toBe(1);
   }, 30000);
 
   test("upstream results merge onto HEAD the same way every time, and conflicting ones are named", async () => {
