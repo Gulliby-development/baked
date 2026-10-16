@@ -4878,17 +4878,7 @@ ${note}`;
                             diagnostics: STATIC_DIAGNOSTICS,
                           }
                         : {}),
-                      ...(narrow
-                        ? {
-                            scope: {
-                              writable: narrow.map((w) => w.path),
-                              later: task.writes
-                                .filter((w) => !narrow.includes(w))
-                                .map((w) => w.path),
-                              note: "This attempt may write only the writable files. If the fix needs a file in later, it is unresolved (unlike other files outside your write scope): report blocked and name that file in unresolved. The next attempt may write all of them.",
-                            },
-                          }
-                        : {}),
+                      ...(narrow ? { scope: correctionScope(task, narrow) } : {}),
                     },
                   }
                 : {}),
@@ -5755,25 +5745,34 @@ ${note}`;
         this.store.finishStep(runId, entry.child, "interrupted");
       });
     } else if (outcome.kind === "rejected") {
-      const cause: InterruptCause | null = this.fallBackFromQuickFix(state, entry.task)
-        ? "widened_correction"
-        : outcome.blocked !== undefined &&
-            this.deferOnMissingArtifact(runId, state, entry.child, entry.task, outcome.blocked, [])
-          ? "waits_for_artifact"
-          : outcome.edits !== undefined && this.continueAtCap(runId, state, entry.child, entry.task)
-            ? "continue_at_cap"
-            : outcome.restart !== undefined &&
-                this.restartOnce(
-                  runId,
-                  state,
-                  entry.child,
-                  entry.task.id,
-                  outcome.restart.reason,
-                  outcome.edits?.changed ?? [],
-                  outcome.restart.account,
-                )
-              ? "restart"
-              : null;
+      const cause: InterruptCause | null =
+        this.fallBackFromQuickFix(state, entry.task) || this.widenCorrection(state, entry, outcome)
+          ? "widened_correction"
+          : outcome.blocked !== undefined &&
+              this.deferOnMissingArtifact(
+                runId,
+                state,
+                entry.child,
+                entry.task,
+                outcome.blocked,
+                [],
+              )
+            ? "waits_for_artifact"
+            : outcome.edits !== undefined &&
+                this.continueAtCap(runId, state, entry.child, entry.task)
+              ? "continue_at_cap"
+              : outcome.restart !== undefined &&
+                  this.restartOnce(
+                    runId,
+                    state,
+                    entry.child,
+                    entry.task.id,
+                    outcome.restart.reason,
+                    outcome.edits?.changed ?? [],
+                    outcome.restart.account,
+                  )
+                ? "restart"
+                : null;
       const again = cause !== null;
       if (again && outcome.edits) this.carryEdits(runId, state, entry, outcome.edits);
       if (!again) failure ??= outcome.error;
@@ -5789,6 +5788,19 @@ ${note}`;
       });
     }
     return failure;
+  }
+  /**
+   * A correction whose narrowed first attempt in its worktree did not finish runs again with every
+   * file of its scope, keeping that attempt's edits, as on the single-writer path.
+   */
+  private widenCorrection(
+    state: RuntimeState,
+    entry: BatchEntry,
+    outcome: Extract<WorkerOutcome, { kind: "rejected" }>,
+  ): boolean {
+    if (!outcome.narrowed || state.widenedCorrections.includes(entry.task.id)) return false;
+    state.widenedCorrections.push(entry.task.id);
+    return true;
   }
   /**
    * Decides whether a task whose worker was lost runs again in this drive, from the run worktree's
@@ -5966,6 +5978,18 @@ ${note}`;
       const kept = keepOutside(root, before, new Set(task.writes.map((w) => w.path)));
       await this.affectedBaseline(runId, entry.child, state, policy, task, signal, root);
       const earlierEdits = await this.applyCarry(runId, state, entry, root);
+      // A correction's first attempt writes only where its findings point, as on the single-writer
+      // path: parallel correctives had every file of their scope (url-shortener b69757cd T006 and
+      // T007, md-site 11b11f19 T013 and T014, #1285).
+      const narrow = state.widenedCorrections.includes(task.id)
+        ? null
+        : narrowCorrectionWrites(
+            task,
+            correctionFocus(this.store, runId, state, task).files,
+            !staticCorrection(this.store, runId, policy, task),
+          );
+      const scoped: Task = narrow ? { ...task, writes: narrow } : task;
+      if (narrow) state.narrowedCorrections[task.id] ??= narrow.map((w) => w.path);
       const currentChanges = async (): Promise<{
         after: Record<string, string>;
         changed: string[];
@@ -5987,14 +6011,15 @@ ${note}`;
             entry.extra && typeof entry.extra === "object"
               ? {
                   ...entry.extra,
-                  ...(await this.correctionContext(runId, state, policy, root, task)),
+                  task: scoped,
+                  ...(await this.correctionContext(runId, state, policy, root, task, narrow)),
                   ...(await this.libraryDocsContext(runId, policy, root, task)),
                   ...(earlierEdits ? { earlierEdits } : {}),
                   ...this.affectedTestsContext(root, state, policy, task),
                 }
               : entry.extra,
             signal,
-            task,
+            scoped,
             0,
             undefined,
             undefined,
@@ -6081,7 +6106,8 @@ ${note}`;
         changed.length === 0 && result.outcome === "blocked"
           ? this.missingArtifactOwnersOf(runId, state, task, result)
           : [];
-      if (restartReason && changed.length === 0 && !waits.length)
+      // A narrowed correction widens before it restarts, as on the single-writer path.
+      if (restartReason && changed.length === 0 && !waits.length && !narrow)
         return {
           kind: "interrupted",
           entry,
@@ -6116,6 +6142,7 @@ ${note}`;
         return {
           kind: "rejected",
           entry,
+          ...(narrow ? { narrowed: true } : {}),
           ...(restartReason ? { restart: { reason: restartReason, account } } : {}),
           ...(changed.length ? { edits: { before, changed } } : { blocked: result }),
           error: new WorkflowFault(
@@ -6978,6 +7005,7 @@ ${note}`;
     policy: RunPolicy,
     root: string,
     task: Task,
+    narrow: Task["writes"] | null,
   ): Promise<Record<string, unknown>> {
     const focus = correctionFocus(this.store, runId, state, task);
     if (!focus.files.length) return {};
@@ -7002,6 +7030,7 @@ ${note}`;
         ...(staticCorrection(this.store, runId, policy, task)
           ? { diagnostics: STATIC_DIAGNOSTICS }
           : {}),
+        ...(narrow ? { scope: correctionScope(task, narrow) } : {}),
       },
     };
   }
@@ -7756,6 +7785,51 @@ ${note}`;
     });
   }
   /**
+   * The open correctives of a sibling test task's failed check whose failing tests import a source
+   * that the failing tests of planned test task `task` import too: one defect there fails both.
+   */
+  private sharedSourceCorrections(
+    runId: string,
+    state: RuntimeState,
+    task: Task,
+    check: Check,
+    output: string,
+  ): string[] {
+    if (task.origin !== "planned" || !isTestCheck(check) || !state.graph) return [];
+    const rootTasks = (state.rootGraph ?? state.graph).tasks;
+    const failing = pathsInOutput(output, rootTasks).filter(
+      (path) => isTestPath(path) && task.writes.some((w) => w.path === path),
+    );
+    if (!failing.length) return [];
+    const root = runRoot(this.store.workspace, state);
+    const sources = [
+      ...new Set(
+        rootTasks.flatMap((t) =>
+          t.writes.filter((w) => w.action !== "delete" && !isTestPath(w.path)).map((w) => w.path),
+        ),
+      ),
+    ];
+    const mine = new Set(importedFiles(root, failing, sources, 1));
+    if (!mine.size) return [];
+    const status = new Map(this.store.tasks(runId).map((r) => [r.id, r.status]));
+    return state.graph.tasks
+      .filter(
+        (t) =>
+          t.origin !== "planned" &&
+          ["pending", "running", "invalidated", "interrupted"].includes(
+            status.get(t.id) ?? "pending",
+          ) &&
+          t.findingIds.some((id) => {
+            const predecessor = rootTasks.find((p) => p.id === state.repairPredecessors[id]);
+            if (!predecessor || predecessor.id === task.id || !isTestTask(predecessor))
+              return false;
+            const tests = (state.repairScope[id] ?? []).filter(isTestPath);
+            return importedFiles(root, tests, sources, 1).some((path) => mine.has(path));
+          }),
+      )
+      .map((t) => t.id);
+  }
+  /**
    * Applies one task check result: a pass is gate evidence, a required failure blocks the task
    * and becomes a finding, and a required inconclusive result blocks the task and returns the
    * check's id: it stops the run unless another check failed (see `inconclusiveTaskCheck`).
@@ -7811,6 +7885,11 @@ ${note}`;
           state.repairPredecessors,
         ),
       );
+    // A test task whose failing tests reach a source a sibling's open corrective is already fixing
+    // waits for it: one defect failed two parallel test tasks and opened two correctives
+    // (url-shortener b69757cd T006 and T007, 634k tokens, #1285). Its check runs again afterwards.
+    if (!owners.length && checked.status === "failed" && checked.output)
+      owners.push(...this.sharedSourceCorrections(runId, state, task, check, checked.output));
     if (owners.length) {
       // contrastgrid d372ea22: main.tsx imported App.tsx of a task that had not run, and a repair
       // agent started for a failure the owner resolves. The check runs again when the owners are done.
@@ -11576,6 +11655,15 @@ export function narrowCorrectionWrites(
   return narrow.length && narrow.length < task.writes.length ? narrow : null;
 }
 
+/** What a correction's narrowed first attempt may write now, and what the next attempt adds. */
+function correctionScope(task: Task, narrow: Task["writes"]): Record<string, unknown> {
+  return {
+    writable: narrow.map((w) => w.path),
+    later: task.writes.filter((w) => !narrow.includes(w)).map((w) => w.path),
+    note: "This attempt may write only the writable files. If the fix needs a file in later, it is unresolved (unlike other files outside your write scope): report blocked and name that file in unresolved. The next attempt may write all of them.",
+  };
+}
+
 /** The writes with the given paths first, in their order, then the rest in plan order. */
 export function focusFirst<T extends { path: string }>(writes: readonly T[], first: string[]): T[] {
   const rank = (path: string): number => {
@@ -11747,6 +11835,8 @@ type WorkerOutcome =
       edits?: { before: Record<string, string>; changed: string[] };
       /** The worker's result when it changed nothing, for a deferral on a missing artifact. */
       blocked?: { outcome: string; summary: string; unresolved: string[] };
+      /** The attempt was a correction's narrowed first attempt: the next one may write its scope. */
+      narrowed?: true;
     }
   /** The task's worker reported that the spec and the tests cannot both hold. */
   | { kind: "conflict"; entry: BatchEntry; result: Implementation }
