@@ -7,7 +7,7 @@
 import { assessRequest, proposeWorkflow } from "../preset-router.js";
 import { executionModeOf, type RunPolicy } from "../schemas.js";
 import { asV2, listDefinitions, loadDefinition } from "../v2/definitions.js";
-import type { InitiativeFeature, InitiativePlan } from "./plan.js";
+import { type InitiativeFeature, type InitiativePlan, MIN_FEATURE_PATHS } from "./plan.js";
 
 /** What the initiative needs to know about a workflow to run a feature with it. */
 export interface FeatureWorkflow {
@@ -137,4 +137,44 @@ export function assignFeatureWorkflows(
     };
   });
   return { ...plan, features };
+}
+
+/** The light workflow a small leaf feature of a decomposer's split runs (#1352). */
+export const LIGHT_LEAF_WORKFLOW = "quick";
+
+/**
+ * The plan with small leaf features moved to the light workflow: a feature nothing depends on,
+ * with one or two boundary paths or size small, that runs a workflow writing a spec, runs
+ * `LIGHT_LEAF_WORKFLOW` when it can run here and the feature's text is not high risk. Its spec
+ * would be a contract nobody pins, and a spec workflow's fixed stages cost the most on the
+ * smallest features: seqmill's documentation leaf cost $1.42 under sdd against about $0.5 for a
+ * quick run (bench round 36). Features in `keep` are left as they are.
+ */
+export function lightenSmallLeaves(
+  plan: InitiativePlan,
+  choices: readonly FeatureWorkflow[],
+  keep: ReadonlySet<string> = new Set(),
+): { plan: InitiativePlan; lightened: { featureId: string; from: string; to: string }[] } {
+  const light = choices.find((c) => c.id === LIGHT_LEAF_WORKFLOW && !c.contract);
+  if (!light) return { plan, lightened: [] };
+  const lightened: { featureId: string; from: string; to: string }[] = [];
+  const features = plan.features.map((feature) => {
+    const from = feature.workflow;
+    const paths = feature.boundary.paths.length;
+    const small = feature.size === "small" || (paths > 0 && paths < MIN_FEATURE_PATHS);
+    if (
+      keep.has(feature.id) ||
+      !from ||
+      !small ||
+      hasDependents(plan, feature) ||
+      !choices.find((c) => c.id === from)?.contract
+    )
+      return feature;
+    const text = featureText(feature);
+    if (assessRequest(text, proposeWorkflow(text, [light.id], light.id)).risk === "high")
+      return feature;
+    lightened.push({ featureId: feature.id, from, to: light.id });
+    return { ...feature, workflow: light.id };
+  });
+  return lightened.length ? { plan: { ...plan, features }, lightened } : { plan, lightened };
 }

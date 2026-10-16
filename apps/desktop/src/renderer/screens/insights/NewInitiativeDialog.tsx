@@ -244,8 +244,8 @@ export function NewInitiativeDialog({
         </div>
         <span className={HINT}>
           {keepFeatures
-            ? "Every feature the split proposes runs on its own, however small."
-            : "Sibling features of one or two files with the same dependencies share one run, since each run pays its own research, spec, plan and review."}
+            ? "Every feature the split proposes runs on its own, with the workflow it was given."
+            : "Sibling features of one or two files with the same dependencies share one run, since each run pays its own research, spec, plan and review; a small feature nothing depends on runs quick."}
         </span>
       </div>
     </FormDialog>

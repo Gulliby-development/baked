@@ -701,6 +701,35 @@ describe("initiative runtime", () => {
     expect(kept.initiatives.store.eventsOfType("values", "split.merged")).toEqual([]);
   });
 
+  test("a small leaf feature of the decomposer runs the light workflow; keepFeatures keeps its spec workflow", async () => {
+    // Bench round 36, seqmill: the documentation leaf ran sdd for $1.42 against about $0.5 for a
+    // quick run; nothing pins a leaf's spec.
+    const three = (id: string) => [`${id}/a.py`, `${id}/b.py`, `${id}/c.py`];
+    const seqmill = plan([
+      { ...feature("core", [], three("core")), workflow: "sdd" },
+      { ...feature("engine", ["core"], three("engine")), workflow: "sdd" },
+      { ...feature("docs", ["core", "engine"], ["README.md", "docs/usage.md"]), workflow: "sdd" },
+      { ...feature("cli", ["engine"], three("cli")), workflow: "sdd", size: "medium" as const },
+    ]);
+    const t = setup(seqmill);
+    await t.start();
+    const view = await t.drive();
+    expect(view.status).toBe("awaiting_approval");
+    expect(view.features.map((f) => [f.id, f.workflowId])).toEqual([
+      ["core", "sdd"],
+      ["engine", "sdd"],
+      ["docs", "quick"],
+      ["cli", "sdd"],
+    ]);
+    expect(t.initiatives.store.eventsOfType("values", "split.lightened")).toEqual([
+      { planRevision: 1, lightened: [{ featureId: "docs", from: "sdd", to: "quick" }] },
+    ]);
+
+    const kept = setup(seqmill);
+    await kept.start({ keepFeatures: true });
+    expect(kept.featureOf(await kept.drive(), "docs").workflowId).toBe("sdd");
+  });
+
   test("small siblings merge only with the same dependencies, up to the path cap and the feature minimum", () => {
     const one = (id: string, deps: string[] = []) => feature(id, deps, [`${id}.go`]);
     // Different dependencies, a feature without paths and a three-path feature stay apart.

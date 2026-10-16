@@ -79,6 +79,7 @@ import {
   type FeatureWorkflow,
   featureWorkflow,
   featureWorkflowChoices,
+  lightenSmallLeaves,
   planWorkflowProblems,
 } from "./workflows.js";
 
@@ -957,15 +958,19 @@ export class InitiativeService {
    * The plan with a workflow and a size on every feature, refused when a workflow cannot run its
    * feature. A decomposer's split (`replaceInvalid`) has a workflow that cannot run replaced.
    */
+  private workflowChoices(settings: InitiativeSettings): FeatureWorkflow[] {
+    return featureWorkflowChoices(this.workflows.workspace, settings.basePolicy, {
+      tiered: settings.featureAutoApproval !== null,
+    });
+  }
+
   private fitWorkflows(
     plan: InitiativePlan,
     settings: InitiativeSettings,
     replaceInvalid: boolean,
     keep?: ReadonlySet<string>,
   ): InitiativePlan {
-    const choices = featureWorkflowChoices(this.workflows.workspace, settings.basePolicy, {
-      tiered: settings.featureAutoApproval !== null,
-    });
+    const choices = this.workflowChoices(settings);
     const fitted = assignFeatureWorkflows(plan, choices, settings.workflowId, {
       replaceInvalid,
       ...(keep ? { keep } : {}),
@@ -1045,8 +1050,15 @@ export class InitiativeService {
     const proposed = floored.plan;
     let plan = proposed;
     let unfit: string | null = null;
+    let lightened: { featureId: string; from: string; to: string }[] = [];
     try {
       plan = this.fitWorkflows(proposed, settings, true);
+      // A small feature nothing depends on runs the light workflow: nobody pins its spec.
+      if (!settings.keepFeatures) {
+        const light = lightenSmallLeaves(plan, this.workflowChoices(settings));
+        plan = light.plan;
+        lightened = light.lightened;
+      }
     } catch (error) {
       unfit = error instanceof Error ? error.message : String(error);
     }
@@ -1066,6 +1078,11 @@ export class InitiativeService {
         this.store.emit(id, "split.merged", {
           planRevision: this.store.get(id).plan_revision,
           merged: floored.merged,
+        });
+      if (lightened.length)
+        this.store.emit(id, "split.lightened", {
+          planRevision: this.store.get(id).plan_revision,
+          lightened,
         });
     });
   }
