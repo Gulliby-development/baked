@@ -135,6 +135,7 @@ import {
 } from "./analysis-notes.js";
 import { approvalDigest } from "./approval.js";
 import { writeViaTemp } from "./atomic-write.js";
+import { type CheckState, checkState, checksProgressed } from "./attempt-progress.js";
 import {
   APPROVAL_REVIEWER,
   evaluateAutoApproval,
@@ -2630,7 +2631,11 @@ export class WorkflowScheduler {
     fault: WorkflowFault,
     currentPaths: () => Promise<string[]>,
   ): Promise<Implementation> {
-    if (!this.capContinuable(runId, state, stepId, task) || !(await currentPaths()).length)
+    if (
+      (!this.capContinuable(runId, state, stepId, task) &&
+        !this.progressShown(runId, state, stepId, task)) ||
+      !(await currentPaths()).length
+    )
       throw fault;
     return {
       schemaVersion: 1,
@@ -2642,6 +2647,70 @@ export class WorkflowScheduler {
         "The attempt used its token cap before it submitted a result; the next attempt continues from its edits.",
       ],
     };
+  }
+  /**
+   * The last result of each check run in each step of a task, oldest step first, with the
+   * failure count and first failure of a failed one.
+   */
+  private taskCheckStates(runId: string, taskId: string): Map<string, Map<string, CheckState>> {
+    const byStep = new Map<string, Map<string, CheckState>>();
+    for (const row of this.store.taskCheckRuns(runId, taskId)) {
+      if (row.status !== "passed" && row.status !== "failed") continue;
+      let output = "";
+      try {
+        output = String(
+          (JSON.parse(this.store.readArtifact(runId, row.artifact_id)) as { output?: unknown })
+            .output ?? "",
+        );
+      } catch {}
+      const checks = byStep.get(row.step_id) ?? new Map<string, CheckState>();
+      checks.set(row.check_id, checkState(row.status, output));
+      byStep.set(row.step_id, checks);
+    }
+    return byStep;
+  }
+  /**
+   * The check states of a task's current attempt and of the latest earlier attempt that ran
+   * checks, when the task used its continuation and its restart, has no progress attempt yet, and
+   * its failing checks moved between the two (#1351). md-site 4b08acf6 (bench round 35): T006 used
+   * its continuation and its restart, then its third attempt ended at the cap after 6
+   * edit-then-check rounds and the run stopped `attempt_cap` with nothing for a person to decide.
+   */
+  private progressShown(
+    runId: string,
+    state: RuntimeState,
+    stepId: string,
+    task: Task,
+  ): { previous: Record<string, CheckState>; current: Record<string, CheckState> } | null {
+    if (
+      (state.taskContinuations[task.id] ?? 0) === 0 ||
+      (state.taskRestarts[task.id] ?? 0) === 0 ||
+      (state.taskProgressAttempts[task.id] ?? 0) > 0
+    )
+      return null;
+    // An attempt the progress watcher stopped was stuck, not short of room.
+    if (this.lastAttemptUsage(runId, stepId)?.finalizedBy === "watcher") return null;
+    const steps = this.taskCheckStates(runId, task.id);
+    const current = steps.get(stepId);
+    const earlier = [...steps].filter(([id]) => id !== stepId).at(-1)?.[1];
+    if (!current || !earlier || !checksProgressed(earlier, current)) return null;
+    return { previous: Object.fromEntries(earlier), current: Object.fromEntries(current) };
+  }
+  /** Grants the progress attempt `progressShown` allows, recording what moved. */
+  private progressAttempt(runId: string, state: RuntimeState, stepId: string, task: Task): boolean {
+    const shown = this.progressShown(runId, state, stepId, task);
+    if (!shown) return false;
+    this.store.transaction(() => {
+      state.taskProgressAttempts[task.id] = 1;
+      this.store.artifact(
+        runId,
+        "recovery",
+        `tasks/progress-attempts/${task.id}.json`,
+        canonical({ taskId: task.id, stepId, ...shown }),
+      );
+      this.store.saveState(runId, state);
+    });
+    return true;
   }
   /** The usage record of the latest attempt of a step, when the executor wrote one. */
   private lastAttemptUsage(runId: string, stepId: string): AttemptUsageRecord | undefined {
@@ -5143,7 +5212,10 @@ ${note}`;
           });
           return;
         }
-        const atCap = changed.length > 0 && this.continueAtCap(runId, state, child, task);
+        const atCap =
+          changed.length > 0 &&
+          (this.continueAtCap(runId, state, child, task) ||
+            this.progressAttempt(runId, state, child, task));
         if (
           atCap ||
           (changed.length > 0 &&
@@ -5899,7 +5971,10 @@ ${note}`;
                     outcome.restart.account,
                   )
                 ? "restart"
-                : null;
+                : outcome.edits !== undefined &&
+                    this.progressAttempt(runId, state, entry.child, entry.task)
+                  ? "continue_at_cap"
+                  : null;
       const again = cause !== null;
       if (again && outcome.edits) this.carryEdits(runId, state, entry, outcome.edits);
       if (!again) failure ??= outcome.error;
