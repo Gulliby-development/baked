@@ -175,6 +175,12 @@ export const CheckSchema = z
      * the exit code decides.
      */
     report: z.enum(["exit", "json"]).optional(),
+    /**
+     * What a timeout counts as when the output names no failed test. Absent means `inconclusive`;
+     * the host's check of the test files a task wrote uses `failed`, since those tests are the
+     * task's own work and a file that never finishes is its defect (#1308).
+     */
+    onTimeout: z.enum(["inconclusive", "failed"]).optional(),
   })
   .strict();
 
