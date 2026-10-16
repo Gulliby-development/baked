@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
-import { criterionCases, missingCases, testsHold } from "../src/core/verification/criteria-cases.js";
+import { criterionCases, isCheckCommand, missingCases, testsHold } from "../src/core/verification/criteria-cases.js";
 import type { Spec } from "../src/core/workflows/schemas.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
@@ -97,4 +97,76 @@ test("a task that writes tests gets the walk of its criteria's cases in its atte
   expect(found[1]).toEqual([
     'AC-001 names "--path SRC", and no test file this task writes (tests/test_cli.py) contains it.',
   ]);
+}, 60000);
+
+// Bench round 36, md-site 7b362eb4 (#1366): AC-009, the spec's repository-level criterion, quotes
+// `bun run typecheck`, `bun run lint` and `bun test`, and the plan gave it to all six code and test
+// tasks. The cases check refused the front matter property test T004 twice for not containing the
+// commands, and the run stopped `invalid_output` after 1.33M tokens. The host runs those commands
+// as checks; they are not cases a test file holds.
+describe("quoted commands and repository-level criteria (#1366)", () => {
+  const repositoryLevel = {
+    id: "AC-009",
+    requirementIds: ["FR-001"],
+    given: "The completed repository and existing scaffold",
+    when: "Repository structure, dependencies and execution-contract checks are executed",
+    then: "`bun run typecheck`, `bun run lint`, and `bun test` pass",
+    method: "automated" as const,
+  };
+
+  test("a quoted check command is not a case", () => {
+    const spec = { criteria: [repositoryLevel, criterion("AC-002", 'it prints "no matching files"')] };
+    const literals = criterionCases(spec, { criterionIds: ["AC-002", "AC-009"] }).map((c) => c.literal);
+    expect(literals).toEqual(["cochange --path src/cli", "cochange --path SRC", "no matching files"]);
+    expect(isCheckCommand("cargo test --all")).toBe(true);
+    expect(isCheckCommand("python -m pytest -q")).toBe(true);
+    // A command of the project that is not a usual check command is one when a policy check runs it.
+    expect(isCheckCommand("make verify")).toBe(false);
+    expect(isCheckCommand("make verify", [{ executable: "make", args: ["verify"] }])).toBe(true);
+    // The tool the project builds stays a case.
+    expect(isCheckCommand("cochange --path SRC")).toBe(false);
+    expect(isCheckCommand("bun run src/cli.ts --help")).toBe(false);
+  });
+
+  test("a criterion the plan gives to most tasks has no cases", () => {
+    const spec = { criteria: [{ ...repositoryLevel, then: 'the build prints "ready" and the help lists "--path"' }, criterion("AC-002", 'it prints "no matching files"')] };
+    const tasks = [{ criterionIds: ["AC-009"] }, { criterionIds: ["AC-009", "AC-002"] }, { criterionIds: ["AC-009"] }, { criterionIds: ["AC-003"] }];
+    expect(criterionCases(spec, { criterionIds: ["AC-002", "AC-009"] }, { tasks }).map((c) => c.criterionId)).toEqual(["AC-002", "AC-002", "AC-002"]);
+    // With the criterion on half of the tasks or fewer, its literals stay cases.
+    const fewer = [{ criterionIds: ["AC-009"] }, { criterionIds: ["AC-002"] }, { criterionIds: ["AC-003"] }];
+    expect(criterionCases(spec, { criterionIds: ["AC-009"] }, { tasks: fewer }).map((c) => c.literal)).toEqual(["ready", "--path"]);
+  });
+});
+
+test("md-site 7b362eb4: a test task whose criteria quote the check commands is not refused for them (#1366)", async () => {
+  const spec: Spec = {
+    ...fixtureSpec,
+    criteria: [{ ...fixtureSpec.criteria[0], then: 'value is ready; `bun run typecheck`, `bun run lint`, and `bun test` pass; `--path SRC` prints "no matching files"' } as Spec["criteria"][number]],
+  };
+  const fixture = workflowFixture();
+  cleanups.push(fixture.dispose);
+  const { executor, root } = fixture;
+  const original = executor.execute.bind(executor);
+  const found: string[][] = [];
+  executor.execute = async (request: ExecutionRequest) => {
+    if (request.profile.output === "spec") return { output: spec, inputTokens: 25, outputTokens: 25 };
+    const out = await original(request);
+    if (request.profile.output === "plan") {
+      const plan = out.output as { markdown: string; taskGraph: { specHash: string; planHash: string; tasks: { writes: { path: string; action: string }[] }[] } };
+      plan.taskGraph.specHash = hashJson(spec);
+      plan.taskGraph.planHash = hashBytes(plan.markdown);
+      plan.taskGraph.tasks[0]?.writes.push({ path: "tests/frontmatter.property.test.ts", action: "create" });
+    }
+    if (request.profile.output === "implementation") {
+      mkdirSync(join(root, "tests"), { recursive: true });
+      writeFileSync(join(root, "tests/frontmatter.property.test.ts"), 'expect(run(["--path", "SRC"]).out).toBe("no matching files");\n');
+      found.push((await request.caseCheck?.(root)) ?? ["no case check"]);
+    }
+    return out;
+  };
+  const run = await fixture.start();
+  await fixture.service.drive(run.runId, new AbortController().signal);
+  await fixture.approve(run.runId);
+  await fixture.service.drive(run.runId, new AbortController().signal);
+  expect(found[0]).toEqual([]);
 }, 60000);

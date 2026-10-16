@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isTestCodePath } from "../workflows/quality/duplication.js";
 import type { Spec } from "../workflows/schemas.js";
-import type { Task } from "../workflows/types.js";
+import type { Check, Task } from "../workflows/types.js";
 
 /**
  * The cases the criteria spell out, walked against the test files a task wrote (#1250). Bench
@@ -23,21 +23,58 @@ const QUOTED = /"([^"\n]+)"|`([^`\n]+)`|\u201c([^\u201d\n]+)\u201d/g;
 /** A placeholder the test fills with a concrete value: `<file>`, `{name}`, `...`. */
 const PLACEHOLDER = /<[^<>\s][^<>]*>|\{[^{}]+\}|\.\.\.|\u2026/g;
 
-/** The quoted literals of the automated criteria a task covers, each once. */
+/**
+ * A quoted command of the project's own checks: the test, type check, lint, build or format
+ * commands of the usual runners. The host runs those as checks; a test file does not contain them.
+ */
+const CHECK_COMMAND =
+  /^(?:(?:bun|npm|pnpm|yarn|npx|bunx)\s+(?:run\s+)?(?:test|typecheck|type-check|lint|build|check|format|fmt)\b|(?:cargo|go|dotnet)\s+(?:test|build|vet|clippy|fmt|check)\b|(?:python3?\s+-m\s+)?(?:pytest|mypy|ruff|tsc|eslint|biome|golangci-lint)\b|(?:mvn|gradle|\.\/gradlew|\.\/mvnw)\b.*\b(?:test|verify|check|build)\b)/;
+
+/** What else decides which quoted literals are cases (#1366). */
+export interface CaseContext {
+  /** The run's checks: a literal that is one of their commands is checked by the host. */
+  checks?: readonly Pick<Check, "executable" | "args">[];
+  /** The plan's tasks: a criterion most of them carry is about the whole repository. */
+  tasks?: readonly Pick<Task, "criterionIds">[];
+}
+
+/** Whether a quoted literal is a command of the project's checks rather than a case. */
+export function isCheckCommand(literal: string, checks: CaseContext["checks"] = []): boolean {
+  const spelled = literal.trim().replace(/\s+/g, " ");
+  return (
+    CHECK_COMMAND.test(spelled) ||
+    checks.some((check) => [check.executable, ...check.args].join(" ") === spelled)
+  );
+}
+
+/**
+ * The quoted literals of the automated criteria a task covers, each once. A command of the
+ * project's checks is not a case, and neither is a literal of a criterion the plan gives to more
+ * than half of its tasks (with three or more): md-site 7b362eb4 (bench round 36) refused a front
+ * matter property test twice for not containing `bun run typecheck` and `bun run lint`, quoted by
+ * a repository-level criterion the plan gave to all six code and test tasks, and the run stopped
+ * `invalid_output` after 1.33M tokens (#1366).
+ */
 export function criterionCases(
   spec: Pick<Spec, "criteria">,
   task: Pick<Task, "criterionIds">,
+  context: CaseContext = {},
 ): CriterionCase[] {
   const cases: CriterionCase[] = [];
   const seen = new Set<string>();
+  const tasks = context.tasks ?? [];
+  const broad = (id: string): boolean =>
+    tasks.length >= 3 && tasks.filter((t) => t.criterionIds.includes(id)).length * 2 > tasks.length;
   for (const criterion of spec.criteria) {
     if (!task.criterionIds.includes(criterion.id) || criterion.method !== "automated") continue;
+    if (broad(criterion.id)) continue;
     for (const text of [criterion.given, criterion.when, criterion.then])
       for (const match of text.matchAll(QUOTED)) {
         const literal = (match[1] ?? match[2] ?? match[3] ?? "").trim();
         // One character says too little to look for, and a span that is all placeholder nothing.
         if (literal.replace(PLACEHOLDER, "").replace(/\W/g, "").length < 2 || seen.has(literal))
           continue;
+        if (isCheckCommand(literal, context.checks)) continue;
         seen.add(literal);
         cases.push({ criterionId: criterion.id, literal });
       }
@@ -79,9 +116,10 @@ export const writtenTestPaths = (task: Pick<Task, "writes">): string[] =>
 export function caseCheck(
   spec: Pick<Spec, "criteria"> | null | undefined,
   task: Pick<Task, "criterionIds" | "writes">,
+  context: CaseContext = {},
 ): ((root: string) => Promise<string[]>) | undefined {
   const paths = writtenTestPaths(task);
-  const cases = spec ? criterionCases(spec, task) : [];
+  const cases = spec ? criterionCases(spec, task, context) : [];
   if (!paths.length || !cases.length) return undefined;
   return async (root) => {
     const texts = (
