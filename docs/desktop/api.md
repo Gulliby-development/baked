@@ -14,7 +14,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 ## Conventions
 
 - JSON bodies, `Content-Type: application/json`, at most 1 MiB (20 MiB for `POST /v1/sessions` and `POST /v1/sessions/ID/messages`, which carry [images](#images)). Methods: `GET`, `POST`, `PATCH`, `DELETE`.
-- Errors: `{"error":{"code":"...","message":"..."}}` with the HTTP status. Codes in use: `INVALID_REQUEST` 400, `UNAUTHORIZED` 401, `CAPABILITY_DENIED`/`ORIGIN_REJECTED` 403, `NOT_FOUND` 404, `METHOD_NOT_ALLOWED` 405, `REVISION_CONFLICT`/`COMMAND_CONFLICT`/`STALE_DECISION`/`WORKSPACE_BUSY`/`NOT_A_REPOSITORY`/`INPUT_CHANGED`/`RUN_TERMINAL`/`SESSION_BUSY`/`STALE_PROMPT` 409, `PAYLOAD_TOO_LARGE` 413, `UNSUPPORTED_MEDIA_TYPE` 415, `HOST_REJECTED` 421, `INTERNAL` 500, `SHUTTING_DOWN` 503. Messages have secrets redacted.
+- Errors: `{"error":{"code":"...","message":"..."}}` with the HTTP status. Codes in use: `INVALID_REQUEST` 400, `UNAUTHORIZED` 401, `CAPABILITY_DENIED`/`ORIGIN_REJECTED` 403, `NOT_FOUND` 404, `METHOD_NOT_ALLOWED` 405, `REVISION_CONFLICT`/`COMMAND_CONFLICT`/`STALE_DECISION`/`WORKSPACE_BUSY`/`NOT_A_REPOSITORY`/`INPUT_CHANGED`/`RUN_TERMINAL`/`SESSION_BUSY`/`STALE_PROMPT` 409, `PAYLOAD_TOO_LARGE` 413, `UNSUPPORTED_MEDIA_TYPE` 415, `HOST_REJECTED` 421, `INTERNAL` 500, `SHUTTING_DOWN` 503. Messages have secrets redacted. A workflow refusal that has a cause carries it as `error.reason`, such as `git_required` when a worktree run or an initiative with worktree features starts in a folder without Git or without a commit; the desktop then offers Initialize Git (`POST /v1/git/actions` `{action: "init"}`) and starts again.
 - Workflow and initiative mutations carry `commandId` (client-chosen, safe id) and `expectedRevision`; a retry with the same `commandId` returns the first result.
 - Streams are Server-Sent Events. Each event has `id:` (a sequence number), the client resumes with `Last-Event-ID` or `?after=`, and the server sends `: keep-alive` comments every 15 s. A client that asks only for `application/json` gets a JSON page instead of a stream where noted.
 - Timestamps are milliseconds since the epoch.
@@ -587,12 +587,13 @@ The terminal Git menu (`Ctrl+G`, `/git`) for the project folder, with the `git` 
 
 | Method and path | Body or query | Result |
 | --- | --- | --- |
-| `GET /v1/git` | | `GitOverview`; `{isRepo: false, ...}` with empty lists outside a repository |
+| `GET /v1/git` | | `GitOverview`; `{isRepo: false, setup: "missing", ...}` with empty lists outside a repository |
 | `GET /v1/git/graph` | `limit?` (1 to 1000, default 150) | `GitGraph`: the local branches and the `limit` latest commits of all of them, laid out in lanes (src/core/git/graph-layout.ts); `{isRepo: false, ...}` with empty lists outside a repository |
-| `POST /v1/git/actions` | one of the actions below | `{ok, message, output, overview: GitOverview}`. A step Git refuses (no upstream, merge conflict, nothing to commit) answers 200 with `ok: false` and Git's reason in `message`. 400 for an unknown action or field and for a destructive action without `confirm: true`; 409 `NOT_A_REPOSITORY` outside a repository and `WORKSPACE_BUSY` while a workflow run holds the workspace. Actions of one server run one at a time |
+| `POST /v1/git/actions` | one of the actions below | `{ok, message, output, overview: GitOverview}`. A step Git refuses (no upstream, merge conflict, nothing to commit) answers 200 with `ok: false` and Git's reason in `message`. 400 for an unknown action or field and for a destructive action without `confirm: true`; 409 `NOT_A_REPOSITORY` outside a repository for every action but `init`, and `WORKSPACE_BUSY` while a workflow run holds the workspace. Actions of one server run one at a time |
 
 | Action | Body | Git |
 | --- | --- | --- |
+| Initialize | `{action: "init"}` | For a folder whose `setup` is `missing` or `no-commit`: `git init` (when there is no repository), a `.gitignore` for dependencies, build output and secrets when the folder has none, `.baked/` in `.git/info/exclude`, then a baseline commit of every file Git does not ignore, without hooks or signing and with the identity `BAKED <noreply@baked.invalid>` when none is configured. Files that look like credentials and files over 50 MB stay out of it and are added to `.git/info/exclude`. `message` names the commit and what was left out. A folder that is `ready` or `nested` answers `ok: false` with the reason |
 | Commit | `{action: "commit", message, stageAll?}` | With `stageAll`, or when nothing is staged, stages every modified and untracked file first, then `git commit -m`. The co-author trailer follows `coAuthorCommits` (on by default). `message` is at most 10,000 characters |
 | Push, pull | `{action: "push"}`, `{action: "pull"}` | `git push`, `git pull` with Git's own defaults; 30 s limit |
 | Stash | `{action: "stash", message?}`, `{action: "stash-pop"}` | `git stash push [-m message]` (at most 200 characters, on one line), `git stash pop` |
@@ -609,6 +610,7 @@ interface GitOverview {
   stashes: string[];    // `git stash list` lines, newest first
   log: { hash: string; subject: string; date: string }[]; // the 20 latest commits, relative dates
   busy: boolean;        // a workflow run holds the workspace; actions answer WORKSPACE_BUSY
+  setup: "ready" | "missing" | "no-commit" | "nested"; // what worktree runs need: a repository at this folder with a commit
 }
 ```
 

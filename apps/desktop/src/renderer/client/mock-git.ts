@@ -26,6 +26,7 @@ function repo(branch: string, extra: Partial<GitOverview> = {}): GitOverview {
       { hash: "17ac5e2", subject: "Recover interrupted runs", date: "1 day ago" },
     ],
     busy: false,
+    setup: "ready",
     ...extra,
   };
 }
@@ -49,6 +50,17 @@ let stashCount = 0;
 
 function apply(state: GitOverview, request: GitAction): { ok: boolean; message: string } {
   switch (request.action) {
+    case "init":
+      if (state.isRepo && state.setup !== "no-commit")
+        return { ok: false, message: "The project folder already has Git with a commit." };
+      Object.assign(state, repo("main", { upstream: null, setup: "ready" }));
+      state.log = [
+        { hash: "a1b2c3d", subject: "Baseline before BAKED worktree runs", date: "just now" },
+      ];
+      return {
+        ok: true,
+        message: "Initialized Git with 12 files (a1b2c3d) and wrote a .gitignore.",
+      };
     case "commit": {
       const message = request.message.trim();
       if (!message) return { ok: false, message: "Commit message cannot be empty" };

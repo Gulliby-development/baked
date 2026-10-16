@@ -1466,6 +1466,18 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/git"],
   },
   {
+    id: "git-init",
+    group: "Projects and setup",
+    title: "Initialize Git with a .gitignore and a baseline commit, so runs can use worktrees",
+    tui: ["/git init"],
+    cli: ["baked workflow git-init"],
+    api: ["/v1/git/actions: action init"],
+    desktop: [
+      "project/git: Initialize Git",
+      "project/runs: start dialog asks when a run needs Git",
+    ],
+  },
+  {
     id: "storage-logs",
     group: "Projects and setup",
     title: "Storage cleanup, model events and the error log",

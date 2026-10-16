@@ -10,6 +10,8 @@ export class ApiError extends Error {
     message: string,
     /** Every problem of a refused change, when the answer lists them (`ROUTING_REFUSED`). */
     readonly problems: string[] = [],
+    /** A workflow refusal's cause, such as `git_required`. */
+    readonly reason: string | null = null,
   ) {
     super(message);
   }
@@ -27,6 +29,7 @@ function unwrap<T>(response: ApiResponse<unknown>): T {
     error?.code ?? "HTTP_ERROR",
     error?.message ?? `Request failed with ${response.status}`,
     problems,
+    typeof error?.reason === "string" ? error.reason : null,
   );
 }
 

@@ -451,7 +451,7 @@ const COMMAND_DEFS: CommandDef[] = [
   {
     cmd: "/git init",
     ic: "git",
-    desc: "Initialize git repo",
+    desc: "Initialize Git with a .gitignore and a baseline commit",
     category: "Git",
     tags: ["create"],
   },

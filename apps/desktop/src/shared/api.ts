@@ -131,7 +131,8 @@ export interface Health {
 }
 
 export interface ApiErrorBody {
-  error: { code: string; message: string };
+  /** `reason` is a workflow refusal's cause, such as `git_required`; absent on older backends. */
+  error: { code: string; message: string; reason?: string };
 }
 
 export interface ApiResponse<T = unknown> {

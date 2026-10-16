@@ -49,6 +49,7 @@ const commands = [
   "follow",
   "discard-worktree",
   "worktrees",
+  "git-init",
   "route",
   "models",
   "doctor",
@@ -251,6 +252,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   ],
   "discard-worktree": ["expected-revision", "command-id"],
   worktrees: ["clean", "dry-run"],
+  "git-init": [],
   route: ["workflow", "model", "route", "json"],
   models: ["model", "provider", "json"],
   doctor: preRunFlags,
@@ -378,9 +380,16 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     result.command !== "propose"
   ) {
     const count =
-      ["list", "profiles", "models", "import", "gc", "definitions", "worktrees"].includes(
-        result.command,
-      ) ||
+      [
+        "list",
+        "profiles",
+        "models",
+        "import",
+        "gc",
+        "definitions",
+        "worktrees",
+        "git-init",
+      ].includes(result.command) ||
       (result.command === "validate" && result.flags.file)
         ? 0
         : result.command === "compare"
@@ -755,6 +764,9 @@ discard-worktree RUN_ID --expected-revision N
 worktrees [--clean [--dry-run]]
   Run and task worktrees under .baked/worktrees, largest first, with size and run status.
   --clean removes those of completed, failed, cancelled and unknown runs (branches stay).
+git-init
+  Initialize Git in a project folder without it, so runs can use --worktree: git init, a
+  .gitignore when there is none, and a baseline commit without credentials and files over 50 MB.
 initiative <command> ...   split a large request into 3..12 features run in dependency order
   start, show, list, events, merge, split, remove, rename, approve, reject, drive, resume, pause,
   replan, extend, reroute; see baked workflow initiative --help

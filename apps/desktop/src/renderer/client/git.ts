@@ -31,9 +31,21 @@ export interface GitOverview {
   log: GitLogEntry[];
   /** A workflow run holds the workspace; actions are refused until it finishes. */
   busy: boolean;
+  /**
+   * Whether worktree runs can use the folder: `ready`, `missing` (no Git), `no-commit`, or
+   * `nested` (inside another repository). Absent on older backends.
+   */
+  setup?: GitSetup;
 }
 
+export type GitSetup = "ready" | "missing" | "no-commit" | "nested";
+
+/** Initialize Git can bring the folder to `ready`. */
+export const canInitGit = (view: Pick<GitOverview, "isRepo" | "setup">): boolean =>
+  view.setup === "missing" || view.setup === "no-commit" || (!view.setup && !view.isRepo);
+
 export type GitAction =
+  | { action: "init" }
   | { action: "commit"; message: string; stageAll?: boolean }
   | { action: "push" | "pull" | "stash-pop" }
   | { action: "stash"; message?: string }

@@ -78,7 +78,7 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | `/git commit` | Git commit with message |
 | `/git diff` | View changes |
 | `/git graph` | Show the commit graph of all branches |
-| `/git init` | Initialize git repo |
+| `/git init` | Initialize Git with a .gitignore and a baseline commit |
 | `/git log` | Show recent commits |
 | `/git pull` | Pull from remote |
 | `/git push` | Push to remote |

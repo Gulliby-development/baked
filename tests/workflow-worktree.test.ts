@@ -22,6 +22,7 @@ import { runReport } from "../src/core/workflows/run-report.js";
 import { worktreeView } from "../src/core/workflows/worktree.js";
 import { parseWorkflowArgs } from "../src/headless/workflow-parse.js";
 import { FixtureExecutor, fixturePolicy } from "./helpers/workflow-fixture.js";
+import { initWorkspaceGit } from "../src/core/git/init.js";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -261,7 +262,19 @@ describe("workflow worktree execution", () => {
     const fault = await refusal(fx.start("worktree"));
     expect(fault.code).toBe("INVALID_DEFINITION");
     expect(fault.details.reason).toBe("git_required");
+    expect(fault.details.gitInit).toBe(true);
     expect(existsSync(join(fx.root, ".baked", "worktrees"))).toBe(false);
+  });
+
+  test("after Git is initialized the same worktree run starts (#1345)", async () => {
+    const fx = setup({ git: false });
+    await refusal(fx.start("worktree"));
+    const init = await initWorkspaceGit(fx.root);
+    expect(init.initialized).toBe(true);
+    const run = await fx.start("worktree");
+    const done = await fx.complete(run.runId);
+    expect(done.status).toBe("completed");
+    expect(fx.service.store.state(run.runId).worktree?.baseHead).toBe(init.commit);
   });
 
   test("approved files with uncommitted user changes need an explicit choice", async () => {
