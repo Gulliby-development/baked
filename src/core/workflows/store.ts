@@ -920,6 +920,21 @@ export class WorkflowStore {
         .get(id)?.n ?? 0
     );
   }
+  /**
+   * Attempts that ended with their edits kept for the next attempt of the same task: the task's
+   * interruptions with cause `continue_at_cap`, counted from events (#1383).
+   */
+  continuedAttempts(id: string): number {
+    return (
+      this.db
+        .query<{ n: number }, [string]>(
+          `SELECT COUNT(*) AS n FROM events WHERE run_id=? AND type='task.state_changed'
+           AND json_extract(payload_json,'$.to')='interrupted'
+           AND json_extract(payload_json,'$.cause')='continue_at_cap'`,
+        )
+        .get(id)?.n ?? 0
+    );
+  }
   artifacts(id: string): ArtifactRow[] {
     return this.db
       .query<ArtifactRow, [string]>("SELECT * FROM artifacts WHERE run_id=? ORDER BY created_at,id")
