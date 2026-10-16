@@ -323,6 +323,43 @@ describe("scenario: a corrective admitted on its cap and finalized by the run bu
   });
 });
 
+// Bench round 32, notesift cli T004 (#1300): one attempt of 26 steps spent 2.27M tokens, almost
+// all cache reads, so its cap (which leaves them out) never bound and only the step limit ended it.
+describe("scenario: an attempt whose cached context keeps growing (#1300)", () => {
+  const result = { schemaVersion: 1, summary: "Fixture researched", facts: [], unknowns: [], constraints: [], suggestedScope: [] };
+  /** Probes until the attempt is restricted to its submit tool, then submits. */
+  function loopingModel(): { steps: () => number } {
+    const provider = getProvider("openai");
+    if (!provider) throw new Error("openai provider missing");
+    const original = provider.createModel;
+    let count = 0;
+    const model = new MockLanguageModelV3({
+      doGenerate: async (options) => {
+        count++;
+        const submitOnly = options.toolChoice?.type === "required" && options.tools?.every((t) => t.name === "submit_result");
+        // Each step replays a 100k context, 97k of it from the cache: 3,500 tokens against the cap.
+        return cachedStep(100_000, 97_000, 500, submitOnly ? { name: "submit_result", input: result } : { name: "unknown_tool", input: { step: count } });
+      },
+    });
+    provider.createModel = () => model as LanguageModelV3;
+    cleanups.push(() => {
+      provider.createModel = original;
+    });
+    return { steps: () => count };
+  }
+
+  test("finalizes on its tokens, cache reads included, long before the step limit", async () => {
+    const model = loopingModel();
+    const { executor, request, usageRecord } = await nativeAttempt({ ...fixturePolicy, maxTotalTokens: 10_000_000 });
+    await expect(executor.execute({ ...request, maxSteps: 40, attemptTokens: 100_000 })).resolves.toMatchObject({ output: result });
+    const usage = usageRecord();
+    // The cap counts 3,500 a step, so only the all-token cap (10 steps of 100k here) can bind.
+    expect(usage).toMatchObject({ stopReason: "submitted", finalizedBy: "tokens", maxTokens: 100_000 });
+    expect(usage?.totalTokens).toBeLessThanOrEqual(1_100_000);
+    expect(model.steps()).toBeLessThan(12);
+  });
+});
+
 describe("attempts whose provider reports no tokens", () => {
   const result = {
     schemaVersion: 1,
