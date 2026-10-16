@@ -12,6 +12,11 @@ export interface StallSettings {
   commandToolMs: number;
   /** A model attempt with no journaled progress for this long is aborted and the step restarts. */
   stepStallMs: number;
+  /**
+   * Lowers the stall limit of a run's model calls to what its own healthy calls justify
+   * (`silenceLimitMs`); `stepStallMs` stays the upper bound. False keeps the fixed limit.
+   */
+  adaptiveSilence: boolean;
   /** Tool calls of one attempt that may hit their deadline before the attempt itself is aborted. */
   maxToolTimeouts: number;
   /** Times a run that stopped on a stall resumes by itself; 0 turns the automatic resume off. */
@@ -31,6 +36,7 @@ export const DEFAULT_STALL_SETTINGS: StallSettings = {
   // A review step took 569 s with no tool call in the middle of one model call; twice that is
   // far beyond any healthy silence.
   stepStallMs: 20 * 60_000,
+  adaptiveSilence: true,
   maxToolTimeouts: 3,
   autoResumes: 3,
   // 1, 3 and 9 minutes: long enough for a dropped connection or a capacity spike to pass.
@@ -149,4 +155,34 @@ export function silentMs(runId: string, now = Date.now()): number {
 }
 export function forgetProgress(runId: string): void {
   progress.delete(runId);
+  silences.delete(runId);
+}
+
+/**
+ * The adaptive silence limit: a model call's silence is compared with the run's own healthy
+ * calls, not only with the fixed `stepStallMs`. A Codex call stayed silent for 17 minutes after
+ * the app replaced its binary while the run's longest healthy silence was 143 s (sketchfold,
+ * #1342). The limit is SILENCE_FACTOR times the longest silence a finished call of the run had,
+ * at least SILENCE_FLOOR_MS (above the longest healthy silence measured anywhere, a 569 s review;
+ * half of a `stepStallMs` set lower) and at most `stepStallMs`; until the run has SILENCE_SAMPLES
+ * calls, it is `stepStallMs`.
+ */
+export const SILENCE_FLOOR_MS = 10 * 60_000;
+export const SILENCE_FACTOR = 4;
+export const SILENCE_SAMPLES = 5;
+const silences = new Map<string, { longest: number; count: number }>();
+/** Records the silence of a model call of the run that ended with a step or a tool call. */
+export function recordModelSilence(runId: string, ms: number): void {
+  const value = silences.get(runId) ?? { longest: 0, count: 0 };
+  value.longest = Math.max(value.longest, ms);
+  value.count++;
+  silences.set(runId, value);
+}
+/** How long a model call of the run may stay silent before its attempt is aborted. */
+export function silenceLimitMs(settings: StallSettings, runId: string): number {
+  const seen = silences.get(runId);
+  if (!settings.adaptiveSilence || !seen || seen.count < SILENCE_SAMPLES)
+    return settings.stepStallMs;
+  const floor = Math.min(SILENCE_FLOOR_MS, settings.stepStallMs / 2);
+  return Math.min(settings.stepStallMs, Math.max(floor, SILENCE_FACTOR * seen.longest));
 }

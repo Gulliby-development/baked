@@ -102,7 +102,14 @@ import {
   SpecSchema,
 } from "./schemas.js";
 import { indexTools, markStaleIndexResult, writtenInRoot } from "./stale-index.js";
-import { type StallSettings, stalledFault, stallSettings, touchProgress } from "./stall.js";
+import {
+  recordModelSilence,
+  type StallSettings,
+  silenceLimitMs,
+  stalledFault,
+  stallSettings,
+  touchProgress,
+} from "./stall.js";
 import {
   AttemptStepController,
   type AttemptUsageRecord,
@@ -241,6 +248,8 @@ interface AttemptWatch {
   lastTool: string | null;
   tools: number;
   deadlines: number;
+  /** When the model call of the current step started, until it asks for a tool or ends. */
+  calledAt: number | null;
   abort(error: Error): void;
 }
 
@@ -303,14 +312,16 @@ export class NativeAgentExecutor implements AgentExecutor {
       lastTool: null,
       tools: 0,
       deadlines: 0,
+      calledAt: null,
       abort: (error) => stall.abort(error),
     };
     const interval = setInterval(
       () => {
-        if (watch.tools > 0 || Date.now() - watch.lastAt < settings.stepStallMs) return;
+        const limit = silenceLimitMs(settings, request.runId);
+        if (watch.tools > 0 || Date.now() - watch.lastAt < limit) return;
         stall.abort(
           stalledFault(
-            `Attempt ${request.attemptId} of ${request.profile.id} made no progress for ${Math.round((Date.now() - watch.lastAt) / 60_000)} min (last tool: ${watch.lastTool ?? "none"})`,
+            `Attempt ${request.attemptId} of ${request.profile.id} made no progress for ${Math.round((Date.now() - watch.lastAt) / 60_000)} min (last tool: ${watch.lastTool ?? "none"}; limit ${Math.round(limit / 60_000)} min${limit < settings.stepStallMs ? ", from the run's own model calls" : ""})`,
           ),
         );
       },
@@ -478,6 +489,11 @@ export class NativeAgentExecutor implements AgentExecutor {
       const backends = new Map<string, ToolBackendCount>();
       // A tool call is progress while it runs (it has its own deadline); the last one names a stall.
       const track = async <T>(name: string, call: () => Promise<T>): Promise<T> => {
+        // The model call of this step was silent until it asked for its first tool.
+        if (watch.calledAt !== null) {
+          recordModelSilence(request.runId, Date.now() - watch.calledAt);
+          watch.calledAt = null;
+        }
         watch.tools++;
         watch.lastTool = name;
         watch.lastAt = Date.now();
@@ -1184,6 +1200,10 @@ export class NativeAgentExecutor implements AgentExecutor {
           providerOptions: withAutomaticCache(provider.providerOptions, cacheTtl),
           headers: provider.headers,
           onStepEnd: (step) => {
+            if (watch.calledAt !== null) {
+              recordModelSilence(request.runId, Date.now() - watch.calledAt);
+              watch.calledAt = null;
+            }
             watch.lastAt = Date.now();
             touchProgress(request.runId);
             finished.push(step);
@@ -1196,6 +1216,7 @@ export class NativeAgentExecutor implements AgentExecutor {
           },
           prepareStep: ({ stepNumber, steps: done, ...history }) => {
             watch.lastAt = Date.now();
+            watch.calledAt = Date.now();
             request.signal.throwIfAborted();
             // Compaction and the finalize notice are recomputed from the clean history each step.
             const messages = cleanStepMessages(history);

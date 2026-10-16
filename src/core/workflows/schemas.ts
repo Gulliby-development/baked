@@ -1107,6 +1107,7 @@ export const WorkflowConfigSchema = z
         toolTimeoutMs: z.number().int().min(1000).max(3_600_000).optional(),
         commandToolMs: z.number().int().min(1000).max(14_400_000).optional(),
         stepStallMs: z.number().int().min(10_000).max(14_400_000).optional(),
+        adaptiveSilence: z.boolean().optional(),
         maxToolTimeouts: z.number().int().min(1).max(50).optional(),
         autoResumes: z.number().int().min(0).max(20).optional(),
         providerResumes: z.number().int().min(0).max(20).optional(),
