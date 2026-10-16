@@ -58,6 +58,15 @@ export function capTokens(usage: StepUsageLike, fallback: number): number {
   return Math.max(0, usage.inputTokens - cacheRead) + (usage.outputTokens ?? 0);
 }
 
+/**
+ * The attempt's spend on all tokens, cache reads included, is capped at this many times its cap.
+ * The cap leaves cache reads out (#1070), so an attempt that loops read, edit and check cycles on a
+ * growing context never reached it and ran to its step limit: notesift T004 spent 2.27M tokens in
+ * one attempt, 90 percent of them cache reads, and jsonshape-update T004 2.09M on a 600k cap
+ * (#1300). Finalizing there hands the task to a continuation that starts from a fresh context.
+ */
+export const ALL_TOKENS_FACTOR = 3;
+
 /** `watcher`: the progress watcher ended a stuck attempt early (`progress-watch.ts`). */
 export type FinalizeReason = "steps" | "tokens" | "watcher";
 /** Steps after a steering message before the same stuck pattern ends the attempt. */
@@ -403,13 +412,39 @@ export class AttemptStepController {
       0,
     );
   }
-  /** Whether the steps used the cap, or all the tokens the ceiling allows. */
+  /**
+   * The cap on all tokens, cache reads included: `ALL_TOKENS_FACTOR` times the token cap, and never
+   * below the step floor (`minSteps` steps at the attempt's average step, all tokens counted).
+   */
+  allTokensCap(steps: ReadonlyArray<{ usage: StepUsageLike }>): number {
+    const { minSteps } = this.options;
+    const floor =
+      minSteps && steps.length ? Math.ceil((this.consumed(steps) / steps.length) * minSteps) : 0;
+    return Math.max(ALL_TOKENS_FACTOR * this.tokenCap(steps), floor);
+  }
+  /** Whether the steps used the cap, the all-token cap, or all the tokens the ceiling allows. */
   private atCap(steps: ReadonlyArray<{ usage: StepUsageLike }>): boolean {
     const ceiling = this.ceiling;
+    const consumed = this.consumed(steps);
     return (
       this.capped(steps) >= this.tokenCap(steps) ||
-      (ceiling !== undefined && this.consumed(steps) >= ceiling)
+      consumed >= this.allTokensCap(steps) ||
+      (ceiling !== undefined && consumed >= ceiling)
     );
+  }
+  /** Whether the next step would pass the all-token cap; the step limit is decided before it. */
+  private allTokensReason(
+    stepNumber: number,
+    steps: ReadonlyArray<{ usage: StepUsageLike }>,
+  ): FinalizeReason | null {
+    const last = steps[steps.length - 1];
+    return finalizeReason({
+      stepNumber,
+      maxSteps: Number.POSITIVE_INFINITY,
+      consumed: this.consumed(steps),
+      lastStepTokens: last ? stepTokens(last.usage, this.options.fallbackStepTokens) : 0,
+      maxTokens: this.allTokensCap(steps),
+    });
   }
   /**
    * Tokens the attempt holds once the next step runs: its spend so far plus an estimate of that
@@ -491,7 +526,9 @@ export class AttemptStepController {
         consumed: this.capped(input.steps),
         lastStepTokens: last ? capTokens(last.usage, fallback) : 0,
         maxTokens: this.tokenCap(input.steps),
-      }) ?? this.ceilingReason(input.stepNumber, input.steps);
+      }) ??
+      this.allTokensReason(input.stepNumber, input.steps) ??
+      this.ceilingReason(input.stepNumber, input.steps);
     const watch = this.options.watch;
     let steer: WatchFinding | null = null;
     // One steering message per attempt; the stop follows only when the steered pattern goes on.
