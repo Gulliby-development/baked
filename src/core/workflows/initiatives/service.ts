@@ -58,6 +58,7 @@ import {
   InitiativeId,
   type InitiativePlan,
   InitiativePlanSchema,
+  literalPathCount,
   mergeSmallSiblings,
   planSizeProblem,
   type SplitEdit,
@@ -1356,7 +1357,7 @@ export class InitiativeService {
         workflowId,
         size: feature.size ?? "medium",
         stages: (facts(workflowId)?.stages ?? []).map((stage) => ({ ...stage, models })),
-        paths: feature.boundary.paths.length,
+        paths: literalPathCount(feature),
       };
     });
     const history = estimateHistory(
@@ -1969,7 +1970,7 @@ function featureRunSamples(
           tokens: run.tokens,
           taskCount: run.taskCount,
           criteria: runStore.state(run.runId).spec?.criteria.length,
-          paths: feature.boundary.paths.length,
+          paths: literalPathCount(feature),
           ...(source === "shared" ? { source } : {}),
         },
       ];
