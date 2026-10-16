@@ -54,12 +54,14 @@ export async function pullRequestChecks(
       `Run ${runId} has no pushed delivery to follow. Deliver it first with \`baked workflow deliver ${runId}\`.`,
     );
   const { result } = delivered;
-  const repository = provider?.repository(result.remote.url) ?? null;
+  // A pushed delivery always has a remote; a local one is never returned here.
+  const url = result.remote?.url ?? "";
+  const repository = url ? (provider?.repository(url) ?? null) : null;
   if (!provider?.checks || !repository)
     throw refuse(
       "CAPABILITY_DENIED",
       "unsupported_remote",
-      `The checks of ${result.remote.url} cannot be read; following needs a GitHub remote.`,
+      `The checks of ${url} cannot be read; following needs a GitHub remote.`,
     );
   const unavailable = provider.unavailable();
   if (unavailable) throw refuse("CAPABILITY_DENIED", "missing_auth", unavailable);
@@ -190,12 +192,13 @@ export async function pullRequestReviews(
       "no_pull_request",
       `The delivery of run ${runId} opened no pull request, so it has no reviews to read.`,
     );
-  const repository = provider?.repository(result.remote.url) ?? null;
+  const url = result.remote?.url ?? "";
+  const repository = url ? (provider?.repository(url) ?? null) : null;
   if (!provider?.reviews || !repository)
     throw refuse(
       "CAPABILITY_DENIED",
       "unsupported_remote",
-      `The reviews of ${result.remote.url} cannot be read; following needs a GitHub remote.`,
+      `The reviews of ${url} cannot be read; following needs a GitHub remote.`,
     );
   const unavailable = provider.unavailable();
   if (unavailable) throw refuse("CAPABILITY_DENIED", "missing_auth", unavailable);

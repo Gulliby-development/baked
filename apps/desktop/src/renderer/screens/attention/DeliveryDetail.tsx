@@ -35,6 +35,7 @@ const OPERATION: Record<string, string> = {
   push: "push",
   pull_request: "pull request",
   review_replies: "review replies",
+  advance: "update branch",
 };
 
 export function operationsLine(operations: string[] | undefined): string {
@@ -56,6 +57,7 @@ export function DeliveryDetail({ item, onDone }: DetailProps) {
         const plan = parseBody<DeliveryBody>(request);
         const pr = plan.pullRequest ?? null;
         const follow = plan.followUp ?? null;
+        const local = (plan.operations ?? []).includes("advance");
         return (
           <>
             <DetailHeader
@@ -65,7 +67,9 @@ export function DeliveryDetail({ item, onDone }: DetailProps) {
             <p className={LEDE}>
               {follow
                 ? "A follow-up commit on the branch of an earlier delivery, pushed as a fast-forward. No new pull request is opened. "
-                : ""}
+                : local
+                  ? "A local delivery: the commit goes onto the checked-out branch and its files into your working copy. Nothing is pushed. "
+                  : ""}
               Nothing in Git changes until you approve this exact plan. Your other uncommitted files
               stay as they are.
             </p>
@@ -74,9 +78,15 @@ export function DeliveryDetail({ item, onDone }: DetailProps) {
                 <span className="font-mono">{plan.branch ?? "–"}</span>
               </Fact>
               <Fact label="Remote">
-                <span className="font-mono">
-                  {plan.remote?.name ?? "–"} → {plan.base?.branch ?? "–"}
-                </span>
+                {local ? (
+                  <>
+                    None, into <span className="font-mono">{plan.base?.branch ?? "–"}</span>
+                  </>
+                ) : (
+                  <span className="font-mono">
+                    {plan.remote?.name ?? "–"} → {plan.base?.branch ?? "–"}
+                  </span>
+                )}
               </Fact>
               <Fact label="Pull request">
                 {follow ? (
@@ -160,7 +170,11 @@ export function DeliveryDetail({ item, onDone }: DetailProps) {
                     const link = result.pullRequest?.url
                       ? ` Pull request: ${result.pullRequest.url}`
                       : "";
-                    onDone(`Delivered ${item.featureId} on ${result.branch}.${link}`);
+                    onDone(
+                      local
+                        ? `Delivered ${item.featureId} into ${plan.base?.branch ?? "the current branch"}.`
+                        : `Delivered ${item.featureId} on ${result.branch}.${link}`,
+                    );
                   })
                 }
               >
@@ -186,6 +200,27 @@ export function DeliveryDetail({ item, onDone }: DetailProps) {
                   }
                 >
                   Commit only, no PR
+                </Button>
+              )}
+              {!local && !follow && (
+                <Button
+                  variant="secondary"
+                  size="md"
+                  className={BTN}
+                  disabled={action.busy}
+                  onClick={() =>
+                    void action.run(async () => {
+                      const prepared = await attentionApi.prepareDelivery(item.projectKey, runId, {
+                        local: true,
+                      });
+                      onDone(
+                        "A local plan replaces this one: no push, the commit goes onto your checked-out branch. Review it before you approve.",
+                        attentionItemId({ ...item, requestId: prepared.requestId }),
+                      );
+                    })
+                  }
+                >
+                  Deliver locally
                 </Button>
               )}
               <RejectForm

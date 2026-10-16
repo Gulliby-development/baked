@@ -1452,6 +1452,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       const flags: WorkflowArgs["flags"] = {};
       if (action === "deliver") {
         const body = DeliverBody.parse(await readJson(req));
+        if (body.local) flags.local = true;
         if (body.remote) flags.remote = body.remote;
         if (body.branch) flags.branch = body.branch;
         if (body.followUp) flags["follow-up"] = body.followUp;

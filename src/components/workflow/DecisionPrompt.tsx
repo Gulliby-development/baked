@@ -777,23 +777,36 @@ export function DecisionPrompt({
     const body = parse<DeliveryBody>(request.body_json);
     const operations = body.operations ?? [];
     const follow = body.followUp;
+    const local = operations.includes("advance");
     return (
       <box flexDirection="column">
         <Section
-          title={follow ? "Approve the follow-up commit" : "Approve the Git delivery"}
+          title={
+            follow
+              ? "Approve the follow-up commit"
+              : local
+                ? "Approve the local delivery"
+                : "Approve the Git delivery"
+          }
           description={
             follow
               ? "Approving lets BAKED commit exactly these files on top of the branch below and push it as a fast-forward. No new pull request is opened. Nothing is force-pushed or merged."
-              : "Approving lets BAKED commit exactly these files, push the branch and open the pull request below. Nothing is force-pushed or merged."
+              : local
+                ? "Approving lets BAKED commit exactly these files on top of the checked-out branch, move that branch to the commit and write the files into your working copy. Nothing is pushed."
+                : "Approving lets BAKED commit exactly these files, push the branch and open the pull request below. Nothing is force-pushed or merged."
           }
         >
           <text fg={t.textPrimary}>
-            {`${operations.join(", ")} to ${body.remote?.name ?? "?"} (${body.remote?.url ?? "?"})`}
+            {local
+              ? `${operations.join(", ")} into ${body.base?.branch ?? "?"}, no remote`
+              : `${operations.join(", ")} to ${body.remote?.name ?? "?"} (${body.remote?.url ?? "?"})`}
           </text>
           <text fg={t.textMuted}>
             {follow
               ? `Adds to branch ${body.branch ?? "?"} at ${(body.base?.commit ?? "").slice(0, 12)}, delivered by run ${follow.runId}`
-              : `Branch ${body.branch ?? "?"} from ${body.base?.branch ?? "?"} at ${(body.base?.commit ?? "").slice(0, 12)}`}
+              : local
+                ? `${body.base?.branch ?? "?"} moves from ${(body.base?.commit ?? "").slice(0, 12)}; the commit is also kept on ${body.branch ?? "?"}`
+                : `Branch ${body.branch ?? "?"} from ${body.base?.branch ?? "?"} at ${(body.base?.commit ?? "").slice(0, 12)}`}
           </text>
           {follow?.pullRequest ? (
             <text fg={t.textMuted}>{`Pull request: ${follow.pullRequest.url}`}</text>

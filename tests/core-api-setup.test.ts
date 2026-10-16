@@ -201,6 +201,10 @@ describe("local API setup and workflow additions", () => {
     expect((await call(`/v1/workflow/runs/${run.runId}/deliver`)).status).toBe(405);
     // A follow-up adds to the followed run's branch, so a new branch name contradicts it.
     expect((await post(`/v1/workflow/runs/${run.runId}/deliver`, { followUp: "other-run", branch: "x" })).status).toBe(400);
+    // A local delivery pushes nowhere, so a remote contradicts it.
+    const local = await post(`/v1/workflow/runs/${run.runId}/deliver`, { local: true, remote: "origin" });
+    expect(local.status).toBe(400);
+    expect(JSON.stringify(await local.json())).toContain("--local");
   }, 60000);
 
   test("gates and routes are listed; confirming needs ids or all", async () => {

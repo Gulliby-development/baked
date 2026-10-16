@@ -728,7 +728,7 @@ A run can execute in its own Git worktree instead of the working copy. Request i
 - File effects record their root: an intent with `root` names the worktree path relative to the project; a record without `root` means the project root. Reconcile, recovery, undo and the plan consistency check resolve every effect in its own root and never against another one; an effect whose root no longer exists stays `unknown` and goes to recovery.
 - On acceptance, after the acceptance checks pass, the accepted content (the files the run journaled in its worktree and the declared task writes that differ from the approval baseline, without `.baked/`, `.git/`, symbolic links and secret-looking files) is committed on the run branch with the baseline HEAD as parent. The commit is built in a temporary index, so commit hooks do not run; its author is the repository's `user.name`/`user.email` (or `BAKED workflow <workflow@baked.invalid>` when none is set) and its dates are the run's creation time, so the same accepted content always gives the same commit and a crash before the completion is saved rebuilds it. The branch is never moved when someone else moved it (`branch_moved`). `completion.json` and `state.worktree.commit` name the commit.
 - The intelligence index is the project's own, used read-only by the worktree's agents; it can be stale for files the run changed. A `navigate`, `bake_find` or `bake_impact` answer that cites a file the run has edited in its worktree ends with a note naming those files and telling the agent to read them before relying on their lines or symbols. A per-worktree index is an open decision ([design](parallel-worktrees.md#open-decisions)).
-- `baked workflow deliver` works for a worktree run: see [Delivery](#delivery). The scheduler never applies the result to the working copy.
+- `baked workflow deliver` works for a worktree run: see [Delivery](#delivery). The scheduler never applies the result to the working copy; `deliver --local` brings it into the checked-out branch of a repository without a remote ([local delivery](#local-delivery-without-a-remote)).
 - On Windows an executable that ends in `.cmd` or `.bat` (`mvn.cmd`, `gradle.bat`, npm shims) in a check, a gate fixer or `run_command` runs as `cmd.exe /d /s /c` with every word double-quoted, because Bun and Node refuse to spawn batch files directly (`spawn mvn.cmd EINVAL`). An argument containing a double quote, a percent sign, a line break or a trailing backslash is refused with an error instead of being escaped, so an argument cannot become a second command; `&`, `|`, `<`, `>` and `^` stay literal inside the quotes.
 - Checks run with `MSBUILDDISABLENODEREUSE=1`, `DOTNET_CLI_USE_MSBUILD_SERVER=0` and `UseSharedCompilation=false` unless the environment sets them, so a `dotnet` check leaves no MSBuild node or compiler server running in a task worktree; such a process keeps the directory locked on Windows. Language servers are never rooted in a task worktree: a root below `.baked/worktrees` maps to the workspace it belongs to (a server whose working directory is a worktree keeps it locked on Windows), and removing a task worktree (or a run's worktrees) first stops every server rooted at or below the path, bounded to 5 seconds. Removal then retries a lock error (`EBUSY`, `EPERM`, `ENOTEMPTY`, `EACCES`) eight times with a growing delay, for at most 20 seconds. A directory that stays locked is renamed into `.baked/trash/` (deleted by the next removal), so its path is free for the next task worktree and the run goes on. Only when the rename fails too, the directory is left on disk, recorded as the artifact `worktree/leftover-TASK.json`, and removed with the run's worktrees at delivery or discard. `baked lsp status` and the `/lsp` view show each server's real working directory (`cwd`).
 - The worktree is removed only for a terminal run: automatically after its delivery completes (the run branch stays as the record of the accepted commit), or by `baked workflow discard-worktree RUN_ID --expected-revision N`, which removes the worktree and deletes the run branch of a completed, failed or cancelled run (artifact `worktree/discarded.json`). The TUI offers it as D on the run screen and the desktop as Discard worktree; `workflow status` reports `worktree: {path, branch, present}` so a front end knows whether there is anything to discard. A run that is still active must be cancelled first; a delivery step of unknown outcome must be settled first.
@@ -1148,6 +1148,7 @@ A completed run whose verification is `current` can be delivered through Git: on
 
 ```sh
 baked workflow deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr] [--with-specs|--no-specs]
+baked workflow deliver RUN_ID --local [--branch NAME] [--with-specs|--no-specs]
 baked workflow approve RUN_ID --request ID --digest SHA256 --expected-revision N
 baked workflow deliver RUN_ID --execute --expected-revision N [--request ID]
 ```
@@ -1171,6 +1172,7 @@ Preparation refuses, with `details.reason` in the error:
 | `detached_head`, `no_commits`, `missing_identity` | No base branch, no base commit, or no `user.name`/`user.email` |
 | `nothing_to_deliver` | Every changed file was excluded |
 | `worktree_missing`, `branch_moved` | A worktree run's worktree was removed, or its run branch no longer points at the accepted commit |
+| `local_with_remote` | `--local` with `--remote`, `--follow-up` or `--answer-threads`; a [local delivery](#local-delivery-without-a-remote) pushes nowhere |
 | `invalid_follow_up`, `not_delivered` | `--follow-up` names the run itself, or a run with no pushed delivery |
 | `answer_without_follow_up`, `no_pull_request`, `thread_not_open` | `--answer-threads` without `--follow-up`, a followed delivery that opened no pull request, or a thread that is not an unresolved review thread of that pull request |
 | `review_replies_failed` | GitHub refused a reply or a resolution of an approved thread; the commit is pushed, and the next execute answers the threads not yet answered |
@@ -1191,6 +1193,18 @@ Pull requests use the GitHub REST API. The token is read from the environment va
 ```json
 { "workflows": { "delivery": { "tokenEnv": "GITHUB_TOKEN", "apiUrl": "https://api.github.com" } } }
 ```
+
+### Local delivery without a remote
+
+`--local` delivers into the branch that is checked out, for a repository without a remote, such as a folder BAKED [initialized for worktree runs](#worktree-execution). The plan has the operations `commit` and `advance`, `remote: null` and no pull request; `--remote`, `--follow-up`, `--answer-threads`, `--draft` and `--no-pr` are refused with it. The same approval by digest applies.
+
+- The commit is built as for any delivery, on HEAD in a temporary index, and recorded on the branch `baked/FEATURE-…` (or `--branch`). A repository without `user.name`/`user.email` gets the author `BAKED <noreply@baked.invalid>` instead of `missing_identity`.
+- `advance` moves the checked-out branch (`base.branch`) from `base.commit` to that commit with a compare-and-swap `git update-ref`, then writes the delivered files into the working copy and stages exactly their new content (a path-limited `git reset`). The person's other uncommitted changes stay as they are.
+- Planning refuses with `dirty_files` when a delivered file in the working copy is neither what HEAD holds nor what the delivery commits, so the person's own edit is never overwritten. A working-copy run whose files are already there is committed as is.
+- `--execute` checks again before the commit, so a refusal leaves no record branch: `head_moved` when another branch is checked out or the branch moved since the plan, `dirty_files` for an edit made after approval. Prepare a new plan after either.
+- An interrupted `advance` is checked against the branch: at the commit it is `reconciled` and the working copy is brought up to it (a file the person edited since is left alone), at the base it is retried.
+
+A worktree run's worktree is removed after a local delivery as after any other; its `baked/wf/RUN_ID` branch stays. An initiative's features are delivered one at a time, upstream features first, since a dependent feature's files start from its upstream results.
 
 ### Follow-up commits to a delivered pull request
 
