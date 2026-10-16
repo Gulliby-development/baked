@@ -3812,7 +3812,12 @@ export class WorkflowScheduler {
         ? this.reproCheck(runId, policy, task)
         : undefined;
     const caseCheck =
-      task && profile.output === "implementation" ? criteriaCaseCheck(state.spec, task) : undefined;
+      task && profile.output === "implementation"
+        ? criteriaCaseCheck(state.spec, task, {
+            checks: policy.checks,
+            tasks: (state.rootGraph ?? state.graph)?.tasks ?? [],
+          })
+        : undefined;
     // A digested spec (#1019) comes with the tool that reads its criteria in full.
     const digested =
       digestsSpec(state.spec, profile, policy) ||
