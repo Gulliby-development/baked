@@ -181,6 +181,11 @@ export const CheckSchema = z
      * task's own work and a file that never finishes is its defect (#1308).
      */
     onTimeout: z.enum(["inconclusive", "failed"]).optional(),
+    /**
+     * Generated inputs the task's text requires of the tests this check runs; a timeout note then
+     * asks for that many cheap cases instead of fewer cases (#1367).
+     */
+    minCases: z.number().int().positive().optional(),
   })
   .strict();
 

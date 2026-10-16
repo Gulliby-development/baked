@@ -111,6 +111,7 @@ import {
   affectedTestCheck,
   affectedTestsFor,
   isTestFile,
+  taskCaseText,
   writtenTestsCheck,
 } from "./affected-tests.js";
 import { outputSchemas } from "./agent-executor.js";
@@ -7451,7 +7452,7 @@ ${note}`;
     own: readonly Check[],
   ): Check | null {
     if (this.testsPending(state, policy)) return null;
-    const gate = writtenTestsCheck(root, policy.checks, task.writes);
+    const gate = writtenTestsCheck(root, policy.checks, task.writes, taskCaseText(task));
     if (!gate) return null;
     const suite = gate.id.replace(/-written$/, "");
     if (own.some((c) => c.id === suite)) return null;
@@ -8348,6 +8349,11 @@ ${note}`;
             ? `Fix ${task.id} and the files the check output names (${owned.slice(0, 5).join(", ")}) and repeat ${check.id}.`
             : `Fix ${task.id} within its approved paths and repeat ${check.id}.`,
     });
+    // A correction keeps the generated inputs the task requires, and its own check knows the
+    // number from this text (#1367).
+    const last = taskFailures.at(-1);
+    if (last && !regression && check.minCases !== undefined)
+      last.suggestedFix += ` Keep at least ${String(check.minCases)} generated inputs, as ${task.id} requires: make each case cheap so ${check.id} finishes within ${String(check.timeoutMs)} ms rather than generating fewer.`;
     return undefined;
   }
   /**
