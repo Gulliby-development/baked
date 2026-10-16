@@ -137,6 +137,7 @@ import { writeViaTemp } from "./atomic-write.js";
 import {
   APPROVAL_REVIEWER,
   evaluateAutoApproval,
+  hostBudgetGrowth,
   humanApprovalReason,
   plannerApprovalLimits,
   planScopeAdvice,
@@ -1697,6 +1698,10 @@ export class WorkflowScheduler {
                           request: coverageRequest(state),
                           hostSplitTasks: state.hostSplitTasks,
                           scaffold: this.baselineScaffold(runId, state),
+                          hostGrowthTokens: hostBudgetGrowth(
+                            this.store.artifacts(runId),
+                            (artifact) => this.store.readArtifact(runId, artifact.id),
+                          ),
                           exists: (path) =>
                             existsSync(join(runRoot(this.store.workspace, state), path)),
                         },
