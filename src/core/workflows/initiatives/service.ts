@@ -1083,11 +1083,33 @@ export class InitiativeService {
       // Asked for rarely and right after runs finish, so it reads the store fresh.
       0,
     );
+    // This initiative's own runs are its progress, not samples: an accepted feature counts with
+    // what it used, and the rest are scaled by how far the accepted ones were from their forecast.
+    const links = this.store.links(id);
+    const own = new Set(links.map((l) => l.run_id));
+    const accepted = new Set(
+      this.view(id)
+        .features.filter((f) => f.state === "accepted")
+        .map((f) => f.id),
+    );
+    const spent: Record<string, { spent: number; accepted: boolean }> = {};
+    for (const link of links) {
+      const entry = spent[link.feature_id] ?? {
+        spent: 0,
+        accepted: accepted.has(link.feature_id),
+      };
+      entry.spent += this.usage(link.run_id).tokens;
+      spent[link.feature_id] = entry;
+    }
     return estimateInitiative({
       features,
       history,
-      samples: this.featureRunSamples(history),
+      samples: this.featureRunSamples(history).filter((s) => !own.has(s.runId)),
       maxTotalTokens: this.limits(row).maxTotalTokens,
+      progress: {
+        features: spent,
+        overhead: row.decompose_run_id ? this.usage(row.decompose_run_id).tokens : 0,
+      },
     });
   }
 

@@ -81,7 +81,10 @@ const FEATURE_GLYPH: Record<FeatureView["state"], string> = {
 };
 const featureEstimateText = (estimate: InitiativeEstimate | null, featureId: string): string => {
   const f = estimate?.features.find((e) => e.featureId === featureId);
-  return f ? ` · estimate ${formatTokens(f.tokens.low)}-${formatTokens(f.tokens.high)} tokens` : "";
+  if (!f) return "";
+  return f.basis === "measured"
+    ? ` · used ${formatTokens(f.tokens.high)} tokens`
+    : ` · estimate ${formatTokens(f.tokens.low)}-${formatTokens(f.tokens.high)} tokens`;
 };
 const clip = (text: string, width: number): string =>
   text.length > width ? `${text.slice(0, Math.max(1, width - 1))}…` : text;

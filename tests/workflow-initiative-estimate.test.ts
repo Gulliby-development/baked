@@ -101,4 +101,50 @@ describe("initiative estimate", () => {
     expect(medium?.basis).toBe("defaults");
     expect(estimate.basis).toBe("defaults");
   });
+
+  test("accepted features count at what they used and scale the forecast of the rest (#1312)", () => {
+    const features = [feature("a", "medium"), feature("b", "medium"), feature("c", "medium")];
+    const plain = estimateInitiative({ features, history: [], samples: [], maxTotalTokens: 30_000_000 });
+    const forecast = plain.features[0]?.tokens ?? { low: 0, high: 0 };
+    const twice = forecast.low + forecast.high;
+    const estimate = estimateInitiative({
+      features,
+      history: [],
+      samples: [],
+      maxTotalTokens: 30_000_000,
+      progress: {
+        features: { a: { spent: twice, accepted: true }, b: { spent: 10, accepted: false } },
+        overhead: 500_000,
+      },
+    });
+    const [a, b, c] = estimate.features;
+    expect(a?.basis).toBe("measured");
+    expect(a?.tokens).toEqual({ low: twice, high: twice });
+    // Feature a used twice its forecast's middle, so b and c are forecast at twice theirs.
+    expect(estimate.progress).toEqual({ spent: 500_000 + twice + 10, accepted: 1, ratio: 2 });
+    expect(b?.basis).toBe("calibrated");
+    expect(c?.tokens).toEqual({ low: forecast.low * 2, high: forecast.high * 2 });
+    expect(estimate.tokens.high).toBe(500_000 + twice + 4 * forecast.high);
+    // The margin covers only what is still to run.
+    expect(estimate.withMargin).toBe(Math.round(500_000 + twice + 4 * forecast.high * 1.25));
+    expect(estimate.notes.join(" ")).toContain("Re-forecast after 1 of 3 features");
+    expect(estimate.label).toContain("used with 1 of 3 features accepted");
+  });
+
+  test("a running feature is never forecast below what it used, and the ratio is bounded", () => {
+    const features = [feature("a", "small"), feature("b", "small")];
+    const estimate = estimateInitiative({
+      features,
+      history: [],
+      samples: [],
+      maxTotalTokens: 30_000_000,
+      progress: {
+        features: { a: { spent: 1_000_000_000, accepted: true }, b: { spent: 900_000_000, accepted: false } },
+        overhead: 0,
+      },
+    });
+    expect(estimate.progress.ratio).toBe(5);
+    expect(estimate.features[1]?.tokens.low).toBe(900_000_000);
+    expect(estimate.budget.fits).toBe("no");
+  });
 });
