@@ -24,6 +24,13 @@ export const ESTIMATE_MARGIN = 0.25;
 export const LEVEL_TASKS = [8, 12.5, 18.5, 26] as const;
 /** How many tasks a feature of each size plans next to a typical run of its workflow. */
 const SIZE_TASK_FACTOR: Record<FeatureSize, number> = { small: 0.5, medium: 1, large: 2 };
+/**
+ * How the stages around the tasks (research, spec, plan, review) of a feature of each size compare
+ * with a typical run's: a larger feature writes a longer spec and has more to review. Bench round 34
+ * (sketchfold): with those stages at a typical run's cost at every size, a large feature was
+ * forecast at 2.4 times a small one and cost 3.4 to 5.5 times as much (#1338).
+ */
+const SIZE_STAGE_FACTOR: Record<FeatureSize, number> = { small: 0.6, medium: 1, large: 1.6 };
 
 /** A finished feature run of an earlier initiative, with the size its plan gave the feature. */
 export interface FeatureRunSample {
@@ -91,8 +98,15 @@ export interface InitiativeEstimate {
   /**
    * The re-forecast once features are accepted (#1312): tokens used so far, how many features are
    * accepted, and the ratio of their measured tokens to their forecast, which scales the rest.
+   * `bySize` holds the same ratio per feature size with an accepted feature; a feature of that size
+   * is scaled by it instead (#1338).
    */
-  progress: { spent: number; accepted: number; ratio: number | null };
+  progress: {
+    spent: number;
+    accepted: number;
+    ratio: number | null;
+    bySize: Partial<Record<FeatureSize, number>>;
+  };
   /**
    * Tokens per acceptance criterion, measured on finished feature runs and this initiative's
    * accepted features; a feature whose spec is written is forecast at no less than its criteria
@@ -167,9 +181,10 @@ function estimateFeature(
       basis: "initiative-history",
       samples: pool.length,
     };
-  // Otherwise a typical run of the feature's workflow, with its tasks scaled by the feature's size:
-  // the stages around the tasks (research, spec, plan, review) cost about the same at any size.
+  // Otherwise a typical run of the feature's workflow scaled by the feature's size: its tasks by the
+  // planned task count, the stages around them less steeply.
   const factor = SIZE_TASK_FACTOR[feature.size];
+  const stageFactor = SIZE_STAGE_FACTOR[feature.size];
   const run = estimatePreRun({
     history,
     workflowId: feature.workflowId,
@@ -178,7 +193,7 @@ function estimateFeature(
     price: () => null,
   });
   const tokens = sum(
-    run.stages.map((s) => (s.type === "tasks" ? scaled(s.tokens, factor) : s.tokens)),
+    run.stages.map((s) => scaled(s.tokens, s.type === "tasks" ? factor : stageFactor)),
   );
   const counts = taskCounts(history, feature.workflowId);
   const tasks = hasTasks
@@ -221,16 +236,31 @@ function reforecast(
   prior: FeatureEstimate[],
   progress: InitiativeProgress,
   samples: FeatureRunSample[],
-): { features: FeatureEstimate[]; ratio: number | null; perCriterion: TokenRange | null } {
+): {
+  features: FeatureEstimate[];
+  ratio: number | null;
+  bySize: Partial<Record<FeatureSize, number>>;
+  perCriterion: TokenRange | null;
+} {
   const used = (f: FeatureEstimate): InitiativeProgress["features"][string] =>
     progress.features[f.featureId] ?? { spent: 0, accepted: false };
   const accepted = prior.filter((f) => used(f).accepted);
-  const forecast = accepted.reduce((total, f) => total + middle(f.tokens), 0);
-  const measured = accepted.reduce((total, f) => total + used(f).spent, 0);
-  const ratio =
-    accepted.length && forecast > 0 && measured > 0
+  const ratioOf = (features: FeatureEstimate[]): number | null => {
+    const forecast = features.reduce((total, f) => total + middle(f.tokens), 0);
+    const measured = features.reduce((total, f) => total + used(f).spent, 0);
+    return features.length && forecast > 0 && measured > 0
       ? Math.min(RATIO_BOUNDS.high, Math.max(RATIO_BOUNDS.low, measured / forecast))
       : null;
+  };
+  const ratio = ratioOf(accepted);
+  // An accepted feature of the same size says more about a feature than all of them together: in
+  // bench round 34 the accepted large feature used 3.2 times its forecast and the medium one about
+  // its forecast, and the other large feature then used 3.3 times its own (#1338).
+  const bySize: Partial<Record<FeatureSize, number>> = {};
+  for (const size of ["small", "medium", "large"] as const) {
+    const own = ratioOf(accepted.filter((f) => f.size === size));
+    if (own !== null) bySize[size] = own;
+  }
   // A feature's work grows with the criteria its spec sets: bench round 32's notesift features
   // with the most criteria overran a size-based forecast the most (#1312).
   const rates = [
@@ -246,7 +276,8 @@ function reforecast(
     const known = criteria ? { criteria } : {};
     if (done)
       return { ...f, ...known, tokens: { low: spent, high: spent }, basis: "measured", spent };
-    const base = ratio === null ? f.tokens : scaled(f.tokens, ratio);
+    const scale = bySize[f.size] ?? ratio;
+    const base = scale === null ? f.tokens : scaled(f.tokens, scale);
     const floor = perCriterion && criteria ? scaled(perCriterion, criteria) : { low: 0, high: 0 };
     const tokens = {
       low: Math.max(base.low, floor.low),
@@ -257,11 +288,11 @@ function reforecast(
       ...f,
       ...known,
       tokens: { low: Math.max(tokens.low, spent), high: Math.max(tokens.high, spent) },
-      basis: ratio === null && !raised ? f.basis : "calibrated",
+      basis: scale === null && !raised ? f.basis : "calibrated",
       spent,
     };
   });
-  return { features, ratio, perCriterion };
+  return { features, ratio, bySize, perCriterion };
 }
 
 /**
@@ -279,7 +310,7 @@ export function estimateInitiative(input: {
 }): InitiativeEstimate {
   const margin = input.margin ?? ESTIMATE_MARGIN;
   const progress = input.progress ?? { features: {}, overhead: 0 };
-  const { features, ratio, perCriterion } = reforecast(
+  const { features, ratio, bySize, perCriterion } = reforecast(
     input.features.map((f) => estimateFeature(f, input.history, input.samples)),
     progress,
     input.samples,
@@ -314,6 +345,13 @@ export function estimateInitiative(input: {
           `Re-forecast after ${accepted} of ${features.length} features: the accepted ones used ${ratio.toFixed(1)} times their forecast, so the features still to run are scaled by it.`,
         ]
       : []),
+    ...(Object.keys(bySize).length > 1 ||
+    Object.values(bySize).some((r) => ratio !== null && Math.abs(r - ratio) >= 0.05)
+      ? (Object.entries(bySize) as [FeatureSize, number][]).map(
+          ([size, r]) =>
+            `Accepted ${size} features used ${r.toFixed(1)} times their forecast; ${size} features still to run are scaled by that instead.`,
+        )
+      : []),
     ...(perCriterion && features.some((f) => f.basis !== "measured" && f.criteria)
       ? [
           `A feature whose spec is written is forecast at no less than ${rangeText(perCriterion)} tokens per acceptance criterion, as measured on finished features.`,
@@ -337,7 +375,7 @@ export function estimateInitiative(input: {
     budget: { maxTotalTokens: input.maxTotalTokens, fits },
     basis,
     features,
-    progress: { spent, accepted, ratio },
+    progress: { spent, accepted, ratio, bySize },
     perCriterion,
     notes,
     label: `Estimate: level ${level}, about ${tasks.low}-${tasks.high} tasks, ${rangeText(tokens)} tokens (plan for ${tokenText(withMargin)} with a ${Math.round(margin * 100)}% margin)${spent ? `, ${tokenText(spent)} used with ${accepted} of ${features.length} features accepted` : ""}; ${budgetText}`,

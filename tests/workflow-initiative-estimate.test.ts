@@ -121,7 +121,7 @@ describe("initiative estimate", () => {
     expect(a?.basis).toBe("measured");
     expect(a?.tokens).toEqual({ low: twice, high: twice });
     // Feature a used twice its forecast's middle, so b and c are forecast at twice theirs.
-    expect(estimate.progress).toEqual({ spent: 500_000 + twice + 10, accepted: 1, ratio: 2 });
+    expect(estimate.progress).toEqual({ spent: 500_000 + twice + 10, accepted: 1, ratio: 2, bySize: { medium: 2 } });
     expect(b?.basis).toBe("calibrated");
     expect(c?.tokens).toEqual({ low: forecast.low * 2, high: forecast.high * 2 });
     expect(estimate.tokens.high).toBe(500_000 + twice + 4 * forecast.high);
@@ -188,5 +188,65 @@ describe("initiative estimate", () => {
     expect(estimate.perCriterion).toBeNull();
     expect(estimate.features[0]?.criteria).toBe(5);
     expect(estimate.notes.join(" ")).not.toContain("per acceptance criterion");
+  });
+});
+
+// Bench round 34 (sketchfold, #1338): a typical sdd run of 1.2M tokens, 0.5M of them in its tasks.
+// The split gave both large features the same range, 2.4 times a small one's, and they cost 3.4 to
+// 5.5 times a small one; the accepted large feature had used 3.2 times its forecast before the
+// other started.
+describe("scenario: large features against small ones in an initiative estimate (#1338)", () => {
+  const typical = (runId: string, implement: number): PastRun => ({
+    ...run(runId, "sdd", 0, 6),
+    tokens: implement + 700_000,
+    stageTokens: { specify: 250_000, plan: 250_000, implement, review: 200_000 },
+    taskTokens: implement,
+  });
+  const history = [typical("h1", 300_000), typical("h2", 700_000)];
+  const features = [
+    feature("core", "medium"),
+    feature("sketch", "small"),
+    feature("docs", "small"),
+    feature("bundles", "large"),
+    feature("commands", "large"),
+  ];
+
+  test("a large feature is forecast at least three times a small one", () => {
+    const estimate = estimateInitiative({ features, history, samples: [], maxTotalTokens: 30_000_000 });
+    const byId = Object.fromEntries(estimate.features.map((f) => [f.featureId, f]));
+    expect(byId.bundles?.basis).toBe("workflow-history");
+    expect(byId.bundles?.tokens.low).toBeGreaterThanOrEqual(3 * (byId.sketch?.tokens.low ?? 0));
+    expect(byId.bundles?.tokens.high).toBeGreaterThanOrEqual(3 * (byId.sketch?.tokens.high ?? 0));
+  });
+
+  test("an accepted large feature re-forecasts the other large one by its own overrun", () => {
+    const plain = estimateInitiative({ features, history, samples: [], maxTotalTokens: 30_000_000 });
+    const forecast = (id: string) => plain.features.find((f) => f.featureId === id)?.tokens ?? { low: 0, high: 0 };
+    const mid = (id: string) => (forecast(id).low + forecast(id).high) / 2;
+    const estimate = estimateInitiative({
+      features,
+      history,
+      samples: [],
+      maxTotalTokens: 30_000_000,
+      progress: {
+        features: {
+          core: { spent: Math.round(mid("core")), accepted: true },
+          bundles: { spent: Math.round(mid("bundles") * 3.2), accepted: true },
+        },
+        overhead: 0,
+      },
+    });
+    const commands = estimate.features.find((f) => f.featureId === "commands");
+    expect(estimate.progress.bySize.large).toBeCloseTo(3.2, 2);
+    expect(estimate.progress.bySize.medium).toBeCloseTo(1, 2);
+    expect(commands?.basis).toBe("calibrated");
+    expect(commands?.tokens.low).toBeGreaterThanOrEqual(Math.floor(forecast("commands").low * 3.19));
+    expect(commands?.tokens.high).toBeGreaterThanOrEqual(Math.floor(forecast("commands").high * 3.19));
+    // Small features have no accepted feature of their size and keep the overall ratio.
+    const docs = estimate.features.find((f) => f.featureId === "docs");
+    const overall = estimate.progress.ratio ?? 0;
+    expect(overall).toBeLessThan(3);
+    expect(docs?.tokens.high).toBe(Math.round(forecast("docs").high * overall));
+    expect(estimate.notes.join(" ")).toContain("Accepted large features used 3.2 times their forecast");
   });
 });
