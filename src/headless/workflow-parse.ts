@@ -78,6 +78,7 @@ export interface WorkflowArgs {
 /** Options every workflow command takes. */
 const globalFlags = ["json", "cwd", "help"];
 const booleanFlags = new Set([
+  "local",
   "approval-review",
   "record-model-calls",
   "refresh",
@@ -237,6 +238,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   gate: ["text", "kind", "id", "model", "from-criteria", "save", "file", "json", "workflow", "at"],
   follow: ["interval", "timeout", "once", "fix", "reviews"],
   deliver: [
+    "local",
     "remote",
     "branch",
     "follow-up",
@@ -426,6 +428,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
   }
   if (!result.flags.help && result.command === "deliver") {
     const planning = [
+      "local",
       "remote",
       "branch",
       "follow-up",
@@ -437,6 +440,14 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
       "no-specs",
     ].filter((name) => name in result.flags);
     const newBranch = ["branch", "draft", "no-pr"].find((name) => name in result.flags);
+    const remoteOnly = ["remote", "follow-up", "answer-threads", "resolve", "draft", "no-pr"].find(
+      (name) => name in result.flags,
+    );
+    if (result.flags.local && remoteOnly)
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        `--local delivers into the current branch with no push; --${remoteOnly} needs a remote delivery`,
+      );
     if ("follow-up" in result.flags && newBranch)
       throw new WorkflowFault(
         "INVALID_DEFINITION",
@@ -745,6 +756,11 @@ deliver RUN_ID --execute --expected-revision N [--request ID]
   Perform the approved plan. Retries check what already exists; nothing is force-pushed or merged.
   The pull request token is read from workflows.delivery.tokenEnv (default GITHUB_TOKEN).
   A worktree run is delivered from its branch; its worktree is removed afterwards, the branch stays.
+deliver RUN_ID --local [--branch NAME] [--with-specs|--no-specs]
+  Plan a local delivery for a repository without a remote: the same commit on top of HEAD, then the
+  checked-out branch moves to it and the delivered files of the working copy and index take its
+  content. No push, no pull request. Refused when a delivered file has uncommitted changes.
+  Deliver an initiative's features one at a time, upstream features first.
 deliver RUN_ID --follow-up DELIVERED_RUN_ID [--remote origin] [--with-specs|--no-specs]
   Plan one commit of this run's files on top of the branch DELIVERED_RUN_ID pushed, fast-forward
   only, and no new pull request: a fix for that pull request's checks or review. The local copy of

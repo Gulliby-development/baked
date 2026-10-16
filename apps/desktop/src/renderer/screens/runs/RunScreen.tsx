@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { reasonText } from "../../../../../../src/core/workflows/reasons.js";
+import { attentionHash } from "../../../shared/attention.js";
+import { attentionApi } from "../../client/attention.js";
 import { chat } from "../../client/chat.js";
 import {
   errorText,
@@ -107,6 +109,26 @@ function Controls({
   const worktree = run.worktree?.present ? run.worktree : null;
   const canDiscard = groupB && ended && worktree !== null;
   const canAccept = run.status === "blocked" && run.reason === "input_changed";
+  const planned = run.requests.find((r) => r.kind === "delivery" && r.status === "pending");
+  const openPlan = (requestId: string): void => {
+    window.location.hash = attentionHash({
+      projectKey,
+      source: "run",
+      runId: run.runId,
+      requestId,
+      kind: "delivery",
+    });
+  };
+  /** Prepares a delivery plan; it is reviewed and approved in "Needs you". */
+  const deliver = (local: boolean): Promise<void> =>
+    act(async () => {
+      const prepared = await attentionApi.prepareDelivery(
+        projectKey,
+        run.runId,
+        local ? { local: true } : {},
+      );
+      openPlan(prepared.requestId);
+    });
   const dialog = (which: Confirm) => ({
     open: confirm === which,
     busy,
@@ -126,6 +148,31 @@ function Controls({
           Accept changes
         </Button>
       )}
+      {run.status === "completed" &&
+        (planned ? (
+          <Button variant="secondary" size="md" onClick={() => openPlan(planned.id)}>
+            Open delivery plan
+          </Button>
+        ) : (
+          <>
+            <Button
+              variant="secondary"
+              size="md"
+              disabled={busy}
+              onClick={() => void deliver(false)}
+            >
+              Deliver
+            </Button>
+            <Button
+              variant="secondary"
+              size="md"
+              disabled={busy}
+              onClick={() => void deliver(true)}
+            >
+              Deliver locally
+            </Button>
+          </>
+        ))}
       {canUndo && (
         <Button variant="secondary" size="md" disabled={busy} onClick={() => ask("undo")}>
           Undo edits

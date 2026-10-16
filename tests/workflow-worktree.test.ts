@@ -415,6 +415,91 @@ describe("workflow worktree execution", () => {
     expect(fault.details.reason).toBe("worktree_missing");
   });
 
+  test("a worktree run is delivered locally into the checked-out branch with no remote (#1347)", async () => {
+    // A folder BAKED initialized has no remote and often no identity.
+    const saved = { global: process.env.GIT_CONFIG_GLOBAL, nosystem: process.env.GIT_CONFIG_NOSYSTEM };
+    const globalDir = mkdtempSync(join(tmpdir(), "baked-local-delivery-config-"));
+    cleanups.push(() => {
+      for (const [key, value] of [["GIT_CONFIG_GLOBAL", saved.global], ["GIT_CONFIG_NOSYSTEM", saved.nosystem]] as const)
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      rmSync(globalDir, { recursive: true, force: true });
+    });
+    process.env.GIT_CONFIG_GLOBAL = join(globalDir, "gitconfig");
+    process.env.GIT_CONFIG_NOSYSTEM = "1";
+    const fx = setup();
+    git(fx.root, "config", "--unset", "user.name");
+    git(fx.root, "config", "--unset", "user.email");
+    const run = await fx.start("worktree");
+    expect((await fx.complete(run.runId)).status).toBe("completed");
+    writeFileSync(join(fx.root, "user.txt"), "user edit\n");
+    const store = fx.service.store;
+    const worktree = store.state(run.runId).worktree;
+    const prepared = await prepareDelivery(store, fx.config, run.runId, { local: true, now: 1700000000 });
+    expect(prepared.plan.operations).toEqual(["commit", "advance"]);
+    expect(prepared.plan.remote).toBeNull();
+    expect(prepared.plan.pullRequest).toBeNull();
+    expect(prepared.plan.base).toEqual({ commit: fx.head, branch: "main" });
+    expect(prepared.plan.author.name).toBe("BAKED");
+    await fx.service.decide(
+      run.runId,
+      { commandId: newId(), expectedRevision: store.run(run.runId).revision },
+      { kind: "approve", requestId: prepared.requestId, digest: prepared.digest },
+    );
+    const result = await executeDelivery(store, fx.config, run.runId, { expectedRevision: store.run(run.runId).revision, provider: null });
+    expect(result.remote).toBeNull();
+    expect(result.operations.map((o) => o.operation)).toEqual(["commit", "advance"]);
+    // main moved to the delivery commit, built on the old HEAD; the file is in the working copy and index.
+    expect(git(fx.root, "rev-parse", "HEAD")).toBe(result.commit ?? "");
+    expect(git(fx.root, "rev-parse", "HEAD^")).toBe(fx.head);
+    expect(git(fx.root, "symbolic-ref", "--short", "HEAD")).toBe("main");
+    expect(readFileSync(join(fx.root, "value.txt"), "utf8")).toBe("ready");
+    expect(git(fx.root, "log", "-1", "--format=%an <%ae>")).toBe("BAKED <noreply@baked.invalid>");
+    // The person's unrelated edit stays an uncommitted change; nothing else is dirty.
+    expect(status(fx.root)).toBe("M user.txt");
+    expect(readFileSync(join(fx.root, "user.txt"), "utf8")).toBe("user edit\n");
+    expect(existsSync(join(fx.root, worktree?.path ?? "missing"))).toBe(false);
+    expect(git(fx.root, "rev-parse", `baked/wf/${run.runId}`)).toBe(worktree?.commit ?? "");
+  });
+
+  test("a local delivery is refused when a delivered file has uncommitted changes or the branch moved", async () => {
+    const fx = setup();
+    const run = await fx.start("worktree");
+    expect((await fx.complete(run.runId)).status).toBe("completed");
+    const store = fx.service.store;
+    writeFileSync(join(fx.root, "value.txt"), "mine");
+    const before = await refusal(prepareDelivery(store, fx.config, run.runId, { local: true }));
+    expect(before.details).toMatchObject({ reason: "dirty_files", files: ["value.txt"] });
+    rmSync(join(fx.root, "value.txt"));
+    const remoteOnly = await refusal(prepareDelivery(store, fx.config, run.runId, { local: true, remote: "origin" }));
+    expect(remoteOnly.details.reason).toBe("local_with_remote");
+
+    const approveAndExecute = async () => {
+      const prepared = await prepareDelivery(store, fx.config, run.runId, { local: true });
+      await fx.service.decide(
+        run.runId,
+        { commandId: newId(), expectedRevision: store.run(run.runId).revision },
+        { kind: "approve", requestId: prepared.requestId, digest: prepared.digest },
+      );
+      return () => executeDelivery(store, fx.config, run.runId, { expectedRevision: store.run(run.runId).revision, provider: null });
+    };
+    const dirty = await approveAndExecute();
+    writeFileSync(join(fx.root, "value.txt"), "mine");
+    expect((await refusal(dirty())).details).toMatchObject({ reason: "dirty_files", files: ["value.txt"] });
+    expect(readFileSync(join(fx.root, "value.txt"), "utf8")).toBe("mine");
+    expect(git(fx.root, "rev-parse", "HEAD")).toBe(fx.head);
+    rmSync(join(fx.root, "value.txt"));
+
+    const moved = await approveAndExecute();
+    writeFileSync(join(fx.root, "other.txt"), "other\n");
+    git(fx.root, "add", "other.txt");
+    git(fx.root, "commit", "-q", "-m", "Other work");
+    const other = git(fx.root, "rev-parse", "HEAD");
+    expect((await refusal(moved())).details.reason).toBe("head_moved");
+    expect(git(fx.root, "rev-parse", "HEAD")).toBe(other);
+    expect(existsSync(join(fx.root, "value.txt"))).toBe(false);
+  });
+
   test("a worktree is discarded only for a terminal run, on the user's command", async () => {
     const fx = setup();
     const run = await fx.start("worktree");

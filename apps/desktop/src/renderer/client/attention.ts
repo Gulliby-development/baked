@@ -60,7 +60,8 @@ export interface ClarificationBody {
 export interface DeliveryBody {
   planId?: string;
   operations?: string[];
-  remote?: { name: string; url: string };
+  /** Null for a local delivery, which pushes nowhere. */
+  remote?: { name: string; url: string } | null;
   branch?: string;
   base?: { commit: string; branch: string };
   /** "add path", "modify path" or "delete path". */
@@ -233,6 +234,8 @@ export const attentionApi = {
     key: string,
     runId: string,
     options: {
+      /** Into the checked-out branch, with no remote, push or pull request. */
+      local?: boolean;
       pullRequest?: boolean;
       draft?: boolean;
       remote?: string;

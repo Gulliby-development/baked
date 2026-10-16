@@ -988,7 +988,8 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "run-deliver",
     group: "Workflow runs",
-    title: "Deliver a run (commit, pull request, follow-up commits to a delivered pull request)",
+    title:
+      "Deliver a run (commit, pull request, follow-up commits to a delivered pull request, local delivery without a remote)",
     tui: ["/workflow"],
     cli: ["baked workflow deliver"],
     api: ["/v1/workflow/runs/:id/deliver", "/v1/workflow/runs/:id/deliver/execute"],

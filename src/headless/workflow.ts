@@ -694,6 +694,7 @@ export async function executeWorkflowCommand(
           ...provider,
         });
       const prepared = await prepareDelivery(service.store, service.config, runId, {
+        ...(args.flags.local === true ? { local: true } : {}),
         ...(typeof args.flags.remote === "string" ? { remote: args.flags.remote } : {}),
         ...(typeof args.flags.branch === "string" ? { branch: args.flags.branch } : {}),
         ...(typeof args.flags["follow-up"] === "string"
