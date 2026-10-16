@@ -217,7 +217,26 @@ function recordGrowth(
   detail: Record<string, unknown>,
 ): void {
   const before = hashJson(policy);
-  const after = PolicySchema.parse({ ...policy, maxTotalTokens });
+  // A cap that may grow (`sizing.maxRunCostUsd`, set by an initiative from its unspent dollars)
+  // grows with the tokens. Bench round 35 (narrowfit sum): auto-growth raised 1,527,292 tokens to
+  // 2,290,938 while the cap stayed $1.46, and the run stopped on the cap with 62% of them used
+  // (#1353).
+  const growCostTo = policy.sizing?.maxRunCostUsd;
+  const maxCostUsd =
+    policy.maxCostUsd !== null && growCostTo !== undefined && maxTotalTokens > policy.maxTotalTokens
+      ? Math.max(
+          policy.maxCostUsd,
+          Math.min(
+            growCostTo,
+            Math.ceil(((policy.maxCostUsd * maxTotalTokens) / policy.maxTotalTokens) * 100) / 100,
+          ),
+        )
+      : policy.maxCostUsd;
+  const after = PolicySchema.parse({ ...policy, maxTotalTokens, maxCostUsd });
+  const cost =
+    maxCostUsd !== policy.maxCostUsd
+      ? { previousCostUsd: policy.maxCostUsd, nextCostUsd: maxCostUsd }
+      : {};
   const count = store
     .artifacts(runId)
     .filter(
@@ -233,8 +252,14 @@ function recordGrowth(
         approvedBy: "sizing",
         previousPolicyHash: before,
         policyHash: hashJson(after),
-        previous: { maxTotalTokens: policy.maxTotalTokens },
-        next: { maxTotalTokens: after.maxTotalTokens },
+        previous: {
+          maxTotalTokens: policy.maxTotalTokens,
+          ...(cost.previousCostUsd != null ? { maxCostUsd: cost.previousCostUsd } : {}),
+        },
+        next: {
+          maxTotalTokens: after.maxTotalTokens,
+          ...(cost.nextCostUsd != null ? { maxCostUsd: cost.nextCostUsd } : {}),
+        },
         ceiling: policy.sizing?.maxRunTokens ?? null,
         ...detail,
       }),
@@ -242,6 +267,7 @@ function recordGrowth(
     store.setPolicy(runId, after);
   });
   policy.maxTotalTokens = after.maxTotalTokens;
+  policy.maxCostUsd = after.maxCostUsd;
 }
 
 /**
@@ -262,6 +288,8 @@ export function growBudgetOnProgress(
   // Another worker of this run may have grown the stored budget already.
   const stored = PolicySchema.parse(JSON.parse(store.run(runId).policy_json));
   if (stored.maxTotalTokens > policy.maxTotalTokens) policy.maxTotalTokens = stored.maxTotalTokens;
+  if (stored.maxCostUsd !== null && stored.maxCostUsd > (policy.maxCostUsd ?? Infinity))
+    policy.maxCostUsd = stored.maxCostUsd;
   if (projected <= policy.maxTotalTokens) return true;
   if (policy.maxTotalTokens >= ceiling) return extendUnderAssume(store, runId, policy, projected);
   const finished = store

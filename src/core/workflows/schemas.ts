@@ -569,6 +569,12 @@ export const PolicySchema = z
          * to without a person while it still makes progress (see `extendUnderAssume`).
          */
         extendToTokens: z.number().int().min(10_000).optional(),
+        /**
+         * Dollars the run's cap (`maxCostUsd`) may grow to along with its token budget: each
+         * automatic growth raises the cap by the same factor, up to this. Unset, growth raises
+         * tokens only and the cap stays where it started (see `recordGrowth`).
+         */
+        maxRunCostUsd: z.number().positive().optional(),
         historyStores: z.array(z.string().min(1)).max(32).optional(),
         testTaskSteps: z.number().int().min(1).max(100).optional(),
       })

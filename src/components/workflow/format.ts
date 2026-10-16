@@ -4,6 +4,7 @@ import {
   proposeExtension,
 } from "../../core/workflows/budget.js";
 import { rangeText, type StartEstimate } from "../../core/workflows/estimate.js";
+import { canExtendRun } from "../../core/workflows/extendable.js";
 import { detectGates } from "../../core/workflows/gates.js";
 import { reasonText } from "../../core/workflows/reasons.js";
 import type { RunSnapshot, WorkflowEvent } from "../../core/workflows/schemas.js";
@@ -271,7 +272,7 @@ export function runActions(
   if (s === "blocked" && snapshot.reason === "input_changed")
     actions.push({ key: "A", label: "accept changes", action: "accept-workspace" });
   if (s === "running") actions.push({ key: "P", label: "pause", action: "pause" });
-  if (s === "blocked" && snapshot.reason === "budget_exhausted" && (!budget || canExtend(budget)))
+  if (canExtendRun(snapshot) && (!budget || canExtend(budget)))
     actions.push({ key: "B", label: "raise limits", action: "extend" });
   if (switchTo && (s === "created" || s === "paused" || s === "blocked" || s === "waiting"))
     actions.push({ key: "M", label: "switch model", action: "reroute" });

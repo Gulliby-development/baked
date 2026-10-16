@@ -58,6 +58,7 @@ import { fileHash } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { estimateHistory, type SavedEstimate } from "./estimate.js";
 import { replayEvents } from "./events.js";
+import { canExtendRun } from "./extendable.js";
 import {
   captureForkSeed,
   FORK_SEED_ARTIFACT,
@@ -1549,12 +1550,20 @@ export class NativeWorkflowService implements WorkflowService {
             "STALE_DECISION",
             "The run stopped at an attempt's token cap, not on its budget: resume it to continue the task with the edits already made",
           );
-        if (row.status !== "blocked" || row.reason !== "budget_exhausted")
+        const before = PolicySchema.parse(JSON.parse(row.policy_json));
+        const spent = this.store.costUsage(runId);
+        if (
+          !canExtendRun({
+            status: row.status,
+            reason: row.reason,
+            estimatedCostUsd: spent.spentUsd + spent.reservedUsd,
+            maxCostUsd: before.maxCostUsd,
+          })
+        )
           throw new WorkflowFault(
             "STALE_DECISION",
-            "Only a run that stopped on its budget can be extended",
+            "Only a run that stopped on its budget, or is blocked with its cost cap nearly spent, can be extended",
           );
-        const before = PolicySchema.parse(JSON.parse(row.policy_json));
         const proposal = proposeExtension(limitsOf(before), budgetUsage(this.store, row));
         const limits: BudgetLimits = {
           maxTotalTokens:
