@@ -1877,7 +1877,8 @@ function describe(view: FeatureView): string {
 
 /**
  * The run policy of a feature: its budget share and, when tiered approval is on, auto approval
- * whose allowed paths are the feature's approved boundary. A feature without boundary paths, or
+ * whose allowed paths are the feature's approved boundary, including an edit of a package
+ * manifest the boundary names. A feature without boundary paths, or
  * with more than auto approval accepts, and every rebased run (`humanOnly`) go to a person.
  */
 export function featurePolicy(
@@ -1912,7 +1913,11 @@ export function featurePolicy(
     ...(growTo !== null ? { sizing: grownSizing(base, maxTotalTokens, growTo) } : {}),
     maxAgentCalls: Math.min(1000, Math.max(MIN_SHARE.maxAgentCalls, calls)),
     maxActiveMs: Math.max(MIN_SHARE.maxActiveMs, ms),
-    autoApproval: limits?.success ? autoApprovalPolicy(limits.data) : null,
+    // A manifest the boundary names was approved with the split, and the feature request lists
+    // the boundary's paths, so editing it is a requested manifest edit (#1328).
+    autoApproval: limits?.success
+      ? { ...autoApprovalPolicy(limits.data), requestedManifestEdits: true }
+      : null,
     ...costPolicy(settings, shareUsd),
   });
 }
