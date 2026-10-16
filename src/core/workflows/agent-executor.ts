@@ -695,7 +695,12 @@ export class NativeAgentExecutor implements AgentExecutor {
               task && checkId.endsWith("-affected")
                 ? affectedTestsFor(root, policy.checks, task.writes).check
                 : task && checkId.endsWith("-written")
-                  ? writtenTestsCheck(root, policy.checks, task.writes, taskCaseText(task))
+                  ? writtenTestsCheck(
+                      root,
+                      policy.checks,
+                      request.writtenTests ?? task.writes,
+                      taskCaseText(task),
+                    )
                   : null;
             const check =
               affected?.id === checkId ? affected : policy.checks.find((c) => c.id === checkId);
