@@ -226,6 +226,16 @@ const SETTLES =
 export const namesRequestSide = (text: string): boolean => SETTLES.test(text);
 
 /**
+ * Wording of a conflict report that one side is what the platform can do at all: a protocol, a
+ * runtime or a library cannot carry or represent the value a criterion or a test demands (#1384,
+ * url-shortener 0cf3a1af: the literal IDN in a Location header, which Bun's Headers reject as not
+ * a ByteString). The implementer rule asks for "platform limit" in such a report.
+ */
+const PLATFORM_LIMIT =
+  /\bplatform[- ]limit\b|\b(?:platform|runtime|protocol|HTTP|headers?|browser|library|operating system|file ?system|encoding)\b[^.;]{0,80}?\b(?:cannot|can't|can ?not|does not|doesn't|is unable to|are unable to)\s+(?:\w+\s+){0,2}?(?:carry|represent|encode|express|transmit|hold|store|accept)\b|\bnot (?:a valid )?(?:ByteString|byte string)\b|\bnot representable\b/i;
+export const namesPlatformLimit = (text: string): boolean => PLATFORM_LIMIT.test(text);
+
+/**
  * A documentation task's report that the rule for examples (run the command, never invent its
  * output) stands against a worked example the request gives (#992, dirdrift 120a6a97: "FR-001 needs
  * the five-line worked example in the README, but the implementer instruction forbids writing
