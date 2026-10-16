@@ -9,6 +9,7 @@ import {
   applySplitEdit,
   featureDigest,
   type InitiativePlan,
+  literalPathCount,
   MAX_MERGED_PATHS,
   mergeSmallSiblings,
   planSizeProblem,
@@ -406,6 +407,23 @@ describe("initiative feature workflows", () => {
     expect(after?.tokens.high).toBe(view.budget.used.tokens);
     expect(after?.withMargin).toBe(after?.tokens.high);
     expect(after?.progress.spent).toBe(view.budget.used.tokens);
+  });
+
+  // Bench round 38, stoptable (#1387): the boundaries were globs, each counted as one path, so the
+  // path floor never applied and a finished glob feature would price a "path" at its whole cost.
+  test("a boundary that names a glob gives the estimate no path count", async () => {
+    expect(literalPathCount(feature("core", [], ["src/core/**"]))).toBe(0);
+    expect(literalPathCount(feature("core", [], ["src/a.ts", "src/{b,c}.ts"]))).toBe(0);
+    expect(literalPathCount(feature("core", [], ["src/a.ts", "tests/a.test.ts"]))).toBe(2);
+    const globs = plan([feature("core", [], ["src/core/**"]), feature("api", ["core"], ["api.txt", "api.test.txt"]), feature("docs", [], ["docs/*.md"])]);
+    const t = setup(globs);
+    await t.start({ plan: globs, keepFeatures: true });
+    const estimate = t.initiatives.estimate("values");
+    expect(estimate?.features.map((f) => [f.featureId, f.paths])).toEqual([
+      ["core", undefined],
+      ["api", 2],
+      ["docs", undefined],
+    ]);
   });
 
   test("with forecastStop a feature waits while the forecast is over the shared budget (#1312)", async () => {

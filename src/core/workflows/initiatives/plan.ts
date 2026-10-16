@@ -156,6 +156,17 @@ function patternsMeet(a: string, b: string): boolean {
   return false;
 }
 
+/**
+ * The files a feature's boundary names, for the estimate's per-path rate: 0 when it names a glob,
+ * since `src/format/**` is one entry and any number of files. Bench round 38 (stoptable): with
+ * glob boundaries the path floor never applied, and a finished glob feature would count its whole
+ * cost against one path (#1387).
+ */
+export function literalPathCount(feature: Pick<InitiativeFeature, "boundary">): number {
+  const { paths } = feature.boundary;
+  return paths.some((path) => GLOB.test(path)) ? 0 : paths.length;
+}
+
 /** The boundary patterns of `a` that meet one of `b`'s. */
 export function sharedPaths(a: InitiativeFeature, b: InitiativeFeature): string[] {
   return a.boundary.paths.filter((p) => b.boundary.paths.some((q) => patternsMeet(p, q)));
