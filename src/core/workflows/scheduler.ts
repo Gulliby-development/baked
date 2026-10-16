@@ -182,6 +182,11 @@ import {
   SCOPING_PLANNERS,
   scopedPlanBudget,
 } from "./clarification.js";
+import {
+  CONFLICT_DECISION_PREFIX,
+  conflictDecisions,
+  decidedFindingIds,
+} from "./conflict-decisions.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
 import { inCostWrapUp } from "./cost-tolerance.js";
 import { coverageFinding } from "./coverage.js";
@@ -3274,9 +3279,12 @@ export class WorkflowScheduler {
     // The repros of earlier findings on the same symbol are a regression set: a rewrite that
     // fixes this finding must not bring one of them back (#1330).
     const regression = new Set(recurringFindings(this.store, runId, task).map((f) => f.id));
+    // A finding a person's spec conflict answer decided is no longer the gate (#1350).
+    const decided = decidedFindingIds(this.store, runId);
     const repros = this.store
       .findings(runId)
       .filter((f) => task.findingIds.includes(f.id) || regression.has(f.id))
+      .filter((f) => !decided.has(f.id))
       .flatMap((f) => {
         const repro = ReproSchema.safeParse((JSON.parse(f.body_json) as { repro?: unknown }).repro);
         return repro.success && executables.includes(repro.data.executable)
@@ -7914,11 +7922,28 @@ ${note}`;
       state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that tests contradict the approved spec: ${report.slice(0, 1500)} The approved spec wins over ${paths.join(", ")}: a correction of the test task changes only the assertions that contradict the spec, and ${task.id} runs again after it.`;
       return;
     }
+    // A person already answered a conflict of this task: the task runs once more under that
+    // answer instead of asking the same question again (#1350, url-shortener asked it 3 times).
+    const answered = conflictDecisions(this.store, runId).filter((d) => d.taskId === task.id);
+    const last = answered.at(-1);
+    const reapplied = last && `tasks/conflicts/${task.id}-under-${last.requestId}.json`;
+    if (last && reapplied && !this.store.latestArtifact(runId, reapplied)) {
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "assumption",
+          reapplied,
+          canonical({ ...account, decision: `${CONFLICT_DECISION_PREFIX}${last.requestId}.json` }),
+        ),
+      );
+      state.prompt += `\nTask ${task.id} reported the spec conflict a person already answered (${CONFLICT_DECISION_PREFIX}${last.requestId}.json): ${last.answer.slice(0, 1500)} That answer is final and the question is not asked again: finish ${task.id} under it, reporting implemented or already_satisfied, not spec_conflict.`;
+      return;
+    }
     this.wait("clarification", state, {
       questions: [
         {
           id: `SPEC-CONFLICT-${task.id}`,
-          question: `Task ${task.id} (${task.title}) reports that the spec and the tests cannot both hold: ${result.summary}${result.unresolved.length ? ` ${result.unresolved.join(" ")}` : ""} Which one is right? The task runs again with your answer; it may not weaken the tests to fit.`,
+          question: `Task ${task.id} (${task.title}) reports that the spec and the tests cannot both hold: ${result.summary}${result.unresolved.length ? ` ${result.unresolved.join(" ")}` : ""} Which one is right? The task runs again with your answer; it may not weaken the tests to fit.${last ? ` It already ran under your earlier answer and reported the conflict again; earlier answer: ${last.answer.slice(0, 800)}` : ""}`,
           blocking: true,
         },
       ],
