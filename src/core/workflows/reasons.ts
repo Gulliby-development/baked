@@ -18,7 +18,7 @@ const REASONS: Record<string, string> = {
     "a required check cannot be started (its executable is missing or not runnable)",
   provider_unavailable: "the model provider is unavailable",
   provider_account:
-    "the model provider refused the account: add credits, fix the API key or switch the run to another model",
+    "the model provider refused the account or its CLI is missing: add credits, fix the API key, install the CLI or switch the run to another model",
   tool_denied: "a tool call was denied by policy",
   storage_failure: "workflow storage failed",
   invalid_output: "a model returned output that failed validation",

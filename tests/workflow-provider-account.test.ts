@@ -82,6 +82,34 @@ describe("provider account refusals", () => {
     expect(calls).toBe(1);
   });
 
+  // sketchfold R34 (#1337): a Codex app update moved its CLI, and the run blocked
+  // provider_unavailable four times, waiting 1, 3 and 9 minutes for a CLI that was not coming back.
+  test("a missing provider CLI blocks the run with provider_account, not as an outage", async () => {
+    const missing = new Error("Codex CLI not found (looked in C:\\Old and 26 more). Install Codex or set BAKED_CODEX_PATH, then run `codex login`.");
+    expect(accountRefusal(missing)).toBe("cli");
+    expect(isTransient(missing)).toBe(false);
+    const root = mkdtempSync(join(tmpdir(), "baked-account-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    let calls = 0;
+    const executor: AgentExecutor = {
+      async execute() {
+        calls++;
+        throw missing;
+      },
+    };
+    const policy: RunPolicy = { ...defaultWorkflowPolicy, checks: [{ id: "check", executable: "bun", args: ["-e", "process.exit(0)"], cwd: ".", timeoutMs: 10000, required: true, scope: "feature", envNames: [], writes: [] }] };
+    const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } };
+    const service = new NativeWorkflowService(root, config, executor);
+    cleanups.push(() => service.close());
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy });
+    const final = await service.drive(run.runId, new AbortController().signal);
+    expect(final.status).toBe("blocked");
+    expect(service.store.run(run.runId).reason).toBe("provider_account");
+    expect(calls).toBe(1);
+    const errors = service.store.artifacts(run.runId).filter((a) => a.logical_path.startsWith("errors/"));
+    expect(errors.map((a) => service.store.readArtifact(run.runId, a.id)).join("\n")).toContain("BAKED_CODEX_PATH");
+  });
+
   test("hand the step to a fallback model on another provider", async () => {
     const root = mkdtempSync(join(tmpdir(), "baked-account-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));

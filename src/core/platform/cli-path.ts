@@ -32,6 +32,13 @@ export interface CliPathHost {
   listDir(path: string): string[];
   /** PATH printed by the user's login shell, or null when it cannot be read. */
   loginShellPath(): string | null;
+  /** When a path was last modified, in ms; 0 when unknown. Orders versioned install folders. */
+  modifiedMs?(path: string): number;
+  /**
+   * Windows: the user and machine PATH from the registry, which a long-running process does not
+   * see change (an app update that moves its CLI updates it), or null when it cannot be read.
+   */
+  registryPath?(): string | null;
 }
 
 const MARK = "__BAKED_PATH__";
@@ -68,6 +75,41 @@ export function parseLoginShellPath(output: string): string | null {
   return path || null;
 }
 
+const REGISTRY_KEYS = [
+  "HKCU\\Environment",
+  "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
+];
+
+/** Reads the user and machine PATH with `reg query`; `%VAR%` references are expanded from `env`. */
+export function readRegistryPath(env: NodeJS.ProcessEnv): string | null {
+  const parts: string[] = [];
+  for (const key of REGISTRY_KEYS) {
+    try {
+      const result = spawnSync("reg", ["query", key, "/v", "Path"], {
+        encoding: "utf-8",
+        timeout: SHELL_TIMEOUT_MS,
+        stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
+      });
+      const value = parseRegistryPath(result.stdout ?? "", env);
+      if (value) parts.push(value);
+    } catch {
+      // A missing key or a sandbox without `reg` leaves that half out.
+    }
+  }
+  return parts.length ? parts.join(";") : null;
+}
+
+/** The `Path` value of `reg query ... /v Path` output, with `%VAR%` expanded. */
+export function parseRegistryPath(output: string, env: NodeJS.ProcessEnv): string | null {
+  const match = /^\s*Path\s+REG_(?:EXPAND_)?SZ\s+(.*)$/im.exec(output);
+  const value = match?.[1]?.trim();
+  if (!value) return null;
+  const lookup = (name: string) =>
+    Object.entries(env).find(([key]) => key.toUpperCase() === name.toUpperCase())?.[1];
+  return value.replace(/%([^%]+)%/g, (whole, name: string) => lookup(name) ?? whole);
+}
+
 function defaultHost(): CliPathHost {
   return {
     platform: process.platform,
@@ -88,6 +130,14 @@ function defaultHost(): CliPathHost {
       }
     },
     loginShellPath: () => readLoginShellPath(process.env, process.platform),
+    modifiedMs: (path) => {
+      try {
+        return statSync(path).mtimeMs;
+      } catch {
+        return 0;
+      }
+    },
+    registryPath: () => (process.platform === "win32" ? readRegistryPath(process.env) : null),
   };
 }
 
@@ -99,6 +149,18 @@ export function wellKnownBinDirs(host: CliPathHost): string[] {
   if (host.platform === "win32") {
     const dirs = [join2(".local", "bin"), join2(".bun", "bin")];
     if (env.APPDATA) dirs.push(join(env.APPDATA, "npm"));
+    // The Codex desktop app keeps its CLI in a folder per app version and replaces it when it
+    // updates itself, while the PATH a running process holds still names the removed one (#1337).
+    if (env.LOCALAPPDATA) {
+      const bin = join(env.LOCALAPPDATA, "OpenAI", "Codex", "bin");
+      const modified = (dir: string) => host.modifiedMs?.(join(bin, dir)) ?? 0;
+      const versions = host
+        .listDir(bin)
+        .sort(
+          (a, b) => modified(b) - modified(a) || b.localeCompare(a, undefined, { numeric: true }),
+        );
+      dirs.push(...versions.map((version) => join(bin, version)), bin);
+    }
     return dirs;
   }
   const dirs = [
@@ -168,7 +230,8 @@ export class CliPathResolver {
 
   /**
    * Where `name` lives. PATH first; then, outside Windows, the login shell PATH, which is
-   * merged into the host PATH; then the installer folders. Found paths are cached, misses are
+   * merged into the host PATH; then the installer folders; then, on Windows, the PATH the
+   * registry holds now. Found paths are cached, misses are
    * not, so a CLI installed while BAKED runs is picked up at the next check.
    */
   resolve(name: string): CliResolution {
@@ -197,6 +260,19 @@ export class CliPathResolver {
     if (viaDirs) {
       prependPath(this.host, [pathApi(this.host).dirname(viaDirs)]);
       return this.hit(name, viaDirs);
+    }
+
+    // Read again on every miss: an installer or app update changes it while BAKED runs.
+    if (this.host.platform === "win32") {
+      const registry = splitPath(this.host, this.host.registryPath?.() ?? "").filter(
+        (dir) => !searched.includes(dir),
+      );
+      searched.push(...registry);
+      const viaRegistry = findIn(registry, name, this.host);
+      if (viaRegistry) {
+        prependPath(this.host, [pathApi(this.host).dirname(viaRegistry)]);
+        return this.hit(name, viaRegistry);
+      }
     }
     return { command: name, found: false, searched: [...new Set(searched)] };
   }

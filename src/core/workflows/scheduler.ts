@@ -608,6 +608,14 @@ function integrityRequirementText(state: RuntimeState): string {
  * The request a spec's deliverables are checked against. A feature of an initiative has its
  * boundary approved with the split, not the request, so it is checked against nothing.
  */
+/** What a person does about a provider refusal before resuming the run. */
+function refusalAdvice(refusal: "credits" | "key" | "cli"): string {
+  if (refusal === "credits")
+    return "the provider account has no credits or quota left; add credits, then resume the run";
+  if (refusal === "key")
+    return "the provider rejected the API key; fix the key, then resume the run";
+  return "the provider's CLI is not installed or not where PATH says (an app update may have moved it); install it, fix PATH or set BAKED_CODEX_PATH or BAKED_CLAUDE_CODE_PATH, then resume the run";
+}
 const coverageRequest = (state: RuntimeState): string =>
   state.hostDependencies ? "" : state.requestText;
 /** Records that the planner was given the scope advice in this run. */
@@ -3818,7 +3826,7 @@ export class WorkflowScheduler {
       if (refusal && !signal.aborted)
         throw new WorkflowFault(
           "OUTPUT_INVALID",
-          `${profile.model} refused the request: ${refusal === "credits" ? "the provider account has no credits or quota left; add credits, then resume the run" : "the provider rejected the API key; fix the key, then resume the run"}, or move the run to another model with baked workflow reroute ${runId} --model ID --expected-revision N. ${error instanceof Error ? error.message : String(error)}`,
+          `${profile.model} refused the request: ${refusalAdvice(refusal)}, or move the run to another model with baked workflow reroute ${runId} --model ID --expected-revision N. ${error instanceof Error ? error.message : String(error)}`,
           { reason: "provider_account" },
         );
       // An attempt that used its steps without submitting and changed nothing is repeated once

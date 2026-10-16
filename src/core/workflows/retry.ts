@@ -12,16 +12,22 @@ const NO_CREDITS =
   /insufficient_quota|no credits|credit balance|exceeded your current quota|billing|payment required/i;
 const BAD_KEY = /api[ _-]?key|unauthori[sz]ed|authentication|invalid x-api-key/i;
 
+/** The message a subscription provider gives when its CLI cannot be found (see cli-path.ts). */
+const CLI_MISSING = /\b(?:Codex|Claude Code) CLI not found\b/;
+
 /**
  * A provider refusal that no retry or other model of the same account fixes: spent credits or
- * quota, or a rejected key. OpenAI reports spent credits as a 429, which is otherwise a rate
- * limit; run 8e117dfa retried it and then lost its task worker over it.
+ * quota, a rejected key, or a provider CLI that is not installed or no longer where PATH says.
+ * OpenAI reports spent credits as a 429, which is otherwise a rate limit; run 8e117dfa retried it
+ * and then lost its task worker over it. A Codex desktop app update moved its CLI, and the
+ * resumes for a provider outage only waited 1, 3 and 9 minutes for nothing (#1337).
  */
-export function accountRefusal(error: unknown): "credits" | "key" | null {
+export function accountRefusal(error: unknown): "credits" | "key" | "cli" | null {
   if (error instanceof WorkflowFault) return null;
   const info = error as ProviderError | undefined;
   const text = `${info?.message ?? ""} ${info?.responseBody ?? ""}`;
   if (OAUTH_REFRESH_COLLISION.test(text)) return null;
+  if (CLI_MISSING.test(text)) return "cli";
   if (info?.statusCode === 402 || NO_CREDITS.test(text)) return "credits";
   if (info?.statusCode === 401 || (info?.statusCode === 403 && BAD_KEY.test(text))) return "key";
   return null;
