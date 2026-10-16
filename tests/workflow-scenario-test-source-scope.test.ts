@@ -32,7 +32,10 @@ const planned = (id: string, paths: string[], checkIds: string[], dependsOn: str
 
 class ScriptedExecutor implements AgentExecutor {
   corrections: string[][] = [];
-  constructor(private root: string) {}
+  constructor(
+    private root: string,
+    private extraTests: string[] = [],
+  ) {}
   private write(path: string, text: string) {
     mkdirSync(join(this.root, path, ".."), { recursive: true });
     writeFileSync(join(this.root, path), text);
@@ -44,7 +47,7 @@ class ScriptedExecutor implements AgentExecutor {
       case "research": output = { schemaVersion: 1, summary: "A fixture workspace", facts: [], unknowns: [], constraints: [], suggestedScope: ["src/render.ts"] }; break;
       case "spec": output = spec; break;
       case "plan":
-        output = { schemaVersion: 1, markdown, taskGraph: { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown), tasks: [planned("T001", ["src/render.ts", "src/slug.ts", "src/links.ts"], []), planned("T002", ["tests/render.test.ts"], ["tests-written"], ["T001"])] } };
+        output = { schemaVersion: 1, markdown, taskGraph: { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown), tasks: [planned("T001", ["src/render.ts", "src/slug.ts", "src/links.ts"], []), planned("T002", ["tests/render.test.ts", ...this.extraTests], ["tests-written"], ["T001"])] } };
         break;
       case "analysis": output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] }; break;
       case "implementation": {
@@ -71,6 +74,47 @@ class ScriptedExecutor implements AgentExecutor {
     return { output, inputTokens: 20, outputTokens: 30 };
   }
 }
+
+async function runScenario(checkPolicy: RunPolicy, extraTests: string[] = []) {
+  const root = mkdtempSync(join(tmpdir(), "baked-mdsite-"));
+  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  const executor = new ScriptedExecutor(root, extraTests);
+  const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy: checkPolicy } };
+  const service = new NativeWorkflowService(root, config, executor);
+  cleanups.push(() => service.close());
+  const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Render the pages", ownerLabel: "test", policy: checkPolicy });
+  await service.drive(run.runId, new AbortController().signal);
+  const snapshot = await service.get(run.runId);
+  const approval = service.store.requests(run.runId).find((r) => r.kind === "approval" && r.status === "pending");
+  if (!approval) throw new Error("No approval request");
+  await service.decide(run.runId, { commandId: newId(), expectedRevision: snapshot.revision }, { kind: "approve", requestId: approval.id, digest: approval.digest });
+  const done = await service.drive(run.runId, new AbortController().signal);
+  const findings = service.store.findings(run.runId).map((f) => JSON.parse(f.body_json) as { claim: string; file: string | null });
+  return { done, executor, service, runId: run.runId, findings };
+}
+
+// Bench round 36, url-shortener 4c3137f0 (#1285): the tests-written check of a property test task
+// timed out, so its output named no file, and the correction could write five files of three
+// tasks (1.52M tokens). A failing test check that names no file fails on the task's own tests.
+const timeoutScript = "const fs = require('node:fs'); if (fs.existsSync('tests/render.test.ts') && fs.readFileSync('src/slug.ts', 'utf8').includes('bug')) { console.log('error: Test timed out after 5000ms'); process.exit(1) }";
+const timeoutCheck = (id: string, scope: "task" | "feature", args: string[] = []): Check => ({ ...check(id, scope), args: ["-e", timeoutScript, ...args] });
+
+describe("scenario: url-shortener 4c3137f0, a timed-out test check that names no file (#1285)", () => {
+  test("the correction starts from the task's only test file and the sources it imports", async () => {
+    const timeoutPolicy: RunPolicy = { ...policy, checks: [timeoutCheck("tests-written", "task"), timeoutCheck("tests", "feature")] };
+    const { done, executor, findings } = await runScenario(timeoutPolicy);
+    expect(done.status).toBe("completed");
+    expect(executor.corrections).toEqual([["src/render.ts", "src/slug.ts", "tests/render.test.ts"]]);
+    const failed = findings.find((f) => f.claim === "Task T002 required check tests-written failed");
+    expect(failed?.file).toBe("tests/render.test.ts");
+  }, 60000);
+
+  test("with several test files, the ones the check's arguments name", async () => {
+    const timeoutPolicy: RunPolicy = { ...policy, checks: [timeoutCheck("tests-written", "task", ["tests/render.test.ts"]), timeoutCheck("tests", "feature")] };
+    const { executor } = await runScenario(timeoutPolicy, ["tests/links.test.ts"]);
+    expect(executor.corrections[0]).toEqual(["src/render.ts", "src/slug.ts", "tests/render.test.ts"]);
+  }, 60000);
+});
 
 describe("scenario: md-site 337d16db, corrective of a failed property test (#1285)", () => {
   test("the first attempt writes the failing test and the sources it imports, not every related file", async () => {

@@ -8303,9 +8303,23 @@ ${note}`;
     // A failing test of the task reaches the code it tests through its imports: the correction's
     // first attempt writes the failing tests and those planned sources, not every file of the
     // related tasks (md-site 337d16db: three correctives with 8 or 9 paths each, #1285).
+    // Output that names no file (a timeout, a bare assertion) still fails on the task's own
+    // tests: the ones the check's arguments name, or the only test file the task writes
+    // (url-shortener 4c3137f0, bench round 36: a timed-out tests-written check of one property test
+    // file opened a correction of five files, 1.52M tokens, #1285).
+    const ownTests = task.writes
+      .filter((w) => w.action !== "delete" && isTestPath(w.path))
+      .map((w) => w.path);
+    const argued = ownTests.filter((path) => check.args.some((arg) => arg.includes(path)));
     const failingTests =
       !regression && isTestCheck(check)
-        ? named.filter((path) => isTestPath(path) && task.writes.some((w) => w.path === path))
+        ? named.some(isTestPath)
+          ? named.filter((path) => isTestPath(path) && task.writes.some((w) => w.path === path))
+          : argued.length
+            ? argued
+            : ownTests.length === 1
+              ? ownTests
+              : []
         : [];
     const sources = failingTests.length
       ? importedFiles(runRoot(this.store.workspace, state), failingTests, [
@@ -8329,7 +8343,8 @@ ${note}`;
       severity: "high",
       requirementIds: task.requirementIds,
       criterionIds: task.criterionIds,
-      file: null,
+      // One failing test file is where the failure shows, and the correction starts there.
+      file: failingTests.length === 1 && sources.length ? (failingTests[0] ?? null) : null,
       symbol: null,
       evidenceIds: [checked.evidenceId],
       claim: regression
