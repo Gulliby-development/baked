@@ -6,7 +6,9 @@
  * initiative owns no execution of its own: it starts, rebases and drives ordinary runs, and its
  * readiness rules are the existing `contractHash` dependency mechanism.
  */
+
 import { ROUTING_ARTIFACT } from "../../llm/model-routing.js";
+import { matchGlob } from "../../platform/index.js";
 import { hashJson } from "../../specs/hash.js";
 import { type BudgetLimits, budgetUsage, limitsOf } from "../budget.js";
 import { autoCostTolerance } from "../cost-tolerance.js";
@@ -55,6 +57,7 @@ import {
   planSizeProblem,
   type SplitEdit,
   SplitEditSchema,
+  sequenceSharedPaths,
   sizeWeight,
   topologicalOrder,
   validateInitiativePlan,
@@ -883,8 +886,7 @@ export class InitiativeService {
         this.forecastOver(this.store.get(id), view)
       )
         break;
-      await this.startFeature(id, ready.id);
-      started = true;
+      if (await this.startFeature(id, ready.id)) started = true;
       view = this.view(id);
     }
     const runs = runnable(view)
@@ -990,12 +992,22 @@ export class InitiativeService {
       commits,
       Math.floor(this.store.get(id).created_at / 1000),
     );
-    if ("conflicts" in merged)
+    if ("conflicts" in merged) {
+      const plan = this.approvedPlan(this.store.get(id));
+      const writers = feature.dependsOn.filter((upstream) =>
+        plan?.features
+          .find((f) => f.id === upstream)
+          ?.boundary.paths.some((pattern) =>
+            merged.conflicts.some((file) => file === pattern || matchGlob(file, pattern)),
+          ),
+      );
+      const merge = writers.length > 1 ? writers : feature.dependsOn;
       throw new WorkflowFault(
         "INPUT_CHANGED",
-        `The results of ${feature.dependsOn.join(", ")}, which ${feature.id} builds on, conflict in ${merged.conflicts.join(", ") || "their files"}; re-plan one of them so their files do not overlap`,
-        { reason: "upstream_conflict" },
+        `The results of ${feature.dependsOn.join(", ")}, which ${feature.id} builds on, conflict in ${merged.conflicts.join(", ") || "their files"}. Merge ${merge.join(", ")} into one feature (baked workflow initiative merge --features ${merge.join(",")}), or re-plan one of them so their files do not overlap`,
+        { reason: "upstream_conflict", conflicts: merged.conflicts },
       );
+    }
     return merged.commit;
   }
 
@@ -1035,7 +1047,8 @@ export class InitiativeService {
     });
   }
 
-  private async startFeature(id: string, featureId: string): Promise<void> {
+  /** Starts a feature's run; false when its upstream results conflict and it waits for a person. */
+  private async startFeature(id: string, featureId: string): Promise<boolean> {
     const row = this.store.get(id);
     const plan = this.approvedPlan(row);
     const feature = plan?.features.find((f) => f.id === featureId);
@@ -1049,7 +1062,23 @@ export class InitiativeService {
     const share = { ...sized, ...guardGrowth(current, featureId, settings.basePolicy) };
     const previous = this.store.links(id).filter((l) => l.feature_id === featureId).length;
     const runFeature = runFeatureId(id, featureId);
-    const baseCommit = await this.featureBase(id, feature, settings);
+    let baseCommit: string | undefined;
+    try {
+      baseCommit = await this.featureBase(id, feature, settings);
+    } catch (error) {
+      if (!(error instanceof WorkflowFault) || error.details.reason !== "upstream_conflict")
+        throw error;
+      // The feature waits for a person instead of failing on every drive (sketchfold: the drive
+      // exited every 52 s for 22 minutes with nothing to answer, #1336).
+      this.store.emit(id, "feature.upstream_conflict", {
+        featureId,
+        planRevision: row.approved_plan_revision,
+        upstream: feature.dependsOn,
+        conflicts: error.details.conflicts ?? [],
+        message: error.message,
+      });
+      return false;
+    }
     // A derived command ID makes a start after a crash return the same run instead of a second one.
     const snapshot = await this.workflows.start({
       commandId: `i-${hashJson({ id, featureId, previous, revision: row.approved_plan_revision }).slice(0, 48)}`,
@@ -1087,6 +1116,7 @@ export class InitiativeService {
         previous ? "replan" : "start",
       );
     });
+    return true;
   }
 
   /**
@@ -1599,6 +1629,14 @@ export class InitiativeService {
     const views = new Map<string, FeatureView>();
     const settings = this.store.settings(row);
     const issues = settings.featureIssues;
+    // Features whose upstream results could not be merged when they were to start, under the
+    // approved split; a new split approval clears them.
+    const conflicts = new Map<string, string>();
+    for (const payload of this.store.eventsOfType(row.id, "feature.upstream_conflict")) {
+      const event = payload as { featureId: string; planRevision: number | null; message: string };
+      if (event.planRevision === row.approved_plan_revision)
+        conflicts.set(event.featureId, event.message);
+    }
     for (const feature of topologicalOrder(plan)) {
       const workflowId = featureWorkflowId(settings, feature);
       const runFeature = runFeatureId(row.id, feature.id);
@@ -1639,6 +1677,11 @@ export class InitiativeService {
       if (!link) {
         view.state = waiting.length ? "waiting" : "ready";
         view.blockers = waiting;
+        const conflict = conflicts.get(feature.id);
+        if (!waiting.length && conflict) {
+          view.state = "blocked";
+          view.blockers = [conflict];
+        }
         continue;
       }
       const run = this.workflows.store.snapshot(link.run_id);
@@ -1818,18 +1861,26 @@ export class InitiativeService {
   /** A new plan revision with a pending split approval bound to its digest. */
   private propose(
     id: string,
-    plan: InitiativePlan,
+    proposed: InitiativePlan,
     source: "decomposer" | "user",
     edit: SplitEdit | null,
   ): void {
     const row = this.store.get(id);
     const settings = this.store.settings(row);
+    // Features that may write a common file run one after the other (#1336).
+    const withRuns = new Set(
+      proposed.features.filter((f) => this.store.current(id, f.id)).map((f) => f.id),
+    );
+    const sequenced = sequenceSharedPaths(proposed, withRuns);
+    const plan = sequenced.plan;
     const budget = planBudget(settings, plan);
     const revision = row.plan_revision + 1;
     const digest = splitDigest(id, revision, plan, budget, settings);
     for (const request of this.store.requests(id).filter((r) => r.status === "pending"))
       this.store.decide(id, request.id, "superseded", { planRevision: revision });
     this.store.addRevision(id, plan, budget, digest, source, edit);
+    if (sequenced.added.length)
+      this.store.emit(id, "split.sequenced", { planRevision: revision, added: sequenced.added });
     this.store.request(id, revision, digest);
     this.store.setStatus(id, "awaiting_approval");
   }

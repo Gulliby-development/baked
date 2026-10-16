@@ -406,6 +406,15 @@ export class InitiativeStore {
         payload: JSON.parse(row.payload_json) as unknown,
       }));
   }
+  /** The payloads of the events of `type`, oldest first. */
+  eventsOfType(id: string, type: string): unknown[] {
+    return this.db
+      .query<{ payload_json: string }, [string, string]>(
+        "SELECT payload_json FROM initiative_events WHERE initiative_id=? AND type=? ORDER BY seq",
+      )
+      .all(id, type)
+      .map((row) => JSON.parse(row.payload_json) as unknown);
+  }
   /** A stored result for a repeated command ID; a different body under the same ID is refused. */
   previousCommand<T>(commandId: string, body: unknown): T | undefined {
     SafeId.parse(commandId);
