@@ -84,7 +84,7 @@ const featureEstimateText = (estimate: InitiativeEstimate | null, featureId: str
   if (!f) return "";
   return f.basis === "measured"
     ? ` · used ${formatTokens(f.tokens.high)} tokens`
-    : ` · estimate ${formatTokens(f.tokens.low)}-${formatTokens(f.tokens.high)} tokens${f.paths ? ` for ${f.paths} ${f.paths === 1 ? "path" : "paths"}` : ""}`;
+    : ` · estimate ${formatTokens(f.tokens.low)}-${formatTokens(f.tokens.high)} tokens${f.paths ? ` for ${f.paths} ${f.paths === 1 ? "path" : "paths"}` : ""}${f.floor ? ` (by ${f.floor})` : ""}`;
 };
 const clip = (text: string, width: number): string =>
   text.length > width ? `${text.slice(0, Math.max(1, width - 1))}…` : text;

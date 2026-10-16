@@ -438,7 +438,7 @@ function EstimatePanel({ projectKey, view }: { projectKey: string; view: Initiat
             <span className="font-mono text-muted-foreground">
               {f.basis === "measured"
                 ? `used ${tokens(f.tokens.high)}`
-                : `${tokens(f.tokens.low)}–${tokens(f.tokens.high)}`}
+                : `${tokens(f.tokens.low)}–${tokens(f.tokens.high)}${f.floor ? ` by ${f.floor}` : ""}`}
             </span>
           </li>
         ))}

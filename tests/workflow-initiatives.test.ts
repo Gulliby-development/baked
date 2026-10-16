@@ -520,6 +520,23 @@ describe("scenario: an initiative budget shared by estimated need (#1311)", () =
     const run = t.workflows.store.run(t.featureOf(started, "core").runId ?? "");
     expect(JSON.parse(run.policy_json).sizing.maxRunTokens).toBe(view.budget.remaining.tokens - reserve);
   }, 30000);
+  // Bench round 37, ranktally (#1376): a project's first initiative had no finished features of its
+  // own, so the path rate of #1354 could not floor the estimate shown at the split approval. The
+  // finished features of the stores in sizing.historyStores now count.
+  test("a new project's split estimate takes the path rate of another project's finished features", async () => {
+    const other = await measured();
+    const fresh = setup();
+    const shared = { ...policy, sizing: { historyStores: [other.root] } };
+    await fresh.start({ plan: threeFeatures, policy: shared });
+    const estimate = fresh.initiatives.estimate("values");
+    expect(estimate?.perPathSamples).toEqual({ features: 3, shared: 3 });
+    expect(estimate?.perPath).not.toBeNull();
+    expect(estimate?.notes.some((n) => n.includes("tokens per path of its boundary, as measured on 3 finished features (3 of other projects)"))).toBe(true);
+    // Without the shared store the split has nothing to measure a path by.
+    const alone = setup();
+    await alone.start({ plan: threeFeatures });
+    expect(alone.initiatives.estimate("values")).toMatchObject({ perPath: null, perPathSamples: { features: 0, shared: 0 } });
+  }, 30000);
 });
 
 // Bench round 32, notesift (#1317): each feature run had its own $8 cap and nothing added the
