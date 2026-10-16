@@ -2564,8 +2564,20 @@ export class WorkflowScheduler {
       if (!check.required) continue;
       signal.throwIfAborted();
       const checked = await run(check);
-      if (checked.status === "failed")
-        failed.push({ id: check.id, output: (checked.output ?? "").slice(-4000) });
+      if (checked.status !== "failed") continue;
+      let output = (checked.output ?? "").slice(-4000);
+      // A failing test that runs another check of the project shows only its exit code: the
+      // continuation gets that check's own output too.
+      const tests = checked.output ? failingTestNames(checked.output) : [];
+      const spawned = policy.checks.find(
+        (c) => c.id !== check.id && tests.some((name) => namesCheckCommand(name, c)),
+      );
+      if (spawned) {
+        const ran = await run(spawned);
+        if (ran.status === "failed" && ran.output?.trim())
+          output = `${output}\n\nThe failing test runs the project's ${spawned.id} check (${[spawned.executable, ...spawned.args].join(" ")}); run on its own it fails with:\n${ran.output.trim().slice(-SPAWNED_OUTPUT_CHARS)}`;
+      }
+      failed.push({ id: check.id, output });
     }
     if (!failed.length) return false;
     this.store.transaction(() => {
@@ -2576,7 +2588,13 @@ export class WorkflowScheduler {
         runId,
         "recovery",
         `tasks/${task.id}/cut-off-checks.json`,
-        canonical({ taskId: task.id, stepId, finalizedBy: record.finalizedBy, failed }),
+        canonical({
+          taskId: task.id,
+          stepId,
+          finalizedBy: record.finalizedBy,
+          reason: "cut_off",
+          failed,
+        }),
       );
       this.store.saveState(runId, state);
     });
@@ -2591,11 +2609,15 @@ export class WorkflowScheduler {
     if (!artifact) return {};
     const record = JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
       failed: { id: string; output: string }[];
+      reason?: "cut_off" | "correction";
     };
     return {
       cutOffChecks: {
         failed: record.failed,
-        note: "An earlier attempt of this task reached its limit after edits it did not check, and these required checks failed on its files, with this output. Fix what fails, run the check with request_check, then submit.",
+        note:
+          record.reason === "correction"
+            ? "This correction's earlier attempt submitted, and these required checks then failed on its files, with this output. The failure is part of this correction: find its cause in what the earlier attempt changed (a test that contradicts the spec is a cause too), fix it, run the check with request_check, then submit."
+            : "An earlier attempt of this task reached its limit after edits it did not check, and these required checks failed on its files, with this output. Fix what fails, run the check with request_check, then submit.",
       },
     };
   }
@@ -8595,6 +8617,79 @@ ${note}`;
     this.store.transaction(() => this.store.saveState(runId, state));
   }
   /**
+   * Whether a correction whose own checks failed goes back to itself once, with the failures,
+   * instead of opening a correction of the correction (#1285). The new correction started over
+   * without the earlier one's context, from the union of the plan's files: bench round 35,
+   * url-shortener 651b2693 T007 broke a property test and T008 was opened for it with all 7
+   * files; round 34 chained md-site d486645a T008 -> T011 -> T012 on one failing test. Only
+   * failures of the task's checks qualify, each with its command output; a failure the
+   * continuation leaves opens the correction of the correction as before.
+   */
+  private continueCorrection(
+    runId: string,
+    state: RuntimeState,
+    task: Task,
+    child: string,
+    failures: Review["findings"],
+  ): boolean {
+    if (task.origin === "planned" || (state.taskContinuations[task.id] ?? 0) > 0) return false;
+    // The checks the correction was opened for, and the files it changed: a failure of another
+    // check on files it did not touch belongs to that file's correction, not to this one.
+    const openedFor = new Set(
+      this.store
+        .findings(runId)
+        .filter((row) => task.findingIds.includes(row.id))
+        .flatMap((row) => {
+          const claim = (JSON.parse(row.body_json) as { claim?: unknown }).claim;
+          const check =
+            typeof claim === "string"
+              ? (/^Required check (\S+) failed$/.exec(claim)?.[1] ?? taskCheckOfClaim(claim))
+              : null;
+          return check ? [check] : [];
+        }),
+    );
+    const diff = this.store.latestArtifact(runId, `tasks/${task.id}/diff.json`);
+    const changed = diff
+      ? ((JSON.parse(this.store.readArtifact(runId, diff.id)) as { changed?: string[] }).changed ??
+        [])
+      : [];
+    const graph = state.graph;
+    const failed: { id: string; output: string }[] = [];
+    for (const finding of failures) {
+      const check = taskCheckOfClaim(finding.claim);
+      const output = check ? this.commandOutput(runId, finding.evidenceIds) : null;
+      if (!check || !output) return false;
+      const regression = finding.claim.includes(" broke existing tests: ");
+      const touched =
+        graph !== null && pathsInOutput(output, graph.tasks).some((path) => changed.includes(path));
+      if (!regression && !openedFor.has(check) && !touched) return false;
+      failed.push({
+        id: check,
+        output: `${finding.claim}. ${finding.impact}\n${output}`.slice(-CONTINUED_OUTPUT_CHARS),
+      });
+    }
+    this.store.transaction(() => {
+      state.taskContinuations[task.id] = 1;
+      delete state.deferredChecks[task.id];
+      this.store.artifact(
+        runId,
+        "recovery",
+        `tasks/${task.id}/cut-off-checks.json`,
+        canonical({
+          taskId: task.id,
+          stepId: child,
+          finalizedBy: null,
+          reason: "correction",
+          failed,
+        }),
+      );
+      this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "continue_at_cap" });
+      this.store.finishStep(runId, child, "failed");
+      this.store.saveState(runId, state);
+    });
+    return true;
+  }
+  /**
    * Closes a task after its checks: failures become corrective tasks; otherwise the task gets its
    * check gate and the repair chain it closes is restored.
    */
@@ -8614,6 +8709,8 @@ ${note}`;
       });
       return;
     }
+    if (taskFailures.length && this.continueCorrection(runId, state, task, child, taskFailures))
+      return;
     this.store.transaction(() =>
       this.store.criticTaskResult(runId, task.id, taskFailures.length ? "repaired" : "passed"),
     );
@@ -12095,6 +12192,8 @@ interface WorkerCheck {
 }
 /** How much of a spawned check's output a finding quotes (#1285). */
 const SPAWNED_OUTPUT_CHARS = 3000;
+/** The failure text a continued correction gets per failed check. */
+const CONTINUED_OUTPUT_CHARS = 8000;
 /** The names of the failing tests a check's output reports: `(fail) name`, `✗ name`, `FAIL name`. */
 function failingTestNames(output: string): string[] {
   return output
