@@ -1929,8 +1929,9 @@ function describe(view: FeatureView): string {
 /**
  * The run policy of a feature: its budget share and, when tiered approval is on, auto approval
  * whose allowed paths are the feature's approved boundary, including an edit of a package
- * manifest the boundary names. A feature without boundary paths, or
- * with more than auto approval accepts, and every rebased run (`humanOnly`) go to a person.
+ * manifest the boundary names, and limits at least as large as the boundary's files
+ * (`boundaryLimits`). A feature without boundary paths, or with more than auto approval accepts,
+ * and every rebased run (`humanOnly`) go to a person.
  */
 export function featurePolicy(
   settings: InitiativeSettings,
@@ -1950,8 +1951,7 @@ export function featurePolicy(
     auto && !humanOnly
       ? DefinitionAutoApprovalSchema.safeParse({
           enabled: true,
-          maxTasks: auto.maxTasks,
-          maxFiles: auto.maxFiles,
+          ...boundaryLimits(auto, feature.boundary.paths),
           allowedPaths: feature.boundary.paths,
           allowDelete: false,
           allowNewDependencies: false,
@@ -1971,6 +1971,28 @@ export function featurePolicy(
       : null,
     ...costPolicy(settings, shareUsd),
   });
+}
+
+/** The most tasks and files a definition's auto approval accepts. */
+const AUTO_APPROVAL_CEILING = { maxTasks: 20, maxFiles: 50 } as const;
+
+/**
+ * The tiered limits of a feature run: the initiative's limits, raised to the files the approved
+ * boundary names, with one task per file and two spare. The person approved those paths with the
+ * split, so a plan that writes them is not larger than what was approved; a boundary of 11 files
+ * could never pass a 10-file limit (narrowfit language and cli, #1349). Glob paths are not
+ * counted, so the initiative's limits stay the floor.
+ */
+export function boundaryLimits(
+  auto: { maxTasks: number; maxFiles: number },
+  paths: readonly string[],
+): { maxTasks: number; maxFiles: number } {
+  const files = paths.filter((p) => !/[*?[\]{}]/.test(p)).length;
+  if (!files) return { maxTasks: auto.maxTasks, maxFiles: auto.maxFiles };
+  return {
+    maxTasks: Math.max(auto.maxTasks, Math.min(AUTO_APPROVAL_CEILING.maxTasks, files + 2)),
+    maxFiles: Math.max(auto.maxFiles, Math.min(AUTO_APPROVAL_CEILING.maxFiles, files)),
+  };
 }
 
 /**
