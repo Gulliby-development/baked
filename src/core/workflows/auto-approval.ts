@@ -87,6 +87,11 @@ export interface ApprovalContext {
   scaffold?: boolean;
   /** The user's request; a spec that leaves one of its deliverables unmapped needs a person. */
   request?: string;
+  /**
+   * Tokens the host added to the run budget on its own (planning floor, sizing, growth), recorded
+   * as policy revisions with `approvedBy: "sizing"`; see `hostBudgetGrowth`.
+   */
+  hostGrowthTokens?: number;
 }
 
 /** Budget limits a renewal may keep or lower, never raise, unless the operator raised them. */
@@ -159,8 +164,17 @@ export function evaluateAutoApproval(
     const limits = config.limits;
     const scope = scopeProblems(limits, graph, context.hostSplitTasks ?? 0);
     const problems = scope.map((p) => p.text);
-    if (policy.maxTotalTokens > limits.maxTotalTokens)
+    // Growth the host made itself, up to the policy's own sizing ceiling, is not a budget a person
+    // has to approve; only the budget the run started with counts against the limit (#1309).
+    const grown = Math.max(0, context.hostGrowthTokens ?? 0);
+    const ceiling = Math.max(limits.maxTotalTokens, policy.sizing?.maxRunTokens ?? 0);
+    const started = policy.maxTotalTokens - grown;
+    if (started > limits.maxTotalTokens)
       problems.push(`the token budget ${policy.maxTotalTokens} exceeds ${limits.maxTotalTokens}`);
+    else if (policy.maxTotalTokens > ceiling)
+      problems.push(
+        `the token budget ${policy.maxTotalTokens} exceeds the sizing ceiling ${ceiling}`,
+      );
     if (!common.length && !problems.length)
       return { approval: { mode: "limits", limitsHash }, reasons: [] };
     reasons.push(...problems.map((reason) => `Limits: ${reason}`));
@@ -434,6 +448,30 @@ export function policyDecisions(
       decisions.push({ policyHash: body.policyHash });
   }
   return decisions;
+}
+
+/**
+ * Tokens the host added to the run budget without a person: the sum of the `maxTotalTokens`
+ * increases of policy revisions with `approvedBy: "sizing"` (planning floor, sizing, growth).
+ */
+export function hostBudgetGrowth(
+  artifacts: ArtifactRow[],
+  read: (artifact: ArtifactRow) => string,
+): number {
+  let grown = 0;
+  for (const artifact of artifacts) {
+    if (artifact.kind !== "policy-revision") continue;
+    const body = JSON.parse(read(artifact)) as {
+      approvedBy?: unknown;
+      previous?: { maxTotalTokens?: unknown };
+      next?: { maxTotalTokens?: unknown };
+    };
+    const before = body.previous?.maxTotalTokens;
+    const after = body.next?.maxTotalTokens;
+    if (body.approvedBy === "sizing" && typeof before === "number" && typeof after === "number")
+      grown += Math.max(0, after - before);
+  }
+  return grown;
 }
 
 /** What an approval request's `autoApproval` says about the approval reviewer, in one line. */
