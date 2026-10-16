@@ -2717,6 +2717,26 @@ export class WorkflowScheduler {
       unresolved: result.unresolved.filter((item) => !advisory.includes(item)),
     };
   }
+  /**
+   * The earlier findings of the run on the symbol this correction's findings name, when a
+   * correction already fixed them: the symbol is being patched one finding at a time, so this
+   * correction rewrites it for its whole input class against every finding's repro (#1330).
+   */
+  private recurringContext(runId: string, task: Task): Record<string, unknown> {
+    const earlier = recurringFindings(this.store, runId, task);
+    if (!earlier.length) return {};
+    return {
+      recurringFindings: {
+        symbols: [...new Set(earlier.map((f) => f.symbol))],
+        earlier: earlier.map((f) => ({
+          id: f.id,
+          claim: f.claim,
+          ...(f.repro ? { repro: f.repro } : {}),
+        })),
+        note: "Earlier corrections of this run already patched these symbols for the findings listed here, and the findings this task corrects are the next case of the same input. Do not add another special case: rewrite the symbol for its whole input class. First state the input grammar or contract it must handle (for a parser: tokenize code spans, links and delimiters first, then interpret them; no placeholder substitution), then rewrite it, and add table-driven tests with one row per finding here and per finding this task corrects. The host runs the repro of every listed finding before it accepts submit_result, and run_repro runs them too.",
+      },
+    };
+  }
   /** The worker's own account of the attempt a restart replaces, for the fresh session's prompt. */
   private previousAttempt(
     runId: string,
@@ -3242,9 +3262,12 @@ export class WorkflowScheduler {
   ): ((root: string, signal: AbortSignal) => Promise<string[]>) | undefined {
     if (task.origin === "planned" || !task.findingIds.length) return undefined;
     const executables = reproExecutables(policy.checks);
+    // The repros of earlier findings on the same symbol are a regression set: a rewrite that
+    // fixes this finding must not bring one of them back (#1330).
+    const regression = new Set(recurringFindings(this.store, runId, task).map((f) => f.id));
     const repros = this.store
       .findings(runId)
-      .filter((f) => task.findingIds.includes(f.id))
+      .filter((f) => task.findingIds.includes(f.id) || regression.has(f.id))
       .flatMap((f) => {
         const repro = ReproSchema.safeParse((JSON.parse(f.body_json) as { repro?: unknown }).repro);
         return repro.success && executables.includes(repro.data.executable)
@@ -4933,6 +4956,7 @@ ${note}`;
               unresolvedMeans: UNRESOLVED_MEANING,
               ...(await this.libraryDocsContext(runId, policy, root, task)),
               ...this.previousAttempt(runId, task.id),
+              ...this.recurringContext(runId, task),
               ...this.cutOffChecks(runId, task.id),
               ...(focus.files.length
                 ? {
@@ -6106,6 +6130,7 @@ ${note}`;
                   ...entry.extra,
                   task: scoped,
                   ...(await this.correctionContext(runId, state, policy, root, task, narrow)),
+                  ...this.recurringContext(runId, task),
                   ...(await this.libraryDocsContext(runId, policy, root, task)),
                   ...(earlierEdits ? { earlierEdits } : {}),
                   ...this.affectedTestsContext(root, state, policy, task),
@@ -11732,6 +11757,69 @@ export function correctionFocus(
       add(files, path);
   }
   return { files: files.filter((path) => task.writes.some((w) => w.path === path)), symbols };
+}
+/** The last name of a symbol a reviewer reported: `Parser.parseInline()` is `parseInline`. */
+const symbolKey = (symbol: string | null | undefined): string =>
+  (symbol ?? "")
+    .replace(/\(.*$/s, "")
+    .split(/[.:#\s]+/)
+    .filter(Boolean)
+    .at(-1) ?? "";
+
+/**
+ * The earlier findings of the run that a correction's findings recur on: the same symbol in the
+ * same file, or the finding one of them names in `repeatOf`, when a correction that finished
+ * already corrected them. md-site 11b11f19 (bench round 33) got five findings on its inline and
+ * front matter parsers over four passes, each patched where the last patch left off (5.44M
+ * tokens of corrections, #1330).
+ */
+export function recurringFindings(
+  store: WorkflowStore,
+  runId: string,
+  task: Task,
+): { id: string; symbol: string; claim: string; repro?: Repro }[] {
+  if (task.origin === "planned" || !task.findingIds.length) return [];
+  const findings = store.findings(runId).map((f) => ({
+    id: f.id,
+    body: JSON.parse(f.body_json) as {
+      file?: string | null;
+      symbol?: string | null;
+      claim?: string;
+      repeatOf?: string | null;
+      repro?: unknown;
+    },
+  }));
+  const own = findings.filter((f) => task.findingIds.includes(f.id));
+  const symbols = new Set(own.map((f) => symbolKey(f.body.symbol)).filter(Boolean));
+  const repeated = new Set(own.flatMap((f) => (f.body.repeatOf ? [f.body.repeatOf] : [])));
+  const corrected = new Set(
+    store
+      .tasks(runId)
+      .filter((row) => row.id !== task.id && ["implemented", "verified"].includes(row.status))
+      .flatMap((row) => (JSON.parse(row.definition_json) as Task).findingIds ?? []),
+  );
+  return findings.flatMap((f) => {
+    if (task.findingIds.includes(f.id) || !corrected.has(f.id)) return [];
+    const key = symbolKey(f.body.symbol);
+    const sameSymbol =
+      key !== "" &&
+      symbols.has(key) &&
+      own.some(
+        (o) =>
+          symbolKey(o.body.symbol) === key &&
+          (!o.body.file || !f.body.file || o.body.file === f.body.file),
+      );
+    if (!sameSymbol && !repeated.has(f.id)) return [];
+    const repro = ReproSchema.safeParse(f.body.repro);
+    return [
+      {
+        id: f.id,
+        symbol: key || (f.body.file ?? ""),
+        claim: f.body.claim ?? "",
+        ...(repro.success ? { repro: repro.data } : {}),
+      },
+    ];
+  });
 }
 /** Characters of each repro input file or stdin a corrective worker is shown. */
 const REPRO_INPUT_CHARS = 8000;
