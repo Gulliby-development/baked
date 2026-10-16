@@ -358,7 +358,7 @@ export function planBudget(settings: InitiativeSettings, plan: InitiativePlan): 
 export const MIN_SHARE = { maxTotalTokens: 1000, maxAgentCalls: 1, maxActiveMs: 1000 } as const;
 
 export const BUDGET_RULE =
-  "Each feature run starts with a share of the remaining shared budget, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included), times the feature's weight, divided by the weights of the features of the approved plan without a run. Tokens are weighted by each feature's estimated need (the high end of its estimate), calls and time by size (small 1, medium 2, large 4). A feature whose share is below the low end of its estimate does not start until the budget is raised. A feature run grows its own budget only up to what remains after the low ends of the features still waiting. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000. With a dollar budget (--budget-usd), dollars are split like tokens and each feature run gets its share as its maxCostUsd (never above the base policy's own) with the initiative's costTolerance; open runs hold their caps. No feature starts on less than $0.01, or once a feature is accepted and the projected total passes the cap and its tolerance.";
+  "Each feature run starts with a share of the remaining shared budget, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included), times the feature's weight, divided by the weights of the features of the approved plan without a run. Tokens are weighted by each feature's estimated need (the high end of its estimate), calls and time by size (small 1, medium 2, large 4). A feature whose share is below the low end of its estimate does not start until the budget is raised. A feature run grows its own budget only up to what remains after the low ends of the features still waiting. A starting feature's calls and active time are what remains less a floor for each other waiting feature (the base policy's per-run limit scaled by size, at most its share), never below its own share. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000. With a dollar budget (--budget-usd), dollars are split like tokens and each feature run gets its share as its maxCostUsd (never above the base policy's own) with the initiative's costTolerance; open runs hold their caps. No feature starts on less than $0.01, or once a feature is accepted and the projected total passes the cap and its tolerance.";
 
 /** Digest a person approves for a plan revision: the plan, the budget and the frozen settings. */
 export function splitDigest(
@@ -1044,8 +1044,9 @@ export class InitiativeService {
     const upstream = this.upstreamContracts(id, feature);
     const current = this.view(id);
     const waiting = current.features.find((f) => f.id === featureId);
-    const share = waiting?.share;
-    if (!share) throw new WorkflowFault("BUDGET_EXHAUSTED", "No budget share is available");
+    const sized = waiting?.share;
+    if (!sized) throw new WorkflowFault("BUDGET_EXHAUSTED", "No budget share is available");
+    const share = { ...sized, ...guardGrowth(current, featureId, settings.basePolicy) };
     const previous = this.store.links(id).filter((l) => l.feature_id === featureId).length;
     const runFeature = runFeatureId(id, featureId);
     const baseCommit = await this.featureBase(id, feature, settings);
@@ -1947,6 +1948,41 @@ export function growthLimit(view: InitiativeView, featureId: string): number | n
     .filter((f) => f.id !== featureId)
     .reduce((sum, f) => sum + (f.need?.low ?? 0), 0);
   return Math.max(0, view.budget.remaining.tokens - reserve);
+}
+
+/**
+ * The calls and active time a starting feature gets: what remains of the shared budget less a
+ * floor for every other feature still waiting, never below its own share. A floor is the base
+ * policy's per-run limit scaled by size (half for small, double for large), at most that
+ * feature's own share. Both limits are stuck-run guards rather than costs, and an open run holds
+ * only what it uses once it ends; split by size alone, the first medium feature of a 6 hour,
+ * 7 feature initiative got 38 minutes, needed 40 and blocked with 11.7M ms of the initiative
+ * unused (#1327).
+ */
+export function guardGrowth(
+  view: InitiativeView,
+  featureId: string,
+  base: Pick<RunPolicy, "maxAgentCalls" | "maxActiveMs">,
+): { calls: number; activeMs: number } {
+  const waiting = view.features.filter((f) => f.share !== null);
+  const own = waiting.find((f) => f.id === featureId)?.share;
+  const others = waiting.filter((f) => f.id !== featureId);
+  const floor = (limit: number, pick: (share: UsageView) => number): number =>
+    others.reduce(
+      (sum, f) => sum + Math.min(f.share ? pick(f.share) : 0, (limit * sizeWeight(f)) / 2),
+      0,
+    );
+  const { remaining } = view.budget;
+  return {
+    calls: Math.max(
+      own?.calls ?? 0,
+      Math.floor(remaining.calls - floor(base.maxAgentCalls, (s) => s.calls)),
+    ),
+    activeMs: Math.max(
+      own?.activeMs ?? 0,
+      Math.floor(remaining.activeMs - floor(base.maxActiveMs, (s) => s.activeMs)),
+    ),
+  };
 }
 
 /**
