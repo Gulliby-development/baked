@@ -5,8 +5,19 @@ export interface PlanCost {
     complete: boolean;
     models: { model: string; usd: number; stages: string[] }[];
   };
-  implementation: { model: string; usd: { low: number; high: number } } | null;
+  /** `rate`: what priced a token (absent on older backends, which used the default mix). */
+  implementation: {
+    model: string;
+    usd: { low: number; high: number };
+    rate?: "run" | "mix" | "default";
+  } | null;
 }
+
+const RATE_TEXT = {
+  run: " at this run's dollars per token so far",
+  mix: " at this run's mix of cached and uncached tokens",
+  default: "",
+} as const;
 
 const usd = (n: number): string => (n < 10 ? `$${n.toFixed(2)}` : `$${Math.round(n)}`);
 
@@ -15,7 +26,7 @@ export function planCostText(cost: PlanCost): string {
   const models = cost.planning.models.map((m) => `${m.model} ${usd(m.usd)}`).join(", ");
   const planning = `Planning so far about ${usd(cost.planning.usd)}${cost.planning.complete ? "" : " (partial: a model has no price)"}${models ? ` (${models})` : ""}`;
   const tasks = cost.implementation
-    ? `; the planned tasks about ${usd(cost.implementation.usd.low)}–${usd(cost.implementation.usd.high)} on ${cost.implementation.model}`
+    ? `; the planned tasks about ${usd(cost.implementation.usd.low)}–${usd(cost.implementation.usd.high)} on ${cost.implementation.model}${RATE_TEXT[cost.implementation.rate ?? "default"]}`
     : "";
   return `${planning}${tasks}`;
 }
