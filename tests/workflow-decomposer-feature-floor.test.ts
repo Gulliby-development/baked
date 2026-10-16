@@ -12,6 +12,6 @@ describe("decomposer feature floor", () => {
     expect(text).toContain("pays a fixed cost besides its tasks");
     expect(text).toContain("at least three files or a group of at least three related behaviors");
     expect(text).toContain("merge a smaller one into a sibling with the same dependencies");
-    expect(decomposer?.version).toBe("1.1.0");
+    expect(decomposer?.version).toBe("1.2.0");
   });
 });

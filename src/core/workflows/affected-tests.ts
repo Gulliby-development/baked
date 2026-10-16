@@ -351,5 +351,6 @@ export function writtenTestsCheck(
     id: gate.id.replace(/-affected$/, "-written"),
     required: true,
     timeoutMs: Math.min(gate.timeoutMs, WRITTEN_TESTS_TIMEOUT_MS),
+    onTimeout: "failed",
   };
 }

@@ -20,6 +20,7 @@ import {
   type RunPolicy,
   type RunSnapshot,
   SafeId,
+  specWritingRule,
 } from "../schemas.js";
 import type { NativeWorkflowService, PlannedReroute } from "../service.js";
 import { terminalStates } from "../state-machine.js";
@@ -1083,11 +1084,33 @@ export class InitiativeService {
       // Asked for rarely and right after runs finish, so it reads the store fresh.
       0,
     );
+    // This initiative's own runs are its progress, not samples: an accepted feature counts with
+    // what it used, and the rest are scaled by how far the accepted ones were from their forecast.
+    const links = this.store.links(id);
+    const own = new Set(links.map((l) => l.run_id));
+    const accepted = new Set(
+      this.view(id)
+        .features.filter((f) => f.state === "accepted")
+        .map((f) => f.id),
+    );
+    const spent: Record<string, { spent: number; accepted: boolean }> = {};
+    for (const link of links) {
+      const entry = spent[link.feature_id] ?? {
+        spent: 0,
+        accepted: accepted.has(link.feature_id),
+      };
+      entry.spent += this.usage(link.run_id).tokens;
+      spent[link.feature_id] = entry;
+    }
     return estimateInitiative({
       features,
       history,
-      samples: this.featureRunSamples(history),
+      samples: this.featureRunSamples(history).filter((s) => !own.has(s.runId)),
       maxTotalTokens: this.limits(row).maxTotalTokens,
+      progress: {
+        features: spent,
+        overhead: row.decompose_run_id ? this.usage(row.decompose_run_id).tokens : 0,
+      },
     });
   }
 
@@ -1626,11 +1649,22 @@ export function featurePrompt(
   upstream: { feature: { id: string }; contract: AcceptedContract }[],
 ): string {
   const others = plan.features.filter((f) => f.id !== feature.id);
+  // A goal that counts spec criteria is a rule for writing specs, which no feature run can
+  // enforce across the initiative; as a goal it became a criterion of every feature (#1310).
+  const rules = plan.goals.filter(specWritingRule);
+  const goals = plan.goals.filter((g) => !specWritingRule(g));
   const lines = [
     `This run implements feature ${feature.id} ("${feature.title}") of the initiative ${row.id} ("${plan.title}").`,
     "",
     "Initiative goals:",
-    ...plan.goals.map((g) => `- ${g}`),
+    ...goals.map((g) => `- ${g}`),
+    ...(rules.length
+      ? [
+          "",
+          "Rules for writing this feature's specification. They are not product goals: follow them while writing the spec, never turn them into a requirement or acceptance criterion, and never change another feature's accepted specification to meet them:",
+          ...rules.map((g) => `- ${g}`),
+        ]
+      : []),
     "",
     `Boundary of this feature: ${feature.boundary.scope}`,
     feature.boundary.paths.length
