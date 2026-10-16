@@ -569,7 +569,8 @@ describe("initiative runtime", () => {
   }, 30000);
 
   test("the shared budget is split equally between features of the same size", async () => {
-    const medium = plan(threeFeatures.features.map((f) => ({ ...f, size: "medium" as const })));
+    // One workflow for all three, so their estimates, and so their token shares, are the same.
+    const medium = plan(threeFeatures.features.map((f) => ({ ...f, size: "medium" as const, workflow: "sdd" })));
     const t = setup(medium, 1000);
     // A share must hold a plan step's reservation (its prompt plus the profile's output cap,
     // about 28000 tokens), with room for the profiles' instructions to grow.

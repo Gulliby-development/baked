@@ -1096,17 +1096,26 @@ export class InitiativeService {
     const row = this.store.get(id);
     const latest = row.plan_revision ? this.store.revision(id, row.plan_revision) : null;
     const plan = this.approvedPlan(row) ?? (latest ? this.store.plan(latest) : null);
+    if (!plan) return null;
+    const accepted = this.view(id)
+      .features.filter((f) => f.state === "accepted")
+      .map((f) => f.id);
     // Asked for rarely and right after runs finish, so it reads the store fresh.
-    return plan ? this.estimateOf(row, plan, 0) : null;
+    return this.estimateOf(row, plan, new Set(accepted), 0);
   }
 
   /**
-   * The estimated tokens of each feature of the approved plan that this project's history prices.
-   * Generic ranges are left out: they say nothing about this project and would hold a feature with
-   * a small budget back on numbers no run measured.
+   * The estimated tokens of each feature of the approved plan that this project's history prices,
+   * or that the initiative's accepted features calibrate. Generic ranges are left out: they say
+   * nothing about this project and would hold a feature with a small budget back on numbers no run
+   * measured.
    */
-  private featureNeeds(row: InitiativeRow, plan: InitiativePlan): Map<string, TokenRange> {
-    const estimate = this.estimateOf(row, plan);
+  private featureNeeds(
+    row: InitiativeRow,
+    plan: InitiativePlan,
+    accepted: ReadonlySet<string>,
+  ): Map<string, TokenRange> {
+    const estimate = this.estimateOf(row, plan, accepted);
     return new Map(
       estimate.features.filter((f) => f.basis !== "defaults").map((f) => [f.featureId, f.tokens]),
     );
@@ -1115,6 +1124,7 @@ export class InitiativeService {
   private estimateOf(
     row: InitiativeRow,
     plan: InitiativePlan,
+    accepted: ReadonlySet<string>,
     maxAgeMs?: number,
   ): InitiativeEstimate {
     const settings = this.store.settings(row);
@@ -1138,13 +1148,8 @@ export class InitiativeService {
     );
     // This initiative's own runs are its progress, not samples: an accepted feature counts with
     // what it used, and the rest are scaled by how far the accepted ones were from their forecast.
-    const links = this.store.links(id);
+    const links = this.store.links(row.id);
     const own = new Set(links.map((l) => l.run_id));
-    const accepted = new Set(
-      this.view(id)
-        .features.filter((f) => f.state === "accepted")
-        .map((f) => f.id),
-    );
     const spent: Record<string, { spent: number; accepted: boolean }> = {};
     for (const link of links) {
       const entry = spent[link.feature_id] ?? {
@@ -1222,7 +1227,9 @@ export class InitiativeService {
     };
     // Features without a run share what remains: tokens by estimated need, calls and time by size.
     const waitingForRun = approved ? features.filter((f) => f.runId === null) : [];
-    const needs = approved && waitingForRun.length ? this.featureNeeds(row, approved) : null;
+    const accepted = new Set(features.filter((f) => f.state === "accepted").map((f) => f.id));
+    const needs =
+      approved && waitingForRun.length ? this.featureNeeds(row, approved, accepted) : null;
     for (const feature of waitingForRun) feature.need = needs?.get(feature.id) ?? null;
     const weights = waitingForRun.reduce((sum, f) => sum + sizeWeight(f), 0);
     const byNeed = tokenWeights(waitingForRun);
