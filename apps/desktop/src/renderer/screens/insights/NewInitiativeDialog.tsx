@@ -2,6 +2,8 @@ import { useId, useState } from "react";
 import { chat } from "../../client/chat.js";
 import { insights } from "../../client/insights.js";
 import { start } from "../../client/start.js";
+import { GitInitDialog, needsGit } from "../../components/GitInitDialog.js";
+import { Alert } from "../../components/ui/alert.js";
 import { Input } from "../../components/ui/input.js";
 import { Label } from "../../components/ui/label.js";
 import { ModelPicker, useModelCatalog } from "../../components/ui/model-picker.js";
@@ -38,6 +40,8 @@ export function NewInitiativeDialog({
   const [tiered, setTiered] = useState<{ maxTasks: string; maxFiles: string } | null>(null);
   const [forecastStop, setForecastStop] = useState(false);
   const [keepFeatures, setKeepFeatures] = useState(false);
+  const [askGit, setAskGit] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
   const definitions = useLoad(projectKey, "definitions", start.definitions);
   const models = useModelCatalog(projectKey, chat.models);
   const initiativeId = idEdit ?? suggestInitiativeId(prompt);
@@ -60,11 +64,36 @@ export function NewInitiativeDialog({
       problem={parsed.ok ? null : parsed.error}
       onSubmit={async () => {
         if (!parsed.ok) return;
-        const view = await insights.startInitiative(projectKey, parsed.body);
-        window.location.hash = projectHref(projectKey, "initiatives", view.initiativeId);
+        try {
+          const view = await insights.startInitiative(projectKey, parsed.body);
+          window.location.hash = projectHref(projectKey, "initiatives", view.initiativeId);
+        } catch (e) {
+          // Feature runs in worktrees need Git: offer to initialize it, then start again.
+          if (needsGit(e)) setAskGit(true);
+          throw e;
+        }
       }}
       onClose={onClose}
     >
+      <GitInitDialog
+        projectKey={projectKey}
+        open={askGit}
+        why="This initiative runs its features in worktrees, which need Git with a first commit, and this folder has none."
+        onDone={() => {
+          setAskGit(false);
+          if (!parsed.ok) return;
+          setRetryError(null);
+          insights.startInitiative(projectKey, parsed.body).then(
+            (view) => {
+              window.location.hash = projectHref(projectKey, "initiatives", view.initiativeId);
+              onClose(true);
+            },
+            (e: unknown) => setRetryError(message(e)),
+          );
+        }}
+        onClose={() => setAskGit(false)}
+      />
+      {retryError && <Alert tone="error">{retryError}</Alert>}
       <div className={FIELD}>
         <Label htmlFor={`${ids}-prompt`}>Request</Label>
         <Textarea

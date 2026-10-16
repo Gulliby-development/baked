@@ -21,6 +21,7 @@ import {
   type TokenRange,
   tokenText,
 } from "../estimate.js";
+import { plannedTaskTokens } from "../plan-cost.js";
 import {
   type CommandIdentity,
   DEFAULT_MAX_PARALLEL_RUNS,
@@ -39,7 +40,7 @@ import type { IssueSource } from "../types.js";
 import { DefinitionAutoApprovalSchema } from "../v2/definition.js";
 import { loadDefinition } from "../v2/definitions.js";
 import { autoApprovalPolicy } from "../v2/runtime.js";
-import { mergedBase } from "../worktree.js";
+import { mergedBase, worktreeBase } from "../worktree.js";
 import { DECOMPOSE_WORKFLOW_ID } from "./decompose.js";
 import {
   estimateInitiative,
@@ -447,6 +448,9 @@ export class InitiativeService {
       keepFeatures: request.keepFeatures ?? false,
     };
     this.checkWorkflow(settings);
+    // Feature runs in worktrees need Git; refuse now rather than after the decomposer ran.
+    if (this.executionMode(settings, settings.workflowId) === "worktree")
+      await worktreeBase(this.workflows.workspace);
     const issued = Object.keys(settings.featureIssues);
     if (issued.length && !request.plan)
       throw new WorkflowFault(
@@ -1111,6 +1115,7 @@ export class InitiativeService {
         false,
         growthLimit(current, featureId),
         waiting?.shareUsd ?? null,
+        costGrowthLimit(current, featureId),
       ),
       ownerLabel: settings.ownerLabel,
       dependencies: upstream.map((u) => ({
@@ -1325,6 +1330,7 @@ export class InitiativeService {
         workflowId,
         size: feature.size ?? "medium",
         stages: (facts(workflowId)?.stages ?? []).map((stage) => ({ ...stage, models })),
+        paths: feature.boundary.paths.length,
       };
     });
     const history = estimateHistory(
@@ -1347,6 +1353,9 @@ export class InitiativeService {
       // The latest run with a spec says how many criteria the feature has.
       const criteria = this.workflows.store.state(link.run_id).spec?.criteria.length;
       if (criteria) entry.criteria = criteria;
+      // And the latest run with a sized plan, what its tasks should use.
+      const planned = plannedTaskTokens(this.workflows.store, link.run_id);
+      if (planned) entry.planned = planned;
       spent[link.feature_id] = entry;
     }
     return estimateInitiative({
@@ -1387,6 +1396,7 @@ export class InitiativeService {
             tokens: run.tokens,
             taskCount: run.taskCount,
             criteria: this.workflows.store.state(run.runId).spec?.criteria.length,
+            paths: feature.boundary.paths.length,
           },
         ];
       });
@@ -1953,8 +1963,9 @@ function describe(view: FeatureView): string {
 /**
  * The run policy of a feature: its budget share and, when tiered approval is on, auto approval
  * whose allowed paths are the feature's approved boundary, including an edit of a package
- * manifest the boundary names. A feature without boundary paths, or
- * with more than auto approval accepts, and every rebased run (`humanOnly`) go to a person.
+ * manifest the boundary names, and limits at least as large as the boundary's files
+ * (`boundaryLimits`). A feature without boundary paths, or with more than auto approval accepts,
+ * and every rebased run (`humanOnly`) go to a person.
  */
 export function featurePolicy(
   settings: InitiativeSettings,
@@ -1963,6 +1974,7 @@ export function featurePolicy(
   humanOnly: boolean,
   growTo: number | null = null,
   shareUsd: number | null = null,
+  growUsd: number | null = null,
 ): RunPolicy {
   const tokens = "tokens" in share ? share.tokens : share.maxTotalTokens;
   const calls = "calls" in share ? share.calls : share.maxAgentCalls;
@@ -1974,18 +1986,29 @@ export function featurePolicy(
     auto && !humanOnly
       ? DefinitionAutoApprovalSchema.safeParse({
           enabled: true,
-          maxTasks: auto.maxTasks,
-          maxFiles: auto.maxFiles,
+          ...boundaryLimits(auto, feature.boundary.paths),
           allowedPaths: feature.boundary.paths,
           allowDelete: false,
           allowNewDependencies: false,
           maxTotalTokens,
         })
       : null;
+  const cost = costPolicy(settings, shareUsd);
+  const grown = growTo !== null ? grownSizing(base, maxTotalTokens, growTo) : base.sizing;
+  // The dollar cap grows with the token budget, up to what the initiative can spare (#1353).
+  const own = base.maxCostUsd ?? Number.POSITIVE_INFINITY;
+  const costTo =
+    cost.maxCostUsd !== undefined && cost.maxCostUsd !== null && growUsd !== null
+      ? Math.min(own, cents(growUsd))
+      : null;
+  const sizing =
+    grown?.maxRunTokens != null && costTo !== null && costTo > (cost.maxCostUsd ?? 0)
+      ? { ...grown, maxRunCostUsd: costTo }
+      : grown;
   return PolicySchema.parse({
     ...base,
     maxTotalTokens,
-    ...(growTo !== null ? { sizing: grownSizing(base, maxTotalTokens, growTo) } : {}),
+    ...(sizing !== base.sizing ? { sizing } : {}),
     maxAgentCalls: Math.min(1000, Math.max(MIN_SHARE.maxAgentCalls, calls)),
     maxActiveMs: Math.max(MIN_SHARE.maxActiveMs, ms),
     // A manifest the boundary names was approved with the split, and the feature request lists
@@ -1993,8 +2016,30 @@ export function featurePolicy(
     autoApproval: limits?.success
       ? { ...autoApprovalPolicy(limits.data), requestedManifestEdits: true }
       : null,
-    ...costPolicy(settings, shareUsd),
+    ...cost,
   });
+}
+
+/** The most tasks and files a definition's auto approval accepts. */
+const AUTO_APPROVAL_CEILING = { maxTasks: 20, maxFiles: 50 } as const;
+
+/**
+ * The tiered limits of a feature run: the initiative's limits, raised to the files the approved
+ * boundary names, with one task per file and two spare. The person approved those paths with the
+ * split, so a plan that writes them is not larger than what was approved; a boundary of 11 files
+ * could never pass a 10-file limit (narrowfit language and cli, #1349). Glob paths are not
+ * counted, so the initiative's limits stay the floor.
+ */
+export function boundaryLimits(
+  auto: { maxTasks: number; maxFiles: number },
+  paths: readonly string[],
+): { maxTasks: number; maxFiles: number } {
+  const files = paths.filter((p) => !/[*?[\]{}]/.test(p)).length;
+  if (!files) return { maxTasks: auto.maxTasks, maxFiles: auto.maxFiles };
+  return {
+    maxTasks: Math.max(auto.maxTasks, Math.min(AUTO_APPROVAL_CEILING.maxTasks, files + 2)),
+    maxFiles: Math.max(auto.maxFiles, Math.min(AUTO_APPROVAL_CEILING.maxFiles, files)),
+  };
 }
 
 /**
@@ -2028,6 +2073,27 @@ export function growthLimit(view: InitiativeView, featureId: string): number | n
     .filter((f) => f.id !== featureId)
     .reduce((sum, f) => sum + (f.need?.low ?? 0), 0);
   return Math.max(0, view.budget.remaining.tokens - reserve);
+}
+
+/**
+ * The dollars a starting feature's cap may grow to with its token budget: what the dollar budget
+ * has left less, for every other feature still waiting, the low end of its estimate at its share's
+ * price per token (its whole dollar share when it has no estimate). A feature's cap was its share,
+ * fixed at start, while its token budget grew: bench round 35's sum feature stopped on its $1.46
+ * cap with 62% of its grown tokens unused and $14 of the initiative unspent (#1353). Null without a
+ * dollar budget.
+ */
+export function costGrowthLimit(view: InitiativeView, featureId: string): number | null {
+  const remaining = view.budget.cost?.remainingUsd;
+  if (remaining === null || remaining === undefined) return null;
+  const reserve = view.features
+    .filter((f) => f.share !== null && f.id !== featureId)
+    .reduce((sum, f) => {
+      const usd = f.shareUsd ?? 0;
+      const tokens = f.share?.tokens ?? 0;
+      return sum + (f.need && tokens > 0 ? Math.min(usd, (f.need.low * usd) / tokens) : usd);
+    }, 0);
+  return Math.max(0, remaining - reserve);
 }
 
 /**

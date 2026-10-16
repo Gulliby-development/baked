@@ -34,6 +34,23 @@ function usdPerToken(model: string): number | null {
   );
 }
 
+/** The run's latest plan sizing report, or null before its plan is sized. */
+function latestSizing(store: WorkflowStore, runId: string): Partial<SizingReport> | null {
+  const latest = store
+    .artifacts(runId)
+    .filter((a) => a.kind === "sizing" && a.logical_path.startsWith("sizing/plan-"))
+    .at(-1);
+  return latest
+    ? (JSON.parse(store.readArtifact(runId, latest.id)) as Partial<SizingReport>)
+    : null;
+}
+
+/** The tokens the run's latest plan sizing expects its planned tasks to use; null without one. */
+export function plannedTaskTokens(store: WorkflowStore, runId: string): TokenRange | null {
+  const tokens = latestSizing(store, runId)?.taskTokens;
+  return tokens ? { low: tokens.low, high: tokens.high } : null;
+}
+
 /** The run's spend so far by model, and the latest plan sizing priced in dollars. */
 export function planCostOf(store: WorkflowStore, runId: string): PlanCost {
   const byModel = new Map<string, { usd: number; stages: Set<string> }>();
@@ -52,13 +69,7 @@ export function planCostOf(store: WorkflowStore, runId: string): PlanCost {
   const models = [...byModel.entries()]
     .map(([model, entry]) => ({ model, usd: entry.usd, stages: [...entry.stages] }))
     .sort((a, b) => b.usd - a.usd || a.model.localeCompare(b.model));
-  const latest = store
-    .artifacts(runId)
-    .filter((a) => a.kind === "sizing" && a.logical_path.startsWith("sizing/plan-"))
-    .at(-1);
-  const report = latest
-    ? (JSON.parse(store.readArtifact(runId, latest.id)) as Partial<SizingReport>)
-    : null;
+  const report = latestSizing(store, runId);
   const rate = report?.model ? usdPerToken(report.model) : null;
   return {
     planning: { usd: models.reduce((sum, m) => sum + m.usd, 0), complete, models },

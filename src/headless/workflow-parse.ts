@@ -49,6 +49,7 @@ const commands = [
   "follow",
   "discard-worktree",
   "worktrees",
+  "git-init",
   "route",
   "models",
   "doctor",
@@ -77,6 +78,7 @@ export interface WorkflowArgs {
 /** Options every workflow command takes. */
 const globalFlags = ["json", "cwd", "help"];
 const booleanFlags = new Set([
+  "local",
   "approval-review",
   "record-model-calls",
   "refresh",
@@ -236,6 +238,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   gate: ["text", "kind", "id", "model", "from-criteria", "save", "file", "json", "workflow", "at"],
   follow: ["interval", "timeout", "once", "fix", "reviews"],
   deliver: [
+    "local",
     "remote",
     "branch",
     "follow-up",
@@ -251,6 +254,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   ],
   "discard-worktree": ["expected-revision", "command-id"],
   worktrees: ["clean", "dry-run"],
+  "git-init": [],
   route: ["workflow", "model", "route", "json"],
   models: ["model", "provider", "json"],
   doctor: preRunFlags,
@@ -378,9 +382,16 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     result.command !== "propose"
   ) {
     const count =
-      ["list", "profiles", "models", "import", "gc", "definitions", "worktrees"].includes(
-        result.command,
-      ) ||
+      [
+        "list",
+        "profiles",
+        "models",
+        "import",
+        "gc",
+        "definitions",
+        "worktrees",
+        "git-init",
+      ].includes(result.command) ||
       (result.command === "validate" && result.flags.file)
         ? 0
         : result.command === "compare"
@@ -417,6 +428,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
   }
   if (!result.flags.help && result.command === "deliver") {
     const planning = [
+      "local",
       "remote",
       "branch",
       "follow-up",
@@ -428,6 +440,14 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
       "no-specs",
     ].filter((name) => name in result.flags);
     const newBranch = ["branch", "draft", "no-pr"].find((name) => name in result.flags);
+    const remoteOnly = ["remote", "follow-up", "answer-threads", "resolve", "draft", "no-pr"].find(
+      (name) => name in result.flags,
+    );
+    if (result.flags.local && remoteOnly)
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        `--local delivers into the current branch with no push; --${remoteOnly} needs a remote delivery`,
+      );
     if ("follow-up" in result.flags && newBranch)
       throw new WorkflowFault(
         "INVALID_DEFINITION",
@@ -736,6 +756,11 @@ deliver RUN_ID --execute --expected-revision N [--request ID]
   Perform the approved plan. Retries check what already exists; nothing is force-pushed or merged.
   The pull request token is read from workflows.delivery.tokenEnv (default GITHUB_TOKEN).
   A worktree run is delivered from its branch; its worktree is removed afterwards, the branch stays.
+deliver RUN_ID --local [--branch NAME] [--with-specs|--no-specs]
+  Plan a local delivery for a repository without a remote: the same commit on top of HEAD, then the
+  checked-out branch moves to it and the delivered files of the working copy and index take its
+  content. No push, no pull request. Refused when a delivered file has uncommitted changes.
+  Deliver an initiative's features one at a time, upstream features first.
 deliver RUN_ID --follow-up DELIVERED_RUN_ID [--remote origin] [--with-specs|--no-specs]
   Plan one commit of this run's files on top of the branch DELIVERED_RUN_ID pushed, fast-forward
   only, and no new pull request: a fix for that pull request's checks or review. The local copy of
@@ -755,6 +780,9 @@ discard-worktree RUN_ID --expected-revision N
 worktrees [--clean [--dry-run]]
   Run and task worktrees under .baked/worktrees, largest first, with size and run status.
   --clean removes those of completed, failed, cancelled and unknown runs (branches stay).
+git-init
+  Initialize Git in a project folder without it, so runs can use --worktree: git init, a
+  .gitignore when there is none, and a baseline commit without credentials and files over 50 MB.
 initiative <command> ...   split a large request into 3..12 features run in dependency order
   start, show, list, events, merge, split, remove, rename, approve, reject, drive, resume, pause,
   replan, extend, reroute; see baked workflow initiative --help

@@ -176,6 +176,11 @@ const LOST_TOOL = new RegExp(
   "i",
 );
 
+/** Whether a worker's text says a tool it needs is missing from its session (#1360). */
+export function claimsLostTool(text: string): boolean {
+  return LOST_TOOL.test(text);
+}
+
 /**
  * An implementation that ended blocked or failed because a session lost a tool it needs
  * (run fc9951d5: `edit_file` unavailable; ecfit 25614519: no edit tool exposed). The next session

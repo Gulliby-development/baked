@@ -41,6 +41,8 @@ export interface FeatureRunSample {
   taskCount: number;
   /** The acceptance criteria of the run's spec; absent before a spec exists. */
   criteria?: number;
+  /** The paths of the feature's boundary in its plan; absent or 0 when it named none. */
+  paths?: number;
 }
 
 /** A feature to estimate: its workflow and that workflow's stages. */
@@ -50,6 +52,8 @@ export interface FeatureToEstimate {
   workflowId: string;
   size: FeatureSize;
   stages: { id: string; type: string; models: string[] }[];
+  /** The paths of the feature's boundary; absent or 0 when the decomposer named none. */
+  paths?: number;
 }
 
 export type FeatureEstimateBasis =
@@ -74,11 +78,18 @@ export interface FeatureEstimate {
   spent: number;
   /** The acceptance criteria of the feature run's spec, once it has one. */
   criteria?: number;
+  /** The paths of the feature's boundary, when it names any. */
+  paths?: number;
+  /** The tokens the feature run's plan sized its tasks at, once it has a plan. */
+  planned?: TokenRange;
 }
 
 /** What an initiative has used so far: per feature, and on runs of no feature (the split). */
 export interface InitiativeProgress {
-  features: Record<string, { spent: number; accepted: boolean; criteria?: number }>;
+  features: Record<
+    string,
+    { spent: number; accepted: boolean; criteria?: number; planned?: TokenRange }
+  >;
   overhead: number;
 }
 
@@ -113,6 +124,11 @@ export interface InitiativeEstimate {
    * times this rate. Null with fewer than `MIN_CRITERIA_SAMPLES` measured features.
    */
   perCriterion: TokenRange | null;
+  /**
+   * Tokens per boundary path, measured like `perCriterion`; a feature still to run is forecast at
+   * no less than its paths times this rate (#1354). Null with fewer than `MIN_CRITERIA_SAMPLES`.
+   */
+  perPath: TokenRange | null;
   notes: string[];
   label: string;
 }
@@ -163,6 +179,7 @@ function estimateFeature(
     workflowId: feature.workflowId,
     size: feature.size,
     spent: 0,
+    ...(feature.paths ? { paths: feature.paths } : {}),
   };
   const hasTasks = feature.stages.some((s) => s.type === "tasks");
   // Finished feature runs of the same size measure the whole feature, split and all; those of the
@@ -241,6 +258,7 @@ function reforecast(
   ratio: number | null;
   bySize: Partial<Record<FeatureSize, number>>;
   perCriterion: TokenRange | null;
+  perPath: TokenRange | null;
 } {
   const used = (f: FeatureEstimate): InitiativeProgress["features"][string] =>
     progress.features[f.featureId] ?? { spent: 0, accepted: false };
@@ -271,17 +289,34 @@ function reforecast(
       .map((u) => u.spent / (u.criteria ?? 1)),
   ];
   const perCriterion = rates.length >= MIN_CRITERIA_SAMPLES ? rangeOf(rates) : null;
+  // The boundary's paths tell features of one size apart before any of them runs: in bench round
+  // 35 the four large narrowfit features named 4 to 11 paths and used 1.8M to 7.9M tokens, at 0.36M
+  // to 0.92M per path, while the size gave them one range (#1354).
+  const pathRates = [
+    ...samples.filter((s) => (s.paths ?? 0) > 0).map((s) => s.tokens / (s.paths ?? 1)),
+    ...accepted
+      .filter((f) => (f.paths ?? 0) > 0 && used(f).spent > 0)
+      .map((f) => used(f).spent / (f.paths ?? 1)),
+  ];
+  const perPath = pathRates.length >= MIN_CRITERIA_SAMPLES ? rangeOf(pathRates) : null;
   const features = prior.map((f): FeatureEstimate => {
-    const { spent, accepted: done, criteria } = used(f);
-    const known = criteria ? { criteria } : {};
+    const { spent, accepted: done, criteria, planned } = used(f);
+    const known = { ...(criteria ? { criteria } : {}), ...(planned ? { planned } : {}) };
     if (done)
       return { ...f, ...known, tokens: { low: spent, high: spent }, basis: "measured", spent };
     const scale = bySize[f.size] ?? ratio;
     const base = scale === null ? f.tokens : scaled(f.tokens, scale);
-    const floor = perCriterion && criteria ? scaled(perCriterion, criteria) : { low: 0, high: 0 };
+    // Floors from what is known of the feature itself: its spec's criteria, its boundary's paths,
+    // and the tasks its run's plan sized (language's plan priced 4.55 to 8.08 dollars of tasks
+    // while its estimate still said 2.65M tokens at most).
+    const floors = [
+      perCriterion && criteria ? scaled(perCriterion, criteria) : null,
+      perPath && f.paths ? scaled(perPath, f.paths) : null,
+      planned ?? null,
+    ].filter((r): r is TokenRange => r !== null);
     const tokens = {
-      low: Math.max(base.low, floor.low),
-      high: Math.max(base.high, floor.high),
+      low: Math.max(base.low, ...floors.map((r) => r.low)),
+      high: Math.max(base.high, ...floors.map((r) => r.high)),
     };
     const raised = tokens.low > base.low || tokens.high > base.high;
     return {
@@ -292,7 +327,7 @@ function reforecast(
       spent,
     };
   });
-  return { features, ratio, bySize, perCriterion };
+  return { features, ratio, bySize, perCriterion, perPath };
 }
 
 /**
@@ -310,7 +345,7 @@ export function estimateInitiative(input: {
 }): InitiativeEstimate {
   const margin = input.margin ?? ESTIMATE_MARGIN;
   const progress = input.progress ?? { features: {}, overhead: 0 };
-  const { features, ratio, bySize, perCriterion } = reforecast(
+  const { features, ratio, bySize, perCriterion, perPath } = reforecast(
     input.features.map((f) => estimateFeature(f, input.history, input.samples)),
     progress,
     input.samples,
@@ -357,6 +392,14 @@ export function estimateInitiative(input: {
           `A feature whose spec is written is forecast at no less than ${rangeText(perCriterion)} tokens per acceptance criterion, as measured on finished features.`,
         ]
       : []),
+    ...(perPath && features.some((f) => f.basis !== "measured" && f.paths)
+      ? [
+          `A feature still to run is forecast at no less than ${rangeText(perPath)} tokens per path of its boundary, as measured on finished features.`,
+        ]
+      : []),
+    ...(features.some((f) => f.basis !== "measured" && f.planned)
+      ? ["A feature whose run has a plan is forecast at no less than the tokens its plan sized."]
+      : []),
   ];
   const fits = fitsOf(withMargin, tokens.low, input.maxTotalTokens);
   const budgetText =
@@ -377,6 +420,7 @@ export function estimateInitiative(input: {
     features,
     progress: { spent, accepted, ratio, bySize },
     perCriterion,
+    perPath,
     notes,
     label: `Estimate: level ${level}, about ${tasks.low}-${tasks.high} tasks, ${rangeText(tokens)} tokens (plan for ${tokenText(withMargin)} with a ${Math.round(margin * 100)}% margin)${spent ? `, ${tokenText(spent)} used with ${accepted} of ${features.length} features accepted` : ""}; ${budgetText}`,
   };

@@ -504,7 +504,10 @@ describe("coordinator splits", () => {
   }, 60000);
 
   test("a split with dependencies starts one initiative whose split is already approved", async () => {
-    const { chat, coordinator, tool, server } = await setup(5);
+    const { fixture, chat, coordinator, tool, server } = await setup(5);
+    // Feature runs in worktrees need Git; an initiative without it is refused at start (#1345).
+    git(fixture.root, "init", "-q", "-b", "main");
+    git(fixture.root, "-c", "user.name=T", "-c", "user.email=t@example.test", "commit", "-q", "--allow-empty", "-m", "Initial");
     const pending = tool("propose_split").execute(
       split([flow("api", ["src/api/**"]), flow("ui", ["src/ui/**"], ["api"]), { ...flow("docs", ["docs/**"]), workflow: "quick" }]) as unknown as Record<string, unknown>,
     );
@@ -608,7 +611,10 @@ describe("coordinator tasks", () => {
 
   test("an approved dependent split gives each feature its issue and tracks each task", async () => {
     const tasks = new FakeTasks();
-    const { chat, coordinator, tool, server } = await setup(5, tasks);
+    const { fixture, chat, coordinator, tool, server } = await setup(5, tasks);
+    // Feature runs in worktrees need Git; an initiative without it is refused at start (#1345).
+    git(fixture.root, "init", "-q", "-b", "main");
+    git(fixture.root, "-c", "user.name=T", "-c", "user.email=t@example.test", "commit", "-q", "--allow-empty", "-m", "Initial");
     const request = split([flow("api", ["src/api/**"]), flow("ui", ["src/ui/**"], ["api"]), flow("docs", ["docs/**"])]);
     const pending = tool("propose_split").execute({
       ...request,

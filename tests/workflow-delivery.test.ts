@@ -303,6 +303,38 @@ describe("Git delivery", () => {
     expect(s.provider.creates).toBe(0);
   });
 
+  test("--local commits a working-copy run onto the checked-out branch with no remote or push (#1347)", async () => {
+    const s = await completedRun({ userChanges: true });
+    git(s.root, "remote", "remove", "origin");
+    const head = git(s.root, "rev-parse", "HEAD");
+    const signal = new AbortController().signal;
+    const cli = (argv: string[]) => executeWorkflowCommand(s.fx.service, parseWorkflowArgs(argv), signal, undefined, { pullRequests: s.provider });
+    expect(workflowHelp).toContain("deliver RUN_ID --local");
+    expect(() => parseWorkflowArgs(["deliver", s.runId, "--local", "--no-pr"])).toThrow("--no-pr needs a remote delivery");
+    expect(() => parseWorkflowArgs(["deliver", s.runId, "--local", "--follow-up", "x"])).toThrow("--follow-up needs a remote delivery");
+    const prepared = (await cli(["deliver", s.runId, "--local"])) as PreparedDelivery;
+    expect(prepared.plan.operations).toEqual(["commit", "advance"]);
+    expect(prepared.plan.remote).toBeNull();
+    expect(prepared.plan.files.map((f) => f.path)).toEqual(["value.txt"]);
+    await cli(["approve", s.runId, "--request", prepared.requestId, "--digest", prepared.digest, "--expected-revision", String(s.fx.service.store.run(s.runId).revision)]);
+    const result = (await cli(["deliver", s.runId, "--execute", "--expected-revision", String(s.fx.service.store.run(s.runId).revision)])) as { commit: string };
+    expect(git(s.root, "rev-parse", "HEAD")).toBe(result.commit);
+    expect(git(s.root, "rev-parse", "HEAD^")).toBe(head);
+    expect(git(s.root, "show", "HEAD:value.txt")).toBe("ready");
+    expect(git(s.root, "show", "--name-only", "--format=", "HEAD")).toBe("value.txt");
+    expect(s.provider.creates).toBe(0);
+    // The run's file is committed; the person's own changes are still uncommitted and unstaged.
+    const changed = git(s.root, "status", "--porcelain=v1", "--untracked-files=all").split("\n").map((line) => line.trim());
+    expect(changed).toContain("M user.txt");
+    expect(changed).toContain("?? notes.txt");
+    expect(changed.some((line) => line.endsWith("value.txt"))).toBe(false);
+    expect(readFileSync(join(s.root, "user.txt"), "utf8")).toBe("user edit\n");
+    // Executing again adopts the commit and the moved branch; nothing changes.
+    const again = (await cli(["deliver", s.runId, "--execute", "--expected-revision", String(s.fx.service.store.run(s.runId).revision)])) as { commit: string };
+    expect(again.commit).toBe(result.commit);
+    expect(git(s.root, "rev-parse", "HEAD")).toBe(result.commit);
+  });
+
   test("only the exact approved plan runs; a new plan supersedes the old request", async () => {
     const s = await completedRun();
     const first = await prepare(s);

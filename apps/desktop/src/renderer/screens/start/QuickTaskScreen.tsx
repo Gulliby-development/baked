@@ -186,6 +186,7 @@ export function QuickTaskScreen({ project }: SectionProps) {
         )}
         <RunStarting projectKey={project.key} starting={launcher.starting} />
         {launcher.error && <Alert tone="error">{launcher.error}</Alert>}
+        {launcher.gitDialog}
         <div className={INLINE}>
           <Button
             type="submit"

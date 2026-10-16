@@ -1,12 +1,14 @@
 import type { JSONValue } from "@ai-sdk/provider";
 import type { ModelMessage } from "@ai-sdk/provider-utils";
 import {
+  missingToolClaims,
   steeringNotice,
   stillStuck,
   type WatchFinding,
   type WatchStep,
   watchSteps,
 } from "./progress-watch.js";
+import { claimsLostTool } from "./retry.js";
 import type { ProfileCompaction } from "./schemas.js";
 
 /** Per-attempt token cap used when the run policy does not set `maxAttemptTokens`. */
@@ -340,6 +342,8 @@ export class AttemptStepController {
   private steered: { at: number; finding: WatchFinding } | null = null;
   private watchDone = false;
   private watchStop: WatchFinding | null = null;
+  /** Whether the session was told which edit tools it has, after it said it had none. */
+  private toolsNamed = false;
   private readonly compactedBytes: number[] = [];
   /** Whether compaction has started; once on, it stays on so the cached prefix keeps matching. */
   private compacting = false;
@@ -385,6 +389,8 @@ export class AttemptStepController {
        */
       watch?: {
         mustEdit: boolean;
+        /** The edit tools of the session, named back to a worker that says it has none. */
+        editTools?: string[];
         onSignal: (finding: WatchFinding, action: "steered" | "stopped") => void;
       };
     },
@@ -552,6 +558,35 @@ export class AttemptStepController {
         }
       }
     }
+    // A worker that says it has no edit tool while the session has some is told which it has; a
+    // second such claim without an edit since ends the attempt, outside the one steering (#1360).
+    let namedTools: WatchFinding | null = null;
+    const editTools = watch?.editTools ?? [];
+    if (
+      watch?.mustEdit &&
+      editTools.length &&
+      this.finalizedBy === null &&
+      this.options.submitTools.length
+    ) {
+      const claims = missingToolClaims(input.steps, claimsLostTool);
+      const tools = editTools.join(", ");
+      if (claims.length >= 2 && this.toolsNamed) {
+        this.finalizedBy = "watcher";
+        this.watchDone = true;
+        this.watchStop = {
+          signal: "no-edit-tool",
+          detail: `the worker said twice that it has no edit tool, while this session has ${tools}`,
+        };
+        watch.onSignal(this.watchStop, "stopped");
+      } else if (claims.length >= 1 && !this.toolsNamed) {
+        this.toolsNamed = true;
+        namedTools = {
+          signal: "no-edit-tool",
+          detail: `the worker said it has no edit tool, while this session has ${tools}`,
+        };
+        watch.onSignal(namedTools, "steered");
+      }
+    }
     const compaction = this.options.compaction;
     const startAt =
       compaction?.startAtTokens ??
@@ -574,6 +609,8 @@ export class AttemptStepController {
       });
     }
     if (steer) this.notices.push({ at: compacted.messages.length, content: steeringNotice(steer) });
+    if (namedTools)
+      this.notices.push({ at: compacted.messages.length, content: steeringNotice(namedTools) });
     const nudgeAfter = this.options.editNudgeAfterReads;
     if (nudgeAfter && !this.nudged && !finalizing) {
       let reads = 0;

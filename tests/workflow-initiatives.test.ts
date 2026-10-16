@@ -36,6 +36,7 @@ import {
   parseInitiativeArgs,
 } from "../src/headless/workflow-initiative.js";
 import { workflowHelp } from "../src/headless/workflow-parse.js";
+import { WorkflowFault } from "../src/core/workflows/errors.js";
 import { mergedBase } from "../src/core/workflows/worktree.js";
 import { assignFeatureWorkflows } from "../src/core/workflows/initiatives/workflows.js";
 
@@ -367,6 +368,8 @@ describe("initiative feature workflows", () => {
       ["docs", "quick", "small"],
     ]);
     expect(before?.basis).toBe("defaults");
+    // Each feature's boundary paths go to the estimate (#1354).
+    expect(before?.features.map((f) => f.paths)).toEqual([1, 1, 1]);
     expect(before?.budget.maxTotalTokens).toBe(view.budget.limits.maxTotalTokens);
     expect(before?.progress.accepted).toBe(0);
     await t.approveSplit();
@@ -892,6 +895,22 @@ describe("initiative runtime", () => {
     view = await t.drive();
     expect(view.status).toBe("completed");
   }, 30000);
+
+  test("an initiative whose features run in worktrees is refused at start in a folder without Git (#1345)", async () => {
+    const t = setup();
+    const worktreePolicy: RunPolicy = { ...policy, executionMode: "worktree" };
+    let fault: unknown = null;
+    try {
+      await t.start({ policy: worktreePolicy });
+    } catch (error) {
+      fault = error;
+    }
+    // A temporary folder inside a repository is not a folder without Git; nothing to check there.
+    if (fault === null) return;
+    expect(fault).toBeInstanceOf(WorkflowFault);
+    expect((fault as WorkflowFault).details).toMatchObject({ reason: "git_required", gitInit: true });
+    expect(t.initiatives.list()).toEqual([]);
+  });
 
   test("in worktrees, independent features run side by side and a dependent one starts from their merged results", async () => {
     const joined = plan([feature("a"), feature("b"), feature("c", ["a", "b"])]);

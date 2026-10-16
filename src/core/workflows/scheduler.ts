@@ -135,6 +135,7 @@ import {
 } from "./analysis-notes.js";
 import { approvalDigest } from "./approval.js";
 import { writeViaTemp } from "./atomic-write.js";
+import { type CheckState, checkState, checksProgressed } from "./attempt-progress.js";
 import {
   APPROVAL_REVIEWER,
   evaluateAutoApproval,
@@ -182,6 +183,11 @@ import {
   SCOPING_PLANNERS,
   scopedPlanBudget,
 } from "./clarification.js";
+import {
+  CONFLICT_DECISION_PREFIX,
+  conflictDecisions,
+  decidedFindingIds,
+} from "./conflict-decisions.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
 import { inCostWrapUp } from "./cost-tolerance.js";
 import { coverageFinding } from "./coverage.js";
@@ -1982,7 +1988,8 @@ export class WorkflowScheduler {
               const executables = reproExecutables(policy.checks);
               const canRepro = executables.length > 0 && auditor.allowedTools.includes("run_repro");
               const converged = state.snapshotId;
-              const repro = (r: Repro) =>
+              const touched = this.runChangedPaths(runId, state);
+              const repro = (r: Repro, file?: string | null) =>
                 runRepro(this.processes, r, {
                   root: runRoot(this.store.workspace, state),
                   executables,
@@ -1991,6 +1998,7 @@ export class WorkflowScheduler {
                   sandbox: runSandbox(policy, runRoot(this.store.workspace, state), {
                     gitWrite: Boolean(state.worktree),
                   }),
+                  shadows: file ? [file, ...touched] : touched,
                 });
               const previous = state.convergence ?? undefined;
               const minConfidence = policy.reviewMinConfidence ?? DEFAULT_REVIEW_MIN_CONFIDENCE;
@@ -2182,7 +2190,7 @@ export class WorkflowScheduler {
                   finding.repro &&
                   executables.length
                 )
-                  outcomes.set(finding.id, await repro(finding.repro));
+                  outcomes.set(finding.id, await repro(finding.repro, finding.file));
               const blocks = (f: Review["findings"][number]): boolean =>
                 findingBlocks(
                   f,
@@ -2559,8 +2567,20 @@ export class WorkflowScheduler {
       if (!check.required) continue;
       signal.throwIfAborted();
       const checked = await run(check);
-      if (checked.status === "failed")
-        failed.push({ id: check.id, output: (checked.output ?? "").slice(-4000) });
+      if (checked.status !== "failed") continue;
+      let output = (checked.output ?? "").slice(-4000);
+      // A failing test that runs another check of the project shows only its exit code: the
+      // continuation gets that check's own output too.
+      const tests = checked.output ? failingTestNames(checked.output) : [];
+      const spawned = policy.checks.find(
+        (c) => c.id !== check.id && tests.some((name) => namesCheckCommand(name, c)),
+      );
+      if (spawned) {
+        const ran = await run(spawned);
+        if (ran.status === "failed" && ran.output?.trim())
+          output = `${output}\n\nThe failing test runs the project's ${spawned.id} check (${[spawned.executable, ...spawned.args].join(" ")}); run on its own it fails with:\n${ran.output.trim().slice(-SPAWNED_OUTPUT_CHARS)}`;
+      }
+      failed.push({ id: check.id, output });
     }
     if (!failed.length) return false;
     this.store.transaction(() => {
@@ -2571,7 +2591,13 @@ export class WorkflowScheduler {
         runId,
         "recovery",
         `tasks/${task.id}/cut-off-checks.json`,
-        canonical({ taskId: task.id, stepId, finalizedBy: record.finalizedBy, failed }),
+        canonical({
+          taskId: task.id,
+          stepId,
+          finalizedBy: record.finalizedBy,
+          reason: "cut_off",
+          failed,
+        }),
       );
       this.store.saveState(runId, state);
     });
@@ -2586,11 +2612,15 @@ export class WorkflowScheduler {
     if (!artifact) return {};
     const record = JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
       failed: { id: string; output: string }[];
+      reason?: "cut_off" | "correction";
     };
     return {
       cutOffChecks: {
         failed: record.failed,
-        note: "An earlier attempt of this task reached its limit after edits it did not check, and these required checks failed on its files, with this output. Fix what fails, run the check with request_check, then submit.",
+        note:
+          record.reason === "correction"
+            ? "This correction's earlier attempt submitted, and these required checks then failed on its files, with this output. The failure is part of this correction: find its cause in what the earlier attempt changed (a test that contradicts the spec is a cause too), fix it, run the check with request_check, then submit."
+            : "An earlier attempt of this task reached its limit after edits it did not check, and these required checks failed on its files, with this output. Fix what fails, run the check with request_check, then submit.",
       },
     };
   }
@@ -2630,7 +2660,11 @@ export class WorkflowScheduler {
     fault: WorkflowFault,
     currentPaths: () => Promise<string[]>,
   ): Promise<Implementation> {
-    if (!this.capContinuable(runId, state, stepId, task) || !(await currentPaths()).length)
+    if (
+      (!this.capContinuable(runId, state, stepId, task) &&
+        !this.progressShown(runId, state, stepId, task)) ||
+      !(await currentPaths()).length
+    )
       throw fault;
     return {
       schemaVersion: 1,
@@ -2642,6 +2676,70 @@ export class WorkflowScheduler {
         "The attempt used its token cap before it submitted a result; the next attempt continues from its edits.",
       ],
     };
+  }
+  /**
+   * The last result of each check run in each step of a task, oldest step first, with the
+   * failure count and first failure of a failed one.
+   */
+  private taskCheckStates(runId: string, taskId: string): Map<string, Map<string, CheckState>> {
+    const byStep = new Map<string, Map<string, CheckState>>();
+    for (const row of this.store.taskCheckRuns(runId, taskId)) {
+      if (row.status !== "passed" && row.status !== "failed") continue;
+      let output = "";
+      try {
+        output = String(
+          (JSON.parse(this.store.readArtifact(runId, row.artifact_id)) as { output?: unknown })
+            .output ?? "",
+        );
+      } catch {}
+      const checks = byStep.get(row.step_id) ?? new Map<string, CheckState>();
+      checks.set(row.check_id, checkState(row.status, output));
+      byStep.set(row.step_id, checks);
+    }
+    return byStep;
+  }
+  /**
+   * The check states of a task's current attempt and of the latest earlier attempt that ran
+   * checks, when the task used its continuation and its restart, has no progress attempt yet, and
+   * its failing checks moved between the two (#1351). md-site 4b08acf6 (bench round 35): T006 used
+   * its continuation and its restart, then its third attempt ended at the cap after 6
+   * edit-then-check rounds and the run stopped `attempt_cap` with nothing for a person to decide.
+   */
+  private progressShown(
+    runId: string,
+    state: RuntimeState,
+    stepId: string,
+    task: Task,
+  ): { previous: Record<string, CheckState>; current: Record<string, CheckState> } | null {
+    if (
+      (state.taskContinuations[task.id] ?? 0) === 0 ||
+      (state.taskRestarts[task.id] ?? 0) === 0 ||
+      (state.taskProgressAttempts[task.id] ?? 0) > 0
+    )
+      return null;
+    // An attempt the progress watcher stopped was stuck, not short of room.
+    if (this.lastAttemptUsage(runId, stepId)?.finalizedBy === "watcher") return null;
+    const steps = this.taskCheckStates(runId, task.id);
+    const current = steps.get(stepId);
+    const earlier = [...steps].filter(([id]) => id !== stepId).at(-1)?.[1];
+    if (!current || !earlier || !checksProgressed(earlier, current)) return null;
+    return { previous: Object.fromEntries(earlier), current: Object.fromEntries(current) };
+  }
+  /** Grants the progress attempt `progressShown` allows, recording what moved. */
+  private progressAttempt(runId: string, state: RuntimeState, stepId: string, task: Task): boolean {
+    const shown = this.progressShown(runId, state, stepId, task);
+    if (!shown) return false;
+    this.store.transaction(() => {
+      state.taskProgressAttempts[task.id] = 1;
+      this.store.artifact(
+        runId,
+        "recovery",
+        `tasks/progress-attempts/${task.id}.json`,
+        canonical({ taskId: task.id, stepId, ...shown }),
+      );
+      this.store.saveState(runId, state);
+    });
+    return true;
   }
   /** The usage record of the latest attempt of a step, when the executor wrote one. */
   private lastAttemptUsage(runId: string, stepId: string): AttemptUsageRecord | undefined {
@@ -3274,19 +3372,25 @@ export class WorkflowScheduler {
     // The repros of earlier findings on the same symbol are a regression set: a rewrite that
     // fixes this finding must not bring one of them back (#1330).
     const regression = new Set(recurringFindings(this.store, runId, task).map((f) => f.id));
+    // A finding a person's spec conflict answer decided is no longer the gate (#1350).
+    const decided = decidedFindingIds(this.store, runId);
     const repros = this.store
       .findings(runId)
       .filter((f) => task.findingIds.includes(f.id) || regression.has(f.id))
+      .filter((f) => !decided.has(f.id))
       .flatMap((f) => {
-        const repro = ReproSchema.safeParse((JSON.parse(f.body_json) as { repro?: unknown }).repro);
+        const body = JSON.parse(f.body_json) as { repro?: unknown; file?: unknown };
+        const repro = ReproSchema.safeParse(body.repro);
         return repro.success && executables.includes(repro.data.executable)
-          ? [{ findingId: f.id, repro: repro.data }]
+          ? [{ findingId: f.id, repro: repro.data, file: body.file }]
           : [];
       });
+    // A repro that runs a copy of the file the task fixes cannot see the fix (#1348).
+    const writes = task.writes.map((w) => w.path);
     if (!repros.length) return undefined;
     return async (root, signal) => {
       const outcomes: { findingId: string; repro: Repro; outcome: ReproOutcome }[] = [];
-      for (const { findingId, repro } of repros)
+      for (const { findingId, repro, file } of repros)
         outcomes.push({
           findingId,
           repro,
@@ -3296,6 +3400,7 @@ export class WorkflowScheduler {
             generated: generatedPaths(policy),
             signal,
             sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
+            shadows: typeof file === "string" ? [file, ...writes] : writes,
           }),
         });
       this.store.transaction(() =>
@@ -5143,7 +5248,10 @@ ${note}`;
           });
           return;
         }
-        const atCap = changed.length > 0 && this.continueAtCap(runId, state, child, task);
+        const atCap =
+          changed.length > 0 &&
+          (this.continueAtCap(runId, state, child, task) ||
+            this.progressAttempt(runId, state, child, task));
         if (
           atCap ||
           (changed.length > 0 &&
@@ -5899,7 +6007,10 @@ ${note}`;
                     outcome.restart.account,
                   )
                 ? "restart"
-                : null;
+                : outcome.edits !== undefined &&
+                    this.progressAttempt(runId, state, entry.child, entry.task)
+                  ? "continue_at_cap"
+                  : null;
       const again = cause !== null;
       if (again && outcome.edits) this.carryEdits(runId, state, entry, outcome.edits);
       if (!again) failure ??= outcome.error;
@@ -7914,11 +8025,28 @@ ${note}`;
       state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that tests contradict the approved spec: ${report.slice(0, 1500)} The approved spec wins over ${paths.join(", ")}: a correction of the test task changes only the assertions that contradict the spec, and ${task.id} runs again after it.`;
       return;
     }
+    // A person already answered a conflict of this task: the task runs once more under that
+    // answer instead of asking the same question again (#1350, url-shortener asked it 3 times).
+    const answered = conflictDecisions(this.store, runId).filter((d) => d.taskId === task.id);
+    const last = answered.at(-1);
+    const reapplied = last && `tasks/conflicts/${task.id}-under-${last.requestId}.json`;
+    if (last && reapplied && !this.store.latestArtifact(runId, reapplied)) {
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "assumption",
+          reapplied,
+          canonical({ ...account, decision: `${CONFLICT_DECISION_PREFIX}${last.requestId}.json` }),
+        ),
+      );
+      state.prompt += `\nTask ${task.id} reported the spec conflict a person already answered (${CONFLICT_DECISION_PREFIX}${last.requestId}.json): ${last.answer.slice(0, 1500)} That answer is final and the question is not asked again: finish ${task.id} under it, reporting implemented or already_satisfied, not spec_conflict.`;
+      return;
+    }
     this.wait("clarification", state, {
       questions: [
         {
           id: `SPEC-CONFLICT-${task.id}`,
-          question: `Task ${task.id} (${task.title}) reports that the spec and the tests cannot both hold: ${result.summary}${result.unresolved.length ? ` ${result.unresolved.join(" ")}` : ""} Which one is right? The task runs again with your answer; it may not weaken the tests to fit.`,
+          question: `Task ${task.id} (${task.title}) reports that the spec and the tests cannot both hold: ${result.summary}${result.unresolved.length ? ` ${result.unresolved.join(" ")}` : ""} Which one is right? The task runs again with your answer; it may not weaken the tests to fit.${last ? ` It already ran under your earlier answer and reported the conflict again; earlier answer: ${last.answer.slice(0, 800)}` : ""}`,
           blocking: true,
         },
       ],
@@ -8570,6 +8698,79 @@ ${note}`;
     this.store.transaction(() => this.store.saveState(runId, state));
   }
   /**
+   * Whether a correction whose own checks failed goes back to itself once, with the failures,
+   * instead of opening a correction of the correction (#1285). The new correction started over
+   * without the earlier one's context, from the union of the plan's files: bench round 35,
+   * url-shortener 651b2693 T007 broke a property test and T008 was opened for it with all 7
+   * files; round 34 chained md-site d486645a T008 -> T011 -> T012 on one failing test. Only
+   * failures of the task's checks qualify, each with its command output; a failure the
+   * continuation leaves opens the correction of the correction as before.
+   */
+  private continueCorrection(
+    runId: string,
+    state: RuntimeState,
+    task: Task,
+    child: string,
+    failures: Review["findings"],
+  ): boolean {
+    if (task.origin === "planned" || (state.taskContinuations[task.id] ?? 0) > 0) return false;
+    // The checks the correction was opened for, and the files it changed: a failure of another
+    // check on files it did not touch belongs to that file's correction, not to this one.
+    const openedFor = new Set(
+      this.store
+        .findings(runId)
+        .filter((row) => task.findingIds.includes(row.id))
+        .flatMap((row) => {
+          const claim = (JSON.parse(row.body_json) as { claim?: unknown }).claim;
+          const check =
+            typeof claim === "string"
+              ? (/^Required check (\S+) failed$/.exec(claim)?.[1] ?? taskCheckOfClaim(claim))
+              : null;
+          return check ? [check] : [];
+        }),
+    );
+    const diff = this.store.latestArtifact(runId, `tasks/${task.id}/diff.json`);
+    const changed = diff
+      ? ((JSON.parse(this.store.readArtifact(runId, diff.id)) as { changed?: string[] }).changed ??
+        [])
+      : [];
+    const graph = state.graph;
+    const failed: { id: string; output: string }[] = [];
+    for (const finding of failures) {
+      const check = taskCheckOfClaim(finding.claim);
+      const output = check ? this.commandOutput(runId, finding.evidenceIds) : null;
+      if (!check || !output) return false;
+      const regression = finding.claim.includes(" broke existing tests: ");
+      const touched =
+        graph !== null && pathsInOutput(output, graph.tasks).some((path) => changed.includes(path));
+      if (!regression && !openedFor.has(check) && !touched) return false;
+      failed.push({
+        id: check,
+        output: `${finding.claim}. ${finding.impact}\n${output}`.slice(-CONTINUED_OUTPUT_CHARS),
+      });
+    }
+    this.store.transaction(() => {
+      state.taskContinuations[task.id] = 1;
+      delete state.deferredChecks[task.id];
+      this.store.artifact(
+        runId,
+        "recovery",
+        `tasks/${task.id}/cut-off-checks.json`,
+        canonical({
+          taskId: task.id,
+          stepId: child,
+          finalizedBy: null,
+          reason: "correction",
+          failed,
+        }),
+      );
+      this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "continue_at_cap" });
+      this.store.finishStep(runId, child, "failed");
+      this.store.saveState(runId, state);
+    });
+    return true;
+  }
+  /**
    * Closes a task after its checks: failures become corrective tasks; otherwise the task gets its
    * check gate and the repair chain it closes is restored.
    */
@@ -8589,6 +8790,8 @@ ${note}`;
       });
       return;
     }
+    if (taskFailures.length && this.continueCorrection(runId, state, task, child, taskFailures))
+      return;
     this.store.transaction(() =>
       this.store.criticTaskResult(runId, task.id, taskFailures.length ? "repaired" : "passed"),
     );
@@ -9860,6 +10063,12 @@ ${note}`;
       ),
     );
   }
+  /** The paths the run changed since its baseline, as far as the run knows them. */
+  private runChangedPaths(runId: string, state: RuntimeState): string[] {
+    const baselineId = state.manifest.baselineSnapshotId;
+    const before = (baselineId && this.store.snapshotFiles(runId, baselineId)) || {};
+    return changedPaths(before, state.expectedFiles ?? {});
+  }
   /**
    * The files the run changed that `include` selects and that still exist, with their content
    * now and at baseline: the planned files kept at approval, else the pre-image the run saved
@@ -10351,7 +10560,8 @@ ${note}`;
     const reviewSnapshotId = state.snapshotId;
     const reviewSnapshotHash = state.workspaceHash;
     const executables = reproExecutables(policy.checks);
-    const repro = (r: Repro) =>
+    const touched = this.runChangedPaths(runId, state);
+    const repro = (r: Repro, file?: string | null) =>
       runRepro(this.processes, r, {
         root: runRoot(this.store.workspace, state),
         executables,
@@ -10360,6 +10570,7 @@ ${note}`;
         sandbox: runSandbox(policy, runRoot(this.store.workspace, state), {
           gitWrite: Boolean(state.worktree),
         }),
+        shadows: file ? [file, ...touched] : touched,
       });
     // The workspace the run started from had no source code: the reviewers judge the whole program.
     const greenfield = this.baselineScaffold(runId, state);
@@ -10575,7 +10786,7 @@ ${note}`;
         const outcomes = new Map<string, ReproOutcome>();
         for (const finding of candidates)
           if (finding.repro && executables.length)
-            outcomes.set(finding.id, await repro(finding.repro));
+            outcomes.set(finding.id, await repro(finding.repro, finding.file));
         if (outcomes.size)
           this.store.transaction(() =>
             this.store.artifact(
@@ -12070,6 +12281,8 @@ interface WorkerCheck {
 }
 /** How much of a spawned check's output a finding quotes (#1285). */
 const SPAWNED_OUTPUT_CHARS = 3000;
+/** The failure text a continued correction gets per failed check. */
+const CONTINUED_OUTPUT_CHARS = 8000;
 /** The names of the failing tests a check's output reports: `(fail) name`, `✗ name`, `FAIL name`. */
 function failingTestNames(output: string): string[] {
   return output

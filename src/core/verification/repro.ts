@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { basename, delimiter, join } from "node:path";
 import type { SandboxRequest } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import type { ProcessScope } from "../workflows/process-scope.js";
@@ -61,6 +61,53 @@ export function reproEnv(root: string): Record<string, string | undefined> {
   return env;
 }
 
+/** Trimmed lines at least this long are code two files share, not boilerplate such as braces. */
+const SHARED_LINE = 16;
+
+/**
+ * The workspace file that a repro input file is a copy of, or null: one with the same base name
+ * that shares its code lines (#1348). narrowfit 3c2e3629 ran `go run {files}/sum.go`, a pasted
+ * copy of `internal/constraint/sum.go`; the corrective fixed the real file and the copy kept
+ * printing the old value, so the task ended invalid_output after every attempt. A probe of its
+ * own that only calls the workspace code shares no lines with it and is not a copy.
+ */
+export function shadowedPath(
+  file: { name: string; content: string },
+  workspace: ReadonlyMap<string, string>,
+): string | null {
+  const lines = (text: string) =>
+    new Set(
+      text
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length >= SHARED_LINE),
+    );
+  const own = lines(file.content);
+  if (!own.size) return null;
+  for (const [path, content] of workspace) {
+    if (basename(path).toLowerCase() !== file.name.toLowerCase()) continue;
+    const theirs = lines(content);
+    const shared = [...own].filter((line) => theirs.has(line)).length;
+    if (shared >= Math.min(3, own.size)) return path;
+  }
+  return null;
+}
+
+/** The workspace files among `paths` that have the base name of one of the repro's input files. */
+function namesakes(root: string, repro: Repro, paths: readonly string[]): Map<string, string> {
+  const names = new Set((repro.files ?? []).map((f) => f.name.toLowerCase()));
+  const found = new Map<string, string>();
+  for (const path of new Set(paths)) {
+    if (!names.has(basename(path).toLowerCase())) continue;
+    try {
+      found.set(path, readFileSync(join(root, path), "utf8"));
+    } catch {
+      // A path the run deleted has nothing a copy could shadow.
+    }
+  }
+  return found;
+}
+
 /**
  * Runs a finding's repro in the workspace and judges the claim by its output (#155). Run 5b703388
  * corrected a "regex accepts a trailing newline" claim that is true in Python but false in
@@ -76,6 +123,11 @@ export async function runRepro(
     signal: AbortSignal;
     /** The run's OS sandbox (see runSandbox), or null. */
     sandbox: SandboxRequest | null;
+    /**
+     * Workspace files a fix may change (the finding's file, the files the run changed): an input
+     * file that is a copy of one of them makes the repro inconclusive without running it.
+     */
+    shadows?: readonly string[];
   },
 ): Promise<ReproOutcome> {
   if (!options.executables.includes(repro.executable))
@@ -85,6 +137,17 @@ export async function runRepro(
       exitCode: null,
       output: "",
     };
+  const workspace = namesakes(options.root, repro, options.shadows ?? []);
+  for (const file of workspace.size ? (repro.files ?? []) : []) {
+    const path = shadowedPath(file, workspace);
+    if (path)
+      return {
+        status: "inconclusive",
+        reason: `Input file ${file.name} is a copy of ${path}: the repro runs the copy, so no fix to ${path} can change its result. Run the workspace's own code instead (a single test, the package path, a project script, or a probe file that calls the code without copying it).`,
+        exitCode: null,
+        output: "",
+      };
+  }
   const before = await sourceManifest(options.root, options.generated, options.signal);
   const executable = repro.executable === "bun" ? process.execPath : repro.executable;
   // Input files live outside the workspace, so a repro still changes no source file (#528).
@@ -254,7 +317,7 @@ export function reproTool(
 ): HostTool {
   let tries = 0;
   return {
-    description: `Run a repro the way the runtime will run it for a finding: the program (one of ${executables.join(", ")}) and its arguments, without a shell, in the workspace root, for up to ${REPRO_TIMEOUT_MS / 1000} s. For a program that reads its input, give the text as stdin, or input files as files (name and content), written to a temporary directory that {files} in an argument names. It must print the observed value on its own line and change no file. Returns reproduced when a line of the output equals actual, refuted when it exits 0 without printing actual, inconclusive otherwise, with the output. At most ${REPRO_TRIES} runs.`,
+    description: `Run a repro the way the runtime will run it for a finding: the program (one of ${executables.join(", ")}) and its arguments, without a shell, in the workspace root, for up to ${REPRO_TIMEOUT_MS / 1000} s. For a program that reads its input, give the text as stdin, or input files as files (name and content), written to a temporary directory that {files} in an argument names. It must print the observed value on its own line and change no file. It must run the workspace's own code: an input file that copies a workspace file is refused, since no fix to that file could change the copy's output. Returns reproduced when a line of the output equals actual, refuted when it exits 0 without printing actual, inconclusive otherwise, with the output. At most ${REPRO_TRIES} runs.`,
     inputSchema: ReproSchema,
     execute: async (input) => {
       if (++tries > REPRO_TRIES)

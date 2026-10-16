@@ -1,11 +1,22 @@
 /**
  * Git delivery of a completed run: a plan the user approves by its digest, then commit, push and
- * pull request as journaled external effects. The user's checkout, index, HEAD and files are never
- * changed; the commit is built from the run's files in a temporary index. No force push, no merge.
+ * pull request as journaled external effects. The commit is built from the run's files in a
+ * temporary index. A remote delivery never changes the user's checkout, index, HEAD or files; a
+ * local delivery (`local`) pushes nowhere and instead moves the current branch to the commit and
+ * brings the delivered files of the working copy and index to it. No force push, no merge.
  */
-import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { AppConfig } from "../../types/index.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
@@ -40,7 +51,11 @@ import {
 import { type EffectRow, newId, type RequestRow, type WorkflowStore } from "./store.js";
 import { removeRunWorktree } from "./worktree.js";
 
-export type DeliveryOperation = "commit" | "push" | "pull_request" | "review_replies";
+/**
+ * `advance` is a local delivery's last step: the current branch moves to the delivery commit and
+ * the working copy and index take its content for the delivered files.
+ */
+export type DeliveryOperation = "commit" | "push" | "pull_request" | "review_replies" | "advance";
 export interface DeliveryFile {
   path: string;
   action: "add" | "modify" | "delete";
@@ -64,7 +79,8 @@ export interface DeliveryPlan {
   /** Seconds since the epoch; also the author and committer date, so the commit is reproducible. */
   createdAt: number;
   operations: DeliveryOperation[];
-  remote: { name: string; url: string };
+  /** Null for a local delivery, which pushes nowhere. */
+  remote: { name: string; url: string } | null;
   branch: string;
   base: { commit: string; branch: string };
   baselineHead: string | null;
@@ -137,7 +153,7 @@ export interface DeliveryResult {
   runRevision: number;
   snapshotId: string;
   approvalRoot: string | null;
-  remote: { name: string; url: string };
+  remote: { name: string; url: string } | null;
   branch: string;
   commit: string | null;
   pullRequest: (PullRequest & { recordedBy: "provider" | "user" }) | null;
@@ -211,6 +227,35 @@ async function remoteUrl(workspace: string, name: string): Promise<string> {
 async function contentAt(workspace: string, commit: string, path: string): Promise<string | null> {
   const result = await git(workspace, ["cat-file", "--filters", `${commit}:${path}`]);
   return result.code === 0 ? hashBytes(result.bytes) : null;
+}
+
+/** The author of a local delivery in a repository that configures none. */
+const LOCAL_AUTHOR = { name: "BAKED", email: "noreply@baked.invalid" };
+
+function fileHashOrNull(absolute: string): string | null {
+  try {
+    return lstatSync(absolute).isFile() ? fileHash(absolute) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Delivered files whose working-copy content is neither what `base` holds nor what the delivery
+ * commits: a local delivery would overwrite the person's own edit there.
+ */
+async function workingCopyConflicts(
+  workspace: string,
+  base: string,
+  files: DeliveryFile[],
+): Promise<string[]> {
+  const conflicts: string[] = [];
+  for (const file of files) {
+    const current = fileHashOrNull(workspacePath(workspace, file.path));
+    if (current === file.hash) continue;
+    if (current !== (await contentAt(workspace, base, file.path))) conflicts.push(file.path);
+  }
+  return conflicts;
 }
 
 async function modeAt(
@@ -359,6 +404,12 @@ function closingIssue(issue: IssueSource | null, repository: string, body: strin
 }
 
 export interface PrepareDeliveryOptions {
+  /**
+   * Deliver into the current branch instead of a remote: commit on top of HEAD, move the current
+   * branch to that commit and bring the working copy to it for the delivered files. No remote,
+   * push or pull request; a repository without user.name/user.email gets a fallback author.
+   */
+  local?: boolean;
   remote?: string;
   branch?: string;
   draft?: boolean;
@@ -430,21 +481,34 @@ export async function prepareDelivery(
       "detached_head",
       "HEAD is detached. Check out the branch the delivery should be based on.",
     );
+  const local = options.local === true;
+  if (local && (options.followUp || options.remote || options.answer?.threads.length))
+    throw refuse(
+      "INVALID_DEFINITION",
+      "local_with_remote",
+      "A local delivery pushes nowhere; --follow-up, --remote and --answer-threads need a remote delivery.",
+    );
   const earlier = options.followUp ? followedDelivery(store, runId, options.followUp) : null;
   if (options.answer?.threads.length && !earlier) throw answerWithoutFollowUp();
-  const remoteName = options.remote ?? earlier?.result.remote.name ?? "origin";
-  const url = await remoteUrl(workspace, remoteName);
-  if (earlier && url !== earlier.result.remote.url)
+  const earlierRemote = earlier?.result.remote ?? null;
+  const remoteName = options.remote ?? earlierRemote?.name ?? "origin";
+  const url = local ? "" : await remoteUrl(workspace, remoteName);
+  if (earlierRemote && url !== earlierRemote.url)
     throw refuse(
       "INPUT_CHANGED",
       "remote_changed",
-      `Run ${earlier.result.runId} was delivered to ${earlier.result.remote.url}, but ${remoteName} is ${url}.`,
+      `Run ${earlier?.result.runId} was delivered to ${earlierRemote.url}, but ${remoteName} is ${url}.`,
     );
   const follow = earlier ? await followedTip(workspace, remoteName, earlier.result.branch) : null;
   // The commit is built on the followed branch's tip; otherwise on HEAD.
   const base = follow ?? head;
-  const name = (await git(workspace, ["config", "user.name"])).stdout.trim();
-  const email = (await git(workspace, ["config", "user.email"])).stdout.trim();
+  let name = (await git(workspace, ["config", "user.name"])).stdout.trim();
+  let email = (await git(workspace, ["config", "user.email"])).stdout.trim();
+  // A folder BAKED initialized for worktree runs often has no identity; a local commit needs one.
+  if (local && (!name || !email)) {
+    name ||= LOCAL_AUTHOR.name;
+    email ||= LOCAL_AUTHOR.email;
+  }
   if (!name || !email)
     throw refuse(
       "INVALID_DEFINITION",
@@ -573,10 +637,20 @@ export async function prepareDelivery(
 
   const branch =
     earlier?.result.branch ?? options.branch ?? `baked/${run.feature_id}-${runId.slice(0, 8)}`;
-  if (!earlier) await assertNewBranch(workspace, remoteName, branch);
+  if (!earlier) await assertNewBranch(workspace, local ? null : remoteName, branch);
+  if (local) {
+    const conflicts = await workingCopyConflicts(workspace, head, files);
+    if (conflicts.length)
+      throw refuse(
+        "INPUT_CHANGED",
+        "dirty_files",
+        `Files in the working copy changed since the run started: ${conflicts.join(", ")}. Commit, stash or revert them before a local delivery.`,
+        { files: conflicts },
+      );
+  }
 
   let pullRequestTarget: { provider: PullRequestProvider; repository: string } | null = null;
-  if (!earlier && options.pullRequest !== false) {
+  if (!local && !earlier && options.pullRequest !== false) {
     const provider =
       options.provider === undefined ? configuredPullRequests(config) : options.provider;
     if (!provider)
@@ -624,13 +698,15 @@ export async function prepareDelivery(
     workspaceHash: state.workspaceHash,
     approvalRoot: state.approvalRoot,
     createdAt: options.now ?? Math.floor(Date.now() / 1000),
-    operations: [
-      "commit",
-      "push",
-      ...(pullRequestTarget ? (["pull_request"] as const) : []),
-      ...(reviewReplies ? (["review_replies"] as const) : []),
-    ] as DeliveryOperation[],
-    remote: { name: remoteName, url },
+    operations: (local
+      ? ["commit", "advance"]
+      : [
+          "commit",
+          "push",
+          ...(pullRequestTarget ? (["pull_request"] as const) : []),
+          ...(reviewReplies ? (["review_replies"] as const) : []),
+        ]) as DeliveryOperation[],
+    remote: local ? null : { name: remoteName, url },
     branch,
     base: earlier
       ? { commit: base, branch: earlier.plan.base.branch }
@@ -905,7 +981,7 @@ async function assertFollowedLocal(workspace: string, branch: string, tip: strin
 /** A new branch name is valid and exists neither locally nor on the remote. */
 async function assertNewBranch(
   workspace: string,
-  remoteName: string,
+  remoteName: string | null,
   branch: string,
 ): Promise<void> {
   if (
@@ -921,6 +997,7 @@ async function assertNewBranch(
       "branch_exists",
       `Branch ${branch} already exists locally. Choose another name with --branch; delivery never overwrites a branch.`,
     );
+  if (remoteName === null) return;
   const remote = await git(workspace, ["ls-remote", "--heads", remoteName, `refs/heads/${branch}`]);
   if (remote.code !== 0) {
     const failure = classifyRemoteFailure(remote.stderr);
@@ -1139,7 +1216,7 @@ export async function executeDelivery(
     if (unavailable) throw refuse("CAPABILITY_DENIED", "missing_auth", unavailable);
   }
   await assertRepository(workspace);
-  if ((await remoteUrl(workspace, plan.remote.name)) !== plan.remote.url)
+  if (plan.remote && (await remoteUrl(workspace, plan.remote.name)) !== plan.remote.url)
     throw refuse(
       "INPUT_CHANGED",
       "remote_changed",
@@ -1150,6 +1227,9 @@ export async function executeDelivery(
   const leases = new WorkspaceLeases(store);
   const contentRoot = plan.worktree ? join(workspace, plan.worktree.path) : workspace;
   leases.acquire(mutationLeaseFor(workspace, contentRoot), runId);
+  // A local delivery also writes the working copy.
+  if (plan.operations.includes("advance") && contentRoot !== workspace)
+    leases.acquire("mutation", runId);
   const { stepId, attemptId } = store.transaction(() =>
     store.beginExternalAttempt(runId, DELIVERY_STAGE),
   );
@@ -1227,6 +1307,14 @@ class DeliveryExecution {
   async run(): Promise<DeliveryResult> {
     // A follow-up adds to the pull request the followed run opened.
     if (this.plan.followUp) this.pullRequest = this.plan.followUp.pullRequest;
+    // A local delivery checks the branch and working copy before its commit, so a refusal
+    // leaves no record branch behind and a new plan can reuse the name.
+    const advanced = this.latest("advance");
+    if (
+      this.plan.operations.includes("advance") &&
+      !(advanced && ["applied", "reconciled", "prepared", "unknown"].includes(advanced.status))
+    )
+      await this.assertAdvance();
     for (const operation of this.plan.operations) {
       const previous = this.latest(operation);
       if (previous && ["prepared", "unknown"].includes(previous.status))
@@ -1239,6 +1327,7 @@ class DeliveryExecution {
       if (operation === "commit") await this.doCommit();
       else if (operation === "push") await this.doPush();
       else if (operation === "review_replies") await this.doReviewReplies();
+      else if (operation === "advance") await this.doAdvance();
       else await this.doPullRequest();
     }
     const result: DeliveryResult = {
@@ -1273,6 +1362,9 @@ class DeliveryExecution {
   /** Outputs of an operation that already took effect. */
   private async adopt(effect: EffectRow & { intent: DeliveryIntent }): Promise<void> {
     if (effect.intent.operation === "commit") this.commit = effect.intent.commit ?? null;
+    // The branch moved; a crash may have come before the working copy took the commit's files.
+    if (effect.intent.operation === "advance" && effect.intent.commit)
+      await this.syncWorkingCopy(effect.intent.commit);
     if (effect.intent.operation === "pull_request") {
       const recorded = this.store.latestArtifact(
         this.runId,
@@ -1286,6 +1378,19 @@ class DeliveryExecution {
     }
   }
   private async probe(intent: DeliveryIntent): Promise<Probe> {
+    if (intent.operation === "advance") {
+      const tip = (
+        await git(this.workspace, [
+          "rev-parse",
+          "--verify",
+          "--quiet",
+          `refs/heads/${intent.branch}`,
+        ])
+      ).stdout.trim();
+      if (tip === intent.commit) return { outcome: "present" };
+      if (tip === intent.base) return { outcome: "absent" };
+      return { outcome: "conflict", actual: tip || "nothing" };
+    }
     if (intent.operation === "commit") {
       const local = await git(this.workspace, [
         "rev-parse",
@@ -1301,7 +1406,7 @@ class DeliveryExecution {
       const remote = await git(this.workspace, [
         "ls-remote",
         "--heads",
-        intent.remote ?? this.plan.remote.name,
+        intent.remote ?? this.plan.remote?.name ?? "",
         `refs/heads/${intent.branch}`,
       ]);
       if (remote.code !== 0) return { outcome: "error", message: remote.stderr.trim() };
@@ -1386,12 +1491,12 @@ class DeliveryExecution {
       return refuse(
         "INPUT_CHANGED",
         "branch_moved",
-        `Branch ${intent.branch} ${intent.operation === "push" ? `on ${this.plan.remote.name} ` : ""}moved to ${actual} after the follow-up plan was made. Prepare and approve a new plan.`,
+        `Branch ${intent.branch} ${intent.operation === "push" ? `on ${this.plan.remote?.name ?? ""} ` : ""}moved to ${actual} after the follow-up plan was made. Prepare and approve a new plan.`,
       );
     return refuse(
       "INPUT_CHANGED",
       "branch_exists",
-      `Branch ${intent.branch} ${intent.operation === "push" ? `on ${this.plan.remote.name} ` : ""}points at ${actual}, not at the delivered commit ${intent.commit}. Delivery never overwrites a branch; prepare a plan with another --branch.`,
+      `Branch ${intent.branch} ${intent.operation === "push" ? `on ${this.plan.remote?.name ?? ""} ` : ""}points at ${actual}, not at the delivered commit ${intent.commit}. Delivery never overwrites a branch; prepare a plan with another --branch.`,
     );
   }
   private prepareEffect(intent: DeliveryIntent): string {
@@ -1588,28 +1693,153 @@ class DeliveryExecution {
       rmSync(directory, { recursive: true, force: true });
     }
   }
+  /** The plan's base branch is checked out at the base, and no delivered file has an edit of the person. */
+  private async assertAdvance(): Promise<void> {
+    const branch = this.plan.base.branch;
+    const current = (
+      await git(this.workspace, ["symbolic-ref", "--quiet", "--short", "HEAD"])
+    ).stdout.trim();
+    const tip = (
+      await git(this.workspace, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`])
+    ).stdout.trim();
+    if (current !== branch || tip !== this.plan.base.commit)
+      throw refuse(
+        "INPUT_CHANGED",
+        "head_moved",
+        current !== branch
+          ? `The delivery goes onto ${branch}, but ${current || "a detached HEAD"} is checked out. Check out ${branch} or prepare a new plan.`
+          : `${branch} moved to ${tip || "nothing"} after the plan was made. Prepare and approve a new plan.`,
+      );
+    const conflicts = await workingCopyConflicts(
+      this.workspace,
+      this.plan.base.commit,
+      this.plan.files,
+    );
+    if (conflicts.length)
+      throw refuse(
+        "INPUT_CHANGED",
+        "dirty_files",
+        `Files in the working copy changed after the plan was approved: ${conflicts.join(", ")}. Commit, stash or revert them, then deliver again.`,
+        { files: conflicts },
+      );
+  }
+  /**
+   * A local delivery's last step: the current branch moves from the plan's base to the commit
+   * (compare-and-swap, so a branch someone moved is never overwritten), then the working copy and
+   * index take the commit's content for the delivered files. Other uncommitted changes of the
+   * person stay as they are.
+   */
+  private async doAdvance(): Promise<void> {
+    const commit = this.commit ?? this.latest("commit")?.intent.commit;
+    if (!commit) throw refuse("STALE_DECISION", "commit_missing", "The delivery commit is missing");
+    await this.assertAdvance();
+    const branch = this.plan.base.branch;
+    await this.attempt(
+      {
+        planId: this.plan.planId,
+        operation: "advance",
+        branch,
+        commit,
+        base: this.plan.base.commit,
+      },
+      async () => {
+        const update = await git(this.workspace, [
+          "update-ref",
+          "-m",
+          `baked local delivery ${this.plan.planId}`,
+          `refs/heads/${branch}`,
+          commit,
+          this.plan.base.commit,
+        ]);
+        // update-ref is atomic: a refusal changed nothing.
+        if (update.code !== 0)
+          return {
+            ok: false,
+            definite: true,
+            fault: refuse(
+              "INPUT_CHANGED",
+              "head_moved",
+              `Cannot move ${branch} to ${commit}: ${update.stderr.trim()}`,
+            ),
+          };
+        await this.syncWorkingCopy(commit);
+        return { ok: true };
+      },
+    );
+  }
+  /**
+   * The delivered files of the working copy and index take the commit's content. A file the
+   * person changed from the base since the check is left as it is, so a retry after a crash never
+   * overwrites an edit; it then shows as their uncommitted change on top of the commit.
+   */
+  private async syncWorkingCopy(commit: string): Promise<void> {
+    for (const file of this.plan.files) {
+      const absolute = workspacePath(this.workspace, file.path);
+      const current = fileHashOrNull(absolute);
+      if (current === file.hash) {
+        if (file.hash !== null && file.mode === "100755") chmodSync(absolute, 0o755);
+        continue;
+      }
+      if (current !== (await contentAt(this.workspace, this.plan.base.commit, file.path))) continue;
+      if (file.action === "delete") {
+        rmSync(absolute, { force: true });
+        continue;
+      }
+      const content = await git(this.workspace, [
+        "cat-file",
+        "--filters",
+        `${commit}:${file.path}`,
+      ]);
+      if (content.code !== 0)
+        throw refuse(
+          "ARTIFACT_MISSING",
+          "commit_missing",
+          `${file.path} is missing from ${commit}`,
+        );
+      mkdirSync(dirname(absolute), { recursive: true });
+      writeFileSync(absolute, content.bytes);
+      if (file.mode === "100755") chmodSync(absolute, 0o755);
+    }
+    await this.syncIndex(commit);
+  }
+  /** The index takes the commit's entries for the delivered files; nothing else is staged or unstaged. */
+  private async syncIndex(commit: string): Promise<void> {
+    const paths = this.plan.files.map((f) => f.path);
+    if (!paths.length) return;
+    const reset = await git(
+      this.workspace,
+      [
+        "--literal-pathspecs",
+        "reset",
+        "-q",
+        commit,
+        "--pathspec-from-file=-",
+        "--pathspec-file-nul",
+      ],
+      { input: paths.join("\0") },
+    );
+    if (reset.code !== 0)
+      throw refuse("CAPABILITY_DENIED", "index_failed", `git reset failed: ${reset.stderr.trim()}`);
+  }
   private async doPush(): Promise<void> {
     const commit = this.commit ?? this.latest("commit")?.intent.commit;
     if (!commit) throw refuse("STALE_DECISION", "commit_missing", "The delivery commit is missing");
+    const target = this.plan.remote;
+    if (!target) throw refuse("INVALID_DEFINITION", "no_remote", "A local delivery has no push");
     await this.attempt(
       {
         planId: this.plan.planId,
         operation: "push",
         branch: this.plan.branch,
         commit,
-        remote: this.plan.remote.name,
-        url: this.plan.remote.url,
+        remote: target.name,
+        url: target.url,
       },
       async () => {
         // No leading "+": Git refuses anything but creating or fast-forwarding the branch.
         const push = await git(
           this.workspace,
-          [
-            "push",
-            "--porcelain",
-            this.plan.remote.name,
-            `${commit}:refs/heads/${this.plan.branch}`,
-          ],
+          ["push", "--porcelain", target.name, `${commit}:refs/heads/${this.plan.branch}`],
           { timeoutMs: 300000 },
         );
         if (push.code === 0) return { ok: true };

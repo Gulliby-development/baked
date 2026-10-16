@@ -15,8 +15,9 @@ import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/type
 // asserted its exit code, so the tsc diagnostics never reached the check output. T008 opened T011,
 // T011 opened T012 for the same failing test, each told only "required check tests-written
 // failed", and the run blocked `no_progress`. The host now runs the check the failing test names
-// and gives its output to the correction, and tells a correction of a correction that the failure
-// is the one the earlier correction was opened for.
+// and gives its output to the correction, sends a correction whose own check fails back to it once
+// (bench round 35, url-shortener 651b2693 T007 -> T008), and tells a correction of a correction
+// that the failure is the one the earlier correction was opened for.
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -87,14 +88,16 @@ const bad = 'export const n: number = "2";\n';
 const good = "export const n: number = 2;\n";
 /** A correction that changes the file but keeps the type error. */
 const stillBad = 'export const n: number = "2"; // a cast was not the fix\n';
+const stillBadAgain = 'export const n: number = "2"; // nor a comment\n';
 
 describe("scenario: md-site d486645a, a test that spawns the project's typecheck (#1285)", () => {
   test("the corrective gets the typecheck's own diagnostics, and its successor is told it is the same failure", async () => {
-    const { done, executor, root, lastError, findings } = await runScenario([bad, stillBad, good]);
+    // T002 keeps the type error, its continuation too, and only then a correction of it is opened.
+    const { done, executor, root, lastError, findings } = await runScenario([bad, stillBad, stillBadAgain, good]);
     expect(lastError).toBe("");
     expect(done.status).toBe("completed");
     expect(readFileSync(join(root, "site.ts"), "utf8")).toBe(good);
-    expect(executor.implementations.map((i) => i.taskId)).toEqual(["T001", "T002", "T003"]);
+    expect(executor.implementations.map((i) => i.taskId)).toEqual(["T001", "T002", "T002", "T003"]);
     // Both check findings quote the diagnostic the test's child process printed.
     const failed = findings.filter((f) => f.claim.endsWith("required check tests-written failed"));
     expect(failed).toHaveLength(2);
@@ -106,8 +109,21 @@ describe("scenario: md-site d486645a, a test that spawns the project's typecheck
     }
     expect(executor.implementations[1]?.input).toContain("error TS2322");
     // The correction of the correction knows the earlier one left the same failure.
-    expect(executor.implementations[2]?.input).toContain("This is the same failure T002 was opened for");
+    expect(executor.implementations[3]?.input).toContain("This is the same failure T002 was opened for");
     expect(executor.implementations[1]?.input).not.toContain("This is the same failure");
+  }, 60000);
+
+  test("a correction whose own required check fails continues once with the output instead of opening a correction of itself", async () => {
+    const { done, executor, findings } = await runScenario([bad, stillBad, good]);
+    expect(done.status).toBe("completed");
+    expect(executor.implementations.map((i) => i.taskId)).toEqual(["T001", "T002", "T002"]);
+    const continuation = executor.implementations[2]?.input ?? "";
+    expect(continuation).toContain("This correction's earlier attempt submitted");
+    expect(continuation).toContain("(fail) bun run typecheck exits successfully");
+    // The continuation sees the typecheck's own diagnostics, not only the exit code.
+    expect(continuation).toContain("runs the project's typecheck check");
+    expect(continuation).toContain("error TS2322");
+    expect(findings.filter((f) => f.claim.endsWith("required check tests-written failed"))).toHaveLength(1);
   }, 60000);
 
   test("a failing test that names no project check keeps the check output as it was", async () => {

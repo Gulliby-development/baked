@@ -250,3 +250,96 @@ describe("scenario: large features against small ones in an initiative estimate 
     expect(estimate.notes.join(" ")).toContain("Accepted large features used 3.2 times their forecast");
   });
 });
+
+// Bench round 35 (narrowfit, #1354): four large features named 4, 5, 6 and 11 boundary paths and
+// got one range; language (11 paths) used 7.9M against a high end of 2.65M, after core, solver,
+// cli and the small features were accepted at 0.36M to 0.58M per path. Its plan then sized its
+// tasks at about 4.8M to 8.5M tokens while the estimate still said 2.65M at most.
+describe("scenario: features estimated from their boundary paths and their plan (#1354)", () => {
+  const typical = (runId: string, implement: number): PastRun => ({
+    ...run(runId, "sdd", 0, 6),
+    tokens: implement + 700_000,
+    stageTokens: { specify: 250_000, plan: 250_000, implement, review: 200_000 },
+    taskTokens: implement,
+  });
+  const history = [typical("h1", 300_000), typical("h2", 700_000)];
+  const withPaths = (id: string, size: FeatureToEstimate["size"], paths: number) => ({ ...feature(id, size), paths });
+  const features = [
+    withPaths("core", "large", 4),
+    withPaths("solver", "large", 5),
+    withPaths("cli", "large", 6),
+    withPaths("language", "large", 11),
+    withPaths("release", "medium", 3),
+    withPaths("sum", "small", 1),
+    withPaths("alldiff", "small", 1),
+  ];
+  const accepted = {
+    core: { spent: 1_839_836, accepted: true },
+    solver: { spent: 1_816_678, accepted: true },
+    cli: { spent: 3_086_741, accepted: true },
+    sum: { spent: 575_000, accepted: true },
+    alldiff: { spent: 439_000, accepted: true },
+  };
+
+  test("a feature still to run is forecast at no less than its paths times the measured rate", () => {
+    const estimate = estimateInitiative({
+      features,
+      history,
+      samples: [],
+      maxTotalTokens: 30_000_000,
+      progress: { features: accepted, overhead: 0 },
+    });
+    const language = estimate.features.find((f) => f.featureId === "language");
+    expect(language?.paths).toBe(11);
+    expect(estimate.perPath).not.toBeNull();
+    const perPath = estimate.perPath ?? { low: 0, high: 0 };
+    expect(perPath.low).toBeGreaterThanOrEqual(400_000);
+    expect(language?.tokens.low).toBeGreaterThanOrEqual(11 * perPath.low);
+    expect(language?.tokens.high).toBeGreaterThanOrEqual(11 * perPath.high);
+    expect(language?.tokens.high).toBeGreaterThanOrEqual(5_000_000);
+    expect(language?.basis).toBe("calibrated");
+    expect(estimate.notes.join(" ")).toContain("per path of its boundary");
+  });
+
+  test("a feature whose run has a sized plan is forecast at no less than the plan's tasks", () => {
+    const planned = { low: 4_800_000, high: 8_500_000 };
+    const estimate = estimateInitiative({
+      features,
+      history,
+      samples: [],
+      maxTotalTokens: 30_000_000,
+      progress: {
+        features: { ...accepted, language: { spent: 900_000, accepted: false, planned } },
+        overhead: 0,
+      },
+    });
+    const language = estimate.features.find((f) => f.featureId === "language");
+    expect(language?.planned).toEqual(planned);
+    expect(language?.tokens.low).toBeGreaterThanOrEqual(planned.low);
+    expect(language?.tokens.high).toBeGreaterThanOrEqual(planned.high);
+    expect(estimate.notes.join(" ")).toContain("the tokens its plan sized");
+  });
+
+  test("paths measured on earlier initiatives' feature runs price a split before any feature runs", () => {
+    const sample = (runId: string, tokens: number, paths: number): FeatureRunSample => ({
+      runId,
+      workflowId: "sdd",
+      size: "medium",
+      tokens,
+      taskCount: 6,
+      paths,
+    });
+    const estimate = estimateInitiative({
+      features,
+      history,
+      samples: [sample("a", 1_500_000, 3), sample("b", 3_500_000, 5)],
+      maxTotalTokens: 30_000_000,
+    });
+    const byId = Object.fromEntries(estimate.features.map((f) => [f.featureId, f]));
+    expect(estimate.perPath).toEqual({ low: 500_000, high: 700_000 });
+    expect(byId.language?.tokens).toEqual({ low: 5_500_000, high: 7_700_000 });
+    // Fewer paths than a typical large feature never lowers its size-based forecast.
+    expect(byId.core?.tokens.high).toBeGreaterThanOrEqual(4 * 700_000);
+  });
+});
+

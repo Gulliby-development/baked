@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../config/index.js";
 import { getCwd } from "../core/cwd.js";
+import { gitInitSummary, initWorkspaceGit } from "../core/git/init.js";
 import { loadModelCatalog } from "../core/llm/model-catalog.js";
 import { parseRouteOverrides, type RoutingEntry } from "../core/llm/model-routing.js";
 import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
@@ -672,6 +673,10 @@ export async function executeWorkflowCommand(
       const changed = editProjectMemory(service.store, edit);
       return { id: changed, ...projectMemoryView(service.store, policy) };
     }
+    case "git-init": {
+      const result = await initWorkspaceGit(service.workspace);
+      return { ...result, message: gitInitSummary(result) };
+    }
     case "worktrees":
       if (args.flags.clean) return service.cleanWorktrees(args.flags["dry-run"] === true);
       return service.worktrees();
@@ -689,6 +694,7 @@ export async function executeWorkflowCommand(
           ...provider,
         });
       const prepared = await prepareDelivery(service.store, service.config, runId, {
+        ...(args.flags.local === true ? { local: true } : {}),
         ...(typeof args.flags.remote === "string" ? { remote: args.flags.remote } : {}),
         ...(typeof args.flags.branch === "string" ? { branch: args.flags.branch } : {}),
         ...(typeof args.flags["follow-up"] === "string"

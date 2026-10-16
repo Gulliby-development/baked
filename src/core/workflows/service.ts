@@ -44,6 +44,7 @@ import {
   smokeLine,
 } from "./check-preflight.js";
 import { answerInvalidatesAnalysis, clarificationResumeIndex } from "./clarification.js";
+import { CONFLICT_DECISION_PREFIX, recordConflictDecision } from "./conflict-decisions.js";
 import { assertFrozenInputs } from "./context.js";
 import { refreshCriticOutcomes } from "./critic-outcomes.js";
 import { decideDelivery, isDeliveryRequest } from "./delivery.js";
@@ -58,6 +59,7 @@ import { fileHash } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { estimateHistory, type SavedEstimate } from "./estimate.js";
 import { replayEvents } from "./events.js";
+import { canExtendRun } from "./extendable.js";
 import {
   captureForkSeed,
   FORK_SEED_ARTIFACT,
@@ -370,6 +372,7 @@ export class NativeWorkflowService implements WorkflowService {
       pendingPatch: null,
       taskContinuations: {},
       taskEditRetries: {},
+      taskProgressAttempts: {},
       quickFixes: {},
       taskRestarts: {},
       ownerLostResumes: 0,
@@ -816,8 +819,16 @@ export class NativeWorkflowService implements WorkflowService {
         }
       }
       const blocked = this.store.run(runId);
-      if (blocked.status === "blocked" && blocked.reason === "invalid_output")
-        this.noteInvalidOutput(runId);
+      if (
+        blocked.status === "blocked" &&
+        blocked.reason === "invalid_output" &&
+        !this.noteInvalidOutput(runId)
+      )
+        throw new WorkflowFault(
+          "STALE_DECISION",
+          `The run stopped again with the same diagnostic after the last resume, so another resume would repeat the same attempt. Change the input instead: revise the run (\`baked workflow revise ${runId}\`), run an initiative feature again (\`baked workflow initiative replan ID --feature F\`), or cancel it`,
+          { reason: "repeated_invalid_output" },
+        );
       // Resuming is the operator's decision to try again: a task whose implementation did not
       // complete (no snapshot) goes back to pending and continues on the edits already in place.
       for (const task of this.store.tasks(runId))
@@ -910,19 +921,25 @@ export class NativeWorkflowService implements WorkflowService {
    * gets the diagnostic as a correction note, so the retry is not the same attempt again; a
    * diagnostic already noted is not added twice.
    */
-  private noteInvalidOutput(runId: string): void {
+  /**
+   * Gives the next attempt the diagnostic of the stop. False when an earlier resume already gave
+   * it this very diagnostic: the attempt after that resume stopped the same way, and narrowfit
+   * 3c2e3629 stopped identically after two more resumes and an extension (#1348).
+   */
+  private noteInvalidOutput(runId: string): boolean {
     const latest = this.store
       .artifacts(runId)
       .filter((a) => a.logical_path.startsWith("errors/"))
       .at(-1);
-    if (!latest) return;
+    if (!latest) return true;
     const diagnostic = this.store.readArtifact(runId, latest.id).trim().slice(0, 2000);
-    if (!diagnostic) return;
+    if (!diagnostic) return true;
     const state = this.store.state(runId);
     const note = `\n${INVALID_OUTPUT_NOTE}\n${canonical({ diagnostic })}`;
-    if (state.prompt.includes(note)) return;
+    if (state.prompt.includes(note)) return false;
     state.prompt += note;
     this.store.saveState(runId, state);
+    return true;
   }
   /**
    * "Accept" on a stopped convergence: the remaining findings become known limitations, and the
@@ -1070,6 +1087,21 @@ export class NativeWorkflowService implements WorkflowService {
           : state.stageIndex;
         const asking = stages[askingIndex];
         state.prompt += `\nUser clarification${asking ? ` (answers the questions of the ${asking.id} stage; they are resolved)` : ""}:\n${canonical(decision.answers)}`;
+        // An answer to a task's spec conflict is a decision of the run: the findings the task
+        // corrects are decided, so their repros stop gating it and it is not asked again (#1350).
+        const conflict = body.specConflict as { taskId?: unknown } | undefined;
+        if (typeof conflict?.taskId === "string") {
+          const taskId = conflict.taskId;
+          const findingIds = state.graph?.tasks.find((t) => t.id === taskId)?.findingIds ?? [];
+          recordConflictDecision(this.store, runId, {
+            requestId: request.id,
+            taskId,
+            findingIds,
+            answer: canonical(decision.answers),
+          });
+          if (findingIds.length)
+            state.prompt += `\nThis answer decides the findings ${findingIds.join(", ")} that task ${taskId} corrects (${CONFLICT_DECISION_PREFIX}${request.id}.json): their repros no longer gate the task.`;
+        }
         // Answered research questions no longer block; the report itself stays valid.
         if (asking?.kind === "research" && state.research) {
           const research = ResearchSchema.parse(JSON.parse(state.research));
@@ -1549,12 +1581,20 @@ export class NativeWorkflowService implements WorkflowService {
             "STALE_DECISION",
             "The run stopped at an attempt's token cap, not on its budget: resume it to continue the task with the edits already made",
           );
-        if (row.status !== "blocked" || row.reason !== "budget_exhausted")
+        const before = PolicySchema.parse(JSON.parse(row.policy_json));
+        const spent = this.store.costUsage(runId);
+        if (
+          !canExtendRun({
+            status: row.status,
+            reason: row.reason,
+            estimatedCostUsd: spent.spentUsd + spent.reservedUsd,
+            maxCostUsd: before.maxCostUsd,
+          })
+        )
           throw new WorkflowFault(
             "STALE_DECISION",
-            "Only a run that stopped on its budget can be extended",
+            "Only a run that stopped on its budget, or is blocked with its cost cap nearly spent, can be extended",
           );
-        const before = PolicySchema.parse(JSON.parse(row.policy_json));
         const proposal = proposeExtension(limitsOf(before), budgetUsage(this.store, row));
         const limits: BudgetLimits = {
           maxTotalTokens:

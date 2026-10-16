@@ -140,7 +140,7 @@ bun test tests/feature-parity.test.ts
 | Fork a run | `/workflow` | `baked workflow fork` | `/v1/workflow/runs/:id/fork` | `project/runs` |
 | Discard a run's worktree | `/workflow` | `baked workflow discard-worktree` | `/v1/workflow/runs/:id/discard-worktree` | `project/runs` |
 | Worktree sizes and cleanup | `/workflow` | `baked workflow worktrees` | `/v1/workflow/worktrees`, `/v1/workflow/worktrees/clean` | `project/runs` |
-| Deliver a run (commit, pull request, follow-up commits to a delivered pull request) | `/workflow` | `baked workflow deliver` | `/v1/workflow/runs/:id/deliver`, `/v1/workflow/runs/:id/deliver/execute` | `project/runs`, `attention` |
+| Deliver a run (commit, pull request, follow-up commits to a delivered pull request, local delivery without a remote) | `/workflow` | `baked workflow deliver` | `/v1/workflow/runs/:id/deliver`, `/v1/workflow/runs/:id/deliver/execute` | `project/runs`, `attention` |
 | Follow a delivered pull request's checks and review comments and start a run that fixes them | `/workflow` | `baked workflow follow` | `/v1/workflow/runs/:id/checks` | `project/runs` |
 | Revise a run after its instructions change | `/workflow` | `baked workflow candidate`, `baked workflow revise` | `/v1/workflow/runs/:id/candidate`, `/v1/workflow/runs/:id/revise` | `project/runs` |
 | Approval reviewer: a model decides low-risk plans outside the auto approval limits | `/workflow` | `baked workflow run`, `baked quick`, `approval-review` | `/v1/workflow/runs` | `project/runs` |
@@ -194,6 +194,7 @@ bun test tests/feature-parity.test.ts
 | Prerequisite check and first-run wizard | `/setup`, `/wizard` | `baked self-check`, `--wizard` | `/v1/workflow/doctor` | `project/overview` |
 | Settings hub and raw config | `/settings` | Not needed: scripts edit config.json | `/v1/config` | `settings/app`, `settings/providers` |
 | Git menu: status, diff, commit graph, commit, push, pull, branch, stash | `/git`, `/git status`, `/git diff` +10 | Not needed: scripts call git | `/v1/git`, `/v1/git/graph`, `/v1/git/actions` | `project/git` |
+| Initialize Git with a .gitignore and a baseline commit, so runs can use worktrees | `/git init` | `baked workflow git-init` | `/v1/git/actions` | `project/git`, `project/runs` |
 | Storage cleanup, model events and the error log | `/storage`, `/model-events`, `/errors` | Not needed: scripts read the log files | `/v1/diagnostics/storage`, `/v1/diagnostics/storage/cleanup`, `/v1/diagnostics/model-events` +1 | `project/diagnostics` |
 | Tool, edit diagnostics and watchdog timeouts, context-window overrides | `/timeouts` | `--timeout` | `/v1/settings` | `settings/chat` |
 | Telemetry switch | `/telemetry` | `baked telemetry` | `/v1/config` | `settings/telemetry` |

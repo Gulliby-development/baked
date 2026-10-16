@@ -1685,6 +1685,17 @@ export class WorkflowStore {
       )
       .all(runId);
   }
+  /**
+   * The check runs made in a task's steps (its `request_check` calls and host checks), each with
+   * the step it ran in, in step order and then run order.
+   */
+  taskCheckRuns(runId: string, taskId: string): (CheckDetailRow & { step_id: string })[] {
+    return this.db
+      .query<CheckDetailRow & { step_id: string }, [string, string]>(
+        "SELECT s.id AS step_id,c.check_id,c.status,c.exit_code,c.reason,c.duration_ms,e.validity,e.artifact_id FROM check_results c JOIN evidence e ON c.run_id=e.run_id AND c.evidence_id=e.id JOIN attempts a ON a.run_id=e.run_id AND a.id=e.producer_attempt_id JOIN steps s ON s.run_id=a.run_id AND s.id=a.step_id WHERE c.run_id=? AND s.stage_id=? ORDER BY s.generation,c.rowid",
+      )
+      .all(runId, `task-${taskId}`);
+  }
   /** Check results with their evidence artifact, oldest first. */
   checkDetails(runId: string): CheckDetailRow[] {
     return this.db

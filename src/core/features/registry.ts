@@ -988,7 +988,8 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "run-deliver",
     group: "Workflow runs",
-    title: "Deliver a run (commit, pull request, follow-up commits to a delivered pull request)",
+    title:
+      "Deliver a run (commit, pull request, follow-up commits to a delivered pull request, local delivery without a remote)",
     tui: ["/workflow"],
     cli: ["baked workflow deliver"],
     api: ["/v1/workflow/runs/:id/deliver", "/v1/workflow/runs/:id/deliver/execute"],
@@ -1464,6 +1465,18 @@ export const FEATURES: readonly Feature[] = [
     cli: notNeeded("scripts call git"),
     api: ["/v1/git", "/v1/git/graph", "/v1/git/actions"],
     desktop: ["project/git"],
+  },
+  {
+    id: "git-init",
+    group: "Projects and setup",
+    title: "Initialize Git with a .gitignore and a baseline commit, so runs can use worktrees",
+    tui: ["/git init"],
+    cli: ["baked workflow git-init"],
+    api: ["/v1/git/actions: action init"],
+    desktop: [
+      "project/git: Initialize Git",
+      "project/runs: start dialog asks when a run needs Git",
+    ],
   },
   {
     id: "storage-logs",
