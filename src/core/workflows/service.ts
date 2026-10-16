@@ -819,8 +819,16 @@ export class NativeWorkflowService implements WorkflowService {
         }
       }
       const blocked = this.store.run(runId);
-      if (blocked.status === "blocked" && blocked.reason === "invalid_output")
-        this.noteInvalidOutput(runId);
+      if (
+        blocked.status === "blocked" &&
+        blocked.reason === "invalid_output" &&
+        !this.noteInvalidOutput(runId)
+      )
+        throw new WorkflowFault(
+          "STALE_DECISION",
+          `The run stopped again with the same diagnostic after the last resume, so another resume would repeat the same attempt. Change the input instead: revise the run (\`baked workflow revise ${runId}\`), run an initiative feature again (\`baked workflow initiative replan ID --feature F\`), or cancel it`,
+          { reason: "repeated_invalid_output" },
+        );
       // Resuming is the operator's decision to try again: a task whose implementation did not
       // complete (no snapshot) goes back to pending and continues on the edits already in place.
       for (const task of this.store.tasks(runId))
@@ -913,19 +921,25 @@ export class NativeWorkflowService implements WorkflowService {
    * gets the diagnostic as a correction note, so the retry is not the same attempt again; a
    * diagnostic already noted is not added twice.
    */
-  private noteInvalidOutput(runId: string): void {
+  /**
+   * Gives the next attempt the diagnostic of the stop. False when an earlier resume already gave
+   * it this very diagnostic: the attempt after that resume stopped the same way, and narrowfit
+   * 3c2e3629 stopped identically after two more resumes and an extension (#1348).
+   */
+  private noteInvalidOutput(runId: string): boolean {
     const latest = this.store
       .artifacts(runId)
       .filter((a) => a.logical_path.startsWith("errors/"))
       .at(-1);
-    if (!latest) return;
+    if (!latest) return true;
     const diagnostic = this.store.readArtifact(runId, latest.id).trim().slice(0, 2000);
-    if (!diagnostic) return;
+    if (!diagnostic) return true;
     const state = this.store.state(runId);
     const note = `\n${INVALID_OUTPUT_NOTE}\n${canonical({ diagnostic })}`;
-    if (state.prompt.includes(note)) return;
+    if (state.prompt.includes(note)) return false;
     state.prompt += note;
     this.store.saveState(runId, state);
+    return true;
   }
   /**
    * "Accept" on a stopped convergence: the remaining findings become known limitations, and the

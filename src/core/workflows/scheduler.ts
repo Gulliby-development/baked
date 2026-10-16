@@ -1988,7 +1988,8 @@ export class WorkflowScheduler {
               const executables = reproExecutables(policy.checks);
               const canRepro = executables.length > 0 && auditor.allowedTools.includes("run_repro");
               const converged = state.snapshotId;
-              const repro = (r: Repro) =>
+              const touched = this.runChangedPaths(runId, state);
+              const repro = (r: Repro, file?: string | null) =>
                 runRepro(this.processes, r, {
                   root: runRoot(this.store.workspace, state),
                   executables,
@@ -1997,6 +1998,7 @@ export class WorkflowScheduler {
                   sandbox: runSandbox(policy, runRoot(this.store.workspace, state), {
                     gitWrite: Boolean(state.worktree),
                   }),
+                  shadows: file ? [file, ...touched] : touched,
                 });
               const previous = state.convergence ?? undefined;
               const minConfidence = policy.reviewMinConfidence ?? DEFAULT_REVIEW_MIN_CONFIDENCE;
@@ -2188,7 +2190,7 @@ export class WorkflowScheduler {
                   finding.repro &&
                   executables.length
                 )
-                  outcomes.set(finding.id, await repro(finding.repro));
+                  outcomes.set(finding.id, await repro(finding.repro, finding.file));
               const blocks = (f: Review["findings"][number]): boolean =>
                 findingBlocks(
                   f,
@@ -3377,15 +3379,18 @@ export class WorkflowScheduler {
       .filter((f) => task.findingIds.includes(f.id) || regression.has(f.id))
       .filter((f) => !decided.has(f.id))
       .flatMap((f) => {
-        const repro = ReproSchema.safeParse((JSON.parse(f.body_json) as { repro?: unknown }).repro);
+        const body = JSON.parse(f.body_json) as { repro?: unknown; file?: unknown };
+        const repro = ReproSchema.safeParse(body.repro);
         return repro.success && executables.includes(repro.data.executable)
-          ? [{ findingId: f.id, repro: repro.data }]
+          ? [{ findingId: f.id, repro: repro.data, file: body.file }]
           : [];
       });
+    // A repro that runs a copy of the file the task fixes cannot see the fix (#1348).
+    const writes = task.writes.map((w) => w.path);
     if (!repros.length) return undefined;
     return async (root, signal) => {
       const outcomes: { findingId: string; repro: Repro; outcome: ReproOutcome }[] = [];
-      for (const { findingId, repro } of repros)
+      for (const { findingId, repro, file } of repros)
         outcomes.push({
           findingId,
           repro,
@@ -3395,6 +3400,7 @@ export class WorkflowScheduler {
             generated: generatedPaths(policy),
             signal,
             sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
+            shadows: typeof file === "string" ? [file, ...writes] : writes,
           }),
         });
       this.store.transaction(() =>
@@ -10057,6 +10063,12 @@ ${note}`;
       ),
     );
   }
+  /** The paths the run changed since its baseline, as far as the run knows them. */
+  private runChangedPaths(runId: string, state: RuntimeState): string[] {
+    const baselineId = state.manifest.baselineSnapshotId;
+    const before = (baselineId && this.store.snapshotFiles(runId, baselineId)) || {};
+    return changedPaths(before, state.expectedFiles ?? {});
+  }
   /**
    * The files the run changed that `include` selects and that still exist, with their content
    * now and at baseline: the planned files kept at approval, else the pre-image the run saved
@@ -10548,7 +10560,8 @@ ${note}`;
     const reviewSnapshotId = state.snapshotId;
     const reviewSnapshotHash = state.workspaceHash;
     const executables = reproExecutables(policy.checks);
-    const repro = (r: Repro) =>
+    const touched = this.runChangedPaths(runId, state);
+    const repro = (r: Repro, file?: string | null) =>
       runRepro(this.processes, r, {
         root: runRoot(this.store.workspace, state),
         executables,
@@ -10557,6 +10570,7 @@ ${note}`;
         sandbox: runSandbox(policy, runRoot(this.store.workspace, state), {
           gitWrite: Boolean(state.worktree),
         }),
+        shadows: file ? [file, ...touched] : touched,
       });
     // The workspace the run started from had no source code: the reviewers judge the whole program.
     const greenfield = this.baselineScaffold(runId, state);
@@ -10772,7 +10786,7 @@ ${note}`;
         const outcomes = new Map<string, ReproOutcome>();
         for (const finding of candidates)
           if (finding.repro && executables.length)
-            outcomes.set(finding.id, await repro(finding.repro));
+            outcomes.set(finding.id, await repro(finding.repro, finding.file));
         if (outcomes.size)
           this.store.transaction(() =>
             this.store.artifact(
