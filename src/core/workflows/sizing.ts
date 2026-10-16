@@ -853,6 +853,9 @@ export function codeTaskCheckProblems(graph: TaskGraph, policy: RunPolicy): stri
  * A part keeps only the task's criteria that the code tasks writing its tested file cover (see
  * `partCriteria`). Returns null when no test task is oversized.
  */
+/** Opens the note a sizing split appends to each part's copy of its task's description. */
+export const SPLIT_PART = "Sizing split this task by file:";
+
 export function splitTestTasks(graph: TaskGraph, report: SizingReport): TaskGraph | null {
   const oversized = new Set(
     report.tasks.filter((task) => task.oversized && task.kind === "test").map((t) => t.taskId),
@@ -882,7 +885,7 @@ export function splitTestTasks(graph: TaskGraph, report: SizingReport): TaskGrap
         id,
         criterionIds: own,
         writes: index === 0 ? [write, ...deletes] : [write],
-        description: `${task.description}\nSizing split this task by file: write only ${write.path}; ${siblings.join(", ")} belong to the other parts of ${task.id}.${scope}`,
+        description: `${task.description}\n${SPLIT_PART} write only ${write.path}; ${siblings.join(", ")} belong to the other parts of ${task.id}.${scope}`,
       };
     });
     parts.set(
