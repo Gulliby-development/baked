@@ -339,6 +339,7 @@ export function writtenTestsCheck(
   root: string,
   checks: readonly Check[],
   writes: readonly { path: string; action: string }[],
+  text = "",
 ): Check | null {
   const files = writes
     .filter((w) => w.action !== "delete" && isTestFile(w.path))
@@ -346,11 +347,41 @@ export function writtenTestsCheck(
     .filter((path) => existsSync(join(root, path)));
   const gate = affectedTestCheck(checks, files);
   if (!gate) return null;
+  const minCases = requiredCases(text);
   return {
     ...gate,
     id: gate.id.replace(/-affected$/, "-written"),
     required: true,
     timeoutMs: Math.min(gate.timeoutMs, WRITTEN_TESTS_TIMEOUT_MS),
     onTimeout: "failed",
+    ...(minCases !== undefined ? { minCases } : {}),
   };
+}
+
+const CASE_COUNT =
+  /\bat least\s+(\d{1,3}(?:,\d{3})+|\d+)\s+(?:(?:randomly|independently|random(?:ly)?|generated|distinct|different)\s+){0,2}(?:inputs?|cases?|samples?|runs?|examples?|iterations?|scenarios?|datasets?|values?)\b/gi;
+const PROPERTY_TEXT =
+  /\bpropert(?:y|ies)\b|\bfast-check\b|\bhypothesis\b|\bgenerated inputs?\b|\bfuzz/i;
+/** The property gate's own minimum of generated inputs (`quality/properties.ts`). */
+export const DEFAULT_MIN_CASES = 100;
+
+/**
+ * The generated inputs a task's text requires of its tests: the largest "at least N inputs" it
+ * names, or the property gate's 100 for a property test task that names no number, or undefined.
+ * url-shortener 4c3137f0 T003 (bench round 36, #1367) planned "at least 100 generated inputs per
+ * criterion"; the timeout note said "tens", the corrective cut the tests to 32 cases and the
+ * review asked for 100 again: three correctives, 3.14M tokens.
+ */
+export function requiredCases(text: string): number | undefined {
+  const counts = [...text.matchAll(CASE_COUNT)].map((match) =>
+    Number((match[1] ?? "").replace(/,/g, "")),
+  );
+  const most = Math.max(0, ...counts.filter((count) => Number.isFinite(count)));
+  if (most > 0) return most;
+  return PROPERTY_TEXT.test(text) ? DEFAULT_MIN_CASES : undefined;
+}
+
+/** The text of a task that may name how many generated inputs its tests need. */
+export function taskCaseText(task: { title: string; description: string }): string {
+  return `${task.title}\n${task.description}`;
 }

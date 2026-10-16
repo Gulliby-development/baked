@@ -301,7 +301,7 @@ export class CheckRunner {
         ...result,
         output: `${result.output}\n\nNote: ${check.id} ran ${
           check.args.filter((arg) => /[/\\]|\.\w+$/.test(arg)).join(" ") || check.args.join(" ")
-        } and did not finish within ${check.timeoutMs} ms, without printing a test result. These tests are too slow or never end. Run the file alone with run_probe and time it; keep generated samples to a representative few cases (tens, not the whole accepted domain the spec allows), avoid one long synchronous loop, and keep each test to a few seconds.`,
+        } and did not finish within ${check.timeoutMs} ms, without printing a test result. These tests are too slow or never end. ${timeoutAdvice(check)}`,
       };
     } else if (result.timedOut) reason = "timeout";
     else if (result.cancelled) reason = "cancelled";
@@ -355,4 +355,16 @@ export class CheckRunner {
     });
     return { status, evidenceId, snapshotId: snapshot.id, output: result.output, reason };
   }
+}
+
+/**
+ * What a test file that ran past its timeout should change. With a required number of generated
+ * inputs it keeps that number and makes each case cheap: "tens" there made a corrective cut the
+ * cases below what the plan and the review require (#1367).
+ */
+function timeoutAdvice(check: Check): string {
+  if (check.minCases === undefined)
+    return "Run the file alone with run_probe and time it; keep generated samples to a representative few cases (tens, not the whole accepted domain the spec allows), avoid one long synchronous loop, and keep each test to a few seconds.";
+  const n = String(check.minCases);
+  return `The task requires at least ${n} generated inputs: do not reduce that number. Make each case cheap so ${n} cases fit in ${String(check.timeoutMs)} ms: one in-memory store or one temporary directory set up once and reused across the cases, no process, server or new file per case, and no sleeps. Run the file alone with run_probe, time it, and divide by the cases to see the cost of one.`;
 }

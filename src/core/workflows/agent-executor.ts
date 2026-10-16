@@ -47,7 +47,7 @@ import {
   writesDocumentation,
 } from "../verification/repro.js";
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
-import { affectedTestsFor, writtenTestsCheck } from "./affected-tests.js";
+import { affectedTestsFor, taskCaseText, writtenTestsCheck } from "./affected-tests.js";
 import { assertAttemptFits, growBudgetOnProgress } from "./budget.js";
 import {
   fixerCommand,
@@ -695,7 +695,7 @@ export class NativeAgentExecutor implements AgentExecutor {
               task && checkId.endsWith("-affected")
                 ? affectedTestsFor(root, policy.checks, task.writes).check
                 : task && checkId.endsWith("-written")
-                  ? writtenTestsCheck(root, policy.checks, task.writes)
+                  ? writtenTestsCheck(root, policy.checks, task.writes, taskCaseText(task))
                   : null;
             const check =
               affected?.id === checkId ? affected : policy.checks.find((c) => c.id === checkId);
