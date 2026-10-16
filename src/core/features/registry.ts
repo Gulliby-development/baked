@@ -1342,8 +1342,8 @@ export const FEATURES: readonly Feature[] = [
       "/workflow: initiatives, $N in the start form's budget and B, dollars on the budget line",
     ],
     cli: [
-      "baked workflow initiative start --budget-usd",
-      "baked workflow initiative extend --budget-usd",
+      "baked workflow initiative start",
+      "baked workflow initiative extend",
       "baked workflow initiative show",
     ],
     api: ["/v1/initiatives", "/v1/initiatives/:id", "/v1/initiatives/:id/extend"],

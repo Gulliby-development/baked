@@ -178,7 +178,7 @@ bun test tests/feature-parity.test.ts
 | Each feature runs its own workflow, with a budget share by estimated need (by size without history) | `/workflow` | `baked workflow initiative set-workflow`, `baked workflow initiative set-size` | `/v1/initiatives/:id/configure` | `project/initiatives` |
 | Estimate a split: a difficulty level and a token range from run history | `/workflow` | `baked workflow initiative estimate` | `/v1/initiatives/:id/estimate` | `project/initiatives` |
 | Independent features run side by side in worktrees | `/workflow` | `baked workflow initiative drive`, `baked workflow initiative show` | `/v1/initiatives/:id` | `project/initiatives` |
-| A dollar cap the feature runs share, with a tolerance and a forecast stop | `/workflow` | `baked workflow initiative start --budget-usd`, `baked workflow initiative extend --budget-usd`, `baked workflow initiative show` | `/v1/initiatives`, `/v1/initiatives/:id`, `/v1/initiatives/:id/extend` | `project/initiatives` |
+| A dollar cap the feature runs share, with a tolerance and a forecast stop | `/workflow` | `baked workflow initiative start`, `baked workflow initiative extend`, `baked workflow initiative show` | `/v1/initiatives`, `/v1/initiatives/:id`, `/v1/initiatives/:id/extend` | `project/initiatives` |
 
 ### Projects and setup
 
