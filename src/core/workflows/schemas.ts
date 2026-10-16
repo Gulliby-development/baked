@@ -2050,6 +2050,38 @@ export function procedureCriteria(spec: Spec): string[] {
     .map((c) => c.id);
 }
 
+const COUNT_LIMIT = String.raw`(?:at\s+most|no\s+more\s+than|not\s+more\s+than|fewer\s+than|less\s+than|up\s+to|a\s+maximum\s+of|maximum\s+of|at\s+least|exactly)`;
+const SPEC_PART = String.raw`(?:acceptance\s+criteri(?:a|on)|requirements?|criteri(?:a|on)|tasks?)`;
+// A measure of the specification or plan itself: "at most 40 acceptance criteria", "the feature
+// specifications total 54 criteria", "the number of acceptance criteria", "specs/<id>/spec.json".
+const SPEC_MEASURE = new RegExp(
+  [
+    String.raw`\b${COUNT_LIMIT}\s+\d[\d,]*\s+(?:\w+\s+){0,2}?acceptance\s+criteri(?:a|on)\b`,
+    String.raw`\b(?:number|count|total)\s+of\s+(?:the\s+)?(?:\w+\s+){0,2}?acceptance\s+criteri(?:a|on)\b`,
+    String.raw`\b(?:specifications?|specs?|task\s+graphs?)\b[^.;]{0,60}?\b(?:${COUNT_LIMIT}\s+|total(?:s|ing)?\s+|counts?\s+)\d[\d,]*\s+(?:\w+\s+){0,2}?${SPEC_PART}\b`,
+    String.raw`\bspecs/[\w.*-]+/spec\.json\b`,
+  ].join("|"),
+  "i",
+);
+
+/**
+ * Criteria that measure the specification or plan rather than the delivered program: a count of
+ * criteria, requirements or tasks, or the content of `specs/<id>/spec.json`. A brief's rule for the
+ * spec author ("at most 40 acceptance criteria") became an initiative goal and then AC-005 of later
+ * features; no feature run can enforce it, the cli plan tried to rewrite 49 protected upstream
+ * specs and docs blocked twice (#1310). Such a rule is followed while writing the spec.
+ */
+export function specMeasureCriteria(spec: Pick<Spec, "criteria">): string[] {
+  return spec.criteria
+    .filter((c) => SPEC_MEASURE.test(`${c.given}\n${c.when}\n${c.then}`))
+    .map((c) => c.id);
+}
+
+/** Whether a goal or request line is a rule about writing the specification, not a product outcome. */
+export function specWritingRule(line: string): boolean {
+  return SPEC_MEASURE.test(line);
+}
+
 const SCOPE_FILLER = new Set(
   "a an the of for to in on and or with any all new its it is be are by as at from this that these those".split(
     " ",
@@ -2217,6 +2249,10 @@ export function specCoverageProblems(
     ...procedureCriteria(spec).map(
       (id) =>
         `criterion ${id} describes how the implementer works (a command run before or after changing the work), not what the result is, and nothing after the run can check the order of its steps. Remove it, and the requirement it alone covers; the implementer reads that instruction in the request. Keep a criterion about the result instead, for example that the tests pass.`,
+    ),
+    ...specMeasureCriteria(spec).map(
+      (id) =>
+        `criterion ${id} measures the specification or plan (how many criteria, requirements or tasks there are, or what a specs/<id>/spec.json file holds), not the delivered program. Remove it, and the requirement it alone covers; follow such a rule while writing this spec and record it as an assumption if it matters. Accepted specifications are host-owned, and no task may change them.`,
     ),
     ...contradictoryScope(spec).map(
       (line) =>

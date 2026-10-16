@@ -20,6 +20,7 @@ import {
   type RunPolicy,
   type RunSnapshot,
   SafeId,
+  specWritingRule,
 } from "../schemas.js";
 import type { NativeWorkflowService, PlannedReroute } from "../service.js";
 import { terminalStates } from "../state-machine.js";
@@ -1626,11 +1627,22 @@ export function featurePrompt(
   upstream: { feature: { id: string }; contract: AcceptedContract }[],
 ): string {
   const others = plan.features.filter((f) => f.id !== feature.id);
+  // A goal that counts spec criteria is a rule for writing specs, which no feature run can
+  // enforce across the initiative; as a goal it became a criterion of every feature (#1310).
+  const rules = plan.goals.filter(specWritingRule);
+  const goals = plan.goals.filter((g) => !specWritingRule(g));
   const lines = [
     `This run implements feature ${feature.id} ("${feature.title}") of the initiative ${row.id} ("${plan.title}").`,
     "",
     "Initiative goals:",
-    ...plan.goals.map((g) => `- ${g}`),
+    ...goals.map((g) => `- ${g}`),
+    ...(rules.length
+      ? [
+          "",
+          "Rules for writing this feature's specification. They are not product goals: follow them while writing the spec, never turn them into a requirement or acceptance criterion, and never change another feature's accepted specification to meet them:",
+          ...rules.map((g) => `- ${g}`),
+        ]
+      : []),
     "",
     `Boundary of this feature: ${feature.boundary.scope}`,
     feature.boundary.paths.length

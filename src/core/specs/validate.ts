@@ -78,7 +78,11 @@ export function validatePackage(
         /^(\.baked|baked|specs|\.git)(\/|$)/i.test(write.path) ||
         /(^|\/)(AGENTS\.md|CLAUDE\.md|constitution\.md|\.env(?:\..*)?)$/i.test(write.path)
       )
-        errors.push(`protected write ${write.path}`);
+        errors.push(
+          /^specs(\/|$)/i.test(write.path)
+            ? `protected write ${write.path}: accepted specifications are host-owned and no task may create, modify or delete them, including another feature's; drop the write and plan only the product work`
+            : `protected write ${write.path}`,
+        );
       const creator = graph.tasks.some(
         (t) =>
           ancestors.has(t.id) &&
