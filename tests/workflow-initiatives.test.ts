@@ -574,6 +574,39 @@ describe("scenario: an initiative dollar budget (#1317)", () => {
   });
 });
 
+// Bench round 33, vtsnap (#1327): calls and active time were split by size alone, so the first
+// medium feature of a 6 hour, 7 feature initiative got 38 minutes, needed 40 and blocked
+// "Active deadline exhausted" with 11.7M ms of the initiative unused.
+describe("scenario: a starting feature's calls and time grow into what the others do not need (#1327)", () => {
+  test("the first feature gets the remaining time and calls less the waiting features' floors", async () => {
+    const t = setup();
+    await t.start({ plan: threeFeatures, budget: { maxTotalTokens: 50_000_000, maxAgentCalls: 400, maxActiveMs: 21_600_000 } });
+    const before = await t.approveSplit();
+    const [core, ...others] = ["core", "api", "docs"].map((id) => t.featureOf(before, id));
+    const weight = (size: string) => (size === "small" ? 1 : size === "large" ? 4 : 2);
+    const floor = (limit: number, pick: (f: (typeof others)[number]) => number) =>
+      others.reduce((sum, f) => sum + Math.min(pick(f), (limit * weight(f.size)) / 2), 0);
+    const ms = 21_600_000 - floor(policy.maxActiveMs, (f) => f.share?.activeMs ?? 0);
+    const calls = 400 - floor(policy.maxAgentCalls, (f) => f.share?.calls ?? 0);
+    expect(ms).toBeGreaterThan(core?.share?.activeMs ?? 0);
+    expect(calls).toBeGreaterThan(core?.share?.calls ?? 0);
+    const view = await t.drive();
+    const run = JSON.parse(t.workflows.store.run(t.featureOf(view, "core").runId ?? "").policy_json);
+    expect([run.maxActiveMs, run.maxAgentCalls]).toEqual([Math.floor(ms), Math.floor(calls)]);
+  }, 30000);
+
+  test("a budget far above the per-run limits leaves each feature its own share", async () => {
+    const t = setup();
+    await t.start({ plan: threeFeatures, budget: { maxTotalTokens: 50_000_000, maxAgentCalls: 40, maxActiveMs: policy.maxActiveMs } });
+    const before = await t.approveSplit();
+    const share = t.featureOf(before, "core").share;
+    const view = await t.drive();
+    const run = JSON.parse(t.workflows.store.run(t.featureOf(view, "core").runId ?? "").policy_json);
+    // The floors are the other features' whole shares here, so nothing is left to grow into.
+    expect([run.maxActiveMs, run.maxAgentCalls]).toEqual([share?.activeMs, share?.calls]);
+  }, 30000);
+});
+
 describe("initiative runtime", () => {
   test("the decomposer proposes the split; an edit changes the approval digest", async () => {
     const t = setup();
@@ -716,7 +749,10 @@ describe("initiative runtime", () => {
     const apiRun = t.featureOf(view, "api").runId ?? "";
     const apiPolicy = JSON.parse(t.workflows.store.run(apiRun).policy_json) as RunPolicy;
     expect(apiPolicy.maxTotalTokens).toBe(Math.floor((budget.maxTotalTokens - core.tokens) / 2));
-    expect(apiPolicy.maxAgentCalls).toBe(Math.floor((budget.maxAgentCalls - core.calls) / 2));
+    // Calls grow past the equal share into what docs does not need: its floor is the policy's
+    // 40 calls per medium run (#1327).
+    const left = budget.maxAgentCalls - core.calls;
+    expect(apiPolicy.maxAgentCalls).toBe(Math.max(Math.floor(left / 2), left - Math.min(Math.floor(left / 2), policy.maxAgentCalls)));
     const api = t.featureOf(view, "api").usage;
     expect(view.budget.used).toEqual({
       tokens: core.tokens + api.tokens,
