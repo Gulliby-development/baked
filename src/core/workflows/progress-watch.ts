@@ -5,13 +5,15 @@
  */
 import { canonical } from "../specs/hash.js";
 
-export type WatchSignal = "repeated-reads" | "no-edits" | "same-failure";
+export type WatchSignal = "repeated-reads" | "no-edits" | "same-failure" | "no-edit-tool";
 export interface WatchFinding {
   signal: WatchSignal;
   /** One sentence for the steering message, the event and the activity feed. */
   detail: string;
 }
 export interface WatchStep {
+  /** The step's own text, where a worker says what it cannot do. */
+  text?: string;
   toolCalls?: readonly { toolName: string; input?: unknown }[];
   toolResults?: readonly { toolName: string; output?: unknown }[];
 }
@@ -95,6 +97,8 @@ export function steeringNotice(finding: WatchFinding): string {
       "Apply the edits the task needs now with multi_edit or edit_file, or call submit_result with what blocks you as unresolved.",
     "same-failure":
       "Running it again will not change the result. Change the code or the approach before the next run, or call submit_result with the failure as unresolved.",
+    "no-edit-tool":
+      "Call one of these tools now to apply the change; they are in this session's tool list.",
   };
   return `Progress watcher: ${finding.detail}. ${advice[finding.signal]} If the same pattern continues, the host ends this attempt early.`;
 }
@@ -150,4 +154,22 @@ export function stillStuck(
     : after.length >= stopAfter
       ? "progress"
       : "waiting";
+}
+
+/**
+ * The steps whose text says an edit tool is missing although none was called since, for a
+ * session that has edit tools (#1360). md-site 4b08acf6 T006 (bench round 35): a restarted
+ * session read for 805k tokens and ended blocked with "This runtime exposes no BAKED edit_file or
+ * multi_edit tool", although the attempt before it had used both.
+ */
+export function missingToolClaims(
+  steps: readonly WatchStep[],
+  claims: (text: string) => boolean,
+): number[] {
+  const found: number[] = [];
+  steps.forEach((step, index) => {
+    if (step.toolCalls?.some((call) => EDIT_TOOLS.has(call.toolName))) found.length = 0;
+    else if (step.text && claims(step.text)) found.push(index);
+  });
+  return found;
 }

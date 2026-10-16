@@ -487,6 +487,10 @@ export class NativeAgentExecutor implements AgentExecutor {
       };
       // Which code intelligence backend (and language server) answered each tool, for usage.
       const backends = new Map<string, ToolBackendCount>();
+      // Reads of the attempt before its first edit, by file and span, with the file's hash (#1360).
+      const earlierReads = new Map<string, { hash: string | null; read: number }>();
+      let readCalls = 0;
+      let edited = false;
       // A tool call is progress while it runs (it has its own deadline); the last one names a stall.
       const track = async <T>(name: string, call: () => Promise<T>): Promise<T> => {
         // The model call of this step was silent until it asked for its first tool.
@@ -538,21 +542,34 @@ export class NativeAgentExecutor implements AgentExecutor {
               noteSyntaxBaseline(name, args);
               let result = await withEditDiagnosticsMode(editMode, () =>
                 guard.execute(name, args, async () => {
+                  if (EDIT_TOOLS.has(name)) edited = true;
                   if (name !== "read" || !Array.isArray(normalized.files))
                     return execute(normalized, options);
-                  const { files, outlines } = await outlineLargeReads(
+                  const { files: asked, unchanged } = unchangedRereads(
                     normalized.files,
+                    earlierReads,
+                    ++readCalls,
+                    edited,
+                  );
+                  if (!asked.length) return { success: true, output: unchanged.join("\n") };
+                  const { files, outlines } = await outlineLargeReads(
+                    asked,
                     (request.task?.writes ?? []).map((w) => workspacePath(root, w.path)),
                   );
                   // The read tool refuses a fourth range read of a file as "already in your
                   // context"; after an outline the agent reads several spans of one file.
                   const fresh = files.length > 0 && files.every(isTargetedRead);
                   const input = { ...normalized, files, ...(fresh ? { fresh: true } : {}) };
-                  if (outlines.length === 0) return execute(input, options);
+                  if (outlines.length === 0 && unchanged.length === 0)
+                    return execute(input, options);
                   const read = files.length
                     ? ((await execute(input, options)) as { output?: unknown })
                     : null;
-                  const output = [typeof read?.output === "string" ? read.output : "", ...outlines]
+                  const output = [
+                    ...unchanged,
+                    typeof read?.output === "string" ? read.output : "",
+                    ...outlines,
+                  ]
                     .filter(Boolean)
                     .join("\n\n");
                   return { ...(read ?? {}), success: true, output };
@@ -1107,6 +1124,7 @@ export class NativeAgentExecutor implements AgentExecutor {
           : {}),
         watch: {
           mustEdit: request.profile.role === "implementer" && !!request.task?.writes.length,
+          editTools: Object.keys(available).filter((name) => EDIT_TOOLS.has(name)),
           onSignal: (finding, action) =>
             this.store.transaction(() =>
               this.store.emit(request.runId, {
@@ -1596,3 +1614,56 @@ export const attemptCapFault = (profileId: string, tokens: number, cap: number):
     `Profile ${profileId} used ${String(tokens)} tokens without submitting a result (attempt cap ${String(cap)})`,
     { reason: "attempt_cap", tokens, cap },
   );
+
+/** Reads an attempt may make before an edit before an unchanged re-read is answered short. */
+export const REREADS_BEFORE_STUB = 3;
+
+/**
+ * The files of a `read` call that still need reading, and a short answer for each one the attempt
+ * already read with the same span while its content stayed the same (#1360). It applies from the
+ * attempt's fourth read until its first edit: md-site 4b08acf6 T006 (bench round 35) re-read one
+ * 27 KB test file five times in a restarted session that never edited, 805k tokens. `earlier`
+ * keeps each read's span, hash and read number.
+ */
+export function unchangedRereads<T>(
+  files: T[],
+  earlier: Map<string, { hash: string | null; read: number }>,
+  read: number,
+  edited: boolean,
+): { files: T[]; unchanged: string[] } {
+  const asked: T[] = [];
+  const unchanged: string[] = [];
+  for (const file of files) {
+    const spec = (typeof file === "string" ? { path: file } : file) as {
+      path?: unknown;
+      ranges?: unknown;
+      target?: unknown;
+      name?: unknown;
+      ifHash?: unknown;
+    };
+    if (typeof spec.path !== "string" || spec.ifHash !== undefined) {
+      asked.push(file);
+      continue;
+    }
+    const key = canonical({
+      path: spec.path,
+      ranges: spec.ranges ?? null,
+      target: spec.target ?? null,
+      name: spec.name ?? null,
+    });
+    let hash: string | null = null;
+    try {
+      hash = fileHash(spec.path);
+    } catch {}
+    const before = earlier.get(key);
+    if (!edited && read > REREADS_BEFORE_STUB && before && hash !== null && before.hash === hash) {
+      unchanged.push(
+        `[${spec.path} is unchanged since your read #${String(before.read)} in this attempt; its content is in your context above. Apply your edit now.]`,
+      );
+      continue;
+    }
+    earlier.set(key, { hash, read });
+    asked.push(file);
+  }
+  return { files: asked, unchanged };
+}
