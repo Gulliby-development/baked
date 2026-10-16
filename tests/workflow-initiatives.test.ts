@@ -342,6 +342,9 @@ describe("initiative feature workflows", () => {
     const core = middle?.features.find((f) => f.featureId === "core");
     expect(core?.basis).toBe("measured");
     expect(core?.tokens).toEqual({ low: spent("core"), high: spent("core") });
+    // The feature's spec says how many acceptance criteria it has.
+    const coreRun = t.featureOf(view, "core").runId ?? "";
+    expect(core?.criteria).toBe(t.workflows.store.state(coreRun).spec?.criteria.length);
     expect(middle?.progress.accepted).toBe(1);
     expect(middle?.progress.ratio).not.toBeNull();
     // The api feature has the same workflow and size as core: scaled by the ratio, its forecast
@@ -362,6 +365,31 @@ describe("initiative feature workflows", () => {
     expect(after?.tokens.high).toBe(view.budget.used.tokens);
     expect(after?.withMargin).toBe(after?.tokens.high);
     expect(after?.progress.spent).toBe(view.budget.used.tokens);
+  });
+
+  test("with forecastStop a feature waits while the forecast is over the shared budget (#1312)", async () => {
+    // Bench round 32, notesift: the forecast was over the budget long before the budget ran out,
+    // and features kept starting. With forecastStop the next start waits for a person instead.
+    const budget = { maxTotalTokens: 200_000, maxAgentCalls: 200, maxActiveMs: 10_000_000 };
+    const plain = setup();
+    await plain.start({ plan: threeFeatures, budget });
+    let view = await plain.approveSplit();
+    expect(view.next.kind).toBe("start");
+    const t = setup();
+    await t.start({ plan: threeFeatures, budget, forecastStop: true });
+    view = await t.approveSplit();
+    const estimate = t.initiatives.estimate("values");
+    expect(estimate?.tokens.low).toBeGreaterThan(budget.maxTotalTokens);
+    expect(view.next.kind).toBe("blocked");
+    expect(view.next.featureId).toBe("core");
+    expect(view.next.message).toContain("The forecast is over the shared budget");
+    view = await t.drive();
+    expect(view.features.every((f) => f.runId === null)).toBe(true);
+    // Raising the budget above the forecast lets the feature start.
+    view = await t.initiatives.extendBudget("values", t.id(), { maxTotalTokens: (estimate?.withMargin ?? 0) * 2 });
+    expect(view.next.kind).toBe("start");
+    view = await t.drive();
+    expect(t.featureOf(view, "core").runId).not.toBeNull();
   });
 
   test("features an edit leaves alone keep what they had, also without a workflow", () => {

@@ -338,6 +338,8 @@ export interface StartFields {
   /** Null lets the core size the shared budget from the policy. */
   budget: BudgetFields | null;
   tiered: { maxTasks: string; maxFiles: string } | null;
+  /** Hold feature starts while the forecast is over the shared budget. */
+  forecastStop?: boolean;
 }
 
 /** The body of `POST /v1/initiatives` for the form, or the first reason it cannot be sent. */
@@ -367,6 +369,7 @@ export function startBody(
       return { ok: false, error: "Tiered approval: max tasks and max files above 0." };
     body.tieredApproval = { maxTasks, maxFiles };
   }
+  if (fields.forecastStop) body.forecastStop = true;
   return { ok: true, body };
 }
 

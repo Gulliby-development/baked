@@ -11,7 +11,7 @@ import { hashJson } from "../../specs/hash.js";
 import { type BudgetLimits, budgetUsage, limitsOf } from "../budget.js";
 import { type AcceptedContract, acceptedContract } from "../dependencies.js";
 import { WorkflowFault } from "../errors.js";
-import { estimateHistory, type PastRun } from "../estimate.js";
+import { estimateHistory, type PastRun, rangeText, tokenText } from "../estimate.js";
 import {
   type CommandIdentity,
   DEFAULT_MAX_PARALLEL_RUNS,
@@ -31,7 +31,12 @@ import { loadDefinition } from "../v2/definitions.js";
 import { autoApprovalPolicy } from "../v2/runtime.js";
 import { mergedBase } from "../worktree.js";
 import { DECOMPOSE_WORKFLOW_ID } from "./decompose.js";
-import { estimateInitiative, type FeatureRunSample, type InitiativeEstimate } from "./estimate.js";
+import {
+  estimateInitiative,
+  type FeatureRunSample,
+  type InitiativeEstimate,
+  type InitiativeProgress,
+} from "./estimate.js";
 import {
   applySplitEdit,
   featureDigest,
@@ -83,6 +88,8 @@ export interface InitiativeStartRequest {
   ownerLabel: string;
   /** The GitHub issue of each feature of `plan`; its runs start from it and delivery closes it. */
   featureIssues?: Record<string, IssueSource>;
+  /** Hold feature starts while the estimate's low end is above the shared budget (#1312). */
+  forecastStop?: boolean;
 }
 
 /** What an initiative reroute did to one of its open runs (`initiative.rerouted` event). */
@@ -270,6 +277,8 @@ export function splitDigest(
       featureAutoApproval: settings.featureAutoApproval,
       autoApprovalConfirmation: settings.autoApprovalConfirmation,
       model: settings.model,
+      // Only when on, so splits approved before the setting existed keep their digest.
+      ...(settings.forecastStop ? { forecastStop: true } : {}),
     },
   });
 }
@@ -316,6 +325,7 @@ export class InitiativeService {
       model: request.model ?? null,
       ownerLabel: request.ownerLabel,
       featureIssues: request.featureIssues ?? {},
+      forecastStop: request.forecastStop ?? false,
     };
     this.checkWorkflow(settings);
     const issued = Object.keys(settings.featureIssues);
@@ -735,7 +745,13 @@ export class InitiativeService {
     let started = false;
     for (;;) {
       const ready = view.features.find((f) => f.state === "ready");
-      if (!ready || runnable(view).length >= view.parallelRuns || shareTooSmall(ready.share)) break;
+      if (
+        !ready ||
+        runnable(view).length >= view.parallelRuns ||
+        shareTooSmall(ready.share) ||
+        this.forecastOver(id, view)
+      )
+        break;
       await this.startFeature(id, ready.id);
       started = true;
       view = this.view(id);
@@ -1060,6 +1076,25 @@ export class InitiativeService {
    * split exists.
    */
   estimate(id: string): InitiativeEstimate | null {
+    return this.estimateOf(id, this.view(id));
+  }
+
+  /**
+   * The forecast-stop message when the initiative has `forecastStop` on and the low end of its
+   * estimate is above the shared budget; null otherwise.
+   */
+  private forecastOver(id: string, view: InitiativeView): string | null {
+    if (!this.store.settings(this.store.get(id)).forecastStop) return null;
+    const estimate = this.estimateOf(id, view);
+    if (!estimate || estimate.tokens.low <= estimate.budget.maxTotalTokens) return null;
+    return `The forecast is over the shared budget: ${rangeText(estimate.tokens)} tokens against ${tokenText(estimate.budget.maxTotalTokens)}. Raise it with baked workflow initiative extend, or trim the split.`;
+  }
+
+  /** The estimate with the features `view` shows as accepted counted at what they used. */
+  private estimateOf(
+    id: string,
+    view: Pick<InitiativeView, "features">,
+  ): InitiativeEstimate | null {
     const row = this.store.get(id);
     const settings = this.store.settings(row);
     const latest = row.plan_revision ? this.store.revision(id, row.plan_revision) : null;
@@ -1088,18 +1123,17 @@ export class InitiativeService {
     // what it used, and the rest are scaled by how far the accepted ones were from their forecast.
     const links = this.store.links(id);
     const own = new Set(links.map((l) => l.run_id));
-    const accepted = new Set(
-      this.view(id)
-        .features.filter((f) => f.state === "accepted")
-        .map((f) => f.id),
-    );
-    const spent: Record<string, { spent: number; accepted: boolean }> = {};
+    const accepted = new Set(view.features.filter((f) => f.state === "accepted").map((f) => f.id));
+    const spent: InitiativeProgress["features"] = {};
     for (const link of links) {
       const entry = spent[link.feature_id] ?? {
         spent: 0,
         accepted: accepted.has(link.feature_id),
       };
       entry.spent += this.usage(link.run_id).tokens;
+      // The latest run with a spec says how many criteria the feature has.
+      const criteria = this.workflows.store.state(link.run_id).spec?.criteria.length;
+      if (criteria) entry.criteria = criteria;
       spent[link.feature_id] = entry;
     }
     return estimateInitiative({
@@ -1139,6 +1173,7 @@ export class InitiativeService {
             size: feature.size ?? "medium",
             tokens: run.tokens,
             taskCount: run.taskCount,
+            criteria: this.workflows.store.state(run.runId).spec?.criteria.length,
           },
         ];
       });
@@ -1323,6 +1358,8 @@ export class InitiativeService {
           `The shared budget is exhausted: ${feature.id} would start with ${share?.tokens ?? 0} tokens, ${share?.calls ?? 0} calls and ${share?.activeMs ?? 0} ms. Raise it with baked workflow initiative extend.`,
           feature,
         );
+      const over = this.forecastOver(row.id, view);
+      if (over) return action("blocked", over, feature);
       return action("start", `Start feature ${feature.id}`, feature);
     }
     if (waits[0]) return waits[0];

@@ -61,6 +61,12 @@ export const InitiativeSettingsSchema = z
      * closes it. Kept beside the plan, so the plan and its digest stay the decomposer's.
      */
     featureIssues: z.record(FeatureKey, IssueSourceSchema).default({}),
+    /**
+     * Holds the next feature start while the low end of the estimate is above the shared budget
+     * (#1312), so a person raises the budget or trims the split before more of it is spent. Off by
+     * default: the budget share check alone stops an initiative only when the budget is used up.
+     */
+    forecastStop: z.boolean().default(false),
   })
   .strict();
 export type InitiativeSettings = z.infer<typeof InitiativeSettingsSchema>;

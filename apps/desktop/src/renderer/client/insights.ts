@@ -171,6 +171,8 @@ export interface StartInitiativeBody {
   /** The shared budget; all three limits or none (then it follows from the policy). */
   budget?: { tokens: number; calls: number; timeMs: number };
   tieredApproval?: TieredApproval;
+  /** Hold feature starts while the estimate's low end is above the shared budget. */
+  forecastStop?: boolean;
 }
 
 /** One new feature of a split (`POST /v1/initiatives/:id/split`). */

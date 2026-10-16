@@ -12,7 +12,7 @@ import { FocusTarget } from "../ui/FocusTarget.js";
 import { Field, Hint, Section } from "../ui/index.js";
 import { errorHint } from "./format.js";
 
-const FIELDS = ["prompt", "id", "workflow", "budget", "tiered", "start"] as const;
+const FIELDS = ["prompt", "id", "workflow", "budget", "tiered", "forecast", "start"] as const;
 type FieldId = (typeof FIELDS)[number];
 
 /** The start form of an initiative: the request, its ID, workflow, shared budget and approval. */
@@ -50,6 +50,7 @@ export function InitiativeStartForm({
   const [workflow, setWorkflow] = useState(defaultWorkflow);
   const [budget, setBudget] = useState("");
   const [tiered, setTiered] = useState(false);
+  const [forecastStop, setForecastStop] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const modelMissing = !model || model === "none";
@@ -79,6 +80,7 @@ export function InitiativeStartForm({
           }
         : {}),
       ...(tiered ? { tieredApproval: { ...DEFAULT_TIERED_APPROVAL } } : {}),
+      ...(forecastStop ? { forecastStop: true } : {}),
     };
   };
   const submit = async (): Promise<void> => {
@@ -123,7 +125,17 @@ export function InitiativeStartForm({
       handled()
     )
       setTiered((v) => !v);
-    else if (evt.name === "return" && (focus === "workflow" || focus === "tiered") && handled())
+    else if (
+      focus === "forecast" &&
+      (evt.name === "left" || evt.name === "right" || evt.name === "space") &&
+      handled()
+    )
+      setForecastStop((v) => !v);
+    else if (
+      evt.name === "return" &&
+      (focus === "workflow" || focus === "tiered" || focus === "forecast") &&
+      handled()
+    )
       move(1);
     else if (evt.name === "return" && focus === "start" && handled()) void submit();
   });
@@ -202,6 +214,19 @@ export function InitiativeStartForm({
               tiered
                 ? `‹ tiered ›  specs up to ${DEFAULT_TIERED_APPROVAL.maxTasks} tasks and ${DEFAULT_TIERED_APPROVAL.maxFiles} files are approved for you`
                 : "‹ every spec ›  you approve each feature's spec"
+            }
+            keyHint="←/→"
+          />
+        </FocusTarget>
+        <FocusTarget active={focus === "forecast"}>
+          <Field
+            label="Forecast"
+            labelWidth={10}
+            focused={focus === "forecast"}
+            value={
+              forecastStop
+                ? "‹ stop ›  no new feature starts while the forecast is over the budget"
+                : "‹ report ›  the forecast is shown, features start until the budget is used"
             }
             keyHint="←/→"
           />
