@@ -672,6 +672,14 @@ export function InitiativeDetail({
                     )}
                   </text>
                 )}
+                {f.mergedFrom?.length ? (
+                  <text fg={t.textMuted}>
+                    {clip(
+                      `Merged from ${f.mergedFrom.join(", ")}: too small for a run each`,
+                      width - 4,
+                    )}
+                  </text>
+                ) : null}
                 {f.issue ? (
                   <text fg={t.textMuted}>
                     {clip(

@@ -276,6 +276,9 @@ function FeatureCard({
             ${(feature.spentUsd ?? 0).toFixed(2)} spent
           </span>
         )}
+        {(feature.mergedFrom?.length ?? 0) > 0 && (
+          <span className="text-dim-foreground">merged from {feature.mergedFrom?.join(", ")}</span>
+        )}
         {feature.issue && (
           <a
             className="font-mono"

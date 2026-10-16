@@ -9,6 +9,8 @@ import {
   applySplitEdit,
   featureDigest,
   type InitiativePlan,
+  MAX_MERGED_PATHS,
+  mergeSmallSiblings,
   planSizeProblem,
   planStructureProblems,
   sequenceSharedPaths,
@@ -597,6 +599,8 @@ describe("scenario: an initiative dollar budget (#1317)", () => {
     expect(() => parseInitiativeArgs(["start", "big", "--prompt", "x", "--budget-usd", "0"])).toThrow("positive dollar amount");
     expect(() => parseInitiativeArgs(["start", "big", "--prompt", "x", "--budget-usd", "5", "--cost-tolerance", "0.9"])).toThrow("auto, off or 0 to 0.5");
     expect(parseInitiativeArgs(["extend", "big", "--budget-usd", "40", "--expected-revision", "3"]).flags["budget-usd"]).toBe("40");
+    expect(parseInitiativeArgs(["start", "big", "--prompt", "x", "--keep-features"]).flags["keep-features"]).toBe(true);
+    expect(initiativeHelp).toContain("--keep-features");
     expect(initiativeHelp).toContain("--budget-usd N [--cost-tolerance auto|off|0.2]");
     // `auto` widens with the number of features, as a run's widens with its tasks.
     expect([3, 4, 9, 12, 13].map((n) => initiativeCostTolerance("auto", n))).toEqual([0.1, 0.15, 0.2, 0.25, 0.3]);
@@ -662,8 +666,103 @@ describe("initiative runtime", () => {
     expect(t.featureOf(view, "docs").title).toBe("Documentation");
   });
 
+  test("the decomposer's one-file siblings are merged into one feature; keepFeatures keeps them apart", async () => {
+    // Bench round 35, narrowfit (#1352): six constraint kinds of one file each, all on core, all
+    // needed by language, each paid a run's research, spec, plan, analysis and review.
+    const kinds = ["alldiff", "sum", "count", "table", "element", "require"];
+    const narrowfit = plan([
+      feature("core", [], ["internal/core/a.go", "internal/core/b.go", "internal/core/c.go"]),
+      ...kinds.map((k) => feature(k, ["core"], [`internal/constraint/${k}.go`])),
+      feature("language", ["core", ...kinds], ["internal/lang/a.go", "internal/lang/b.go", "internal/lang/c.go"]),
+    ]);
+    const t = setup(narrowfit);
+    await t.start();
+    let view = await t.drive();
+    expect(view.status).toBe("awaiting_approval");
+    expect(view.features.map((f) => f.id)).toEqual(["core", "alldiff", "language"]);
+    const merged = t.featureOf(view, "alldiff");
+    expect(merged.mergedFrom).toEqual(kinds);
+    expect(merged.boundary.paths).toEqual(kinds.map((k) => `internal/constraint/${k}.go`));
+    expect(merged.dependsOn).toEqual(["core"]);
+    expect(merged.title).toBe(kinds.map((k) => `Feature ${k}`).join(" + "));
+    for (const k of kinds) expect(merged.contract).toContain(`${k}.txt holds the value of ${k}`);
+    expect(t.featureOf(view, "language").dependsOn).toEqual(["core", "alldiff"]);
+    expect(t.featureOf(view, "core").mergedFrom).toEqual([]);
+    const events = t.initiatives.store.eventsOfType("values", "split.merged");
+    expect(events).toEqual([{ planRevision: 1, merged: [{ featureId: "alldiff", from: kinds }] }]);
+    // The merged split is approved and runs like any other.
+    view = await t.approveSplit();
+    expect(view.status).toBe("active");
+
+    const kept = setup(narrowfit);
+    await kept.start({ keepFeatures: true });
+    view = await kept.drive();
+    expect(view.features.map((f) => f.id)).toEqual(["core", ...kinds, "language"]);
+    expect(kept.initiatives.store.eventsOfType("values", "split.merged")).toEqual([]);
+  });
+
+  test("a small leaf feature of the decomposer runs the light workflow; keepFeatures keeps its spec workflow", async () => {
+    // Bench round 36, seqmill: the documentation leaf ran sdd for $1.42 against about $0.5 for a
+    // quick run; nothing pins a leaf's spec.
+    const three = (id: string) => [`${id}/a.py`, `${id}/b.py`, `${id}/c.py`];
+    const seqmill = plan([
+      { ...feature("core", [], three("core")), workflow: "sdd" },
+      { ...feature("engine", ["core"], three("engine")), workflow: "sdd" },
+      { ...feature("docs", ["core", "engine"], ["README.md", "docs/usage.md"]), workflow: "sdd" },
+      { ...feature("cli", ["engine"], three("cli")), workflow: "sdd", size: "medium" as const },
+    ]);
+    const t = setup(seqmill);
+    await t.start();
+    const view = await t.drive();
+    expect(view.status).toBe("awaiting_approval");
+    expect(view.features.map((f) => [f.id, f.workflowId])).toEqual([
+      ["core", "sdd"],
+      ["engine", "sdd"],
+      ["docs", "quick"],
+      ["cli", "sdd"],
+    ]);
+    expect(t.initiatives.store.eventsOfType("values", "split.lightened")).toEqual([
+      { planRevision: 1, lightened: [{ featureId: "docs", from: "sdd", to: "quick" }] },
+    ]);
+
+    const kept = setup(seqmill);
+    await kept.start({ keepFeatures: true });
+    expect(kept.featureOf(await kept.drive(), "docs").workflowId).toBe("sdd");
+  });
+
+  test("small siblings merge only with the same dependencies, up to the path cap and the feature minimum", () => {
+    const one = (id: string, deps: string[] = []) => feature(id, deps, [`${id}.go`]);
+    // Different dependencies, a feature without paths and a three-path feature stay apart.
+    const mixed = plan([
+      feature("core", [], ["a", "b", "c"]),
+      one("x", ["core"]),
+      one("y", ["core"]),
+      one("z"),
+      feature("open", ["core"], []),
+      feature("big", ["core"], ["d", "e", "f"]),
+    ]);
+    const result = mergeSmallSiblings(mixed);
+    expect(result.merged).toEqual([{ featureId: "x", from: ["x", "y"] }]);
+    expect(result.plan.features.map((f) => f.id)).toEqual(["core", "x", "z", "open", "big"]);
+    expect(validateInitiativePlan(result.plan)).toEqual([]);
+    // A required feature is not merged with an optional one.
+    const optional = plan([feature("core", [], ["a", "b", "c"]), one("x", ["core"]), { ...one("y", ["core"]), mandatory: false }, one("w", ["core"])]);
+    expect(mergeSmallSiblings(optional).merged).toEqual([{ featureId: "x", from: ["x", "w"] }]);
+    // Twelve one-file siblings become features of at most MAX_MERGED_PATHS paths.
+    const many = plan([feature("core", [], ["a", "b", "c"]), ...Array.from({ length: 12 }, (_, i) => one(`k${i}`, ["core"]))]);
+    const chunked = mergeSmallSiblings(many);
+    expect(chunked.merged.map((m) => m.from.length)).toEqual([MAX_MERGED_PATHS, 12 - MAX_MERGED_PATHS]);
+    // The split never drops below three features.
+    const three = mergeSmallSiblings(plan([one("a"), one("b"), one("c"), one("d")]));
+    expect(three.plan.features.map((f) => f.id)).toEqual(["a", "c", "d"]);
+    expect(three.merged).toEqual([{ featureId: "a", from: ["a", "b"] }]);
+    expect(mergeSmallSiblings(threeFeatures).merged).toEqual([]);
+  });
+
   test("a decomposer split above twelve features is refused with a message to split into stages", async () => {
-    const t = setup(plan(Array.from({ length: 13 }, (_, i) => feature(`f${i}`))));
+    // Three paths each, so no feature is small enough to be merged into a sibling.
+    const paths = (id: string) => [`${id}/a.txt`, `${id}/b.txt`, `${id}/c.txt`];
+    const t = setup(plan(Array.from({ length: 13 }, (_, i) => feature(`f${i}`, [], paths(`f${i}`)))));
     await t.start();
     const view = await t.drive();
     expect(view.status).toBe("refused");

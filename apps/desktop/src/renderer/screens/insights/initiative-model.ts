@@ -380,6 +380,8 @@ export interface StartFields {
   tiered: { maxTasks: string; maxFiles: string } | null;
   /** Hold feature starts while the forecast is over the shared budget. */
   forecastStop?: boolean;
+  /** Keep the decomposer's small features apart. */
+  keepFeatures?: boolean;
 }
 
 /** The body of `POST /v1/initiatives` for the form, or the first reason it cannot be sent. */
@@ -415,6 +417,7 @@ export function startBody(
     body.tieredApproval = { maxTasks, maxFiles };
   }
   if (fields.forecastStop) body.forecastStop = true;
+  if (fields.keepFeatures) body.keepFeatures = true;
   return { ok: true, body };
 }
 
