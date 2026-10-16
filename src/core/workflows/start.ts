@@ -62,6 +62,7 @@ import {
   reviewersOf,
   stageKind,
   stageProfileId,
+  withBoundaryApproval,
 } from "./v2/runtime.js";
 import { worktreeBase } from "./worktree.js";
 
@@ -111,6 +112,7 @@ export async function prepareStart(
     | "workflowId"
     | "routes"
     | "autoApprovalConfirmation"
+    | "boundaryAutoApproval"
     | "executionMode"
     | "sandbox"
     | "maxConcurrentWriters"
@@ -179,7 +181,7 @@ export async function prepareStart(
     review: "review",
     converge: "convergence",
   };
-  const workflow: WorkflowDefinition | WorkflowV2 = loaded.definition;
+  let workflow: WorkflowDefinition | WorkflowV2 = loaded.definition;
   let gates: Gate[] = [];
   const gateFiles: Record<string, string> = {};
   if (loaded.schemaVersion === 1) {
@@ -198,16 +200,33 @@ export async function prepareStart(
       throw new WorkflowFault("INVALID_DEFINITION", missingFeatureChecks(request.workflowId), {
         missingFeatureChecks: true,
       });
+    // A shipped preset under an initiative's tiered approval approves within the boundary limits
+    // the policy carries; the person confirmed those when starting the initiative.
+    const hostApproval = policy.autoApproval;
+    const boundary =
+      request.boundaryAutoApproval &&
+      !loaded.path &&
+      !loaded.definition.autoApproval &&
+      hostApproval?.limits
+        ? withBoundaryApproval(loaded.definition, hostApproval.limits)
+        : null;
+    if (boundary) {
+      loaded = { ...loaded, definition: boundary };
+      workflow = boundary;
+    }
     const bound = bindDefinition(
       workspace,
       loaded.definition,
       policy,
       (id) => registry.get(id).output,
-      request.autoApprovalConfirmation,
+      boundary ? autoApprovalHash(boundary.autoApproval) : request.autoApprovalConfirmation,
     );
     gates = bound.gates;
     Object.assign(gateFiles, bound.gateFiles);
-    policy = bound.policy;
+    // The host's limits keep their own options, such as requested manifest edits.
+    policy = boundary
+      ? PolicySchema.parse({ ...bound.policy, autoApproval: hostApproval })
+      : bound.policy;
   }
   // The CLI flag overrides the definition, which overrides the policy. Inline leaves the field
   // out, so the policy hash of an inline run is what it was before execution modes existed.

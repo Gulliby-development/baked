@@ -47,7 +47,9 @@ export function featureWorkflow(
 
 /**
  * The workflows a feature can run: they start without problems and write files. With tiered
- * approval only schema 1 workflows qualify, since a v2 definition owns its own auto approval.
+ * approval only schema 1 workflows qualify, since a v2 definition owns its own auto approval,
+ * and the shipped light preset, whose plan approval the run binds to the feature's boundary
+ * limits (`boundaryAutoApproval`, #1374).
  */
 export function featureWorkflowChoices(
   workspace: string,
@@ -56,10 +58,13 @@ export function featureWorkflowChoices(
 ): FeatureWorkflow[] {
   return listDefinitions(workspace, policy)
     .filter((d) => !d.problems.length && d.writes)
-    .filter((d) => !options.tiered || d.schemaVersion === 1)
+    .filter((d) => !options.tiered || d.schemaVersion === 1 || tieredPreset(d))
     .map((d) => featureWorkflow(workspace, policy, d.id))
     .filter((w): w is FeatureWorkflow => w !== null);
 }
+
+const tieredPreset = (d: { id: string; source: "builtin" | "project"; schemaVersion: 1 | 2 }) =>
+  d.schemaVersion === 2 && d.source === "builtin" && d.id === LIGHT_LEAF_WORKFLOW;
 
 const hasDependents = (plan: InitiativePlan, feature: InitiativeFeature): boolean =>
   plan.features.some((f) => f.dependsOn.includes(feature.id));
@@ -139,13 +144,22 @@ export function assignFeatureWorkflows(
   return { ...plan, features };
 }
 
+/**
+ * A path whose change stays on a thorough workflow even in a small leaf: migrations, auth,
+ * secrets, CI and deployment, data schemas, payments. Judged by the files a leaf writes, not its
+ * words: ranktally's `release` leaf (README, LICENSE, a test) reads as risky by its name alone
+ * (bench round 37, #1374).
+ */
+const RISKY_PATH =
+  /(^|[/._-])(migrations?|auth\w*|security|secrets?|credentials?|\.github|deploy\w*|dockerfile|schema\w*|database|db|payments?|billing|permissions?)([/._-]|$)/i;
+
 /** The light workflow a small leaf feature of a decomposer's split runs (#1352). */
 export const LIGHT_LEAF_WORKFLOW = "quick";
 
 /**
  * The plan with small leaf features moved to the light workflow: a feature nothing depends on,
  * with one or two boundary paths or size small, that runs a workflow writing a spec, runs
- * `LIGHT_LEAF_WORKFLOW` when it can run here and the feature's text is not high risk. Its spec
+ * `LIGHT_LEAF_WORKFLOW` when it can run here and none of its paths is risky (`RISKY_PATH`). Its spec
  * would be a contract nobody pins, and a spec workflow's fixed stages cost the most on the
  * smallest features: seqmill's documentation leaf cost $1.42 under sdd against about $0.5 for a
  * quick run (bench round 36). Features in `keep` are left as they are.
@@ -154,10 +168,15 @@ export function lightenSmallLeaves(
   plan: InitiativePlan,
   choices: readonly FeatureWorkflow[],
   keep: ReadonlySet<string> = new Set(),
-): { plan: InitiativePlan; lightened: { featureId: string; from: string; to: string }[] } {
+): {
+  plan: InitiativePlan;
+  lightened: { featureId: string; from: string; to: string }[];
+  /** Leaves the rule fits that keep their workflow because the light one cannot run here. */
+  unavailable: string[];
+} {
   const light = choices.find((c) => c.id === LIGHT_LEAF_WORKFLOW && !c.contract);
-  if (!light) return { plan, lightened: [] };
   const lightened: { featureId: string; from: string; to: string }[] = [];
+  const unavailable: string[] = [];
   const features = plan.features.map((feature) => {
     const from = feature.workflow;
     const paths = feature.boundary.paths.length;
@@ -170,11 +189,17 @@ export function lightenSmallLeaves(
       !choices.find((c) => c.id === from)?.contract
     )
       return feature;
-    const text = featureText(feature);
-    if (assessRequest(text, proposeWorkflow(text, [light.id], light.id)).risk === "high")
+    if (feature.boundary.paths.some((p) => RISKY_PATH.test(p))) return feature;
+    if (!light) {
+      unavailable.push(feature.id);
       return feature;
+    }
     lightened.push({ featureId: feature.id, from, to: light.id });
     return { ...feature, workflow: light.id };
   });
-  return lightened.length ? { plan: { ...plan, features }, lightened } : { plan, lightened };
+  return {
+    plan: lightened.length ? { ...plan, features } : plan,
+    lightened,
+    unavailable,
+  };
 }

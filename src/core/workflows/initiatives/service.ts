@@ -1051,6 +1051,7 @@ export class InitiativeService {
     let plan = proposed;
     let unfit: string | null = null;
     let lightened: { featureId: string; from: string; to: string }[] = [];
+    let unavailable: string[] = [];
     try {
       plan = this.fitWorkflows(proposed, settings, true);
       // A small feature nothing depends on runs the light workflow: nobody pins its spec.
@@ -1058,6 +1059,7 @@ export class InitiativeService {
         const light = lightenSmallLeaves(plan, this.workflowChoices(settings));
         plan = light.plan;
         lightened = light.lightened;
+        unavailable = light.unavailable;
       }
     } catch (error) {
       unfit = error instanceof Error ? error.message : String(error);
@@ -1079,10 +1081,12 @@ export class InitiativeService {
           planRevision: this.store.get(id).plan_revision,
           merged: floored.merged,
         });
-      if (lightened.length)
+      if (lightened.length || unavailable.length)
         this.store.emit(id, "split.lightened", {
           planRevision: this.store.get(id).plan_revision,
           lightened,
+          // Small leaves that keep a spec workflow because quick cannot run a feature here.
+          ...(unavailable.length ? { unavailable } : {}),
         });
     });
   }
@@ -1143,6 +1147,8 @@ export class InitiativeService {
       ...(settings.autoApprovalConfirmation
         ? { autoApprovalConfirmation: settings.autoApprovalConfirmation }
         : {}),
+      // A shipped light preset approves its plan within the feature's tiered limits (#1374).
+      ...(settings.featureAutoApproval ? { boundaryAutoApproval: true } : {}),
       ...(settings.featureIssues[featureId] ? { issue: settings.featureIssues[featureId] } : {}),
       ...(baseCommit ? { baseCommit } : {}),
     });

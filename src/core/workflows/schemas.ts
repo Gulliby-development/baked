@@ -1609,6 +1609,12 @@ export interface StartRequest {
    */
   autoApprovalConfirmation?: string;
   /**
+   * Set by an initiative with tiered approval: a shipped preset's human approval stages approve
+   * within the policy's auto approval limits (the feature's boundary), as a schema 1 workflow
+   * does. The person set those limits when starting the initiative (#1374).
+   */
+  boundaryAutoApproval?: boolean;
+  /**
    * Execution mode requested for this run (CLI `--worktree`). It overrides the policy and the
    * definition; omitted, the definition's `execution`, then the policy's `executionMode` apply.
    */
