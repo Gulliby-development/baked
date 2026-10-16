@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
-import { hashBytes } from "../specs/hash.js";
+import { canonical, hashBytes } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { writeViaTemp } from "./atomic-write.js";
 import { WorkflowFault } from "./errors.js";
@@ -135,6 +135,33 @@ export class EffectJournal {
           : current === effect.before_hash
             ? "failed"
             : "unknown";
+      // A tool's edit has no after-hash until it returns: the tool formats the file after writing
+      // it, so its result is not known in advance. A file that differs from its pre-image was
+      // written, the decision an operator makes with `record-applied` and the one a stalled
+      // attempt's edits get; the task reruns from the file as it is. A process that died mid-edit
+      // (a laptop sleep) asked a person to compare two hashes (md-site c77cfece, #1313).
+      if (status === "unknown" && effect.kind === "file_patch" && effect.after_hash === null) {
+        const tool = (JSON.parse(effect.intent_json) as { tool?: unknown }).tool;
+        if (typeof tool === "string") {
+          this.store.transaction(() => {
+            this.store.finishFileEffect(runId, effect.id, current);
+            this.store.artifact(
+              runId,
+              "recovery",
+              `interrupted-edits/${effect.id}.json`,
+              canonical({
+                effectId: effect.id,
+                tool,
+                before: effect.before_hash,
+                after: current,
+                outcome:
+                  "an interrupted edit settled as applied: the file differs from its pre-image",
+              }),
+            );
+          });
+          continue;
+        }
+      }
       this.store.transaction(() => this.store.effectStatus(runId, effect.id, status));
       if (status === "unknown") unknown.push(effect.id);
     }
