@@ -138,7 +138,7 @@ export interface EventPayloads {
   };
   "attempt.advisory": {
     attemptId: string;
-    signal: "repeated-reads" | "no-edits" | "same-failure";
+    signal: "repeated-reads" | "no-edits" | "same-failure" | "no-edit-tool";
     action: "steered" | "stopped";
     detail: string;
   };

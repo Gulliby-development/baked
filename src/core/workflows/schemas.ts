@@ -1286,7 +1286,7 @@ export const EventSchema = z.discriminatedUnion("type", [
       payload: z
         .object({
           attemptId: SafeId,
-          signal: z.enum(["repeated-reads", "no-edits", "same-failure"]),
+          signal: z.enum(["repeated-reads", "no-edits", "same-failure", "no-edit-tool"]),
           action: z.enum(["steered", "stopped"]),
           detail: z.string().max(500),
         })
