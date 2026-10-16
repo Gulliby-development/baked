@@ -29,7 +29,7 @@ function artifact(id: string, kind: string, path: string, content: string): Arti
 
 /** A store with one attempt per stage, each `input` tokens in and `output` out on `model`. */
 function makeStore(
-  attempts: { id: string; stage: string; model: string | null; input: number; output: number }[],
+  attempts: { id: string; stage: string; model: string | null; input: number; output: number; cacheRead?: number }[],
   sizing?: { model: string | null; taskTokens: { low: number; expected: number; high: number } },
 ): WorkflowStore {
   const rows: AttemptRow[] = attempts.map((a) => ({
@@ -60,7 +60,7 @@ function makeStore(
       finalizedBy: null,
       totalTokens: a.input + a.output,
       steps: [
-        { inputTokens: a.input, outputTokens: a.output, cacheReadTokens: 0, toolCalls: 0, compactedBytes: 0 },
+        { inputTokens: a.input, outputTokens: a.output, cacheReadTokens: a.cacheRead ?? 0, toolCalls: 0, compactedBytes: 0 },
       ],
     };
     return artifact(`usage-${a.id}`, "usage", `attempts/${a.id}/usage.json`, JSON.stringify(usage));
@@ -90,6 +90,48 @@ const price = (model: string) => {
   return pricing;
 };
 
+const defaultRate = (model: string) =>
+  (DEFAULT_MIX.input * price(model).input + DEFAULT_MIX.cacheRead * price(model).cacheRead + DEFAULT_MIX.output * price(model).output) /
+  1e6;
+
+// Bench round 38, stoptable (#1386): codex attempts were 70 to 80 percent cache reads and cost $0.8
+// to $1.2 per million tokens. Priced at the default mix, the four plan approvals showed $19.2 to
+// $36.1 for features that cost $11.82 in all, planning and reviews included.
+describe("scenario: plan cost priced at the run's measured rate (#1386)", () => {
+  const sizing = { model: SONNET, taskTokens: { low: 3_000_000, expected: 4_000_000, high: 5_000_000 } };
+  // Planning attempts that read 75 percent of their tokens from the cache.
+  const cached = (model: string) => [
+    { id: "spec", stage: "specify", model, input: 900_000, output: 100_000, cacheRead: 750_000 },
+    { id: "plan", stage: "plan", model, input: 450_000, output: 50_000, cacheRead: 375_000 },
+  ];
+
+  test("the tasks are priced at what the run's attempts on the model paid per token", () => {
+    const cost = planCostOf(makeStore(cached(SONNET), sizing), runId);
+    const paid = cost.planning.usd / 1_500_000;
+    expect(cost.implementation?.rate).toBe("run");
+    expect(cost.implementation?.usd.low).toBeCloseTo(3_000_000 * paid, 6);
+    expect(cost.implementation?.usd.high).toBeCloseTo(5_000_000 * paid, 6);
+    // The default mix priced the same plan well above what a token actually cost.
+    expect(cost.implementation?.usd.low ?? 0).toBeLessThan(0.75 * 3_000_000 * defaultRate(SONNET));
+    expect(planCostText(cost)).toEndWith(`on ${SONNET} at this run's dollars per token so far`);
+  });
+
+  test("on a model the run has not paid yet, the run's token mix prices it", () => {
+    const cost = planCostOf(makeStore(cached(OPUS), sizing), runId);
+    const p = price(SONNET);
+    const mix = (1_125_000 * p.cacheRead + 225_000 * p.input + 150_000 * p.output) / 1e6 / 1_500_000;
+    expect(cost.implementation?.rate).toBe("mix");
+    expect(cost.implementation?.usd.low).toBeCloseTo(3_000_000 * mix, 6);
+    expect(desktopPlanCostText(cost)).toBe(planCostText(cost));
+  });
+
+  test("without any measured attempt the default mix stays", () => {
+    const cost = planCostOf(makeStore([{ id: "host", stage: "check", model: null, input: 0, output: 0 }], sizing), runId);
+    expect(cost.implementation).toMatchObject({ rate: "default", usd: { low: 3_000_000 * defaultRate(SONNET) } });
+    expect(planCostText(cost)).toEndWith(`on ${SONNET}`);
+  });
+});
+
 describe("plan approval cost (#1019)", () => {
   test("planning is split by model and the tasks are priced from the latest sizing", () => {
     const store = makeStore(
@@ -110,12 +152,10 @@ describe("plan approval cost (#1019)", () => {
     ]);
     expect(cost.planning.models[0]?.usd).toBeCloseTo(opus, 6);
     expect(cost.planning.usd).toBeCloseTo(opus + sonnet, 6);
-    const rate =
-      (DEFAULT_MIX.input * price(SONNET).input +
-        DEFAULT_MIX.cacheRead * price(SONNET).cacheRead +
-        DEFAULT_MIX.output * price(SONNET).output) /
-      1e6;
+    // The run's own sonnet attempt paid this per token (#1386).
+    const rate = sonnet / 55_000;
     expect(cost.implementation?.model).toBe(SONNET);
+    expect(cost.implementation?.rate).toBe("run");
     expect(cost.implementation?.usd.low).toBeCloseTo(1_000_000 * rate, 6);
     expect(cost.implementation?.usd.high).toBeCloseTo(2_000_000 * rate, 6);
   });
