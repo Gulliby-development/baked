@@ -389,6 +389,70 @@ describe("initiative feature workflows", () => {
   });
 });
 
+// Bench round 32, notesift (#1311): shares by size words (small 1, medium 2, large 4) and open runs
+// that grew past their share left the last feature 0.8M of a 30M budget, and the budget was
+// extended only after the fact.
+describe("scenario: an initiative budget shared by estimated need (#1311)", () => {
+  /** Completes the "values" initiative so a second one is priced from its feature runs. */
+  async function measured() {
+    // Calls large enough for the estimates to clear the smallest share and sizing ceiling.
+    const t = setup(threeFeatures, 20_000);
+    let view = await t.start({
+      plan: threeFeatures,
+      featureAutoApproval: { maxTasks: 5, maxFiles: 5 },
+      budget: { maxTotalTokens: 50_000_000, maxAgentCalls: 400, maxActiveMs: 21_600_000 },
+    });
+    await t.approveSplit();
+    for (let i = 0; i < 12 && view.status !== "completed"; i++) view = await t.drive();
+    expect(view.status).toBe("completed");
+    return t;
+  }
+  const second = async (t: Awaited<ReturnType<typeof measured>>, budget: { maxTotalTokens: number; maxAgentCalls: number; maxActiveMs: number }) => {
+    await t.initiatives.start({
+      commandId: newId(),
+      initiativeId: "second",
+      prompt: "Add the value files again",
+      policy: { ...policy, sizing: { maxRunTokens: 50_000_000 } },
+      ownerLabel: "test",
+      plan: threeFeatures,
+      budget,
+    });
+    const request = t.initiatives.view("second").pendingDecisions.find((d) => d.scope === "initiative");
+    if (!request) throw new Error("No pending split approval");
+    return t.initiatives.approve(
+      "second",
+      { commandId: newId(), expectedRevision: t.initiatives.view("second").revision },
+      { requestId: request.requestId, digest: request.digest },
+    );
+  };
+
+  test("a feature whose share is below its estimate stops before it starts, with the numbers", async () => {
+    const t = await measured();
+    const estimate = t.initiatives.estimate("values");
+    const lows = (estimate?.features ?? []).reduce((sum, f) => sum + f.tokens.low, 0);
+    let view = await second(t, { maxTotalTokens: Math.floor(lows * 0.8), maxAgentCalls: 400, maxActiveMs: 21_600_000 });
+    view = await t.initiatives.drive("second", new AbortController().signal);
+    expect(view.next.kind).toBe("blocked");
+    expect(view.next.message).toMatch(/^The shared budget is short: core would start with \d+ tokens, below its estimate of \d+-\d+\. /);
+    expect(view.features.every((f) => f.runId === null)).toBe(true);
+  }, 30000);
+
+  test("tokens are shared by estimated need and a run grows only into what the others do not need", async () => {
+    const t = await measured();
+    const estimate = t.initiatives.estimate("values");
+    const highs = (estimate?.features ?? []).reduce((sum, f) => sum + f.tokens.high, 0);
+    const view = await second(t, { maxTotalTokens: highs * 2, maxAgentCalls: 400, maxActiveMs: 21_600_000 });
+    const [core, api, docs] = ["core", "api", "docs"].map((id) => t.featureOf(view, id));
+    for (const f of [core, api, docs]) expect(f?.need).not.toBeNull();
+    const total = (core?.need?.high ?? 0) + (api?.need?.high ?? 0) + (docs?.need?.high ?? 0);
+    expect(docs?.share?.tokens).toBe(Math.floor((view.budget.remaining.tokens * (docs?.need?.high ?? 0)) / total));
+    const reserve = (api?.need?.low ?? 0) + (docs?.need?.low ?? 0);
+    const started = await t.initiatives.drive("second", new AbortController().signal);
+    const run = t.workflows.store.run(t.featureOf(started, "core").runId ?? "");
+    expect(JSON.parse(run.policy_json).sizing.maxRunTokens).toBe(view.budget.remaining.tokens - reserve);
+  }, 30000);
+});
+
 describe("initiative runtime", () => {
   test("the decomposer proposes the split; an edit changes the approval digest", async () => {
     const t = setup();
@@ -505,7 +569,8 @@ describe("initiative runtime", () => {
   }, 30000);
 
   test("the shared budget is split equally between features of the same size", async () => {
-    const medium = plan(threeFeatures.features.map((f) => ({ ...f, size: "medium" as const })));
+    // One workflow for all three, so their estimates, and so their token shares, are the same.
+    const medium = plan(threeFeatures.features.map((f) => ({ ...f, size: "medium" as const, workflow: "sdd" })));
     const t = setup(medium, 1000);
     // A share must hold a plan step's reservation (its prompt plus the profile's output cap,
     // about 28000 tokens), with room for the profiles' instructions to grow.

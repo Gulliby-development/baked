@@ -11,11 +11,12 @@ import { hashJson } from "../../specs/hash.js";
 import { type BudgetLimits, budgetUsage, limitsOf } from "../budget.js";
 import { type AcceptedContract, acceptedContract } from "../dependencies.js";
 import { WorkflowFault } from "../errors.js";
-import { estimateHistory, type PastRun } from "../estimate.js";
+import { estimateHistory, type PastRun, type TokenRange } from "../estimate.js";
 import {
   type CommandIdentity,
   DEFAULT_MAX_PARALLEL_RUNS,
   executionModeOf,
+  extendToOf,
   PolicySchema,
   type RunPolicy,
   type RunSnapshot,
@@ -134,6 +135,12 @@ export interface FeatureView {
   size: NonNullable<InitiativeFeature["size"]>;
   /** The budget share the feature starts with now; null once it has a run or before approval. */
   share: UsageView | null;
+  /**
+   * The feature's estimated tokens (`initiative estimate`) when this project's run history prices
+   * them; they weight its share and gate its start. Null otherwise, once it has a run or before
+   * approval.
+   */
+  need: TokenRange | null;
   /** The workflow feature ID of this feature's runs. */
   runFeatureId: string;
   /** The GitHub issue the feature's runs start from and their delivery closes; null without one. */
@@ -224,6 +231,31 @@ function shareTooSmall(share: UsageView | null): boolean {
   );
 }
 
+/**
+ * Why a ready feature may not start on its share, or null. Below the low end of its estimate it
+ * stops for a decision before it starts: notesift's docs would have started with 0.8M tokens after
+ * 29.15M of 30M, and the budget was extended only after the fact (#1311).
+ */
+function shareShortfall(feature: Pick<FeatureView, "id" | "share" | "need">): string | null {
+  const share = feature.share;
+  if (shareTooSmall(share))
+    return `The shared budget is exhausted: ${feature.id} would start with ${share?.tokens ?? 0} tokens, ${share?.calls ?? 0} calls and ${share?.activeMs ?? 0} ms. Raise it with baked workflow initiative extend.`;
+  if (share && feature.need && share.tokens < feature.need.low)
+    return `The shared budget is short: ${feature.id} would start with ${share.tokens} tokens, below its estimate of ${feature.need.low}-${feature.need.high}. Raise it with baked workflow initiative extend.`;
+  return null;
+}
+
+/**
+ * Token weights of the features that share the budget: their estimated need (the high end of the
+ * estimate), or their size weight when any of them has no estimate. The size words say little
+ * about cost: in bench round 32 a small feature used 3.57M tokens and a large one 4.11M (#1311).
+ */
+function tokenWeights(features: Pick<FeatureView, "size" | "need">[]): number[] {
+  return features.every((f) => (f.need?.high ?? 0) > 0)
+    ? features.map((f) => f.need?.high ?? 0)
+    : features.map((f) => sizeWeight(f));
+}
+
 /** The workflow feature ID of an initiative feature's runs. `_` never occurs in either part. */
 export const runFeatureId = (initiativeId: string, featureId: string): string =>
   `${initiativeId}_${featureId}`;
@@ -249,7 +281,7 @@ export function planBudget(settings: InitiativeSettings, plan: InitiativePlan): 
 export const MIN_SHARE = { maxTotalTokens: 1000, maxAgentCalls: 1, maxActiveMs: 1000 } as const;
 
 export const BUDGET_RULE =
-  "Each feature run starts with a share of the remaining shared budget weighted by its size (small 1, medium 2, large 4), rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included), times the feature's weight, divided by the weights of the features of the approved plan without a run. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000.";
+  "Each feature run starts with a share of the remaining shared budget, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included), times the feature's weight, divided by the weights of the features of the approved plan without a run. Tokens are weighted by each feature's estimated need (the high end of its estimate), calls and time by size (small 1, medium 2, large 4). A feature whose share is below the low end of its estimate does not start until the budget is raised. A feature run grows its own budget only up to what remains after the low ends of the features still waiting. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000.";
 
 /** Digest a person approves for a plan revision: the plan, the budget and the frozen settings. */
 export function splitDigest(
@@ -735,7 +767,7 @@ export class InitiativeService {
     let started = false;
     for (;;) {
       const ready = view.features.find((f) => f.state === "ready");
-      if (!ready || runnable(view).length >= view.parallelRuns || shareTooSmall(ready.share)) break;
+      if (!ready || runnable(view).length >= view.parallelRuns || shareShortfall(ready)) break;
       await this.startFeature(id, ready.id);
       started = true;
       view = this.view(id);
@@ -895,7 +927,8 @@ export class InitiativeService {
     if (!plan || !feature) throw new WorkflowFault("NOT_FOUND", `Unknown feature ${featureId}`);
     const settings = this.store.settings(row);
     const upstream = this.upstreamContracts(id, feature);
-    const share = this.view(id).features.find((f) => f.id === featureId)?.share;
+    const current = this.view(id);
+    const share = current.features.find((f) => f.id === featureId)?.share;
     if (!share) throw new WorkflowFault("BUDGET_EXHAUSTED", "No budget share is available");
     const previous = this.store.links(id).filter((l) => l.feature_id === featureId).length;
     const runFeature = runFeatureId(id, featureId);
@@ -906,7 +939,7 @@ export class InitiativeService {
       workflowId: featureWorkflowId(settings, feature),
       featureId: runFeature,
       prompt: featurePrompt(row, plan, feature, upstream),
-      policy: featurePolicy(settings, share, feature, false),
+      policy: featurePolicy(settings, share, feature, false, growthLimit(current, featureId)),
       ownerLabel: settings.ownerLabel,
       dependencies: upstream.map((u) => ({
         featureId: u.contract.featureId,
@@ -1061,10 +1094,40 @@ export class InitiativeService {
    */
   estimate(id: string): InitiativeEstimate | null {
     const row = this.store.get(id);
-    const settings = this.store.settings(row);
     const latest = row.plan_revision ? this.store.revision(id, row.plan_revision) : null;
     const plan = this.approvedPlan(row) ?? (latest ? this.store.plan(latest) : null);
     if (!plan) return null;
+    const accepted = this.view(id)
+      .features.filter((f) => f.state === "accepted")
+      .map((f) => f.id);
+    // Asked for rarely and right after runs finish, so it reads the store fresh.
+    return this.estimateOf(row, plan, new Set(accepted), 0);
+  }
+
+  /**
+   * The estimated tokens of each feature of the approved plan that this project's history prices,
+   * or that the initiative's accepted features calibrate. Generic ranges are left out: they say
+   * nothing about this project and would hold a feature with a small budget back on numbers no run
+   * measured.
+   */
+  private featureNeeds(
+    row: InitiativeRow,
+    plan: InitiativePlan,
+    accepted: ReadonlySet<string>,
+  ): Map<string, TokenRange> {
+    const estimate = this.estimateOf(row, plan, accepted);
+    return new Map(
+      estimate.features.filter((f) => f.basis !== "defaults").map((f) => [f.featureId, f.tokens]),
+    );
+  }
+
+  private estimateOf(
+    row: InitiativeRow,
+    plan: InitiativePlan,
+    accepted: ReadonlySet<string>,
+    maxAgeMs?: number,
+  ): InitiativeEstimate {
+    const settings = this.store.settings(row);
     const facts = this.workflowFacts(settings);
     const models = settings.model ? [settings.model] : [];
     const features = plan.features.map((feature) => {
@@ -1081,18 +1144,12 @@ export class InitiativeService {
       this.workflows.store,
       this.workflows.workspace,
       settings.basePolicy,
-      // Asked for rarely and right after runs finish, so it reads the store fresh.
-      0,
+      maxAgeMs,
     );
     // This initiative's own runs are its progress, not samples: an accepted feature counts with
     // what it used, and the rest are scaled by how far the accepted ones were from their forecast.
-    const links = this.store.links(id);
+    const links = this.store.links(row.id);
     const own = new Set(links.map((l) => l.run_id));
-    const accepted = new Set(
-      this.view(id)
-        .features.filter((f) => f.state === "accepted")
-        .map((f) => f.id),
-    );
     const spent: Record<string, { spent: number; accepted: boolean }> = {};
     for (const link of links) {
       const entry = spent[link.feature_id] ?? {
@@ -1168,11 +1225,20 @@ export class InitiativeService {
       calls: Math.max(0, limits.maxAgentCalls - committed.calls),
       activeMs: Math.max(0, limits.maxActiveMs - committed.activeMs),
     };
-    // Features without a run share what remains, each by the weight of its size.
+    // Features without a run share what remains: tokens by estimated need, calls and time by size.
     const waitingForRun = approved ? features.filter((f) => f.runId === null) : [];
+    const accepted = new Set(features.filter((f) => f.state === "accepted").map((f) => f.id));
+    const needs =
+      approved && waitingForRun.length ? this.featureNeeds(row, approved, accepted) : null;
+    for (const feature of waitingForRun) feature.need = needs?.get(feature.id) ?? null;
     const weights = waitingForRun.reduce((sum, f) => sum + sizeWeight(f), 0);
-    for (const feature of waitingForRun)
-      feature.share = share(remaining, weights, sizeWeight(feature));
+    const byNeed = tokenWeights(waitingForRun);
+    const needTotal = byNeed.reduce((sum, w) => sum + w, 0);
+    for (const [index, feature] of waitingForRun.entries())
+      feature.share = {
+        ...share(remaining, weights, sizeWeight(feature)),
+        tokens: share(remaining, needTotal, byNeed[index]).tokens,
+      };
     const unstarted = waitingForRun.length;
     const nextShare =
       (waitingForRun.find((f) => f.state === "ready") ?? waitingForRun[0])?.share ?? null;
@@ -1316,13 +1382,8 @@ export class InitiativeService {
       if (feature.state === "stale")
         return action("rebase", `Rebase ${feature.id} on the changed upstream contract`, feature);
       if (feature.state !== "ready") continue;
-      const share = feature.share;
-      if (shareTooSmall(share))
-        return action(
-          "blocked",
-          `The shared budget is exhausted: ${feature.id} would start with ${share?.tokens ?? 0} tokens, ${share?.calls ?? 0} calls and ${share?.activeMs ?? 0} ms. Raise it with baked workflow initiative extend.`,
-          feature,
-        );
+      const shortfall = shareShortfall(feature);
+      if (shortfall) return action("blocked", shortfall, feature);
       return action("start", `Start feature ${feature.id}`, feature);
     }
     if (waits[0]) return waits[0];
@@ -1358,6 +1419,7 @@ export class InitiativeService {
         workflowId,
         size: feature.size ?? "medium",
         share: null,
+        need: null,
         runFeatureId: runFeature,
         issue: issues[feature.id] ?? null,
         state: "proposed",
@@ -1613,6 +1675,7 @@ export function featurePolicy(
   share: UsageView | typeof MIN_SHARE,
   feature: InitiativeFeature,
   humanOnly: boolean,
+  growTo: number | null = null,
 ): RunPolicy {
   const tokens = "tokens" in share ? share.tokens : share.maxTotalTokens;
   const calls = "calls" in share ? share.calls : share.maxAgentCalls;
@@ -1635,11 +1698,45 @@ export function featurePolicy(
   return PolicySchema.parse({
     ...base,
     maxTotalTokens,
+    ...(growTo !== null ? { sizing: grownSizing(base, maxTotalTokens, growTo) } : {}),
     maxAgentCalls: Math.min(1000, Math.max(MIN_SHARE.maxAgentCalls, calls)),
     maxActiveMs: Math.max(MIN_SHARE.maxActiveMs, ms),
     autoApproval: limits?.success ? autoApprovalPolicy(limits.data) : null,
   });
 }
+
+/**
+ * What a starting feature may grow its run budget to: the shared budget that remains less the low
+ * end of the estimate of every other feature still waiting for a run. Without it a run grew from
+ * its share to its own planning floor and sizing ceiling and held that, so the features after it
+ * started on what was left (#1311). Null when no feature has an estimate.
+ */
+export function growthLimit(view: InitiativeView, featureId: string): number | null {
+  const waiting = view.features.filter((f) => f.share !== null);
+  if (!waiting.some((f) => f.need)) return null;
+  const reserve = waiting
+    .filter((f) => f.id !== featureId)
+    .reduce((sum, f) => sum + (f.need?.low ?? 0), 0);
+  return Math.max(0, view.budget.remaining.tokens - reserve);
+}
+
+/**
+ * The base policy's sizing with its ceiling and hard ceiling held to `growTo` (never below the
+ * share). A base policy without a ceiling never grows, so it is left as it is.
+ */
+function grownSizing(base: RunPolicy, share: number, growTo: number): RunPolicy["sizing"] {
+  const ceiling = base.sizing?.maxRunTokens;
+  if (ceiling === undefined || ceiling === null) return base.sizing;
+  const limit = Math.max(MIN_GROWTH_TOKENS, share, growTo);
+  const hard = extendToOf(base);
+  return {
+    ...base.sizing,
+    maxRunTokens: Math.min(ceiling, limit),
+    ...(hard !== null ? { extendToTokens: Math.min(hard, limit) } : {}),
+  };
+}
+/** The smallest sizing ceiling a policy accepts. */
+const MIN_GROWTH_TOKENS = 10_000;
 
 /** The request a feature run starts from: its place in the initiative and the contracts around it. */
 export function featurePrompt(
