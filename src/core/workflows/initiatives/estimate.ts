@@ -125,8 +125,9 @@ export interface InitiativeEstimate {
    */
   perCriterion: TokenRange | null;
   /**
-   * Tokens per boundary path, measured like `perCriterion`; a feature still to run is forecast at
-   * no less than its paths times this rate (#1354). Null with fewer than `MIN_CRITERIA_SAMPLES`.
+   * Tokens per boundary path, measured like `perCriterion`: the low end of the measured rates up to
+   * their median. A feature still to run, whose spec is not written yet, is forecast at no less than
+   * its paths times this rate (#1354). Null with fewer than `MIN_CRITERIA_SAMPLES`.
    */
   perPath: TokenRange | null;
   notes: string[];
@@ -148,6 +149,13 @@ const scaled = (r: TokenRange, f: number): TokenRange => ({
   high: Math.round(r.high * f),
 });
 const middle = (r: TokenRange): number => (r.low + r.high) / 2;
+const median = (values: number[]): number => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const half = Math.floor(sorted.length / 2);
+  return sorted.length % 2
+    ? (sorted[half] ?? 0)
+    : ((sorted[half - 1] ?? 0) + (sorted[half] ?? 0)) / 2;
+};
 
 /** The level of a planned task count. */
 export function levelOf(tasks: number): InitiativeEstimate["level"] {
@@ -298,7 +306,11 @@ function reforecast(
       .filter((f) => (f.paths ?? 0) > 0 && used(f).spent > 0)
       .map((f) => used(f).spent / (f.paths ?? 1)),
   ];
-  const perPath = pathRates.length >= MIN_CRITERIA_SAMPLES ? rangeOf(pathRates) : null;
+  // Up to the median, not the highest rate: a file dense in rules costs several times a plain one
+  // (bench round 36, seqmill: 0.29M to 1.28M per path), and the highest rate scaled every feature
+  // still to run up to 1.9 times what it used.
+  const pathRange = pathRates.length >= MIN_CRITERIA_SAMPLES ? rangeOf(pathRates) : null;
+  const perPath = pathRange && { low: pathRange.low, high: Math.round(median(pathRates)) };
   const features = prior.map((f): FeatureEstimate => {
     const { spent, accepted: done, criteria, planned } = used(f);
     const known = { ...(criteria ? { criteria } : {}), ...(planned ? { planned } : {}) };
@@ -308,10 +320,12 @@ function reforecast(
     const base = scale === null ? f.tokens : scaled(f.tokens, scale);
     // Floors from what is known of the feature itself: its spec's criteria, its boundary's paths,
     // and the tasks its run's plan sized (language's plan priced 4.55 to 8.08 dollars of tasks
-    // while its estimate still said 2.65M tokens at most).
+    // while its estimate still said 2.65M tokens at most). Once the spec is written its criteria
+    // replace the paths: seqmill used 155k to 320k per criterion against 0.29M to 1.28M per path.
+    const byCriteria = perCriterion && criteria ? scaled(perCriterion, criteria) : null;
     const floors = [
-      perCriterion && criteria ? scaled(perCriterion, criteria) : null,
-      perPath && f.paths ? scaled(perPath, f.paths) : null,
+      byCriteria,
+      !byCriteria && perPath && f.paths ? scaled(perPath, f.paths) : null,
       planned ?? null,
     ].filter((r): r is TokenRange => r !== null);
     const tokens = {
@@ -392,7 +406,7 @@ export function estimateInitiative(input: {
           `A feature whose spec is written is forecast at no less than ${rangeText(perCriterion)} tokens per acceptance criterion, as measured on finished features.`,
         ]
       : []),
-    ...(perPath && features.some((f) => f.basis !== "measured" && f.paths)
+    ...(perPath && features.some((f) => f.basis !== "measured" && f.paths && !f.criteria)
       ? [
           `A feature still to run is forecast at no less than ${rangeText(perPath)} tokens per path of its boundary, as measured on finished features.`,
         ]

@@ -336,10 +336,58 @@ describe("scenario: features estimated from their boundary paths and their plan 
       maxTotalTokens: 30_000_000,
     });
     const byId = Object.fromEntries(estimate.features.map((f) => [f.featureId, f]));
-    expect(estimate.perPath).toEqual({ low: 500_000, high: 700_000 });
-    expect(byId.language?.tokens).toEqual({ low: 5_500_000, high: 7_700_000 });
+    // From the lowest rate up to the median (#1354, R36).
+    expect(estimate.perPath).toEqual({ low: 500_000, high: 600_000 });
+    expect(byId.language?.tokens).toEqual({ low: 5_500_000, high: 6_600_000 });
     // Fewer paths than a typical large feature never lowers its size-based forecast.
-    expect(byId.core?.tokens.high).toBeGreaterThanOrEqual(4 * 700_000);
+    expect(byId.core?.tokens.high).toBeGreaterThanOrEqual(4 * 600_000);
+  });
+});
+
+// Bench round 36 (seqmill, #1354 follow-up): tokens per path ran from 0.29M (formats, 7 paths) to
+// 1.28M (alignment, 2 paths: one rule-dense module and its test), and a floor at the highest rate
+// put the high end 1.3 to 1.9 times above what the features used. Tokens per spec criterion were
+// steadier, 155k to 320k.
+describe("scenario: the path floor at the median rate, and criteria once a spec exists (#1354, R36)", () => {
+  const withPaths = (id: string, paths: number) => ({ ...feature(id, "medium"), paths });
+  const features = [
+    withPaths("core", 8),
+    withPaths("formats", 7),
+    withPaths("quality", 2),
+    withPaths("alignment", 2),
+    withPaths("transforms", 5),
+    // Many paths in one boundary, as a cli that names each subcommand's module and test.
+    withPaths("cli", 20),
+  ];
+  const progress = {
+    features: {
+      core: { spent: 2_770_000, accepted: true, criteria: 12 },
+      formats: { spent: 2_020_000, accepted: true, criteria: 13 },
+      quality: { spent: 1_820_000, accepted: true, criteria: 7 },
+      alignment: { spent: 2_560_000, accepted: true, criteria: 8 },
+      cli: { spent: 0, accepted: false, criteria: 10 },
+    },
+    overhead: 0,
+  };
+
+  test("a feature without a spec is floored at its paths times the median rate, not the highest", () => {
+    const estimate = estimateInitiative({ features, history: [], samples: [], maxTotalTokens: 30_000_000, progress });
+    const rates = [2_770_000 / 8, 2_020_000 / 7, 1_820_000 / 2, 2_560_000 / 2].sort((a, b) => a - b);
+    const median = Math.round(((rates[1] ?? 0) + (rates[2] ?? 0)) / 2);
+    expect(estimate.perPath?.high).toBe(median);
+    // transforms (5 paths) used 2.0M; at the highest rate (1.28M a path) its floor said 6.4M.
+    const transforms = estimate.features.find((f) => f.featureId === "transforms");
+    expect(transforms?.tokens.high).toBeLessThan(5 * 1_000_000);
+  });
+
+  test("a feature whose spec is written is priced by its criteria, not its paths", () => {
+    const estimate = estimateInitiative({ features, history: [], samples: [], maxTotalTokens: 30_000_000, progress });
+    const cli = estimate.features.find((f) => f.featureId === "cli");
+    const perCriterion = estimate.perCriterion ?? { low: 0, high: 0 };
+    expect(cli?.criteria).toBe(10);
+    // cli used 1.95M; its criteria floor stays near it while 20 paths would say 9M or more.
+    expect(cli?.tokens.high).toBeGreaterThanOrEqual(10 * perCriterion.high);
+    expect(cli?.tokens.high).toBeLessThan(20 * (estimate.perPath?.low ?? 0));
   });
 });
 
