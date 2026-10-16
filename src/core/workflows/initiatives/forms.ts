@@ -33,6 +33,8 @@ export const InitiativeStartInputSchema = z.strictObject({
   featureIssues: z.record(FeatureKey, IssueSourceSchema).optional(),
   /** Feature runs execute in worktrees, so independent features run side by side. */
   worktree: z.boolean().optional(),
+  /** Hold feature starts while the estimate's low end is above the shared budget. */
+  forecastStop: z.boolean().optional(),
 });
 export type InitiativeStartInput = z.infer<typeof InitiativeStartInputSchema>;
 
@@ -70,6 +72,7 @@ export function initiativeStartRequest(
     ...(form.confirmAutoApproval ? { autoApprovalConfirmation: form.confirmAutoApproval } : {}),
     ...(form.model ? { model: form.model } : {}),
     ...(form.featureIssues ? { featureIssues: form.featureIssues } : {}),
+    ...(form.forecastStop ? { forecastStop: true } : {}),
     ownerLabel: identity.ownerLabel,
   };
 }

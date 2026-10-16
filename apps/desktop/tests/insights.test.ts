@@ -686,6 +686,10 @@ describe("initiative management", () => {
       false,
     );
     expect(startBody({ ...fields, tiered: { maxTasks: "0", maxFiles: "10" } }).ok).toBe(false);
+    expect(startBody({ ...fields, forecastStop: true })).toEqual({
+      ok: true,
+      body: { initiativeId: "ship-it", prompt: "Ship it", workflow: "sdd", forecastStop: true },
+    });
   });
 });
 

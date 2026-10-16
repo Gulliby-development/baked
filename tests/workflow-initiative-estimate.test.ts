@@ -147,4 +147,46 @@ describe("initiative estimate", () => {
     expect(estimate.features[1]?.tokens.low).toBe(900_000_000);
     expect(estimate.budget.fits).toBe("no");
   });
+
+  test("a feature with a written spec is forecast at no less than its criteria times the measured rate (#1312)", () => {
+    const features = [feature("a", "small"), feature("b", "small"), feature("c", "small")];
+    const sample = (runId: string, tokens: number, criteria: number): FeatureRunSample => ({
+      runId,
+      workflowId: "sdd",
+      size: "large",
+      tokens,
+      taskCount: 10,
+      criteria,
+    });
+    // 1M per criterion on two finished large features; their size keeps them out of the small pool.
+    const samples = [sample("x", 4_000_000, 4), sample("y", 6_000_000, 6)];
+    const progress = { features: { b: { spent: 0, accepted: false, criteria: 8 } }, overhead: 0 };
+    const estimate = estimateInitiative({ features, history: [], samples, maxTotalTokens: 30_000_000, progress });
+    const [a, b] = estimate.features;
+    expect(estimate.perCriterion).toEqual({ low: 1_000_000, high: 1_000_000 });
+    expect(b?.criteria).toBe(8);
+    expect(b?.tokens).toEqual({ low: 8_000_000, high: 8_000_000 });
+    expect(b?.basis).toBe("calibrated");
+    // A feature without a spec yet keeps its size-based forecast.
+    expect(a?.basis).toBe("defaults");
+    expect(a?.tokens.high).toBeLessThan(8_000_000);
+    expect(estimate.notes.join(" ")).toContain("per acceptance criterion");
+  });
+
+  test("one measured feature is not enough to price by criteria", () => {
+    const features = [feature("a", "medium"), feature("b", "medium")];
+    const estimate = estimateInitiative({
+      features,
+      history: [],
+      samples: [],
+      maxTotalTokens: 30_000_000,
+      progress: {
+        features: { a: { spent: 5_000_000, accepted: true, criteria: 5 }, b: { spent: 0, accepted: false, criteria: 20 } },
+        overhead: 0,
+      },
+    });
+    expect(estimate.perCriterion).toBeNull();
+    expect(estimate.features[0]?.criteria).toBe(5);
+    expect(estimate.notes.join(" ")).not.toContain("per acceptance criterion");
+  });
 });

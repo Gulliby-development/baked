@@ -32,6 +32,8 @@ export interface FeatureRunSample {
   size: FeatureSize;
   tokens: number;
   taskCount: number;
+  /** The acceptance criteria of the run's spec; absent before a spec exists. */
+  criteria?: number;
 }
 
 /** A feature to estimate: its workflow and that workflow's stages. */
@@ -63,11 +65,13 @@ export interface FeatureEstimate {
   samples: number;
   /** Tokens this initiative's runs of the feature have used so far. */
   spent: number;
+  /** The acceptance criteria of the feature run's spec, once it has one. */
+  criteria?: number;
 }
 
 /** What an initiative has used so far: per feature, and on runs of no feature (the split). */
 export interface InitiativeProgress {
-  features: Record<string, { spent: number; accepted: boolean }>;
+  features: Record<string, { spent: number; accepted: boolean; criteria?: number }>;
   overhead: number;
 }
 
@@ -89,6 +93,12 @@ export interface InitiativeEstimate {
    * accepted, and the ratio of their measured tokens to their forecast, which scales the rest.
    */
   progress: { spent: number; accepted: number; ratio: number | null };
+  /**
+   * Tokens per acceptance criterion, measured on finished feature runs and this initiative's
+   * accepted features; a feature whose spec is written is forecast at no less than its criteria
+   * times this rate. Null with fewer than `MIN_CRITERIA_SAMPLES` measured features.
+   */
+  perCriterion: TokenRange | null;
   notes: string[];
   label: string;
 }
@@ -195,6 +205,9 @@ export function estimateSummary(estimate: InitiativeEstimate): string {
 const fitsOf = (high: number, low: number, limit: number): "yes" | "maybe" | "no" =>
   high <= limit ? "yes" : low <= limit ? "maybe" : "no";
 
+/** Measured features with criteria needed before the estimate prices features by criteria. */
+export const MIN_CRITERIA_SAMPLES = 2;
+
 /** Bounds of the measured-to-forecast ratio that scales the features still to run. */
 const RATIO_BOUNDS = { low: 0.25, high: 5 } as const;
 
@@ -207,8 +220,9 @@ const RATIO_BOUNDS = { low: 0.25, high: 5 } as const;
 function reforecast(
   prior: FeatureEstimate[],
   progress: InitiativeProgress,
-): { features: FeatureEstimate[]; ratio: number | null } {
-  const used = (f: FeatureEstimate) =>
+  samples: FeatureRunSample[],
+): { features: FeatureEstimate[]; ratio: number | null; perCriterion: TokenRange | null } {
+  const used = (f: FeatureEstimate): InitiativeProgress["features"][string] =>
     progress.features[f.featureId] ?? { spent: 0, accepted: false };
   const accepted = prior.filter((f) => used(f).accepted);
   const forecast = accepted.reduce((total, f) => total + middle(f.tokens), 0);
@@ -217,18 +231,37 @@ function reforecast(
     accepted.length && forecast > 0 && measured > 0
       ? Math.min(RATIO_BOUNDS.high, Math.max(RATIO_BOUNDS.low, measured / forecast))
       : null;
+  // A feature's work grows with the criteria its spec sets: bench round 32's notesift features
+  // with the most criteria overran a size-based forecast the most (#1312).
+  const rates = [
+    ...samples.filter((s) => (s.criteria ?? 0) > 0).map((s) => s.tokens / (s.criteria ?? 1)),
+    ...accepted
+      .map(used)
+      .filter((u) => (u.criteria ?? 0) > 0 && u.spent > 0)
+      .map((u) => u.spent / (u.criteria ?? 1)),
+  ];
+  const perCriterion = rates.length >= MIN_CRITERIA_SAMPLES ? rangeOf(rates) : null;
   const features = prior.map((f): FeatureEstimate => {
-    const { spent, accepted: done } = used(f);
-    if (done) return { ...f, tokens: { low: spent, high: spent }, basis: "measured", spent };
-    const tokens = ratio === null ? f.tokens : scaled(f.tokens, ratio);
+    const { spent, accepted: done, criteria } = used(f);
+    const known = criteria ? { criteria } : {};
+    if (done)
+      return { ...f, ...known, tokens: { low: spent, high: spent }, basis: "measured", spent };
+    const base = ratio === null ? f.tokens : scaled(f.tokens, ratio);
+    const floor = perCriterion && criteria ? scaled(perCriterion, criteria) : { low: 0, high: 0 };
+    const tokens = {
+      low: Math.max(base.low, floor.low),
+      high: Math.max(base.high, floor.high),
+    };
+    const raised = tokens.low > base.low || tokens.high > base.high;
     return {
       ...f,
+      ...known,
       tokens: { low: Math.max(tokens.low, spent), high: Math.max(tokens.high, spent) },
-      basis: ratio === null ? f.basis : "calibrated",
+      basis: ratio === null && !raised ? f.basis : "calibrated",
       spent,
     };
   });
-  return { features, ratio };
+  return { features, ratio, perCriterion };
 }
 
 /**
@@ -246,9 +279,10 @@ export function estimateInitiative(input: {
 }): InitiativeEstimate {
   const margin = input.margin ?? ESTIMATE_MARGIN;
   const progress = input.progress ?? { features: {}, overhead: 0 };
-  const { features, ratio } = reforecast(
+  const { features, ratio, perCriterion } = reforecast(
     input.features.map((f) => estimateFeature(f, input.history, input.samples)),
     progress,
+    input.samples,
   );
   const overhead = { low: progress.overhead, high: progress.overhead };
   const tokens = sum([overhead, ...features.map((f) => f.tokens)]);
@@ -280,6 +314,11 @@ export function estimateInitiative(input: {
           `Re-forecast after ${accepted} of ${features.length} features: the accepted ones used ${ratio.toFixed(1)} times their forecast, so the features still to run are scaled by it.`,
         ]
       : []),
+    ...(perCriterion && features.some((f) => f.basis !== "measured" && f.criteria)
+      ? [
+          `A feature whose spec is written is forecast at no less than ${rangeText(perCriterion)} tokens per acceptance criterion, as measured on finished features.`,
+        ]
+      : []),
   ];
   const fits = fitsOf(withMargin, tokens.low, input.maxTotalTokens);
   const budgetText =
@@ -299,6 +338,7 @@ export function estimateInitiative(input: {
     basis,
     features,
     progress: { spent, accepted, ratio },
+    perCriterion,
     notes,
     label: `Estimate: level ${level}, about ${tasks.low}-${tasks.high} tasks, ${rangeText(tokens)} tokens (plan for ${tokenText(withMargin)} with a ${Math.round(margin * 100)}% margin)${spent ? `, ${tokenText(spent)} used with ${accepted} of ${features.length} features accepted` : ""}; ${budgetText}`,
   };
