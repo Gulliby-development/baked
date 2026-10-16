@@ -391,3 +391,57 @@ describe("scenario: the path floor at the median rate, and criteria once a spec 
   });
 });
 
+
+describe("scenario: the split estimate floored by paths at another project's rate (#1376, R37)", () => {
+  // ranktally: core, methods and cli (large, 10, 10 and 9 paths) all got 1.60M-2.85M and used
+  // 4.34M, 5.35M and 6.19M; release (small, 3 paths) got 0.43M-0.77M and used 1.65M. Before any
+  // feature ran, the only measured path rates were the finished features of earlier projects.
+  const withPaths = (id: string, size: FeatureToEstimate["size"], paths: number) => ({ ...feature(id, size), paths });
+  const features = [
+    withPaths("core", "large", 10),
+    withPaths("formats", "medium", 4),
+    withPaths("methods", "large", 10),
+    withPaths("cli", "large", 9),
+    withPaths("release", "small", 3),
+  ];
+  const shared = (runId: string, size: FeatureRunSample["size"], tokens: number, paths: number): FeatureRunSample => ({
+    runId,
+    workflowId: "sdd",
+    size,
+    tokens,
+    taskCount: 8,
+    paths,
+    source: "shared",
+  });
+  // Fifteen runs of the workflow, which priced a large feature at 1.6M to 2.2M as R37 did.
+  const history = Array.from({ length: 15 }, (_, i) => run(`r${i}`, "sdd", 700_000 + i * 40_000, 8));
+  // Earlier projects' features: 0.48M to 0.69M per path.
+  const samples = [
+    shared("a", "medium", 1_400_000, 4),
+    shared("b", "medium", 2_400_000, 5),
+    shared("c", "small", 1_380_000, 2),
+    shared("d", "small", 1_100_000, 2),
+  ];
+
+  test("features of one size are told apart by their paths before any of them runs", () => {
+    const plain = estimateInitiative({ features, history, samples: [], maxTotalTokens: 30_000_000 });
+    const estimate = estimateInitiative({ features, history, samples, maxTotalTokens: 30_000_000 });
+    const of = (e: typeof estimate, id: string) => e.features.find((f) => f.featureId === id);
+    // By size class alone every large feature has the same range, whatever its boundary.
+    expect(plain.tokens.high).toBeLessThan(10_840_000);
+    expect(of(plain, "core")?.tokens).toEqual(of(plain, "cli")?.tokens ?? { low: -1, high: -1 });
+    expect(estimate.perPathSamples).toEqual({ features: 4, shared: 4 });
+    const perPath = estimate.perPath ?? { low: 0, high: 0 };
+    for (const id of ["core", "methods", "cli"]) {
+      const f = of(estimate, id);
+      expect(f?.floor).toBe("paths");
+      expect(f?.basis).toBe("calibrated");
+      expect(f?.tokens.high).toBe((f?.paths ?? 0) * perPath.high);
+    }
+    expect(of(estimate, "cli")?.tokens.high).toBeLessThan(of(estimate, "core")?.tokens.high ?? 0);
+    // ranktally used 18.98M: within this estimate's margin, and well above the size class's.
+    expect(estimate.tokens.high).toBeGreaterThan(18_980_000 * 0.95);
+    expect(estimate.withMargin).toBeGreaterThan(18_980_000);
+    expect(estimate.notes.join("\n")).toContain("as measured on 4 finished features (4 of other projects)");
+  });
+});

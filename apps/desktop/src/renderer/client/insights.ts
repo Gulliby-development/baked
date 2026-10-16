@@ -175,6 +175,8 @@ export interface InitiativeEstimate {
     paths?: number;
     /** The tokens the feature run's plan sized its tasks at, once it has a plan. */
     planned?: TokenSpan;
+    /** What raised the range above the size-scaled forecast, at its measured rate. */
+    floor?: "criteria" | "paths" | "plan";
   }[];
   /** Tokens used so far and the measured-to-forecast ratio; absent on older backends. */
   progress?: {

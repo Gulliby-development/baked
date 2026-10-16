@@ -7,6 +7,8 @@
  * readiness rules are the existing `contractHash` dependency mechanism.
  */
 
+import { existsSync, statSync } from "node:fs";
+import { basename, dirname } from "node:path";
 import { ROUTING_ARTIFACT } from "../../llm/model-routing.js";
 import { matchGlob } from "../../platform/index.js";
 import { hashJson } from "../../specs/hash.js";
@@ -16,6 +18,7 @@ import { type AcceptedContract, acceptedContract } from "../dependencies.js";
 import { WorkflowFault } from "../errors.js";
 import {
   estimateHistory,
+  historyStorePaths,
   type PastRun,
   rangeText,
   type TokenRange,
@@ -35,7 +38,7 @@ import {
 } from "../schemas.js";
 import type { NativeWorkflowService, PlannedReroute } from "../service.js";
 import { terminalStates } from "../state-machine.js";
-import { newId } from "../store.js";
+import { newId, WorkflowStore } from "../store.js";
 import type { IssueSource } from "../types.js";
 import { DefinitionAutoApprovalSchema } from "../v2/definition.js";
 import { loadDefinition } from "../v2/definitions.js";
@@ -1378,45 +1381,18 @@ export class InitiativeService {
     return estimateInitiative({
       features,
       history,
-      samples: this.featureRunSamples(history).filter((s) => !own.has(s.runId)),
+      samples: [
+        ...featureRunSamples(this.store, this.workflows.store, history),
+        ...sharedFeatureRunSamples(
+          historyStorePaths(this.workflows.workspace, settings.basePolicy),
+          history,
+        ),
+      ].filter((s) => !own.has(s.runId)),
       maxTotalTokens: this.limits(row).maxTotalTokens,
       progress: {
         features: spent,
         overhead: row.decompose_run_id ? this.usage(row.decompose_run_id).tokens : 0,
       },
-    });
-  }
-
-  /** Finished feature runs of every initiative in this store, with the size their plan gave them. */
-  private featureRunSamples(history: PastRun[]): FeatureRunSample[] {
-    const runs = new Map(history.map((run) => [run.runId, run]));
-    return this.store.list().flatMap((row) => {
-      const settings = this.store.settings(row);
-      const plans = new Map<number, InitiativePlan>();
-      return this.store.links(row.id).flatMap((link) => {
-        const run = runs.get(link.run_id);
-        if (run?.status !== "completed") return [];
-        if (!plans.has(link.plan_revision))
-          plans.set(
-            link.plan_revision,
-            this.store.plan(this.store.revision(row.id, link.plan_revision)),
-          );
-        const feature = plans
-          .get(link.plan_revision)
-          ?.features.find((f) => f.id === link.feature_id);
-        if (!feature) return [];
-        return [
-          {
-            runId: run.runId,
-            workflowId: featureWorkflowId(settings, feature),
-            size: feature.size ?? "medium",
-            tokens: run.tokens,
-            taskCount: run.taskCount,
-            criteria: this.workflows.store.state(run.runId).spec?.criteria.length,
-            paths: feature.boundary.paths.length,
-          },
-        ];
-      });
     });
   }
 
@@ -1957,6 +1933,79 @@ export class InitiativeService {
 }
 
 type WorkflowFacts = (workflowId: string) => FeatureWorkflow | null;
+
+/** Finished feature runs of every initiative in a store, with the size their plan gave them. */
+function featureRunSamples(
+  initiatives: InitiativeStore,
+  runStore: WorkflowStore,
+  history: PastRun[],
+  source: "project" | "shared" = "project",
+): FeatureRunSample[] {
+  const runs = new Map(history.map((run) => [run.runId, run]));
+  return initiatives.list().flatMap((row) => {
+    const settings = initiatives.settings(row);
+    const plans = new Map<number, InitiativePlan>();
+    return initiatives.links(row.id).flatMap((link) => {
+      const run = runs.get(link.run_id);
+      if (run?.status !== "completed") return [];
+      if (!plans.has(link.plan_revision))
+        plans.set(
+          link.plan_revision,
+          initiatives.plan(initiatives.revision(row.id, link.plan_revision)),
+        );
+      const feature = plans.get(link.plan_revision)?.features.find((f) => f.id === link.feature_id);
+      if (!feature) return [];
+      return [
+        {
+          runId: run.runId,
+          workflowId: featureWorkflowId(settings, feature),
+          size: feature.size ?? "medium",
+          tokens: run.tokens,
+          taskCount: run.taskCount,
+          criteria: runStore.state(run.runId).spec?.criteria.length,
+          paths: feature.boundary.paths.length,
+          ...(source === "shared" ? { source } : {}),
+        },
+      ];
+    });
+  });
+}
+
+/** Samples read from each shared store, until the store's files change. */
+const sharedSamples = new Map<string, { stamp: string; samples: FeatureRunSample[] }>();
+
+/**
+ * Finished feature runs of the initiatives in the stores of `sizing.historyStores`, read only. A
+ * project's first initiative has no finished features of its own, so without these the path rate
+ * of #1354 could not floor the estimate shown at the split approval (bench round 37, #1376). A
+ * store that is missing, unreadable or of another schema gives none.
+ */
+function sharedFeatureRunSamples(paths: string[], history: PastRun[]): FeatureRunSample[] {
+  return paths.flatMap((path) => {
+    const parent = dirname(path);
+    if (basename(path) !== "workflows.sqlite" || basename(parent) !== ".baked") return [];
+    // A WAL database changes its -wal file first.
+    const stamp = [path, `${path}-wal`]
+      .map((file) => (existsSync(file) ? statSync(file).mtimeMs : 0))
+      .join("/");
+    const cached = sharedSamples.get(path);
+    if (cached?.stamp === stamp) return cached.samples;
+    let store: WorkflowStore | null = null;
+    let samples: FeatureRunSample[] = [];
+    try {
+      if (existsSync(path)) {
+        store = new WorkflowStore(dirname(parent), true);
+        samples = featureRunSamples(new InitiativeStore(store), store, history, "shared");
+      }
+    } catch {
+      samples = [];
+    } finally {
+      store?.close();
+    }
+    sharedSamples.set(path, { stamp, samples });
+    return samples;
+  });
+}
 
 /** The workflow a feature's runs use: its own, or the initiative's default. */
 const featureWorkflowId = (settings: InitiativeSettings, feature: InitiativeFeature): string =>
