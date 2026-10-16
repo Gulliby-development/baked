@@ -378,6 +378,8 @@ export interface StartFields {
   /** A dollar cap feature runs share; empty or absent sets none. */
   budgetUsd?: string;
   tiered: { maxTasks: string; maxFiles: string } | null;
+  /** Hold feature starts while the forecast is over the shared budget. */
+  forecastStop?: boolean;
 }
 
 /** The body of `POST /v1/initiatives` for the form, or the first reason it cannot be sent. */
@@ -412,6 +414,7 @@ export function startBody(
       return { ok: false, error: "Tiered approval: max tasks and max files above 0." };
     body.tieredApproval = { maxTasks, maxFiles };
   }
+  if (fields.forecastStop) body.forecastStop = true;
   return { ok: true, body };
 }
 

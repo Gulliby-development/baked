@@ -192,6 +192,8 @@ export interface StartInitiativeBody {
   /** The dollar cap feature runs share; absent leaves dollars to each run's policy. */
   budgetUsd?: number;
   tieredApproval?: TieredApproval;
+  /** Hold feature starts while the estimate's low end is above the shared budget. */
+  forecastStop?: boolean;
 }
 
 /** One new feature of a split (`POST /v1/initiatives/:id/split`). */

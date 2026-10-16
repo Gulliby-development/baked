@@ -36,10 +36,20 @@ export function NewInitiativeDialog({
   const [budget, setBudget] = useState<BudgetFields | null>(null);
   const [budgetUsd, setBudgetUsd] = useState("");
   const [tiered, setTiered] = useState<{ maxTasks: string; maxFiles: string } | null>(null);
+  const [forecastStop, setForecastStop] = useState(false);
   const definitions = useLoad(projectKey, "definitions", start.definitions);
   const models = useModelCatalog(projectKey, chat.models);
   const initiativeId = idEdit ?? suggestInitiativeId(prompt);
-  const parsed = startBody({ prompt, initiativeId, workflow, model, budget, budgetUsd, tiered });
+  const parsed = startBody({
+    prompt,
+    initiativeId,
+    workflow,
+    model,
+    budget,
+    budgetUsd,
+    tiered,
+    forecastStop,
+  });
   return (
     <FormDialog
       title="New initiative"
@@ -183,6 +193,17 @@ export function NewInitiativeDialog({
           {tiered
             ? "Feature plans within these limits that write only inside the feature's paths are approved without you; others wait. Needs a schema 1 workflow such as sdd."
             : "Every feature plan waits for your approval."}
+        </span>
+      </div>
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-2.5">
+          <Switch id={`${ids}-forecast`} checked={forecastStop} onCheckedChange={setForecastStop} />
+          <Label htmlFor={`${ids}-forecast`}>Stop when the forecast is over the budget</Label>
+        </div>
+        <span className={HINT}>
+          {forecastStop
+            ? "No new feature starts while the low end of the re-forecast is above the shared budget; raise the budget or trim the split to go on."
+            : "The forecast is shown; features start until the shared budget is used."}
         </span>
       </div>
     </FormDialog>

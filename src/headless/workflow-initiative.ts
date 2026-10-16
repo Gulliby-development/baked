@@ -61,6 +61,7 @@ const commandFlags: Record<InitiativeCommand, string[]> = {
     "max-files",
     "confirm-auto-approval",
     "worktree",
+    "forecast-stop",
     "command-id",
   ],
   show: [],
@@ -82,7 +83,14 @@ const commandFlags: Record<InitiativeCommand, string[]> = {
   extend: ["tokens", "calls", "time-ms", "budget-usd", ...mutation],
   reroute: ["model", "resume", ...mutation],
 };
-const booleanFlags = new Set(["json", "help", "tiered-approval", "resume", "worktree"]);
+const booleanFlags = new Set([
+  "json",
+  "help",
+  "tiered-approval",
+  "resume",
+  "worktree",
+  "forecast-stop",
+]);
 const integerFlags = new Set([
   "expected-revision",
   "after",
@@ -251,6 +259,7 @@ export async function executeInitiativeCommand(
           ? { autoApprovalConfirmation: args.flags["confirm-auto-approval"] }
           : {}),
         ...(typeof args.flags.model === "string" ? { model: args.flags.model } : {}),
+        ...(args.flags["forecast-stop"] ? { forecastStop: true } : {}),
         ownerLabel: stringFlag(args, "owner", "CLI"),
       });
       return initiatives.drive(id, signal);
@@ -413,7 +422,7 @@ export const initiativeHelp = `baked workflow initiative <command> [options]
 start ID (--prompt TEXT | --prompt-file FILE) [--plan FILE] [--workflow sdd] [--policy FILE]
     [--budget-tokens N --budget-calls N --budget-time-ms N] [--budget-usd N [--cost-tolerance auto|off|0.2]]
     [--tiered-approval [--max-tasks 5] [--max-files 10]]
-    [--confirm-auto-approval HASH] [--model ID] [--worktree]
+    [--confirm-auto-approval HASH] [--model ID] [--worktree] [--forecast-stop]
   Split a large request into 3..12 features. Without --plan the decomposer proposes the split;
   a split above 12 features is refused with a request to split the work into stages. Each
   feature runs its own workflow (--workflow is the default for a feature that names none) and

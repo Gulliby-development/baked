@@ -717,6 +717,10 @@ describe("initiative management", () => {
       body: { initiativeId: "ship-it", prompt: "Ship it", workflow: "sdd", budgetUsd: 40 },
     });
     expect(startBody({ ...fields, budgetUsd: "free" }).ok).toBe(false);
+    expect(startBody({ ...fields, forecastStop: true })).toEqual({
+      ok: true,
+      body: { initiativeId: "ship-it", prompt: "Ship it", workflow: "sdd", forecastStop: true },
+    });
   });
 });
 
