@@ -365,6 +365,8 @@ describe("initiative feature workflows", () => {
       ["docs", "quick", "small"],
     ]);
     expect(before?.basis).toBe("defaults");
+    // Each feature's boundary paths go to the estimate (#1354).
+    expect(before?.features.map((f) => f.paths)).toEqual([1, 1, 1]);
     expect(before?.budget.maxTotalTokens).toBe(view.budget.limits.maxTotalTokens);
     expect(before?.progress.accepted).toBe(0);
     await t.approveSplit();

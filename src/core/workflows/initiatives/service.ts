@@ -21,6 +21,7 @@ import {
   type TokenRange,
   tokenText,
 } from "../estimate.js";
+import { plannedTaskTokens } from "../plan-cost.js";
 import {
   type CommandIdentity,
   DEFAULT_MAX_PARALLEL_RUNS,
@@ -1306,6 +1307,7 @@ export class InitiativeService {
         workflowId,
         size: feature.size ?? "medium",
         stages: (facts(workflowId)?.stages ?? []).map((stage) => ({ ...stage, models })),
+        paths: feature.boundary.paths.length,
       };
     });
     const history = estimateHistory(
@@ -1328,6 +1330,9 @@ export class InitiativeService {
       // The latest run with a spec says how many criteria the feature has.
       const criteria = this.workflows.store.state(link.run_id).spec?.criteria.length;
       if (criteria) entry.criteria = criteria;
+      // And the latest run with a sized plan, what its tasks should use.
+      const planned = plannedTaskTokens(this.workflows.store, link.run_id);
+      if (planned) entry.planned = planned;
       spent[link.feature_id] = entry;
     }
     return estimateInitiative({
@@ -1368,6 +1373,7 @@ export class InitiativeService {
             tokens: run.tokens,
             taskCount: run.taskCount,
             criteria: this.workflows.store.state(run.runId).spec?.criteria.length,
+            paths: feature.boundary.paths.length,
           },
         ];
       });
