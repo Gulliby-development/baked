@@ -38,7 +38,7 @@ import {
 import { workflowHelp } from "../src/headless/workflow-parse.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
 import { mergedBase } from "../src/core/workflows/worktree.js";
-import { assignFeatureWorkflows } from "../src/core/workflows/initiatives/workflows.js";
+import { assignFeatureWorkflows, lightenSmallLeaves } from "../src/core/workflows/initiatives/workflows.js";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -745,6 +745,67 @@ describe("initiative runtime", () => {
     const kept = setup(seqmill);
     await kept.start({ keepFeatures: true });
     expect(kept.featureOf(await kept.drive(), "docs").workflowId).toBe("sdd");
+  });
+
+  test("under tiered approval a small leaf still runs quick, and its plan is approved within its boundary (#1374)", async () => {
+    // Bench round 37, ranktally: with --tiered-approval only schema 1 workflows were feature
+    // choices, quick (a shipped schema 2 preset) was not, and the release leaf ran sdd for 1.65M.
+    const three = (id: string) => [`${id}.txt`, `${id}/b.txt`, `${id}/c.txt`];
+    const ranktally = plan([
+      { ...feature("core", [], three("core")), workflow: "sdd" },
+      { ...feature("engine", ["core"], three("engine")), workflow: "sdd", size: "medium" as const },
+      { ...feature("release", ["engine"], ["release.txt", "LICENSE"]), workflow: "sdd" },
+    ]);
+    const t = setup(ranktally);
+    await t.start({ featureAutoApproval: { maxTasks: 8, maxFiles: 14 } });
+    let view = await t.drive();
+    expect(view.features.map((f) => [f.id, f.workflowId])).toEqual([
+      ["core", "sdd"],
+      ["engine", "sdd"],
+      ["release", "quick"],
+    ]);
+    expect(t.initiatives.store.eventsOfType("values", "split.lightened")).toEqual([
+      { planRevision: 1, lightened: [{ featureId: "release", from: "sdd", to: "quick" }] },
+    ]);
+    await t.approveSplit();
+    for (let i = 0; i < 6 && view.status !== "completed"; i++) view = await t.drive();
+    // No person was asked: quick's plan approval took the feature's tiered limits.
+    expect(view.status).toBe("completed");
+    const release = t.featureOf(view, "release").runId ?? "";
+    const run = t.workflows.store.run(release);
+    const definition = JSON.parse(run.definition_json) as { id: string; stages: { id: string; decision?: string }[] };
+    expect(definition.id).toBe("quick");
+    expect(definition.stages.find((s) => s.id === "approve")?.decision).toBe("auto");
+    expect(t.workflows.store.requests(release).find((r) => r.kind === "approval")?.actor).toBe("auto-approval");
+    expect(JSON.parse(run.policy_json).autoApproval.limits.allowedPaths).toEqual(["release.txt", "LICENSE"]);
+  }, 30000);
+
+  test("a small leaf that writes a risky path keeps its spec workflow", () => {
+    const choices = [
+      { id: "sdd", description: "", schemaVersion: 1 as const, contract: true, execution: "inline" as const, stages: [] },
+      { id: "quick", description: "", schemaVersion: 2 as const, contract: false, execution: "inline" as const, stages: [] },
+    ];
+    const leaves = plan([
+      { ...feature("core", [], ["a", "b", "c"]), workflow: "sdd" },
+      { ...feature("release", ["core"], ["README.md", "LICENSE"]), workflow: "sdd" },
+      { ...feature("store", ["core"], ["db/migrations/002.sql"]), workflow: "sdd" },
+      { ...feature("login", ["core"], ["src/auth.ts"]), workflow: "sdd" },
+      { ...feature("ci", ["core"], [".github/workflows/ci.yml"]), workflow: "sdd" },
+    ]);
+    const result = lightenSmallLeaves(leaves, choices);
+    expect(result.lightened.map((l) => l.featureId)).toEqual(["release"]);
+    // Without quick among the choices the leaf is reported instead of skipped silently.
+    expect(lightenSmallLeaves(leaves, choices.slice(0, 1)).unavailable).toEqual(["release"]);
+  });
+
+  test("a quick run outside an initiative keeps its human plan approval", async () => {
+    const t = setup();
+    const run = await t.workflows.start({
+      commandId: newId(), workflowId: "quick", featureId: "solo", prompt: "Add solo.txt", ownerLabel: "test",
+      policy: { ...policy, autoApproval: { renewal: false, limits: { maxTasks: 5, maxFiles: 5, allowedPaths: ["solo.txt"], allowDelete: false, allowNewDependencies: false, maxTotalTokens: 100000 } } },
+    });
+    const definition = JSON.parse(t.workflows.store.run(run.runId).definition_json) as { stages: { id: string; decision?: string }[] };
+    expect(definition.stages.find((s) => s.id === "approve")?.decision).toBe("human");
   });
 
   test("small siblings merge only with the same dependencies, up to the path cap and the feature minimum", () => {

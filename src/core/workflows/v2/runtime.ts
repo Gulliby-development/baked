@@ -3,6 +3,7 @@ import type { RunPolicy, Spec, WorkflowDefinition } from "../schemas.js";
 import { WorkflowSchema } from "../schemas.js";
 import type { Check, RuntimeState } from "../types.js";
 import {
+  DefinitionAutoApprovalSchema,
   effectiveMode,
   type Gate,
   type GateBinding,
@@ -293,6 +294,27 @@ export function autoApprovalOf(definition: WorkflowV2): RunPolicy["autoApproval"
   if (!auto || !definition.stages.some((s) => s.type === "approval" && s.decision === "auto"))
     return null;
   return autoApprovalPolicy(auto);
+}
+
+/**
+ * A shipped preset whose human approval stages approve within limits the host sets: an initiative
+ * with tiered approval runs a small leaf feature on `quick` and approves its plan within the
+ * feature's boundary, as a schema 1 workflow does with the same limits (#1374). Null when the
+ * limits do not fit a definition's auto approval (more than 20 paths, for one).
+ */
+export function withBoundaryApproval(
+  definition: WorkflowV2,
+  limits: NonNullable<NonNullable<RunPolicy["autoApproval"]>["limits"]>,
+): (WorkflowV2 & { autoApproval: NonNullable<WorkflowV2["autoApproval"]> }) | null {
+  const parsed = DefinitionAutoApprovalSchema.safeParse({ enabled: true, ...limits });
+  if (!parsed.success) return null;
+  return {
+    ...definition,
+    autoApproval: parsed.data,
+    stages: definition.stages.map((s) =>
+      s.type === "approval" && s.decision === "human" ? { ...s, decision: "auto" } : s,
+    ),
+  };
 }
 
 /** The run policy form of auto approval limits; renewal is never on for limits set by a host. */
