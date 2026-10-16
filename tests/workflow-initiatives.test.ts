@@ -316,7 +316,10 @@ describe("initiative feature workflows", () => {
     expect(t.featureOf(view, "docs").state).toBe("accepted");
   });
 
-  test("the estimate prices the split from history once a feature run finished", async () => {
+  test("the estimate re-forecasts as features are accepted (#1312)", async () => {
+    // Bench round 32, notesift: the split's forecast said "fits" at 10.6M to 19.0M and the
+    // initiative used 32.7M. Accepted features now count at what they used, and their ratio to
+    // the forecast scales the features still to run.
     const t = setup();
     let view = await t.start({ plan: threeFeatures });
     const before = t.initiatives.estimate("values");
@@ -327,20 +330,38 @@ describe("initiative feature workflows", () => {
     ]);
     expect(before?.basis).toBe("defaults");
     expect(before?.budget.maxTotalTokens).toBe(view.budget.limits.maxTotalTokens);
-    expect(before?.withMargin).toBe(Math.round((before?.tokens.high ?? 0) * 1.25));
+    expect(before?.progress.accepted).toBe(0);
     await t.approveSplit();
+    const spent = (featureId: string) => t.workflows.store.history().find((r) => r.runId === t.featureOf(view, featureId).runId)?.tokens ?? 0;
+    for (let i = 0; i < 12 && t.featureOf(view, "core").state !== "accepted"; i++) {
+      view = await t.drive();
+      const waiting = view.pendingDecisions.find((d) => d.scope === "feature" && d.kind === "approval");
+      if (waiting?.featureId) await t.approveFeature(waiting.featureId);
+    }
+    const middle = t.initiatives.estimate("values");
+    const core = middle?.features.find((f) => f.featureId === "core");
+    expect(core?.basis).toBe("measured");
+    expect(core?.tokens).toEqual({ low: spent("core"), high: spent("core") });
+    expect(middle?.progress.accepted).toBe(1);
+    expect(middle?.progress.ratio).not.toBeNull();
+    // The api feature has the same workflow and size as core: scaled by the ratio, its forecast
+    // is the one core turned out to cost.
+    const api = middle?.features.find((f) => f.featureId === "api");
+    expect(api?.basis).toBe("calibrated");
+    expect((api?.tokens.low ?? 0) + (api?.tokens.high ?? 0)).toBeCloseTo(2 * spent("core"), -2);
     for (let i = 0; i < 12 && view.status !== "completed"; i++) {
       view = await t.drive();
       const waiting = view.pendingDecisions.find((d) => d.scope === "feature" && d.kind === "approval");
       if (waiting?.featureId) await t.approveFeature(waiting.featureId);
     }
     expect(view.status).toBe("completed");
-    // The finished medium features now measure the medium ones; a small one has its own sample.
+    // Every feature accepted: the estimate is what the initiative used, with no margin left.
     const after = t.initiatives.estimate("values");
-    expect(after?.features.map((f) => f.basis)).toEqual(["initiative-history", "initiative-history", "initiative-history"]);
-    const core = t.workflows.store.history().find((r) => r.runId === t.featureOf(view, "core").runId);
-    expect(after?.features[0]?.samples).toBe(2);
-    expect(after?.features[0]?.tokens.high).toBeGreaterThanOrEqual(core?.tokens ?? 0);
+    expect(after?.features.map((f) => f.basis)).toEqual(["measured", "measured", "measured"]);
+    expect(after?.tokens.low).toBe(after?.tokens.high);
+    expect(after?.tokens.high).toBe(view.budget.used.tokens);
+    expect(after?.withMargin).toBe(after?.tokens.high);
+    expect(after?.progress.spent).toBe(view.budget.used.tokens);
   });
 
   test("features an edit leaves alone keep what they had, also without a workflow", () => {
