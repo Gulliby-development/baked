@@ -305,6 +305,11 @@ export class CheckRunner {
       };
     } else if (result.timedOut) reason = "timeout";
     else if (result.cancelled) reason = "cancelled";
+    else if (status === "failed" && perTestTimeout(result.output) !== null)
+      result = {
+        ...result,
+        output: `${result.output}\n\n${perTestTimeoutNote(perTestTimeout(result.output) ?? 0)}`,
+      };
     else if (check.report === "json" && reason === "exit") {
       const report = readGateReport(result.output);
       // A passing report from a command that exited nonzero contradicts itself; neither is trusted.
@@ -362,6 +367,25 @@ export class CheckRunner {
  * inputs it keeps that number and makes each case cheap: "tens" there made a corrective cut the
  * cases below what the plan and the review require (#1367).
  */
+const PER_TEST_TIMEOUT =
+  /\btimed out after (\d+)\s?ms\b|\bExceeded timeout of (\d+)\s?ms for a test\b|\bTest timed out in (\d+)\s?ms\b/i;
+
+/** The per-test limit a bun, jest or vitest timeout line in `output` names, or null. */
+export function perTestTimeout(output: string): number | null {
+  const match = PER_TEST_TIMEOUT.exec(output);
+  const ms = match?.slice(1).find((value) => value !== undefined);
+  return ms === undefined ? null : Number(ms);
+}
+
+/**
+ * Names the runner's per-test limit next to its timeout line. md-site 095b7b11 (bench round 38,
+ * #1385) hit bun's default 5000 ms per test twice although the check allowed 60 s, and the one
+ * web search of the round looked up how to raise it.
+ */
+export function perTestTimeoutNote(ms: number): string {
+  return `Note: a test ran into the test runner's own per-test limit of ${String(ms)} ms, which is separate from the check's timeout. Make each case cheaper so the test fits; when one test really needs longer, give that test its own limit (the third argument of \`test(name, fn, ms)\` in bun, jest and vitest) instead of cutting the cases the task requires.`;
+}
+
 function timeoutAdvice(check: Check): string {
   if (check.minCases === undefined)
     return "Run the file alone with run_probe and time it; keep generated samples to a representative few cases (tens, not the whole accepted domain the spec allows), avoid one long synchronous loop, and keep each test to a few seconds.";
