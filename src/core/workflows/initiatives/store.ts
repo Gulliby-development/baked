@@ -83,6 +83,11 @@ export const InitiativeSettingsSchema = z
      * default: the budget share check alone stops an initiative only when the budget is used up.
      */
     forecastStop: z.boolean().default(false),
+    /**
+     * Keeps the decomposer's features as it split them. Off by default: small siblings (one or
+     * two boundary paths, same dependencies) are merged into one feature (#1352).
+     */
+    keepFeatures: z.boolean().default(false),
   })
   .strict();
 export type InitiativeSettings = z.infer<typeof InitiativeSettingsSchema>;

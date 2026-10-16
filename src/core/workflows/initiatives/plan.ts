@@ -14,7 +14,8 @@ export const MIN_FEATURES = 3;
 /** An initiative holds at most this many features; a larger request is split into stages first. */
 export const MAX_FEATURES = 12;
 
-const Text = z.string().min(1).max(4000);
+const MAX_TEXT = 4000;
+const Text = z.string().min(1).max(MAX_TEXT);
 /**
  * Feature and initiative IDs are short, lower case slugs. A feature run's ID is
  * `INITIATIVE--FEATURE`, which must still be a valid workflow feature ID (at most 96 characters).
@@ -293,6 +294,113 @@ function largestOf(features: InitiativeFeature[]): Pick<InitiativeFeature, "work
 }
 
 /**
+ * The features of `plan` with `featureIds` combined into one, placed where the first of them was:
+ * its boundary, contract and dependencies are the parts' together, and dependents of a part
+ * depend on it. The result is not validated.
+ */
+function mergeFeatures(
+  plan: InitiativePlan,
+  featureIds: string[],
+  mergedId?: string,
+  title?: string,
+): InitiativeFeature[] {
+  const merged = unique(featureIds).map((featureId) => {
+    const feature = plan.features.find((f) => f.id === featureId);
+    if (!feature) throw new WorkflowFault("NOT_FOUND", `Unknown feature ${featureId}`);
+    return feature;
+  });
+  if (merged.length < 2)
+    throw new WorkflowFault("INVALID_DEFINITION", "Merge needs two different features");
+  const ids = new Set(merged.map((f) => f.id));
+  const id = mergedId ?? merged[0]?.id ?? "";
+  if (!ids.has(id) && plan.features.some((f) => f.id === id))
+    throw new WorkflowFault("INVALID_DEFINITION", `Feature ${id} already exists`);
+  const combined: InitiativeFeature = {
+    id,
+    title: title ?? merged.map((f) => f.title).join(" + "),
+    boundary: {
+      scope: merged.map((f) => f.boundary.scope).join("\n"),
+      paths: unique(merged.flatMap((f) => f.boundary.paths)),
+    },
+    contract: merged.map((f) => f.contract).join("\n"),
+    dependsOn: unique(merged.flatMap((f) => f.dependsOn)).filter((d) => !ids.has(d)),
+    mandatory: merged.some((f) => f.mandatory),
+    ...largestOf(merged),
+  };
+  const position = plan.features.findIndex((f) => ids.has(f.id));
+  const features: InitiativeFeature[] = [];
+  for (const [index, feature] of plan.features.entries()) {
+    if (index === position) features.push(combined);
+    if (ids.has(feature.id)) continue;
+    features.push({
+      ...feature,
+      dependsOn: unique(feature.dependsOn.map((d) => (ids.has(d) ? id : d))),
+    });
+  }
+  return features;
+}
+
+/** A feature with fewer boundary paths than this is merged into its small siblings (#1352). */
+export const MIN_FEATURE_PATHS = 3;
+/** Small siblings are merged into features of at most this many paths. */
+export const MAX_MERGED_PATHS = 8;
+
+/**
+ * The decomposer's split with small siblings merged: features with one or two boundary paths, the
+ * same dependencies and the same `mandatory` become one feature of at most `MAX_MERGED_PATHS`
+ * paths, while the split keeps at least `MIN_FEATURES`. Every feature run pays fixed stages
+ * (research, specification, planning, analysis, review) besides its tasks; six one-file features
+ * of narrowfit spent 67 to 80 percent of their 3.13M tokens there (bench round 35, #1352). A
+ * feature without paths is left alone, since its size is unknown. Siblings with the same
+ * dependencies never depend on each other, so a merge cannot form a cycle.
+ */
+export function mergeSmallSiblings(plan: InitiativePlan): {
+  plan: InitiativePlan;
+  merged: { featureId: string; from: string[] }[];
+} {
+  const groups = new Map<string, string[]>();
+  for (const feature of plan.features) {
+    const paths = feature.boundary.paths.length;
+    if (paths === 0 || paths >= MIN_FEATURE_PATHS) continue;
+    const key = `${[...feature.dependsOn].sort().join(",")}|${feature.mandatory}`;
+    groups.set(key, [...(groups.get(key) ?? []), feature.id]);
+  }
+  let current = plan;
+  const merged: { featureId: string; from: string[] }[] = [];
+  for (const group of groups.values()) {
+    let rest = group;
+    while (rest.length >= 2) {
+      const room = current.features.length - MIN_FEATURES + 1;
+      // Parts are added while the merged feature stays a run's worth and its texts fit.
+      const parts: InitiativeFeature[] = [];
+      for (const id of rest) {
+        const feature = current.features.find((f) => f.id === id);
+        if (!feature || parts.length >= room) break;
+        const next = [...parts, feature];
+        const fits = (text: (f: InitiativeFeature) => string) =>
+          next.map(text).join("\n").length <= MAX_TEXT;
+        const paths = new Set(next.flatMap((f) => f.boundary.paths)).size;
+        if (paths > MAX_MERGED_PATHS || !fits((f) => f.boundary.scope) || !fits((f) => f.contract))
+          break;
+        parts.push(feature);
+      }
+      rest = rest.slice(Math.max(1, parts.length));
+      if (parts.length < 2) continue;
+      const ids = parts.map((f) => f.id);
+      const joined = parts.map((f) => f.title).join(" + ");
+      const title =
+        joined.length <= 200 ? joined : `${parts[0]?.title} and ${parts.length - 1} more`;
+      current = {
+        ...current,
+        features: mergeFeatures(current, ids, undefined, title.slice(0, 200)),
+      };
+      merged.push({ featureId: ids[0] ?? "", from: ids });
+    }
+  }
+  return { plan: current, merged };
+}
+
+/**
  * Applies one edit and returns the new plan. The result is validated as a whole: an edit that
  * leaves fewer than three features, an unknown ID or a cycle is refused.
  */
@@ -327,35 +435,7 @@ export function applySplitEdit(plan: InitiativePlan, edit: SplitEdit): Initiativ
       break;
     }
     case "merge": {
-      const merged = unique(edit.featureIds).map(find);
-      if (merged.length < 2)
-        throw new WorkflowFault("INVALID_DEFINITION", "Merge needs two different features");
-      const ids = new Set(merged.map((f) => f.id));
-      const id = edit.id ?? merged[0]?.id ?? "";
-      if (!ids.has(id) && plan.features.some((f) => f.id === id))
-        throw new WorkflowFault("INVALID_DEFINITION", `Feature ${id} already exists`);
-      const combined: InitiativeFeature = {
-        id,
-        title: edit.title ?? merged.map((f) => f.title).join(" + "),
-        boundary: {
-          scope: merged.map((f) => f.boundary.scope).join("\n"),
-          paths: unique(merged.flatMap((f) => f.boundary.paths)),
-        },
-        contract: merged.map((f) => f.contract).join("\n"),
-        dependsOn: unique(merged.flatMap((f) => f.dependsOn)).filter((d) => !ids.has(d)),
-        mandatory: merged.some((f) => f.mandatory),
-        ...largestOf(merged),
-      };
-      const position = plan.features.findIndex((f) => ids.has(f.id));
-      features = [];
-      for (const [index, feature] of plan.features.entries()) {
-        if (index === position) features.push(combined);
-        if (ids.has(feature.id)) continue;
-        features.push({
-          ...feature,
-          dependsOn: unique(feature.dependsOn.map((d) => (ids.has(d) ? id : d))),
-        });
-      }
+      features = mergeFeatures(plan, edit.featureIds, edit.id, edit.title);
       break;
     }
     case "split": {

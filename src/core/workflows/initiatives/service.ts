@@ -54,6 +54,7 @@ import {
   InitiativeId,
   type InitiativePlan,
   InitiativePlanSchema,
+  mergeSmallSiblings,
   planSizeProblem,
   type SplitEdit,
   SplitEditSchema,
@@ -105,6 +106,8 @@ export interface InitiativeStartRequest {
   featureIssues?: Record<string, IssueSource>;
   /** Hold feature starts while the estimate's low end is above the shared budget (#1312). */
   forecastStop?: boolean;
+  /** Keep the decomposer's split as is instead of merging small siblings (#1352). */
+  keepFeatures?: boolean;
 }
 
 /** What an initiative reroute did to one of its open runs (`initiative.rerouted` event). */
@@ -206,6 +209,11 @@ export interface FeatureView {
   /** The dollars this feature's runs spent, superseded runs included. */
   spentUsd: number;
   runIds: string[];
+  /**
+   * The decomposer's features merged into this one because each was too small for a run; absent
+   * in views stored before merging existed.
+   */
+  mergedFrom?: string[];
 }
 
 export interface NextAction {
@@ -436,6 +444,7 @@ export class InitiativeService {
       ownerLabel: request.ownerLabel,
       featureIssues: request.featureIssues ?? {},
       forecastStop: request.forecastStop ?? false,
+      keepFeatures: request.keepFeatures ?? false,
     };
     this.checkWorkflow(settings);
     const issued = Object.keys(settings.featureIssues);
@@ -1023,8 +1032,13 @@ export class InitiativeService {
     const state = this.workflows.store.state(row.decompose_run_id ?? "");
     if (!state.initiativePlan)
       throw new WorkflowFault("ARTIFACT_MISSING", "The decompose run has no initiative plan");
-    const proposed = InitiativePlanSchema.parse(JSON.parse(state.initiativePlan));
+    const decomposed = InitiativePlanSchema.parse(JSON.parse(state.initiativePlan));
     const settings = this.store.settings(row);
+    // Small siblings share one run's fixed stages (#1352); the decomposer's prompt alone did not.
+    const floored = settings.keepFeatures
+      ? { plan: decomposed, merged: [] }
+      : mergeSmallSiblings(decomposed);
+    const proposed = floored.plan;
     let plan = proposed;
     let unfit: string | null = null;
     try {
@@ -1044,6 +1058,11 @@ export class InitiativeService {
       }
       this.store.setTitle(id, plan.title);
       this.propose(id, plan, "decomposer", null);
+      if (floored.merged.length)
+        this.store.emit(id, "split.merged", {
+          planRevision: this.store.get(id).plan_revision,
+          merged: floored.merged,
+        });
     });
   }
 
@@ -1637,6 +1656,10 @@ export class InitiativeService {
       if (event.planRevision === row.approved_plan_revision)
         conflicts.set(event.featureId, event.message);
     }
+    const mergedFrom = new Map<string, string[]>();
+    for (const payload of this.store.eventsOfType(row.id, "split.merged"))
+      for (const entry of (payload as { merged: { featureId: string; from: string[] }[] }).merged)
+        mergedFrom.set(entry.featureId, entry.from);
     for (const feature of topologicalOrder(plan)) {
       const workflowId = featureWorkflowId(settings, feature);
       const runFeature = runFeatureId(row.id, feature.id);
@@ -1666,6 +1689,7 @@ export class InitiativeService {
         usage: runs.map((l) => this.usage(l.run_id)).reduce(add, zero()),
         spentUsd: Math.round(runs.reduce((sum, l) => sum + this.spentUsd(l.run_id), 0) * 100) / 100,
         runIds: runs.map((l) => l.run_id),
+        mergedFrom: mergedFrom.get(feature.id) ?? [],
       };
       views.set(feature.id, view);
       if (!approved) continue;

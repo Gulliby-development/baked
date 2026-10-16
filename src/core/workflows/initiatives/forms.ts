@@ -38,6 +38,8 @@ export const InitiativeStartInputSchema = z.strictObject({
   worktree: z.boolean().optional(),
   /** Hold feature starts while the estimate's low end is above the shared budget. */
   forecastStop: z.boolean().optional(),
+  /** Keep the decomposer's small features apart instead of merging siblings into one run. */
+  keepFeatures: z.boolean().optional(),
 });
 export type InitiativeStartInput = z.infer<typeof InitiativeStartInputSchema>;
 
@@ -80,6 +82,7 @@ export function initiativeStartRequest(
     ...(form.model ? { model: form.model } : {}),
     ...(form.featureIssues ? { featureIssues: form.featureIssues } : {}),
     ...(form.forecastStop ? { forecastStop: true } : {}),
+    ...(form.keepFeatures ? { keepFeatures: true } : {}),
     ownerLabel: identity.ownerLabel,
   };
 }

@@ -78,6 +78,8 @@ export interface InitiativeFeature {
   workflowId?: string;
   /** Its budget share is weighted by it; absent on older backends. */
   size?: FeatureSize;
+  /** The decomposer's features merged into this one, each too small for a run of its own. */
+  mergedFrom?: string[];
   /** The share it starts with, while it has no run yet; absent on older backends. */
   share?: UsageTotals | null;
   /** The dollars it starts with under a dollar cap; null without one, absent on older backends. */
@@ -200,6 +202,8 @@ export interface StartInitiativeBody {
   tieredApproval?: TieredApproval;
   /** Hold feature starts while the estimate's low end is above the shared budget. */
   forecastStop?: boolean;
+  /** Keep the decomposer's small features apart instead of merging siblings. */
+  keepFeatures?: boolean;
 }
 
 /** One new feature of a split (`POST /v1/initiatives/:id/split`). */

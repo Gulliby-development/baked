@@ -37,6 +37,7 @@ export function NewInitiativeDialog({
   const [budgetUsd, setBudgetUsd] = useState("");
   const [tiered, setTiered] = useState<{ maxTasks: string; maxFiles: string } | null>(null);
   const [forecastStop, setForecastStop] = useState(false);
+  const [keepFeatures, setKeepFeatures] = useState(false);
   const definitions = useLoad(projectKey, "definitions", start.definitions);
   const models = useModelCatalog(projectKey, chat.models);
   const initiativeId = idEdit ?? suggestInitiativeId(prompt);
@@ -49,6 +50,7 @@ export function NewInitiativeDialog({
     budgetUsd,
     tiered,
     forecastStop,
+    keepFeatures,
   });
   return (
     <FormDialog
@@ -204,6 +206,17 @@ export function NewInitiativeDialog({
           {forecastStop
             ? "No new feature starts while the low end of the re-forecast is above the shared budget; raise the budget or trim the split to go on."
             : "The forecast is shown; features start until the shared budget is used."}
+        </span>
+      </div>
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-2.5">
+          <Switch id={`${ids}-keep`} checked={keepFeatures} onCheckedChange={setKeepFeatures} />
+          <Label htmlFor={`${ids}-keep`}>Keep small features apart</Label>
+        </div>
+        <span className={HINT}>
+          {keepFeatures
+            ? "Every feature the split proposes runs on its own, however small."
+            : "Sibling features of one or two files with the same dependencies share one run, since each run pays its own research, spec, plan and review."}
         </span>
       </div>
     </FormDialog>

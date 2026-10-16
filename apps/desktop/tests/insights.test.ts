@@ -721,6 +721,10 @@ describe("initiative management", () => {
       ok: true,
       body: { initiativeId: "ship-it", prompt: "Ship it", workflow: "sdd", forecastStop: true },
     });
+    expect(startBody({ ...fields, keepFeatures: true })).toEqual({
+      ok: true,
+      body: { initiativeId: "ship-it", prompt: "Ship it", workflow: "sdd", keepFeatures: true },
+    });
   });
 });
 

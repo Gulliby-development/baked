@@ -12,7 +12,16 @@ import { FocusTarget } from "../ui/FocusTarget.js";
 import { Field, Hint, Section } from "../ui/index.js";
 import { errorHint } from "./format.js";
 
-const FIELDS = ["prompt", "id", "workflow", "budget", "tiered", "forecast", "start"] as const;
+const FIELDS = [
+  "prompt",
+  "id",
+  "workflow",
+  "budget",
+  "tiered",
+  "forecast",
+  "features",
+  "start",
+] as const;
 type FieldId = (typeof FIELDS)[number];
 
 /** The start form of an initiative: the request, its ID, workflow, shared budget and approval. */
@@ -51,6 +60,7 @@ export function InitiativeStartForm({
   const [budget, setBudget] = useState("");
   const [tiered, setTiered] = useState(false);
   const [forecastStop, setForecastStop] = useState(false);
+  const [keepFeatures, setKeepFeatures] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const modelMissing = !model || model === "none";
@@ -82,6 +92,7 @@ export function InitiativeStartForm({
       ...(maxCostUsd !== undefined ? { budgetUsd: maxCostUsd } : {}),
       ...(tiered ? { tieredApproval: { ...DEFAULT_TIERED_APPROVAL } } : {}),
       ...(forecastStop ? { forecastStop: true } : {}),
+      ...(keepFeatures ? { keepFeatures: true } : {}),
     };
   };
   const submit = async (): Promise<void> => {
@@ -133,8 +144,17 @@ export function InitiativeStartForm({
     )
       setForecastStop((v) => !v);
     else if (
+      focus === "features" &&
+      (evt.name === "left" || evt.name === "right" || evt.name === "space") &&
+      handled()
+    )
+      setKeepFeatures((v) => !v);
+    else if (
       evt.name === "return" &&
-      (focus === "workflow" || focus === "tiered" || focus === "forecast") &&
+      (focus === "workflow" ||
+        focus === "tiered" ||
+        focus === "forecast" ||
+        focus === "features") &&
       handled()
     )
       move(1);
@@ -230,6 +250,19 @@ export function InitiativeStartForm({
               forecastStop
                 ? "‹ stop ›  no new feature starts while the forecast is over the budget"
                 : "‹ report ›  the forecast is shown, features start until the budget is used"
+            }
+            keyHint="←/→"
+          />
+        </FocusTarget>
+        <FocusTarget active={focus === "features"}>
+          <Field
+            label="Features"
+            labelWidth={10}
+            focused={focus === "features"}
+            value={
+              keepFeatures
+                ? "‹ keep ›  every feature the decomposer proposes runs on its own"
+                : "‹ merge small ›  one- and two-file siblings share one run"
             }
             keyHint="←/→"
           />
