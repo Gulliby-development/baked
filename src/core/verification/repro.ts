@@ -411,6 +411,20 @@ export function writesDocumentation(writes: readonly { path: string; action: str
   return writes.some((w) => w.action !== "delete" && DOCUMENT.test(w.path.replaceAll("\\", "/")));
 }
 
+/**
+ * Whether a finding about a document carries a repro that never reads that document: it shows
+ * what the code does, which a fix to the document cannot change (#1375). ranktally d8bc82f7: F1
+ * on README.md ran the tally with `expected: "[]"`, the corrective rewrote the README, the repro
+ * still printed `["A","B"]` (what the claim itself says the code does), and the worker raised a
+ * spec conflict that waited for a person. Such a repro is evidence for the finding, not a gate on
+ * its correction.
+ */
+export function reproBlindToDocument(file: string | null | undefined, repro: Repro): boolean {
+  if (!file || !DOCUMENT.test(file.replaceAll("\\", "/"))) return false;
+  const name = basename(file.replaceAll("\\", "/")).toLowerCase();
+  return ![repro.executable, ...repro.args].some((arg) => arg.toLowerCase().includes(name));
+}
+
 export function probeTool(
   executables: readonly string[],
   run: (probe: { executable: string; args: string[] }) => Promise<ProbeOutcome>,

@@ -91,6 +91,7 @@ import {
   outputShows,
   type ReproOutcome,
   reproAllows,
+  reproBlindToDocument,
   reproExecutables,
   reproTool,
   runProbe,
@@ -3382,7 +3383,11 @@ export class WorkflowScheduler {
       .flatMap((f) => {
         const body = JSON.parse(f.body_json) as { repro?: unknown; file?: unknown };
         const repro = ReproSchema.safeParse(body.repro);
-        return repro.success && executables.includes(repro.data.executable)
+        // A document finding's repro that runs code shows the claim but no edit of the document
+        // can change it (#1375).
+        return repro.success &&
+          executables.includes(repro.data.executable) &&
+          !reproBlindToDocument(typeof body.file === "string" ? body.file : null, repro.data)
           ? [{ findingId: f.id, repro: repro.data, file: body.file }]
           : [];
       });
