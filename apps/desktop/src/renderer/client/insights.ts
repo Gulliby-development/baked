@@ -169,6 +169,10 @@ export interface InitiativeEstimate {
     samples: number;
     /** Tokens this initiative's runs of the feature used; absent on older backends. */
     spent?: number;
+    /** The paths of the feature's boundary, when it names any. */
+    paths?: number;
+    /** The tokens the feature run's plan sized its tasks at, once it has a plan. */
+    planned?: TokenSpan;
   }[];
   /** Tokens used so far and the measured-to-forecast ratio; absent on older backends. */
   progress?: {

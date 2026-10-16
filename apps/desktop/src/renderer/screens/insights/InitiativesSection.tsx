@@ -430,6 +430,7 @@ function EstimatePanel({ projectKey, view }: { projectKey: string; view: Initiat
             <span className="min-w-0 truncate text-foreground">{f.title}</span>
             <span className="font-mono text-dim-foreground">
               {f.workflowId} · {f.size}
+              {f.paths ? ` · ${f.paths} ${f.paths === 1 ? "path" : "paths"}` : ""}
             </span>
             <span className="font-mono text-muted-foreground">
               {f.basis === "measured"
