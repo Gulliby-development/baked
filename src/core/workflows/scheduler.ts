@@ -36,6 +36,7 @@ import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification
 import {
   appendCorrections,
   failedCheckFindings,
+  failureSignature as failingLines,
   failuresCovered,
   isTestOf,
   noTestsCollected,
@@ -5227,7 +5228,7 @@ ${note}`;
       this.settleRed(runId, state, policy, task, child, taskResults, taskFailures);
       return;
     }
-    for (const { check, checked } of await this.fixFailedTaskChecks(
+    const settled = await this.fixFailedTaskChecks(
       runId,
       child,
       state,
@@ -5236,7 +5237,8 @@ ${note}`;
       taskResults,
       signal,
       taskRoot,
-    ))
+    );
+    for (const { check, checked } of settled)
       inconclusive ??= this.applyTaskCheck(
         runId,
         state,
@@ -5248,6 +5250,7 @@ ${note}`;
         policy,
       );
     this.inconclusiveTaskCheck(inconclusive, taskFailures);
+    await this.spawnedCheckOutput(runId, child, policy, settled, taskFailures, signal, taskRoot);
     if (unresolvedAccount && !taskFailures.length && !taskResults.length)
       taskFailures.push(...this.unresolvedFindings(runId, state, task, unresolvedAccount));
     await this.critique(
@@ -6555,7 +6558,7 @@ ${note}`;
     }
     const evidence: string[] = [];
     let inconclusive: string | undefined;
-    for (const { check, checked } of await this.fixFailedTaskChecks(
+    const settled = await this.fixFailedTaskChecks(
       runId,
       entry.child,
       state,
@@ -6564,7 +6567,8 @@ ${note}`;
       results,
       signal,
       mainRoot,
-    ))
+    );
+    for (const { check, checked } of settled)
       inconclusive ??= this.applyTaskCheck(
         runId,
         state,
@@ -6576,6 +6580,7 @@ ${note}`;
         policy,
       );
     this.inconclusiveTaskCheck(inconclusive, failures);
+    await this.spawnedCheckOutput(runId, entry.child, policy, settled, failures, signal, mainRoot);
     if (outcome.account.unresolved.length && !failures.length && !results.length)
       failures.push(...this.unresolvedFindings(runId, state, task, outcome.account));
     await this.critique(
@@ -6609,6 +6614,45 @@ ${note}`;
    * changed file runs again. Only what the fixer cannot fix is repaired by a model (bench round 07,
    * pkgdrift T004 54k and md-site T009 71k for whitespace and lint findings).
    */
+  /**
+   * The output of a project check that a failing test runs as a child process (#1285). md-site
+   * d486645a (bench round 34): the test `bun run typecheck exits successfully` failed with only
+   * `Received: 2`, since the test printed the exit code and not the tsc diagnostics, so three
+   * correctives in a row could not see the cause. When a failing test's name names the command of
+   * another policy check, the host runs that check; when it fails too, its output becomes evidence
+   * of the findings of the failed check, and their impact quotes its tail.
+   */
+  private async spawnedCheckOutput(
+    runId: string,
+    child: string,
+    policy: RunPolicy,
+    results: WorkerCheck[],
+    failures: Review["findings"],
+    signal: AbortSignal,
+    root: string,
+  ): Promise<void> {
+    for (const { check, checked } of results) {
+      if (checked.status !== "failed" || !checked.output) continue;
+      const cited = failures.filter((f) => f.evidenceIds.includes(checked.evidenceId));
+      if (!cited.length) continue;
+      const tests = failingTestNames(checked.output);
+      const spawned = policy.checks.find(
+        (c) => c.id !== check.id && tests.some((name) => namesCheckCommand(name, c)),
+      );
+      if (!spawned) continue;
+      const ran = await this.runTaskCheck(runId, child, spawned, policy, signal, root);
+      if (ran.status !== "failed" || !ran.output?.trim()) continue;
+      const tail = ran.output.trim().slice(-SPAWNED_OUTPUT_CHARS);
+      for (const finding of cited) {
+        finding.evidenceIds.push(ran.evidenceId);
+        finding.impact =
+          `${finding.impact}. The failing test runs the project's ${spawned.id} check (${[spawned.executable, ...spawned.args].join(" ")}); run on its own it fails with:\n${tail}`.slice(
+            0,
+            16000,
+          );
+      }
+    }
+  }
   private async fixFailedTaskChecks(
     runId: string,
     child: string,
@@ -8137,6 +8181,7 @@ ${note}`;
       ...new Set([...diagnosed, ...owned, ...(sources.length ? failingTests : []), ...sources]),
     ];
     if (scope.length) state.repairScope[findingId] = scope;
+    const signature = checked.output ? failingLines(checked.output) : "";
     taskFailures.push({
       id: findingId,
       kind: "correctness",
@@ -8149,7 +8194,11 @@ ${note}`;
       claim: regression
         ? `Task ${task.id} broke existing tests: check ${check.id} passed before the task and fails after it`
         : `Task ${task.id} required check ${check.id} failed`,
-      impact: "Dependent tasks cannot run",
+      // The failing lines identify the defect, so a correction of a correction that leaves the
+      // same failure is recognized as a repeat (#1285).
+      impact: signature
+        ? `Dependent tasks cannot run. Failing: ${signature}`
+        : "Dependent tasks cannot run",
       suggestedFix: regression
         ? `Fix the change ${task.id} made so the existing tests pass again and repeat ${check.id}; change a test only when the task's requirements change the behavior it expects.`
         : diagnosed.length
@@ -12010,6 +12059,30 @@ interface BatchEntry {
 interface WorkerCheck {
   check: Check;
   checked: { status: "passed" | "failed" | "inconclusive"; evidenceId: string; output?: string };
+}
+/** How much of a spawned check's output a finding quotes (#1285). */
+const SPAWNED_OUTPUT_CHARS = 3000;
+/** The names of the failing tests a check's output reports: `(fail) name`, `✗ name`, `FAIL name`. */
+function failingTestNames(output: string): string[] {
+  return output
+    .split(/\r?\n/)
+    .map((line) =>
+      /^\s*(?:\(fail\)|✗|✘|×|✖|FAIL\b|not ok\b(?:\s+\d+)?)\s*-?\s*(.+)$/.exec(line)?.[1]?.trim(),
+    )
+    .filter((name): name is string => Boolean(name));
+}
+/**
+ * Whether a test name names a check's command: the whole command (`bun run typecheck`), or
+ * `run` followed by the check's ID or its last argument (`npm run lint`).
+ */
+function namesCheckCommand(name: string, check: Check): boolean {
+  const text = name.toLowerCase();
+  const command = [check.executable, ...check.args].join(" ").toLowerCase();
+  if (command.length > 3 && text.includes(command)) return true;
+  const words = [...new Set([check.id, check.args.at(-1) ?? ""])]
+    .filter((w) => w.length > 2)
+    .map((w) => w.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  return words.some((w) => new RegExp(`\\brun\\s+${w}\\b`).test(text));
 }
 /**
  * Whether an attempt's last edit came after its last request_check, from the tool names its usage

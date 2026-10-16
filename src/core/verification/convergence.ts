@@ -305,6 +305,13 @@ export function failuresCovered(
   return failing.every((line) => named.includes(line));
 }
 
+/** The failing tests and assertions a check finding's impact quotes (`Failing: ...`), or null. */
+export function failingOf(impact: string): string | null {
+  const match =
+    /Failing: ([\s\S]*?)(?:\. Property counterexample: |\. The failing test runs |$)/.exec(impact);
+  return match?.[1]?.trim() || null;
+}
+
 /**
  * Findings for a failed run-level check. Run 6931efd6: ruff flagged three test files of three
  * tasks, but the one finding (no file) went to the first task with the check, whose correction
@@ -550,13 +557,46 @@ export function appendCorrections(
         : "no_progress: consecutive reflection rounds repeat the same findings",
       { reason: "no_progress", ...(kind === "repair" ? { freshRestart: true } : {}) },
     );
+  const isolate =
+    "isolate the cause with run_probe (a minimal program or the failing test alone) and confirm what the code or a library actually does before editing again; if the cause lies outside the files you may edit, say so in unresolved.";
+  // A corrective whose own check fails the same way as the finding it was opened for left that
+  // defect as it was: md-site d486645a (bench round 34) opened T011 for T008 and T012 for T011,
+  // each told only "Task T0NN required check tests-written failed" for the same failing test
+  // (#1285). The next correction is told it is the same defect, which corrective left it, and to
+  // isolate the cause first.
+  const repeatedBy = (finding: Review["findings"][number]): string | null => {
+    if (!taskLevel) return null;
+    const predecessor = state.repairPredecessors[finding.id];
+    const corrective = state.graph?.tasks.find(
+      (t) => t.id === predecessor && t.origin !== "planned",
+    );
+    const failing = failingOf(finding.impact);
+    if (!corrective || !failing) return null;
+    return store
+      .findings(runId)
+      .some(
+        (row) =>
+          corrective.findingIds.includes(row.id) &&
+          failingOf((JSON.parse(row.body_json) as { impact?: string }).impact ?? "") === failing,
+      )
+      ? corrective.id
+      : null;
+  };
   const toCorrect =
     repeats > 0 && !fresh
       ? findings.map((f) => ({
           ...f,
-          suggestedFix: `${f.suggestedFix} The previous correction left this failure unchanged: isolate the cause with run_probe (a minimal program or the failing test alone) and confirm what the code or a library actually does before editing again; if the cause lies outside the files you may edit, say so in unresolved.`,
+          suggestedFix: `${f.suggestedFix} The previous correction left this failure unchanged: ${isolate}`,
         }))
-      : findings;
+      : findings.map((f) => {
+          const by = repeatedBy(f);
+          return by
+            ? {
+                ...f,
+                suggestedFix: `${f.suggestedFix} This is the same failure ${by} was opened for, and ${by}'s change left it: ${isolate}`,
+              }
+            : f;
+        });
   const predecessorsBefore = { ...state.repairPredecessors };
   // Above every id a row of the run has used, so a correction never takes over the row (and the
   // status) of a task an earlier plan revision cancelled (#1190).
