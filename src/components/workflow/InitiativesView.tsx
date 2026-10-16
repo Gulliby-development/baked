@@ -4,7 +4,7 @@ import {
   estimateSummary,
   type InitiativeEstimate,
 } from "../../core/workflows/initiatives/estimate.js";
-import type { InitiativeStartInput } from "../../core/workflows/initiatives/forms.js";
+import { costText, type InitiativeStartInput } from "../../core/workflows/initiatives/forms.js";
 import type { FeatureView, InitiativeView } from "../../core/workflows/initiatives/service.js";
 import {
   type InitiativeAction,
@@ -493,7 +493,7 @@ export function InitiativeList({
         const color = s.needsYou ? t.warning : STATUS_COLOR[view.status](t);
         const glyph = s.needsYou ? "⚑" : initiativeIsTerminal(view) ? "✓" : "◐";
         const progress = `${s.accepted}/${s.total} features`;
-        const budget = `${formatTokens(s.tokensUsed)}/${formatTokens(s.tokensLimit)} tokens`;
+        const budget = `${formatTokens(s.tokensUsed)}/${formatTokens(s.tokensLimit)} tokens${s.cost ? ` · ${s.cost}` : ""}`;
         const attention = [
           s.pending ? `${s.pending} decision${s.pending > 1 ? "s" : ""}` : "",
           s.blockers ? `${s.blockers} blocker${s.blockers > 1 ? "s" : ""}` : "",
@@ -573,6 +573,7 @@ export function InitiativeDetail({
   const split = pendingSplitApproval(view);
   const blockers = initiativeIsTerminal(view) ? [] : initiativeBlockers(view);
   const { limits, used } = view.budget;
+  const cost = costText(view.budget.cost);
   const plan =
     view.approvedPlanRevision === null
       ? `revision ${view.planRevision || "none"} (not approved)`
@@ -594,7 +595,7 @@ export function InitiativeDetail({
       </text>
       <text fg={t.textMuted}>
         {clip(
-          `Budget ${formatTokens(used.tokens)}/${formatTokens(limits.maxTotalTokens)} tokens · ${used.calls}/${limits.maxAgentCalls} calls · ${formatDuration(used.activeMs)}/${formatDuration(limits.maxActiveMs)}`,
+          `Budget ${formatTokens(used.tokens)}/${formatTokens(limits.maxTotalTokens)} tokens · ${used.calls}/${limits.maxAgentCalls} calls · ${formatDuration(used.activeMs)}/${formatDuration(limits.maxActiveMs)}${cost ? ` · ${cost}` : ""}`,
           width,
         )}
       </text>
@@ -666,7 +667,7 @@ export function InitiativeDetail({
                 {narrow ? null : (
                   <text fg={t.textMuted}>
                     {clip(
-                      `Workflow ${f.workflowId} · ${f.size}${f.share ? ` · starts with ${formatTokens(f.share.tokens)} tokens` : ""}${featureEstimateText(estimate, f.id)}`,
+                      `Workflow ${f.workflowId} · ${f.size}${f.share ? ` · starts with ${formatTokens(f.share.tokens)} tokens${f.shareUsd != null ? ` and $${f.shareUsd.toFixed(2)}` : ""}` : ""}${f.spentUsd ? ` · $${f.spentUsd.toFixed(2)} spent` : ""}${featureEstimateText(estimate, f.id)}`,
                       width - 4,
                     )}
                   </text>

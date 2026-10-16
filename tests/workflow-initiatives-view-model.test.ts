@@ -7,7 +7,7 @@ import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import type { InitiativePlan } from "../src/core/workflows/initiatives/plan.js";
 import { type FeatureView, InitiativeService, type InitiativeView } from "../src/core/workflows/initiatives/service.js";
 import { featureView, initiativeView } from "./helpers/initiative-views.js";
-import { initiativeStartRequest, parseBudgetText, parseSplitParts, suggestInitiativeId } from "../src/core/workflows/initiatives/forms.js";
+import { costText, initiativeStartRequest, parseBudgetText, parseSplitParts, suggestInitiativeId } from "../src/core/workflows/initiatives/forms.js";
 import {
   applyInitiativeAction,
   initiativeActions,
@@ -121,6 +121,22 @@ describe("initiative forms", () => {
     expect(parseBudgetText("")).toEqual({});
     expect(() => parseBudgetText("lots")).toThrow("not a positive amount");
     expect(() => parseBudgetText("1 2 3 4")).toThrow("at most");
+    expect(parseBudgetText("8M 400 4h $40")).toEqual({ maxTotalTokens: 8_000_000, maxAgentCalls: 400, maxActiveMs: 14_400_000, maxCostUsd: 40 });
+    expect(parseBudgetText("$12.5")).toEqual({ maxCostUsd: 12.5 });
+    expect(() => parseBudgetText("$0")).toThrow("not a positive amount");
+    expect(() => parseBudgetText("$1 $2")).toThrow("at most");
+  });
+
+  test("the initiative's dollars in one line", () => {
+    const none = { capUsd: null, tolerance: 0, ceilingUsd: null, spentUsd: 0, reservedUsd: 0, remainingUsd: null, forecastUsd: null };
+    expect(costText(none)).toBeNull();
+    expect(costText({ ...none, spentUsd: 1.5 })).toBe("$1.50 spent");
+    expect(costText({ capUsd: 32, tolerance: 0.25, ceilingUsd: 40, spentUsd: 29.15, reservedUsd: 0, remainingUsd: 2.85, forecastUsd: 41.2 })).toBe("$29.15 of $32.00 (ceiling $40.00) · $2.85 left · forecast $41.20");
+    const capped = initiativeView({ budget: { ...initiativeView().budget, cost: { ...none, capUsd: 10, ceilingUsd: 10, spentUsd: 2, remainingUsd: 8 } } });
+    expect(summarizeInitiative(capped).cost).toBe("$2.00 of $10.00 · $8.00 left");
+    const extend = initiativeActions(capped, false, null).find((a) => a.key === "B");
+    expect(extend?.input?.question).toContain("$dollars");
+    expect(extend?.input?.build("$20")).toEqual({ kind: "extend", expectedRevision: 3, maxCostUsd: 20 });
   });
 
   test("suggest a free initiative ID from the request", () => {
@@ -136,6 +152,7 @@ describe("initiative forms", () => {
     expect(request).toMatchObject({ commandId: "c1", workflowId: "quick", featureAutoApproval: { maxTasks: 2, maxFiles: 3 }, budget: { maxTotalTokens: 10, maxAgentCalls: 2, maxActiveMs: 1000 }, ownerLabel: "TUI" });
     expect(initiativeStartRequest({ initiativeId: "values", prompt: "x", workflow: "sdd" }, {}, { commandId: "c2", ownerLabel: "API" })).toMatchObject({ workflowId: "sdd", budget: null, featureAutoApproval: null });
     expect(() => initiativeStartRequest({ initiativeId: "Bad_ID", prompt: "x" }, {}, { commandId: "c3", ownerLabel: "API" })).toThrow();
+    expect(initiativeStartRequest({ initiativeId: "values", prompt: "x", budgetUsd: 32, costTolerance: "auto" }, {}, { commandId: "c4", ownerLabel: "API" }).costBudget).toEqual({ maxCostUsd: 32, costTolerance: "auto" });
   });
 
   test("offers the tab's model as the initiative's new model while nothing executes", () => {

@@ -60,7 +60,7 @@ export function InitiativeStartForm({
     if (!InitiativeId.safeParse(id).success)
       throw new Error("Initiative ID: lowercase letters, digits and - only, up to 40 characters");
     if (modelMissing) throw new Error("Select a model (Esc, then Ctrl+L)");
-    const limits = parseBudgetText(budget);
+    const { maxCostUsd, ...limits } = parseBudgetText(budget);
     const set = Object.keys(limits).length;
     if (set !== 0 && set !== 3)
       throw new Error("A shared budget needs tokens, calls and time, such as 8M 400 4h");
@@ -78,6 +78,7 @@ export function InitiativeStartForm({
             },
           }
         : {}),
+      ...(maxCostUsd !== undefined ? { budgetUsd: maxCostUsd } : {}),
       ...(tiered ? { tieredApproval: { ...DEFAULT_TIERED_APPROVAL } } : {}),
     };
   };
@@ -181,7 +182,9 @@ export function InitiativeStartForm({
           />
         </FocusTarget>
         <text fg={focus === "budget" ? t.brand : t.textMuted}>
-          {"Shared budget: tokens calls time (empty: derived from the policy and the split)"}
+          {
+            "Shared budget: tokens calls time and/or $dollars (empty: derived from the policy and the split)"
+          }
         </text>
         <box {...box(focus === "budget")}>
           <input

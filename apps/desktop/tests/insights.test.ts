@@ -12,6 +12,8 @@ import { MOCK_ROUTES, type MockRequest } from "../src/renderer/client/mock-route
 import {
   budgetExtension,
   budgetFields,
+  costLine,
+  parseUsd,
   canEditSplit,
   canExtendBudget,
   canRemoveFeature,
@@ -647,6 +649,30 @@ describe("initiative management", () => {
       ok: true,
       limits: { calls: 200 },
     });
+    // A dollar cap goes up on its own; the token limits stay as they are.
+    expect(budgetExtension(view, current, "$40")).toEqual({ ok: true, limits: { costUsd: 40 } });
+    expect(budgetExtension(view, current, "lots").ok).toBe(false);
+    const cost = {
+      capUsd: 32,
+      tolerance: 0.25,
+      ceilingUsd: 40,
+      spentUsd: 29.15,
+      reservedUsd: 0,
+      remainingUsd: 2.85,
+      forecastUsd: 41.2,
+    };
+    const capped = initiativeView({ budget: { ...view.budget, cost } });
+    expect(budgetExtension(capped, current, "30")).toEqual({
+      ok: false,
+      error: "Limits can only go up.",
+    });
+    expect(budgetExtension(capped, current, "32").ok).toBe(false);
+    expect(costLine(capped)).toBe(
+      "$29.15 of $32.00 (ceiling $40.00) · $2.85 left · forecast $41.20",
+    );
+    expect(costLine(view)).toBeNull();
+    expect(parseUsd("$12.50")).toBe(12.5);
+    expect(parseUsd("0")).toBeNull();
   });
 
   test("start body", () => {
@@ -686,6 +712,11 @@ describe("initiative management", () => {
       false,
     );
     expect(startBody({ ...fields, tiered: { maxTasks: "0", maxFiles: "10" } }).ok).toBe(false);
+    expect(startBody({ ...fields, budgetUsd: "40" })).toEqual({
+      ok: true,
+      body: { initiativeId: "ship-it", prompt: "Ship it", workflow: "sdd", budgetUsd: 40 },
+    });
+    expect(startBody({ ...fields, budgetUsd: "free" }).ok).toBe(false);
   });
 });
 

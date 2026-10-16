@@ -28,6 +28,20 @@ export const BudgetLimitsSchema = z
   })
   .strict();
 
+/** The tolerance band of a dollar cap, as in a run policy (`costTolerance`). */
+export const CostToleranceSchema = z.union([z.enum(["auto", "off"]), z.number().min(0).max(0.5)]);
+
+/**
+ * The initiative's dollar budget across its runs (#1317): the cap feature runs share, and how far
+ * past it the initiative may go (`auto` takes 10% to 30% by the number of features).
+ */
+export const CostBudgetSchema = z
+  .object({
+    maxCostUsd: z.number().positive(),
+    costTolerance: CostToleranceSchema.default("off"),
+  })
+  .strict();
+
 /** Fixed when the initiative starts; part of every split approval digest. */
 export const InitiativeSettingsSchema = z
   .object({
@@ -37,6 +51,8 @@ export const InitiativeSettingsSchema = z
     basePolicy: PolicySchema,
     /** The shared budget; null derives it per plan revision (see `planBudget`). */
     budget: BudgetLimitsSchema.nullable(),
+    /** The dollar budget; null (the default) leaves dollars to each run's own `maxCostUsd`. */
+    costBudget: CostBudgetSchema.nullable().default(null),
     /**
      * Tiered approval. When set, each feature run gets auto approval limited to its approved
      * boundary paths with these task and file bounds; null (the default) sends every feature spec
@@ -65,6 +81,8 @@ export const InitiativeSettingsSchema = z
   .strict();
 export type InitiativeSettings = z.infer<typeof InitiativeSettingsSchema>;
 export type BudgetLimitsValue = z.infer<typeof BudgetLimitsSchema>;
+export type CostBudgetValue = z.infer<typeof CostBudgetSchema>;
+export type CostToleranceValue = z.infer<typeof CostToleranceSchema>;
 
 export interface InitiativeRow {
   id: string;

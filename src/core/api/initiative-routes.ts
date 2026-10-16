@@ -43,6 +43,7 @@ const ExtendBody = Command.extend({
   tokens: PositiveInt.optional(),
   calls: PositiveInt.optional(),
   timeMs: PositiveInt.optional(),
+  costUsd: z.number().positive().optional(),
 }).strict();
 const RerouteBody = Command.extend({
   model: z.string().min(1),
@@ -236,6 +237,7 @@ export async function initiativeRoute(ctx: InitiativeRouteContext): Promise<Resp
           ...(body.tokens !== undefined ? { maxTotalTokens: body.tokens } : {}),
           ...(body.calls !== undefined ? { maxAgentCalls: body.calls } : {}),
           ...(body.timeMs !== undefined ? { maxActiveMs: body.timeMs } : {}),
+          ...(body.costUsd !== undefined ? { maxCostUsd: body.costUsd } : {}),
         }),
       );
     }

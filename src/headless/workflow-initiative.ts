@@ -4,7 +4,11 @@ import { defaultWorkflowPolicy } from "../core/workflows/defaults.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
 import { InitiativePlanSchema, SplitEditSchema } from "../core/workflows/initiatives/plan.js";
 import { InitiativeService, type InitiativeView } from "../core/workflows/initiatives/service.js";
-import type { BudgetLimitsValue } from "../core/workflows/initiatives/store.js";
+import {
+  type BudgetLimitsValue,
+  CostToleranceSchema,
+  type CostToleranceValue,
+} from "../core/workflows/initiatives/store.js";
 import { PolicySchema } from "../core/workflows/schemas.js";
 import type { NativeWorkflowService } from "../core/workflows/service.js";
 import { newId } from "../core/workflows/store.js";
@@ -50,6 +54,8 @@ const commandFlags: Record<InitiativeCommand, string[]> = {
     "budget-tokens",
     "budget-calls",
     "budget-time-ms",
+    "budget-usd",
+    "cost-tolerance",
     "tiered-approval",
     "max-tasks",
     "max-files",
@@ -73,7 +79,7 @@ const commandFlags: Record<InitiativeCommand, string[]> = {
   resume: mutation,
   pause: mutation,
   replan: ["feature", ...mutation],
-  extend: ["tokens", "calls", "time-ms", ...mutation],
+  extend: ["tokens", "calls", "time-ms", "budget-usd", ...mutation],
   reroute: ["model", "resume", ...mutation],
 };
 const booleanFlags = new Set(["json", "help", "tiered-approval", "resume", "worktree"]);
@@ -126,6 +132,10 @@ export function parseInitiativeArgs(argv: string[]): InitiativeArgs {
       throw new WorkflowFault("INVALID_DEFINITION", `${token} needs a value`);
     if (integerFlags.has(name) && !/^\d+$/.test(value))
       throw new WorkflowFault("INVALID_DEFINITION", `${token} requires an integer`);
+    if (name === "budget-usd" && !(/^\d+(\.\d+)?$/.test(value) && Number(value) > 0))
+      throw new WorkflowFault("INVALID_DEFINITION", `${token} requires a positive dollar amount`);
+    if (name === "cost-tolerance" && !CostToleranceSchema.safeParse(costTolerance(value)).success)
+      throw new WorkflowFault("INVALID_DEFINITION", `${token} takes auto, off or 0 to 0.5`);
     result.flags[name] = value;
   }
   if (result.flags.help) return result;
@@ -149,6 +159,11 @@ export function parseInitiativeArgs(argv: string[]): InitiativeArgs {
         "INVALID_DEFINITION",
         "A shared budget needs all of --budget-tokens, --budget-calls and --budget-time-ms",
       );
+    if ("cost-tolerance" in result.flags && !("budget-usd" in result.flags))
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        "--cost-tolerance applies only with --budget-usd",
+      );
     if (
       !result.flags["tiered-approval"] &&
       ("max-tasks" in result.flags || "max-files" in result.flags)
@@ -169,6 +184,9 @@ const stringFlag = (args: InitiativeArgs, name: string, fallback?: string): stri
 };
 const numberFlag = (args: InitiativeArgs, name: string): number | undefined =>
   typeof args.flags[name] === "string" ? Number(args.flags[name]) : undefined;
+/** `auto`, `off`, or a share of the cap such as 0.2. */
+const costTolerance = (value: string): CostToleranceValue =>
+  value === "auto" || value === "off" ? value : Number(value);
 
 export async function executeInitiativeCommand(
   initiatives: InitiativeService,
@@ -216,6 +234,13 @@ export async function executeInitiativeCommand(
           workflows.config.workflows?.defaultWorkflow ?? "sdd",
         ),
         budget,
+        costBudget:
+          typeof args.flags["budget-usd"] === "string"
+            ? {
+                maxCostUsd: Number(args.flags["budget-usd"]),
+                costTolerance: costTolerance(stringFlag(args, "cost-tolerance", "off")),
+              }
+            : null,
         featureAutoApproval: args.flags["tiered-approval"]
           ? {
               maxTasks: numberFlag(args, "max-tasks") ?? 5,
@@ -322,10 +347,12 @@ export async function executeInitiativeCommand(
       const tokens = numberFlag(args, "tokens");
       const calls = numberFlag(args, "calls");
       const ms = numberFlag(args, "time-ms");
+      const usd = numberFlag(args, "budget-usd");
       return initiatives.extendBudget(id, identity(), {
         ...(tokens !== undefined ? { maxTotalTokens: tokens } : {}),
         ...(calls !== undefined ? { maxAgentCalls: calls } : {}),
         ...(ms !== undefined ? { maxActiveMs: ms } : {}),
+        ...(usd !== undefined ? { maxCostUsd: usd } : {}),
       });
     }
     case "reroute": {
@@ -384,12 +411,15 @@ export async function runInitiativeCli(
 export const initiativeHelp = `baked workflow initiative <command> [options]
 
 start ID (--prompt TEXT | --prompt-file FILE) [--plan FILE] [--workflow sdd] [--policy FILE]
-    [--budget-tokens N --budget-calls N --budget-time-ms N] [--tiered-approval [--max-tasks 5] [--max-files 10]]
+    [--budget-tokens N --budget-calls N --budget-time-ms N] [--budget-usd N [--cost-tolerance auto|off|0.2]]
+    [--tiered-approval [--max-tasks 5] [--max-files 10]]
     [--confirm-auto-approval HASH] [--model ID] [--worktree]
   Split a large request into 3..12 features. Without --plan the decomposer proposes the split;
   a split above 12 features is refused with a request to split the work into stages. Each
   feature runs its own workflow (--workflow is the default for a feature that names none) and
-  takes a budget share weighted by its size. --worktree runs feature runs in worktrees, so
+  takes a budget share weighted by its estimated need (by size without history). --budget-usd
+  gives the initiative a dollar cap its feature runs share; once a feature is accepted, no feature
+  starts while the projected total passes the cap and its tolerance. --worktree runs feature runs in worktrees, so
   independent features run side by side.
 show ID | list | events ID [--after SEQ] [--limit 200]
 estimate ID
@@ -406,7 +436,7 @@ reject ID --request ID --reason TEXT --expected-revision N
 drive ID                  run feature runs in dependency order until a person is needed
 pause|resume ID --expected-revision N
 replan ID --feature F --expected-revision N   (run one feature again; other results stay)
-extend ID --expected-revision N [--tokens N] [--calls N] [--time-ms N]   (raise the shared budget)
+extend ID --expected-revision N [--tokens N] [--calls N] [--time-ms N] [--budget-usd N]   (raise the shared budget)
 reroute ID --model ID --expected-revision N [--resume]
   Feature runs started from now on use the model, and the stopped open runs move to it as with
   baked workflow reroute (same checks, run.rerouted events); every run is checked before any is

@@ -265,6 +265,34 @@ export function parseCount(text: string): number | null {
   return Number.isSafeInteger(value) && value >= 1 ? value : null;
 }
 
+/** A dollar amount typed in a field, with an optional leading `$`; null unless above 0. */
+export function parseUsd(text: string): number | null {
+  const match = /^\$?\s*(\d+(?:\.\d{1,2})?)$/.exec(text.trim());
+  const value = match?.[1] ? Number(match[1]) : Number.NaN;
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+const usd = (n: number): string => `$${n.toFixed(2)}`;
+
+/**
+ * The initiative's dollars in one line, as the terminal shows them: spent of the cap (and its
+ * ceiling with a tolerance), what is left and the forecast; null without a cap and spending.
+ */
+export function costLine(view: Pick<InitiativeView, "budget">): string | null {
+  const cost = view.budget.cost;
+  if (!cost) return null;
+  if (cost.capUsd === null) return cost.spentUsd > 0 ? `${usd(cost.spentUsd)} spent` : null;
+  const ceiling =
+    cost.ceilingUsd !== null && cost.ceilingUsd > cost.capUsd
+      ? ` (ceiling ${usd(cost.ceilingUsd)})`
+      : "";
+  return [
+    `${usd(cost.spentUsd)} of ${usd(cost.capUsd)}${ceiling}`,
+    `${usd(cost.remainingUsd ?? 0)} left`,
+    ...(cost.forecastUsd !== null ? [`forecast ${usd(cost.forecastUsd)}`] : []),
+  ].join(" · ");
+}
+
 /** The text fields of a shared budget; time is in minutes. */
 export interface BudgetFields {
   tokens: string;
@@ -308,9 +336,18 @@ export function budgetFields(view: Pick<InitiativeView, "budget">): BudgetFields
 export function budgetExtension(
   view: Pick<InitiativeView, "budget">,
   fields: BudgetFields,
-): { ok: true; limits: Partial<BudgetLimits> } | { ok: false; error: string } {
+  dollars = "",
+):
+  | { ok: true; limits: Partial<BudgetLimits> & { costUsd?: number } }
+  | { ok: false; error: string } {
   const parsed = parseBudget(fields);
   if (!parsed.ok) return parsed;
+  const cap = view.budget.cost?.capUsd ?? null;
+  const usdValue = dollars.trim() ? parseUsd(dollars) : null;
+  if (dollars.trim() && usdValue === null)
+    return { ok: false, error: "Dollar cap: an amount above 0, like 40." };
+  if (usdValue !== null && cap !== null && usdValue < cap)
+    return { ok: false, error: "Limits can only go up." };
   const current = view.budget.limits;
   const { tokens, calls, timeMs } = parsed.limits;
   // Minutes round the current time limit up, so an unchanged field is not a lower limit.
@@ -319,7 +356,8 @@ export function budgetExtension(
     return { ok: false, error: "Limits can only go up." };
   if (!sameTime && timeMs < current.maxActiveMs)
     return { ok: false, error: "Limits can only go up." };
-  const limits: Partial<BudgetLimits> = {
+  const limits: Partial<BudgetLimits> & { costUsd?: number } = {
+    ...(usdValue !== null && usdValue !== cap ? { costUsd: usdValue } : {}),
     ...(tokens > current.maxTotalTokens ? { tokens } : {}),
     ...(calls > current.maxAgentCalls ? { calls } : {}),
     ...(!sameTime && timeMs > current.maxActiveMs ? { timeMs } : {}),
@@ -337,6 +375,8 @@ export interface StartFields {
   model: string;
   /** Null lets the core size the shared budget from the policy. */
   budget: BudgetFields | null;
+  /** A dollar cap feature runs share; empty or absent sets none. */
+  budgetUsd?: string;
   tiered: { maxTasks: string; maxFiles: string } | null;
 }
 
@@ -359,6 +399,11 @@ export function startBody(
     const parsed = parseBudget(fields.budget);
     if (!parsed.ok) return parsed;
     body.budget = parsed.limits;
+  }
+  if (fields.budgetUsd?.trim()) {
+    const value = parseUsd(fields.budgetUsd);
+    if (value === null) return { ok: false, error: "Dollar cap: an amount above 0, like 40." };
+    body.budgetUsd = value;
   }
   if (fields.tiered) {
     const maxTasks = parseCount(fields.tiered.maxTasks);

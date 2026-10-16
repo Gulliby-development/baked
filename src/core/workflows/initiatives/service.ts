@@ -9,6 +9,7 @@
 import { ROUTING_ARTIFACT } from "../../llm/model-routing.js";
 import { hashJson } from "../../specs/hash.js";
 import { type BudgetLimits, budgetUsage, limitsOf } from "../budget.js";
+import { autoCostTolerance } from "../cost-tolerance.js";
 import { type AcceptedContract, acceptedContract } from "../dependencies.js";
 import { WorkflowFault } from "../errors.js";
 import { estimateHistory, type PastRun, type TokenRange } from "../estimate.js";
@@ -49,6 +50,8 @@ import {
 } from "./plan.js";
 import {
   type BudgetLimitsValue,
+  CostBudgetSchema,
+  type CostToleranceValue,
   type InitiativeEvent,
   type InitiativeRow,
   type InitiativeRunRow,
@@ -76,6 +79,8 @@ export interface InitiativeStartRequest {
   workflowId?: string;
   /** The shared budget; omitted, it is derived from the policy (see `planBudget`). */
   budget?: BudgetLimits | null;
+  /** The dollar budget feature runs share; omitted or null leaves dollars to each run's policy. */
+  costBudget?: { maxCostUsd: number; costTolerance?: CostToleranceValue } | null;
   /** Tiered approval; omitted or null keeps every feature spec approval with a person. */
   featureAutoApproval?: { maxTasks: number; maxFiles: number } | null;
   /** The confirmation of a v2 feature workflow's own auto approval limits (see `start`). */
@@ -123,6 +128,28 @@ export interface UsageView {
   activeMs: number;
 }
 
+/** The initiative's dollars (#1317): what its runs spent, and the cap they share when one is set. */
+export interface CostView {
+  /** The dollar cap (`--budget-usd`); null without one. */
+  capUsd: number | null;
+  /** The tolerance band as a share of the cap; 0 without a cap or with `costTolerance` off. */
+  tolerance: number;
+  /** The cap plus its band: past it no feature starts. Null without a cap. */
+  ceilingUsd: number | null;
+  /** What every run of the initiative spent, the decompose run and superseded runs included. */
+  spentUsd: number;
+  /** Dollars open runs may still spend under their caps; held back from later features' shares. */
+  reservedUsd: number;
+  /** cap - (spent of finished runs + caps of open runs); null without a cap. */
+  remainingUsd: number | null;
+  /**
+   * The projected total once a feature is accepted (#1312): what was spent, plus the tokens the
+   * re-forecast leaves for the features not accepted yet at the initiative's measured price. Null
+   * without a cap, before a feature is accepted, or while nothing is priced.
+   */
+  forecastUsd: number | null;
+}
+
 export interface FeatureView {
   id: string;
   title: string;
@@ -141,6 +168,8 @@ export interface FeatureView {
    * approval.
    */
   need: TokenRange | null;
+  /** The dollar share the feature starts with, split like its token share; null without a cap. */
+  shareUsd: number | null;
   /** The workflow feature ID of this feature's runs. */
   runFeatureId: string;
   /** The GitHub issue the feature's runs start from and their delivery closes; null without one. */
@@ -158,6 +187,8 @@ export interface FeatureView {
   pendingRequests: PendingDecision[];
   /** Everything this feature's runs spent, superseded runs included. */
   usage: UsageView;
+  /** The dollars this feature's runs spent, superseded runs included. */
+  spentUsd: number;
   runIds: string[];
 }
 
@@ -216,6 +247,8 @@ export interface InitiativeView {
     unstartedFeatures: number;
     /** The share of the next feature to start. */
     nextShare: UsageView | null;
+    /** Dollars spent, and the dollar cap with what remains of it when one is set. */
+    cost: CostView;
     rule: string;
   };
   next: NextAction;
@@ -236,7 +269,23 @@ function shareTooSmall(share: UsageView | null): boolean {
  * stops for a decision before it starts: notesift's docs would have started with 0.8M tokens after
  * 29.15M of 30M, and the budget was extended only after the fact (#1311).
  */
-function shareShortfall(feature: Pick<FeatureView, "id" | "share" | "need">): string | null {
+function shareShortfall(
+  view: Pick<InitiativeView, "budget" | "features">,
+  feature: Pick<FeatureView, "id" | "share" | "need" | "shareUsd">,
+): string | null {
+  const cost = view.budget.cost;
+  if (cost.capUsd !== null && cost.ceilingUsd !== null) {
+    const ceiling =
+      cost.ceilingUsd > cost.capUsd
+        ? `${usd(cost.ceilingUsd)} ceiling (the ${usd(cost.capUsd)} cap and its tolerance)`
+        : `${usd(cost.capUsd)} cap`;
+    if (cost.forecastUsd !== null && cost.forecastUsd > cost.ceilingUsd) {
+      const accepted = view.features.filter((f) => f.state === "accepted").length;
+      return `The initiative's cost forecast is ${usd(cost.forecastUsd)}, above its ${ceiling}: ${usd(cost.spentUsd)} spent with ${accepted} of ${view.features.length} features accepted. Raise the dollar budget to at least ${usd(Math.ceil(cost.forecastUsd))} with baked workflow initiative extend --budget-usd N to start ${feature.id}, or pause the initiative.`;
+    }
+    if ((feature.shareUsd ?? 0) < MIN_SHARE_USD)
+      return `The shared dollar budget is exhausted: ${feature.id} would start with ${usd(feature.shareUsd ?? 0)} of the ${ceiling}, ${usd(cost.spentUsd)} spent. Raise it with baked workflow initiative extend --budget-usd N.`;
+  }
   const share = feature.share;
   if (shareTooSmall(share))
     return `The shared budget is exhausted: ${feature.id} would start with ${share?.tokens ?? 0} tokens, ${share?.calls ?? 0} calls and ${share?.activeMs ?? 0} ms. Raise it with baked workflow initiative extend.`;
@@ -254,6 +303,21 @@ function tokenWeights(features: Pick<FeatureView, "size" | "need">[]): number[] 
   return features.every((f) => (f.need?.high ?? 0) > 0)
     ? features.map((f) => f.need?.high ?? 0)
     : features.map((f) => sizeWeight(f));
+}
+
+const usd = (n: number): string => `$${n.toFixed(2)}`;
+const cents = (n: number): number => Math.floor(n * 100) / 100;
+
+/** The smallest dollar share a feature run can start with. */
+export const MIN_SHARE_USD = 0.01;
+
+/**
+ * The `auto` tolerance of an initiative's dollar cap: more features miss their price by more, so
+ * the band widens from 10% (up to 3 features) to 30% (more than 12), like a run's by its tasks.
+ */
+export function initiativeCostTolerance(setting: CostToleranceValue, features: number): number {
+  if (setting === "off") return 0;
+  return setting === "auto" ? autoCostTolerance(Math.max(1, features) * (8 / 3)) : setting;
 }
 
 /** The workflow feature ID of an initiative feature's runs. `_` never occurs in either part. */
@@ -281,7 +345,7 @@ export function planBudget(settings: InitiativeSettings, plan: InitiativePlan): 
 export const MIN_SHARE = { maxTotalTokens: 1000, maxAgentCalls: 1, maxActiveMs: 1000 } as const;
 
 export const BUDGET_RULE =
-  "Each feature run starts with a share of the remaining shared budget, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included), times the feature's weight, divided by the weights of the features of the approved plan without a run. Tokens are weighted by each feature's estimated need (the high end of its estimate), calls and time by size (small 1, medium 2, large 4). A feature whose share is below the low end of its estimate does not start until the budget is raised. A feature run grows its own budget only up to what remains after the low ends of the features still waiting. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000.";
+  "Each feature run starts with a share of the remaining shared budget, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included), times the feature's weight, divided by the weights of the features of the approved plan without a run. Tokens are weighted by each feature's estimated need (the high end of its estimate), calls and time by size (small 1, medium 2, large 4). A feature whose share is below the low end of its estimate does not start until the budget is raised. A feature run grows its own budget only up to what remains after the low ends of the features still waiting. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000. With a dollar budget (--budget-usd), dollars are split like tokens and each feature run gets its share as its maxCostUsd (never above the base policy's own) with the initiative's costTolerance; open runs hold their caps. No feature starts on less than $0.01, or once a feature is accepted and the projected total passes the cap and its tolerance.";
 
 /** Digest a person approves for a plan revision: the plan, the budget and the frozen settings. */
 export function splitDigest(
@@ -302,6 +366,8 @@ export function splitDigest(
       featureAutoApproval: settings.featureAutoApproval,
       autoApprovalConfirmation: settings.autoApprovalConfirmation,
       model: settings.model,
+      // Left out when unset, so splits approved before dollar budgets keep their digest.
+      costBudget: settings.costBudget ?? undefined,
     },
   });
 }
@@ -343,6 +409,9 @@ export class InitiativeService {
       workflowId: SafeId.parse(request.workflowId ?? "sdd"),
       basePolicy: PolicySchema.parse(request.policy),
       budget: request.budget ?? null,
+      costBudget: request.costBudget
+        ? CostBudgetSchema.parse({ costTolerance: "off", ...request.costBudget })
+        : null,
       featureAutoApproval: request.featureAutoApproval ?? null,
       autoApprovalConfirmation: request.autoApprovalConfirmation ?? null,
       model: request.model ?? null,
@@ -560,7 +629,7 @@ export class InitiativeService {
   async extendBudget(
     id: string,
     command: CommandIdentity,
-    requested: Partial<BudgetLimitsValue>,
+    requested: Partial<BudgetLimitsValue> & { maxCostUsd?: number },
   ): Promise<InitiativeView> {
     return this.command(id, command, { action: "extend", requested }, () => {
       const row = this.store.get(id);
@@ -571,14 +640,38 @@ export class InitiativeService {
         maxAgentCalls: requested.maxAgentCalls ?? current.maxAgentCalls,
         maxActiveMs: requested.maxActiveMs ?? current.maxActiveMs,
       };
+      const cost = settings.costBudget;
+      const nextCost =
+        requested.maxCostUsd === undefined
+          ? cost
+          : CostBudgetSchema.parse({
+              costTolerance: cost?.costTolerance ?? "off",
+              maxCostUsd: requested.maxCostUsd,
+            });
       if (
         next.maxTotalTokens < current.maxTotalTokens ||
         next.maxAgentCalls < current.maxAgentCalls ||
-        next.maxActiveMs < current.maxActiveMs
+        next.maxActiveMs < current.maxActiveMs ||
+        (cost && nextCost && nextCost.maxCostUsd < cost.maxCostUsd)
       )
         throw new WorkflowFault("INVALID_DEFINITION", "Shared budget limits can only be raised");
-      this.store.setSettings(id, { ...settings, budget: next });
-      this.store.emit(id, "budget.extended", { previous: current, next });
+      // Raising only the dollars keeps a token budget that is still derived from the split.
+      const tokensRaised =
+        requested.maxTotalTokens !== undefined ||
+        requested.maxAgentCalls !== undefined ||
+        requested.maxActiveMs !== undefined;
+      this.store.setSettings(id, {
+        ...settings,
+        budget: tokensRaised || requested.maxCostUsd === undefined ? next : settings.budget,
+        costBudget: nextCost,
+      });
+      this.store.emit(id, "budget.extended", {
+        previous: current,
+        next,
+        ...(requested.maxCostUsd !== undefined
+          ? { previousCostUsd: cost?.maxCostUsd ?? null, nextCostUsd: requested.maxCostUsd }
+          : {}),
+      });
     });
   }
 
@@ -767,7 +860,8 @@ export class InitiativeService {
     let started = false;
     for (;;) {
       const ready = view.features.find((f) => f.state === "ready");
-      if (!ready || runnable(view).length >= view.parallelRuns || shareShortfall(ready)) break;
+      if (!ready || runnable(view).length >= view.parallelRuns || shareShortfall(view, ready))
+        break;
       await this.startFeature(id, ready.id);
       started = true;
       view = this.view(id);
@@ -928,7 +1022,8 @@ export class InitiativeService {
     const settings = this.store.settings(row);
     const upstream = this.upstreamContracts(id, feature);
     const current = this.view(id);
-    const share = current.features.find((f) => f.id === featureId)?.share;
+    const waiting = current.features.find((f) => f.id === featureId);
+    const share = waiting?.share;
     if (!share) throw new WorkflowFault("BUDGET_EXHAUSTED", "No budget share is available");
     const previous = this.store.links(id).filter((l) => l.feature_id === featureId).length;
     const runFeature = runFeatureId(id, featureId);
@@ -939,7 +1034,14 @@ export class InitiativeService {
       workflowId: featureWorkflowId(settings, feature),
       featureId: runFeature,
       prompt: featurePrompt(row, plan, feature, upstream),
-      policy: featurePolicy(settings, share, feature, false, growthLimit(current, featureId)),
+      policy: featurePolicy(
+        settings,
+        share,
+        feature,
+        false,
+        growthLimit(current, featureId),
+        waiting?.shareUsd ?? null,
+      ),
       ownerLabel: settings.ownerLabel,
       dependencies: upstream.map((u) => ({
         featureId: u.contract.featureId,
@@ -1010,6 +1112,11 @@ export class InitiativeService {
       unstartedWeight + sizeWeight(feature),
       sizeWeight(feature),
     );
+    const remainingUsd = current.budget.cost.remainingUsd;
+    const rebaseUsd =
+      remainingUsd === null
+        ? null
+        : cents((remainingUsd * sizeWeight(feature)) / (unstartedWeight + sizeWeight(feature)));
     const dependencies = upstream.map((u) => ({
       featureId: u.contract.featureId,
       contractHash: u.contract.contractHash,
@@ -1024,7 +1131,7 @@ export class InitiativeService {
       },
       {
         dependencies,
-        policy: featurePolicy(settings, rebaseShare, feature, true),
+        policy: featurePolicy(settings, rebaseShare, feature, true, null, rebaseUsd),
         ...(baseCommit ? { baseCommit } : {}),
       },
     );
@@ -1110,12 +1217,7 @@ export class InitiativeService {
    * nothing about this project and would hold a feature with a small budget back on numbers no run
    * measured.
    */
-  private featureNeeds(
-    row: InitiativeRow,
-    plan: InitiativePlan,
-    accepted: ReadonlySet<string>,
-  ): Map<string, TokenRange> {
-    const estimate = this.estimateOf(row, plan, accepted);
+  private featureNeeds(estimate: InitiativeEstimate): Map<string, TokenRange> {
     return new Map(
       estimate.features.filter((f) => f.basis !== "defaults").map((f) => [f.featureId, f.tokens]),
     );
@@ -1228,17 +1330,25 @@ export class InitiativeService {
     // Features without a run share what remains: tokens by estimated need, calls and time by size.
     const waitingForRun = approved ? features.filter((f) => f.runId === null) : [];
     const accepted = new Set(features.filter((f) => f.state === "accepted").map((f) => f.id));
-    const needs =
-      approved && waitingForRun.length ? this.featureNeeds(row, approved, accepted) : null;
+    const estimate =
+      approved && waitingForRun.length ? this.estimateOf(row, approved, accepted) : null;
+    const needs = estimate ? this.featureNeeds(estimate) : null;
     for (const feature of waitingForRun) feature.need = needs?.get(feature.id) ?? null;
     const weights = waitingForRun.reduce((sum, f) => sum + sizeWeight(f), 0);
     const byNeed = tokenWeights(waitingForRun);
     const needTotal = byNeed.reduce((sum, w) => sum + w, 0);
-    for (const [index, feature] of waitingForRun.entries())
+    const cost = this.costView(settings, plan, runIds, used, accepted, estimate);
+    for (const [index, feature] of waitingForRun.entries()) {
       feature.share = {
         ...share(remaining, weights, sizeWeight(feature)),
         tokens: share(remaining, needTotal, byNeed[index]).tokens,
       };
+      // Dollars follow the token weights: both price the same work.
+      feature.shareUsd =
+        cost.remainingUsd === null
+          ? null
+          : cents((cost.remainingUsd * (byNeed[index] ?? 0)) / needTotal);
+    }
     const unstarted = waitingForRun.length;
     const nextShare =
       (waitingForRun.find((f) => f.state === "ready") ?? waitingForRun[0])?.share ?? null;
@@ -1290,12 +1400,54 @@ export class InitiativeService {
         remaining,
         unstartedFeatures: unstarted,
         nextShare,
+        cost,
         rule: BUDGET_RULE,
       },
       next: { kind: "done", featureId: null, runId: null, message: "" },
     };
     view.next = this.nextAction(row, view);
     return view;
+  }
+
+  /** The initiative's dollars: spent, held by open runs, and the cap with its forecast. */
+  private costView(
+    settings: InitiativeSettings,
+    plan: InitiativePlan | null,
+    runIds: string[],
+    used: UsageView,
+    accepted: ReadonlySet<string>,
+    estimate: InitiativeEstimate | null,
+  ): CostView {
+    const spentUsd = runIds.reduce((sum, runId) => sum + this.spentUsd(runId), 0);
+    const committedUsd = runIds.reduce((sum, runId) => sum + this.committedUsd(runId), 0);
+    const budget = settings.costBudget;
+    const capUsd = budget?.maxCostUsd ?? null;
+    const tolerance = budget
+      ? initiativeCostTolerance(budget.costTolerance, plan?.features.length ?? 0)
+      : 0;
+    // The re-forecast's tokens still to run, at the price this initiative's runs have paid so far.
+    const forecastable =
+      capUsd !== null &&
+      estimate !== null &&
+      accepted.size > 0 &&
+      settings.basePolicy.costForecast !== "off" &&
+      spentUsd > 0 &&
+      used.tokens > 0;
+    const left = forecastable
+      ? estimate.features
+          .filter((f) => !accepted.has(f.featureId))
+          .reduce((sum, f) => sum + Math.max(0, (f.tokens.low + f.tokens.high) / 2 - f.spent), 0)
+      : 0;
+    const round = (n: number): number => Math.round(n * 100) / 100;
+    return {
+      capUsd,
+      tolerance,
+      ceilingUsd: capUsd === null ? null : round(capUsd * (1 + tolerance)),
+      spentUsd: round(spentUsd),
+      reservedUsd: round(Math.max(0, committedUsd - spentUsd)),
+      remainingUsd: capUsd === null ? null : cents(Math.max(0, capUsd - committedUsd)),
+      forecastUsd: forecastable ? round(spentUsd + (spentUsd / used.tokens) * left) : null,
+    };
   }
 
   private nextAction(row: InitiativeRow, view: InitiativeView): NextAction {
@@ -1382,7 +1534,7 @@ export class InitiativeService {
       if (feature.state === "stale")
         return action("rebase", `Rebase ${feature.id} on the changed upstream contract`, feature);
       if (feature.state !== "ready") continue;
-      const shortfall = shareShortfall(feature);
+      const shortfall = shareShortfall(view, feature);
       if (shortfall) return action("blocked", shortfall, feature);
       return action("start", `Start feature ${feature.id}`, feature);
     }
@@ -1420,6 +1572,7 @@ export class InitiativeService {
         size: feature.size ?? "medium",
         share: null,
         need: null,
+        shareUsd: null,
         runFeatureId: runFeature,
         issue: issues[feature.id] ?? null,
         state: "proposed",
@@ -1431,6 +1584,7 @@ export class InitiativeService {
         blockers: [],
         pendingRequests: [],
         usage: runs.map((l) => this.usage(l.run_id)).reduce(add, zero()),
+        spentUsd: Math.round(runs.reduce((sum, l) => sum + this.spentUsd(l.run_id), 0) * 100) / 100,
         runIds: runs.map((l) => l.run_id),
       };
       views.set(feature.id, view);
@@ -1538,6 +1692,20 @@ export class InitiativeService {
       calls: usage.calls,
       activeMs: usage.activeMs,
     };
+  }
+
+  /** The dollars a run spent. */
+  private spentUsd(runId: string): number {
+    return this.workflows.store.costUsage(runId).spentUsd;
+  }
+
+  /** The dollars a run takes from the dollar budget: its spending, or its cap while open. */
+  private committedUsd(runId: string): number {
+    const run = this.workflows.store.run(runId);
+    const { spentUsd, reservedUsd } = this.workflows.store.costUsage(runId);
+    if (terminalStates.includes(run.status)) return spentUsd;
+    const cap = PolicySchema.parse(JSON.parse(run.policy_json)).maxCostUsd ?? 0;
+    return Math.max(spentUsd + reservedUsd, cap);
   }
 
   /** What a run takes from the shared budget: its usage once terminal, its limits while open. */
@@ -1676,6 +1844,7 @@ export function featurePolicy(
   feature: InitiativeFeature,
   humanOnly: boolean,
   growTo: number | null = null,
+  shareUsd: number | null = null,
 ): RunPolicy {
   const tokens = "tokens" in share ? share.tokens : share.maxTotalTokens;
   const calls = "calls" in share ? share.calls : share.maxAgentCalls;
@@ -1702,7 +1871,26 @@ export function featurePolicy(
     maxAgentCalls: Math.min(1000, Math.max(MIN_SHARE.maxAgentCalls, calls)),
     maxActiveMs: Math.max(MIN_SHARE.maxActiveMs, ms),
     autoApproval: limits?.success ? autoApprovalPolicy(limits.data) : null,
+    ...costPolicy(settings, shareUsd),
   });
+}
+
+/**
+ * The dollar cap of a feature run under a dollar budget: its share, never above the base policy's
+ * own cap, with the initiative's tolerance. Without a budget the base policy stays as it is.
+ */
+function costPolicy(
+  settings: InitiativeSettings,
+  shareUsd: number | null,
+): Pick<RunPolicy, "maxCostUsd" | "costTolerance"> | Record<string, never> {
+  const budget = settings.costBudget;
+  if (!budget || shareUsd === null) return {};
+  const own = settings.basePolicy.maxCostUsd;
+  const cap = Math.max(MIN_SHARE_USD, cents(shareUsd));
+  return {
+    maxCostUsd: own === null ? cap : Math.min(own, cap),
+    costTolerance: budget.costTolerance,
+  };
 }
 
 /**

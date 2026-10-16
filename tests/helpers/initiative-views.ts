@@ -4,8 +4,8 @@ import type { FeatureView, InitiativeView } from "../../src/core/workflows/initi
 export function featureView(id: string, extra: Partial<FeatureView> = {}): FeatureView {
   return {
     id, title: `Feature ${id}`, mandatory: true, dependsOn: [], boundary: { scope: id, paths: [`${id}.txt`] },
-    contract: `${id}.txt exists`, workflowId: "sdd", size: "medium", share: null, runFeatureId: `big_${id}`, state: "ready", runId: null, runStatus: null, runReason: null,
-    pinned: [], contractHash: null, blockers: [], pendingRequests: [], usage: { tokens: 0, calls: 0, activeMs: 0 }, runIds: [], ...extra,
+    contract: `${id}.txt exists`, workflowId: "sdd", size: "medium", share: null, need: null, shareUsd: null, runFeatureId: `big_${id}`, state: "ready", runId: null, runStatus: null, runReason: null,
+    pinned: [], contractHash: null, blockers: [], pendingRequests: [], usage: { tokens: 0, calls: 0, activeMs: 0 }, spentUsd: 0, runIds: [], ...extra,
   };
 }
 
@@ -19,6 +19,7 @@ export function initiativeView(extra: Partial<InitiativeView> = {}): InitiativeV
       limits: { maxTotalTokens: 400000, maxAgentCalls: 80, maxActiveMs: 3600000 }, used: { tokens: 12000, calls: 3, activeMs: 60000 },
       reserved: { tokens: 0, calls: 0, activeMs: 0 }, remaining: { tokens: 388000, calls: 77, activeMs: 3540000 },
       unstartedFeatures: 1, nextShare: null, rule: "",
+      cost: { capUsd: null, tolerance: 0, ceilingUsd: null, spentUsd: 0, reservedUsd: 0, remainingUsd: null, forecastUsd: null },
     },
     next: { kind: "start", featureId: "core", runId: null, message: "Start feature core" },
     ...extra,

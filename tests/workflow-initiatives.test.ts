@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
-import { hashBytes, hashJson } from "../src/core/specs/hash.js";
+import { canonical, hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import {
   applySplitEdit,
@@ -18,12 +18,13 @@ import {
   type InitiativeStartRequest,
   InitiativeService,
   type InitiativeView,
+  initiativeCostTolerance,
   runFeatureId,
 } from "../src/core/workflows/initiatives/service.js";
 import type { RunPolicy, Spec } from "../src/core/workflows/schemas.js";
 import { RoutingRecordSchema } from "../src/core/llm/model-routing.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
-import { newId } from "../src/core/workflows/store.js";
+import { newId, type WorkflowStore } from "../src/core/workflows/store.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
 import {
   executeInitiativeCommand,
@@ -86,7 +87,9 @@ class InitiativeExecutor implements AgentExecutor {
   rendezvous = 0;
   rendezvousMs = 5000;
   private arrived = 0;
-  constructor(private root: string, public split: unknown = threeFeatures, private tokens = 100) {}
+  /** When set, each call records its tokens as priced usage, as the agent executor does. */
+  usageStore: WorkflowStore | null = null;
+  constructor(private root: string, public split: unknown = threeFeatures, public tokens = 100) {}
   async execute(request: ExecutionRequest) {
     this.calls.push(request.profile.output);
     const implementing = request.profile.output === "implementation";
@@ -173,6 +176,13 @@ class InitiativeExecutor implements AgentExecutor {
       default:
         throw new Error(`Unexpected profile ${request.profile.output}`);
     }
+    this.usageStore?.transaction(() =>
+      this.usageStore?.artifact(request.runId, "usage", `attempts/${request.attemptId}/usage.json`, canonical({
+        schemaVersion: 1, profileId: request.profile.id, taskId: request.task?.id ?? null, maxSteps: 10, maxTokens: 1_000_000,
+        stopReason: "submitted", finalizedBy: null, totalTokens: this.tokens,
+        steps: [{ step: 1, inputTokens: this.tokens / 2, outputTokens: this.tokens / 2, cacheReadTokens: 0, cacheWriteTokens: 0, toolCalls: 0, compactedBytes: 0 }],
+      })),
+    );
     return { output, inputTokens: this.tokens / 2, outputTokens: this.tokens / 2 };
   }
 }
@@ -451,6 +461,89 @@ describe("scenario: an initiative budget shared by estimated need (#1311)", () =
     const run = t.workflows.store.run(t.featureOf(started, "core").runId ?? "");
     expect(JSON.parse(run.policy_json).sizing.maxRunTokens).toBe(view.budget.remaining.tokens - reserve);
   }, 30000);
+});
+
+// Bench round 32, notesift (#1317): each feature run had its own $8 cap and nothing added the
+// dollars up, so the initiative spent $29.15 of the loop's $32 with no signal from the host.
+describe("scenario: an initiative dollar budget (#1317)", () => {
+  const MODEL = "anthropic/claude-sonnet-4-6";
+  const startPriced = (t: ReturnType<typeof setup>, maxCostUsd: number, extra: Partial<InitiativeStartRequest> = {}) =>
+    t.start({
+      plan: threeFeatures,
+      model: MODEL,
+      featureAutoApproval: { maxTasks: 5, maxFiles: 5 },
+      budget: { maxTotalTokens: 50_000_000, maxAgentCalls: 400, maxActiveMs: 21_600_000 },
+      costBudget: { maxCostUsd },
+      ...extra,
+    });
+
+  test("feature runs share the dollar cap: each starts with its share as its maxCostUsd", async () => {
+    const t = setup(threeFeatures, 20_000);
+    t.executor.usageStore = t.workflows.store;
+    await startPriced(t, 3, { costBudget: { maxCostUsd: 3, costTolerance: 0.1 } });
+    const view = await t.approveSplit();
+    expect(view.budget.cost).toEqual({ capUsd: 3, tolerance: 0.1, ceilingUsd: 3.3, spentUsd: 0, reservedUsd: 0, remainingUsd: 3, forecastUsd: null });
+    // Without estimates, dollars follow the size weights: core 2, api 2, docs 1 of 5.
+    expect(view.features.map((f) => [f.id, f.size, f.shareUsd])).toEqual([["core", "medium", 1.2], ["api", "medium", 1.2], ["docs", "small", 0.6]]);
+    const driven = await t.drive();
+    const policy = JSON.parse(t.workflows.store.run(t.featureOf(driven, "core").runId ?? "").policy_json);
+    expect([policy.maxCostUsd, policy.costTolerance]).toEqual([1.2, 0.1]);
+    expect(t.featureOf(driven, "core").spentUsd).toBeGreaterThan(0);
+    expect(driven.budget.cost.spentUsd).toBe(t.featureOf(driven, "core").spentUsd);
+  }, 30000);
+
+  test("once a feature is accepted, a forecast above the cap stops the next feature until the cap is raised", async () => {
+    const t = setup(threeFeatures, 20_000);
+    t.executor.usageStore = t.workflows.store;
+    await startPriced(t, 3);
+    await t.approveSplit();
+    let view = await t.drive();
+    expect(t.featureOf(view, "core").state).toBe("accepted");
+    const forecast = view.budget.cost.forecastUsd ?? 0;
+    expect(forecast).toBeGreaterThan(3);
+    expect(view.next.kind).toBe("blocked");
+    expect(view.next.message).toMatch(/^The initiative's cost forecast is \$\d+\.\d\d, above its \$3\.00 cap: \$\d+\.\d\d spent with 1 of 3 features accepted\. Raise the dollar budget to at least \$\d+\.00 with baked workflow initiative extend --budget-usd N/);
+    expect(initiativeExit(view)).toBe(4);
+    expect(["api", "docs"].map((id) => t.featureOf(view, id).runId)).toEqual([null, null]);
+    view = await t.initiatives.extendBudget("values", t.id(), { maxCostUsd: Math.ceil(forecast) + 1 });
+    expect(view.budget.cost.capUsd).toBe(Math.ceil(forecast) + 1);
+    // Raising only the dollars leaves the token limits as they were.
+    expect(view.budget.limits.maxTotalTokens).toBe(50_000_000);
+    await expect(t.initiatives.extendBudget("values", t.id(), { maxCostUsd: 1 })).rejects.toThrow("can only be raised");
+    view = await t.drive();
+    expect(t.featureOf(view, "api").runId).not.toBeNull();
+  }, 30000);
+
+  test("costForecast off in the base policy keeps only the shares", async () => {
+    const t = setup(threeFeatures, 20_000);
+    t.executor.usageStore = t.workflows.store;
+    await startPriced(t, 3, { policy: { ...policy, costForecast: "off" } });
+    await t.approveSplit();
+    const view = await t.drive();
+    expect(view.budget.cost.forecastUsd).toBeNull();
+    expect(t.featureOf(view, "api").runId).not.toBeNull();
+  }, 30000);
+
+  test("a dollar share below one cent stops the feature before it starts", async () => {
+    const t = setup(threeFeatures, 20_000);
+    await startPriced(t, 0.02);
+    await t.approveSplit();
+    const view = await t.drive();
+    expect(view.next.message).toMatch(/^The shared dollar budget is exhausted: core would start with \$0\.00 of the \$0\.02 cap/);
+    expect(view.features.every((f) => f.runId === null)).toBe(true);
+  }, 30000);
+
+  test("the CLI takes the dollar cap, its tolerance and raises it with extend", () => {
+    const args = parseInitiativeArgs(["start", "big", "--prompt", "x", "--budget-usd", "32.5", "--cost-tolerance", "auto"]);
+    expect([args.flags["budget-usd"], args.flags["cost-tolerance"]]).toEqual(["32.5", "auto"]);
+    expect(() => parseInitiativeArgs(["start", "big", "--prompt", "x", "--cost-tolerance", "0.2"])).toThrow("only with --budget-usd");
+    expect(() => parseInitiativeArgs(["start", "big", "--prompt", "x", "--budget-usd", "0"])).toThrow("positive dollar amount");
+    expect(() => parseInitiativeArgs(["start", "big", "--prompt", "x", "--budget-usd", "5", "--cost-tolerance", "0.9"])).toThrow("auto, off or 0 to 0.5");
+    expect(parseInitiativeArgs(["extend", "big", "--budget-usd", "40", "--expected-revision", "3"]).flags["budget-usd"]).toBe("40");
+    expect(initiativeHelp).toContain("--budget-usd N [--cost-tolerance auto|off|0.2]");
+    // `auto` widens with the number of features, as a run's widens with its tasks.
+    expect([3, 4, 9, 12, 13].map((n) => initiativeCostTolerance("auto", n))).toEqual([0.1, 0.15, 0.2, 0.25, 0.3]);
+  });
 });
 
 describe("initiative runtime", () => {

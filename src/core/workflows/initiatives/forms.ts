@@ -11,8 +11,8 @@ import { featureSlug } from "../feature-id.js";
 import { PolicySchema, SafeId } from "../schemas.js";
 import { IssueSourceSchema } from "../types.js";
 import { FeatureKey, InitiativeId, InitiativePlanSchema } from "./plan.js";
-import type { FeatureView, InitiativeStartRequest, InitiativeView } from "./service.js";
-import type { BudgetLimitsValue } from "./store.js";
+import type { CostView, FeatureView, InitiativeStartRequest, InitiativeView } from "./service.js";
+import { type BudgetLimitsValue, CostToleranceSchema } from "./store.js";
 
 const PositiveInt = z.number().int().min(1);
 
@@ -27,6 +27,9 @@ export const InitiativeStartInputSchema = z.strictObject({
   budget: z
     .strictObject({ tokens: PositiveInt, calls: PositiveInt, timeMs: PositiveInt })
     .optional(),
+  /** The dollar cap feature runs share (#1317), with its tolerance band. */
+  budgetUsd: z.number().positive().optional(),
+  costTolerance: CostToleranceSchema.optional(),
   tieredApproval: z.strictObject({ maxTasks: PositiveInt, maxFiles: PositiveInt }).optional(),
   confirmAutoApproval: z.string().min(1).optional(),
   /** The GitHub issue of each feature of `plan`, by feature ID; delivery of its runs closes it. */
@@ -66,6 +69,10 @@ export function initiativeStartRequest(
           maxActiveMs: form.budget.timeMs,
         }
       : null,
+    costBudget:
+      form.budgetUsd !== undefined
+        ? { maxCostUsd: form.budgetUsd, costTolerance: form.costTolerance ?? "off" }
+        : null,
     featureAutoApproval: form.tieredApproval ?? null,
     ...(form.confirmAutoApproval ? { autoApprovalConfirmation: form.confirmAutoApproval } : {}),
     ...(form.model ? { model: form.model } : {}),
@@ -126,19 +133,45 @@ function amount(text: string, units: Record<string, number>, what: string): numb
 }
 
 /**
- * Budget limits from text: `TOKENS [CALLS [TIME]]`, such as `8M 400 4h`. Tokens take k or M, time
- * takes ms, s, m or h; `-` leaves a limit out. Empty text gives no limits.
+ * Budget limits from text: `TOKENS [CALLS [TIME]]`, such as `8M 400 4h`, and a dollar cap as a
+ * word starting with `$`, such as `$40`. Tokens take k or M, time takes ms, s, m or h; `-` leaves a
+ * limit out. Empty text gives no limits.
  */
-export function parseBudgetText(text: string): Partial<BudgetLimitsValue> {
-  const words = text.trim().split(/\s+/).filter(Boolean);
-  if (words.length > 3)
-    throw new WorkflowFault("INVALID_DEFINITION", "Give at most tokens, calls and time");
+export function parseBudgetText(
+  text: string,
+): Partial<BudgetLimitsValue> & { maxCostUsd?: number } {
+  const all = text.trim().split(/\s+/).filter(Boolean);
+  const dollars = all.filter((w) => w.startsWith("$"));
+  const words = all.filter((w) => !w.startsWith("$"));
+  if (words.length > 3 || dollars.length > 1)
+    throw new WorkflowFault("INVALID_DEFINITION", "Give at most tokens, calls, time and $dollars");
+  const usd = dollars[0] ? Number(dollars[0].slice(1)) : undefined;
+  if (usd !== undefined && !(Number.isFinite(usd) && usd > 0))
+    throw new WorkflowFault("INVALID_DEFINITION", `Dollars ${dollars[0]} is not a positive amount`);
   const [tokens, calls, time] = words;
   return {
+    ...(usd !== undefined ? { maxCostUsd: usd } : {}),
     ...(tokens && tokens !== "-" ? { maxTotalTokens: amount(tokens, TOKEN_UNITS, "Tokens") } : {}),
     ...(calls && calls !== "-" ? { maxAgentCalls: amount(calls, { "": 1 }, "Calls") } : {}),
     ...(time && time !== "-" ? { maxActiveMs: amount(time, TIME_UNITS, "Time") } : {}),
   };
+}
+
+const usd = (n: number): string => `$${n.toFixed(2)}`;
+
+/** The initiative's dollars in one line; null without a cap and before anything is spent. */
+export function costText(cost: CostView | undefined): string | null {
+  if (!cost) return null;
+  if (cost.capUsd === null) return cost.spentUsd > 0 ? `${usd(cost.spentUsd)} spent` : null;
+  const ceiling =
+    cost.ceilingUsd !== null && cost.ceilingUsd > cost.capUsd
+      ? ` (ceiling ${usd(cost.ceilingUsd)})`
+      : "";
+  return [
+    `${usd(cost.spentUsd)} of ${usd(cost.capUsd)}${ceiling}`,
+    `${usd(cost.remainingUsd ?? 0)} left`,
+    ...(cost.forecastUsd !== null ? [`forecast ${usd(cost.forecastUsd)}`] : []),
+  ].join(" · ");
 }
 
 const terminal = (view: Pick<InitiativeView, "status">): boolean =>
