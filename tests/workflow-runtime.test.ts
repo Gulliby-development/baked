@@ -185,6 +185,49 @@ describe("durable SDD runtime", () => {
     expect(service.store.requests(run.runId).find((r) => r.kind === "recovery")?.body_json).toContain(effect);
     expect(service.store.attempts(run.runId)[0]?.status).toBe("interrupted");
   });
+  // Bench round 32, md-site c77cfece (#1313): the host slept during an edit_file; the effect had
+  // no after-hash, so the run waited for a person to compare the file's hash with its pre-image.
+  test("an edit interrupted by a dead process is settled from the file, without a recovery request", async () => {
+    const { root, service } = setup(); const { run } = await start(service);
+    writeFileSync(join(root, "value.txt"), "before");
+    const step = service.store.beginStep(run.runId, "task-T001");
+    const attempt = service.store.reserve(run.runId, step, null, 0, policy);
+    const written = service.store.prepareEffect(run.runId, attempt, "file_patch", { path: "value.txt", tool: "edit_file" }, hashBytes("before"), null);
+    writeFileSync(join(root, "value.txt"), "edited");
+    writeFileSync(join(root, "other.txt"), "kept");
+    const untouched = service.store.prepareEffect(run.runId, attempt, "file_patch", { path: "other.txt", tool: "edit_file" }, hashBytes("kept"), null);
+    const done = await service.drive(run.runId, new AbortController().signal);
+    expect(done.reason).not.toBe("interrupted_effect");
+    expect(service.store.requests(run.runId).some((r) => r.kind === "recovery")).toBe(false);
+    const effects = new Map(service.store.effects(run.runId).map((e) => [e.id, e]));
+    expect(effects.get(written)).toMatchObject({ status: "applied", after_hash: hashBytes("edited") });
+    expect(effects.get(untouched)?.status).toBe("failed");
+    expect(service.store.artifacts(run.runId).some((a) => a.logical_path === `interrupted-edits/${written}.json`)).toBe(true);
+  });
+  test("an interrupted publication without a tool still waits for a person", async () => {
+    const { root, service } = setup(); const { run } = await start(service);
+    writeFileSync(join(root, "value.txt"), "elsewhere");
+    const step = service.store.beginStep(run.runId, "interrupted-publish");
+    const attempt = service.store.reserve(run.runId, step, null, 0, policy);
+    service.store.prepareEffect(run.runId, attempt, "file_patch", { path: "value.txt" }, hashBytes("before"), hashBytes("after"));
+    const waiting = await service.drive(run.runId, new AbortController().signal);
+    expect(waiting.reason).toBe("interrupted_effect");
+  });
+  // The same wake killed the initiative command: the active-time flush hit a SQLite disk I/O error
+  // in a timer and threw an uncaught exception (#1313).
+  test("a transient SQLite error while recording active time does not end the drive", async () => {
+    const { service } = setup(); const { run } = await start(service);
+    const store = service.store as unknown as { addActiveTime: (runId: string, ms: number) => void };
+    const original = store.addActiveTime.bind(service.store);
+    let failures = 0;
+    store.addActiveTime = (runId, ms) => {
+      if (failures++ % 2 === 0) throw Object.assign(new Error("disk I/O error"), { code: "SQLITE_IOERR" });
+      original(runId, ms);
+    };
+    const done = await service.drive(run.runId, new AbortController().signal);
+    expect(done.status).not.toBe("failed");
+    expect(failures).toBeGreaterThan(0);
+  });
   test("a legacy write begun before the first run already holds a durable mutation lease", async () => {
     const root = mkdtempSync(join(tmpdir(), "baked-legacy-lease-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));
