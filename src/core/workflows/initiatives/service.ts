@@ -39,7 +39,7 @@ import type { IssueSource } from "../types.js";
 import { DefinitionAutoApprovalSchema } from "../v2/definition.js";
 import { loadDefinition } from "../v2/definitions.js";
 import { autoApprovalPolicy } from "../v2/runtime.js";
-import { mergedBase } from "../worktree.js";
+import { mergedBase, worktreeBase } from "../worktree.js";
 import { DECOMPOSE_WORKFLOW_ID } from "./decompose.js";
 import {
   estimateInitiative,
@@ -438,6 +438,9 @@ export class InitiativeService {
       forecastStop: request.forecastStop ?? false,
     };
     this.checkWorkflow(settings);
+    // Feature runs in worktrees need Git; refuse now rather than after the decomposer ran.
+    if (this.executionMode(settings, settings.workflowId) === "worktree")
+      await worktreeBase(this.workflows.workspace);
     const issued = Object.keys(settings.featureIssues);
     if (issued.length && !request.plan)
       throw new WorkflowFault(

@@ -2,13 +2,15 @@
  * The Git menu over the local API (`/v1/git`): the project's status, branches, stashes and recent
  * commits, the commit graph (`/v1/git/graph`) and the actions of the terminal Git menu. Core
  * logic lives in src/core/git/menu.ts and src/core/git/graph.ts.
- * Writes wait for each other, are refused while a workflow run holds the workspace, and the
+ * `init` initializes Git in a folder without it (src/core/git/init.ts); every other action needs a
+ * repository. Writes wait for each other, are refused while a workflow run holds the workspace, and the
  * destructive ones (force push with lease, hard reset) need `confirm: true`, the API's form of
  * the terminal's confirmation prompt.
  */
 import { z } from "zod";
 import type { AppConfig } from "../../types/index.js";
 import { GRAPH_COMMITS_MAX, readGitGraph } from "../git/graph.js";
+import { workspaceGitState } from "../git/init.js";
 import {
   BRANCH_NAME_MAX,
   COMMIT_MESSAGE_MAX,
@@ -34,6 +36,7 @@ export interface GitRouteContext extends RouteContext {
 const Confirm = { confirm: z.boolean().optional() };
 const Name = z.string().min(1).max(BRANCH_NAME_MAX);
 const ActionBody = z.discriminatedUnion("action", [
+  z.strictObject({ action: z.literal("init") }),
   z.strictObject({
     action: z.literal("commit"),
     message: z.string().min(1).max(COMMIT_MESSAGE_MAX),
@@ -82,12 +85,21 @@ function toAction(body: z.infer<typeof ActionBody>): GitMenuAction {
   }
 }
 
+/** The overview the Git screen renders: status, branches, log, whether a run holds the folder and its Git setup. */
+async function overview(ctx: GitRouteContext) {
+  return {
+    ...(await readGitOverview(ctx.workspace)),
+    busy: workspaceHeld(ctx.store),
+    setup: (await workspaceGitState(ctx.workspace)).kind,
+  };
+}
+
 /** Answers a Git request, or returns null when the path is not a Git endpoint. */
 export async function gitRoute(ctx: GitRouteContext): Promise<Response | null> {
   const { path, workspace } = ctx;
   if (path === "/v1/git") {
     ctx.only("GET");
-    return ctx.json(200, { ...(await readGitOverview(workspace)), busy: workspaceHeld(ctx.store) });
+    return ctx.json(200, await overview(ctx));
   }
   if (path === "/v1/git/graph") {
     ctx.only("GET");
@@ -100,7 +112,7 @@ export async function gitRoute(ctx: GitRouteContext): Promise<Response | null> {
   if (DESTRUCTIVE_GIT_ACTIONS.includes(body.action) && !("confirm" in body && body.confirm))
     ctx.fail(400, "INVALID_REQUEST", `${body.action} discards work; send confirm: true to run it`);
   const step = ctx.queue.tail.then(async () => {
-    if (!(await isGitRepo(workspace)))
+    if (body.action !== "init" && !(await isGitRepo(workspace)))
       ctx.fail(409, "NOT_A_REPOSITORY", "The project folder is not a Git repository");
     if (workspaceHeld(ctx.store))
       ctx.fail(
@@ -114,8 +126,5 @@ export async function gitRoute(ctx: GitRouteContext): Promise<Response | null> {
   });
   ctx.queue.tail = step.catch(() => undefined);
   const result = await step;
-  return ctx.json(200, {
-    ...result,
-    overview: { ...(await readGitOverview(workspace)), busy: workspaceHeld(ctx.store) },
-  });
+  return ctx.json(200, { ...result, overview: await overview(ctx) });
 }

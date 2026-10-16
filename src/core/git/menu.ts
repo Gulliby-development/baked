@@ -4,6 +4,7 @@
  * `GitCommitModal`, `/git` commands) and the local API (`/v1/git`) both run them from here, so
  * each surface only asks for confirmation and renders the result.
  */
+import { gitInitSummary, initWorkspaceGit } from "./init.js";
 import {
   commitMessage,
   type GitLogEntry,
@@ -17,6 +18,7 @@ import {
 } from "./status.js";
 
 export const GIT_MENU_ACTIONS = [
+  "init",
   "commit",
   "push",
   "pull",
@@ -38,7 +40,7 @@ export const BRANCH_NAME_MAX = 200;
 
 export type GitMenuAction =
   | { action: "commit"; message: string; stageAll?: boolean }
-  | { action: "push" | "pull" | "stash-pop" | "force-push" | "reset-hard" }
+  | { action: "init" | "push" | "pull" | "stash-pop" | "force-push" | "reset-hard" }
   | { action: "stash"; message?: string }
   | { action: "create-branch" | "switch-branch"; name: string };
 
@@ -156,6 +158,12 @@ export async function runGitMenuAction(
   options: { coAuthor?: boolean } = {},
 ): Promise<GitActionResult> {
   switch (request.action) {
+    case "init":
+      try {
+        return { ok: true, message: gitInitSummary(await initWorkspaceGit(cwd)), output: "" };
+      } catch (error) {
+        return refused(error instanceof Error ? error.message : String(error));
+      }
     case "commit":
       return commitChanges(cwd, {
         message: request.message,

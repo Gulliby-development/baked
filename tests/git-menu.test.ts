@@ -176,6 +176,13 @@ describe("git over the local API", () => {
       const answer = await fetch(`${server.url}/v1/git/actions`, { method: "POST", headers, body: JSON.stringify({ action: "pull" }) });
       expect(answer.status).toBe(409);
       expect(((await answer.json()) as { error: { code: string } }).error.code).toBe("NOT_A_REPOSITORY");
+      expect((overview as { setup?: string }).setup).toBe("missing");
+      // `init` is the one action a folder without Git takes (#1345).
+      const init = await fetch(`${server.url}/v1/git/actions`, { method: "POST", headers, body: JSON.stringify({ action: "init" }) });
+      const done = (await init.json()) as { ok: boolean; message: string; overview: { isRepo: boolean; setup: string } };
+      expect(done).toMatchObject({ ok: true, overview: { isRepo: true, setup: "ready" } });
+      expect(done.message).toContain("Initialized Git");
+      expect(git(fixture.root, "ls-files")).not.toContain(".baked/");
     }
   });
 });

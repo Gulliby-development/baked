@@ -100,19 +100,31 @@ function worktreeCommand<T>(workspace: string, command: () => Promise<T>): Promi
  * user asked for an untouched working copy, and an inline run would write it.
  */
 export async function worktreeBase(workspace: string): Promise<string> {
-  const refuse = (message: string) =>
-    new WorkflowFault("INVALID_DEFINITION", message, { reason: "git_required" });
+  const refuse = (message: string, gitInit = false) =>
+    new WorkflowFault("INVALID_DEFINITION", message, {
+      reason: "git_required",
+      ...(gitInit ? { gitInit } : {}),
+    });
   const top = await git(workspace, ["rev-parse", "--show-prefix"]);
   if (top.code !== 0)
     throw refuse(
-      "Worktree execution needs a Git repository. Run `git init` and commit a baseline, or run the workflow inline.",
+      `Worktree execution needs a Git repository. ${GIT_INIT_HINT}, or run the workflow inline.`,
+      true,
     );
   if (top.stdout.trim())
     throw refuse("Worktree execution needs the workspace to be the root of its Git repository.");
   const head = (await git(workspace, ["rev-parse", "--verify", "--quiet", "HEAD"])).stdout.trim();
-  if (!head) throw refuse("Worktree execution needs a repository with at least one commit.");
+  if (!head)
+    throw refuse(
+      `Worktree execution needs a repository with at least one commit. ${GIT_INIT_HINT}.`,
+      true,
+    );
   return head;
 }
+
+/** How each surface lets the person initialize Git (src/core/git/init.ts) after confirming. */
+const GIT_INIT_HINT =
+  "BAKED can initialize it with a .gitignore and a baseline commit: confirm Initialize Git in the desktop app, run /git init in the terminal app or baked workflow git-init";
 
 /** The result of merging commits onto HEAD: the merged commit, or the files that conflict. */
 export type MergedBase = { commit: string } | { conflicts: string[]; between: [string, string] };
