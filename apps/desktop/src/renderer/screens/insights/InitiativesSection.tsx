@@ -402,6 +402,7 @@ function EstimatePanel({ projectKey, view }: { projectKey: string; view: Initiat
         <span className="text-[13px] text-muted-foreground">
           about {estimate.tasks.low}–{estimate.tasks.high} tasks · {tokens(estimate.tokens.low)}–
           {tokens(estimate.tokens.high)} tokens · plan for {tokens(estimate.withMargin)}
+          {estimate.progress?.spent ? ` · ${tokens(estimate.progress.spent)} used` : ""}
         </span>
         <Button
           variant="ghost"
@@ -424,7 +425,9 @@ function EstimatePanel({ projectKey, view }: { projectKey: string; view: Initiat
               {f.workflowId} · {f.size}
             </span>
             <span className="font-mono text-muted-foreground">
-              {tokens(f.tokens.low)}–{tokens(f.tokens.high)}
+              {f.basis === "measured"
+                ? `used ${tokens(f.tokens.high)}`
+                : `${tokens(f.tokens.low)}–${tokens(f.tokens.high)}`}
             </span>
           </li>
         ))}

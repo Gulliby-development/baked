@@ -119,8 +119,17 @@ export interface TokenSpan {
   low: number;
   high: number;
 }
-/** How an estimate was measured: finished feature runs, runs of the workflow, any run, or defaults. */
-export type EstimateBasis = "initiative-history" | "workflow-history" | "history" | "defaults";
+/**
+ * How an estimate was measured: this initiative's accepted features (`measured`, and `calibrated`
+ * for the rest scaled by them), finished feature runs, runs of the workflow, any run, or defaults.
+ */
+export type EstimateBasis =
+  | "measured"
+  | "calibrated"
+  | "initiative-history"
+  | "workflow-history"
+  | "history"
+  | "defaults";
 /** `GET /v1/initiatives/ID/estimate`: the level and token range of the split, from run history. */
 export interface InitiativeEstimate {
   level: 1 | 2 | 3 | 4 | 5;
@@ -139,7 +148,11 @@ export interface InitiativeEstimate {
     tasks: TokenSpan;
     basis: EstimateBasis;
     samples: number;
+    /** Tokens this initiative's runs of the feature used; absent on older backends. */
+    spent?: number;
   }[];
+  /** Tokens used so far and the measured-to-forecast ratio; absent on older backends. */
+  progress?: { spent: number; accepted: number; ratio: number | null };
   notes: string[];
   label: string;
 }

@@ -44,6 +44,8 @@ export interface FeatureToEstimate {
 }
 
 export type FeatureEstimateBasis =
+  | "measured"
+  | "calibrated"
   | "initiative-history"
   | "workflow-history"
   | "history"
@@ -59,6 +61,14 @@ export interface FeatureEstimate {
   basis: FeatureEstimateBasis;
   /** Past runs the range comes from; 0 for generic ranges. */
   samples: number;
+  /** Tokens this initiative's runs of the feature have used so far. */
+  spent: number;
+}
+
+/** What an initiative has used so far: per feature, and on runs of no feature (the split). */
+export interface InitiativeProgress {
+  features: Record<string, { spent: number; accepted: boolean }>;
+  overhead: number;
 }
 
 export interface InitiativeEstimate {
@@ -74,11 +84,18 @@ export interface InitiativeEstimate {
   /** The weakest basis among the features. */
   basis: FeatureEstimateBasis;
   features: FeatureEstimate[];
+  /**
+   * The re-forecast once features are accepted (#1312): tokens used so far, how many features are
+   * accepted, and the ratio of their measured tokens to their forecast, which scales the rest.
+   */
+  progress: { spent: number; accepted: number; ratio: number | null };
   notes: string[];
   label: string;
 }
 
 const BASIS_ORDER: FeatureEstimateBasis[] = [
+  "measured",
+  "calibrated",
   "initiative-history",
   "workflow-history",
   "history",
@@ -121,6 +138,7 @@ function estimateFeature(
     title: feature.title,
     workflowId: feature.workflowId,
     size: feature.size,
+    spent: 0,
   };
   const hasTasks = feature.stages.some((s) => s.type === "tasks");
   // Finished feature runs of the same size measure the whole feature, split and all; those of the
@@ -177,6 +195,42 @@ export function estimateSummary(estimate: InitiativeEstimate): string {
 const fitsOf = (high: number, low: number, limit: number): "yes" | "maybe" | "no" =>
   high <= limit ? "yes" : low <= limit ? "maybe" : "no";
 
+/** Bounds of the measured-to-forecast ratio that scales the features still to run. */
+const RATIO_BOUNDS = { low: 0.25, high: 5 } as const;
+
+/**
+ * The features as they stand: an accepted one at its measured tokens, the rest at their forecast
+ * scaled by how far the accepted ones were from theirs, and never below what they already used.
+ * Bench round 32 (notesift): the split's forecast of 10.6M to 19.0M said "fits" and the initiative
+ * used 32.7M; its first features had shown the gap long before the budget ran out.
+ */
+function reforecast(
+  prior: FeatureEstimate[],
+  progress: InitiativeProgress,
+): { features: FeatureEstimate[]; ratio: number | null } {
+  const used = (f: FeatureEstimate) =>
+    progress.features[f.featureId] ?? { spent: 0, accepted: false };
+  const accepted = prior.filter((f) => used(f).accepted);
+  const forecast = accepted.reduce((total, f) => total + middle(f.tokens), 0);
+  const measured = accepted.reduce((total, f) => total + used(f).spent, 0);
+  const ratio =
+    accepted.length && forecast > 0 && measured > 0
+      ? Math.min(RATIO_BOUNDS.high, Math.max(RATIO_BOUNDS.low, measured / forecast))
+      : null;
+  const features = prior.map((f): FeatureEstimate => {
+    const { spent, accepted: done } = used(f);
+    if (done) return { ...f, tokens: { low: spent, high: spent }, basis: "measured", spent };
+    const tokens = ratio === null ? f.tokens : scaled(f.tokens, ratio);
+    return {
+      ...f,
+      tokens: { low: Math.max(tokens.low, spent), high: Math.max(tokens.high, spent) },
+      basis: ratio === null ? f.basis : "calibrated",
+      spent,
+    };
+  });
+  return { features, ratio };
+}
+
 /**
  * The estimate of `features` against the initiative's token budget. `history` is the project's
  * run history (`estimateHistory`); `samples` are finished feature runs of earlier initiatives.
@@ -187,16 +241,29 @@ export function estimateInitiative(input: {
   samples: FeatureRunSample[];
   maxTotalTokens: number;
   margin?: number;
+  /** What this initiative has used so far; its own runs are not in `samples`. */
+  progress?: InitiativeProgress;
 }): InitiativeEstimate {
   const margin = input.margin ?? ESTIMATE_MARGIN;
-  const features = input.features.map((f) => estimateFeature(f, input.history, input.samples));
-  const tokens = sum(features.map((f) => f.tokens));
+  const progress = input.progress ?? { features: {}, overhead: 0 };
+  const { features, ratio } = reforecast(
+    input.features.map((f) => estimateFeature(f, input.history, input.samples)),
+    progress,
+  );
+  const overhead = { low: progress.overhead, high: progress.overhead };
+  const tokens = sum([overhead, ...features.map((f) => f.tokens)]);
   const tasks = sum(features.map((f) => f.tasks));
   const level = levelOf(middle(tasks));
-  const withMargin = Math.round(tokens.high * (1 + margin));
+  // Measured tokens need no margin; only what is still to run does.
+  const known =
+    progress.overhead +
+    features.filter((f) => f.basis === "measured").reduce((t, f) => t + f.spent, 0);
+  const withMargin = Math.round(known + (tokens.high - known) * (1 + margin));
+  const accepted = features.filter((f) => f.basis === "measured").length;
+  const spent = progress.overhead + features.reduce((t, f) => t + f.spent, 0);
   const basis = features.reduce<FeatureEstimateBasis>(
     (worst, f) => (BASIS_ORDER.indexOf(f.basis) > BASIS_ORDER.indexOf(worst) ? f.basis : worst),
-    "initiative-history",
+    "measured",
   );
   const generic = features.filter((f) => f.basis === "defaults").length;
   const notes = [
@@ -205,9 +272,14 @@ export function estimateInitiative(input: {
           `${generic} of ${features.length} features use generic ranges: this project has no finished runs of their workflow yet.`,
         ]
       : []),
-    ...(input.samples.length
+    ...(input.samples.length || accepted
       ? []
       : ["No finished initiative feature runs yet, so feature sizes scale a typical run's tasks."]),
+    ...(ratio !== null
+      ? [
+          `Re-forecast after ${accepted} of ${features.length} features: the accepted ones used ${ratio.toFixed(1)} times their forecast, so the features still to run are scaled by it.`,
+        ]
+      : []),
   ];
   const fits = fitsOf(withMargin, tokens.low, input.maxTotalTokens);
   const budgetText =
@@ -226,7 +298,8 @@ export function estimateInitiative(input: {
     budget: { maxTotalTokens: input.maxTotalTokens, fits },
     basis,
     features,
+    progress: { spent, accepted, ratio },
     notes,
-    label: `Estimate: level ${level}, about ${tasks.low}-${tasks.high} tasks, ${rangeText(tokens)} tokens (plan for ${tokenText(withMargin)} with a ${Math.round(margin * 100)}% margin); ${budgetText}`,
+    label: `Estimate: level ${level}, about ${tasks.low}-${tasks.high} tasks, ${rangeText(tokens)} tokens (plan for ${tokenText(withMargin)} with a ${Math.round(margin * 100)}% margin)${spent ? `, ${tokenText(spent)} used with ${accepted} of ${features.length} features accepted` : ""}; ${budgetText}`,
   };
 }

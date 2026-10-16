@@ -291,6 +291,18 @@ export class CheckRunner {
         ...result,
         output: `${result.output}\n\nNote: ${check.id} timed out after ${check.timeoutMs} ms, after the failure above. Run the failing test file alone first and fix what keeps it from finishing (an unbounded loop, an open handle, a pending promise) together with the failure.`,
       };
+    } else if (result.timedOut && check.onTimeout === "failed" && !result.cancelled) {
+      // The test files a task wrote ran past the timeout without printing a result
+      // (url-shortener f1648a92: one synchronous loop of about 10k file-database transactions,
+      // #1308). They are the task's own work, so the timeout repairs like a failure.
+      status = "failed";
+      reason = "timeout_no_result";
+      result = {
+        ...result,
+        output: `${result.output}\n\nNote: ${check.id} ran ${
+          check.args.filter((arg) => /[/\\]|\.\w+$/.test(arg)).join(" ") || check.args.join(" ")
+        } and did not finish within ${check.timeoutMs} ms, without printing a test result. These tests are too slow or never end. Run the file alone with run_probe and time it; keep generated samples to a representative few cases (tens, not the whole accepted domain the spec allows), avoid one long synchronous loop, and keep each test to a few seconds.`,
+      };
     } else if (result.timedOut) reason = "timeout";
     else if (result.cancelled) reason = "cancelled";
     else if (check.report === "json" && reason === "exit") {

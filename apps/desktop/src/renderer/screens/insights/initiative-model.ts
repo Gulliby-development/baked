@@ -431,6 +431,10 @@ export const hasDependents = (
 /** What an estimate's basis means, for the line under it. */
 export function estimateBasisText(estimate: InitiativeEstimate): string {
   switch (estimate.basis) {
+    case "measured":
+      return "Measured: every feature is accepted, so this is what the initiative used.";
+    case "calibrated":
+      return "Re-forecast from the accepted features: the rest are scaled by how far those were from their forecast.";
     case "initiative-history":
       return "From finished feature runs of earlier initiatives in this project.";
     case "workflow-history":

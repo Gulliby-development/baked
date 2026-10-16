@@ -620,6 +620,16 @@ const REJECTION_NOTE =
 const LONG_RETRY_AFTER_MS = 30_000;
 /** How often a driving process writes the run's active time to the run row (#1038). */
 export const ACTIVE_FLUSH_MS = 1_000;
+
+/** A SQLite error a retry can clear: a disk I/O error after a suspension, or a busy database. */
+export function transientSqliteError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = (error as { code?: unknown }).code;
+  return (
+    (typeof code === "string" && /^SQLITE_(IOERR|BUSY|LOCKED)/.test(code)) ||
+    /disk I\/O error|database is (locked|busy)/i.test(error.message)
+  );
+}
 /** The implementer's own list of what it left unfinished, for the blocked task's message. */
 /**
  * The planned files a failed check of a corrective task names, when the task may write none of
@@ -840,13 +850,23 @@ export class WorkflowScheduler {
     // The run row keeps the active time as it accrues, so a process that dies loses at most the
     // last interval of it, not everything since the drive started (#1038).
     let recorded = 0;
+    // After a laptop sleep the first write can fail with a transient SQLite I/O or busy error; it
+    // ran in a timer, so it killed the command with an uncaught exception (bench round 32, #1313).
+    // The write is tried once more, and an interval still unrecorded goes with the next flush.
     const recordActive = (): void => {
       const now = performance.now();
       const idle = idleMs + (idleFrom === null ? 0 : now - idleFrom);
       const add = Math.ceil(now - started - idle - recorded);
       if (add <= 0) return;
-      this.store.transaction(() => this.store.addActiveTime(runId, add));
-      recorded += add;
+      for (let tries = 2; tries > 0; tries--) {
+        try {
+          this.store.transaction(() => this.store.addActiveTime(runId, add));
+          recorded += add;
+          return;
+        } catch (error) {
+          if (!transientSqliteError(error)) throw error;
+        }
+      }
     };
     const flush = setInterval(recordActive, ACTIVE_FLUSH_MS);
     // Management commands from another process must stop this owner before the next effect.
