@@ -289,13 +289,24 @@ export function faultStatus(code: WorkflowErrorCode): number {
   return 500;
 }
 
-function errorOf(error: unknown): { status: number; code: string; message: string } {
+function errorOf(error: unknown): {
+  status: number;
+  code: string;
+  message: string;
+  /** A WorkflowFault's `details.reason`, so a client can offer the repair (`git_required`). */
+  reason?: string;
+} {
   if (error instanceof ApiError)
     return { status: error.status, code: error.code, message: error.message };
   if (error instanceof ChatError)
     return { status: chatErrorStatus(error), code: error.code, message: error.message };
   if (error instanceof WorkflowFault)
-    return { status: faultStatus(error.code), code: error.code, message: error.message };
+    return {
+      status: faultStatus(error.code),
+      code: error.code,
+      message: error.message,
+      ...(typeof error.details.reason === "string" ? { reason: error.details.reason } : {}),
+    };
   if (error instanceof ZodError)
     return {
       status: 400,
@@ -717,8 +728,12 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       headers: headers(origin, { "Content-Type": "application/json; charset=utf-8" }),
     });
   const failure = (error: unknown, origin: string | null): Response => {
-    const { status, code, message } = errorOf(error);
-    return json(status, { error: { code, message: redactSecrets(message) } }, origin);
+    const { status, code, message, reason } = errorOf(error);
+    return json(
+      status,
+      { error: { code, message: redactSecrets(message), ...(reason ? { reason } : {}) } },
+      origin,
+    );
   };
 
   async function readJson(req: Request, raisedLimit?: number): Promise<unknown> {

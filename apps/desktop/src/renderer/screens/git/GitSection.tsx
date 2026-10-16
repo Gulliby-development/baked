@@ -1,5 +1,6 @@
 import { type FormEvent, useMemo, useState } from "react";
-import { type GitAction, type GitOverview, git } from "../../client/git.js";
+import { canInitGit, type GitAction, type GitOverview, git } from "../../client/git.js";
+import { GitInitDialog } from "../../components/GitInitDialog.js";
 import { Icon } from "../../components/Icon.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
@@ -68,6 +69,7 @@ export function GitSection({ project }: SectionProps) {
   const [stashMessage, setStashMessage] = useState("");
   const [asking, setAsking] = useState<Confirmable | null>(null);
   const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [askInit, setAskInit] = useState(false);
 
   const act = async (action: GitAction): Promise<{ ok: boolean; message: string }> => {
     setBusy(true);
@@ -122,12 +124,35 @@ export function GitSection({ project }: SectionProps) {
 
   if (loaded.state !== "ready") return <LoadState value={loaded} what="Git" />;
   const view: GitOverview = loaded.data;
-  if (!view.isRepo)
+  if (!view.isRepo || (view.setup === "no-commit" && canInitGit(view)))
     return (
-      <Empty>
-        This folder is not a Git repository. Run <span className="font-mono">git init</span> in it,
-        or <span className="font-mono">/git init</span> in the terminal app.
-      </Empty>
+      <div className={STACK}>
+        <Empty>
+          {view.isRepo
+            ? "This repository has no commit yet."
+            : "This folder is not a Git repository."}{" "}
+          Worktree runs, parallel initiative features and delivery need Git with a first commit.
+        </Empty>
+        {result && <Alert tone={result.ok ? "info" : "error"}>{result.message}</Alert>}
+        <div className={ACTIONS}>
+          <Button variant="primary" size="md" onClick={() => setAskInit(true)}>
+            Initialize Git
+          </Button>
+        </div>
+        <GitInitDialog
+          projectKey={key}
+          open={askInit}
+          why="Git keeps each worktree run on its own branch."
+          onDone={(summary) => {
+            setAskInit(false);
+            setResult({ ok: true, message: summary, output: "" });
+            reload();
+            reloadGraph();
+            void refresh();
+          }}
+          onClose={() => setAskInit(false)}
+        />
+      </div>
     );
   const locked = busy || view.busy;
   const groups = changeGroups(view);

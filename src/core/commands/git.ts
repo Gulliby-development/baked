@@ -1,17 +1,15 @@
 import type { InfoPopupLine } from "../../components/modals/InfoPopup.js";
 import { type BranchKind, graphText, readGitGraph } from "../git/graph.js";
 import { type GitMenuAction, runGitMenuAction } from "../git/menu.js";
-import { getGitDiff, getGitLog, getGitStatus, gitInit } from "../git/status.js";
+import { getGitDiff, getGitLog, getGitStatus } from "../git/status.js";
 import { icon } from "../icons.js";
 import { getThemeTokens } from "../theme/index.js";
 import type { CommandContext, CommandHandler } from "./types.js";
 import { sysMsg } from "./utils.js";
 
+/** Typing the command is the confirmation; worktree runs point here when the folder has no Git. */
 function handleGitInit(_input: string, ctx: CommandContext): void {
-  gitInit(ctx.cwd).then((ok) => {
-    ctx.refreshGit();
-    sysMsg(ctx, ok ? "Initialized git repository." : "Failed to initialize git repository.");
-  });
+  runGitOp(ctx, { action: "init" }, "Initializing Git with a baseline commit…");
 }
 
 function handleBranchCreate(input: string, ctx: CommandContext): void {

@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import type { RunSnapshot } from "../../../shared/api.js";
 import { type PreRunEstimate, type RunPolicy, type StartBody, start } from "../../client/start.js";
+import { GitInitDialog, needsGit } from "../../components/GitInitDialog.js";
 import { Busy } from "../../components/ui/busy.js";
 import { useProgress } from "../../lib/progress.js";
 import { projectHref } from "../../router.js";
@@ -121,32 +122,48 @@ export function budgetField(preset: BudgetPreset): { budget?: BudgetPreset } {
   return preset === "standard" ? {} : { budget: preset };
 }
 
-/** Starts a run and opens it; keeps the error for the form. */
+/**
+ * Starts a run and opens it; keeps the error for the form. A worktree start refused for want of
+ * Git asks to initialize it (`gitDialog`, rendered by the form) and starts again after a yes.
+ */
 export function useStartRun(key: string): {
   starting: boolean;
   error: string | null;
   run: (body: Omit<StartBody, "commandId">) => Promise<RunSnapshot | null>;
+  gitDialog: ReactNode;
 } {
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  return {
-    starting,
-    error,
-    run: async (body) => {
-      setStarting(true);
-      setError(null);
-      try {
-        const snapshot = await start.run(key, { commandId: crypto.randomUUID(), ...body });
-        window.location.hash = projectHref(key, "runs", snapshot.runId);
-        return snapshot;
-      } catch (e) {
-        setError(message(e));
-        return null;
-      } finally {
-        setStarting(false);
-      }
-    },
+  const [waiting, setWaiting] = useState<Omit<StartBody, "commandId"> | null>(null);
+  const run = async (body: Omit<StartBody, "commandId">): Promise<RunSnapshot | null> => {
+    setStarting(true);
+    setError(null);
+    try {
+      const snapshot = await start.run(key, { commandId: crypto.randomUUID(), ...body });
+      window.location.hash = projectHref(key, "runs", snapshot.runId);
+      return snapshot;
+    } catch (e) {
+      if (needsGit(e)) setWaiting(body);
+      setError(message(e));
+      return null;
+    } finally {
+      setStarting(false);
+    }
   };
+  const gitDialog = (
+    <GitInitDialog
+      projectKey={key}
+      open={waiting !== null}
+      why="Running in a worktree needs Git with a first commit, and this folder has none."
+      onDone={() => {
+        const body = waiting;
+        setWaiting(null);
+        if (body) void run(body);
+      }}
+      onClose={() => setWaiting(null)}
+    />
+  );
+  return { starting, error, run, gitDialog };
 }
 
 const RUN_START_TASKS = ["run-start", "open"] as const;
