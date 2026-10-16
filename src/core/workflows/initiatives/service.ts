@@ -1096,6 +1096,7 @@ export class InitiativeService {
         false,
         growthLimit(current, featureId),
         waiting?.shareUsd ?? null,
+        costGrowthLimit(current, featureId),
       ),
       ownerLabel: settings.ownerLabel,
       dependencies: upstream.map((u) => ({
@@ -1949,6 +1950,7 @@ export function featurePolicy(
   humanOnly: boolean,
   growTo: number | null = null,
   shareUsd: number | null = null,
+  growUsd: number | null = null,
 ): RunPolicy {
   const tokens = "tokens" in share ? share.tokens : share.maxTotalTokens;
   const calls = "calls" in share ? share.calls : share.maxAgentCalls;
@@ -1967,10 +1969,22 @@ export function featurePolicy(
           maxTotalTokens,
         })
       : null;
+  const cost = costPolicy(settings, shareUsd);
+  const grown = growTo !== null ? grownSizing(base, maxTotalTokens, growTo) : base.sizing;
+  // The dollar cap grows with the token budget, up to what the initiative can spare (#1353).
+  const own = base.maxCostUsd ?? Number.POSITIVE_INFINITY;
+  const costTo =
+    cost.maxCostUsd !== undefined && cost.maxCostUsd !== null && growUsd !== null
+      ? Math.min(own, cents(growUsd))
+      : null;
+  const sizing =
+    grown?.maxRunTokens != null && costTo !== null && costTo > (cost.maxCostUsd ?? 0)
+      ? { ...grown, maxRunCostUsd: costTo }
+      : grown;
   return PolicySchema.parse({
     ...base,
     maxTotalTokens,
-    ...(growTo !== null ? { sizing: grownSizing(base, maxTotalTokens, growTo) } : {}),
+    ...(sizing !== base.sizing ? { sizing } : {}),
     maxAgentCalls: Math.min(1000, Math.max(MIN_SHARE.maxAgentCalls, calls)),
     maxActiveMs: Math.max(MIN_SHARE.maxActiveMs, ms),
     // A manifest the boundary names was approved with the split, and the feature request lists
@@ -1978,7 +1992,7 @@ export function featurePolicy(
     autoApproval: limits?.success
       ? { ...autoApprovalPolicy(limits.data), requestedManifestEdits: true }
       : null,
-    ...costPolicy(settings, shareUsd),
+    ...cost,
   });
 }
 
@@ -2035,6 +2049,27 @@ export function growthLimit(view: InitiativeView, featureId: string): number | n
     .filter((f) => f.id !== featureId)
     .reduce((sum, f) => sum + (f.need?.low ?? 0), 0);
   return Math.max(0, view.budget.remaining.tokens - reserve);
+}
+
+/**
+ * The dollars a starting feature's cap may grow to with its token budget: what the dollar budget
+ * has left less, for every other feature still waiting, the low end of its estimate at its share's
+ * price per token (its whole dollar share when it has no estimate). A feature's cap was its share,
+ * fixed at start, while its token budget grew: bench round 35's sum feature stopped on its $1.46
+ * cap with 62% of its grown tokens unused and $14 of the initiative unspent (#1353). Null without a
+ * dollar budget.
+ */
+export function costGrowthLimit(view: InitiativeView, featureId: string): number | null {
+  const remaining = view.budget.cost?.remainingUsd;
+  if (remaining === null || remaining === undefined) return null;
+  const reserve = view.features
+    .filter((f) => f.share !== null && f.id !== featureId)
+    .reduce((sum, f) => {
+      const usd = f.shareUsd ?? 0;
+      const tokens = f.share?.tokens ?? 0;
+      return sum + (f.need && tokens > 0 ? Math.min(usd, (f.need.low * usd) / tokens) : usd);
+    }, 0);
+  return Math.max(0, remaining - reserve);
 }
 
 /**

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { canExtendRun } from "../../../../../../src/core/workflows/extendable.js";
 import { reasonText } from "../../../../../../src/core/workflows/reasons.js";
 import { chat } from "../../client/chat.js";
 import {
@@ -252,7 +253,7 @@ function Budget({
   const limit = data.artifacts.estimate?.maxTokens ?? null;
   const estimate = data.artifacts.estimate;
   const calls = data.usage?.attempts.length ?? null;
-  const exhausted = run.status === "blocked" && run.reason === "budget_exhausted";
+  const exhausted = canExtendRun(run);
   const [extra, setExtra] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
