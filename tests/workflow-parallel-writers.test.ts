@@ -90,6 +90,13 @@ class ParallelExecutor implements AgentExecutor {
   capAtLimit: Record<string, number> = {};
   /** Tasks of `capAtLimit` whose last step went past the cap before a final submit was forced (#1070). */
   capUnforced = new Set<string>();
+  /**
+   * Tasks whose first attempt writes a partial file, is finalized by its token cap after an edit
+   * it did not check and submits a complete result (#1329).
+   */
+  cutOffUnchecked = new Set<string>();
+  /** The failed checks each implementation was handed from a cut-off attempt (#1329). */
+  cutOffChecks: { taskId: string; failed?: { id: string; output: string }[] }[] = [];
   /** Tasks whose first attempt reports its edit tool unavailable and submits no change. */
   lostTool = new Set<string>();
   /** Tasks whose first attempt ends blocked with this summary and no change. */
@@ -113,7 +120,7 @@ class ParallelExecutor implements AgentExecutor {
     const task = request.task;
     if (!task) throw new Error("Implementation without a task");
     const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as {
-      extra: { integration?: Record<string, unknown>; earlierEdits?: { paths: string[]; patch: string }; previousAttempt?: { summary: string; unresolved: string[] } };
+      extra: { integration?: Record<string, unknown>; earlierEdits?: { paths: string[]; patch: string }; previousAttempt?: { summary: string; unresolved: string[] }; cutOffChecks?: { failed: { id: string; output: string }[] } };
     };
     const guard = new WorkflowToolPolicy(
       service.store, service.leases, request.runId, request.attemptId, request.profile,
@@ -173,6 +180,17 @@ class ParallelExecutor implements AgentExecutor {
           await write(path, "partial, edited");
         }
         throw attemptCapFault(request.profile.id, 374_264, 374_264);
+      }
+      this.cutOffChecks.push({ taskId: task.id, ...(data.extra.cutOffChecks ? { failed: data.extra.cutOffChecks.failed } : {}) });
+      if (this.cutOffUnchecked.delete(task.id)) {
+        await write(first, "partial");
+        const steps = [["edit_file"], ["request_check"], ["multi_edit"], ["submit_result"]].map((tools) => ({ inputTokens: 25, outputTokens: 25, cacheReadTokens: null, toolCalls: tools.length, tools, compactedBytes: 0 }));
+        service.store.artifact(request.runId, "usage", `attempts/${request.attemptId}/usage.json`, JSON.stringify({ schemaVersion: 1, profileId: request.profile.id, taskId: task.id, maxSteps: request.maxSteps, maxTokens: 1000, stopReason: "submitted", finalizedBy: "tokens", totalTokens: 1000, steps }));
+        return {
+          output: { schemaVersion: 1, taskId: task.id, outcome: "implemented", summary: "Wrote files", evidenceIds: [], unresolved: [] },
+          inputTokens: 25,
+          outputTokens: 25,
+        };
       }
       if (this.capped.delete(task.id)) {
         await write(first, "partial");
@@ -308,6 +326,29 @@ describe("workflow parallel writers", () => {
     expect(attempts[1]?.earlierEdits?.patch).toContain("+partial");
     expect(fx.store.state(run.runId).taskContinuations).toEqual({ T001: 1 });
     expect(fx.store.state(run.runId).taskCarry).toEqual({});
+    expect(readFileSync(join(fx.tree(run.runId), "a.txt"), "utf8")).toBe("A");
+  });
+
+  test("a cut-off attempt whose unchecked edit fails its task check continues in its own task, not integrated (#1329)", async () => {
+    // Bench R33 md-site 11b11f19: corrective T013 hit its token cap after an edit it never
+    // checked, submitted a failing test, and the next corrective's worktree inherited it.
+    const expected = { "a.txt": "A" };
+    const fx = setup([{ id: "T001", files: expected }], expected, {
+      policy: { checks: [contentCheck(expected), { ...contentCheck(expected), id: "where", scope: "task" }] },
+    });
+    fx.executor.cutOffUnchecked.add("T001");
+    const run = await fx.start(2);
+    const done = await fx.complete(run.runId);
+    expect(fx.lastError(run.runId)).toBe("");
+    expect(done.status).toBe("completed");
+    const attempts = fx.executor.earlier.filter((e) => e.taskId === "T001");
+    expect(attempts).toHaveLength(2);
+    // The partial file was never integrated: the continuation gets it as its own earlier edit.
+    expect(attempts[1]?.content).toBe("partial");
+    expect(attempts[1]?.earlierEdits?.paths).toEqual(["a.txt"]);
+    expect(fx.executor.cutOffChecks.filter((c) => c.taskId === "T001").map((c) => c.failed?.map((f) => f.id))).toEqual([undefined, ["where"]]);
+    expect(fx.store.state(run.runId).taskContinuations).toEqual({ T001: 1 });
+    expect((fx.store.state(run.runId).graph?.tasks ?? []).map((t) => t.id)).toEqual(["T001"]);
     expect(readFileSync(join(fx.tree(run.runId), "a.txt"), "utf8")).toBe("A");
   });
 
