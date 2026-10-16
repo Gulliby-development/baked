@@ -11,8 +11,12 @@ export interface Diagnostic {
   text: string;
 }
 
-/** A diagnostic header followed by a location line: rustc, clippy (`error[E0308]: ...` / `--> a.rs:3:5`). */
-const HEADER = /^(?:error|warning)(?:\[[A-Za-z0-9]+\])?:\s*\S/;
+/**
+ * A diagnostic header followed by a location line: rustc, clippy (`error[E0308]: ...` / `--> a.rs:3:5`)
+ * and ruff's default `full` format (`F401 [*] \`os\` imported but unused` / `--> tools/a.py:1:8`, #1326).
+ */
+const HEADER =
+  /^(?:(?:error|warning)(?:\[[A-Za-z0-9]+\])?:|[A-Z]{1,4}\d{2,4}\b(?:\s+\[\*\])?\s)\s*\S/;
 const ARROW = /^\s*-->\s*(.+?):\d+(?::\d+)?\s*$/;
 /** `path(3,5): msg` (tsc), `path:3:5: msg` or `path:3:5 - msg` (tsc pretty, pyright, go vet), `path:3: msg` (mypy). */
 const LOCATED = /^\s*(.+?\.[A-Za-z0-9]+)(?:\(\d+,\d+\)|:\d+(?::\d+)?)\s*(?::|-)\s*(.+)$/;

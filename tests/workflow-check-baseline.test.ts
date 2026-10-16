@@ -316,6 +316,27 @@ describe("baseline comparison in update runs", () => {
       expect(baselineDebt(out, "/w", { baseline: ["biome.json|format"], changed: [], summary: 2 })).toBeNull();
     });
 
+    // #1326: ruff's default `full` format puts the rule code on its own header line and the
+    // location on a `-->` line; the parser found nothing in it, so the run stopped on F401 debt.
+    test("ruff debt in its default output format passes the check and the run completes", async () => {
+      const full = "F401 [*] `os` imported but unused\n --> tools/legacy.py:1:8\n  |\n1 | import os\n  |        ^^\n  |\nhelp: Remove unused import: `os`\n\nFound 1 error.\n[*] 1 fixable with the `--fix` option.";
+      expect(baselineKeys(full, "/w")).toEqual(["tools/legacy.py|F# [*] `os` imported but unused"]);
+      const ruff = {
+        ...lint,
+        id: "ruff",
+        args: ["-e", `console.log(${JSON.stringify(full)}); process.exit(1)`],
+      };
+      const fixture = workflowFixture({
+        policy: { ...fixturePolicy, staticBaseline: "relative", checks: [...fixturePolicy.checks, ruff] },
+      });
+      cleanups.push(fixture.dispose);
+      mkdirSync(join(fixture.root, "tools"));
+      writeFileSync(join(fixture.root, "tools", "legacy.py"), "import os\n");
+      const run = await driveToChecks(fixture);
+      expect(baseline(fixture, run.runId)?.debt).toEqual({ [commandKey(ruff)]: ["tools/legacy.py|F# [*] `os` imported but unused"] });
+      expect((await fixture.service.get(run.runId)).status).toBe("completed");
+    });
+
     test("the same diagnostic in a file a task writes still fails the check", async () => {
       const { fixture, run } = await scenario("src/duration.ts format");
       const findings = fixture.service.store.findings(run.runId).map((f) => JSON.parse(f.body_json) as { claim: string });
