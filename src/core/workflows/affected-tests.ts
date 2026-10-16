@@ -348,14 +348,43 @@ export function writtenTestsCheck(
   const gate = affectedTestCheck(checks, files);
   if (!gate) return null;
   const minCases = requiredCases(text);
+  const timeoutMs = Math.min(gate.timeoutMs, WRITTEN_TESTS_TIMEOUT_MS);
   return {
     ...gate,
     id: gate.id.replace(/-affected$/, "-written"),
+    args: withPerTestTimeout(gate, timeoutMs),
     required: true,
-    timeoutMs: Math.min(gate.timeoutMs, WRITTEN_TESTS_TIMEOUT_MS),
+    timeoutMs,
     onTimeout: "failed",
     ...(minCases !== undefined ? { minCases } : {}),
   };
+}
+
+const TIMEOUT_FLAG = /^--(?:timeout|testTimeout|test-timeout)\b/;
+
+/**
+ * `check`'s arguments with a per-test timeout for the runners whose default is 5 s (bun test,
+ * jest, vitest): half the check's timeout and at least 30 s, when that is shorter than the whole check. md-site 095b7b11
+ * (bench round 38, #1385) built 100 temporary sites in one property test; bun stopped it at 5 s
+ * while the check allowed 60 s, and the chain cost 2.71M tokens. An existing flag is kept.
+ */
+export function withPerTestTimeout(check: Check, timeoutMs: number): string[] {
+  const args = check.args;
+  if (args.some((arg) => TIMEOUT_FLAG.test(arg))) return args;
+  const name = programName(check.executable);
+  const ms = Math.max(30_000, Math.floor(timeoutMs / 2));
+  if (ms >= timeoutMs) return args;
+  const runner = name === "npx" || name === "bunx" ? args[0] : name;
+  const flags =
+    name === "bun" && args[0] === "test"
+      ? ["--timeout", String(ms)]
+      : runner === "jest" || runner === "vitest"
+        ? [`--testTimeout=${String(ms)}`]
+        : [];
+  if (!flags.length) return args;
+  const first = args.findIndex((arg) => arg.startsWith("./"));
+  const at = first === -1 ? args.length : first;
+  return [...args.slice(0, at), ...flags, ...args.slice(at)];
 }
 
 const CASE_COUNT =
