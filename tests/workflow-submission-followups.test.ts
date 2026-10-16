@@ -48,6 +48,27 @@ test("resuming after invalid output gives the stage the diagnostic as a correcti
   expect(service.store.state(run.runId).prompt.split(note)).toHaveLength(2);
 });
 
+// narrowfit 3c2e3629 (#1348): the run stopped with the same diagnostic after a resume, and two more
+// resumes and an extension repeated the same attempt until a replan.
+test("a resume after the same invalid output stopped the run again is refused with the ways out", async () => {
+  const fixture = workflowFixture();
+  cleanups.push(fixture.dispose);
+  const { service, executor } = fixture;
+  const original = executor.execute.bind(executor);
+  executor.execute = async (request: ExecutionRequest) =>
+    request.profile.output === "analysis"
+      ? { output: { schemaVersion: 1, verdict: "maybe", findings: [] }, inputTokens: 25, outputTokens: 25 }
+      : original(request);
+  const run = await fixture.start();
+  expect(await service.drive(run.runId, signal())).toMatchObject({ status: "blocked", reason: "invalid_output" });
+  await fixture.resume(run.runId);
+  expect(await service.drive(run.runId, signal())).toMatchObject({ status: "blocked", reason: "invalid_output" });
+  const refused = await fixture.resume(run.runId).then(() => null, (error: Error) => error.message);
+  expect(refused).toContain("stopped again with the same diagnostic");
+  expect(refused).toContain("initiative replan");
+  expect(service.store.run(run.runId)).toMatchObject({ status: "blocked", reason: "invalid_output" });
+});
+
 test("an analysis submission without a well-formed input hash is not rejected for it", () => {
   const filled = fillHostConstants("analysis", 1, { verdict: "pass", findings: [] }) as { inputHash: string; schemaVersion: number };
   expect(filled.inputHash).toMatch(/^[a-f0-9]{64}$/);
