@@ -128,6 +128,7 @@ import {
   isHostSplitNit,
   knownRisks,
   namesExampleRule,
+  namesPlatformLimit,
   namesRequestSide,
   persistentDefect,
   REQUEST_NOTE,
@@ -189,6 +190,7 @@ import {
   CONFLICT_DECISION_PREFIX,
   conflictDecisions,
   decidedFindingIds,
+  recordConflictDecision,
 } from "./conflict-decisions.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
 import { inCostWrapUp } from "./cost-tolerance.js";
@@ -7975,9 +7977,15 @@ ${note}`;
     // copies the request's example (#992).
     const example = first && writesOnlyDocs(task) && namesExampleRule(report);
     const assume = first && (example || namesRequestSide(report));
-    const tests = first && !assume ? this.conflictingTests(runId, state, task, report) : [];
+    // One side is what the platform cannot do at all: no person can choose it, so the nearest
+    // feasible behavior the task named holds (#1384).
+    const platform = first && !assume && namesPlatformLimit(report);
+    const tests =
+      first && !assume && !platform ? this.conflictingTests(runId, state, task, report) : [];
     const own =
-      first && !assume && !tests.length ? this.ownRunTests(runId, state, task, report) : [];
+      first && !assume && !platform && !tests.length
+        ? this.ownRunTests(runId, state, task, report)
+        : [];
     this.store.transaction(() => {
       this.store.artifact(
         runId,
@@ -7997,9 +8005,26 @@ ${note}`;
               : "The request is authoritative",
           }),
         );
+      if (platform) {
+        const assumed =
+          "The platform cannot carry or represent what one side demands: the nearest feasible behavior the task named holds";
+        this.store.artifact(runId, "assumption", assumedPath, canonical({ ...account, assumed }));
+        // Like a person's answer, the assumption decides the findings the task corrects, so a
+        // repro that expects the impossible value no longer gates it (#1350).
+        recordConflictDecision(this.store, runId, {
+          requestId: `assumed-${task.id}`,
+          taskId: task.id,
+          findingIds: task.findingIds,
+          answer: `Assumed under clarification assume (${assumedPath}): ${assumed}.`,
+        });
+      }
       this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
       this.store.finishStep(runId, child, "failed");
     });
+    if (platform) {
+      state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the platform cannot do what a criterion, a test or a finding demands: ${report.slice(0, 1500)} Implement the nearest feasible behavior the report names (for a value a protocol cannot carry, its standard serialized form). Where a test this run wrote asserts the impossible value, change only that assertion to the feasible behavior; weaken no other test. ${task.findingIds.length ? `The repros of ${task.findingIds.join(", ")} no longer gate the task. ` : ""}Report implemented or already_satisfied, not spec_conflict.`;
+      return;
+    }
     if (example) {
       state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the rule for documentation examples contradicts the request: ${report.slice(0, 1500)} The request is authoritative: copy every example output the request or the spec gives into the documentation exactly as given, even when its files are not in the workspace, and name the copied examples in the summary. Run probes only for examples the request does not give.`;
       return;
