@@ -393,6 +393,7 @@ type Implementation = ReturnType<typeof ImplementationSchema.parse>;
 
 import { browserLayoutProbe, type LayoutProbe, layoutVerdict } from "./layout-check.js";
 import { planCostOf } from "./plan-cost.js";
+import { EDIT_TOOLS } from "./progress-watch.js";
 import {
   applyRevision,
   MAX_PATCH_FINDINGS,
@@ -2518,6 +2519,71 @@ export class WorkflowScheduler {
     state.taskBudgets[task.id] = Math.ceil(record.maxTokens * 1.5);
     state.taskSteps[task.id] = Math.ceil(record.maxSteps * 1.5);
     return true;
+  }
+  /**
+   * Whether a task whose attempt was cut off continues with the output of a required check it
+   * fails (#1329). md-site 11b11f19 (bench round 33): corrective T013 hit its token cap after 14
+   * steps, edited a test after its last request_check and submitted a complete result; the test
+   * expected `.md` where the spec says `.html`, the check failed after the attempt, a sibling
+   * inherited the failing test and the run stopped `no_progress`. When the attempt was finalized
+   * by its token or step cap or the progress watcher after an edit it did not check, the host runs
+   * the task's required checks before the result is accepted; a failure sends the task back once
+   * as a continuation at the cap, with the failing output, instead of opening a finding.
+   */
+  private async cutOffCheckFailures(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    stepId: string,
+    task: Task,
+    changed: string[],
+    signal: AbortSignal,
+    root: string,
+    run: (check: Check) => Promise<WorkerCheck["checked"]>,
+  ): Promise<boolean> {
+    if (!changed.length || (state.taskContinuations[task.id] ?? 0) > 0) return false;
+    if (this.testsPending(state, policy) && isTestTask(task)) return false;
+    const record = this.lastAttemptUsage(runId, stepId);
+    if (!record || !record.finalizedBy || !editedAfterLastCheck(record)) return false;
+    const failed: { id: string; output: string }[] = [];
+    for (const check of this.gatedChecks(runId, state, policy, task, root)) {
+      if (!check.required) continue;
+      signal.throwIfAborted();
+      const checked = await run(check);
+      if (checked.status === "failed")
+        failed.push({ id: check.id, output: (checked.output ?? "").slice(-4000) });
+    }
+    if (!failed.length) return false;
+    this.store.transaction(() => {
+      state.taskContinuations[task.id] = 1;
+      state.taskBudgets[task.id] = Math.ceil(record.maxTokens * 1.5);
+      state.taskSteps[task.id] = Math.ceil(record.maxSteps * 1.5);
+      this.store.artifact(
+        runId,
+        "recovery",
+        `tasks/${task.id}/cut-off-checks.json`,
+        canonical({ taskId: task.id, stepId, finalizedBy: record.finalizedBy, failed }),
+      );
+      this.store.saveState(runId, state);
+    });
+    return true;
+  }
+  /** The required checks a task failed after an attempt was cut off (#1329), for its continuation. */
+  private cutOffChecks(
+    runId: string,
+    taskId: string,
+  ): { cutOffChecks?: { failed: { id: string; output: string }[]; note: string } } {
+    const artifact = this.store.latestArtifact(runId, `tasks/${taskId}/cut-off-checks.json`);
+    if (!artifact) return {};
+    const record = JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+      failed: { id: string; output: string }[];
+    };
+    return {
+      cutOffChecks: {
+        failed: record.failed,
+        note: "An earlier attempt of this task reached its limit after edits it did not check, and these required checks failed on its files, with this output. Fix what fails, run the check with request_check, then submit.",
+      },
+    };
   }
   /** The usage record of a step's latest attempt when its task may still continue at the cap. */
   private capContinuable(
@@ -4867,6 +4933,7 @@ ${note}`;
               unresolvedMeans: UNRESOLVED_MEANING,
               ...(await this.libraryDocsContext(runId, policy, root, task)),
               ...this.previousAttempt(runId, task.id),
+              ...this.cutOffChecks(runId, task.id),
               ...(focus.files.length
                 ? {
                     correctionFocus: {
@@ -5073,6 +5140,28 @@ ${note}`;
           `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}${correctionReason(correction)}${refusedReason(refused)}`,
           refused.length ? { reason: "input_changed", paths: refused } : {},
         );
+      }
+      if (
+        await this.cutOffCheckFailures(
+          runId,
+          state,
+          policy,
+          child,
+          task,
+          changed,
+          signal,
+          root,
+          (check) => this.runTaskCheck(runId, child, check, policy, signal, root),
+        )
+      ) {
+        this.store.transaction(() => {
+          this.store.taskStatus(runId, task.id, "interrupted", null, {
+            cause: "continue_at_cap",
+          });
+          this.store.finishStep(runId, child, "failed");
+          this.store.saveState(runId, state);
+        });
+        return;
       }
       if (result.outcome === "already_satisfied")
         this.validateSatisfiedEvidence(runId, state, after, result);
@@ -5745,8 +5834,11 @@ ${note}`;
         this.store.finishStep(runId, entry.child, "interrupted");
       });
     } else if (outcome.kind === "rejected") {
-      const cause: InterruptCause | null =
-        this.fallBackFromQuickFix(state, entry.task) || this.widenCorrection(state, entry, outcome)
+      // A cut-off attempt whose check failed already continues at its cap (#1329).
+      const cause: InterruptCause | null = outcome.continued
+        ? "continue_at_cap"
+        : this.fallBackFromQuickFix(state, entry.task) ||
+            this.widenCorrection(state, entry, outcome)
           ? "widened_correction"
           : outcome.blocked !== undefined &&
               this.deferOnMissingArtifact(
@@ -5910,6 +6002,7 @@ ${note}`;
         ...fresh.extra,
         unresolvedMeans: UNRESOLVED_MEANING,
         ...this.previousAttempt(runId, task.id),
+        ...this.cutOffChecks(runId, task.id),
       };
       const needed = reserveTokens(
         this.estimatePrompt(runId, state, policy, profile, extra),
@@ -6149,6 +6242,30 @@ ${note}`;
             "OUTPUT_INVALID",
             `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}${correctionReason(correction)}${refusedReason(refused)}`,
             refused.length ? { reason: "input_changed", paths: refused } : {},
+          ),
+        };
+      if (
+        await this.cutOffCheckFailures(
+          runId,
+          state,
+          policy,
+          entry.child,
+          task,
+          changed,
+          signal,
+          root,
+          (check) =>
+            checks.run(() => this.runTaskCheck(runId, entry.child, check, policy, signal, root)),
+        )
+      )
+        return {
+          kind: "rejected",
+          entry,
+          continued: true,
+          edits: { before, changed },
+          error: new WorkflowFault(
+            "OUTPUT_INVALID",
+            `Task ${task.id} failed a required check after edits its cut-off attempt did not check`,
           ),
         };
       if (result.outcome === "already_satisfied")
@@ -11806,6 +11923,19 @@ interface WorkerCheck {
   check: Check;
   checked: { status: "passed" | "failed" | "inconclusive"; evidenceId: string; output?: string };
 }
+/**
+ * Whether an attempt's last edit came after its last request_check, from the tool names its usage
+ * record keeps; false for a record written before step tools were recorded.
+ */
+function editedAfterLastCheck(record: AttemptUsageRecord): boolean {
+  let edit = -1;
+  let check = -1;
+  record.steps.forEach((step, index) => {
+    if (step.tools?.some((tool) => EDIT_TOOLS.has(tool))) edit = index;
+    if (step.tools?.includes("request_check")) check = index;
+  });
+  return edit > check;
+}
 /** How a task worker ended; only `done` is integrated. */
 /** Whether every file a task writes (a deletion aside) is among the given files; false for none. */
 function ownsOnly(task: Task, files: ReadonlySet<string>): boolean {
@@ -11833,6 +11963,8 @@ type WorkerOutcome =
       restart?: { reason: string; account: { summary: string; unresolved: string[] } };
       /** The files the attempt changed in its worktree, with the manifest before it. */
       edits?: { before: Record<string, string>; changed: string[] };
+      /** The task already continues at its cap: its cut-off attempt failed a required check (#1329). */
+      continued?: true;
       /** The worker's result when it changed nothing, for a deferral on a missing artifact. */
       blocked?: { outcome: string; summary: string; unresolved: string[] };
       /** The attempt was a correction's narrowed first attempt: the next one may write its scope. */

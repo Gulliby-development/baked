@@ -96,7 +96,7 @@ export function finalizeNotice(reason: FinalizeReason, watched?: WatchFinding): 
   if (reason === "watcher")
     return `The progress watcher ended this attempt early: ${watched?.detail ?? "the same pattern continued after the warning"}. Do not call any other tool. Call submit_result now with the work already done and list what blocks you as unresolved.`;
   const limit = reason === "steps" ? "step limit" : "token budget";
-  return `The ${limit} for this task is reached. Do not call any other tool. Call submit_result now with the complete result for the work already done; list anything unfinished as unresolved instead of continuing. The host runs the checks after you, so a check you did not run again is not unresolved.`;
+  return `The ${limit} for this task is reached. Do not call any other tool. Call submit_result now with the complete result for the work already done; list anything unfinished as unresolved instead of continuing. A check you did not run is not unresolved: the host runs the task's required checks on your files, and one that fails after an edit you did not check comes back to this task once.`;
 }
 
 /** Notice added once when an attempt that must edit has only read for several steps. */
