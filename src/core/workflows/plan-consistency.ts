@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { workspacePath } from "../specs/validate.js";
 import type { AgentProfile, Spec, TaskGraph } from "./schemas.js";
-import { fileKind } from "./sizing.js";
+import { fileKind, SPLIT_PART } from "./sizing.js";
 import type { Task } from "./types.js";
 
 /** Cross-artifact checks that analysis would otherwise spend model rounds on. */
@@ -15,6 +15,7 @@ export const PLAN_CONSISTENCY_CHECKS = [
   "a task with checks that creates a Rust module file also writes the lib.rs, main.rs or mod.rs that declares it, so its checks compile it",
   "code created after a task creates the entry point (main, cli, app, server, program) is wired in by a task that writes the entry point and runs after it",
   "a documentation task that runs the program to capture its output runs after the tasks that write the program's entry points",
+  "each task has its own description, and no task's description tells it to create a file another task writes",
 ];
 
 /** A file that declares or re-exports the modules next to it. */
@@ -474,5 +475,51 @@ export function planConsistencyProblems(
       }
   problems.push(...unwiredEntryPoints(graph));
   problems.push(...undeclaredRustModules(workspace, graph));
+  problems.push(...copiedTaskTexts(graph));
+  return problems;
+}
+
+/** A file name a description tells its task to create: "Create DiffIgnoreStyleTests.cs ...". */
+const CREATES_FILE =
+  /\b(?:create|add|write)s?\s+(?:(?:a|an|the|new)\s+){0,2}`?([\w./-]*\w\.[A-Za-z][A-Za-z0-9]{0,5})\b`?/gi;
+const baseName = (path: string): string => path.slice(path.lastIndexOf("/") + 1);
+
+/**
+ * Tasks whose description was copied from another task (#1377). vtsnap-update b436e161 (bench
+ * round 37): T003, T004 and T005 had the same title and description, "Create
+ * DiffIgnoreStyleTests.cs following CliTests layout ...", while T004 and T005 modify CliTests.cs
+ * and DocsTests.cs, so two tasks worked from an instruction outside their write scope.
+ */
+export function copiedTaskTexts(graph: TaskGraph): string[] {
+  const problems: string[] = [];
+  const text = (description: string): string =>
+    description.replace(/\s+/g, " ").trim().toLowerCase();
+  const byText = new Map<string, string[]>();
+  for (const task of graph.tasks) {
+    const key = text(task.description);
+    if (key.length < 20) continue;
+    byText.set(key, [...(byText.get(key) ?? []), task.id]);
+  }
+  for (const ids of byText.values())
+    if (ids.length > 1)
+      problems.push(
+        `${ids.join(", ")} have the same description; give each task the description of its own writes`,
+      );
+  for (const task of graph.tasks) {
+    // A sizing split part keeps its task's description, which names the other parts' files.
+    if (task.description.includes(SPLIT_PART)) continue;
+    const own = new Set(task.writes.map((w) => baseName(w.path)));
+    for (const match of task.description.matchAll(CREATES_FILE)) {
+      const name = baseName(match[1] ?? "");
+      if (!name || own.has(name)) continue;
+      const writer = graph.tasks.find(
+        (other) => other.id !== task.id && other.writes.some((w) => baseName(w.path) === name),
+      );
+      if (writer)
+        problems.push(
+          `${task.id}'s description says to create ${name}, which ${writer.id} writes and ${task.id} does not; describe the files ${task.id} writes`,
+        );
+    }
+  }
   return problems;
 }
