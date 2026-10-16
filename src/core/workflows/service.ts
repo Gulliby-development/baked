@@ -371,6 +371,7 @@ export class NativeWorkflowService implements WorkflowService {
       pendingPatch: null,
       taskContinuations: {},
       taskEditRetries: {},
+      taskProgressAttempts: {},
       quickFixes: {},
       taskRestarts: {},
       ownerLostResumes: 0,

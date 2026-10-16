@@ -252,6 +252,12 @@ export const RuntimeStateSchema = z
      */
     taskEditRetries: z.record(z.string(), z.number().int().nonnegative()).default({}),
     /**
+     * Progress attempts per task (#1351): a task that used its continuation and its restart and
+     * still ends at its cap gets one more attempt when its failing checks moved since the attempt
+     * before.
+     */
+    taskProgressAttempts: z.record(z.string(), z.number().int().nonnegative()).default({}),
+    /**
      * Corrections started as a quick fix (`quickFix: "on"`, #1001): `quick` while the first,
      * small attempt runs, `full` once it fell back to the usual budget and scope.
      */
