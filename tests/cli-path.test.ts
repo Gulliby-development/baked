@@ -7,6 +7,7 @@ import {
   CliPathResolver,
   describeSearch,
   parseLoginShellPath,
+  parseRegistryPath,
   wellKnownBinDirs,
 } from "../src/core/platform/cli-path.js";
 
@@ -19,6 +20,8 @@ function fakeHost(options: {
   dirs?: Record<string, string[]>;
   shellPath?: string | null;
   env?: NodeJS.ProcessEnv;
+  modified?: Record<string, number>;
+  registryPath?: () => string | null;
 }): CliPathHost & { shellReads: number } {
   const files = new Set(options.files ?? []);
   const host = {
@@ -32,6 +35,8 @@ function fakeHost(options: {
       host.shellReads++;
       return options.shellPath ?? null;
     },
+    modifiedMs: (path: string) => options.modified?.[path] ?? 0,
+    registryPath: () => options.registryPath?.() ?? null,
   };
   return host;
 }
@@ -108,6 +113,52 @@ describe("CLI path resolution", () => {
     const missing = new CliPathResolver(fakeHost({ platform: "win32", path: dir }));
     expect(missing.resolve("claude").found).toBe(false);
     expect(wellKnownBinDirs(fakeHost({ platform: "win32" }))).not.toContain("/opt/homebrew/bin");
+  });
+
+  // sketchfold R34 (#1337): the Codex desktop app updated itself mid-run and moved its CLI to a
+  // new version folder; the PATH the run held still named the removed one.
+  test("Windows finds the Codex app's newest version folder after the app updated itself", () => {
+    const bin = "C:\\Users\\dev\\AppData\\Local\\OpenAI\\Codex\\bin";
+    const host = fakeHost({
+      platform: "win32",
+      path: `${bin}\\26.1009.1`,
+      env: { PATHEXT: ".EXE", LOCALAPPDATA: "C:\\Users\\dev\\AppData\\Local" },
+      dirs: { [bin]: ["26.1009.1", "26.1015.2", "26.1001.0"] },
+      modified: { [`${bin}\\26.1015.2`]: 3000, [`${bin}\\26.1001.0`]: 1000, [`${bin}\\26.1009.1`]: 2000 },
+      files: [`${bin}\\26.1015.2\\codex.exe`, `${bin}\\26.1001.0\\codex.exe`],
+    });
+    const dirs = wellKnownBinDirs(host);
+    expect(dirs.indexOf(`${bin}\\26.1015.2`)).toBeLessThan(dirs.indexOf(`${bin}\\26.1001.0`));
+    expect(new CliPathResolver(host).resolve("codex")).toEqual({ command: "codex", found: true, searched: [] });
+    // The bare name spawns from the new folder.
+    expect(host.env.PATH?.split(";")[0]).toBe(`${bin}\\26.1015.2`);
+  });
+
+  test("Windows reads the registry PATH again on every miss", () => {
+    let registry: string | null = null;
+    let reads = 0;
+    const host = fakeHost({
+      platform: "win32",
+      path: "C:\\Old",
+      env: { PATHEXT: ".EXE" },
+      files: ["D:\\Tools\\codex.exe"],
+      registryPath: () => {
+        reads++;
+        return registry;
+      },
+    });
+    const resolver = new CliPathResolver(host);
+    expect(resolver.resolve("codex").found).toBe(false);
+    registry = "C:\\Old;D:\\Tools";
+    expect(resolver.resolve("codex").found).toBe(true);
+    expect(reads).toBe(2);
+    expect(host.env.PATH?.split(";")[0]).toBe("D:\\Tools");
+  });
+
+  test("a registry PATH value is parsed and its variables expanded", () => {
+    const output = "\r\nHKEY_CURRENT_USER\\Environment\r\n    Path    REG_EXPAND_SZ    %LOCALAPPDATA%\\Codex;C:\\Bin\r\n";
+    expect(parseRegistryPath(output, { LocalAppData: "C:\\L" })).toBe("C:\\L\\Codex;C:\\Bin");
+    expect(parseRegistryPath("ERROR: not found", {})).toBeNull();
   });
 
   test("the login shell PATH is read between markers, ignoring profile output", () => {
