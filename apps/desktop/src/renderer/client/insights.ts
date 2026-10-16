@@ -171,7 +171,13 @@ export interface InitiativeEstimate {
     spent?: number;
   }[];
   /** Tokens used so far and the measured-to-forecast ratio; absent on older backends. */
-  progress?: { spent: number; accepted: number; ratio: number | null };
+  progress?: {
+    spent: number;
+    accepted: number;
+    ratio: number | null;
+    /** The same ratio per feature size with an accepted feature, which scales that size instead. */
+    bySize?: Partial<Record<"small" | "medium" | "large", number>>;
+  };
   notes: string[];
   label: string;
 }
