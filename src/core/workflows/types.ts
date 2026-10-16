@@ -536,6 +536,11 @@ export interface ExecutionRequest {
    */
   caseCheck?: (root: string) => Promise<string[]>;
   /**
+   * The writes whose test files the task's tests-written check runs, when they are not all of the
+   * task's writes: a correction's check runs only the tests its findings point at (#1373).
+   */
+  writtenTests?: Task["writes"];
+  /**
    * The errors of a failed `request_check` run that belong to the task, for a whole-unit check
    * that runs in the checks stage rather than after the task (#799); null for any other check.
    */

@@ -2565,7 +2565,7 @@ export class WorkflowScheduler {
     const record = this.lastAttemptUsage(runId, stepId);
     if (!record || !record.finalizedBy || !editedAfterLastCheck(record)) return false;
     const failed: { id: string; output: string }[] = [];
-    for (const check of this.gatedChecks(runId, state, policy, task, root)) {
+    for (const check of this.gatedChecks(runId, state, policy, task, root, changed)) {
       if (!check.required) continue;
       signal.throwIfAborted();
       const checked = await run(check);
@@ -3856,6 +3856,9 @@ export class WorkflowScheduler {
         ...(taskEndCheck ? { taskEndCheck } : {}),
         ...(reproCheck ? { reproCheck } : {}),
         ...(caseCheck ? { caseCheck } : {}),
+        ...(task && task.origin !== "planned"
+          ? { writtenTests: this.writtenTestWrites(runId, state, task) }
+          : {}),
         ...(attributeCheck ? { attributeCheck } : {}),
         ...(this.formatHints(runId, state, profile.output, task)
           ? { formatHints: this.formatHints(runId, state, profile.output, task) }
@@ -6429,7 +6432,7 @@ ${note}`;
       if (result.outcome === "already_satisfied")
         this.validateSatisfiedEvidence(runId, state, after, result);
       const results: WorkerCheck[] = [];
-      for (const check of this.gatedChecks(runId, state, policy, task, root)) {
+      for (const check of this.gatedChecks(runId, state, policy, task, root, changed)) {
         const checked = await checks.run(() =>
           this.runTaskCheck(runId, entry.child, check, policy, signal, root),
         );
@@ -7426,9 +7429,10 @@ ${note}`;
     policy: RunPolicy,
     task: Task,
     root: string,
+    changed: readonly string[] = [],
   ): Check[] {
     const own = taskChecks(policy, task);
-    const written = this.writtenTestsCheck(runId, state, policy, task, root, own);
+    const written = this.writtenTestsCheck(runId, state, policy, task, root, own, changed);
     const gated = written ? [...own, written] : own;
     const record = this.affectedRecord(state, task);
     if (record?.baseline !== "passed" || !record.checkId) return gated;
@@ -7455,9 +7459,15 @@ ${note}`;
     task: Task,
     root: string,
     own: readonly Check[],
+    changed: readonly string[],
   ): Check | null {
     if (this.testsPending(state, policy)) return null;
-    const gate = writtenTestsCheck(root, policy.checks, task.writes, taskCaseText(task));
+    const gate = writtenTestsCheck(
+      root,
+      policy.checks,
+      this.writtenTestWrites(runId, state, task, changed),
+      taskCaseText(task),
+    );
     if (!gate) return null;
     const suite = gate.id.replace(/-written$/, "");
     if (own.some((c) => c.id === suite)) return null;
@@ -7480,6 +7490,31 @@ ${note}`;
     )
       return null;
     return gate;
+  }
+  /**
+   * The writes whose test files a task's tests-written check runs. A correction may write every
+   * file of the tasks it repairs, so the check of all its test files ran the failing tests of
+   * siblings still in flight and opened a correction of the correction (md-site T008 to T009,
+   * 4.31M tokens; ranktally T011 to T012; bench round 37, #1373). A correction's check runs only
+   * the test files its findings point at and the ones it changed itself (`changed`, before the
+   * attempt's diff is recorded).
+   */
+  private writtenTestWrites(
+    runId: string,
+    state: RuntimeState,
+    task: Task,
+    changed: readonly string[] = [],
+  ): Task["writes"] {
+    if (task.origin === "planned" || !task.findingIds.length) return task.writes;
+    const tests = task.writes.filter((w) => isTestFile(w.path));
+    if (!tests.length) return tests;
+    const scope = new Set([...correctionFocus(this.store, runId, state, task).files, ...changed]);
+    for (const row of this.store.artifacts(runId)) {
+      if (row.logical_path !== `tasks/${task.id}/diff.json`) continue;
+      const diff = JSON.parse(this.store.readArtifact(runId, row.id)) as { changed?: string[] };
+      for (const path of diff.changed ?? []) scope.add(path);
+    }
+    return tests.filter((w) => scope.has(w.path));
   }
   /**
    * Docs for the locked versions of the libraries a task uses, from the run's `libraryDocs`
@@ -8370,9 +8405,11 @@ ${note}`;
             : `Fix ${task.id} within its approved paths and repeat ${check.id}.`,
     });
     // A correction keeps the generated inputs the task requires, and its own check knows the
-    // number from this text (#1367).
+    // number from this text (#1367). Only after a timeout: on an assertion failure the note sent
+    // the correction after speed instead of the defect (#1373).
     const last = taskFailures.at(-1);
-    if (last && !regression && check.minCases !== undefined)
+    const timedOut = /timed out after|did not finish within/.test(checked.output ?? "");
+    if (last && !regression && timedOut && check.minCases !== undefined)
       last.suggestedFix += ` Keep at least ${String(check.minCases)} generated inputs, as ${task.id} requires: make each case cheap so ${check.id} finishes within ${String(check.timeoutMs)} ms rather than generating fewer.`;
     return undefined;
   }
