@@ -30,10 +30,15 @@ export interface Task {
   title: string;
   description: string;
   dependsOn: string[];
-  writes: { path: string; action: string }[];
+  /** `content` is set when the plan fixed the file's whole content and the host writes it. */
+  writes: { path: string; action: string; content?: string }[];
   checkIds: string[];
   origin: string;
 }
+/** Whether the host writes the task's files with no agent (`hostWritten` in task-graph.ts). */
+export const hostWritten = (task: Pick<Task, "writes">): boolean =>
+  task.writes.length > 0 &&
+  task.writes.every((w) => w.action !== "delete" && w.content !== undefined);
 /** `tasks.json` (TaskGraphSchema). */
 export interface TaskGraph {
   tasks: Task[];

@@ -452,6 +452,8 @@ import {
 import {
   documentsOnly,
   hasTaskGate,
+  hostContentProblems,
+  hostWritten,
   missingArtifactOwners,
   namesPath,
   pendingCodePaths,
@@ -1194,6 +1196,7 @@ export class WorkflowScheduler {
                 const problems = [
                   ...this.planProblems(runId, spec, submitted, policy, profiles),
                   ...codeTaskCheckProblems(submitted.taskGraph, policy),
+                  ...hostContentProblems(submitted.taskGraph),
                   ...testWriteProblems(submitted.taskGraph, policy),
                   ...testsFirstProblems(spec, submitted.taskGraph, policy),
                 ];
@@ -2993,6 +2996,7 @@ export class WorkflowScheduler {
         row.status === "interrupted" ||
         !checks.length ||
         !task.writes.length ||
+        hostWritten(task) ||
         // Its earlier implementation passed its checks under this very definition; a revision
         // that changed it (or reset the gates) always implements it again.
         state.taskGates[task.id]?.definitionHash !== hashJson(task) ||
@@ -5038,10 +5042,13 @@ ${note}`;
     if (
       !checking &&
       (task.writes.length === 0 ||
+        hostWritten(task) ||
         (firstRun && (await this.correctionPassing(runId, child, state, policy, task, signal))))
     ) {
-      // A task that may not write, or a correction whose failing checks already pass, has nothing
-      // for a model to do: its task checks decide it, and the checks stage covers the rest.
+      // A task that may not write, a task whose files the host writes, or a correction whose
+      // failing checks already pass, has nothing for a model to do: its task checks decide it,
+      // and the checks stage covers the rest.
+      if (hostWritten(task)) this.writeHostFiles(runId, child, state, policy, task);
       await this.snapshot(runId, state, policy, signal);
       this.store.transaction(() => {
         this.store.taskStatus(runId, task.id, "implemented", state.snapshotId);
@@ -5503,7 +5510,7 @@ ${note}`;
       const ready = runnable;
       if (!checking && (await this.hostFirstReruns(runId, stepId, state, policy, signal, ready)))
         continue;
-      const single = checking ?? ready.find((t) => t.writes.length === 0);
+      const single = checking ?? ready.find((t) => t.writes.length === 0 || hostWritten(t));
       signal.throwIfAborted();
       if (single) {
         await this.implementTask(
@@ -7636,6 +7643,29 @@ ${note}`;
           },
         }
       : {};
+  }
+  /**
+   * Writes a host-written task's files with the content its plan fixed, journaled as the task's
+   * own edits so review, undo and delivery see them, with no agent attempt (#1460). A file that
+   * already has that content is left as it is.
+   */
+  private writeHostFiles(
+    runId: string,
+    child: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ): void {
+    const root = runRoot(this.store.workspace, state);
+    const attempt = this.store.reserve(runId, child, null, 0, policy);
+    for (const write of task.writes) {
+      const content = Buffer.from(write.content ?? "", "utf8");
+      const absolute = workspacePath(root, write.path);
+      if (fileHash(absolute) === hashBytes(content)) continue;
+      const before = this.store.transaction(() => capturePreImage(this.store, runId, absolute));
+      this.journal.publish(runId, attempt, write.path, content, before, "file_patch", root);
+    }
+    this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
   }
   private async runTaskCheck(
     runId: string,
