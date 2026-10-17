@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { planCostText as desktopPlanCostText } from "../apps/desktop/src/renderer/lib/plan-cost.js";
 import { findPricing } from "../src/core/llm/pricing.js";
 import { DEFAULT_MIX } from "../src/core/workflows/estimate.js";
-import { type PlanCost, planCostOf, planCostText } from "../src/core/workflows/plan-cost.js";
+import { type PlanCost, planCostOf, planCostText, plannedRunTokens } from "../src/core/workflows/plan-cost.js";
+import { taskTotal, verificationTokens } from "../src/core/workflows/sizing.js";
 import type { AttemptUsageRecord } from "../src/core/workflows/step-budget.js";
 import type { ArtifactRow, AttemptRow, StepRow, WorkflowStore } from "../src/core/workflows/store.js";
 
@@ -30,7 +31,7 @@ function artifact(id: string, kind: string, path: string, content: string): Arti
 /** A store with one attempt per stage, each `input` tokens in and `output` out on `model`. */
 function makeStore(
   attempts: { id: string; stage: string; model: string | null; input: number; output: number; cacheRead?: number }[],
-  sizing?: { model: string | null; taskTokens: { low: number; expected: number; high: number } },
+  sizing?: { model: string | null; taskTokens: { low: number; expected: number; high: number }; [key: string]: unknown },
 ): WorkflowStore {
   const rows: AttemptRow[] = attempts.map((a) => ({
     id: a.id,
@@ -201,5 +202,26 @@ describe("plan approval cost (#1019)", () => {
     };
     expect(planCostText(partial)).toBe("Planning so far about $0.00 (partial: a model has no price)");
     expect(desktopPlanCostText(partial)).toBe(planCostText(partial));
+  });
+
+  test("a sized plan forecasts the whole run, not its tasks alone (#1418)", () => {
+    // 2M spent on research, spec and plan; two tasks of 1.5M to 2.5M each, so 3M to 5M of tasks.
+    const tasks = [{ estimate: { low: 1_500_000, high: 2_500_000 } }, { estimate: { low: 1_500_000, high: 2_500_000 } }];
+    const price = taskTotal(tasks.map((t) => t.estimate)).price;
+    const verification = verificationTokens();
+    const store = makeStore([], {
+      model: null,
+      tasks,
+      taskTokens: { low: 3_000_000, expected: 4_000_000, high: 5_000_000 },
+      runTokens: Math.round(2_000_000 + price + verification),
+      repairReserve: 500_000,
+    });
+    const planned = plannedRunTokens(store, runId);
+    expect(planned?.low).toBeCloseTo(2_000_000 + verification + 3_000_000, -1);
+    expect(planned?.high).toBeCloseTo(2_000_000 + verification + 5_000_000 + 500_000, -1);
+    // A report from before `runTokens` gives its tasks alone.
+    const old = makeStore([], { model: null, taskTokens: { low: 3_000_000, expected: 4_000_000, high: 5_000_000 } });
+    expect(plannedRunTokens(old, runId)).toEqual({ low: 3_000_000, high: 5_000_000 });
+    expect(plannedRunTokens(makeStore([]), runId)).toBeNull();
   });
 });

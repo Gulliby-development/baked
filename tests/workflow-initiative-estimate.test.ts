@@ -317,7 +317,7 @@ describe("scenario: features estimated from their boundary paths and their plan 
     expect(language?.planned).toEqual(planned);
     expect(language?.tokens.low).toBeGreaterThanOrEqual(planned.low);
     expect(language?.tokens.high).toBeGreaterThanOrEqual(planned.high);
-    expect(estimate.notes.join(" ")).toContain("the tokens its plan sized");
+    expect(estimate.notes.join(" ")).toContain("the tokens its plan sizing expects the whole run to use");
   });
 
   test("paths measured on earlier initiatives' feature runs price a split before any feature runs", () => {

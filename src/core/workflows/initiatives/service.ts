@@ -24,7 +24,7 @@ import {
   type TokenRange,
   tokenText,
 } from "../estimate.js";
-import { plannedTaskTokens } from "../plan-cost.js";
+import { plannedRunTokens } from "../plan-cost.js";
 import {
   type CommandIdentity,
   DEFAULT_MAX_PARALLEL_RUNS,
@@ -334,6 +334,54 @@ function tokenWeights(features: Pick<FeatureView, "size" | "need">[]): number[] 
   return features.every((f) => (f.need?.high ?? 0) > 0)
     ? features.map((f) => f.need?.high ?? 0)
     : features.map((f) => sizeWeight(f));
+}
+
+/**
+ * The shares of the features waiting for a run: tokens and dollars by estimated need (dollars
+ * follow the token weights, as both price the same work), calls and active time by size.
+ */
+function splitShares(
+  features: Pick<FeatureView, "size" | "need">[],
+  remaining: UsageView,
+  remainingUsd: number | null,
+): { share: UsageView; shareUsd: number | null }[] {
+  const weights = features.reduce((sum, f) => sum + sizeWeight(f), 0);
+  const byNeed = tokenWeights(features);
+  const needTotal = byNeed.reduce((sum, w) => sum + w, 0);
+  return features.map((feature, index) => ({
+    share: {
+      ...share(remaining, weights, sizeWeight(feature)),
+      tokens: share(remaining, needTotal, byNeed[index]).tokens,
+    },
+    shareUsd:
+      remainingUsd === null ? null : cents((remainingUsd * (byNeed[index] ?? 0)) / needTotal),
+  }));
+}
+
+/**
+ * The view a rebased feature's new run is sized from: the feature waits for a run again with
+ * `need`, and it and the features that have not started share what remains as at a start. The
+ * rebase split by size and passed no growth limits, so its run could grow to the base ceiling
+ * and leave a waiting feature below its estimate (#1417).
+ */
+export function rebaseView(
+  view: InitiativeView,
+  featureId: string,
+  need: TokenRange | null,
+): InitiativeView {
+  const target = view.features.find((f) => f.id === featureId);
+  if (!target) return view;
+  const waiting = [
+    ...view.features.filter((f) => f.share !== null && f.id !== featureId),
+    { ...target, need },
+  ];
+  const shares = splitShares(
+    waiting,
+    view.budget.remaining,
+    view.budget.cost?.remainingUsd ?? null,
+  );
+  const byId = new Map(waiting.map((f, index) => [f.id, { ...f, ...shares[index] }]));
+  return { ...view, features: view.features.map((f) => byId.get(f.id) ?? f) };
 }
 
 const usd = (n: number): string => `$${n.toFixed(2)}`;
@@ -1206,21 +1254,19 @@ export class InitiativeService {
       if (oldState.snapshotId)
         this.workflows.store.invalidateEvidence(link.run_id, oldState.snapshotId, "input_changed");
     });
-    // The rebased run shares what is left with the features that have not started yet.
-    const current = this.view(id);
-    const unstartedWeight = current.features
-      .filter((f) => f.share !== null)
-      .reduce((sum, f) => sum + sizeWeight(f), 0);
-    const rebaseShare = share(
-      current.budget.remaining,
-      unstartedWeight + sizeWeight(feature),
-      sizeWeight(feature),
+    // The rebased run shares what is left with the features that have not started yet, by need,
+    // and grows only as far as their estimates leave room, as a starting feature does (#1417).
+    const before = this.view(id);
+    const accepted = new Set(
+      before.features.filter((f) => f.state === "accepted" && f.id !== featureId).map((f) => f.id),
     );
-    const remainingUsd = current.budget.cost.remainingUsd;
-    const rebaseUsd =
-      remainingUsd === null
-        ? null
-        : cents((remainingUsd * sizeWeight(feature)) / (unstartedWeight + sizeWeight(feature)));
+    const need = this.featureNeeds(this.estimateOf(row, plan, accepted)).get(featureId) ?? null;
+    const current = rebaseView(before, featureId, need);
+    const rebased = current.features.find((f) => f.id === featureId);
+    const rebaseShare = {
+      ...(rebased?.share ?? zero()),
+      ...guardGrowth(current, featureId, settings.basePolicy),
+    };
     const dependencies = upstream.map((u) => ({
       featureId: u.contract.featureId,
       contractHash: u.contract.contractHash,
@@ -1235,7 +1281,15 @@ export class InitiativeService {
       },
       {
         dependencies,
-        policy: featurePolicy(settings, rebaseShare, feature, true, null, rebaseUsd),
+        policy: featurePolicy(
+          settings,
+          rebaseShare,
+          feature,
+          true,
+          growthLimit(current, featureId),
+          rebased?.shareUsd ?? null,
+          costGrowthLimit(current, featureId),
+        ),
         ...(baseCommit ? { baseCommit } : {}),
       },
     );
@@ -1381,8 +1435,8 @@ export class InitiativeService {
       // The latest run with a spec says how many criteria the feature has.
       const criteria = this.workflows.store.state(link.run_id).spec?.criteria.length;
       if (criteria) entry.criteria = criteria;
-      // And the latest run with a sized plan, what its tasks should use.
-      const planned = plannedTaskTokens(this.workflows.store, link.run_id);
+      // And the latest run with a sized plan, what the whole run should use.
+      const planned = plannedRunTokens(this.workflows.store, link.run_id);
       if (planned) entry.planned = planned;
       spent[link.feature_id] = entry;
     }
@@ -1434,21 +1488,9 @@ export class InitiativeService {
       approved && waitingForRun.length ? this.estimateOf(row, approved, accepted) : null;
     const needs = estimate ? this.featureNeeds(estimate) : null;
     for (const feature of waitingForRun) feature.need = needs?.get(feature.id) ?? null;
-    const weights = waitingForRun.reduce((sum, f) => sum + sizeWeight(f), 0);
-    const byNeed = tokenWeights(waitingForRun);
-    const needTotal = byNeed.reduce((sum, w) => sum + w, 0);
     const cost = this.costView(settings, plan, runIds, used, accepted, estimate);
-    for (const [index, feature] of waitingForRun.entries()) {
-      feature.share = {
-        ...share(remaining, weights, sizeWeight(feature)),
-        tokens: share(remaining, needTotal, byNeed[index]).tokens,
-      };
-      // Dollars follow the token weights: both price the same work.
-      feature.shareUsd =
-        cost.remainingUsd === null
-          ? null
-          : cents((cost.remainingUsd * (byNeed[index] ?? 0)) / needTotal);
-    }
+    const shares = splitShares(waitingForRun, remaining, cost.remainingUsd);
+    for (const [index, feature] of waitingForRun.entries()) Object.assign(feature, shares[index]);
     const unstarted = waitingForRun.length;
     const nextShare =
       (waitingForRun.find((f) => f.state === "ready") ?? waitingForRun[0])?.share ?? null;
