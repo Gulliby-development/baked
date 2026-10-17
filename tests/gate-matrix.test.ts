@@ -13,7 +13,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
 import { exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
-import { failureSignature } from "../src/core/verification/output-counts.js";
+import { failureSignature, testCount } from "../src/core/verification/output-counts.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import {
@@ -1098,6 +1098,75 @@ describe("gate matrix: formatting a lint gate does not verify", () => {
     test(`"${text}" with ${checks.map((c) => c.id).join(", ")} passing: ${shown}`, () => {
       expect(styleClaimShown(text, checks)).toBe(shown);
     });
+});
+
+/**
+ * A project whose toolchain no detector knows (Lua, PHP, C) states its commands in a task runner or
+ * its CI (#1488). Without suggestions a shipped SDD preset refuses to start until a person types
+ * every gate; with them the gates come from the project's own files, and a runner that prints TAP
+ * or a JUnit XML report still gets the fewer-tests baseline.
+ */
+describe("gate matrix: a toolchain no detector knows", () => {
+  const LUA = { "src/sum.lua": "return function(a, b) return a + b end\n", "spec/sum_spec.lua": "describe('sum', function() end)\n" };
+  const cases: [string, Record<string, string>, [string, string, string[]][]][] = [
+    [
+      "Makefile",
+      { ...LUA, Makefile: ".PHONY: test lint\nLUA ?= lua\n\nlint:\n\tluacheck src\n\ntest: lint\n\tbusted\n\nfmt-check fmt:\n\tstylua --check src\n" },
+      [
+        ["lint", "make", ["lint"]],
+        ["format", "make", ["fmt-check"]],
+        ["tests", "make", ["test"]],
+      ],
+    ],
+    [
+      "justfile",
+      { ...LUA, justfile: "set shell := [\"bash\", \"-c\"]\nversion := \"1\"\n\n# Run the specs\ntest *args:\n    busted {{args}}\n\ncheck: test\n    luacheck src\n" },
+      [
+        ["tests", "just", ["test"]],
+        ["check", "just", ["check"]],
+      ],
+    ],
+    [
+      "Taskfile",
+      { ...LUA, "Taskfile.yml": "version: '3'\n\ntasks:\n  lint:\n    cmds:\n      - luacheck src\n  test:\n    deps: [lint]\n    cmds:\n      - busted\n" },
+      [
+        ["lint", "task", ["lint"]],
+        ["tests", "task", ["test"]],
+      ],
+    ],
+    [
+      "CI workflow",
+      {
+        ...LUA,
+        ".github/workflows/ci.yml": "on: [push]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: luarocks install busted\n      - run: luacheck src\n      - name: Specs\n        run: |\n          busted --output=TAP\n      - run: busted --coverage && luacov\n",
+      },
+      [
+        ["lint", "luacheck", ["src"]],
+        ["tests", "busted", ["--output=TAP"]],
+      ],
+    ],
+  ];
+  for (const [name, files, expected] of cases)
+    test(`${name}: its targets are suggested and preselected`, () => {
+      const found = detectGates(project(files));
+      expect(found.map((s) => [s.check.id, s.check.executable, s.check.args])).toEqual(expected);
+      expect(found.every((s) => s.preselected && s.check.required && s.check.scope === "feature")).toBe(true);
+    });
+
+  test("a detected toolchain keeps its own gates, without the runner's", () => {
+    const found = detectGates(project({ ...FIXTURES.go.files, Makefile: "test:\n\tgo test ./...\n" }));
+    expect(found.map((s) => s.check.id)).toEqual(FIXTURES.go.gates);
+  });
+
+  test("the runner's test gate is a test check for the mutation and written-tests gates", () => {
+    const tests = detectGates(project({ ...LUA, Makefile: "test:\n\tbusted\n" })).find((s) => s.check.id === "tests");
+    expect(tests && isTestCheck(tests.check)).toBe(true);
+  });
+
+  test("TAP and JUnit XML output give the fewer-tests baseline", () => {
+    expect(testCount("ok 1 - sum adds\nok 2 - sum commutes\n1..2\n")).toEqual({ tool: "tap", count: 2 });
+    expect(testCount('<testsuites tests="5"><testsuite tests="5"/></testsuites>')).toEqual({ tool: "junit", count: 5 });
+  });
 });
 
 const toolchains = process.env.BAKED_GATE_MATRIX_TOOLCHAINS === "1";

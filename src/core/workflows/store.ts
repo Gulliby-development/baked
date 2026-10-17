@@ -941,7 +941,9 @@ export class WorkflowStore {
   }
   artifacts(id: string): ArtifactRow[] {
     return this.db
-      .query<ArtifactRow, [string]>("SELECT * FROM artifacts WHERE run_id=? ORDER BY created_at,id")
+      .query<ArtifactRow, [string]>(
+        "SELECT * FROM artifacts WHERE run_id=? ORDER BY created_at,rowid",
+      )
       .all(id);
   }
   latestArtifact(id: string, path: string): ArtifactRow | null {

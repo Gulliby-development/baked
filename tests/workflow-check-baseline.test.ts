@@ -57,6 +57,20 @@ describe("check output counts", () => {
     expect(testCount("ok  \texample.com/app\t0.01s")).toBeNull();
   });
 
+  // A language without a parser of its own still gets the fewer-tests baseline (#1488).
+  test("reads TAP plans and JUnit XML reports", () => {
+    expect(testCount("ok 1 - adds\nok 2 - subtracts\n1..2")).toEqual({ tool: "tap", count: 2 });
+    expect(testCount("1..3\nok 1\n    1..5\n    ok 1 - sub\nok 2\nok 3\n1..1 # second stream\nok 1")).toEqual({ tool: "tap", count: 4 });
+    expect(testCount("t/basic.t .. ok\nAll tests successful.\nFiles=2, Tests=14,  0 wallclock secs\nResult: PASS")).toEqual({ tool: "tap", count: 14 });
+    expect(testCount('<?xml version="1.0"?>\n<testsuites name="busted" tests="7" failures="0">\n<testsuite name="a" tests="4"></testsuite>\n</testsuites>')).toEqual({ tool: "junit", count: 7 });
+    expect(testCount('<testsuite name="a" tests="4"/>\n<testsuite name="b" tests="3"/>')).toEqual({ tool: "junit", count: 7 });
+    expect(testCount('<testsuite name="a"><testcase name="x"/><testcase name="y"/></testsuite>')).toEqual({ tool: "junit", count: 2 });
+    // A range in prose is no plan.
+    expect(testCount("use slices 1..2 of the input")).toBeNull();
+    const tap = { kind: "tests" as const, tool: "tap", count: 10 };
+    expect(baselineRegression(tap, "ok 1\n1..8")).toContain("fell from 10 to 8");
+  });
+
   test("a regression needs the same tool on both sides and ignores fewer tests when tests are deleted", () => {
     const lint = { kind: "diagnostics" as const, tool: "biome", count: 1 };
     expect(baselineRegression(lint, "Checked 1 file in 1ms.\nFound 2 infos.")).toContain("rose from 1 to 2");
