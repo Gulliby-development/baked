@@ -453,6 +453,7 @@ import {
   documentsOnly,
   hasTaskGate,
   hostContentProblems,
+  hostFileProblems,
   hostWritten,
   missingArtifactOwners,
   namesPath,
@@ -1197,6 +1198,7 @@ export class WorkflowScheduler {
                   ...this.planProblems(runId, spec, submitted, policy, profiles),
                   ...codeTaskCheckProblems(submitted.taskGraph, policy),
                   ...hostContentProblems(submitted.taskGraph),
+                  ...hostFileProblems(submitted.taskGraph, state.hostFiles),
                   ...testWriteProblems(submitted.taskGraph, policy),
                   ...testsFirstProblems(spec, submitted.taskGraph, policy),
                 ];
@@ -1250,6 +1252,14 @@ export class WorkflowScheduler {
                       profiles: profiles.filter((p) => p.output !== "approval-review"),
                       workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
                       ...(approvalLimits ? { approvalLimits } : {}),
+                      ...(state.hostFiles?.length
+                        ? {
+                            hostFiles: {
+                              files: state.hostFiles,
+                              note: "The split fixed the whole content of these files. Write all of them in one task of their own whose writes carry exactly this content (the host writes them with no agent), and let later tasks modify them.",
+                            },
+                          }
+                        : {}),
                       ...(testsFirstOf(policy) !== "off"
                         ? {
                             testsFirst: testsFirstNote(

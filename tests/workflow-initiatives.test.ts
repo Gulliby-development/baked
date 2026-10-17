@@ -7,6 +7,7 @@ import { canonical, hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import {
   applySplitEdit,
+  boundaryPathCounts,
   featureDigest,
   type InitiativePlan,
   literalPathCount,
@@ -220,9 +221,13 @@ function repository(root: string): void {
   git(root, "commit", "-q", "-m", "Initial");
 }
 
-function setup(split: unknown = threeFeatures, tokens = 100) {
+function setup<E extends InitiativeExecutor = InitiativeExecutor>(
+  split: unknown = threeFeatures,
+  tokens = 100,
+  make: (root: string) => E = (root) => new InitiativeExecutor(root, split, tokens) as E,
+) {
   const root = mkdtempSync(join(tmpdir(), "baked-initiative-"));
-  const executor = new InitiativeExecutor(root, split, tokens);
+  const executor = make(root);
   const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: false, defaultWorkflow: "sdd", policy } };
   const workflows = new NativeWorkflowService(root, config, executor);
   const initiatives = new InitiativeService(workflows);
@@ -1533,5 +1538,130 @@ describe("initiative reroute", () => {
     expect(view.status).toBe("active");
     expect(view.model).toBe("spare/model");
     expect(initiativeExit(view)).toBe(3);
+  });
+});
+
+describe("scenario: a split that fixes a crate skeleton (#1461)", () => {
+  // Bench round 40, tonemath: the brief fixed 20 module stubs and a lib.rs of their mod lines.
+  // The decomposer now lists them as the first feature's skeleton, and that feature's run writes
+  // them in the host instead of an agent task per stub.
+  const skeleton = [
+    { path: "src/lib.rs", content: "pub mod a;\npub mod b;\n" },
+    { path: "src/a.rs", content: "// a: filled by api.\n" },
+    { path: "src/b.rs", content: "// b: filled by docs.\n" },
+  ];
+  const split = plan([
+    { ...feature("core", [], ["core.txt", "src/lib.rs", "src/a.rs", "src/b.rs"]), skeleton },
+    feature("api", ["core"]),
+    feature("docs", ["core"]),
+  ]);
+
+  /**
+   * A planner that writes the host files in a task of its own. With `ignore`, its first plan
+   * leaves them out and gets the submission problems back, as submit_result returns them.
+   */
+  class SkeletonPlanner extends InitiativeExecutor {
+    ignore = 0;
+    hostPrompts: string[] = [];
+    problems: string[] = [];
+    override async execute(request: ExecutionRequest) {
+      const result = await super.execute(request);
+      if (request.profile.output !== "plan") return result;
+      const [documents, attempt] = request.prompt.split("\n").slice(-2);
+      const data = { ...JSON.parse(documents ?? "{}"), ...JSON.parse(attempt ?? "{}") } as { extra?: { hostFiles?: { files: typeof skeleton } } };
+      const hostFiles = data.extra?.hostFiles;
+      if (!hostFiles) return result;
+      this.hostPrompts.push(request.prompt);
+      if (this.ignore-- > 0) {
+        this.problems = request.validate?.(result.output) ?? [];
+        if (!this.problems.length) return result;
+      }
+      const output = result.output as { taskGraph: { tasks: { id: string; dependsOn: string[]; writes: unknown[] }[] } };
+      const [own] = output.taskGraph.tasks;
+      if (!own) return result;
+      output.taskGraph.tasks = [
+        { ...own, id: "T001", title: "Lay down the crate skeleton", writes: hostFiles.files.map((f) => ({ path: f.path, action: "create", content: f.content })) },
+        { ...own, id: "T002", dependsOn: ["T001"] },
+      ];
+      return result;
+    }
+  }
+
+  const skeletonSetup = () => setup(split, 100, (root) => new SkeletonPlanner(root, split));
+
+  async function complete(t: ReturnType<typeof skeletonSetup>) {
+    await t.start({ plan: split, keepFeatures: true });
+    let view = await t.approveSplit();
+    for (let i = 0; i < 16 && view.status !== "completed"; i++) {
+      view = await t.drive();
+      const waiting = view.pendingDecisions.find((d) => d.scope === "feature" && d.kind === "approval");
+      if (waiting?.featureId) await t.approveFeature(waiting.featureId);
+    }
+    return view;
+  }
+
+  test("the first feature's run writes the skeleton in the host, and the initiative completes", async () => {
+    const t = skeletonSetup();
+    const view = await complete(t);
+    expect(view.status).toBe("completed");
+    expect(t.featureOf(view, "core").skeleton).toEqual(skeleton);
+    for (const file of skeleton) expect(readFileSync(join(t.root, file.path), "utf8")).toBe(file.content);
+    // No implementer wrote a skeleton file: only the features' own value files.
+    expect(Object.keys(t.executor.writes).sort()).toEqual(["api.txt", "core.txt", "docs.txt"]);
+    // Only the core run was told about the skeleton.
+    expect(t.executor.hostPrompts).toHaveLength(1);
+    expect(t.executor.hostPrompts[0]).toContain("The split fixes the whole content of src/lib.rs, src/a.rs, src/b.rs");
+    const coreRun = t.featureOf(view, "core").runId ?? "";
+    expect(t.workflows.store.state(coreRun).hostFiles).toEqual(skeleton);
+  }, 60000);
+
+  test("a plan that does not write the skeleton in the host goes back to the planner", async () => {
+    const t = skeletonSetup();
+    t.executor.ignore = 1;
+    const view = await complete(t);
+    expect(view.status).toBe("completed");
+    expect(t.executor.problems.join("\n")).toContain("write all of them in one task whose writes carry exactly that content; src/lib.rs, src/a.rs, src/b.rs are not written that way");
+    expect(t.executor.problems.join("\n")).not.toContain("Task T001 creates");
+    for (const file of skeleton) expect(readFileSync(join(t.root, file.path), "utf8")).toBe(file.content);
+    expect(Object.keys(t.executor.writes).sort()).toEqual(["api.txt", "core.txt", "docs.txt"]);
+  }, 60000);
+
+  test("a skeleton file is one literal path of its feature's boundary, in one feature only", () => {
+    expect(planStructureProblems(split)).toEqual([]);
+    const outside = plan([{ ...feature("core"), skeleton: [{ path: "src/lib.rs", content: "" }] }, feature("api"), feature("docs")]);
+    expect(planStructureProblems(outside)).toEqual(["core's skeleton file src/lib.rs is outside its boundary paths"]);
+    const glob = plan([{ ...feature("core", [], ["src/**"]), skeleton: [{ path: "src/*.rs", content: "" }] }, feature("api"), feature("docs")]);
+    expect(planStructureProblems(glob)[0]).toContain("names a glob src/*.rs");
+    const twice = plan([
+      { ...feature("core", [], ["src/lib.rs"]), skeleton: [{ path: "src/lib.rs", content: "" }] },
+      { ...feature("api", [], ["src/**"]), skeleton: [{ path: "src/lib.rs", content: "" }] },
+      feature("docs"),
+    ]);
+    expect(planStructureProblems(twice)).toEqual(["src/lib.rs is in the skeleton of both core and api"]);
+    // The skeleton is part of what a run is bound to; a feature without one keeps its digest.
+    const core = split.features[0];
+    if (!core) throw new Error("no core");
+    const { skeleton: _, ...bare } = core;
+    expect(featureDigest(core)).not.toBe(featureDigest(bare));
+    expect(featureDigest(feature("api"))).toBe(featureDigest({ ...feature("api"), skeleton: [] }));
+    // The estimate prices core's own file, not the host-written skeleton.
+    expect(boundaryPathCounts(split).get("core")).toEqual({ paths: 1, placeholders: 3 });
+  });
+
+  test("merging keeps every skeleton file, and a split gives each file to the first part that names it", () => {
+    const four = plan([...split.features, feature("cli", ["core"])]);
+    const merged = applySplitEdit(four, { op: "merge", featureIds: ["core", "api"], id: "core" });
+    expect(merged.features.find((f) => f.id === "core")?.skeleton).toEqual(skeleton);
+    const parts = applySplitEdit(split, {
+      op: "split",
+      featureId: "core",
+      into: [
+        { id: "core", title: "Core", paths: ["core.txt", "src/lib.rs"] },
+        { id: "mods", title: "Modules", paths: ["src/a.rs", "src/b.rs", "src/lib.rs"] },
+      ],
+    });
+    expect(parts.features.find((f) => f.id === "core")?.skeleton?.map((f) => f.path)).toEqual(["src/lib.rs"]);
+    expect(parts.features.find((f) => f.id === "mods")?.skeleton?.map((f) => f.path)).toEqual(["src/a.rs", "src/b.rs"]);
+    expect(planStructureProblems(parts)).toEqual([]);
   });
 });

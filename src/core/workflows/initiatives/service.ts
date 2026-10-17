@@ -184,6 +184,8 @@ export interface FeatureView {
   mandatory: boolean;
   dependsOn: string[];
   boundary: InitiativeFeature["boundary"];
+  /** Boundary files whose content the split fixes; the feature's run writes them in the host. */
+  skeleton?: NonNullable<InitiativeFeature["skeleton"]>;
   contract: string;
   /** The workflow this feature's runs use: its own, or the initiative's default. */
   workflowId: string;
@@ -1205,6 +1207,7 @@ export class InitiativeService {
       // A shipped light preset approves its plan within the feature's tiered limits (#1374).
       ...(settings.featureAutoApproval ? { boundaryAutoApproval: true } : {}),
       ...(settings.featureIssues[featureId] ? { issue: settings.featureIssues[featureId] } : {}),
+      ...(feature.skeleton?.length ? { hostFiles: feature.skeleton } : {}),
       ...(baseCommit ? { baseCommit } : {}),
     });
     this.store.transaction(() => {
@@ -1726,6 +1729,7 @@ export class InitiativeService {
         mandatory: feature.mandatory,
         dependsOn: feature.dependsOn,
         boundary: feature.boundary,
+        skeleton: feature.skeleton ?? [],
         contract: feature.contract,
         workflowId,
         size: feature.size ?? "medium",
@@ -2315,6 +2319,11 @@ export function featurePrompt(
       ? `Paths this feature may write: ${feature.boundary.paths.join(", ")}`
       : "The split names no paths for this feature; stay within the boundary above.",
     `Contract this feature provides to the features that depend on it: ${feature.contract}`,
+    ...(feature.skeleton?.length
+      ? [
+          `The split fixes the whole content of ${feature.skeleton.map((f) => f.path).join(", ")}: one task writes them as host-written files with exactly that content (extra.hostFiles), and later features replace the stubs.`,
+        ]
+      : []),
   ];
   for (const { feature: dependency, contract } of upstream) {
     const definition = plan.features.find((f) => f.id === dependency.id);

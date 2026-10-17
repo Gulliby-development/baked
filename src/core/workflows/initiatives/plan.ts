@@ -7,7 +7,7 @@ import { z } from "zod";
 import { matchGlob } from "../../platform/index.js";
 import { hashJson } from "../../specs/hash.js";
 import { WorkflowFault } from "../errors.js";
-import { SafeId } from "../schemas.js";
+import { HOST_CONTENT_MAX_CHARS, SafeId } from "../schemas.js";
 
 /** An initiative holds at least this many features; a smaller request is a single run. */
 export const MIN_FEATURES = 3;
@@ -53,6 +53,18 @@ export const InitiativeFeatureSchema = z
     workflow: SafeId.optional(),
     /** How much work the feature is; its budget share is weighted by it. Omitted, medium. */
     size: z.enum(["small", "medium", "large"]).optional(),
+    /**
+     * Files of the boundary whose whole content the request fixes (module stubs that hold only a
+     * comment, a registration file of `pub mod` lines, an empty `__init__.py`). The feature's
+     * run writes them in the host with no agent; later features replace the stubs through their
+     * own boundary. A brief's 20-module skeleton cost 2.58M tokens as agent tasks (#1461).
+     */
+    skeleton: z
+      .array(
+        z.object({ path: PathPattern, content: z.string().max(HOST_CONTENT_MAX_CHARS) }).strict(),
+      )
+      .max(50)
+      .optional(),
   })
   .strict();
 export type InitiativeFeature = z.infer<typeof InitiativeFeatureSchema>;
@@ -98,6 +110,26 @@ export function planStructureProblems(plan: InitiativePlan): string[] {
   }
   const cycle = findCycle(plan);
   if (cycle) problems.push(`dependency cycle: ${cycle.join(" -> ")}`);
+  return [...problems, ...skeletonProblems(plan)];
+}
+
+/**
+ * Problems of the features' skeletons: each file is one literal path of its feature's boundary,
+ * listed once in the whole split, so exactly one run writes it.
+ */
+function skeletonProblems(plan: InitiativePlan): string[] {
+  const owner = new Map<string, string>();
+  const problems: string[] = [];
+  for (const feature of plan.features)
+    for (const { path } of feature.skeleton ?? []) {
+      if (GLOB.test(path))
+        problems.push(`${feature.id}'s skeleton names a glob ${path}; list each file`);
+      else if (!feature.boundary.paths.some((p) => patternsMeet(path, p)))
+        problems.push(`${feature.id}'s skeleton file ${path} is outside its boundary paths`);
+      const first = owner.get(path);
+      if (first) problems.push(`${path} is in the skeleton of both ${first} and ${feature.id}`);
+      else owner.set(path, feature.id);
+    }
   return problems;
 }
 
@@ -182,7 +214,9 @@ export interface BoundaryPathCount {
  * order that lists it and as a placeholder in the earlier ones. A skeleton-first split lists its
  * module stubs in the first feature and again in the features that fill them: bench round 40
  * (tonemath) listed 48 paths for 33 files, and the first feature's path floor came out 1.54 times
- * what it used (#1464). A glob boundary counts no paths (`literalPathCount`) and claims none.
+ * what it used (#1464). A file of the feature's own skeleton counts as a placeholder too: the
+ * host writes it with no agent (#1461). A glob boundary counts no paths (`literalPathCount`) and
+ * claims none.
  */
 export function boundaryPathCounts(
   plan: Pick<InitiativePlan, "features">,
@@ -195,7 +229,10 @@ export function boundaryPathCounts(
     plan.features.map((f): [string, BoundaryPathCount] => {
       if (!literal(f)) return [f.id, { paths: 0, placeholders: 0 }];
       const paths = [...new Set(f.boundary.paths)];
-      const placeholders = paths.filter((path) => owner.get(path) !== f.id).length;
+      const skeleton = new Set((f.skeleton ?? []).map((file) => file.path));
+      const placeholders = paths.filter(
+        (path) => owner.get(path) !== f.id || skeleton.has(path),
+      ).length;
       return [f.id, { paths: paths.length - placeholders, placeholders }];
     }),
   );
@@ -285,7 +322,26 @@ export function featureDigest(feature: InitiativeFeature): string {
     mandatory: feature.mandatory,
     // Another workflow is another run; the size only weighs the next budget share.
     ...(feature.workflow ? { workflow: feature.workflow } : {}),
+    // Left out when there is none, so features approved before skeletons keep their digest.
+    ...(feature.skeleton?.length ? { skeleton: feature.skeleton } : {}),
   });
+}
+
+/**
+ * The skeleton files of a split feature that part `index` keeps: each file goes to the first part
+ * whose paths name it, so it keeps one owner.
+ */
+function partSkeleton(
+  original: InitiativeFeature,
+  parts: readonly { paths?: string[] | undefined }[],
+  index: number,
+): Pick<InitiativeFeature, "skeleton"> {
+  const names = (i: number, path: string) =>
+    (parts[i]?.paths ?? original.boundary.paths).some((p) => patternsMeet(path, p));
+  const kept = (original.skeleton ?? []).filter(
+    ({ path }) => parts.findIndex((_, i) => names(i, path)) === index,
+  );
+  return kept.length ? { skeleton: kept } : {};
 }
 
 /** Edits a person may apply to a proposed split. Each one produces a new plan revision. */
@@ -378,6 +434,9 @@ function mergeFeatures(
     dependsOn: unique(merged.flatMap((f) => f.dependsOn)).filter((d) => !ids.has(d)),
     mandatory: merged.some((f) => f.mandatory),
     ...largestOf(merged),
+    ...(merged.some((f) => f.skeleton?.length)
+      ? { skeleton: merged.flatMap((f) => f.skeleton ?? []) }
+      : {}),
   };
   const position = plan.features.findIndex((f) => ids.has(f.id));
   const features: InitiativeFeature[] = [];
@@ -499,7 +558,7 @@ export function applySplitEdit(plan: InitiativePlan, edit: SplitEdit): Initiativ
       for (const id of parts)
         if (id !== original.id && plan.features.some((f) => f.id === id))
           throw new WorkflowFault("INVALID_DEFINITION", `Feature ${id} already exists`);
-      const replacements: InitiativeFeature[] = edit.into.map((part) => ({
+      const replacements: InitiativeFeature[] = edit.into.map((part, index) => ({
         id: part.id,
         title: part.title,
         boundary: {
@@ -510,6 +569,7 @@ export function applySplitEdit(plan: InitiativePlan, edit: SplitEdit): Initiativ
         dependsOn: original.dependsOn,
         mandatory: original.mandatory,
         ...(original.workflow ? { workflow: original.workflow } : {}),
+        ...partSkeleton(original, edit.into, index),
       }));
       features = plan.features.flatMap((f) =>
         f.id === original.id
