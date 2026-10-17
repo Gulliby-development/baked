@@ -453,17 +453,170 @@ function mavenGates(workspace: string): GateSuggestion[] {
  * Looks for the project's own test and lint commands. Nothing is written: the result is a list the
  * user confirms. Gates already configured (same ID or same command) are left out.
  */
+/**
+ * The gates a project's own task runner or CI names, for a project whose toolchain no detector
+ * above knows (a Lua, PHP or C project with a Makefile, #1488). Each kind takes the first source
+ * that has it: a `Makefile`, `justfile` or `Taskfile.yml` target, then a single-command run step of
+ * a GitHub Actions workflow. A command that needs a shell (pipes, `&&`, variables) is not offered,
+ * since a check runs without one.
+ */
+const RUNNER_KINDS: { id: string; targets: string[]; timeoutMs: number }[] = [
+  { id: "typecheck", targets: ["typecheck", "type-check", "types"], timeoutMs: 120000 },
+  { id: "lint", targets: ["lint"], timeoutMs: 120000 },
+  {
+    id: "format",
+    targets: ["fmt-check", "format-check", "check-fmt", "check-format", "fmtcheck"],
+    timeoutMs: 120000,
+  },
+  { id: "tests", targets: ["test", "tests"], timeoutMs: 600000 },
+  { id: "check", targets: ["check"], timeoutMs: 600000 },
+];
+
+/** Target names of a Makefile: `name:` rules, not variables (`name := x`) or special targets. */
+export function makeTargets(text: string): string[] {
+  return [
+    ...text.matchAll(/^([A-Za-z0-9][\w.-]*(?:[ \t]+[A-Za-z0-9][\w.-]*)*)[ \t]*:(?![=:])/gm),
+  ].flatMap((m) => (m[1] ?? "").split(/[ \t]+/));
+}
+
+/** Recipe names of a justfile: `name args:` lines, not settings or assignments (`x := y`). */
+export function justRecipes(text: string): string[] {
+  return [...text.matchAll(/^@?([A-Za-z0-9][\w-]*)(?:\s+[^:=\n]*)?:(?!=)/gm)].map(
+    (m) => m[1] ?? "",
+  );
+}
+
+/** Task names of a Taskfile: the keys under `tasks:`. */
+export function taskfileTasks(text: string): string[] {
+  const block = /^tasks:\s*\n((?:[ \t]+.*\n?|\s*\n)*)/m.exec(text)?.[1] ?? "";
+  const indent = /^([ \t]+)\S/m.exec(block)?.[1] ?? "  ";
+  return [...block.matchAll(new RegExp(`^${indent}([\\w.-]+):`, "gm"))].map((m) => m[1] ?? "");
+}
+
+/** The single-line `run:` commands of a GitHub Actions workflow. */
+export function workflowRunCommands(text: string): string[] {
+  const commands: string[] = [];
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const match = /^(\s*)(?:-\s+)?run:\s*(.*)$/.exec(lines[i] ?? "");
+    if (!match) continue;
+    const value = (match[2] ?? "").trim();
+    if (value && !/^[|>]/.test(value)) {
+      commands.push(value.replace(/^(['"])(.*)\1$/, "$2"));
+      continue;
+    }
+    // A block scalar: its one command line, when it has exactly one.
+    const body: string[] = [];
+    const base = (match[1] ?? "").length;
+    for (let j = i + 1; j < lines.length; j++) {
+      const line = lines[j] ?? "";
+      if (line.trim() && line.length - line.trimStart().length <= base) break;
+      if (line.trim() && !line.trim().startsWith("#")) body.push(line.trim());
+    }
+    if (body.length === 1 && body[0]) commands.push(body[0]);
+  }
+  return commands;
+}
+
+const SHELL_SYNTAX = /[|&;<>`$(){}*?\\]|^\w+=/;
+/** Steps that set the job up rather than check the code: `luarocks install busted`. */
+const SETUP_COMMAND = /\b(?:install|add|setup|update|upgrade|download|fetch|restore|cache)\b/i;
+const CI_KIND: [string, RegExp][] = [
+  ["typecheck", /\b(?:typecheck|type-check|mypy|pyright|tsc|phpstan|psalm)\b/i],
+  [
+    "lint",
+    /\b(?:lint|luacheck|rubocop|shellcheck|ktlint|swiftlint|clang-tidy|golangci-lint|flake8|pylint|eslint)\b/i,
+  ],
+  [
+    "format",
+    /\b(?:fmt|format|stylua|prettier|pint|black)\b.*(?:--check|--verify|-check|--dry-run)\b/i,
+  ],
+  ["tests", /\b(?:test|tests|busted|rspec|phpunit|pest|ctest|bats|pester|prove)\b/i],
+];
+
+function runnerGates(workspace: string): GateSuggestion[] {
+  const sources: { name: string; tool: string; names: string[] }[] = [];
+  for (const name of ["Makefile", "GNUmakefile", "makefile"]) {
+    const text = read(workspace, name);
+    if (text !== null) {
+      sources.push({ name, tool: "make", names: makeTargets(text) });
+      break;
+    }
+  }
+  for (const name of ["justfile", ".justfile", "Justfile"]) {
+    const text = read(workspace, name);
+    if (text !== null) {
+      sources.push({ name, tool: "just", names: justRecipes(text) });
+      break;
+    }
+  }
+  for (const name of ["Taskfile.yml", "Taskfile.yaml"]) {
+    const text = read(workspace, name);
+    if (text !== null) {
+      sources.push({ name, tool: "task", names: taskfileTasks(text) });
+      break;
+    }
+  }
+  const out: GateSuggestion[] = [];
+  for (const kind of RUNNER_KINDS) {
+    for (const source of sources) {
+      const target = kind.targets.find((t) => source.names.includes(t));
+      if (!target) continue;
+      out.push({
+        check: gate(kind.id, source.tool, [target], kind.timeoutMs),
+        source: `${source.name} target "${target}"`,
+        reason: `${source.tool} ${target}`,
+        preselected: true,
+      });
+      break;
+    }
+  }
+  const workflows = join(workspace, ".github", "workflows");
+  let files: string[] = [];
+  try {
+    files = readdirSync(workflows)
+      .filter((name) => /\.ya?ml$/i.test(name))
+      .sort();
+  } catch {
+    // No workflows.
+  }
+  for (const file of files) {
+    for (const command of workflowRunCommands(read(workflows, file) ?? "")) {
+      if (SHELL_SYNTAX.test(command) || SETUP_COMMAND.test(command)) continue;
+      const kind = CI_KIND.find(([, pattern]) => pattern.test(command))?.[0];
+      if (!kind || out.some((s) => s.check.id === kind)) continue;
+      let words: string[];
+      try {
+        words = splitCommandLine(command);
+      } catch {
+        continue;
+      }
+      const [executable, ...args] = words;
+      if (!executable) continue;
+      const timeoutMs = RUNNER_KINDS.find((k) => k.id === kind)?.timeoutMs ?? 600000;
+      out.push({
+        check: gate(kind, executable, args, timeoutMs),
+        source: `.github/workflows/${file} run step`,
+        reason: command,
+        preselected: true,
+      });
+    }
+  }
+  return out;
+}
+
 export function detectGates(workspace: string, configured: Check[] = []): GateSuggestion[] {
   const known = new Set(configured.map((c) => formatCommandLine(c.executable, c.args)));
   const ids = new Set(configured.map((c) => c.id));
-  return [
+  const toolchain = [
     ...scriptGates(workspace),
     ...pythonGates(workspace),
     ...goGates(workspace),
     ...dotnetGates(workspace),
     ...cargoGates(workspace),
     ...mavenGates(workspace),
-  ].filter(
+  ];
+  return (toolchain.length ? toolchain : runnerGates(workspace)).filter(
     (s) => !ids.has(s.check.id) && !known.has(formatCommandLine(s.check.executable, s.check.args)),
   );
 }

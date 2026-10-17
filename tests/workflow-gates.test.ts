@@ -169,6 +169,15 @@ describe("gate detection by ecosystem", () => {
     expect(ids(root)).toEqual(["tests", "ruff", "ruff-format", "gofmt", "go-vet", "go-test"]);
     expect(ids(workspace())).toEqual([]);
   });
+  test("a CI step that needs a shell or sets the job up is not a gate (#1488)", () => {
+    const ci = (run: string) => ids(workspace({ ".github/workflows/ci.yml": `jobs:\n  t:\n    steps:\n      - run: ${run}\n` }));
+    expect(ci("busted && luacov")).toEqual([]);
+    expect(ci("FOO=1 busted")).toEqual([]);
+    expect(ci("busted spec/*_spec.lua")).toEqual([]);
+    expect(ci("luarocks install busted")).toEqual([]);
+    expect(ci("busted")).toEqual(["tests"]);
+    expect(ids(workspace({ Makefile: "CC := gcc\n.PHONY: all\nall: build\n%.o: %.c\n\tcc $<\n" }))).toEqual([]);
+  });
   test("gates that are already configured are not suggested again", () => {
     const root = workspace({ "package.json": pkg({ test: "vitest", lint: "biome" }), "bun.lock": "" });
     expect(ids(root, [gate({ id: "tests" })])).toEqual(["lint"]);

@@ -64,6 +64,20 @@ export function diagnosticCount(output: string): OutputCount | null {
   return null;
 }
 
+/**
+ * The test count of a JUnit XML report: the `tests` attribute of `<testsuites>`, else the sum over
+ * its `<testsuite>` elements, else the number of `<testcase>` elements.
+ */
+export function junitCount(output: string): number | null {
+  if (!/<testsuites?\b/.test(output)) return null;
+  const root = /<testsuites\b[^>]*?\stests="(\d+)"/.exec(output);
+  if (root) return Number(root[1]);
+  const suites = sum(output, /<testsuite\b[^>]*?\stests="(\d+)"/g);
+  if (suites !== null) return suites;
+  const cases = [...output.matchAll(/<testcase\b/g)].length;
+  return cases || null;
+}
+
 /** The number of tests a runner ran, by its summary line. */
 export function testCount(output: string): OutputCount | null {
   // bun test: "Ran 42 tests across 3 files."
@@ -102,6 +116,15 @@ export function testCount(output: string): OutputCount | null {
   // go test -v: one "=== RUN   TestName" per top-level test; without -v there is no count.
   const go = lines(output, /^=== RUN\s+[^/\s]+\s*$/);
   if (go) return { tool: "go", count: go };
+  // A language without a parser of its own (#1488): a JUnit XML report printed to the output
+  // (`--reporter=junit`), then TAP (busted, bats, prove, node:test, pgTAP).
+  const junit = junitCount(output);
+  if (junit !== null) return { tool: "junit", count: junit };
+  const prove = output.match(/^Files=\d+, Tests=(\d+),/m);
+  if (prove) return { tool: "tap", count: Number(prove[1]) };
+  // A TAP plan `1..N` per top-level stream; an indented plan belongs to a subtest.
+  const tap = sum(output, /^1\.\.(\d+)(?:[ \t]+#.*)?\r?$/gm);
+  if (tap !== null) return { tool: "tap", count: tap };
   return null;
 }
 
