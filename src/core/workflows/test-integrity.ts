@@ -193,6 +193,17 @@ const COMPARED = [
 const TS_FILE = /\.[cm]?tsx?$/i;
 const DOC_FILE = /\.(md|mdx|rst|txt|adoc)$/i;
 
+/** String literals, including multi-line raw and triple-quoted ones (Go, Python, JS templates). */
+const STRING_TEXT =
+  /"""[\s\S]*?"""|'''[\s\S]*?'''|`[^`]*`|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/g;
+
+/** How much literal text a file holds: the expected values its assertions compare against. */
+function literalText(lines: readonly string[]): number {
+  let total = 0;
+  for (const match of lines.join("\n").matchAll(STRING_TEXT)) total += match[0].length;
+  return total;
+}
+
 function literals(text: string): Set<string> {
   const found = new Set<string>();
   for (const match of text.matchAll(LITERAL))
@@ -222,6 +233,12 @@ export interface ScanOptions {
    * while every test case stays and the file still asserts; fewer test cases are not.
    */
   rewrites?: ReadonlySet<string>;
+  /**
+   * Test files a correction's own finding says check too little (#1481): fewer assertions are
+   * accepted while every test case stays, the file still asserts and it holds more expected
+   * literal text, as when three `toContain` checks become one comparison with the full output.
+   */
+  strengthens?: ReadonlySet<string>;
   /** Contents of test files the task can see, for literals that special-case test inputs. */
   testSources?: readonly string[];
   /** Request, spec and plan text: a literal they name is a requirement, not a test input. */
@@ -283,8 +300,11 @@ export function scanTestIntegrity(
         });
       const assertsBefore = count(before, ASSERTIONS);
       const assertsAfter = count(after, ASSERTIONS);
+      const kept = testsAfter >= testsBefore && assertsAfter > 0;
       const rewritten =
-        options.rewrites?.has(path) === true && testsAfter >= testsBefore && assertsAfter > 0;
+        kept &&
+        (options.rewrites?.has(path) === true ||
+          (options.strengthens?.has(path) === true && literalText(after) > literalText(before)));
       if (!reasoned && !rewritten && assertsAfter < assertsBefore)
         findings.push({
           rule: "assertions",
@@ -390,6 +410,39 @@ export function testWriteProblems(
 /** A finding raised by a linter or a lint rule: "ruff BLE001", "eslint no-empty". */
 const LINT_FINDING =
   /\b(?:lint(?:er|ing)?|ruff|eslint|biome|clippy|golangci(?:-lint)?|pylint|flake8|rubocop|ktlint|checkstyle)\b|\b(?:BLE|PLW|PLR|SIM|ARG|E|W|F|B)\d{3,4}\b/;
+
+/**
+ * A claim that a test checks less than its criterion states: it omits the expected output, only
+ * counts or checks a prefix, or is too weak (fpbits front F1, #1481).
+ */
+const WEAK_TEST =
+  /\b(?:omit(?:s|ted|ting)?|only (?:checks?|counts?|asserts?|compares?|verif(?:y|ies)|tests?)|(?:does not|doesn't|do not|don't|never) (?:check|assert|compare|verify)|too (?:weak|loose|lenient)|(?:weak|loose|lenient)(?:er)? (?:assertions?|checks?|tests?)|(?:complete|full|exact) (?:literal|expected)|prefix|substring)\b/i;
+
+/**
+ * The test files a correction may strengthen with fewer, stronger assertions (#1481): a test file
+ * its finding names when the finding says the test checks too little (kind `partial` or
+ * `missing`, or a claim in those words). fpbits front T012 replaced a separator count, a final-row
+ * check and a prefix check with full expected outputs (24 assertions to 23); the guard flagged it
+ * and corrective T013 spent 391k tokens adding an assertion back. The guard's own findings never
+ * qualify.
+ */
+export function strengthenTargets(
+  findings: readonly { kind: string; file: string | null; claim: string; suggestedFix: string }[],
+): Set<string> {
+  return new Set(
+    findings
+      .filter(
+        (f) =>
+          f.file !== null &&
+          isTestPath(f.file) &&
+          !f.claim.startsWith("Test integrity") &&
+          (f.kind === "partial" ||
+            f.kind === "missing" ||
+            WEAK_TEST.test(`${f.claim}\n${f.suggestedFix}`)),
+      )
+      .map((f) => f.file as string),
+  );
+}
 
 /**
  * The test files a correction may rewrite with fewer assertions (#1069): a test file its finding

@@ -40,6 +40,7 @@ import {
 import { staticCorrection } from "../src/core/workflows/scheduler.js";
 import type { Check, RunPolicy, RuntimeState } from "../src/core/workflows/schemas.js";
 import type { WorkflowStore } from "../src/core/workflows/store.js";
+import { scanTestIntegrity } from "../src/core/workflows/test-integrity.js";
 import type { Task } from "../src/core/workflows/types.js";
 import {
   createTaskWorktree,
@@ -631,6 +632,74 @@ const SYNTAX: Record<Stack, { path: string; valid: string; broken: string; line:
     line: 5,
   },
 };
+
+// --- Test integrity ----------------------------------------------------------------------
+
+/**
+ * A test that checks parts of the output (a prefix, a count, a final row), and the same test
+ * strengthened to one comparison with the full expected output: fewer assertions, more expected
+ * text. A correction of a test-strength finding writes the second (#1481).
+ */
+const STRENGTHENED: Record<Stack, { path: string; loose: string; strict: string }> = {
+  bun: {
+    path: "tests/table.test.ts",
+    loose: 'test("table", () => {\n  expect(out).toContain("1 | one");\n  expect(out).toContain("2 | two");\n  expect(out.length).toBe(17);\n});\n',
+    strict: 'test("table", () => {\n  expect(out).toBe("1 | one\\n2 | two\\n3 | three\\n");\n});\n',
+  },
+  npm: {
+    path: "test/table.test.js",
+    loose: 'test("table", () => {\n  assert.ok(out.startsWith("1 | one"));\n  assert.ok(out.endsWith("3 | three"));\n});\n',
+    strict: 'test("table", () => {\n  assert.strictEqual(out, "1 | one\\n2 | two\\n3 | three");\n});\n',
+  },
+  python: {
+    path: "tests/test_table.py",
+    loose: 'def test_table():\n    assert out.startswith("1 | one")\n    assert out.count("\\n") == 3\n',
+    strict: 'def test_table():\n    assert out == """1 | one\n2 | two\n3 | three\n"""\n',
+  },
+  go: {
+    path: "table_test.go",
+    loose: 'func TestTable(t *testing.T) {\n\tif !strings.HasPrefix(out, "1 | one") {\n\t\tt.Errorf("prefix")\n\t}\n\tif strings.Count(out, "\\n") != 3 {\n\t\tt.Errorf("rows")\n\t}\n}\n',
+    strict: 'func TestTable(t *testing.T) {\n\twant := `1 | one\n2 | two\n3 | three\n`\n\tif out != want {\n\t\tt.Errorf("got %q", out)\n\t}\n}\n',
+  },
+  rust: {
+    path: "tests/table.rs",
+    loose: '#[test]\nfn table() {\n    assert!(out.starts_with("1 | one"));\n    assert_eq!(out.lines().count(), 3);\n}\n',
+    strict: '#[test]\nfn table() {\n    assert_eq!(out, "1 | one\\n2 | two\\n3 | three\\n");\n}\n',
+  },
+  maven: {
+    path: "src/test/java/fixture/TableTest.java",
+    loose: '    @Test\n    void table() {\n        assertTrue(out.startsWith("1 | one"));\n        assertEquals(3, out.lines().count());\n    }\n',
+    strict: '    @Test\n    void table() {\n        assertEquals("1 | one\\n2 | two\\n3 | three\\n", out);\n    }\n',
+  },
+  dotnet: {
+    path: "tests/TableTests.cs",
+    loose: '    [Fact]\n    public void Table()\n    {\n        Assert.StartsWith("1 | one", output);\n        Assert.Equal(3, output.Split("\\n").Length);\n    }\n',
+    strict: '    [Fact]\n    public void Table()\n    {\n        Assert.Equal("1 | one\\n2 | two\\n3 | three\\n", output);\n    }\n',
+  },
+};
+
+for (const stack of STACKS) {
+  const sample = STRENGTHENED[stack];
+  const rules = (strengthens: string[], after = sample.strict) =>
+    scanTestIntegrity([{ path: sample.path, before: sample.loose, after }], {
+      strengthens: new Set(strengthens),
+    }).map((f) => f.rule);
+  describe(`gate matrix: ${stack} test integrity`, () => {
+    cell(stack, "test integrity: strengthened test of a test-strength finding passes", () => {
+      expect(rules([sample.path])).toEqual([]);
+    });
+    cell(stack, "test integrity: the same edit without that finding is flagged", () => {
+      expect(rules([])).toEqual(["assertions"]);
+    });
+    cell(stack, "test integrity: fewer assertions with less expected text are flagged", () => {
+      // The loose test with its last assertion removed: weaker, not stronger.
+      const lines = sample.loose.split("\n");
+      const last = lines.findLastIndex((line) => /assert|expect\(|Errorf/i.test(line));
+      const weaker = lines.filter((_, i) => i !== last).join("\n");
+      expect(rules([sample.path], weaker)).toContain("assertions");
+    });
+  });
+}
 
 for (const stack of STACKS) {
   const sample = SYNTAX[stack];
