@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { loadProjectConfig, saveProjectConfig } from "../../config/index.js";
 import { gateSandbox } from "../security/sandbox.js";
 import { workspacePath } from "../specs/validate.js";
-import { buildCheckEnv } from "../verification/check-runner.js";
+import { buildCheckEnv, exitStatus } from "../verification/check-runner.js";
 import {
   MISSING_GATE_REPORT,
   readGateReport,
@@ -321,21 +321,47 @@ function pythonGates(workspace: string): GateSuggestion[] {
       reason: "ruff check .",
       preselected: true,
     });
+  // `ruff check` reports no formatting, so formatting drift passed unverified (#1480). A project
+  // that configures the formatter gets its check preselected; one that only uses ruff as a linter
+  // may format with another tool, so the gate is offered there but not preselected.
+  const ruffConfig = `${read(workspace, "ruff.toml") ?? ""}\n${read(workspace, ".ruff.toml") ?? ""}`;
+  const formatSource = /\[tool\.ruff\.format\]/.test(pyproject)
+    ? "pyproject.toml [tool.ruff.format]"
+    : /^\s*\[format\]/m.test(ruffConfig)
+      ? "ruff.toml [format]"
+      : null;
+  if (ruffSource)
+    out.push({
+      check: {
+        ...gate("ruff-format", "ruff", ["format", "--check", "."], 120000),
+        fix: { executable: "ruff", args: ["format"] },
+      },
+      source: formatSource ?? ruffSource,
+      reason: "ruff format --check . (fixer: ruff format)",
+      preselected: formatSource !== null,
+    });
   return out;
 }
 
 function goGates(workspace: string): GateSuggestion[] {
   if (!has(workspace, "go.mod")) return [];
-  // `gofmt -l` exits 0 whatever it lists, so formatting is applied by the vet gate's fixer
-  // rather than verified by a check of its own.
+  // `go vet` passes on unformatted code and is a whole-unit check, so its fixer never ran on a
+  // task's files; formatting is a file-local gate of its own. `gofmt -l` exits 0 whatever it
+  // lists, and the check runner fails it on any listed file (#1480).
   return [
     {
       check: {
-        ...gate("go-vet", "go", ["vet", "./..."], 300000),
+        ...gate("gofmt", "gofmt", ["-l", "."], 120000),
         fix: { executable: "go", args: ["fmt", "./..."] },
       },
       source: "go.mod",
-      reason: "go vet ./... (fixer: go fmt ./...)",
+      reason: "gofmt -l . (fails on a listed file; fixer: go fmt ./...)",
+      preselected: true,
+    },
+    {
+      check: gate("go-vet", "go", ["vet", "./..."], 300000),
+      source: "go.mod",
+      reason: "go vet ./...",
       preselected: true,
     },
     {
@@ -502,9 +528,9 @@ export async function executeGate(
             ? report?.status === "failed" || (report?.status === "passed" && result.exitCode === 0)
               ? report.status
               : "error"
-            : result.exitCode === 0
-              ? "passed"
-              : "failed",
+            : result.exitCode === null
+              ? "failed"
+              : exitStatus(parsed, result.exitCode, result.output),
       exitCode: result.exitCode,
       durationMs: result.durationMs,
       outputTail: outputTail(output),

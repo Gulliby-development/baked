@@ -564,6 +564,9 @@ export function noteInconclusiveReview(
   return added;
 }
 
+/** How a formatting or lint claim no passing check shows starts its coverage explanation (#1480). */
+export const STYLE_UNSHOWN = "No passing format or lint check covers this claim";
+
 /**
  * Records criteria that convergence could not verify, and that no finding names, as known
  * limitations. A criterion only another environment can prove (propdrift eea2e0e9 AC-008, "behavior
@@ -590,7 +593,9 @@ export function noteUnverifiedCriteria(
       file: null,
       symbol: null,
       claim: `Criterion ${criterionId} could not be verified on this host${explanation ? `: ${explanation.replace(/\s+/g, " ").slice(0, 400)}` : ""}`,
-      impact: "The evidence needs an environment or device the run does not have",
+      impact: explanation.startsWith(STYLE_UNSHOWN)
+        ? "No check of the run verifies it; a format or lint gate would"
+        : "The evidence needs an environment or device the run does not have",
       decidedBy: "notes",
       round,
     };

@@ -60,6 +60,7 @@ import {
   requiredChecksPass,
   reversalCandidates,
   reviewLimitAccepts,
+  STYLE_UNSHOWN,
 } from "../verification/convergence-stop.js";
 import { caseCheck as criteriaCaseCheck } from "../verification/criteria-cases.js";
 import { type DocExampleResult, isDocFile, runDocExamples } from "../verification/doc-examples.js";
@@ -172,6 +173,7 @@ import {
   isWholeUnitCheck,
   isWholeUnitFixer,
   isWholeUnitFormatter,
+  styleClaimShown,
   taskCheckList,
   validateChecks,
   wholeUnitFixerCommand,
@@ -2197,6 +2199,25 @@ export class WorkflowScheduler {
                     });
                 }
                 review.verdict = "changes_requested";
+              }
+              // A formatting or lint claim passes only on a check that shows it (#1480).
+              const results = this.store.checks(runId);
+              const passedChecks = policy.checks.filter((check) => {
+                const last = results
+                  .filter((c) => c.check_id === check.id && c.snapshot_id === state.snapshotId)
+                  .at(-1);
+                return last?.status === "passed" && last.validity === "current";
+              });
+              for (const item of review.coverage) {
+                const text = state.spec.criteria.find((c) => c.id === item.criterionId)?.then;
+                if (
+                  item.verdict !== "pass" ||
+                  !text ||
+                  styleClaimShown(text, passedChecks) !== false
+                )
+                  continue;
+                item.verdict = "inconclusive";
+                item.explanation = `${STYLE_UNSHOWN} (passing checks: ${passedChecks.map((c) => c.id).join(", ") || "none"}). ${item.explanation}`;
               }
               validateReview(
                 this.store,

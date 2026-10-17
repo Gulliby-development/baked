@@ -37,7 +37,7 @@ describe("the command that applies a fixer to one file", () => {
   test("Go: gofmt formats a file, go fmt only takes packages", () => {
     const root = workspace({ "go.mod": "module m\n\ngo 1.21\n" });
     expect(fixers(root, "pkg/a.go")).toEqual([
-      { id: "go-vet", executable: "gofmt", args: ["-w", "pkg/a.go"] },
+      { id: "gofmt", executable: "gofmt", args: ["-w", "pkg/a.go"] },
     ]);
   });
 
@@ -54,6 +54,7 @@ describe("the command that applies a fixer to one file", () => {
     const py = workspace({ "ruff.toml": "", "pyproject.toml": "[tool.ruff]\n" });
     expect(fixers(py, "app/x.py")).toEqual([
       { id: "ruff", executable: "ruff", args: ["check", "--fix", "app/x.py"] },
+      { id: "ruff-format", executable: "ruff", args: ["format", "app/x.py"] },
     ]);
     expect(
       fixerCommand({ executable: "bun", args: ["x", "biome", "check", "--write"] }, "src/a.ts"),

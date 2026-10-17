@@ -12,11 +12,17 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
-import { timedOutFailure } from "../src/core/verification/check-runner.js";
+import { exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
 import { failureSignature } from "../src/core/verification/output-counts.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
-import { isStaticCheck, isWholeUnitCheck } from "../src/core/workflows/check-policy.js";
+import {
+  coveringChecks,
+  fixerCommand,
+  isStaticCheck,
+  isWholeUnitCheck,
+  styleClaimShown,
+} from "../src/core/workflows/check-policy.js";
 import { detectGates, executeGate } from "../src/core/workflows/gates.js";
 import { type LayoutResult, layoutVerdict } from "../src/core/workflows/layout-check.js";
 import { addedDependencies } from "../src/core/workflows/quality/dependencies.js";
@@ -74,7 +80,7 @@ const STATIC_FIXES: Record<Stack, string[]> = {
   bun: ["typecheck", "lint"],
   npm: ["lint"],
   python: ["ruff"],
-  go: ["go-vet"],
+  go: ["gofmt", "go-vet"],
   rust: ["cargo-fmt", "cargo-clippy"],
   maven: [],
   dotnet: ["dotnet-format"],
@@ -230,7 +236,7 @@ const FIXTURES: Record<Stack, Fixture> = {
   },
   go: {
     files: { "go.mod": "module example.com/fixture\n\ngo 1.22\n" },
-    gates: ["go-vet", "go-test"],
+    gates: ["gofmt", "go-vet", "go-test"],
     wholeUnit: ["go-vet"],
     manifest: {
       path: "go.mod",
@@ -1025,6 +1031,75 @@ const RUNNABLE: Partial<
   },
 };
 
+/**
+ * Formatting that a passing lint gate does not show (bench round 41, fpbits, #1480): `go vet`
+ * passes on unformatted code, `gofmt -l` exits 0 whatever it lists, and `ruff check` reports no
+ * formatting. Each stack's formatter is a file-local gate of its own, so it covers the files a task
+ * writes and its fixer formats them before the task's checks run.
+ */
+describe("gate matrix: formatting a lint gate does not verify", () => {
+  const formatters: [string, Record<string, string>, string, string, { executable: string; args: string[] }][] = [
+    ["go", FIXTURES.go.files, "gofmt", "internal/core/format.go", { executable: "gofmt", args: ["-w", "internal/core/format.go"] }],
+    [
+      "python",
+      { "pyproject.toml": "[project]\nname = 'fixture'\n\n[tool.ruff]\n\n[tool.ruff.format]\nquote-style = 'double'\n" },
+      "ruff-format",
+      "fixture/core.py",
+      { executable: "ruff", args: ["format", "fixture/core.py"] },
+    ],
+    ["rust", FIXTURES.rust.files, "cargo-fmt", "src/core.rs", { executable: "cargo", args: ["fmt", "--", "src/core.rs"] }],
+    ["dotnet", FIXTURES.dotnet.files, "dotnet-format", "src/Core.cs", { executable: "dotnet", args: ["format", "--include", "src/Core.cs"] }],
+  ];
+  for (const [stack, files, id, path, fixer] of formatters)
+    test(`${stack}: ${id} is preselected and its fixer formats the file a task wrote`, () => {
+      const checks = detectGates(project(files))
+        .filter((s) => s.preselected)
+        .map((s) => s.check);
+      const check = checks.find((c) => c.id === id);
+      expect(check?.fix && fixerCommand(check.fix, path)).toEqual(fixer);
+      const writes = [{ path, action: "create" as const }];
+      // Whole-unit formatters (cargo fmt) run at the checks stage after integration (#842).
+      expect(coveringChecks({ checks } as RunPolicy, { writes }).some((c) => c.id === id)).toBe(!isWholeUnitCheck(check as Check));
+    });
+
+  test("gofmt -l fails on a file it lists although it exits 0", () => {
+    const gofmt = detectGates(project(FIXTURES.go.files)).find((s) => s.check.id === "gofmt")?.check as Check;
+    expect(exitStatus(gofmt, 0, "internal/core/format.go\n")).toBe("failed");
+    expect(exitStatus(gofmt, 0, "")).toBe("passed");
+    expect(exitStatus({ ...gofmt, executable: "C:\\Go\\bin\\gofmt.exe" }, 0, "a.go\n")).toBe("failed");
+  });
+
+  // A criterion that claims formatting or lint passes only on a check that shows it.
+  const passed = (...commands: string[][]): Check[] =>
+    commands.map(([executable = "", ...args]) => ({
+      id: [executable, ...args].join("-").replace(/[^A-Za-z0-9_-]/g, ""),
+      executable,
+      args,
+      cwd: ".",
+      timeoutMs: 1000,
+      required: true,
+      scope: "feature",
+      envNames: [],
+      writes: [],
+    }));
+  const claims: [string, Check[], boolean | null][] = [
+    ["All new Go files are gofmt-formatted; 'go vet ./...' and 'go test ./...' pass", passed(["go", "vet", "./..."], ["go", "test", "./..."]), false],
+    ["All new Go files are gofmt-formatted; 'go vet ./...' and 'go test ./...' pass", passed(["gofmt", "-l", "."], ["go", "vet", "./..."]), true],
+    ["changed Go files are formatted", passed(["go", "vet", "./..."]), false],
+    ["the Python sources are formatted", passed(["ruff", "check", "."]), false],
+    ["the Python sources are formatted", passed(["ruff", "format", "--check", "."]), true],
+    ["the code is lint-clean", passed(["ruff", "check", "."]), true],
+    ["the code is formatted", passed(["bun", "run", "lint"]), true],
+    ["cargo fmt --check and clippy report nothing", passed(["cargo", "fmt", "--check"], ["cargo", "clippy"]), true],
+    ["the report prints dates in ISO 8601 format", passed(["go", "test", "./..."]), null],
+    ["the output is formatted as a table", passed(["go", "test", "./..."]), null],
+  ];
+  for (const [text, checks, shown] of claims)
+    test(`"${text}" with ${checks.map((c) => c.id).join(", ")} passing: ${shown}`, () => {
+      expect(styleClaimShown(text, checks)).toBe(shown);
+    });
+});
+
 const toolchains = process.env.BAKED_GATE_MATRIX_TOOLCHAINS === "1";
 // The test preload points HOME at an empty profile, where rustup finds no default toolchain;
 // os.homedir() still names the real home, so the toolchain tier points rustup and cargo there.
@@ -1040,6 +1115,51 @@ const available = (needs: string[][]) =>
   });
 
 describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
+  // A misaligned struct passes `go vet` and fails the format gate; the per-file fixer repairs it
+  // (bench round 41, fpbits internal/core/format.go, #1480). The same for an unformatted Python file.
+  const unformatted: [Stack, string, Record<string, string>, string, string[][]][] = [
+    [
+      "go",
+      "gofmt",
+      { ...RUNNABLE.go?.files, "format.go": "package fixture\n\ntype Format struct {\n\tA int\n\tLonger string\n}\n" },
+      "format.go",
+      [["go", "version"]],
+    ],
+    [
+      "python",
+      "ruff-format",
+      {
+        ...RUNNABLE.python?.files,
+        "pyproject.toml": "[project]\nname = 'fixture'\nversion = '0.1.0'\n\n[tool.ruff]\nline-length = 100\n\n[tool.ruff.format]\n\n[tool.pytest.ini_options]\ntestpaths = ['tests']\n",
+        "fixture/core.py": "def core( a,b ):\n    return {'a':a,'b':b}\n",
+      },
+      "fixture/core.py",
+      [["ruff", "--version"]],
+    ],
+  ];
+  for (const [stack, id, files, path, needs] of unformatted)
+    (process.env.CI || available(needs) ? cell : (s: Stack, name: string) => test.skip(`${name} (no toolchain)`, () => {}))(
+      stack,
+      `${stack}: ${id} fails on an unformatted file that the lint gate passes, and its fixer repairs it`,
+      async () => {
+        const root = project(files);
+        const checks = detectGates(root)
+          .filter((s) => s.preselected)
+          .map((s) => s.check);
+        const format = checks.find((c) => c.id === id);
+        const lint = checks.find((c) => c.id === (stack === "go" ? "go-vet" : "ruff"));
+        if (!format?.fix || !lint) throw new Error(`${id} or its lint gate is missing`);
+        expect((await executeGate(root, lint, new AbortController().signal)).status).toBe("passed");
+        const before = await executeGate(root, format, new AbortController().signal);
+        expect(before.status).toBe("failed");
+        expect(before.outputTail).toContain(path.split("/").at(-1) ?? path);
+        const fix = fixerCommand(format.fix, path);
+        expect(spawnSync(fix.executable, fix.args, { cwd: root }).status).toBe(0);
+        expect((await executeGate(root, format, new AbortController().signal)).status).toBe("passed");
+      },
+      300_000,
+    );
+
   for (const [stack, runnable] of Object.entries(RUNNABLE) as [Stack, NonNullable<(typeof RUNNABLE)[Stack]>][]) {
     // In CI every toolchain must be there; locally a missing one skips its row.
     const ready = process.env.CI ? true : available(runnable.needs);

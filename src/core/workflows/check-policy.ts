@@ -41,7 +41,7 @@ const CODE_FILE =
   /\.(?:[cm]?[jt]sx?|pyi?|rs|go|java|kt|rb|php|cs|cpp|cc|c|h|hpp|swift|vue|svelte)$/i;
 /** Commands that analyze source without running it: linters, formatters and type checkers. */
 const STATIC_COMMAND =
-  /\b(?:lint|eslint|biome|ruff|flake8|pylint|clippy|vet|fmt|format|prettier|mypy|pyright|tsc|typecheck|check)\b/i;
+  /\b(?:lint|eslint|biome|ruff|flake8|pylint|clippy|vet|fmt|gofmt|format|prettier|mypy|pyright|tsc|typecheck|check)\b/i;
 
 /** Source code a linter or formatter reads: any written file that is not documentation or data. */
 export const isCodePath = (path: string): boolean => CODE_FILE.test(path);
@@ -173,4 +173,33 @@ export function fixerCommand(
   if (name === "dotnet" && first === "format" && !fix.args.includes("--include"))
     return { executable: fix.executable, args: [...fix.args, "--include", path] };
   return { executable: fix.executable, args: [...fix.args, path] };
+}
+
+/** A criterion that claims the code is formatted: a formatter's name, or files "are formatted". */
+const FORMAT_CLAIM =
+  /\b(?:gofmt|go\s+fmt|rustfmt|cargo\s+fmt|ruff\s+format|prettier|dotnet\s+format|clang-format)\b|-formatted\b|\b(?:code|files?|sources?)\b[^.;]{0,40}?\b(?:is|are|stays?|remains?)\s+(?:properly\s+|correctly\s+)?formatted\b/i;
+/** A criterion that claims the code is lint-clean or passes a named linter. */
+const LINT_CLAIM =
+  /\blint(?:-clean|s|ed|ers?|ing)?\b|\b(?:clippy|ruff\s+check|eslint|flake8|pylint|go\s+vet|rubocop|ktlint)\b/i;
+const FORMAT_COMMAND = /\b(?:gofmt|fmt|format|prettier|biome|lint)\b/i;
+const LINT_COMMAND =
+  /\b(?:lint|eslint|biome|ruff|flake8|pylint|clippy|vet|rubocop|ktlint|golangci-lint)\b/i;
+
+/**
+ * Whether the passing checks show a criterion's formatting or lint claim, or null when it makes
+ * none. A walker passed "all new Go files are gofmt-formatted" from `go vet` and `go test` alone
+ * while a file was not (bench round 41, fpbits, #1480). A claim of both needs a passing check of
+ * each kind; a `lint` script counts for formatting, since JavaScript projects run their formatter
+ * through it.
+ */
+export function styleClaimShown(text: string, passed: readonly Check[]): boolean | null {
+  const kinds = [
+    ...(FORMAT_CLAIM.test(text) ? [FORMAT_COMMAND] : []),
+    ...(LINT_CLAIM.test(text) ? [LINT_COMMAND] : []),
+  ];
+  if (!kinds.length) return null;
+  const commands = passed
+    .filter(isStaticCheck)
+    .map((c) => [c.id, c.executable, ...c.args].join(" "));
+  return kinds.every((kind) => commands.some((command) => kind.test(command)));
 }
