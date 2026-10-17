@@ -1686,6 +1686,8 @@ export interface StartRequest {
   baseCommit?: string;
   /** The proposal of `--auto-preset` and the workflow the run took (`PresetChoice`). */
   presetChoice?: import("./preset-router.js").PresetChoice;
+  /** Why the host built no auto approval for a run that asked for it (`RuntimeState`, #1467). */
+  autoApprovalDeclined?: string;
 }
 export type Decision =
   | {

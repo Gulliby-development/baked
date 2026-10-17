@@ -1180,21 +1180,24 @@ export class InitiativeService {
       });
       return false;
     }
+    const policy = featurePolicy(
+      settings,
+      share,
+      feature,
+      false,
+      growthLimit(current, featureId),
+      waiting?.shareUsd ?? null,
+      costGrowthLimit(current, featureId),
+    );
+    const declined = featureApprovalDeclined(settings, feature, false, policy);
     // A derived command ID makes a start after a crash return the same run instead of a second one.
     const snapshot = await this.workflows.start({
       commandId: `i-${hashJson({ id, featureId, previous, revision: row.approved_plan_revision }).slice(0, 48)}`,
       workflowId: featureWorkflowId(settings, feature),
       featureId: runFeature,
       prompt: featurePrompt(row, plan, feature, upstream),
-      policy: featurePolicy(
-        settings,
-        share,
-        feature,
-        false,
-        growthLimit(current, featureId),
-        waiting?.shareUsd ?? null,
-        costGrowthLimit(current, featureId),
-      ),
+      policy,
+      ...(declined ? { autoApprovalDeclined: declined } : {}),
       ownerLabel: settings.ownerLabel,
       dependencies: upstream.map((u) => ({
         featureId: u.contract.featureId,
@@ -1278,6 +1281,16 @@ export class InitiativeService {
     }));
     const baseCommit = await this.featureBase(id, feature, settings);
     const open = this.workflows.store.run(link.run_id);
+    const policy = featurePolicy(
+      settings,
+      rebaseShare,
+      feature,
+      true,
+      growthLimit(current, featureId),
+      rebased?.shareUsd ?? null,
+      costGrowthLimit(current, featureId),
+    );
+    const declined = featureApprovalDeclined(settings, feature, true, policy);
     const snapshot = await this.workflows.rebase(
       link.run_id,
       {
@@ -1286,16 +1299,9 @@ export class InitiativeService {
       },
       {
         dependencies,
-        policy: featurePolicy(
-          settings,
-          rebaseShare,
-          feature,
-          true,
-          growthLimit(current, featureId),
-          rebased?.shareUsd ?? null,
-          costGrowthLimit(current, featureId),
-        ),
+        policy,
         ...(baseCommit ? { baseCommit } : {}),
+        ...(declined ? { autoApprovalDeclined: declined } : {}),
       },
     );
     this.store.transaction(() => {
@@ -2161,6 +2167,25 @@ export function featurePolicy(
       : null,
     ...cost,
   });
+}
+
+/**
+ * Why a feature run under tiered approval got no auto approval, or null when it has one or the
+ * initiative has tiered approval off. The approval request shows it, so a person who is asked
+ * knows why the initiative did not approve on its own (#1467).
+ */
+export function featureApprovalDeclined(
+  settings: InitiativeSettings,
+  feature: InitiativeFeature,
+  humanOnly: boolean,
+  policy: RunPolicy,
+): string | null {
+  if (!settings.featureAutoApproval || policy.autoApproval) return null;
+  if (humanOnly)
+    return `Feature ${feature.id} was rebased onto new upstream results, so a person approves its plan again; tiered approval covers only the feature's first run.`;
+  if (!feature.boundary.paths.length)
+    return `The approved split names no boundary paths for feature ${feature.id}, so tiered approval has no paths to allow and a person approves its plan.`;
+  return `Feature ${feature.id}'s boundary (${feature.boundary.paths.length} paths) is outside what tiered approval accepts, so a person approves its plan.`;
 }
 
 /**
