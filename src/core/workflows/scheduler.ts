@@ -57,6 +57,7 @@ import {
   noteUnverifiedCriteria,
   passesWithNotes,
   REPEAT_NOTE,
+  reaskableCriteria,
   requiredChecksPass,
   reversalCandidates,
   reviewLimitAccepts,
@@ -519,6 +520,7 @@ import {
   hasNoSource,
   type WorkspaceFacts,
   workspaceFacts,
+  workspaceInventory,
 } from "./workspace-facts.js";
 import {
   commitRunBranch,
@@ -10993,7 +10995,14 @@ ${note}`;
       // The language dimension reviews idioms in the diff; criterion coverage is not its job.
       const diffOnly = reviewer.dimension === "language";
       let reproAdvised = false;
-      const ask = async (extra: Record<string, unknown>): Promise<Review> => {
+      // Criteria that count or list files are settled from the host's file list (#1506).
+      const inventory = diffOnly
+        ? undefined
+        : workspaceInventory(runRoot(this.store.workspace, state));
+      const ask = async (
+        extra: Record<string, unknown>,
+        maxSteps = REVIEW_ATTEMPT_STEPS,
+      ): Promise<Review> => {
         const answer = ReviewSchema.parse(
           await this.call(
             runId,
@@ -11020,6 +11029,7 @@ ${note}`;
               ...(reviewer.dimension === "correctness" && examples.length
                 ? { documentedExamples: examples }
                 : {}),
+              ...(inventory ? { workspaceInventory: inventory } : {}),
               ...extra,
             },
             signal,
@@ -11049,7 +11059,7 @@ ${note}`;
               return advice;
             },
             {
-              maxSteps: Math.min(profile.maxSteps, policy.maxAgentSteps, REVIEW_ATTEMPT_STEPS),
+              maxSteps: Math.min(profile.maxSteps, policy.maxAgentSteps, maxSteps),
               maxTokens: undefined,
             },
             canRepro ? () => ({ run_repro: reproTool(executables, repro) }) : undefined,
@@ -11075,17 +11085,23 @@ ${note}`;
       if (result.verdict === "inconclusive" && reviewer.required) {
         // One more question with the criteria it left open: a reviewer that sees the list often
         // settles them, or says what evidence would (endfix 2295dbbd, AC-001 and AC-005).
-        const open = result.coverage.filter((c) => c.verdict === "inconclusive");
+        // A criterion whose explanation already names evidence the reviewer cannot produce is
+        // not asked again (#1506): the same tools give the same answer, and it goes to the
+        // converge stage as an evidence gap. The second question gets half the steps.
+        const open = reaskableCriteria(result.coverage);
         if (open.length) {
-          result = await ask({
-            inconclusiveCriteria: {
-              note: "Your review was inconclusive on these criteria. Settle each from the code and the evidence, using run_repro where it helps, or say in the explanation which test or check would establish it. Do not leave a criterion inconclusive without a reason.",
-              criteria: open.map((c) => ({
-                criterionId: c.criterionId,
-                explanation: c.explanation,
-              })),
+          result = await ask(
+            {
+              inconclusiveCriteria: {
+                note: "Your review was inconclusive on these criteria. Settle each from the code, the evidence and extra.workspaceInventory, using run_repro where it helps, or say in the explanation which test or check would establish it. Do not leave a criterion inconclusive without a reason.",
+                criteria: open.map((c) => ({
+                  criterionId: c.criterionId,
+                  explanation: c.explanation,
+                })),
+              },
             },
-          });
+            Math.ceil(REVIEW_ATTEMPT_STEPS / 2),
+          );
         }
       }
       validateReview(
