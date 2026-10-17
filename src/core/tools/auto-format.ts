@@ -11,7 +11,12 @@ import { runBoundedShell } from "./bounded-process.js";
 const formatCommands = new Map<string, string | null>();
 let formatOverride: string | null | undefined;
 
-const AUTO_FORMAT_TIMEOUT_MS = 5_000;
+/**
+ * The deadline of a format command, after an edit and in `formatFile` alike. A formatter's first
+ * start on Windows (`bunx` resolving it, the antivirus scanning the binary) took over 10 s on CI
+ * runners; later runs take well under a second (#1177, #1429).
+ */
+export const FORMAT_TIMEOUT_MS = 30_000;
 
 function shellQuote(s: string): string {
   // POSIX: single-quote wrap; Windows cmd.exe: double-quote wrap (no special chars allowed in path-only args).
@@ -56,7 +61,7 @@ export async function autoFormatAfterEdit(filePath: string, cwd?: string): Promi
     // A deadline that kills the whole tree: the formatter's own children must not hold the edit.
     const result = await runBoundedShell(command, {
       cwd: effectiveCwd,
-      timeoutMs: AUTO_FORMAT_TIMEOUT_MS,
+      timeoutMs: FORMAT_TIMEOUT_MS,
     });
     return !result.timedOut && result.exitCode === 0;
   } catch {
