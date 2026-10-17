@@ -59,6 +59,7 @@ import {
   InitiativeId,
   type InitiativePlan,
   InitiativePlanSchema,
+  isGlobPath,
   literalPathCount,
   mergeSmallSiblings,
   planSizeProblem,
@@ -86,6 +87,7 @@ import {
   featureWorkflowChoices,
   lightenSmallLeaves,
   planWorkflowProblems,
+  restoreContractWorkflows,
 } from "./workflows.js";
 
 export interface InitiativeStartRequest {
@@ -1910,16 +1912,28 @@ export class InitiativeService {
     const withRuns = new Set(
       proposed.features.filter((f) => this.store.current(id, f.id)).map((f) => f.id),
     );
-    const sequenced = sequenceSharedPaths(proposed, withRuns);
-    const plan = sequenced.plan;
+    const choices = this.workflowChoices(settings);
+    const noContract = new Set(
+      proposed.features
+        .filter((f) => !choices.find((c) => c.id === featureWorkflowId(settings, f))?.contract)
+        .map((f) => f.id),
+    );
+    const sequenced = sequenceSharedPaths(proposed, withRuns, noContract);
+    // A light feature that still gained a dependent writes a spec after all (#1406).
+    const repaired = restoreContractWorkflows(sequenced.plan, choices, settings.workflowId);
+    const plan = repaired.plan;
     const budget = planBudget(settings, plan);
     const revision = row.plan_revision + 1;
     const digest = splitDigest(id, revision, plan, budget, settings);
     for (const request of this.store.requests(id).filter((r) => r.status === "pending"))
       this.store.decide(id, request.id, "superseded", { planRevision: revision });
     this.store.addRevision(id, plan, budget, digest, source, edit);
-    if (sequenced.added.length)
-      this.store.emit(id, "split.sequenced", { planRevision: revision, added: sequenced.added });
+    if (sequenced.added.length || repaired.restored.length)
+      this.store.emit(id, "split.sequenced", {
+        planRevision: revision,
+        added: sequenced.added,
+        ...(repaired.restored.length ? { restored: repaired.restored } : {}),
+      });
     this.store.request(id, revision, digest);
     this.store.setStatus(id, "awaiting_approval");
   }
@@ -2112,7 +2126,7 @@ export function boundaryLimits(
   auto: { maxTasks: number; maxFiles: number },
   paths: readonly string[],
 ): { maxTasks: number; maxFiles: number } {
-  const files = paths.filter((p) => !/[*?[\]{}]/.test(p)).length;
+  const files = paths.filter((p) => !isGlobPath(p)).length;
   if (!files) return { maxTasks: auto.maxTasks, maxFiles: auto.maxFiles };
   return {
     maxTasks: Math.max(auto.maxTasks, Math.min(AUTO_APPROVAL_CEILING.maxTasks, files + 2)),
