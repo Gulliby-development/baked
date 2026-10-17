@@ -299,6 +299,8 @@ export const RuntimeStateSchema = z
       .default(null),
     /** Times analyze sent plan-only findings back to the planner instead of a person; once. */
     analysisReplans: z.number().int().nonnegative().default(0),
+    /** Times analyze sent derivation audit findings back to the spec author; once (#1465). */
+    derivationReturns: z.number().int().nonnegative().default(0),
     /**
      * Blocking findings of earlier analysis passes, shown to the next pass so it reports every
      * remaining one at once instead of one new finding per return (#1113).

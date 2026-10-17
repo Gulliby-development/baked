@@ -205,6 +205,14 @@ import { type CriticCalibration, calibrateCritic, criticExamples } from "./criti
 import { crossPlatformNote } from "./cross-platform.js";
 import { git } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
+import {
+  DERIVATION_RETURN_NOTE,
+  derivationAuditExtra,
+  derivationAuditOn,
+  derivationFindings,
+  derivationProblems,
+  isDerivationFinding,
+} from "./derivation-audit.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { describeChange, keepOutside, restoreOutside, unjournaledOutside } from "./fixer-scope.js";
@@ -1405,6 +1413,7 @@ export class WorkflowScheduler {
                 advance = false;
                 break;
               }
+              const audit = derivationAuditOn(policy) ? derivationAuditExtra(spec) : null;
               const analysis = AnalysisSchema.parse(
                 await this.call(
                   runId,
@@ -1422,6 +1431,7 @@ export class WorkflowScheduler {
                     ...(Object.keys(hostSplitParts(graph)).length
                       ? { hostSplit: hostSplitParts(graph) }
                       : {}),
+                    ...(audit ? { derivationAudit: audit } : {}),
                   },
                   signal,
                   undefined,
@@ -1429,10 +1439,13 @@ export class WorkflowScheduler {
                   (output) => {
                     const parsed = AnalysisSchema.safeParse(output);
                     return parsed.success
-                      ? deferredBlockingProblems(
-                          parsed.data.findings,
-                          (_, index) => parsed.data.findings[index]?.description ?? "",
-                        )
+                      ? [
+                          ...deferredBlockingProblems(
+                            parsed.data.findings,
+                            (_, index) => parsed.data.findings[index]?.description ?? "",
+                          ),
+                          ...(audit ? derivationProblems(spec, parsed.data) : []),
+                        ]
                       : [];
                   },
                 ),
@@ -1515,6 +1528,12 @@ export class WorkflowScheduler {
               }
               // Findings about check outcomes stay in the record as notes; checks run later.
               let findings = demoteDeferred(analysis.findings, (f) => f.description);
+              // The host raises the rows the audit could not reproduce; the model does not (#1465).
+              if (audit)
+                findings = [
+                  ...findings.filter((f) => !isDerivationFinding(f)),
+                  ...derivationFindings(spec, analysis),
+                ];
               // Analysis passes when no finding blocks: the rest are notes, whatever the model's verdict.
               const blocking = findings.some((f) => f.blocking);
               state.analysisPassed = !blocking && analysis.verdict !== "inconclusive";
@@ -1568,6 +1587,25 @@ export class WorkflowScheduler {
                   rerouted = v2 !== null;
                   break;
                 }
+              }
+              // A criterion row the requirements do not give goes back to the spec author once,
+              // whatever the clarification policy: the requirements settle it (#1465).
+              const derived = state.analysisPassed
+                ? []
+                : findings.filter((f) => f.blocking && isDerivationFinding(f));
+              const specify = stages.findIndex((s) => s.kind === "specify");
+              if (
+                derived.length &&
+                state.derivationReturns === 0 &&
+                specify >= 0 &&
+                this.moveTo(state, stages, specify, v2)
+              ) {
+                state.derivationReturns = 1;
+                this.pendPatch(state, policy, derived, ["spec", "plan"]);
+                state.prompt += `\n${DERIVATION_RETURN_NOTE}\n${canonical(derived.map(({ kind, refs, description }) => ({ kind, refs, description })))}`;
+                advance = false;
+                rerouted = v2 !== null;
+                break;
               }
               if (planOnly.length && state.analysisReplans === 0 && plan >= 0) {
                 if (this.moveTo(state, stages, plan, v2)) {
