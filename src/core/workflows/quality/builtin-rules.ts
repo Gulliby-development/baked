@@ -16,6 +16,12 @@ export interface QualityRule {
   fix: string;
   /** The lines (0-based, from `index`) of a match starting at `index`, or null. */
   match(lines: readonly string[], index: number): number[] | null;
+  /**
+   * A whitespace rule: it reads only files that existed at baseline, on lines whose exact text
+   * (spaces included) is new there, since the other rules compare lines without their
+   * indentation and a new file has no diff to keep small (#1398).
+   */
+  whitespace?: true;
 }
 
 const C_LIKE = [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"];
@@ -174,6 +180,66 @@ function catchReturnDefault(lines: readonly string[], index: number): number[] |
   return declaredFallback(lines, index, statement) ? null : match;
 }
 
+/** Code files a whitespace rule reads: not Markdown, where two trailing spaces break a line. */
+const CODE = [
+  ...BRACE_CATCH,
+  ...PY,
+  ".go",
+  ".rs",
+  ".rb",
+  ".c",
+  ".h",
+  ".cc",
+  ".cpp",
+  ".hpp",
+  ".kts",
+  ".gradle",
+  ".sh",
+];
+/** A line's leading spaces, or null when it is blank or indented with a tab. */
+const spaces = (line: string): number | null =>
+  !line.trim() || /^ *\t/.test(line) ? null : line.length - line.trimStart().length;
+
+/**
+ * The file's indentation step: the most common change of indentation between neighbouring lines.
+ * Cached per file, since the rule asks for it on every line.
+ */
+const stepCache = new WeakMap<readonly string[], number>();
+function indentStep(lines: readonly string[]): number {
+  const cached = stepCache.get(lines);
+  if (cached !== undefined) return cached;
+  const counts = new Map<number, number>();
+  let previous: number | null = null;
+  for (const line of lines) {
+    const indent = spaces(line);
+    if (indent === null) continue;
+    const change = previous === null ? 0 : Math.abs(indent - previous);
+    if (change > 0) counts.set(change, (counts.get(change) ?? 0) + 1);
+    previous = indent;
+  }
+  const step = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0]?.[0] ?? 0;
+  stepCache.set(lines, step);
+  return step;
+}
+
+/**
+ * A statement indented off the file's step: an `else if` at 14 spaces among siblings at 12 in a
+ * file indented by 4 (bench round 39, linehunk-update `Cli.java`). Only after a line that ends a
+ * statement or opens or closes a block, so aligned continuation lines and comment bodies are left
+ * alone.
+ */
+function unevenIndent(lines: readonly string[], index: number): number[] | null {
+  const indent = spaces(lines[index] ?? "");
+  if (indent === null || /^\s*(?:\*|\/\/|\.|\+|-|&&|\|\||\?|:)/.test(lines[index] ?? ""))
+    return null;
+  let previous = index - 1;
+  while (previous >= 0 && !(lines[previous] ?? "").trim()) previous--;
+  if (previous < 0) return null;
+  if (!/[;{}]\s*$/.test(lines[previous] ?? "")) return null;
+  const step = indentStep(lines);
+  return step >= 2 && indent % step !== 0 ? [index] : null;
+}
+
 export const BUILTIN_RULES: readonly QualityRule[] = [
   {
     id: "empty-catch",
@@ -311,6 +377,50 @@ export const BUILTIN_RULES: readonly QualityRule[] = [
     message: "The body is a placeholder, not an implementation",
     fix: "Implement the behavior, or leave the function out until a task implements it.",
     match: (lines, index) => pythonPlaceholder(lines, index) ?? placeholderLine(lines, index),
+  },
+  {
+    id: "whitespace-only-line",
+    title: "Line of only whitespace",
+    severity: "error",
+    extensions: CODE,
+    inTests: true,
+    whitespace: true,
+    message: "A line holds only spaces or tabs, an unrelated change in the diff",
+    fix: "Leave the line empty, as the blank lines around it are.",
+    match: lineRule(/^[ \t]+\r?$/),
+  },
+  {
+    id: "trailing-whitespace",
+    title: "Trailing whitespace",
+    severity: "error",
+    extensions: CODE,
+    inTests: true,
+    whitespace: true,
+    message: "A changed line ends in spaces or tabs",
+    fix: "Remove the whitespace at the end of the line.",
+    match: lineRule(/\S[ \t]+\r?$/),
+  },
+  {
+    id: "uneven-indent",
+    title: "Indentation off the file's step",
+    severity: "warning",
+    extensions: [
+      ...BRACE_CATCH,
+      ".go",
+      ".rs",
+      ".c",
+      ".h",
+      ".cc",
+      ".cpp",
+      ".hpp",
+      ".kts",
+      ".gradle",
+    ],
+    inTests: true,
+    whitespace: true,
+    message: "A changed line is indented off the file's indentation step",
+    fix: "Indent the line like its siblings in the same block.",
+    match: unevenIndent,
   },
   {
     id: "todo-comment",

@@ -126,6 +126,23 @@ export function addedLines(before: string | null | undefined, after: string): Se
   return added;
 }
 
+/**
+ * The 0-based lines of `after` whose exact text, spaces included, is not in `before`: a blank line
+ * the run filled with spaces, or a line whose indentation it changed. Empty without a baseline.
+ */
+export function rewrittenLines(before: string | null | undefined, after: string): Set<number> {
+  if (typeof before !== "string") return new Set();
+  const pool = new Map<string, number>();
+  for (const line of before.split("\n")) pool.set(line, (pool.get(line) ?? 0) + 1);
+  const out = new Set<number>();
+  after.split("\n").forEach((line, i) => {
+    const left = pool.get(line) ?? 0;
+    if (left > 0) pool.set(line, left - 1);
+    else out.add(i);
+  });
+  return out;
+}
+
 const severityOf = (settings: RuleSettings, id: string, fallback: RuleSeverity): RuleSeverity =>
   settings.severity?.[id] ?? fallback;
 
@@ -138,13 +155,17 @@ export function checkBuiltinRules(files: ChangedFile[], settings: RuleSettings):
     const test = isTestCodePath(file.path);
     const lines = file.content.split("\n");
     const added = addedLines(file.before, file.content);
-    if (!added.size) continue;
+    const rewritten = rewrittenLines(file.before, file.content);
+    if (!added.size && !rewritten.size) continue;
     for (const rule of BUILTIN_RULES) {
       if (disabled.has(rule.id) || (test && !rule.inTests)) continue;
       if (rule.extensions.length && !rule.extensions.includes(ext)) continue;
+      const changed = rule.whitespace ? rewritten : added;
+      if (!changed.size) continue;
       for (let i = 0; i < lines.length; i++) {
+        if (rule.whitespace && !changed.has(i)) continue;
         const span = rule.match(lines, i);
-        if (!span?.some((line) => added.has(line))) continue;
+        if (!span?.some((line) => changed.has(line))) continue;
         const severity = severityOf(settings, rule.id, rule.severity);
         out.push({
           rule: rule.id,

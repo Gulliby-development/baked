@@ -58,8 +58,11 @@ Agents often leave code that passes the tests but hides failures. The rule pack 
 | `lint-suppression` | warning | `eslint-disable`, `biome-ignore`, `# noqa`, `# type: ignore`, `# pylint: disable`, `//nolint`, `#[allow(...)]`, `@SuppressWarnings`, `#pragma warning disable`, `NOSONAR` | all |
 | `placeholder-body` | error | `throw new Error("not implemented")`, `throw new Error("TODO")` or `"todo: ..."` (a message that only starts with the word, such as `Todo with id 3 does not exist`, is not one), `todo!()`, `unimplemented!()`, `panic("not implemented")`, an empty `NotImplementedException`/`UnsupportedOperationException`, a Python function whose whole body (after an optional docstring or `pass`) is `raise NotImplementedError` (not an `@abstractmethod`, nor a method of a class based on `ABC`, `Protocol` or `metaclass=ABCMeta`) | all |
 | `todo-comment` | warning | `TODO`, `FIXME`, `XXX`, `HACK` comments | all |
+| `whitespace-only-line` | error | a line of only spaces or tabs | code files except Markdown |
+| `trailing-whitespace` | error | spaces or tabs at the end of a line | same |
+| `uneven-indent` | warning | a statement indented off the file's indentation step (the most common change of indentation between neighbouring lines), after a line that ends a statement or opens or closes a block | brace languages |
 
-Test files skip the error-handling, `unwrap`, `any`, placeholder and TODO rules; suppressions and `@ts-ignore` count there too.
+Test files skip the error-handling, `unwrap`, `any`, placeholder and TODO rules; suppressions and `@ts-ignore` count there too. The three whitespace rules read only files that existed at approval, on lines whose exact text, spaces included, is new there: a blank line the run filled with spaces, or a line whose indentation it changed. A new file has no diff to keep small, and the other rules compare lines without their indentation. They catch what a repository without a formatter check lets through: in bench round 39 an update of a Maven project (`mvn -B -q verify` formats nothing) turned two blank lines of `Cli.java` into lines of spaces and indented an `else if` at 14 spaces among siblings at 12.
 
 A rules check that finds the same rule on the same text in the same file after the correction for it (the line may have moved) does not ask for another correction: the rules cannot tell the code apart, so the match is shown as `error, kept after its correction` and the earlier finding is listed under "Known limitations" in the run report, accepted by the rule pack.
 
