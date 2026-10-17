@@ -134,8 +134,8 @@ describe("scenario: a feature's dollar cap grows with its tokens (#1353)", () =>
     const policy = featurePolicy(settings, view.features[0]?.share ?? { tokens: 0, calls: 0, activeMs: 0 }, feature, true, 3_000_000, 1.46, costGrowthLimit(view, "sum"));
     expect(policy.maxCostUsd).toBe(1.46);
     expect(policy.sizing?.maxRunCostUsd).toBe(5.25);
-    // Never above the base policy's own per-run cap.
-    expect(featurePolicy(settings, view.features[0]?.share ?? { tokens: 0, calls: 0, activeMs: 0 }, feature, true, 3_000_000, 1.46, 20).sizing?.maxRunCostUsd).toBe(8);
+    // The base policy's own per-run cap does not bound it under a dollar budget (#1503).
+    expect(featurePolicy(settings, view.features[0]?.share ?? { tokens: 0, calls: 0, activeMs: 0 }, feature, true, 3_000_000, 1.46, 20).sizing?.maxRunCostUsd).toBe(20);
     // Without a dollar budget nothing grows.
     expect(costGrowthLimit({ ...view, budget: { cost: { remainingUsd: null } } } as unknown as InitiativeView, "sum")).toBeNull();
   });

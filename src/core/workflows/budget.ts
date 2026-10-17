@@ -234,11 +234,12 @@ function recordGrowth(
   runId: string,
   policy: RunPolicy,
   maxTotalTokens: number,
-  kind: "auto-growth" | "planning-floor" | "planning-growth" | "auto-extend",
+  kind: "auto-growth" | "planning-floor" | "planning-growth" | "auto-extend" | "forecast-growth",
   detail: Record<string, unknown>,
+  costTo?: number,
 ): void {
   const before = hashJson(policy);
-  const maxCostUsd = grownCostCap(policy, maxTotalTokens);
+  const maxCostUsd = costTo ?? grownCostCap(policy, maxTotalTokens);
   const after = PolicySchema.parse({ ...policy, maxTotalTokens, maxCostUsd });
   const cost =
     maxCostUsd !== policy.maxCostUsd
@@ -275,6 +276,37 @@ function recordGrowth(
   });
   policy.maxTotalTokens = after.maxTotalTokens;
   policy.maxCostUsd = after.maxCostUsd;
+}
+
+/**
+ * Grows a run's cost cap so its tolerance ceiling covers a forecast of `projectedUsd`, when the
+ * policy lets the cap grow (`sizing.maxRunCostUsd`, what an initiative can spare for the feature)
+ * that far. Recorded like every host growth (`approvedBy: "sizing"`, `kind: "forecast-growth"`).
+ * Returns whether the forecast now fits. An initiative feature whose finished tasks ran over their
+ * price stopped for a person with most of the initiative's dollars unspent (#1503).
+ */
+export function growCostCapToForecast(
+  store: WorkflowStore,
+  runId: string,
+  policy: RunPolicy,
+  projectedUsd: number,
+  tolerance: number,
+): boolean {
+  const bound = policy.sizing?.maxRunCostUsd;
+  if (policy.maxCostUsd === null || bound === undefined) return false;
+  const needed = Math.ceil((projectedUsd / (1 + tolerance)) * 100) / 100;
+  if (needed <= policy.maxCostUsd) return true;
+  if (needed > bound) return false;
+  recordGrowth(
+    store,
+    runId,
+    policy,
+    policy.maxTotalTokens,
+    "forecast-growth",
+    { projectedUsd, maxRunCostUsd: bound },
+    needed,
+  );
+  return true;
 }
 
 /**

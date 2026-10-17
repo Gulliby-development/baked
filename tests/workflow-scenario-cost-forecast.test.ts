@@ -3,6 +3,7 @@ import { findPricing } from "../src/core/llm/pricing.js";
 import { canonical } from "../src/core/specs/hash.js";
 import { budgetLimitText, canExtend } from "../src/components/workflow/format.js";
 import { growBudgetOnProgress } from "../src/core/workflows/budget.js";
+import { featurePolicy, type InitiativeSettings } from "../src/core/workflows/initiatives/service.js";
 import { assertForecastFits, costForecast, forecastProgress } from "../src/core/workflows/cost-forecast.js";
 import { runReport } from "../src/core/workflows/run-report.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
@@ -55,8 +56,8 @@ function spend(store: WorkflowStore, runId: string, stage: string, policy: RunPo
 }
 
 /** cfgtrace at $5.62: planning spent, 7 of 23 test tasks done, each over its price. */
-async function midRun(options: { perTask: number[]; costForecast?: "ask" | "off" }) {
-  const policy: RunPolicy = { ...fixturePolicy, maxAgentCalls: 1000, maxTotalTokens: 16_000_000, maxCostUsd: CAP, ...(options.costForecast ? { costForecast: options.costForecast } : {}) };
+async function midRun(options: { perTask: number[]; costForecast?: "ask" | "off"; policy?: Partial<RunPolicy> }) {
+  const policy: RunPolicy = { ...fixturePolicy, maxAgentCalls: 1000, maxTotalTokens: 16_000_000, maxCostUsd: CAP, ...(options.costForecast ? { costForecast: options.costForecast } : {}), ...options.policy };
   // The fixture model has no price, so the run starts uncapped and takes the capped policy after.
   const made = workflowFixture({ policy: { ...policy, maxCostUsd: null } });
   cleanups.push(made.dispose);
@@ -128,7 +129,8 @@ describe("scenario: cfgtrace b4427c85, a forecast past the dollar cap stops the 
   // stop at the old cap, so a cap the host grew since then is not asked about again.
   test("a cap the host grew after the stop is not asked about again", async () => {
     const { store, runId, policy } = await midRun({ perTask: OVER });
-    const live: RunPolicy = { ...policy, sizing: { maxRunTokens: 17_000_000, maxRunCostUsd: CAP * 10 } };
+    // A bound the forecast cannot reach, so the forecast stops instead of growing the cap (#1503).
+    const live: RunPolicy = { ...policy, sizing: { maxRunTokens: 17_000_000, maxRunCostUsd: CAP * 1.05 } };
     store.setPolicy(runId, live);
     expect(() => assertForecastFits(store, runId, live)).toThrow();
     expect(growBudgetOnProgress(store, runId, live, 16_500_000)).toBe(true);
@@ -197,5 +199,68 @@ describe("scenario: cfgtrace b4427c85, a forecast past the dollar cap stops the 
     assertForecastFits(store, runId, policy);
     expect(forecastProgress(store, runId)).toHaveLength(0);
     expect(runReport(store, runId)).not.toContain("Cost forecast");
+  });
+});
+
+// Bench round 42, fecsmith front (#1503): under `--budget-usd 30` with a base policy cap of $8,
+// the feature's dollar share (about $9.8) and the dollars it could grow into (about $19) were both
+// clipped to $8. After five tasks over their price the forecast ($11.88) passed the $9.20 ceiling
+// and the run stopped for a person with $21 of the initiative unspent; it finished at $9.03.
+describe("scenario: an initiative feature's dollar cap under a dollar budget (#1503, R42)", () => {
+  const BASE = Math.round(CAP * 0.8 * 100) / 100;
+  // Dollar amounts in whole cents, as the initiative computes them.
+  const SHARE = Math.floor(CAP);
+  const ROOM = Math.floor(CAP * 4);
+  const SHORT = Math.floor(CAP * 1.1);
+  const settings = {
+    basePolicy: { ...fixturePolicy, maxCostUsd: BASE, sizing: { maxRunTokens: 50_000_000 } },
+    costBudget: { maxCostUsd: CAP * 4, costTolerance: "auto" },
+    featureAutoApproval: null,
+  } as unknown as InitiativeSettings;
+  const front = { id: "front", title: "front", boundary: { scope: "front", paths: ["src/front.ts"] }, contract: "front", dependsOn: [], mandatory: true };
+  const share = { tokens: 16_000_000, calls: 1000, activeMs: 3_600_000 };
+  const policyOf = (growUsd: number, humanOnly = false) => featurePolicy(settings, share, front, humanOnly, 17_000_000, SHARE, growUsd);
+
+  test("the feature's cap is its share and may grow into the initiative's spare dollars, past the base cap", () => {
+    for (const humanOnly of [false, true]) {
+      const policy = policyOf(ROOM, humanOnly);
+      expect(policy.maxCostUsd).toBe(SHARE);
+      expect(policy.sizing?.maxRunCostUsd).toBe(ROOM);
+    }
+    // A share below the base cap stays the cap; a run without a dollar budget keeps the base cap.
+    expect(featurePolicy(settings, share, front, false, 17_000_000, 3, CAP * 4).maxCostUsd).toBe(3);
+    expect(featurePolicy({ ...settings, costBudget: null } as unknown as InitiativeSettings, share, front, false, 17_000_000, null, null).maxCostUsd).toBe(BASE);
+  });
+
+  test("a forecast over the cap that the spare dollars cover grows the cap instead of stopping", async () => {
+    const feature = policyOf(ROOM);
+    const { store, runId, policy } = await midRun({
+      perTask: OVER,
+      policy: { maxCostUsd: feature.maxCostUsd, costTolerance: feature.costTolerance, ...(feature.sizing ? { sizing: feature.sizing } : {}) },
+    });
+    const before = costForecast(store, runId, policy);
+    expect(before?.projectedUsd).toBeGreaterThan(before?.ceilingUsd ?? Infinity);
+    expect(() => assertForecastFits(store, runId, policy)).not.toThrow();
+    expect(policy.maxCostUsd).toBeGreaterThan(SHARE);
+    const after = costForecast(store, runId, policy);
+    expect(after?.projectedUsd).toBeLessThanOrEqual(after?.ceilingUsd ?? 0);
+    const revision = store.artifacts(runId).find((a) => a.kind === "policy-revision");
+    expect(JSON.parse(store.readArtifact(runId, revision?.id ?? ""))).toMatchObject({
+      kind: "forecast-growth",
+      approvedBy: "sizing",
+      previous: { maxCostUsd: SHARE },
+      next: { maxCostUsd: policy.maxCostUsd },
+    });
+    expect(store.artifacts(runId).filter((a) => a.kind === "cost-forecast")).toHaveLength(0);
+  });
+
+  test("a forecast the spare dollars cannot cover still stops, naming what the initiative can spare", async () => {
+    const feature = policyOf(SHORT);
+    const { store, runId, policy } = await midRun({
+      perTask: OVER,
+      policy: { maxCostUsd: feature.maxCostUsd, costTolerance: feature.costTolerance, ...(feature.sizing ? { sizing: feature.sizing } : {}) },
+    });
+    expect(() => assertForecastFits(store, runId, policy)).toThrow(`The initiative can spare up to $${SHORT.toFixed(2)} for this run`);
+    expect(policy.maxCostUsd).toBe(SHARE);
   });
 });
