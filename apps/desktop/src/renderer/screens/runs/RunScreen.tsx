@@ -44,7 +44,7 @@ import {
 } from "./line-model.js";
 import { type RunData, useRun } from "./load.js";
 import { RunMaintenance } from "./Maintenance.js";
-import { clock, duration, pipeline, type RunTrace, taskCount } from "./model.js";
+import { budgetPanelNeeded, clock, duration, pipeline, type RunTrace, taskCount } from "./model.js";
 import { PullRequestPanel } from "./PullRequestPanel.js";
 import { Meter, Panel, StatusPill, TONE_TEXT } from "./parts.js";
 import { ReportView } from "./ReportView.js";
@@ -336,7 +336,9 @@ function Budget({
           label="Cost cap"
           value={run.estimatedCostUsd ?? 0}
           limit={run.costCeilingUsd ?? run.maxCostUsd}
-          text={`${usd(run.estimatedCostUsd)} / ${usd(run.maxCostUsd)}${
+          text={`${usd(run.estimatedCostUsd)}${
+            run.reservedCostUsd ? ` (+${usd(run.reservedCostUsd)} reserved)` : ""
+          } / ${usd(run.maxCostUsd)}${
             run.costCeilingUsd !== undefined ? ` (up to ${usd(run.costCeilingUsd)} to finish)` : ""
           }`}
         />
@@ -363,7 +365,9 @@ function Budget({
           }}
         >
           <p className={WARN_NOTE}>
-            The run stopped on its budget.
+            {run.reason === "budget_exhausted"
+              ? "The run stopped on its budget."
+              : "The run is blocked with its cost cap nearly spent, so its next step would stop on the budget."}
             {run.maxCostUsd !== undefined
               ? " Extending also doubles its cost cap when the cap stopped it."
               : ""}
@@ -643,12 +647,8 @@ function RunMeter({
 }) {
   const run = data.status;
   const limit = data.artifacts.estimate?.maxTokens ?? null;
-  // A run stopped on its budget or its provider needs these panels, so they open on their own.
-  const needed =
-    run.status === "blocked" &&
-    (run.reason === "budget_exhausted" ||
-      run.reason === "provider_account" ||
-      run.reason === "provider_unavailable");
+  // A run the budget or its provider stopped needs these panels, so they open on their own.
+  const needed = budgetPanelNeeded(run);
   const [open, setOpen] = useState(needed);
   useEffect(() => {
     if (needed) setOpen(true);

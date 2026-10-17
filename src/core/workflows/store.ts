@@ -515,6 +515,7 @@ export class WorkflowStore {
       activeMs: row.active_ms,
       estimatedCostUsd: this.costOf(id, row.estimated_cost_microusd),
       ...costCapOf(row.policy_json),
+      ...this.reservedCostOf(id, row.policy_json),
       ...this.costCeilingOf(id, row.policy_json),
       verificationState: state.verificationState,
       limitations: { count: limitationIds.length, ids: limitationIds },
@@ -1530,6 +1531,15 @@ export class WorkflowStore {
           ceilingUsd: cap,
         },
       );
+  }
+  /**
+   * What the run's open attempts reserve in dollars (`costUsage`), for a run with a cost cap and
+   * a reservation: `canExtendRun` measures spent plus reserved against the cap, as the service does.
+   */
+  private reservedCostOf(runId: string, policyJson: string): { reservedCostUsd?: number } {
+    if (!("maxCostUsd" in costCapOf(policyJson))) return {};
+    const { reservedUsd } = this.costUsage(runId);
+    return reservedUsd > 0 ? { reservedCostUsd: reservedUsd } : {};
   }
   /** The snapshot field of the cap's tolerance ceiling, left out when the run has no band. */
   private costCeilingOf(runId: string, policyJson: string): { costCeilingUsd?: number } {

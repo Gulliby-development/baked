@@ -1,4 +1,5 @@
-import type { RunState } from "../../../shared/api.js";
+import { canExtendRun } from "../../../../../../src/core/workflows/extendable.js";
+import type { RunSnapshot, RunState } from "../../../shared/api.js";
 import type { WorkflowEvent } from "../../client/runs.js";
 
 /**
@@ -584,3 +585,22 @@ export const STATUS_TONE: Record<RunState, "ok" | "warn" | "err" | "info" | ""> 
   failed: "err",
   cancelled: "",
 };
+
+/**
+ * Whether the run screen opens its budget and activity panels on its own: a blocked run the
+ * service would extend (`canExtendRun`: stopped on its budget, or blocked for another reason with
+ * its spent and reserved cost near the cap), or one stopped by its provider.
+ */
+export function budgetPanelNeeded(
+  run: Pick<
+    RunSnapshot,
+    "status" | "reason" | "estimatedCostUsd" | "reservedCostUsd" | "maxCostUsd"
+  >,
+): boolean {
+  return (
+    run.status === "blocked" &&
+    (canExtendRun(run) ||
+      run.reason === "provider_account" ||
+      run.reason === "provider_unavailable")
+  );
+}
