@@ -56,6 +56,32 @@ export function readyTasks(
     : ready;
 }
 
+/**
+ * Whether the host writes the task's files itself: every write creates or replaces a file with
+ * the content the plan fixed, so no agent attempt runs (#1460). A task that also deletes, or has a
+ * write without content, is an agent task.
+ */
+export function hostWritten(task: Pick<Task, "writes">): boolean {
+  return (
+    task.writes.length > 0 &&
+    task.writes.every((w) => w.action !== "delete" && w.content !== undefined)
+  );
+}
+
+/**
+ * Plan problems of host-written content (#1460): a task that carries content on only some of its
+ * writes, or on a delete, would have its content ignored and an agent write the files instead.
+ */
+export function hostContentProblems(graph: Pick<TaskGraph, "tasks">): string[] {
+  return graph.tasks.flatMap((task) => {
+    const carried = task.writes.filter((w) => w.content !== undefined);
+    if (!carried.length || hostWritten(task)) return [];
+    return [
+      `Task ${task.id} gives content to ${carried.map((w) => w.path).join(", ")} but not to every write, or deletes a file; the host writes a task's files only when every write carries its content and none deletes. Put the files with fixed content in a task of their own, or remove their content.`,
+    ];
+  });
+}
+
 /** Whether a task writes only documentation: Markdown, a README, a licence or a changelog. */
 export function documentsOnly(task: Task): boolean {
   return (

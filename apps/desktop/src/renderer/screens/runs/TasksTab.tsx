@@ -5,6 +5,7 @@ import { LABEL, LEDE, PANEL, TABLE } from "../../lib/styles.js";
 import { Questions } from "./Decision.js";
 import type { RunData } from "./load.js";
 import {
+  hostWritten,
   nextTasks,
   type RunTrace,
   type Task,
@@ -255,7 +256,17 @@ export function TasksTab({
             {graph.tasks.map((t) => (
               <tr key={t.id}>
                 <td className="font-mono">{t.id}</td>
-                <td>{t.title}</td>
+                <td>
+                  {t.title}
+                  {hostWritten(t) && (
+                    <span
+                      className="ml-2 text-dim-foreground"
+                      title="The plan fixed these files' content; the host writes them with no agent"
+                    >
+                      host
+                    </span>
+                  )}
+                </td>
                 <td className={STATE_TONE[taskState(t, trace)]}>
                   {STATE_TEXT[taskState(t, trace)]}
                 </td>
