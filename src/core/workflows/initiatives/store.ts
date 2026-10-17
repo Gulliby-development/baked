@@ -5,6 +5,7 @@ import { WorkflowFault } from "../errors.js";
 import { PolicySchema, SafeId } from "../schemas.js";
 import { newId, type WorkflowStore } from "../store.js";
 import { IssueSourceSchema } from "../types.js";
+import { HOST_AUTO_APPROVAL_CEILING } from "../v2/definition.js";
 import { FeatureKey, InitiativeId, type InitiativePlan, InitiativePlanSchema } from "./plan.js";
 
 /** The workflow schema version that adds initiatives (migration 004). */
@@ -60,8 +61,8 @@ export const InitiativeSettingsSchema = z
      */
     featureAutoApproval: z
       .object({
-        maxTasks: z.number().int().min(1).max(20),
-        maxFiles: z.number().int().min(1).max(50),
+        maxTasks: z.number().int().min(1).max(HOST_AUTO_APPROVAL_CEILING.maxTasks),
+        maxFiles: z.number().int().min(1).max(HOST_AUTO_APPROVAL_CEILING.maxFiles),
       })
       .strict()
       .nullable(),

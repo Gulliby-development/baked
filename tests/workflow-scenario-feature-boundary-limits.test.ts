@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { tmpdir } from "node:os";
 import { evaluateAutoApproval } from "../src/core/workflows/auto-approval.js";
 import type { InitiativeFeature } from "../src/core/workflows/initiatives/plan.js";
 import { boundaryLimits, featurePolicy, type InitiativeSettings } from "../src/core/workflows/initiatives/service.js";
+import { loadDefinition } from "../src/core/workflows/v2/definitions.js";
+import { withBoundaryApproval } from "../src/core/workflows/v2/runtime.js";
 import { fixturePolicy, fixtureSpec } from "./helpers/workflow-fixture.js";
 
 type Graph = Parameters<typeof evaluateAutoApproval>[3];
@@ -59,6 +62,34 @@ const decide = (boundary: string[], writes: string[]) =>
   );
 
 describe("tiered approval limits follow the approved boundary (#1349)", () => {
+  // tonemath R40 core (#1458): 22 boundary files and a 24-task plan lost auto approval to the
+  // 20-path cap of a definition's auto approval, with no reason given.
+  test("a boundary of more than 20 files keeps auto approval, with tasks up to its files plus 2", () => {
+    for (const count of [21, 30, 50]) {
+      const paths = Array.from({ length: count }, (_, i) => `src/m${i}.rs`);
+      const policy = featurePolicy(settings, share, feature(paths), false);
+      expect(policy.autoApproval?.limits).toMatchObject({ maxTasks: count + 2, maxFiles: count, allowedPaths: paths });
+    }
+    const paths = Array.from({ length: 22 }, (_, i) => `src/m${i}.rs`);
+    const result = decide(paths, [...paths, paths[0] as string, paths[1] as string]);
+    expect(result.reasons).toEqual([]);
+    expect(result.approval?.mode).toBe("limits");
+    expect(decide(paths, [...paths, "src/extra.rs"]).approval).toBeNull();
+  });
+
+  test("a quick leaf keeps the boundary's limits past 20 paths", () => {
+    const paths = Array.from({ length: 22 }, (_, i) => `src/m${i}.rs`);
+    const limits = featurePolicy(settings, share, feature(paths), false).autoApproval?.limits;
+    if (!limits) throw new Error("no limits");
+    const quick = loadDefinition(tmpdir(), "quick", fixturePolicy);
+    if (quick.schemaVersion !== 2) throw new Error("quick is a v2 preset");
+    expect(withBoundaryApproval(quick.definition, limits)?.autoApproval.allowedPaths).toEqual(paths);
+  });
+
+  test("a rebased run still goes to a person", () => {
+    expect(featurePolicy(settings, share, feature(files), true).autoApproval).toBeNull();
+  });
+
   test("a plan writing the 11 boundary files, one task each, is approved without a person", () => {
     const result = decide(files, files);
     expect(result.reasons).toEqual([]);
@@ -78,9 +109,9 @@ describe("tiered approval limits follow the approved boundary (#1349)", () => {
     expect(result.approval).toBeNull();
   });
 
-  test("raised limits stay within what a definition accepts", () => {
+  test("raised limits follow the boundary's files", () => {
     const many = Array.from({ length: 20 }, (_, i) => `f${i}.go`);
-    expect(boundaryLimits({ maxTasks: 5, maxFiles: 10 }, many)).toEqual({ maxTasks: 20, maxFiles: 20 });
+    expect(boundaryLimits({ maxTasks: 5, maxFiles: 10 }, many)).toEqual({ maxTasks: 22, maxFiles: 20 });
     expect(boundaryLimits({ maxTasks: 5, maxFiles: 10 }, files)).toEqual({ maxTasks: 13, maxFiles: 11 });
   });
 });

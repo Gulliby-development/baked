@@ -41,7 +41,7 @@ import { terminalStates } from "../state-machine.js";
 import { stopDetail } from "../stop-detail.js";
 import { newId, WorkflowStore } from "../store.js";
 import type { IssueSource } from "../types.js";
-import { DefinitionAutoApprovalSchema } from "../v2/definition.js";
+import { HOST_AUTO_APPROVAL_CEILING, HostAutoApprovalSchema } from "../v2/definition.js";
 import { loadDefinition } from "../v2/definitions.js";
 import { autoApprovalPolicy } from "../v2/runtime.js";
 import { mergedBase, worktreeBase } from "../worktree.js";
@@ -2098,8 +2098,8 @@ function describe(view: FeatureView): string {
  * The run policy of a feature: its budget share and, when tiered approval is on, auto approval
  * whose allowed paths are the feature's approved boundary, including an edit of a package
  * manifest the boundary names, and limits at least as large as the boundary's files
- * (`boundaryLimits`). A feature without boundary paths, or with more than auto approval accepts,
- * and every rebased run (`humanOnly`) go to a person.
+ * (`boundaryLimits`). A feature without boundary paths and every rebased run (`humanOnly`) go to a
+ * person.
  */
 export function featurePolicy(
   settings: InitiativeSettings,
@@ -2118,7 +2118,7 @@ export function featurePolicy(
   const auto = settings.featureAutoApproval;
   const limits =
     auto && !humanOnly
-      ? DefinitionAutoApprovalSchema.safeParse({
+      ? HostAutoApprovalSchema.safeParse({
           enabled: true,
           ...boundaryLimits(auto, feature.boundary.paths),
           allowedPaths: feature.boundary.paths,
@@ -2154,9 +2154,6 @@ export function featurePolicy(
   });
 }
 
-/** The most tasks and files a definition's auto approval accepts. */
-const AUTO_APPROVAL_CEILING = { maxTasks: 20, maxFiles: 50 } as const;
-
 /**
  * The tiered limits of a feature run: the initiative's limits, raised to the files the approved
  * boundary names, with one task per file and two spare. The person approved those paths with the
@@ -2171,8 +2168,8 @@ export function boundaryLimits(
   const files = paths.filter((p) => !isGlobPath(p)).length;
   if (!files) return { maxTasks: auto.maxTasks, maxFiles: auto.maxFiles };
   return {
-    maxTasks: Math.max(auto.maxTasks, Math.min(AUTO_APPROVAL_CEILING.maxTasks, files + 2)),
-    maxFiles: Math.max(auto.maxFiles, Math.min(AUTO_APPROVAL_CEILING.maxFiles, files)),
+    maxTasks: Math.max(auto.maxTasks, Math.min(HOST_AUTO_APPROVAL_CEILING.maxTasks, files + 2)),
+    maxFiles: Math.max(auto.maxFiles, Math.min(HOST_AUTO_APPROVAL_CEILING.maxFiles, files)),
   };
 }
 
