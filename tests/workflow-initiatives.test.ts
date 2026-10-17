@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
@@ -1018,6 +1018,28 @@ describe("initiative runtime", () => {
     expect(pending?.body_json).toContain("outside.txt");
     await t.approveFeature("api");
     view = await t.drive();
+    expect(view.status).toBe("completed");
+  }, 30000);
+
+  // Bench round 39, dieodds (#1394): the cli feature depends on others, so its approval matched the
+  // csproj its boundary names against the empty deliverables text and asked a person.
+  test("tiered approval auto-approves a dependent feature's edit of a manifest its boundary names", async () => {
+    const csproj = "src/Api/Api.csproj";
+    const split = plan([feature("core"), feature("api", ["core"], ["api.txt", csproj]), feature("docs")]);
+    const t = setup(split);
+    mkdirSync(join(t.root, "src", "Api"), { recursive: true });
+    writeFileSync(join(t.root, csproj), "<Project />\n");
+    // Source code in the workspace: a scaffold's manifests are edited without a person anyway.
+    writeFileSync(join(t.root, "src", "Api", "Program.cs"), "return 0;\n");
+    t.executor.extraWrites.api = csproj;
+    await t.start({ plan: split, featureAutoApproval: { maxTasks: 5, maxFiles: 5 } });
+    await t.approveSplit();
+    let view = await t.drive();
+    for (let i = 0; i < 4 && view.status !== "completed"; i++) view = await t.drive();
+    const apiRun = t.featureOf(view, "api").runId ?? "";
+    const approval = t.workflows.store.requests(apiRun).find((r) => r.kind === "approval");
+    console.log("DBG", JSON.stringify(t.workflows.store.state(apiRun).hostDependencies), approval?.actor, JSON.stringify(t.workflows.store.state(apiRun).graph?.tasks.map((x) => x.writes)), JSON.parse(t.workflows.store.run(apiRun).policy_json).autoApproval);
+    expect(approval?.actor).toBe("auto-approval");
     expect(view.status).toBe("completed");
   }, 30000);
 
