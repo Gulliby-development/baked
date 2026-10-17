@@ -102,6 +102,21 @@ const FAILED_TEST_OUTPUT: Record<Stack, string> = {
   dotnet: "  Failed SumTests.Commutes [8 ms]",
 };
 
+/**
+ * A red baseline as the stack's test runner (and Python's type checker) prints it, with `n` files
+ * checked or tests passing. A task that adds a file or a passing test changes `n` but not the
+ * failure, which must keep its signature (#1221, #1425).
+ */
+const RED_BASELINE: Record<Stack, (n: number) => string> = {
+  bun: (n) => `test/old.test.ts:\n(fail) old [1.00ms]\n\n ${n} pass\n 1 fail\n ${n + 1} expect() calls\nRan ${n + 1} tests across ${n} files. [12.00ms]`,
+  npm: (n) => ` FAIL  src/old.test.js > old\n Test Files  1 failed | ${n} passed (${n + 1})\n      Tests  1 failed | ${n} passed (${n + 1})`,
+  python: (n) => `FAILED tests/test_old.py::test_old - assert 1 == 2\n=== 1 failed, ${n} passed in 0.12s ===\nsrc/old.py:3: error: Incompatible return value type\nFound 1 error in 1 file (checked ${n} source files)`,
+  go: (n) => `--- FAIL: TestOld (0.00s)\nFAIL\nFAIL\texample.com/fixture\t0.0${n}s`,
+  rust: (n) => `running ${n + 1} tests\ntest old ... FAILED\ntest result: FAILED. ${n} passed; 1 failed; 0 ignored; 0 measured; 0 filtered out`,
+  maven: (n) => `[ERROR] Tests run: ${n + 1}, Failures: 1, Errors: 0, Skipped: 0\n[ERROR] com.example.OldTest.old -- Time elapsed: 0.01 s <<< FAILURE!`,
+  dotnet: (n) => `  Failed OldTests.Old [3 ms]\nFailed!  - Failed:     1, Passed:     ${n}, Skipped:     0, Total:     ${n + 1}`,
+};
+
 /** Cells known to be wrong today: `<stack>:<cell>` -> issue. */
 const KNOWN: Record<string, string> = {};
 
@@ -370,6 +385,10 @@ for (const stack of STACKS) {
 
     cell(stack, "timed-out-failure", () => {
       expect(timedOutFailure(`${FAILED_TEST_OUTPUT[stack]}\nstill running`)).toBe(true);
+    });
+
+    cell(stack, "baseline-signature test summary", () => {
+      expect(failureSignature(RED_BASELINE[stack](4), "/w")).toBe(failureSignature(RED_BASELINE[stack](5), "/w"));
     });
 
     cell(stack, "written-tests-check", () => {

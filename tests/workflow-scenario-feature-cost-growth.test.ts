@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { runActions } from "../src/components/workflow/format.js";
+import { headline, runActions } from "../src/components/workflow/format.js";
 import { canonical } from "../src/core/specs/hash.js";
 import { growBudgetOnProgress } from "../src/core/workflows/budget.js";
 import { canExtendRun } from "../src/core/workflows/extendable.js";
@@ -11,6 +11,7 @@ import {
 } from "../src/core/workflows/initiatives/service.js";
 import type { RunPolicy, RunSnapshot, Task } from "../src/core/workflows/schemas.js";
 import type { AttemptUsageRecord } from "../src/core/workflows/step-budget.js";
+import { readWorkflowView } from "../src/core/workflows/view.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
 // Bench round 35, narrowfit sum (#1353): the feature run started with a $1.46 cap (its dollar
@@ -168,6 +169,28 @@ describe("scenario: extend a run blocked with its dollar cap nearly spent (#1353
     ).rejects.toThrow("Only a run that stopped on its budget");
   });
 
+  test("a run blocked at 90% spent with a 6% reservation is offered extend on every surface (#1435)", async () => {
+    const { made, store, runId } = await featureRun(share, 1_400_000);
+    const { spentUsd } = store.costUsage(runId);
+    // An attempt with unknown usage still holds its reservation: about 6% of the cap below.
+    const stepId = store.beginStep(runId, "implement");
+    store.reserve(runId, stepId, MODEL, 95_000, { ...share, maxCostUsd: null });
+    const cap = Math.round((spentUsd / 0.9) * 100) / 100;
+    store.setPolicy(runId, { ...share, maxCostUsd: cap });
+    store.transaction(() => store.transition(runId, "blocked", "invalid_output"));
+    const { reservedUsd } = store.costUsage(runId);
+    expect(spentUsd / cap).toBeLessThan(0.95);
+    expect((spentUsd + reservedUsd) / cap).toBeGreaterThanOrEqual(0.95);
+    const view = readWorkflowView(made.service, runId);
+    const snapshot = view.snapshot;
+    expect(canExtendRun(snapshot)).toBe(true);
+    expect(runActions(snapshot, view.budget).map((a) => a.action)).toContain("extend");
+    expect(headline(snapshot, view.stages, false, view.budget).next).toContain("press B to raise the limits");
+    expect(snapshot.reservedCostUsd).toBeCloseTo(reservedUsd, 6);
+    await made.service.extendBudget(runId, { commandId: "extend-3", expectedRevision: snapshot.revision }, { maxCostUsd: cap * 2 });
+    expect(JSON.parse(store.run(runId).policy_json).maxCostUsd).toBe(cap * 2);
+  });
+
   test("an attempt-cap stop resumes instead, whatever the dollars", () => {
     const blocked = (reason: string, cost: number): Pick<RunSnapshot, "status" | "reason" | "estimatedCostUsd" | "maxCostUsd"> =>
       ({ status: "blocked", reason, estimatedCostUsd: cost, maxCostUsd: 1 }) as Pick<RunSnapshot, "status" | "reason" | "estimatedCostUsd" | "maxCostUsd">;
@@ -175,5 +198,7 @@ describe("scenario: extend a run blocked with its dollar cap nearly spent (#1353
     expect(canExtendRun(blocked("budget_exhausted", 0.1))).toBe(true);
     expect(canExtendRun(blocked("invalid_output", 0.95))).toBe(true);
     expect(canExtendRun(blocked("invalid_output", 0.94))).toBe(false);
+    expect(canExtendRun({ ...blocked("invalid_output", 0.9), reservedCostUsd: 0.05 })).toBe(true);
+    expect(canExtendRun({ ...blocked("invalid_output", 0.9), reservedCostUsd: 0.04 })).toBe(false);
   });
 });

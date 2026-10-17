@@ -104,6 +104,8 @@ export interface RunSnapshot {
   estimatedCostUsd: number | null;
   /** The run's dollar cap (`policy.maxCostUsd`); present only when the run has one. */
   maxCostUsd?: number;
+  /** What open attempts still reserve in dollars; present only with a cost cap and a reservation. */
+  reservedCostUsd?: number;
   /** The cap plus its `costTolerance` band, where every cost check stops; present only with a band. */
   costCeilingUsd?: number;
   pendingRequestIds: string[];

@@ -140,11 +140,11 @@ export function headline(
       if (snapshot.reason === "provider_account" || snapshot.reason === "provider_unavailable")
         return {
           now: `Blocked at ${at}: ${reasonText(snapshot.reason)}.${snapshot.autoRetry ? ` Retrying by itself at ${new Date(snapshot.autoRetry.at).toLocaleTimeString()} (${snapshot.autoRetry.attempt} of ${snapshot.autoRetry.of}).` : ""}`,
-          next: "Press R to retry once the provider works again, or M to continue on this tab's model (Ctrl+L picks another); completed work stays. F forks, C cancels.",
+          next: `${raiseText(snapshot, budget)}Press R to retry once the provider works again, or M to continue on this tab's model (Ctrl+L picks another); completed work stays. F forks, C cancels.`,
         };
       return {
         now: `Blocked at ${at}: ${reasonText(snapshot.reason)}.`,
-        next: "Press R to retry, F to fork, or C to cancel.",
+        next: `${raiseText(snapshot, budget)}Press R to retry, F to fork, or C to cancel.`,
       };
     case "completed":
       return { now: "Completed. All required criteria are verified.", next: null };
@@ -224,6 +224,18 @@ export function canExtend(budget: BudgetView): boolean {
   const cap = costCapFor(budget);
   return extensionFor(budget) !== null || (cap !== null && cap > (budget.cost?.maxCostUsd ?? cap));
 }
+/**
+ * Whether the run screen offers B: the service would extend the run (`canExtendRun`, spent plus
+ * reserved cost against the cap) and a raise would change a limit.
+ */
+export function offersExtend(snapshot: RunSnapshot, budget: BudgetView | null): boolean {
+  return canExtendRun(snapshot) && (!budget || canExtend(budget));
+}
+/** The B hint for a run blocked for another reason with its cost cap nearly spent. */
+function raiseText(snapshot: RunSnapshot, budget: BudgetView | null): string {
+  if (!offersExtend(snapshot, budget)) return "";
+  return `Its cost cap is nearly spent: press B to raise the limits${budget ? ` (${extensionText(budget)})` : ""} and continue from this stage. `;
+}
 export function extensionText(budget: BudgetView): string {
   const next = extensionFor(budget);
   const cap = costCapFor(budget);
@@ -272,7 +284,7 @@ export function runActions(
   if (s === "blocked" && snapshot.reason === "input_changed")
     actions.push({ key: "A", label: "accept changes", action: "accept-workspace" });
   if (s === "running") actions.push({ key: "P", label: "pause", action: "pause" });
-  if (canExtendRun(snapshot) && (!budget || canExtend(budget)))
+  if (offersExtend(snapshot, budget))
     actions.push({ key: "B", label: "raise limits", action: "extend" });
   if (switchTo && (s === "created" || s === "paused" || s === "blocked" || s === "waiting"))
     actions.push({ key: "M", label: "switch model", action: "reroute" });

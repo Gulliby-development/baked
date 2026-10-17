@@ -156,7 +156,25 @@ const SUMMARY_COUNT =
   /\b(Checked|Found|in|Scanned) \d+ (files?|errors?|warnings?|infos?|problems?|diagnostics?)\b/g;
 const singular = (noun: string): string => noun.replace(/s$/, "");
 const FILES_DONE =
-  /\b\d+ (files?) (checked|scanned|formatted|left unchanged|would be reformatted)\b/g;
+  /\b\d+ (files?) (checked|scanned|formatted|already formatted|left unchanged|would be left unchanged|would be reformatted)\b/g;
+/**
+ * Counts that grow when a task adds a file or a passing test while the failure stays the same
+ * (#1425): mypy's "checked 4 source files", and the passed, skipped and total counts of test
+ * summaries (pytest, jest, vitest, bun, cargo, dotnet, Maven, Gradle). Failed counts are kept.
+ */
+const GROWING_COUNTS: [RegExp, string][] = [
+  [/\bchecked \d+ source files?\b/g, "checked <n> source file"],
+  [
+    /\b\d+ (passed|skipped|deselected|xfailed|xpassed|warnings?|total|tests completed)\b/g,
+    "<n> $1",
+  ],
+  [/\b(Passed|Skipped|Total|Tests run):\s*\d+/g, "$1: <n>"],
+  [/^(\s*)\d+ (pass|skip|todo)$/gm, "$1<n> $2"],
+  [/\b\d+ expect\(\) calls\b/g, "<n> expect() calls"],
+  [/\bRan \d+ tests? across \d+ files?\b/g, "Ran <n> tests across <n> files"],
+  [/\brunning \d+ tests?\b/g, "running <n> tests"],
+  [/^(\s*Tests?(?: Files)?\b.*?)\s*\(\d+\)$/gm, "$1"],
+];
 
 /**
  * The output of a failing check with what changes between two runs of the same failure left out
@@ -165,6 +183,9 @@ const FILES_DONE =
  * worktree path counts as the workspace: the baseline is measured in the run worktree and a later
  * check may run in a task worktree (mouse-mover-update 3d7389cf, #1055).
  */
+const growingCounts = (text: string): string =>
+  GROWING_COUNTS.reduce((out, [pattern, to]) => out.replace(pattern, to), text);
+
 export function failureSignature(output: string, root: string): string {
   const project = root.replace(/[\\/]\.baked[\\/]worktrees[\\/].*$/, "");
   const text = output
@@ -186,5 +207,5 @@ export function failureSignature(output: string, root: string): string {
     .filter(Boolean)
     .join("\n")
     .trim();
-  return text;
+  return growingCounts(text);
 }

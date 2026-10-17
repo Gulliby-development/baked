@@ -23,12 +23,26 @@ const QUOTED = /"([^"\n]+)"|`([^`\n]+)`|\u201c([^\u201d\n]+)\u201d/g;
 /** A placeholder the test fills with a concrete value: `<file>`, `{name}`, `...`. */
 const PLACEHOLDER = /<[^<>\s][^<>]*>|\{[^{}]+\}|\.\.\.|\u2026/g;
 
+/** The prefixes that run a tool from the project's environment: `npx`, `uv run`, `python -m`. */
+const RUNNER = String.raw`(?:(?:npx|bunx|pnpm\s+(?:exec|dlx)|yarn(?:\s+dlx)?|uv\s+run|poetry\s+run|pipenv\s+run|hatch\s+run|pdm\s+run|python3?\s+-m)\s+)?`;
+const TOOL = String.raw`(?:pytest|unittest|mypy|ruff|black|isort|flake8|pylint|pyright|tox|nox|tsc|eslint|biome|prettier|vitest|jest|mocha|golangci-lint)\b`;
 /**
  * A quoted command of the project's own checks: the test, type check, lint, build or format
- * commands of the usual runners. The host runs those as checks; a test file does not contain them.
+ * commands of the usual runners, also run through `npx`, `bunx`, `pnpm exec`, `uv run`,
+ * `poetry run` or `python -m` (#1427). The host runs those as checks; a test file does not
+ * contain them.
  */
-const CHECK_COMMAND =
-  /^(?:(?:bun|npm|pnpm|yarn|npx|bunx)\s+(?:run\s+)?(?:test|typecheck|type-check|lint|build|check|format|fmt)\b|(?:cargo|go|dotnet)\s+(?:test|build|vet|clippy|fmt|check)\b|(?:python3?\s+-m\s+)?(?:pytest|mypy|ruff|tsc|eslint|biome|golangci-lint)\b|(?:mvn|gradle|\.\/gradlew|\.\/mvnw)\b.*\b(?:test|verify|check|build)\b)/;
+const CHECK_COMMAND = new RegExp(
+  `^(?:${[
+    String.raw`(?:bun|npm|pnpm|yarn)\s+(?:run\s+)?(?:test|typecheck|type-check|lint|build|check|format|fmt)\b`,
+    String.raw`(?:cargo|go|dotnet)\s+(?:test|build|vet|clippy|fmt|check|format)\b`,
+    String.raw`deno\s+(?:test|lint|fmt|check)\b`,
+    String.raw`node\s+--test\b`,
+    String.raw`make\s+(?:test|check|lint|build)\b`,
+    RUNNER + TOOL,
+    String.raw`(?:mvn|mvnw|gradle|gradlew|\.\/gradlew|\.\/mvnw)\b.*\b(?:test|verify|check|build)\b`,
+  ].join("|")})`,
+);
 
 /** What else decides which quoted literals are cases (#1366). */
 export interface CaseContext {
