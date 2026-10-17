@@ -6955,27 +6955,32 @@ ${note}`;
     const profile = this.requireProfile(profiles.find((p) => p.id === task.profileId));
     const before = await sourceManifest(mainRoot, generatedPaths(policy), signal);
     const known = new Set(this.store.effects(runId).map((e) => e.id));
-    const result = ImplementationSchema.parse(
-      await this.call(
-        runId,
-        entry.child,
-        state,
-        policy,
-        profile,
-        {
-          task: scoped,
-          integration: {
-            role: "integrator",
-            instruction: `Integrate task ${task.id} into the run worktree. Each listed file was changed both by tasks integrated before it (integrated) and by ${task.id} (task), starting from the same base. Edit only these files so that the result keeps the intent of every listed task; submit the result for ${task.id}.`,
-            taskId: task.id,
-            files,
-            spec: state.spec,
-            tasks: writers,
+    // A missed size target in the merged file is a note like a worker's, not an unresolved conflict (#1414).
+    const result = this.settleSizeTargets(
+      runId,
+      task.id,
+      ImplementationSchema.parse(
+        await this.call(
+          runId,
+          entry.child,
+          state,
+          policy,
+          profile,
+          {
+            task: scoped,
+            integration: {
+              role: "integrator",
+              instruction: `Integrate task ${task.id} into the run worktree. Each listed file was changed both by tasks integrated before it (integrated) and by ${task.id} (task), starting from the same base. Edit only these files so that the result keeps the intent of every listed task; submit the result for ${task.id}.`,
+              taskId: task.id,
+              files,
+              spec: state.spec,
+              tasks: writers,
+            },
+            unresolvedMeans: UNRESOLVED_MEANING,
           },
-          unresolvedMeans: UNRESOLVED_MEANING,
-        },
-        signal,
-        scoped,
+          signal,
+          scoped,
+        ),
       ),
     );
     const after = await sourceManifest(mainRoot, generatedPaths(policy), signal);
