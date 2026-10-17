@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { affectedTestCheck, isCompiledTestFile, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
+import { affectedTestCheck, holdsWrittenTests, isCompiledTestFile, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import type { Check } from "../src/core/workflows/types.js";
 
 // dieodds (C#, xUnit; bench round 39, #1396): the policy's only test check was `dotnet test`, which
@@ -44,5 +44,14 @@ describe("written-tests check of compiled stacks (#1396)", () => {
     expect(affectedTestCheck([check("t", "gradlew", ["test", "--info"])], ["app/src/test/kotlin/com/acme/QueryTest.kt"])?.args).toEqual(["--info", "test", "--tests", "com.acme.QueryTest"]);
     expect(affectedTestCheck([check("t", "dotnet", ["test", "--filter", "Category=Unit"])], ["Tests/SumTests.cs"])).toBeNull();
     expect(affectedTestCheck([check("t", "dotnet", ["build"])], ["Tests/SumTests.cs"])).toBeNull();
+  });
+
+  test("which unfinished writes of other tasks hold the check back (#1408)", () => {
+    expect(["README.md", "docs/usage.md", "CHANGELOG", "LICENSE.txt"].filter((path) => holdsWrittenTests(path, false))).toEqual([]);
+    expect(holdsWrittenTests("docs/usage.md", false, ["docs/usage.md"])).toBe(true);
+    expect(["src/app.ts", "tests/fixtures/data.json", "pyproject.toml"].every((path) => holdsWrittenTests(path, false))).toBe(true);
+    expect(holdsWrittenTests("tests/other.test.ts", false)).toBe(false);
+    expect(holdsWrittenTests("Tests/OtherTests.cs", false)).toBe(false);
+    expect(holdsWrittenTests("Tests/OtherTests.cs", true)).toBe(true);
   });
 });

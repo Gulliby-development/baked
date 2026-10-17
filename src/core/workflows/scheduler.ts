@@ -111,8 +111,8 @@ import { baselineDebt, baselineKeys, taskErrors } from "../verification/task-end
 import {
   affectedTestCheck,
   affectedTestsFor,
+  holdsWrittenTests,
   isCompiledTestFile,
-  isTestFile,
   isWrittenTestFile,
   taskCaseText,
   writtenTestsCheck,
@@ -7512,8 +7512,6 @@ ${note}`;
             (r.status === "implemented" && hasTaskGate(r, state.taskGates))),
       );
     const sources = (state.rootGraph ?? state.graph)?.tasks ?? [];
-    // A compiled test project builds every test file in it, so a sibling's unfinished test file
-    // fails this check too (#1396); interpreted runners load only the files they are given.
     const compiled = writes.some((w) => isCompiledTestFile(w.path));
     if (
       sources.some(
@@ -7521,9 +7519,7 @@ ${note}`;
           t.id !== task.id &&
           !done(t.id) &&
           t.writes.some(
-            (w) =>
-              w.action !== "delete" &&
-              (compiled ? !isTestFile(w.path) : !isWrittenTestFile(w.path)),
+            (w) => w.action !== "delete" && holdsWrittenTests(w.path, compiled, task.readHints),
           ),
       )
     )
