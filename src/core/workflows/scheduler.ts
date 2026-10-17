@@ -1716,6 +1716,7 @@ export class WorkflowScheduler {
                         ),
                         {
                           request: coverageRequest(state),
+                          manifestRequest: state.requestText || state.prompt,
                           hostSplitTasks: state.hostSplitTasks,
                           scaffold: this.baselineScaffold(runId, state),
                           hostGrowthTokens: hostBudgetGrowth(

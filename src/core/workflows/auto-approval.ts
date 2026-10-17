@@ -88,6 +88,13 @@ export interface ApprovalContext {
   /** The user's request; a spec that leaves one of its deliverables unmapped needs a person. */
   request?: string;
   /**
+   * The run's own request text, which `requestedManifestEdits` matches manifest writes against
+   * (defaults to `request`). A feature run of an initiative checks deliverables against nothing,
+   * since its boundary was approved with the split, but its request still names the manifest its
+   * boundary lists (#1394, dieodds cli).
+   */
+  manifestRequest?: string;
+  /**
    * Tokens the host added to the run budget on its own (planning floor, sizing, growth), recorded
    * as policy revisions with `approvedBy: "sizing"`; see `hostBudgetGrowth`.
    */
@@ -139,7 +146,10 @@ export function evaluateAutoApproval(
   for (const write of writes)
     if (
       needsPerson(write, context.exists, context.scaffold) &&
-      !(config.requestedManifestEdits && requestedManifestEdit(write, context.request ?? ""))
+      !(
+        config.requestedManifestEdits &&
+        requestedManifestEdit(write, context.manifestRequest ?? context.request ?? "")
+      )
     )
       common.push(`${write.path} always needs a person`);
   // Under `clarification: assume` the run already decides what it may on its own; the deferral is
