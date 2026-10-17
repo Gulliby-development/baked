@@ -5,6 +5,7 @@ import type { Task } from "./types.js";
 
 const MAX_SOURCE_BYTES = 256 * 1024;
 const EXTENSIONS = /\.(?:[cm]?[jt]sx?|py|pyi|rs|go|rb|php|java|kt|cs|swift)$/i;
+const JVM_FILE = /\.(?:java|kt|kts|scala|groovy)$/;
 /** Prose a documentation writer produces; it reads only what its read hints and writes name. */
 const DOCUMENTATION = /.(?:mdx?|rst|txt|adoc)$/i;
 const SPECIFIER =
@@ -97,8 +98,84 @@ export function changeReach(
           reach = "imports";
       }
     }
+    if (reach !== "imports" && languageImports(write.path, source, changed)) reach = "imports";
   }
   return reach;
+}
+
+/**
+ * Imports the specifier scan cannot resolve, by language (#1420): a Go file reaches the other
+ * files of its package directory and the packages its import block names; a Rust file the
+ * modules of its crate that `use crate::`, `use <crate>::`, `self::`, `super::` or `mod` name; a
+ * Java, Kotlin or Scala file the classes of its own package it names; a Python file the modules
+ * of a relative import (`from ..parser import x`, `from . import parser`).
+ */
+function languageImports(path: string, source: string, changed: ReadonlySet<string>): boolean {
+  const file = path.replaceAll("\\", "/");
+  const dir = posix.dirname(file);
+  const others = [...changed].map((c) => c.replaceAll("\\", "/")).filter((c) => c !== file);
+  if (file.endsWith(".go")) {
+    const imports = [
+      ...source.matchAll(/^\s*import\s*\(([\s\S]*?)\)|^\s*import\s+(?:[\w.]+\s+)?"([^"]+)"/gm),
+    ].flatMap((m) =>
+      m[2] ? [m[2]] : [...(m[1] ?? "").matchAll(/"([^"]+)"/g)].map((q) => q[1] ?? ""),
+    );
+    return others.some((c) => {
+      if (!c.endsWith(".go")) return false;
+      const target = posix.dirname(c);
+      return (
+        target === dir ||
+        (target !== "." && imports.some((i) => i === target || i.endsWith(`/${target}`)))
+      );
+    });
+  }
+  if (file.endsWith(".rs")) {
+    const crate = /^(?:(.*)\/)?(?:src|tests|benches|examples)\//.exec(file);
+    const src = crate?.[1] ? `${crate[1]}/src` : "src";
+    const own = /(?:^|\/)(?:lib|main|mod)\.rs$/.test(file) ? dir : file.replace(/\.rs$/, "");
+    const modules = new Set<string>();
+    for (const m of source.matchAll(/^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;/gm))
+      modules.add(`${own}/${m[1]}`);
+    for (const m of source.matchAll(/\buse\s+([\w:]+)/g)) {
+      const segments = (m[1] ?? "").split("::").filter(Boolean);
+      const head = segments[0] ?? "";
+      if (segments.length < 2 || ["std", "core", "alloc"].includes(head)) continue;
+      const base = head === "self" ? own : head === "super" ? posix.dirname(own) : src;
+      const rest = segments.slice(1);
+      for (let n = 1; n <= rest.length; n++) modules.add(`${base}/${rest.slice(0, n).join("/")}`);
+    }
+    return others.some((c) => c.endsWith(".rs") && modules.has(stem(c).replace(/\/mod$/, "")));
+  }
+  if (JVM_FILE.test(file)) {
+    const pkg = /^\s*package\s+([\w.]+)/m.exec(source)?.[1];
+    if (!pkg) return false;
+    const pkgPath = pkg.replaceAll(".", "/");
+    return others.some((c) => {
+      const s = stem(c);
+      const name = s.slice(s.lastIndexOf("/") + 1);
+      return (
+        JVM_FILE.test(c) &&
+        (posix.dirname(s) === pkgPath || posix.dirname(s).endsWith(`/${pkgPath}`)) &&
+        new RegExp(`\\b${name}\\b`).test(source)
+      );
+    });
+  }
+  if (/\.pyi?$/.test(file)) {
+    const modules = new Set<string>();
+    for (const m of source.matchAll(/^\s*from\s+(\.+)([\w.]*)\s+import\s+\(?([\w\s,]+)/gm)) {
+      let base = dir;
+      for (let up = 1; up < (m[1] ?? ".").length; up++) base = posix.dirname(base);
+      const module = (m[2] ?? "").replaceAll(".", "/");
+      modules.add(module ? posix.join(base, module) : base);
+      if (!module)
+        for (const name of (m[3] ?? "").split(",")) {
+          const imported = name.trim().split(/\s+/)[0];
+          if (imported) modules.add(posix.join(base, imported));
+        }
+    }
+    return others.some((c) => /\.pyi?$/.test(c) && modules.has(stem(c)));
+  }
+  return false;
 }
 
 /** Whether a change reaches a task at all; the answer errs toward rerunning. */

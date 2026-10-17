@@ -36,6 +36,7 @@ import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification
 import {
   appendCorrections,
   failedCheckFindings,
+  failingFilesInOutput,
   failureSignature as failingLines,
   failuresCovered,
   isTestOf,
@@ -670,7 +671,7 @@ export function outOfScopeFailure(
   tasks: Task[],
 ): string[] {
   if (task.origin === "planned" || checked.status !== "failed" || !checked.output) return [];
-  const named = pathsInOutput(checked.output, tasks);
+  const named = failingFilesInOutput(checked.output, tasks);
   return named.some((path) => task.writes.some((w) => w.path === path)) ? [] : named;
 }
 /** A SQLite failure is a host fault, never a model's invalid output. */
@@ -7239,7 +7240,9 @@ ${note}`;
           `out_of_scope_failure: ${task.id} changed nothing and check ${check.id} still fails on ${outside.slice(0, 5).join(", ")}, which it may not write (evidence ${checked.evidenceId}). Fix those files or revise the plan, then resume.`,
           { reason: "no_progress", paths: outside },
         );
-      const named = checked.output ? pathsInOutput(checked.output, state.graph?.tasks ?? []) : [];
+      const named = checked.output
+        ? failingFilesInOutput(checked.output, state.graph?.tasks ?? [])
+        : [];
       return `it changed none of its files and check ${check.id} still fails${named.length ? ` on ${named.slice(0, 5).join(", ")}` : ""} (evidence ${checked.evidenceId})`;
     }
     return true;
@@ -8227,7 +8230,7 @@ ${note}`;
   ): string[] {
     if (task.origin !== "planned" || !isTestCheck(check) || !state.graph) return [];
     const rootTasks = (state.rootGraph ?? state.graph).tasks;
-    const failing = pathsInOutput(output, rootTasks).filter(
+    const failing = failingFilesInOutput(output, rootTasks).filter(
       (path) => isTestPath(path) && task.writes.some((w) => w.path === path),
     );
     if (!failing.length) return [];
@@ -8289,7 +8292,7 @@ ${note}`;
     if (
       checked.status === "failed" &&
       checked.output &&
-      !pathsInOutput(checked.output, [task]).length &&
+      !failingFilesInOutput(checked.output, [task]).length &&
       this.failsAsBaseline(runId, state, check, checked.output)
     )
       return undefined;
@@ -8367,7 +8370,7 @@ ${note}`;
     // Files the output names that this task may not write: a repair of the task gets the ones
     // the run's other tasks own (commitbump cd842f0f: fmt of tests/docs.rs failed on src/*.rs).
     const rootTasks = (state.rootGraph ?? state.graph)?.tasks ?? [];
-    const named = checked.output ? pathsInOutput(checked.output, rootTasks) : [];
+    const named = checked.output ? failingFilesInOutput(checked.output, rootTasks) : [];
     const outside = named.filter((path) => !task.writes.some((w) => w.path === path));
     // A regression's repair fixes the task's change, so it leaves alone the tests that planned
     // tasks still to run update (#972).
@@ -8872,7 +8875,8 @@ ${note}`;
       if (!check || !output) return false;
       const regression = finding.claim.includes(" broke existing tests: ");
       const touched =
-        graph !== null && pathsInOutput(output, graph.tasks).some((path) => changed.includes(path));
+        graph !== null &&
+        failingFilesInOutput(output, graph.tasks).some((path) => changed.includes(path));
       if (!regression && !openedFor.has(check) && !touched) return false;
       failed.push({
         id: check,

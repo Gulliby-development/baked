@@ -228,6 +228,52 @@ function goAssertionIn(text: string, path: string, paths: string[]): boolean {
   );
 }
 
+/** A runner's line for a test file that passed: jest `PASS a`, vitest ` ✓ a (3 tests)`, pytest `a::t PASSED` or `a ....  [50%]`. */
+const PASSING_LINE = /^\s*(?:PASS|✓|√|✔)\s|\bPASSED\b|^\s*\S+\s+\.+\s*(?:\[\s*\d+%\])?\s*$/;
+const BUN_FAILED = /^\s*(?:\(fail\)|✗)/;
+const BUN_PASSED = /^\s*(?:\(pass\)|✓)/;
+
+/**
+ * Planned files a check's output reports failing (#1419, #1420): the files `pathsInOutput`,
+ * `failingPathsInOutput` (Go's base-name assertion lines) and `classFilesInOutput` (JVM and .NET
+ * classes) name, less those named only on a runner's passing lines. jest, vitest and verbose
+ * pytest list every test file they ran, and bun prints a header for every file, so the passing
+ * files counted as failing ones: a corrective then saw its own task's passing test and opened a
+ * correction of itself instead of waiting for the sibling fixing the failing one. The single place
+ * the corrective decisions ask which files fail.
+ */
+export function failingFilesInOutput(output: string, tasks: Task[]): string[] {
+  const named = unique([
+    ...pathsInOutput(output, tasks),
+    ...failingPathsInOutput(output, tasks),
+    ...classFilesInOutput(output, tasks),
+  ]);
+  if (!named.length) return [];
+  const lines = output.replaceAll("\\", "/").split(/\r?\n/);
+  const failing = new Set<string>();
+  const mentioned = new Set<string>();
+  for (const path of named) {
+    const at = new RegExp(`(?:^|[\\s/"'(:\`*[,=<])${escapeRegExp(path)}(?![\\w.-])`);
+    const header = new RegExp(`^(?:[A-Za-z]:)?(?:\\S*/)?${escapeRegExp(path)}:\\s*$`);
+    lines.forEach((line, index) => {
+      if (!at.test(line) && !line.startsWith(path)) return;
+      mentioned.add(path);
+      if (header.test(line)) {
+        // bun's file header: the file fails when a test under it does.
+        const section: string[] = [];
+        for (const next of lines.slice(index + 1)) {
+          if (/^\S.*:\s*$/.test(next)) break;
+          section.push(next);
+        }
+        if (section.some((l) => BUN_FAILED.test(l)) || !section.some((l) => BUN_PASSED.test(l)))
+          failing.add(path);
+      } else if (!PASSING_LINE.test(line)) failing.add(path);
+    });
+  }
+  // Files no line names (a class or a Go base name) count as the parsers found them.
+  return named.filter((path) => failing.has(path) || !mentioned.has(path));
+}
+
 /** Lines of a check's output that name what fails: test names and assertion messages. */
 const FAILURE_LINE =
   /^\s*(?:\(fail\)|✗|✘|×|✖|FAIL|not ok|error:|AssertionError|Expected|Received|E\s{2,}|---\s*FAIL)/i;
@@ -347,7 +393,7 @@ export function failedCheckFindings(
   // A failing property's shrunk input is the reproduction the correction starts from (#637).
   const counterexample = counterexampleOf(output);
   const owners = new Map<string, { task: Task; file: string }>();
-  const named = unique([...pathsInOutput(output, tasks), ...classFilesInOutput(output, tasks)]);
+  const named = failingFilesInOutput(output, tasks);
   // The code a failing test exercises is where its fix usually goes (plainbooks 2d0a6a57: the
   // failing QueryTest needed Query.java), so the planned subjects of the named tests count too
   // (#1270).
