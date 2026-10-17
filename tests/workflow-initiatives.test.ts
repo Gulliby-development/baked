@@ -39,7 +39,12 @@ import {
 import { workflowHelp } from "../src/headless/workflow-parse.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
 import { mergedBase } from "../src/core/workflows/worktree.js";
-import { assignFeatureWorkflows, lightenSmallLeaves } from "../src/core/workflows/initiatives/workflows.js";
+import {
+  assignFeatureWorkflows,
+  lightenSmallLeaves,
+  planWorkflowProblems,
+  restoreContractWorkflows,
+} from "../src/core/workflows/initiatives/workflows.js";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -799,6 +804,87 @@ describe("initiative runtime", () => {
     expect(t.workflows.store.requests(release).find((r) => r.kind === "approval")?.actor).toBe("auto-approval");
     expect(JSON.parse(run.policy_json).autoApproval.limits.allowedPaths).toEqual(["release.txt", "LICENSE"]);
   }, 30000);
+
+  test("glob boundaries are of unknown size: the decomposer's broad features are neither merged nor moved to quick (#1405)", async () => {
+    // The decomposer gives boundaries as globs; `src/parser/**` is one entry and any number of
+    // files, and counting it as one path merged broad siblings and ran them on quick.
+    const broad = plan([
+      { ...feature("core", [], ["src/core/**"]), workflow: "sdd" },
+      { ...feature("parser", ["core"], ["src/parser/**"]), workflow: "sdd" },
+      { ...feature("render", ["core"], ["src/render/**"]), workflow: "sdd" },
+      { ...feature("cli", ["parser", "render"], ["src/cli/**"]), workflow: "sdd", size: "large" as const },
+      { ...feature("docs", ["cli"], ["docs/**"]), workflow: "sdd" },
+    ]);
+    const t = setup(broad);
+    await t.start();
+    const view = await t.drive();
+    expect(view.features.map((f) => [f.id, f.workflowId, f.mergedFrom])).toEqual([
+      ["core", "sdd", []],
+      ["parser", "sdd", []],
+      ["render", "sdd", []],
+      ["cli", "sdd", []],
+      ["docs", "sdd", []],
+    ]);
+    expect(t.initiatives.store.eventsOfType("values", "split.merged")).toEqual([]);
+    expect(t.initiatives.store.eventsOfType("values", "split.lightened")).toEqual([]);
+    // A large leaf with literal paths stays on its spec workflow too.
+    const choices = [
+      { id: "sdd", description: "", schemaVersion: 1 as const, contract: true, execution: "inline" as const, stages: [] },
+      { id: "quick", description: "", schemaVersion: 2 as const, contract: false, execution: "inline" as const, stages: [] },
+    ];
+    const large = plan([
+      { ...feature("core", [], ["a", "b", "c"]), workflow: "sdd" },
+      { ...feature("big", ["core"], ["x.ts"]), workflow: "sdd", size: "large" as const },
+      { ...feature("tiny", ["core"], ["y.ts"]), workflow: "sdd" },
+    ]);
+    expect(lightenSmallLeaves(large, choices).lightened.map((l) => l.featureId)).toEqual(["tiny"]);
+    expect(mergeSmallSiblings(plan([feature("a", [], ["src/a/**"]), feature("b", [], ["src/b/**"]), feature("c"), feature("d")])).merged).toEqual([
+      { featureId: "c", from: ["c", "d"] },
+    ]);
+  });
+
+  test("a quick leaf that shares a file with a later feature stays a leaf, and the initiative completes (#1406)", async () => {
+    // Sequencing made cli depend on the lightened docs leaf (both write README.md), and every
+    // drive stopped at ARTIFACT_MISSING because quick writes no spec to pin.
+    const readme = plan([
+      { ...feature("core", [], ["core.txt", "core/b.txt", "core/c.txt"]), workflow: "sdd" },
+      { ...feature("docs", ["core"], ["docs.txt", "README.md"]), workflow: "sdd" },
+      { ...feature("cli", ["core"], ["cli.txt", "cli/b.txt", "README.md"]), workflow: "sdd", size: "medium" as const },
+    ]);
+    const t = setup(readme);
+    await t.start();
+    let view = await t.drive();
+    expect(view.features.map((f) => [f.id, f.workflowId, f.dependsOn])).toEqual([
+      ["core", "sdd", []],
+      ["cli", "sdd", ["core"]],
+      ["docs", "quick", ["core", "cli"]],
+    ]);
+    await t.approveSplit();
+    for (let i = 0; i < 12 && view.status !== "completed"; i++) {
+      view = await t.drive();
+      const waiting = view.pendingDecisions.find((d) => d.scope === "feature" && d.kind === "approval");
+      if (waiting?.featureId) await t.approveFeature(waiting.featureId);
+    }
+    expect(view.status).toBe("completed");
+  }, 30000);
+
+  test("a light feature that still gains a dependent is moved back to a spec workflow (#1406)", () => {
+    const choices = [
+      { id: "sdd", description: "", schemaVersion: 1 as const, contract: true, execution: "inline" as const, stages: [] },
+      { id: "quick", description: "", schemaVersion: 2 as const, contract: false, execution: "inline" as const, stages: [] },
+    ];
+    const both = plan([
+      feature("core", [], ["a", "b", "c"]),
+      { ...feature("x", ["core"], ["shared.md"]), workflow: "quick" },
+      { ...feature("y", ["core"], ["shared.md", "y.md"]), workflow: "quick" },
+    ]);
+    // Both are light, so the later depends on the earlier, which then needs a spec.
+    const sequenced = sequenceSharedPaths(both, new Set(), new Set(["x", "y"]));
+    expect(sequenced.added).toEqual([{ featureId: "y", dependsOn: "x", paths: ["shared.md"] }]);
+    const repaired = restoreContractWorkflows(sequenced.plan, choices, "sdd");
+    expect(repaired.restored).toEqual([{ featureId: "x", from: "quick", to: "sdd" }]);
+    expect(planWorkflowProblems(repaired.plan, choices)).toEqual([]);
+  });
 
   test("a small leaf that writes a risky path keeps its spec workflow", () => {
     const choices = [

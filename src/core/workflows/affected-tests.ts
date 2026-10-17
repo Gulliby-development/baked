@@ -83,6 +83,31 @@ export function isCompiledTestFile(path: string): boolean {
 export const isWrittenTestFile = (path: string): boolean =>
   isTestFile(path) || isCompiledTestFile(path);
 
+const DOC_EXTENSION = /\.(?:md|mdx|markdown|rst|adoc)$/i;
+const DOC_NAME = /^(?:readme|changelog|license|licence|notice|authors|contributing)(?:\.\w+)?$/i;
+
+/** Whether a path is documentation: Markdown, reStructuredText, AsciiDoc, or a README-like file. */
+export function isDocumentationPath(path: string): boolean {
+  const name = posix.basename(path.replaceAll("\\", "/"));
+  return DOC_EXTENSION.test(name) || DOC_NAME.test(name);
+}
+
+/**
+ * Whether another task's unfinished write keeps a task's written tests from running on their own:
+ * it may change code or data the tests load. Documentation does not, unless the test task reads
+ * it (#1408: a README task after the tests suppressed the check and a hang reached the feature
+ * gate). A compiled test project builds every test file in it, so there another task's test file
+ * holds the check back too (#1396).
+ */
+export function holdsWrittenTests(
+  path: string,
+  compiled: boolean,
+  reads: readonly string[] = [],
+): boolean {
+  if (isDocumentationPath(path) && !reads.includes(path)) return false;
+  return compiled ? !isTestFile(path) : !isWrittenTestFile(path);
+}
+
 /** The class a C#, Java or Kotlin test file declares, by the file-per-class convention. */
 const className = (path: string): string =>
   posix.basename(path.replaceAll("\\", "/")).replace(/\.\w+$/, "");

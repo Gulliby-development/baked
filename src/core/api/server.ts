@@ -68,6 +68,7 @@ import {
   type WorkflowErrorCode,
 } from "../workflows/schemas.js";
 import type { NativeWorkflowService } from "../workflows/service.js";
+import { transientSqliteError } from "../workflows/transient-sqlite.js";
 import { usageSummary } from "../workflows/usage.js";
 import { usageMarkdown } from "../workflows/usage-markdown.js";
 import type { WorkflowV2 } from "../workflows/v2/definition.js";
@@ -931,6 +932,11 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
           try {
             source.tick(send);
           } catch (error) {
+            // A store read that failed after the host slept is read again on the next poll (#1410).
+            if (transientSqliteError(error)) {
+              timer = setTimeout(poll, pollMs);
+              return;
+            }
             const { code, message } = errorOf(error);
             send(
               `event: error\ndata: ${JSON.stringify({ error: { code, message: redactSecrets(message) } })}\n\n`,

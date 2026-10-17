@@ -82,7 +82,7 @@ export interface FeatureEstimate {
   criteria?: number;
   /** The paths of the feature's boundary, when it names any. */
   paths?: number;
-  /** The tokens the feature run's plan sized its tasks at, once it has a plan. */
+  /** The tokens the feature run's plan sizing expects the run to use, once it has a plan. */
   planned?: TokenRange;
   /**
    * What raised the range above the size-scaled forecast: the spec's criteria, the boundary's
@@ -334,8 +334,8 @@ function reforecast(
     const scale = bySize[f.size] ?? ratio;
     const base = scale === null ? f.tokens : scaled(f.tokens, scale);
     // Floors from what is known of the feature itself: its spec's criteria, its boundary's paths,
-    // and the tasks its run's plan sized (language's plan priced 4.55 to 8.08 dollars of tasks
-    // while its estimate still said 2.65M tokens at most). Once the spec is written its criteria
+    // and the run its plan sized, its tasks and what is spent around them (language's plan priced
+    // 4.55 to 8.08 dollars of tasks while its estimate still said 2.65M tokens at most). Once the spec is written its criteria
     // replace the paths: seqmill used 155k to 320k per criterion against 0.29M to 1.28M per path.
     const byCriteria = perCriterion && criteria ? scaled(perCriterion, criteria) : null;
     const floors = (
@@ -437,7 +437,9 @@ export function estimateInitiative(input: {
         ]
       : []),
     ...(features.some((f) => f.basis !== "measured" && f.planned)
-      ? ["A feature whose run has a plan is forecast at no less than the tokens its plan sized."]
+      ? [
+          "A feature whose run has a plan is forecast at no less than the tokens its plan sizing expects the whole run to use.",
+        ]
       : []),
   ];
   const fits = fitsOf(withMargin, tokens.low, input.maxTotalTokens);
