@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { isManifestFile, isSourceFile } from "../intelligence/language-traits.js";
 
 /**
  * Workspace Facts: what the host knows about the files a run starts from. Stages used to get a
@@ -8,8 +9,8 @@ import { join } from "node:path";
  * existed. The inventory is built by the host before research and handed to every stage that
  * reads the workspace; it outranks what a model wrote about the same files.
  */
-export const SOURCE_FILE =
-  /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php|cs|c|h|cpp|hpp|swift|sql|sh|css|scss|html|vue|svelte)$/i;
+/** A source file of any language the language table knows: code, markup, styles or queries. */
+export const isSourcePath = (path: string): boolean => isSourceFile(path);
 const SKIPPED = new Set([
   ".git",
   "node_modules",
@@ -26,8 +27,6 @@ const SKIPPED = new Set([
 ]);
 const SCAN_LIMIT = 2000;
 const LISTED_LIMIT = 80;
-const MANIFEST =
-  /^(package\.json|tsconfig[^/]*\.json|biome\.jsonc?|pyproject\.toml|requirements[^/]*\.txt|setup\.(py|cfg)|go\.mod|Cargo\.toml|pom\.xml|build\.gradle(\.kts)?|global\.json|[^/]+\.(csproj|fsproj|vbproj|slnx?)|Gemfile|composer\.json|deno\.jsonc?|bunfig\.toml|Makefile)$/i;
 
 export type WorkspaceKind =
   /** No file at all (besides skipped folders). */
@@ -78,7 +77,7 @@ export function workspaceFacts(root: string): WorkspaceFacts {
         continue;
       }
       total += 1;
-      if (SOURCE_FILE.test(entry.name)) sources += 1;
+      if (isSourceFile(entry.name)) sources += 1;
       if (files.length < LISTED_LIMIT) {
         let bytes = 0;
         try {
@@ -90,9 +89,7 @@ export function workspaceFacts(root: string): WorkspaceFacts {
       }
     }
   }
-  const manifests = files
-    .filter((f) => MANIFEST.test(f.path.split("/").pop() ?? ""))
-    .map((f) => f.path);
+  const manifests = files.filter((f) => isManifestFile(f.path)).map((f) => f.path);
   let scripts: Record<string, string> = {};
   if (files.some((f) => f.path === "package.json")) {
     try {

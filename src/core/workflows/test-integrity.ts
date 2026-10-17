@@ -1,3 +1,4 @@
+import { isTestFile } from "../intelligence/language-traits.js";
 import type { RunPolicy } from "./schemas.js";
 import type { Task } from "./types.js";
 
@@ -40,15 +41,8 @@ export interface FileChange {
   after: string | null;
 }
 
-const TEST_DIR = /(^|\/)(__tests__|tests?)\//i;
-const TEST_FILE =
-  /(\.(test|spec)\.[cm]?[jt]sx?$)|(_test\.(go|py|exs?)$)|((^|\/)test_[^/]*\.py$)|((^|\/)conftest\.py$)|(_spec\.rb$)|(Tests?\.(java|kt|cs|scala)$)/i;
-
-/** Whether a path is a test file by the usual conventions of the supported languages. */
-export function isTestPath(path: string): boolean {
-  const normalized = path.replaceAll("\\", "/");
-  return TEST_DIR.test(normalized) || TEST_FILE.test(normalized);
-}
+/** Whether a path is a test file by the conventions of its language (the language table, #1488). */
+export const isTestPath = (path: string): boolean => isTestFile(path);
 
 /**
  * A test file that existed before the run: a test path no task of the approved graph creates.

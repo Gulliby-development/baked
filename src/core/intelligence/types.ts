@@ -47,6 +47,7 @@ export type Language =
   | "ignore"
   | "lockfile"
   | "vue"
+  | "svelte"
   | "rescript"
   | "solidity"
   | "tlaplus"
@@ -69,6 +70,7 @@ export const EXT_TO_LANGUAGE: Record<string, Language> = {
   // Python
   ".py": "python",
   ".pyw": "python",
+  ".pyi": "python",
   // Go
   ".go": "go",
   // Rust
@@ -177,6 +179,8 @@ export const EXT_TO_LANGUAGE: Record<string, Language> = {
   ".lockb": "lockfile",
   // Vue
   ".vue": "vue",
+  // Svelte
+  ".svelte": "svelte",
   // ReScript
   ".res": "rescript",
   ".resi": "rescript",

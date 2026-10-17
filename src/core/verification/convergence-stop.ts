@@ -1,3 +1,4 @@
+import { isTestFile } from "../intelligence/language-traits.js";
 import { hashJson } from "../specs/hash.js";
 import type { Review, RunPolicy } from "../workflows/schemas.js";
 import type { WorkflowStore } from "../workflows/store.js";
@@ -479,12 +480,11 @@ export function acceptResidual(
   }
 }
 
-const TEST_OR_DOC_PATH =
-  /(?:^|\/)(?:tests?|__tests__|spec|specs|docs?)\/|\.(?:test|spec)\.[cm]?[jt]sx?$|(?:^|\/)test_[^/]+\.py$|_test\.(?:py|go)$|\.(?:md|mdx|rst)$/i;
+const DOC_PATH = /(?:^|\/)(?:specs|docs?)\/|\.(?:md|mdx|rst)$/i;
 
 /** Whether a path is a test or documentation file, the only place a medium finding may pass with notes. */
 export const testOrDocFile = (file: string | null): boolean =>
-  file !== null && TEST_OR_DOC_PATH.test(file.replaceAll("\\", "/"));
+  file !== null && (isTestFile(file) || DOC_PATH.test(file.replaceAll("\\", "/")));
 
 /**
  * Whether a finding passes with notes instead of starting a repair: it is `partial` (test

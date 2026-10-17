@@ -4,6 +4,7 @@ import { readdir } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import type { ToolResult } from "../../types";
 import { getCwd } from "../cwd.js";
+import { isTestFile } from "../intelligence/language-traits.js";
 import { isForbidden } from "../security/forbidden.js";
 import type { IntelligenceClient } from "../workers/intelligence-client.js";
 
@@ -267,7 +268,7 @@ export function fileTypePenalty(relPath: string): number {
   if (LOCK_RE.test(relPath)) return 0.05;
   if (JUNK_RE.test(relPath)) return 0.1;
   if (DOCS_RE.test(relPath)) return 0.15;
-  if (TEST_RE.test(relPath)) return 0.3;
+  if (TEST_RE.test(relPath) || isTestFile(relPath)) return 0.3;
   if (CONFIG_RE.test(relPath)) return 0.4;
   return 1;
 }

@@ -1,3 +1,4 @@
+import { isTestFile } from "../intelligence/language-traits.js";
 import type { Check } from "../workflows/types.js";
 
 /**
@@ -19,7 +20,7 @@ export interface OutputCount {
 export const CHECK_BASELINE_PATH = "facts/check-baseline.json";
 
 /** A test file by its path; a run that deletes one may lower the test count. */
-export const TEST_FILE = /(^|\/)(tests?|__tests__|spec)\/|[._](test|spec)\.[a-z]+$|_test\.go$/i;
+export const TEST_FILE = { test: (path: string): boolean => isTestFile(path) };
 
 /** Signature of a check's command: a check is compared only with a baseline of the same command. */
 export const commandKey = (check: Pick<Check, "executable" | "args" | "cwd">): string =>
