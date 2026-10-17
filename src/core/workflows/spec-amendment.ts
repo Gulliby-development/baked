@@ -24,9 +24,10 @@ export interface SpecAmendment {
   /**
    * What wins over the named criteria: the request (a spec that contradicts the brief), or the
    * implementation (a finding on a run document after a correction deliberately departed from
-   * it, #1066). Absent in amendments recorded before #1066, which are all "request".
+   * it, #1066), or the spec's own requirements (a task reported a criterion that contradicts
+   * them, #1459). Absent in amendments recorded before #1066, which are all "request".
    */
-  authority?: "request" | "implementation";
+  authority?: "request" | "implementation" | "requirement";
   /**
    * Where it was found: a review (absent), or an analysis finding on the spec that survived the
    * last return before implement and was settled for the request (#1120).
@@ -141,9 +142,33 @@ export function analysisAmendmentOf(
 export function amendmentNote(path: string, amendment: SpecAmendment): string {
   const ids = [...amendment.criterionIds, ...amendment.requirementIds];
   const scope = ids.length ? ids.join(", ") : "the spec, the plan and the tasks";
+  if (amendment.authority === "requirement") {
+    const criteria = amendment.criterionIds.join(", ");
+    const requirements = amendment.requirementIds.join(", ");
+    return `Spec amendment (${path}): a task found that ${criteria} of the approved spec contradict ${requirements} of the same spec: ${amendment.claim.slice(0, 1000)} The requirements are authoritative over the criteria: read ${criteria} as ${requirements} state; spec.json is not rewritten. Code and tests follow ${requirements}; an assertion that only served the contradicting criterion wording is changed to what the requirements state, and that is not a weakened test. Reviews and convergence judge ${criteria} by what ${requirements} state and do not raise the contradicting wording again.`;
+  }
   if (amendment.source === "analysis")
     return `Spec amendment (${path}): analysis found that the approved spec still disagrees with the request after its last revision: ${amendment.claim.slice(0, 1000)} The request is authoritative over ${scope} on this point; spec.json is not rewritten. The plan, tasks, code and tests follow the request, and reviews and convergence judge ${scope} by what the request states and do not raise this point of the spec again.`;
   if (amendment.authority === "implementation")
     return `Spec amendment (${path}): a review found that the approved spec or plan no longer matches what a correction deliberately implemented: ${amendment.claim.slice(0, 1000)} The implementation is authoritative over ${scope} on this point (${amendment.suggestedFix.slice(0, 600)}); the run documents are not rewritten. Reviews and convergence judge ${scope} by the implementation on this point and do not raise the departure from the spec or plan again.`;
   return `Spec amendment (${path}): a review found that the approved spec contradicts the request: ${amendment.claim.slice(0, 1000)} The request is authoritative over ${scope}: read them as the request states (${amendment.suggestedFix.slice(0, 600)}). Code and tests follow the request; a test that only served the contradicting wording is changed or removed, and that is not a weakened test. Reviews and convergence judge ${scope} by what the request states and do not raise the contradicting wording again.`;
+}
+
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The criteria and requirements of the approved spec that a task's conflict report names, when it
+ * names both: two parts of the spec the specify stage wrote disagree, so neither is the request.
+ * tonemath 241fc475 (bench round 40): AC-008 said `G##/Db` cannot be spelled while FR-002, FR-003
+ * and FR-006 allow the double sharp, and the run asked a person under `clarification: assume`
+ * (#1459). The requirement wins: a criterion only illustrates it.
+ */
+export function criterionAgainstRequirement(
+  spec: Pick<Spec, "criteria" | "requirements">,
+  report: string,
+): { criterionIds: string[]; requirementIds: string[] } | null {
+  const named = (id: string) => new RegExp(`(?<![\\w-])${escapeRegExp(id)}(?![\\w-])`).test(report);
+  const criterionIds = spec.criteria.map((c) => c.id).filter(named);
+  const requirementIds = spec.requirements.map((r) => r.id).filter(named);
+  return criterionIds.length && requirementIds.length ? { criterionIds, requirementIds } : null;
 }
