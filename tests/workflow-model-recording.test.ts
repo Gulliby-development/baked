@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -135,6 +135,19 @@ describe("record and replay of model calls (#856)", () => {
       ["researcher/run", 0, 1],
     ]);
     expect(recording.calls[1]?.response.content).toMatchObject([{ type: "tool-call", toolName: "submit_result" }]);
+  });
+
+  test("calls stored in the same millisecond keep their order", async () => {
+    // Artifacts that tied on `created_at` were listed by their random ID, so a replay's export
+    // could list the second call first (seen on macOS CI).
+    setSystemTime(new Date("2026-10-17T21:00:00.000Z"));
+    cleanups.push(() => {
+      setSystemTime();
+    });
+    for (let i = 0; i < 4; i++) {
+      const { recording } = await recordAttempt();
+      expect(recording.calls.map((c) => c.call)).toEqual([0, 1]);
+    }
   });
 
   test("a replay answers from the recording without calling the provider, and records again", async () => {
