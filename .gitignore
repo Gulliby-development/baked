@@ -73,8 +73,11 @@ benchmarks/results-*.json
 # Local git worktrees
 .worktrees/
 
-# Installed agent skills (user-specific)
-.agents/
+# Installed agent skills (user-specific); repository skills under .agents/skills/file-issue are tracked
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/file-issue/
 
 # Audit logs
 audit_issue.json

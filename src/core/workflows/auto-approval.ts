@@ -293,8 +293,41 @@ function requiredByRequest(write: Write, request: string): boolean {
  */
 function requestedManifestEdit(write: Write, request: string): boolean {
   return (
-    write.action !== "delete" && isManifestPath(write.path) && requiredByRequest(write, request)
+    write.action !== "delete" && isManifestPath(write.path) && requestNamesManifest(write, request)
   );
+}
+
+/** Manifest names every package of a monorepo repeats; the request names one only by its path. */
+const SHARED_MANIFEST =
+  /^(?:package\.json|pyproject\.toml|requirements[\w.-]*\.txt|cargo\.toml|go\.mod|pom\.xml)$/;
+/** A sentence that tells the run to leave a file alone ("keep package.json as is"). */
+const LEAVE_ALONE =
+  /\b(?:do not|don't|never|must not|should not|without (?:changing|editing|modifying|touching|updating))\b|\b(?:keep|leave)\b.*\b(?:as[ -]is|unchanged|untouched|intact|alone)\b/;
+const PATH_CHAR = "[\\w./-]";
+
+/**
+ * Whether the request names a manifest as one to change (#1428). Unlike `requiredByRequest`,
+ * which only shapes the planner's advice, this decides an approval: the manifest's path must
+ * appear as a whole token (`package.json` is not part of `packages/api/package.json`), its bare
+ * file name counts only for a name no other package repeats (`Api.csproj`, not `package.json`),
+ * and a sentence that tells the run to leave the file alone does not count.
+ */
+function requestNamesManifest(write: Write, request: string): boolean {
+  const path = write.path.toLowerCase();
+  const name = path.split("/").at(-1) ?? path;
+  const tokens = SHARED_MANIFEST.test(name) ? [path] : [path, name];
+  const whole = tokens.map(
+    (token) =>
+      new RegExp(
+        `(?:^|[^\\w./-])(?:\\./)?${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?!${PATH_CHAR}*\\w)`,
+      ),
+  );
+  return request
+    .toLowerCase()
+    .replaceAll("\\", "/")
+    .replaceAll("\u2019", "'")
+    .split(/(?<=[.!?;])\s+|\n+/)
+    .some((sentence) => !LEAVE_ALONE.test(sentence) && whole.some((re) => re.test(sentence)));
 }
 
 /**
