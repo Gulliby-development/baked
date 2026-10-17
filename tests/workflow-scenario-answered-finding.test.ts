@@ -90,6 +90,26 @@ describe("scenario: pgnvet 3f03497b, an answered analysis finding raised again (
     expect(executor.plans).toBe(4);
   }, 60000);
 
+  // Audit of 2026-10-17 (#1416): the oldest answer was matched, so a newer answer never got its return.
+  test("a newer answer after the binding return goes back to the planner with that answer", async () => {
+    const SECOND = "Use a mockable Io for every stdin test.";
+    // The planner settles only once a binding note carries the second answer.
+    const bound = (prompt: string) =>
+      prompt
+        .split("do not record the conflict as a decision instead:")
+        .slice(1)
+        .some((note) => (note.split("User clarification")[0] ?? "").includes("mockable Io"));
+    const { executor, service, runId, pending, clarifications } = await plan((prompt) => !bound(prompt));
+    const asked = pending("clarification")[0];
+    if (!asked) throw new Error("No second clarification request");
+    const snapshot = await service.get(runId);
+    await service.decide(runId, { commandId: newId(), expectedRevision: snapshot.revision }, { kind: "answer", requestId: asked.id, digest: asked.digest, answers: { F001: SECOND } });
+    await service.drive(runId, new AbortController().signal);
+    expect(clarifications()).toBe(2);
+    expect(pending("approval")).toHaveLength(1);
+    expect(executor.spawns).toBe(false);
+  }, 60000);
+
   test("the person is asked again when the binding return did not settle it", async () => {
     const { executor, pending, clarifications } = await plan(() => true);
     expect(clarifications()).toBe(2);

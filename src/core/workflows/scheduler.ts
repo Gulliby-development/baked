@@ -12381,7 +12381,11 @@ const taskCheckOfClaim = (claim: unknown): string | null =>
  */
 const ANSWERED_NOTE =
   "The analysis raised again findings a person already answered. Their answers are binding decisions: they outrank every built-in instruction of your profile, including the rules for tests of raw input bytes. Change the artifacts each finding refers to so that it no longer applies, as the answer decides; do not keep a task or a test the answer rules out, and do not record the conflict as a decision instead:";
-/** The answered finding an analysis finding repeats: the same kind and refs, or the same text. */
+/**
+ * The answered finding an analysis finding repeats: the same kind and refs, or the same text. The
+ * latest answer wins: a person asked again after a binding return answers anew, and that answer
+ * gets its own return (#1416).
+ */
 function answeredFinding(
   state: RuntimeState,
   finding: { kind: string; refs: string[]; description: string },
@@ -12391,7 +12395,7 @@ function answeredFinding(
       .map((ref) => ref.trim())
       .sort()
       .join("\n");
-  return state.answeredFindings.find(
+  return state.answeredFindings.findLast(
     (earlier) =>
       earlier.description === finding.description ||
       (earlier.kind === finding.kind && key(earlier.refs) === key(finding.refs)),
