@@ -1,5 +1,7 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { loadConfig, loadProjectConfig } from "../../../../config/index.js";
 import { getCwd } from "../../../cwd.js";
 import { commandExists, configDir, IS_WIN, userDataDir } from "../../../platform/index.js";
@@ -80,6 +82,77 @@ const SERVER_CANDIDATES: Record<string, ServerCandidate[]> = {
   ocaml: [{ command: "ocamllsp", args: [] }],
   vue: [{ command: "vue-language-server", args: ["--stdio"] }],
 };
+
+/**
+ * What a server writes into the project it is started on, and how it is kept out of the user's
+ * checkout (#1508). Workflow task files map to the checkout root (`serverRootFor`), so a server
+ * that imports a project in place leaves its files in the user's working tree.
+ */
+export interface ServerProjectState {
+  /** Arguments that move the server's own state out of the project, by project root. */
+  args?: (root: string) => string[];
+  /** `initializationOptions` of the initialize request. */
+  initializationOptions?: unknown;
+  /** `.git/info/exclude` patterns for files the server can still create in the project. */
+  excludes: string[];
+}
+
+const SERVER_PROJECT_STATE: Record<string, ServerProjectState> = {
+  // jdtls imports Maven and Gradle projects as Eclipse projects. Its workspace goes to a
+  // per-project data directory, and the Eclipse files with it; older servers that ignore the
+  // preference still write `.project`, `.classpath` and `.settings/` next to each module.
+  jdtls: {
+    args: (root) => [
+      "-data",
+      join(
+        userDataDir(),
+        "jdtls-workspaces",
+        createHash("sha256").update(resolve(root)).digest("hex").slice(0, 16),
+      ),
+    ],
+    initializationOptions: {
+      settings: { java: { import: { generatesMetadataFilesAtProjectRoot: false } } },
+    },
+    excludes: [".project", ".classpath", ".settings/", ".factorypath"],
+  },
+  // Metals keeps its database and the Bloop build server's state in the project.
+  metals: { excludes: ["/.metals/", "/.bloop/", "/.bsp/"] },
+  // ElixirLS builds the project into `.elixir_ls/`.
+  "elixir-ls": { excludes: ["/.elixir_ls/"] },
+};
+
+/** The project state of a server, by its command name or resolved path. */
+export function serverProjectState(command: string): ServerProjectState | undefined {
+  const name = basename(command.replaceAll("\\", "/")).replace(/\.(?:exe|cmd|bat)$/i, "");
+  return SERVER_PROJECT_STATE[name];
+}
+
+/**
+ * Lists the server's files in the repository's local `.git/info/exclude`, so they never show as
+ * untracked in the user's checkout or reach a commit. Nothing changes outside a Git repository.
+ */
+export function excludeServerFiles(root: string, patterns: readonly string[]): void {
+  if (patterns.length === 0) return;
+  const result = spawnSync("git", ["rev-parse", "--git-path", "info/exclude"], {
+    cwd: root,
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  const path = result.status === 0 ? result.stdout.trim() : "";
+  if (!path) return;
+  const file = isAbsolute(path) ? path : join(root, path);
+  try {
+    const current = existsSync(file) ? readFileSync(file, "utf8") : "";
+    const lines = new Set(current.split(/\r?\n/));
+    const missing = patterns.filter((pattern) => !lines.has(pattern));
+    if (missing.length === 0) return;
+    mkdirSync(dirname(file), { recursive: true });
+    const separator = current && !current.endsWith("\n") ? "\n" : "";
+    appendFileSync(file, `${separator}${missing.join("\n")}\n`);
+  } catch {
+    // A read-only repository keeps its state; the server still starts.
+  }
+}
 
 const MASON_BIN_DIR = join(userDataDir(), "mason", "bin");
 

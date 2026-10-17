@@ -23,7 +23,7 @@ import {
   type LspTypeHierarchyItem,
   type LspWorkspaceEdit,
 } from "./protocol.js";
-import type { LspServerConfig } from "./server-registry.js";
+import { excludeServerFiles, type LspServerConfig, serverProjectState } from "./server-registry.js";
 import { spawnLspServer } from "./spawn.js";
 
 const LANGUAGE_ID_MAP: Partial<Record<string, string>> = {
@@ -92,7 +92,13 @@ export class StandaloneLspClient {
 
   /** Spawn the server process and perform the initialize handshake */
   async start(): Promise<void> {
-    this.process = spawnLspServer(this.config.command, this.config.args, this.cwd);
+    const state = serverProjectState(this.config.command);
+    const args =
+      state?.args && !this.config.args.includes("-data")
+        ? [...this.config.args, ...state.args(this.cwd)]
+        : this.config.args;
+    if (state) excludeServerFiles(this.cwd, state.excludes);
+    this.process = spawnLspServer(this.config.command, args, this.cwd);
     trackProcess(this.process);
     if (this.process.pid) trackLspPid(this.process.pid);
 
@@ -141,6 +147,9 @@ export class StandaloneLspClient {
       },
       rootUri: this.rootUri,
       workspaceFolders: [{ uri: this.rootUri, name: "workspace" }],
+      ...(state?.initializationOptions !== undefined
+        ? { initializationOptions: state.initializationOptions }
+        : {}),
     })) as { capabilities?: { workspace?: { fileOperations?: { willRename?: unknown } } } } | null;
 
     // Check if server advertises willRename support
