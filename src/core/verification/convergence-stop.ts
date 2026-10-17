@@ -661,3 +661,26 @@ export function noteStoppedInconclusive(
     .map((c) => c.criterionId);
   return noteUnverifiedCriteria(state, coverage, ids, round);
 }
+
+/** An explanation that names evidence a reviewer cannot produce with its tools (#1506). */
+const NAMES_MISSING_EVIDENCE = [
+  /\bwould (?:settle|establish|confirm|resolve|prove|show|demonstrate)\b/i,
+  /\b(?:cannot|can't|could not|couldn't|unable to|no (?:tool|way) to)\s+(?:run|execute|list|enumerate|count|observe|access|launch|start|measure)\b/i,
+  /\brequires? (?:running|executing|launching|a (?:live|real|running|deployed))\b/i,
+  /\b(?:needs?|requires?) (?:a |an )?(?:new |dedicated |separate |additional )?(?:test|check|command|benchmark|measurement)s? (?:to|that)\b/i,
+];
+
+/**
+ * The inconclusive criteria worth asking the same reviewer about again: one whose explanation
+ * already names evidence the reviewer cannot produce (a test or check that would settle it, a
+ * command it cannot run) gets the same answer from the same tools. fecsmith release (bench round
+ * 42) asked a second time about a file inventory the reviewer could not list, for 583k tokens and
+ * the same verdict (#1506); such criteria go straight to the converge stage as evidence gaps.
+ */
+export function reaskableCriteria(coverage: Review["coverage"]): Review["coverage"] {
+  return coverage.filter(
+    (c) =>
+      c.verdict === "inconclusive" &&
+      !NAMES_MISSING_EVIDENCE.some((pattern) => pattern.test(c.explanation)),
+  );
+}

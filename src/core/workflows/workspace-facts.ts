@@ -1,6 +1,7 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { isManifestFile, isSourceFile } from "../intelligence/language-traits.js";
+import { isTestCodePath } from "./quality/duplication.js";
 
 /**
  * Workspace Facts: what the host knows about the files a run starts from. Stages used to get a
@@ -141,4 +142,81 @@ const ABSENCE =
 export function contradictsFacts(description: string, facts: WorkspaceFacts): boolean {
   if (!ABSENCE.test(description)) return false;
   return facts.files.some((f) => description.includes(f.path));
+}
+
+const INVENTORY_LIMIT = 500;
+
+/** The files of the reviewed workspace, as the reviewers get them (#1506). */
+export interface WorkspaceInventory {
+  /** Every file: tracked and untracked ones, without ignored ones and files deleted on disk. */
+  totalFiles: number;
+  /** Of those, test files (test directories and the test file names of the supported languages). */
+  testFiles: number;
+  /** The paths, sorted, up to 500. */
+  paths: string[];
+  truncated: boolean;
+  note: string;
+}
+
+function gitFiles(root: string): string[] | null {
+  try {
+    const proc = Bun.spawnSync(
+      ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+      {
+        cwd: root,
+        stdout: "pipe",
+        stderr: "ignore",
+        windowsHide: true,
+        timeout: 30_000,
+      },
+    );
+    if (proc.exitCode !== 0) return null;
+    return proc.stdout.toString().split("\0").filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
+function walkedFiles(root: string): string[] {
+  const files: string[] = [];
+  const queue = [""];
+  for (let prefix = queue.shift(); prefix !== undefined; prefix = queue.shift()) {
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = readdirSync(join(root, prefix), { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (!SKIPPED.has(entry.name)) queue.push(rel);
+      } else files.push(rel);
+      if (files.length > 20 * INVENTORY_LIMIT) return files;
+    }
+  }
+  return files;
+}
+
+/**
+ * The file list of the workspace a review reads (#1506). A criterion that counts or lists files
+ * ("exactly 26 production files") could only end inconclusive: the reviewer has no tool that
+ * lists files, and fecsmith release (bench round 42) asked it twice for 761k tokens and accepted
+ * the criterion unverified. Git's view (tracked and untracked, not ignored) when the workspace is
+ * a repository, a walk that skips dependency and build folders otherwise; a file deleted on disk
+ * is not listed.
+ */
+export function workspaceInventory(root: string): WorkspaceInventory {
+  const all = (gitFiles(root) ?? walkedFiles(root))
+    .filter((path) => existsSync(join(root, path)))
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const tests = all.filter(isTestCodePath).length;
+  const truncated = all.length > INVENTORY_LIMIT;
+  return {
+    totalFiles: all.length,
+    testFiles: tests,
+    paths: all.slice(0, INVENTORY_LIMIT),
+    truncated,
+    note: `The host's list of the files in the reviewed workspace now: ${String(all.length)} file(s), ${String(tests)} of them test files${truncated ? `; the first ${String(INVENTORY_LIMIT)} paths are listed` : ""}. Settle a criterion that counts, lists or limits files from it instead of leaving it inconclusive.`,
+  };
 }
