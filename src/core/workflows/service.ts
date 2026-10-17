@@ -1587,7 +1587,8 @@ export class NativeWorkflowService implements WorkflowService {
           !canExtendRun({
             status: row.status,
             reason: row.reason,
-            estimatedCostUsd: spent.spentUsd + spent.reservedUsd,
+            estimatedCostUsd: spent.spentUsd,
+            reservedCostUsd: spent.reservedUsd,
             maxCostUsd: before.maxCostUsd,
           })
         )
