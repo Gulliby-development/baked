@@ -1,5 +1,6 @@
 import { useTheme } from "../../core/theme/index.js";
 import type { TaskRow } from "../../core/workflows/store.js";
+import { hostWritten } from "../../core/workflows/task-graph.js";
 import type { Task } from "../../core/workflows/types.js";
 
 const GLYPH: Record<TaskRow["status"], string> = {
@@ -40,6 +41,7 @@ export function TaskGraphView({ tasks }: { tasks: TaskRow[] }) {
             <text fg={color} attributes={row.status === "running" ? 1 : 0}>
               {`${GLYPH[row.status]} ${row.id} ${task.title}`}
               {task.origin !== "planned" ? <span fg={t.warning}>{` (${task.origin})`}</span> : null}
+              {hostWritten(task) ? <span fg={t.textMuted}>{" (host-written)"}</span> : null}
             </text>
             <text fg={t.textFaint}>
               {`   ${row.status}${task.dependsOn.length ? ` · after ${task.dependsOn.join(", ")}` : ""} · criteria ${task.criterionIds.join(", ")}`}

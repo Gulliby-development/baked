@@ -41,7 +41,7 @@ import { terminalStates } from "../state-machine.js";
 import { stopDetail } from "../stop-detail.js";
 import { newId, WorkflowStore } from "../store.js";
 import type { IssueSource } from "../types.js";
-import { DefinitionAutoApprovalSchema } from "../v2/definition.js";
+import { HOST_AUTO_APPROVAL_CEILING, HostAutoApprovalSchema } from "../v2/definition.js";
 import { loadDefinition } from "../v2/definitions.js";
 import { autoApprovalPolicy } from "../v2/runtime.js";
 import { mergedBase, worktreeBase } from "../worktree.js";
@@ -54,13 +54,13 @@ import {
 } from "./estimate.js";
 import {
   applySplitEdit,
+  boundaryPathCounts,
   featureDigest,
   type InitiativeFeature,
   InitiativeId,
   type InitiativePlan,
   InitiativePlanSchema,
   isGlobPath,
-  literalPathCount,
   mergeSmallSiblings,
   planSizeProblem,
   type SplitEdit,
@@ -184,6 +184,8 @@ export interface FeatureView {
   mandatory: boolean;
   dependsOn: string[];
   boundary: InitiativeFeature["boundary"];
+  /** Boundary files whose content the split fixes; the feature's run writes them in the host. */
+  skeleton?: NonNullable<InitiativeFeature["skeleton"]>;
   contract: string;
   /** The workflow this feature's runs use: its own, or the initiative's default. */
   workflowId: string;
@@ -1208,6 +1210,7 @@ export class InitiativeService {
       // A shipped light preset approves its plan within the feature's tiered limits (#1374).
       ...(settings.featureAutoApproval ? { boundaryAutoApproval: true } : {}),
       ...(settings.featureIssues[featureId] ? { issue: settings.featureIssues[featureId] } : {}),
+      ...(feature.skeleton?.length ? { hostFiles: feature.skeleton } : {}),
       ...(baseCommit ? { baseCommit } : {}),
     });
     this.store.transaction(() => {
@@ -1412,6 +1415,7 @@ export class InitiativeService {
     const settings = this.store.settings(row);
     const facts = this.workflowFacts(settings);
     const models = settings.model ? [settings.model] : [];
+    const counts = boundaryPathCounts(plan);
     const features = plan.features.map((feature) => {
       const workflowId = featureWorkflowId(settings, feature);
       return {
@@ -1420,7 +1424,7 @@ export class InitiativeService {
         workflowId,
         size: feature.size ?? "medium",
         stages: (facts(workflowId)?.stages ?? []).map((stage) => ({ ...stage, models })),
-        paths: literalPathCount(feature),
+        ...counts.get(feature.id),
       };
     });
     const history = estimateHistory(
@@ -1731,6 +1735,7 @@ export class InitiativeService {
         mandatory: feature.mandatory,
         dependsOn: feature.dependsOn,
         boundary: feature.boundary,
+        skeleton: feature.skeleton ?? [],
         contract: feature.contract,
         workflowId,
         size: feature.size ?? "medium",
@@ -2018,16 +2023,19 @@ function featureRunSamples(
   const runs = new Map(history.map((run) => [run.runId, run]));
   return initiatives.list().flatMap((row) => {
     const settings = initiatives.settings(row);
-    const plans = new Map<number, InitiativePlan>();
+    const plans = new Map<
+      number,
+      { plan: InitiativePlan; counts: ReturnType<typeof boundaryPathCounts> }
+    >();
     return initiatives.links(row.id).flatMap((link) => {
       const run = runs.get(link.run_id);
       if (run?.status !== "completed") return [];
-      if (!plans.has(link.plan_revision))
-        plans.set(
-          link.plan_revision,
-          initiatives.plan(initiatives.revision(row.id, link.plan_revision)),
-        );
-      const feature = plans.get(link.plan_revision)?.features.find((f) => f.id === link.feature_id);
+      if (!plans.has(link.plan_revision)) {
+        const plan = initiatives.plan(initiatives.revision(row.id, link.plan_revision));
+        plans.set(link.plan_revision, { plan, counts: boundaryPathCounts(plan) });
+      }
+      const revision = plans.get(link.plan_revision);
+      const feature = revision?.plan.features.find((f) => f.id === link.feature_id);
       if (!feature) return [];
       return [
         {
@@ -2037,7 +2045,8 @@ function featureRunSamples(
           tokens: run.tokens,
           taskCount: run.taskCount,
           criteria: runStore.state(run.runId).spec?.criteria.length,
-          paths: literalPathCount(feature),
+          // A stub it created for a later feature counts at its share, not as a path (#1464).
+          ...revision?.counts.get(feature.id),
           ...(source === "shared" ? { source } : {}),
         },
       ];
@@ -2104,8 +2113,8 @@ function describe(view: FeatureView): string {
  * The run policy of a feature: its budget share and, when tiered approval is on, auto approval
  * whose allowed paths are the feature's approved boundary, including an edit of a package
  * manifest the boundary names, and limits at least as large as the boundary's files
- * (`boundaryLimits`). A feature without boundary paths, or with more than auto approval accepts,
- * and every rebased run (`humanOnly`) go to a person.
+ * (`boundaryLimits`). A feature without boundary paths and every rebased run (`humanOnly`) go to a
+ * person.
  */
 export function featurePolicy(
   settings: InitiativeSettings,
@@ -2124,7 +2133,7 @@ export function featurePolicy(
   const auto = settings.featureAutoApproval;
   const limits =
     auto && !humanOnly
-      ? DefinitionAutoApprovalSchema.safeParse({
+      ? HostAutoApprovalSchema.safeParse({
           enabled: true,
           ...boundaryLimits(auto, feature.boundary.paths),
           allowedPaths: feature.boundary.paths,
@@ -2179,9 +2188,6 @@ export function featureApprovalDeclined(
   return `Feature ${feature.id}'s boundary (${feature.boundary.paths.length} paths) is outside what tiered approval accepts, so a person approves its plan.`;
 }
 
-/** The most tasks and files a definition's auto approval accepts. */
-const AUTO_APPROVAL_CEILING = { maxTasks: 20, maxFiles: 50 } as const;
-
 /**
  * The tiered limits of a feature run: the initiative's limits, raised to the files the approved
  * boundary names, with one task per file and two spare. The person approved those paths with the
@@ -2196,8 +2202,8 @@ export function boundaryLimits(
   const files = paths.filter((p) => !isGlobPath(p)).length;
   if (!files) return { maxTasks: auto.maxTasks, maxFiles: auto.maxFiles };
   return {
-    maxTasks: Math.max(auto.maxTasks, Math.min(AUTO_APPROVAL_CEILING.maxTasks, files + 2)),
-    maxFiles: Math.max(auto.maxFiles, Math.min(AUTO_APPROVAL_CEILING.maxFiles, files)),
+    maxTasks: Math.max(auto.maxTasks, Math.min(HOST_AUTO_APPROVAL_CEILING.maxTasks, files + 2)),
+    maxFiles: Math.max(auto.maxFiles, Math.min(HOST_AUTO_APPROVAL_CEILING.maxFiles, files)),
   };
 }
 
@@ -2338,6 +2344,11 @@ export function featurePrompt(
       ? `Paths this feature may write: ${feature.boundary.paths.join(", ")}`
       : "The split names no paths for this feature; stay within the boundary above.",
     `Contract this feature provides to the features that depend on it: ${feature.contract}`,
+    ...(feature.skeleton?.length
+      ? [
+          `The split fixes the whole content of ${feature.skeleton.map((f) => f.path).join(", ")}: one task writes them as host-written files with exactly that content (extra.hostFiles), and later features replace the stubs.`,
+        ]
+      : []),
   ];
   for (const { feature: dependency, contract } of upstream) {
     const definition = plan.features.find((f) => f.id === dependency.id);

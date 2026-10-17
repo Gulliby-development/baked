@@ -368,7 +368,7 @@ export class CodexAppServerSessions {
 
   constructor(
     private readonly connect: () => Promise<CodexAppServerConnection> = () =>
-      startCodexAppServerSession({ experimentalApi: true }),
+      startCodexAppServerSession({ experimentalApi: true, isolated: true }),
   ) {}
 
   /** Opens a streaming step, or returns null when app-server cannot serve it. */

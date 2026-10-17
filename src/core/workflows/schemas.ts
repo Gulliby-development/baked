@@ -95,6 +95,9 @@ export const SpecSchema = z
   })
   .strict();
 
+/** The longest content a host-written task write may carry. */
+export const HOST_CONTENT_MAX_CHARS = 4000;
+
 export const TaskSchema = z
   .object({
     id: TaskId,
@@ -115,6 +118,14 @@ export const TaskSchema = z
            * every other write, so stored graphs keep their hash.
            */
           reason: Text.optional(),
+          /**
+           * The whole content of a file the request fixes (a module stub with only a comment, a
+           * registration file of mod lines, an empty __init__.py or index barrel). When every
+           * write of a task has it, the host writes the files with no agent attempt and the
+           * task's checks decide it: 20 one-line Rust stubs cost 2.58M tokens as agent tasks
+           * (#1460). Absent on every other write, so stored graphs keep their hash.
+           */
+          content: z.string().max(HOST_CONTENT_MAX_CHARS).optional(),
         })
         .strict(),
     ),
@@ -1620,6 +1631,11 @@ export interface StartRequest {
    * does. The person set those limits when starting the initiative (#1374).
    */
   boundaryAutoApproval?: boolean;
+  /**
+   * Files whose whole content is fixed before planning (an initiative feature's skeleton): the
+   * plan must write them in one host-written task with exactly this content (#1461).
+   */
+  hostFiles?: { path: string; content: string }[];
   /**
    * Execution mode requested for this run (CLI `--worktree`). It overrides the policy and the
    * definition; omitted, the definition's `execution`, then the policy's `executionMode` apply.

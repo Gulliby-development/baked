@@ -79,12 +79,20 @@ const FEATURE_GLYPH: Record<FeatureView["state"], string> = {
   stale: "↻",
   accepted: "✓",
 };
+/** A feature's boundary paths, with the placeholders it creates for later features (#1464). */
+const pathText = (f: { paths?: number; placeholders?: number }): string => {
+  const paths = f.paths ? `${f.paths} ${f.paths === 1 ? "path" : "paths"}` : "";
+  const stubs = f.placeholders
+    ? `${f.placeholders} ${f.placeholders === 1 ? "placeholder" : "placeholders"}`
+    : "";
+  return paths || stubs ? ` for ${[paths, stubs].filter(Boolean).join(" + ")}` : "";
+};
 const featureEstimateText = (estimate: InitiativeEstimate | null, featureId: string): string => {
   const f = estimate?.features.find((e) => e.featureId === featureId);
   if (!f) return "";
   return f.basis === "measured"
     ? ` · used ${formatTokens(f.tokens.high)} tokens`
-    : ` · estimate ${formatTokens(f.tokens.low)}-${formatTokens(f.tokens.high)} tokens${f.paths ? ` for ${f.paths} ${f.paths === 1 ? "path" : "paths"}` : ""}${f.floor ? ` (by ${f.floor})` : ""}`;
+    : ` · estimate ${formatTokens(f.tokens.low)}-${formatTokens(f.tokens.high)} tokens${pathText(f)}${f.floor ? ` (by ${f.floor})` : ""}`;
 };
 const clip = (text: string, width: number): string =>
   text.length > width ? `${text.slice(0, Math.max(1, width - 1))}…` : text;
@@ -676,6 +684,14 @@ export function InitiativeDetail({
                   <text fg={t.textMuted}>
                     {clip(
                       `Merged from ${f.mergedFrom.join(", ")}: too small for a run each`,
+                      width - 4,
+                    )}
+                  </text>
+                ) : null}
+                {f.skeleton?.length ? (
+                  <text fg={t.textMuted}>
+                    {clip(
+                      `Skeleton written by the host: ${f.skeleton.map((file) => file.path).join(", ")}`,
                       width - 4,
                     )}
                   </text>

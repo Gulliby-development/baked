@@ -3,6 +3,7 @@ import readline from "node:readline";
 import { describeSearch, resolveCli } from "../../../platform/cli-path.js";
 import { trackProcess } from "../../../process-tracker.js";
 import type { ProviderModelInfo } from "../types.js";
+import { codexRunEnv } from "./home.js";
 
 export interface CodexLoginStatus {
   installed: boolean;
@@ -176,12 +177,17 @@ export function assertCodexReady(): void {
   }
 }
 
+/**
+ * `isolated` starts the app-server in BAKED's own Codex home, without the user's AGENTS.md and
+ * skills (#1462); model turns use it. Sign-in and model listing stay in the user's home.
+ */
 export async function startCodexAppServerSession(
-  options: { experimentalApi?: boolean } = {},
+  options: { experimentalApi?: boolean; isolated?: boolean } = {},
 ): Promise<CodexAppServerConnection> {
   const child = spawn(codexCommand(), ["app-server", "--listen", "stdio://"], {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
+    ...(options.isolated ? { env: codexRunEnv() } : {}),
   });
   trackProcess(child);
 

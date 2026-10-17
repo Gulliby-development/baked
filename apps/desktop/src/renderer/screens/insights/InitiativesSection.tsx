@@ -279,6 +279,12 @@ function FeatureCard({
         {(feature.mergedFrom?.length ?? 0) > 0 && (
           <span className="text-dim-foreground">merged from {feature.mergedFrom?.join(", ")}</span>
         )}
+        {(feature.skeleton?.length ?? 0) > 0 && (
+          <span className="text-dim-foreground">
+            skeleton written by the host:{" "}
+            <span className="font-mono">{feature.skeleton?.map((f) => f.path).join(", ")}</span>
+          </span>
+        )}
         {feature.issue && (
           <a
             className="font-mono"
@@ -434,6 +440,9 @@ function EstimatePanel({ projectKey, view }: { projectKey: string; view: Initiat
             <span className="font-mono text-dim-foreground">
               {f.workflowId} · {f.size}
               {f.paths ? ` · ${f.paths} ${f.paths === 1 ? "path" : "paths"}` : ""}
+              {f.placeholders
+                ? ` · ${f.placeholders} ${f.placeholders === 1 ? "placeholder" : "placeholders"}`
+                : ""}
             </span>
             <span className="font-mono text-muted-foreground">
               {f.basis === "measured"

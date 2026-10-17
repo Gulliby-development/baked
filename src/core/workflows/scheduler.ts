@@ -433,6 +433,7 @@ import {
 import {
   amendmentNote,
   analysisAmendmentOf,
+  criterionAgainstRequirement,
   documentAmendmentOf,
   namesRunDocument,
   type SpecAmendment,
@@ -451,6 +452,9 @@ import {
 import {
   documentsOnly,
   hasTaskGate,
+  hostContentProblems,
+  hostFileProblems,
+  hostWritten,
   missingArtifactOwners,
   namesPath,
   pendingCodePaths,
@@ -1193,6 +1197,8 @@ export class WorkflowScheduler {
                 const problems = [
                   ...this.planProblems(runId, spec, submitted, policy, profiles),
                   ...codeTaskCheckProblems(submitted.taskGraph, policy),
+                  ...hostContentProblems(submitted.taskGraph),
+                  ...hostFileProblems(submitted.taskGraph, state.hostFiles),
                   ...testWriteProblems(submitted.taskGraph, policy),
                   ...testsFirstProblems(spec, submitted.taskGraph, policy),
                 ];
@@ -1246,6 +1252,14 @@ export class WorkflowScheduler {
                       profiles: profiles.filter((p) => p.output !== "approval-review"),
                       workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
                       ...(approvalLimits ? { approvalLimits } : {}),
+                      ...(state.hostFiles?.length
+                        ? {
+                            hostFiles: {
+                              files: state.hostFiles,
+                              note: "The split fixed the whole content of these files. Write all of them in one task of their own whose writes carry exactly this content (the host writes them with no agent), and let later tasks modify them.",
+                            },
+                          }
+                        : {}),
                       ...(testsFirstOf(policy) !== "off"
                         ? {
                             testsFirst: testsFirstNote(
@@ -2996,6 +3010,7 @@ export class WorkflowScheduler {
         row.status === "interrupted" ||
         !checks.length ||
         !task.writes.length ||
+        hostWritten(task) ||
         // Its earlier implementation passed its checks under this very definition; a revision
         // that changed it (or reset the gates) always implements it again.
         state.taskGates[task.id]?.definitionHash !== hashJson(task) ||
@@ -5041,10 +5056,13 @@ ${note}`;
     if (
       !checking &&
       (task.writes.length === 0 ||
+        hostWritten(task) ||
         (firstRun && (await this.correctionPassing(runId, child, state, policy, task, signal))))
     ) {
-      // A task that may not write, or a correction whose failing checks already pass, has nothing
-      // for a model to do: its task checks decide it, and the checks stage covers the rest.
+      // A task that may not write, a task whose files the host writes, or a correction whose
+      // failing checks already pass, has nothing for a model to do: its task checks decide it,
+      // and the checks stage covers the rest.
+      if (hostWritten(task)) this.writeHostFiles(runId, child, state, policy, task);
       await this.snapshot(runId, state, policy, signal);
       this.store.transaction(() => {
         this.store.taskStatus(runId, task.id, "implemented", state.snapshotId);
@@ -5506,7 +5524,7 @@ ${note}`;
       const ready = runnable;
       if (!checking && (await this.hostFirstReruns(runId, stepId, state, policy, signal, ready)))
         continue;
-      const single = checking ?? ready.find((t) => t.writes.length === 0);
+      const single = checking ?? ready.find((t) => t.writes.length === 0 || hostWritten(t));
       signal.throwIfAborted();
       if (single) {
         await this.implementTask(
@@ -7640,6 +7658,29 @@ ${note}`;
         }
       : {};
   }
+  /**
+   * Writes a host-written task's files with the content its plan fixed, journaled as the task's
+   * own edits so review, undo and delivery see them, with no agent attempt (#1460). A file that
+   * already has that content is left as it is.
+   */
+  private writeHostFiles(
+    runId: string,
+    child: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ): void {
+    const root = runRoot(this.store.workspace, state);
+    const attempt = this.store.reserve(runId, child, null, 0, policy);
+    for (const write of task.writes) {
+      const content = Buffer.from(write.content ?? "", "utf8");
+      const absolute = workspacePath(root, write.path);
+      if (fileHash(absolute) === hashBytes(content)) continue;
+      const before = this.store.transaction(() => capturePreImage(this.store, runId, absolute));
+      this.journal.publish(runId, attempt, write.path, content, before, "file_patch", root);
+    }
+    this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
+  }
   private async runTaskCheck(
     runId: string,
     child: string,
@@ -8059,19 +8100,53 @@ ${note}`;
     // One side is what the platform cannot do at all: no person can choose it, so the nearest
     // feasible behavior the task named holds (#1384).
     const platform = first && !assume && namesPlatformLimit(report);
+    // The test files of the conflict: those the report names, and those the task's last failing
+    // check names, since reports often cite a test by function only (tonemath 241fc475, #1459).
+    const failing = this.failedCheckOutput(runId, task.id);
+    const named = (tasks: Task[]): string[] => [
+      ...new Set([
+        ...pathsInOutput(report, tasks),
+        ...(failing ? failingFilesInOutput(failing, tasks) : []),
+      ]),
+    ];
     const tests =
-      first && !assume && !platform ? this.conflictingTests(runId, state, task, report) : [];
+      first && !assume && !platform ? this.conflictingTests(runId, state, task, named) : [];
     const own =
       first && !assume && !platform && !tests.length
-        ? this.ownRunTests(runId, state, task, report)
+        ? this.ownRunTests(runId, state, task, named)
         : [];
+    // Two parts of the approved spec disagree, a criterion and a requirement: the requirement
+    // wins, unless a test the run did not write is involved, which stays a question (#1459).
+    const ranked =
+      first && !assume && !platform && state.spec
+        ? criterionAgainstRequirement(state.spec, report)
+        : null;
+    const foreign = named((state.rootGraph ?? state.graph)?.tasks ?? [task]).filter(
+      (path) =>
+        isTestPath(path) &&
+        (state.testsFirst?.files.includes(path) || !this.createdByRun(runId, state, path)),
+    );
+    const amended = ranked && !foreign.length ? ranked : null;
+    const byRequirement = amended && !tests.length && !own.length;
+    const amendmentPath = `amendments/conflict-${task.id}.json`;
+    const amendment: SpecAmendment | null = amended && {
+      findingId: `conflict-${task.id}`,
+      criterionIds: amended.criterionIds,
+      requirementIds: amended.requirementIds,
+      paths: [...own, ...tests.map((t) => t.path)],
+      claim: report.slice(0, 1500),
+      suggestedFix: `Read ${amended.criterionIds.join(", ")} as ${amended.requirementIds.join(", ")} state.`,
+      authority: "requirement",
+    };
     const assumed = example
       ? "The request's worked example is authoritative: copy it verbatim"
       : assume
         ? "The request is authoritative"
         : platform
           ? "The platform cannot carry or represent what one side demands: the nearest feasible behavior the task named holds"
-          : null;
+          : byRequirement
+            ? `The requirements ${amended.requirementIds.join(", ")} win over the criteria ${amended.criterionIds.join(", ")} that contradict them`
+            : null;
     const freed = task.findingIds.length
       ? ` The repros of ${task.findingIds.join(", ")} no longer gate the task.`
       : "";
@@ -8093,9 +8168,16 @@ ${note}`;
           answer: `Assumed under clarification assume (${assumedPath}): ${assumed}.`,
         });
       }
+      if (amendment) this.store.artifact(runId, "assumption", amendmentPath, canonical(amendment));
       this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
       this.store.finishStep(runId, child, "failed");
     });
+    // Every later agent reads the amendment, so reviews do not raise the criterion again.
+    if (amendment) state.prompt += `\n${amendmentNote(amendmentPath, amendment)}`;
+    if (byRequirement) {
+      state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that criteria of the approved spec contradict its requirements: ${report.slice(0, 1500)} ${assumed} (${amendmentPath}): implement what ${amended.requirementIds.join(", ")} state, and where a test this run wrote follows the contradicting criterion, change only that assertion to what the requirements state; weaken no other test.${freed} Report implemented or already_satisfied, not spec_conflict.`;
+      return;
+    }
     if (platform) {
       state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the platform cannot do what a criterion, a test or a finding demands: ${report.slice(0, 1500)} Implement the nearest feasible behavior the report names (for a value a protocol cannot carry, its standard serialized form). Where a test this run wrote asserts the impossible value, change only that assertion to the feasible behavior; weaken no other test.${freed} Report implemented or already_satisfied, not spec_conflict.`;
       return;
@@ -8205,21 +8287,51 @@ ${note}`;
    * Tests written first and approved by a person, and tests that existed before the run, stay a
    * question.
    */
-  private ownRunTests(runId: string, state: RuntimeState, task: Task, report: string): string[] {
-    const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [task];
-    const baselineId = state.manifest.baselineSnapshotId;
-    const baseline = baselineId ? this.store.snapshotFiles(runId, baselineId) : null;
-    const created = (path: string) =>
-      baseline
-        ? !(path in baseline)
-        : tasks.some((t) => t.writes.some((w) => w.path === path && w.action === "create"));
-    return pathsInOutput(report, [task]).filter(
+  private ownRunTests(
+    runId: string,
+    state: RuntimeState,
+    task: Task,
+    named: (tasks: Task[]) => string[],
+  ): string[] {
+    const found = named([task]);
+    // A test task whose conflict names no file conflicts with the tests it writes (#1459).
+    const paths = found.length || !isTestTask(task) ? found : task.writes.map((w) => w.path);
+    return paths.filter(
       (path) =>
         isTestPath(path) &&
         task.writes.some((w) => w.path === path && w.action !== "delete") &&
         !state.testsFirst?.files.includes(path) &&
-        created(path),
+        this.createdByRun(runId, state, path),
     );
+  }
+  /**
+   * Whether this run created a file: absent from the baseline snapshot, or, without one, created
+   * by a task of the plan.
+   */
+  private createdByRun(runId: string, state: RuntimeState, path: string): boolean {
+    const baselineId = state.manifest.baselineSnapshotId;
+    const baseline = baselineId ? this.store.snapshotFiles(runId, baselineId) : null;
+    if (baseline) return !(path in baseline);
+    const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [];
+    return tasks.some((t) => t.writes.some((w) => w.path === path && w.action === "create"));
+  }
+  /** The output of the checks whose latest run in a task's attempts failed, joined (#1459). */
+  private failedCheckOutput(runId: string, taskId: string): string {
+    const latest = new Map<string, { status: string; artifact_id: string }>();
+    for (const row of this.store.taskCheckRuns(runId, taskId)) latest.set(row.check_id, row);
+    const outputs: string[] = [];
+    for (const row of latest.values()) {
+      if (row.status !== "failed") continue;
+      try {
+        outputs.push(
+          String(
+            (JSON.parse(this.store.readArtifact(runId, row.artifact_id)) as { output?: unknown })
+              .output ?? "",
+          ),
+        );
+      } catch {}
+    }
+    return outputs.join("\n");
   }
   /**
    * The test files a conflict report names that the task cannot write and that an implemented test
@@ -8229,7 +8341,7 @@ ${note}`;
     runId: string,
     state: RuntimeState,
     task: Task,
-    report: string,
+    named: (tasks: Task[]) => string[],
   ): { path: string; owner: Task }[] {
     const root = state.rootGraph ?? state.graph;
     if (!root) return [];
@@ -8239,7 +8351,7 @@ ${note}`;
         .filter((t) => t.status === "implemented")
         .map((t) => t.id),
     );
-    return pathsInOutput(report, root.tasks).flatMap((path) => {
+    return named(root.tasks).flatMap((path) => {
       if (task.writes.some((w) => w.path === path) || state.testsFirst?.files.includes(path))
         return [];
       const owner = root.tasks.find(

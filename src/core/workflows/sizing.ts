@@ -7,6 +7,7 @@ import { DEFAULT_STAGE_RANGES, historyStorePaths, rangeOf, type TokenRange } fro
 import { extendToOf, type RunPolicy, type TaskGraph } from "./schemas.js";
 import { DEFAULT_MAX_ATTEMPT_TOKENS } from "./step-budget.js";
 import type { WorkflowStore } from "./store.js";
+import { hostWritten } from "./task-graph.js";
 import type { Task } from "./types.js";
 
 /**
@@ -122,7 +123,9 @@ export const fileKind = (path: string): FileKind =>
         : "code";
 
 type Written = { path: string; action: WriteAction };
+/** The files an agent writes for the task: none when the host writes them (#1460). */
 function written(task: Pick<Task, "writes">): Written[] {
+  if (hostWritten(task)) return [];
   return task.writes.flatMap((w) =>
     w.action === "delete" ? [] : [{ path: w.path, action: w.action }],
   );
@@ -780,7 +783,7 @@ export function plannerSizing(
   const k = (kind: FileKind) => `${Math.round(highest(rates, kind) / 1000)}k`;
   return {
     maxCodeFilesPerTask,
-    note: `Give every task that writes code the policy's typecheck check, so its errors show in that task. Put tests in tasks of their own: a test file costs about ${k("test")} tokens, a code file about ${k("code")}, a documentation file about ${k("docs")}, a project manifest or solution file about ${k("manifest")}.${perCriterion ? ` A test task costs at least about ${Math.round(perCriterion.perCriterion.high / 1000)}k per criterion it covers.` : ""} Keep each code task to at most ${maxCodeFilesPerTask} files. Give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel and are merged afterwards; a test task depends on the code tasks whose criteria it covers. A test task above one attempt is split into one task per test file.`,
+    note: `Give every task that writes code the policy's typecheck check, so its errors show in that task. Put tests in tasks of their own: a test file costs about ${k("test")} tokens, a code file about ${k("code")}, a documentation file about ${k("docs")}, a project manifest or solution file about ${k("manifest")}.${perCriterion ? ` A test task costs at least about ${Math.round(perCriterion.perCriterion.high / 1000)}k per criterion it covers.` : ""} Keep each code task to at most ${maxCodeFilesPerTask} files. A task whose writes all carry their content is written by the host and costs nothing, whatever its file count. Give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel and are merged afterwards; a test task depends on the code tasks whose criteria it covers. A test task above one attempt is split into one task per test file.`,
   };
 }
 
@@ -943,7 +946,7 @@ export function partCriteria(graph: TaskGraph, task: Task, files: string[]): str
 
 /** The note that sends an oversized plan back to the planner once. */
 export function splitNote(report: SizingReport, maxCodeFilesPerTask: number): string {
-  return `Sizing: the plan is too large for its attempts. ${report.reasons.join(". ")}. Re-plan with smaller tasks: tests in tasks of their own, at most ${maxCodeFilesPerTask} code files per task, disjoint writes and no dependency between tasks where possible, so they run in parallel.`;
+  return `Sizing: the plan is too large for its attempts. ${report.reasons.join(". ")}. Re-plan with smaller tasks: tests in tasks of their own, at most ${maxCodeFilesPerTask} code files per task, disjoint writes and no dependency between tasks where possible, so they run in parallel. Files whose whole content the request fixes (module stubs, a registration file) go in one task whose writes carry their content, which the host writes for nothing.`;
 }
 
 /** The approval's line for the sized active time against the active-time cap (#933). */

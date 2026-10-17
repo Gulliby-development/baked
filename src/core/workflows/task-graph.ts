@@ -56,6 +56,69 @@ export function readyTasks(
     : ready;
 }
 
+/**
+ * Whether the host writes the task's files itself: every write creates or replaces a file with
+ * the content the plan fixed, so no agent attempt runs (#1460). A task that also deletes, or has a
+ * write without content, is an agent task.
+ */
+export function hostWritten(task: Pick<Task, "writes">): boolean {
+  return (
+    task.writes.length > 0 &&
+    task.writes.every((w) => w.action !== "delete" && w.content !== undefined)
+  );
+}
+
+/**
+ * Plan problems of host-written content (#1460): a task that carries content on only some of its
+ * writes, or on a delete, would have its content ignored and an agent write the files instead.
+ */
+export function hostContentProblems(graph: Pick<TaskGraph, "tasks">): string[] {
+  return graph.tasks.flatMap((task) => {
+    const carried = task.writes.filter((w) => w.content !== undefined);
+    if (!carried.length || hostWritten(task)) return [];
+    return [
+      `Task ${task.id} gives content to ${carried.map((w) => w.path).join(", ")} but not to every write, or deletes a file; the host writes a task's files only when every write carries its content and none deletes. Put the files with fixed content in a task of their own, or remove their content.`,
+    ];
+  });
+}
+
+/**
+ * Plan problems of a run whose files are fixed before planning (an initiative feature's skeleton,
+ * #1461): every file is written by one host-written task with exactly its content, and no other
+ * task creates it.
+ */
+export function hostFileProblems(
+  graph: Pick<TaskGraph, "tasks">,
+  files: readonly { path: string; content: string }[] | null,
+): string[] {
+  if (!files?.length) return [];
+  const owners = new Set<string>();
+  const wrong: string[] = [];
+  for (const file of files) {
+    const writer = graph.tasks.find(
+      (t) =>
+        hostWritten(t) && t.writes.some((w) => w.path === file.path && w.content === file.content),
+    );
+    if (writer) owners.add(writer.id);
+    else wrong.push(file.path);
+  }
+  const creators = graph.tasks.filter(
+    (t) =>
+      !owners.has(t.id) &&
+      t.writes.some((w) => w.action === "create" && files.some((f) => f.path === w.path)),
+  );
+  const problems: string[] = [];
+  if (wrong.length || owners.size > 1)
+    problems.push(
+      `extra.hostFiles fixes the content of ${files.map((f) => f.path).join(", ")}: write all of them in one task whose writes carry exactly that content${wrong.length ? `; ${wrong.join(", ")} ${wrong.length === 1 ? "is" : "are"} not written that way` : ""}.`,
+    );
+  for (const task of creators)
+    problems.push(
+      `Task ${task.id} creates a file of extra.hostFiles; the host-written task creates it, so modify it after that task instead.`,
+    );
+  return problems;
+}
+
 /** Whether a task writes only documentation: Markdown, a README, a licence or a changelog. */
 export function documentsOnly(task: Task): boolean {
   return (

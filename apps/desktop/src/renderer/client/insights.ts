@@ -80,6 +80,8 @@ export interface InitiativeFeature {
   size?: FeatureSize;
   /** The decomposer's features merged into this one, each too small for a run of its own. */
   mergedFrom?: string[];
+  /** Boundary files whose content the split fixes; its run writes them with no agent. */
+  skeleton?: { path: string; content: string }[];
   /** The share it starts with, while it has no run yet; absent on older backends. */
   share?: UsageTotals | null;
   /** The dollars it starts with under a dollar cap; null without one, absent on older backends. */
@@ -171,8 +173,10 @@ export interface InitiativeEstimate {
     samples: number;
     /** Tokens this initiative's runs of the feature used; absent on older backends. */
     spent?: number;
-    /** The paths of the feature's boundary, when it names any. */
+    /** The paths of the feature's boundary no later feature lists, when it names any. */
     paths?: number;
+    /** Placeholder paths of its boundary that a later feature fills; absent on older backends. */
+    placeholders?: number;
     /** The tokens the feature run's plan sized its tasks at, once it has a plan. */
     planned?: TokenSpan;
     /** What raised the range above the size-scaled forecast, at its measured rate. */

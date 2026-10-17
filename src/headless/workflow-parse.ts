@@ -665,6 +665,8 @@ resume RUN_ID --expected-revision N [--accept-workspace] [--events]
 approve RUN_ID --request ID --digest SHA256 --expected-revision N [--exclude-user-changes] [--no-resume]
   --exclude-user-changes is required when a worktree run's approved files have uncommitted changes in your working copy
 answer RUN_ID --request ID --answers-file FILE --expected-revision N [--no-resume]
+  FILE is a JSON object of strings keyed by question id: {"Q-1": "answer"}; {"answers": {...}} as
+  workflow status --json stores it works too
 evidence RUN_ID --request ID --file FILE --accept --expected-revision N [--no-resume]
   approve, answer and evidence continue the run after the decision (resume and drive, exit codes
   as resume) unless another request still waits for a person; --no-resume only records the decision

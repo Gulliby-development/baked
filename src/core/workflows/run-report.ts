@@ -1052,11 +1052,15 @@ function render(facts: Facts, cap: number): string {
     };
     amendmentList(
       "Spec amendments (the request wins over the spec):",
-      facts.amendments.filter((a) => a.authority !== "implementation"),
+      facts.amendments.filter((a) => !a.authority || a.authority === "request"),
     );
     amendmentList(
       "Spec amendments (the implementation wins over the spec):",
       facts.amendments.filter((a) => a.authority === "implementation"),
+    );
+    amendmentList(
+      "Spec amendments (a requirement wins over a criterion that contradicts it):",
+      facts.amendments.filter((a) => a.authority === "requirement"),
     );
   }
 
