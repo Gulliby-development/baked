@@ -83,7 +83,7 @@ import { ProcessScope } from "./process-scope.js";
 import { EDIT_TOOLS } from "./progress-watch.js";
 import { isTargetedRead, outlineLargeReads } from "./read-outline.js";
 import { settleInterruptedEdits } from "./recovery.js";
-import { isTransient } from "./retry.js";
+import { isOutputLimit, isTransient } from "./retry.js";
 import { RevisionSchema } from "./revision-patch.js";
 import {
   AnalysisSchema,
@@ -228,6 +228,19 @@ export function estimateUnreportedUsage(
     inputTokens: tokens(Buffer.byteLength(prompt) * Math.max(1, steps.length)),
     outputTokens: tokens(Buffer.byteLength(text) + argumentBytes),
   };
+}
+
+/**
+ * The tokens of a model call the provider ended for running past its output cap, which reports
+ * none: the messages it was sent at about 4 bytes a token, and a full response at the cap. Bench
+ * round 41 (fpbits): a 10 minute xhigh response ended "Incomplete response returned, reason:
+ * max_output_tokens" and was recorded as 0 tokens and $0 (#1479).
+ */
+export function outputLimitUsage(
+  sentBytes: number,
+  maxOutputTokens: number,
+): { inputTokens: number; outputTokens: number } {
+  return { inputTokens: Math.ceil(sentBytes / 4), outputTokens: maxOutputTokens };
 }
 
 function sumUsage(steps: readonly StepLike[]): Partial<LanguageModelUsage> {
@@ -1221,6 +1234,18 @@ export class NativeAgentExecutor implements AgentExecutor {
         });
         stepStartedAt = Date.now();
       };
+      // A call past the output cap reports no usage: it is charged as a step at its estimate.
+      const chargeOutputLimit = (error: unknown): boolean => {
+        if (request.signal.aborted || !isOutputLimit(error)) return false;
+        const usage = outputLimitUsage(
+          budget.lastSentBytes() ?? Buffer.byteLength(request.prompt),
+          request.profile.maxOutputTokens,
+        );
+        finished.push({ usage, finishReason: "length", toolCalls: [] });
+        recordStep(usage, error);
+        this.store.recordAttemptUsage(request.runId, request.attemptId, budget.consumed(finished));
+        return true;
+      };
       const opening = openingMessage(request.prompt, this.config.cache?.ttl ?? "5m");
       let result: {
         steps: readonly StepLike[];
@@ -1310,10 +1335,26 @@ export class NativeAgentExecutor implements AgentExecutor {
             usage: sumUsage(finished),
           };
         } else {
-          if (!request.signal.aborted) recordStep(undefined, error);
+          const charged = chargeOutputLimit(error);
+          if (!request.signal.aborted && !charged) recordStep(undefined, error);
           try {
+            const usage = budget.record(
+              finished,
+              false,
+              meta,
+              request.signal.aborted ? "aborted" : "error",
+            );
+            const total = sumUsage(finished);
             writeUsage(
-              budget.record(finished, false, meta, request.signal.aborted ? "aborted" : "error"),
+              charged
+                ? {
+                    ...usage,
+                    estimatedUsage: {
+                      inputTokens: total.inputTokens ?? 0,
+                      outputTokens: total.outputTokens ?? 0,
+                    },
+                  }
+                : usage,
             );
           } catch {
             // The original failure matters more than a usage record that could not be stored.
@@ -1380,6 +1421,9 @@ export class NativeAgentExecutor implements AgentExecutor {
             usage: sumUsage(finished),
           };
         } catch (error) {
+          // A continuation past the output cap goes back to the scheduler, which retries the step
+          // at a lower effort; its estimate is charged to the attempt first.
+          if (chargeOutputLimit(error)) throw error;
           if (request.signal.aborted || isTransient(error)) {
             if (!request.signal.aborted) recordStep(undefined, error);
             throw error;
@@ -1513,6 +1557,14 @@ export class NativeAgentExecutor implements AgentExecutor {
               this.store.finishAttempt(request.runId, attempt, "completed", correctionTokens),
             );
           } catch (error) {
+            if (isOutputLimit(error) && !request.signal.aborted)
+              correctionTokens += stepTokens(
+                outputLimitUsage(
+                  Buffer.byteLength(request.prompt),
+                  request.profile.maxOutputTokens,
+                ),
+                request.profile.maxOutputTokens,
+              );
             this.store.transaction(() =>
               this.store.finishAttempt(
                 request.runId,
@@ -1523,8 +1575,9 @@ export class NativeAgentExecutor implements AgentExecutor {
                 error,
               ),
             );
-            // A provider outage is not invalid output: the scheduler retries or falls back.
-            if (isTransient(error)) throw error;
+            // A provider outage is not invalid output: the scheduler retries or falls back, and
+            // retries a response past the output cap at a lower effort.
+            if (isTransient(error) || isOutputLimit(error)) throw error;
             throw new WorkflowFault(
               "OUTPUT_INVALID",
               `Profile ${request.profile.id} returned invalid output after one format correction`,

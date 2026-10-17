@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { largerContextModel } from "../llm/context-sizes.js";
 import {
+  lowerEffort,
   ROUTING_ARTIFACT,
   type RouteContext,
   type RouteEffort,
@@ -336,6 +337,7 @@ import {
   failedOwnEdits,
   isCapacityError,
   isInputTooLarge,
+  isOutputLimit,
   isTransient,
   reportsLostTool,
   retryAfterMs,
@@ -673,6 +675,8 @@ const REJECTION_NOTE =
   "A person rejected the approval of the previous spec and plan with this explanation. Revise the spec, the plan and the tasks so they follow it; where it contradicts an assumption, the explanation wins.";
 /** A provider asking to wait longer than this is not waited for once a route has fallback models. */
 const LONG_RETRY_AFTER_MS = 30_000;
+/** Immediate retries, each at one effort step lower, after a response ran past the output cap (#1479). */
+const OUTPUT_LIMIT_RETRIES = 2;
 /** How often a driving process writes the run's active time to the run row (#1038). */
 export const ACTIVE_FLUSH_MS = 1_000;
 
@@ -3786,9 +3790,15 @@ export class WorkflowScheduler {
       largerWindow?: boolean;
       /** The context did not fit and nothing larger is left: its run-level documents are shortened. */
       compact?: boolean;
+      /**
+       * Set on the retries after a response ran past the provider's output cap, with the effort
+       * they run at: one step below the previous call's, or its own when none is lower.
+       */
+      outputLimit?: { effort?: RouteEffort; tries: number };
     } = {},
   ): Promise<unknown> {
     const route = this.route(runId, stepId, stageProfile);
+    const effort = placement.outputLimit ? placement.outputLimit.effort : route.effort;
     const fallbackIndex = placement.fallbackIndex ?? 0;
     const largerWindow = placement.largerWindow === true;
     const profile = this.routed(runId, stepId, stageProfile, fallbackIndex, largerWindow);
@@ -3941,7 +3951,7 @@ export class WorkflowScheduler {
           ? { formatHints: this.formatHints(runId, state, profile.output, task) }
           : {}),
         ...(host ? { hostTools: host } : {}),
-        ...(route.effort ? { effort: route.effort } : {}),
+        ...(effort ? { effort } : {}),
       });
       const parsed = outputSchemas[profile.output]?.safeParse(result.output);
       if (!parsed?.success)
@@ -4110,6 +4120,51 @@ export class WorkflowScheduler {
             stepRetry: true,
           },
         );
+      }
+      // A response past the provider's output cap is not an outage: the step is tried again at
+      // once, one effort step lower each time and told why, instead of blocking on the outage
+      // ladder with the same prompt and effort (bench round 41, fpbits: 20 minutes lost, #1479).
+      // A route without effort gets one retry with the notice; after `OUTPUT_LIMIT_RETRIES` the
+      // failure takes the usual path.
+      if (isOutputLimit(error) && !signal.aborted && !wrote) {
+        const lower = lowerEffort(effort);
+        const tries = placement.outputLimit?.tries ?? 0;
+        if (tries === 0 || (lower && tries < OUTPUT_LIMIT_RETRIES)) {
+          const notice =
+            "Your previous response for this step ran past the provider's output limit and was discarded. Keep each response short: reason briefly, and split large files or edits into several smaller tool calls instead of one long one.";
+          const retryExtra =
+            extra && typeof extra === "object" && !Array.isArray(extra)
+              ? { ...extra, outputLimit: notice }
+              : { input: extra, outputLimit: notice };
+          return this.call(
+            runId,
+            stepId,
+            state,
+            policy,
+            stageProfile,
+            retryExtra,
+            signal,
+            task,
+            0,
+            validate,
+            limits,
+            hostTools,
+            {
+              ...(placement.root ? { root: placement.root } : {}),
+              ...(fallbackIndex ? { fallbackIndex } : {}),
+              ...(placement.primaryError !== undefined
+                ? { primaryError: placement.primaryError }
+                : {}),
+              ...(largerWindow ? { largerWindow } : {}),
+              ...(placement.stepRetry ? { stepRetry: true } : {}),
+              ...(placement.compact ? { compact: true } : {}),
+              outputLimit: {
+                ...((lower ?? effort) ? { effort: lower ?? effort } : {}),
+                tries: tries + 1,
+              },
+            },
+          );
+        }
       }
       const next = route.models[fallbackIndex + 1];
       // Each fallback model gets one retry. A long retry-after is better spent on the next model,

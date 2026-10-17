@@ -23,6 +23,15 @@ const RouteRef = z
  */
 export const RouteEffort = z.enum(["default", "low", "medium", "high", "xhigh", "max"]);
 export type RouteEffort = z.infer<typeof RouteEffort>;
+/**
+ * The next lower effort, for a retry after a response ran past the output cap; null at `low`
+ * and for `default`, which sends no effort knob to lower.
+ */
+export function lowerEffort(effort: RouteEffort | undefined): RouteEffort | null {
+  const order: RouteEffort[] = ["low", "medium", "high", "xhigh", "max"];
+  const index = effort ? order.indexOf(effort) : -1;
+  return index > 0 ? (order[index - 1] ?? null) : null;
+}
 const ModelId = z
   .string()
   .trim()
