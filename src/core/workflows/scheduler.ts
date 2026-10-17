@@ -325,6 +325,7 @@ import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery.js";
 import { deliverableProblems, repairDeliverables, requestCoverage } from "./request-coverage.js";
 import {
+  type AccountRefusal,
   abortableDelay,
   accountRefusal,
   atAttemptCap,
@@ -336,6 +337,7 @@ import {
   reportsLostTool,
   retryAfterMs,
   retryDelay,
+  usageLimitReset,
 } from "./retry.js";
 import {
   buildReviewBundle,
@@ -620,7 +622,11 @@ function integrityRequirementText(state: RuntimeState): string {
  * boundary approved with the split, not the request, so it is checked against nothing.
  */
 /** What a person does about a provider refusal before resuming the run. */
-function refusalAdvice(refusal: "credits" | "key" | "cli"): string {
+function refusalAdvice(refusal: AccountRefusal, error: unknown): string {
+  if (refusal === "limit") {
+    const reset = usageLimitReset(error);
+    return `the provider account reached its usage limit${reset ? ` until ${reset}` : ""}; add credits or wait for the limit to reset, then resume the run`;
+  }
   if (refusal === "credits")
     return "the provider account has no credits or quota left; add credits, then resume the run";
   if (refusal === "key")
@@ -3949,7 +3955,7 @@ export class WorkflowScheduler {
       if (refusal && !signal.aborted)
         throw new WorkflowFault(
           "OUTPUT_INVALID",
-          `${profile.model} refused the request: ${refusalAdvice(refusal)}, or move the run to another model with baked workflow reroute ${runId} --model ID --expected-revision N. ${error instanceof Error ? error.message : String(error)}`,
+          `${profile.model} refused the request: ${refusalAdvice(refusal, error)}, or move the run to another model with baked workflow reroute ${runId} --model ID --expected-revision N. ${error instanceof Error ? error.message : String(error)}`,
           { reason: "provider_account" },
         );
       // An attempt that used its steps without submitting and changed nothing is repeated once

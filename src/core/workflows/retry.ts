@@ -12,6 +12,26 @@ const NO_CREDITS =
   /insufficient_quota|no credits|credit balance|exceeded your current quota|billing|payment required/i;
 const BAD_KEY = /api[ _-]?key|unauthori[sz]ed|authentication|invalid x-api-key/i;
 
+/**
+ * A usage limit of the account, which lifts at a reset hours or days away, not within the 1, 3
+ * and 9 minute resumes of a provider outage (#1395). In each provider's words:
+ * - Codex: "You've hit your usage limit ... try again at Oct 22nd, 2026 10:55 AM" (or "in 4 days");
+ * - Claude Code: "Claude AI usage limit reached|<epoch>", "You've hit your limit · resets 3pm",
+ *   "5-hour limit reached", "Weekly limit reached";
+ * - Anthropic API: "You have reached your specified API usage limits. You will regain access on ...";
+ * - GitHub Copilot: a monthly premium request or chat quota ("quota_exceeded");
+ * - GitHub Models and others: a 429 that asks to wait over an hour (a daily request limit).
+ * A rate limit ("Rate limit reached for requests", a short retry-after) is not one of them.
+ */
+const USAGE_LIMIT =
+  /usage limit|hit your limit|\b(?:5-hour|weekly|session|daily|monthly) limit reached|regain access on|quota_exceeded|premium request(?:s)? (?:allowance|quota|limit)|monthly[\w ]{0,40} quota|exceeded your (?:monthly|premium|chat)[\w ]{0,40} (?:quota|allowance)/i;
+const LIMIT_RESET =
+  /(?:try again (?:at|in)|resets(?: at| on)?|regain access on)\s+([^\n|]+?)(?:\.\s|\.?\s*$|\n|\||\s+to\s|\s+or\s)/i;
+/** Claude Code's older "usage limit reached|1760000000" carries the reset as epoch seconds. */
+const EPOCH_RESET = /usage limit reached\|(\d{10})\b/i;
+/** A wait longer than this is a usage limit, not a rate limit. */
+const LIMIT_WAIT_MS = 60 * 60_000;
+
 /** The message a subscription provider gives when its CLI cannot be found (see cli-path.ts). */
 const CLI_MISSING = /\b(?:Codex|Claude Code) CLI not found\b/;
 
@@ -20,17 +40,42 @@ const CLI_MISSING = /\b(?:Codex|Claude Code) CLI not found\b/;
  * quota, a rejected key, or a provider CLI that is not installed or no longer where PATH says.
  * OpenAI reports spent credits as a 429, which is otherwise a rate limit; run 8e117dfa retried it
  * and then lost its task worker over it. A Codex desktop app update moved its CLI, and the
- * resumes for a provider outage only waited 1, 3 and 9 minutes for nothing (#1337).
+ * resumes for a provider outage only waited 1, 3 and 9 minutes for nothing (#1337). A subscription
+ * usage limit is refused the same way (#1395).
  */
-export function accountRefusal(error: unknown): "credits" | "key" | "cli" | null {
+export type AccountRefusal = "credits" | "limit" | "key" | "cli";
+
+export function accountRefusal(error: unknown): AccountRefusal | null {
   if (error instanceof WorkflowFault) return null;
   const info = error as ProviderError | undefined;
   const text = `${info?.message ?? ""} ${info?.responseBody ?? ""}`;
   if (OAUTH_REFRESH_COLLISION.test(text)) return null;
   if (CLI_MISSING.test(text)) return "cli";
+  if (USAGE_LIMIT.test(text) || requestedWaitMs(error) > LIMIT_WAIT_MS) return "limit";
   if (info?.statusCode === 402 || NO_CREDITS.test(text)) return "credits";
   if (info?.statusCode === 401 || (info?.statusCode === 403 && BAD_KEY.test(text))) return "key";
   return null;
+}
+
+/** When a usage limit lifts, in the provider's own words ("Oct 22nd, 2026 10:55 AM"), or null. */
+export function usageLimitReset(error: unknown): string | null {
+  const info = error as ProviderError | undefined;
+  const text = `${info?.message ?? ""} ${info?.responseBody ?? ""}`;
+  const epoch = EPOCH_RESET.exec(text)?.[1];
+  if (epoch) return new Date(Number(epoch) * 1000).toISOString();
+  const words = LIMIT_RESET.exec(text)?.[1]?.trim();
+  if (words) return words;
+  const wait = requestedWaitMs(error);
+  return wait > LIMIT_WAIT_MS ? new Date(Date.now() + wait).toISOString() : null;
+}
+
+/** The wait a provider asked for, by `retry-after` or in its message ("wait 33000 seconds"). */
+function requestedWaitMs(error: unknown): number {
+  const info = error as ProviderError | undefined;
+  const seconds = /\bwait (\d+) seconds\b/i.exec(
+    `${info?.message ?? ""} ${info?.responseBody ?? ""}`,
+  )?.[1];
+  return Math.max(retryAfterMs(error), seconds ? Number(seconds) * 1000 : 0);
 }
 
 const OAUTH_REFRESH_COLLISION =
