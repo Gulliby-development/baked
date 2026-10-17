@@ -25,6 +25,7 @@ import {
   promptImages,
 } from "../prompt-images.js";
 import { codexCommand } from "./client.js";
+import { codexRunEnv } from "./home.js";
 
 export interface CodexRunnerCall {
   modelId: string;
@@ -357,6 +358,9 @@ export const CODEX_ADAPTER_CONFIG: Record<string, string | boolean | number> = {
   approval_policy: "never",
   web_search: "disabled",
   project_doc_max_bytes: 0,
+  // The user's config.toml is shared with the isolated home (./home.ts); its personal
+  // instructions stay out like their AGENTS.md (#1462).
+  developer_instructions: "",
   "skills.include_instructions": false,
   include_permissions_instructions: false,
   include_apps_instructions: false,
@@ -454,7 +458,7 @@ async function runCodexProcess(
   prompt: string,
   abortSignal?: AbortSignal,
 ): Promise<CodexRunnerResult> {
-  const child = spawn(codexCommand(), args, { signal: abortSignal });
+  const child = spawn(codexCommand(), args, { signal: abortSignal, env: codexRunEnv() });
   trackProcess(child);
   let spawnError: unknown | null = null;
   child.once("error", (error) => {
