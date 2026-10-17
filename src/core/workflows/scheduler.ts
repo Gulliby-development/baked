@@ -8023,6 +8023,16 @@ ${note}`;
       first && !assume && !platform && !tests.length
         ? this.ownRunTests(runId, state, task, report)
         : [];
+    const assumed = example
+      ? "The request's worked example is authoritative: copy it verbatim"
+      : assume
+        ? "The request is authoritative"
+        : platform
+          ? "The platform cannot carry or represent what one side demands: the nearest feasible behavior the task named holds"
+          : null;
+    const freed = task.findingIds.length
+      ? ` The repros of ${task.findingIds.join(", ")} no longer gate the task.`
+      : "";
     this.store.transaction(() => {
       this.store.artifact(
         runId,
@@ -8030,24 +8040,10 @@ ${note}`;
         `tasks/conflicts/${task.id}.json`,
         canonical(account),
       );
-      if (assume)
-        this.store.artifact(
-          runId,
-          "assumption",
-          assumedPath,
-          canonical({
-            ...account,
-            assumed: example
-              ? "The request's worked example is authoritative: copy it verbatim"
-              : "The request is authoritative",
-          }),
-        );
-      if (platform) {
-        const assumed =
-          "The platform cannot carry or represent what one side demands: the nearest feasible behavior the task named holds";
+      if (assumed) {
         this.store.artifact(runId, "assumption", assumedPath, canonical({ ...account, assumed }));
         // Like a person's answer, the assumption decides the findings the task corrects, so a
-        // repro that expects the impossible value no longer gates it (#1350).
+        // repro that expects what the assumption overrules no longer gates it (#1350, #1407).
         recordConflictDecision(this.store, runId, {
           requestId: `assumed-${task.id}`,
           taskId: task.id,
@@ -8059,15 +8055,15 @@ ${note}`;
       this.store.finishStep(runId, child, "failed");
     });
     if (platform) {
-      state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the platform cannot do what a criterion, a test or a finding demands: ${report.slice(0, 1500)} Implement the nearest feasible behavior the report names (for a value a protocol cannot carry, its standard serialized form). Where a test this run wrote asserts the impossible value, change only that assertion to the feasible behavior; weaken no other test. ${task.findingIds.length ? `The repros of ${task.findingIds.join(", ")} no longer gate the task. ` : ""}Report implemented or already_satisfied, not spec_conflict.`;
+      state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the platform cannot do what a criterion, a test or a finding demands: ${report.slice(0, 1500)} Implement the nearest feasible behavior the report names (for a value a protocol cannot carry, its standard serialized form). Where a test this run wrote asserts the impossible value, change only that assertion to the feasible behavior; weaken no other test.${freed} Report implemented or already_satisfied, not spec_conflict.`;
       return;
     }
     if (example) {
-      state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the rule for documentation examples contradicts the request: ${report.slice(0, 1500)} The request is authoritative: copy every example output the request or the spec gives into the documentation exactly as given, even when its files are not in the workspace, and name the copied examples in the summary. Run probes only for examples the request does not give.`;
+      state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the rule for documentation examples contradicts the request: ${report.slice(0, 1500)} The request is authoritative: copy every example output the request or the spec gives into the documentation exactly as given, even when its files are not in the workspace, and name the copied examples in the summary. Run probes only for examples the request does not give.${freed}`;
       return;
     }
     if (assume) {
-      state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the spec or its tests contradict the request: ${report.slice(0, 1500)} The request is authoritative: follow what it states. Where a criterion, a requirement or a test says otherwise, the request wins; a test that contradicts the request is changed to what the request states, and no other test is weakened.`;
+      state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the spec or its tests contradict the request: ${report.slice(0, 1500)} The request is authoritative: follow what it states. Where a criterion, a requirement or a test says otherwise, the request wins; a test that contradicts the request is changed to what the request states, and no other test is weakened.${freed}`;
       return;
     }
     if (own.length) {
