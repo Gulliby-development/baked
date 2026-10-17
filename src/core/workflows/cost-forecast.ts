@@ -1,8 +1,9 @@
-import { canonical } from "../specs/hash.js";
+import { canonical, hashJson } from "../specs/hash.js";
 import { costRate } from "./budget.js";
-import { costCeilingUsd } from "./cost-tolerance.js";
+import { costCeilingUsd, currentCostCap } from "./cost-tolerance.js";
 import { WorkflowFault } from "./errors.js";
-import type { RunPolicy } from "./schemas.js";
+import { hostGrowth } from "./host-growth.js";
+import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { type SizingReport, verificationTokens } from "./sizing.js";
 import type { WorkflowStore } from "./store.js";
 
@@ -50,7 +51,7 @@ export function costForecast(
   runId: string,
   policy: RunPolicy,
 ): CostForecast | null {
-  const cap = policy.maxCostUsd;
+  const cap = currentCostCap(store, runId, policy);
   if (cap === null) return null;
   const sized = latestSizing(store, runId)?.tasks ?? [];
   if (!sized.length) return null;
@@ -101,14 +102,21 @@ export function costForecast(
 
 /**
  * The forecast total the run stopped on at this cap, or null when it has not stopped on one: the
- * run screens name it as what stopped the run.
+ * run screens name it as what stopped the run. A cap the host grew on its own since that stop
+ * (`hostGrowth`) is the same cap: the person already chose to spend on, and the run stopped again
+ * after every automatic growth step (#1433).
  */
 export function askedForecast(store: WorkflowStore, runId: string, capUsd: number): number | null {
-  const asked = store
-    .artifacts(runId)
+  const artifacts = store.artifacts(runId);
+  const stored = PolicySchema.parse(JSON.parse(store.run(runId).policy_json));
+  const caps = new Set([
+    capUsd,
+    ...hostGrowth(artifacts, (a) => store.readArtifact(runId, a.id), hashJson(stored)).caps,
+  ]);
+  const asked = artifacts
     .filter((a) => a.kind === "cost-forecast")
     .map((a) => JSON.parse(store.readArtifact(runId, a.id)) as Partial<CostForecast>)
-    .find((f) => f.capUsd === capUsd);
+    .find((f) => typeof f.capUsd === "number" && caps.has(f.capUsd));
   return typeof asked?.projectedUsd === "number" ? asked.projectedUsd : null;
 }
 

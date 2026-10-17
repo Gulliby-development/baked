@@ -587,8 +587,10 @@ describe("workflow parallel writers", () => {
       .flatMap((e) => (e.type === "task.state_changed" && e.payload.to === "interrupted" ? [e.payload] : []));
     expect(interrupted).toEqual([
       // #929: an error of BAKED's own code carries its stack, so its caller is known.
-      expect.objectContaining({ taskId: "T002", cause: "worker_lost", detail: expect.stringContaining("worker process exited"), stack: expect.stringContaining("workflow-parallel-writers.test.ts") }),
+      // #1432: the restart carries the dead worker's edits, which counts as progress.
+      expect.objectContaining({ taskId: "T002", cause: "worker_lost", detail: expect.stringContaining("worker process exited"), stack: expect.stringContaining("workflow-parallel-writers.test.ts"), carried: true }),
     ]);
+    expect(fx.store.continuedAttempts(run.runId)).toBe(1);
     expect(fx.store.state(run.runId).taskRestarts).toEqual({ T002: 1 });
     expect(fx.store.leases()).toEqual([]);
   });

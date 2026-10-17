@@ -326,7 +326,9 @@ export function growBudgetOnProgress(
  * blocked `budget_exhausted` at plan with its 20M ceiling unused (#1296). A model attempt that
  * completed since the last such growth counts as progress here: the budget grows by the same step,
  * up to the ceiling, recorded as `kind: "planning-growth"`. A planning phase whose attempts keep
- * failing does not grow it.
+ * failing does not grow it. The same holds once a revise or a rejected tests-first task has
+ * invalidated every finished task: the run re-plans with no task finished, and without this the
+ * budget did not grow again until one re-finished (#1431).
  */
 function growWhilePlanning(
   store: WorkflowStore,
@@ -335,7 +337,6 @@ function growWhilePlanning(
   projected: number,
   ceiling: number,
 ): boolean {
-  if (store.taskCompletions(runId) > 0) return false;
   const completedAttempts = store
     .attempts(runId)
     .filter((a) => a.model_id !== null && a.status === "completed").length;
