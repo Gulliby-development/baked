@@ -1731,6 +1731,10 @@ export class WorkflowScheduler {
                             this.store.artifacts(runId),
                             (artifact) => this.store.readArtifact(runId, artifact.id),
                           ),
+                          policyRevisions: {
+                            artifacts: this.store.artifacts(runId),
+                            read: (artifact) => this.store.readArtifact(runId, artifact.id),
+                          },
                           exists: (path) =>
                             existsSync(join(runRoot(this.store.workspace, state), path)),
                         },
@@ -5234,6 +5238,7 @@ ${note}`;
             this.store.taskStatus(runId, task.id, "interrupted", null, {
               cause: "widened_correction",
               detail: "quick fix did not finish",
+              carried: changed.length > 0,
             });
             this.store.finishStep(runId, child, "failed");
             this.store.saveState(runId, state);
@@ -5247,6 +5252,7 @@ ${note}`;
             state.widenedCorrections.push(task.id);
             this.store.taskStatus(runId, task.id, "interrupted", null, {
               cause: "widened_correction",
+              carried: changed.length > 0,
             });
             this.store.finishStep(runId, child, "failed");
             this.store.saveState(runId, state);
@@ -5317,7 +5323,7 @@ ${note}`;
               null,
               atCap
                 ? { cause: "continue_at_cap" }
-                : { cause: "restart", detail: restartReason ?? undefined },
+                : { cause: "restart", detail: restartReason ?? undefined, carried: true },
             );
             this.store.finishStep(runId, child, "failed");
             this.store.saveState(runId, state);
@@ -6023,6 +6029,7 @@ ${note}`;
           cause: outcome.cause,
           detail: outcome.reason,
           ...(outcome.stack ? { stack: outcome.stack } : {}),
+          carried: restart && outcome.edits !== undefined,
         });
         this.store.finishStep(runId, entry.child, "interrupted");
       });
@@ -6069,6 +6076,7 @@ ${note}`;
           this.store.taskStatus(runId, entry.task.id, "interrupted", null, {
             cause,
             ...(cause === "restart" && outcome.restart ? { detail: outcome.restart.reason } : {}),
+            carried: outcome.edits !== undefined,
           });
         else this.store.taskStatus(runId, entry.task.id, "blocked");
         this.store.finishStep(runId, entry.child, "failed");

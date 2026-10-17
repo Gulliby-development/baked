@@ -51,20 +51,42 @@ export function costToleranceOf(store: WorkflowStore, runId: string, policy: Run
   return setting === "auto" ? autoCostTolerance(plannedTasks(store, runId)) : setting;
 }
 
-/** The dollars every cost check stops at: the cap plus its tolerance; null without a cap. */
-export function costCeilingUsd(
+/**
+ * The run's dollar cap: the larger of the policy a caller holds and the stored one. Each attempt
+ * and each drive keeps its own policy object, and another attempt may have grown the stored cap
+ * since (`recordGrowth`); a check against the stale cap refused calls the stored cap allows
+ * (#1434). Caps only grow during a run, so the larger one is current.
+ */
+export function currentCostCap(
   store: WorkflowStore,
   runId: string,
   policy: RunPolicy,
 ): number | null {
   const cap = policy.maxCostUsd;
   if (cap === null) return null;
+  let stored: unknown = null;
+  try {
+    stored = (JSON.parse(store.run(runId).policy_json) as { maxCostUsd?: unknown }).maxCostUsd;
+  } catch {
+    // A run that cannot be read keeps the caller's cap.
+  }
+  return typeof stored === "number" && stored > cap ? stored : cap;
+}
+
+/** The dollars every cost check stops at: the cap plus its tolerance; null without a cap. */
+export function costCeilingUsd(
+  store: WorkflowStore,
+  runId: string,
+  policy: RunPolicy,
+): number | null {
+  const cap = currentCostCap(store, runId, policy);
+  if (cap === null) return null;
   return Math.round(cap * (1 + costToleranceOf(store, runId, policy)) * 100) / 100;
 }
 
 /** Whether the run has a tolerance band and has spent and reserved past its soft cap. */
 export function inCostWrapUp(store: WorkflowStore, runId: string, policy: RunPolicy): boolean {
-  const cap = policy.maxCostUsd;
+  const cap = currentCostCap(store, runId, policy);
   if (cap === null || costToleranceOf(store, runId, policy) === 0) return false;
   const { spentUsd, reservedUsd } = store.costUsage(runId);
   return spentUsd + reservedUsd >= cap;

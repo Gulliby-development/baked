@@ -58,7 +58,7 @@ const extensions = (store: WorkflowStore, runId: string) =>
     .filter((b) => b.kind === "auto-extend");
 
 /** md-site after its extension at the last finish and two attempts of corrective T009. */
-async function afterTwoAttempts(edited: boolean) {
+async function afterTwoAttempts(edited: boolean | "restart") {
   const policy: RunPolicy = { ...fixturePolicy, clarification: "assume", maxAgentCalls: 1000, maxTotalTokens: 6_000_000, maxCostUsd: CAP, sizing: { maxRunTokens: 6_000_000 } };
   // The fixture model has no price, so the run starts uncapped and takes the capped policy after.
   const made = workflowFixture({ policy: { ...policy, maxCostUsd: null } });
@@ -83,7 +83,8 @@ async function afterTwoAttempts(edited: boolean) {
     store.taskStatus(runId, "T009", "running");
     store.taskStatus(runId, "T009", "interrupted", null, { cause: "widened_correction" });
     store.taskStatus(runId, "T009", "running");
-    if (edited) store.taskStatus(runId, "T009", "interrupted", null, { cause: "continue_at_cap" });
+    if (edited === "restart") store.taskStatus(runId, "T009", "interrupted", null, { cause: "restart", detail: "prose end", carried: true });
+    else if (edited) store.taskStatus(runId, "T009", "interrupted", null, { cause: "continue_at_cap" });
     else store.taskStatus(runId, "T009", "interrupted", null, { cause: "restart", detail: "no edit" });
   });
   spend(store, runId, stepId, policy, SPENT_TOKENS - FIRST);
@@ -102,6 +103,15 @@ describe("scenario: md-site 095b7b11, a corrective continued at its cap counts a
     expect(all).toHaveLength(2);
     expect(all[1].continuedAttempts).toBe(1);
     expect(all[1].taskCompletions).toBe(all[0].taskCompletions);
+  });
+
+  // Sibling of #1388 (#1432): a restart that carries the attempt's edits keeps work the same way.
+  test("a restart that carried its edits counts as progress too", async () => {
+    const { store, runId, policy } = await afterTwoAttempts("restart");
+    expect(() => assertAttemptFits(store, runId, "next", policy, 1_200_000)).not.toThrow();
+    const all = extensions(store, runId);
+    expect(all).toHaveLength(2);
+    expect(all[1].continuedAttempts).toBe(1);
   });
 
   test("attempts that kept no edits are still no progress", async () => {

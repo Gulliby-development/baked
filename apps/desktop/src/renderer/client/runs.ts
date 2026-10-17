@@ -150,6 +150,8 @@ export interface EventPayloads {
     /** Why the task was interrupted (restart, continue_at_cap, worker_lost, ...). */
     cause?: string;
     detail?: string;
+    /** The next attempt starts from this attempt's edits. */
+    carried?: true;
   };
   "artifact.committed": { artifactId: string; kind: string; hash: string };
   "check.finished": { checkId: string; evidenceId: string; status: string };
