@@ -4,6 +4,8 @@
  * continuation and its restart gets one more attempt only on such progress.
  */
 
+import { isFailedTestLine } from "../verification/failed-test-line.js";
+
 export interface CheckState {
   status: "passed" | "failed";
   /** Failing tests the output reports, or null when it names no count. */
@@ -13,9 +15,11 @@ export interface CheckState {
 }
 
 const COUNT = /(\d+)\s+(?:tests?\s+)?fail(?:ed|ures?|s)?\b/gi;
-const FAIL_LINE = /^\s*(?:\(fail\)|--- FAIL:|FAIL\b|not ok\b|✗|×)/;
-const FIRST =
+// Jest's and go's `FAIL <file or package>` lines count too, as before.
+const FAIL_LINE = (line: string): boolean => isFailedTestLine(line) || /^\s*FAIL\b/.test(line);
+const FIRST_TEXT =
   /\(fail\)|--- FAIL:|\bFAIL\b|not ok\b|✗|×|\berror\b|AssertionError|panicked at|\bExpected\b/i;
+const FIRST = (line: string): boolean => FIRST_TEXT.test(line) || isFailedTestLine(line);
 const TIMING = /\[?\d+(?:\.\d+)?\s?(?:ms|s)\]?/g;
 
 /** The failure count and first failure of a check's output. */
@@ -23,9 +27,9 @@ export function checkState(status: "passed" | "failed", output: string): CheckSt
   if (status === "passed") return { status, failed: 0, first: null };
   const counts = [...output.matchAll(COUNT)].map((match) => Number(match[1]));
   const lines = output.split(/\r?\n/);
-  const failLines = lines.filter((line) => FAIL_LINE.test(line)).length;
+  const failLines = lines.filter(FAIL_LINE).length;
   const failed = counts.length ? (counts.at(-1) ?? null) : failLines || null;
-  const line = lines.find((candidate) => FIRST.test(candidate));
+  const line = lines.find(FIRST);
   const first = line ? line.replace(TIMING, "").replace(/\s+/g, " ").trim().slice(0, 300) : null;
   return { status, failed, first };
 }

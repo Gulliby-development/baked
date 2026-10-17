@@ -12,6 +12,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
+import { timedOutFailure } from "../src/core/verification/check-runner.js";
 import { failureSignature } from "../src/core/verification/output-counts.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
@@ -88,6 +89,17 @@ const WRITTEN_TEST_ARGS: Record<Stack, string[] | null> = {
   rust: ["test", "--test", "sum"],
   maven: ["-B", "-q", "test", "-Dtest=com.example.SumTest", "-Dsurefire.failIfNoSpecifiedTests=false"],
   dotnet: ["test", "--nologo", "--filter", "FullyQualifiedName~SumTests."],
+};
+
+/** A failed test as the stack's test runner prints it, before a hang (#1277, #1424). */
+const FAILED_TEST_OUTPUT: Record<Stack, string> = {
+  bun: "test/sum.test.ts:\n(fail) sum is commutative [0.31ms]",
+  npm: " FAIL  src/sum.test.js > sum\n × sum 2ms",
+  python: "FAILED tests/test_sum.py::test_sum_commutes - assert 3 == 4",
+  go: "--- FAIL: TestSum (0.00s)",
+  rust: "test sum_commutes ... FAILED",
+  maven: "[ERROR] com.example.SumTest.commutes -- Time elapsed: 0.012 s <<< FAILURE!",
+  dotnet: "  Failed SumTests.Commutes [8 ms]",
 };
 
 /**
@@ -369,6 +381,10 @@ for (const stack of STACKS) {
 
     cell(stack, "detection", () => {
       expect(preselected().map((c) => c.id)).toEqual(fixture.gates);
+    });
+
+    cell(stack, "timed-out-failure", () => {
+      expect(timedOutFailure(`${FAILED_TEST_OUTPUT[stack]}\nstill running`)).toBe(true);
     });
 
     cell(stack, "baseline-signature test summary", () => {

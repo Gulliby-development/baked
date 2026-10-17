@@ -687,6 +687,10 @@ describe("durable SDD runtime", () => {
       expect(silent.status).toBe("inconclusive");
       expect(silent.output).toContain("Gate report: missing");
       expect(service.store.checkDetails(run.runId).slice(-4).map((r) => r.reason)).toEqual(["report", "report", "report_exit_mismatch", "no_report"]);
+      // #1426: a log line about a timed-out test does not keep the report from deciding.
+      const timedOutLog = await runner.run(run.runId, attempt, custom(`console.log('this test timed out after 500ms'); console.log(JSON.stringify({ status: 'inconclusive' })); process.exit(1)`), new AbortController().signal);
+      expect(timedOutLog.status).toBe("inconclusive");
+      expect(service.store.checkDetails(run.runId).at(-1)?.reason).toBe("report");
     } finally { await scope.stop(); }
   });
   test("evidence IDs cannot be borrowed from another run", async () => {
