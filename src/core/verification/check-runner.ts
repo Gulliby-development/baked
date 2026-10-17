@@ -36,6 +36,30 @@ export function buildCheckEnv(check: Check): NodeJS.ProcessEnv {
   return env;
 }
 
+/**
+ * A check whose command lists the files it finds wrong and exits 0 whatever it lists: `gofmt -l`
+ * (#1480). Any file it lists fails the check, so formatting is verified like `cargo fmt --check`.
+ */
+export function listsFailures(check: Pick<Check, "executable" | "args">): boolean {
+  const name = check.executable
+    .replace(/^.*[\\/]/, "")
+    .replace(/\.exe$/i, "")
+    .toLowerCase();
+  return name === "gofmt" && check.args.includes("-l");
+}
+
+/** The status of a check's finished command: its exit code, and the files a listing check names. */
+export function exitStatus(
+  check: Pick<Check, "executable" | "args">,
+  exitCode: number,
+  output: string,
+): "passed" | "failed" {
+  return exitCode === 0 && !(listsFailures(check) && output.trim()) ? "passed" : "failed";
+}
+
+const listedNote = (check: Check): string =>
+  `Note: ${check.executable} ${check.args.join(" ")} lists the files that are not formatted and exits 0, so every file listed above fails ${check.id}.${check.fix ? ` Its fixer (${check.fix.executable} ${check.fix.args.join(" ")}) formats them.` : ""}`;
+
 const ALL_PASSED =
   /^\s*(?:\d+ pass\b[\s\S]*^\s*0 fail\b|=+ \d+ passed(?: in [\d.]+s)? =+$|Tests?:\s+\d+ passed, \d+ total)/m;
 const ANY_FAILED = /^\s*[1-9]\d* fail\b|\b[1-9]\d* (?:failed|errors?)\b/m;
@@ -188,9 +212,7 @@ export class CheckRunner {
       const status =
         result.timedOut || result.cancelled || result.exitCode === null
           ? "inconclusive"
-          : result.exitCode === 0
-            ? "passed"
-            : "failed";
+          : exitStatus(check, result.exitCode, result.output);
       return { status, output: result.output, truncated: result.truncated };
     } catch {
       return { status: "inconclusive", output: "", truncated: false };
@@ -271,16 +293,19 @@ export class CheckRunner {
       process.stderr.write(
         `[slow-check] ${check.id} ${result.durationMs}ms exit=${result.exitCode} timedOut=${result.timedOut} ${result.output.slice(0, 300)}\n`,
       );
-    const note = passedOutputNote(result.output, result.exitCode);
+    const listed = result.exitCode === 0 && exitStatus(check, 0, result.output) === "failed";
+    const note = listed ? listedNote(check) : passedOutputNote(result.output, result.exitCode);
     if (note) result = { ...result, output: `${result.output}\n\n${note}` };
     const after = await sourceManifest(root, generated);
     const unstable = changedPaths(before, after).length > 0;
     let status: "passed" | "failed" | "inconclusive" =
       unstable || result.timedOut || result.cancelled || result.exitCode === null
         ? "inconclusive"
-        : result.exitCode === 0
-          ? "passed"
-          : "failed";
+        : listed
+          ? "failed"
+          : result.exitCode === 0
+            ? "passed"
+            : "failed";
     if (unstable) reason = "source_changed";
     else if (result.timedOut && timedOutFailure(result.output)) {
       // A test failed before the run hung (url-shortener aa8fbd5d, #1271): the failure is real, so

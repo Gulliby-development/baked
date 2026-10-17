@@ -103,16 +103,30 @@ describe("gate detection by ecosystem", () => {
       { "requirements.txt": "ruff==0.5\n" },
     ]) {
       const found = detectGates(workspace(files));
-      expect(found.map((s) => s.check.id)).toEqual(["ruff"]);
+      expect(found.map((s) => s.check.id)).toEqual(["ruff", "ruff-format"]);
       expect(found[0]?.check).toMatchObject({ executable: "ruff", args: ["check", "."] });
+      // Without formatter settings the project may format with another tool (#1480).
+      expect(found[1]).toMatchObject({ preselected: false, check: { args: ["format", "--check", "."], fix: { executable: "ruff", args: ["format"] } } });
+    }
+  });
+  test("ruff format is preselected when the project configures the formatter (#1480)", () => {
+    for (const [files, source] of [
+      [{ "pyproject.toml": "[tool.ruff]\n\n[tool.ruff.format]\nquote-style = 'double'\n" }, "pyproject.toml [tool.ruff.format]"],
+      [{ "ruff.toml": "line-length = 100\n\n[format]\nquote-style = 'double'\n" }, "ruff.toml [format]"],
+      [{ ".ruff.toml": "[format]\n" }, "ruff.toml [format]"],
+    ] as [Record<string, string>, string][]) {
+      const format = detectGates(workspace(files)).find((s) => s.check.id === "ruff-format");
+      expect(format).toMatchObject({ preselected: true, source });
     }
   });
   test("go and cargo projects get their format, lint and test gates", () => {
     const go = detectGates(workspace({ "go.mod": "module example.com/x\n" }));
     expect(go.map((s) => s.check)).toMatchObject([
-      { id: "go-vet", executable: "go", args: ["vet", "./..."], fix: { executable: "go", args: ["fmt", "./..."] } },
+      { id: "gofmt", executable: "gofmt", args: ["-l", "."], fix: { executable: "go", args: ["fmt", "./..."] } },
+      { id: "go-vet", executable: "go", args: ["vet", "./..."] },
       { id: "go-test", executable: "go", args: ["test", "./..."] },
     ]);
+    expect(go[1]?.check.fix).toBeUndefined();
     const cargo = detectGates(workspace({ "Cargo.toml": '[package]\nname = "x"\n' }));
     expect(cargo.map((s) => s.check)).toMatchObject([
       { id: "cargo-fmt", executable: "cargo", args: ["fmt", "--check"], fix: { executable: "cargo", args: ["fmt"] } },
@@ -152,7 +166,7 @@ describe("gate detection by ecosystem", () => {
       "go.mod": "module x\n",
       "ruff.toml": "",
     });
-    expect(ids(root)).toEqual(["tests", "ruff", "go-vet", "go-test"]);
+    expect(ids(root)).toEqual(["tests", "ruff", "ruff-format", "gofmt", "go-vet", "go-test"]);
     expect(ids(workspace())).toEqual([]);
   });
   test("gates that are already configured are not suggested again", () => {
@@ -170,7 +184,7 @@ describe("gate detection by ecosystem", () => {
       "Cargo.toml": "[package]\n",
     });
     const all = detectGates(root).map((s) => s.check);
-    expect(all.length).toBe(11);
+    expect(all.length).toBe(13);
     expect(writeGates(root, all)).toBeUndefined();
     expect(readGates(root).map((c) => c.id)).toEqual(all.map((c) => c.id));
   });
