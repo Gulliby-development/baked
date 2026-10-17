@@ -111,7 +111,9 @@ import { baselineDebt, baselineKeys, taskErrors } from "../verification/task-end
 import {
   affectedTestCheck,
   affectedTestsFor,
+  isCompiledTestFile,
   isTestFile,
+  isWrittenTestFile,
   taskCaseText,
   writtenTestsCheck,
 } from "./affected-tests.js";
@@ -7496,12 +7498,8 @@ ${note}`;
     changed: readonly string[],
   ): Check | null {
     if (this.testsPending(state, policy)) return null;
-    const gate = writtenTestsCheck(
-      root,
-      policy.checks,
-      this.writtenTestWrites(runId, state, task, changed),
-      taskCaseText(task),
-    );
+    const writes = this.writtenTestWrites(runId, state, task, changed);
+    const gate = writtenTestsCheck(root, policy.checks, writes, taskCaseText(task));
     if (!gate) return null;
     const suite = gate.id.replace(/-written$/, "");
     if (own.some((c) => c.id === suite)) return null;
@@ -7514,12 +7512,19 @@ ${note}`;
             (r.status === "implemented" && hasTaskGate(r, state.taskGates))),
       );
     const sources = (state.rootGraph ?? state.graph)?.tasks ?? [];
+    // A compiled test project builds every test file in it, so a sibling's unfinished test file
+    // fails this check too (#1396); interpreted runners load only the files they are given.
+    const compiled = writes.some((w) => isCompiledTestFile(w.path));
     if (
       sources.some(
         (t) =>
           t.id !== task.id &&
           !done(t.id) &&
-          t.writes.some((w) => w.action !== "delete" && !isTestFile(w.path)),
+          t.writes.some(
+            (w) =>
+              w.action !== "delete" &&
+              (compiled ? !isTestFile(w.path) : !isWrittenTestFile(w.path)),
+          ),
       )
     )
       return null;
@@ -7540,7 +7545,7 @@ ${note}`;
     changed: readonly string[] = [],
   ): Task["writes"] {
     if (task.origin === "planned" || !task.findingIds.length) return task.writes;
-    const tests = task.writes.filter((w) => isTestFile(w.path));
+    const tests = task.writes.filter((w) => isWrittenTestFile(w.path));
     if (!tests.length) return tests;
     const scope = new Set([...correctionFocus(this.store, runId, state, task).files, ...changed]);
     for (const row of this.store.artifacts(runId)) {
