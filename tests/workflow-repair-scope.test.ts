@@ -151,6 +151,7 @@ describe("a correction that changes nothing on a failure outside its files", () 
     subject.store = {
       tasks: () => [{ id: "T008", generation: 0 }],
       findings: () => [{ id: "F1", body_json: JSON.stringify({ claim: "Required check fmt failed" }) }],
+      artifacts: () => [],
     } as unknown as WorkflowStore;
     subject.runTaskCheck = async () => ({ status, evidenceId: "E9", output });
     const state = { ...stateOf(), graph: { ...root, tasks: [...root.tasks, repair] } } as RuntimeState;

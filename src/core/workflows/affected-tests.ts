@@ -57,6 +57,43 @@ export function isTestFile(path: string): boolean {
   return /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(name) || /(^|\/)(__tests__)\//.test(path);
 }
 
+const CS_FILE = /\.cs$/;
+const RS_FILE = /\.rs$/;
+const JVM_FILE = /\.(?:java|kt)$/;
+
+/**
+ * Whether a path is a test file of a compiled stack the written-tests check runs (#1396): a C#
+ * file named `*Test(s).cs` or under a `Tests` or `*.Tests` directory, a Rust integration test
+ * directly in a `tests/` directory, or a Java or Kotlin file under `src/test/`.
+ */
+export function isCompiledTestFile(path: string): boolean {
+  const normal = path.replaceAll("\\", "/");
+  const parts = normal.split("/");
+  const name = parts.at(-1) ?? "";
+  if (CS_FILE.test(name))
+    return (
+      !parts.some((part) => part === "obj" || part === "bin") &&
+      (/Tests?\.cs$/.test(name) || parts.slice(0, -1).some((part) => /(?:^|\.)tests?$/i.test(part)))
+    );
+  if (RS_FILE.test(name)) return parts.at(-2) === "tests";
+  return JVM_FILE.test(name) && /(?:^|\/)src\/test\//.test(normal);
+}
+
+/** Whether a task's written test file is one the written-tests check can run. */
+export const isWrittenTestFile = (path: string): boolean =>
+  isTestFile(path) || isCompiledTestFile(path);
+
+/** The class a C#, Java or Kotlin test file declares, by the file-per-class convention. */
+const className = (path: string): string =>
+  posix.basename(path.replaceAll("\\", "/")).replace(/\.\w+$/, "");
+
+/** The fully qualified JVM class of a file under `src/test/java` or `src/test/kotlin`. */
+const jvmClass = (path: string): string => {
+  const normal = path.replaceAll("\\", "/").replace(/\.\w+$/, "");
+  const at = normal.search(/src\/test\/(?:java|kotlin)\//);
+  return at === -1 ? className(path) : normal.slice(at).split("/").slice(3).join(".");
+};
+
 function walk(root: string): string[] | null {
   const files: string[] = [];
   const stack = [""];
@@ -296,7 +333,19 @@ export function affectedTestCheck(checks: readonly Check[], tests: string[]): Ch
         ),
       ];
     }
-    if (!prefix || targets.length === 0) continue;
+    if (!prefix) {
+      const compiled = compiledTestArgs(name, args, tests.filter(isCompiledTestFile));
+      if (!compiled) continue;
+      return {
+        ...check,
+        id: `${check.id}-affected`,
+        args: compiled,
+        required: false,
+        scope: "task",
+        writes: [],
+      };
+    }
+    if (targets.length === 0) continue;
     return {
       ...check,
       id: `${check.id}-affected`,
@@ -305,6 +354,55 @@ export function affectedTestCheck(checks: readonly Check[], tests: string[]): Ch
       scope: "task",
       writes: [],
     };
+  }
+  return null;
+}
+
+/**
+ * The arguments that run only `tests` with a compiled stack's test check, or null (#1396):
+ * `dotnet test --filter` on the test classes, `cargo test --test` on integration test files,
+ * maven's `test` goal with `-Dtest` and gradle's `--tests`. dieodds (C#, bench round 39) had no
+ * task check for its test tasks: a wrong expectation surfaced at the feature gate and took five
+ * correctives (1.76M tokens).
+ */
+function compiledTestArgs(name: string, args: string[], tests: string[]): string[] | null {
+  if (name === "dotnet" && args[0] === "test") {
+    const classes = tests.filter((t) => CS_FILE.test(t)).map(className);
+    if (!classes.length || args.includes("--filter")) return null;
+    return [...args, "--filter", classes.map((c) => `FullyQualifiedName~${c}.`).join("|")];
+  }
+  if (name === "cargo" && args[0] === "test") {
+    const files = tests.filter((t) => RS_FILE.test(t)).map(className);
+    if (!files.length) return null;
+    const end = args.indexOf("--");
+    const head = flagsOnly(end === -1 ? args.slice(1) : args.slice(1, end));
+    return [
+      "test",
+      ...head,
+      ...files.flatMap((file) => ["--test", file]),
+      ...(end === -1 ? [] : args.slice(end)),
+    ];
+  }
+  const classes = tests.filter((t) => JVM_FILE.test(t)).map(jvmClass);
+  if (!classes.length) return null;
+  if (
+    (name === "mvn" || name === "mvnw") &&
+    args.some((arg) => /^(?:test|verify|install|package)$/.test(arg))
+  ) {
+    if (args.some((arg) => arg.startsWith("-Dtest="))) return null;
+    return [
+      ...flagsOnly(args),
+      "test",
+      `-Dtest=${classes.join(",")}`,
+      "-Dsurefire.failIfNoSpecifiedTests=false",
+    ];
+  }
+  if (
+    (name === "gradle" || name === "gradlew") &&
+    args.some((arg) => /^(?:test|check|build)$/.test(arg))
+  ) {
+    if (args.includes("--tests")) return null;
+    return [...flagsOnly(args), "test", ...classes.flatMap((c) => ["--tests", c])];
   }
   return null;
 }
@@ -342,7 +440,7 @@ export function writtenTestsCheck(
   text = "",
 ): Check | null {
   const files = writes
-    .filter((w) => w.action !== "delete" && isTestFile(w.path))
+    .filter((w) => w.action !== "delete" && isWrittenTestFile(w.path))
     .map((w) => w.path)
     .filter((path) => existsSync(join(root, path)));
   const gate = affectedTestCheck(checks, files);

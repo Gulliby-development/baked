@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
 import { failureSignature } from "../src/core/verification/output-counts.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
+import { writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { isStaticCheck, isWholeUnitCheck } from "../src/core/workflows/check-policy.js";
 import { detectGates, executeGate } from "../src/core/workflows/gates.js";
 import { type LayoutResult, layoutVerdict } from "../src/core/workflows/layout-check.js";
@@ -75,6 +76,18 @@ const STATIC_FIXES: Record<Stack, string[]> = {
   rust: ["cargo-fmt", "cargo-clippy"],
   maven: [],
   dotnet: ["dotnet-format"],
+};
+
+/** The task-scope check that runs a test task's own file (#1271; compiled stacks #1396). */
+const WRITTEN_TEST_ARGS: Record<Stack, string[] | null> = {
+  // The detected JavaScript gates run a package script, whose arguments are up to the script.
+  bun: null,
+  npm: null,
+  python: ["-m", "pytest", "-q", "./tests/test_sum.py"],
+  go: ["test", "./."],
+  rust: ["test", "--test", "sum"],
+  maven: ["-B", "-q", "test", "-Dtest=com.example.SumTest", "-Dsurefire.failIfNoSpecifiedTests=false"],
+  dotnet: ["test", "--nologo", "--filter", "FullyQualifiedName~SumTests."],
 };
 
 /** Cells known to be wrong today: `<stack>:<cell>` -> issue. */
@@ -341,6 +354,13 @@ for (const stack of STACKS) {
 
     cell(stack, "detection", () => {
       expect(preselected().map((c) => c.id)).toEqual(fixture.gates);
+    });
+
+    cell(stack, "written-tests-check", () => {
+      const path = fixture.property.path;
+      const root = project({ ...fixture.files, [path]: fixture.property.seeded });
+      const written = writtenTestsCheck(root, preselected(), [{ path, action: "create" }]);
+      expect(written?.args ?? null).toEqual(WRITTEN_TEST_ARGS[stack]);
     });
 
     // The mutation gate needs a required test check to run the mutants against; without one it is
@@ -799,7 +819,9 @@ for (const stack of STACKS) {
 // --- Toolchain tier --------------------------------------------------------------------------
 
 /** Minimal valid projects whose detected gates should all pass with the real tools. */
-const RUNNABLE: Partial<Record<Stack, { files: Record<string, string>; needs: string[][] }>> = {
+const RUNNABLE: Partial<
+  Record<Stack, { files: Record<string, string>; needs: string[][]; written?: string }>
+> = {
   bun: {
     files: {
       "package.json": JSON.stringify({ name: "fixture", private: true, scripts: { test: "bun test" } }),
@@ -837,7 +859,9 @@ const RUNNABLE: Partial<Record<Stack, { files: Record<string, string>; needs: st
       "Cargo.toml": '[package]\nname = "fixture"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\n',
       "src/lib.rs":
         "pub fn sum(a: i32, b: i32) -> i32 {\n    a + b\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn adds() {\n        assert_eq!(sum(1, 2), 3);\n    }\n}\n",
+      "tests/sum.rs": "#[test]\nfn sum_adds() {\n    assert_eq!(fixture::sum(1, 2), 3);\n}\n",
     },
+    written: "tests/sum.rs",
     needs: [
       ["cargo", "--version"],
       ["cargo", "fmt", "--version"],
@@ -884,6 +908,7 @@ const RUNNABLE: Partial<Record<Stack, { files: Record<string, string>; needs: st
       ["mvn", "--version"],
       ["java", "-version"],
     ],
+    written: "src/test/java/com/example/SumTest.java",
   },
   dotnet: {
     files: {
@@ -934,5 +959,25 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
       },
       900_000,
     );
+    if (runnable.written)
+      (ready ? cell : (s: Stack, name: string) => test.skip(`${name} (no toolchain)`, () => {}))(
+        stack,
+        `${stack}: the written-tests check runs the task's test file`,
+        async () => {
+          const root = project(runnable.files);
+          const checks = detectGates(root)
+            .filter((s) => s.preselected)
+            .map((s) => s.check);
+          const check = writtenTestsCheck(root, checks, [{ path: runnable.written ?? "", action: "create" }]);
+          expect(check).not.toBeNull();
+          if (!check) return;
+          const result = await executeGate(root, check, new AbortController().signal);
+          expect({ status: result.status, output: result.status === "passed" ? "" : result.outputTail }).toEqual({
+            status: "passed",
+            output: "",
+          });
+        },
+        900_000,
+      );
   }
 });
