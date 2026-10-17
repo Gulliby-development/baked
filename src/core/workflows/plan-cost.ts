@@ -1,6 +1,6 @@
 import { findPricing } from "../llm/pricing.js";
 import { DEFAULT_MIX, type TokenMix, type TokenRange } from "./estimate.js";
-import type { SizingReport } from "./sizing.js";
+import { type SizingReport, taskTotal } from "./sizing.js";
 import type { WorkflowStore } from "./store.js";
 import { type AttemptUsageRow, runUsage } from "./usage.js";
 
@@ -85,10 +85,25 @@ function latestSizing(store: WorkflowStore, runId: string): Partial<SizingReport
     : null;
 }
 
-/** The tokens the run's latest plan sizing expects its planned tasks to use; null without one. */
-export function plannedTaskTokens(store: WorkflowStore, runId: string): TokenRange | null {
-  const tokens = latestSizing(store, runId)?.taskTokens;
-  return tokens ? { low: tokens.low, high: tokens.high } : null;
+/**
+ * The tokens the run's latest plan sizing expects the whole run to use; null without one. That is
+ * what the run spent before its plan was sized, its tasks, and review and convergence (the parts
+ * of `runTokens` beyond the tasks' price), plus the repair reserve at the high end. The tasks
+ * alone left a run that had spent 2M on research, spec and plan forecast at 3M-5M for 3M-5M of
+ * tasks (#1418). A report without `runTokens` gives its tasks alone.
+ */
+export function plannedRunTokens(store: WorkflowStore, runId: string): TokenRange | null {
+  const report = latestSizing(store, runId);
+  const tokens = report?.taskTokens;
+  if (!tokens) return null;
+  const around =
+    report.runTokens !== undefined && report.tasks
+      ? Math.max(0, report.runTokens - taskTotal(report.tasks.map((t) => t.estimate)).price)
+      : 0;
+  return {
+    low: around + tokens.low,
+    high: around + tokens.high + (report.repairReserve ?? 0),
+  };
 }
 
 /** The run's spend so far by model, and the latest plan sizing priced in dollars. */
