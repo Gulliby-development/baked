@@ -201,6 +201,43 @@ export function literalPathCount(feature: Pick<InitiativeFeature, "boundary">): 
   return paths.some((path) => GLOB.test(path)) ? 0 : paths.length;
 }
 
+/** A feature's literal boundary paths for the estimate: those it owns, and placeholders. */
+export interface BoundaryPathCount {
+  /** Paths no later feature lists: the feature writes them in full. */
+  paths: number;
+  /** Paths a later feature lists too: the feature creates a placeholder that one fills. */
+  placeholders: number;
+}
+
+/**
+ * Every feature's literal boundary paths, each counted in full only in the last feature in plan
+ * order that lists it and as a placeholder in the earlier ones. A skeleton-first split lists its
+ * module stubs in the first feature and again in the features that fill them: bench round 40
+ * (tonemath) listed 48 paths for 33 files, and the first feature's path floor came out 1.54 times
+ * what it used (#1464). A file of the feature's own skeleton counts as a placeholder too: the
+ * host writes it with no agent (#1461). A glob boundary counts no paths (`literalPathCount`) and
+ * claims none.
+ */
+export function boundaryPathCounts(
+  plan: Pick<InitiativePlan, "features">,
+): Map<string, BoundaryPathCount> {
+  const literal = (f: InitiativeFeature) => literalPathCount(f) > 0;
+  const owner = new Map<string, string>();
+  for (const f of plan.features.filter(literal))
+    for (const path of f.boundary.paths) owner.set(path, f.id);
+  return new Map(
+    plan.features.map((f): [string, BoundaryPathCount] => {
+      if (!literal(f)) return [f.id, { paths: 0, placeholders: 0 }];
+      const paths = [...new Set(f.boundary.paths)];
+      const skeleton = new Set((f.skeleton ?? []).map((file) => file.path));
+      const placeholders = paths.filter(
+        (path) => owner.get(path) !== f.id || skeleton.has(path),
+      ).length;
+      return [f.id, { paths: paths.length - placeholders, placeholders }];
+    }),
+  );
+}
+
 /** The boundary patterns of `a` that meet one of `b`'s. */
 export function sharedPaths(a: InitiativeFeature, b: InitiativeFeature): string[] {
   return a.boundary.paths.filter((p) => b.boundary.paths.some((q) => patternsMeet(p, q)));

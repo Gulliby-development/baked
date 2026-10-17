@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { startApiServer } from "../src/core/api/server.js";
 import { builtinProfiles } from "../src/core/agents/profiles/builtin.js";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
@@ -17,12 +18,16 @@ import {
   planOnlyFindings,
   researchBudget,
 } from "../src/core/workflows/clarification.js";
+import { clarificationAnswers, clarificationKeys } from "../src/core/workflows/answers.js";
 import { repeatedFacet } from "../src/core/workflows/analysis-notes.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
+import type { WorkflowFault } from "../src/core/workflows/errors.js";
 import type { RunPolicy, Spec } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
+import { parseWorkflowArgs } from "../src/headless/workflow-parse.js";
+import { executeWorkflowCommand } from "../src/headless/workflow.js";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -438,5 +443,97 @@ describe("answering a clarification", () => {
       const run = await startAssume(service);
       expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("clarification");
     });
+  });
+});
+
+describe("answers file shape (#1463)", () => {
+  test("a flat object passes, the stored {answers} shape is unwrapped, anything else names the problem", () => {
+    expect(clarificationAnswers({ "Q-1": "Zero" })).toEqual({ "Q-1": "Zero" });
+    expect(clarificationAnswers({ answers: { "Q-1": "Zero" } })).toEqual({ "Q-1": "Zero" });
+    // A question whose id is "answers" stays a flat answer.
+    expect(clarificationAnswers({ answers: "Zero" })).toEqual({ answers: "Zero" });
+    const fault = (raw: unknown, expected: string[] = []) => {
+      try {
+        clarificationAnswers(raw, expected);
+      } catch (error) {
+        return error as WorkflowFault;
+      }
+      throw new Error("No fault");
+    };
+    const nested = fault({ "Q-1": ["a"] }, ["Q-1"]);
+    expect(nested.code).toBe("INVALID_DEFINITION");
+    expect(nested.message).toBe(
+      'Answers must be a JSON object of strings; question id "Q-1" has an array value. The request asks about Q-1. Expected a JSON object of strings keyed by question id, for example {"Q-1": "your answer"}.',
+    );
+    expect(fault({ answers: { "Q-1": 3 } }).message).toContain('question id "Q-1" has a number value');
+    expect(fault({ "Q-1": "a", other: { x: 1 } }).message).toContain('question id "other" has an object value');
+    expect(fault(["a"], ["SPEC-CONFLICT-T006"]).message).toBe(
+      'Answers must be a JSON object of strings, not an array. The request asks about SPEC-CONFLICT-T006. Expected a JSON object of strings keyed by question id, for example {"SPEC-CONFLICT-T006": "your answer"}.',
+    );
+    expect(fault({}).message).toContain("Answers are empty.");
+  });
+  test("the request's keys are its question or finding ids", () => {
+    expect(clarificationKeys({ questions: [{ id: "Q-1" }, {}] })).toEqual(["Q-1", "Q2"]);
+    expect(clarificationKeys({ findings: [{ id: "SPEC-CONFLICT-T006" }] })).toEqual(["SPEC-CONFLICT-T006"]);
+    expect(clarificationKeys({})).toEqual([]);
+  });
+
+  async function waitingOnQuestion() {
+    const service = setup(new ScriptedExecutor({ specQuestion: true }));
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy });
+    expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("clarification");
+    const request = service.store.requests(run.runId).find((r) => r.kind === "clarification" && r.status === "pending");
+    if (!request) throw new Error("No pending clarification");
+    return { service, runId: run.runId, request };
+  }
+
+  test("the CLI accepts the wrapped file and names the expected ids for a wrong one", async () => {
+    const { service, runId, request } = await waitingOnQuestion();
+    const file = join(service.store.workspace, "answers.json");
+    const answer = async (body: unknown) => {
+      writeFileSync(file, JSON.stringify(body));
+      const revision = (await service.get(runId)).revision;
+      return executeWorkflowCommand(
+        service,
+        parseWorkflowArgs(["answer", runId, "--request", request.id, "--answers-file", file, "--expected-revision", String(revision), "--no-resume"]),
+        new AbortController().signal,
+      );
+    };
+    await expect(answer({ answers: { "Q-1": ["Zero"] } })).rejects.toThrow(
+      'question id "Q-1" has an array value. The request asks about Q-1.',
+    );
+    expect(service.store.requests(runId).find((r) => r.id === request.id)?.status).toBe("pending");
+    await answer({ answers: { "Q-1": "Zero shows 0%" } });
+    const decided = service.store.requests(runId).find((r) => r.id === request.id);
+    expect(decided?.status).not.toBe("pending");
+    expect(decided?.answer_json).toContain("Zero shows 0%");
+  });
+
+  test("the local API accepts the wrapped answers and answers 400 with the problem otherwise", async () => {
+    const { service, runId, request } = await waitingOnQuestion();
+    const configDir = mkdtempSync(join(tmpdir(), "baked-answer-config-"));
+    const homeDir = mkdtempSync(join(tmpdir(), "baked-answer-home-"));
+    const server = await startApiServer({ service, pollMs: 20, configDir, homeDir, log: () => {} });
+    cleanups.push(() => {
+      rmSync(configDir, { recursive: true, force: true });
+      rmSync(homeDir, { recursive: true, force: true });
+    });
+    try {
+      const post = async (answers: unknown) =>
+        fetch(`${server.url}/v1/workflow/runs/${runId}/answer`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${server.token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ commandId: newId(), expectedRevision: (await service.get(runId)).revision, requestId: request.id, answers }),
+        });
+      const wrong = await post({ "Q-1": { text: "Zero" } });
+      expect(wrong.status).toBe(400);
+      const error = ((await wrong.json()) as { error: { code: string; message: string } }).error;
+      expect(error.code).toBe("INVALID_DEFINITION");
+      expect(error.message).toContain('question id "Q-1" has an object value. The request asks about Q-1.');
+      expect((await post({ answers: { "Q-1": "Zero shows 0%" } })).status).toBe(200);
+      expect(service.store.requests(runId).find((r) => r.id === request.id)?.answer_json).toContain("Zero shows 0%");
+    } finally {
+      await server.stop();
+    }
   });
 });

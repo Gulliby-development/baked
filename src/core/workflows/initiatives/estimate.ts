@@ -31,6 +31,16 @@ const SIZE_TASK_FACTOR: Record<FeatureSize, number> = { small: 0.5, medium: 1, l
  * forecast at 2.4 times a small one and cost 3.4 to 5.5 times as much (#1338).
  */
 const SIZE_STAGE_FACTOR: Record<FeatureSize, number> = { small: 0.6, medium: 1, large: 1.6 };
+/**
+ * What a placeholder path costs next to a path a feature writes in full: the stub a feature
+ * creates for a later feature to fill. Bench round 40 (tonemath): 20 stub tasks used 2.58M tokens,
+ * about 129k each, against 389k per path measured on finished features (#1464).
+ */
+export const PLACEHOLDER_SHARE = 1 / 3;
+
+/** The paths a feature counts for the per-path rate: its own in full, its placeholders less. */
+export const pathWeight = (f: { paths?: number; placeholders?: number }): number =>
+  (f.paths ?? 0) + PLACEHOLDER_SHARE * (f.placeholders ?? 0);
 
 /** A finished feature run of an earlier initiative, with the size its plan gave the feature. */
 export interface FeatureRunSample {
@@ -41,8 +51,10 @@ export interface FeatureRunSample {
   taskCount: number;
   /** The acceptance criteria of the run's spec; absent before a spec exists. */
   criteria?: number;
-  /** The paths of the feature's boundary in its plan; absent or 0 when it named none. */
+  /** The paths of the feature's boundary in its plan that no later feature lists; absent or 0 when it named none. */
   paths?: number;
+  /** Paths of its boundary a later feature of the plan lists too (`boundaryPathCounts`). */
+  placeholders?: number;
   /** This project's store, or one of the policy's `sizing.historyStores`; absent means project. */
   source?: "project" | "shared";
 }
@@ -54,8 +66,10 @@ export interface FeatureToEstimate {
   workflowId: string;
   size: FeatureSize;
   stages: { id: string; type: string; models: string[] }[];
-  /** The paths of the feature's boundary; absent or 0 when the decomposer named none. */
+  /** The paths of the feature's boundary no later feature lists; absent or 0 when the decomposer named none. */
   paths?: number;
+  /** Paths of its boundary a later feature lists too: placeholders it creates for that one. */
+  placeholders?: number;
 }
 
 export type FeatureEstimateBasis =
@@ -80,8 +94,10 @@ export interface FeatureEstimate {
   spent: number;
   /** The acceptance criteria of the feature run's spec, once it has one. */
   criteria?: number;
-  /** The paths of the feature's boundary, when it names any. */
+  /** The paths of the feature's boundary no later feature lists, when it names any. */
   paths?: number;
+  /** Placeholder paths of its boundary that a later feature fills, when it has any. */
+  placeholders?: number;
   /** The tokens the feature run's plan sizing expects the run to use, once it has a plan. */
   planned?: TokenRange;
   /**
@@ -201,6 +217,7 @@ function estimateFeature(
     size: feature.size,
     spent: 0,
     ...(feature.paths ? { paths: feature.paths } : {}),
+    ...(feature.placeholders ? { placeholders: feature.placeholders } : {}),
   };
   const hasTasks = feature.stages.some((s) => s.type === "tasks");
   // Finished feature runs of the same size measure the whole feature, split and all; those of the
@@ -313,13 +330,14 @@ function reforecast(
   const perCriterion = rates.length >= MIN_CRITERIA_SAMPLES ? rangeOf(rates) : null;
   // The boundary's paths tell features of one size apart before any of them runs: in bench round
   // 35 the four large narrowfit features named 4 to 11 paths and used 1.8M to 7.9M tokens, at 0.36M
-  // to 0.92M per path, while the size gave them one range (#1354).
-  const pathSamples = samples.filter((s) => (s.paths ?? 0) > 0);
+  // to 0.92M per path, while the size gave them one range (#1354). A placeholder counts at its
+  // share, so a stub two features list does not dilute the rate of the feature that creates it.
+  const pathSamples = samples.filter((s) => pathWeight(s) > 0);
   const pathRates = [
-    ...pathSamples.map((s) => s.tokens / (s.paths ?? 1)),
+    ...pathSamples.map((s) => s.tokens / pathWeight(s)),
     ...accepted
-      .filter((f) => (f.paths ?? 0) > 0 && used(f).spent > 0)
-      .map((f) => used(f).spent / (f.paths ?? 1)),
+      .filter((f) => pathWeight(f) > 0 && used(f).spent > 0)
+      .map((f) => used(f).spent / pathWeight(f)),
   ];
   // Up to the median, not the highest rate: a file dense in rules costs several times a plain one
   // (bench round 36, seqmill: 0.29M to 1.28M per path), and the highest rate scaled every feature
@@ -341,7 +359,7 @@ function reforecast(
     const floors = (
       [
         ["criteria", byCriteria],
-        ["paths", !byCriteria && perPath && f.paths ? scaled(perPath, f.paths) : null],
+        ["paths", !byCriteria && perPath && pathWeight(f) ? scaled(perPath, pathWeight(f)) : null],
         ["plan", planned ?? null],
       ] as const
     ).filter((entry): entry is readonly [FeatureFloor, TokenRange] => entry[1] !== null);
@@ -431,9 +449,14 @@ export function estimateInitiative(input: {
           `A feature whose spec is written is forecast at no less than ${rangeText(perCriterion)} tokens per acceptance criterion, as measured on finished features.`,
         ]
       : []),
-    ...(perPath && features.some((f) => f.basis !== "measured" && f.paths && !f.criteria)
+    ...(perPath && features.some((f) => f.basis !== "measured" && pathWeight(f) && !f.criteria)
       ? [
           `A feature still to run is forecast at no less than ${rangeText(perPath)} tokens per path of its boundary, as measured on ${perPathSamples.features} finished features${perPathSamples.shared ? ` (${perPathSamples.shared} of other projects)` : ""}.`,
+        ]
+      : []),
+    ...(perPath && features.some((f) => f.basis !== "measured" && f.placeholders && !f.criteria)
+      ? [
+          `A path a later feature also lists counts in full only in that feature, and at ${Math.round(PLACEHOLDER_SHARE * 100)}% as a placeholder in the earlier ones.`,
         ]
       : []),
     ...(features.some((f) => f.basis !== "measured" && f.planned)

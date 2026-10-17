@@ -7,6 +7,7 @@ import { canonical, hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import {
   applySplitEdit,
+  boundaryPathCounts,
   featureDigest,
   type InitiativePlan,
   literalPathCount,
@@ -39,6 +40,7 @@ import {
 import { workflowHelp } from "../src/headless/workflow-parse.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
 import { mergedBase } from "../src/core/workflows/worktree.js";
+import { PLACEHOLDER_SHARE } from "../src/core/workflows/initiatives/estimate.js";
 import {
   assignFeatureWorkflows,
   lightenSmallLeaves,
@@ -85,6 +87,8 @@ class InitiativeExecutor implements AgentExecutor {
   contracts: Record<string, string> = {};
   /** Extra path a feature's plan writes, to step outside its boundary. */
   extraWrites: Record<string, string> = {};
+  /** Further files a feature's plan writes, one task each. */
+  extraTasks: Record<string, string[]> = {};
   writes: Record<string, number> = {};
   /** Models whose implementation calls fail as an account without credits. */
   refused = new Set<string>();
@@ -161,7 +165,7 @@ class InitiativeExecutor implements AgentExecutor {
           schemaVersion: 1, markdown,
           taskGraph: {
             schemaVersion: 1, featureId: spec.featureId, revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown),
-            tasks: [{ id: "T001", title: `Create ${path}`, description: "Write ready", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes, readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior" }],
+            tasks: [path, ...(this.extraTasks[name] ?? [])].map((file, i) => ({ id: `T${String(i + 1).padStart(3, "0")}`, title: `Create ${file}`, description: "Write ready", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: i ? [{ path: file, action: existsSync(join(root, file)) ? "modify" : "create" }] : writes, readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior" })),
           },
         };
         break;
@@ -565,6 +569,28 @@ describe("scenario: an initiative budget shared by estimated need (#1311)", () =
     const alone = setup();
     await alone.start({ plan: threeFeatures });
     expect(alone.initiatives.estimate("values")).toMatchObject({ perPath: null, perPathSamples: { features: 0, shared: 0 } });
+  }, 30000);
+  // Bench round 40, tonemath (#1464): core listed the stubs later features filled, so a finished
+  // core counted its whole cost against paths it only created placeholders for.
+  test("a finished feature's placeholder paths count at their share in the measured path rate", async () => {
+    const stubbed = plan([feature("core", [], ["core.txt", "api.txt"]), feature("api", ["core"]), feature("docs")]);
+    const other = setup(stubbed, 20_000);
+    await other.start({
+      plan: stubbed,
+      featureAutoApproval: { maxTasks: 5, maxFiles: 5 },
+      budget: { maxTotalTokens: 50_000_000, maxAgentCalls: 400, maxActiveMs: 21_600_000 },
+    });
+    let view = await other.approveSplit();
+    for (let i = 0; i < 12 && view.status !== "completed"; i++) view = await other.drive();
+    expect(view.status).toBe("completed");
+    const spent = Object.fromEntries((other.initiatives.estimate("values")?.features ?? []).map((f) => [f.featureId, f.spent]));
+    expect(other.initiatives.estimate("values")?.features.find((f) => f.featureId === "core")).toMatchObject({ paths: 1, placeholders: 1 });
+    const fresh = setup();
+    await fresh.start({ plan: threeFeatures, policy: { ...policy, sizing: { historyStores: [other.root] } } });
+    const rates = [(spent.core ?? 0) / (1 + PLACEHOLDER_SHARE), spent.api ?? 0, spent.docs ?? 0];
+    // Core's 140k over one file and one stub is 105k a path, the median; two full paths said 70k.
+    const sorted = [...rates].sort((a, b) => a - b);
+    expect(fresh.initiatives.estimate("values")?.perPath).toEqual({ low: sorted[0] ?? 0, high: Math.round(sorted[1] ?? 0) });
   }, 30000);
 });
 
@@ -1130,8 +1156,25 @@ describe("initiative runtime", () => {
     for (let i = 0; i < 4 && view.status !== "completed"; i++) view = await t.drive();
     const apiRun = t.featureOf(view, "api").runId ?? "";
     const approval = t.workflows.store.requests(apiRun).find((r) => r.kind === "approval");
-    console.log("DBG", JSON.stringify(t.workflows.store.state(apiRun).hostDependencies), approval?.actor, JSON.stringify(t.workflows.store.state(apiRun).graph?.tasks.map((x) => x.writes)), JSON.parse(t.workflows.store.run(apiRun).policy_json).autoApproval);
     expect(approval?.actor).toBe("auto-approval");
+    expect(view.status).toBe("completed");
+  }, 30000);
+
+  // Bench round 40, tonemath core (#1458): a boundary of 22 files is more than a definition's auto
+  // approval accepts, so the feature's tiered approval was dropped without a reason and a person
+  // waited 14 minutes for a plan inside the approved boundary.
+  test("tiered approval auto-approves a feature whose boundary names more than 20 files", async () => {
+    const modules = Array.from({ length: 21 }, (_, i) => `core-m${String(i + 1).padStart(2, "0")}.txt`);
+    const split = plan([feature("core", [], ["core.txt", ...modules]), feature("api", ["core"]), feature("docs")]);
+    const t = setup(split);
+    t.executor.extraTasks.core = modules;
+    await t.start({ plan: split, featureAutoApproval: { maxTasks: 8, maxFiles: 14 } });
+    await t.approveSplit();
+    let view = await t.drive();
+    for (let i = 0; i < 4 && view.status !== "completed"; i++) view = await t.drive();
+    const coreRun = t.featureOf(view, "core").runId ?? "";
+    expect(JSON.parse(t.workflows.store.run(coreRun).policy_json).autoApproval?.limits).toMatchObject({ maxTasks: 24, maxFiles: 22 });
+    expect(t.workflows.store.requests(coreRun).find((r) => r.kind === "approval")?.actor).toBe("auto-approval");
     expect(view.status).toBe("completed");
   }, 30000);
 
@@ -1601,6 +1644,8 @@ describe("scenario: a split that fixes a crate skeleton (#1461)", () => {
     const { skeleton: _, ...bare } = core;
     expect(featureDigest(core)).not.toBe(featureDigest(bare));
     expect(featureDigest(feature("api"))).toBe(featureDigest({ ...feature("api"), skeleton: [] }));
+    // The estimate prices core's own file, not the host-written skeleton.
+    expect(boundaryPathCounts(split).get("core")).toEqual({ paths: 1, placeholders: 3 });
   });
 
   test("merging keeps every skeleton file, and a split gives each file to the first part that names it", () => {

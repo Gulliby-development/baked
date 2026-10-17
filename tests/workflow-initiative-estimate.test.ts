@@ -6,7 +6,9 @@ import {
   type FeatureRunSample,
   type FeatureToEstimate,
   levelOf,
+  PLACEHOLDER_SHARE,
 } from "../src/core/workflows/initiatives/estimate.js";
+import { boundaryPathCounts, type InitiativePlan } from "../src/core/workflows/initiatives/plan.js";
 
 const SDD = [
   { id: "specify", type: "agent", models: [] },
@@ -443,5 +445,83 @@ describe("scenario: the split estimate floored by paths at another project's rat
     expect(estimate.tokens.high).toBeGreaterThan(18_980_000 * 0.95);
     expect(estimate.withMargin).toBeGreaterThan(18_980_000);
     expect(estimate.notes.join("\n")).toContain("as measured on 4 finished features (4 of other projects)");
+  });
+});
+
+describe("scenario: a placeholder two features list counts in full once (#1464, R40)", () => {
+  // tonemath: core listed its 7 files and 15 module stubs that theory, analysis and front then
+  // filled, 48 boundary paths for 33 files. Core sat on the path floor at 22 x 389k = 8.57M low
+  // and used 5.56M; the stubs cost about 129k each, a third of a full path.
+  const node = (id: string, paths: string[]): InitiativePlan["features"][number] => ({
+    id,
+    title: id,
+    boundary: { scope: id, paths },
+    contract: id,
+    dependsOn: id === "core" ? [] : ["core"],
+    mandatory: true,
+  });
+  const files = (dir: string, n: number) => Array.from({ length: n }, (_, i) => `src/${dir}/m${i}.rs`);
+  const stubs = { theory: files("theory", 5), analysis: files("analysis", 5), front: files("front", 5) };
+  const tonemath: InitiativePlan = {
+    schemaVersion: 1,
+    title: "tonemath",
+    goals: ["g"],
+    completionCriteria: ["c"],
+    features: [
+      node("core", [...files("core", 7), ...stubs.theory, ...stubs.analysis, ...stubs.front]),
+      node("theory", [...stubs.theory, "src/theory/scale.rs"]),
+      node("analysis", [...stubs.analysis, "src/analysis/key.rs"]),
+      node("front", [...stubs.front, ...files("front-cli", 6)]),
+      node("docs", ["README.md", "docs/usage.md", "CHANGELOG.md"]),
+    ],
+  };
+
+  test("each path counts in full only in the last feature that lists it", () => {
+    const counts = boundaryPathCounts(tonemath);
+    expect(Object.fromEntries(counts)).toEqual({
+      core: { paths: 7, placeholders: 15 },
+      theory: { paths: 6, placeholders: 0 },
+      analysis: { paths: 6, placeholders: 0 },
+      front: { paths: 11, placeholders: 0 },
+      docs: { paths: 3, placeholders: 0 },
+    });
+    // 33 distinct files, not the 48 the boundaries list.
+    expect([...counts.values()].reduce((n, c) => n + c.paths, 0)).toBe(33);
+    // A glob boundary claims no path and counts none.
+    const glob = { ...tonemath, features: [...tonemath.features, node("all", ["src/**"])] };
+    expect(boundaryPathCounts(glob).get("all")).toEqual({ paths: 0, placeholders: 0 });
+    expect(boundaryPathCounts(glob).get("core")).toEqual({ paths: 7, placeholders: 15 });
+  });
+
+  const sample = (runId: string, tokens: number, paths: number, placeholders = 0): FeatureRunSample => ({
+    runId,
+    workflowId: "sdd",
+    size: "medium",
+    tokens,
+    taskCount: 8,
+    paths,
+    ...(placeholders ? { placeholders } : {}),
+  });
+
+  test("the floor counts a placeholder at its share in the feature that creates it", () => {
+    const counts = boundaryPathCounts(tonemath);
+    const features = tonemath.features.map((f) => ({ ...feature(f.id, "large"), ...counts.get(f.id) }));
+    // Finished features at 389k and 506k per path.
+    const samples = [sample("a", 389_476 * 4, 4), sample("b", 506_000 * 4, 4)];
+    const estimate = estimateInitiative({ features, history: [], samples, maxTotalTokens: 40_000_000 });
+    const core = estimate.features.find((f) => f.featureId === "core");
+    expect(core).toMatchObject({ paths: 7, placeholders: 15, floor: "paths" });
+    // 7 + 15 / 3 = 12 paths: 4.67M low against 5.56M used, where 22 paths said 8.57M.
+    expect(core?.tokens.low).toBe(Math.round(389_476 * (7 + 15 * PLACEHOLDER_SHARE)));
+    expect(core?.tokens.low).toBeLessThan(5_560_000);
+    expect(estimate.notes.join("\n")).toContain("counts in full only in that feature, and at 33% as a placeholder");
+  });
+
+  test("a finished feature's placeholders do not dilute the per-path rate", () => {
+    // 1.2M for 2 files and 3 stubs is 400k per path, not the 240k five full paths would say.
+    const samples = [sample("a", 1_200_000, 2, 3), sample("b", 800_000, 2)];
+    const estimate = estimateInitiative({ features: [feature("x", "medium")], history: [], samples, maxTotalTokens: 10_000_000 });
+    expect(estimate.perPath).toEqual({ low: 400_000, high: 400_000 });
+    expect(estimate.perPathSamples).toEqual({ features: 2, shared: 0 });
   });
 });

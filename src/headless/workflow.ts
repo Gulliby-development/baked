@@ -5,6 +5,7 @@ import { getCwd } from "../core/cwd.js";
 import { gitInitSummary, initWorkspaceGit } from "../core/git/init.js";
 import { loadModelCatalog } from "../core/llm/model-catalog.js";
 import { parseRouteOverrides, type RoutingEntry } from "../core/llm/model-routing.js";
+import { clarificationAnswers, clarificationKeys } from "../core/workflows/answers.js";
 import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
 import { withModelReview } from "../core/workflows/auto-approval.js";
 import { type BudgetLimits, type BudgetPresetId, presetPolicy } from "../core/workflows/budget.js";
@@ -521,19 +522,13 @@ export async function executeWorkflowCommand(
         ...(args.flags["exclude-user-changes"] === true ? { userChanges: "exclude" as const } : {}),
       });
     case "answer": {
-      const answers = jsonFile("answers-file");
-      if (
-        !answers ||
-        typeof answers !== "object" ||
-        Array.isArray(answers) ||
-        Object.values(answers).some((v) => typeof v !== "string")
-      )
-        throw new WorkflowFault("INVALID_DEFINITION", "Answers must be a JSON object of strings");
-      return decideThenResume({
-        kind: "answer",
-        requestId: stringFlag(args, "request"),
-        answers: answers as Record<string, string>,
-      });
+      const requestId = stringFlag(args, "request");
+      const request = service.store.requests(runId).find((r) => r.id === requestId);
+      const answers = clarificationAnswers(
+        jsonFile("answers-file"),
+        request ? clarificationKeys(JSON.parse(request.body_json)) : [],
+      );
+      return decideThenResume({ kind: "answer", requestId, answers });
     }
     case "reject":
       return service.decide(runId, identity(), {
