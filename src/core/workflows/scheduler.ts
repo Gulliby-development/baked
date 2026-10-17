@@ -151,7 +151,7 @@ import {
   policyDecisions,
   withoutApprovalRemarks,
 } from "./auto-approval.js";
-import { budgetUsage, raiseToStartEstimate, reserveTokens } from "./budget.js";
+import { budgetUsage, grownCostCap, raiseToStartEstimate, reserveTokens } from "./budget.js";
 import {
   type CandidateResult,
   type CandidateSelection,
@@ -4434,9 +4434,13 @@ ${note}`;
     const time = report.activeTime.after > policy.maxActiveMs;
     if (!tokens && !time) return;
     const before = hashJson(policy);
+    // The sized tokens bring their dollars: a cap that may grow follows them, as on auto-growth;
+    // otherwise a sized feature stopped on its starting cap at about half its tokens (#1411).
+    const maxCostUsd = tokens ? grownCostCap(policy, report.budgetAfter) : policy.maxCostUsd;
     const changed = {
       ...(tokens ? { maxTotalTokens: report.budgetAfter } : {}),
       ...(time ? { maxActiveMs: report.activeTime.after } : {}),
+      ...(maxCostUsd !== policy.maxCostUsd ? { maxCostUsd } : {}),
     };
     const after = PolicySchema.parse({ ...policy, ...changed });
     this.store.transaction(() => {
@@ -4460,6 +4464,7 @@ ${note}`;
     // The drive keeps this policy object; the rest of the run sees the sized limits.
     policy.maxTotalTokens = after.maxTotalTokens;
     policy.maxActiveMs = after.maxActiveMs;
+    policy.maxCostUsd = after.maxCostUsd;
     state.manifest.policyHash = hashJson(after);
     if (time) this.rearmDeadline();
   }
