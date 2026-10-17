@@ -95,4 +95,37 @@ describe("plan: Rust modules registered by a later task (#1299)", () => {
     );
     expect(moduleProblems(graph, workspace())).toEqual([]);
   });
+
+  test("a module of the 2018 layout is declared by its parent module file (#1412)", () => {
+    const graph = graphOf(
+      task("T001", [["Cargo.toml", "create"], ["src/lib.rs", "create"], ["src/parser.rs", "create"]]),
+      task("T002", [["src/parser/lexer.rs", "create"]], { dependsOn: ["T001"] }),
+      task("T003", [["src/parser/ast/mod.rs", "create"]], { dependsOn: ["T001"] }),
+      task("T004", [["src/parser.rs", "modify"]], { dependsOn: ["T002", "T003"] }),
+    );
+    expect(moduleProblems(graph, workspace())).toEqual([
+      "T002 creates the Rust module src/parser/lexer.rs but does not write src/parser.rs, which declares it, so T002's checks (clippy) never compile it and its errors surface only after the task that adds the mod line. Add src/parser.rs to T002's writes and declare the module there; the host orders tasks that write the same index.",
+      "T003 creates the Rust module src/parser/ast/mod.rs but does not write src/parser.rs, which declares it, so T003's checks (clippy) never compile it and its errors surface only after the task that adds the mod line. Add src/parser.rs to T003's writes and declare the module there; the host orders tasks that write the same index.",
+    ]);
+    // Declaring it in the parent module passes; a sibling module file is not an index.
+    const declared = graphOf(
+      task("T001", [["Cargo.toml", "create"], ["src/lib.rs", "create"], ["src/parser.rs", "create"]]),
+      task("T002", [["src/parser/lexer.rs", "create"], ["src/parser.rs", "modify"]], { dependsOn: ["T001"] }),
+      task("T003", [["src/text.rs", "create"], ["src/lib.rs", "modify"]], { dependsOn: ["T001"] }),
+    );
+    expect(moduleProblems(declared, workspace())).toEqual([]);
+  });
+
+  test("a task writing a parent module file runs after the tasks creating its modules (#1412)", () => {
+    const graph = graphOf(
+      task("T001", [["src/parser.rs", "create"]]),
+      task("T002", [["src/parser/lexer.rs", "create"]]),
+      task("T003", [["src/text.rs", "create"]]),
+    );
+    expect(withModuleDependencies(graph).tasks.map((t) => [t.id, t.dependsOn])).toEqual([
+      ["T001", ["T002"]],
+      ["T002", []],
+      ["T003", []],
+    ]);
+  });
 });
