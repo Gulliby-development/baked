@@ -36,7 +36,11 @@ const repro = { executable: "bun", args: ["-e", `console.log((await Bun.file('${
 class ScriptedExecutor implements AgentExecutor {
   corrections: Task[] = [];
   advice: string[][] = [];
-  constructor(private root: string) {}
+  /** The stage whose reviewer raises the dropped clause: the walker, or a dimension review (#1415). */
+  constructor(
+    private root: string,
+    private raisedBy: "convergence" | "review" = "convergence",
+  ) {}
   async execute(request: ExecutionRequest) {
     const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as { inputHash: string; snapshotHash: string; extra: { evidence?: { id: string }[]; finding?: { id: string }; dimension?: string } };
     const evidence = data.extra.evidence?.map((e) => e.id) ?? [];
@@ -62,12 +66,12 @@ class ScriptedExecutor implements AgentExecutor {
       case "review":
       case "convergence": {
         const coverage = [{ criterionId: "AC-001", verdict: "pass", evidenceIds: evidence, explanation: "struct 1A is rejected" }];
-        // The dimension review passes; the convergence walker finds the dropped clause.
-        if ("dimension" in data.extra || readFileSync(join(this.root, PARSE), "utf8").includes("reserved")) {
+        // One stage finds the dropped clause; the other passes.
+        if (("dimension" in data.extra) !== (this.raisedBy === "review") || readFileSync(join(this.root, PARSE), "utf8").includes("reserved")) {
           output = { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", coverage, findings: [] };
           break;
         }
-        const finding: Review["findings"][number] = { id: "F-reserved-names", kind: "missing", severity: "medium", basis: "spec", confidence: 0.6, requirementIds: ["FR-001"], criterionIds: [], file: PARSE, symbol: "valid_name", evidenceIds: evidence, claim: 'The request says invalid name "X" applies also for struct, end and type names, but `struct u8` is accepted', impact: "A struct named after a type prints a layout instead of the documented error", suggestedFix: "Reject struct, end and type names in valid_name" };
+        const finding: Review["findings"][number] = { id: "F-reserved-names", kind: "missing", severity: this.raisedBy === "review" ? "high" : "medium", basis: "spec", confidence: 0.6, requirementIds: ["FR-001"], criterionIds: [], file: PARSE, symbol: "valid_name", evidenceIds: evidence, claim: 'The request says invalid name "X" applies also for struct, end and type names, but `struct u8` is accepted', impact: "A struct named after a type prints a layout instead of the documented error", suggestedFix: "Reject struct, end and type names in valid_name" };
         const review = { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "changes_requested", coverage, findings: [finding] } as Review;
         // The walker attaches the repro it tried only when the host asks for it.
         const advice = request.validate?.(review) ?? [];
@@ -83,11 +87,11 @@ class ScriptedExecutor implements AgentExecutor {
   }
 }
 
-async function runScenario() {
+async function runScenario(raisedBy: "convergence" | "review" = "convergence") {
   const root = mkdtempSync(join(tmpdir(), "baked-bytelens-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const policy: RunPolicy = { ...defaultWorkflowPolicy, maxRepairRounds: 1, maxConvergenceRounds: 2, checks: [tests] };
-  const executor = new ScriptedExecutor(root);
+  const executor = new ScriptedExecutor(root, raisedBy);
   const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } };
   const service = new NativeWorkflowService(root, config, executor);
   cleanups.push(() => service.close());
@@ -104,6 +108,15 @@ async function runScenario() {
 describe("scenario: bytelens efe010c4, a request clause kept as a confidence note (#1210)", () => {
   test("the walker is asked for a repro, it reproduces, and a corrective repairs the clause", async () => {
     const { done, executor, root } = await runScenario();
+    expect(done.status).toBe("completed");
+    expect(executor.advice[0]?.join("\n")).toContain("F-reserved-names are below the confidence threshold");
+    expect(executor.corrections).toHaveLength(1);
+    expect(readFileSync(join(root, PARSE), "utf8")).toContain("reserved names");
+  }, 60000);
+
+  // Audit of 2026-10-17 (#1415): the dimension review dropped such a claim before any repro ran.
+  test("a dimension reviewer is asked for the repro too, and a reproduced claim repairs", async () => {
+    const { done, executor, root } = await runScenario("review");
     expect(done.status).toBe("completed");
     expect(executor.advice[0]?.join("\n")).toContain("F-reserved-names are below the confidence threshold");
     expect(executor.corrections).toHaveLength(1);

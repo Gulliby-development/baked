@@ -10797,7 +10797,13 @@ ${note}`;
               );
               // Asked once: a reviewer that still has no repro after the advice is not blocked.
               if (problems.length || reproAdvised || !canRepro) return problems;
-              const advice = missingReproAdvice(output as Review, executables, prior?.review);
+              const advice = [
+                ...missingReproAdvice(output as Review, executables, prior?.review),
+                ...unconfidentReproAdvice(
+                  output as Review,
+                  policy.reviewMinConfidence ?? DEFAULT_REVIEW_MIN_CONFIDENCE,
+                ),
+              ];
               if (advice.length) reproAdvised = true;
               return advice;
             },
@@ -10903,13 +10909,16 @@ ${note}`;
         // Advisory reviewers, findings below the blocking severities and inferred notes are
         // recorded, not repaired.
         // Below the severity floor, a spec-based finding with a repro still competes: it repairs
-        // when the host reproduces it (#801).
+        // when the host reproduces it (#801). So does a claim kept a note only for its confidence,
+        // as in the converge stage (#1210, #1415).
+        const unconfident = (f: Review["findings"][number]): boolean =>
+          confidenceOnlyNote(f, policy.reviewMinConfidence);
         const candidates = reviewer.required
           ? result.findings.filter(
               (f) =>
                 reviewer.blocking.includes(f.severity) &&
                 (severities.includes(f.severity) || confirmableSpecFinding(f)) &&
-                findingBlocks(f, policy.reviewMinConfidence),
+                (findingBlocks(f, policy.reviewMinConfidence) || unconfident(f)),
             )
           : [];
         // A claim starts a correction only when its repro shows it (#155).
@@ -10927,7 +10936,7 @@ ${note}`;
             ),
           );
         const blocking = candidates.filter((f) =>
-          severities.includes(f.severity)
+          severities.includes(f.severity) && !unconfident(f)
             ? reproAllows(f, outcomes.get(f.id)?.status, executables.length > 0)
             : outcomes.get(f.id)?.status === "reproduced",
         );
