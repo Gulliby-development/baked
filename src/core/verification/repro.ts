@@ -280,9 +280,9 @@ export function missingReproAdvice(
 }
 
 /**
- * Advice for a convergence review whose missing or correctness findings on behavior the request
- * names fall below the confidence threshold without a repro: such a finding is a note unless a
- * repro shows it, so the walker is asked once to try it (#1210).
+ * Advice for a dimension or convergence review whose missing or correctness findings on behavior
+ * the request names fall below the confidence threshold without a repro: such a finding is a note
+ * unless a repro shows it, so the reviewer is asked once to try it (#1210, #1415).
  */
 export function unconfidentReproAdvice(review: Review, minConfidence: number): string[] {
   const unshown = review.findings.filter(
