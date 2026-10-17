@@ -358,6 +358,18 @@ describe("baseline comparison in update runs", () => {
     expect(failureSignature("a.py:1:1: E501\nFound 1 error.\n3 files checked", "/w")).toBe(
       failureSignature("a.py:1:1: E501\nFound 1 error.\n4 files checked", "/w"),
     );
+    // #1425: Python tools and test summaries count files checked and tests passed too.
+    for (const [before, after] of [
+      ["src/a.py:3: error: Bad\nFound 1 error in 1 file (checked 4 source files)", "src/a.py:3: error: Bad\nFound 1 error in 1 file (checked 5 source files)"],
+      ["Would reformat: src/a.py\n1 file would be reformatted, 3 files already formatted", "Would reformat: src/a.py\n1 file would be reformatted, 4 files already formatted"],
+      ["would reformat src/a.py\n1 file would be reformatted, 3 files would be left unchanged.", "would reformat src/a.py\n1 file would be reformatted, 4 files would be left unchanged."],
+      ["FAILED tests/test_a.py::test_x\n1 failed, 4 passed in 0.2s", "FAILED tests/test_a.py::test_x\n1 failed, 5 passed in 0.3s"],
+      ["Tests:       1 failed, 4 passed, 5 total", "Tests:       1 failed, 5 passed, 6 total"],
+      ["5 tests completed, 1 failed", "6 tests completed, 1 failed"],
+    ])
+      expect(failureSignature(before, "/w")).toBe(failureSignature(after, "/w"));
+    // A different number of failures is a different failure.
+    expect(failureSignature("FAILED tests/test_a.py::test_x\n1 failed, 4 passed", "/w")).not.toBe(failureSignature("FAILED tests/test_a.py::test_x\n2 failed, 4 passed", "/w"));
     expect(failureSignature("✖ 2 problems (2 errors, 0 warnings)", "/w")).toBe(
       failureSignature("✖ 3 problems (3 errors, 0 warnings)", "/w"),
     );
