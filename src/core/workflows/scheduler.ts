@@ -472,6 +472,7 @@ import {
   withTestsFirstOrder,
 } from "./tests-first.js";
 import { takeHashRefusals } from "./tool-policy.js";
+import { transientSqliteError } from "./transient-sqlite.js";
 import type { AgentExecutor, Check, HostTool, RuntimeState, Task } from "./types.js";
 import { acceptanceGrants, blocksRun } from "./v2/acceptance.js";
 import { type BrowserDriverOptions, runAcceptanceGate } from "./v2/acceptance-gate.js";
@@ -650,15 +651,6 @@ const LONG_RETRY_AFTER_MS = 30_000;
 /** How often a driving process writes the run's active time to the run row (#1038). */
 export const ACTIVE_FLUSH_MS = 1_000;
 
-/** A SQLite error a retry can clear: a disk I/O error after a suspension, or a busy database. */
-export function transientSqliteError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const code = (error as { code?: unknown }).code;
-  return (
-    (typeof code === "string" && /^SQLITE_(IOERR|BUSY|LOCKED)/.test(code)) ||
-    /disk I\/O error|database is (locked|busy)/i.test(error.message)
-  );
-}
 /** The implementer's own list of what it left unfinished, for the blocked task's message. */
 /**
  * The planned files a failed check of a corrective task names, when the task may write none of
@@ -900,8 +892,13 @@ export class WorkflowScheduler {
     const flush = setInterval(recordActive, ACTIVE_FLUSH_MS);
     // Management commands from another process must stop this owner before the next effect.
     const poll = setInterval(() => {
-      if (["paused", "cancelled"].includes(this.store.run(runId).status))
-        controller.abort(new Error("Run management command"));
+      try {
+        if (["paused", "cancelled"].includes(this.store.run(runId).status))
+          controller.abort(new Error("Run management command"));
+      } catch (error) {
+        // A throw from a timer ends the process; after a sleep the next tick reads it (#1410).
+        if (!transientSqliteError(error)) controller.abort(error);
+      }
     }, 100);
     let stepId: string | null = null;
     this.queued = [];
