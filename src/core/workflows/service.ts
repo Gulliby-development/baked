@@ -1577,10 +1577,10 @@ export class NativeWorkflowService implements WorkflowService {
       { runId, ...command, action: "extend-budget", requested },
       () => {
         const row = this.store.run(runId);
-        if (row.status === "blocked" && row.reason === "attempt_cap")
+        if (row.status === "blocked" && (row.reason === "attempt_cap" || row.reason === "step_cap"))
           throw new WorkflowFault(
             "STALE_DECISION",
-            "The run stopped at an attempt's token cap, not on its budget: resume it to continue the task with the edits already made",
+            `The run stopped at an attempt's ${row.reason === "step_cap" ? "step" : "token"} cap, not on its budget: resume it to continue the task with the edits already made`,
           );
         const before = PolicySchema.parse(JSON.parse(row.policy_json));
         const spent = this.store.costUsage(runId);

@@ -795,6 +795,7 @@ export const ReasonCode = z.enum([
   "workspace_busy",
   "budget_exhausted",
   "attempt_cap",
+  "step_cap",
   "checkpoint",
   "no_progress",
   "verification_failed",

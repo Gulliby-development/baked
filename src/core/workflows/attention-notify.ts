@@ -60,6 +60,7 @@ const KIND_LABELS: Record<string, string> = {
   delivery: "delivery approval",
   budget_exhausted: "a budget extension",
   attempt_cap: "a resume",
+  step_cap: "a resume",
 };
 
 /** What a run waits for, in words. */

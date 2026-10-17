@@ -17,7 +17,8 @@ export function canExtendRun(run: {
   reservedCostUsd?: number | undefined;
   maxCostUsd?: number | null | undefined;
 }): boolean {
-  if (run.status !== "blocked" || run.reason === "attempt_cap") return false;
+  if (run.status !== "blocked" || run.reason === "attempt_cap" || run.reason === "step_cap")
+    return false;
   if (run.reason === "budget_exhausted") return true;
   if (run.maxCostUsd == null || (run.estimatedCostUsd === null && !run.reservedCostUsd))
     return false;

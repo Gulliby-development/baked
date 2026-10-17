@@ -271,3 +271,13 @@ export function endedOnProse(error: unknown): error is WorkflowFault {
 export function atAttemptCap(error: unknown): error is WorkflowFault {
   return error instanceof WorkflowFault && error.details.reason === "attempt_cap";
 }
+
+/** Whether an attempt used its steps without submitting a result (#1478). */
+export function atStepCap(error: unknown): error is WorkflowFault {
+  return error instanceof WorkflowFault && error.details.reason === "step_cap";
+}
+
+/** Whether an attempt ended at its token or step cap without submitting a result. */
+export function capEnded(error: unknown): error is WorkflowFault {
+  return atAttemptCap(error) || atStepCap(error);
+}
