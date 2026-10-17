@@ -8,6 +8,7 @@ import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import type { Check, RunPolicy, Spec, Task } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
+import { requestedWrittenTests } from "../src/core/workflows/agent-executor.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
 
 // Scenario of bench round 37 (#1373). md-site T008 and ranktally T011: a correction may write the
@@ -113,4 +114,16 @@ describe("scenario: md-site T008, a correction's tests-written check (#1373)", (
     expect(done.status).toBe("completed");
     expect(readFileSync(join(root, "src/slug.ts"), "utf8")).toContain("toLowerCase");
   }, 120000);
+});
+
+describe("requestedWrittenTests (#1421)", () => {
+  const correction = { ...planned("T004", ["src/slug.ts", "tests/render.test.ts", "tests/slug.test.ts", "tests/regression.test.ts"]), origin: "repair" as const, findingIds: ["F1"] };
+  const given = [{ path: "tests/render.test.ts", action: "create" as const }];
+  test("adds the task's test files the attempt edited, which the host's check after it runs too", () => {
+    expect(requestedWrittenTests(correction, given, new Set(["tests/regression.test.ts", "src/slug.ts", "tests/other.test.ts"])).map((w) => w.path)).toEqual(["tests/render.test.ts", "src/slug.ts", "tests/regression.test.ts"]);
+  });
+  test("keeps the given list without edits, and a planned task's writes without a list", () => {
+    expect(requestedWrittenTests(correction, given, new Set()).map((w) => w.path)).toEqual(["tests/render.test.ts"]);
+    expect(requestedWrittenTests(correction, undefined, new Set())).toEqual(correction.writes);
+  });
 });

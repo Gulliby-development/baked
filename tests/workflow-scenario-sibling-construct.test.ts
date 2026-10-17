@@ -32,7 +32,10 @@ const reproFor = (marker: string): Repro => ({ executable: "bun", args: ["-e", `
 
 class ScriptedExecutor implements AgentExecutor {
   corrections: { findingIds: string[]; sibling?: { files: string[]; earlier: { id: string; repro?: Repro }[]; note: string }; recurring?: unknown; regression: string[] }[] = [];
-  constructor(private root: string) {}
+  constructor(
+    private root: string,
+    private three = false,
+  ) {}
   async execute(request: ExecutionRequest) {
     const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as { inputHash: string; snapshotHash: string; extra: { evidence?: { id: string }[]; siblingFindings?: { files: string[]; earlier: { id: string; repro?: Repro }[]; note: string }; recurringFindings?: unknown } };
     const evidenceIds = data.extra.evidence?.map((e) => e.id) ?? [];
@@ -50,6 +53,9 @@ class ScriptedExecutor implements AgentExecutor {
         else if (this.corrections.length === 0) {
           this.corrections.push({ findingIds: task?.findingIds ?? [], regression: [] });
           write("ready code");
+        } else if (this.corrections.length === 2) {
+          this.corrections.push({ findingIds: task?.findingIds ?? [], sibling: data.extra.siblingFindings, recurring: data.extra.recurringFindings, regression: [] });
+          write("ready code link star");
         } else {
           // The second correction first patches only its own case, dropping the first one, as
           // md-site's corrections did; the host's repro check shows the regression.
@@ -69,7 +75,9 @@ class ScriptedExecutor implements AgentExecutor {
           ? [finding("F1", "code", "parseInline", "Emphasis closes inside a multiline inline code span")]
           : !text.includes("link")
             ? [finding("F2", "link", "renderBlockquote", "Multiline inline code inside a blockquote loses its newlines")]
-            : [];
+            : this.three && !text.includes("star")
+              ? [finding("F3", "star", "parseInline", "Emphasis closes inside a code span after a star")]
+              : [];
         output = findings.length
           ? { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "changes_requested", coverage: [{ criterionId: "AC-001", verdict: "fail", evidenceIds, explanation: findings[0]?.claim }], findings }
           : pass;
@@ -108,5 +116,32 @@ describe("scenario: md-site ec3c22bf, findings on one construct across functions
     expect(second?.sibling?.note).toContain("list every context the construct can appear in");
     expect(first?.sibling).toBeUndefined();
     expect(second?.regression.join("\n")).toContain("F1");
+  });
+});
+
+describe("scenario: a correction with both recurring and same-file findings (#1423)", () => {
+  test("gets the same-file findings beside the recurring ones, as both gate its submit", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-sibling-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const executor = new ScriptedExecutor(root, true);
+    const longer: RunPolicy = { ...policy, maxRepairRounds: 5, maxConvergenceRounds: 4 };
+    const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy: longer } };
+    const service = new NativeWorkflowService(root, config, executor);
+    cleanups.push(() => service.close());
+    const started = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Parse inline Markdown", ownerLabel: "test", policy: longer });
+    await service.drive(started.runId, new AbortController().signal);
+    const snapshot = await service.get(started.runId);
+    const approval = service.store.requests(started.runId).find((r) => r.kind === "approval" && r.status === "pending");
+    if (!approval) throw new Error("No approval request");
+    await service.decide(started.runId, { commandId: newId(), expectedRevision: snapshot.revision }, { kind: "approve", requestId: approval.id, digest: approval.digest });
+    const done = await service.drive(started.runId, new AbortController().signal);
+    expect(done.status).toBe("completed");
+    const third = executor.corrections[2];
+    expect(third?.findingIds).toEqual(["F3"]);
+    // F1 is on the same symbol: recurring. F2 is another symbol in the file: a sibling, whose
+    // repro gates the submit too, so the worker must see it.
+    expect((third?.recurring as { earlier: { id: string }[] } | undefined)?.earlier.map((f) => f.id)).toEqual(["F1"]);
+    expect(third?.sibling?.earlier.map((f) => f.id)).toEqual(["F2"]);
+    expect(third?.sibling?.earlier[0]?.repro).toEqual(reproFor("link"));
   });
 });
