@@ -34,13 +34,16 @@ test("rejects seeded oversized payloads", () => { expect(limit).toBe(8192); });
 const spec: Spec = { schemaVersion: 1, featureId: "fixture", revision: 1, title: "Shortener", problem: "No handler", outcome: "A handler", inScope: ["Handler"], outOfScope: [], assumptions: [], openQuestions: [], requirements: [{ id: "FR-001", text: "Payloads over 8192 bytes are rejected", priority: "must", verification: "automated", sourceRefs: [] }], criteria: [{ id: "AC-001", requirementIds: ["FR-001"], given: "a payload", when: "it is posted", then: "a payload over 8192 bytes is rejected", method: "automated" }], dependencies: [] };
 const markdown = "# Plan\n## Context\nOne handler.\n## Decisions\nDEC-001: FR-001 caps payloads.\n## Components\nsrc/handler.ts\n## Data\nText\n## Verification\nTests\n## Risks\nNone for fixture";
 const task = (id: string, path: string, dependsOn: string[]): Task => ({ id, title: `Write ${path}`, description: `Write ${path}`, requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn, profileId: "implementer", writes: [{ path, action: "create" }], readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior" });
-const tasks = [task("T001", "src/handler.ts", []), task("T002", "tests/handler.test.ts", ["T001"])];
+const TASKS = [task("T001", "src/handler.ts", []), task("T002", "tests/handler.test.ts", ["T001"])];
 const tests: Check = { id: "tests", executable: "bun", args: ["test"], cwd: ".", timeoutMs: 8000, required: true, scope: "feature", envNames: [], writes: [] };
 const policy: RunPolicy = { ...defaultWorkflowPolicy, checks: [tests] };
 
 class ScriptedExecutor implements AgentExecutor {
   attempts: { id: string; origin: string }[] = [];
-  constructor(private root: string) {}
+  constructor(
+    private root: string,
+    private tasks: Task[] = TASKS,
+  ) {}
   async execute(request: ExecutionRequest) {
     const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as { inputHash: string; snapshotHash: string; extra: { evidence?: { id: string }[] } };
     const evidence = data.extra.evidence?.map((e) => e.id) ?? [];
@@ -48,7 +51,7 @@ class ScriptedExecutor implements AgentExecutor {
     switch (request.profile.output) {
       case "research": output = { schemaVersion: 1, summary: "A fixture workspace", facts: [], unknowns: [], constraints: [], suggestedScope: ["src/handler.ts"] }; break;
       case "spec": output = spec; break;
-      case "plan": output = { schemaVersion: 1, markdown, taskGraph: { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown), tasks } }; break;
+      case "plan": output = { schemaVersion: 1, markdown, taskGraph: { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown), tasks: this.tasks } }; break;
       case "analysis": output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] }; break;
       case "implementation": {
         const current = request.task;
@@ -58,6 +61,7 @@ class ScriptedExecutor implements AgentExecutor {
           mkdirSync(join(this.root, "src"), { recursive: true });
           writeFileSync(join(this.root, "src/handler.ts"), "export const limit = 8192;\n");
         }
+        if (writes.includes("README.md")) writeFileSync(join(this.root, "README.md"), `# Shortener\n\nRevision ${this.attempts.length}\n`);
         if (writes.includes("tests/handler.test.ts")) {
           mkdirSync(join(this.root, "tests"), { recursive: true });
           writeFileSync(join(this.root, "tests/handler.test.ts"), current?.origin === "planned" ? FAILS_THEN_HANGS : PASSES);
@@ -75,11 +79,10 @@ class ScriptedExecutor implements AgentExecutor {
   }
 }
 
-describe("scenario: url-shortener aa8fbd5d, a written test that fails and hangs (#1271)", () => {
-  test("the test task runs its own file and its correction repairs it", async () => {
+async function writtenTestsRun(tasks: Task[]) {
     const root = mkdtempSync(join(tmpdir(), "baked-written-tests-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));
-    const executor = new ScriptedExecutor(root);
+    const executor = new ScriptedExecutor(root, tasks);
     const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } };
     const service = new NativeWorkflowService(root, config, executor);
     cleanups.push(() => service.close());
@@ -98,7 +101,15 @@ describe("scenario: url-shortener aa8fbd5d, a written test that fails and hangs 
     const first = JSON.parse(service.store.readArtifact(run.runId, written[0]?.id ?? "{}"));
     expect(first).toMatchObject({ reason: "timeout_after_failure", timedOut: true, definition: { args: ["test", "./tests/handler.test.ts"], timeoutMs: 8000 } });
     expect(executor.attempts.filter((a) => a.origin !== "planned")).toHaveLength(1);
-  }, 90000);
+}
+
+describe("scenario: url-shortener aa8fbd5d, a written test that fails and hangs (#1271)", () => {
+  test("the test task runs its own file and its correction repairs it", () => writtenTestsRun(TASKS), 90000);
+
+  // #1408: a README task still to run counted as code, so T002's tests never ran on their own and
+  // the hang reached the feature `tests` check, which repaired it in a later repair task.
+  test("a documentation task still to run does not hold the test task's check back", () =>
+    writtenTestsRun([...TASKS, task("T003", "README.md", ["T002"])]), 90000);
 });
 
 describe("a check that timed out", () => {
