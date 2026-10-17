@@ -39,6 +39,7 @@ import {
 import { workflowHelp } from "../src/headless/workflow-parse.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
 import { mergedBase } from "../src/core/workflows/worktree.js";
+import { PLACEHOLDER_SHARE } from "../src/core/workflows/initiatives/estimate.js";
 import {
   assignFeatureWorkflows,
   lightenSmallLeaves,
@@ -563,6 +564,28 @@ describe("scenario: an initiative budget shared by estimated need (#1311)", () =
     const alone = setup();
     await alone.start({ plan: threeFeatures });
     expect(alone.initiatives.estimate("values")).toMatchObject({ perPath: null, perPathSamples: { features: 0, shared: 0 } });
+  }, 30000);
+  // Bench round 40, tonemath (#1464): core listed the stubs later features filled, so a finished
+  // core counted its whole cost against paths it only created placeholders for.
+  test("a finished feature's placeholder paths count at their share in the measured path rate", async () => {
+    const stubbed = plan([feature("core", [], ["core.txt", "api.txt"]), feature("api", ["core"]), feature("docs")]);
+    const other = setup(stubbed, 20_000);
+    await other.start({
+      plan: stubbed,
+      featureAutoApproval: { maxTasks: 5, maxFiles: 5 },
+      budget: { maxTotalTokens: 50_000_000, maxAgentCalls: 400, maxActiveMs: 21_600_000 },
+    });
+    let view = await other.approveSplit();
+    for (let i = 0; i < 12 && view.status !== "completed"; i++) view = await other.drive();
+    expect(view.status).toBe("completed");
+    const spent = Object.fromEntries((other.initiatives.estimate("values")?.features ?? []).map((f) => [f.featureId, f.spent]));
+    expect(other.initiatives.estimate("values")?.features.find((f) => f.featureId === "core")).toMatchObject({ paths: 1, placeholders: 1 });
+    const fresh = setup();
+    await fresh.start({ plan: threeFeatures, policy: { ...policy, sizing: { historyStores: [other.root] } } });
+    const rates = [(spent.core ?? 0) / (1 + PLACEHOLDER_SHARE), spent.api ?? 0, spent.docs ?? 0];
+    // Core's 140k over one file and one stub is 105k a path, the median; two full paths said 70k.
+    const sorted = [...rates].sort((a, b) => a - b);
+    expect(fresh.initiatives.estimate("values")?.perPath).toEqual({ low: sorted[0] ?? 0, high: Math.round(sorted[1] ?? 0) });
   }, 30000);
 });
 

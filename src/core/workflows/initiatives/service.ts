@@ -54,13 +54,13 @@ import {
 } from "./estimate.js";
 import {
   applySplitEdit,
+  boundaryPathCounts,
   featureDigest,
   type InitiativeFeature,
   InitiativeId,
   type InitiativePlan,
   InitiativePlanSchema,
   isGlobPath,
-  literalPathCount,
   mergeSmallSiblings,
   planSizeProblem,
   type SplitEdit,
@@ -1406,6 +1406,7 @@ export class InitiativeService {
     const settings = this.store.settings(row);
     const facts = this.workflowFacts(settings);
     const models = settings.model ? [settings.model] : [];
+    const counts = boundaryPathCounts(plan);
     const features = plan.features.map((feature) => {
       const workflowId = featureWorkflowId(settings, feature);
       return {
@@ -1414,7 +1415,7 @@ export class InitiativeService {
         workflowId,
         size: feature.size ?? "medium",
         stages: (facts(workflowId)?.stages ?? []).map((stage) => ({ ...stage, models })),
-        paths: literalPathCount(feature),
+        ...counts.get(feature.id),
       };
     });
     const history = estimateHistory(
@@ -2012,16 +2013,19 @@ function featureRunSamples(
   const runs = new Map(history.map((run) => [run.runId, run]));
   return initiatives.list().flatMap((row) => {
     const settings = initiatives.settings(row);
-    const plans = new Map<number, InitiativePlan>();
+    const plans = new Map<
+      number,
+      { plan: InitiativePlan; counts: ReturnType<typeof boundaryPathCounts> }
+    >();
     return initiatives.links(row.id).flatMap((link) => {
       const run = runs.get(link.run_id);
       if (run?.status !== "completed") return [];
-      if (!plans.has(link.plan_revision))
-        plans.set(
-          link.plan_revision,
-          initiatives.plan(initiatives.revision(row.id, link.plan_revision)),
-        );
-      const feature = plans.get(link.plan_revision)?.features.find((f) => f.id === link.feature_id);
+      if (!plans.has(link.plan_revision)) {
+        const plan = initiatives.plan(initiatives.revision(row.id, link.plan_revision));
+        plans.set(link.plan_revision, { plan, counts: boundaryPathCounts(plan) });
+      }
+      const revision = plans.get(link.plan_revision);
+      const feature = revision?.plan.features.find((f) => f.id === link.feature_id);
       if (!feature) return [];
       return [
         {
@@ -2031,7 +2035,8 @@ function featureRunSamples(
           tokens: run.tokens,
           taskCount: run.taskCount,
           criteria: runStore.state(run.runId).spec?.criteria.length,
-          paths: literalPathCount(feature),
+          // A stub it created for a later feature counts at its share, not as a path (#1464).
+          ...revision?.counts.get(feature.id),
           ...(source === "shared" ? { source } : {}),
         },
       ];
