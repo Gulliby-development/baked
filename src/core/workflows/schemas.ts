@@ -1311,6 +1311,7 @@ export const EventSchema = z.discriminatedUnion("type", [
           cause: InterruptCause.optional(),
           detail: z.string().max(500).optional(),
           stack: z.string().max(2000).optional(),
+          carried: z.literal(true).optional(),
         })
         .strict(),
     })
@@ -2167,8 +2168,14 @@ export function narrowingBounds(
 /** A clause that puts inputs beyond a criterion's domain outside it: "larger inputs are outside this criterion's checked domain". */
 const DOMAIN_EXCLUSION =
   /\boutside\b[^.;]*\bdomain\b|\b(?:larger|longer|bigger|greater|deeper|more|higher|wider)\b[^.;]*\b(?:are|is)\s+(?:outside|not covered)\b|\bnot covered\b/i;
+/** What a thousands or millions suffix multiplies by: "10k rows" names 10,000 rows (#1413). */
+const SUFFIX_FACTOR: Record<string, number> = { k: 1e3, K: 1e3, M: 1e6 };
 const boundNumbers = (text: string): string[] =>
-  (text.match(/\d[\d,._]*/g) ?? []).map((n) => n.replace(/[,._]+$/, "").replace(/[,_]/g, ""));
+  [...text.matchAll(/(\d[\d,._]*)([kKM]\b)?/g)].map(([, raw = "", suffix]) => {
+    const n = raw.replace(/[,._]+$/, "").replace(/[,_]/g, "");
+    const scaled = suffix ? Number(n) * (SUFFIX_FACTOR[suffix] ?? 1) : Number.NaN;
+    return Number.isFinite(scaled) ? String(Math.round(scaled)) : n;
+  });
 
 /**
  * Criteria whose Given, When or Then narrow the criterion with a domain exclusion the request does not

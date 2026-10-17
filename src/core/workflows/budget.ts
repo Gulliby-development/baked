@@ -205,6 +205,27 @@ export function proposeCostCap(
 const GROWTH_STEP = 0.5;
 
 /**
+ * The cost cap after the host grows the token budget to `maxTotalTokens`. A cap that may grow
+ * (`sizing.maxRunCostUsd`, set by an initiative from its unspent dollars) grows in proportion to
+ * the tokens, up to that bound; any other cap stays. Every host growth of the token budget goes
+ * through here, so the sizing raise and auto-growth agree (#1411). Bench round 35 (narrowfit sum):
+ * auto-growth raised 1,527,292 tokens to 2,290,938 while the cap stayed $1.46, and the run stopped
+ * on the cap with 62% of them used (#1353).
+ */
+export function grownCostCap(policy: RunPolicy, maxTotalTokens: number): number | null {
+  const growCostTo = policy.sizing?.maxRunCostUsd;
+  if (policy.maxCostUsd === null || growCostTo === undefined) return policy.maxCostUsd;
+  if (maxTotalTokens <= policy.maxTotalTokens) return policy.maxCostUsd;
+  return Math.max(
+    policy.maxCostUsd,
+    Math.min(
+      growCostTo,
+      Math.ceil(((policy.maxCostUsd * maxTotalTokens) / policy.maxTotalTokens) * 100) / 100,
+    ),
+  );
+}
+
+/**
  * Records a budget growth the host made on its own as a policy revision (`approvedBy: "sizing"`,
  * never an operator decision), stores the policy and updates the object the caller drives with.
  */
@@ -217,21 +238,7 @@ function recordGrowth(
   detail: Record<string, unknown>,
 ): void {
   const before = hashJson(policy);
-  // A cap that may grow (`sizing.maxRunCostUsd`, set by an initiative from its unspent dollars)
-  // grows with the tokens. Bench round 35 (narrowfit sum): auto-growth raised 1,527,292 tokens to
-  // 2,290,938 while the cap stayed $1.46, and the run stopped on the cap with 62% of them used
-  // (#1353).
-  const growCostTo = policy.sizing?.maxRunCostUsd;
-  const maxCostUsd =
-    policy.maxCostUsd !== null && growCostTo !== undefined && maxTotalTokens > policy.maxTotalTokens
-      ? Math.max(
-          policy.maxCostUsd,
-          Math.min(
-            growCostTo,
-            Math.ceil(((policy.maxCostUsd * maxTotalTokens) / policy.maxTotalTokens) * 100) / 100,
-          ),
-        )
-      : policy.maxCostUsd;
+  const maxCostUsd = grownCostCap(policy, maxTotalTokens);
   const after = PolicySchema.parse({ ...policy, maxTotalTokens, maxCostUsd });
   const cost =
     maxCostUsd !== policy.maxCostUsd
@@ -319,7 +326,9 @@ export function growBudgetOnProgress(
  * blocked `budget_exhausted` at plan with its 20M ceiling unused (#1296). A model attempt that
  * completed since the last such growth counts as progress here: the budget grows by the same step,
  * up to the ceiling, recorded as `kind: "planning-growth"`. A planning phase whose attempts keep
- * failing does not grow it.
+ * failing does not grow it. The same holds once a revise or a rejected tests-first task has
+ * invalidated every finished task: the run re-plans with no task finished, and without this the
+ * budget did not grow again until one re-finished (#1431).
  */
 function growWhilePlanning(
   store: WorkflowStore,
@@ -328,7 +337,6 @@ function growWhilePlanning(
   projected: number,
   ceiling: number,
 ): boolean {
-  if (store.taskCompletions(runId) > 0) return false;
   const completedAttempts = store
     .attempts(runId)
     .filter((a) => a.model_id !== null && a.status === "completed").length;

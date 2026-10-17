@@ -1,5 +1,6 @@
 import { canonical, hashJson } from "../specs/hash.js";
 import { WorkflowFault } from "./errors.js";
+import { hostGrowth, withoutHostGrowth } from "./host-growth.js";
 import { isManifestPath } from "./quality/manifests.js";
 import { unmappedDeliverables } from "./request-coverage.js";
 import {
@@ -99,6 +100,11 @@ export interface ApprovalContext {
    * as policy revisions with `approvedBy: "sizing"`; see `hostBudgetGrowth`.
    */
   hostGrowthTokens?: number;
+  /**
+   * The run's policy revisions, so a renewal can tell the host's own budget growth from a change a
+   * person has to approve (`hostGrowth`).
+   */
+  policyRevisions?: { artifacts: ArtifactRow[]; read: (artifact: ArtifactRow) => string };
 }
 
 /** Budget limits a renewal may keep or lower, never raise, unless the operator raised them. */
@@ -164,7 +170,14 @@ export function evaluateAutoApproval(
   const limitsHash = hashJson({ policy: policyBounds(policy) });
   const reasons: string[] = [...common];
   if (config.renewal) {
-    const renewal = renewalProblems(policy, manifest, graph, requests, decisions);
+    const renewal = renewalProblems(
+      policy,
+      manifest,
+      graph,
+      requests,
+      decisions,
+      context.policyRevisions,
+    );
     if (!common.length && !renewal.length)
       return { approval: { mode: "renewal", limitsHash }, reasons: [] };
     reasons.push(...renewal.map((reason) => `Renewal: ${reason}`));
@@ -280,8 +293,41 @@ function requiredByRequest(write: Write, request: string): boolean {
  */
 function requestedManifestEdit(write: Write, request: string): boolean {
   return (
-    write.action !== "delete" && isManifestPath(write.path) && requiredByRequest(write, request)
+    write.action !== "delete" && isManifestPath(write.path) && requestNamesManifest(write, request)
   );
+}
+
+/** Manifest names every package of a monorepo repeats; the request names one only by its path. */
+const SHARED_MANIFEST =
+  /^(?:package\.json|pyproject\.toml|requirements[\w.-]*\.txt|cargo\.toml|go\.mod|pom\.xml)$/;
+/** A sentence that tells the run to leave a file alone ("keep package.json as is"). */
+const LEAVE_ALONE =
+  /\b(?:do not|don't|never|must not|should not|without (?:changing|editing|modifying|touching|updating))\b|\b(?:keep|leave)\b.*\b(?:as[ -]is|unchanged|untouched|intact|alone)\b/;
+const PATH_CHAR = "[\\w./-]";
+
+/**
+ * Whether the request names a manifest as one to change (#1428). Unlike `requiredByRequest`,
+ * which only shapes the planner's advice, this decides an approval: the manifest's path must
+ * appear as a whole token (`package.json` is not part of `packages/api/package.json`), its bare
+ * file name counts only for a name no other package repeats (`Api.csproj`, not `package.json`),
+ * and a sentence that tells the run to leave the file alone does not count.
+ */
+function requestNamesManifest(write: Write, request: string): boolean {
+  const path = write.path.toLowerCase();
+  const name = path.split("/").at(-1) ?? path;
+  const tokens = SHARED_MANIFEST.test(name) ? [path] : [path, name];
+  const whole = tokens.map(
+    (token) =>
+      new RegExp(
+        `(?:^|[^\\w./-])(?:\\./)?${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?!${PATH_CHAR}*\\w)`,
+      ),
+  );
+  return request
+    .toLowerCase()
+    .replaceAll("\\", "/")
+    .replaceAll("\u2019", "'")
+    .split(/(?<=[.!?;])\s+|\n+/)
+    .some((sentence) => !LEAVE_ALONE.test(sentence) && whole.some((re) => re.test(sentence)));
 }
 
 /**
@@ -347,7 +393,11 @@ export function withoutApprovalRemarks(graph: TaskGraph): TaskGraph {
  * A renewal stays within the latest human approval: the same or fewer writes, the same task
  * profiles and frozen inputs, and no wider capabilities. The remaining policy settings (checks,
  * budgets, auto approval) must match that approval, or match the policy the operator set later
- * with an explicit command, because that command is itself a human decision.
+ * with an explicit command, because that command is itself a human decision. Budget growth the
+ * host made on its own after either (`hostGrowth`) is not a change: the renewal compares the limits
+ * as they were before it. A renewal refused "maxTotalTokens grew" after the host grew the budget
+ * past a revise, and since the cost cap grows too, "checks or other policy settings changed"
+ * (#1430).
  */
 function renewalProblems(
   policy: RunPolicy,
@@ -355,6 +405,7 @@ function renewalProblems(
   graph: TaskGraph,
   requests: RequestRow[],
   decisions: PolicyDecision[],
+  revisions?: ApprovalContext["policyRevisions"],
 ): string[] {
   const previous = requests.filter(
     (request) =>
@@ -379,13 +430,24 @@ function renewalProblems(
   // in force that a decision names is therefore the operator's latest choice; an approval taken
   // after that decision was taken under the same policy, so their order does not matter.
   const current = hashJson(policy);
-  const operatorSet = decisions.some((decision) => decision.policyHash === current);
+  const growth = revisions
+    ? hostGrowth(
+        revisions.artifacts,
+        revisions.read,
+        current,
+        new Set([hashJson(approved), ...decisions.map((decision) => decision.policyHash)]),
+      )
+    : null;
+  const set = growth ? withoutHostGrowth(policy, growth) : policy;
+  const operatorSet = decisions.some(
+    (decision) => decision.policyHash === current || decision.policyHash === growth?.baseHash,
+  );
   if (!operatorSet) {
-    if (canonical(settings(policy)) !== canonical(settings(approved)))
+    if (canonical(settings(set)) !== canonical(settings(approved)))
       problems.push("checks or other policy settings changed without an operator decision");
     for (const key of budgetKeys)
-      if (policy[key] > approved[key])
-        problems.push(`${key} grew from ${approved[key]} to ${policy[key]}`);
+      if (set[key] > approved[key])
+        problems.push(`${key} grew from ${approved[key]} to ${set[key]}`);
   }
   for (const key of ["workflowHash", "profileHashes", "skillHashes"] as const)
     if (canonical(manifest[key]) !== canonical(body.manifest[key])) problems.push(`${key} changed`);

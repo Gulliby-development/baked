@@ -7,7 +7,12 @@
 import { assessRequest, proposeWorkflow } from "../preset-router.js";
 import { executionModeOf, type RunPolicy } from "../schemas.js";
 import { asV2, listDefinitions, loadDefinition } from "../v2/definitions.js";
-import { type InitiativeFeature, type InitiativePlan, MIN_FEATURE_PATHS } from "./plan.js";
+import {
+  type InitiativeFeature,
+  type InitiativePlan,
+  literalPathCount,
+  MIN_FEATURE_PATHS,
+} from "./plan.js";
 
 /** What the initiative needs to know about a workflow to run a feature with it. */
 export interface FeatureWorkflow {
@@ -158,9 +163,9 @@ export const LIGHT_LEAF_WORKFLOW = "quick";
 
 /**
  * The plan with small leaf features moved to the light workflow: a feature nothing depends on,
- * with one or two boundary paths or size small, that runs a workflow writing a spec, runs
- * `LIGHT_LEAF_WORKFLOW` when it can run here and none of its paths is risky (`RISKY_PATH`). Its spec
- * would be a contract nobody pins, and a spec workflow's fixed stages cost the most on the
+ * with one or two literal boundary paths or size small (never large, never a glob boundary), that
+ * runs a workflow writing a spec, runs `LIGHT_LEAF_WORKFLOW` when it can run here and none of its
+ * paths is risky (`RISKY_PATH`). Its spec would be a contract nobody pins, and a spec workflow's fixed stages cost the most on the
  * smallest features: seqmill's documentation leaf cost $1.42 under sdd against about $0.5 for a
  * quick run (bench round 36). Features in `keep` are left as they are.
  */
@@ -179,8 +184,13 @@ export function lightenSmallLeaves(
   const unavailable: string[] = [];
   const features = plan.features.map((feature) => {
     const from = feature.workflow;
-    const paths = feature.boundary.paths.length;
-    const small = feature.size === "small" || (paths > 0 && paths < MIN_FEATURE_PATHS);
+    // A glob boundary is any number of files: its size is unknown, so it is left alone (#1405).
+    const paths = literalPathCount(feature);
+    const glob = paths === 0 && feature.boundary.paths.length > 0;
+    const small =
+      !glob &&
+      feature.size !== "large" &&
+      (feature.size === "small" || (paths > 0 && paths < MIN_FEATURE_PATHS));
     if (
       keep.has(feature.id) ||
       !from ||
@@ -202,4 +212,31 @@ export function lightenSmallLeaves(
     lightened,
     unavailable,
   };
+}
+
+/**
+ * The plan with every feature that other features depend on running a workflow that writes a
+ * spec: a feature on a light workflow that gained a dependent (shared-path sequencing runs after
+ * the workflows are chosen) gets `fallback`, the initiative's default when it writes a spec, else
+ * the first choice that does. Without it the dependent stops at ARTIFACT_MISSING on every drive,
+ * since there is no accepted spec to pin (#1406).
+ */
+export function restoreContractWorkflows(
+  plan: InitiativePlan,
+  choices: readonly FeatureWorkflow[],
+  defaultWorkflow: string,
+): { plan: InitiativePlan; restored: { featureId: string; from: string; to: string }[] } {
+  const contract = (id: string) => choices.find((c) => c.id === id)?.contract === true;
+  const fallback = contract(defaultWorkflow)
+    ? defaultWorkflow
+    : choices.find((c) => c.contract)?.id;
+  const restored: { featureId: string; from: string; to: string }[] = [];
+  if (!fallback) return { plan, restored };
+  const features = plan.features.map((feature) => {
+    const from = feature.workflow ?? defaultWorkflow;
+    if (contract(from) || !hasDependents(plan, feature)) return feature;
+    restored.push({ featureId: feature.id, from, to: fallback });
+    return { ...feature, workflow: fallback };
+  });
+  return restored.length ? { plan: { ...plan, features }, restored } : { plan, restored };
 }

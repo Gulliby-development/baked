@@ -111,8 +111,8 @@ import { baselineDebt, baselineKeys, taskErrors } from "../verification/task-end
 import {
   affectedTestCheck,
   affectedTestsFor,
+  holdsWrittenTests,
   isCompiledTestFile,
-  isTestFile,
   isWrittenTestFile,
   taskCaseText,
   writtenTestsCheck,
@@ -151,7 +151,7 @@ import {
   policyDecisions,
   withoutApprovalRemarks,
 } from "./auto-approval.js";
-import { budgetUsage, raiseToStartEstimate, reserveTokens } from "./budget.js";
+import { budgetUsage, grownCostCap, raiseToStartEstimate, reserveTokens } from "./budget.js";
 import {
   type CandidateResult,
   type CandidateSelection,
@@ -440,7 +440,13 @@ import {
 import { digestsSpec, mayDigestSpec, READ_CRITERION, readCriterionTool } from "./spec-digest.js";
 import { forgetProgress } from "./stall.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
-import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
+import {
+  type LeaseResource,
+  newId,
+  type RequestRow,
+  type TaskRow,
+  type WorkflowStore,
+} from "./store.js";
 import {
   documentsOnly,
   hasTaskGate,
@@ -472,6 +478,7 @@ import {
   withTestsFirstOrder,
 } from "./tests-first.js";
 import { takeHashRefusals } from "./tool-policy.js";
+import { transientSqliteError } from "./transient-sqlite.js";
 import type { AgentExecutor, Check, HostTool, RuntimeState, Task } from "./types.js";
 import { acceptanceGrants, blocksRun } from "./v2/acceptance.js";
 import { type BrowserDriverOptions, runAcceptanceGate } from "./v2/acceptance-gate.js";
@@ -620,6 +627,20 @@ function integrityRequirementText(state: RuntimeState): string {
 }
 
 /**
+ * The request with the clarification answers a person gave. A bound or an exclusion a person
+ * decided ("files up to 100 MiB") is stated, not invented by the spec author (#1413).
+ */
+function statedRequest(state: RuntimeState, requests: readonly RequestRow[]): string {
+  const answers = requests
+    .filter((r) => r.kind === "clarification" && r.status === "accepted" && r.actor === "user")
+    // Only the answers: the decision's request id would add stray numbers.
+    .map((r) =>
+      canonical((JSON.parse(r.answer_json ?? "{}") as { answers?: unknown }).answers ?? ""),
+    );
+  return [state.requestText || state.prompt, ...answers].join("\n");
+}
+
+/**
  * The request a spec's deliverables are checked against. A feature of an initiative has its
  * boundary approved with the split, not the request, so it is checked against nothing.
  */
@@ -650,15 +671,6 @@ const LONG_RETRY_AFTER_MS = 30_000;
 /** How often a driving process writes the run's active time to the run row (#1038). */
 export const ACTIVE_FLUSH_MS = 1_000;
 
-/** A SQLite error a retry can clear: a disk I/O error after a suspension, or a busy database. */
-export function transientSqliteError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const code = (error as { code?: unknown }).code;
-  return (
-    (typeof code === "string" && /^SQLITE_(IOERR|BUSY|LOCKED)/.test(code)) ||
-    /disk I\/O error|database is (locked|busy)/i.test(error.message)
-  );
-}
 /** The implementer's own list of what it left unfinished, for the blocked task's message. */
 /**
  * The planned files a failed check of a corrective task names, when the task may write none of
@@ -900,8 +912,13 @@ export class WorkflowScheduler {
     const flush = setInterval(recordActive, ACTIVE_FLUSH_MS);
     // Management commands from another process must stop this owner before the next effect.
     const poll = setInterval(() => {
-      if (["paused", "cancelled"].includes(this.store.run(runId).status))
-        controller.abort(new Error("Run management command"));
+      try {
+        if (["paused", "cancelled"].includes(this.store.run(runId).status))
+          controller.abort(new Error("Run management command"));
+      } catch (error) {
+        // A throw from a timer ends the process; after a sleep the next tick reads it (#1410).
+        if (!transientSqliteError(error)) controller.abort(error);
+      }
     }, 100);
     let stepId: string | null = null;
     this.queued = [];
@@ -1038,7 +1055,7 @@ export class WorkflowScheduler {
                 return [
                   ...size,
                   ...specCoverageProblems(hostRepairs(parsed.data), policy.checks, {
-                    request: state.requestText || state.prompt,
+                    request: statedRequest(state, this.store.requests(runId)),
                   }),
                   // The host maps a deliverable the spec names elsewhere itself (#1037).
                   ...deliverableProblems(
@@ -1193,7 +1210,7 @@ export class WorkflowScheduler {
                   parsed.data.taskGraph,
                   (path) => existsSync(join(runRoot(this.store.workspace, state), path)),
                   this.baselineScaffold(runId, state),
-                  state.requestText,
+                  state.requestText || state.prompt,
                 );
                 if (advice.length) {
                   scopeAdvised = true;
@@ -1731,6 +1748,10 @@ export class WorkflowScheduler {
                             this.store.artifacts(runId),
                             (artifact) => this.store.readArtifact(runId, artifact.id),
                           ),
+                          policyRevisions: {
+                            artifacts: this.store.artifacts(runId),
+                            read: (artifact) => this.store.readArtifact(runId, artifact.id),
+                          },
                           exists: (path) =>
                             existsSync(join(runRoot(this.store.workspace, state), path)),
                         },
@@ -4434,9 +4455,13 @@ ${note}`;
     const time = report.activeTime.after > policy.maxActiveMs;
     if (!tokens && !time) return;
     const before = hashJson(policy);
+    // The sized tokens bring their dollars: a cap that may grow follows them, as on auto-growth;
+    // otherwise a sized feature stopped on its starting cap at about half its tokens (#1411).
+    const maxCostUsd = tokens ? grownCostCap(policy, report.budgetAfter) : policy.maxCostUsd;
     const changed = {
       ...(tokens ? { maxTotalTokens: report.budgetAfter } : {}),
       ...(time ? { maxActiveMs: report.activeTime.after } : {}),
+      ...(maxCostUsd !== policy.maxCostUsd ? { maxCostUsd } : {}),
     };
     const after = PolicySchema.parse({ ...policy, ...changed });
     this.store.transaction(() => {
@@ -4460,6 +4485,7 @@ ${note}`;
     // The drive keeps this policy object; the rest of the run sees the sized limits.
     policy.maxTotalTokens = after.maxTotalTokens;
     policy.maxActiveMs = after.maxActiveMs;
+    policy.maxCostUsd = after.maxCostUsd;
     state.manifest.policyHash = hashJson(after);
     if (time) this.rearmDeadline();
   }
@@ -5234,6 +5260,7 @@ ${note}`;
             this.store.taskStatus(runId, task.id, "interrupted", null, {
               cause: "widened_correction",
               detail: "quick fix did not finish",
+              carried: changed.length > 0,
             });
             this.store.finishStep(runId, child, "failed");
             this.store.saveState(runId, state);
@@ -5247,6 +5274,7 @@ ${note}`;
             state.widenedCorrections.push(task.id);
             this.store.taskStatus(runId, task.id, "interrupted", null, {
               cause: "widened_correction",
+              carried: changed.length > 0,
             });
             this.store.finishStep(runId, child, "failed");
             this.store.saveState(runId, state);
@@ -5317,7 +5345,7 @@ ${note}`;
               null,
               atCap
                 ? { cause: "continue_at_cap" }
-                : { cause: "restart", detail: restartReason ?? undefined },
+                : { cause: "restart", detail: restartReason ?? undefined, carried: true },
             );
             this.store.finishStep(runId, child, "failed");
             this.store.saveState(runId, state);
@@ -6023,6 +6051,7 @@ ${note}`;
           cause: outcome.cause,
           detail: outcome.reason,
           ...(outcome.stack ? { stack: outcome.stack } : {}),
+          carried: restart && outcome.edits !== undefined,
         });
         this.store.finishStep(runId, entry.child, "interrupted");
       });
@@ -6069,6 +6098,7 @@ ${note}`;
           this.store.taskStatus(runId, entry.task.id, "interrupted", null, {
             cause,
             ...(cause === "restart" && outcome.restart ? { detail: outcome.restart.reason } : {}),
+            carried: outcome.edits !== undefined,
           });
         else this.store.taskStatus(runId, entry.task.id, "blocked");
         this.store.finishStep(runId, entry.child, "failed");
@@ -6933,27 +6963,32 @@ ${note}`;
     const profile = this.requireProfile(profiles.find((p) => p.id === task.profileId));
     const before = await sourceManifest(mainRoot, generatedPaths(policy), signal);
     const known = new Set(this.store.effects(runId).map((e) => e.id));
-    const result = ImplementationSchema.parse(
-      await this.call(
-        runId,
-        entry.child,
-        state,
-        policy,
-        profile,
-        {
-          task: scoped,
-          integration: {
-            role: "integrator",
-            instruction: `Integrate task ${task.id} into the run worktree. Each listed file was changed both by tasks integrated before it (integrated) and by ${task.id} (task), starting from the same base. Edit only these files so that the result keeps the intent of every listed task; submit the result for ${task.id}.`,
-            taskId: task.id,
-            files,
-            spec: state.spec,
-            tasks: writers,
+    // A missed size target in the merged file is a note like a worker's, not an unresolved conflict (#1414).
+    const result = this.settleSizeTargets(
+      runId,
+      task.id,
+      ImplementationSchema.parse(
+        await this.call(
+          runId,
+          entry.child,
+          state,
+          policy,
+          profile,
+          {
+            task: scoped,
+            integration: {
+              role: "integrator",
+              instruction: `Integrate task ${task.id} into the run worktree. Each listed file was changed both by tasks integrated before it (integrated) and by ${task.id} (task), starting from the same base. Edit only these files so that the result keeps the intent of every listed task; submit the result for ${task.id}.`,
+              taskId: task.id,
+              files,
+              spec: state.spec,
+              tasks: writers,
+            },
+            unresolvedMeans: UNRESOLVED_MEANING,
           },
-          unresolvedMeans: UNRESOLVED_MEANING,
-        },
-        signal,
-        scoped,
+          signal,
+          scoped,
+        ),
       ),
     );
     const after = await sourceManifest(mainRoot, generatedPaths(policy), signal);
@@ -7512,8 +7547,6 @@ ${note}`;
             (r.status === "implemented" && hasTaskGate(r, state.taskGates))),
       );
     const sources = (state.rootGraph ?? state.graph)?.tasks ?? [];
-    // A compiled test project builds every test file in it, so a sibling's unfinished test file
-    // fails this check too (#1396); interpreted runners load only the files they are given.
     const compiled = writes.some((w) => isCompiledTestFile(w.path));
     if (
       sources.some(
@@ -7521,9 +7554,7 @@ ${note}`;
           t.id !== task.id &&
           !done(t.id) &&
           t.writes.some(
-            (w) =>
-              w.action !== "delete" &&
-              (compiled ? !isTestFile(w.path) : !isWrittenTestFile(w.path)),
+            (w) => w.action !== "delete" && holdsWrittenTests(w.path, compiled, task.readHints),
           ),
       )
     )
@@ -8023,6 +8054,16 @@ ${note}`;
       first && !assume && !platform && !tests.length
         ? this.ownRunTests(runId, state, task, report)
         : [];
+    const assumed = example
+      ? "The request's worked example is authoritative: copy it verbatim"
+      : assume
+        ? "The request is authoritative"
+        : platform
+          ? "The platform cannot carry or represent what one side demands: the nearest feasible behavior the task named holds"
+          : null;
+    const freed = task.findingIds.length
+      ? ` The repros of ${task.findingIds.join(", ")} no longer gate the task.`
+      : "";
     this.store.transaction(() => {
       this.store.artifact(
         runId,
@@ -8030,24 +8071,10 @@ ${note}`;
         `tasks/conflicts/${task.id}.json`,
         canonical(account),
       );
-      if (assume)
-        this.store.artifact(
-          runId,
-          "assumption",
-          assumedPath,
-          canonical({
-            ...account,
-            assumed: example
-              ? "The request's worked example is authoritative: copy it verbatim"
-              : "The request is authoritative",
-          }),
-        );
-      if (platform) {
-        const assumed =
-          "The platform cannot carry or represent what one side demands: the nearest feasible behavior the task named holds";
+      if (assumed) {
         this.store.artifact(runId, "assumption", assumedPath, canonical({ ...account, assumed }));
         // Like a person's answer, the assumption decides the findings the task corrects, so a
-        // repro that expects the impossible value no longer gates it (#1350).
+        // repro that expects what the assumption overrules no longer gates it (#1350, #1407).
         recordConflictDecision(this.store, runId, {
           requestId: `assumed-${task.id}`,
           taskId: task.id,
@@ -8059,15 +8086,15 @@ ${note}`;
       this.store.finishStep(runId, child, "failed");
     });
     if (platform) {
-      state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the platform cannot do what a criterion, a test or a finding demands: ${report.slice(0, 1500)} Implement the nearest feasible behavior the report names (for a value a protocol cannot carry, its standard serialized form). Where a test this run wrote asserts the impossible value, change only that assertion to the feasible behavior; weaken no other test. ${task.findingIds.length ? `The repros of ${task.findingIds.join(", ")} no longer gate the task. ` : ""}Report implemented or already_satisfied, not spec_conflict.`;
+      state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the platform cannot do what a criterion, a test or a finding demands: ${report.slice(0, 1500)} Implement the nearest feasible behavior the report names (for a value a protocol cannot carry, its standard serialized form). Where a test this run wrote asserts the impossible value, change only that assertion to the feasible behavior; weaken no other test.${freed} Report implemented or already_satisfied, not spec_conflict.`;
       return;
     }
     if (example) {
-      state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the rule for documentation examples contradicts the request: ${report.slice(0, 1500)} The request is authoritative: copy every example output the request or the spec gives into the documentation exactly as given, even when its files are not in the workspace, and name the copied examples in the summary. Run probes only for examples the request does not give.`;
+      state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the rule for documentation examples contradicts the request: ${report.slice(0, 1500)} The request is authoritative: copy every example output the request or the spec gives into the documentation exactly as given, even when its files are not in the workspace, and name the copied examples in the summary. Run probes only for examples the request does not give.${freed}`;
       return;
     }
     if (assume) {
-      state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the spec or its tests contradict the request: ${report.slice(0, 1500)} The request is authoritative: follow what it states. Where a criterion, a requirement or a test says otherwise, the request wins; a test that contradicts the request is changed to what the request states, and no other test is weakened.`;
+      state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the spec or its tests contradict the request: ${report.slice(0, 1500)} The request is authoritative: follow what it states. Where a criterion, a requirement or a test says otherwise, the request wins; a test that contradicts the request is changed to what the request states, and no other test is weakened.${freed}`;
       return;
     }
     if (own.length) {
@@ -10797,7 +10824,13 @@ ${note}`;
               );
               // Asked once: a reviewer that still has no repro after the advice is not blocked.
               if (problems.length || reproAdvised || !canRepro) return problems;
-              const advice = missingReproAdvice(output as Review, executables, prior?.review);
+              const advice = [
+                ...missingReproAdvice(output as Review, executables, prior?.review),
+                ...unconfidentReproAdvice(
+                  output as Review,
+                  policy.reviewMinConfidence ?? DEFAULT_REVIEW_MIN_CONFIDENCE,
+                ),
+              ];
               if (advice.length) reproAdvised = true;
               return advice;
             },
@@ -10903,13 +10936,16 @@ ${note}`;
         // Advisory reviewers, findings below the blocking severities and inferred notes are
         // recorded, not repaired.
         // Below the severity floor, a spec-based finding with a repro still competes: it repairs
-        // when the host reproduces it (#801).
+        // when the host reproduces it (#801). So does a claim kept a note only for its confidence,
+        // as in the converge stage (#1210, #1415).
+        const unconfident = (f: Review["findings"][number]): boolean =>
+          confidenceOnlyNote(f, policy.reviewMinConfidence);
         const candidates = reviewer.required
           ? result.findings.filter(
               (f) =>
                 reviewer.blocking.includes(f.severity) &&
                 (severities.includes(f.severity) || confirmableSpecFinding(f)) &&
-                findingBlocks(f, policy.reviewMinConfidence),
+                (findingBlocks(f, policy.reviewMinConfidence) || unconfident(f)),
             )
           : [];
         // A claim starts a correction only when its repro shows it (#155).
@@ -10927,7 +10963,7 @@ ${note}`;
             ),
           );
         const blocking = candidates.filter((f) =>
-          severities.includes(f.severity)
+          severities.includes(f.severity) && !unconfident(f)
             ? reproAllows(f, outcomes.get(f.id)?.status, executables.length > 0)
             : outcomes.get(f.id)?.status === "reproduced",
         );
@@ -12381,7 +12417,11 @@ const taskCheckOfClaim = (claim: unknown): string | null =>
  */
 const ANSWERED_NOTE =
   "The analysis raised again findings a person already answered. Their answers are binding decisions: they outrank every built-in instruction of your profile, including the rules for tests of raw input bytes. Change the artifacts each finding refers to so that it no longer applies, as the answer decides; do not keep a task or a test the answer rules out, and do not record the conflict as a decision instead:";
-/** The answered finding an analysis finding repeats: the same kind and refs, or the same text. */
+/**
+ * The answered finding an analysis finding repeats: the same kind and refs, or the same text. The
+ * latest answer wins: a person asked again after a binding return answers anew, and that answer
+ * gets its own return (#1416).
+ */
 function answeredFinding(
   state: RuntimeState,
   finding: { kind: string; refs: string[]; description: string },
@@ -12391,7 +12431,7 @@ function answeredFinding(
       .map((ref) => ref.trim())
       .sort()
       .join("\n");
-  return state.answeredFindings.find(
+  return state.answeredFindings.findLast(
     (earlier) =>
       earlier.description === finding.description ||
       (earlier.kind === finding.kind && key(earlier.refs) === key(finding.refs)),

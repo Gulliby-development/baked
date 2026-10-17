@@ -114,6 +114,7 @@ import {
   AttemptStepController,
   type AttemptUsageRecord,
   DEFAULT_MAX_ATTEMPT_TOKENS,
+  KEEP_RECENT_TOOL_MESSAGES,
   MIN_ATTEMPT_STEPS,
   type StepLike,
   stepTokens,
@@ -488,8 +489,10 @@ export class NativeAgentExecutor implements AgentExecutor {
       // Which code intelligence backend (and language server) answered each tool, for usage.
       const backends = new Map<string, ToolBackendCount>();
       // Reads of the attempt before its first edit, by file and span, with the file's hash (#1360).
-      const earlierReads = new Map<string, { hash: string | null; read: number }>();
+      const earlierReads = new Map<string, { hash: string | null; read: number; call?: number }>();
       let readCalls = 0;
+      // Tool calls of the attempt so far; history compaction keeps only the newest results.
+      let toolCalls = 0;
       let edited = false;
       // A tool call is progress while it runs (it has its own deadline); the last one names a stall.
       const track = async <T>(name: string, call: () => Promise<T>): Promise<T> => {
@@ -499,6 +502,7 @@ export class NativeAgentExecutor implements AgentExecutor {
           watch.calledAt = null;
         }
         watch.tools++;
+        toolCalls++;
         watch.lastTool = name;
         watch.lastAt = Date.now();
         try {
@@ -550,6 +554,11 @@ export class NativeAgentExecutor implements AgentExecutor {
                     earlierReads,
                     ++readCalls,
                     edited,
+                    {
+                      fresh: normalized.fresh === true,
+                      mayEdit: Object.keys(available).some((tool) => EDIT_TOOLS.has(tool)),
+                      call: toolCalls,
+                    },
                   );
                   if (!asked.length) return { success: true, output: unchanged.join("\n") };
                   const { files, outlines } = await outlineLargeReads(
@@ -1632,10 +1641,12 @@ export const REREADS_BEFORE_STUB = 3;
  */
 export function unchangedRereads<T>(
   files: T[],
-  earlier: Map<string, { hash: string | null; read: number }>,
+  earlier: Map<string, { hash: string | null; read: number; call?: number }>,
   read: number,
   edited: boolean,
+  options: { fresh?: boolean; mayEdit?: boolean; call?: number } = {},
 ): { files: T[]; unchanged: string[] } {
+  const { fresh = false, mayEdit = true, call } = options;
   const asked: T[] = [];
   const unchanged: string[] = [];
   for (const file of files) {
@@ -1661,13 +1672,29 @@ export function unchangedRereads<T>(
       hash = fileHash(spec.path);
     } catch {}
     const before = earlier.get(key);
-    if (!edited && read > REREADS_BEFORE_STUB && before && hash !== null && before.hash === hash) {
+    // The stub points at the earlier output, so it is given only while that output is still in
+    // the history: not for a fresh read (the compaction stub asks for one), not once history
+    // compaction may have elided it, and not to a role that cannot edit (#1409).
+    const inHistory =
+      call === undefined ||
+      before?.call === undefined ||
+      call - before.call <= KEEP_RECENT_TOOL_MESSAGES;
+    if (
+      !edited &&
+      !fresh &&
+      mayEdit &&
+      inHistory &&
+      read > REREADS_BEFORE_STUB &&
+      before &&
+      hash !== null &&
+      before.hash === hash
+    ) {
       unchanged.push(
         `[${spec.path} is unchanged since your read #${String(before.read)} in this attempt; its content is in your context above. Apply your edit now.]`,
       );
       continue;
     }
-    earlier.set(key, { hash, read });
+    earlier.set(key, { hash, read, ...(call !== undefined ? { call } : {}) });
     asked.push(file);
   }
   return { files: asked, unchanged };

@@ -7,7 +7,7 @@ import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { writeViaTemp } from "./atomic-write.js";
 import { costRate, growBudgetOnProgress } from "./budget.js";
-import { costCeilingUsd } from "./cost-tolerance.js";
+import { costCeilingUsd, currentCostCap } from "./cost-tolerance.js";
 import { WorkflowFault } from "./errors.js";
 import type { PastRun } from "./estimate.js";
 import { migration001 } from "./migrations/001.js";
@@ -921,8 +921,10 @@ export class WorkflowStore {
     );
   }
   /**
-   * Attempts that ended with their edits kept for the next attempt of the same task: the task's
-   * interruptions with cause `continue_at_cap`, counted from events (#1383).
+   * Attempts that ended with their edits kept for the next attempt of the same task, counted from
+   * events: interruptions with cause `continue_at_cap` (#1383), and restarts or widened
+   * corrections that carried the attempt's edits (`carried`), which keep work the same way
+   * (#1432).
    */
   continuedAttempts(id: string): number {
     return (
@@ -930,7 +932,8 @@ export class WorkflowStore {
         .query<{ n: number }, [string]>(
           `SELECT COUNT(*) AS n FROM events WHERE run_id=? AND type='task.state_changed'
            AND json_extract(payload_json,'$.to')='interrupted'
-           AND json_extract(payload_json,'$.cause')='continue_at_cap'`,
+           AND (json_extract(payload_json,'$.cause')='continue_at_cap'
+                OR json_extract(payload_json,'$.carried')=1)`,
         )
         .get(id)?.n ?? 0
     );
@@ -1176,7 +1179,7 @@ export class WorkflowStore {
     status: TaskRow["status"],
     snapshotId: string | null = null,
     /** Why the task was interrupted, on the `task.state_changed` event (#843). */
-    interrupt?: { cause: InterruptCause; detail?: string; stack?: string },
+    interrupt?: { cause: InterruptCause; detail?: string; stack?: string; carried?: boolean },
   ): void {
     const row = this.tasks(runId).find((t) => t.id === id);
     if (!row) throw new WorkflowFault("NOT_FOUND", `Task ${id} missing`);
@@ -1197,6 +1200,7 @@ export class WorkflowStore {
               cause: interrupt.cause,
               ...(interrupt.detail ? { detail: interrupt.detail.slice(0, 500) } : {}),
               ...(interrupt.stack ? { stack: interrupt.stack.slice(0, 2000) } : {}),
+              ...(interrupt.carried ? { carried: true } : {}),
             }
           : {}),
       },
@@ -1505,11 +1509,12 @@ export class WorkflowStore {
   ): void {
     const cap = costCeilingUsd(this, runId, policy);
     if (cap === null) return;
+    const maxCostUsd = currentCostCap(this, runId, policy);
     if (findPricing(model) === null)
       throw new WorkflowFault(
         "BUDGET_EXHAUSTED",
         `No price is known for ${model}, so the run's cost cap cannot hold`,
-        { reason: "cost", model, maxCostUsd: policy.maxCostUsd },
+        { reason: "cost", model, maxCostUsd },
       );
     const { spentUsd, reservedUsd } = this.costUsage(runId, attemptId);
     const row = this.run(runId);
@@ -1518,7 +1523,7 @@ export class WorkflowStore {
     if (spentUsd + reservedUsd + requestedUsd > cap)
       throw new WorkflowFault(
         "BUDGET_EXHAUSTED",
-        cap > (policy.maxCostUsd ?? cap)
+        cap > (maxCostUsd ?? cap)
           ? "The next model call would pass the run's cost ceiling (its cap and tolerance)"
           : "The next model call would pass the run's cost cap",
         {
@@ -1526,7 +1531,7 @@ export class WorkflowStore {
           spentUsd,
           reservedUsd,
           requestedUsd,
-          maxCostUsd: policy.maxCostUsd,
+          maxCostUsd,
           ceilingUsd: cap,
         },
       );

@@ -145,6 +145,8 @@ function findCycle(plan: InitiativePlan): string[] | null {
 }
 
 const GLOB = /[*?[\]{}]/;
+/** Whether a boundary path is a glob pattern rather than one file. */
+export const isGlobPath = (path: string): boolean => GLOB.test(path);
 /**
  * Whether two boundary patterns name a common file: the same pattern, or a literal path of one
  * that the other's glob matches. Two different globs are not compared.
@@ -178,11 +180,14 @@ export function sharedPaths(a: InitiativeFeature, b: InitiativeFeature): string[
  * joins them. Siblings that each add a line to one registration file (lib.rs, mod.rs, an index)
  * otherwise run side by side and their accepted results cannot be merged (sketchfold: hll,
  * frequent, hist and member each added `pub mod` to src/lib.rs, #1336). Features in `fixed`
- * (those with a run) keep their dependencies.
+ * (those with a run) keep their dependencies. An earlier feature in `noContract` (its workflow
+ * writes no spec, such as a `quick` leaf) cannot be built on, so it depends on the later one
+ * instead when that one can provide a contract (#1406).
  */
 export function sequenceSharedPaths(
   plan: InitiativePlan,
   fixed: ReadonlySet<string> = new Set(),
+  noContract: ReadonlySet<string> = new Set(),
 ): { plan: InitiativePlan; added: { featureId: string; dependsOn: string; paths: string[] }[] } {
   const features = plan.features.map((f) => ({ ...f, dependsOn: [...f.dependsOn] }));
   const byId = new Map(features.map((f) => [f.id, f] as const));
@@ -206,8 +211,12 @@ export function sequenceSharedPaths(
       if (!earlier) continue;
       const paths = sharedPaths(later, earlier);
       if (!paths.length || reaches(later.id, earlier.id) || reaches(earlier.id, later.id)) continue;
-      later.dependsOn.push(earlier.id);
-      added.push({ featureId: later.id, dependsOn: earlier.id, paths });
+      const [dependent, upstream] =
+        noContract.has(earlier.id) && !noContract.has(later.id) && !fixed.has(earlier.id)
+          ? [earlier, later]
+          : [later, earlier];
+      dependent.dependsOn.push(upstream.id);
+      added.push({ featureId: dependent.id, dependsOn: upstream.id, paths });
     }
   }
   return added.length ? { plan: { ...plan, features }, added } : { plan, added };
@@ -362,8 +371,8 @@ export const MAX_MERGED_PATHS = 8;
  * paths, while the split keeps at least `MIN_FEATURES`. Every feature run pays fixed stages
  * (research, specification, planning, analysis, review) besides its tasks; six one-file features
  * of narrowfit spent 67 to 80 percent of their 3.13M tokens there (bench round 35, #1352). A
- * feature without paths is left alone, since its size is unknown. Siblings with the same
- * dependencies never depend on each other, so a merge cannot form a cycle.
+ * feature without paths, or with a glob among them, is left alone, since its size is unknown.
+ * Siblings with the same dependencies never depend on each other, so a merge cannot form a cycle.
  */
 export function mergeSmallSiblings(plan: InitiativePlan): {
   plan: InitiativePlan;
@@ -371,7 +380,8 @@ export function mergeSmallSiblings(plan: InitiativePlan): {
 } {
   const groups = new Map<string, string[]>();
   for (const feature of plan.features) {
-    const paths = feature.boundary.paths.length;
+    // A glob boundary is any number of files, so its size is unknown, like no paths (#1405).
+    const paths = literalPathCount(feature);
     if (paths === 0 || paths >= MIN_FEATURE_PATHS) continue;
     const key = `${[...feature.dependsOn].sort().join(",")}|${feature.mandatory}`;
     groups.set(key, [...(groups.get(key) ?? []), feature.id]);

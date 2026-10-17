@@ -184,6 +184,32 @@ describe("automatic budget growth", () => {
     expect(growth.find((b) => b.kind === "planning-growth")).toMatchObject({ approvedBy: "sizing", ceiling: 10_000_000 });
   });
 
+  // Sibling of #1236 and #1296 (#1431): a revise or a rejected tests-first task invalidated every
+  // finished task, and nothing grew the budget again until one re-finished, re-planning included.
+  test("after the finished tasks are invalidated the budget grows on completed attempts again", async () => {
+    const policy = { ...fixturePolicy, sizing: { maxRunTokens: 6_000_000 } };
+    const fixture = workflowFixture({ policy });
+    cleanups.push(fixture.dispose);
+    const run = await fixture.start();
+    expect((await drive(fixture, run.runId)).status).toBe("completed");
+    const store = fixture.service.store;
+    store.transaction(() => {
+      for (const task of store.tasks(run.runId)) store.taskStatus(run.runId, task.id, "invalidated");
+    });
+    const current = { ...JSON.parse(store.run(run.runId).policy_json), maxTotalTokens: 1_000_000 };
+    store.setPolicy(run.runId, current);
+    expect(growBudgetOnProgress(store, run.runId, current, 1_200_000)).toBe(true);
+    expect(current.maxTotalTokens).toBe(1_500_000);
+    const growth = store
+      .artifacts(run.runId)
+      .filter((a) => a.logical_path.startsWith("policy-revisions/auto-"))
+      .map((a) => JSON.parse(store.readArtifact(run.runId, a.id)))
+      .at(-1);
+    expect(growth).toMatchObject({ kind: "planning-growth", approvedBy: "sizing" });
+    // The next growth waits for another completed attempt.
+    expect(growBudgetOnProgress(store, run.runId, current, 1_600_000)).toBe(false);
+  });
+
   test("planning growth needs a completed attempt since the last one", async () => {
     const policy = { ...fixturePolicy, maxTotalTokens: 300000, sizing: { maxRunTokens: 10_000_000 } };
     const fixture = workflowFixture({ policy });

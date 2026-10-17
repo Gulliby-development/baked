@@ -13,7 +13,8 @@ import type { AgentExecutor, ExecutionRequest, Task } from "../src/core/workflow
 import { RunStatus, type RunPolicy, type Spec } from "../src/core/workflows/schemas.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { WorkflowToolPolicy } from "../src/core/workflows/tool-policy.js";
-import { assertWorkspaceMutationAllowed, withinWorkflow, withWorkspaceMutation } from "../src/core/workflows/leases.js";
+import { assertWorkspaceMutationAllowed, withinWorkflow, withWorkspaceMutation, WorkspaceLeases } from "../src/core/workflows/leases.js";
+import { replayEvents } from "../src/core/workflows/events.js";
 import { ProcessScope } from "../src/core/workflows/process-scope.js";
 import { parseWorkflowArgs, workflowHelp } from "../src/headless/workflow-parse.js";
 import { executeWorkflowCommand } from "../src/headless/workflow.js";
@@ -227,6 +228,65 @@ describe("durable SDD runtime", () => {
     const done = await service.drive(run.runId, new AbortController().signal);
     expect(done.status).not.toBe("failed");
     expect(failures).toBeGreaterThan(0);
+  });
+  // Sibling-bug audit (#1410): the 100 ms management poll reads the run row in a timer too; a
+  // SQLite error there after a sleep was an uncaught exception that ended the process.
+  test("a transient SQLite error in the management poll does not end the drive", async () => {
+    const { service, executor } = setup(); const { run } = await start(service);
+    const store = service.store as unknown as { run: (runId: string) => unknown };
+    const original = store.run.bind(service.store);
+    let failing = false; let failures = 0;
+    store.run = (runId) => {
+      if (failing) { failures++; throw Object.assign(new Error("disk I/O error"), { code: "SQLITE_IOERR" }); }
+      return original(runId);
+    };
+    const execute = executor.execute.bind(executor);
+    let once = true;
+    executor.execute = async (request) => {
+      if (once) { once = false; failing = true; await Bun.sleep(350); failing = false; }
+      return execute(request);
+    };
+    const done = await service.drive(run.runId, new AbortController().signal);
+    expect(failures).toBeGreaterThan(0);
+    expect(done.status).not.toBe("failed");
+  });
+  // #1410: the lease heartbeat took any renewal error for a lost lease and stopped the drive.
+  test("the lease heartbeat survives a transient SQLite error but not a lease past its expiry", () => {
+    const { service } = setup();
+    const leases = new WorkspaceLeases(service.store);
+    cleanups.push(() => leases.release());
+    leases.acquire("execution:sleep-test", null);
+    const store = service.store as unknown as { transaction: (fn: () => unknown) => unknown };
+    const original = store.transaction.bind(service.store);
+    let fail: Error | null = Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+    store.transaction = (fn) => { if (fail) throw fail; return original(fn); };
+    const beat = () => (leases as unknown as { heartbeat: () => void }).heartbeat();
+    beat();
+    expect(leases.signal.aborted).toBe(false);
+    fail = null; beat();
+    expect(leases.signal.aborted).toBe(false);
+    // Still failing once the lease would have expired: another owner may hold it now.
+    fail = Object.assign(new Error("disk I/O error"), { code: "SQLITE_IOERR" });
+    const now = Date.now; let clock = now();
+    Date.now = () => clock;
+    try {
+      beat(); clock += 11_000; beat();
+    } finally { Date.now = now; }
+    expect(leases.signal.aborted).toBe(true);
+  });
+  test("an event replay reads again after a transient SQLite error", async () => {
+    const { service } = setup(); const { run } = await start(service);
+    await service.drive(run.runId, new AbortController().signal);
+    const store = service.store as unknown as { events: (runId: string, after?: number) => unknown };
+    const original = store.events.bind(service.store);
+    let failures = 0;
+    store.events = (runId, after) => {
+      if (failures++ === 0) throw Object.assign(new Error("disk I/O error"), { code: "SQLITE_IOERR" });
+      return original(runId, after);
+    };
+    const seen: unknown[] = [];
+    for await (const event of replayEvents(service.store, run.runId, 0, new AbortController().signal)) seen.push(event);
+    expect(seen.length).toBeGreaterThan(0);
   });
   test("a legacy write begun before the first run already holds a durable mutation lease", async () => {
     const root = mkdtempSync(join(tmpdir(), "baked-legacy-lease-"));

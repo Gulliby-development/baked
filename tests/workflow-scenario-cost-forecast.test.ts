@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { findPricing } from "../src/core/llm/pricing.js";
 import { canonical } from "../src/core/specs/hash.js";
 import { budgetLimitText, canExtend } from "../src/components/workflow/format.js";
+import { growBudgetOnProgress } from "../src/core/workflows/budget.js";
 import { assertForecastFits, costForecast, forecastProgress } from "../src/core/workflows/cost-forecast.js";
 import { runReport } from "../src/core/workflows/run-report.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
@@ -121,6 +122,24 @@ describe("scenario: cfgtrace b4427c85, a forecast past the dollar cap stops the 
     const enough = { ...policy, maxCostUsd: CAP * 4 };
     store.setPolicy(runId, enough);
     expect(() => assertForecastFits(store, runId, enough)).not.toThrow();
+  });
+
+  // Edge of #1363 (#1433): the host grows a feature's cap with its tokens. The person answered the
+  // stop at the old cap, so a cap the host grew since then is not asked about again.
+  test("a cap the host grew after the stop is not asked about again", async () => {
+    const { store, runId, policy } = await midRun({ perTask: OVER });
+    const live: RunPolicy = { ...policy, sizing: { maxRunTokens: 17_000_000, maxRunCostUsd: CAP * 10 } };
+    store.setPolicy(runId, live);
+    expect(() => assertForecastFits(store, runId, live)).toThrow();
+    expect(growBudgetOnProgress(store, runId, live, 16_500_000)).toBe(true);
+    expect(live.maxCostUsd).toBeGreaterThan(CAP);
+    expect(costForecast(store, runId, live)?.projectedUsd).toBeGreaterThan(live.maxCostUsd ?? 0);
+    expect(() => assertForecastFits(store, runId, live)).not.toThrow();
+    expect(store.artifacts(runId).filter((a) => a.kind === "cost-forecast")).toHaveLength(1);
+    // A cap a person raises is still asked about.
+    const raised = { ...live, maxCostUsd: (live.maxCostUsd ?? 0) * 1.2 };
+    store.setPolicy(runId, raised);
+    expect(() => assertForecastFits(store, runId, raised)).toThrow();
   });
 
   test("tasks on their price leave a forecast inside the cap", async () => {

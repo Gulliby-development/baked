@@ -79,6 +79,8 @@ class ParallelExecutor implements AgentExecutor {
   hooks: Record<string, (request: ExecutionRequest) => Promise<void> | void> = {};
   /** Content the integrator writes for each conflicting file. */
   resolution: Record<string, string> = {};
+  /** What the integrator reports as unresolved (#1414). */
+  integratorUnresolved: string[] = [];
   /** Tasks whose first attempt writes a partial file and stops at its token cap. */
   capped = new Set<string>();
   /** Tasks whose first attempt edits its files and is then stopped by its token cap (#935). */
@@ -134,6 +136,12 @@ class ParallelExecutor implements AgentExecutor {
     if (data.extra.integration) {
       this.integrations.push({ taskId: task.id, integration: data.extra.integration });
       for (const w of task.writes) await write(w.path, this.resolution[w.path] ?? "");
+      if (this.integratorUnresolved.length)
+        return {
+          output: { schemaVersion: 1, taskId: task.id, outcome: "implemented", summary: "Merged both changes", evidenceIds: [], unresolved: this.integratorUnresolved },
+          inputTokens: 25,
+          outputTokens: 25,
+        };
     } else {
       const entry: Started = { taskId: task.id, root, start: performance.now(), end: 0 };
       this.started.push(entry);
@@ -579,8 +587,10 @@ describe("workflow parallel writers", () => {
       .flatMap((e) => (e.type === "task.state_changed" && e.payload.to === "interrupted" ? [e.payload] : []));
     expect(interrupted).toEqual([
       // #929: an error of BAKED's own code carries its stack, so its caller is known.
-      expect.objectContaining({ taskId: "T002", cause: "worker_lost", detail: expect.stringContaining("worker process exited"), stack: expect.stringContaining("workflow-parallel-writers.test.ts") }),
+      // #1432: the restart carries the dead worker's edits, which counts as progress.
+      expect.objectContaining({ taskId: "T002", cause: "worker_lost", detail: expect.stringContaining("worker process exited"), stack: expect.stringContaining("workflow-parallel-writers.test.ts"), carried: true }),
     ]);
+    expect(fx.store.continuedAttempts(run.runId)).toBe(1);
     expect(fx.store.state(run.runId).taskRestarts).toEqual({ T002: 1 });
     expect(fx.store.leases()).toEqual([]);
   });
@@ -821,6 +831,23 @@ describe("workflow parallel writers", () => {
     const refused = await strict.start(2);
     expect((await strict.drive(refused.runId)).status).toBe("blocked");
     expect(strict.lastError(refused.runId)).toContain("both write shared.txt without a dependency");
+  });
+
+  // Audit of 2026-10-17 (#1414): the merged file is over its size target, which faulted the run as an unresolved conflict.
+  test("an integrator that reports only a missed size target resolved the conflict", async () => {
+    const fx = setup(
+      [{ id: "T001", files: { "shared.txt": "ONE\ntwo\n" }, action: "modify" }, { id: "T002", files: { "shared.txt": "one\nTWO\n" }, action: "modify" }],
+      { "shared.txt": "ONE\nTWO\n" },
+      { overlap: true },
+    );
+    fx.executor.resolution = { "shared.txt": "ONE\nTWO\n" };
+    fx.executor.integratorUnresolved = ["shared.txt is now 520 lines, above the ~400-line target"];
+    const run = await fx.start(2);
+    const done = await fx.complete(run.runId);
+    expect(done.status).toBe("completed");
+    expect(fx.executor.integrations).toHaveLength(1);
+    const record = fx.store.artifacts(run.runId).find((a) => a.logical_path === "tasks/size-targets/T002.json");
+    expect(fx.store.readArtifact(run.runId, record?.id ?? "")).toContain("400-line target");
   });
 
   test("one writer behaves as phase 1: every task in the run worktree, one at a time", async () => {

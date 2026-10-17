@@ -196,6 +196,24 @@ describe("auto approval", () => {
         expect(evaluateAutoApproval(optedIn, manifest, covered, graph([write]), [], [], { ...present, request: unnamed }).approval).toBeNull();
       }
     });
+    // #1428: the request names a manifest only by its whole path; a shared name such as
+    // package.json names the root one, and a sentence that keeps a file as is names none.
+    test("a manifest is named by its whole path, not by a substring or a shared file name", () => {
+      const decide = (path: string, text: string) =>
+        evaluateAutoApproval(optedIn, manifest, covered, graph([modify(path)]), [], [], { ...present, request: text }).approval?.mode ?? null;
+      expect(decide("package.json", request)).toBeNull();
+      expect(decide("package.json", "Add a Core library. Do not edit package.json.")).toBeNull();
+      expect(decide("package.json", "Add a Core library and leave `package.json` unchanged.")).toBeNull();
+      const monorepo = "Add a Core library. Add the build script to packages/api/package.json.";
+      expect(decide("packages/api/package.json", monorepo)).toBe("limits");
+      expect(decide("package.json", monorepo)).toBeNull();
+      expect(decide("packages/web/package.json", monorepo)).toBeNull();
+      expect(decide("packages/api/package.json", "Add a Core library. Update package.json.")).toBeNull();
+      expect(decide("package.json", "Add a Core library. Update ./package.json.")).toBe("limits");
+      expect(decide("src/Lockorder/Lockorder.csproj", "Add a Core library. Reference it from src\\Lockorder\\Lockorder.csproj.")).toBe("limits");
+      expect(decide("src/Lockorder/Lockorder.csproj", "Add a Core library. Reference it from MyLockorder.csproj.")).toBeNull();
+      expect(decide("src/Lockorder/Lockorder.csproj", "Add a Core library. Reference it from src/Lockorder/Lockorder.csproj.bak.")).toBeNull();
+    });
     test("renewal still needs an earlier human approval", () => {
       const renewOnly: RunPolicy = { ...defaultWorkflowPolicy, autoApproval: { renewal: true, limits: null, requestedManifestEdits: true } };
       const result = evaluateAutoApproval(renewOnly, manifest, covered, edits, [], [], present);

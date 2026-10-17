@@ -11,6 +11,7 @@ import { buildSafeEnv } from "../spawn.js";
 import { executeCheckCommand } from "../verification/check-runner.js";
 import { assertWorkspaceMutationAllowed } from "../workflows/leases.js";
 import { ProcessScope } from "../workflows/process-scope.js";
+import { FORMAT_TIMEOUT_MS } from "./auto-format.js";
 import { runBoundedShell } from "./bounded-process.js";
 import { compressShellOutputFull } from "./shell-compress.js";
 import { saveTee, truncateWithTee } from "./tee.js";
@@ -1092,9 +1093,10 @@ export async function formatFile(filePath: string, cwd?: string): Promise<boolea
   // `/var` is `/private/var`) would look outside the project to it.
   const command = `${profile.formatFile} ${shellQuote(realPath(filePath))}`;
   try {
-    // A formatter's first start on Windows (`bunx` resolving it, the antivirus scanning the
-    // binary) took over 10 s on CI runners; later runs take well under a second (#1177).
-    const result = await runBoundedShell(command, { cwd: effectiveCwd, timeoutMs: 30_000 });
+    const result = await runBoundedShell(command, {
+      cwd: effectiveCwd,
+      timeoutMs: FORMAT_TIMEOUT_MS,
+    });
     return !result.timedOut && result.exitCode === 0;
   } catch {
     return false;
