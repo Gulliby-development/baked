@@ -2845,8 +2845,12 @@ export class WorkflowScheduler {
    */
   private recurringContext(runId: string, task: Task): Record<string, unknown> {
     const earlier = recurringFindings(this.store, runId, task);
-    if (!earlier.length) return this.siblingContext(runId, task);
+    // The same-file findings gate submit beside the recurring ones (`reproCheck`), so the worker
+    // gets both lists (#1423).
+    const siblings = this.siblingContext(runId, task);
+    if (!earlier.length) return siblings;
     return {
+      ...siblings,
       recurringFindings: {
         symbols: [...new Set(earlier.map((f) => f.symbol))],
         earlier: earlier.map((f) => ({

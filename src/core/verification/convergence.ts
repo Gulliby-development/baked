@@ -25,6 +25,7 @@ import {
   testSweepStep,
 } from "./class-sweep.js";
 import { findingSetHash } from "./convergence-stop.js";
+import { reproBlindToDocument } from "./repro.js";
 
 /**
  * Planned tasks a correction of `task` may write for: those of the same profile that cover one of
@@ -453,8 +454,13 @@ export function correctionBase(
  * The first step of a correction whose finding carries a repro (#765): run it before editing,
  * so the fix starts from the failure the reviewer showed, and again after the fix.
  */
-function reproStep(repro: Review["findings"][number]["repro"]): string {
+function reproStep(finding: Pick<Review["findings"][number], "repro" | "file">): string {
+  const repro = finding.repro;
   if (!repro) return "";
+  // A document finding's repro that runs code is evidence, not a gate: the host does not run it
+  // and run_repro leaves it out (#1375), so the correction is not told to make it pass (#1422).
+  if (reproBlindToDocument(finding.file, repro))
+    return `\nEvidence: the review ran ${[repro.executable, ...repro.args].map((a) => JSON.stringify(a)).join(" ")} and saw ${JSON.stringify(repro.actual)}. It shows what the code does; this correction changes ${finding.file}, which that command does not read, so it is not run again and does not have to change.`;
   const command = [repro.executable, ...repro.args].map((a) => JSON.stringify(a)).join(" ");
   // run_repro runs it with its input files and stdin; run_probe takes only a command line (#1283).
   return `\nReproduce first: run_repro runs ${command}${repro.files?.length || repro.stdin !== undefined ? " with its input files and stdin" : ""} as the host does before it accepts the task. Call it before editing. The review saw it print ${JSON.stringify(repro.actual)} where the spec needs ${JSON.stringify(repro.expected)}. After the fix, run it again and confirm it no longer reproduces.`;
@@ -847,7 +853,7 @@ export function appendCorrections(
       description: grouped
         .map(
           (finding) =>
-            `${grouped.length > 1 ? `Finding ${finding.id}: ` : ""}${finding.claim}\nImpact: ${finding.impact}\nProposed fix: ${finding.suggestedFix}${reproStep(finding.repro)}${(kind === "convergence" || reviewPass) && !sweep && !checkRunFinding(finding) ? SIBLING_STEP : ""}`,
+            `${grouped.length > 1 ? `Finding ${finding.id}: ` : ""}${finding.claim}\nImpact: ${finding.impact}\nProposed fix: ${finding.suggestedFix}${reproStep(finding)}${(kind === "convergence" || reviewPass) && !sweep && !checkRunFinding(finding) ? SIBLING_STEP : ""}`,
         )
         .join("\n\n")
         .concat(sweep),
