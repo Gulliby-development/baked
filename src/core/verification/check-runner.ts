@@ -7,6 +7,7 @@ import type { ProcessResult, ProcessScope } from "../workflows/process-scope.js"
 import { generatedPaths, type RunPolicy } from "../workflows/schemas.js";
 import type { WorkflowStore } from "../workflows/store.js";
 import type { Check } from "../workflows/types.js";
+import { isFailedTestLine } from "./failed-test-line.js";
 import { MISSING_GATE_REPORT, readGateReport, renderGateReport } from "./gate-report.js";
 import { changedPaths, sourceManifest } from "./snapshot.js";
 
@@ -53,8 +54,9 @@ export function passedOutputNote(output: string, exitCode: number | null): strin
 export const MODEL_OUTPUT_LIMIT = 40_000;
 const OUTPUT_HEAD = 4_000;
 const OUTPUT_TAIL = 32_000;
-const FAILED_TEST_LINE =
-  /^\s*(?:FAILED\b|ERROR\b|\(fail\)|--- FAIL|not ok\b|[✗✕✘×]\s)|\.\.\. FAILED\s*$/;
+// The output the model sees also keeps `ERROR` lines, which name pytest errors and Maven summaries.
+const shownFailureLine = (line: string): boolean =>
+  isFailedTestLine(line) || /^\s*ERROR\b/.test(line);
 const FAILED_TEST_LINES = 40;
 
 /**
@@ -74,7 +76,7 @@ export function modelCheckOutput(
     ...new Set(
       middle
         .split("\n")
-        .filter((line) => FAILED_TEST_LINE.test(line))
+        .filter((line) => shownFailureLine(line))
         .map((line) => line.trimEnd().slice(0, 300)),
     ),
   ].slice(0, FAILED_TEST_LINES);
@@ -94,10 +96,8 @@ export function modelCheckOutput(
 
 /** Whether the output of a check that timed out names a failed test before it stopped. */
 export function timedOutFailure(output: string): boolean {
-  return output.split("\n").some((line) => FAILED_TEST.test(line));
+  return output.split("\n").some(isFailedTestLine);
 }
-// A failed test as runners print it; a bare ERROR line may be the application's own log.
-const FAILED_TEST = /^\s*(?:FAILED\b|\(fail\)|--- FAIL|not ok\b|[✗✕✘×]\s)|\.\.\. FAILED\s*$/;
 
 export class CheckRunner {
   constructor(
@@ -305,11 +305,6 @@ export class CheckRunner {
       };
     } else if (result.timedOut) reason = "timeout";
     else if (result.cancelled) reason = "cancelled";
-    else if (status === "failed" && perTestTimeout(result.output) !== null)
-      result = {
-        ...result,
-        output: `${result.output}\n\n${perTestTimeoutNote(perTestTimeout(result.output) ?? 0)}`,
-      };
     else if (check.report === "json" && reason === "exit") {
       const report = readGateReport(result.output);
       // A passing report from a command that exited nonzero contradicts itself; neither is trusted.
@@ -321,6 +316,11 @@ export class CheckRunner {
         output: `${result.output}\n\n${report ? renderGateReport(report) : MISSING_GATE_REPORT}`,
       };
     }
+    // After the chain, so a JSON gate's report is still read when its log mentions a test that
+    // timed out (#1426).
+    const perTest = status === "failed" && !result.timedOut ? perTestTimeout(result.output) : null;
+    if (perTest !== null)
+      result = { ...result, output: `${result.output}\n\n${perTestTimeoutNote(perTest)}` };
     // `output` already holds stdout and stderr interleaved; storing them again tripled a 2 MB
     // pytest diff in one artifact (#993).
     const { stdout: _stdout, stderr: _stderr, ...recorded } = result;

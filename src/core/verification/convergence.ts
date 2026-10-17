@@ -25,6 +25,7 @@ import {
   testSweepStep,
 } from "./class-sweep.js";
 import { findingSetHash } from "./convergence-stop.js";
+import { isFailedTestLine } from "./failed-test-line.js";
 
 /**
  * Planned tasks a correction of `task` may write for: those of the same profile that cover one of
@@ -242,7 +243,7 @@ export function failureSignature(output: string): string {
   const lines = output
     .replaceAll("\\", "/")
     .split(/\r?\n/)
-    .filter((line) => FAILURE_LINE.test(line))
+    .filter((line) => FAILURE_LINE.test(line) || isFailedTestLine(line))
     .map((line) =>
       line
         .replace(/\[[\d.]+\s*m?s\]/gi, "")
