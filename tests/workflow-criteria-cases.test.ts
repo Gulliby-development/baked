@@ -196,3 +196,100 @@ test("md-site 7b362eb4: a test task whose criteria quote the check commands is n
   await fixture.service.drive(run.runId, new AbortController().signal);
   expect(found[0]).toEqual([]);
 }, 60000);
+
+// Bench round 41, fpbits (#1482): three of six features paid 1.63M tokens for review findings that
+// a test file left out a member of a set or a table row its criteria list in plain words, not in
+// quotes: analysis had no `Steps` case for bf16, f32 or e5m2. The walk now takes the members of a
+// closed set the spec spells out and the input cells of a criterion's table.
+describe("enumerated sets and table rows (#1482)", () => {
+  const formats = "Support the six formats f16, bf16, f32, f64, e4m3 and e5m2.";
+  const steps = (then: string): Spec["criteria"][number] => ({
+    id: "AC-004",
+    requirementIds: ["FR-001"],
+    given: "a positive nonzero start",
+    when: "`Steps` walks toward zero",
+    then,
+    method: "automated",
+  });
+
+  test("a criterion naming members of a closed set asks for each one", () => {
+    const spec = { inScope: [formats], criteria: [steps("it crosses zero for bf16, f32 or e5m2")] };
+    const cases = criterionCases(spec, { criterionIds: ["AC-004"] });
+    expect(cases.map((c) => c.literal)).toEqual(["Steps", "bf16", "f32", "e5m2"]);
+    const missing = missingCases(cases, ['test("Steps", () => { steps("bf16"); steps("f32x"); })']);
+    expect(missing.map((c) => c.literal)).toEqual(["f32", "e5m2"]);
+  });
+
+  test("all N things takes the set of that size", () => {
+    const spec = { requirements: [{ id: "FR-001", text: formats, priority: "must" as const, verification: "automated" as const, sourceRefs: [] }], criteria: [steps("it is exact for all six formats")] };
+    const literals = criterionCases(spec, { criterionIds: ["AC-004"] }).map((c) => c.literal);
+    expect(literals).toEqual(["Steps", "f16", "bf16", "f32", "f64", "e4m3", "e5m2"]);
+    // A whole word: bf16 does not stand for f16.
+    const cases = criterionCases(spec, { criterionIds: ["AC-004"] });
+    expect(missingCases(cases, ["Steps bf16 f32 f64 e4m3 e5m2"]).map((c) => c.literal)).toEqual(["f16"]);
+    // A count that matches no set, or two sets, asks for nothing.
+    expect(criterionCases({ ...spec, criteria: [steps("it is exact for all five formats")] }, { criterionIds: ["AC-004"] }).map((c) => c.literal)).toEqual(["Steps"]);
+  });
+
+  test("plain words, ids, file names and sets the spec does not spell out elsewhere are not cases", () => {
+    const spec = {
+      inScope: [formats, "Cover AC-001, AC-002 and AC-003", "Write test_a.py, test_b.py and test_c.py"],
+      criteria: [
+        steps("lint, typecheck and test pass; AC-001, AC-002 and AC-003 hold; test_a.py and test_b.py run"),
+        { ...steps("f16 or bf16 round"), id: "AC-005" },
+      ],
+    };
+    expect(criterionCases(spec, { criterionIds: ["AC-004"] }).map((c) => c.literal)).toEqual(["Steps"]);
+    // Without a spelled-out set elsewhere, a list is left to the review.
+    expect(criterionCases({ criteria: spec.criteria }, { criterionIds: ["AC-005"] }).map((c) => c.literal)).toEqual(["Steps"]);
+    // The defining list itself is not asked for by its own text.
+    expect(criterionCases({ criteria: [steps(formats)] }, { criterionIds: ["AC-004"] }).map((c) => c.literal)).toEqual(["Steps"]);
+  });
+
+  test("each data row's input cell is a case, not the header or the separator", () => {
+    const table = "it prints:\n| input | expected |\n| --- | --- |\n| `0x3c00` | 1 |\n| 0x7bff | 65504 |\n| <bits> | any |";
+    const cases = criterionCases({ criteria: [steps(table)] }, { criterionIds: ["AC-004"] });
+    // `0x3c00` is also a quoted span; a case is listed once.
+    expect(cases.map((c) => c.literal)).toEqual(["Steps", "0x3c00", "0x7bff"]);
+    expect(missingCases(cases, ['Steps(0x3c00) == "1"']).map((c) => c.literal)).toEqual(["0x7bff"]);
+  });
+});
+
+test("a test task's attempt is told which set member its tests leave out (#1482)", async () => {
+  const spec: Spec = {
+    ...fixtureSpec,
+    inScope: [...fixtureSpec.inScope, "Support the six formats f16, bf16, f32, f64, e4m3 and e5m2."],
+    criteria: [{ ...fixtureSpec.criteria[0], then: "value is ready for bf16, f32 or e5m2" } as Spec["criteria"][number]],
+  };
+  const fixture = workflowFixture();
+  cleanups.push(fixture.dispose);
+  const { executor, root } = fixture;
+  const original = executor.execute.bind(executor);
+  const found: string[][] = [];
+  executor.execute = async (request: ExecutionRequest) => {
+    if (request.profile.output === "spec") return { output: spec, inputTokens: 25, outputTokens: 25 };
+    const out = await original(request);
+    if (request.profile.output === "plan") {
+      const plan = out.output as { markdown: string; taskGraph: { specHash: string; planHash: string; tasks: { writes: { path: string; action: string }[] }[] } };
+      plan.taskGraph.specHash = hashJson(spec);
+      plan.taskGraph.planHash = hashBytes(plan.markdown);
+      plan.taskGraph.tasks[0]?.writes.push({ path: "tests/steps.test.ts", action: "create" });
+    }
+    if (request.profile.output === "implementation") {
+      mkdirSync(join(root, "tests"), { recursive: true });
+      writeFileSync(join(root, "tests/steps.test.ts"), 'for (const f of ["bf16", "f32"]) test(f, () => {});\n');
+      found.push((await request.caseCheck?.(root)) ?? ["no case check"]);
+      writeFileSync(join(root, "tests/steps.test.ts"), 'for (const f of ["bf16", "f32", "e5m2"]) test(f, () => {});\n');
+      found.push((await request.caseCheck?.(root)) ?? ["no case check"]);
+    }
+    return out;
+  };
+  const run = await fixture.start();
+  await fixture.service.drive(run.runId, new AbortController().signal);
+  await fixture.approve(run.runId);
+  await fixture.service.drive(run.runId, new AbortController().signal);
+  expect(found[0]).toEqual([
+    'AC-001 names "e5m2", and no test file this task writes (tests/steps.test.ts) contains it.',
+  ]);
+  expect(found[1]).toEqual([]);
+}, 60000);
