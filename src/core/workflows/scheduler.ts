@@ -1193,7 +1193,7 @@ export class WorkflowScheduler {
                   parsed.data.taskGraph,
                   (path) => existsSync(join(runRoot(this.store.workspace, state), path)),
                   this.baselineScaffold(runId, state),
-                  state.requestText,
+                  state.requestText || state.prompt,
                 );
                 if (advice.length) {
                   scopeAdvised = true;
