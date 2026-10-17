@@ -2835,7 +2835,7 @@ export class WorkflowScheduler {
    */
   private recurringContext(runId: string, task: Task): Record<string, unknown> {
     const earlier = recurringFindings(this.store, runId, task);
-    if (!earlier.length) return {};
+    if (!earlier.length) return this.siblingContext(runId, task);
     return {
       recurringFindings: {
         symbols: [...new Set(earlier.map((f) => f.symbol))],
@@ -2845,6 +2845,26 @@ export class WorkflowScheduler {
           ...(f.repro ? { repro: f.repro } : {}),
         })),
         note: "Earlier corrections of this run already patched these symbols for the findings listed here, and the findings this task corrects are the next case of the same input. Do not add another special case: rewrite the symbol for its whole input class. First state the input grammar or contract it must handle (for a parser: tokenize code spans, links and delimiters first, then interpret them; no placeholder substitution), then rewrite it, and add table-driven tests with one row per finding here and per finding this task corrects. The host runs the repro of every listed finding before it accepts submit_result, and run_repro runs them too.",
+      },
+    };
+  }
+  /**
+   * The earlier corrected findings in the file this correction's findings name, on other symbols:
+   * the review is finding the neighbouring cases of one construct one round at a time, so this
+   * correction covers the construct's sibling contexts in one go (#1397).
+   */
+  private siblingContext(runId: string, task: Task): Record<string, unknown> {
+    const earlier = sameFileFindings(this.store, runId, task);
+    if (!earlier.length) return {};
+    return {
+      siblingFindings: {
+        files: [...new Set(earlier.map((f) => f.file))],
+        earlier: earlier.map((f) => ({
+          id: f.id,
+          claim: f.claim,
+          ...(f.repro ? { repro: f.repro } : {}),
+        })),
+        note: "Earlier corrections of this run already fixed these findings in the same file, and a review found the case this task corrects only afterwards. Do not fix only the reported case: name the construct it is about (for example multiline inline code, or emphasis next to a code span), list every context the construct can appear in (inside a blockquote, a list item, a heading or a table cell, nested in another construct, next to a line that looks like a block marker), make it work in each, and add one table-driven test with a row per context. The host runs the repro of every finding listed here before it accepts submit_result.",
       },
     };
   }
@@ -3375,7 +3395,12 @@ export class WorkflowScheduler {
     const executables = reproExecutables(policy.checks);
     // The repros of earlier findings on the same symbol are a regression set: a rewrite that
     // fixes this finding must not bring one of them back (#1330).
-    const regression = new Set(recurringFindings(this.store, runId, task).map((f) => f.id));
+    const regression = new Set(
+      [
+        ...recurringFindings(this.store, runId, task),
+        ...sameFileFindings(this.store, runId, task),
+      ].map((f) => f.id),
+    );
     // A finding a person's spec conflict answer decided is no longer the gate (#1350).
     const decided = decidedFindingIds(this.store, runId);
     const repros = this.store
@@ -12176,6 +12201,49 @@ export function recurringFindings(
       {
         id: f.id,
         symbol: key || (f.body.file ?? ""),
+        claim: f.body.claim ?? "",
+        ...(repro.success ? { repro: repro.data } : {}),
+      },
+    ];
+  });
+}
+/**
+ * The earlier findings of the run in the same file as a correction's findings, on another symbol
+ * or none, that a correction which finished already corrected; those `recurringFindings` names are
+ * left out. md-site ec3c22bf (bench round 39) got three findings about multiline inline code in
+ * `src/markdown.ts` one review round after another (emphasis inside the span, lost newlines, the
+ * same inside blockquotes), 1.85M tokens of corrections for cases one pass could cover (#1397).
+ */
+export function sameFileFindings(
+  store: WorkflowStore,
+  runId: string,
+  task: Task,
+): { id: string; file: string; claim: string; repro?: Repro }[] {
+  if (task.origin === "planned" || !task.findingIds.length) return [];
+  const findings = store.findings(runId).map((f) => ({
+    id: f.id,
+    body: JSON.parse(f.body_json) as { file?: string | null; claim?: string; repro?: unknown },
+  }));
+  const files = new Set(
+    findings.flatMap((f) => (task.findingIds.includes(f.id) && f.body.file ? [f.body.file] : [])),
+  );
+  if (!files.size) return [];
+  const recurring = new Set(recurringFindings(store, runId, task).map((f) => f.id));
+  const corrected = new Set(
+    store
+      .tasks(runId)
+      .filter((row) => row.id !== task.id && ["implemented", "verified"].includes(row.status))
+      .flatMap((row) => (JSON.parse(row.definition_json) as Task).findingIds ?? []),
+  );
+  return findings.flatMap((f) => {
+    const file = f.body.file;
+    if (!file || !files.has(file) || task.findingIds.includes(f.id)) return [];
+    if (!corrected.has(f.id) || recurring.has(f.id)) return [];
+    const repro = ReproSchema.safeParse(f.body.repro);
+    return [
+      {
+        id: f.id,
+        file,
         claim: f.body.claim ?? "",
         ...(repro.success ? { repro: repro.data } : {}),
       },
