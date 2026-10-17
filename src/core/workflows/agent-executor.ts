@@ -1493,9 +1493,13 @@ export class NativeAgentExecutor implements AgentExecutor {
           throw new WorkflowFault(
             "OUTPUT_INVALID",
             `Profile ${request.profile.id} ended after ${result.steps.length} steps without submitting a result`,
-            usage.stopReason === "steps" || usage.stopReason === "no_submission"
-              ? { reason: "no_submission" }
-              : {},
+            // A step cap is its own reason: a task that edited continues at it like at the token
+            // cap, and a stop names it (#1478).
+            usage.stopReason === "steps"
+              ? { reason: "step_cap" }
+              : usage.stopReason === "no_submission"
+                ? { reason: "no_submission" }
+                : {},
           );
         try {
           submitted = schema.parse(JSON.parse(result.text));

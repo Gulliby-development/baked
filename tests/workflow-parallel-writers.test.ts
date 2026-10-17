@@ -92,6 +92,8 @@ class ParallelExecutor implements AgentExecutor {
   capAtLimit: Record<string, number> = {};
   /** Tasks of `capAtLimit` whose last step went past the cap before a final submit was forced (#1070). */
   capUnforced = new Set<string>();
+  /** Tasks whose next attempt edits, then uses its steps without a result being accepted (#1478). */
+  stepCapped = new Set<string>();
   /**
    * Tasks whose first attempt writes a partial file, is finalized by its token cap after an edit
    * it did not check and submits a complete result (#1329).
@@ -176,6 +178,11 @@ class ParallelExecutor implements AgentExecutor {
           inputTokens: 25,
           outputTokens: 25,
         };
+      if (this.stepCapped.delete(task.id)) {
+        await write(first, "partial");
+        service.store.artifact(request.runId, "usage", `attempts/${request.attemptId}/usage.json`, JSON.stringify({ schemaVersion: 1, profileId: request.profile.id, taskId: task.id, maxSteps: request.maxSteps, maxTokens: 438_442, stopReason: "steps", finalizedBy: "steps", totalTokens: 160_276, steps: [] }));
+        throw new WorkflowFault("OUTPUT_INVALID", `Profile ${request.profile.id} ended after ${request.maxSteps} steps without submitting a result`, { reason: "step_cap" });
+      }
       if ((this.capAtLimit[task.id] ?? 0) > 0) {
         this.capAtLimit[task.id] = (this.capAtLimit[task.id] ?? 0) - 1;
         await write(first, "partial");
@@ -376,6 +383,20 @@ describe("workflow parallel writers", () => {
     // The sibling ran once.
     expect(fx.executor.started.filter((s) => s.taskId === "T002")).toHaveLength(1);
     expect(readFileSync(join(fx.tree(run.runId), "a.txt"), "utf8")).toBe("A");
+  });
+
+  test("an attempt that edited and used its steps continues its task in the batch (#1478)", async () => {
+    // Bench R41 fpbits T010: 20 of 20 steps at 37% of the token cap, the run stopped invalid_output.
+    const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }], { "a.txt": "A", "b.txt": "B" });
+    fx.executor.stepCapped.add("T001");
+    const run = await fx.start(2);
+    const done = await fx.complete(run.runId);
+    expect(done.status).toBe("completed");
+    const attempts = fx.executor.earlier.filter((e) => e.taskId === "T001");
+    expect(attempts).toHaveLength(2);
+    expect(attempts[1]?.content).toBe("partial");
+    expect(fx.store.state(run.runId).taskContinuations).toEqual({ T001: 1 });
+    expect(fx.executor.started.filter((s) => s.taskId === "T002")).toHaveLength(1);
   });
 
   test("an attempt whose last step passed the cap before a final submit was forced continues too (#1070)", async () => {

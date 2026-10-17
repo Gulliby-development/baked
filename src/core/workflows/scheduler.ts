@@ -334,7 +334,8 @@ import {
   type AccountRefusal,
   abortableDelay,
   accountRefusal,
-  atAttemptCap,
+  atStepCap,
+  capEnded,
   endedOnProse,
   failedOwnEdits,
   isCapacityError,
@@ -2724,7 +2725,9 @@ export class WorkflowScheduler {
     return record;
   }
   /**
-   * The result of an implementer attempt that used its token cap without submitting (#1056). The
+   * The result of an implementer attempt that used its token or step cap without submitting
+   * (#1056, #1478: fpbits T010 used 20 of 20 steps at 37% of its token cap, its last edit broke the
+   * syntax gate and no step was left to repair it). The
    * forced final submit needs room an attempt ending exactly at the cap may not have, so the same
    * attempt either restarted its task or stopped the run (bench round 20: 3 of 9 runs). When the
    * task may still continue at the cap and the attempt changed files, it is a blocked result, so
@@ -2752,7 +2755,9 @@ export class WorkflowScheduler {
       summary: fault.message.slice(0, 15000),
       evidenceIds: [],
       unresolved: [
-        "The attempt used its token cap before it submitted a result; the next attempt continues from its edits.",
+        atStepCap(fault)
+          ? "The attempt used its steps before a result was accepted; the next attempt continues from its edits."
+          : "The attempt used its token cap before it submitted a result; the next attempt continues from its edits.",
       ],
     };
   }
@@ -4028,6 +4033,10 @@ export class WorkflowScheduler {
           ),
         );
       const wrote = this.store.effects(runId).some((effect) => effect.attempt_id === attempt);
+      const editedFiles = () =>
+        this.store
+          .effects(runId)
+          .some((effect) => effect.attempt_id === attempt && effect.kind === "file_patch");
       const refusal = accountRefusal(error);
       // Another model on the same provider shares the refused account; one elsewhere does not.
       const provider = (model: string) => model.split("/")[0];
@@ -4108,12 +4117,14 @@ export class WorkflowScheduler {
           },
         );
       }
+      // Commands and artifacts are not edits: a stage agent that ran checks or a repro still gets
+      // the retry; an attempt that changed files continues on them instead (`capEndResult`, #1478).
       if (
         error instanceof WorkflowFault &&
-        error.details.reason === "no_submission" &&
+        (error.details.reason === "no_submission" || error.details.reason === "step_cap") &&
         !placement.stepRetry &&
         !signal.aborted &&
-        !wrote
+        !editedFiles()
       ) {
         const grown = (n: number) => Math.ceil(n * 1.5);
         const steps =
@@ -5281,7 +5292,7 @@ ${note}`;
             signal,
             scoped,
           ).catch(async (error: unknown) => {
-            if (atAttemptCap(error))
+            if (capEnded(error))
               return this.capEndResult(
                 runId,
                 state,
@@ -5669,12 +5680,12 @@ ${note}`;
         );
         // A stopped run integrates nothing: its unintegrated tasks are invalidated on recovery.
         // A rejected task does not keep the others of its batch out of the run worktree. Neither
-        // does one stopped at its attempt cap: the run itself can go on, and the resume would
-        // otherwise run its finished siblings again (#1056).
+        // does one stopped at its token or step cap: the run itself can go on, and the resume
+        // would otherwise run its finished siblings again (#1056, #1478).
         const fatal = outcomes.find((outcome) => outcome.kind === "fatal");
         if (fatal) failure = fatal.error;
         const integrate = outcomes.every(
-          (outcome) => outcome.kind !== "fatal" || atAttemptCap(outcome.error),
+          (outcome) => outcome.kind !== "fatal" || capEnded(outcome.error),
         );
         for (const outcome of outcomes) {
           if (outcome.kind === "fatal") continue;
@@ -6450,7 +6461,7 @@ ${note}`;
             undefined,
             { root, attemptId: entry.attemptId },
           ).catch(async (error: unknown) => {
-            if (atAttemptCap(error))
+            if (capEnded(error))
               return this.capEndResult(
                 runId,
                 state,
