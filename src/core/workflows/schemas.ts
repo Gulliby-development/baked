@@ -1632,6 +1632,11 @@ export interface StartRequest {
    */
   boundaryAutoApproval?: boolean;
   /**
+   * Files whose whole content is fixed before planning (an initiative feature's skeleton): the
+   * plan must write them in one host-written task with exactly this content (#1461).
+   */
+  hostFiles?: { path: string; content: string }[];
+  /**
    * Execution mode requested for this run (CLI `--worktree`). It overrides the policy and the
    * definition; omitted, the definition's `execution`, then the policy's `executionMode` apply.
    */

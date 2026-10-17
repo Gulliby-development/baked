@@ -378,6 +378,14 @@ export const RuntimeStateSchema = z
       .array(z.object({ featureId: SafeId, contractHash: Hash }).strict())
       .nullable()
       .default(null),
+    /**
+     * Files the plan must write with this content in one host-written task: an initiative
+     * feature's skeleton (#1461). Null when the run has none.
+     */
+    hostFiles: z
+      .array(z.object({ path: z.string(), content: z.string() }).strict())
+      .nullable()
+      .default(null),
     /** The frozen diff a review-only run reviews. */
     diff: z
       .object({ artifactId: z.string(), hash: z.string(), files: z.array(z.string()) })

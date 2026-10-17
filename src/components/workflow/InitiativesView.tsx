@@ -680,6 +680,14 @@ export function InitiativeDetail({
                     )}
                   </text>
                 ) : null}
+                {f.skeleton?.length ? (
+                  <text fg={t.textMuted}>
+                    {clip(
+                      `Skeleton written by the host: ${f.skeleton.map((file) => file.path).join(", ")}`,
+                      width - 4,
+                    )}
+                  </text>
+                ) : null}
                 {f.issue ? (
                   <text fg={t.textMuted}>
                     {clip(

@@ -80,6 +80,8 @@ export interface InitiativeFeature {
   size?: FeatureSize;
   /** The decomposer's features merged into this one, each too small for a run of its own. */
   mergedFrom?: string[];
+  /** Boundary files whose content the split fixes; its run writes them with no agent. */
+  skeleton?: { path: string; content: string }[];
   /** The share it starts with, while it has no run yet; absent on older backends. */
   share?: UsageTotals | null;
   /** The dollars it starts with under a dollar cap; null without one, absent on older backends. */

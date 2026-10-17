@@ -384,6 +384,7 @@ export class NativeWorkflowService implements WorkflowService {
       report: null,
       initiativePlan: null,
       hostDependencies,
+      hostFiles: request.hostFiles?.length ? request.hostFiles : null,
       diff: null,
       workingSet: null,
       projectMemory: null,

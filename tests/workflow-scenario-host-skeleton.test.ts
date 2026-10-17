@@ -5,7 +5,7 @@ import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
 import { plannerSizing, sizePlan } from "../src/core/workflows/sizing.js";
-import { hostContentProblems, hostWritten } from "../src/core/workflows/task-graph.js";
+import { hostContentProblems, hostFileProblems, hostWritten } from "../src/core/workflows/task-graph.js";
 import type { ExecutionRequest, Task } from "../src/core/workflows/types.js";
 import { FixtureExecutor, fixturePolicy, fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 
@@ -107,5 +107,26 @@ describe("sizing a host-written skeleton task (#1460)", () => {
     const mixed = { ...python, id: "T003", writes: [...python.writes, { path: "pkg/io/read.py", action: "create" as const }] };
     expect(hostContentProblems({ tasks: [python, barrel] })).toEqual([]);
     expect(hostContentProblems({ tasks: [mixed] })[0]).toContain("Task T003 gives content to pkg/__init__.py, pkg/io/__init__.py");
+  });
+});
+
+describe("files a run must write in the host (#1461)", () => {
+  const files = skeletonWrites.map(({ path, content }) => ({ path, content }));
+  test("one host-written task with exactly the content satisfies them", () => {
+    expect(hostFileProblems({ tasks: [skeleton, value] }, files)).toEqual([]);
+    expect(hostFileProblems({ tasks: [value] }, null)).toEqual([]);
+  });
+  test("other content, two tasks, or another task creating one of them is a plan problem", () => {
+    const changed = { ...skeleton, writes: skeletonWrites.map((w) => (w.path === "src/lib.rs" ? { ...w, content: "pub mod m00;\n" } : w)) };
+    expect(hostFileProblems({ tasks: [changed, value] }, files)[0]).toContain("src/lib.rs is not written that way");
+    const halves = [
+      { ...skeleton, writes: skeletonWrites.slice(0, 10) },
+      { ...skeleton, id: "T003", writes: skeletonWrites.slice(10) },
+    ];
+    expect(hostFileProblems({ tasks: halves }, files)[0]).toContain("write all of them in one task");
+    const creator = { ...value, id: "T004", writes: [{ path: "src/m00.rs", action: "create" as const }] };
+    expect(hostFileProblems({ tasks: [skeleton, creator] }, files)).toEqual([
+      "Task T004 creates a file of extra.hostFiles; the host-written task creates it, so modify it after that task instead.",
+    ]);
   });
 });
