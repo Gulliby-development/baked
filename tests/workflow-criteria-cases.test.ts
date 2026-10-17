@@ -128,6 +128,32 @@ describe("quoted commands and repository-level criteria (#1366)", () => {
     expect(isCheckCommand("bun run src/cli.ts --help")).toBe(false);
   });
 
+  test("check commands run through a package runner or another toolchain are not cases (#1427)", () => {
+    for (const command of [
+      "npx tsc --noEmit",
+      "npx eslint .",
+      "npx vitest run",
+      "bunx biome check .",
+      "pnpm exec tsc",
+      "yarn jest",
+      "uv run pytest",
+      "poetry run pytest -q",
+      "python -m unittest",
+      "python3 -m mypy src",
+      "node --test",
+      "deno test",
+      "dotnet format --verify-no-changes",
+      "make test",
+      "./mvnw -q verify",
+      "gradlew check",
+    ]) {
+      expect(isCheckCommand(command)).toBe(true);
+    }
+    for (const literal of ["npx cochange --path src", "uv run cochange", "python -m cochange", "node dist/cli.js", "make verify", "testing"]) {
+      expect(isCheckCommand(literal)).toBe(false);
+    }
+  });
+
   test("a criterion the plan gives to most tasks has no cases", () => {
     const spec = { criteria: [{ ...repositoryLevel, then: 'the build prints "ready" and the help lists "--path"' }, criterion("AC-002", 'it prints "no matching files"')] };
     const tasks = [{ criterionIds: ["AC-009"] }, { criterionIds: ["AC-009", "AC-002"] }, { criterionIds: ["AC-009"] }, { criterionIds: ["AC-003"] }];

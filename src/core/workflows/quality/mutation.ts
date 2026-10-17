@@ -206,7 +206,7 @@ export function isTestCheck(check: { id: string; executable: string; args: strin
   const build = buildToolRunsTests(check.executable, check.args);
   if (build !== null) return build;
   const text = [check.id, check.executable, ...check.args].join(" ").toLowerCase();
-  return /\b(?:test|tests|pytest|vitest|jest|mocha|ava|tap|phpunit|rspec|ctest|nextest)\b/.test(
+  return /\b(?:test|tests|pytest|unittest|vitest|jest|mocha|ava|tap|phpunit|rspec|ctest|nextest)\b/.test(
     text,
   );
 }
