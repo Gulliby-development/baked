@@ -125,6 +125,37 @@ describe("size bounds a criterion invents at spec acceptance (#1227)", () => {
     expect(inventedBounds(bounded, "Summarize the expenses. Accept files up to 10 MB.")).toEqual(["AC-002", "AC-003", "AC-004"]);
   });
 
+  // Audit of 2026-10-17 (#1413): a request that says "10k rows" states the 10,000 rows a criterion names.
+  test("read a thousands or millions suffix in the request as its number", () => {
+    const rows: Spec = { ...fixed, criteria: [...fixed.criteria, given("AC-002", "a CSV of up to 10,000 rows"), given("AC-003", "up to 2,000,000 lines")] };
+    expect(inventedBounds(rows, "Summarize the expenses; it handles 10k rows and 2M lines.")).toEqual([]);
+    expect(inventedBounds(rows, "Summarize the expenses; it handles 10 rows.")).toEqual(["AC-002", "AC-003"]);
+    expect(domainExclusions({ criteria: [given("AC-002", "up to 10,000 rows; larger inputs are outside this criterion's checked domain")] }, "It handles 10k rows.")).toEqual([]);
+  });
+
+  // Audit of 2026-10-17 (#1413): the spec asked for the largest input and a person answered; the
+  // next spec states that bound, which the check must not send back as invented.
+  test("a bound a person gave in a clarification answer is stated, not invented", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-spec-answered-bound-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const asking: Spec = { ...fixed, openQuestions: [{ id: "Q-1", question: "What is the largest input file?", blocking: true }] };
+    const answered: Spec = { ...fixed, criteria: [...fixed.criteria, given("AC-003", "an input file up to 100 MiB")] };
+    const executor = new SpecExecutor(asking, answered);
+    const policy: RunPolicy = { ...defaultWorkflowPolicy, checks: [{ id: "check", executable: "bun", args: ["-e", "process.exit(0)"], cwd: ".", timeoutMs: 10000, required: true, scope: "feature", envNames: [], writes: [] }] };
+    const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } };
+    const service = new NativeWorkflowService(root, config, executor);
+    cleanups.push(() => service.close());
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Summarize the expenses in a CSV file.", ownerLabel: "test", policy });
+    expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("clarification");
+    const request = service.store.requests(run.runId).find((r) => r.kind === "clarification" && r.status === "pending");
+    const current = service.store.run(run.runId);
+    await service.decide(run.runId, { commandId: newId(), expectedRevision: current.revision }, { kind: "answer", requestId: request?.id ?? "", answers: { "Q-1": "Files up to 100 MiB" } });
+    await service.drive(run.runId, new AbortController().signal);
+    expect(executor.specErrors.length).toBeGreaterThan(1);
+    expect(executor.specErrors.at(-1)?.filter((e) => e.includes("states a size or count bound"))).toEqual([]);
+    expect(service.store.state(run.runId).spec?.criteria.map((c) => c.id)).toEqual(["AC-001", "AC-003"]);
+  });
+
   test("send the spec back to its author before the planner sees it", async () => {
     const root = mkdtempSync(join(tmpdir(), "baked-spec-bounds-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));
@@ -192,7 +223,11 @@ describe("a blocking spec finding that survives the last analysis return (#1120)
 
 class SpecExecutor implements AgentExecutor {
   specErrors: string[][] = [];
-  constructor(private first: Spec) {}
+  private specs = 0;
+  constructor(
+    private first: Spec,
+    private later: Spec = first,
+  ) {}
   async execute(request: ExecutionRequest) {
     const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as { inputHash: string };
     const markdown = "# Plan\n## Context\nCreate value.txt.\n## Decisions\nDEC-001: FR-001 needs ready.\n## Components\nvalue.txt\n## Data\nText\n## Verification\ncheck\n## Risks\nNone for fixture";
@@ -202,7 +237,7 @@ class SpecExecutor implements AgentExecutor {
         output = { schemaVersion: 1, summary: "Fixture", facts: [], unknowns: [], constraints: [], suggestedScope: ["value.txt"] };
         break;
       case "spec": {
-        output = this.first;
+        output = this.specs++ ? this.later : this.first;
         const errors = request.validate?.(output) ?? [];
         this.specErrors.push(errors);
         if (errors.length) output = fixed;

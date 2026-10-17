@@ -440,7 +440,13 @@ import {
 import { digestsSpec, mayDigestSpec, READ_CRITERION, readCriterionTool } from "./spec-digest.js";
 import { forgetProgress } from "./stall.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
-import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
+import {
+  type LeaseResource,
+  newId,
+  type RequestRow,
+  type TaskRow,
+  type WorkflowStore,
+} from "./store.js";
 import {
   documentsOnly,
   hasTaskGate,
@@ -618,6 +624,20 @@ function integrityRequirementText(state: RuntimeState): string {
     state.spec ? canonical(state.spec) : "",
     state.plan ?? "",
   ].join("\n");
+}
+
+/**
+ * The request with the clarification answers a person gave. A bound or an exclusion a person
+ * decided ("files up to 100 MiB") is stated, not invented by the spec author (#1413).
+ */
+function statedRequest(state: RuntimeState, requests: readonly RequestRow[]): string {
+  const answers = requests
+    .filter((r) => r.kind === "clarification" && r.status === "accepted" && r.actor === "user")
+    // Only the answers: the decision's request id would add stray numbers.
+    .map((r) =>
+      canonical((JSON.parse(r.answer_json ?? "{}") as { answers?: unknown }).answers ?? ""),
+    );
+  return [state.requestText || state.prompt, ...answers].join("\n");
 }
 
 /**
@@ -1035,7 +1055,7 @@ export class WorkflowScheduler {
                 return [
                   ...size,
                   ...specCoverageProblems(hostRepairs(parsed.data), policy.checks, {
-                    request: state.requestText || state.prompt,
+                    request: statedRequest(state, this.store.requests(runId)),
                   }),
                   // The host maps a deliverable the spec names elsewhere itself (#1037).
                   ...deliverableProblems(
