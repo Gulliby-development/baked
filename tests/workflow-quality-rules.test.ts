@@ -184,6 +184,67 @@ describe("anti-slop rule pack", () => {
     ]);
   });
 
+  // Bench round 39, linehunk-update (#1398): the update's diff of Cli.java added an `else if` at
+  // 14 spaces among siblings at 12 and turned two blank lines into lines of spaces. The repository
+  // check (`mvn -B -q verify`) has no formatter, and the rules compared lines without indentation.
+  test("whitespace slips in a file that existed are reported on the lines the run rewrote", () => {
+    const before = [
+      "class Cli {",
+      "    static int run(String[] args) {",
+      "        for (String arg : args) {",
+      "            if (arg.equals(\"-q\")) {",
+      "                quiet = true;",
+      "            } else if (arg.equals(\"-v\")) {",
+      "                verbose = true;",
+      "            }",
+      "        }",
+      "",
+      "        return 0;",
+      "    }",
+      "",
+      "    record Parsed(boolean quiet) {}",
+      "}",
+      "",
+    ].join("\n");
+    const after = [
+      "class Cli {",
+      "    static int run(String[] args) {",
+      "        for (String arg : args) {",
+      "            if (arg.equals(\"-q\")) {",
+      "                quiet = true;",
+      "            } else if (arg.equals(\"-v\")) {",
+      "                verbose = true;",
+      "              } else if (arg.equals(\"-n\")) {",
+      "                dryRun = true;   ",
+      "            }",
+      "        }",
+      "  ",
+      "        return 0;",
+      "    }",
+      "  ",
+      "    record Parsed(boolean quiet) {}",
+      "}",
+      "",
+    ].join("\n");
+    expect(rulesOf([{ path: "src/main/java/Cli.java", content: after, before }])).toEqual([
+      "whitespace-only-line:12:block",
+      "whitespace-only-line:15:block",
+      "trailing-whitespace:9:block",
+      "uneven-indent:8:note",
+    ]);
+    // Lines the file already had stay out of it, however they are indented.
+    expect(rulesOf([{ path: "src/main/java/Cli.java", content: after, before: after }])).toEqual([]);
+    // A file the run created has no diff to keep small, and Markdown breaks lines with spaces.
+    expect(rulesOf([created("src/main/java/Cli.java", after)])).toEqual([]);
+    expect(rulesOf([{ path: "README.md", content: "a  \n  \n", before: "a\n\n" }])).toEqual([]);
+  });
+
+  test("an aligned continuation or a comment body is not uneven indentation", () => {
+    const before = "class A {\n    void f() {\n        g();\n    }\n}\n";
+    const after = "class A {\n    void f() {\n        g(a,\n          b);\n        /**\n         * Doc.\n         */\n        h();\n    }\n}\n";
+    expect(rulesOf([{ path: "A.java", content: after, before }])).toEqual([]);
+  });
+
   test("every built-in rule has an ID, a message and a fix", () => {
     const ids = BUILTIN_RULES.map((r) => r.id);
     expect(new Set(ids).size).toBe(ids.length);
