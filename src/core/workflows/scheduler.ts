@@ -469,6 +469,7 @@ import {
   isTestPath,
   rewriteTargets,
   scanTestIntegrity,
+  strengthenTargets,
   testIntegrityOf,
   testWriteProblems,
 } from "./test-integrity.js";
@@ -7784,6 +7785,7 @@ ${note}`;
       .map((f) => JSON.parse(f.body_json) as Review["findings"][number]);
     const found = scanTestIntegrity(changes, {
       rewrites: task.origin === "planned" ? new Set() : rewriteTargets(ownFindings),
+      strengthens: task.origin === "planned" ? new Set() : strengthenTargets(ownFindings),
       reasoned: new Set([
         ...task.writes
           .filter((w) => w.reason || (amending && isTestPath(w.path)))
@@ -8003,6 +8005,15 @@ ${note}`;
       const bytes = readFileSync(absolute);
       return bytes.length > MAX_INTEGRITY_BYTES ? null : bytes.toString("utf8");
     };
+    // The findings of the run's corrections say which test files they may rewrite or strengthen.
+    const corrected = this.store
+      .findings(runId)
+      .filter((f) =>
+        (state.graph?.tasks ?? []).some(
+          (t) => t.origin !== "planned" && t.findingIds.includes(f.id),
+        ),
+      )
+      .map((f) => JSON.parse(f.body_json) as Review["findings"][number]);
     const found = scanTestIntegrity(
       changed.map((path) => {
         const hash = baseline.get(path) ?? null;
@@ -8010,16 +8021,8 @@ ${note}`;
         return { path, before: kept, after: read(path) };
       }),
       {
-        rewrites: rewriteTargets(
-          this.store
-            .findings(runId)
-            .filter((f) =>
-              (state.graph?.tasks ?? []).some(
-                (t) => t.origin !== "planned" && t.findingIds.includes(f.id),
-              ),
-            )
-            .map((f) => JSON.parse(f.body_json) as Review["findings"][number]),
-        ),
+        rewrites: rewriteTargets(corrected),
+        strengthens: strengthenTargets(corrected),
         reasoned: new Set([
           ...tasks.flatMap((t) => t.writes.filter((w) => w.reason).map((w) => w.path)),
           ...this.amendments(runId).flatMap((a) => a.paths),
