@@ -1415,7 +1415,7 @@ export class InitiativeService {
     const settings = this.store.settings(row);
     const facts = this.workflowFacts(settings);
     const models = settings.model ? [settings.model] : [];
-    const counts = boundaryPathCounts(plan);
+    const counts = boundaryPathCounts(plan, row.prompt);
     const features = plan.features.map((feature) => {
       const workflowId = featureWorkflowId(settings, feature);
       return {
@@ -2032,7 +2032,7 @@ function featureRunSamples(
       if (run?.status !== "completed") return [];
       if (!plans.has(link.plan_revision)) {
         const plan = initiatives.plan(initiatives.revision(row.id, link.plan_revision));
-        plans.set(link.plan_revision, { plan, counts: boundaryPathCounts(plan) });
+        plans.set(link.plan_revision, { plan, counts: boundaryPathCounts(plan, row.prompt) });
       }
       const revision = plans.get(link.plan_revision);
       const feature = revision?.plan.features.find((f) => f.id === link.feature_id);
@@ -2192,14 +2192,17 @@ export function featureApprovalDeclined(
  * The tiered limits of a feature run: the initiative's limits, raised to the files the approved
  * boundary names, with one task per file and two spare. The person approved those paths with the
  * split, so a plan that writes them is not larger than what was approved; a boundary of 11 files
- * could never pass a 10-file limit (narrowfit language and cli, #1349). Glob paths are not
- * counted, so the initiative's limits stay the floor.
+ * could never pass a 10-file limit (narrowfit language and cli, #1349). A glob names any number of
+ * files the person approved with it, so a boundary with a glob takes the host's ceiling: the
+ * allowed paths still keep every write inside the boundary. fecsmith front (`commands/*Command.java`
+ * and three files) planned 19 files against a 14-file limit and waited for a person (#1504).
  */
 export function boundaryLimits(
   auto: { maxTasks: number; maxFiles: number },
   paths: readonly string[],
 ): { maxTasks: number; maxFiles: number } {
-  const files = paths.filter((p) => !isGlobPath(p)).length;
+  if (paths.some(isGlobPath)) return { ...HOST_AUTO_APPROVAL_CEILING };
+  const files = paths.length;
   if (!files) return { maxTasks: auto.maxTasks, maxFiles: auto.maxFiles };
   return {
     maxTasks: Math.max(auto.maxTasks, Math.min(HOST_AUTO_APPROVAL_CEILING.maxTasks, files + 2)),

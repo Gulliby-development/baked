@@ -13,6 +13,14 @@ describe("decomposer feature floor", () => {
     expect(text).toContain("at least three files or a group of at least three related behaviors");
     expect(text).toContain("merge a smaller one into a sibling with the same dependencies");
     expect(text).toContain("The host merges features of one or two paths");
-    expect(decomposer?.version).toBe("1.4.0");
+    expect(decomposer?.version).toBe("1.5.0");
+  });
+
+  // Bench round 42, fecsmith (#1504): the brief named every command file, the decomposer wrote
+  // `commands/*Command.java`, and the estimate could not count the feature's files.
+  test("the decomposer lists named files by path and keeps globs for open sets", () => {
+    const text = decomposer?.instructions ?? "";
+    expect(text).toContain("each file by its path when the request or the code names it");
+    expect(text).toContain("a glob only for an open set of files that nobody lists");
   });
 });
