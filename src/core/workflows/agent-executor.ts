@@ -123,7 +123,7 @@ import {
 } from "./step-budget.js";
 import type { EffectRow, WorkflowStore } from "./store.js";
 import { pureWorkflowTools, WorkflowToolPolicy } from "./tool-policy.js";
-import type { AgentExecutor, ExecutionRequest, ExecutionResponse } from "./types.js";
+import type { AgentExecutor, ExecutionRequest, ExecutionResponse, Task } from "./types.js";
 import { AcceptanceDraftSchema, AcceptanceWalkSchema } from "./v2/acceptance.js";
 
 export const outputSchemas: Record<string, z.ZodType> = {
@@ -494,6 +494,8 @@ export class NativeAgentExecutor implements AgentExecutor {
       // Tool calls of the attempt so far; history compaction keeps only the newest results.
       let toolCalls = 0;
       let edited = false;
+      // Files the attempt's edit tools named, for the tests-written check it requests (#1421).
+      const editedPaths = new Set<string>();
       // A tool call is progress while it runs (it has its own deadline); the last one names a stall.
       const track = async <T>(name: string, call: () => Promise<T>): Promise<T> => {
         // The model call of this step was silent until it asked for its first tool.
@@ -546,7 +548,11 @@ export class NativeAgentExecutor implements AgentExecutor {
               noteSyntaxBaseline(name, args);
               let result = await withEditDiagnosticsMode(editMode, () =>
                 guard.execute(name, args, async () => {
-                  if (EDIT_TOOLS.has(name)) edited = true;
+                  if (EDIT_TOOLS.has(name)) {
+                    edited = true;
+                    if (!mcp)
+                      for (const path of editedPathsOf(args)) editedPaths.add(guard.path(path));
+                  }
                   if (name !== "read" || !Array.isArray(normalized.files))
                     return execute(normalized, options);
                   const { files: asked, unchanged } = unchangedRereads(
@@ -707,10 +713,25 @@ export class NativeAgentExecutor implements AgentExecutor {
                   ? writtenTestsCheck(
                       root,
                       policy.checks,
-                      request.writtenTests ?? task.writes,
+                      requestedWrittenTests(task, request.writtenTests, editedPaths),
                       taskCaseText(task),
                     )
                   : null;
+            // A correction whose findings point at no test file and that edited none has no
+            // tests-written check, after the attempt either (#1421).
+            if (
+              task &&
+              checkId.endsWith("-written") &&
+              !affected &&
+              request.writtenTests &&
+              writtenTestsCheck(root, policy.checks, task.writes, taskCaseText(task))?.id ===
+                checkId
+            )
+              return {
+                checkId,
+                status: "deferred",
+                note: `${checkId} runs the test files this correction's findings point at and the ones it edits. It points at none and has edited none, so the host runs no ${checkId} after this attempt; the task's other checks and the checks stage still run. Edit a test file of the task to have it run.`,
+              };
             const check =
               affected?.id === checkId ? affected : policy.checks.find((c) => c.id === checkId);
             if (!check || (check !== affected && !task?.checkIds.includes(checkId)))
@@ -1698,4 +1719,37 @@ export function unchangedRereads<T>(
     asked.push(file);
   }
   return { files: asked, unchanged };
+}
+
+/** The file paths an edit tool call names: `path`, `file`, a rename's `to` and `files`. */
+function editedPathsOf(args: Record<string, unknown>): string[] {
+  const paths: string[] = [];
+  for (const key of ["path", "file", "to"]) {
+    const value = args[key];
+    if (typeof value === "string") paths.push(value);
+  }
+  if (Array.isArray(args.files))
+    for (const f of args.files) {
+      if (typeof f === "string") paths.push(f);
+      else if (f && typeof f === "object" && "path" in f && typeof f.path === "string")
+        paths.push(f.path);
+    }
+  return paths;
+}
+
+/**
+ * The writes whose test files a requested tests-written check runs: the list the host gave the
+ * attempt and the test files of the task the attempt has edited so far, which the host's check
+ * after the attempt runs too (#1421).
+ */
+export function requestedWrittenTests(
+  task: Task,
+  given: Task["writes"] | undefined,
+  edited: ReadonlySet<string>,
+): Task["writes"] {
+  if (!given) return task.writes;
+  const extra = task.writes.filter(
+    (w) => edited.has(w.path) && !given.some((g) => g.path === w.path),
+  );
+  return [...given, ...extra];
 }

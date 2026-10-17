@@ -268,9 +268,9 @@ describe("a correction of a finding with a repro", () => {
       suggestedFix: "Keep the last value",
       ...(repro ? { repro } : {}),
     }) as Review["findings"][number];
-  const correct = (f: Review["findings"][number]) => {
+  const correct = (f: Review["findings"][number], predecessor = "T001") => {
     const state = stateOf();
-    state.repairPredecessors[f.id] = "T001";
+    state.repairPredecessors[f.id] = predecessor;
     appendCorrections(store, "run", state, policy, [f], "repair");
     return ((state.graph?.tasks ?? []).at(-1) as Task).description;
   };
@@ -283,5 +283,18 @@ describe("a correction of a finding with a repro", () => {
 
   test("without a repro the description is unchanged", () => {
     expect(correct(finding())).not.toContain("Reproduce first");
+  });
+
+  // #1422: a document finding's repro that never reads the document is evidence; the host does
+  // not run it and run_repro leaves it out (#1375), so the correction is not told to make it pass.
+  test("of a document, with a repro that does not read it, is shown the repro as evidence only", () => {
+    const repro = { executable: "cargo", args: ["run", "--", "a,b"], expected: "2", actual: "1" };
+    const description = correct({ ...finding(repro), file: "src/lib.rs" });
+    expect(description).toContain("Reproduce first");
+    const doc = correct({ ...finding(repro), file: "docs/guide.md" }, "T004");
+    expect(doc).not.toContain("Reproduce first");
+    expect(doc).toContain('Evidence: the review ran "cargo" "run" "--" "a,b" and saw "1".');
+    const reading = correct({ ...finding({ ...repro, args: ["run", "--", "docs/guide.md"] }), file: "docs/guide.md" }, "T004");
+    expect(reading).toContain("Reproduce first");
   });
 });

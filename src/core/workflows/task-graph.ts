@@ -1,5 +1,5 @@
 import { hashJson } from "../specs/hash.js";
-import { failingPathsInOutput, pathsInOutput } from "../verification/convergence.js";
+import { failingFilesInOutput, failingPathsInOutput } from "../verification/convergence.js";
 import { isDocFile } from "../verification/doc-examples.js";
 import { isTestFile } from "./affected-tests.js";
 import { writtenCodePaths } from "./check-policy.js";
@@ -274,7 +274,7 @@ export function pendingOwners(
       .filter((t) => !dependsOn(t.id, task.id))
       .map((t) => t.id),
   );
-  const named = pathsInOutput(output, graph.tasks);
+  const named = failingFilesInOutput(output, graph.tasks);
   if (!named.length || named.some(own)) return [...read];
   const owners = new Set(read);
   for (const path of named) {
@@ -309,7 +309,7 @@ export function testUpdateOwners(
   // Where the output locates failures, only those files count: a type error in a test names the
   // source declaration it disagrees with in an indented line (mdtoc-update 952805a8, #972).
   const located = failingPathsInOutput(output, graph.tasks);
-  const named = located.length ? located : pathsInOutput(output, graph.tasks);
+  const named = located.length ? located : failingFilesInOutput(output, graph.tasks);
   if (!named.length || !named.every((path) => isTestFile(path) || isRustTestFile(path))) return [];
   if (named.some((path) => task.writes.some((w) => w.path === path))) return [];
   const owners = new Set<string>();
@@ -385,7 +385,7 @@ export function siblingCorrections(
   predecessors: RuntimeState["repairPredecessors"],
 ): string[] {
   if (!graph || task.origin === "planned") return [];
-  const named = pathsInOutput(output, graph.tasks).filter(isTestPath);
+  const named = failingFilesInOutput(output, graph.tasks).filter(isTestPath);
   if (!named.length) return [];
   const writes = (tasks: Task[], path: string) =>
     tasks.some((t) => t.writes.some((w) => w.path === path && w.action !== "delete"));
