@@ -6,6 +6,7 @@ import { canonical } from "../specs/hash.js";
 import { WorkflowFault } from "./errors.js";
 import { DEFAULT_STALL_SETTINGS, silentMs } from "./stall.js";
 import { type LeaseResource, type LeaseRow, newId, WorkflowStore } from "./store.js";
+import { transientSqliteError } from "./transient-sqlite.js";
 
 /**
  * The mutation lease that guards writes under `root`: the project lease for the project root,
@@ -154,6 +155,10 @@ export function recordWorkerExit(store: WorkflowStore, ownerId: string): void {
     }
   });
 }
+/** How long a lease lasts without renewal, and how often its owner renews it. */
+const LEASE_TTL_MS = 15_000;
+const HEARTBEAT_MS = 5_000;
+
 export class WorkspaceLeases {
   readonly owner = newId();
   private held = new Map<LeaseRow["resource"], LeaseRow>();
@@ -165,6 +170,8 @@ export class WorkspaceLeases {
    */
   progressWindowMs = Math.ceil(DEFAULT_STALL_SETTINGS.stepStallMs * 1.5);
   private markedStalled = new Set<LeaseRow["resource"]>();
+  /** When renewals began to fail with a transient SQLite error, or null while they succeed. */
+  private failingSince: number | null = null;
   /** Leases whose loss stops only the work under them (a task worktree), not the whole owner. */
   private isolated = new Map<LeaseRow["resource"], AbortController>();
   get signal(): AbortSignal {
@@ -217,7 +224,7 @@ export class WorkspaceLeases {
         owner_id: this.owner,
         owner_epoch: (previous?.owner_epoch ?? 0) + 1,
         run_id: runId,
-        expires_at: Date.now() + 15000,
+        expires_at: Date.now() + LEASE_TTL_MS,
         process_identity_json: canonical(identity),
       };
       this.store.putLease(row);
@@ -225,7 +232,7 @@ export class WorkspaceLeases {
       if (options.isolated) this.isolated.set(resource, new AbortController());
     });
     if (!this.timer) {
-      this.timer = setInterval(() => this.heartbeat(), 5000);
+      this.timer = setInterval(() => this.heartbeat(), HEARTBEAT_MS);
       this.timer.unref();
     }
   }
@@ -252,10 +259,10 @@ export class WorkspaceLeases {
       if (this.markedStalled.delete(resource))
         return {
           ...held,
-          expires_at: Date.now() + 15000,
+          expires_at: Date.now() + LEASE_TTL_MS,
           process_identity_json: canonical(identity),
         };
-      return { ...held, expires_at: Date.now() + 15000 };
+      return { ...held, expires_at: Date.now() + LEASE_TTL_MS };
     }
     if (this.markedStalled.has(resource)) return held;
     this.markedStalled.add(resource);
@@ -273,6 +280,7 @@ export class WorkspaceLeases {
           this.held.set(resource, renewed);
         });
       } catch (error) {
+        if (this.tolerable(error)) continue;
         // Another owner holds it now: only the work under this lease stops, and the durable
         // lease is left to its new owner.
         this.held.delete(resource);
@@ -289,13 +297,26 @@ export class WorkspaceLeases {
           this.held.set(resource, renewed);
         }
       });
+      this.failingSince = null;
     } catch (error) {
+      if (this.tolerable(error)) return;
       // The owner must stop its processes before releasing the durable lease.
       // A failed renewal alone never proves that its effects have stopped.
       if (this.timer) clearInterval(this.timer);
       this.timer = undefined;
       this.lost.abort(error);
     }
+  }
+  /**
+   * A transient SQLite error (a disk I/O error after the host slept, a busy database) is not a
+   * lost lease: the next heartbeat renews it, as long as that is still before the lease expires
+   * (#1410). Past that, another owner may have taken it, and the failure counts as a loss.
+   */
+  private tolerable(error: unknown): boolean {
+    if (!transientSqliteError(error)) return false;
+    const now = Date.now();
+    this.failingSince ??= now;
+    return now - this.failingSince < LEASE_TTL_MS - HEARTBEAT_MS;
   }
   /** Releases one lease and keeps the others, as a task worktree's lease after its integration. */
   releaseOne(resource: LeaseRow["resource"]): void {
