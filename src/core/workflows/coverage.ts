@@ -1,5 +1,5 @@
 import type { TaskGraph } from "./schemas.js";
-import { SOURCE_FILE as SOURCE, type WorkspaceKind } from "./workspace-facts.js";
+import { isSourcePath, type WorkspaceKind } from "./workspace-facts.js";
 
 /**
  * Request coverage on a new project. A request that describes a program with noun phrases
@@ -20,7 +20,7 @@ export function describesProgram(prompt: string): boolean {
 /** True when no task writes source or test code: only docs, licenses, manifests and configs. */
 export function writesNoCode(graph: TaskGraph): boolean {
   const writes = graph.tasks.flatMap((task) => task.writes);
-  return writes.length > 0 && writes.every((write) => !SOURCE.test(write.path));
+  return writes.length > 0 && writes.every((write) => !isSourcePath(write.path));
 }
 
 export interface CoverageFinding {

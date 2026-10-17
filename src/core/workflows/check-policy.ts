@@ -1,3 +1,4 @@
+import { isCodeFile } from "../intelligence/language-traits.js";
 import { workspacePath } from "../specs/validate.js";
 import { WorkflowFault } from "./errors.js";
 import type { RunPolicy, TaskGraph } from "./schemas.js";
@@ -37,14 +38,12 @@ export function validateChecks(workspace: string, policy: RunPolicy, graph?: Tas
   }
 }
 
-const CODE_FILE =
-  /\.(?:[cm]?[jt]sx?|pyi?|rs|go|java|kt|rb|php|cs|cpp|cc|c|h|hpp|swift|vue|svelte)$/i;
 /** Commands that analyze source without running it: linters, formatters and type checkers. */
 const STATIC_COMMAND =
   /\b(?:lint|eslint|biome|ruff|flake8|pylint|clippy|vet|fmt|gofmt|format|prettier|mypy|pyright|tsc|typecheck|check)\b/i;
 
 /** Source code a linter or formatter reads: any written file that is not documentation or data. */
-export const isCodePath = (path: string): boolean => CODE_FILE.test(path);
+export const isCodePath = (path: string): boolean => isCodeFile(path);
 
 /** The code files a task creates or modifies. */
 export const writtenCodePaths = (task: Pick<Task, "writes">): string[] =>

@@ -12,6 +12,8 @@
  * the desktop app's preview bridge runs the same code on sample data.
  */
 
+import { isTestFile } from "./language-traits.js";
+
 export interface GraphSnapshotFile {
   path: string;
   lines: number;
@@ -225,7 +227,7 @@ export interface GraphModel {
 }
 
 export function isTestPath(path: string): boolean {
-  return /(^|\/)(tests?|__tests__|spec)\//.test(path) || /\.(test|spec)\.[cm]?[jt]sx?$/.test(path);
+  return isTestFile(path);
 }
 
 const base = (path: string): string => path.slice(path.lastIndexOf("/") + 1);

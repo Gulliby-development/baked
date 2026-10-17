@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { isTestFile as isLanguageTestFile } from "../intelligence/language-traits.js";
 import { workspacePath } from "../specs/validate.js";
 import type { AgentProfile, Spec, TaskGraph } from "./schemas.js";
 import { fileKind, SPLIT_PART } from "./sizing.js";
@@ -251,9 +252,9 @@ export function undeclaredRustModules(workspace: string, graph: TaskGraph): stri
 const ENTRY_POINT =
   /(?:^|\/)(?:main|cli|app|server|program)\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|cs|rb|php|swift)$/i;
 const isTestFile = (path: string): boolean =>
-  /(?:^|\/)(?:tests?|__tests__|spec)\/|[._-](?:test|spec)\.\w+$|_test\.go$|(?:^|\/)test_[^/]+$/i.test(
-    path,
-  ) || /[a-z]Tests?\.\w+$/.test(path);
+  isLanguageTestFile(path) ||
+  /[._-](?:test|spec)\.\w+$|(?:^|\/)test_[^/]+$/i.test(path) ||
+  /[a-z]Tests?\.\w+$/.test(path);
 const extensionOf = (path: string): string => path.slice(path.lastIndexOf(".")).toLowerCase();
 
 /**

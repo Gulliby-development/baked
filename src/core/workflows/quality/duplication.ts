@@ -11,6 +11,7 @@
  */
 import { readFile, stat } from "node:fs/promises";
 import { extname } from "node:path";
+import { isTestFile } from "../../intelligence/language-traits.js";
 import { workspacePath } from "../../specs/validate.js";
 import { isCodePath } from "../check-policy.js";
 
@@ -91,13 +92,7 @@ export interface DuplicationResult {
 
 /** Test code: test directories and the test file names of the supported languages. */
 export function isTestCodePath(path: string): boolean {
-  return (
-    /(^|\/)(tests?|__tests__|spec|testdata|src\/test)\//.test(path) ||
-    /\.(test|spec)\.[cm]?[jt]sx?$/.test(path) ||
-    /(^|\/)(test_[^/]*|[^/]*_test)\.py$/.test(path) ||
-    /_test\.go$/.test(path) ||
-    /(Test|Tests)\.(java|kt|cs)$/.test(path)
-  );
+  return /(^|\/)(testdata|src\/test)\//.test(path) || isTestFile(path);
 }
 
 /** The code files of a source manifest, read; oversized files and repositories are left out. */

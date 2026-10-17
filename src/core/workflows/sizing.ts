@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { isManifestFile, isTestFile } from "../intelligence/language-traits.js";
 import { isTestOf } from "../verification/convergence.js";
 import { MAX_EXTENDED_MS } from "./budget.js";
 import { DEFAULT_STAGE_RANGES, historyStorePaths, rangeOf, type TokenRange } from "./estimate.js";
@@ -102,13 +103,9 @@ const MIN_RATE_TOKENS = 100_000;
 /** The active-time cap holds the estimated time plus this share. */
 export const ACTIVE_TIME_MARGIN = 0.25;
 
-const TEST_PATH = /(^|\/)(tests?|__tests__|spec)\/|\.(test|spec)\.[cm]?[jt]sx?$/i;
 const DOCS_EXTENSION = /\.(md|mdx|markdown|rst|adoc)$/i;
 const DOCS_DIR = /(^|\/)docs?\//i;
 const SOURCE = /\.[cm]?[jt]sx?$/i;
-/** Project manifests and solution files, by file name. */
-const MANIFEST =
-  /(^|\/)(package\.json|tsconfig(\.[\w-]+)?\.json|deno\.jsonc?|go\.mod|go\.work|Cargo\.toml|pom\.xml|(build|settings)\.gradle(\.kts)?|pyproject\.toml|setup\.cfg|requirements([.-][\w-]+)?\.txt|Pipfile|Gemfile|composer\.json|mix\.exs|global\.json|Directory\.(Build|Packages)\.(props|targets)|[^/]+\.(csproj|fsproj|vbproj|sln|slnx))$/i;
 /**
  * Documentation by extension anywhere, or a non-source file under `docs/`; then project manifests
  * and solution files; then tests; else code.
@@ -116,9 +113,9 @@ const MANIFEST =
 export const fileKind = (path: string): FileKind =>
   DOCS_EXTENSION.test(path) || (DOCS_DIR.test(path) && !SOURCE.test(path))
     ? "docs"
-    : MANIFEST.test(path)
+    : isManifestFile(path)
       ? "manifest"
-      : TEST_PATH.test(path)
+      : isTestFile(path)
         ? "test"
         : "code";
 
