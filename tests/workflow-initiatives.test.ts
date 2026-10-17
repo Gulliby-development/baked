@@ -83,6 +83,8 @@ class InitiativeExecutor implements AgentExecutor {
   writes: Record<string, number> = {};
   /** Models whose implementation calls fail as an account without credits. */
   refused = new Set<string>();
+  /** What a refused model says. */
+  refusal = "You have no credits remaining. Add credits to continue.";
   /** The files in each feature's root when it was implemented. */
   seen: Record<string, string[]> = {};
   /** Implementation calls in flight, and the most at once. */
@@ -113,7 +115,7 @@ class InitiativeExecutor implements AgentExecutor {
   private respond(request: ExecutionRequest) {
     const root = request.root ?? this.root;
     if (this.refused.has(request.profile.model) && request.profile.output === "implementation")
-      throw Object.assign(new Error("You have no credits remaining. Add credits to continue."), { statusCode: 429 });
+      throw Object.assign(new Error(this.refusal), { statusCode: 429 });
     const [documents, attempt] = request.prompt.split("\n").slice(-2);
     const data = { ...JSON.parse(documents ?? "{}"), ...JSON.parse(attempt ?? "{}") } as {
       inputHash: string; snapshotHash: string; spec: Spec | null;
@@ -1309,6 +1311,26 @@ describe("initiative reroute", () => {
     expect(t.workflows.store.run(core.runId ?? "").status).not.toBe("blocked");
     view = await t.drive();
     expect(t.featureOf(view, "core").state).toBe("accepted");
+  });
+
+  // dieodds R39 (#1395): the Codex usage limit reset five days later, and the initiative said only
+  // "blocked (provider_unavailable)" after 1, 3 and 9 minute resumes.
+  test("a feature stopped by a usage limit names the limit and its reset in the initiative", async () => {
+    const t = setup();
+    t.executor.refused.add("fixture/model");
+    t.executor.refusal =
+      "You've hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Oct 22nd, 2026 10:55 AM.";
+    await t.start({ plan: threeFeatures });
+    await t.approveSplit();
+    await t.drive();
+    await t.approveFeature("core");
+    const view = await t.drive();
+    const core = t.featureOf(view, "core");
+    expect(core.runReason).toBe("provider_account");
+    expect(core.blockers[0]).toContain("reached its usage limit until Oct 22nd, 2026 10:55 AM");
+    expect(core.blockers[0]).toContain("baked workflow reroute");
+    expect(view.next).toMatchObject({ kind: "blocked" });
+    expect(JSON.stringify(view.next)).toContain("usage limit");
   });
 
   test("a split waiting for approval is proposed again, since its digest covers the model", async () => {

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
-import { accountRefusal, isCapacityError, isTransient, reportsLostTool, retryDelay } from "../src/core/workflows/retry.js";
+import { accountRefusal, isCapacityError, isTransient, reportsLostTool, retryDelay, usageLimitReset } from "../src/core/workflows/retry.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
@@ -108,6 +108,79 @@ describe("provider account refusals", () => {
     expect(calls).toBe(1);
     const errors = service.store.artifacts(run.runId).filter((a) => a.logical_path.startsWith("errors/"));
     expect(errors.map((a) => service.store.readArtifact(run.runId, a.id)).join("\n")).toContain("BAKED_CODEX_PATH");
+  });
+
+  // #1395: each supported provider words its usage limit differently; a rate limit must stay transient.
+  test("every provider's usage limit is a limit with its reset, and its rate limits stay transient", () => {
+    const limits: [string, Record<string, unknown>, string | null][] = [
+      ["Codex, a date", { message: "You've hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Oct 22nd, 2026 10:55 AM." }, "Oct 22nd, 2026 10:55 AM"],
+      ["Codex, a duration", { message: "You've hit your usage limit. Upgrade to Pro (https://openai.com/chatgpt/pricing) or try again in 4 days 3 hours." }, "4 days 3 hours"],
+      ["Claude Code, epoch", { message: "Claude AI usage limit reached|1760000000" }, "2025-10-09T08:53:20.000Z"],
+      ["Claude Code", { message: "You've hit your limit \u00b7 resets 3pm (Europe/Berlin)" }, "3pm (Europe/Berlin)"],
+      ["Claude Code, 5 hours", { message: "5-hour limit reached \u2219 resets 3pm" }, "3pm"],
+      ["Claude Code, weekly", { message: "Weekly limit reached \u00b7 resets Oct 20, 10am" }, "Oct 20, 10am"],
+      ["Anthropic API spend limit", { statusCode: 400, message: "You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC." }, "2026-11-01 at 00:00 UTC"],
+      ["Copilot premium requests", { statusCode: 402, message: "quota_exceeded: You have exceeded your premium requests allowance for this month." }, null],
+      ["Copilot chat quota", { statusCode: 429, message: "You've reached your monthly chat messages quota. Upgrade to Copilot Pro to continue." }, null],
+    ];
+    for (const [name, error, reset] of limits) {
+      expect([name, accountRefusal(error)]).toEqual([name, "limit"]);
+      expect([name, isTransient(error)]).toEqual([name, false]);
+      expect([name, usageLimitReset(error)]).toEqual([name, reset]);
+    }
+    // GitHub Models' daily request limit asks for hours; its reset is that wait from now.
+    const daily = { statusCode: 429, message: "Rate limit of 150 per 86400s exceeded for UserByModelByDay. Please wait 33000 seconds before retrying." };
+    expect(accountRefusal(daily)).toBe("limit");
+    expect(Date.parse(usageLimitReset(daily) ?? "") - Date.now()).toBeGreaterThan(32_000_000);
+    expect(accountRefusal({ statusCode: 429, message: "Too many requests", responseHeaders: { "retry-after": "7200" } })).toBe("limit");
+
+    const credits: Record<string, unknown>[] = [
+      { statusCode: 400, message: "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits." },
+      { statusCode: 429, message: "You exceeded your current quota, please check your plan and billing details." },
+    ];
+    for (const error of credits) expect(accountRefusal(error)).toBe("credits");
+
+    const rateLimits: Record<string, unknown>[] = [
+      { statusCode: 429, message: "This request would exceed the rate limit for your organization of 50 requests per minute." },
+      { statusCode: 429, message: "Rate limit reached for gpt-5 in organization org-x on tokens per min (TPM): Limit 30000. Please try again in 20s." },
+      { statusCode: 429, message: "rate limit exceeded", responseHeaders: { "retry-after": "30" } },
+      { statusCode: 429, message: "Rate limit of 15 per 60s exceeded for UserByModelByMinute. Please wait 42 seconds before retrying." },
+      { message: "429 Too Many Requests exceeded retry limit" },
+    ];
+    for (const error of rateLimits) {
+      expect([error.message, accountRefusal(error)]).toEqual([error.message, null]);
+      expect([error.message, isTransient(error)]).toEqual([error.message, true]);
+    }
+  });
+
+  // dieodds R39 (#1395): a Codex usage limit that reset five days later was retried on the 1, 3 and 9
+  // minute ladder and reported only as provider_unavailable.
+  test("a subscription usage limit blocks the run with provider_account and names its reset", async () => {
+    const limit = new Error("You've hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Oct 22nd, 2026 10:55 AM.");
+    expect(accountRefusal(limit)).toBe("limit");
+    expect(isTransient(limit)).toBe(false);
+    expect(usageLimitReset(limit)).toBe("Oct 22nd, 2026 10:55 AM");
+    const root = mkdtempSync(join(tmpdir(), "baked-account-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    let calls = 0;
+    const executor: AgentExecutor = {
+      async execute() {
+        calls++;
+        throw limit;
+      },
+    };
+    const policy: RunPolicy = { ...defaultWorkflowPolicy, checks: [{ id: "check", executable: "bun", args: ["-e", "process.exit(0)"], cwd: ".", timeoutMs: 10000, required: true, scope: "feature", envNames: [], writes: [] }] };
+    const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } };
+    const service = new NativeWorkflowService(root, config, executor);
+    cleanups.push(() => service.close());
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy });
+    const final = await service.drive(run.runId, new AbortController().signal);
+    expect(final.status).toBe("blocked");
+    expect(service.store.run(run.runId).reason).toBe("provider_account");
+    expect(calls).toBe(1);
+    expect(service.store.artifacts(run.runId).some((a) => a.logical_path.startsWith("provider/resume-"))).toBe(false);
+    const errors = service.store.artifacts(run.runId).filter((a) => a.logical_path.startsWith("errors/"));
+    expect(errors.map((a) => service.store.readArtifact(run.runId, a.id)).join("\n")).toContain("reached its usage limit until Oct 22nd, 2026 10:55 AM");
   });
 
   test("hand the step to a fallback model on another provider", async () => {

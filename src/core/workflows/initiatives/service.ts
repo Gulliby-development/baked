@@ -38,6 +38,7 @@ import {
 } from "../schemas.js";
 import type { NativeWorkflowService, PlannedReroute } from "../service.js";
 import { terminalStates } from "../state-machine.js";
+import { stopDetail } from "../stop-detail.js";
 import { newId, WorkflowStore } from "../store.js";
 import type { IssueSource } from "../types.js";
 import { DefinitionAutoApprovalSchema } from "../v2/definition.js";
@@ -1785,8 +1786,12 @@ export class InitiativeService {
         view.blockers = waiting;
       } else if (run.status === "blocked") {
         view.state = "blocked";
+        // A provider refusal names its own remedy (credits, a usage limit's reset, a reroute), which
+        // a bare reason hides from whoever reads the initiative (#1395).
+        const refusal =
+          run.reason === "provider_account" ? stopDetail(this.workflows.store, link.run_id) : null;
         view.blockers = [
-          `run ${link.run_id} is blocked (${run.reason}); resolve it with baked workflow resume ${link.run_id}`,
+          `run ${link.run_id} is blocked (${run.reason})${refusal ? `: ${refusal.split("\n")[0]?.slice(0, 600)}` : ""}; resolve it with baked workflow resume ${link.run_id}`,
         ];
       } else view.state = run.status === "paused" ? "paused" : "in_progress";
     }
