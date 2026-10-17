@@ -1211,6 +1211,23 @@ describe("initiative runtime", () => {
     expect(view.status).toBe("completed");
   }, 30000);
 
+  // Bench round 42, fecsmith front (#1504): a boundary of globs and a few files counted only its
+  // literal paths, so a 19-file plan inside it went to a person under 8-task, 14-file limits.
+  test("tiered approval auto-approves a plan inside a glob boundary that is larger than the limits", async () => {
+    const modules = Array.from({ length: 18 }, (_, i) => `core-m${String(i + 1).padStart(2, "0")}.txt`);
+    const split = plan([feature("core", [], ["core.txt", "core-*.txt"]), feature("api", ["core"]), feature("docs")]);
+    const t = setup(split);
+    t.executor.extraTasks.core = modules;
+    await t.start({ plan: split, featureAutoApproval: { maxTasks: 8, maxFiles: 14 } });
+    await t.approveSplit();
+    let view = await t.drive();
+    for (let i = 0; i < 4 && view.status !== "completed"; i++) view = await t.drive();
+    const coreRun = t.featureOf(view, "core").runId ?? "";
+    expect(t.workflows.store.state(coreRun).graph?.tasks.length).toBe(19);
+    expect(t.workflows.store.requests(coreRun).find((r) => r.kind === "approval")?.actor).toBe("auto-approval");
+    expect(view.status).toBe("completed");
+  }, 30000);
+
   test("an initiative whose features run in worktrees is refused at start in a folder without Git (#1345)", async () => {
     const t = setup();
     const worktreePolicy: RunPolicy = { ...policy, executionMode: "worktree" };

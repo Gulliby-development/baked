@@ -209,26 +209,67 @@ export interface BoundaryPathCount {
   placeholders: number;
 }
 
+/** File paths a request names, such as `src/cli.ts` or `AddCommand.java`. */
+export function namedFiles(text: string): string[] {
+  const found = text.matchAll(
+    /(?:^|[\s`'"([])(?:\.\/)?((?:[\w.-]+\/)*[\w-][\w.-]*\.[A-Za-z][A-Za-z0-9]{0,9})(?=$|[\s`'"),.;:\]])/gm,
+  );
+  return [...new Set([...found].map((m) => m[1] as string))];
+}
+
+/**
+ * The files a feature's boundary stands for: its paths when they are all literal, or its literal
+ * paths and the files the request names that its globs match. Null when a glob matches no named
+ * file, since its size is then unknown. fecsmith R42 front (`commands/*Command.java` for eight
+ * commands the brief named) was priced like a four-file feature and used 2.2 times the high end
+ * (#1504). A bare file name matches a glob's last segment when it names more than an extension.
+ */
+export function boundaryFiles(
+  feature: Pick<InitiativeFeature, "boundary">,
+  named: readonly string[],
+): string[] | null {
+  const { paths } = feature.boundary;
+  const globs = paths.filter((p) => GLOB.test(p));
+  if (!globs.length) return [...new Set(paths)];
+  // A bare name matches the glob's last segment only when that segment names more than an
+  // extension: `*Command.java` takes `AddCommand.java`, `*.java` takes nothing bare.
+  const tail = (glob: string) => glob.split("/").at(-1) ?? glob;
+  const specific = (glob: string) =>
+    /\w/.test(
+      tail(glob)
+        .replace(/\.[^.]*$/, "")
+        .replace(/[*?]/g, ""),
+    );
+  const matches = (file: string, glob: string) =>
+    matchGlob(file, glob) ||
+    matchGlob(file, `**/${glob}`) ||
+    (!file.includes("/") && specific(glob) && matchGlob(file, tail(glob)));
+  const matched = named.filter((file) => globs.some((glob) => matches(file, glob)));
+  if (!matched.length) return null;
+  return [...new Set([...paths.filter((p) => !GLOB.test(p)), ...matched])];
+}
+
 /**
  * Every feature's literal boundary paths, each counted in full only in the last feature in plan
  * order that lists it and as a placeholder in the earlier ones. A skeleton-first split lists its
  * module stubs in the first feature and again in the features that fill them: bench round 40
  * (tonemath) listed 48 paths for 33 files, and the first feature's path floor came out 1.54 times
  * what it used (#1464). A file of the feature's own skeleton counts as a placeholder too: the
- * host writes it with no agent (#1461). A glob boundary counts no paths (`literalPathCount`) and
- * claims none.
+ * host writes it with no agent (#1461). A glob boundary counts the files of the request it
+ * matches (`boundaryFiles`); one that matches none counts no paths and claims none.
  */
 export function boundaryPathCounts(
   plan: Pick<InitiativePlan, "features">,
+  request = "",
 ): Map<string, BoundaryPathCount> {
-  const literal = (f: InitiativeFeature) => literalPathCount(f) > 0;
+  const named = namedFiles(request);
+  const files = new Map(plan.features.map((f) => [f.id, boundaryFiles(f, named)]));
   const owner = new Map<string, string>();
-  for (const f of plan.features.filter(literal))
-    for (const path of f.boundary.paths) owner.set(path, f.id);
+  for (const f of plan.features) for (const path of files.get(f.id) ?? []) owner.set(path, f.id);
   return new Map(
     plan.features.map((f): [string, BoundaryPathCount] => {
-      if (!literal(f)) return [f.id, { paths: 0, placeholders: 0 }];
-      const paths = [...new Set(f.boundary.paths)];
+      const paths = files.get(f.id);
+      if (!paths?.length) return [f.id, { paths: 0, placeholders: 0 }];
       const skeleton = new Set((f.skeleton ?? []).map((file) => file.path));
       const placeholders = paths.filter(
         (path) => owner.get(path) !== f.id || skeleton.has(path),

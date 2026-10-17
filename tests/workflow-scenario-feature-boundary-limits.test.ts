@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { evaluateAutoApproval } from "../src/core/workflows/auto-approval.js";
-import type { InitiativeFeature } from "../src/core/workflows/initiatives/plan.js";
+import { boundaryPathCounts, type InitiativeFeature, namedFiles } from "../src/core/workflows/initiatives/plan.js";
 import { boundaryLimits, featurePolicy, type InitiativeSettings } from "../src/core/workflows/initiatives/service.js";
 import { loadDefinition } from "../src/core/workflows/v2/definitions.js";
 import { withBoundaryApproval } from "../src/core/workflows/v2/runtime.js";
@@ -102,16 +102,72 @@ describe("tiered approval limits follow the approved boundary (#1349)", () => {
     expect(result.reasons.join("\n")).toContain("main.go");
   });
 
-  test("a glob boundary keeps the initiative's limits", () => {
-    expect(boundaryLimits({ maxTasks: 5, maxFiles: 10 }, ["src/**", "README.md"])).toEqual({ maxTasks: 5, maxFiles: 10 });
-    expect(boundaryLimits({ maxTasks: 5, maxFiles: 10 }, ["internal/**"])).toEqual({ maxTasks: 5, maxFiles: 10 });
-    const result = decide(["internal/**"], files.map((f) => `internal/${f}`));
-    expect(result.approval).toBeNull();
+  // fecsmith R42 front (#1504): two globs and three files, a 13-task, 19-file plan inside them,
+  // and limits of 8 tasks and 14 files sent the approval to a person.
+  test("a plan inside a glob boundary is approved whatever its size; a write outside is not", () => {
+    const boundary = ["commands/*Command.java", "Cli.java", "Main.java", "commands/*CommandTest.java", "CliTest.java"];
+    expect(boundaryLimits({ maxTasks: 8, maxFiles: 14 }, boundary)).toEqual({ maxTasks: 500, maxFiles: 500 });
+    const commands = ["Encode", "Decode", "Verify", "Inspect", "Bench", "List", "Help", "Version"];
+    const writes = [
+      ...commands.map((c) => `commands/${c}Command.java`),
+      ...commands.map((c) => `commands/${c}CommandTest.java`),
+      "Cli.java",
+      "Main.java",
+      "CliTest.java",
+    ];
+    const tiered = (auto: { maxTasks: number; maxFiles: number }) => ({ ...settings, featureAutoApproval: auto }) as InitiativeSettings;
+    const planned = (paths: string[]) =>
+      evaluateAutoApproval(featurePolicy(tiered({ maxTasks: 8, maxFiles: 14 }), share, feature(boundary), false), {} as Parameters<typeof evaluateAutoApproval>[1], fixtureSpec, onePerFile(paths), [], [], { exists: () => false });
+    const inside = planned(writes);
+    expect(writes.length).toBe(19);
+    expect(inside.reasons).toEqual([]);
+    expect(inside.approval?.mode).toBe("limits");
+    const outside = planned([...writes, "build.gradle.kts"]);
+    expect(outside.approval).toBeNull();
+    expect(outside.reasons.join("\n")).toContain("build.gradle.kts");
   });
 
   test("raised limits follow the boundary's files", () => {
     const many = Array.from({ length: 20 }, (_, i) => `f${i}.go`);
     expect(boundaryLimits({ maxTasks: 5, maxFiles: 10 }, many)).toEqual({ maxTasks: 22, maxFiles: 20 });
     expect(boundaryLimits({ maxTasks: 5, maxFiles: 10 }, files)).toEqual({ maxTasks: 13, maxFiles: 11 });
+  });
+});
+
+// fecsmith R42 (#1504): `core/*.java` and `commands/*Command.java` were both sized as unknown
+// (`paths: null`), so front (eight named commands) got the range of a four-file feature.
+describe("a glob boundary is sized from the files the request names (#1504)", () => {
+  const split = (features: [string, string[]][]) => ({
+    features: features.map(([id, paths]) => ({ ...feature(paths), id })),
+  });
+  const request = [
+    "Build fecsmith. Commands: EncodeCommand.java, DecodeCommand.java and VerifyCommand.java,",
+    "each with its test (`EncodeCommandTest.java`, `DecodeCommandTest.java`, `VerifyCommandTest.java`).",
+    "The entry point is src/main/java/fecsmith/Main.java.",
+  ].join("\n");
+
+  test("the request's file names are found", () => {
+    expect(namedFiles(request)).toEqual([
+      "EncodeCommand.java",
+      "DecodeCommand.java",
+      "VerifyCommand.java",
+      "EncodeCommandTest.java",
+      "DecodeCommandTest.java",
+      "VerifyCommandTest.java",
+      "src/main/java/fecsmith/Main.java",
+    ]);
+  });
+
+  test("a glob counts the named files it matches; one that matches none stays unknown", () => {
+    const counts = boundaryPathCounts(
+      split([
+        ["core", ["core/*.java"]],
+        ["front", ["commands/*Command.java", "commands/*CommandTest.java", "Cli.java"]],
+      ]),
+      request,
+    );
+    expect(counts.get("core")).toEqual({ paths: 0, placeholders: 0 });
+    expect(counts.get("front")).toEqual({ paths: 7, placeholders: 0 });
+    expect(boundaryPathCounts(split([["front", ["commands/*Command.java"]]])).get("front")).toEqual({ paths: 0, placeholders: 0 });
   });
 });
