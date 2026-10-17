@@ -12,7 +12,7 @@ export const PLAN_CONSISTENCY_CHECKS = [
   "every read hint exists or is created by the task or an earlier task",
   "every task reference exists or is created by an earlier task",
   "a task that writes a module index (lib.rs, main.rs, mod.rs, __init__.py, index.ts) runs after the tasks that create the module files beside it",
-  "a task with checks that creates a Rust module file also writes the lib.rs, main.rs or mod.rs that declares it, so its checks compile it",
+  "a task with checks that creates a Rust module file also writes the lib.rs, main.rs, mod.rs or parent module file (src/parser.rs for src/parser/lexer.rs) that declares it, so its checks compile it",
   "code created after a task creates the entry point (main, cli, app, server, program) is wired in by a task that writes the entry point and runs after it",
   "a documentation task that runs the program to capture its output runs after the tasks that write the program's entry points",
   "each task has its own description, and no task's description tells it to create a file another task writes",
@@ -29,8 +29,22 @@ const SIBLINGS: Array<{ index: RegExp; file: RegExp; child: RegExp }> = [
 const dirOf = (path: string): string =>
   path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
 
+/**
+ * A Rust module file other than a crate root or `mod.rs`: in the 2018 layout `src/parser.rs`
+ * declares the modules in `src/parser/` (#1412).
+ */
+const isRustParentModule = (path: string): boolean =>
+  path.endsWith(".rs") && !MODULE_INDEX.test(path);
+
 /** Whether `file` is a module that the module index at `index` declares. */
 function declaredBy(index: string, file: string): boolean {
+  if (isRustParentModule(index)) {
+    const dir = index.slice(0, -".rs".length);
+    if (!file.endsWith(".rs") || !file.startsWith(`${dir}/`)) return false;
+    const fileDir = dirOf(file);
+    if (fileDir === dir) return !MODULE_INDEX.test(file);
+    return /(?:^|\/)mod\.rs$/.test(file) && dirOf(fileDir) === dir;
+  }
   const rule = SIBLINGS.find((r) => r.index.test(index));
   if (!rule || file === index || !rule.file.test(file)) return false;
   const dir = dirOf(index);
@@ -40,11 +54,11 @@ function declaredBy(index: string, file: string): boolean {
 }
 
 /**
- * A task that writes a module index (`lib.rs`, `mod.rs`, `__init__.py`, `index.ts`) waits for the
- * tasks that create the module files it declares. Planners gave a crate's `lib.rs` and its
- * `parse.rs` to parallel tasks; the index then named modules that did not exist in its own
- * worktree, and every check of it failed until a sibling merged (bench round 08, commitbump). A
- * dependency that would close a cycle is not added.
+ * A task that writes a module index (`lib.rs`, `mod.rs`, a parent module such as `src/parser.rs`,
+ * `__init__.py`, `index.ts`) waits for the tasks that create the module files it declares.
+ * Planners gave a crate's `lib.rs` and its `parse.rs` to parallel tasks; the index then named
+ * modules that did not exist in its own worktree, and every check of it failed until a sibling
+ * merged (bench round 08, commitbump). A dependency that would close a cycle is not added.
  */
 export function withModuleDependencies(graph: TaskGraph): TaskGraph {
   const deps = new Map(graph.tasks.map((task) => [task.id, [...task.dependsOn]]));
@@ -55,7 +69,9 @@ export function withModuleDependencies(graph: TaskGraph): TaskGraph {
     return (deps.get(from) ?? []).some((id) => reaches(id, to, seen));
   };
   for (const task of graph.tasks) {
-    const indexes = task.writes.filter((w) => w.action !== "delete" && MODULE_INDEX.test(w.path));
+    const indexes = task.writes.filter(
+      (w) => w.action !== "delete" && (MODULE_INDEX.test(w.path) || isRustParentModule(w.path)),
+    );
     if (!indexes.length) continue;
     for (const other of graph.tasks) {
       if (other.id === task.id || reaches(task.id, other.id) || reaches(other.id, task.id))
@@ -218,9 +234,10 @@ export function undeclaredRustModules(workspace: string, graph: TaskGraph): stri
       if (write.action !== "create" || !file.endsWith(".rs") || isTestFile(file)) continue;
       if (MODULE_INDEX.test(file) && !/(?:^|\/)mod\.rs$/.test(file)) continue;
       const dir = dirOf(/(?:^|\/)mod\.rs$/.test(file) ? dirOf(file) : file);
-      const indexes = ["lib.rs", "main.rs", "mod.rs"]
-        .map((name) => (dir ? `${dir}/${name}` : name))
-        .filter((index) => declaredBy(index, file) && present(index));
+      const indexes = [
+        ...["lib.rs", "main.rs", "mod.rs"].map((name) => (dir ? `${dir}/${name}` : name)),
+        ...(dir ? [`${dir}.rs`] : []),
+      ].filter((index) => declaredBy(index, file) && present(index));
       if (!indexes.length || task.writes.some((w) => indexes.includes(w.path))) continue;
       problems.push(
         `${task.id} creates the Rust module ${file} but does not write ${indexes.join(" or ")}, which declares it, so ${task.id}'s checks (${task.checkIds.join(", ")}) never compile it and its errors surface only after the task that adds the mod line. Add ${indexes[0]} to ${task.id}'s writes and declare the module there; the host orders tasks that write the same index.`,
