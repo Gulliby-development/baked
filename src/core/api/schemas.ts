@@ -89,7 +89,8 @@ export const RejectBody = Command.extend({
 }).strict();
 export const AnswerBody = Command.extend({
   requestId: SafeId,
-  answers: z.record(z.string(), z.string()),
+  // Checked by the command, which names the wrong key and accepts the stored `{answers}` shape.
+  answers: z.unknown().refine((value) => value !== undefined, "Required"),
 }).strict();
 export const ExtendBody = Command.extend({
   tokens: PositiveInt.optional(),
