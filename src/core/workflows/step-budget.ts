@@ -504,6 +504,10 @@ export class AttemptStepController {
     this.ceilingStop = final === "tokens";
     return final;
   }
+  /** Serialized size of the messages the newest step sent; undefined before the first. */
+  lastSentBytes(): number | undefined {
+    return this.sentBytes.findLast((bytes) => bytes !== undefined);
+  }
   consumed(steps: ReadonlyArray<{ usage: StepUsageLike }>): number {
     return steps.reduce(
       (sum, step) => sum + stepTokens(step.usage, this.options.fallbackStepTokens),

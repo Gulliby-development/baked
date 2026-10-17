@@ -147,9 +147,26 @@ export function isInputTooLarge(error: unknown): boolean {
   );
 }
 
+const OUTPUT_LIMIT =
+  /incomplete response returned|reason:\s*max_output_tokens|exceeded the \d+ output token maximum/i;
+
+/**
+ * The model's response ran past the provider's output cap, reported as an error instead of a
+ * `length` finish: Codex's "Incomplete response returned, reason: max_output_tokens", Claude
+ * Code's "Claude's response exceeded the 32000 output token maximum". It is neither an outage nor
+ * transient: the same prompt at the same effort runs past the cap the same way. Bench round 41
+ * (fpbits): a 10 minute response ended this way, recorded 0 tokens and waited on the outage
+ * ladder (#1479).
+ */
+export function isOutputLimit(error: unknown): boolean {
+  if (error instanceof WorkflowFault) return false;
+  const info = error as ProviderError | undefined;
+  return OUTPUT_LIMIT.test(`${info?.message ?? ""} ${info?.responseBody ?? ""}`);
+}
+
 /** A provider failure worth trying again: a timeout, rate limit, overload or network error. */
 export function isTransient(error: unknown): boolean {
-  if (error instanceof WorkflowFault || accountRefusal(error)) return false;
+  if (error instanceof WorkflowFault || accountRefusal(error) || isOutputLimit(error)) return false;
   if (isOAuthRefreshCollision(error) || isCapacityError(error)) return true;
   const info = error as ProviderError | undefined;
   if (info?.name === "TimeoutError") return true;

@@ -153,6 +153,27 @@ describe("attempt usage of a failing native attempt", () => {
     expect(store.recordedUsage(run.runId, attemptId)).toBe(0);
   });
 
+  // Bench round 41 (fpbits, #1479): Codex ended a 10 minute response with "Incomplete response
+  // returned, reason: max_output_tokens" and reported no usage, so the attempt recorded 0 tokens.
+  test("a call ended at the output cap is charged its estimate, not zero", async () => {
+    scriptModel([
+      step(1000, 100, { name: "unknown_tool", input: {} }),
+      () => {
+        throw new Error("Incomplete response returned, reason: max_output_tokens");
+      },
+    ]);
+    const { store, run, attemptId, executor, request, usageRecord } = await nativeAttempt();
+    await expect(executor.execute(request)).rejects.toThrow("max_output_tokens");
+    const cap = request.profile.maxOutputTokens;
+    const used = store.recordedUsage(run.runId, attemptId) ?? 0;
+    // The step that ran, a full response at the cap, and the messages the failed call was sent.
+    expect(used).toBeGreaterThan(1100 + cap);
+    const usage = usageRecord();
+    expect(usage).toMatchObject({ stopReason: "error", totalTokens: used });
+    expect(usage?.steps.map((s) => s.outputTokens)).toEqual([100, cap]);
+    expect(usage?.estimatedUsage?.outputTokens).toBe(100 + cap);
+  });
+
   test("an attempt that fails before any model step records zero tokens", async () => {
     scriptModel([
       () => {
