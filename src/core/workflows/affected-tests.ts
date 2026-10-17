@@ -15,6 +15,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { isStaticCheck } from "./check-policy.js";
+import { launchedCommand } from "./launcher.js";
 import type { Check } from "./types.js";
 
 /** At most this many tests go to an attempt; the nearest ones (fewest import hops) first. */
@@ -304,12 +305,6 @@ export function affectedTests(root: string, sources: string[]): AffectedTest[] {
     .slice(0, MAX_AFFECTED_TESTS);
 }
 
-const programName = (executable: string): string =>
-  executable
-    .replace(/^.*[\\/]/, "")
-    .replace(/\.(?:exe|cmd|bat)$/i, "")
-    .toLowerCase();
-
 /** Keeps a test runner's own flags and drops the paths or patterns a check named. */
 const flagsOnly = (args: string[]): string[] => args.filter((arg) => arg.startsWith("-"));
 
@@ -324,8 +319,7 @@ export function affectedTestCheck(checks: readonly Check[], tests: string[]): Ch
   const files = tests.map((t) => `./${t}`);
   for (const check of checks) {
     if (isStaticCheck(check) || check.cwd !== ".") continue;
-    const name = programName(check.executable);
-    const args = check.args;
+    const { program: name, args, launch } = launchedCommand(check.executable, check.args);
     const js = files.filter((f) => JS_FILE.test(f));
     const py = files.filter((f) => PY_FILE.test(f));
     let prefix: string[] | null = null;
@@ -360,21 +354,23 @@ export function affectedTestCheck(checks: readonly Check[], tests: string[]): Ch
     }
     if (!prefix) {
       const compiled = compiledTestArgs(name, args, tests.filter(isCompiledTestFile));
-      if (!compiled) continue;
+      const command = compiled && launch(compiled);
+      if (!command) continue;
       return {
         ...check,
+        ...command,
         id: `${check.id}-affected`,
-        args: compiled,
         required: false,
         scope: "task",
         writes: [],
       };
     }
-    if (targets.length === 0) continue;
+    const command = targets.length ? launch([...prefix, ...targets]) : null;
+    if (!command) continue;
     return {
       ...check,
+      ...command,
       id: `${check.id}-affected`,
-      args: [...prefix, ...targets],
       required: false,
       scope: "task",
       writes: [],
@@ -492,11 +488,10 @@ const TIMEOUT_FLAG = /^--(?:timeout|testTimeout|test-timeout)\b/;
  * while the check allowed 60 s, and the chain cost 2.71M tokens. An existing flag is kept.
  */
 export function withPerTestTimeout(check: Check, timeoutMs: number): string[] {
-  const args = check.args;
-  if (args.some((arg) => TIMEOUT_FLAG.test(arg))) return args;
-  const name = programName(check.executable);
+  const { program: name, args, launch } = launchedCommand(check.executable, check.args);
+  if (args.some((arg) => TIMEOUT_FLAG.test(arg))) return check.args;
   const ms = Math.max(30_000, Math.floor(timeoutMs / 2));
-  if (ms >= timeoutMs) return args;
+  if (ms >= timeoutMs) return check.args;
   const runner = name === "npx" || name === "bunx" ? args[0] : name;
   const flags =
     name === "bun" && args[0] === "test"
@@ -504,10 +499,10 @@ export function withPerTestTimeout(check: Check, timeoutMs: number): string[] {
       : runner === "jest" || runner === "vitest"
         ? [`--testTimeout=${String(ms)}`]
         : [];
-  if (!flags.length) return args;
+  if (!flags.length) return check.args;
   const first = args.findIndex((arg) => arg.startsWith("./"));
   const at = first === -1 ? args.length : first;
-  return [...args.slice(0, at), ...flags, ...args.slice(at)];
+  return launch([...args.slice(0, at), ...flags, ...args.slice(at)])?.args ?? check.args;
 }
 
 const CASE_COUNT =

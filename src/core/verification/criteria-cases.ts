@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { launchedCommand } from "../workflows/launcher.js";
 import { isTestCodePath } from "../workflows/quality/duplication.js";
 import type { Spec } from "../workflows/schemas.js";
 import type { Check, Task } from "../workflows/types.js";
@@ -62,7 +63,14 @@ export function isCheckCommand(literal: string, checks: CaseContext["checks"] = 
   const spelled = literal.trim().replace(/\s+/g, " ");
   return (
     CHECK_COMMAND.test(spelled) ||
-    checks.some((check) => [check.executable, ...check.args].join(" ") === spelled)
+    checks.some((check) => {
+      // A check behind a launcher (`cmd /c mvn verify`) is quoted as the command it runs (#1507).
+      const { program, args } = launchedCommand(check.executable, check.args);
+      return (
+        [check.executable, ...check.args].join(" ") === spelled ||
+        [program, ...args].join(" ") === spelled
+      );
+    })
   );
 }
 
