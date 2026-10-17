@@ -3,11 +3,11 @@ import type { RunPolicy, Spec, WorkflowDefinition } from "../schemas.js";
 import { WorkflowSchema } from "../schemas.js";
 import type { Check, RuntimeState } from "../types.js";
 import {
-  DefinitionAutoApprovalSchema,
   effectiveMode,
   type Gate,
   type GateBinding,
   GateSchema,
+  HostAutoApprovalSchema,
   type Stage,
   stageGates,
   type WorkflowV2,
@@ -299,14 +299,14 @@ export function autoApprovalOf(definition: WorkflowV2): RunPolicy["autoApproval"
 /**
  * A shipped preset whose human approval stages approve within limits the host sets: an initiative
  * with tiered approval runs a small leaf feature on `quick` and approves its plan within the
- * feature's boundary, as a schema 1 workflow does with the same limits (#1374). Null when the
- * limits do not fit a definition's auto approval (more than 20 paths, for one).
+ * feature's boundary, as a schema 1 workflow does with the same limits (#1374). The host's limits
+ * keep the run policy's ceilings, not a definition author's 20-path cap (#1458).
  */
 export function withBoundaryApproval(
   definition: WorkflowV2,
   limits: NonNullable<NonNullable<RunPolicy["autoApproval"]>["limits"]>,
 ): (WorkflowV2 & { autoApproval: NonNullable<WorkflowV2["autoApproval"]> }) | null {
-  const parsed = DefinitionAutoApprovalSchema.safeParse({ enabled: true, ...limits });
+  const parsed = HostAutoApprovalSchema.safeParse({ enabled: true, ...limits });
   if (!parsed.success) return null;
   return {
     ...definition,

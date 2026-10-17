@@ -414,6 +414,21 @@ export const DefinitionAutoApprovalSchema = z
   })
   .strict();
 
+/** The most tasks and files auto approval accepts when the host sets the limits; see below. */
+export const HOST_AUTO_APPROVAL_CEILING = { maxTasks: 500, maxFiles: 500 } as const;
+
+/**
+ * Auto approval limits the host builds from a boundary a person approved, such as an initiative
+ * feature's under tiered approval. They are as wide as the boundary, so they keep the run
+ * policy's ceilings rather than the caps a definition's author gets: a feature with 22 boundary
+ * files and 24 tasks lost auto approval to the 20-path cap without a word (#1458).
+ */
+export const HostAutoApprovalSchema = DefinitionAutoApprovalSchema.extend({
+  maxTasks: z.number().int().min(1).max(HOST_AUTO_APPROVAL_CEILING.maxTasks),
+  maxFiles: z.number().int().min(1).max(HOST_AUTO_APPROVAL_CEILING.maxFiles),
+  allowedPaths: z.array(PathPattern).min(1),
+});
+
 export const PRESETS = [
   "quick",
   "quick-fix",

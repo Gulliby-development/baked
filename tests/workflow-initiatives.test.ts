@@ -85,6 +85,8 @@ class InitiativeExecutor implements AgentExecutor {
   contracts: Record<string, string> = {};
   /** Extra path a feature's plan writes, to step outside its boundary. */
   extraWrites: Record<string, string> = {};
+  /** Further files a feature's plan writes, one task each. */
+  extraTasks: Record<string, string[]> = {};
   writes: Record<string, number> = {};
   /** Models whose implementation calls fail as an account without credits. */
   refused = new Set<string>();
@@ -161,7 +163,7 @@ class InitiativeExecutor implements AgentExecutor {
           schemaVersion: 1, markdown,
           taskGraph: {
             schemaVersion: 1, featureId: spec.featureId, revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown),
-            tasks: [{ id: "T001", title: `Create ${path}`, description: "Write ready", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes, readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior" }],
+            tasks: [path, ...(this.extraTasks[name] ?? [])].map((file, i) => ({ id: `T${String(i + 1).padStart(3, "0")}`, title: `Create ${file}`, description: "Write ready", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: i ? [{ path: file, action: existsSync(join(root, file)) ? "modify" : "create" }] : writes, readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior" })),
           },
         };
         break;
@@ -1126,8 +1128,25 @@ describe("initiative runtime", () => {
     for (let i = 0; i < 4 && view.status !== "completed"; i++) view = await t.drive();
     const apiRun = t.featureOf(view, "api").runId ?? "";
     const approval = t.workflows.store.requests(apiRun).find((r) => r.kind === "approval");
-    console.log("DBG", JSON.stringify(t.workflows.store.state(apiRun).hostDependencies), approval?.actor, JSON.stringify(t.workflows.store.state(apiRun).graph?.tasks.map((x) => x.writes)), JSON.parse(t.workflows.store.run(apiRun).policy_json).autoApproval);
     expect(approval?.actor).toBe("auto-approval");
+    expect(view.status).toBe("completed");
+  }, 30000);
+
+  // Bench round 40, tonemath core (#1458): a boundary of 22 files is more than a definition's auto
+  // approval accepts, so the feature's tiered approval was dropped without a reason and a person
+  // waited 14 minutes for a plan inside the approved boundary.
+  test("tiered approval auto-approves a feature whose boundary names more than 20 files", async () => {
+    const modules = Array.from({ length: 21 }, (_, i) => `core-m${String(i + 1).padStart(2, "0")}.txt`);
+    const split = plan([feature("core", [], ["core.txt", ...modules]), feature("api", ["core"]), feature("docs")]);
+    const t = setup(split);
+    t.executor.extraTasks.core = modules;
+    await t.start({ plan: split, featureAutoApproval: { maxTasks: 8, maxFiles: 14 } });
+    await t.approveSplit();
+    let view = await t.drive();
+    for (let i = 0; i < 4 && view.status !== "completed"; i++) view = await t.drive();
+    const coreRun = t.featureOf(view, "core").runId ?? "";
+    expect(JSON.parse(t.workflows.store.run(coreRun).policy_json).autoApproval?.limits).toMatchObject({ maxTasks: 24, maxFiles: 22 });
+    expect(t.workflows.store.requests(coreRun).find((r) => r.kind === "approval")?.actor).toBe("auto-approval");
     expect(view.status).toBe("completed");
   }, 30000);
 
