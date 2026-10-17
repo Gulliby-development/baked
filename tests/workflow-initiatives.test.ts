@@ -19,6 +19,9 @@ import {
   validateInitiativePlan,
 } from "../src/core/workflows/initiatives/plan.js";
 import {
+  featureApprovalDeclined,
+  featurePolicy,
+  type InitiativeSettings,
   type InitiativeStartRequest,
   InitiativeService,
   type InitiativeView,
@@ -1108,6 +1111,36 @@ describe("initiative runtime", () => {
     view = await t.drive();
     expect(view.status).toBe("completed");
   }, 30000);
+
+  test("a tiered feature without boundary paths asks a person and says why (#1467)", async () => {
+    const pathless = plan([feature("core", [], []), feature("api", ["core"]), feature("docs")]);
+    const t = setup(pathless);
+    await t.start({ plan: pathless, featureAutoApproval: { maxTasks: 5, maxFiles: 5 } });
+    await t.approveSplit();
+    const view = await t.drive();
+    const core = t.featureOf(view, "core");
+    expect(core.state).toBe("needs_decision");
+    const pending = t.workflows.store.requests(core.runId ?? "").find((r) => r.kind === "approval" && r.status === "pending");
+    expect(JSON.parse(pending?.body_json ?? "{}").autoApproval).toEqual({
+      declined: ["The approved split names no boundary paths for feature core, so tiered approval has no paths to allow and a person approves its plan."],
+    });
+    expect(JSON.parse(t.workflows.store.run(core.runId ?? "").policy_json).autoApproval).toBeNull();
+  }, 30000);
+
+  test("a rebased tiered feature's decline reason is stored with its run (#1467)", () => {
+    const settings = { basePolicy: policy, featureAutoApproval: { maxTasks: 5, maxFiles: 5 } } as unknown as InitiativeSettings;
+    const share = { tokens: 2_000_000, calls: 200, activeMs: 3_600_000 };
+    const api = feature("api", ["core"]);
+    const rebased = featurePolicy(settings, share, api, true);
+    expect(rebased.autoApproval).toBeNull();
+    expect(featureApprovalDeclined(settings, api, true, rebased)).toBe(
+      "Feature api was rebased onto new upstream results, so a person approves its plan again; tiered approval covers only the feature's first run.",
+    );
+    // A first run within its boundary has auto approval, and tiered approval off gives no reason.
+    expect(featureApprovalDeclined(settings, api, false, featurePolicy(settings, share, api, false))).toBeNull();
+    const off = { ...settings, featureAutoApproval: null } as unknown as InitiativeSettings;
+    expect(featureApprovalDeclined(off, api, true, featurePolicy(off, share, api, true))).toBeNull();
+  });
 
   // Bench round 39, dieodds (#1394): the cli feature depends on others, so its approval matched the
   // csproj its boundary names against the empty deliverables text and asked a person.

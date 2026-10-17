@@ -487,6 +487,12 @@ export const RuntimeStateSchema = z
       .default(null),
     /** Set on a run started with `--auto-preset`: what was proposed, why, and what ran. */
     presetChoice: PresetChoiceSchema.nullable().default(null),
+    /**
+     * Why the host gave a run that asked for auto approval none (an initiative feature with no
+     * boundary paths, a rebased feature run). The approval request shows it as
+     * `autoApproval.declined` (#1467).
+     */
+    autoApprovalDeclined: z.string().nullable().default(null),
   })
   .strict();
 export type RuntimeState = z.infer<typeof RuntimeStateSchema>;

@@ -395,6 +395,7 @@ export class NativeWorkflowService implements WorkflowService {
       worktreeBase: request.baseCommit ?? null,
       testsFirst: null,
       presetChoice: request.presetChoice ?? null,
+      autoApprovalDeclined: request.autoApprovalDeclined ?? null,
     };
     return this.store.transaction(() => {
       const duplicate = this.store.previousCommand(request.commandId, request);
@@ -1860,6 +1861,8 @@ export class NativeWorkflowService implements WorkflowService {
       policy?: RunPolicy;
       /** The new worktree base: the feature's upstream results merged onto HEAD. */
       baseCommit?: string;
+      /** Why the rebased run's policy has no auto approval (#1467). */
+      autoApprovalDeclined?: string;
     },
   ): Promise<RunSnapshot> {
     this.enabled();
@@ -1869,6 +1872,7 @@ export class NativeWorkflowService implements WorkflowService {
     }));
     const policy = rebase.policy ? PolicySchema.parse(rebase.policy) : undefined;
     const baseCommit = rebase.baseCommit;
+    const declined = rebase.autoApprovalDeclined;
     return this.forkRun(
       runId,
       command,
@@ -1880,7 +1884,12 @@ export class NativeWorkflowService implements WorkflowService {
         policy: policy ?? null,
         ...(baseCommit ? { baseCommit } : {}),
       },
-      { dependencies, policy, ...(baseCommit ? { baseCommit } : {}) },
+      {
+        dependencies,
+        policy,
+        ...(baseCommit ? { baseCommit } : {}),
+        ...(declined ? { autoApprovalDeclined: declined } : {}),
+      },
     );
   }
   private forkRun(
@@ -1891,6 +1900,7 @@ export class NativeWorkflowService implements WorkflowService {
       dependencies: { featureId: string; contractHash: string }[];
       policy?: RunPolicy;
       baseCommit?: string;
+      autoApprovalDeclined?: string;
     },
     fromStage?: string,
   ): RunSnapshot {
@@ -1968,6 +1978,7 @@ export class NativeWorkflowService implements WorkflowService {
       if (rebase) {
         state.hostDependencies = rebase.dependencies;
         if (rebase.baseCommit) state.worktreeBase = rebase.baseCommit;
+        state.autoApprovalDeclined = rebase.autoApprovalDeclined ?? null;
         state.manifest.policyHash = hashJson(policy);
         state.manifest.dependencyContracts = [];
         if (state.spec) {

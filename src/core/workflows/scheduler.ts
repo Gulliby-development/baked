@@ -1820,10 +1820,14 @@ export class WorkflowScheduler {
                   ...(v2 && acceptanceGrants(v2.gates).length
                     ? { acceptanceCapabilities: acceptanceGrants(v2.gates) }
                     : {}),
-                  ...(policy.autoApproval || human
+                  // A run the host gave no auto approval says why first, also at a human stage (#1467).
+                  ...(policy.autoApproval || human || state.autoApprovalDeclined
                     ? {
                         autoApproval: auto.approval ?? {
-                          declined: auto.reasons,
+                          declined: [
+                            ...(state.autoApprovalDeclined ? [state.autoApprovalDeclined] : []),
+                            ...(policy.autoApproval || human ? auto.reasons : []),
+                          ],
                           ...(review ?? {}),
                         },
                       }
