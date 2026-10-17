@@ -1500,7 +1500,7 @@ export class InitiativeService {
       approved && waitingForRun.length ? this.estimateOf(row, approved, accepted) : null;
     const needs = estimate ? this.featureNeeds(estimate) : null;
     for (const feature of waitingForRun) feature.need = needs?.get(feature.id) ?? null;
-    const cost = this.costView(settings, plan, runIds, used, accepted, estimate);
+    const cost = this.costView(settings, plan, runIds, used, accepted, estimate, decompose?.id);
     const shares = splitShares(waitingForRun, remaining, cost.remainingUsd);
     for (const [index, feature] of waitingForRun.entries()) Object.assign(feature, shares[index]);
     const unstarted = waitingForRun.length;
@@ -1571,6 +1571,7 @@ export class InitiativeService {
     used: UsageView,
     accepted: ReadonlySet<string>,
     estimate: InitiativeEstimate | null,
+    decomposeRunId?: string,
   ): CostView {
     const spentUsd = runIds.reduce((sum, runId) => sum + this.spentUsd(runId), 0);
     const committedUsd = runIds.reduce((sum, runId) => sum + this.committedUsd(runId), 0);
@@ -1600,7 +1601,11 @@ export class InitiativeService {
       spentUsd: round(spentUsd),
       reservedUsd: round(Math.max(0, committedUsd - spentUsd)),
       remainingUsd: capUsd === null ? null : cents(Math.max(0, capUsd - committedUsd)),
-      forecastUsd: forecastable ? round(spentUsd + (spentUsd / used.tokens) * left) : null,
+      forecastUsd: forecastable
+        ? round(
+            spentUsd + this.featureCostRate(runIds, decomposeRunId, spentUsd / used.tokens) * left,
+          )
+        : null,
     };
   }
 
@@ -1871,6 +1876,27 @@ export class InitiativeService {
       calls: usage.calls,
       activeMs: usage.activeMs,
     };
+  }
+
+  /**
+   * USD per token of the initiative's feature runs, for the feature tokens still to run (#1505):
+   * the dollars they spent over the tokens those dollars priced. The decompose run is paid once
+   * and does not repeat, and held or in-flight tokens carry no dollars yet, so neither enters it.
+   * `fallback` (every run's dollars over every run's tokens) stands in before a feature run spent.
+   */
+  private featureCostRate(
+    runIds: string[],
+    decomposeRunId: string | undefined,
+    fallback: number,
+  ): number {
+    let usd = 0;
+    let tokens = 0;
+    for (const runId of runIds) {
+      if (runId === decomposeRunId) continue;
+      usd += this.spentUsd(runId);
+      tokens += this.workflows.store.run(runId).token_usage;
+    }
+    return usd > 0 && tokens > 0 ? usd / tokens : fallback;
   }
 
   /** The dollars a run spent. */

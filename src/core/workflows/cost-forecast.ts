@@ -1,5 +1,5 @@
 import { canonical, hashJson } from "../specs/hash.js";
-import { costRate } from "./budget.js";
+import { costRate, remainingCostRate } from "./budget.js";
 import { costCeilingUsd, currentCostCap } from "./cost-tolerance.js";
 import { WorkflowFault } from "./errors.js";
 import { hostGrowth } from "./host-growth.js";
@@ -13,7 +13,8 @@ const MIN_MEASURED_TASKS = 3;
 /**
  * Where a run with a dollar cap is heading (#1246): what it spent, plus the planned tasks still
  * open at their price times how far the finished tasks of the same kind went over theirs, plus
- * the final review and convergence, in dollars at the run's measured price per token.
+ * the final review and convergence, in dollars: open tasks at the price per token the finished
+ * tasks paid, the review at the run's blended price (#1505).
  */
 export interface CostForecast {
   capUsd: number;
@@ -81,18 +82,20 @@ export function costForecast(
   const byKind = new Map<string, number>();
   for (const kind of new Set(measured.map((t) => t.kind)))
     byKind.set(kind, ratioOf(measured.filter((t) => t.kind === kind)));
-  const remainingTokens = Math.round(
-    open.reduce((sum, t) => sum + mid(t) * (byKind.get(t.kind) ?? ratio), 0) + verificationTokens(),
-  );
+  const taskTokens = open.reduce((sum, t) => sum + mid(t) * (byKind.get(t.kind) ?? ratio), 0);
+  const remainingTokens = Math.round(taskTokens + verificationTokens());
   const row = store.run(runId);
   const { spentUsd, reservedUsd } = store.costUsage(runId);
+  // Open tasks at the price the finished tasks paid; the final review and convergence run on the
+  // review models, at the run's blended price as before (#1505).
+  const taskRate = remainingCostRate(store, runId);
   const rate = costRate(spentUsd > 0 ? spentUsd : null, row.token_usage, null);
-  if (rate <= 0) return null;
+  if (rate <= 0 || taskRate <= 0) return null;
   return {
     capUsd: cap,
     ceilingUsd: costCeilingUsd(store, runId, policy) ?? cap,
     spentUsd,
-    projectedUsd: spentUsd + reservedUsd + remainingTokens * rate,
+    projectedUsd: spentUsd + reservedUsd + taskTokens * taskRate + verificationTokens() * rate,
     ratio,
     measuredTasks: measured.length,
     openTasks: open.length,
