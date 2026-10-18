@@ -22,6 +22,61 @@ import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
 describe("mutants", () => {
+  const booleanFile = (path: string, count: number) => ({
+    path, before: null, content: Array.from({ length: count }, (_, i) => `const flag${i} = true;`).join("\n"),
+  });
+
+  test("the cap is shared across files before taking more lines from one file (#1567)", () => {
+    const files = ["a", "b", "c"].map((name) => booleanFile(`src/${name}.ts`, 30));
+    const mutants = generateMutants(files);
+    expect(mutants).toHaveLength(24);
+    for (const file of files) expect(mutants.filter((m) => m.file === file.path)).toHaveLength(8);
+    expect(mutants.slice(0, 3).map((m) => m.file)).toEqual(files.map((f) => f.path));
+    expect(generateMutants([...files].reverse())).toEqual(mutants);
+    expect(mutants.map((m) => m.id)).toEqual(Array.from({ length: 24 }, (_, i) => `M${i + 1}`));
+  });
+
+  test("a small file keeps its candidates and gives its unused share to larger files", () => {
+    const files = [booleanFile("src/a.ts", 40), booleanFile("src/b.ts", 40), booleanFile("src/z.ts", 3)];
+    const mutants = generateMutants(files);
+    expect(mutants).toHaveLength(24);
+    expect(mutants.filter((m) => m.file === "src/z.ts").map((m) => m.line)).toEqual([1, 2, 3]);
+    expect(mutants.filter((m) => m.file === "src/a.ts")).toHaveLength(11);
+    expect(mutants.filter((m) => m.file === "src/b.ts")).toHaveLength(10);
+  });
+
+  test("larger additions get priority when the cap cannot cover every eligible file", () => {
+    const files = [booleanFile("src/a.ts", 1), booleanFile("src/z.ts", 10)];
+    expect(generateMutants(files, 1).map((m) => m.file)).toEqual(["src/z.ts"]);
+    expect(generateMutants(files, 0)).toEqual([]);
+    expect(generateMutants([])).toEqual([]);
+    expect(generateMutants([booleanFile("tests/z.test.ts", 40), { path: "src/empty.ts", before: null, content: "// true\n" }])).toEqual([]);
+  });
+
+  test("proposal text shares its character budget across files and reuses a small file's share", () => {
+    const large = (path: string) => ({
+      path, before: null, content: Array.from({ length: 100 }, (_, i) => `const flag${i} = true; // ${"x".repeat(300)}`).join("\n"),
+    });
+    const files = [large("src/a.ts"), large("src/b.ts"), large("src/z.ts")];
+    const listed = proposalFiles(files);
+    expect(listed.map((f) => f.path)).toEqual(files.map((f) => f.path));
+    const sizes = listed.map((f) => f.lines.join("").length);
+    expect(Math.max(...sizes) - Math.min(...sizes)).toBeLessThan(400);
+    expect(sizes.reduce((sum, size) => sum + size, 0)).toBeLessThanOrEqual(24_000);
+    expect(sizes.reduce((sum, size) => sum + size, 0)).toBeGreaterThan(23_600);
+    expect(proposalFiles([...files].reverse())).toEqual(listed);
+
+    const small = booleanFile("src/z.ts", 3);
+    const redistributed = proposalFiles([files[0]!, files[1]!, small, booleanFile("tests/ignored.test.ts", 100)]);
+    expect(redistributed.find((f) => f.path === small.path)?.lines).toHaveLength(3);
+    for (const path of ["src/a.ts", "src/b.ts"])
+      expect(redistributed.find((f) => f.path === path)!.lines.join("").length).toBeGreaterThan(11_500);
+    expect(proposalFiles([])).toEqual([]);
+    expect(proposalFiles([{ path: "src/long.ts", before: null, content: `const flag = true; // ${"x".repeat(24_000)}` }, small])).toEqual([
+      { path: small.path, lines: ["1: const flag0 = true;", "2: const flag1 = true;", "3: const flag2 = true;"] },
+    ]);
+  });
+
   test("strings and comments are not mutated", () => {
     const line = 'const a = "x < y"; // a && b';
     expect(maskNonCode("src/a.ts", line)).toHaveLength(line.length);

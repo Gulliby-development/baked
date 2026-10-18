@@ -1144,7 +1144,7 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "mutation-gate",
     group: "Workflow runs",
-    title: "Mutation gate on the lines a run added, with installed mutation tools",
+    title: "Mutation gate with built-in budgets shared across changed files and installed tools",
     tui: ["/code-quality", "/workflow: run report"],
     cli: ["baked workflow run: --mutation off|advisory|required", "baked workflow report"],
     api: ["/v1/settings: code-quality page", "/v1/workflow/runs", "/v1/workflow/runs/:id/report"],

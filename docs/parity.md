@@ -155,7 +155,7 @@ bun test tests/feature-parity.test.ts
 | New dependencies looked up before checks; Semgrep on the run's diff | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | Docs for the locked library versions a task uses | `/code-quality` | `baked workflow doctor` | `/v1/settings` | `settings/chat` |
 | Per-profile effort and compaction threshold (set in agent profile files) | `/workflow` | `baked workflow profiles`, `baked workflow route` | `/v1/workflow/profiles`, `/v1/workflow/route` | `settings/routing` |
-| Mutation gate on the lines a run added, with installed mutation tools | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
+| Mutation gate with built-in budgets shared across changed files and installed tools | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | Property-based tests from marked acceptance criteria | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | Harden preset: strengthen the tests of existing code | `/workflow` | `baked workflow run` | `/v1/workflow/runs`, `/v1/workflow/definitions` | `project/overview` |
 | Custom gates: a script or container that reports its result as JSON (command.report json) | `/workflow` | `baked workflow gates`, `baked workflow validate` | `/v1/workflow/checks`, `/v1/workflow/checks/:id/run` | `project/gates` |

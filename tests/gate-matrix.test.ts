@@ -37,7 +37,7 @@ import {
   type ToolShell,
   toolShellFiles,
 } from "../src/core/workflows/quality/mutation-tools.js";
-import { isTestCheck } from "../src/core/workflows/quality/mutation.js";
+import { generateMutants, isTestCheck, proposalFiles } from "../src/core/workflows/quality/mutation.js";
 import {
   libraryFiles,
   propertyLibraries,
@@ -516,6 +516,22 @@ for (const stack of STACKS) {
     // a silent no-op (#844).
     cell(stack, "test-check", () => {
       expect(preselected().some((c) => c.required && isTestCheck(c))).toBe(true);
+    });
+
+    cell(stack, "mutation caps cover sibling files (#1567)", () => {
+      const source = fixture.mutation?.source ?? "src/Sum.cs";
+      const extension = source.slice(source.lastIndexOf("."));
+      const line = stack === "python" ? "    return value > 0" : "    return value > 0;";
+      const files = ["a", "b", "z"].map((name) => ({
+        path: `src/${name}${extension}`, before: null,
+        content: Array.from({ length: 100 }, () => `${line}${" ".repeat(300)}`).join("\n"),
+      }));
+      const mutants = generateMutants(files);
+      expect(mutants).toHaveLength(24);
+      for (const file of files) expect(mutants.filter((m) => m.file === file.path)).toHaveLength(8);
+      const listed = proposalFiles(files);
+      expect(listed.map((f) => f.path)).toEqual(files.map((f) => f.path));
+      expect(listed.flatMap((f) => f.lines).join("").length).toBeLessThanOrEqual(24_000);
     });
 
     // A check started through a launcher routes by the program the launcher runs (#1507): bench
