@@ -38,6 +38,8 @@ import { useWorkflowStore } from "../stores/workflow.js";
 
 const sessions = new Map<string, WorkflowClient>();
 const exitedOwners = new Map<string, Set<string>>();
+/** Workers stopped because their thread stopped; the next worker of the workspace takes their runs over. */
+const stalledOwners = new Map<string, string[]>();
 export function workflowIsRunning(runId: string): boolean {
   return [...sessions.values()].some((service) => service.isRunning(runId));
 }
@@ -75,6 +77,8 @@ export function workflowSession(workspace: string): WorkflowClient {
       owners.add(owner);
       exitedOwners.set(workspace, owners);
     }
+    const stalled = service.stalledOwner;
+    if (stalled) stalledOwners.set(workspace, [...(stalledOwners.get(workspace) ?? []), stalled]);
     service.close();
     service = undefined;
   }
@@ -84,7 +88,13 @@ export function workflowSession(workspace: string): WorkflowClient {
       mergeConfigs(loadConfig(), loadEffectiveProjectConfig(workspace)),
       [...(exitedOwners.get(workspace) ?? [])],
       getIntelligenceClient,
+      { stalledOwners: stalledOwners.get(workspace) ?? [], supervisor: {} },
     );
+    stalledOwners.delete(workspace);
+    // A worker stopped for a stopped thread is replaced at once, so its runs continue (#1541).
+    service.onStalled = () => {
+      workflowSession(workspace);
+    };
     sessions.set(workspace, service);
   }
   return service;

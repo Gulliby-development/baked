@@ -126,6 +126,7 @@ import { providerResumeWaitMs, stallSettings } from "./stall.js";
 import { bindDefinition, type PreparedStart, prepareStart } from "./start.js";
 import { assertMutable } from "./state-machine.js";
 import { newId, WorkflowStore } from "./store.js";
+import type { StalledDriver } from "./supervisor.js";
 import { reusableImplementations } from "./task-graph.js";
 import { isTestTask } from "./tests-first.js";
 import { type AgentExecutor, type RuntimeState, RuntimeStateSchema } from "./types.js";
@@ -657,14 +658,14 @@ export class NativeWorkflowService implements WorkflowService {
     return true;
   }
   /**
-   * Takes over a run whose driver process the supervisor stopped because its main thread no
-   * longer ran (#1533: a synchronous call that never returned left the run "running" for 31 min).
-   * Called after that process is gone. Within `workflows.stall.autoResumes`, counted with the
+   * Takes over a run whose driver (a process, or a worker thread of the terminal UI) the
+   * supervisor stopped because its thread no longer ran (#1533: a synchronous call that never
+   * returned left the run "running" for 31 min). Called after that driver is gone. Within `workflows.stall.autoResumes`, counted with the
    * watchdog's own resumes in `stallResumes`, the run is resumed (its open edits are settled from
    * the file hashes on the next drive) and true is returned; past it the run blocks `step_stalled`
    * for a person. Each takeover is journaled as `stalled/takeover-N.json`.
    */
-  async takeOverStalledDriver(runId: string, pid: number): Promise<boolean> {
+  async takeOverStalledDriver(runId: string, driver: StalledDriver): Promise<boolean> {
     const run = this.store.run(runId);
     if (run.status !== "running") return false;
     const state = this.store.state(runId);
@@ -676,7 +677,13 @@ export class NativeWorkflowService implements WorkflowService {
         runId,
         "recovery",
         `stalled/takeover-${attempt}.json`,
-        canonical({ attempt, of: limit, pid, resumed: resumes }),
+        canonical({
+          attempt,
+          of: limit,
+          pid: driver.pid,
+          ...(driver.owner ? { owner: driver.owner } : {}),
+          resumed: resumes,
+        }),
       );
       if (resumes) {
         state.stallResumes = attempt;
@@ -686,7 +693,7 @@ export class NativeWorkflowService implements WorkflowService {
         runId,
         "diagnostic",
         `errors/${newId()}.txt`,
-        `The driver process ${pid} stopped running its timers (no lease renewal, tool deadline or step watchdog) and was stopped by its supervisor`,
+        `The driver ${driver.owner ? `worker ${driver.owner} of process ${driver.pid}` : `process ${driver.pid}`} stopped running its timers (no lease renewal, tool deadline or step watchdog) and was stopped by its supervisor`,
       );
       this.store.transition(runId, "blocked", "step_stalled");
     });

@@ -206,7 +206,7 @@ Markdown files in `<project>/.baked/commands/` and `~/.baked/commands/` become s
 | `baked workflow <command>` | Durable workflow runs; see the [runtime guide](workflows/runtime.md) |
 | `baked quick TEXT` | A small task through the quick workflow ([quick workflow](workflows/quick.md)) |
 | `baked doctor` | Checks before a workflow run: keys, routed models, check commands, Git, budget |
-| `baked serve [--port N] [--allow-origin ORIGIN]` | Local HTTP API on 127.0.0.1 for the desktop app ([local API](workflows/runtime.md#local-api-baked-serve)) |
+| `baked serve [--port N] [--allow-origin ORIGIN] [--take-over PID]` | Local HTTP API on 127.0.0.1 for the desktop app ([local API](workflows/runtime.md#local-api-baked-serve)) |
 | `baked session fork ID [--at MESSAGE_ID \| --checkpoint N] [--rollback-files] [--force] [--json]` | Save a fork of a session, optionally rolling files back ([forking a session](headless.md#forking-a-session)) |
 | `baked session checkpoints ID [--json]` | List the turns of a saved session that `undo --to N` can go back to ([undoing a turn](headless.md#undoing-a-turn)) |
 | `baked session undo ID [--to N] [--force] [--json]`, `baked session redo ID [--force] [--json]` | Undo the last turn of a saved session with its file edits, or put the oldest undone turn back ([undoing a turn](headless.md#undoing-a-turn)) |

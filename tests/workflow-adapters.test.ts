@@ -20,6 +20,9 @@ test("native executor edits and deletes through guarded tools and bounds output 
 test("workflow panel renders list, form and run sections at three terminal sizes", async () => {
   expect(await fixture("workflow-ui.tsx")).toContain('"frames":78');
 }, 35000);
+test("the terminal UI stops a workflow worker whose thread stopped and the next worker takes its run over (#1541)", async () => {
+  expect(await fixture("workflow-worker-stall.ts")).toContain('"stall":"passed"');
+}, 35000);
 test("workflow worker preserves command state while SQLite contention leaves the UI thread responsive", async () => {
   expect(await fixture("workflow-worker.ts")).toContain('"worker":"passed"');
 }, 35000);

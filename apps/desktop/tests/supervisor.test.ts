@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Backend } from "../src/main/backend.ts";
@@ -171,5 +171,40 @@ describe("Backend", () => {
     expect(spawned).toBeLessThanOrEqual(3);
     while (backend.state.kind !== "failed") await Bun.sleep(10);
     expect(spawned).toBe(3);
+  });
+
+  test("a server that stops answering is restarted and the new one takes its runs over (#1541)", async () => {
+    const path = folder("stall");
+    const spawned: { args: string[]; pid: number | undefined }[] = [];
+    const states: BackendState[] = [];
+    const backend = new Backend({
+      folder: path,
+      command: { command: process.execPath, prefix: [fake] },
+      tokenFile: join(path, "t.token"),
+      restartDelaysMs: [20, 20],
+      stallPollMs: 25,
+      spawn: (command, args, options) => {
+        const child = spawn(command, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
+        spawned.push({ args, pid: child.pid });
+        return child;
+      },
+      onState: (state) => states.push(state),
+    });
+    cleanups.push(() => backend.stop());
+    const { url, token } = await backend.start();
+    // The server's thread stops: this request and every health check after it go unanswered.
+    void fetch(`${url}/v1/hang`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => undefined);
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(join(path, "took-over.txt")) && Date.now() < deadline) await Bun.sleep(20);
+    expect(spawned).toHaveLength(2);
+    expect(spawned[0]?.args).not.toContain("--take-over");
+    expect(readFileSync(join(path, "took-over.txt"), "utf8")).toBe(String(spawned[0]?.pid));
+    const restarting = states.find((state) => state.kind === "restarting");
+    expect(restarting?.kind === "restarting" && restarting.lastError).toContain("stopped answering");
+    while (backend.state.kind !== "running" && Date.now() < deadline) await Bun.sleep(20);
+    expect(backend.state.kind).toBe("running");
+    // A third server does not take over again.
+    await backend.restart();
+    expect(spawned[2]?.args).not.toContain("--take-over");
   });
 });
