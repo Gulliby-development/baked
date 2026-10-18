@@ -1166,6 +1166,11 @@ export class WorkflowStore {
     else
       for (const task of this.tasks(runId))
         if (task.status === "pending" && !graph.tasks.some((t) => t.id === task.id)) {
+          // Keep the finding, but detach its obsolete repair assignment before deleting the task.
+          this.db.run(
+            "UPDATE findings SET repair_task_id=NULL WHERE run_id=? AND repair_task_id=?",
+            [runId, task.id],
+          );
           this.db.run("DELETE FROM tasks WHERE run_id=? AND id=?", [runId, task.id]);
         }
     const rows = new Map(this.tasks(runId).map((row) => [row.id, row]));

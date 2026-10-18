@@ -32,9 +32,11 @@ class ScriptedExecutor extends FixtureExecutor {
   analyses = 0;
   owners: unknown[] = [];
   implemented: string[] = [];
+  beforeThirdPlan: (() => void) | null = null;
   constructor(private workspace: string) { super(workspace); }
   override async execute(request: ExecutionRequest) {
     if (request.profile.output === "plan") {
+      if (this.plans === 2) this.beforeThirdPlan?.();
       const count = [13, 32, 14][this.plans++]!;
       const taskGraph: TaskGraph = {
         schemaVersion: 1, featureId: "fixture", revision: 1,
@@ -72,9 +74,23 @@ test("scenario: re-planning split tests removes old edges before dropped tasks (
   cleanups.push(fixture.dispose);
   const { service, executor } = fixture;
   const run = await fixture.start();
+  let findingId = "";
+  executor.beforeThirdPlan = () => service.store.transaction(() => {
+    expect(service.store.tasks(run.runId).find((row) => row.id === "T015")?.status).toBe("pending");
+    const finding = {
+      id: "F-replan", kind: "missing", severity: "low", basis: "spec",
+      requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "tests/slice-15.test.ts",
+      symbol: null, evidenceIds: [], claim: "The test slice needs revision",
+      impact: "The slice does not cover AC-001", suggestedFix: "Replace the slice in the next plan",
+    };
+    const artifact = service.store.artifact(run.runId, "finding", "findings/F-replan.json", JSON.stringify(finding));
+    findingId = service.store.addFinding(run.runId, finding, "f".repeat(64), artifact.id);
+    service.store.findingStatus(run.runId, findingId, "confirmed", "T015");
+  });
   expect(await service.drive(run.runId, new AbortController().signal)).toMatchObject({ status: "waiting", reason: "approval" });
   expect(executor.plans).toBe(3);
   expect(executor.analyses).toBe(3);
+  expect(service.store.findings(run.runId)).toEqual([expect.objectContaining({ id: findingId, status: "confirmed", repair_task_id: null })]);
   expect(service.store.tasks(run.runId).map((row) => row.id)).toEqual(Array.from({ length: 14 }, (_, i) => id(i + 1)));
 
   const db = new Database(service.store.path, { readonly: true });
@@ -85,6 +101,8 @@ test("scenario: re-planning split tests removes old edges before dropped tasks (
     );
   } finally { db.close(); }
 
+  // The scripted reviewer accepts the replacement slices as resolving this finding.
+  service.store.transaction(() => service.store.findingStatus(run.runId, findingId, "resolved"));
   await fixture.approve(run.runId);
   expect(await service.drive(run.runId, new AbortController().signal)).toMatchObject({ status: "completed" });
   expect(executor.implemented).toHaveLength(14);
@@ -126,4 +144,38 @@ test("a package revision preserves task history and clears corrective findings b
       { task_id: "T003", dependency_id: "T001" }, { task_id: "T003", dependency_id: "T002" },
     ]);
   } finally { db.close(); }
+});
+
+test("a replacement plan detaches only findings assigned to deleted pending tasks", async () => {
+  const fixture = workflowFixture();
+  cleanups.push(fixture.dispose);
+  const { store } = fixture.service;
+  const run = await fixture.start();
+  const other = await fixture.start("other");
+  const graph: TaskGraph = {
+    schemaVersion: 1, featureId: "fixture", revision: 1,
+    specHash: hashJson(fixtureSpec), planHash: hashBytes(markdown),
+    tasks: [task(1), task(2), task(3)],
+  };
+  store.transaction(() => {
+    for (const runId of [run.runId, other.runId]) {
+      store.syncTasks(runId, graph);
+      for (let n = 1; n <= 3; n++) {
+        const body = { id: `F00${n}` };
+        const artifact = store.artifact(runId, "finding", `findings/${body.id}.json`, JSON.stringify(body));
+        const finding = store.addFinding(runId, body, String(n).repeat(64), artifact.id);
+        store.findingStatus(runId, finding, "confirmed", id(n));
+      }
+    }
+    // An omitted task that already ran remains as history, along with its repair assignment.
+    store.taskStatus(run.runId, "T003", "failed");
+  });
+  const before = store.findings(run.runId);
+  const otherBefore = store.findings(other.runId);
+  store.transaction(() => store.syncTasks(run.runId, { ...graph, tasks: [task(1)] }));
+  expect(store.tasks(run.runId).map((row) => [row.id, row.status])).toEqual([["T001", "pending"], ["T003", "failed"]]);
+  expect(store.findings(run.runId)).toEqual(before.map((finding) => ({ ...finding, repair_task_id: finding.repair_task_id === "T002" ? null : finding.repair_task_id })));
+  expect(store.findings(other.runId)).toEqual(otherBefore);
+  expect(store.connection.query("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });
+  expect(store.connection.query("PRAGMA foreign_key_check").all()).toEqual([]);
 });
