@@ -971,6 +971,7 @@ export class InitiativeService {
         const ready = this.byPath(
           row,
           view.features.filter((f) => f.state === "ready"),
+          view.parallelRuns > 1,
         )[0];
         if (
           !ready ||
@@ -1010,9 +1011,16 @@ export class InitiativeService {
     );
   }
 
-  /** Features ordered by remaining critical path, longest first, then in plan order (#1535). */
-  private byPath<T extends { id: string }>(row: InitiativeRow, features: T[]): T[] {
-    const plan = features.length > 1 ? this.approvedPlan(row) : null;
+  /**
+   * Features ordered by remaining critical path, longest first, then in plan order (#1535). One
+   * feature at a time keeps plan order: the order does not change the wall time then.
+   */
+  private byPath<T extends { id: string }>(
+    row: InitiativeRow,
+    features: T[],
+    parallel: boolean,
+  ): T[] {
+    const plan = parallel && features.length > 1 ? this.approvedPlan(row) : null;
     if (!plan) return features;
     const rank = remainingPath(plan, namedFiles(row.prompt));
     return [...features].sort((a, b) => (rank.get(b.id) ?? 0) - (rank.get(a.id) ?? 0));
@@ -1556,6 +1564,7 @@ export class InitiativeService {
         this.byPath(
           row,
           waitingForRun.filter((f) => f.state === "ready"),
+          this.parallelRuns(settings, plan, facts) > 1,
         )[0] ?? waitingForRun[0]
       )?.share ?? null;
     const pendingDecisions: PendingDecision[] = [
@@ -1750,6 +1759,7 @@ export class InitiativeService {
         this.byPath(
           row,
           view.features.filter((f) => f.state === "ready"),
+          parallel,
         )[0] ?? feature;
       const shortfall = shareShortfall(view, first);
       if (shortfall) return action("blocked", shortfall, first);
