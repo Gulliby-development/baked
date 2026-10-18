@@ -18,6 +18,7 @@ import { failureSignature, testCount } from "../src/core/verification/output-cou
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { launchedCommand } from "../src/core/workflows/launcher.js";
+import { detectProfile } from "../src/core/tools/project.js";
 import {
   coveringChecks,
   fixerCommand,
@@ -48,7 +49,7 @@ import {
 import { staticCorrection } from "../src/core/workflows/scheduler.js";
 import type { Check, RunPolicy, RuntimeState } from "../src/core/workflows/schemas.js";
 import type { WorkflowStore } from "../src/core/workflows/store.js";
-import { addedTests, scanTestIntegrity } from "../src/core/workflows/test-integrity.js";
+import { scanTestIntegrity, testChanges } from "../src/core/workflows/test-integrity.js";
 import type { Task } from "../src/core/workflows/types.js";
 import {
   createTaskWorktree,
@@ -109,6 +110,20 @@ const DOCUMENTED_PROGRAM: Record<Stack, string> = {
   rust: "cargo",
   maven: "java",
   dotnet: "dotnet",
+};
+
+/**
+ * The edit tools' lint and per-file format commands (#1537): the Python profile read ruff only from
+ * ruff.toml, so this fixture's `[tool.ruff]` project got flake8 and black while its gates ran ruff.
+ */
+const EDIT_PROFILE: Record<Stack, { lint: string | null; formatFile: string | null }> = {
+  bun: { lint: "bun run lint", formatFile: null },
+  npm: { lint: "npm run lint", formatFile: null },
+  python: { lint: "ruff check", formatFile: "ruff format" },
+  go: { lint: "go vet ./...", formatFile: "gofmt -w" },
+  rust: { lint: "cargo clippy", formatFile: "rustfmt" },
+  maven: { lint: "mvn checkstyle:check", formatFile: null },
+  dotnet: { lint: "dotnet format --verify-no-changes", formatFile: null },
 };
 
 /** The launchers a project may start its checks through (#1507). */
@@ -414,6 +429,11 @@ for (const stack of STACKS) {
     // caesar 21bc3a53: run_probe refused java next to `mvn verify`, so its README task blocked.
     cell(stack, "README example program runs under run_probe", () => {
       expect(reproExecutables(preselected())).toContain(DOCUMENTED_PROGRAM[stack]);
+    });
+
+    cell(stack, "edit-profile", async () => {
+      const profile = await detectProfile(project(fixture.files));
+      expect({ lint: profile.lint, formatFile: profile.formatFile }).toEqual(EDIT_PROFILE[stack]);
     });
 
     cell(stack, "timed-out-failure", () => {
@@ -760,47 +780,50 @@ for (const stack of STACKS) {
 }
 
 /**
- * A test file with two tests of one assertion each, by name. A correction that swaps the first for
- * a weaker test under another name keeps every total (#1519).
+ * A test file with two tests of one assertion each, by name, the first checking `v`. A correction
+ * that swaps the first for a weaker test under another name keeps every total (#1519); one that
+ * only retitles it keeps its body (#1532).
  */
-const NAMED: Record<Stack, { path: string; file: (names: [string, string]) => string }> = {
+const NAMED: Record<Stack, { path: string; file: (names: [string, string], v?: number) => string }> = {
   bun: {
     path: "tests/primes.test.ts",
-    file: ([a, b]) => `test("${a}", () => {\n  expect(run()).toBe(1);\n});\ntest("${b}", () => {\n  expect(run()).toBe(2);\n});\n`,
+    file: ([a, b], v = 1) => `test("${a}", () => {\n  expect(run()).toBe(${v});\n});\ntest("${b}", () => {\n  expect(run()).toBe(2);\n});\n`,
   },
   npm: {
     path: "test/primes.test.js",
-    file: ([a, b]) => `it("${a}", () => {\n  assert.strictEqual(run(), 1);\n});\nit("${b}", () => {\n  assert.strictEqual(run(), 2);\n});\n`,
+    file: ([a, b], v = 1) => `it("${a}", () => {\n  assert.strictEqual(run(), ${v});\n});\nit("${b}", () => {\n  assert.strictEqual(run(), 2);\n});\n`,
   },
   python: {
     path: "tests/test_primes.py",
-    file: ([a, b]) => `def test_${a}():\n    assert run() == 1\n\n\ndef test_${b}():\n    assert run() == 2\n`,
+    file: ([a, b], v = 1) => `def test_${a}():\n    assert run() == ${v}\n\n\ndef test_${b}():\n    assert run() == 2\n`,
   },
   go: {
     path: "primes_test.go",
-    file: ([a, b]) => `func Test${a}(t *testing.T) {\n\tif run() != 1 {\n\t\tt.Errorf("a")\n\t}\n}\n\nfunc Test${b}(t *testing.T) {\n\tif run() != 2 {\n\t\tt.Errorf("b")\n\t}\n}\n`,
+    file: ([a, b], v = 1) => `func Test${a}(t *testing.T) {\n\tif run() != ${v} {\n\t\tt.Errorf("want ${v}")\n\t}\n}\n\nfunc Test${b}(t *testing.T) {\n\tif run() != 2 {\n\t\tt.Errorf("want 2")\n\t}\n}\n`,
   },
   rust: {
     path: "tests/primes.rs",
-    file: ([a, b]) => `#[test]\nfn ${a}() {\n    assert_eq!(run(), 1);\n}\n\n#[test]\nfn ${b}() {\n    assert_eq!(run(), 2);\n}\n`,
+    file: ([a, b], v = 1) => `#[test]\nfn ${a}() {\n    assert_eq!(run(), ${v});\n}\n\n#[test]\nfn ${b}() {\n    assert_eq!(run(), 2);\n}\n`,
   },
   maven: {
     path: "src/test/java/fixture/PrimesTest.java",
-    file: ([a, b]) => `    @Test\n    void ${a}() {\n        assertEquals(1, run());\n    }\n\n    @Test\n    @DisplayName("second")\n    void ${b}() {\n        assertEquals(2, run());\n    }\n`,
+    file: ([a, b], v = 1) => `    @Test\n    void ${a}() {\n        assertEquals(${v}, run());\n    }\n\n    @Test\n    @DisplayName("second")\n    void ${b}() {\n        assertEquals(2, run());\n    }\n`,
   },
   dotnet: {
     path: "tests/PrimesTests.cs",
-    file: ([a, b]) => `    [Fact]\n    public void ${a}()\n    {\n        Assert.Equal(1, Run());\n    }\n\n    [Theory]\n    [InlineData(2)]\n    public async Task ${b}(int n)\n    {\n        Assert.Equal(n, await Run());\n    }\n`,
+    file: ([a, b], v = 1) => `    [Fact]\n    public void ${a}()\n    {\n        Assert.Equal(${v}, Run());\n    }\n\n    [Theory]\n    [InlineData(2)]\n    public async Task ${b}(int n)\n    {\n        Assert.Equal(n, await Run());\n    }\n`,
   },
 };
 
 for (const stack of STACKS) {
   const sample = NAMED[stack];
   const before = sample.file(["intervalWorkload", "scalarCases"]);
-  const swapped = sample.file(["literalCases", "scalarCases"]);
+  const swapped = sample.file(["literalCases", "scalarCases"], 3);
+  const renamed = sample.file(["serializedLocation", "scalarCases"]);
   const scan = (after: string, options: Parameters<typeof scanTestIntegrity>[1] = {}) =>
     scanTestIntegrity([{ path: sample.path, before, after }], options);
   const name = (base: string) => (stack === "python" ? `test_${base}` : stack === "go" ? `Test${base}` : base);
+  const protects = new Map([[sample.path, new Map([[name("intervalWorkload"), "T011 for finding F1"]])]]);
   describe(`gate matrix: ${stack} test identity`, () => {
     cell(stack, "test identity: a test swapped for another under a new name is flagged", () => {
       const found = scan(swapped);
@@ -809,14 +832,19 @@ for (const stack of STACKS) {
     });
     cell(stack, "test identity: an added test and an edited body pass", () => {
       expect(scan(before.replace("1", "3"))).toEqual([]);
-      expect(addedTests({ path: sample.path, before, after: swapped })).toEqual([name("literalCases")]);
+      expect(testChanges({ path: sample.path, before, after: swapped })).toEqual({ added: [name("literalCases")], renamed: {} });
     });
     cell(stack, "test identity: a test another finding's correction added stays, whatever the finding asks", () => {
-      const protects = new Map([[sample.path, new Map([[name("intervalWorkload"), "T011 for finding F1"]])]]);
       const found = scan(swapped, { protects, rewrites: new Set([sample.path]) });
       expect(found.map((f) => f.rule)).toEqual(["test-removed"]);
       expect(found[0]?.detail).toContain("which T011 for finding F1 added");
+      expect(found[0]?.keep).toEqual([name("intervalWorkload")]);
       expect(scan(swapped, { rewrites: new Set([sample.path]) })).toEqual([]);
+    });
+    cell(stack, "test identity: a test retitled with its body kept is not removed, protected or not", () => {
+      expect(scan(renamed)).toEqual([]);
+      expect(scan(renamed, { protects })).toEqual([]);
+      expect(testChanges({ path: sample.path, before, after: renamed })).toEqual({ added: [], renamed: { [name("intervalWorkload")]: name("serializedLocation") } });
     });
   });
 }

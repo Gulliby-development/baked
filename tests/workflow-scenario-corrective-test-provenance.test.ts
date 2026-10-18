@@ -21,6 +21,8 @@ afterEach(async () => {
 const scalar = 'test("scalar cases", () => {\n  expect(read()).toBe("ready");\n});\n';
 const interval = 'test("interval workload", () => {\n  expect(primes(10000)).toBe(1229);\n});\n';
 const literal = 'test("literal cases", () => {\n  expect(primes(10)).toBe(4);\n});\n';
+// The same test under the title the second correction gave it.
+const retitled = interval.replace("interval workload", "uses the serialized interval workload");
 
 class ProvenanceExecutor extends FixtureExecutor {
   store: WorkflowStore | null = null;
@@ -28,7 +30,10 @@ class ProvenanceExecutor extends FixtureExecutor {
   /** The claims of the findings each correction corrected, in order. */
   corrections: string[][] = [];
   reviewExtras: Record<string, unknown>[] = [];
-  constructor(private dir: string) {
+  constructor(
+    private dir: string,
+    private mode: "swap" | "rename" = "swap",
+  ) {
     super(dir);
   }
   private keep(runId: string, path: string) {
@@ -60,7 +65,12 @@ class ProvenanceExecutor extends FixtureExecutor {
           this.keep(request.runId, test);
           const current = readFileSync(test, "utf8");
           if (claims.some((c) => c.includes("interval workload test"))) writeFileSync(test, current + interval);
-          else if (claims.some((c) => c.startsWith("Test integrity"))) writeFileSync(test, scalar + interval + literal);
+          else if (this.mode === "rename") {
+            // R44: the guard's correction puts the old title back, which drops the new one.
+            const integrity = claims.some((c) => c.startsWith("Test integrity"));
+            if (!integrity) writeFileSync(join(this.dir, "value.txt"), "ready");
+            writeFileSync(test, integrity ? current.replace(retitled, interval) : current.replace(interval, retitled));
+          } else if (claims.some((c) => c.startsWith("Test integrity"))) writeFileSync(test, scalar + interval + literal);
           else {
             // The correction of F2: in scope for every file, it swaps the interval test.
             writeFileSync(join(this.dir, "value.txt"), "ready");
@@ -136,4 +146,32 @@ test("the reviewer and the spec auditor rank settled conflicts above a suggested
     expect(text).toContain("extra.settledConflicts");
     expect(text).toContain("A rule the request states and a settled conflict outrank a suggested fix");
   }
+});
+
+// Bench round 44, url-shortener ae4b9d3d (#1532): T005 added a test for F1, T006 corrected F1-2
+// and retitled it with the same assertions, the guard reported the old title removed, and T007
+// put it back, which removed the new title: two repair rounds, blocked no_progress, 2.4M tokens.
+test("a correction of another finding may retitle the test a sibling correction added", async () => {
+  const fixture = workflowFixture({ executor: (root) => new ProvenanceExecutor(root, "rename") });
+  cleanups.push(fixture.dispose);
+  const { service, executor } = fixture;
+  executor.store = service.store;
+  const run = await fixture.start();
+  await service.drive(run.runId, new AbortController().signal);
+  await fixture.approve(run.runId);
+  await service.drive(run.runId, new AbortController().signal);
+  const claims = service.store.findings(run.runId).map((f) => (JSON.parse(f.body_json) as { claim: string }).claim);
+  expect(claims.filter((c) => c.startsWith("Test integrity"))).toEqual([]);
+  expect(readFileSync(join(fixture.root, "value.test.ts"), "utf8")).toContain("uses the serialized interval workload");
+  expect(executor.corrections).toHaveLength(2);
+  expect((await service.get(run.runId)).status).toBe("completed");
+});
+
+test("cases merged into one table test keep their expected values; a dropped case is still flagged", async () => {
+  const { scanTestIntegrity } = await import("../src/core/workflows/test-integrity.js");
+  const before = 'test("redirects an ASCII URL", () => {\n  expect(location("/a")).toBe("https://example.com/a");\n});\ntest("redirects a Unicode URL", () => {\n  expect(location("/b")).toBe("https://example.com/%E9%9B%AA");\n});\n';
+  const table = 'test("uses serialized Location values", () => {\n  for (const [path, want] of [["/a", "https://example.com/a"], ["/b", "https://example.com/%E9%9B%AA"]]) {\n    expect(location(path)).toBe(want);\n  }\n});\n';
+  const scan = (after: string) => scanTestIntegrity([{ path: "tests/redirect.test.ts", before, after }]).map((f) => f.rule);
+  expect(scan(table)).toEqual([]);
+  expect(scan(table.replace(', ["/b", "https://example.com/%E9%9B%AA"]', ""))).toEqual(["test-count", "assertions"]);
 });

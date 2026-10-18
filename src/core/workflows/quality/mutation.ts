@@ -41,6 +41,17 @@ export const mutationOf = (
 export const MAX_MUTANTS = 24;
 /** Time the gate may spend on mutants, all test checks included. */
 export const DEFAULT_MUTATION_BUDGET_MS = 300_000;
+/** The shortest time one mutant's tests get, however fast the green suite is. */
+export const MIN_MUTANT_DEADLINE_MS = 20_000;
+
+/**
+ * How long one mutant's tests may run: three times the green suite plus 10 seconds, at least
+ * 20 seconds. A mutant that makes the suite loop forever then costs seconds instead of the whole
+ * budget (#1534).
+ */
+export function mutantDeadlineMs(greenMs: number): number {
+  return Math.max(MIN_MUTANT_DEADLINE_MS, Math.ceil(3 * greenMs + 10_000));
+}
 
 export interface Mutant {
   id: string;
@@ -84,7 +95,7 @@ export interface MutationResult {
   /** The checks run against each mutant. */
   tests: string[];
   mutants: MutantOutcome[];
-  /** Killed of run mutants, in percent; null when none ran. */
+  /** Killed or timed-out of run mutants, in percent; null when none ran. */
   score: number | null;
   note?: string;
 }
@@ -252,8 +263,27 @@ export interface MutationRunner {
 }
 
 /**
+ * How long the test checks take on green code: for each, its slowest passing run recorded in the
+ * run (a run of a test subset is faster), summed; undefined while any of them has not passed.
+ */
+export function greenSuiteMs(
+  results: { check_id: string; status: string; duration_ms: number }[],
+  checks: string[],
+): number | undefined {
+  let total = 0;
+  for (const check of checks) {
+    const passed = results.filter((r) => r.check_id === check && r.status === "passed");
+    if (!passed.length) return undefined;
+    total += Math.max(...passed.map((r) => r.duration_ms));
+  }
+  return checks.length ? total : undefined;
+}
+
+/**
  * Plants each mutant, runs the tests and restores the file before the next one. The original is
- * restored in a `finally`, so an error or cancellation never leaves a mutant behind.
+ * restored in a `finally`, so an error or cancellation never leaves a mutant behind. Each mutant's
+ * tests get `mutantDeadlineMs` of the green suite's duration (`greenMs`, else the slowest mutant
+ * run that finished so far), never more than the budget left.
  */
 export async function runMutants(
   mode: MutationMode,
@@ -261,10 +291,18 @@ export async function runMutants(
   files: ChangedFile[],
   tests: string[],
   runner: MutationRunner,
-  options: { budgetMs?: number; thresholds?: Record<string, number>; signal?: AbortSignal } = {},
+  options: {
+    budgetMs?: number;
+    /** How long the test checks take without a mutant, when known. */
+    greenMs?: number;
+    thresholds?: Record<string, number>;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<MutationResult> {
   const budget = options.budgetMs ?? DEFAULT_MUTATION_BUDGET_MS;
   const started = runner.now();
+  // A run that finished took about as long as the suite (a killed one may stop early).
+  let slowest = 0;
   const content = new Map(files.map((f) => [f.path, f]));
   const outcomes: MutantOutcome[] = [];
   let outOfTime = false;
@@ -280,7 +318,12 @@ export async function runMutants(
     let result: Awaited<ReturnType<MutationRunner["test"]>>;
     try {
       await runner.plant(mutant.file, applyMutant(file.content, mutant));
-      result = await runner.test(left);
+      const green = options.greenMs ?? (slowest > 0 ? slowest : undefined);
+      const before = runner.now();
+      result = await runner.test(
+        green === undefined ? left : Math.min(left, mutantDeadlineMs(green)),
+      );
+      if (result.status !== "timeout") slowest = Math.max(slowest, runner.now() - before);
     } finally {
       await runner.restore(mutant.file);
     }
@@ -319,7 +362,9 @@ export async function runMutants(
 
 /**
  * The result with its score and blocking survivors set from its mutants' statuses: a survivor
- * blocks while its file's score is under the file's threshold. Equivalent mutants are not scored.
+ * blocks while its file's score is under the file's threshold. A mutant whose tests timed out was
+ * detected (the suite noticed it, as mutation tools count it) and scores with the killed ones;
+ * equivalent and not-run mutants are not scored.
  */
 export function scoreMutants(
   result: MutationResult,
@@ -327,12 +372,13 @@ export function scoreMutants(
   thresholds: Record<string, number> | undefined,
 ): MutationResult {
   const known = new Map(files.map((f) => [f.path, f.before !== undefined]));
-  const ran = (o: MutantOutcome) => o.status === "killed" || o.status === "survived";
+  const detected = (o: MutantOutcome) => o.status === "killed" || o.status === "timeout";
+  const ran = (o: MutantOutcome) => detected(o) || o.status === "survived";
   const mutants = result.mutants.map((outcome) => {
     if (outcome.status !== "survived" || result.mode !== "required" || !known.get(outcome.file))
       return { ...outcome, blocking: false };
     const inFile = result.mutants.filter((o) => o.file === outcome.file && ran(o));
-    const killed = inFile.filter((o) => o.status === "killed").length;
+    const killed = inFile.filter(detected).length;
     return {
       ...outcome,
       blocking: (killed / inFile.length) * 100 < thresholdFor(outcome.file, thresholds),
@@ -343,7 +389,7 @@ export function scoreMutants(
     ...result,
     mutants,
     score: scored.length
-      ? Math.round((scored.filter((o) => o.status === "killed").length / scored.length) * 100)
+      ? Math.round((scored.filter(detected).length / scored.length) * 100)
       : null,
   };
 }
