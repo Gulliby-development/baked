@@ -224,6 +224,7 @@ import {
   seedBytes,
 } from "./fork-stage.js";
 import { outputTail } from "./gates.js";
+import { criticalPathProblems } from "./initiatives/critical-path.js";
 import {
   InitiativePlanSchema,
   MAX_FEATURES,
@@ -2061,7 +2062,12 @@ export class WorkflowScheduler {
                   (output) => {
                     const parsed = InitiativePlanSchema.safeParse(output);
                     return parsed.success
-                      ? planStructureProblems(parsed.data)
+                      ? [
+                          ...planStructureProblems(parsed.data),
+                          ...(policy.criticalPath === "split"
+                            ? criticalPathProblems(parsed.data, state.requestText || state.prompt)
+                            : []),
+                        ]
                       : [parsed.error.message];
                   },
                 ),

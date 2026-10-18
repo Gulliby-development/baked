@@ -82,6 +82,8 @@ export interface InitiativeFeature {
   mergedFrom?: string[];
   /** Boundary files whose content the split fixes; its run writes them with no agent. */
   skeleton?: { path: string; content: string }[];
+  /** Why the decomposer kept this feature of the critical path whole; absent otherwise. */
+  serial?: string;
   /** The share it starts with, while it has no run yet; absent on older backends. */
   share?: UsageTotals | null;
   /** The dollars it starts with under a dollar cap; null without one, absent on older backends. */
@@ -214,6 +216,8 @@ export interface StartInitiativeBody {
   forecastStop?: boolean;
   /** Keep the decomposer's small features apart instead of merging siblings. */
   keepFeatures?: boolean;
+  /** Ask the decomposer to split a feature that dominates the critical path. */
+  splitCriticalPath?: boolean;
 }
 
 /** One new feature of a split (`POST /v1/initiatives/:id/split`). */

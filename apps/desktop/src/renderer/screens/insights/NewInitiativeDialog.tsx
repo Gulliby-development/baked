@@ -40,6 +40,7 @@ export function NewInitiativeDialog({
   const [tiered, setTiered] = useState<{ maxTasks: string; maxFiles: string } | null>(null);
   const [forecastStop, setForecastStop] = useState(false);
   const [keepFeatures, setKeepFeatures] = useState(false);
+  const [splitCriticalPath, setSplitCriticalPath] = useState(false);
   const [askGit, setAskGit] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
   const definitions = useLoad(projectKey, "definitions", start.definitions);
@@ -55,6 +56,7 @@ export function NewInitiativeDialog({
     tiered,
     forecastStop,
     keepFeatures,
+    splitCriticalPath,
   });
   return (
     <FormDialog
@@ -246,6 +248,21 @@ export function NewInitiativeDialog({
           {keepFeatures
             ? "Every feature the split proposes runs on its own, with the workflow it was given."
             : "Sibling features of one or two files with the same dependencies share one run, since each run pays its own research, spec, plan and review; a small feature nothing depends on runs quick."}
+        </span>
+      </div>
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-2.5">
+          <Switch
+            id={`${ids}-path`}
+            checked={splitCriticalPath}
+            onCheckedChange={setSplitCriticalPath}
+          />
+          <Label htmlFor={`${ids}-path`}>Split the critical path</Label>
+        </div>
+        <span className={HINT}>
+          {splitCriticalPath
+            ? "A feature that holds more than a third of the longest chain of dependencies is split into parts that run side by side, unless the decomposer says why it stays whole. Each extra feature pays its own fixed stages."
+            : "Features keep the boundaries the decomposer gave them, however long their chain."}
         </span>
       </div>
     </FormDialog>

@@ -710,6 +710,8 @@ describe("scenario: an initiative dollar budget (#1317)", () => {
     expect(parseInitiativeArgs(["extend", "big", "--budget-usd", "40", "--expected-revision", "3"]).flags["budget-usd"]).toBe("40");
     expect(parseInitiativeArgs(["start", "big", "--prompt", "x", "--keep-features"]).flags["keep-features"]).toBe(true);
     expect(initiativeHelp).toContain("--keep-features");
+    expect(parseInitiativeArgs(["start", "big", "--prompt", "x", "--split-critical-path"]).flags["split-critical-path"]).toBe(true);
+    expect(initiativeHelp).toContain("--split-critical-path");
     expect(initiativeHelp).toContain("--budget-usd N [--cost-tolerance auto|off|0.2]");
     // `auto` widens with the number of features, as a run's widens with its tasks.
     expect([3, 4, 9, 12, 13].map((n) => initiativeCostTolerance("auto", n))).toEqual([0.1, 0.15, 0.2, 0.25, 0.3]);

@@ -20,6 +20,7 @@ const FIELDS = [
   "tiered",
   "forecast",
   "features",
+  "path",
   "start",
 ] as const;
 type FieldId = (typeof FIELDS)[number];
@@ -61,6 +62,7 @@ export function InitiativeStartForm({
   const [tiered, setTiered] = useState(false);
   const [forecastStop, setForecastStop] = useState(false);
   const [keepFeatures, setKeepFeatures] = useState(false);
+  const [splitPath, setSplitPath] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const modelMissing = !model || model === "none";
@@ -93,6 +95,7 @@ export function InitiativeStartForm({
       ...(tiered ? { tieredApproval: { ...DEFAULT_TIERED_APPROVAL } } : {}),
       ...(forecastStop ? { forecastStop: true } : {}),
       ...(keepFeatures ? { keepFeatures: true } : {}),
+      ...(splitPath ? { splitCriticalPath: true } : {}),
     };
   };
   const submit = async (): Promise<void> => {
@@ -150,11 +153,18 @@ export function InitiativeStartForm({
     )
       setKeepFeatures((v) => !v);
     else if (
+      focus === "path" &&
+      (evt.name === "left" || evt.name === "right" || evt.name === "space") &&
+      handled()
+    )
+      setSplitPath((v) => !v);
+    else if (
       evt.name === "return" &&
       (focus === "workflow" ||
         focus === "tiered" ||
         focus === "forecast" ||
-        focus === "features") &&
+        focus === "features" ||
+        focus === "path") &&
       handled()
     )
       move(1);
@@ -263,6 +273,19 @@ export function InitiativeStartForm({
               keepFeatures
                 ? "‹ keep ›  every feature the decomposer proposes runs on its own"
                 : "‹ merge small ›  one- and two-file siblings share one run"
+            }
+            keyHint="←/→"
+          />
+        </FocusTarget>
+        <FocusTarget active={focus === "path"}>
+          <Field
+            label="Path"
+            labelWidth={10}
+            focused={focus === "path"}
+            value={
+              splitPath
+                ? "‹ split ›  a feature that dominates the critical path is split to run in parallel"
+                : "‹ as split ›  the decomposer's chain of features is kept"
             }
             keyHint="←/→"
           />

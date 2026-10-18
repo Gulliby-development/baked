@@ -63,6 +63,7 @@ const commandFlags: Record<InitiativeCommand, string[]> = {
     "worktree",
     "forecast-stop",
     "keep-features",
+    "split-critical-path",
     "command-id",
   ],
   show: [],
@@ -92,6 +93,7 @@ const booleanFlags = new Set([
   "worktree",
   "forecast-stop",
   "keep-features",
+  "split-critical-path",
 ]);
 const integerFlags = new Set([
   "expected-revision",
@@ -263,6 +265,7 @@ export async function executeInitiativeCommand(
         ...(typeof args.flags.model === "string" ? { model: args.flags.model } : {}),
         ...(args.flags["forecast-stop"] ? { forecastStop: true } : {}),
         ...(args.flags["keep-features"] ? { keepFeatures: true } : {}),
+        ...(args.flags["split-critical-path"] ? { splitCriticalPath: true } : {}),
         ownerLabel: stringFlag(args, "owner", "CLI"),
       });
       return initiatives.drive(id, signal);
@@ -426,6 +429,7 @@ start ID (--prompt TEXT | --prompt-file FILE) [--plan FILE] [--workflow sdd] [--
     [--budget-tokens N --budget-calls N --budget-time-ms N] [--budget-usd N [--cost-tolerance auto|off|0.2]]
     [--tiered-approval [--max-tasks 5] [--max-files 10]]
     [--confirm-auto-approval HASH] [--model ID] [--worktree] [--forecast-stop] [--keep-features]
+    [--split-critical-path]
   Split a large request into 3..12 features. Without --plan the decomposer proposes the split;
   a split above 12 features is refused with a request to split the work into stages. Each
   feature runs its own workflow (--workflow is the default for a feature that names none) and
@@ -434,7 +438,8 @@ start ID (--prompt TEXT | --prompt-file FILE) [--plan FILE] [--workflow sdd] [--
   starts while the projected total passes the cap and its tolerance. --worktree runs feature runs in worktrees, so
   independent features run side by side. The decomposer's features with one or two paths and the
   same dependencies are merged into one feature, since each run pays fixed stages; --keep-features
-  keeps them apart.
+  keeps them apart. --split-critical-path has the decomposer split a feature that holds more than
+  a third of the longest dependency chain into parts that run side by side, or say why it cannot.
 show ID | list | events ID [--after SEQ] [--limit 200]
 estimate ID
   Estimate the split: a level from 1 to 5 by planned tasks and a token range per feature and in

@@ -40,6 +40,8 @@ export const InitiativeStartInputSchema = z.strictObject({
   forecastStop: z.boolean().optional(),
   /** Keep the decomposer's small features apart instead of merging siblings into one run. */
   keepFeatures: z.boolean().optional(),
+  /** Ask the decomposer to split a feature that dominates the critical path. */
+  splitCriticalPath: z.boolean().optional(),
 });
 export type InitiativeStartInput = z.infer<typeof InitiativeStartInputSchema>;
 
@@ -83,6 +85,7 @@ export function initiativeStartRequest(
     ...(form.featureIssues ? { featureIssues: form.featureIssues } : {}),
     ...(form.forecastStop ? { forecastStop: true } : {}),
     ...(form.keepFeatures ? { keepFeatures: true } : {}),
+    ...(form.splitCriticalPath ? { splitCriticalPath: true } : {}),
     ownerLabel: identity.ownerLabel,
   };
 }
