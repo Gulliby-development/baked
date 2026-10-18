@@ -27,7 +27,7 @@ class ScriptedExecutor extends FixtureExecutor {
   analyses = 0;
   plans = 0;
   invalidWordings = 0;
-  constructor(private workspace: string, private path: string, private legacy: boolean) {
+  constructor(private workspace: string, private path: string, private legacy: boolean, private mode: "legacy" | "covering" | "derived" | "quote" = "legacy") {
     super(workspace);
   }
   override async execute(request: ExecutionRequest) {
@@ -46,16 +46,21 @@ class ScriptedExecutor extends FixtureExecutor {
       // A stored graph from before the fix, as encountered after resuming a run.
       if (this.legacy) task.description += `\nSizing split this task by file: write only ${this.path};  belong to the other parts of T002. ${legacyBatch}`;
       plan.taskGraph.tasks.push(task);
+      if (this.mode === "covering") {
+        task.checkIds = [];
+        plan.markdown += "\nDEC-002: T002 has empty checkIds; verification runs after integration.";
+        plan.taskGraph.planHash = hashBytes(plan.markdown);
+      }
       return result;
     }
     if (request.profile.output === "analysis") {
       this.analyses += 1;
       const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as {
         inputHash: string;
-        extra: { verifiedByRuntime: string[]; executionContract: { checks: { id: string }[] } };
+        extra: { verifiedByRuntime: string[]; executionContract: { checks: { id: string }[] }; hostAddedChecks: { covering: { task: string; checkIds: string[] }[]; derived: string[] } };
       };
       const checks = data.extra.executionContract.checks.map((check) => check.id);
-      expect(checks).toEqual(["typecheck", "lint", "tests"]);
+      expect(checks).toEqual(this.mode === "covering" ? ["typecheck", "lint", "tests", "format"] : ["typecheck", "lint", "tests"]);
       const graph = (JSON.parse(request.prompt.split("\n").at(-2) ?? "{}") as { graph: TaskGraph }).graph;
       const bad = graph.tasks.filter((task) => task.description.includes("run tests-written after each batch"));
       this.invalidWordings += bad.length;
@@ -63,6 +68,18 @@ class ScriptedExecutor extends FixtureExecutor {
         id: `F-${task.id}`, kind: "inconsistency", refs: ["tasks.json", task.id], blocking: true,
         description: `${task.id}'s appended batching wording requires tests-written, but the policy checks only define ${checks.join(", ")}.`,
       }));
+      expect(data.extra.hostAddedChecks.derived).toContain("tests-written");
+      expect(data.extra.hostAddedChecks.derived).toContain("tests-affected");
+      if (this.mode === "covering") {
+        expect(data.extra.hostAddedChecks.covering).toContainEqual({ task: "T002", checkIds: ["lint", "format"] });
+        expect(graph.tasks.find((t) => t.id === "T002")!.checkIds).toEqual(["lint", "format"]);
+        findings.push({ id: "F002", kind: "inconsistency", refs: ["plan.md", "tasks.json", "T002"], blocking: true,
+          description: "DEC-002 in plan.md declares T002 checkIds empty, but tasks.json includes lint and format; this contradicts the plan's checks." });
+      }
+      if (this.mode === "derived") findings.push({ id: "F003", kind: "ambiguity", refs: ["tasks.json", "T002"], blocking: true,
+        description: "T002 requires tests-affected, missing from executionContract.checks." });
+      if (this.mode === "quote") findings.push({ id: "F004", kind: "inconsistency", refs: ["tasks.json", "T002"], blocking: true,
+        description: 'T002\'s appended sentence "This criterion alone exceeds one attempt" requires batching checks missing from the policy.' });
       return { output: { schemaVersion: 1, inputHash: data.inputHash, verdict: findings.length ? "needs_revision" : "pass", findings }, inputTokens: 25, outputTokens: 25 };
     }
     if (request.profile.output === "implementation" && request.task?.id === "T002") {
@@ -97,7 +114,7 @@ for (const path of ["tests/value.test.ts", "tests/test_value.py", "internal/valu
 }
 
 test("scenario: a legacy host batching check inconsistency stays a note through approval", async () => {
-  const fixture = workflowFixture({ policy, executor: (root) => new ScriptedExecutor(root, "tests/value.test.ts", true) });
+  const fixture = workflowFixture({ policy: { ...policy, sizing: { maxAttemptTokens: 2_000_000 } }, executor: (root) => new ScriptedExecutor(root, "tests/value.test.ts", true) });
   cleanups.push(fixture.dispose);
   const run = await fixture.start();
   expect((await fixture.service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");
@@ -108,3 +125,23 @@ test("scenario: a legacy host batching check inconsistency stays a note through 
   expect(state.analysisRaised).toEqual([]);
   expect(fixture.service.store.requests(run.runId).some((r) => r.kind === "clarification")).toBe(false);
 }, 120_000);
+
+for (const mode of ["covering", "derived", "quote"] as const) {
+  test(`scenario: analysis keeps host ${mode} check additions as notes (#1579)`, async () => {
+    const fixture = workflowFixture({
+      policy: mode === "quote" ? policy : {
+        ...policy, sizing: { maxAttemptTokens: 2_000_000 },
+        checks: mode === "covering" ? [...policy.checks, { ...policy.checks[1]!, id: "format" }] : policy.checks,
+      },
+      executor: (root) => new ScriptedExecutor(root, "tests/value.test.ts", false, mode),
+    });
+    cleanups.push(fixture.dispose);
+    const run = await fixture.start();
+    expect((await fixture.service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");
+    expect(fixture.executor.analyses).toBe(mode === "quote" ? 2 : 1);
+    expect(fixture.executor.plans).toBe(mode === "quote" ? 2 : 1);
+    expect(fixture.service.store.state(run.runId).analysisReplans).toBe(0);
+    expect(fixture.service.store.state(run.runId).analysisPassed).toBe(true);
+    expect(fixture.service.store.requests(run.runId).some((r) => r.kind === "clarification")).toBe(false);
+  }, 120_000);
+}

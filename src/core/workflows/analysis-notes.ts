@@ -1,10 +1,12 @@
 import type { z } from "zod";
+import { coveringChecks } from "./check-policy.js";
 import {
   withCommandDependencies,
   withModuleDependencies,
   withReadDependencies,
 } from "./plan-consistency.js";
-import type { ResearchSchema, Spec, TaskGraph } from "./schemas.js";
+import { isTestCheck } from "./quality/mutation.js";
+import type { ResearchSchema, RunPolicy, Spec, TaskGraph } from "./schemas.js";
 import { withTestDependencies } from "./sizing.js";
 import type { Check } from "./types.js";
 
@@ -74,47 +76,81 @@ export function isHostSplitNit(
   );
 }
 
-/**
- * Older sizing notes named tests-written even when the policy lacked it (#1579).
- * Only that host-added instruction is a note; planner-authored checks and spec conflicts stay blocking.
- */
+export function hostAddedChecks(graph: TaskGraph, policy: RunPolicy) {
+  return {
+    covering: graph.tasks.flatMap((task) => {
+      const checkIds = coveringChecks(policy, task).map((check) => check.id);
+      return checkIds.length ? [{ task: task.id, checkIds }] : [];
+    }),
+    derived: policy.checks
+      .filter(isTestCheck)
+      .flatMap((check) => [`${check.id}-written`, `${check.id}-affected`]),
+    note: "The host attaches covering static checks after planning and derives file-scoped test checks during execution. They need not appear in plan.md or executionContract.checks. Host-appended sizing and batching sentences are execution guidance. Findings about these additions alone are notes; spec conflicts and planner-authored check requirements still need review.",
+  };
+}
+
+/** Host-owned check additions cannot be repaired by returning the plan (#1579). */
 export function isHostBatchCheckNit(
   finding: { refs: readonly string[]; description: string },
   graph: TaskGraph,
   checks: readonly Pick<Check, "id">[],
+  added?: ReturnType<typeof hostAddedChecks>,
+  plan = "",
 ): boolean {
-  if (checks.some((check) => check.id === "tests-written")) return false;
   const text = [...finding.refs, finding.description].join(" ");
   if (
-    !/\btests-written\b/.test(finding.description) ||
-    !/\b(?:policy|executionContract)\b|\b(?:available|declared|configured|defined) checks\b/i.test(
+    !/\b(?:checks?|checkIds|policy|executionContract|batch|wording|sentence)\b/i.test(text) ||
+    !/\b(?:only|missing|absent|undeclared|undefined|unknown|unavailable|lacks?|without|mismatch|inconsistent|contradict\w*|requires?)\b|\bnot (?:in|listed|defined|declared|present|available)\b|\bdoes(?: not|n't) (?:have|include|define|declare|list)\b/i.test(
       finding.description,
     ) ||
-    !/\b(?:only|missing|absent|undeclared|undefined|unknown|unavailable|lacks?|without)\b|\bnot (?:in|listed|defined|declared|present|available)\b|\bdoes(?: not|n't) (?:have|include|define|declare|list)\b/i.test(
-      finding.description,
-    ) ||
-    /\b(?:AC|FR|NFR|SC)-\d+\b|\bspec\.json\b|\bcheckIds\b/i.test(text)
+    FAILS_CRITERION.test(text) ||
+    /\b(?:AC|FR|NFR|SC)-\d+\b|\bspec\.json\b/i.test(text)
   )
     return false;
   const named = [...new Set(text.match(/\bT\d{3,}\b/g) ?? [])];
+  const derived = text.match(/\b[\w-]+-(?:written|affected)\b/g) ?? [];
+  if (derived.some((id) => plan.includes(id))) return false;
+  const undeclared = derived.filter((id) => !checks.some((check) => check.id === id));
+  const quoted =
+    /This criterion alone exceeds one attempt|run [\w-]+-(?:written|affected) after each batch|check each batch with the task's available checks/i.test(
+      finding.description,
+    );
+  if (!named.length && !quoted && !undeclared.length) return false;
+  const tasks = named.length
+    ? named.map((id) => graph.tasks.find((task) => task.id === id))
+    : graph.tasks;
   return (
-    named.length > 0 &&
-    named.every((id) => {
-      const task = graph.tasks.find((task) => task.id === id);
-      if (!task || task.checkIds.includes("tests-written")) return false;
+    tasks.length > 0 &&
+    tasks.every((task) => {
+      if (!task) return false;
+      const covering = added?.covering.find((entry) => entry.task === task.id)?.checkIds ?? [];
+      if (
+        covering.some((id) =>
+          new RegExp(`\\b${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(text),
+        ) &&
+        /\b(?:checkIds|plan(?:\.md)?|DEC-\d+)\b/i.test(text)
+      )
+        return true;
       const split = task.description.search(
         /\nSizing split (?:this task by file|this test file into slices):/,
       );
+      const authored = `${task.title}\n${split < 0 ? task.description : task.description.slice(0, split)}`;
+      if (derived.some((id) => task.checkIds.includes(id) || authored.includes(id))) return false;
+      if (/\bcheckIds\b/.test(text)) return false;
+      const hostText = split < 0 ? "" : task.description.slice(split);
       if (
-        split === -1 ||
-        /\btests-written\b/.test(`${task.title}\n${task.description.slice(0, split)}`)
+        quoted &&
+        hostText.includes("This criterion alone exceeds one attempt") &&
+        (!derived.length || undeclared.length === derived.length)
       )
-        return false;
-      return task.description
-        .slice(split)
-        .includes(
-          "This criterion alone exceeds one attempt. Write its cases in small batches inside this attempt, run tests-written after each batch, and preserve earlier batches.",
-        );
+        return true;
+      return (
+        undeclared.length > 0 &&
+        undeclared.length === derived.length &&
+        undeclared.every(
+          (id) => added?.derived.includes(id) || hostText.includes(`run ${id} after each batch`),
+        )
+      );
     })
   );
 }

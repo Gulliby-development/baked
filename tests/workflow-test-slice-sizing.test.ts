@@ -18,7 +18,7 @@ const policy = { ...defaultWorkflowPolicy, sizing: { maxAttemptTokens: 600_000 }
 const sample = (more: Partial<SizingSample> = {}): SizingSample => ({
   runId: "history", taskId: "T001", kind: "test", action: "create", source: "project", files: 4, tokens: 800_000, model: "m", criteria: 8, cases: 20, ...more,
 });
-const history = [sample(), sample()];
+const history = Array.from({ length: 6 }, (_, index) => sample({ cases: index % 2 ? 30 : 10 }));
 const spec = (rows: number): SpecText => ({ criteria: ids.map((id, index) => ({
   id, requirementIds: ["FR-001"], method: "automated", given: "a CLI input", when: "it runs",
   then: `input | expected\n--- | ---\n${Array.from({ length: Math.floor(rows / 6) + (index < rows % 6 ? 1 : 0) }, (_, i) => `value-${index}-${i} | ok`).join("\n")}`,
@@ -49,11 +49,41 @@ describe("literal case pricing and sequential test slices (#1562)", () => {
     expect(caseRate([sample({ cases: undefined }), sample({ cases: 0 })])).toBeNull();
     expect(caseRate([sample()])).toBeNull();
     const samples = [...history, sample({ source: "shared", tokens: 8_000_000 }), sample({ source: "shared", tokens: 8_000_000 })];
-    expect(caseRate(samples)).toMatchObject({ basis: "project", perCase: { low: 40_000, high: 40_000 }, samples: 2 });
-    samples.push(sample({ model: "other", tokens: 1_600_000 }), sample({ model: "other", tokens: 1_600_000 }));
+    expect(caseRate(samples)).toMatchObject({ basis: "project", perCase: { low: 40_000, high: 40_000 }, samples: 6 });
+    samples.push(...history.map((s) => ({ ...s, model: "other", tokens: 1_600_000 })));
     expect(caseRate(samples, "other")).toMatchObject({ model: "other", perCase: { low: 80_000, high: 80_000 } });
     expect(perFileRates(history).test.create.perFile.high).toBe(200_000);
     expect(size(graph(task("T001", "src/cli.ts")), history, spec(40)).tasks[0]!.estimate.high).toBe(100_000);
+  });
+
+  test("case pricing needs six samples and varied case counts, including within a selected model", () => {
+    expect(caseRate(history.slice(0, 5))).toBeNull();
+    expect(caseRate(Array.from({ length: 6 }, () => sample()))).toBeNull();
+    expect(caseRate([...history, sample({ model: "new", tokens: 9_000_000 })], "new")?.model).toBeNull();
+    const varied = Array.from({ length: 6 }, (_, index) => sample({ cases: index % 2 ? 20 : 1, tokens: index % 2 ? 100_000 : 350_000 }));
+    const rate = 450_000 / 21;
+    expect(caseRate(varied)?.perCase).toEqual({ low: rate, high: rate });
+  });
+
+  test("known small files never slice and an uncertain high alone does not split tests", () => {
+    const samples = [sample({ files: 1, tokens: 200_000, criteria: undefined, cases: undefined }), sample({ files: 1, tokens: 900_000, criteria: undefined, cases: undefined })];
+    const g = graph(task("T001", "tests/cli.test.ts"));
+    const report = size(g, samples, spec(6));
+    expect(report.tasks[0]!.estimate.high).toBe(900_000);
+    expect(report.tasks[0]!.oversized).toBe(false);
+    expect(splitTestTasks(g, report, spec(6))).toBeNull();
+    for (const count of [1, 2, 5]) {
+      const small = size(g, [sample({ files: 1, tokens: 2_000_000 }), sample({ files: 1, tokens: 2_000_000 })], spec(count));
+      expect(small.tasks[0]!.oversized).toBe(false);
+      expect(splitTestTasks(g, small, spec(count))).toBeNull();
+    }
+  });
+
+  test("observed case counts bound the whole price, but larger case counts can extrapolate", () => {
+    const g = graph(task("T001", "tests/cli.test.ts"));
+    const capped = size(g, history, spec(30));
+    expect(capped.tasks[0]!.estimate.high).toBe(800_000);
+    expect(size(g, history, spec(40)).tasks[0]!.estimate.high).toBe(1_600_000);
   });
 
   test("a modified single file above 1.39M splits without a case rate and preserves deletes once", () => {
@@ -95,6 +125,9 @@ describe("literal case pricing and sequential test slices (#1562)", () => {
     expect(split.tasks[0]!.criterionIds).toEqual([ids[0]!]);
     expect(criterionCases(text, split.tasks[0]!).length).toBe(40);
     expect(split.tasks[0]!.description).toContain("small batches inside this attempt");
+    const repeated = splitTestTasks(split, size(split, history, text), text)!;
+    expect(repeated.tasks[0]!.description).toBe(split.tasks[0]!.description);
+    expect(repeated.tasks[0]!.description).not.toContain("tests-written");
     expect(report.tasks[0]!.sliceCount).toBe(1);
     expect(plannerSizing(policy, history).note).toContain("Each literal test case");
     expect(plannerSizing(policy, history).note).toContain("create it first, then modify it");
