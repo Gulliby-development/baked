@@ -18,6 +18,8 @@ import { failureSignature, testCount } from "../src/core/verification/output-cou
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { launchedCommand } from "../src/core/workflows/launcher.js";
+import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
+import { sizePlan, splitTestTasks } from "../src/core/workflows/sizing.js";
 import { withPerTestTimeout } from "../src/core/workflows/test-timeout.js";
 import { detectProfile } from "../src/core/tools/project.js";
 import {
@@ -490,6 +492,25 @@ for (const stack of STACKS) {
       const written = writtenTestsCheck(root, preselected(), writes);
       expect(plannedWrittenTests(preselected(), writes)?.id ?? null).toBe(written?.id ?? null);
       if (written) expect(plannedWrittenTests(preselected(), writes)?.timeoutMs).toBe(written.timeoutMs);
+    });
+
+    cell(stack, "sequential-test-slices-written-tests", () => {
+      const path = fixture.property.path;
+      const root = project({ ...fixture.files, [path]: fixture.property.seeded });
+      const original: Task = {
+        id: "T001", title: "Tests", description: "Write cases", requirementIds: ["FR-001"],
+        criterionIds: ["AC-001", "AC-002", "AC-003", "AC-004"], dependsOn: [], profileId: "implementer",
+        writes: [{ path, action: "create" }], readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior",
+      };
+      const graph = { schemaVersion: 1 as const, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [original] };
+      const report = sizePlan({ graph, policy: { ...defaultWorkflowPolicy, sizing: { maxAttemptTokens: 200_000 } }, samples: [], spent: 0 });
+      const parts = splitTestTasks(graph, report)!.tasks;
+      expect(parts).toHaveLength(2);
+      for (const part of parts) {
+        expect(part.writes.map((w) => w.path)).toEqual([path]);
+        expect(plannedWrittenTests(preselected(), part.writes)?.paths ?? null).toEqual(WRITTEN_TEST_ARGS[stack] ? [path] : null);
+        expect(writtenTestsCheck(root, preselected(), part.writes)?.args ?? null).toEqual(WRITTEN_TEST_ARGS[stack]);
+      }
     });
 
     // The mutation gate needs a required test check to run the mutants against; without one it is

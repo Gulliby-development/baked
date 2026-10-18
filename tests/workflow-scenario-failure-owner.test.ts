@@ -8,7 +8,7 @@ import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { fileHash } from "../src/core/workflows/effects.js";
 import type { Check, RunPolicy, Spec, Task, TaskGraph } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
-import { splitTestTasks, type SizingReport } from "../src/core/workflows/sizing.js";
+import { sizePlan, splitTestTasks } from "../src/core/workflows/sizing.js";
 import { newId } from "../src/core/workflows/store.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
 
@@ -110,7 +110,9 @@ async function runScenario(mode: "update" | "panic", split = false, cutOff = fal
   if (split) {
     graph.tasks = graph.tasks.map((t, index) => index < 2 ? { ...t, criterionIds: ["AC-002"] } : t);
     const combined = { ...graph.tasks[2] as Task, writes: [...(graph.tasks[2]?.writes ?? []), ...update.writes] };
-    graph = splitTestTasks({ ...graph, tasks: [...graph.tasks.slice(0, 2), combined] }, { tasks: [{ taskId: "T004", kind: "test", oversized: true }] } as SizingReport) as TaskGraph;
+    const unsplit = { ...graph, tasks: [...graph.tasks.slice(0, 2), combined] };
+    const report = sizePlan({ graph: unsplit, policy: { ...defaultWorkflowPolicy, sizing: { maxAttemptTokens: 600_000 } }, samples: [], spent: 0 });
+    graph = splitTestTasks(unsplit, report, scenarioSpec) as TaskGraph;
   }
   graph.specHash = hashJson(scenarioSpec);
   const tests = mode === "update"

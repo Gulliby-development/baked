@@ -1165,6 +1165,8 @@ export class NativeAgentExecutor implements AgentExecutor {
       const submitTools = ["submit_result", "submit_artifact", "submit_review"].filter(
         (name) => name in available,
       );
+      // Sizing supplies each test slice's own price, including its literal cases. Preserve that
+      // cap instead of falling back to the policy's smaller generic attempt cap.
       const attemptCap = Math.min(
         request.maxTokens ?? Number.POSITIVE_INFINITY,
         request.attemptTokens ?? policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS,
