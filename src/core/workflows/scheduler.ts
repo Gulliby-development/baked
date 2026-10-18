@@ -4135,6 +4135,33 @@ export class WorkflowScheduler {
           }
         : undefined;
     try {
+      if (task && profile.output === "implementation") {
+        // Save what this attempt receives, before it can fail or the findings change (#1566).
+        // Both serial tasks and task worktrees, including retries, pass through here.
+        const context = (extra ?? {}) as Record<string, unknown>;
+        const keys = [
+          "recurringFindings",
+          "siblingFindings",
+          "correctionFocus",
+          "cutOffChecks",
+          "earlierEdits",
+        ];
+        this.store.transaction(() =>
+          this.store.artifact(
+            runId,
+            "attempt-context",
+            `attempts/${attempt}/context.json`,
+            canonical({
+              schemaVersion: 1,
+              taskId: task.id,
+              findingIds: task.findingIds,
+              ...Object.fromEntries(
+                keys.filter((key) => context[key] !== undefined).map((key) => [key, context[key]]),
+              ),
+            }),
+          ),
+        );
+      }
       const result = await this.executor.execute({
         runId,
         attemptId: attempt,

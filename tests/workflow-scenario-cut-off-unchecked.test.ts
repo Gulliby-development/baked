@@ -35,6 +35,7 @@ interface Behavior {
 }
 
 class ScriptedExecutor implements AgentExecutor {
+  contexts: { sent: Record<string, unknown>; saved?: Record<string, unknown> }[] = [];
   implementations: { cutOffChecks?: { failed: { id: string; output: string }[] }; maxTokens: number }[] = [];
   service?: NativeWorkflowService;
   constructor(
@@ -54,6 +55,8 @@ class ScriptedExecutor implements AgentExecutor {
       case "analysis": output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] }; break;
       case "implementation": {
         const first = this.implementations.length === 0;
+        const row = this.service?.store.latestArtifact(request.runId, `attempts/${request.attemptId}/context.json`);
+        this.contexts.push({ sent: data.extra, saved: row ? JSON.parse(this.service?.store.readArtifact(request.runId, row.id) ?? "{}") : undefined });
         this.implementations.push({ ...(data.extra.cutOffChecks ? { cutOffChecks: data.extra.cutOffChecks } : {}), maxTokens: request.attemptTokens ?? 0 });
         // The cut-off attempt leaves a link to the markdown file; the next one fixes it.
         writeFileSync(join(this.root, "out.txt"), first ? "link a.md\n" : "link a.html\n");
@@ -111,6 +114,11 @@ describe("scenario: md-site 11b11f19, a corrective cut off after edits it did no
     expect(executor.implementations[1]?.maxTokens).toBe(1500);
     expect(state.taskContinuations).toEqual({ T001: 1 });
     expect(correctives).toEqual([]);
+    const [first, continuation] = executor.contexts;
+    expect(first?.saved?.cutOffChecks).toBeUndefined();
+    expect(continuation?.saved?.cutOffChecks).toEqual(continuation?.sent.cutOffChecks);
+    expect(continuation?.saved?.cutOffChecks).toBeDefined();
+    expect(continuation?.saved?.earlierEdits).toEqual(continuation?.sent.earlierEdits);
   }, 60000);
 
   test("an attempt the watcher stopped is checked the same way", async () => {
