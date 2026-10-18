@@ -4,6 +4,7 @@ import { reasonText } from "../../../../../../src/core/workflows/reasons.js";
 import { attentionHash } from "../../../shared/attention.js";
 import { attentionApi } from "../../client/attention.js";
 import { chat } from "../../client/chat.js";
+import { desktopRecoveryText } from "../../client/remedies.js";
 import {
   errorText,
   GROUP_B_CAPABILITY,
@@ -801,7 +802,7 @@ function StopNote({ run }: { run: RunData["status"] }) {
       </Alert>
       {run.stopDetail && (
         <pre className="m-0 max-h-[240px] overflow-auto whitespace-pre-wrap rounded-base border-2 border-border bg-[var(--bg-sunken)] px-3 py-2 font-mono text-[12px]">
-          {run.stopDetail}
+          {desktopRecoveryText(run.stopDetail, run.recovery)}
         </pre>
       )}
     </section>

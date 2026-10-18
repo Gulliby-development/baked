@@ -1,4 +1,6 @@
 import { createWorkerHandler } from "../../src/core/workers/rpc.js";
+import { WorkflowFault } from "../../src/core/workflows/errors.js";
+import { recoveryAdvice } from "../../src/core/workflows/remedies.js";
 
 let initConfig: Record<string, unknown> | null = null;
 
@@ -8,6 +10,9 @@ const ctx = createWorkerHandler(
     add: (a: unknown, b: unknown) => (a as number) + (b as number),
     fail: () => {
       throw new Error("intentional error");
+    },
+    failRecovery: () => {
+      throw new WorkflowFault("STALE_DECISION", recoveryAdvice("baked workflow resume RUN", "The run needs a retry.", { action: "resume", runId: "RUN" }));
     },
     failCustom: (msg: unknown) => {
       throw new Error(msg as string);

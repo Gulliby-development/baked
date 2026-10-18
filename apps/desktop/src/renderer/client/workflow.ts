@@ -1,3 +1,4 @@
+import type { RecoveryAdvice } from "../../../../../src/core/workflows/remedies.js";
 import type { RunSnapshot } from "../../shared/api.js";
 import { call } from "./api.js";
 
@@ -20,6 +21,7 @@ export interface RunStatus extends RunSnapshot {
   }[];
   /** For a blocked or failed run, the error the runtime recorded when it stopped it. */
   stopDetail?: string | null;
+  recovery?: RecoveryAdvice;
 }
 
 const commandId = (): string => crypto.randomUUID();

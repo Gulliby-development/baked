@@ -1,3 +1,5 @@
+import { errorRecovery } from "../src/core/workflows/remedies.js";
+import { expectRecovery } from "./helpers/workflow-remedies.js";
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -114,6 +116,7 @@ describe("edits refused as changed outside the attempt (#954)", () => {
     expect((error as WorkflowFault).message).toContain("value.txt were refused 3 times");
     expect((error as WorkflowFault).details).toMatchObject({ path: "value.txt", refusals: 3, root: "", hash: hashBytes("old\n") });
     expect((error as WorkflowFault).message).toContain("--accept-workspace");
+    expectRecovery((error as WorkflowFault).message, errorRecovery(error), "accept-workspace");
     expect(seen.calls).toBeLessThanOrEqual(4);
   });
 
@@ -163,7 +166,9 @@ describe("edits refused as changed outside the attempt (#954)", () => {
     expect(await service.drive(run.runId, signal)).toMatchObject({ status: "blocked", reason: "input_changed" });
     expect(attempts).toBe(2);
     const revision = async () => (await service.get(run.runId)).revision;
-    await expect(service.resume(run.runId, { commandId: newId(), expectedRevision: await revision() })).rejects.toThrow("still differs from what the run recorded");
+    const refused = await service.resume(run.runId, { commandId: newId(), expectedRevision: await revision() }).catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(WorkflowFault);
+    expectRecovery((refused as WorkflowFault).message, errorRecovery(refused), "accept-workspace");
     expect(attempts).toBe(2);
     // Keeping the file is the decision: the next attempt edits it from there.
     await service.resume(run.runId, { commandId: newId(), expectedRevision: await revision() }, { acceptWorkspace: true });

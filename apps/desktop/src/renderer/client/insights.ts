@@ -1,3 +1,4 @@
+import type { RecoveryAdvice } from "../../../../../src/core/workflows/remedies.js";
 import { ApiError, call } from "./api.js";
 
 /**
@@ -28,6 +29,7 @@ export type FeatureState =
   | "accepted";
 
 export interface InitiativeNext {
+  recovery?: RecoveryAdvice;
   kind: string;
   featureId: string | null;
   runId: string | null;
@@ -67,6 +69,7 @@ export interface InitiativeFeature {
   runId: string | null;
   runStatus: string | null;
   blockers: string[];
+  recovery?: RecoveryAdvice;
   pendingRequests: PendingDecision[];
   usage: UsageTotals;
   /** What the feature owns and the contract it provides; absent on older backends. */

@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useState } from "react";
+import { desktopRecoveryText } from "../../client/remedies.js";
 import { type RouteExplanation, setup } from "../../client/setup.js";
 import {
   type DoctorCheck,
@@ -72,7 +73,9 @@ export function DoctorChecks({ checks, limit }: { checks: DoctorCheck[]; limit?:
             </span>
             {(check.detail || check.fix) && (
               <span className="text-[12px] text-dim-foreground">
-                {[check.detail, check.fix].filter(Boolean).join(" · ")}
+                {[check.detail, desktopRecoveryText(check.fix ?? "", check.recovery)]
+                  .filter(Boolean)
+                  .join(" · ")}
               </span>
             )}
           </span>

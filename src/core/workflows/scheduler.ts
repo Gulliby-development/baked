@@ -346,6 +346,7 @@ import { DEFAULT_SAST_CONFIG, QUALITY_SAST, runSast, sastClaim, sastOf } from ".
 import { carriesOver, changedSince, previousRound } from "./re-review.js";
 import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery.js";
+import { recoveryAdvice } from "./remedies.js";
 import { deliverableProblems, repairDeliverables, requestCoverage } from "./request-coverage.js";
 import {
   type AccountRefusal,
@@ -2627,6 +2628,13 @@ export class WorkflowScheduler {
               ? fault.message
               : String(fault),
         );
+        if (fault instanceof WorkflowFault && fault.details.recovery)
+          this.store.artifact(
+            runId,
+            "recovery",
+            `recovery/advice-${diagnostic.id}.json`,
+            canonical(fault.details.recovery),
+          );
         // A task that ended unfinished after its restart (#1516): the service resumes it once.
         if (fault instanceof WorkflowFault && typeof fault.details.unfinishedTask === "string")
           this.store.artifact(
@@ -4322,7 +4330,11 @@ export class WorkflowScheduler {
       if (refusal && !signal.aborted)
         throw new WorkflowFault(
           "OUTPUT_INVALID",
-          `${profile.model} refused the request: ${refusalAdvice(refusal, error)}, or move the run to another model with baked workflow reroute ${runId} --model ID --expected-revision N. ${error instanceof Error ? error.message : String(error)}`,
+          recoveryAdvice(
+            `${profile.model} refused the request: ${refusalAdvice(refusal, error)}, or move the run to another model with baked workflow reroute ${runId} --model ID --expected-revision N. ${error instanceof Error ? error.message : String(error)}`,
+            `${profile.model} refused the request: ${refusalAdvice(refusal, error)}. ${error instanceof Error ? error.message : String(error)}`,
+            { action: "reroute", runId },
+          ),
           { reason: "provider_account" },
         );
       // An attempt that used its steps without submitting and changed nothing is repeated once

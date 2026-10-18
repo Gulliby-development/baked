@@ -1,6 +1,7 @@
 import { canonical, hashJson } from "../specs/hash.js";
 import { WorkflowFault } from "../workflows/errors.js";
 import { counterexampleOf } from "../workflows/quality/properties.js";
+import { recoveryAdvice } from "../workflows/remedies.js";
 import {
   CorrectionSchema,
   DEFAULT_FRESH_RESTART_AFTER,
@@ -594,7 +595,12 @@ export function appendCorrections(
     // Not BUDGET_EXHAUSTED: `workflow extend` raises tokens, calls and time, none of which helps.
     throw new WorkflowFault(
       "RECOVERY_REQUIRED",
-      `no_progress: ${count} finding(s) remain after the policy's ${setting} (${value}). Narrow the spec or raise ${setting} with workflow revise, or fork the run.`,
+      recoveryAdvice(
+        `no_progress: ${count} finding(s) remain after the policy's ${setting} (${value}). Narrow the spec or raise ${setting} with workflow revise, or fork the run.`,
+        `no_progress: ${count} finding(s) remain after the policy's ${setting} (${value}). Narrow the spec or raise ${setting}.`,
+        { action: "revise", runId, setting },
+        { action: "fork", runId },
+      ),
       { reason: "no_progress", limit: setting },
     );
   };

@@ -1,3 +1,4 @@
+import { expectRecovery } from "./helpers/workflow-remedies.js";
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -460,6 +461,7 @@ describe("initiative feature workflows", () => {
     expect(view.next.kind).toBe("blocked");
     expect(view.next.featureId).toBe("core");
     expect(view.next.message).toContain("The forecast is over the shared budget");
+    expectRecovery(view.next.message, view.next.recovery, "extend");
     view = await t.drive();
     expect(view.features.every((f) => f.runId === null)).toBe(true);
     // Raising the budget above the forecast lets the feature start.
@@ -539,6 +541,7 @@ describe("scenario: an initiative budget shared by estimated need (#1311)", () =
     view = await t.initiatives.drive("second", new AbortController().signal);
     expect(view.next.kind).toBe("blocked");
     expect(view.next.message).toMatch(/^The shared budget is short: core would start with \d+ tokens, below its estimate of \d+-\d+\. /);
+    expectRecovery(view.next.message, view.next.recovery, "extend");
     expect(view.features.every((f) => f.runId === null)).toBe(true);
   }, 30000);
 
@@ -637,6 +640,7 @@ describe("scenario: an initiative dollar budget (#1317)", () => {
     expect(forecast).toBeGreaterThan(3);
     expect(view.next.kind).toBe("blocked");
     expect(view.next.message).toMatch(/^The initiative's cost forecast is \$\d+\.\d\d, above its \$3\.00 cap: \$\d+\.\d\d spent with 1 of 3 features accepted\. Raise the dollar budget to at least \$\d+\.00 with baked workflow initiative extend --budget-usd N/);
+    expectRecovery(view.next.message, view.next.recovery, "extend");
     expect(initiativeExit(view)).toBe(4);
     expect(["api", "docs"].map((id) => t.featureOf(view, id).runId)).toEqual([null, null]);
     view = await t.initiatives.extendBudget("values", t.id(), { maxCostUsd: Math.ceil(forecast) + 1 });
@@ -698,6 +702,7 @@ describe("scenario: an initiative dollar budget (#1317)", () => {
     await t.approveSplit();
     const view = await t.drive();
     expect(view.next.message).toMatch(/^The shared dollar budget is exhausted: core would start with \$0\.00 of the \$0\.02 cap/);
+    expectRecovery(view.next.message, view.next.recovery, "extend");
     expect(view.features.every((f) => f.runId === null)).toBe(true);
   }, 30000);
 
@@ -1152,6 +1157,7 @@ describe("initiative runtime", () => {
     let view = await t.drive();
     expect(view.next.kind).toBe("blocked");
     expect(view.next.message).toContain("shared budget is exhausted");
+    expectRecovery(view.next.message, view.next.recovery, "extend");
     expect(view.features.every((f) => f.runId === null)).toBe(true);
     view = await t.initiatives.extendBudget("values", t.id(), { maxTotalTokens: 300000, maxAgentCalls: 90 });
     expect(view.next.kind).toBe("start");

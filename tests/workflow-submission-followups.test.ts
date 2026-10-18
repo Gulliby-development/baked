@@ -1,4 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
+import { errorRecovery } from "../src/core/workflows/remedies.js";
+import { expectRecovery } from "./helpers/workflow-remedies.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { fillHostConstants } from "../src/core/workflows/host-constants.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
@@ -63,9 +65,10 @@ test("a resume after the same invalid output stopped the run again is refused wi
   expect(await service.drive(run.runId, signal())).toMatchObject({ status: "blocked", reason: "invalid_output" });
   await fixture.resume(run.runId);
   expect(await service.drive(run.runId, signal())).toMatchObject({ status: "blocked", reason: "invalid_output" });
-  const refused = await fixture.resume(run.runId).then(() => null, (error: Error) => error.message);
-  expect(refused).toContain("stopped again with the same diagnostic");
-  expect(refused).toContain("initiative replan");
+  const refused = await fixture.resume(run.runId).then(() => null, (error: Error) => error);
+  expect(refused?.message).toContain("stopped again with the same diagnostic");
+  expect(refused?.message).toContain("initiative replan");
+  expectRecovery(refused?.message ?? "", errorRecovery(refused), "revise");
   expect(service.store.run(run.runId)).toMatchObject({ status: "blocked", reason: "invalid_output" });
 });
 

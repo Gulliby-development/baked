@@ -6,6 +6,8 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Process model
 
+Workflow refusals can include optional `error.recovery` alongside the existing `error.message`. Run status can include `recovery` alongside `stopDetail`; initiative features and `next` can include `recovery` alongside `blockers` and `message`. Doctor checks can include it alongside `fix`. Its shape is `{ message, summary, remedies: [{ action, runId?, initiativeId?, featureId?, setting? }] }`. Actions are `resume`, `extend`, `accept-workspace`, `reroute`, `revise`, `replan`, `deliver`, `recover`, `fork`, `cancel` and `pause`. The legacy message keeps CLI commands for older clients. The desktop renders the summary with its button or decision names. These fields describe advice only; actions still use the existing commands, revisions and approval checks. A client that receives no advice displays the original text.
+
 - One `baked serve` per project folder. The desktop main process starts `baked serve --cwd FOLDER --port 0 --allow-origin ORIGIN` for each open project, reads the one JSON line `{"url","port","tokenFile"}` from stdout, reads the token from `tokenFile`, and stops the process with SIGTERM (Windows: the process is killed; the token file is removed on the next start).
 - The server binds 127.0.0.1 only. Every request carries `Authorization: Bearer TOKEN`. The Host header must name the loopback address and port. Requests with an `Origin` header are refused unless that origin was allowed with `--allow-origin`.
 - Everything that is shared between projects (the known-project list, global config, provider keys) is read from the user profile, so any project's server can answer for it.

@@ -1,3 +1,5 @@
+import { stopRecovery } from "../src/core/workflows/stop-detail.js";
+import { expectRecovery } from "./helpers/workflow-remedies.js";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -123,6 +125,7 @@ describe("scenario: a review finding left after the review rounds (#1157)", () =
     expect(done.status).toBe("blocked");
     expect(done.reason).toBe("no_progress");
     expect(lastError).toContain("maxRepairRounds (2)");
+    expectRecovery(lastError, stopRecovery(service.store, runId), "revise");
     expect(row.review_rounds).toBe(2);
     expect(service.store.state(runId).limitations).toHaveLength(0);
   }, 60000);

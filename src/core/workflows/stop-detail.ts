@@ -1,4 +1,16 @@
+import { type RecoveryAdvice, recoveryOf } from "./remedies.js";
 import type { WorkflowStore } from "./store.js";
+
+/** Advice belongs to the latest diagnostic, so a later stop cannot reuse a stale remedy. */
+export function stopRecovery(store: WorkflowStore, runId: string): RecoveryAdvice | undefined {
+  const latest = store
+    .artifacts(runId)
+    .filter((a) => a.kind === "diagnostic" && a.logical_path.startsWith("errors/"))
+    .at(-1);
+  if (!latest) return undefined;
+  const advice = store.latestArtifact(runId, `recovery/advice-${latest.id}.json`);
+  return advice ? recoveryOf(JSON.parse(store.readArtifact(runId, advice.id))) : undefined;
+}
 
 /**
  * What stopped a blocked or failed run: the error the runtime recorded when it stopped it, cut to

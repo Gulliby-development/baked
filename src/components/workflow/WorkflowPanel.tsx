@@ -42,6 +42,7 @@ import { Onboarding } from "./Onboarding.js";
 import { RoutingPopup } from "./RoutingView.js";
 import { orderRuns, RunList } from "./RunList.js";
 import { RunOverview } from "./RunOverview.js";
+import { tuiErrorText } from "./remedies.js";
 import { TaskGraphView } from "./TaskGraphView.js";
 import { UndoReport } from "./UndoReport.js";
 import { UsagePopup } from "./UsageView.js";
@@ -208,7 +209,7 @@ export function WorkflowPanel({
       const { report } = await workflowSession(workspace).undo(id);
       setUndone({ runId: id, report });
     } catch (err) {
-      setFlash({ kind: "err", message: err instanceof Error ? err.message : String(err) });
+      setFlash({ kind: "err", message: tuiErrorText(err) });
     }
   };
   /**
@@ -248,7 +249,7 @@ export function WorkflowPanel({
         setFlash({ kind: "info", message: `${summary}; no unresolved review comments` });
       else setFlash({ kind: read.state === "passed" ? "ok" : "info", message: summary });
     } catch (err) {
-      setFlash({ kind: "err", message: err instanceof Error ? err.message : String(err) });
+      setFlash({ kind: "err", message: tuiErrorText(err) });
     }
   };
   const start = async (input: StartRunInput): Promise<void> => {
@@ -280,7 +281,7 @@ export function WorkflowPanel({
       if (enabled === false && key === "e") {
         event.preventDefault();
         void enable().catch((err: unknown) =>
-          setFlash({ kind: "err", message: err instanceof Error ? err.message : String(err) }),
+          setFlash({ kind: "err", message: tuiErrorText(err) }),
         );
         return;
       }
@@ -381,9 +382,7 @@ export function WorkflowPanel({
           prompt: fix.prompt,
           model: activeModel && activeModel !== "none" ? activeModel : "",
           budget: "standard",
-        }).catch((err: unknown) =>
-          setFlash({ kind: "err", message: err instanceof Error ? err.message : String(err) }),
-        );
+        }).catch((err: unknown) => setFlash({ kind: "err", message: tuiErrorText(err) }));
       } else if (key === "escape" || key === "n") setFixChecks(null);
       return;
     }
@@ -451,9 +450,7 @@ export function WorkflowPanel({
       void service
         .outsideChanges(snapshot.runId)
         .then((changes) => setConfirmAccept(changes.map((c) => c.path)))
-        .catch((err: unknown) =>
-          setFlash({ kind: "err", message: err instanceof Error ? err.message : String(err) }),
-        );
+        .catch((err: unknown) => setFlash({ kind: "err", message: tuiErrorText(err) }));
     else if (action.action === "checks") void readChecks(snapshot.runId);
     else if (action.action === "reviews") void readChecks(snapshot.runId, true);
     else if (action.action === "undo") {

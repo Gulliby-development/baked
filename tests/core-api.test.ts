@@ -11,6 +11,8 @@ import type { RunSnapshot, WorkflowEvent } from "../src/core/workflows/schemas.j
 import { newId } from "../src/core/workflows/store.js";
 import { removeTempDir } from "./helpers/temp-dir.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
+import type { RecoveryAdvice } from "../src/core/workflows/remedies.js";
+import { desktopRecoveryText } from "../apps/desktop/src/renderer/client/remedies.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -49,6 +51,18 @@ async function until<T>(read: () => Promise<T>, done: (value: T) => boolean, tim
     await Bun.sleep(25);
   }
 }
+
+test("workflow API errors preserve CLI text and carry app recovery advice (#1578)", async () => {
+  const { fixture, post } = await setup();
+  const run = await fixture.start();
+  const response = await post(`/v1/workflow/runs/${run.runId}/deliver/execute`, { expectedRevision: run.revision });
+  const body = await response.json() as { error: { message: string; recovery?: RecoveryAdvice } };
+  expect(response.status).toBe(409);
+  expect(body.error.message).toContain("baked workflow deliver");
+  expect(body.error.recovery?.remedies).toEqual([{ action: "deliver", runId: run.runId }]);
+  expect(desktopRecoveryText(body.error.message, body.error.recovery)).toContain("choose Deliver");
+  expect(desktopRecoveryText(body.error.message, body.error.recovery)).not.toContain("baked workflow");
+});
 
 /** Reads SSE frames until `count` events arrived, then disconnects. */
 async function readEvents(response: Response, count: number): Promise<{ id: number; event: WorkflowEvent }[]> {

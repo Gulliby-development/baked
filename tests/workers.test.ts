@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { WorkerClient } from "../src/core/workers/rpc.js";
+import { tuiErrorText } from "../src/components/workflow/remedies.js";
 import { useWorkerStore } from "../src/stores/workers.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -317,6 +318,13 @@ describe("RPC Framework (rpc.ts)", () => {
 
     it("worker throw propagates error message", async () => {
       await expect(client.fail()).rejects.toThrow("intentional error");
+    });
+
+    it("workflow recovery advice crosses RPC without becoming CLI text (#1578)", async () => {
+      const error = await client.callMethod("failRecovery").catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe("baked workflow resume RUN");
+      expect(tuiErrorText(error)).toBe("The run needs a retry. Open run RUN and press R to retry.");
     });
 
     it("worker throw preserves custom message", async () => {
