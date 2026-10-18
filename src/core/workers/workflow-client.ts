@@ -9,6 +9,13 @@ import type { InitiativeAction, InitiativeListView } from "../workflows/initiati
 import type { RollbackReport } from "../workflows/rollback.js";
 import type { RunFileDiff } from "../workflows/run-diff.js";
 import type { Decision, RunSnapshot } from "../workflows/schemas.js";
+import { stallSettings } from "../workflows/stall.js";
+import { WorkflowStore } from "../workflows/store.js";
+import {
+  DEFAULT_SUPERVISOR,
+  StallDetector,
+  type StallDetectorOptions,
+} from "../workflows/supervisor.js";
 import type { Check } from "../workflows/types.js";
 import type { RunSummary, StartRunInput, WorkflowInfo, WorkflowView } from "../workflows/view.js";
 import type { IntelligenceClient } from "./intelligence-client.js";
@@ -42,6 +49,16 @@ export interface UndoResult {
   report: RollbackReport | null;
 }
 
+export interface WorkflowClientOptions {
+  /** Workers stopped for a stopped thread, whose runs this worker takes over and drives (#1541). */
+  stalledOwners?: string[];
+  /**
+   * Watches the worker for a stopped thread; off when left out. The grace period defaults to
+   * `workflows.stall.supervisorGraceMs`. The host recreates the client when `onStalled` fires.
+   */
+  supervisor?: Partial<StallDetectorOptions>;
+}
+
 export class WorkflowClient extends WorkerClient {
   private views = new Map<string, WorkflowView>();
   private driving = new Set<string>();
@@ -53,18 +70,14 @@ export class WorkflowClient extends WorkerClient {
   get exitedOwner(): string | null {
     return this.closed ? this.owner : null;
   }
-  /** The exact worker's lease owner, used by a host that supervises it. */
-  get leaseOwner(): string | null {
-    return this.owner;
+  private stalled: string | null = null;
+  /** The owner of a worker this client stopped because its thread stopped, once it closed. */
+  get stalledOwner(): string | null {
+    return this.closed ? this.stalled : null;
   }
-  /** Stops a stalled worker and waits for proof that its thread has exited. */
-  async stopWorker(): Promise<void> {
-    if (this.closed) return;
-    const closed = new Promise<void>((resolve) => this.worker.addEventListener("close", resolve));
-    this.worker.terminate();
-    await closed;
-    this.close();
-  }
+  /** Called when a worker this client stopped for a stopped thread has closed. */
+  onStalled: (() => void) | null = null;
+  private stopWatch: (() => void) | null = null;
   private stopRelay: (() => void) | null = null;
   /**
    * `intelligence` returns this thread's intelligence client; run steps in the worker borrow it
@@ -75,10 +88,11 @@ export class WorkflowClient extends WorkerClient {
     config: AppConfig,
     exitedOwners: string[] = [],
     intelligence?: () => IntelligenceClient | null,
+    options: WorkflowClientOptions = {},
   ) {
     super(
       workerPath("workflow", import.meta.url, import.meta.dir),
-      { workspace, config, exitedOwners },
+      { workspace, config, exitedOwners, stalledOwners: options.stalledOwners ?? [] },
       { smol: true },
     );
     if (intelligence) {
@@ -96,7 +110,16 @@ export class WorkflowClient extends WorkerClient {
     this.worker.addEventListener("close", () => {
       this.closed = true;
       this.driving.clear();
+      this.stopWatch?.();
+      if (this.stalled) this.onStalled?.();
     });
+    if (options.supervisor) {
+      const graceMs = options.supervisor.graceMs ?? stallSettings(config).supervisorGraceMs;
+      // At least four polls in the grace period, so a short one is still noticed in time.
+      const pollMs =
+        options.supervisor.pollMs ?? Math.min(DEFAULT_SUPERVISOR.pollMs, Math.max(50, graceMs / 4));
+      this.watch(workspace, { graceMs, pollMs });
+    }
     this.on("drive", (value) => {
       const event = value as { id: string; runId: string };
       this.driving.add(event.runId);
@@ -114,6 +137,37 @@ export class WorkflowClient extends WorkerClient {
       const event = value as { runId: string; message: string };
       this.driveErrors.set(event.runId, event.message);
     });
+  }
+  /**
+   * The worker drives runs on its own thread. When that thread stops (a synchronous call that
+   * never returns, #1533), the run's timers stop with it while this thread keeps running. The
+   * worker's leases that stay expired for the grace period stop the worker; the next worker takes
+   * its runs over (`stalledOwner`).
+   */
+  private watch(workspace: string, options: StallDetectorOptions): void {
+    if (!(options.graceMs > 0)) return;
+    const detector = new StallDetector(options);
+    let store: WorkflowStore | null = null;
+    const timer = setInterval(() => {
+      if (!this.owner || this.closed) return;
+      try {
+        store ??= new WorkflowStore(workspace, true);
+        if (!detector.check(store.leases(), { pid: process.pid, owner: this.owner }).length) return;
+      } catch {
+        // A busy or missing database is checked again on the next poll.
+        return;
+      }
+      this.stalled = this.owner;
+      this.stopWatch?.();
+      this.worker.terminate();
+    }, options.pollMs);
+    timer.unref?.();
+    this.stopWatch = () => {
+      clearInterval(timer);
+      store?.close();
+      store = null;
+      this.stopWatch = null;
+    };
   }
   // Never restart or replay workflow mutations after an uncertain worker exit.
   protected override tryRestart(): boolean {
@@ -266,6 +320,7 @@ export class WorkflowClient extends WorkerClient {
     await this.callWithTimeout(30000, "shutdown");
   }
   close(): void {
+    this.stopWatch?.();
     this.stopRelay?.();
     this.stopRelay = null;
     this.dispose();

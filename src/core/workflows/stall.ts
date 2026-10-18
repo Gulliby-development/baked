@@ -29,8 +29,8 @@ export interface StallSettings {
   /** Wait before the first provider resume; each later wait is three times the previous one. */
   providerWaitMs: number;
   /**
-   * How long the leases of a headless driver may stay expired before its supervisor stops the
-   * driver and takes its runs over (#1533); 0 runs headless commands without a supervisor.
+   * How long a driver's leases may stay expired, or a desktop server may leave health unanswered,
+   * before its supervisor stops it and takes its runs over. Zero disables supervision.
    */
   supervisorGraceMs: number;
 }

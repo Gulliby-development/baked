@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { isTestFile as isLanguageTestFile } from "../intelligence/language-traits.js";
 import { workspacePath } from "../specs/validate.js";
 import type { AgentProfile, Spec, TaskGraph } from "./schemas.js";
-import { fileKind, SPLIT_PART } from "./sizing.js";
+import { fileKind, SLICE_PART, SPLIT_PART } from "./sizing.js";
 import type { Task } from "./types.js";
 
 /** Cross-artifact checks that analysis would otherwise spend model rounds on. */
@@ -525,7 +525,7 @@ export function copiedTaskTexts(graph: TaskGraph): string[] {
       );
   for (const task of graph.tasks) {
     // A sizing split part keeps its task's description, which names the other parts' files.
-    if (task.description.includes(SPLIT_PART)) continue;
+    if (task.description.includes(SPLIT_PART) || task.description.includes(SLICE_PART)) continue;
     const own = new Set(task.writes.map((w) => baseName(w.path)));
     for (const match of task.description.matchAll(CREATES_FILE)) {
       const name = baseName(match[1] ?? "");

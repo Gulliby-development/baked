@@ -31,12 +31,15 @@ const reproFor = (marker: string): Repro => ({ executable: "bun", args: ["-e", `
 
 class ScriptedExecutor implements AgentExecutor {
   corrections: { findingIds: string[]; recurring?: { earlier: { id: string; repro?: Repro }[]; note: string }; regression: string[] }[] = [];
+  service?: NativeWorkflowService;
+  contexts: { taskId: string; findingIds: string[]; sent: Record<string, unknown>; saved?: Record<string, unknown> }[] = [];
   constructor(private root: string) {}
   async execute(request: ExecutionRequest) {
     const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as { inputHash: string; snapshotHash: string; extra: { evidence?: { id: string }[]; recurringFindings?: { earlier: { id: string; repro?: Repro }[]; note: string } } };
     const evidenceIds = data.extra.evidence?.map((e) => e.id) ?? [];
     const pass = { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", coverage: [{ criterionId: "AC-001", verdict: "pass", evidenceIds, explanation: "Checks pass" }], findings: [] };
-    const write = (text: string) => writeFileSync(join(this.root, "inline.txt"), text);
+    const root = request.root ?? this.root;
+    const write = (text: string) => writeFileSync(join(root, "inline.txt"), text);
     let output: unknown;
     switch (request.profile.output) {
       case "research": output = { schemaVersion: 1, summary: "A fixture workspace", facts: [], unknowns: [], constraints: [], suggestedScope: ["inline.txt"] }; break;
@@ -45,6 +48,8 @@ class ScriptedExecutor implements AgentExecutor {
       case "analysis": output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] }; break;
       case "implementation": {
         const task = request.task;
+        const row = this.service?.store.latestArtifact(request.runId, `attempts/${request.attemptId}/context.json`);
+        this.contexts.push({ taskId: task?.id ?? "", findingIds: task?.findingIds ?? [], sent: data.extra, saved: row ? JSON.parse(this.service?.store.readArtifact(request.runId, row.id) ?? "{}") : undefined });
         if (task?.origin === "planned") write("ready");
         else if (this.corrections.length === 0) {
           this.corrections.push({ findingIds: task?.findingIds ?? [], regression: [] });
@@ -53,7 +58,7 @@ class ScriptedExecutor implements AgentExecutor {
           // The second correction first patches only its own case, dropping the first one, as
           // md-site's corrections did; the host's repro check shows the regression.
           write("ready link");
-          const regression = (await request.reproCheck?.(this.root, request.signal)) ?? [];
+          const regression = (await request.reproCheck?.(root, request.signal)) ?? [];
           this.corrections.push({ findingIds: task?.findingIds ?? [], recurring: data.extra.recurringFindings, regression });
           write("ready code link");
         }
@@ -62,7 +67,7 @@ class ScriptedExecutor implements AgentExecutor {
       }
       case "review": output = pass; break;
       case "convergence": {
-        const text = readFileSync(join(this.root, "inline.txt"), "utf8");
+        const text = readFileSync(join(root, "inline.txt"), "utf8");
         const finding = (id: string, marker: string, symbol: string, claim: string) => ({ id, kind: "correctness", severity: "medium", basis: "spec", confidence: 0.99, requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "inline.txt", symbol, evidenceIds, claim, impact: "Wrong emphasis", suggestedFix: "Keep delimiters literal", repro: reproFor(marker) });
         const findings = !text.includes("code")
           ? [finding("F1", "code", "parseInline", "Strong emphasis is applied inside inline code")]
@@ -81,14 +86,21 @@ class ScriptedExecutor implements AgentExecutor {
 }
 
 describe("scenario: md-site 11b11f19, findings that recur on one symbol (#1330)", () => {
-  test("the second correction of a symbol rewrites it against the earlier finding's repro", async () => {
+  test.each([false, true])("records the second correction's recurring context before execution, worktree=%s (#1566)", async (worktree) => {
     const root = mkdtempSync(join(tmpdir(), "baked-recurring-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    if (worktree) {
+      for (const args of [["init", "-q", "-b", "main"], ["config", "user.name", "Test User"], ["config", "user.email", "test@example.test"], ["config", "commit.gpgsign", "false"], ["commit", "-q", "--allow-empty", "-m", "Initial"]]) {
+        const result = Bun.spawnSync(["git", ...args], { cwd: root, stdout: "pipe", stderr: "pipe" });
+        if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+      }
+    }
     const executor = new ScriptedExecutor(root);
     const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } };
     const service = new NativeWorkflowService(root, config, executor);
+    executor.service = service;
     cleanups.push(() => service.close());
-    const started = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Parse inline Markdown", ownerLabel: "test", policy });
+    const started = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Parse inline Markdown", ownerLabel: "test", policy, ...(worktree ? { executionMode: "worktree" as const, maxConcurrentWriters: 2 } : {}) });
     await service.drive(started.runId, new AbortController().signal);
     const snapshot = await service.get(started.runId);
     const approval = service.store.requests(started.runId).find((r) => r.kind === "approval" && r.status === "pending");
@@ -103,5 +115,19 @@ describe("scenario: md-site 11b11f19, findings that recur on one symbol (#1330)"
     expect(second?.recurring?.earlier[0]?.repro).toEqual(reproFor("code"));
     expect(second?.recurring?.note).toContain("rewrite the symbol for its whole input class");
     expect(second?.regression.join("\n")).toContain("F1");
-  });
+    for (const context of executor.contexts) {
+      expect(context.saved).toBeDefined();
+      expect(context.saved?.schemaVersion).toBe(1);
+      expect(context.saved?.taskId).toBe(context.taskId);
+      expect(context.saved?.findingIds).toEqual(context.findingIds);
+      expect(context.saved?.recurringFindings).toEqual(context.sent.recurringFindings);
+      expect(context.saved?.correctionFocus).toEqual(context.sent.correctionFocus);
+      expect(context.saved?.siblingFindings).toEqual(context.sent.siblingFindings);
+    }
+    const [initial, firstCorrection, secondCorrection] = executor.contexts;
+    expect(initial?.saved?.recurringFindings).toBeUndefined();
+    expect(firstCorrection?.saved?.recurringFindings).toBeUndefined();
+    expect(secondCorrection?.saved?.recurringFindings).toMatchObject({ symbols: ["parseInline"], earlier: [{ id: "F1", repro: reproFor("code") }] });
+    expect(secondCorrection?.saved?.correctionFocus).toMatchObject({ files: ["inline.txt"], symbols: ["Parser.parseInline()"] });
+  }, 60000);
 });

@@ -48,12 +48,14 @@ function scriptModel(respond: (prompt: LanguageModelV3Prompt) => LanguageModelV3
 class NativeImplementer extends FixtureExecutor {
   native: NativeAgentExecutor | null = null;
   steps: number[] = [];
+  requests: ExecutionRequest[] = [];
   constructor(root: string, private readonly firstSteps: number) {
     super(root);
   }
   override async execute(request: ExecutionRequest) {
     if (request.profile.output !== "implementation") return super.execute(request);
     if (!this.native) throw new Error("native executor missing");
+    this.requests.push(request);
     const maxSteps = this.steps.length ? request.maxSteps : Math.min(request.maxSteps, this.firstSteps);
     this.steps.push(maxSteps);
     return this.native.execute({ ...request, maxSteps, profile: { ...request.profile, model: "openai/fixture-model" } });
@@ -98,6 +100,16 @@ describe("scenario: an attempt that edited and used its steps (#1478)", () => {
     // The continuation raised the step cap by half, like a continuation at the token cap.
     expect(fixture.executor.steps[1]).toBe(Math.ceil((fixture.executor.steps[0] ?? 0) * 1.5));
     expect(readFileSync(join(fixture.root, "value.txt"), "utf8")).toBe("ready");
+    const records = fixture.executor.requests.map((request) => {
+      const artifact = fixture.service.store.latestArtifact(request.runId, `attempts/${request.attemptId}/context.json`);
+      expect(artifact).toBeDefined();
+      const saved = JSON.parse(fixture.service.store.readArtifact(request.runId, artifact?.id ?? ""));
+      const sent = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}").extra;
+      expect(saved.earlierEdits).toEqual(sent.earlierEdits);
+      return saved;
+    });
+    expect(records[0].earlierEdits).toBeUndefined();
+    expect(records[1].earlierEdits).toMatchObject({ paths: ["value.txt"], patch: expect.stringContaining("draft") });
   }, 60000);
 
   test("an attempt that used its steps and changed nothing is repeated with more steps", async () => {

@@ -1547,7 +1547,7 @@ export class WorkflowScheduler {
                   isHostSplitNit(finding, split)
                 ) {
                   finding.blocking = false;
-                  finding.description = `About tasks the host split by file after planning (${Object.entries(
+                  finding.description = `About tasks the host split by file or criterion slices after planning (${Object.entries(
                     split,
                   )
                     .map(([original, ids]) => `${original}: ${ids.join(", ")}`)
@@ -3196,16 +3196,18 @@ export class WorkflowScheduler {
     }
     return progressed;
   }
-  /** The planned graph with its oversized test tasks split by file, recorded when it splits. */
+  /** Split oversized tests by file and then by criteria within a file, before analysis. */
   private splitTests(runId: string, graph: TaskGraph, policy: RunPolicy): TaskGraph {
+    const spec = this.store.state(runId).spec;
     const report = sizePlan({
       graph,
+      spec,
       policy,
       samples: sizingHistory(this.store.workspace, policy),
       spent: this.store.run(runId).token_usage,
       model: this.sizingModel(runId, graph),
     });
-    const split = splitTestTasks(graph, report);
+    const split = splitTestTasks(graph, report, spec);
     if (!split) return graph;
     const revision = this.store.state(runId).sizingReplans;
     this.store.transaction(() =>
@@ -4135,6 +4137,33 @@ export class WorkflowScheduler {
           }
         : undefined;
     try {
+      if (task && profile.output === "implementation") {
+        // Save what this attempt receives, before it can fail or the findings change (#1566).
+        // Both serial tasks and task worktrees, including retries, pass through here.
+        const context = (extra ?? {}) as Record<string, unknown>;
+        const keys = [
+          "recurringFindings",
+          "siblingFindings",
+          "correctionFocus",
+          "cutOffChecks",
+          "earlierEdits",
+        ];
+        this.store.transaction(() =>
+          this.store.artifact(
+            runId,
+            "attempt-context",
+            `attempts/${attempt}/context.json`,
+            canonical({
+              schemaVersion: 1,
+              taskId: task.id,
+              findingIds: task.findingIds,
+              ...Object.fromEntries(
+                keys.filter((key) => context[key] !== undefined).map((key) => [key, context[key]]),
+              ),
+            }),
+          ),
+        );
+      }
       const result = await this.executor.execute({
         runId,
         attemptId: attempt,
@@ -4639,6 +4668,7 @@ export class WorkflowScheduler {
     const model = this.sizingModel(runId, graph);
     const report = sizePlan({
       graph,
+      spec: state.spec,
       policy,
       samples,
       spent: this.store.run(runId).token_usage,
@@ -7862,7 +7892,7 @@ ${note}`;
       writtenTestsCheck: {
         checkId,
         paths,
-        note: `After this task the host runs ${checkId}, required: the test files this task writes, on their own, within ${seconds} s. Run request_check ${checkId} once they are written and fix what fails before you submit: a test that fails or runs too long after you submit sends the task back to you with the output.`,
+        note: `After this task the host runs ${checkId}, required: the test files this task writes, on their own, within ${seconds} s. The host uses the same 30 s per-test default for this check and the full suite for bun test, jest and vitest, unless the project sets its own timeout. Run request_check ${checkId} once they are written and fix what fails before you submit: a test that fails or runs too long after you submit sends the task back to you with the output.`,
       },
     };
   }

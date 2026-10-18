@@ -29,6 +29,21 @@ const QUOTED = /"([^"\n]+)"|`([^`\n]+)`|\u201c([^\u201d\n]+)\u201d/g;
 /** A placeholder the test fills with a concrete value: `<file>`, `{name}`, `...`. */
 const PLACEHOLDER = /<[^<>\s][^<>]*>|\{[^{}]+\}|\.\.\.|\u2026/g;
 
+/** Prose labels are for the reviewer, not strings a test must repeat (#1565). */
+function literalCase(literal: string, code = false, value = false): boolean {
+  const concrete = literal.replace(PLACEHOLDER, "");
+  if (concrete.replace(/\W/g, "").length < 2) return false;
+  return (
+    value ||
+    /\d|(?:^|\s)--?[A-Za-z]|[=<>:+*%{}[\]]/.test(concrete) ||
+    (code && (identifierLike(concrete) || /^[A-Z][a-z]\w*$/.test(concrete)))
+  );
+}
+
+/** A quoted output or argument value can be plain English, unlike a quoted scenario label. */
+const VALUE_CONTEXT =
+  /\b(?:prints?|outputs?|returns?|emits?|says?|equals?|contains?|lists?|(?:message|text|argument|value|input|spelling|stderr|stdout)(?:\s+(?:is|of))?)\s*[:=]?\s*$/i;
+
 /** The prefixes that run a tool from the project's environment: `npx`, `uv run`, `python -m`. */
 const RUNNER = String.raw`(?:(?:npx|bunx|pnpm\s+(?:exec|dlx)|yarn(?:\s+dlx)?|uv\s+run|poetry\s+run|pipenv\s+run|hatch\s+run|pdm\s+run|python3?\s+-m)\s+)?`;
 const TOOL = String.raw`(?:pytest|unittest|mypy|ruff|black|isort|flake8|pylint|pyright|tox|nox|tsc|eslint|biome|prettier|vitest|jest|mocha|golangci-lint)\b`;
@@ -104,8 +119,14 @@ export function criterionCases(
     for (const [field, text] of [criterion.given, criterion.when, criterion.then].entries()) {
       for (const match of text.matchAll(QUOTED)) {
         const literal = (match[1] ?? match[2] ?? match[3] ?? "").trim();
-        // One character says too little to look for, and a span that is all placeholder nothing.
-        if (literal.replace(PLACEHOLDER, "").replace(/\W/g, "").length < 2) continue;
+        if (
+          !literalCase(
+            literal,
+            match[2] !== undefined,
+            VALUE_CONTEXT.test(text.slice(0, match.index)),
+          )
+        )
+          continue;
         add(criterion.id, literal);
       }
       for (const input of tableInputs(text)) add(criterion.id, input);
@@ -225,8 +246,7 @@ const SEPARATOR_CELL = /^:?-{2,}:?$/;
 
 /**
  * The first cells of the data rows of a criterion's table (`input | expected`): each row's input
- * is a case (#1482). The header row and the separator are left out, and so is a cell that is only
- * a placeholder.
+ * is a case when it names a concrete literal, rather than a scenario label (#1565).
  */
 function tableInputs(text: string): string[] {
   const rows = text
@@ -246,30 +266,38 @@ function tableInputs(text: string): string[] {
     if (cells.every((cell) => SEPARATOR_CELL.test(cell))) return;
     const next = rows[index + 1];
     if (next?.every((cell) => SEPARATOR_CELL.test(cell))) return;
-    const cell = (cells[0] ?? "").replace(/^[`"\u201c]|[`"\u201d]$/g, "").trim();
+    const raw = cells[0] ?? "";
+    const cell = raw.replace(/^[`"\u201c]|[`"\u201d]$/g, "").trim();
     if (HEADER_CELL.test(cell)) return;
-    if (cell.replace(PLACEHOLDER, "").replace(/\W/g, "").length < 2) return;
+    if (!literalCase(cell, raw.startsWith("`"))) return;
     inputs.push(cell);
   });
   return inputs;
 }
 
 const escapeRegex = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-/** What may stand between the words of a literal in a test: spaces, or the quotes and commas of an argument list. */
 const SEPARATOR = String.raw`[\s"'\x60,()[\]]+`;
+/** Keep flags, paths, identifiers and signed numbers; discard grouping syntax and conjunctions. */
+const SIGNIFICANT_TOKEN =
+  /--?[A-Za-z][\w-]*|[A-Za-z_$][\w$]*(?:[./\\-][\w$]+)*|-?\d\w*(?:\.\d+)?|[!=<>]=+|[+*%]/g;
 
 /**
- * Whether a test text holds the literal: as written, with string escapes undone, or with its
- * words as separate arguments (`["--path", "src/cli"]`). A placeholder matches any text.
+ * Whether one test file holds all significant tokens of a literal, in any order or grouping.
+ * Placeholders stand for test-specific values; case and token boundaries still matter.
  */
 export function testsHold(text: string, literal: string): boolean {
   const unescaped = text.replace(/\\(["'\\`])/g, "$1");
-  const pattern = literal
+  const tokens = literal.replace(PLACEHOLDER, " ").match(SIGNIFICANT_TOKEN) ?? [];
+  const significant = tokens.filter((token) => token !== "and" && token !== "or");
+  if (!significant.length) return false;
+  // Keep exact spellings of punctuation-heavy values, including absolute and Windows paths.
+  const exact = literal
     .split(PLACEHOLDER)
     .map((part) => part.split(/\s+/).filter(Boolean).map(escapeRegex).join(SEPARATOR))
     .join("[\\s\\S]*?");
-  const regex = new RegExp(pattern);
-  return regex.test(unescaped);
+  const held = (pattern: string) =>
+    new RegExp(`(?<![A-Za-z0-9_$./\\\\-])${pattern}(?![A-Za-z0-9_$./\\\\-])`).test(unescaped);
+  return held(exact) || significant.every((token) => held(escapeRegex(token)));
 }
 
 /** The cases no text holds. */

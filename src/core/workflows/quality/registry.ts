@@ -48,6 +48,17 @@ async function lookup(
   const missing = (status: number) =>
     status === 404 || status === 410 ? { status: "missing" as const } : null;
   switch (ecosystem) {
+    case "rubygems": {
+      const meta = await getJson(
+        fetcher,
+        `https://rubygems.org/api/v1/gems/${encodeURIComponent(name)}.json`,
+      );
+      const gone = missing(meta.status);
+      if (gone) return gone;
+      if (meta.status !== 200)
+        return { status: "unknown", reason: `registry answered ${meta.status}` };
+      return { status: "exists" };
+    }
     case "npm": {
       const meta = await getJson(fetcher, `https://registry.npmjs.org/${name.replace("/", "%2F")}`);
       const gone = missing(meta.status);
@@ -349,6 +360,7 @@ const POPULAR: Record<Ecosystem, readonly string[]> = {
     "Polly",
   ],
   maven: [],
+  rubygems: [],
 };
 
 function distance(a: string, b: string): number {

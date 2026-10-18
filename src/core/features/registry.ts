@@ -785,6 +785,16 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/overview: New run, Quick task"],
   },
   {
+    id: "run-test-sizing",
+    group: "Workflow runs",
+    title:
+      "Size tests by literal cases and split large test files into sequential criterion slices",
+    tui: ["/workflow: plan approval shows the sized tasks"],
+    cli: ["baked workflow show: plan sizing and task slices"],
+    api: ["/v1/workflow/runs/:id: shared sizing record and tasks"],
+    desktop: ["project/runs: plan approval and task slices"],
+  },
+  {
     id: "test-integrity",
     group: "Workflow runs",
     title: "Test-integrity guard: block or warn on test gaming, spec conflicts",
@@ -833,13 +843,13 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "run-detail",
     group: "Workflow runs",
-    title: "Run list, detail, report, artifacts and usage",
+    title: "Run list, detail, report, artifacts, attempt context and usage",
     tui: ["/workflow"],
     cli: [
       "baked workflow list",
       "baked workflow status",
       "baked workflow report",
-      "baked workflow artifacts",
+      "baked workflow artifacts: includes attempts/ID/context.json for task context",
       "baked workflow usage",
     ],
     api: [
@@ -884,6 +894,15 @@ export const FEATURES: readonly Feature[] = [
       "project/overview: New run, best-of-n workflow",
       "project/runs: Report tab, Best-of-N section",
     ],
+  },
+  {
+    id: "criteria-case-check",
+    group: "Workflow runs",
+    title: "Task-end test case check: concrete input tokens, with scenario labels left to review",
+    tui: ["/workflow: task activity and diagnostic artifacts"],
+    cli: ["baked workflow artifacts"],
+    api: ["/v1/workflow/runs/:id/artifacts"],
+    desktop: ["project/runs: task activity and artifacts"],
   },
   {
     id: "progress-watcher",
@@ -962,16 +981,17 @@ export const FEATURES: readonly Feature[] = [
     id: "run-supervisor",
     group: "Workflow runs",
     title: "Supervisor: a driver whose thread stopped is stopped and its run taken over",
-    tui: gap(1541, "the TUI drives runs in its own process"),
+    tui: ["/workflow"],
     cli: [
       "baked workflow run",
       "baked workflow resume",
       "baked workflow approve",
       "baked workflow initiative drive",
+      "baked serve --take-over",
       "baked session coordinator send",
     ],
-    api: gap(1541, "baked serve drives runs in its own process"),
-    desktop: gap(1541, "through baked serve"),
+    api: ["/v1/health"],
+    desktop: ["project/runs"],
   },
   {
     id: "run-fork",
@@ -1028,6 +1048,15 @@ export const FEATURES: readonly Feature[] = [
     cli: ["baked workflow candidate", "baked workflow revise"],
     api: ["/v1/workflow/runs/:id/candidate", "/v1/workflow/runs/:id/revise"],
     desktop: ["project/runs"],
+  },
+  {
+    id: "requested-manifest-edits",
+    group: "Workflow runs",
+    title: "Requested manifest edits, including Gradle and Gemfile, with dependency checks",
+    tui: ["/workflow: run with autoApproval.requestedManifestEdits in the policy"],
+    cli: ["baked workflow run: autoApproval.requestedManifestEdits in the policy"],
+    api: ["/v1/workflow/runs"],
+    desktop: ["project/runs: shared workflow approval and dependency findings"],
   },
   {
     id: "approval-review",
@@ -1121,7 +1150,7 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "mutation-gate",
     group: "Workflow runs",
-    title: "Mutation gate on the lines a run added, with installed mutation tools",
+    title: "Mutation gate with built-in budgets shared across changed files and installed tools",
     tui: ["/code-quality", "/workflow: run report"],
     cli: ["baked workflow run: --mutation off|advisory|required", "baked workflow report"],
     api: ["/v1/settings: code-quality page", "/v1/workflow/runs", "/v1/workflow/runs/:id/report"],
@@ -1349,6 +1378,18 @@ export const FEATURES: readonly Feature[] = [
     cli: ["baked workflow initiative drive", "baked workflow initiative show"],
     api: ["/v1/initiatives/:id"],
     desktop: ["project/initiatives: the shared budget line shows up to N features at once"],
+  },
+  {
+    id: "initiative-critical-path",
+    group: "Initiatives",
+    title: "Review long dependency chains and merge small siblings by their dependents",
+    tui: ["/workflow: initiative start, Path split; Critical path in the split approval"],
+    cli: [
+      "baked workflow initiative start: --split-critical-path",
+      "baked workflow initiative show",
+    ],
+    api: ["/v1/initiatives: splitCriticalPath", "/v1/initiatives/:id: criticalPath"],
+    desktop: ["project/initiatives: Split the critical path; Critical path in the split approval"],
   },
   {
     id: "initiative-dollar-budget",

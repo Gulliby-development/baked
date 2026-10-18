@@ -1,7 +1,9 @@
 /**
  * Stands in for `baked` in tests: `serve` takes the same arguments and writes the same ready line
  * and token file, with the same bearer check. A folder whose name contains "crash", or that holds
- * a `.fake-serve-crash` file, fails at start; "slow" never reports ready.
+ * a `.fake-serve-crash` file, fails at start; "slow" never reports ready. "stall" reports a
+ * grace period in its health, and `/v1/hang` stops its thread; `--take-over PID` is written to
+ * `took-over.txt` in the folder.
  *
  * With FAKE_BAKED_PROJECTS set to a JSON file of known projects, `projects list --json` and
  * `projects add FOLDER` read and write that file, so the desktop app can run against this fake.
@@ -104,6 +106,7 @@ function attention(req: Request): Response {
   return new Response(body, { headers: { "Content-Type": "text/event-stream" } });
 }
 
+if (args.includes("--take-over")) writeFileSync(join(folder, "took-over.txt"), value("--take-over"));
 if (name.includes("slow")) setInterval(() => {}, 1000);
 else {
   const token = `t-${process.pid}`;
@@ -118,7 +121,13 @@ else {
         return Response.json({ error: { code: "UNAUTHORIZED", message: "no" } }, { status: 401 });
       const url = new URL(req.url);
       if (url.pathname === "/v1/health")
-        return Response.json({ apiVersion: 1, version: "9.9.9", workspace: folder });
+        return Response.json({
+          apiVersion: 1,
+          version: "9.9.9",
+          workspace: folder,
+          ...(name.includes("stall") ? { supervisorGraceMs: 300 } : {}),
+        });
+      if (url.pathname === "/v1/hang") for (;;) {}
       if (url.pathname === "/v1/attention") return attention(req);
       if (url.pathname === "/v1/download")
         return new Response(`# ${url.searchParams.get("title") ?? "Chat"}\n`, {

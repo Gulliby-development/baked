@@ -21,29 +21,36 @@ export const DEFAULT_SUPERVISOR: StallDetectorOptions = {
   pollMs: 5_000,
 };
 
+/** A driver: a process, or one worker thread (lease owner) of a process, as in the terminal UI. */
+export interface StalledDriver {
+  pid: number;
+  owner?: string;
+}
+
 export class StallDetector {
   private stale = new Map<string, { expiresAt: number; since: number }>();
   private last: number | null = null;
   constructor(private options: StallDetectorOptions = DEFAULT_SUPERVISOR) {}
 
   /**
-   * The runs whose leases, held by the process `pid`, have stayed expired and unrenewed for
-   * `graceMs` of the supervisor's running time. A lease renewed in between starts over, and so
+   * The runs whose leases, held by `driver` (a process ID, or a process and its lease owner), have
+   * stayed expired and unrenewed for `graceMs` of the supervisor's running time. A lease renewed in between starts over, and so
    * does every lease after a gap in the supervisor's own polls: a host that slept stopped both
    * processes, and the driver renews its leases when it wakes.
    */
   check(
     leases: readonly LeaseRow[],
-    pid: number,
+    driver: number | StalledDriver,
     now: number = Date.now(),
     clock: number = performance.now(),
   ): string[] {
     if (this.last !== null && clock - this.last > this.options.pollMs * 3) this.stale.clear();
     this.last = clock;
+    const held = typeof driver === "number" ? { pid: driver } : driver;
     const stuck = new Set<string>();
     const seen = new Set<string>();
     for (const lease of leases) {
-      if (!lease.run_id || ownerPid(lease) !== pid || lease.expires_at > now) continue;
+      if (!lease.run_id || !heldBy(lease, held) || lease.expires_at > now) continue;
       seen.add(lease.resource);
       const earlier = this.stale.get(lease.resource);
       if (!earlier || earlier.expiresAt !== lease.expires_at) {
@@ -55,6 +62,21 @@ export class StallDetector {
     for (const resource of this.stale.keys()) if (!seen.has(resource)) this.stale.delete(resource);
     return [...stuck];
   }
+}
+
+/** Whether `driver` holds the lease. */
+export function heldBy(lease: LeaseRow, driver: StalledDriver): boolean {
+  if (driver.owner !== undefined && lease.owner_id !== driver.owner) return false;
+  return ownerPid(lease) === driver.pid;
+}
+
+/** The runs with a lease `driver` holds. */
+export function driverRuns(leases: readonly LeaseRow[], driver: StalledDriver): string[] {
+  return [
+    ...new Set(
+      leases.flatMap((lease) => (lease.run_id && heldBy(lease, driver) ? [lease.run_id] : [])),
+    ),
+  ];
 }
 
 function ownerPid(lease: LeaseRow): number | null {

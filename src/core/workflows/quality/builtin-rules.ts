@@ -22,6 +22,11 @@ export interface QualityRule {
    * indentation and a new file has no diff to keep small (#1398).
    */
   whitespace?: true;
+  /**
+   * The rule reads code and comments only: it matches on lines whose string content is blanked,
+   * so test data such as `"custom_value: any text"` or `"# noqa"` is no finding (#1549).
+   */
+  code?: true;
 }
 
 const C_LIKE = [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"];
@@ -323,6 +328,7 @@ export const BUILTIN_RULES: readonly QualityRule[] = [
   },
   {
     id: "rust-unwrap",
+    code: true,
     title: "unwrap or expect in Rust code",
     severity: "warning",
     extensions: [".rs"],
@@ -338,6 +344,7 @@ export const BUILTIN_RULES: readonly QualityRule[] = [
   },
   {
     id: "ts-ignore",
+    code: true,
     title: "TypeScript check turned off",
     severity: "error",
     extensions: C_LIKE,
@@ -348,6 +355,7 @@ export const BUILTIN_RULES: readonly QualityRule[] = [
   },
   {
     id: "explicit-any",
+    code: true,
     title: "Explicit any",
     severity: "warning",
     extensions: [".ts", ".tsx", ".mts", ".cts"],
@@ -358,6 +366,7 @@ export const BUILTIN_RULES: readonly QualityRule[] = [
   },
   {
     id: "lint-suppression",
+    code: true,
     title: "Lint suppression",
     severity: "warning",
     extensions: [],
@@ -424,6 +433,7 @@ export const BUILTIN_RULES: readonly QualityRule[] = [
   },
   {
     id: "todo-comment",
+    code: true,
     title: "TODO left in code",
     severity: "warning",
     extensions: [],

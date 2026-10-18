@@ -310,7 +310,7 @@ function requestedManifestEdit(write: Write, request: string): boolean {
 
 /** Manifest names every package of a monorepo repeats; the request names one only by its path. */
 const SHARED_MANIFEST =
-  /^(?:package\.json|pyproject\.toml|requirements[\w.-]*\.txt|cargo\.toml|go\.mod|pom\.xml)$/;
+  /^(?:package\.json|pyproject\.toml|requirements[\w.-]*\.txt|cargo\.toml|go\.mod|pom\.xml|(?:build|settings)\.gradle(?:\.kts)?|gemfile)$/;
 /** A sentence that tells the run to leave a file alone ("keep package.json as is"). */
 const LEAVE_ALONE =
   /\b(?:do not|don't|never|must not|should not|without (?:changing|editing|modifying|touching|updating))\b|\b(?:keep|leave)\b.*\b(?:as[ -]is|unchanged|untouched|intact|alone)\b/;

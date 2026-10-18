@@ -12,12 +12,16 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
+import { criterionCases, missingCases, writtenTestPaths } from "../src/core/verification/criteria-cases.js";
 import { reproExecutables } from "../src/core/verification/repro.js";
 import { exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
 import { failureSignature, testCount } from "../src/core/verification/output-counts.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { launchedCommand } from "../src/core/workflows/launcher.js";
+import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
+import { sizePlan, splitTestTasks } from "../src/core/workflows/sizing.js";
+import { withPerTestTimeout } from "../src/core/workflows/test-timeout.js";
 import { detectProfile } from "../src/core/tools/project.js";
 import {
   coveringChecks,
@@ -28,13 +32,13 @@ import {
 } from "../src/core/workflows/check-policy.js";
 import { detectGates, executeGate } from "../src/core/workflows/gates.js";
 import { type LayoutResult, layoutVerdict } from "../src/core/workflows/layout-check.js";
-import { addedDependencies } from "../src/core/workflows/quality/dependencies.js";
+import { addedDependencies, checkDependencies } from "../src/core/workflows/quality/dependencies.js";
 import {
   detectMutationTool,
   type ToolShell,
   toolShellFiles,
 } from "../src/core/workflows/quality/mutation-tools.js";
-import { isTestCheck } from "../src/core/workflows/quality/mutation.js";
+import { generateMutants, isTestCheck, proposalFiles } from "../src/core/workflows/quality/mutation.js";
 import {
   libraryFiles,
   propertyLibraries,
@@ -159,6 +163,23 @@ const RED_BASELINE: Record<Stack, (n: number) => string> = {
   maven: (n) => `[ERROR] Tests run: ${n + 1}, Failures: 1, Errors: 0, Skipped: 0\n[ERROR] com.example.OldTest.old -- Time elapsed: 0.01 s <<< FAILURE!`,
   dotnet: (n) => `  Failed OldTests.Old [3 ms]\nFailed!  - Failed:     1, Passed:     ${n}, Skipped:     0, Total:     ${n + 1}`,
 };
+
+// Dependency readers do not imply Gradle or Ruby gate detection support (#1489, #1552).
+describe("requested Gradle and Gemfile dependency checks (#1552)", () => {
+  for (const path of ["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "Gemfile"]) {
+    test(`${path}: a requested edit still blocks an unrequested package without registry access`, async () => {
+      const ruby = path === "Gemfile";
+      const before = ruby ? 'gem "rack", "3"\n' : 'dependencies { implementation("org.example:core:1") }\n';
+      const content = before + (ruby ? 'gem "rake", "13"\n' : 'dependencies { testImplementation("org.example:tests:1") }\n');
+      const name = ruby ? "rake" : "org.example:tests";
+      const files = [{ path, before, content }];
+      const result = await checkDependencies(files, new Set(), { lookups: false, requested: `Update ${path}.` });
+      expect(result.dependencies.map((d) => [d.name, d.verdict, d.blocking])).toEqual([[name, "unrequested", true]]);
+      const requested = await checkDependencies(files, new Set(), { lookups: false, requested: `Update ${path} to use ${name}.` });
+      expect(requested.dependencies.map((d) => [d.name, d.verdict, d.blocking])).toEqual([[name, "unknown", false]]);
+    });
+  }
+});
 
 /** Cells known to be wrong today: `<stack>:<cell>` -> issue. */
 const KNOWN: Record<string, string> = {};
@@ -393,6 +414,22 @@ function cell(stack: Stack, name: string, body: () => void | Promise<void>, time
   else test(name, body, timeout);
 }
 
+describe("gate matrix: criteria scenario labels (#1565)", () => {
+  const samples: { stack: Stack; path: string; text: string }[] = [
+    { stack: "bun", path: "tests/cli.test.ts", text: 'const path = "src/cli"; expect(run(["--path", path])).toBe(0); Join([3, 0, -2]);' },
+    { stack: "python", path: "tests/test_cli.py", text: 'path = "src/cli"\nassert run(["--path", path]) == 0\nJoin([3, 0, -2])' },
+    { stack: "go", path: "cli_test.go", text: 'path := "src/cli"; run([]string{"--path", path}); Join([]int{3, 0, -2})' },
+  ];
+  for (const sample of samples) cell(sample.stack, `${sample.stack}: labels are not missing cases`, () => {
+    const task = { criterionIds: ["AC-001"], writes: [{ path: sample.path, action: "create" as const }] };
+    const cases = criterionCases({ criteria: [{ id: "AC-001", requirementIds: ["FR-001"], given: 'the "repeated flag" and `success` scenarios', when: "tests run", then: "| Input | expected |\n| --- | --- |\n| repeated flag | last value |\n| success | zero status |\n| --path src/cli | selected |\n| Join([3,0,-2]) | joined |", method: "automated" }] }, task);
+    expect(writtenTestPaths(task)).toEqual([sample.path]);
+    expect(cases.map((c) => c.literal)).toEqual(["--path src/cli", "Join([3,0,-2])"]);
+    expect(missingCases(cases, [sample.text])).toEqual([]);
+    expect(missingCases(cases, [sample.text.replace("src/cli", "SRC")]).map((c) => c.literal)).toEqual(["--path src/cli"]);
+  });
+});
+
 /** A tool shell over a real directory with a fixed PATH, for detection only. */
 function shell(root: string, on: string[]): ToolShell {
   return {
@@ -424,6 +461,17 @@ for (const stack of STACKS) {
 
     cell(stack, "detection", () => {
       expect(preselected().map((c) => c.id)).toEqual(fixture.gates);
+    });
+
+    cell(stack, "suite per-test timeout (#1548)", () => {
+      const root = project(fixture.files);
+      const suite = detectGates(root).map((s) => s.check).find(isTestCheck)!;
+      const definition = JSON.stringify(suite);
+      const args = withPerTestTimeout(suite, root);
+      if (stack === "bun") expect(args.slice(-2)).toEqual(["--timeout", "30000"]);
+      else if (stack === "npm") expect(args.slice(-2)).toEqual(["--", "--testTimeout=30000"]);
+      else expect(args).toEqual(suite.args);
+      expect(JSON.stringify(suite)).toBe(definition);
     });
 
     // caesar 21bc3a53: run_probe refused java next to `mvn verify`, so its README task blocked.
@@ -462,10 +510,45 @@ for (const stack of STACKS) {
       if (written) expect(plannedWrittenTests(preselected(), writes)?.timeoutMs).toBe(written.timeoutMs);
     });
 
+    cell(stack, "sequential-test-slices-written-tests", () => {
+      const path = fixture.property.path;
+      const root = project({ ...fixture.files, [path]: fixture.property.seeded });
+      const original: Task = {
+        id: "T001", title: "Tests", description: "Write cases", requirementIds: ["FR-001"],
+        criterionIds: ["AC-001", "AC-002", "AC-003", "AC-004"], dependsOn: [], profileId: "implementer",
+        writes: [{ path, action: "create" }], readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior",
+      };
+      const graph = { schemaVersion: 1 as const, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [original] };
+      const report = sizePlan({ graph, policy: { ...defaultWorkflowPolicy, sizing: { maxAttemptTokens: 200_000 } }, samples: [], spent: 0 });
+      const parts = splitTestTasks(graph, report)!.tasks;
+      expect(parts).toHaveLength(2);
+      for (const part of parts) {
+        expect(part.writes.map((w) => w.path)).toEqual([path]);
+        expect(plannedWrittenTests(preselected(), part.writes)?.paths ?? null).toEqual(WRITTEN_TEST_ARGS[stack] ? [path] : null);
+        expect(writtenTestsCheck(root, preselected(), part.writes)?.args ?? null).toEqual(WRITTEN_TEST_ARGS[stack]);
+      }
+    });
+
     // The mutation gate needs a required test check to run the mutants against; without one it is
     // a silent no-op (#844).
     cell(stack, "test-check", () => {
       expect(preselected().some((c) => c.required && isTestCheck(c))).toBe(true);
+    });
+
+    cell(stack, "mutation caps cover sibling files (#1567)", () => {
+      const source = fixture.mutation?.source ?? "src/Sum.cs";
+      const extension = source.slice(source.lastIndexOf("."));
+      const line = stack === "python" ? "    return value > 0" : "    return value > 0;";
+      const files = ["a", "b", "z"].map((name) => ({
+        path: `src/${name}${extension}`, before: null,
+        content: Array.from({ length: 100 }, () => `${line}${" ".repeat(300)}`).join("\n"),
+      }));
+      const mutants = generateMutants(files);
+      expect(mutants).toHaveLength(24);
+      for (const file of files) expect(mutants.filter((m) => m.file === file.path)).toHaveLength(8);
+      const listed = proposalFiles(files);
+      expect(listed.map((f) => f.path)).toEqual(files.map((f) => f.path));
+      expect(listed.flatMap((f) => f.lines).join("").length).toBeLessThanOrEqual(24_000);
     });
 
     // A check started through a launcher routes by the program the launcher runs (#1507): bench

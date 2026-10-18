@@ -12,6 +12,7 @@ import { acceptanceSandbox, type SandboxRequest } from "../../security/sandbox.j
 import { buildSafeEnv } from "../../spawn.js";
 import { canonical, hashBytes, hashJson } from "../../specs/hash.js";
 import { workspacePath } from "../../specs/validate.js";
+import { executeCheckCommand } from "../../verification/check-runner.js";
 import { changedPaths, sourceManifest } from "../../verification/snapshot.js";
 import { fileHash } from "../effects.js";
 import { WorkflowFault } from "../errors.js";
@@ -748,7 +749,7 @@ async function runTest(
   let monitor: ReturnType<typeof setInterval> | null = null;
   let result: Awaited<ReturnType<ProcessScope["execute"]>>;
   try {
-    result = await scope.execute(resolveExecutable(command.executable), command.args, {
+    result = await executeCheckCommand(scope, resolveExecutable(command.executable), command.args, {
       cwd: workspace,
       env,
       timeoutMs: gate.timeoutMs,

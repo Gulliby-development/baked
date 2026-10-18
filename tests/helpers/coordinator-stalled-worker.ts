@@ -1,21 +1,13 @@
-// A real worker with a scripted executor. Its first implementation stops the event loop,
-// after its leases have expired, so only the coordinator host can recover the run (#1554).
-import type { AppConfig } from "../../src/types/index.js";
-import { executeWorkflowCommand } from "../../src/headless/workflow.js";
-import { parseWorkflowArgs } from "../../src/headless/workflow-parse.js";
-import { initiativeStartRequest, type InitiativeStartInput } from "../../src/core/workflows/initiatives/forms.js";
-import { InitiativeService } from "../../src/core/workflows/initiatives/service.js";
-import { applyInitiativeAction } from "../../src/core/workflows/initiatives/view-model.js";
-import { newId } from "../../src/core/workflows/store.js";
-import { createWorkerHandler } from "../../src/core/workers/rpc.js";
+// Run the production workflow worker with a scripted executor. The first worker hangs
+// after tool.started; its replacement uses the production takeover and drive paths.
+import { mock } from "bun:test";
 import { NativeWorkflowService } from "../../src/core/workflows/service.js";
 import type { ExecutionRequest } from "../../src/core/workflows/types.js";
 import { FixtureExecutor } from "./workflow-fixture.js";
 
 let service: NativeWorkflowService;
-let initiatives: InitiativeService;
-let hang = false;
-let uncertain = false;
+const hang = process.env.COORDINATOR_TEST_HANG === "1";
+const uncertain = process.env.COORDINATOR_TEST_UNCERTAIN === "1";
 class ScriptedExecutor extends FixtureExecutor {
   override async execute(request: ExecutionRequest) {
     if (hang && ["implementation", "initiativePlan"].includes(request.profile.output)) {
@@ -40,30 +32,21 @@ class ScriptedExecutor extends FixtureExecutor {
   }
 }
 
-const ctx = createWorkerHandler({
-  async command(id, argv) {
-    return executeWorkflowCommand(service, parseWorkflowArgs(argv as string[]), new AbortController().signal,
-      (runId) => ctx.emit("drive", { id, runId }));
-  },
-  async startInitiative(input) {
-    const view = await initiatives.start(initiativeStartRequest(input as InitiativeStartInput, service.config, { commandId: newId(), ownerLabel: "Coordinator" }));
-    void initiatives.drive(view.initiativeId, new AbortController().signal).catch((error) => ctx.emit("drive-error", String(error)));
-    return view;
-  },
-  async initiativeAction(id, action) {
-    const result = await applyInitiativeAction(initiatives, id as string, action);
-    if (result.drive) void initiatives.drive(id as string, new AbortController().signal).catch((error) => ctx.emit("drive-error", String(error)));
-    return result.view;
-  },
-  async gatesUpdate() {},
-}, (config) => {
-  const root = config.workspace as string;
-  hang = config.hang === true;
-  uncertain = config.uncertain === true;
-  service = new NativeWorkflowService(root, config.config as AppConfig, new ScriptedExecutor(root));
-  initiatives = new InitiativeService(service);
-  ctx.emit("owner", service.leases.owner);
-}, async () => {
-  await service.shutdown();
-  service.close();
-});
+class ScriptedService extends NativeWorkflowService {
+  constructor(...args: ConstructorParameters<typeof NativeWorkflowService>) {
+    const [root, config, , readOnly, context] = args;
+    super(root, config, new ScriptedExecutor(root), readOnly, context);
+    service = this;
+  }
+  override async drive(...args: Parameters<NativeWorkflowService["drive"]>) {
+    if (process.env.COORDINATOR_TEST_REJECT_RESUME === "1" && this.store.state(args[0]).stallResumes > 0)
+      throw new Error("Recovery drive failed");
+    return super.drive(...args);
+  }
+}
+mock.module("../../src/core/workflows/service.js", () => ({ NativeWorkflowService: ScriptedService }));
+// Dynamic import yields before the production handler exists; retain the init RPC meanwhile.
+const queued: MessageEvent[] = [];
+self.onmessage = (event) => { queued.push(event); };
+await import("../../src/core/workers/workflow.worker.js");
+for (const event of queued) self.onmessage?.(event);

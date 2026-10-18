@@ -6,13 +6,15 @@ import { scaffoldProjectQuietly } from "../core/projects/scaffold.js";
 import { scriptedExecutorFromEnv } from "../core/workflows/scripted-executor.js";
 import { NativeWorkflowService } from "../core/workflows/service.js";
 
-export const serveHelp = `baked serve [--port N] [--token-file FILE] [--allow-origin ORIGIN]... [--cwd DIR]
+export const serveHelp = `baked serve [--port N] [--token-file FILE] [--allow-origin ORIGIN]... [--take-over PID] [--cwd DIR]
 
 Serves the local workflow API on 127.0.0.1 for desktop apps and other clients.
   --port N              port to bind; 0 (default) picks a free port
   --token-file FILE     where to write the bearer token (mode 0600);
                         default .baked/serve-PORT.token in the workspace
   --allow-origin ORIGIN accept browser requests from this exact origin (repeatable)
+  --take-over PID       take over and drive the runs of a stopped server
+                        (the desktop app restarts a server that stopped answering)
 
 Prints one JSON line {"url","port","tokenFile"} when ready. Every request needs
 "Authorization: Bearer TOKEN". Stops on SIGINT or SIGTERM and removes the token file.
@@ -22,6 +24,7 @@ export interface ServeArgs {
   port: number;
   tokenFile?: string;
   allowOrigins: string[];
+  takeOver?: number;
 }
 
 export function parseServeArgs(argv: string[]): ServeArgs | "help" {
@@ -44,7 +47,11 @@ export function parseServeArgs(argv: string[]): ServeArgs | "help" {
       if (result.tokenFile !== undefined) throw new Error("Duplicate option --token-file");
       result.tokenFile = value();
     } else if (token === "--allow-origin") result.allowOrigins.push(value());
-    else if (token === "--cwd") value();
+    else if (token === "--take-over") {
+      const raw = value();
+      if (!/^[1-9]\d*$/.test(raw)) throw new Error("--take-over requires a process ID");
+      result.takeOver = Number(raw);
+    } else if (token === "--cwd") value();
     else if (token?.startsWith("--cwd=")) continue;
     else throw new Error(`Unknown option ${token ?? ""}`);
   }
@@ -79,6 +86,7 @@ export async function runServeCli(argv: string[]): Promise<number> {
       allowOrigins: args.allowOrigins,
       ownsService: true,
       backgroundIndex: true,
+      ...(args.takeOver !== undefined ? { takeOver: { pid: args.takeOver } } : {}),
       ...(args.tokenFile ? { tokenFile: resolve(cwd, args.tokenFile) } : {}),
     });
   } catch (error) {
