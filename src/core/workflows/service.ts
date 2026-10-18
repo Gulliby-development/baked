@@ -83,7 +83,12 @@ import {
   renderProjectMemory,
 } from "./project-memory.js";
 import { abortableDelay } from "./retry.js";
-import { REFUSED_EDIT_PREFIX, runWrittenHash, undoRunEdits } from "./rollback.js";
+import {
+  REFUSED_EDIT_PREFIX,
+  runWrittenHash,
+  UNFINISHED_BLOCK_PREFIX,
+  undoRunEdits,
+} from "./rollback.js";
 import {
   independenceWarnings,
   independentReviewMode,
@@ -378,6 +383,7 @@ export class NativeWorkflowService implements WorkflowService {
       taskRestarts: {},
       ownerLostResumes: 0,
       stallResumes: 0,
+      unfinishedResumes: 0,
       providerResumes: 0,
       taskCarry: {},
       taskGates: {},
@@ -554,6 +560,7 @@ export class NativeWorkflowService implements WorkflowService {
       if (process.env.BAKED_TRACE_RUN_BLOCKS === "1") this.traceBlock(runId);
       if (await this.resumeOwnerLost(runId, signal)) continue;
       if (await this.resumeStalled(runId, signal)) continue;
+      if (await this.resumeUnfinished(runId, signal)) continue;
       if (await this.resumeProviderOutage(runId, signal)) continue;
       return snapshot;
     }
@@ -636,6 +643,49 @@ export class NativeWorkflowService implements WorkflowService {
         "recovery",
         `stalled/resume-${attempt}.json`,
         canonical({ attempt, of: limit }),
+      );
+      this.store.saveState(runId, state);
+    });
+    try {
+      await this.resume(runId, {
+        commandId: newId(),
+        expectedRevision: this.store.run(runId).revision,
+      });
+    } catch {
+      return false;
+    }
+    return true;
+  }
+  /**
+   * A run that blocked because a task ended unfinished after its one restart (#1516: a watcher stop
+   * left a check red, and the restarted session stopped too) resumes by itself once. The output is
+   * a well-formed account of work left, not a schema fault, and the next session starts from it:
+   * the stopped attempt's `unresolved` and the red checks' output. A pending request still holds
+   * the run for a person. The resume is journaled as a recovery artifact.
+   */
+  private async resumeUnfinished(runId: string, signal: AbortSignal): Promise<boolean> {
+    if (signal.aborted) return false;
+    const run = this.store.run(runId);
+    if (run.status !== "blocked" || run.reason !== "invalid_output") return false;
+    const state = this.store.state(runId);
+    if (state.unfinishedResumes >= 1 || this.store.requests(runId).some(blocksRun)) return false;
+    const diagnostic = this.store
+      .artifacts(runId)
+      .filter((a) => a.logical_path.startsWith("errors/"))
+      .at(-1);
+    const marker = diagnostic
+      ? this.store.latestArtifact(runId, `${UNFINISHED_BLOCK_PREFIX}${diagnostic.id}.json`)
+      : null;
+    if (!marker) return false;
+    const { taskId } = JSON.parse(this.store.readArtifact(runId, marker.id)) as { taskId: string };
+    const attempt = state.unfinishedResumes + 1;
+    this.store.transaction(() => {
+      state.unfinishedResumes = attempt;
+      this.store.artifact(
+        runId,
+        "recovery",
+        `unfinished/resume-${attempt}.json`,
+        canonical({ attempt, of: 1, taskId }),
       );
       this.store.saveState(runId, state);
     });

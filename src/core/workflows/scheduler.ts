@@ -368,6 +368,7 @@ import {
   REFUSED_EDIT_PREFIX,
   readKept,
   runWrittenHash,
+  UNFINISHED_BLOCK_PREFIX,
   uncommittedEdits,
 } from "./rollback.js";
 import {
@@ -716,6 +717,10 @@ function isStoreError(error: unknown): boolean {
 }
 /** The start of the restart reason for an edit of the task's own file that did not apply. */
 const EDIT_RETRY = "an edit of its own file did not apply";
+/** Lines of a failed check's output a restarted or resumed session gets (#1516). */
+const FAILED_CHECK_LINES = 30;
+/** The start of the restart reason for a wrong claim of no edit tool (#1516). */
+const LOST_TOOL_CLAIM = "its worker reported that it had no edit tool";
 const CHECK_FAILURE = /fail|error|violation|assert|does not pass|not passing/i;
 const CHECK_KIND =
   /test|lint|ruff|eslint|biome|clippy|flake8|mypy|pyright|tsc|typecheck|type check/i;
@@ -2597,6 +2602,14 @@ export class WorkflowScheduler {
               ? fault.message
               : String(fault),
         );
+        // A task that ended unfinished after its restart (#1516): the service resumes it once.
+        if (fault instanceof WorkflowFault && typeof fault.details.unfinishedTask === "string")
+          this.store.artifact(
+            runId,
+            "recovery",
+            `${UNFINISHED_BLOCK_PREFIX}${diagnostic.id}.json`,
+            canonical({ taskId: fault.details.unfinishedTask }),
+          );
         // An attempt stopped by repeated hash refusals: the file stays as it is until someone
         // decides, so a plain resume would only be refused again (#1269). Named after the
         // diagnostic of this stop.
@@ -2911,6 +2924,10 @@ export class WorkflowScheduler {
     if (proseEnd) return "its session ended on a text reply and never submitted a result";
     if (changed.length === 0 && reportsLostTool(result))
       return "a tool was unavailable to its worker, which submitted no change";
+    // A claim of no edit tool from a session that edited (#1516, md-site T002: "exposes no BAKED
+    // edit_file or multi_edit tool" after two edit_file calls) is wrong, and the next session is told.
+    if (reportsLostTool(result))
+      return `${LOST_TOOL_CLAIM}, although it edited ${changed.join(", ")} with them: this session has edit_file and multi_edit too; call them to finish the change`;
     const usage = this.lastAttemptUsage(runId, stepId);
     if (
       changed.length === 0 &&
@@ -2996,18 +3013,32 @@ export class WorkflowScheduler {
   private previousAttempt(
     runId: string,
     taskId: string,
-  ): { previousAttempt?: { summary: string; unresolved: string[]; note: string } } {
+  ): {
+    previousAttempt?: {
+      summary: string;
+      unresolved: string[];
+      failedChecks?: { id: string; output: string }[];
+      restartReason?: string;
+      note: string;
+    };
+  } {
     const artifact = this.store.latestArtifact(runId, `tasks/restarts/${taskId}.json`);
     if (!artifact) return {};
     const record = JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
       summary?: string;
       unresolved?: string[];
+      failedChecks?: { id: string; output: string }[];
+      reason?: string;
     };
-    if (!record.summary && !record.unresolved?.length) return {};
+    if (!record.summary && !record.unresolved?.length && !record.failedChecks?.length) return {};
     return {
       previousAttempt: {
         summary: record.summary ?? "",
         unresolved: record.unresolved ?? [],
+        ...(record.failedChecks?.length ? { failedChecks: record.failedChecks } : {}),
+        // Why the host restarted it, when that corrects the earlier session (#1516: a claim of no
+        // edit tool from a session that edited).
+        ...(record.reason?.startsWith(LOST_TOOL_CLAIM) ? { restartReason: record.reason } : {}),
         note: "An earlier session of this task ended without a complete implementation, as described here. Start from the current files and finish what it left; do not repeat its failed approach.",
       },
     };
@@ -5523,12 +5554,17 @@ ${note}`;
           });
           return;
         }
-        this.store.transaction(() => this.store.taskStatus(runId, task.id, "blocked"));
+        this.store.transaction(() => {
+          this.store.taskStatus(runId, task.id, "blocked");
+          this.recordUnfinished(runId, child, task.id, result, changed);
+        });
         const refused = takeHashRefusals(root);
         throw new WorkflowFault(
           "OUTPUT_INVALID",
           `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}${correctionReason(correction)}${refusedReason(refused)}`,
-          refused.length ? { reason: "input_changed", paths: refused } : {},
+          refused.length
+            ? { reason: "input_changed", paths: refused }
+            : { unfinishedTask: task.id },
         );
       }
       if (
@@ -6271,7 +6307,21 @@ ${note}`;
             ...(cause === "restart" && outcome.restart ? { detail: outcome.restart.reason } : {}),
             carried: outcome.edits !== undefined,
           });
-        else this.store.taskStatus(runId, entry.task.id, "blocked");
+        else {
+          this.store.taskStatus(runId, entry.task.id, "blocked");
+          if (
+            outcome.error instanceof WorkflowFault &&
+            outcome.error.details.unfinishedTask === entry.task.id &&
+            outcome.account
+          )
+            this.recordUnfinished(
+              runId,
+              entry.child,
+              entry.task.id,
+              outcome.account,
+              outcome.edits?.changed ?? [],
+            );
+        }
         this.store.finishStep(runId, entry.child, "failed");
         if (again) this.store.saveState(runId, state);
       });
@@ -6321,6 +6371,62 @@ ${note}`;
       outcome.account,
     );
   }
+  /**
+   * The required checks the step's attempts last ran red, with the first lines of their output
+   * (#1516): a restart or resume after a watcher stop starts from the failure itself, not only
+   * from the stopped worker's account of it.
+   */
+  private failedChecksOf(
+    runId: string,
+    stepId: string,
+    taskId: string,
+  ): { id: string; output: string }[] {
+    const last = new Map<string, { status: string; artifactId: string }>();
+    for (const row of this.store.taskCheckRuns(runId, taskId))
+      if (row.step_id === stepId)
+        last.set(row.check_id, { status: row.status, artifactId: row.artifact_id });
+    const failed: { id: string; output: string }[] = [];
+    for (const [id, row] of last) {
+      if (row.status !== "failed") continue;
+      let output = "";
+      try {
+        output = String(
+          (JSON.parse(this.store.readArtifact(runId, row.artifactId)) as { output?: unknown })
+            .output ?? "",
+        );
+      } catch {}
+      failed.push({ id, output: output.split("\n").slice(0, FAILED_CHECK_LINES).join("\n") });
+    }
+    return failed;
+  }
+  /**
+   * Keeps the account of a task's attempt that blocked the run unfinished (#1516) where the next
+   * session's prompt reads it (`previousAttempt`), so a resume starts from that attempt, not from
+   * the one the restart replaced.
+   */
+  private recordUnfinished(
+    runId: string,
+    stepId: string,
+    taskId: string,
+    result: { summary: string; unresolved: string[] },
+    changed: string[],
+  ): void {
+    const failedChecks = this.failedChecksOf(runId, stepId, taskId);
+    this.store.artifact(
+      runId,
+      "recovery",
+      `tasks/restarts/${taskId}.json`,
+      canonical({
+        taskId,
+        stepId,
+        reason: "blocked unfinished",
+        carriedPaths: changed,
+        summary: result.summary,
+        unresolved: result.unresolved,
+        ...(failedChecks.length ? { failedChecks } : {}),
+      }),
+    );
+  }
   /** Records the one restart a task gets per run; false when it already had it. */
   private restartOnce(
     runId: string,
@@ -6342,6 +6448,7 @@ ${note}`;
       .attempts(runId)
       .filter((attempt) => attempt.step_id === stepId)
       .reduce((sum, attempt) => sum + (attempt.used_tokens ?? 0), 0);
+    const failedChecks = this.failedChecksOf(runId, stepId, taskId);
     this.store.transaction(() => {
       state.taskRestarts[taskId] = 1;
       this.store.artifact(
@@ -6356,6 +6463,7 @@ ${note}`;
           interruptedTokens,
           carriedTokens: carriedPaths.length ? interruptedTokens : 0,
           ...account,
+          ...(failedChecks.length ? { failedChecks } : {}),
         }),
       );
       this.store.saveState(runId, state);
@@ -6639,8 +6747,11 @@ ${note}`;
           error: new WorkflowFault(
             "OUTPUT_INVALID",
             `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}${correctionReason(correction)}${refusedReason(refused)}`,
-            refused.length ? { reason: "input_changed", paths: refused } : {},
+            refused.length
+              ? { reason: "input_changed", paths: refused }
+              : { unfinishedTask: task.id },
           ),
+          account: { summary: result.summary, unresolved: result.unresolved },
         };
       if (
         await this.cutOffCheckFailures(
@@ -12848,6 +12959,8 @@ type WorkerOutcome =
       blocked?: { outcome: string; summary: string; unresolved: string[] };
       /** The attempt was a correction's narrowed first attempt: the next one may write its scope. */
       narrowed?: true;
+      /** The worker's account of an unfinished attempt, kept when it blocks the run (#1516). */
+      account?: { summary: string; unresolved: string[] };
     }
   /** The task's worker reported that the spec and the tests cannot both hold. */
   | { kind: "conflict"; entry: BatchEntry; result: Implementation }

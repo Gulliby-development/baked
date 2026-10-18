@@ -266,6 +266,7 @@ export const RuntimeStateSchema = z
     ownerLostResumes: z.number().int().nonnegative().default(0),
     /** Times a run blocked with `step_stalled` resumed by itself (`workflows.stall.autoResumes`). */
     stallResumes: z.number().int().nonnegative().default(0),
+    unfinishedResumes: z.number().int().nonnegative().default(0),
     /** Times a run blocked with `provider_unavailable` resumed by itself (`workflows.stall.providerResumes`). */
     providerResumes: z.number().int().nonnegative().default(0),
     /**
