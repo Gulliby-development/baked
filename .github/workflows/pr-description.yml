@@ -1,0 +1,32 @@
+name: PR description
+
+# Runs again when the description is edited, so fixing the Sweep section needs no new push.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, synchronize, reopened]
+  merge_group:
+
+jobs:
+  # A pull request that closes a Bug issue reports its sibling sweep (.agents/skills/file-issue).
+  # In the merge queue it reports "skipped", which counts as passed.
+  sweep-section:
+    if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.4.3"
+
+      - name: Sweep section for Bug fixes
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bun scripts/check-sweep-section.ts

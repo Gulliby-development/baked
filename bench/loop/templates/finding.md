@@ -2,6 +2,7 @@
 
 - Severity: P0 | P1 | P2
 - Kind: invariant | recovery | model-behavior — <one line why>
+- Origin: new | sibling-of:#N — <which path, stage, toolchain or case the fix of #N did not cover> | harder-round — <the new language or the size> | model-behavior
 - Seen on: <role: provider/model, ...>; earlier: <finding ids or none>
 - Confirmation: reproduced (fork <id>, <model>) | not-reproduced (fork <id>, <model>) -> model-only | pending | skipped: <reason> | n/a (invariant)
 - Seen in: <app> run <id>, stage <stage>, attempt <n>; also <other apps/rounds>
