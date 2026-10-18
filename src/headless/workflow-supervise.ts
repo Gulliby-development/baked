@@ -5,11 +5,11 @@ import { getCwd } from "../core/cwd.js";
 import { IS_WIN, killTree } from "../core/platform/index.js";
 import { getRestartSpec } from "../core/restart.js";
 import { workspacePath } from "../core/specs/validate.js";
-import { InitiativeStore } from "../core/workflows/initiatives/store.js";
 import { NativeWorkflowService } from "../core/workflows/service.js";
 import { stallSettings } from "../core/workflows/stall.js";
 import { WorkflowStore } from "../core/workflows/store.js";
 import { DEFAULT_SUPERVISOR, StallDetector } from "../core/workflows/supervisor.js";
+import { takeOverDriver } from "../core/workflows/takeover.js";
 
 /** Set in the driver a supervisor starts, so it does not start another one. */
 export const SUPERVISED_ENV = "BAKED_WORKFLOW_SUPERVISED";
@@ -107,7 +107,7 @@ function startDriver(argv: string[], cwd: string): ChildProcess {
  * Runs `baked workflow ARGV` in a driver process and watches it from this one, whose thread stays
  * free (#1533). When the driver's leases stay expired for the grace period (its thread stopped:
  * a synchronous call that never returns, or a suspended process), the supervisor stops the driver
- * and its commands, takes the run over (`takeOverStalledDriver`, within `autoResumes`) and starts
+ * and its commands, takes the run over (`takeOverDriver`, within `autoResumes`) and starts
  * a new driver that resumes it. Its output is passed through; the exit code is the last driver's.
  */
 export async function superviseWorkflowCli(
@@ -186,20 +186,11 @@ export async function superviseWorkflowCli(
       const service = new NativeWorkflowService(cwd, config);
       let next: string[] | null = null;
       try {
-        for (const runId of stuck) {
-          const resumed = await service.takeOverStalledDriver(runId, pid);
-          log(JSON.stringify({ supervisor: "takeover", runId, pid, resumed }));
-          if (!resumed || next) continue;
-          const initiatives = new InitiativeStore(service.store);
-          next = recoveryArgs(
-            args,
-            {
-              runId,
-              revision: service.store.run(runId).revision,
-              initiativeId: initiatives.available() ? initiatives.initiativeOfRun(runId) : null,
-            },
-            lastSeq,
+        for (const run of await takeOverDriver(service, { pid }, stuck)) {
+          log(
+            JSON.stringify({ supervisor: "takeover", runId: run.runId, pid, resumed: run.resumed }),
           );
+          if (run.resumed) next ??= recoveryArgs(args, run, lastSeq);
         }
       } finally {
         service.close();

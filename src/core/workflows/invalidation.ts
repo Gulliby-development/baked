@@ -214,3 +214,14 @@ export function importedFiles(
   }
   return found;
 }
+
+/** Named production files take precedence over a package's conservative import closure. */
+export function correctiveSources(
+  root: string,
+  tests: readonly string[],
+  candidates: readonly string[],
+  owned: readonly string[],
+  depth = 2,
+): string[] {
+  return owned.length ? [...new Set(owned)] : importedFiles(root, tests, candidates, depth);
+}

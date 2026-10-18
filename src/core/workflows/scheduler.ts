@@ -238,7 +238,7 @@ import {
   planStructureProblems,
 } from "./initiatives/plan.js";
 import { featureWorkflowChoices } from "./initiatives/workflows.js";
-import { changeReach, importedFiles, repairChangedFiles } from "./invalidation.js";
+import { changeReach, correctiveSources, repairChangedFiles } from "./invalidation.js";
 import {
   commandMayBeRunning,
   mutationLeaseFor,
@@ -474,6 +474,7 @@ import {
 } from "./store.js";
 import {
   documentsOnly,
+  failureOwner,
   hasTaskGate,
   hostContentProblems,
   hostFileProblems,
@@ -481,11 +482,9 @@ import {
   missingArtifactOwners,
   namesPath,
   pendingCodePaths,
-  pendingOwners,
   pendingWriters,
   readyTasks,
   siblingCorrections,
-  testUpdateOwners,
 } from "./task-graph.js";
 import {
   integrityFix,
@@ -2727,6 +2726,7 @@ export class WorkflowScheduler {
       signal.throwIfAborted();
       const checked = await run(check);
       if (checked.status !== "failed") continue;
+      let ownerOutput = checked.output ?? "";
       let output = (checked.output ?? "").slice(-4000);
       // A failing test that runs another check of the project shows only its exit code: the
       // continuation gets that check's own output too.
@@ -2736,9 +2736,19 @@ export class WorkflowScheduler {
       );
       if (spawned) {
         const ran = await run(spawned);
-        if (ran.status === "failed" && ran.output?.trim())
+        if (ran.status === "failed" && ran.output?.trim()) {
+          ownerOutput += `\n${ran.output}`;
           output = `${output}\n\nThe failing test runs the project's ${spawned.id} check (${[spawned.executable, ...spawned.args].join(" ")}); run on its own it fails with:\n${ran.output.trim().slice(-SPAWNED_OUTPUT_CHARS)}`;
+        }
       }
+      const owner = failureOwner(
+        state.rootGraph ?? state.graph,
+        this.store.tasks(runId),
+        state.taskGates,
+        task,
+        ownerOutput,
+      );
+      if (["pending", "test-update", "finished"].includes(owner.kind)) return false;
       failed.push({ id: check.id, output });
     }
     if (!failed.length) return false;
@@ -3524,6 +3534,28 @@ export class WorkflowScheduler {
       });
     };
   }
+  /** Existing-test parts do not repeat cases assigned to new test files of the same split. */
+  private caseTask(state: RuntimeState, task: Task): Task {
+    const graph = state.rootGraph ?? state.graph;
+    if (!graph || task.origin !== "planned" || !task.writes.every((w) => w.action !== "create"))
+      return task;
+    const parts = Object.values(hostSplitParts(graph)).find((ids) => ids.includes(task.id));
+    if (!parts) return task;
+    const created = new Set(
+      graph.tasks
+        .filter((t) => parts.includes(t.id))
+        .flatMap((t) => t.writes.filter((w) => w.action === "create" && isTestPath(w.path)))
+        .map((w) => w.path),
+    );
+    // Continuation slices modify a newly created file and still own their acceptance cases.
+    if (task.writes.some((w) => created.has(w.path))) return task;
+    const covered = new Set(
+      graph.tasks
+        .filter((t) => parts.includes(t.id) && t.writes.some((w) => created.has(w.path)))
+        .flatMap((t) => t.criterionIds),
+    );
+    return { ...task, criterionIds: task.criterionIds.filter((id) => !covered.has(id)) };
+  }
   /**
    * The task-end whole-unit check of a task that writes code (#673): the run's feature-scope type
    * checks, run once in the task's directory, keeping the errors in the task's own files that
@@ -4120,7 +4152,7 @@ export class WorkflowScheduler {
         : undefined;
     const caseCheck =
       task && profile.output === "implementation"
-        ? criteriaCaseCheck(state.spec, task, {
+        ? criteriaCaseCheck(state.spec, this.caseTask(state, task), {
             checks: policy.checks,
             tasks: (state.rootGraph ?? state.graph)?.tasks ?? [],
           })
@@ -4137,6 +4169,33 @@ export class WorkflowScheduler {
           }
         : undefined;
     try {
+      if (task && profile.output === "implementation") {
+        // Save what this attempt receives, before it can fail or the findings change (#1566).
+        // Both serial tasks and task worktrees, including retries, pass through here.
+        const context = (extra ?? {}) as Record<string, unknown>;
+        const keys = [
+          "recurringFindings",
+          "siblingFindings",
+          "correctionFocus",
+          "cutOffChecks",
+          "earlierEdits",
+        ];
+        this.store.transaction(() =>
+          this.store.artifact(
+            runId,
+            "attempt-context",
+            `attempts/${attempt}/context.json`,
+            canonical({
+              schemaVersion: 1,
+              taskId: task.id,
+              findingIds: task.findingIds,
+              ...Object.fromEntries(
+                keys.filter((key) => context[key] !== undefined).map((key) => [key, context[key]]),
+              ),
+            }),
+          ),
+        );
+      }
       const result = await this.executor.execute({
         runId,
         attemptId: attempt,
@@ -4161,6 +4220,18 @@ export class WorkflowScheduler {
           ? { writtenTests: this.writtenTestWrites(runId, state, task) }
           : {}),
         ...(attributeCheck ? { attributeCheck } : {}),
+        ...(task && profile.output === "implementation"
+          ? {
+              failureOwner: (output: string) =>
+                failureOwner(
+                  state.rootGraph ?? state.graph,
+                  this.store.tasks(runId),
+                  state.taskGates,
+                  task,
+                  output,
+                ),
+            }
+          : {}),
         ...(this.formatHints(runId, state, profile.output, task)
           ? { formatHints: this.formatHints(runId, state, profile.output, task) }
           : {}),
@@ -5331,6 +5402,7 @@ ${note}`;
     let integrity: Review["findings"] = [];
     let reported: { summary: string; unresolved: string[] } | undefined;
     let unresolvedAccount: { summary: string; unresolved: string[] } | undefined;
+    const cutOffResults = new Map<string, WorkerCheck["checked"]>();
     if (
       !checking &&
       (task.writes.length === 0 ||
@@ -5681,7 +5753,11 @@ ${note}`;
           changed,
           signal,
           root,
-          (check) => this.runTaskCheck(runId, child, check, policy, signal, root),
+          async (check) => {
+            const checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
+            cutOffResults.set(hashJson(check), checked);
+            return checked;
+          },
         )
       ) {
         this.store.transaction(() => {
@@ -5726,7 +5802,9 @@ ${note}`;
     const taskRoot = runRoot(this.store.workspace, state);
     const taskResults: WorkerCheck[] = [];
     for (const check of this.gatedChecks(runId, state, policy, task, taskRoot)) {
-      const checked = await this.runTaskCheck(runId, child, check, policy, signal, taskRoot);
+      const checked =
+        cutOffResults.get(hashJson(check)) ??
+        (await this.runTaskCheck(runId, child, check, policy, signal, taskRoot));
       taskResults.push({ check, checked });
     }
     if (this.testsPending(state, policy) && isTestTask(task)) {
@@ -8893,10 +8971,17 @@ ${note}`;
   ): string[] {
     if (task.origin !== "planned" || !isTestCheck(check) || !state.graph) return [];
     const rootTasks = (state.rootGraph ?? state.graph).tasks;
+    const owner = failureOwner(
+      state.rootGraph ?? state.graph,
+      this.store.tasks(runId),
+      state.taskGates,
+      task,
+      output,
+    );
     const failing = failingFilesInOutput(output, rootTasks).filter(
       (path) => isTestPath(path) && task.writes.some((w) => w.path === path),
     );
-    if (!failing.length) return [];
+    if (!failing.length && owner.kind !== "finished") return [];
     const root = runRoot(this.store.workspace, state);
     const sources = [
       ...new Set(
@@ -8905,7 +8990,9 @@ ${note}`;
         ),
       ),
     ];
-    const mine = new Set(importedFiles(root, failing, sources, 1));
+    const mine = new Set(
+      correctiveSources(root, failing, sources, owner.kind === "finished" ? owner.files : [], 1),
+    );
     if (!mine.size) return [];
     const status = new Map(this.store.tasks(runId).map((r) => [r.id, r.status]));
     return state.graph.tasks
@@ -8920,7 +9007,24 @@ ${note}`;
             if (!predecessor || predecessor.id === task.id || !isTestTask(predecessor))
               return false;
             const tests = (state.repairScope[id] ?? []).filter(isTestPath);
-            return importedFiles(root, tests, sources, 1).some((path) => mine.has(path));
+            const finding = this.store.findings(runId).find((f) => f.id === id);
+            const body = finding
+              ? (JSON.parse(finding.body_json) as Review["findings"][number])
+              : null;
+            const other = failureOwner(
+              state.rootGraph ?? state.graph,
+              this.store.tasks(runId),
+              state.taskGates,
+              predecessor,
+              body ? (this.commandOutput(runId, body.evidenceIds) ?? "") : "",
+            );
+            return correctiveSources(
+              root,
+              tests,
+              sources,
+              other.kind === "finished" ? other.files : [],
+              1,
+            ).some((path) => mine.has(path));
           }),
       )
       .map((t) => t.id);
@@ -8959,16 +9063,17 @@ ${note}`;
       this.failsAsBaseline(runId, state, check, checked.output)
     )
       return undefined;
-    const owners =
-      checked.status === "failed" && task.origin === "planned" && checked.output
-        ? pendingOwners(
+    const owner =
+      checked.status === "failed" && checked.output
+        ? failureOwner(
             state.rootGraph ?? state.graph,
             this.store.tasks(runId),
             state.taskGates,
             task,
             checked.output,
           )
-        : [];
+        : undefined;
+    const owners = owner?.kind === "pending" ? [...owner.owners] : [];
     // A corrective task that fails only on test files other correctives are fixing waits for them
     // instead of opening a corrective of itself (#1285).
     if (!owners.length && checked.status === "failed" && checked.output)
@@ -8995,16 +9100,7 @@ ${note}`;
       );
       return undefined;
     }
-    const updaters =
-      checked.status === "failed" && checked.output
-        ? testUpdateOwners(
-            state.rootGraph ?? state.graph,
-            this.store.tasks(runId),
-            state.taskGates,
-            task,
-            checked.output,
-          )
-        : [];
+    const updaters = owner?.kind === "test-update" ? owner.owners : [];
     if (updaters.length) {
       // mdtoc-update (bench round 14): the change breaks expectations a later task of the plan
       // updates; a corrective task rewrote that task's tests. That task's own checks run them.
@@ -9091,18 +9187,28 @@ ${note}`;
               : []
         : [];
     const sources = failingTests.length
-      ? importedFiles(runRoot(this.store.workspace, state), failingTests, [
-          ...new Set(
-            rootTasks.flatMap((t) =>
-              t.writes
-                .filter((w) => w.action !== "delete" && !isTestPath(w.path))
-                .map((w) => w.path),
+      ? correctiveSources(
+          runRoot(this.store.workspace, state),
+          failingTests,
+          [
+            ...new Set(
+              rootTasks.flatMap((t) =>
+                t.writes
+                  .filter((w) => w.action !== "delete" && !isTestPath(w.path))
+                  .map((w) => w.path),
+              ),
             ),
-          ),
-        ])
+          ],
+          owner?.kind === "finished" ? owner.files : [],
+        )
       : [];
     const scope = [
-      ...new Set([...diagnosed, ...owned, ...(sources.length ? failingTests : []), ...sources]),
+      ...new Set([
+        ...diagnosed,
+        ...owned,
+        ...(sources.length || owned.length ? failingTests : []),
+        ...sources,
+      ]),
     ];
     if (scope.length) state.repairScope[findingId] = scope;
     const signature = checked.output ? failingLines(checked.output) : "";
@@ -9113,7 +9219,10 @@ ${note}`;
       requirementIds: task.requirementIds,
       criterionIds: task.criterionIds,
       // One failing test file is where the failure shows, and the correction starts there.
-      file: failingTests.length === 1 && sources.length ? (failingTests[0] ?? null) : null,
+      file:
+        failingTests.length === 1 && (sources.length || owned.length)
+          ? (failingTests[0] ?? null)
+          : null,
       symbol: null,
       evidenceIds: [checked.evidenceId],
       claim: regression
@@ -9393,11 +9502,31 @@ ${note}`;
       .filter((f) => f.status === "open" || f.status === "confirmed")
       .map((f) => JSON.parse(f.body_json) as Review["findings"][number]);
     const covered: { checkId: string; findingIds: string[] }[] = [];
+    const handoffs: { checkId: string; evidenceId: string; owners: string[] }[] = [];
     for (const check of policy.checks.filter((c) => c.required && c.scope === "feature")) {
       let checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
       if (checked.status === "failed" && testsPending && noTestsCollected(checked.output ?? "")) {
         ran.push({ checkId: check.id, status: "no_tests", evidenceId: checked.evidenceId });
         continue;
+      }
+      if (checked.status === "failed") {
+        const owner = failureOwner(
+          state.rootGraph,
+          this.store.tasks(runId),
+          state.taskGates,
+          task,
+          checked.output ?? "",
+          { crossProfile: true },
+        );
+        if (owner.kind === "test-update" || owner.kind === "pending") {
+          ran.push({ checkId: check.id, status: checked.status, evidenceId: checked.evidenceId });
+          handoffs.push({
+            checkId: check.id,
+            evidenceId: checked.evidenceId,
+            owners: owner.owners,
+          });
+          continue;
+        }
       }
       // A failure the check's fixer settles (`cargo fmt` on the named files) is no defect to route:
       // run the fixer as the checks stage does, journaled as `apply_fix`, and rerun the check
@@ -9419,6 +9548,18 @@ ${note}`;
         ...(fixed ? { fixed: true as const } : {}),
       });
       if (checked.status !== "failed") continue;
+      const owner = failureOwner(
+        state.rootGraph,
+        this.store.tasks(runId),
+        state.taskGates,
+        task,
+        checked.output ?? "",
+        { crossProfile: true },
+      );
+      if (owner.kind === "test-update" || owner.kind === "pending") {
+        handoffs.push({ checkId: check.id, evidenceId: checked.evidenceId, owners: owner.owners });
+        continue;
+      }
       const claim = `Required check ${check.id} failed`;
       if (failuresCovered(checked.output ?? "", open)) {
         covered.push({ checkId: check.id, findingIds: open.map((f) => f.id) });
@@ -9446,7 +9587,12 @@ ${note}`;
       );
       // Output that names planned files decides who owns the failure; output that names none
       // (a bare assertion) is the reporting task's account of where the defect is.
-      const named = failed.filter((f) => f.file !== null && pending.includes(f.file));
+      const named = failed.filter(
+        (f) =>
+          f.file !== null &&
+          pending.includes(f.file) &&
+          (owner.kind !== "finished" || owner.files.includes(f.file)),
+      );
       const unnamed = failed.every((f) => f.file === null);
       // A failure placed on a named file is the file's owner's, with its requirements: the
       // reporting task wrote none of it.
@@ -9479,6 +9625,7 @@ ${note}`;
           checks: ran,
           findings: findings.map((f) => f.id),
           ...(covered.length ? { covered } : {}),
+          ...(handoffs.length ? { handoffs } : {}),
         }),
       ),
     );
@@ -9539,6 +9686,14 @@ ${note}`;
       const check = taskCheckOfClaim(finding.claim);
       const output = check ? this.commandOutput(runId, finding.evidenceIds) : null;
       if (!check || !output) return false;
+      const owner = failureOwner(
+        state.rootGraph ?? state.graph,
+        this.store.tasks(runId),
+        state.taskGates,
+        task,
+        output,
+      );
+      if (["pending", "test-update", "finished"].includes(owner.kind)) return false;
       const regression = finding.claim.includes(" broke existing tests: ");
       const touched =
         graph !== null &&

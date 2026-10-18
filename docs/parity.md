@@ -126,20 +126,22 @@ bun test tests/feature-parity.test.ts
 | Start a full run or a quick task | `/workflow` | `baked workflow run`, `baked quick`, `baked workflow definitions` +1 | `/v1/workflow/runs`, `/v1/workflow/definitions`, `/v1/workflow/profiles` | `project/overview` |
 | Size tests by literal cases and split large test files into sequential criterion slices | `/workflow` | `baked workflow show` | `/v1/workflow/runs/:id` | `project/runs` |
 | Test-integrity guard: block or warn on test gaming, spec conflicts | `/workflow` | `baked workflow run`, `baked workflow answer` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/answer` | `project/overview`, `attention` |
+| Route failed checks to pending test writers or named source owners | `/workflow` | `baked workflow run`, `baked workflow artifacts` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/artifacts` | `project/runs` |
 | Tests first: failing tests approved before the code, tdd preset | `/workflow` | `baked workflow run`, `baked workflow approve`, `baked workflow reject` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/approve`, `/v1/workflow/runs/:id/reject` | `project/overview`, `attention` |
 | Cost cap of a run: per run, per project and in the doctor and estimate | `/workflow`, `/timeouts` | `baked workflow run`, `baked workflow doctor`, `baked workflow estimate` +1 | `/v1/workflow/runs`, `/v1/workflow/doctor`, `/v1/workflow/estimate` +1 | `project/overview`, `settings/chat` |
 | Propose the workflow and budget from the request | `/workflow` | `baked workflow propose`, `baked workflow run`, `auto-preset` | `/v1/workflow/propose` | `project/overview` |
-| Run list, detail, report, artifacts and usage | `/workflow` | `baked workflow list`, `baked workflow status`, `baked workflow report` +2 | `/v1/workflow/runs`, `/v1/workflow/runs/:id`, `/v1/workflow/runs/:id/events` +3 | `project/runs` |
+| Run list, detail, report, artifacts, attempt context and usage | `/workflow` | `baked workflow list`, `baked workflow status`, `baked workflow report` +2 | `/v1/workflow/runs`, `/v1/workflow/runs/:id`, `/v1/workflow/runs/:id/events` +3 | `project/runs` |
 | Record a run's model calls and replay them without the provider | Not needed: a debugging aid for BAKED itself | `baked workflow run`, `baked workflow recording` | Not needed: a debugging aid for BAKED itself | Not needed: a debugging aid for BAKED itself |
 | Critic outcome log and calibration: scores with checks, acceptance, delivery, survival | `/workflow` | `baked workflow outcomes` | `/v1/workflow/critic`, `/v1/workflow/runs/:id/report` | `settings/routing`, `project/runs` |
 | Best-of-N: implement each planned task several times and keep the best candidate | `/workflow` | `baked workflow run` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `project/overview`, `project/runs` |
+| Task-end test case check: concrete input tokens, with scenario labels left to review | `/workflow` | `baked workflow artifacts` | `/v1/workflow/runs/:id/artifacts` | `project/runs` |
 | Progress watcher: steer, then stop, a stuck agent attempt | `/workflow` | `baked workflow run`, `baked workflow resume` | `/v1/workflow/runs/:id/events` | `project/runs` |
 | Approve, reject, answer, give evidence, continue, accept a stopped convergence | `/workflow` | `baked workflow approve`, `baked workflow reject`, `baked workflow answer` +3 | `/v1/workflow/runs/:id/approve`, `/v1/workflow/runs/:id/reject`, `/v1/workflow/runs/:id/answer` +3 | `project/runs`, `attention` |
 | Acceptance: criteria that need a person's evidence | `/workflow` | `baked workflow evidence` | `/v1/workflow/runs/:id/evidence` | `project/runs`, `attention` |
 | Recover a stuck side effect | `/workflow` | `baked workflow recover` | `/v1/workflow/runs/:id/recover` | `project/runs` |
 | Pause, resume, accept outside changes, cancel, extend, reroute, undo edits | `/workflow` | `baked workflow pause`, `baked workflow resume`, `baked workflow cancel` +3 | `/v1/workflow/runs/:id/pause`, `/v1/workflow/runs/:id/resume`, `/v1/workflow/runs/:id/cancel` +3 | `project/runs` |
 | Continue approved manifest edits using the run's file-patch hash history | `/workflow` | `baked workflow run`, `baked workflow resume` | `/v1/workflow/runs/:id/resume` | `project/runs` |
-| Supervisor: a driver whose thread stopped is stopped and its run taken over | **Gap** [#1541](https://github.com/Gulliby-development/baked/issues/1541): the TUI drives runs in its own process | `baked workflow run`, `baked workflow resume`, `baked workflow approve` +1 | **Gap** [#1541](https://github.com/Gulliby-development/baked/issues/1541): baked serve drives runs in its own process | **Gap** [#1541](https://github.com/Gulliby-development/baked/issues/1541): through baked serve |
+| Supervisor: a driver whose thread stopped is stopped and its run taken over | `/workflow` | Partial [#1554](https://github.com/Gulliby-development/baked/issues/1554): runs launched by baked session coordinator send still need worker supervision | `/v1/health` | `project/runs` |
 | Fork a run | `/workflow` | `baked workflow fork` | `/v1/workflow/runs/:id/fork` | `project/runs` |
 | Discard a run's worktree | `/workflow` | `baked workflow discard-worktree` | `/v1/workflow/runs/:id/discard-worktree` | `project/runs` |
 | Worktree sizes and cleanup | `/workflow` | `baked workflow worktrees` | `/v1/workflow/worktrees`, `/v1/workflow/worktrees/clean` | `project/runs` |
@@ -156,7 +158,7 @@ bun test tests/feature-parity.test.ts
 | New dependencies looked up before checks; Semgrep on the run's diff | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | Docs for the locked library versions a task uses | `/code-quality` | `baked workflow doctor` | `/v1/settings` | `settings/chat` |
 | Per-profile effort and compaction threshold (set in agent profile files) | `/workflow` | `baked workflow profiles`, `baked workflow route` | `/v1/workflow/profiles`, `/v1/workflow/route` | `settings/routing` |
-| Mutation gate on the lines a run added, with installed mutation tools | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
+| Mutation gate with built-in budgets shared across changed files and installed tools | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | Property-based tests from marked acceptance criteria | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | Harden preset: strengthen the tests of existing code | `/workflow` | `baked workflow run` | `/v1/workflow/runs`, `/v1/workflow/definitions` | `project/overview` |
 | Custom gates: a script or container that reports its result as JSON (command.report json) | `/workflow` | `baked workflow gates`, `baked workflow validate` | `/v1/workflow/checks`, `/v1/workflow/checks/:id/run` | `project/gates` |
@@ -216,6 +218,6 @@ bun test tests/feature-parity.test.ts
 ### Open gaps by issue
 
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
-- [#1541](https://github.com/Gulliby-development/baked/issues/1541): Supervisor: a driver whose thread stopped is stopped and its run taken over
+- [#1554](https://github.com/Gulliby-development/baked/issues/1554): Supervisor: a driver whose thread stopped is stopped and its run taken over
 
 <!-- parity:end -->

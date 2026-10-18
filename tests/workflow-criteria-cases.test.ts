@@ -59,6 +59,37 @@ describe("the quoted cases of a task's criteria", () => {
     ];
     expect(missingCases(cases, ['run(["--path", "src/cli"])']).map((c) => c.literal)).toEqual(["--path SRC"]);
   });
+
+  test("scenario labels stay with the reviewer while concrete table inputs stay cases (#1565)", () => {
+    const table = [
+      "| Input | expected |", "| --- | --- |",
+      "| repeated flag | last value |", "| success | zero status |",
+      "| no arguments | usage |", "| Show(empty) | empty text |",
+      "| Join(nil) or Join(empty) | empty text |", "| TEXT | a placeholder |",
+      "| rank/unrank | inverse operations |",
+      "| --max-part=5 and --max-part 5 | same option |",
+      "| Join([3,0,-2]) | joined values |",
+    ].join("\n");
+    const spec = { criteria: [{ ...criterion("AC-001", table), given: 'input scenarios include "repeated flag", `success`, and \u201crank/unrank\u201d', when: "tests run" }] };
+    expect(criterionCases(spec, { criterionIds: ["AC-001"] }).map((c) => c.literal)).toEqual([
+      "--max-part=5 and --max-part 5", "Join([3,0,-2])",
+    ]);
+    // Plain English remains a case when the criterion explicitly names output text.
+    expect(criterionCases({ criteria: [{ ...spec.criteria[0]!, then: 'it prints "no matching files" and returns "success"' }] }, { criterionIds: ["AC-001"] }).map((c) => c.literal)).toEqual(["no matching files", "success"]);
+  });
+
+  test("significant tokens can move or change grouping but cannot disappear (#1565)", () => {
+    expect(testsHold('const path = "src/cli"; run(["--path", path])', "--path src/cli")).toBe(true);
+    expect(testsHold('run(["--max-part", "5"]); run(["--max-part=5"])', "--max-part=5 and --max-part 5")).toBe(true);
+    expect(testsHold("Join([]int{3, 0, -2})", "Join([3,0,-2])")).toBe(true);
+    expect(testsHold('"/tmp/cli"', "/tmp/cli")).toBe(true);
+    expect(testsHold('"C:\\src\\cli"', "C:\\src\\cli")).toBe(true);
+    expect(testsHold("Join([]int{3, 0, 2})", "Join([3,0,-2])")).toBe(false);
+    expect(testsHold('run(["--path", "src/cliExtra"])', "--path src/cli")).toBe(false);
+    expect(testsHold('run(["--path", "src/cli"])', "--path SRC")).toBe(false);
+    expect(testsHold("", "<file>")).toBe(false);
+    expect(missingCases([{ criterionId: "AC-001", literal: "--path src/cli" }], ['"--path"', '"src/cli"'])).toHaveLength(1);
+  });
 });
 
 test("a task that writes tests gets the walk of its criteria's cases in its attempt", async () => {

@@ -564,6 +564,8 @@ export interface ExecutionRequest {
    * that runs in the checks stage rather than after the task (#799); null for any other check.
    */
   attributeCheck?: (check: Check, output: string) => string[] | null;
+  /** Ownership advice for failed checks, including test updates and upstream defects. */
+  failureOwner?: (output: string) => import("./task-graph.js").FailureOwner;
   /** Directory the agent reads, edits and checks in; defaults to the run's workspace. */
   root?: string;
   /**

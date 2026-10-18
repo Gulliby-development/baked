@@ -137,17 +137,72 @@ const OPERATORS: readonly Operator[] = [
 const SKIP_LINE =
   /^\s*(?:import\b|from\s+\S+\s+import\b|export\s+(?:\*|\{|type\b|interface\b)|package\b|using\b|use\b|#include\b|@|type\s+\w+\s*=|interface\b)/;
 
+/** One entry per group before taking another from the same group. */
+function interleave<T>(groups: T[][]): T[] {
+  const out: T[] = [];
+  for (let round = 0; groups.some((group) => round < group.length); round++)
+    for (const group of groups) {
+      const item = group[round];
+      if (item !== undefined) out.push(item);
+    }
+  return out;
+}
+
+/**
+ * Reserve an equal share for each file before redistributing unused capacity. Larger additions
+ * go first when the cap cannot cover every file. Costs are one mutant or a numbered line's text.
+ */
+function fileShares<T>(
+  files: { path: string; size: number; items: T[] }[],
+  budget: number,
+  cost: (item: T) => number,
+): { path: string; items: T[] }[] {
+  const groups = files
+    .filter((file) => file.items.length)
+    .sort((a, b) => b.size - a.size || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+    .map((file) => ({ ...file, index: 0, spent: 0, selected: [] as T[] }));
+  const share = Math.floor(budget / groups.length);
+  let left = budget;
+  const take = (group: (typeof groups)[number], item: T) => {
+    group.selected.push(item);
+    group.index++;
+    group.spent += cost(item);
+    left -= cost(item);
+  };
+  for (const group of groups)
+    for (const item of group.items) {
+      if (group.spent + cost(item) > share) break;
+      take(group, item);
+    }
+  while (left > 0) {
+    // A short file gives its unused share to the least represented file that can still fit.
+    let next: (typeof groups)[number] | undefined;
+    for (const group of groups) {
+      const item = group.items[group.index];
+      if (item !== undefined && cost(item) <= left && (!next || group.spent < next.spent))
+        next = group;
+    }
+    if (!next) break;
+    const item = next.items[next.index];
+    if (item !== undefined) take(next, item);
+  }
+  return groups.map((group) => ({ path: group.path, items: group.selected }));
+}
+
 /** Mutants on the lines each changed non-test code file gained, spread round-robin and capped. */
 export function generateMutants(files: ChangedFile[], max = MAX_MUTANTS): Mutant[] {
-  const perLine: Mutant[][] = [];
+  const perFile: { path: string; size: number; items: Mutant[] }[] = [];
   for (const file of files) {
     if (isTestCodePath(file.path)) continue;
+    const perLine: Mutant[][] = [];
+    let size = 0;
     const lines = file.content.split("\n");
     const code = maskNonCode(file.path, file.content).split("\n");
     for (const index of [...addedLines(file.before, file.content)].sort((a, b) => a - b)) {
       const original = lines[index] ?? "";
       const masked = code[index] ?? "";
       if (isNonCodeLine(masked) || SKIP_LINE.test(original)) continue;
+      size += original.length;
       const mutants: Mutant[] = [];
       for (const operator of OPERATORS) {
         const match = operator.pattern.exec(masked);
@@ -170,14 +225,11 @@ export function generateMutants(files: ChangedFile[], max = MAX_MUTANTS): Mutant
       }
       if (mutants.length) perLine.push(mutants);
     }
+    // Prefer distinct lines inside each file, even when a line supports several operators.
+    perFile.push({ path: file.path, size, items: interleave(perLine) });
   }
-  // One mutant per line first, then the second of each line, so a cap covers the most lines.
-  const out: Mutant[] = [];
-  for (let round = 0; out.length < max; round++) {
-    const next = perLine.map((mutants) => mutants[round]).filter((m): m is Mutant => !!m);
-    if (!next.length) break;
-    out.push(...next.slice(0, max - out.length));
-  }
+  // Rotate files during execution too, so a deadline does not favor the first file's share.
+  const out = interleave(fileShares(perFile, max, () => 1).map((file) => file.items));
   return out.map((mutant, i) => ({ ...mutant, id: `M${i + 1}` }));
 }
 
@@ -408,8 +460,7 @@ const MAX_PROPOSAL_INPUT_CHARS = 24_000;
 
 /** The lines each changed non-test code file gained, numbered, for the agent that proposes mutants. */
 export function proposalFiles(files: ChangedFile[]): { path: string; lines: string[] }[] {
-  let left = MAX_PROPOSAL_INPUT_CHARS;
-  const out: { path: string; lines: string[] }[] = [];
+  const perFile: { path: string; size: number; items: string[] }[] = [];
   for (const file of files) {
     if (isTestCodePath(file.path)) continue;
     const text = file.content.split("\n");
@@ -419,13 +470,17 @@ export function proposalFiles(files: ChangedFile[]): { path: string; lines: stri
       const line = text[index] ?? "";
       if (isNonCodeLine(code[index]) || SKIP_LINE.test(line)) continue;
       const entry = `${index + 1}: ${line}`;
-      if (entry.length > left) break;
-      left -= entry.length;
       lines.push(entry);
     }
-    if (lines.length) out.push({ path: file.path, lines });
+    perFile.push({
+      path: file.path,
+      size: lines.reduce((sum, line) => sum + line.length, 0),
+      items: lines,
+    });
   }
-  return out;
+  return fileShares(perFile, MAX_PROPOSAL_INPUT_CHARS, (line) => line.length)
+    .filter((file) => file.items.length)
+    .map((file) => ({ path: file.path, lines: file.items }));
 }
 
 /**

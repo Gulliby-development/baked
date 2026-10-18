@@ -12,6 +12,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
+import { criterionCases, missingCases, writtenTestPaths } from "../src/core/verification/criteria-cases.js";
 import { reproExecutables } from "../src/core/verification/repro.js";
 import { exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
 import { failureSignature, testCount } from "../src/core/verification/output-counts.js";
@@ -37,7 +38,7 @@ import {
   type ToolShell,
   toolShellFiles,
 } from "../src/core/workflows/quality/mutation-tools.js";
-import { isTestCheck } from "../src/core/workflows/quality/mutation.js";
+import { generateMutants, isTestCheck, proposalFiles } from "../src/core/workflows/quality/mutation.js";
 import {
   libraryFiles,
   propertyLibraries,
@@ -50,8 +51,9 @@ import {
   ruleFindingKey,
 } from "../src/core/workflows/quality/rules.js";
 import { staticCorrection } from "../src/core/workflows/scheduler.js";
+import { failureOwner } from "../src/core/workflows/task-graph.js";
 import type { Check, RunPolicy, RuntimeState } from "../src/core/workflows/schemas.js";
-import type { WorkflowStore } from "../src/core/workflows/store.js";
+import type { TaskRow, WorkflowStore } from "../src/core/workflows/store.js";
 import { scanTestIntegrity, testChanges } from "../src/core/workflows/test-integrity.js";
 import type { Task } from "../src/core/workflows/types.js";
 import {
@@ -413,6 +415,22 @@ function cell(stack: Stack, name: string, body: () => void | Promise<void>, time
   else test(name, body, timeout);
 }
 
+describe("gate matrix: criteria scenario labels (#1565)", () => {
+  const samples: { stack: Stack; path: string; text: string }[] = [
+    { stack: "bun", path: "tests/cli.test.ts", text: 'const path = "src/cli"; expect(run(["--path", path])).toBe(0); Join([3, 0, -2]);' },
+    { stack: "python", path: "tests/test_cli.py", text: 'path = "src/cli"\nassert run(["--path", path]) == 0\nJoin([3, 0, -2])' },
+    { stack: "go", path: "cli_test.go", text: 'path := "src/cli"; run([]string{"--path", path}); Join([]int{3, 0, -2})' },
+  ];
+  for (const sample of samples) cell(sample.stack, `${sample.stack}: labels are not missing cases`, () => {
+    const task = { criterionIds: ["AC-001"], writes: [{ path: sample.path, action: "create" as const }] };
+    const cases = criterionCases({ criteria: [{ id: "AC-001", requirementIds: ["FR-001"], given: 'the "repeated flag" and `success` scenarios', when: "tests run", then: "| Input | expected |\n| --- | --- |\n| repeated flag | last value |\n| success | zero status |\n| --path src/cli | selected |\n| Join([3,0,-2]) | joined |", method: "automated" }] }, task);
+    expect(writtenTestPaths(task)).toEqual([sample.path]);
+    expect(cases.map((c) => c.literal)).toEqual(["--path src/cli", "Join([3,0,-2])"]);
+    expect(missingCases(cases, [sample.text])).toEqual([]);
+    expect(missingCases(cases, [sample.text.replace("src/cli", "SRC")]).map((c) => c.literal)).toEqual(["--path src/cli"]);
+  });
+});
+
 /** A tool shell over a real directory with a fixed PATH, for detection only. */
 function shell(root: string, on: string[]): ToolShell {
   return {
@@ -518,6 +536,22 @@ for (const stack of STACKS) {
       expect(preselected().some((c) => c.required && isTestCheck(c))).toBe(true);
     });
 
+    cell(stack, "mutation caps cover sibling files (#1567)", () => {
+      const source = fixture.mutation?.source ?? "src/Sum.cs";
+      const extension = source.slice(source.lastIndexOf("."));
+      const line = stack === "python" ? "    return value > 0" : "    return value > 0;";
+      const files = ["a", "b", "z"].map((name) => ({
+        path: `src/${name}${extension}`, before: null,
+        content: Array.from({ length: 100 }, () => `${line}${" ".repeat(300)}`).join("\n"),
+      }));
+      const mutants = generateMutants(files);
+      expect(mutants).toHaveLength(24);
+      for (const file of files) expect(mutants.filter((m) => m.file === file.path)).toHaveLength(8);
+      const listed = proposalFiles(files);
+      expect(listed.map((f) => f.path)).toEqual(files.map((f) => f.path));
+      expect(listed.flatMap((f) => f.lines).join("").length).toBeLessThanOrEqual(24_000);
+    });
+
     // A check started through a launcher routes by the program the launcher runs (#1507): bench
     // round 42 wrote the Maven check as `cmd /c mvn -B -q verify`, and 7 of 7 features got no
     // task-end test check and no mutation gate.
@@ -541,6 +575,21 @@ for (const stack of STACKS) {
       for (const check of checks.filter((c) => isTestCheck(c))) {
         expect(isStaticCheck(check)).toBe(false);
       }
+    });
+
+    cell(stack, "pending-test-update-owner (#1563)", () => {
+      const path = fixture.property.path;
+      const source: Task = { id: "T001", title: "Source", description: "Source", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: [{ path: "value.txt", action: "create" }], readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Fixture" };
+      const updater: Task = { ...source, id: "T002", dependsOn: [source.id], writes: [{ path, action: "modify" }] };
+      const graph = { schemaVersion: 1 as const, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [source, updater] };
+      const rows = [{ id: source.id, status: "implemented" }, { id: updater.id, status: "pending" }] as TaskRow[];
+      const output = stack === "maven" ? "[ERROR] com.example.SumTest.commutes:42 expected result"
+        : stack === "dotnet" ? "Failed SumTests.Commutes [8 ms]"
+        : stack === "go" ? "--- FAIL: TestSum (0.00s)\n    sum_test.go:42: wrong result"
+        : stack === "rust" ? "thread 'sum' panicked at tests/sum.rs:42:5"
+        : `FAIL ${path}:42: wrong result`;
+      expect(failureOwner(graph, rows, {}, source, output)).toMatchObject({ kind: "test-update", owners: [updater.id] });
+      expect(failureOwner(graph, [{ ...rows[1], status: "verified" }] as TaskRow[], {}, source, output).kind).not.toBe("test-update");
     });
 
     // `allowNewDependencies: false` relies on this to see a dependency added to the stack's

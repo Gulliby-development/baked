@@ -804,6 +804,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/overview: New run, Test integrity", "attention"],
   },
   {
+    id: "workflow-failure-ownership",
+    group: "Workflow runs",
+    title: "Route failed checks to pending test writers or named source owners",
+    tui: ["/workflow: run tasks and diagnostic artifacts"],
+    cli: ["baked workflow run", "baked workflow artifacts"],
+    api: ["/v1/workflow/runs", "/v1/workflow/runs/:id/artifacts"],
+    desktop: ["project/runs: tasks and artifacts"],
+  },
+  {
     id: "tests-first",
     group: "Workflow runs",
     title: "Tests first: failing tests approved before the code, tdd preset",
@@ -843,13 +852,13 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "run-detail",
     group: "Workflow runs",
-    title: "Run list, detail, report, artifacts and usage",
+    title: "Run list, detail, report, artifacts, attempt context and usage",
     tui: ["/workflow"],
     cli: [
       "baked workflow list",
       "baked workflow status",
       "baked workflow report",
-      "baked workflow artifacts",
+      "baked workflow artifacts: includes attempts/ID/context.json for task context",
       "baked workflow usage",
     ],
     api: [
@@ -894,6 +903,15 @@ export const FEATURES: readonly Feature[] = [
       "project/overview: New run, best-of-n workflow",
       "project/runs: Report tab, Best-of-N section",
     ],
+  },
+  {
+    id: "criteria-case-check",
+    group: "Workflow runs",
+    title: "Task-end test case check: concrete input tokens, with scenario labels left to review",
+    tui: ["/workflow: task activity and diagnostic artifacts"],
+    cli: ["baked workflow artifacts"],
+    api: ["/v1/workflow/runs/:id/artifacts"],
+    desktop: ["project/runs: task activity and artifacts"],
   },
   {
     id: "progress-watcher",
@@ -981,15 +999,20 @@ export const FEATURES: readonly Feature[] = [
     id: "run-supervisor",
     group: "Workflow runs",
     title: "Supervisor: a driver whose thread stopped is stopped and its run taken over",
-    tui: gap(1541, "the TUI drives runs in its own process"),
-    cli: [
-      "baked workflow run",
-      "baked workflow resume",
-      "baked workflow approve",
-      "baked workflow initiative drive",
-    ],
-    api: gap(1541, "baked serve drives runs in its own process"),
-    desktop: gap(1541, "through baked serve"),
+    tui: ["/workflow"],
+    cli: partial(
+      [
+        "baked workflow run",
+        "baked workflow resume",
+        "baked workflow approve",
+        "baked workflow initiative drive",
+        "baked serve --take-over",
+      ],
+      1554,
+      "runs launched by baked session coordinator send still need worker supervision",
+    ),
+    api: ["/v1/health"],
+    desktop: ["project/runs"],
   },
   {
     id: "run-fork",
@@ -1148,7 +1171,7 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "mutation-gate",
     group: "Workflow runs",
-    title: "Mutation gate on the lines a run added, with installed mutation tools",
+    title: "Mutation gate with built-in budgets shared across changed files and installed tools",
     tui: ["/code-quality", "/workflow: run report"],
     cli: ["baked workflow run: --mutation off|advisory|required", "baked workflow report"],
     api: ["/v1/settings: code-quality page", "/v1/workflow/runs", "/v1/workflow/runs/:id/report"],

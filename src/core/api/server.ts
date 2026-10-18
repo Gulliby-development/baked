@@ -28,7 +28,12 @@ import { join } from "node:path";
 import type { Server } from "bun";
 import { ZodError, type z } from "zod";
 import { executeWorkflowCommand } from "../../headless/workflow.js";
-import { validateWorkflowArgs, type WorkflowArgs } from "../../headless/workflow-parse.js";
+import {
+  parseWorkflowArgs,
+  validateWorkflowArgs,
+  type WorkflowArgs,
+} from "../../headless/workflow-parse.js";
+import { recoveryArgs } from "../../headless/workflow-supervise.js";
 import { ArtifactStore } from "../artifacts/store.js";
 import type { VercelOptions } from "../artifacts/vercel.js";
 import { githubTasks, type TaskTracker } from "../chat/coordinator-launch.js";
@@ -68,6 +73,9 @@ import {
   type WorkflowErrorCode,
 } from "../workflows/schemas.js";
 import type { NativeWorkflowService } from "../workflows/service.js";
+import { stallSettings } from "../workflows/stall.js";
+import type { StalledDriver } from "../workflows/supervisor.js";
+import { takeOverDriver } from "../workflows/takeover.js";
 import { transientSqliteError } from "../workflows/transient-sqlite.js";
 import { usageSummary } from "../workflows/usage.js";
 import { usageMarkdown } from "../workflows/usage-markdown.js";
@@ -245,6 +253,11 @@ export interface ApiServerOptions {
   openArtifact?: (path: string) => boolean;
   /** Receives one line per background drive failure. Defaults to stderr. */
   log?: (line: string) => void;
+  /**
+   * A stopped `baked serve` whose runs this server takes over and drives (#1541): the desktop app
+   * restarts a server that stopped answering with `--take-over PID`.
+   */
+  takeOver?: StalledDriver;
   /**
    * Keeps the code index current in the background (`baked serve` turns it on): opens the
    * project shortly after start, then updates after file changes, chat edits, runs and git
@@ -1026,6 +1039,8 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
           version: CURRENT_VERSION,
           workspace: service.workspace,
           capabilities: CAPABILITIES,
+          // How long the desktop app waits for an answer before it restarts this server (#1541).
+          supervisorGraceMs: stallSettings(service.config).supervisorGraceMs,
         },
         origin,
       );
@@ -1649,6 +1664,30 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     return ownMemory;
   };
   chat.setMemorySource(chatMemory);
+  if (options.takeOver) {
+    const driver = options.takeOver;
+    // In the background: the server answers while the runs are taken over and driven again.
+    void takeOverDriver(service, driver)
+      .then((runs) => {
+        for (const run of runs) {
+          log(
+            JSON.stringify({
+              event: "takeover",
+              runId: run.runId,
+              pid: driver.pid,
+              resumed: run.resumed,
+            }),
+          );
+          if (!run.resumed || shutdown.signal.aborted) continue;
+          if (run.initiativeId) driveInitiative(run.initiativeId);
+          else void launch(parseWorkflowArgs(recoveryArgs([], run, 0))).catch(() => undefined);
+        }
+      })
+      .catch((error: unknown) => {
+        const { code, message } = errorOf(error);
+        log(JSON.stringify({ event: "takeover-error", code, message: redactSecrets(message) }));
+      });
+  }
   const stop = (): Promise<void> => {
     stopping ??= (async () => {
       shutdown.abort(new Error("API server shutdown"));
