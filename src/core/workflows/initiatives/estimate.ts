@@ -38,7 +38,10 @@ const SIZE_STAGE_FACTOR: Record<FeatureSize, number> = { small: 0.6, medium: 1, 
  */
 export const PLACEHOLDER_SHARE = 1 / 3;
 
-/** The paths a feature counts for the per-path rate: its own in full, its placeholders less. */
+/**
+ * The paths a feature counts for the per-path rate: its own in full, its placeholders less, the
+ * files of its skeleton not at all (the host writes them, #1550).
+ */
 export const pathWeight = (f: { paths?: number; placeholders?: number }): number =>
   (f.paths ?? 0) + PLACEHOLDER_SHARE * (f.placeholders ?? 0);
 
@@ -55,6 +58,8 @@ export interface FeatureRunSample {
   paths?: number;
   /** Paths of its boundary a later feature of the plan lists too (`boundaryPathCounts`). */
   placeholders?: number;
+  /** Files of its skeleton, which the host wrote; they are not in the per-path rate. */
+  skeleton?: number;
   /** This project's store, or one of the policy's `sizing.historyStores`; absent means project. */
   source?: "project" | "shared";
 }
@@ -70,6 +75,8 @@ export interface FeatureToEstimate {
   paths?: number;
   /** Paths of its boundary a later feature lists too: placeholders it creates for that one. */
   placeholders?: number;
+  /** Files of its skeleton: the host writes them, so they add nothing to its forecast. */
+  skeleton?: number;
 }
 
 export type FeatureEstimateBasis =
@@ -98,6 +105,8 @@ export interface FeatureEstimate {
   paths?: number;
   /** Placeholder paths of its boundary that a later feature fills, when it has any. */
   placeholders?: number;
+  /** Files of its skeleton the host writes, when it has any; they cost no tokens. */
+  skeleton?: number;
   /** The tokens the feature run's plan sizing expects the run to use, once it has a plan. */
   planned?: TokenRange;
   /**
@@ -218,6 +227,7 @@ function estimateFeature(
     spent: 0,
     ...(feature.paths ? { paths: feature.paths } : {}),
     ...(feature.placeholders ? { placeholders: feature.placeholders } : {}),
+    ...(feature.skeleton ? { skeleton: feature.skeleton } : {}),
   };
   const hasTasks = feature.stages.some((s) => s.type === "tasks");
   // Finished feature runs of the same size measure the whole feature, split and all; those of the
@@ -458,6 +468,9 @@ export function estimateInitiative(input: {
       ? [
           `A path a later feature also lists counts in full only in that feature, and at ${Math.round(PLACEHOLDER_SHARE * 100)}% as a placeholder in the earlier ones.`,
         ]
+      : []),
+    ...(perPath && features.some((f) => f.basis !== "measured" && f.skeleton && !f.criteria)
+      ? ["A file of a feature's skeleton counts nothing: the host writes it with no agent."]
       : []),
     ...(features.some((f) => f.basis !== "measured" && f.planned)
       ? [

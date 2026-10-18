@@ -5,7 +5,7 @@
  */
 import { builtinModules } from "node:module";
 
-export type Ecosystem = "npm" | "pypi" | "crates" | "go" | "nuget" | "maven";
+export type Ecosystem = "npm" | "pypi" | "crates" | "go" | "nuget" | "maven" | "rubygems";
 
 export interface Dependency {
   ecosystem: Ecosystem;
@@ -27,7 +27,9 @@ export function isManifestPath(path: string): boolean {
     name === "Cargo.toml" ||
     name === "go.mod" ||
     /\.(csproj|fsproj|vbproj)$/.test(name) ||
-    name === "pom.xml"
+    name === "pom.xml" ||
+    /^(?:build|settings)\.gradle(?:\.kts)?$/.test(name) ||
+    name === "Gemfile"
   );
 }
 
@@ -186,6 +188,64 @@ function pomXml(path: string, text: string): Dependency[] {
   return out;
 }
 
+/** Literal Maven coordinates in Gradle dependency blocks, in Groovy or Kotlin syntax. */
+function gradle(path: string, text: string): Dependency[] {
+  // Blank comments without shifting offsets or treating comment markers in strings as comments.
+  const code = text.replace(
+    /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\/[^\n]*|\/\*[\s\S]*?\*\//g,
+    (token) => (token.startsWith("/") ? token.replace(/[^\n]/g, " ") : token),
+  );
+  const out: Dependency[] = [];
+  const blocks: boolean[] = [];
+  let previous = "";
+  for (const token of code.matchAll(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[\w]+|[{}]/g)) {
+    const value = token[0];
+    if (value === "{") blocks.push(previous === "dependencies" || blocks.at(-1) === true);
+    else if (value === "}") blocks.pop();
+    else if (blocks.at(-1)) {
+      const coordinate = /^["']([\w.-]+):([\w.-]+)(?::[^"']*)?["']$/.exec(value);
+      if (coordinate)
+        out.push({
+          ecosystem: "maven",
+          name: `${coordinate[1]}:${coordinate[2]}`,
+          file: path,
+          line: lineOf(text, token.index),
+        });
+      // Groovy `group: 'g', name: 'a'` and Kotlin `group = "g", name = "a"`.
+      if (value === "group") {
+        const notation =
+          /^group\s*[:=]\s*["']([\w.-]+)["']\s*,\s*name\s*[:=]\s*["']([\w.-]+)["']/.exec(
+            code.slice(token.index),
+          );
+        if (notation)
+          out.push({
+            ecosystem: "maven",
+            name: `${notation[1]}:${notation[2]}`,
+            file: path,
+            line: lineOf(text, token.index),
+          });
+      }
+    }
+    previous = value;
+  }
+  return out;
+}
+
+/** Gemfile declarations, including gems inside groups and source blocks. */
+function gemfile(path: string, text: string): Dependency[] {
+  const out: Dependency[] = [];
+  const code = text.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|#[^\n]*/g, (token) =>
+    token.startsWith("#") ? "" : token,
+  );
+  code.split("\n").forEach((line, i) => {
+    const match = /^\s*gem\s*(?:\(\s*)?["']([\w.-]+)["'](.*)$/.exec(line);
+    if (!match || /\b(?:git|github|path)\s*:|:(?:git|github|path)\s*=>/.test(match[2] ?? ""))
+      return;
+    out.push({ ecosystem: "rubygems", name: match[1] ?? "", file: path, line: i + 1 });
+  });
+  return out;
+}
+
 /** The registry dependencies a manifest declares. */
 export function manifestDependencies(path: string, text: string): Dependency[] {
   const name = base(path);
@@ -196,6 +256,8 @@ export function manifestDependencies(path: string, text: string): Dependency[] {
   if (name === "go.mod") return goMod(path, text);
   if (/\.(csproj|fsproj|vbproj)$/.test(name)) return csproj(path, text);
   if (name === "pom.xml") return pomXml(path, text);
+  if (/^(?:build|settings)\.gradle(?:\.kts)?$/.test(name)) return gradle(path, text);
+  if (name === "Gemfile") return gemfile(path, text);
   return [];
 }
 

@@ -7,6 +7,7 @@ import { launchedCommand } from "../workflows/launcher.js";
 import type { ProcessResult, ProcessScope } from "../workflows/process-scope.js";
 import { generatedPaths, type RunPolicy } from "../workflows/schemas.js";
 import type { WorkflowStore } from "../workflows/store.js";
+import { withPerTestTimeout } from "../workflows/test-timeout.js";
 import type { Check } from "../workflows/types.js";
 import { isFailedTestLine } from "./failed-test-line.js";
 import { MISSING_GATE_REPORT, readGateReport, renderGateReport } from "./gate-report.js";
@@ -15,8 +16,11 @@ import { changedPaths, sourceManifest } from "./snapshot.js";
 /** Shared process execution for native checks and the legacy project formatter. */
 export const executeCheckCommand = (
   scope: ProcessScope,
-  ...args: Parameters<ProcessScope["execute"]>
-): Promise<ProcessResult> => scope.execute(...args);
+  executable: string,
+  args: string[],
+  options: Parameters<ProcessScope["execute"]>[2],
+): Promise<ProcessResult> =>
+  scope.execute(executable, withPerTestTimeout({ executable, args }, options.cwd), options);
 
 /** The environment every check and on-demand gate run gets: safe base plus the names it declares. */
 export function buildCheckEnv(check: Check): NodeJS.ProcessEnv {

@@ -166,8 +166,8 @@ describe("a glob boundary is sized from the files the request names (#1504)", ()
       ]),
       request,
     );
-    expect(counts.get("core")).toEqual({ paths: 0, placeholders: 0 });
-    expect(counts.get("front")).toEqual({ paths: 7, placeholders: 0 });
-    expect(boundaryPathCounts(split([["front", ["commands/*Command.java"]]])).get("front")).toEqual({ paths: 0, placeholders: 0 });
+    expect(counts.get("core")).toEqual({ paths: 0, placeholders: 0, skeleton: 0 });
+    expect(counts.get("front")).toEqual({ paths: 7, placeholders: 0, skeleton: 0 });
+    expect(boundaryPathCounts(split([["front", ["commands/*Command.java"]]])).get("front")).toEqual({ paths: 0, placeholders: 0, skeleton: 0 });
   });
 });

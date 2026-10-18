@@ -275,6 +275,24 @@ export function parseUsd(text: string): number | null {
 const usd = (n: number): string => `$${n.toFixed(2)}`;
 
 /**
+ * The critical path of the split in one line, as the terminal shows it: its features, their share
+ * of the work and the most the split can gain over one feature at a time; null with fewer than two
+ * features or on an older backend.
+ */
+export function criticalPathLine(
+  view: Pick<InitiativeView, "criticalPath" | "features" | "parallelRuns">,
+): string | null {
+  const path = view.criticalPath;
+  if (!path || view.features.length < 2) return null;
+  const gain =
+    (view.parallelRuns ?? 1) > 1
+      ? ` · at most ${path.speedup.toFixed(2)}x faster than one feature at a time`
+      : "";
+  const kept = path.chain ? ` · kept: ${path.chain}` : "";
+  return `Critical path: ${path.features.join(" → ")} (${path.features.length} of ${view.features.length} features, ${Math.round(path.workShare * 100)}% of the work)${gain}${kept}`;
+}
+
+/**
  * The initiative's dollars in one line, as the terminal shows them: spent of the cap (and its
  * ceiling with a tolerance), what is left and the forecast; null without a cap and spending.
  */

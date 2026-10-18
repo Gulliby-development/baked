@@ -9,6 +9,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { extname } from "node:path";
+import { blankStringLiterals } from "../../intelligence/comments.js";
 import { workspacePath } from "../../specs/validate.js";
 import { BUILTIN_RULES, type RuleSeverity } from "./builtin-rules.js";
 import { isTestCodePath } from "./duplication.js";
@@ -154,6 +155,7 @@ export function checkBuiltinRules(files: ChangedFile[], settings: RuleSettings):
     const ext = extname(file.path).toLowerCase();
     const test = isTestCodePath(file.path);
     const lines = file.content.split("\n");
+    const code = blankStringLiterals(file.path, file.content).split("\n");
     const added = addedLines(file.before, file.content);
     const rewritten = rewrittenLines(file.before, file.content);
     if (!added.size && !rewritten.size) continue;
@@ -164,7 +166,7 @@ export function checkBuiltinRules(files: ChangedFile[], settings: RuleSettings):
       if (!changed.size) continue;
       for (let i = 0; i < lines.length; i++) {
         if (rule.whitespace && !changed.has(i)) continue;
-        const span = rule.match(lines, i);
+        const span = rule.match(rule.code ? code : lines, i);
         if (!span?.some((line) => changed.has(line))) continue;
         const severity = severityOf(settings, rule.id, rule.severity);
         out.push({

@@ -1034,6 +1034,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs"],
   },
   {
+    id: "requested-manifest-edits",
+    group: "Workflow runs",
+    title: "Requested manifest edits, including Gradle and Gemfile, with dependency checks",
+    tui: ["/workflow: run with autoApproval.requestedManifestEdits in the policy"],
+    cli: ["baked workflow run: autoApproval.requestedManifestEdits in the policy"],
+    api: ["/v1/workflow/runs"],
+    desktop: ["project/runs: shared workflow approval and dependency findings"],
+  },
+  {
     id: "approval-review",
     group: "Workflow runs",
     title: "Approval reviewer: a model decides low-risk plans outside the auto approval limits",
@@ -1353,6 +1362,18 @@ export const FEATURES: readonly Feature[] = [
     cli: ["baked workflow initiative drive", "baked workflow initiative show"],
     api: ["/v1/initiatives/:id"],
     desktop: ["project/initiatives: the shared budget line shows up to N features at once"],
+  },
+  {
+    id: "initiative-critical-path",
+    group: "Initiatives",
+    title: "Review long dependency chains and merge small siblings by their dependents",
+    tui: ["/workflow: initiative start, Path split; Critical path in the split approval"],
+    cli: [
+      "baked workflow initiative start: --split-critical-path",
+      "baked workflow initiative show",
+    ],
+    api: ["/v1/initiatives: splitCriticalPath", "/v1/initiatives/:id: criticalPath"],
+    desktop: ["project/initiatives: Split the critical path; Critical path in the split approval"],
   },
   {
     id: "initiative-dollar-budget",

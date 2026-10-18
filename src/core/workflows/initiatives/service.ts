@@ -45,7 +45,7 @@ import { HOST_AUTO_APPROVAL_CEILING, HostAutoApprovalSchema } from "../v2/defini
 import { loadDefinition } from "../v2/definitions.js";
 import { autoApprovalPolicy } from "../v2/runtime.js";
 import { mergedBase, worktreeBase } from "../worktree.js";
-import { remainingPath } from "./critical-path.js";
+import { criticalPathSummary, remainingPath } from "./critical-path.js";
 import { DECOMPOSE_WORKFLOW_ID } from "./decompose.js";
 import {
   estimateInitiative,
@@ -275,6 +275,17 @@ export interface InitiativeView {
    * `workflows.maxParallelRuns` when every feature runs in a worktree.
    */
   parallelRuns: number;
+  /**
+   * The longest dependency chain of the latest plan, its share of the work by size and files, and
+   * the most the split can gain over one feature at a time with `parallelRuns` (#1551); `chain` is
+   * the decomposer's reason to keep a long chain. Null before a plan exists.
+   */
+  criticalPath: {
+    features: string[];
+    workShare: number;
+    speedup: number;
+    chain: string | null;
+  } | null;
   decompose: { runId: string; status: string; reason: string } | null;
   features: FeatureView[];
   pendingDecisions: PendingDecision[];
@@ -1157,7 +1168,9 @@ export class InitiativeService {
     // Small siblings share one run's fixed stages (#1352); the decomposer's prompt alone did not.
     const floored = settings.keepFeatures
       ? { plan: decomposed, merged: [] }
-      : mergeSmallSiblings(decomposed);
+      : mergeSmallSiblings(decomposed, {
+          byDependents: settings.splitCriticalPath || settings.basePolicy.criticalPath === "split",
+        });
     const proposed = floored.plan;
     let plan = proposed;
     let unfit: string | null = null;
@@ -1599,6 +1612,9 @@ export class InitiativeService {
       model: settings.model,
       featureAutoApproval: settings.featureAutoApproval,
       parallelRuns: this.parallelRuns(settings, plan, facts),
+      criticalPath: plan
+        ? criticalPathSummary(plan, row.prompt, this.parallelRuns(settings, plan, facts))
+        : null,
       decompose: decompose
         ? { runId: decompose.id, status: decompose.status, reason: decompose.reason }
         : null,

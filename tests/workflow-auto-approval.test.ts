@@ -190,7 +190,7 @@ describe("auto approval", () => {
       expect(result.approval?.mode).toBe("limits");
     });
     test("a manifest the request does not name, a delete, a lock file or a tool config still needs a person", () => {
-      for (const write of [modify("src/Other/Other.csproj"), { path: "src/Lockorder/Lockorder.csproj", action: "delete" as const }, modify("packages.lock.json"), modify("Directory.Packages.props"), modify("tsconfig.json")]) {
+      for (const write of [modify("src/Other/Other.csproj"), { path: "src/Lockorder/Lockorder.csproj", action: "delete" as const }, modify("packages.lock.json"), modify("Directory.Packages.props"), modify("Directory.Build.props"), modify("bunfig.toml"), modify("Gemfile.lock"), modify("tsconfig.json")]) {
         const named = `${request} Also touch ${write.path}.`;
         const unnamed = write.path === "src/Other/Other.csproj" ? request : named;
         expect(evaluateAutoApproval(optedIn, manifest, covered, graph([write]), [], [], { ...present, request: unnamed }).approval).toBeNull();
@@ -213,12 +213,44 @@ describe("auto approval", () => {
       expect(decide("src/Lockorder/Lockorder.csproj", "Add a Core library. Reference it from src\\Lockorder\\Lockorder.csproj.")).toBe("limits");
       expect(decide("src/Lockorder/Lockorder.csproj", "Add a Core library. Reference it from MyLockorder.csproj.")).toBeNull();
       expect(decide("src/Lockorder/Lockorder.csproj", "Add a Core library. Reference it from src/Lockorder/Lockorder.csproj.bak.")).toBeNull();
+      for (const name of ["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "Gemfile"]) {
+        expect(decide(name, `Add a Core library. Update ${name}.`)).toBe("limits");
+        expect(decide(`app/${name}`, `Add a Core library. Update ${name}.`)).toBeNull();
+        expect(decide(name, `Add a Core library. Update app/${name}.`)).toBeNull();
+        expect(decide(`app/${name}`, `Add a Core library. Update app\\${name}.`)).toBe("limits");
+      }
     });
     test("renewal still needs an earlier human approval", () => {
       const renewOnly: RunPolicy = { ...defaultWorkflowPolicy, autoApproval: { renewal: true, limits: null, requestedManifestEdits: true } };
       const result = evaluateAutoApproval(renewOnly, manifest, covered, edits, [], [], present);
       expect(result.approval).toBeNull();
       expect(result.reasons.join("\n")).not.toContain("always needs a person");
+    });
+    // spdxok-update b270088e (R45, #1547): the scaffold's allowed paths leave the manifest out,
+    // so the limits' scope check declined the edit the always-human test had let through.
+    test("a named manifest edit outside the allowed paths is approved, for every manifest kind", () => {
+      const scoped: RunPolicy = { ...anywhere, autoApproval: { renewal: false, limits: { ...limits, allowedPaths: ["src/**", "tests/**"], maxFiles: 10 }, requestedManifestEdits: true } };
+      const reviewed: RunPolicy = { ...scoped, autoApproval: { ...(scoped.autoApproval as NonNullable<RunPolicy["autoApproval"]>), modelReview: true } };
+      for (const path of ["pyproject.toml", "package.json", "Cargo.toml", "go.mod", "pom.xml", "requirements.txt", "requirements-dev.txt", "Spdxok.csproj", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "Gemfile"]) {
+        const plan = graph([modify("src/cli.py"), modify(path)]);
+        const asked = { ...present, request: `Add a Core library. Add the CLI entry point and register it in ${path}.` };
+        const result = evaluateAutoApproval(scoped, manifest, covered, plan, [], [], asked);
+        expect(result.reasons).toEqual([]);
+        expect(result.approval?.mode).toBe("limits");
+        expect(evaluateAutoApproval(reviewed, manifest, covered, plan, [], [], asked).approval?.mode).toBe("limits");
+        expect(planScopeAdvice(scoped, plan, () => true, false, asked.request)).toEqual([]);
+        // Not named, named only to be kept as is, or deleted: still a person, and the advice says so.
+        for (const request of ["Add a Core library. Add the CLI entry point.", `Add a Core library. Keep ${path} unchanged.`]) {
+          expect(evaluateAutoApproval(scoped, manifest, covered, plan, [], [], { ...present, request }).approval).toBeNull();
+          expect(planScopeAdvice(scoped, plan, () => true, false, request).join("\n")).toContain(`${path} always needs a person`);
+        }
+        const deleted = graph([{ path, action: "delete" as const }]);
+        expect(evaluateAutoApproval(scoped, manifest, covered, deleted, [], [], asked).approval).toBeNull();
+      }
+      // A shared manifest name in a sub-package is named only by its path; a lockfile never.
+      const nested = graph([modify("tools/package.json")]);
+      expect(evaluateAutoApproval(scoped, manifest, covered, nested, [], [], { ...present, request: "Add a Core library. Register the CLI in package.json." }).approval).toBeNull();
+      expect(evaluateAutoApproval(scoped, manifest, covered, graph([modify("Cargo.lock")]), [], [], { ...present, request: "Add a Core library. Update Cargo.lock." }).approval).toBeNull();
     });
     test("the planner is told the request may name manifest edits", () => {
       expect(plannerApprovalLimits(optedIn)?.alwaysHuman).toContain("or one the request names");

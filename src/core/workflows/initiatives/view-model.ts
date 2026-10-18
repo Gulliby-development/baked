@@ -52,6 +52,23 @@ export function initiativeBlockers(view: InitiativeView): string[] {
   return blockers;
 }
 
+/**
+ * The critical path of the split in one line (#1551): its features, their share of the work, and
+ * the most the split can gain over one feature at a time. Null with fewer than two features.
+ */
+export function criticalPathText(
+  view: Pick<InitiativeView, "criticalPath" | "features" | "parallelRuns">,
+): string | null {
+  const path = view.criticalPath;
+  if (!path || view.features.length < 2) return null;
+  const gain =
+    view.parallelRuns > 1
+      ? ` · at most ${path.speedup.toFixed(2)}x faster than one feature at a time`
+      : "";
+  const kept = path.chain ? ` · kept: ${path.chain}` : "";
+  return `Critical path: ${path.features.join(" -> ")} (${path.features.length} of ${view.features.length} features, ${Math.round(path.workShare * 100)}% of the work)${gain}${kept}`;
+}
+
 export function summarizeInitiative(view: InitiativeView): InitiativeSummary {
   const mandatory = view.features.filter((f) => f.mandatory);
   const blockers = initiativeIsTerminal(view) ? [] : initiativeBlockers(view);

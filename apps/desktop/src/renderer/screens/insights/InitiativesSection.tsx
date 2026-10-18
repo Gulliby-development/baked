@@ -37,6 +37,7 @@ import {
   canSwitchModel,
   configurableFeatures,
   costLine,
+  criticalPathLine,
   detailStatus,
   estimateBasisText,
   estimateFit,
@@ -448,6 +449,7 @@ function EstimatePanel({ projectKey, view }: { projectKey: string; view: Initiat
               {f.placeholders
                 ? ` · ${f.placeholders} ${f.placeholders === 1 ? "placeholder" : "placeholders"}`
                 : ""}
+              {f.skeleton ? ` · ${f.skeleton} host-written` : ""}
             </span>
             <span className="font-mono text-muted-foreground">
               {f.basis === "measured"
@@ -671,6 +673,9 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
           </Button>
         )}
       </div>
+      {criticalPathLine(view) && (
+        <p className="m-0 text-[12px] text-dim-foreground">{criticalPathLine(view)}</p>
+      )}
       {dialog?.kind === "reject" && split && (
         <RejectDialog projectKey={projectKey} view={view} decision={split} onClose={close} />
       )}

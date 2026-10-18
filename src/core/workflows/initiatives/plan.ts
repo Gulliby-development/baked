@@ -82,6 +82,11 @@ export const InitiativePlanSchema = z
     completionCriteria: z.array(Text).min(1).max(30),
     /** Bounds are checked by `planSizeProblem`, so an oversized split is refused with a reason. */
     features: z.array(InitiativeFeatureSchema).min(1).max(100),
+    /**
+     * Why the longest dependency chain stays as it is although it holds most of the work: each
+     * feature on it needs the one before (critical-path.ts, #1551). Absent when nobody asked.
+     */
+    chain: Text.optional(),
   })
   .strict();
 export type InitiativePlan = z.infer<typeof InitiativePlanSchema>;
@@ -212,6 +217,8 @@ export interface BoundaryPathCount {
   paths: number;
   /** Paths a later feature lists too: the feature creates a placeholder that one fills. */
   placeholders: number;
+  /** Files of the feature's own skeleton: the host writes them, so they cost no tokens (#1550). */
+  skeleton: number;
 }
 
 /** File paths a request names, such as `src/cli.ts` or `AddCommand.java`. */
@@ -259,8 +266,9 @@ export function boundaryFiles(
  * order that lists it and as a placeholder in the earlier ones. A skeleton-first split lists its
  * module stubs in the first feature and again in the features that fill them: bench round 40
  * (tonemath) listed 48 paths for 33 files, and the first feature's path floor came out 1.54 times
- * what it used (#1464). A file of the feature's own skeleton counts as a placeholder too: the
- * host writes it with no agent (#1461). A glob boundary counts the files of the request it
+ * what it used (#1464). A file of the feature's own skeleton counts apart, at no cost: the host
+ * writes it with no agent (#1461), and bench round 45 (grundykit) priced 22 such stubs at a third
+ * of a path each, 2.1M to 3.1M tokens the feature never used (#1550). A glob boundary counts the files of the request it
  * matches (`boundaryFiles`); one that matches none counts no paths and claims none.
  */
 export function boundaryPathCounts(
@@ -274,12 +282,13 @@ export function boundaryPathCounts(
   return new Map(
     plan.features.map((f): [string, BoundaryPathCount] => {
       const paths = files.get(f.id);
-      if (!paths?.length) return [f.id, { paths: 0, placeholders: 0 }];
-      const skeleton = new Set((f.skeleton ?? []).map((file) => file.path));
+      if (!paths?.length) return [f.id, { paths: 0, placeholders: 0, skeleton: 0 }];
+      const own = new Set((f.skeleton ?? []).map((file) => file.path));
+      const skeleton = paths.filter((path) => own.has(path)).length;
       const placeholders = paths.filter(
-        (path) => owner.get(path) !== f.id || skeleton.has(path),
+        (path) => !own.has(path) && owner.get(path) !== f.id,
       ).length;
-      return [f.id, { paths: paths.length - placeholders, placeholders }];
+      return [f.id, { paths: paths.length - placeholders - skeleton, placeholders, skeleton }];
     }),
   );
 }
@@ -511,16 +520,31 @@ export const MAX_MERGED_PATHS = 8;
  * feature without paths, or with a glob among them, is left alone, since its size is unknown.
  * Siblings with the same dependencies never depend on each other, so a merge cannot form a cycle.
  */
-export function mergeSmallSiblings(plan: InitiativePlan): {
+export function mergeSmallSiblings(
+  plan: InitiativePlan,
+  options: { byDependents?: boolean } = {},
+): {
   plan: InitiativePlan;
   merged: { featureId: string; from: string[] }[];
 } {
+  // With `byDependents`, siblings merge only when the same features depend on them: a merged
+  // feature makes every dependent of each part wait for all parts. Bench round 45 (grundykit)
+  // merged table, period, misere and wythoff, so solve, which needs only table, waited for the
+  // other three, and 8 of 9 features ran in series (#1551).
+  const dependents = new Map<string, string[]>();
+  if (options.byDependents)
+    for (const feature of plan.features)
+      for (const upstream of feature.dependsOn)
+        dependents.set(upstream, [...(dependents.get(upstream) ?? []), feature.id]);
   const groups = new Map<string, string[]>();
   for (const feature of plan.features) {
     // A glob boundary is any number of files, so its size is unknown, like no paths (#1405).
     const paths = literalPathCount(feature);
     if (paths === 0 || paths >= MIN_FEATURE_PATHS) continue;
-    const key = `${[...feature.dependsOn].sort().join(",")}|${feature.mandatory}`;
+    const after = options.byDependents
+      ? `|${[...(dependents.get(feature.id) ?? [])].sort().join(",")}`
+      : "";
+    const key = `${[...feature.dependsOn].sort().join(",")}|${feature.mandatory}${after}`;
     groups.set(key, [...(groups.get(key) ?? []), feature.id]);
   }
   let current = plan;

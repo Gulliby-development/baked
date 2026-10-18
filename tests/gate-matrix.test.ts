@@ -18,6 +18,7 @@ import { failureSignature, testCount } from "../src/core/verification/output-cou
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { launchedCommand } from "../src/core/workflows/launcher.js";
+import { withPerTestTimeout } from "../src/core/workflows/test-timeout.js";
 import { detectProfile } from "../src/core/tools/project.js";
 import {
   coveringChecks,
@@ -28,7 +29,7 @@ import {
 } from "../src/core/workflows/check-policy.js";
 import { detectGates, executeGate } from "../src/core/workflows/gates.js";
 import { type LayoutResult, layoutVerdict } from "../src/core/workflows/layout-check.js";
-import { addedDependencies } from "../src/core/workflows/quality/dependencies.js";
+import { addedDependencies, checkDependencies } from "../src/core/workflows/quality/dependencies.js";
 import {
   detectMutationTool,
   type ToolShell,
@@ -159,6 +160,23 @@ const RED_BASELINE: Record<Stack, (n: number) => string> = {
   maven: (n) => `[ERROR] Tests run: ${n + 1}, Failures: 1, Errors: 0, Skipped: 0\n[ERROR] com.example.OldTest.old -- Time elapsed: 0.01 s <<< FAILURE!`,
   dotnet: (n) => `  Failed OldTests.Old [3 ms]\nFailed!  - Failed:     1, Passed:     ${n}, Skipped:     0, Total:     ${n + 1}`,
 };
+
+// Dependency readers do not imply Gradle or Ruby gate detection support (#1489, #1552).
+describe("requested Gradle and Gemfile dependency checks (#1552)", () => {
+  for (const path of ["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "Gemfile"]) {
+    test(`${path}: a requested edit still blocks an unrequested package without registry access`, async () => {
+      const ruby = path === "Gemfile";
+      const before = ruby ? 'gem "rack", "3"\n' : 'dependencies { implementation("org.example:core:1") }\n';
+      const content = before + (ruby ? 'gem "rake", "13"\n' : 'dependencies { testImplementation("org.example:tests:1") }\n');
+      const name = ruby ? "rake" : "org.example:tests";
+      const files = [{ path, before, content }];
+      const result = await checkDependencies(files, new Set(), { lookups: false, requested: `Update ${path}.` });
+      expect(result.dependencies.map((d) => [d.name, d.verdict, d.blocking])).toEqual([[name, "unrequested", true]]);
+      const requested = await checkDependencies(files, new Set(), { lookups: false, requested: `Update ${path} to use ${name}.` });
+      expect(requested.dependencies.map((d) => [d.name, d.verdict, d.blocking])).toEqual([[name, "unknown", false]]);
+    });
+  }
+});
 
 /** Cells known to be wrong today: `<stack>:<cell>` -> issue. */
 const KNOWN: Record<string, string> = {};
@@ -424,6 +442,17 @@ for (const stack of STACKS) {
 
     cell(stack, "detection", () => {
       expect(preselected().map((c) => c.id)).toEqual(fixture.gates);
+    });
+
+    cell(stack, "suite per-test timeout (#1548)", () => {
+      const root = project(fixture.files);
+      const suite = detectGates(root).map((s) => s.check).find(isTestCheck)!;
+      const definition = JSON.stringify(suite);
+      const args = withPerTestTimeout(suite, root);
+      if (stack === "bun") expect(args.slice(-2)).toEqual(["--timeout", "30000"]);
+      else if (stack === "npm") expect(args.slice(-2)).toEqual(["--", "--testTimeout=30000"]);
+      else expect(args).toEqual(suite.args);
+      expect(JSON.stringify(suite)).toBe(definition);
     });
 
     // caesar 21bc3a53: run_probe refused java next to `mvn verify`, so its README task blocked.

@@ -31,7 +31,8 @@ const ARITHMETIC = ["gcd", "primes", "funcs", "residues", "cfrac"];
 const split = (arithmetic: InitiativeFeature[]): InitiativePlan => {
   const ids = arithmetic.map((f) => f.id);
   return {
-    schemaVersion: 1, title: "intsmith", goals: ["A number theory CLI"], completionCriteria: ["Every command works"],
+    // The chain check (#1551) is answered, so these cases see the share check of one feature only.
+    schemaVersion: 1, title: "intsmith", goals: ["A number theory CLI"], completionCriteria: ["Every command works"], chain: "each command layer calls the one below",
     features: [
       feature("core", modules(["core", "parse"]), []),
       ...arithmetic,
