@@ -212,12 +212,12 @@ test("revision keeps custom profile and workflow definitions frozen", async () =
     const revised = service.store.state(run.runId);
     expect(revised.frozenFiles[profilePath]).toBe(hashBytes(readFileSync(profilePath)));
     expect(revised.frozenFiles[workflowPath]).toBe(hashBytes(readFileSync(workflowPath)));
-    expect(() => assertFrozenInputs(revised)).not.toThrow();
+    expect(() => assertFrozenInputs(revised, service.store, run.runId)).not.toThrow();
     writeFileSync(profilePath, `${readFileSync(profilePath, "utf8")} `);
-    expect(() => assertFrozenInputs(revised)).toThrow("Accepted input changed");
+    expect(() => assertFrozenInputs(revised, service.store, run.runId)).toThrow("Accepted input changed");
     writeFileSync(profilePath, JSON.stringify(profile));
     writeFileSync(workflowPath, `${readFileSync(workflowPath, "utf8")} `);
-    expect(() => assertFrozenInputs(revised)).toThrow("Accepted input changed");
+    expect(() => assertFrozenInputs(revised, service.store, run.runId)).toThrow("Accepted input changed");
   } finally {
     close();
   }
