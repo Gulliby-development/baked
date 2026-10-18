@@ -95,6 +95,8 @@ The authoritative whole-project typecheck stays in the workflow checks stage and
 
 With the `sandbox` setting on, `shell` and `project` commands (and the commit checks below) run in an OS sandbox: they write only inside the project, temp and package caches, and cannot read SSH keys, cloud credentials or token files. See [OS sandbox](sandbox.md).
 
+The same detection picks the formatter the edit tools run on a file after they change it. A Python project uses ruff (`ruff check` to lint, `ruff format` to format, through `uv run`, `poetry run` or `pipenv run` when the project has that lock file) when it has `ruff.toml` or `.ruff.toml`, a `[tool.ruff` table in `pyproject.toml`, or ruff declared as a dependency in `pyproject.toml` or a `requirements*.txt` file; otherwise flake8 and black. This is the rule the workflow's [ruff gates](workflows/runtime.md) use, so an edit is formatted the way the `ruff format --check` gate checks it (#1537).
+
 A `git commit` run by the agent first runs the project's native checks (for example `biome check` and `tsc --noEmit`, `cargo clippy` and `cargo check`, `ruff` and `pyright`); a failure blocks the commit and returns the errors. The checks come from config files, never from `package.json` scripts.
 
 ### Approval reviewer

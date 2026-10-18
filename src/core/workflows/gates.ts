@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { loadProjectConfig, saveProjectConfig } from "../../config/index.js";
 import { gateSandbox } from "../security/sandbox.js";
 import { workspacePath } from "../specs/validate.js";
+import { ruffSource as pythonRuffSource } from "../tools/python-tooling.js";
 import { buildCheckEnv, exitStatus } from "../verification/check-runner.js";
 import {
   MISSING_GATE_REPORT,
@@ -302,15 +303,12 @@ function pythonGates(workspace: string): GateSuggestion[] {
       reason: "python -m pytest -q",
       preselected: true,
     });
-  const ruffSource = has(workspace, "ruff.toml")
-    ? "ruff.toml"
-    : has(workspace, ".ruff.toml")
-      ? ".ruff.toml"
-      : /\[tool\.ruff/.test(pyproject)
-        ? "pyproject.toml [tool.ruff]"
-        : /^\s*ruff\b/im.test(requirements)
-          ? "declared ruff dependency"
-          : null;
+  const ruffSource = pythonRuffSource({
+    ruffToml: has(workspace, "ruff.toml"),
+    dotRuffToml: has(workspace, ".ruff.toml"),
+    pyproject,
+    requirements,
+  });
   if (ruffSource)
     out.push({
       check: {
