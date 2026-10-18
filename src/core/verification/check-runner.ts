@@ -3,6 +3,7 @@ import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { rootField } from "../workflows/effects.js";
+import { launchedCommand } from "../workflows/launcher.js";
 import type { ProcessResult, ProcessScope } from "../workflows/process-scope.js";
 import { generatedPaths, type RunPolicy } from "../workflows/schemas.js";
 import type { WorkflowStore } from "../workflows/store.js";
@@ -41,11 +42,8 @@ export function buildCheckEnv(check: Check): NodeJS.ProcessEnv {
  * (#1480). Any file it lists fails the check, so formatting is verified like `cargo fmt --check`.
  */
 export function listsFailures(check: Pick<Check, "executable" | "args">): boolean {
-  const name = check.executable
-    .replace(/^.*[\\/]/, "")
-    .replace(/\.exe$/i, "")
-    .toLowerCase();
-  return name === "gofmt" && check.args.includes("-l");
+  const { program, args } = launchedCommand(check.executable, check.args);
+  return program === "gofmt" && args.includes("-l");
 }
 
 /** The status of a check's finished command: its exit code, and the files a listing check names. */

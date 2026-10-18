@@ -16,6 +16,7 @@ import { exitStatus, timedOutFailure } from "../src/core/verification/check-runn
 import { failureSignature, testCount } from "../src/core/verification/output-counts.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
+import { launchedCommand } from "../src/core/workflows/launcher.js";
 import {
   coveringChecks,
   fixerCommand,
@@ -97,6 +98,14 @@ const WRITTEN_TEST_ARGS: Record<Stack, string[] | null> = {
   maven: ["-B", "-q", "test", "-Dtest=com.example.SumTest", "-Dsurefire.failIfNoSpecifiedTests=false"],
   dotnet: ["test", "--nologo", "--filter", "FullyQualifiedName~SumTests."],
 };
+
+/** The launchers a project may start its checks through (#1507). */
+const LAUNCHERS: [string, (executable: string, args: string[]) => { executable: string; args: string[] }][] = [
+  ["cmd /c", (executable, args) => ({ executable: "cmd", args: ["/c", executable, ...args] })],
+  ["cmd.exe /d /s /c", (executable, args) => ({ executable: "cmd.exe", args: ["/d", "/s", "/c", [executable, ...args].join(" ")] })],
+  ["sh -c", (executable, args) => ({ executable: "sh", args: ["-c", [executable, ...args].join(" ")] })],
+  ["pwsh -Command", (executable, args) => ({ executable: "pwsh", args: ["-NoProfile", "-Command", [executable, ...args].join(" ")] })],
+];
 
 /** A failed test as the stack's test runner prints it, before a hang (#1277, #1424). */
 const FAILED_TEST_OUTPUT: Record<Stack, string> = {
@@ -410,6 +419,21 @@ for (const stack of STACKS) {
     cell(stack, "test-check", () => {
       expect(preselected().some((c) => c.required && isTestCheck(c))).toBe(true);
     });
+
+    // A check started through a launcher routes by the program the launcher runs (#1507): bench
+    // round 42 wrote the Maven check as `cmd /c mvn -B -q verify`, and 7 of 7 features got no
+    // task-end test check and no mutation gate.
+    for (const [launcher, wrap] of LAUNCHERS)
+      cell(stack, `written-tests-check and test-check behind ${launcher}`, () => {
+        const path = fixture.property.path;
+        const root = project({ ...fixture.files, [path]: fixture.property.seeded });
+        const checks = preselected().map((c) => ({ ...c, ...wrap(c.executable, c.args) }));
+        expect(checks.some((c) => c.required && isTestCheck(c))).toBe(true);
+        const written = writtenTestsCheck(root, checks, [{ path, action: "create" }]);
+        if (!WRITTEN_TEST_ARGS[stack]) return expect(written).toBeNull();
+        expect(written?.executable).toBe(launcher.split(" ")[0]);
+        expect(launchedCommand(written?.executable ?? "", written?.args ?? []).args).toEqual(WRITTEN_TEST_ARGS[stack]);
+      });
 
     // Whole-unit checks fail in a task's worktree until sibling tasks' files exist, so they run at
     // integration; file-local static checks run per task (#799, #842).
