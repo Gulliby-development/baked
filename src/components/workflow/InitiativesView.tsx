@@ -79,13 +79,17 @@ const FEATURE_GLYPH: Record<FeatureView["state"], string> = {
   stale: "↻",
   accepted: "✓",
 };
-/** A feature's boundary paths, with the placeholders it creates for later features (#1464). */
-const pathText = (f: { paths?: number; placeholders?: number }): string => {
+/**
+ * A feature's boundary paths, with the placeholders it creates for later features (#1464) and the
+ * skeleton files the host writes for it at no cost (#1550).
+ */
+const pathText = (f: { paths?: number; placeholders?: number; skeleton?: number }): string => {
   const paths = f.paths ? `${f.paths} ${f.paths === 1 ? "path" : "paths"}` : "";
   const stubs = f.placeholders
     ? `${f.placeholders} ${f.placeholders === 1 ? "placeholder" : "placeholders"}`
     : "";
-  return paths || stubs ? ` for ${[paths, stubs].filter(Boolean).join(" + ")}` : "";
+  const counted = paths || stubs ? ` for ${[paths, stubs].filter(Boolean).join(" + ")}` : "";
+  return f.skeleton ? `${counted} (+${f.skeleton} host-written)` : counted;
 };
 const featureEstimateText = (estimate: InitiativeEstimate | null, featureId: string): string => {
   const f = estimate?.features.find((e) => e.featureId === featureId);

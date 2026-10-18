@@ -1777,6 +1777,9 @@ describe("scenario: a split that fixes a crate skeleton (#1461)", () => {
     expect(t.executor.hostPrompts[0]).toContain("The split fixes the whole content of src/lib.rs, src/a.rs, src/b.rs");
     const coreRun = t.featureOf(view, "core").runId ?? "";
     expect(t.workflows.store.state(coreRun).hostFiles).toEqual(skeleton);
+    // #1550: the host-written task ran no agent, so the run's history counts only the agent task.
+    expect(t.workflows.store.tasks(coreRun).map((task) => task.id)).toEqual(["T001", "T002"]);
+    expect(t.workflows.store.history(coreRun)[0]?.taskCount).toBe(1);
   }, 60000);
 
   test("a plan that does not write the skeleton in the host goes back to the planner", async () => {
@@ -1808,8 +1811,8 @@ describe("scenario: a split that fixes a crate skeleton (#1461)", () => {
     const { skeleton: _, ...bare } = core;
     expect(featureDigest(core)).not.toBe(featureDigest(bare));
     expect(featureDigest(feature("api"))).toBe(featureDigest({ ...feature("api"), skeleton: [] }));
-    // The estimate prices core's own file, not the host-written skeleton.
-    expect(boundaryPathCounts(split).get("core")).toEqual({ paths: 1, placeholders: 3 });
+    // The estimate prices core's own file, not the host-written skeleton: no placeholder either (#1550).
+    expect(boundaryPathCounts(split).get("core")).toEqual({ paths: 1, placeholders: 0, skeleton: 3 });
   });
 
   test("merging keeps every skeleton file, and a split gives each file to the first part that names it", () => {

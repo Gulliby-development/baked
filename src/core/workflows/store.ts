@@ -40,7 +40,8 @@ import {
 } from "./schemas.js";
 import { DEFAULT_STALL_SETTINGS, touchProgress } from "./stall.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
-import { type RuntimeState, RuntimeStateSchema, type Snapshot } from "./types.js";
+import { hostWritten } from "./task-graph.js";
+import { type RuntimeState, RuntimeStateSchema, type Snapshot, type Task } from "./types.js";
 import { attemptCost, attemptSpend } from "./usage.js";
 import type { WorkflowV2 } from "./v2/definition.js";
 
@@ -303,13 +304,16 @@ function historyOf(db: Database, only?: string): PastRun[] {
     spentOn.set(row.run_id, row.tokens);
     past.model = row.model;
   }
+  // A task the host writes runs no agent and uses no tokens, so it is not a task the per-task
+  // rate or a feature's task count measures (#1550: grundykit's skeleton task used 0 tokens).
   for (const row of db
-    .query<{ run_id: string; n: number }, []>(
-      "SELECT run_id, COUNT(*) AS n FROM tasks WHERE status<>'invalidated' GROUP BY run_id",
+    .query<{ run_id: string; definition_json: string }, []>(
+      "SELECT run_id, definition_json FROM tasks WHERE status<>'invalidated'",
     )
     .all()) {
     const past = byRun.get(row.run_id);
-    if (past) past.taskCount = row.n;
+    const task = JSON.parse(row.definition_json) as Partial<Pick<Task, "writes">>;
+    if (past && !hostWritten({ writes: task.writes ?? [] })) past.taskCount++;
   }
   return [...byRun.values()];
 }
