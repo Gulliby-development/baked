@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { executeWorkflowCommand } from "../../headless/workflow.js";
 import { parseWorkflowArgs } from "../../headless/workflow-parse.js";
+import { recoveryArgs } from "../../headless/workflow-supervise.js";
 import type { AppConfig } from "../../types/index.js";
 import { ContextManager } from "../context/manager.js";
 import { SharedRootContext } from "../context/shared-root.js";
@@ -38,6 +39,7 @@ import {
 } from "../workflows/schemas.js";
 import { NativeWorkflowService } from "../workflows/service.js";
 import { newId } from "../workflows/store.js";
+import { takeOverDriver } from "../workflows/takeover.js";
 import { PRESETS } from "../workflows/v2/definition.js";
 import { listDefinitions, QUICK_WORKFLOW_ID } from "../workflows/v2/definitions.js";
 import { proposeForWorkspace } from "../workflows/v2/propose.js";
@@ -98,6 +100,41 @@ function driveInitiative(id: string): void {
       controllers.delete(key);
       initiativeDrives.delete(id);
     });
+}
+
+/**
+ * Takes over the runs of workers the terminal UI stopped because their thread stopped (#1541), and
+ * drives the resumed ones here, as `baked workflow resume` and `initiative drive` would.
+ */
+async function takeOverStalled(owners: string[]): Promise<void> {
+  for (const owner of owners) {
+    for (const run of await takeOverDriver(current(), { pid: process.pid, owner })) {
+      if (!run.resumed) continue;
+      if (run.initiativeId) {
+        driveInitiative(run.initiativeId);
+        continue;
+      }
+      const id = newId();
+      const controller = new AbortController();
+      controllers.set(id, controller);
+      void executeWorkflowCommand(
+        current(),
+        parseWorkflowArgs(recoveryArgs([], run, 0)),
+        controller.signal,
+        (runId) => ctx.emit("drive", { id, runId }),
+      )
+        .catch((err: unknown) =>
+          ctx.emit("drive-error", {
+            runId: run.runId,
+            message: err instanceof Error ? err.message : String(err),
+          }),
+        )
+        .finally(() => {
+          controllers.delete(id);
+          ctx.emit("driven", { runId: run.runId });
+        });
+    }
+  }
 }
 
 const StartInput = z
@@ -401,6 +438,11 @@ const ctx = createWorkerHandler(
     if (Array.isArray(config.exitedOwners))
       for (const owner of config.exitedOwners) recordWorkerExit(service.store, SafeId.parse(owner));
     ctx.emit("owner", service.leases.owner);
+    if (Array.isArray(config.stalledOwners) && config.stalledOwners.length)
+      // A run the takeover could not resume stays as the run screen shows it, for a person.
+      void takeOverStalled(config.stalledOwners.map((owner) => SafeId.parse(owner))).catch(
+        () => undefined,
+      );
   },
   close,
 );

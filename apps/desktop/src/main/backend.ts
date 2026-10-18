@@ -33,6 +33,8 @@ export interface BackendOptions {
   stableAfterMs?: number;
   readyTimeoutMs?: number;
   stopGraceMs?: number;
+  /** How often a running backend's health is checked for a stopped thread (#1541). */
+  stallPollMs?: number;
   platform?: NodeJS.Platform;
   onState?: (state: BackendState) => void;
 }
@@ -58,6 +60,11 @@ export class BackendError extends Error {
 /**
  * One `baked serve --cwd <folder>` process: starts it, waits for its ready line and a healthy
  * `/v1/health`, restarts it with backoff when it exits unexpectedly, and stops it.
+ *
+ * `baked serve` drives runs on its main thread. When that thread stops (a synchronous call that
+ * never returns, #1541), every protection of the runs stops with it, and so does the API. A running
+ * backend that leaves its health unanswered for the server's `supervisorGraceMs` is stopped and
+ * restarted with `--take-over PID`, so the new server takes its runs over and drives them again.
  */
 export class Backend {
   private child: ChildLike | null = null;
@@ -70,6 +77,10 @@ export class Backend {
   private startedAt = 0;
   private stderr: string[] = [];
   private current: BackendState = { kind: "stopped" };
+  private watchTimer: ReturnType<typeof setInterval> | null = null;
+  /** The stopped server whose runs the next one takes over, and the one stopped for not answering. */
+  private takeOver: number | null = null;
+  private stalled: { child: ChildLike; reason: string } | null = null;
 
   constructor(private readonly options: BackendOptions) {}
 
@@ -98,6 +109,7 @@ export class Backend {
 
   async stop(): Promise<void> {
     this.stopping = true;
+    this.unwatch();
     if (this.restartTimer) clearTimeout(this.restartTimer);
     this.restartTimer = null;
     this.cancelRestart?.(new BackendError("BACKEND_STOPPED", "The backend was stopped"));
@@ -133,6 +145,7 @@ export class Backend {
       "0",
       "--token-file",
       tokenFile,
+      ...(this.takeOver !== null ? ["--take-over", String(this.takeOver)] : []),
     ];
     this.stderr = [];
     const child = spawn(command.command, args, { cwd: folder, env: { ...process.env } });
@@ -158,10 +171,13 @@ export class Backend {
         stdout += chunk;
         const newline = stdout.indexOf("\n");
         if (newline === -1) return;
-        this.connect(stdout.slice(0, newline)).then((endpoint) => {
+        this.connect(stdout.slice(0, newline)).then(({ endpoint, graceMs }) => {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
+          // The new server took the stopped one's runs over.
+          this.takeOver = null;
+          this.watch(child, endpoint, graceMs);
           resolve(endpoint);
         }, fail);
       });
@@ -218,7 +234,7 @@ export class Backend {
     return this.ready;
   }
 
-  private async connect(line: string): Promise<Endpoint> {
+  private async connect(line: string): Promise<{ endpoint: Endpoint; graceMs: number }> {
     let ready: { url?: unknown; tokenFile?: unknown };
     try {
       ready = JSON.parse(line) as { url?: unknown; tokenFile?: unknown };
@@ -236,11 +252,91 @@ export class Backend {
       throw new BackendError("BACKEND_UNHEALTHY", `Health check returned ${response.status}`);
     const health = (await response.json()) as Health;
     this.setState({ kind: "running", version: health.version });
-    return endpoint;
+    // An older server reports no grace period and is not watched.
+    return { endpoint, graceMs: health.supervisorGraceMs ?? 0 };
   }
 
-  private exited(child: ChildLike, reason: string): void {
+  /**
+   * Checks the health of a running server every poll. Any answer counts: the thread runs. A gap
+   * of several polls in this process's own timers means the host slept, and the wait starts over.
+   */
+  private watch(child: ChildLike, endpoint: Endpoint, graceMs: number): void {
+    this.unwatch();
+    if (!(graceMs > 0)) return;
+    const pollMs = this.options.stallPollMs ?? 5000;
+    let answered = performance.now();
+    let last = answered;
+    let checking = false;
+    const timer = setInterval(() => {
+      if (this.child !== child) {
+        clearInterval(timer);
+        return;
+      }
+      const now = performance.now();
+      if (now - last > pollMs * 3) answered = now;
+      last = now;
+      if (now - answered >= graceMs) {
+        clearInterval(timer);
+        if (this.watchTimer === timer) this.watchTimer = null;
+        this.stopStalled(child, graceMs);
+        return;
+      }
+      if (checking) return;
+      checking = true;
+      (this.options.fetch ?? fetch)(`${endpoint.url}/v1/health`, {
+        headers: { Authorization: `Bearer ${endpoint.token}` },
+        signal: AbortSignal.timeout(pollMs),
+      })
+        .then(
+          () => {
+            answered = performance.now();
+          },
+          () => undefined,
+        )
+        .finally(() => {
+          checking = false;
+        });
+    }, pollMs);
+    timer.unref?.();
+    this.watchTimer = timer;
+  }
+
+  private unwatch(): void {
+    if (this.watchTimer) clearInterval(this.watchTimer);
+    this.watchTimer = null;
+  }
+
+  /** Kills a server that stopped answering; the exit handler restarts it with `--take-over`. */
+  private stopStalled(child: ChildLike, graceMs: number): void {
+    if (child.pid === undefined) return;
+    this.takeOver = child.pid;
+    this.stalled = {
+      child,
+      reason: `baked serve stopped answering for ${Math.round(graceMs / 1000)} s and was restarted`,
+    };
+    this.forceStop(child);
+  }
+
+  private forceStop(child: ChildLike): void {
+    // A stopped thread does not handle SIGTERM; taskkill /T also ends the commands it started.
+    if ((this.options.platform ?? process.platform) === "win32" && child.pid !== undefined) {
+      const killer = nodeSpawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      // Restricted Windows accounts can stop their child but cannot enumerate its process tree.
+      // Recovery still refuses to replay a command whose descendants may be running.
+      killer.once("error", () => child.kill("SIGKILL"));
+      killer.once("exit", (code) => {
+        if (code !== 0) child.kill("SIGKILL");
+      });
+    } else child.kill("SIGKILL");
+  }
+
+  private exited(child: ChildLike, exitReason: string): void {
     if (this.child !== child) return;
+    const reason = this.stalled?.child === child ? this.stalled.reason : exitReason;
+    this.stalled = null;
     this.child = null;
     this.endpoint = null;
     this.ready = null;
@@ -280,8 +376,7 @@ export class Backend {
       child.once("exit", finish);
       const platform = this.options.platform ?? process.platform;
       // Windows has no SIGTERM; taskkill /T also ends the Bun child of a source checkout.
-      if (platform === "win32" && child.pid !== undefined)
-        nodeSpawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+      if (platform === "win32" && child.pid !== undefined) this.forceStop(child);
       else child.kill("SIGTERM");
       const timer = setTimeout(() => {
         child.kill("SIGKILL");

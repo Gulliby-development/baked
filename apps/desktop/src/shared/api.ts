@@ -130,6 +130,8 @@ export interface Health {
   apiVersion: number;
   version: string;
   workspace: string;
+  /** How long the server may leave health unanswered before the app restarts it; absent on older servers. */
+  supervisorGraceMs?: number;
 }
 
 export interface ApiErrorBody {
