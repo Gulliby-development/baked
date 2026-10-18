@@ -123,7 +123,7 @@ describe("documented examples", () => {
     });
     expect(results.map((r) => r.status)).toEqual(["match", "match", "mismatch", "not_run", "not_run"]);
     expect(results[2]?.firstDifference).toEqual({ line: 1, expected: "right", actual: "wrong" });
-    expect(results[3]?.reason).toContain("cat is not a program the run's checks start");
+    expect(results[3]?.reason).toContain("cat is not a program the run's checks or their toolchains start");
     expect(results[4]?.reason).toContain("needs a shell");
     expect(readdirSync(root)).toEqual(["source.txt"]);
   });

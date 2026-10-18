@@ -5,7 +5,7 @@ import { MockLanguageModelV3 } from "ai/test";
 import { getProvider } from "../src/core/llm/providers/index.js";
 import { codeWebSearchFor, NativeAgentExecutor } from "../src/core/workflows/agent-executor.js";
 import { WorkspaceLeases } from "../src/core/workflows/leases.js";
-import { type AgentProfile, ProfileSchema } from "../src/core/workflows/schemas.js";
+import { type AgentProfile, ProfileSchema, type RunPolicy } from "../src/core/workflows/schemas.js";
 import { AttemptStepController, type AttemptUsageRecord } from "../src/core/workflows/step-budget.js";
 import { mergeToolBackends, runUsage, toolBackendLine } from "../src/core/workflows/usage.js";
 import type { AgentExecutor, ExecutionRequest, Task } from "../src/core/workflows/types.js";
@@ -557,6 +557,26 @@ describe("documentation probes", () => {
 
   test("a planned task that writes only code has no probe", async () => {
     expect(await probeOnce("value.txt")).toBeNull();
+  });
+
+  // Smoke 2026-10-18, caesar 21bc3a53 (#1529): a Maven project's only check is `mvn verify`, the
+  // README documents `java -cp target/classes caesar.Main ...`, and run_probe refused java, so the
+  // README task blocked with every check green.
+  test("a Maven project's README task may start java, the runtime of its check", async () => {
+    scriptModel([
+      step(1000, 50, { name: "run_probe", input: { executable: "java", args: ["-version"] } }),
+      () => {
+        throw new Error("provider unavailable");
+      },
+    ]);
+    const maven: RunPolicy = { ...fixturePolicy, checks: fixturePolicy.checks.map((c) => ({ ...c, executable: "mvn", args: ["-B", "-q", "verify"] })) };
+    const { store, run, attemptId, executor, request } = await nativeAttempt(maven, "implementation", planned("README.md"));
+    await expect(executor.execute(request)).rejects.toThrow("provider unavailable");
+    const row = store.latestArtifact(run.runId, `attempts/${attemptId}/probe-1.json`);
+    const probe = JSON.parse(store.readArtifact(run.runId, row?.id ?? "")) as { executable: string; status: string; reason?: string };
+    expect(probe.executable).toBe("java");
+    // Started (or, without a JDK on the host, failed to start), never refused as a stranger.
+    expect(probe.reason ?? "").not.toContain("is not a program");
   });
 });
 

@@ -8,6 +8,7 @@ import {
   outputShows,
   REPRO_TRIES,
   reproAllows,
+  reproExecutables,
   reproTool,
   runRepro,
 } from "../src/core/verification/repro.js";
@@ -90,7 +91,19 @@ describe("review finding repro", () => {
       sandbox: null,
     });
     expect(outcome.status).toBe("inconclusive");
-    expect(outcome.reason).toContain("not a program the run's checks start");
+    expect(outcome.reason).toContain("not a program the run's checks or their toolchains start");
+  });
+
+  // #1529: the program a README documents runs under the toolchain's runtime, not the build tool.
+  test("each toolchain's runtime may start next to its check program", () => {
+    const of = (...executables: string[]) => reproExecutables(executables.map((executable) => ({ executable })));
+    expect(of("mvn")).toEqual(["mvn", "java"]);
+    expect(of("./mvnw.cmd", "./gradlew")).toEqual(["./mvnw.cmd", "./gradlew", "java"]);
+    expect(of("npm")).toEqual(["npm", "node"]);
+    expect(of("/usr/bin/python3")).toEqual(["/usr/bin/python3", "python", "python3"]);
+    expect(of("pytest", "ruff")).toEqual(["pytest", "ruff", "python", "python3"]);
+    // Go, Cargo and .NET run their programs themselves; bun is its own runtime.
+    expect(of("go", "cargo", "dotnet", "bun")).toEqual(["go", "cargo", "dotnet", "bun"]);
   });
 
   test("a repro that changes source files is inconclusive", async () => {

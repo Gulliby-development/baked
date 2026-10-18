@@ -39,11 +39,46 @@ export function outputShows(output: string, text: string): boolean {
 }
 
 /**
- * Programs a repro may start: those the run's approved checks start. The approval covers what
- * those programs run on the workspace, so a repro adds no program the user did not approve.
+ * The runtime that runs what a check's build tool or package manager builds or installs (#1529).
+ * caesar 21bc3a53 (Java 17, one check `mvn -B -q verify`) wrote README examples as
+ * `java -cp target/classes caesar.Main ...`; run_probe refused java, the implementer would not
+ * invent the output, and the run blocked with every check green. The checks already run the
+ * project's code through that runtime (tests, plugins, scripts), so it adds no new trust.
+ */
+const RUNTIMES: Record<string, readonly string[]> = {
+  mvn: ["java"],
+  mvnw: ["java"],
+  gradle: ["java"],
+  gradlew: ["java"],
+  sbt: ["java"],
+  npm: ["node"],
+  npx: ["node"],
+  pnpm: ["node"],
+  yarn: ["node"],
+  pytest: ["python", "python3"],
+  python: ["python", "python3"],
+  python3: ["python", "python3"],
+  uv: ["python", "python3"],
+  poetry: ["python", "python3"],
+  tox: ["python", "python3"],
+};
+
+/** A program's name without its directory or Windows launcher extension: `./mvnw.cmd` is `mvnw`. */
+const programName = (executable: string): string =>
+  basename(executable.replaceAll("\\", "/"))
+    .replace(/\.(?:cmd|bat|exe)$/i, "")
+    .toLowerCase();
+
+/**
+ * Programs a repro or probe may start: those the run's approved checks start, and the runtime of
+ * each check's toolchain (java for Maven and Gradle, node for npm, python for pytest). The
+ * approval covers what those programs run on the workspace, so a repro adds no program the user
+ * did not approve. Go, Cargo and .NET run their programs themselves (`go run`, `cargo run`,
+ * `dotnet run`).
  */
 export function reproExecutables(checks: readonly { executable: string }[]): string[] {
-  return [...new Set(checks.map((c) => c.executable))];
+  const own = checks.map((c) => c.executable);
+  return [...new Set([...own, ...own.flatMap((e) => RUNTIMES[programName(e)] ?? [])])];
 }
 
 /**
@@ -133,7 +168,7 @@ export async function runRepro(
   if (!options.executables.includes(repro.executable))
     return {
       status: "inconclusive",
-      reason: `${repro.executable} is not a program the run's checks start (${options.executables.join(", ") || "none"})`,
+      reason: `${repro.executable} is not a program the run's checks or their toolchains start (${options.executables.join(", ") || "none"})`,
       exitCode: null,
       output: "",
     };
@@ -362,7 +397,7 @@ export async function runProbe(
   if (!options.executables.includes(probe.executable))
     return {
       status: "refused",
-      reason: `${probe.executable} is not a program the run's checks start (${options.executables.join(", ") || "none"})`,
+      reason: `${probe.executable} is not a program the run's checks or their toolchains start (${options.executables.join(", ") || "none"})`,
       output: "",
     };
   const before = await sourceManifest(options.root, options.generated, options.signal);
