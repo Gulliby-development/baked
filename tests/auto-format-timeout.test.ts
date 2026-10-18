@@ -21,7 +21,7 @@ describe("autoFormatAfterEdit", () => {
     // A formatter that starts slowly, then rewrites the file it is given.
     setFormatCache(`bun -e "await Bun.sleep(5500); require('fs').writeFileSync(process.argv.at(-1), 'formatted')"`);
     cleanups.push(resetFormatCache);
-    expect(await autoFormatAfterEdit(file, root)).toBe(true);
+    expect(await autoFormatAfterEdit(file, root, null)).toBe(true);
     expect(readFileSync(file, "utf8")).toBe("formatted");
   }, 30_000);
 });

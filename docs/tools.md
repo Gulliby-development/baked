@@ -97,6 +97,10 @@ With the `sandbox` setting on, `shell` and `project` commands (and the commit ch
 
 The same detection picks the formatter the edit tools run on a file after they change it. A Python project uses ruff (`ruff check` to lint, `ruff format` to format, through `uv run`, `poetry run` or `pipenv run` when the project has that lock file) when it has `ruff.toml` or `.ruff.toml`, a `[tool.ruff` table in `pyproject.toml`, or ruff declared as a dependency in `pyproject.toml` or a `requirements*.txt` file; otherwise flake8 and black. This is the rule the workflow's [ruff gates](workflows/runtime.md) use, so an edit is formatted the way the `ruff format --check` gate checks it (#1537).
 
+Automatic whole-file formatting after `edit_file`, `multi_edit`, `ast_edit`, `rename_symbol`, `rename_file` and `move_symbol` requires a formatter-clean pre-image. BAKED sends the original text to ruff, black, Prettier, Biome, gofmt or rustfmt through stdin and compares their output without overwriting the edited file. Existing formatting differences, a failed probe or an unsupported formatter skip the automatic format pass. Refactors keep the original text for every affected file, including importers and moved files. Their language-server formatting fallback is limited to new files, since a project formatter's clean baseline does not establish cleanliness for a different formatter. New files may still receive whole-file formatting. Automatic rustfmt calls skip child modules so they only format the edited file.
+
+An explicit `project` action `format` can reformat unrelated lines or the whole project. Workflow format checks and their configured `check.fix` commands still enforce the repository's format policy.
+
 A `git commit` run by the agent first runs the project's native checks (for example `biome check` and `tsc --noEmit`, `cargo clippy` and `cargo check`, `ruff` and `pyright`); a failure blocks the commit and returns the errors. The checks come from config files, never from `package.json` scripts.
 
 ### Approval reviewer

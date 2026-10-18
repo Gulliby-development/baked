@@ -3,6 +3,8 @@ import { resolve } from "node:path";
 import { getCwd } from "../cwd.js";
 import { getIntelligenceClient, getIntelligenceRouter } from "../intelligence/index.js";
 import type { FormatEdit, RefactorResult } from "../intelligence/types.js";
+import { realPath } from "../projects/paths.js";
+import { autoFormatAfterEdit } from "./auto-format.js";
 import { pushEdit } from "./edit-stack.js";
 import { emitFileEdited } from "./file-events.js";
 
@@ -15,7 +17,11 @@ import { emitFileEdited } from "./file-events.js";
  *
  * Returns list of actions applied (empty if nothing changed).
  */
-async function autoFixFile(filePath: string, tabId?: string): Promise<string[]> {
+async function autoFixFile(
+  filePath: string,
+  tabId?: string,
+  before?: string | null,
+): Promise<string[]> {
   const absPath = resolve(filePath);
   const client = getIntelligenceClient();
   const router = getIntelligenceRouter(getCwd());
@@ -57,9 +63,8 @@ async function autoFixFile(filePath: string, tabId?: string): Promise<string[]> 
   // 3. Format — final pass (after imports/fixAll may have shifted lines)
   // Priority: project formatter (authoritative) → LSP formatDocument → skip
   try {
-    const { formatFile } = await import("./project.js");
     const preFormat = await readFile(absPath, "utf-8");
-    const formatted = await formatFile(absPath);
+    const formatted = await autoFormatAfterEdit(absPath, undefined, before);
     if (formatted) {
       // Re-read the file that the formatter wrote and push to edit stack
       const afterFormat = await readFile(absPath, "utf-8");
@@ -68,7 +73,7 @@ async function autoFixFile(filePath: string, tabId?: string): Promise<string[]> 
         emitFileEdited(absPath, afterFormat);
         applied.push("format");
       }
-    } else {
+    } else if (before === null) {
       let formatResult: import("../intelligence/types.js").FormatEdit | null = null;
       const client = getIntelligenceClient();
       if (client) {
@@ -98,14 +103,26 @@ async function autoFixFile(filePath: string, tabId?: string): Promise<string[]> 
 export async function autoFixFiles(
   filePaths: string[],
   tabId?: string,
+  beforeImages: ReadonlyMap<string, string | null> = new Map(),
 ): Promise<Map<string, string[]>> {
   const results = new Map<string, string[]>();
-  const unique = [...new Set(filePaths.map((f) => resolve(f)))];
+  // LSP and text edits can name the same file through different checkout aliases.
+  // Keep its earliest pre-image and run fixes once, retaining the caller's path for undo/results.
+  const baselines = new Map<string, string | null>();
+  for (const [file, before] of beforeImages) {
+    const key = realPath(file);
+    if (!baselines.has(key)) baselines.set(key, before);
+  }
+  const unique = new Map<string, string>();
+  for (const file of filePaths) {
+    const key = realPath(file);
+    if (!unique.has(key)) unique.set(key, resolve(file));
+  }
 
   await Promise.all(
-    unique.map(async (file) => {
+    [...unique].map(async ([key, file]) => {
       try {
-        const actions = await autoFixFile(file, tabId);
+        const actions = await autoFixFile(file, tabId, baselines.get(key));
         if (actions.length > 0) results.set(file, actions);
       } catch {
         // Best-effort

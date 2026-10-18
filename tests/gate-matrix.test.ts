@@ -23,6 +23,7 @@ import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { sizePlan, splitTestTasks } from "../src/core/workflows/sizing.js";
 import { withPerTestTimeout } from "../src/core/workflows/test-timeout.js";
 import { detectProfile } from "../src/core/tools/project.js";
+import { formatProbeCommand } from "../src/core/tools/auto-format.js";
 import {
   coveringChecks,
   fixerCommand,
@@ -483,6 +484,22 @@ for (const stack of STACKS) {
     cell(stack, "edit-profile", async () => {
       const profile = await detectProfile(project(fixture.files));
       expect({ lint: profile.lint, formatFile: profile.formatFile }).toEqual(EDIT_PROFILE[stack]);
+    });
+
+    cell(stack, "post-edit formatter pre-image probe (#1582)", async () => {
+      const root = project(fixture.files);
+      const profile = await detectProfile(root);
+      const file = join(root, "original.py");
+      const command = profile.formatFile;
+      if (stack === "python") {
+        expect(formatProbeCommand(command!, file)).toContain("ruff format --stdin-filename");
+      } else if (stack === "go") {
+        expect(formatProbeCommand(command!, file)).toBe("gofmt");
+      } else if (stack === "rust") {
+        expect(formatProbeCommand(command!, file)).toContain("rustfmt --emit stdout");
+      } else {
+        expect(command).toBeNull();
+      }
     });
 
     cell(stack, "timed-out-failure", () => {
