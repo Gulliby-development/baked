@@ -200,7 +200,7 @@ import {
   recordConflictDecision,
 } from "./conflict-decisions.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
-import { inCostWrapUp } from "./cost-tolerance.js";
+import { costToleranceOf, currentCostCap, inCostWrapUp } from "./cost-tolerance.js";
 import { coverageFinding } from "./coverage.js";
 import { type CriticCalibration, calibrateCritic, criticExamples } from "./critic-calibration.js";
 import { crossPlatformNote } from "./cross-platform.js";
@@ -422,7 +422,7 @@ import {
 type Implementation = ReturnType<typeof ImplementationSchema.parse>;
 
 import { browserLayoutProbe, type LayoutProbe, layoutVerdict } from "./layout-check.js";
-import { planCostOf } from "./plan-cost.js";
+import { planCostOf, planCostWarning } from "./plan-cost.js";
 import { EDIT_TOOLS } from "./progress-watch.js";
 import {
   applyRevision,
@@ -1868,10 +1868,10 @@ export class WorkflowScheduler {
                   // Defaults the agents chose instead of asking; approving accepts them.
                   assumptions: state.spec.assumptions,
                   ...(state.activeTime ? { activeTime: state.activeTime } : {}),
-                  // A plan priced above the ceiling is approved knowing where it should stop (#974).
-                  ...overCeilingOf(this.store, runId),
-                  // What planning cost so far next to what the tasks should cost (#1019).
-                  planCost: planCostOf(this.store, runId),
+                  // A plan priced above the ceiling, in tokens (#974) or dollars (#1503), is
+                  // approved knowing where it should stop; planning so far next to what the tasks
+                  // should cost (#1019).
+                  ...this.approvalCost(runId, policy),
                   ...(state.spec.deliverables
                     ? { requestCoverage: requestCoverage(state.spec, coverageRequest(state)) }
                     : {}),
@@ -3719,6 +3719,22 @@ export class WorkflowScheduler {
       ...(entry?.effort || profile.effort ? { effort: entry?.effort ?? profile.effort } : {}),
       ...(entry?.context !== undefined ? { context: entry.context } : {}),
     };
+  }
+  /** The plan approval's priced plan and its warnings: tokens over the ceiling, dollars over the cap. */
+  private approvalCost(
+    runId: string,
+    policy: RunPolicy,
+  ): { planCost: ReturnType<typeof planCostOf>; budgetWarning?: string } {
+    const planCost = planCostOf(this.store, runId);
+    const dollars = planCostWarning(
+      planCost,
+      currentCostCap(this.store, runId, policy),
+      costToleranceOf(this.store, runId, policy),
+      policy.sizing?.maxRunCostUsd,
+    );
+    const tokens = overCeilingOf(this.store, runId).budgetWarning;
+    const budgetWarning = [tokens, dollars].filter(Boolean).join(" ");
+    return { planCost, ...(budgetWarning ? { budgetWarning } : {}) };
   }
   /** The run's frozen routing record, cached; null for runs started before routing. */
   private routingRecord(runId: string): RoutingRecord | null {

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { planCostText as desktopPlanCostText } from "../apps/desktop/src/renderer/lib/plan-cost.js";
 import { findPricing } from "../src/core/llm/pricing.js";
 import { DEFAULT_MIX } from "../src/core/workflows/estimate.js";
-import { type PlanCost, planCostOf, planCostText, plannedRunTokens } from "../src/core/workflows/plan-cost.js";
+import { type PlanCost, planCostOf, planCostText, planCostWarning, plannedRunTokens } from "../src/core/workflows/plan-cost.js";
 import { taskTotal, verificationTokens } from "../src/core/workflows/sizing.js";
 import type { AttemptUsageRecord } from "../src/core/workflows/step-budget.js";
 import type { ArtifactRow, AttemptRow, StepRow, WorkflowStore } from "../src/core/workflows/store.js";
@@ -223,5 +223,26 @@ describe("plan approval cost (#1019)", () => {
     const old = makeStore([], { model: null, taskTokens: { low: 3_000_000, expected: 4_000_000, high: 5_000_000 } });
     expect(plannedRunTokens(old, runId)).toEqual({ low: 3_000_000, high: 5_000_000 });
     expect(plannedRunTokens(makeStore([]), runId)).toBeNull();
+  });
+});
+
+// Bench round 42, fecsmith front (#1503): the plan was priced $6.75-$11.29 with planning against
+// an $8 cap and a $9.20 ceiling, and its approval said nothing about dollars.
+describe("planCostWarning", () => {
+  const cost = {
+    planning: { usd: 0.9, complete: true, models: [] },
+    implementation: { model: "codex/gpt-6-luna", usd: { low: 5.85, high: 10.39 } },
+  };
+  test("warns when the priced high end passes the cap with its tolerance", () => {
+    expect(planCostWarning(cost, 8, 0.15)).toBe(
+      "The plan is priced up to $11 with planning, above the run's $8.00 cap with its tolerance: the cost forecast may stop the run before it finishes. Approve a smaller plan, or extend the run's cap.",
+    );
+  });
+  test("is quiet when the cap may grow far enough, when it fits, or when nothing is priced", () => {
+    expect(planCostWarning(cost, 8, 0.15, 19)).toBeNull();
+    expect(planCostWarning(cost, 12, 0)).toBeNull();
+    expect(planCostWarning({ ...cost, implementation: null }, 8, 0)).toBeNull();
+    expect(planCostWarning(cost, null, 0)).toBeNull();
+    expect(planCostWarning(cost, 8, 0, 9)).toContain("and the $9.00 it may grow to");
   });
 });

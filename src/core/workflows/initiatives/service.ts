@@ -2170,14 +2170,15 @@ export function featurePolicy(
       : null;
   const cost = costPolicy(settings, shareUsd);
   const grown = growTo !== null ? grownSizing(base, maxTotalTokens, growTo) : base.sizing;
-  // The dollar cap grows with the token budget, up to what the initiative can spare (#1353).
-  const own = base.maxCostUsd ?? Number.POSITIVE_INFINITY;
+  // The dollar cap grows with the token budget, up to what the initiative can spare (#1353). The
+  // base policy's own cap does not bound it: the initiative's dollar budget does (#1503).
   const costTo =
     cost.maxCostUsd !== undefined && cost.maxCostUsd !== null && growUsd !== null
-      ? Math.min(own, cents(growUsd))
+      ? cents(growUsd)
       : null;
+  // Set without a token ceiling too: the cost forecast grows the cap toward it (#1503).
   const sizing =
-    grown?.maxRunTokens != null && costTo !== null && costTo > (cost.maxCostUsd ?? 0)
+    costTo !== null && costTo > (cost.maxCostUsd ?? 0)
       ? { ...grown, maxRunCostUsd: costTo }
       : grown;
   return PolicySchema.parse({
@@ -2237,8 +2238,12 @@ export function boundaryLimits(
 }
 
 /**
- * The dollar cap of a feature run under a dollar budget: its share, never above the base policy's
- * own cap, with the initiative's tolerance. Without a budget the base policy stays as it is.
+ * The dollar cap of a feature run under a dollar budget: its share, with the initiative's
+ * tolerance. The base policy's own cap is the cap of a run outside a dollar budget; under one, a
+ * feature's tokens come from the shared pool, and so do its dollars. Clipped to the base cap, a
+ * feature with a $9.80 share and $19 to grow into had $8 whatever it needed: bench round 42
+ * (fecsmith front) stopped on its forecast with $21 of the initiative's $30 unspent (#1503).
+ * Without a budget the base policy stays as it is.
  */
 function costPolicy(
   settings: InitiativeSettings,
@@ -2246,10 +2251,8 @@ function costPolicy(
 ): Pick<RunPolicy, "maxCostUsd" | "costTolerance"> | Record<string, never> {
   const budget = settings.costBudget;
   if (!budget || shareUsd === null) return {};
-  const own = settings.basePolicy.maxCostUsd;
-  const cap = Math.max(MIN_SHARE_USD, cents(shareUsd));
   return {
-    maxCostUsd: own === null ? cap : Math.min(own, cap),
+    maxCostUsd: Math.max(MIN_SHARE_USD, cents(shareUsd)),
     costTolerance: budget.costTolerance,
   };
 }

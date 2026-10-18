@@ -151,6 +151,28 @@ const RATE_TEXT: Record<PlanCostRate, string> = {
 
 const usd = (n: number): string => (n < 10 ? `$${n.toFixed(2)}` : `$${Math.round(n)}`);
 
+/**
+ * A warning for a plan approval when the plan's priced high end (planning so far and the planned
+ * tasks) passes the run's dollar ceiling: its cap, or what the cap may grow to
+ * (`sizing.maxRunCostUsd`), with its tolerance. Null when it fits or nothing is priced. Bench round
+ * 42 (fecsmith front): a plan priced $6.75-$11.29 against an $8 cap was approved without a word,
+ * and the forecast stopped the run after five tasks (#1503).
+ */
+export function planCostWarning(
+  cost: PlanCost,
+  capUsd: number | null,
+  tolerance: number,
+  growToUsd?: number,
+): string | null {
+  if (capUsd === null || !cost.implementation) return null;
+  const high = cost.planning.usd + cost.implementation.usd.high;
+  const limit = Math.max(capUsd, growToUsd ?? 0);
+  if (high <= limit * (1 + tolerance)) return null;
+  const grows = limit > capUsd ? ` and the ${usd(limit)} it may grow to` : "";
+  const band = tolerance > 0 ? " with its tolerance" : "";
+  return `The plan is priced up to ${usd(high)} with planning, above the run's ${usd(capUsd)} cap${grows}${band}: the cost forecast may stop the run before it finishes. Approve a smaller plan, or extend the run's cap.`;
+}
+
 /** The approval's line: `Planning so far about $X (model $Y, ...); the planned tasks about $A–$B on M`. */
 export function planCostText(cost: PlanCost): string {
   const models = cost.planning.models.map((m) => `${m.model} ${usd(m.usd)}`).join(", ");
