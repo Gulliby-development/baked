@@ -7862,7 +7862,7 @@ ${note}`;
       writtenTestsCheck: {
         checkId,
         paths,
-        note: `After this task the host runs ${checkId}, required: the test files this task writes, on their own, within ${seconds} s. Run request_check ${checkId} once they are written and fix what fails before you submit: a test that fails or runs too long after you submit sends the task back to you with the output.`,
+        note: `After this task the host runs ${checkId}, required: the test files this task writes, on their own, within ${seconds} s. The host uses the same 30 s per-test default for this check and the full suite for bun test, jest and vitest, unless the project sets its own timeout. Run request_check ${checkId} once they are written and fix what fails before you submit: a test that fails or runs too long after you submit sends the task back to you with the output.`,
       },
     };
   }

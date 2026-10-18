@@ -306,7 +306,12 @@ export function affectedTests(root: string, sources: string[]): AffectedTest[] {
 }
 
 /** Keeps a test runner's own flags and drops the paths or patterns a check named. */
-const flagsOnly = (args: string[]): string[] => args.filter((arg) => arg.startsWith("-"));
+const flagsOnly = (args: string[]): string[] =>
+  args.filter(
+    (arg, i) =>
+      arg.startsWith("-") ||
+      /^(?:--(?:timeout|testTimeout|test-timeout|config)|-c)$/.test(args[i - 1] ?? ""),
+  );
 
 /**
  * A command that runs only `tests` with the runner of one of the policy's test checks, or null
@@ -471,7 +476,6 @@ export function writtenTestsCheck(
   return {
     ...gate,
     id: gate.id.replace(/-affected$/, "-written"),
-    args: withPerTestTimeout(gate, timeoutMs),
     required: true,
     timeoutMs,
     onTimeout: "failed",
@@ -497,32 +501,6 @@ export function plannedWrittenTests(
     paths,
     timeoutMs: Math.min(gate.timeoutMs, WRITTEN_TESTS_TIMEOUT_MS),
   };
-}
-
-const TIMEOUT_FLAG = /^--(?:timeout|testTimeout|test-timeout)\b/;
-
-/**
- * `check`'s arguments with a per-test timeout for the runners whose default is 5 s (bun test,
- * jest, vitest): half the check's timeout and at least 30 s, when that is shorter than the whole check. md-site 095b7b11
- * (bench round 38, #1385) built 100 temporary sites in one property test; bun stopped it at 5 s
- * while the check allowed 60 s, and the chain cost 2.71M tokens. An existing flag is kept.
- */
-export function withPerTestTimeout(check: Check, timeoutMs: number): string[] {
-  const { program: name, args, launch } = launchedCommand(check.executable, check.args);
-  if (args.some((arg) => TIMEOUT_FLAG.test(arg))) return check.args;
-  const ms = Math.max(30_000, Math.floor(timeoutMs / 2));
-  if (ms >= timeoutMs) return check.args;
-  const runner = name === "npx" || name === "bunx" ? args[0] : name;
-  const flags =
-    name === "bun" && args[0] === "test"
-      ? ["--timeout", String(ms)]
-      : runner === "jest" || runner === "vitest"
-        ? [`--testTimeout=${String(ms)}`]
-        : [];
-  if (!flags.length) return check.args;
-  const first = args.findIndex((arg) => arg.startsWith("./"));
-  const at = first === -1 ? args.length : first;
-  return launch([...args.slice(0, at), ...flags, ...args.slice(at)])?.args ?? check.args;
 }
 
 const CASE_COUNT =
