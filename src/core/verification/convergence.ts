@@ -26,7 +26,7 @@ import {
 } from "./class-sweep.js";
 import { findingSetHash } from "./convergence-stop.js";
 import { isFailedTestLine } from "./failed-test-line.js";
-import { reproBlindToDocument } from "./repro.js";
+import { reproCannotSeeCorrection } from "./repro.js";
 
 /**
  * Planned tasks a correction of `task` may write for: those of the same profile that cover one of
@@ -460,7 +460,7 @@ function reproStep(finding: Pick<Review["findings"][number], "repro" | "file">):
   if (!repro) return "";
   // A document finding's repro that runs code is evidence, not a gate: the host does not run it
   // and run_repro leaves it out (#1375), so the correction is not told to make it pass (#1422).
-  if (reproBlindToDocument(finding.file, repro))
+  if (reproCannotSeeCorrection(finding.file, repro))
     return `\nEvidence: the review ran ${[repro.executable, ...repro.args].map((a) => JSON.stringify(a)).join(" ")} and saw ${JSON.stringify(repro.actual)}. It shows what the code does; this correction changes ${finding.file}, which that command does not read, so it is not run again and does not have to change.`;
   const command = [repro.executable, ...repro.args].map((a) => JSON.stringify(a)).join(" ");
   // run_repro runs it with its input files and stdin; run_probe takes only a command line (#1283).
