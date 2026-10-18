@@ -12,6 +12,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
+import { reproExecutables } from "../src/core/verification/repro.js";
 import { exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
 import { failureSignature, testCount } from "../src/core/verification/output-counts.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
@@ -97,6 +98,17 @@ const WRITTEN_TEST_ARGS: Record<Stack, string[] | null> = {
   rust: ["test", "--test", "sum"],
   maven: ["-B", "-q", "test", "-Dtest=com.example.SumTest", "-Dsurefire.failIfNoSpecifiedTests=false"],
   dotnet: ["test", "--nologo", "--filter", "FullyQualifiedName~SumTests."],
+};
+
+/** The program a README of the stack documents, which run_probe must be able to start (#1529). */
+const DOCUMENTED_PROGRAM: Record<Stack, string> = {
+  bun: "bun",
+  npm: "node",
+  python: process.platform === "win32" ? "python" : "python3",
+  go: "go",
+  rust: "cargo",
+  maven: "java",
+  dotnet: "dotnet",
 };
 
 /** The launchers a project may start its checks through (#1507). */
@@ -397,6 +409,11 @@ for (const stack of STACKS) {
 
     cell(stack, "detection", () => {
       expect(preselected().map((c) => c.id)).toEqual(fixture.gates);
+    });
+
+    // caesar 21bc3a53: run_probe refused java next to `mvn verify`, so its README task blocked.
+    cell(stack, "README example program runs under run_probe", () => {
+      expect(reproExecutables(preselected())).toContain(DOCUMENTED_PROGRAM[stack]);
     });
 
     cell(stack, "timed-out-failure", () => {

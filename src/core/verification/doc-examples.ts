@@ -340,7 +340,7 @@ export async function runDocExamples(
         const [program, ...args] = example.argv as [string, ...string[]];
         if (!options.executables.includes(program)) {
           skip(
-            `${program} is not a program the run's checks start (${options.executables.join(", ") || "none"})`,
+            `${program} is not a program the run's checks or their toolchains start (${options.executables.join(", ") || "none"})`,
           );
           continue;
         }
