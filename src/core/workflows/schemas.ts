@@ -490,6 +490,13 @@ export const PolicySchema = z
      */
     specDigest: z.enum(["auto", "off"]).optional(),
     /**
+     * `on` has analyze recompute every literal input and expected row of an automated criterion
+     * from the requirements (derivation-audit.ts, #1465); a row they do not give is a blocking
+     * finding that goes back to the spec author once. Absent means `off`, so stored policies keep
+     * their hash.
+     */
+    derivationAudit: z.enum(["off", "on"]).optional(),
+    /**
      * The duplication and dead-code ratchet (quality/duplication.ts). Absent means `warn`: copies
      * and unused declarations the run adds are reported, never blocking, so stored policies keep
      * their hash. `ratchet` makes them blocking findings; `off` skips the measurement.
@@ -1076,8 +1083,28 @@ export const AnalysisSchema = z
           .strict(),
       )
       .max(100),
+    /**
+     * The derivation audit (derivation-audit.ts, `derivationAudit: "on"`): each literal row of a
+     * criterion recomputed from the requirements. Optional, so analyses stored before it keep
+     * their hashes.
+     */
+    derivations: z
+      .array(
+        z
+          .object({
+            criterionId: CriterionId,
+            row: Text,
+            recomputed: Text,
+            matches: z.boolean(),
+            derivation: Text,
+          })
+          .strict(),
+      )
+      .max(200)
+      .optional(),
   })
   .strict();
+export type Analysis = z.infer<typeof AnalysisSchema>;
 export const RefutationSchema = z
   .object({
     schemaVersion: z.literal(1),
