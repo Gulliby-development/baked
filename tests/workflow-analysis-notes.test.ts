@@ -4,6 +4,7 @@ import {
   assumable,
   hostDependencyEdges,
   isCountNit,
+  isHostBatchCheckNit,
   isHostEdgeNit,
   knownRisks,
   persistentDefect,
@@ -41,6 +42,34 @@ const graph = (...tasks: ReturnType<typeof task>[]): TaskGraph => ({
   specHash: "a".repeat(64),
   planHash: "b".repeat(64),
   tasks,
+});
+
+describe("check wording appended by sizing (#1579)", () => {
+  const batch = "This criterion alone exceeds one attempt. Write its cases in small batches inside this attempt, run tests-written after each batch, and preserve earlier batches.";
+  const planned = task("T002", "tests/value.test.ts");
+  const legacy = {
+    ...planned,
+    description: `Write ready-value tests\nSizing split this task by file: write only tests/value.test.ts;  belong to the other parts of T002. ${batch}`,
+  };
+  const finding = { refs: ["tasks.json", "T002"], description: "T002's batching description requires tests-written, but the policy only has typecheck, lint and tests checks" };
+  const checks = [{ id: "typecheck" }, { id: "lint" }, { id: "tests" }];
+  test("recognizes a legacy host note even when the part keeps the original task ID", () => {
+    expect(isHostBatchCheckNit(finding, graph(legacy), checks)).toBe(true);
+    expect(isHostBatchCheckNit({ ...finding, description: "T002 requires tests-written, which is not in executionContract.checks" }, graph(legacy), checks)).toBe(true);
+    expect(isHostBatchCheckNit(finding, graph({ ...legacy, description: legacy.description.replace("this task by file:", "this test file into slices:") }), checks)).toBe(true);
+  });
+  test("keeps planner check requirements and findings about other tasks or the spec", () => {
+    expect(isHostBatchCheckNit(finding, graph(planned), checks)).toBe(false);
+    expect(isHostBatchCheckNit(finding, graph({ ...legacy, title: "Run tests-written" }), checks)).toBe(false);
+    expect(isHostBatchCheckNit(finding, graph({ ...legacy, description: `Run tests-written. ${legacy.description}` }), checks)).toBe(false);
+    expect(isHostBatchCheckNit(finding, graph({ ...legacy, checkIds: ["tests-written"] }), checks)).toBe(false);
+    expect(isHostBatchCheckNit(finding, graph(legacy), [...checks, { id: "tests-written" }])).toBe(false);
+    expect(isHostBatchCheckNit({ ...finding, refs: ["T002", "T003"] }, graph(legacy, task("T003", "tests/other.test.ts")), checks)).toBe(false);
+    expect(isHostBatchCheckNit({ ...finding, refs: ["spec.json", "AC-001", "T002"] }, graph(legacy), checks)).toBe(false);
+    expect(isHostBatchCheckNit({ ...finding, description: `${finding.description}; implementing it violates FR-001` }, graph(legacy), checks)).toBe(false);
+    expect(isHostBatchCheckNit({ ...finding, description: "T002 checkIds include tests-written, absent from the policy" }, graph(legacy), checks)).toBe(false);
+    expect(isHostBatchCheckNit({ ...finding, description: "T002 tests-written check fails because its batch uses the wrong fixture" }, graph(legacy), checks)).toBe(false);
+  });
 });
 
 describe("dependency edges the host adds (dirdrift)", () => {

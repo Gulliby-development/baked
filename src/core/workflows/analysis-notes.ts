@@ -6,6 +6,7 @@ import {
 } from "./plan-consistency.js";
 import type { ResearchSchema, Spec, TaskGraph } from "./schemas.js";
 import { withTestDependencies } from "./sizing.js";
+import type { Check } from "./types.js";
 
 type Research = z.infer<typeof ResearchSchema>;
 
@@ -70,6 +71,51 @@ export function isHostSplitNit(
     ([original, ids]) =>
       ids.some((id) => id !== original && named.has(id)) &&
       [...named].every((id) => ids.includes(id)),
+  );
+}
+
+/**
+ * Older sizing notes named tests-written even when the policy lacked it (#1579).
+ * Only that host-added instruction is a note; planner-authored checks and spec conflicts stay blocking.
+ */
+export function isHostBatchCheckNit(
+  finding: { refs: readonly string[]; description: string },
+  graph: TaskGraph,
+  checks: readonly Pick<Check, "id">[],
+): boolean {
+  if (checks.some((check) => check.id === "tests-written")) return false;
+  const text = [...finding.refs, finding.description].join(" ");
+  if (
+    !/\btests-written\b/.test(finding.description) ||
+    !/\b(?:policy|executionContract)\b|\b(?:available|declared|configured|defined) checks\b/i.test(
+      finding.description,
+    ) ||
+    !/\b(?:only|missing|absent|undeclared|undefined|unknown|unavailable|lacks?|without)\b|\bnot (?:in|listed|defined|declared|present|available)\b|\bdoes(?: not|n't) (?:have|include|define|declare|list)\b/i.test(
+      finding.description,
+    ) ||
+    /\b(?:AC|FR|NFR|SC)-\d+\b|\bspec\.json\b|\bcheckIds\b/i.test(text)
+  )
+    return false;
+  const named = [...new Set(text.match(/\bT\d{3,}\b/g) ?? [])];
+  return (
+    named.length > 0 &&
+    named.every((id) => {
+      const task = graph.tasks.find((task) => task.id === id);
+      if (!task || task.checkIds.includes("tests-written")) return false;
+      const split = task.description.search(
+        /\nSizing split (?:this task by file|this test file into slices):/,
+      );
+      if (
+        split === -1 ||
+        /\btests-written\b/.test(`${task.title}\n${task.description.slice(0, split)}`)
+      )
+        return false;
+      return task.description
+        .slice(split)
+        .includes(
+          "This criterion alone exceeds one attempt. Write its cases in small batches inside this attempt, run tests-written after each batch, and preserve earlier batches.",
+        );
+    })
   );
 }
 

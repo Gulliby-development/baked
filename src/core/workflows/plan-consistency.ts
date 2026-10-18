@@ -17,6 +17,7 @@ export const PLAN_CONSISTENCY_CHECKS = [
   "code created after a task creates the entry point (main, cli, app, server, program) is wired in by a task that writes the entry point and runs after it",
   "a documentation task that runs the program to capture its output runs after the tasks that write the program's entry points",
   "each task has its own description, and no task's description tells it to create a file another task writes",
+  "sizing split and batching notes appended by the host are execution guidance, not planner requirements for additional check IDs; executionContract.checks defines the run's checks",
 ];
 
 /** A file that declares or re-exports the modules next to it. */

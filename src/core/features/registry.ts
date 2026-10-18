@@ -790,7 +790,7 @@ export const FEATURES: readonly Feature[] = [
     title:
       "Size tests by literal cases and split large test files into sequential criterion slices",
     tui: ["/workflow: plan approval shows the sized tasks"],
-    cli: ["baked workflow show: plan sizing and task slices"],
+    cli: ["baked workflow show: task slices and batching guidance using available checks"],
     api: ["/v1/workflow/runs/:id: shared sizing record and tasks"],
     desktop: ["project/runs: plan approval and task slices"],
   },

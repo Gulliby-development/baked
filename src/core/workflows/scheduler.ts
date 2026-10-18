@@ -132,6 +132,7 @@ import {
   hostDependencyEdges,
   hostSplitParts,
   isCountNit,
+  isHostBatchCheckNit,
   isHostEdgeNit,
   isHostSplitNit,
   knownRisks,
@@ -1535,6 +1536,17 @@ export class WorkflowScheduler {
                 ) {
                   finding.blocking = false;
                   finding.description = `About dependsOn edges the host adds after planning (${hostEdges.map((e) => `${e.task} after ${e.dependsOn}`).join(", ")}); kept as a note: ${finding.description}`;
+                }
+              }
+              // A resumed graph may still carry the old host batching note naming an undeclared check.
+              for (const finding of analysis.findings) {
+                if (
+                  finding.blocking &&
+                  finding.kind === "inconsistency" &&
+                  isHostBatchCheckNit(finding, graph, policy.checks)
+                ) {
+                  finding.blocking = false;
+                  finding.description = `About check wording the host appended after planning; kept as a note: ${finding.description}`;
                 }
               }
               // The host split oversized test tasks after planning; plan.md names only the original.

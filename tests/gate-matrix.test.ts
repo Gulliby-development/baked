@@ -530,6 +530,24 @@ for (const stack of STACKS) {
       }
     });
 
+    cell(stack, "indivisible-test-batches-without-tests-written (#1579)", () => {
+      const original: Task = {
+        id: "T001", title: "Tests", description: "Write cases", requirementIds: ["FR-001"],
+        criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer",
+        writes: [{ path: fixture.property.path, action: "create" }], readHints: [],
+        checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior",
+      };
+      const graph = { schemaVersion: 1 as const, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [original] };
+      const policy = { ...defaultWorkflowPolicy, checks: preselected(), sizing: { maxAttemptTokens: 200_000 } };
+      expect(policy.checks.some((check) => check.id === "tests-written")).toBe(false);
+      const report = sizePlan({ graph, policy, samples: [], spent: 0 });
+      expect(report.tasks[0]!.oversized).toBe(true);
+      const part = splitTestTasks(graph, report)!.tasks[0]!;
+      expect(part.description).toContain("small batches inside this attempt");
+      expect(part.description).not.toContain("tests-written");
+      expect(part.checkIds).toEqual(original.checkIds);
+    });
+
     // The mutation gate needs a required test check to run the mutants against; without one it is
     // a silent no-op (#844).
     cell(stack, "test-check", () => {

@@ -1012,7 +1012,7 @@ export function splitTestTasks(
           : `${SPLIT_PART} write only ${write.path}; ${siblings.join(", ")} belong to the other parts of ${task.id}.`;
         const batch =
           needsSlices && high(ids) > report.maxAttemptTokens
-            ? " This criterion alone exceeds one attempt. Write its cases in small batches inside this attempt, run tests-written after each batch, and preserve earlier batches."
+            ? " This criterion alone exceeds one attempt. Write its cases in small batches inside this attempt, check each batch with the task's available checks, and preserve earlier batches."
             : "";
         const sliceWrite = previous ? { ...write, action: "modify" as const } : write;
         split.push({
