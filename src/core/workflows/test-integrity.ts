@@ -17,6 +17,7 @@ export const testIntegrityOf = (policy: Pick<RunPolicy, "testIntegrity">): TestI
 export type IntegrityRule =
   | "test-deleted"
   | "test-count"
+  | "test-removed"
   | "assertions"
   | "skip"
   | "suppression"
@@ -92,6 +93,68 @@ const TEST_CASES = new RegExp(
   ].join("|"),
   "g",
 );
+/** Tests named on their own line: Python and Go functions, JavaScript and TypeScript titles. */
+const NAMED_TESTS = [
+  /^\s*(?:async\s+)?def\s+(test\w*)\s*\(/,
+  /^func\s+(Test\w*)\s*\(/,
+  /(?:^|[^.\w$])(?:it|test)(?:\.(?:concurrent|only|skip|todo|failing))?\s*\(\s*(["'`])((?:(?!\1)[^\\\n])+)\1/,
+];
+/** Rust, Java, Kotlin and C# mark a test with an attribute above the function that names it. */
+const TEST_ATTRIBUTE =
+  /#\[(?:tokio::)?test\]|@(?:Test|ParameterizedTest)\b|\[(?:Fact|Theory|Test|TestMethod|TestCase)\b/;
+const ATTRIBUTED_TEST = /\b(?:fn|fun|void|Task)\s+(`[^`]+`|\w+)\s*[(<]/;
+/** Lines below an attribute that may hold more attributes before the function. */
+const ATTRIBUTE_LINES = 8;
+
+/** The names of a file's tests, with how often each occurs (classes and suites may repeat one). */
+function testNames(lines: readonly string[]): Map<string, number> {
+  const names = new Map<string, number>();
+  const add = (name: string) => names.set(name, (names.get(name) ?? 0) + 1);
+  for (const [index, line] of lines.entries()) {
+    const named = NAMED_TESTS.map((pattern) => line.match(pattern)).find(Boolean);
+    const name = named?.[2] ?? named?.[1];
+    if (name) {
+      add(name);
+      continue;
+    }
+    const attribute = line.match(TEST_ATTRIBUTE);
+    if (!attribute) continue;
+    const rest = line.slice((attribute.index ?? 0) + attribute[0].length);
+    for (const next of [rest, ...lines.slice(index + 1, index + 1 + ATTRIBUTE_LINES)]) {
+      const attributed = next.match(ATTRIBUTED_TEST)?.[1];
+      if (attributed) {
+        add(attributed);
+        break;
+      }
+      if (next !== rest && TEST_ATTRIBUTE.test(next)) break;
+    }
+  }
+  return names;
+}
+
+/** Names in `before` that `after` holds fewer times. */
+function missingNames(before: Map<string, number>, after: Map<string, number>): string[] {
+  return [...before].filter(([name, n]) => (after.get(name) ?? 0) < n).map(([name]) => name);
+}
+
+/**
+ * The tests a change adds to a test file, by name (#1519): null when the file is not a test file
+ * or its earlier content was not kept.
+ */
+export function addedTests(change: FileChange): string[] | null {
+  if (!isTestPath(change.path) || change.before === undefined || change.after === null) return null;
+  return missingNames(
+    testNames(codeLines(change.after)),
+    testNames(codeLines(change.before ?? "")),
+  );
+}
+
+const quoted = (names: readonly string[]) =>
+  names
+    .slice(0, 5)
+    .map((name) => JSON.stringify(name))
+    .join(", ") + (names.length > 5 ? ` and ${String(names.length - 5)} more` : "");
+
 const ASSERTIONS =
   /\bexpect\s*\(|\bassert\w*\b|\bAssert\.\w+|\bt\.(?:Error|Errorf|Fatal|Fatalf)\b|\brequire\.\w+\s*\(/g;
 const SKIPS = new RegExp(
@@ -233,6 +296,12 @@ export interface ScanOptions {
    * literal text, as when three `toContain` checks become one comparison with the full output.
    */
   strengthens?: ReadonlySet<string>;
+  /**
+   * Tests that a correction of another finding added, by path and name, with who added them
+   * (#1519): a change that leaves one out is reported whatever its own finding asks, since two
+   * findings that need opposite tests are a conflict to report, not one to settle by editing.
+   */
+  protects?: ReadonlyMap<string, ReadonlyMap<string, string>>;
   /** Contents of test files the task can see, for literals that special-case test inputs. */
   testSources?: readonly string[];
   /** Request, spec and plan text: a literal they name is a requirement, not a test input. */
@@ -286,11 +355,35 @@ export function scanTestIntegrity(
         continue;
       }
       const testsAfter = count(after, TEST_CASES);
+      const namesAfter = testNames(after);
+      const removed = missingNames(testNames(before), namesAfter);
+      const lost = [...(options.protects?.get(path) ?? [])].filter(
+        ([name]) => !namesAfter.has(name),
+      );
+      for (const [name, origin] of lost)
+        findings.push({
+          rule: "test-removed",
+          path,
+          detail: `${removed.includes(name) ? "removed" : "left out"} test ${JSON.stringify(name)}, which ${origin} added`,
+        });
+      const unclaimed = removed.filter((name) => !lost.some(([lostName]) => lostName === name));
       if (!reasoned && testsAfter < testsBefore)
         findings.push({
           rule: "test-count",
           path,
-          detail: `test count dropped from ${String(testsBefore)} to ${String(testsAfter)}`,
+          detail: `test count dropped from ${String(testsBefore)} to ${String(testsAfter)}${unclaimed.length ? ` (removed ${quoted(unclaimed)})` : ""}`,
+        });
+      else if (
+        !reasoned &&
+        options.rewrites?.has(path) !== true &&
+        options.strengthens?.has(path) !== true &&
+        unclaimed.length
+      )
+        // Equal totals hide a swap: a strong test replaced by a weaker one under another name.
+        findings.push({
+          rule: "test-removed",
+          path,
+          detail: `removed test(s) ${quoted(unclaimed)} while the test count stayed ${String(testsAfter)}`,
         });
       const assertsBefore = count(before, ASSERTIONS);
       const assertsAfter = count(after, ASSERTIONS);
@@ -365,6 +458,8 @@ export function scanTestIntegrity(
 /** The instruction a repair gets for an integrity finding. */
 export function integrityFix(finding: IntegrityFinding): string {
   switch (finding.rule) {
+    case "test-removed":
+      return `Restore the removed tests in ${finding.path} under their names, with their assertions, and make the code pass them. If the finding you correct and the one a restored test was added for cannot both hold, report outcome spec_conflict naming both findings instead of removing the test.`;
     case "test-deleted":
     case "test-count":
     case "assertions":
