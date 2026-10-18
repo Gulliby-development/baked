@@ -1309,6 +1309,76 @@ describe("initiative runtime", () => {
     expect(git(t.root, "status", "--porcelain")).toBe("");
   }, 30000);
 
+  // Bench round 44, cayleykit (#1535): features started in waves behind Promise.allSettled, so a
+  // freed slot stayed empty until the slowest sibling stopped (8.3 slot-minutes), and the ready
+  // feature on the critical path waited behind one earlier in plan order.
+  describe("dispatch on every stop, longest remaining path first (#1535)", () => {
+    class TimedExecutor extends InitiativeExecutor {
+      delays: Record<string, number> = {};
+      starts: string[] = [];
+      /** `start:NAME` and `end:NAME` in the order they happened. */
+      events: string[] = [];
+      override async execute(request: ExecutionRequest) {
+        const name = request.task?.writes[0]?.path.replace(/\.txt$/, "");
+        if (request.profile.output !== "implementation" || !name) return super.execute(request);
+        this.starts.push(name);
+        this.events.push(`start:${name}`);
+        await Bun.sleep(this.delays[name] ?? 0);
+        try {
+          return await super.execute(request);
+        } finally {
+          this.events.push(`end:${name}`);
+        }
+      }
+    }
+    const cayley = plan([
+      feature("chain"),
+      feature("finite"),
+      feature("perm", ["chain"]),
+      feature("chainc", ["chain"]),
+      feature("finitec", ["chain", "finite"]),
+      feature("entry", ["finitec"]),
+    ]);
+
+    async function run(maxParallelRuns: number) {
+      const t = setup(cayley, 100, (root) => new TimedExecutor(root, cayley));
+      repository(t.root);
+      // Run lengths in the proportions of the round: finite outlasts chain, the command features are long.
+      t.executor.delays = { chain: 50, finite: 3000, perm: 4500, chainc: 4500, finitec: 300, entry: 50 };
+      if (t.workflows.config.workflows) t.workflows.config.workflows.maxParallelRuns = maxParallelRuns;
+      const worktreePolicy: RunPolicy = { ...policy, executionMode: "worktree" };
+      await t.start({ plan: cayley, policy: worktreePolicy, featureAutoApproval: { maxTasks: 5, maxFiles: 5 }, budget: { maxTotalTokens: 6_000_000, maxAgentCalls: 2000, maxActiveMs: 6_000_000 } });
+      const approved = await t.approveSplit();
+      expect(approved.parallelRuns).toBe(maxParallelRuns);
+      const view = await t.drive();
+      expect(view.status).toBe("completed");
+      return t.executor;
+    }
+
+    test("with two slots, a freed slot is refilled at once and the critical-path feature goes first", async () => {
+      const executor = await run(2);
+      // perm starts when chain stops, while finite still runs; before, it waited for finite too.
+      // chain and finite start together, in either order.
+      expect(executor.starts.slice(0, 2).sort()).toEqual(["chain", "finite"]);
+      expect(executor.starts[2]).toBe("perm");
+      expect(executor.events.indexOf("start:perm")).toBeLessThan(executor.events.indexOf("end:finite"));
+      // When finite stops, finitec (on the path to entry) starts before chainc, which is earlier in plan order.
+      expect(executor.starts.indexOf("finitec")).toBeLessThan(executor.starts.indexOf("chainc"));
+      expect(executor.maxActive).toBeLessThanOrEqual(2);
+    }, 60000);
+
+    test("with three slots, every ready feature starts as soon as a slot frees", async () => {
+      const executor = await run(3);
+      expect(executor.starts.slice(0, 2).sort()).toEqual(["chain", "finite"]);
+      expect(executor.starts.slice(2, 4).sort()).toEqual(["chainc", "perm"]);
+      // Both start when chain stops, while finite still runs.
+      expect(executor.events.indexOf("start:chainc")).toBeLessThan(executor.events.indexOf("end:finite"));
+      // finitec takes the slot finite frees while perm and chainc still run.
+      expect(executor.events.indexOf("start:finitec")).toBeLessThan(executor.events.indexOf("end:perm"));
+      expect(executor.maxActive).toBeLessThanOrEqual(3);
+    }, 60000);
+  });
+
   test("siblings that share a file run in order, so a dependent's merge of their results succeeds (#1336)", async () => {
     // Bench round 34, sketchfold: hll, frequent, hist and member each added a `pub mod` line to
     // src/lib.rs with no dependency between them; their accepted results conflicted when sketch
