@@ -1,11 +1,12 @@
 import { Database } from "bun:sqlite";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { isManifestFile, isTestFile } from "../intelligence/language-traits.js";
 import { isTestOf } from "../verification/convergence.js";
+import { criterionCases, type SpecText } from "../verification/criteria-cases.js";
 import { MAX_EXTENDED_MS } from "./budget.js";
 import { DEFAULT_STAGE_RANGES, historyStorePaths, rangeOf, type TokenRange } from "./estimate.js";
-import { extendToOf, type RunPolicy, type TaskGraph } from "./schemas.js";
+import { extendToOf, type RunPolicy, SpecSchema, type TaskGraph } from "./schemas.js";
 import { DEFAULT_MAX_ATTEMPT_TOKENS } from "./step-budget.js";
 import type { WorkflowStore } from "./store.js";
 import { hostWritten } from "./task-graph.js";
@@ -13,7 +14,8 @@ import type { Task } from "./types.js";
 
 /**
  * Plan-time sizing. Once the plan names the tasks and the files they write, each task is priced
- * per written file by the kind of file (code, test or docs) and by whether the task creates or
+ * per written file and test tasks also by their criteria and literal cases. File rates depend
+ * on the kind of file (code, test or docs) and on whether the task creates or
  * modifies it: tests cost far more than code, a README cost more than a code file, and editing
  * existing code cost more than writing new code. The size of a file says little about the size of
  * its change. The rates are the tokens earlier tasks of the same kind spent per file to get done,
@@ -44,6 +46,8 @@ export interface SizingSample {
   model: string | null;
   /** The acceptance criteria the planned task covered; absent in older history. */
   criteria?: number;
+  /** Literal cases from the accepted spec; absent in history without a readable spec. */
+  cases?: number;
 }
 
 /**
@@ -155,6 +159,25 @@ export function samplesFrom(
     const runs = db.query<{ id: string }, []>("SELECT id FROM runs WHERE status='completed'").all();
     const samples: SizingSample[] = [];
     for (const { id } of runs) {
+      let spec: SpecText | null = null;
+      try {
+        const artifact = db
+          .query<{ inline_content: string | null; blob_path: string | null }, [string]>(
+            "SELECT inline_content, blob_path FROM artifacts WHERE run_id=? AND logical_path='spec.json' ORDER BY revision DESC LIMIT 1",
+          )
+          .get(id);
+        const content =
+          artifact?.inline_content ??
+          (artifact?.blob_path
+            ? readFileSync(
+                join(dirname(databasePath), "..", artifact.blob_path.replaceAll("\\", "/")),
+                "utf8",
+              )
+            : null);
+        if (content) spec = SpecSchema.safeParse(JSON.parse(content)).data ?? null;
+      } catch {
+        // Older stores and synthetic history may have no spec artifacts. Keep their file rates.
+      }
       const tasks = db
         .query<{ id: string; definition_json: string }, [string]>(
           "SELECT id, definition_json FROM tasks WHERE run_id=? AND status='verified'",
@@ -208,6 +231,9 @@ export function samplesFrom(
             tokens,
             model: modelOf.get(`task-${task.id}`)?.model ?? null,
             criteria: task.criterionIds?.length ?? 0,
+            ...(spec && task.criterionIds
+              ? { cases: criterionCases(spec, { criterionIds: task.criterionIds }).length }
+              : {}),
           });
       }
     }
@@ -421,8 +447,11 @@ export interface TaskSize {
   attemptTokens: number;
   /** Step cap for one attempt; null keeps the profile's and the policy's. */
   attemptSteps: number | null;
-  /** Above one attempt and writes several files: the plan should split it. */
+  /** Above one attempt and writes several files or tests: the plan should split it. */
   oversized: boolean;
+  cases?: number;
+  /** Sequential slices of this test file, including this task. */
+  sliceCount?: number;
 }
 
 export interface SizingReport {
@@ -432,6 +461,8 @@ export interface SizingReport {
   rates: Rates;
   /** Tokens per criterion that price test tasks (`criterionRate`); null without that history. */
   criterionRate: CriterionRate | null;
+  /** Tokens per literal case of finished test tasks; null until two have readable specs. */
+  caseRate?: CaseRate | null;
   tasks: TaskSize[];
   /**
    * Tokens the run is expected to need in total, from what it spent so far: the tasks' midpoints
@@ -507,40 +538,74 @@ export function criterionRate(
   samples: SizingSample[],
   model: string | null = null,
 ): CriterionRate | null {
-  const tests = samples.filter((s) => s.kind === "test" && (s.criteria ?? 0) > 0);
+  const measured = testUnitRate(samples, "criteria", model);
+  return measured ? { perCriterion: measured.range, ...measured.source } : null;
+}
+
+export interface CaseRate {
+  perCase: TokenRange;
+  samples: number;
+  basis: "project" | "history";
+  model: string | null;
+}
+
+/** Literal cases use the same project and model selection as criteria. No invented case rate. */
+export function caseRate(samples: SizingSample[], model: string | null = null): CaseRate | null {
+  const measured = testUnitRate(samples, "cases", model);
+  return measured ? { perCase: measured.range, ...measured.source } : null;
+}
+
+function testUnitRate(samples: SizingSample[], unit: "criteria" | "cases", model: string | null) {
+  const tests = samples.filter((s) => s.kind === "test" && (s[unit] ?? 0) > 0);
   const own = model ? tests.filter((s) => s.model === model) : [];
   const ofModel = own.length >= MIN_MODEL_SAMPLES ? model : null;
   const pool = ofModel ? own : tests;
   const project = pool.filter((s) => s.source === "project");
-  const basis = project.length >= MIN_PROJECT_SAMPLES ? "project" : "history";
+  const basis: CriterionRate["basis"] =
+    project.length >= MIN_PROJECT_SAMPLES ? "project" : "history";
   const chosen = basis === "project" ? project : pool;
   if (chosen.length < MIN_PROJECT_SAMPLES) return null;
-  const range = rangeOf(chosen.map((s) => s.tokens / (s.criteria ?? 1)));
-  return range ? { perCriterion: range, samples: chosen.length, basis, model: ofModel } : null;
+  const range = rangeOf(chosen.map((s) => s.tokens / (s[unit] ?? 1)));
+  return range ? { range, source: { samples: chosen.length, basis, model: ofModel } } : null;
 }
 
 /**
  * One task's price: the per-file rate of each file it writes, by its kind and action, summed. A
- * test task is priced at least at its criteria times the measured rate per criterion, when history
- * has one.
+ * test task costs at least its criteria and literal cases at their measured rates. Sequential
+ * slices share the file price and each pay for their own criteria and cases.
  */
 export function priceTask(
-  task: Pick<Task, "writes"> & Partial<Pick<Task, "criterionIds">>,
+  task: Pick<Task, "writes"> & Partial<Pick<Task, "criterionIds" | "sizingSlice">>,
   rates: Rates,
   perCriterion: CriterionRate | null = null,
+  cases = 0,
+  perCase: CaseRate | null = null,
 ): TokenRange {
+  const share = taskKind(task) === "test" ? (task.sizingSlice?.share ?? 1) : 1;
   const byFile = written(task).reduce(
     (total, { path, action }) => {
       const rate = rates[fileKind(path)][action].perFile;
-      return { low: total.low + rate.low, high: total.high + rate.high };
+      return { low: total.low + rate.low * share, high: total.high + rate.high * share };
     },
     { low: 0, high: 0 },
   );
   const criteria = task.criterionIds?.length ?? 0;
-  if (!perCriterion || !criteria || taskKind(task) !== "test") return byFile;
+  if (taskKind(task) !== "test") return byFile;
   return {
-    low: Math.max(byFile.low, criteria * perCriterion.perCriterion.low),
-    high: Math.max(byFile.high, criteria * perCriterion.perCriterion.high),
+    low: Math.round(
+      Math.max(
+        byFile.low,
+        criteria * (perCriterion?.perCriterion.low ?? 0),
+        cases * (perCase?.perCase.low ?? 0),
+      ),
+    ),
+    high: Math.round(
+      Math.max(
+        byFile.high,
+        criteria * (perCriterion?.perCriterion.high ?? 0),
+        cases * (perCase?.perCase.high ?? 0),
+      ),
+    ),
   };
 }
 
@@ -587,9 +652,12 @@ export function sizePlan(input: {
   loopShares?: readonly number[];
   /** Tokens per active minute of earlier runs (`rateHistory`); they set the time estimate. */
   tokenRates?: readonly number[];
+  /** Accepted criteria, including their quoted inputs and table rows. */
+  spec?: SpecText | null;
 }): SizingReport {
   const rates = perFileRates(input.samples, input.model ?? null);
   const perCriterion = criterionRate(input.samples, input.model ?? null);
+  const perCase = caseRate(input.samples, input.model ?? null);
   const maxAttemptTokens = input.policy.sizing?.maxAttemptTokens ?? DEFAULT_MAX_SIZED_ATTEMPT;
   const maxRunTokens = input.policy.sizing?.maxRunTokens ?? null;
   const floor = input.policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS;
@@ -597,16 +665,19 @@ export function sizePlan(input: {
   const tasks = input.graph.tasks
     .filter((task) => writtenFiles(task).length > 0)
     .map((task): TaskSize => {
-      const estimate = priceTask(task, rates, perCriterion);
+      const kind = taskKind(task);
+      const cases = input.spec && kind === "test" ? criterionCases(input.spec, task).length : 0;
+      const estimate = priceTask(task, rates, perCriterion, cases, perCase);
       const files = writtenFiles(task).length;
       return {
         taskId: task.id,
-        kind: taskKind(task),
+        kind,
         files,
         estimate,
         attemptTokens: Math.min(maxAttemptTokens, Math.max(floor, Math.round(estimate.high))),
         attemptSteps: taskKind(task) === "test" ? testSteps : null,
-        oversized: files > 1 && estimate.high > maxAttemptTokens,
+        oversized: (files > 1 || kind === "test") && estimate.high > maxAttemptTokens,
+        ...(kind === "test" ? { cases, sliceCount: task.sizingSlice?.count ?? 1 } : {}),
       };
     });
   const verification = verificationTokens();
@@ -698,6 +769,7 @@ export function sizePlan(input: {
     model: input.model ?? null,
     rates,
     criterionRate: perCriterion,
+    caseRate: perCase,
     tasks,
     runTokens,
     taskTokens: { low: taskTokens.low, expected: taskTokens.expected, high: taskTokens.high },
@@ -775,12 +847,13 @@ export function plannerSizing(
 ): { maxCodeFilesPerTask: number; note: string } {
   const rates = perFileRates(samples, model);
   const perCriterion = criterionRate(samples, model);
+  const perCase = caseRate(samples, model);
   const maxAttemptTokens = policy.sizing?.maxAttemptTokens ?? DEFAULT_MAX_SIZED_ATTEMPT;
   const maxCodeFilesPerTask = Math.max(1, Math.floor(maxAttemptTokens / highest(rates, "code")));
   const k = (kind: FileKind) => `${Math.round(highest(rates, kind) / 1000)}k`;
   return {
     maxCodeFilesPerTask,
-    note: `Give every task that writes code the policy's typecheck check, so its errors show in that task. Put tests in tasks of their own: a test file costs about ${k("test")} tokens, a code file about ${k("code")}, a documentation file about ${k("docs")}, a project manifest or solution file about ${k("manifest")}.${perCriterion ? ` A test task costs at least about ${Math.round(perCriterion.perCriterion.high / 1000)}k per criterion it covers.` : ""} Keep each code task to at most ${maxCodeFilesPerTask} files. A task whose writes all carry their content is written by the host and costs nothing, whatever its file count. Give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel and are merged afterwards; a test task depends on the code tasks whose criteria it covers. A test task above one attempt is split into one task per test file.`,
+    note: `Give every task that writes code the policy's typecheck check, so its errors show in that task. Put tests in tasks of their own: a test file costs about ${k("test")} tokens, a code file about ${k("code")}, a documentation file about ${k("docs")}, a project manifest or solution file about ${k("manifest")}.${perCriterion ? ` A test task costs at least about ${Math.round(perCriterion.perCriterion.high / 1000)}k per criterion it covers.` : ""} ${perCase ? ` Each literal test case costs at least about ${Math.round(perCase.perCase.high / 1000)}k tokens.` : ""} Keep each code task to at most ${maxCodeFilesPerTask} files. A task whose writes all carry their content is written by the host and costs nothing, whatever its file count. Give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel and are merged afterwards; a test task depends on the code tasks whose criteria it covers. Keep test tasks within the ${maxAttemptTokens} token attempt cap by the cases their criteria name, even when they write only one file. An oversized test file is split into sequential slices of whole criteria: create it first, then modify it, each slice depending on the previous. Preserve earlier slices and test only the assigned criteria. If one criterion alone exceeds the cap, write and check its cases in batches inside the same attempt.`,
   };
 }
 
@@ -846,17 +919,24 @@ export function codeTaskCheckProblems(graph: TaskGraph, policy: RunPolicy): stri
 }
 
 /**
- * Splits each oversized test task into one task per test file, so the plan needs no second round
+ * Splits oversized test tasks by file, then into sequential criterion slices of each file, so the plan needs no second round
  * for it: test files rarely depend on each other, and a planner told to split a test task did not
  * (expenses-py-r4). The first file keeps the task's ID and the others get new ones; every part
  * keeps the task's checks and dependencies, and a task that depended on it depends on every part.
+ * Slices of one file divide its per-file price by case weight, keep whole criteria, and preserve
+ * create/modify order. A criterion that alone exceeds the cap stays intact with batching guidance.
  * A part keeps only the task's criteria that the code tasks writing its tested file cover (see
  * `partCriteria`). Returns null when no test task is oversized.
  */
 /** Opens the note a sizing split appends to each part's copy of its task's description. */
 export const SPLIT_PART = "Sizing split this task by file:";
+export const SLICE_PART = "Sizing split this test file into slices:";
 
-export function splitTestTasks(graph: TaskGraph, report: SizingReport): TaskGraph | null {
+export function splitTestTasks(
+  graph: TaskGraph,
+  report: SizingReport,
+  spec?: SpecText | null,
+): TaskGraph | null {
   const oversized = new Set(
     report.tasks.filter((task) => task.oversized && task.kind === "test").map((t) => t.taskId),
   );
@@ -864,7 +944,7 @@ export function splitTestTasks(graph: TaskGraph, report: SizingReport): TaskGrap
   let next = Math.max(...graph.tasks.map((task) => Number(task.id.slice(1)))) + 1;
   const parts = new Map<string, string[]>();
   const tasks = graph.tasks.flatMap((task) => {
-    if (!oversized.has(task.id)) return [task];
+    if (!oversized.has(task.id) || task.sizingSlice) return [task];
     const files = task.writes.filter((write) => write.action !== "delete");
     const deletes = task.writes.filter((write) => write.action === "delete");
     const criteria = partCriteria(
@@ -872,22 +952,96 @@ export function splitTestTasks(graph: TaskGraph, report: SizingReport): TaskGrap
       task,
       files.map((write) => write.path),
     );
-    const split = files.map((write, index) => {
-      const id = index === 0 ? task.id : `T${String(next++).padStart(3, "0")}`;
+    const split: Task[] = [];
+    for (const [fileIndex, write] of files.entries()) {
       const siblings = files.filter((other) => other !== write).map((other) => other.path);
-      const own = criteria[index] ?? task.criterionIds;
-      const others = task.criterionIds.filter((c) => !own.includes(c));
-      const scope = others.length
-        ? ` Cover only ${own.join(", ")} in it; ${others.join(", ")} are covered by the other parts' files, so do not test them here.`
-        : "";
-      return {
-        ...task,
-        id,
-        criterionIds: own,
-        writes: index === 0 ? [write, ...deletes] : [write],
-        description: `${task.description}\n${SPLIT_PART} write only ${write.path}; ${siblings.join(", ")} belong to the other parts of ${task.id}.${scope}`,
-      };
-    });
+      const own = criteria[fileIndex] ?? task.criterionIds;
+      const base = { ...task, criterionIds: own, writes: [write] };
+      const cases = (ids: string[]) =>
+        spec ? criterionCases(spec, { criterionIds: ids }).length : 0;
+      const weights = new Map(own.map((id) => [id, Math.max(1, cases([id]))]));
+      const weight = (ids: string[]) => ids.reduce((sum, id) => sum + (weights.get(id) ?? 1), 0);
+      const total = weight(own);
+      // Later slices modify the file. Use the higher action rate while grouping, so a cheap
+      // create rate does not leave the continuation slices above the attempt cap.
+      const continuation = { ...base, writes: [{ ...write, action: "modify" as const }] };
+      const high = (ids: string[]) =>
+        Math.max(
+          ...[base, continuation].map(
+            (part) =>
+              priceTask(
+                {
+                  ...part,
+                  criterionIds: ids,
+                  sizingSlice: { taskId: task.id, index: 0, count: 1, share: weight(ids) / total },
+                },
+                report.rates,
+                report.criterionRate,
+                cases(ids),
+                report.caseRate,
+              ).high,
+          ),
+        );
+      const groups: string[][] = [];
+      let group: string[] = [];
+      const needsSlices =
+        priceTask(base, report.rates, report.criterionRate, cases(own), report.caseRate).high >
+        report.maxAttemptTokens;
+      if (!needsSlices) groups.push(own);
+      else {
+        for (const id of own) {
+          if (group.length && high([...group, id]) > report.maxAttemptTokens) {
+            groups.push(group);
+            group = [];
+          }
+          group.push(id);
+        }
+        if (group.length) groups.push(group);
+      }
+      let previous: string | null = null;
+      for (const [index, ids] of groups.entries()) {
+        const id = split.length === 0 ? task.id : `T${String(next++).padStart(3, "0")}`;
+        const others = task.criterionIds.filter((c) => !ids.includes(c));
+        const sliced = groups.length > 1;
+        const scope = others.length
+          ? ` Cover only ${ids.join(", ")} in it; ${others.join(", ")} are covered by the other parts' ${sliced ? "slices" : "files"}, so do not test them here.`
+          : "";
+        const note = sliced
+          ? `${SLICE_PART} write only ${write.path}; the other slices belong to the other parts of ${task.id}. Slice ${index + 1} of ${groups.length}. Preserve existing tests and add only this slice's criteria.`
+          : `${SPLIT_PART} write only ${write.path}; ${siblings.join(", ")} belong to the other parts of ${task.id}.`;
+        const batch =
+          needsSlices && high(ids) > report.maxAttemptTokens
+            ? " This criterion alone exceeds one attempt. Write its cases in small batches inside this attempt, run tests-written after each batch, and preserve earlier batches."
+            : "";
+        const sliceWrite = previous ? { ...write, action: "modify" as const } : write;
+        split.push({
+          ...task,
+          id,
+          criterionIds: ids,
+          requirementIds: spec
+            ? [
+                ...new Set(
+                  spec.criteria.filter((c) => ids.includes(c.id)).flatMap((c) => c.requirementIds),
+                ),
+              ]
+            : task.requirementIds,
+          writes: split.length === 0 ? [sliceWrite, ...deletes] : [sliceWrite],
+          dependsOn: [...task.dependsOn, ...(previous ? [previous] : [])],
+          ...(sliced
+            ? {
+                sizingSlice: {
+                  taskId: task.id,
+                  index,
+                  count: groups.length,
+                  share: weight(ids) / total,
+                },
+              }
+            : {}),
+          description: `${task.description}\n${note}${scope}${batch}`,
+        });
+        previous = id;
+      }
+    }
     parts.set(
       task.id,
       split.map((part) => part.id),
@@ -943,7 +1097,7 @@ export function partCriteria(graph: TaskGraph, task: Task, files: string[]): str
 
 /** The note that sends an oversized plan back to the planner once. */
 export function splitNote(report: SizingReport, maxCodeFilesPerTask: number): string {
-  return `Sizing: the plan is too large for its attempts. ${report.reasons.join(". ")}. Re-plan with smaller tasks: tests in tasks of their own, at most ${maxCodeFilesPerTask} code files per task, disjoint writes and no dependency between tasks where possible, so they run in parallel. Files whose whole content the request fixes (module stubs, a registration file) go in one task whose writes carry their content, which the host writes for nothing.`;
+  return `Sizing: the plan is too large for its attempts. ${report.reasons.join(". ")}. Re-plan with smaller tasks: tests in tasks of their own, split a large single test file into sequential criterion slices with create then modify writes and a dependency on the preceding slice, at most ${maxCodeFilesPerTask} code files per task, disjoint writes and no dependency between tasks where possible, so they run in parallel. Files whose whole content the request fixes (module stubs, a registration file) go in one task whose writes carry their content, which the host writes for nothing.`;
 }
 
 /** The approval's line for the sized active time against the active-time cap (#933). */

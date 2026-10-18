@@ -785,6 +785,16 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/overview: New run, Quick task"],
   },
   {
+    id: "run-test-sizing",
+    group: "Workflow runs",
+    title:
+      "Size tests by literal cases and split large test files into sequential criterion slices",
+    tui: ["/workflow: plan approval shows the sized tasks"],
+    cli: ["baked workflow show: plan sizing and task slices"],
+    api: ["/v1/workflow/runs/:id: shared sizing record and tasks"],
+    desktop: ["project/runs: plan approval and task slices"],
+  },
+  {
     id: "test-integrity",
     group: "Workflow runs",
     title: "Test-integrity guard: block or warn on test gaming, spec conflicts",

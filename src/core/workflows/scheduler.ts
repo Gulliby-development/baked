@@ -1547,7 +1547,7 @@ export class WorkflowScheduler {
                   isHostSplitNit(finding, split)
                 ) {
                   finding.blocking = false;
-                  finding.description = `About tasks the host split by file after planning (${Object.entries(
+                  finding.description = `About tasks the host split by file or criterion slices after planning (${Object.entries(
                     split,
                   )
                     .map(([original, ids]) => `${original}: ${ids.join(", ")}`)
@@ -3196,16 +3196,18 @@ export class WorkflowScheduler {
     }
     return progressed;
   }
-  /** The planned graph with its oversized test tasks split by file, recorded when it splits. */
+  /** Split oversized tests by file and then by criteria within a file, before analysis. */
   private splitTests(runId: string, graph: TaskGraph, policy: RunPolicy): TaskGraph {
+    const spec = this.store.state(runId).spec;
     const report = sizePlan({
       graph,
+      spec,
       policy,
       samples: sizingHistory(this.store.workspace, policy),
       spent: this.store.run(runId).token_usage,
       model: this.sizingModel(runId, graph),
     });
-    const split = splitTestTasks(graph, report);
+    const split = splitTestTasks(graph, report, spec);
     if (!split) return graph;
     const revision = this.store.state(runId).sizingReplans;
     this.store.transaction(() =>
@@ -4639,6 +4641,7 @@ export class WorkflowScheduler {
     const model = this.sizingModel(runId, graph);
     const report = sizePlan({
       graph,
+      spec: state.spec,
       policy,
       samples,
       spent: this.store.run(runId).token_usage,

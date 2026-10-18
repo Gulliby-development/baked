@@ -139,6 +139,16 @@ export const TaskSchema = z
     origin: z.enum(["planned", "repair", "convergence"]),
     findingIds: z.array(SafeId),
     rationale: Text,
+    /** Host sizing's sequential slices of one test file; absent on unsplit tasks. */
+    sizingSlice: z
+      .object({
+        taskId: TaskId,
+        index: z.number().int().nonnegative(),
+        count: z.number().int().positive(),
+        share: z.number().positive().max(1),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
