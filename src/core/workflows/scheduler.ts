@@ -485,12 +485,12 @@ import {
   testUpdateOwners,
 } from "./task-graph.js";
 import {
-  addedTests,
   integrityFix,
   isTestPath,
   rewriteTargets,
   scanTestIntegrity,
   strengthenTargets,
+  testChanges,
   testIntegrityOf,
   testWriteProblems,
 } from "./test-integrity.js";
@@ -8130,27 +8130,34 @@ ${note}`;
   }
   /**
    * Records the tests a correction added, by file and name, with the findings it corrects
-   * (#1519): a later correction of another finding may not remove them.
+   * (#1519): a later correction of another finding may not remove them. Tests it retitled or
+   * merged are recorded with their new names, so that protection follows them (#1532).
    */
   private recordAddedTests(
     runId: string,
     task: Task,
     changes: readonly { path: string; before: string | null | undefined; after: string | null }[],
   ): void {
-    const added = Object.fromEntries(
-      changes.flatMap((change) => {
-        const names = addedTests(change);
-        return names?.length ? [[change.path, names]] : [];
-      }),
-    );
+    const added: Record<string, string[]> = {};
+    const renamed: Record<string, Record<string, string>> = {};
+    for (const change of changes) {
+      const tests = testChanges(change);
+      if (tests?.added.length) added[change.path] = tests.added;
+      if (tests && Object.keys(tests.renamed).length) renamed[change.path] = tests.renamed;
+    }
     const path = `tasks/${task.id}/tests.json`;
-    if (!Object.keys(added).length && !this.store.latestArtifact(runId, path)) return;
+    if (
+      !Object.keys(added).length &&
+      !Object.keys(renamed).length &&
+      !this.store.latestArtifact(runId, path)
+    )
+      return;
     this.store.transaction(() =>
       this.store.artifact(
         runId,
         "diagnostic",
         path,
-        canonical({ taskId: task.id, findingIds: task.findingIds, added }),
+        canonical({ taskId: task.id, findingIds: task.findingIds, added, renamed }),
       ),
     );
   }
@@ -8159,6 +8166,8 @@ ${note}`;
    * who added them for which finding (#1519). intsmith ca6f3023 (bench round 43): T011 added the
    * width-10000 interval test for F1, T012 corrected F2 with every file of the feature in scope
    * and replaced it with a scalar test, and two more correctives (1.37M tokens) brought it back.
+   * A protected test keeps its protection under the name a later task gave it, and the tests of
+   * findings a settled conflict decided are not protected: the settlement may change them (#1532).
    */
   private correctionTests(
     runId: string,
@@ -8166,6 +8175,7 @@ ${note}`;
     changed: readonly string[],
   ): Map<string, Map<string, string>> {
     const own = new Set(task.findingIds);
+    const decided = decidedFindingIds(this.store, runId);
     const files = new Set(changed);
     const protects = new Map<string, Map<string, string>>();
     for (const row of this.store.artifacts(runId)) {
@@ -8177,9 +8187,25 @@ ${note}`;
         taskId?: string;
         findingIds?: string[];
         added?: Record<string, string[]>;
+        renamed?: Record<string, Record<string, string>>;
       };
+      for (const [path, renames] of Object.entries(body.renamed ?? {})) {
+        const byName = protects.get(path);
+        if (!byName) continue;
+        for (const [from, to] of Object.entries(renames)) {
+          const origin = byName.get(from);
+          if (origin === undefined) continue;
+          byName.delete(from);
+          byName.set(to, origin);
+        }
+      }
       const findingIds = body.findingIds ?? [];
-      if (!findingIds.length || findingIds.some((id) => own.has(id))) continue;
+      if (
+        !findingIds.length ||
+        findingIds.some((id) => own.has(id)) ||
+        findingIds.every((id) => decided.has(id))
+      )
+        continue;
       for (const [path, names] of Object.entries(body.added ?? {})) {
         if (!files.has(path)) continue;
         const byName = protects.get(path) ?? new Map<string, string>();
