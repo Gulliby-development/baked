@@ -16,7 +16,7 @@ import { reproExecutables } from "../src/core/verification/repro.js";
 import { exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
 import { failureSignature, testCount } from "../src/core/verification/output-counts.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
-import { writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
+import { plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { launchedCommand } from "../src/core/workflows/launcher.js";
 import {
   coveringChecks,
@@ -429,6 +429,17 @@ for (const stack of STACKS) {
       const root = project({ ...fixture.files, [path]: fixture.property.seeded });
       const written = writtenTestsCheck(root, preselected(), [{ path, action: "create" }]);
       expect(written?.args ?? null).toEqual(WRITTEN_TEST_ARGS[stack]);
+    });
+
+    // A planned test task is told the check of its test files before they exist (#1518): bench
+    // round 43's bun test tasks listed no suite check and did not know they could run it.
+    cell(stack, "planned-written-tests", () => {
+      const path = fixture.property.path;
+      const root = project({ ...fixture.files, [path]: fixture.property.seeded });
+      const writes = [{ path, action: "create" }];
+      const written = writtenTestsCheck(root, preselected(), writes);
+      expect(plannedWrittenTests(preselected(), writes)?.id ?? null).toBe(written?.id ?? null);
+      if (written) expect(plannedWrittenTests(preselected(), writes)?.timeoutMs).toBe(written.timeoutMs);
     });
 
     // The mutation gate needs a required test check to run the mutants against; without one it is

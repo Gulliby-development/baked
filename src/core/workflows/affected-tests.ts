@@ -479,6 +479,26 @@ export function writtenTestsCheck(
   };
 }
 
+/**
+ * The `-written` check that will run the test files in `writes`, known before they exist, so a
+ * planned task can be told it in its input (#1518): its ID, the files and its timeout.
+ */
+export function plannedWrittenTests(
+  checks: readonly Check[],
+  writes: readonly { path: string; action: string }[],
+): { id: string; paths: string[]; timeoutMs: number } | null {
+  const paths = writes
+    .filter((w) => w.action !== "delete" && isWrittenTestFile(w.path))
+    .map((w) => w.path);
+  const gate = paths.length ? affectedTestCheck(checks, paths) : null;
+  if (!gate) return null;
+  return {
+    id: gate.id.replace(/-affected$/, "-written"),
+    paths,
+    timeoutMs: Math.min(gate.timeoutMs, WRITTEN_TESTS_TIMEOUT_MS),
+  };
+}
+
 const TIMEOUT_FLAG = /^--(?:timeout|testTimeout|test-timeout)\b/;
 
 /**

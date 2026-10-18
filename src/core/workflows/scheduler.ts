@@ -118,6 +118,7 @@ import {
   holdsWrittenTests,
   isCompiledTestFile,
   isWrittenTestFile,
+  plannedWrittenTests,
   taskCaseText,
   writtenTestsCheck,
 } from "./affected-tests.js";
@@ -2744,6 +2745,16 @@ export class WorkflowScheduler {
     });
     return true;
   }
+  /** Whether a planned task is in its continuation after its tests-written check failed (#1518). */
+  private writtenTestsContinuation(runId: string, state: RuntimeState, task: Task): boolean {
+    if ((state.taskContinuations[task.id] ?? 0) === 0) return false;
+    const artifact = this.store.latestArtifact(runId, `tasks/${task.id}/cut-off-checks.json`);
+    return (
+      artifact !== null &&
+      (JSON.parse(this.store.readArtifact(runId, artifact.id)) as { reason?: string }).reason ===
+        "written_tests"
+    );
+  }
   /** The required checks a task failed after an attempt was cut off (#1329), for its continuation. */
   private cutOffChecks(
     runId: string,
@@ -2753,15 +2764,17 @@ export class WorkflowScheduler {
     if (!artifact) return {};
     const record = JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
       failed: { id: string; output: string }[];
-      reason?: "cut_off" | "correction";
+      reason?: "cut_off" | "correction" | "written_tests";
     };
     return {
       cutOffChecks: {
         failed: record.failed,
         note:
-          record.reason === "correction"
-            ? "This correction's earlier attempt submitted, and these required checks then failed on its files, with this output. The failure is part of this correction: find its cause in what the earlier attempt changed (a test that contradicts the spec is a cause too), fix it, run the check with request_check, then submit."
-            : "An earlier attempt of this task reached its limit after edits it did not check, and these required checks failed on its files, with this output. Fix what fails, run the check with request_check, then submit.",
+          record.reason === "written_tests"
+            ? "This task's earlier attempt submitted, and these required checks then failed on the files it wrote, with this output. Find the cause: a test whose expectation contradicts the spec, a test too slow for the check's limit, or a defect in code this task writes. Fix it within this task's files, run the check with request_check, then submit. When the test is right and the defect is in code another task owns, keep the test as the spec requires and submit without unresolved items: the host then opens a correction of that code."
+            : record.reason === "correction"
+              ? "This correction's earlier attempt submitted, and these required checks then failed on its files, with this output. The failure is part of this correction: find its cause in what the earlier attempt changed (a test that contradicts the spec is a cause too), fix it, run the check with request_check, then submit."
+              : "An earlier attempt of this task reached its limit after edits it did not check, and these required checks failed on its files, with this output. Fix what fails, run the check with request_check, then submit.",
       },
     };
   }
@@ -5380,6 +5393,7 @@ ${note}`;
                   }
                 : {}),
               ...this.affectedTestsContext(root, state, policy, task),
+              ...this.writtenTestsContext(state, policy, task),
               ...(inherited.length
                 ? {
                     earlierEdits: {
@@ -6629,6 +6643,7 @@ ${note}`;
                   ...(await this.libraryDocsContext(runId, policy, root, task)),
                   ...(earlierEdits ? { earlierEdits } : {}),
                   ...this.affectedTestsContext(root, state, policy, task),
+                  ...this.writtenTestsContext(state, policy, task),
                 }
               : entry.extra,
             signal,
@@ -7536,6 +7551,9 @@ ${note}`;
       result.unresolved.length > 0
     )
       return "";
+    // A planned test task sent back with its tests-written failures (#1518) wrote its files in the
+    // earlier attempt; one that keeps them leaves the failure to a correction.
+    if (task.origin === "planned" && this.writtenTestsContinuation(runId, state, task)) return true;
     if (task.origin === "planned" && !rerun)
       return "it reported implemented but changed none of its files";
     const named = new Set(
@@ -7747,6 +7765,33 @@ ${note}`;
     else if (record?.baseline === "failed")
       note += ` They already failed before this task (evidence ${record.evidenceId ?? "none"}); do not take those failures for yours.`;
     return { affectedTests: { paths, checkId, note } };
+  }
+  /**
+   * For a planned task that writes test files, the check of those files the host runs after it
+   * (#1518). Bench round 43: the bun plans gave their test tasks only typecheck and lint, the
+   * workers did not know they could run `tests-written`, and its failures after the attempts
+   * became cold corrective tasks (41 percent of url-shortener, 23 percent of md-site).
+   */
+  private writtenTestsContext(
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ): { writtenTestsCheck?: { checkId: string; paths: string[]; note: string } } {
+    if (task.origin !== "planned" || this.testsPending(state, policy)) return {};
+    const planned = plannedWrittenTests(policy.checks, task.writes);
+    if (!planned) return {};
+    const checkId = planned.id;
+    const suite = checkId.replace(/-written$/, "");
+    if (taskChecks(policy, task).some((c) => c.id === suite)) return {};
+    const paths = planned.paths;
+    const seconds = Math.round(planned.timeoutMs / 1000);
+    return {
+      writtenTestsCheck: {
+        checkId,
+        paths,
+        note: `After this task the host runs ${checkId}, required: the test files this task writes, on their own, within ${seconds} s. Run request_check ${checkId} once they are written and fix what fails before you submit: a test that fails or runs too long after you submit sends the task back to you with the output.`,
+      },
+    };
   }
   /** The affected-test record of a task, or of the task a corrective task repairs. */
   private affectedRecord(
@@ -9329,7 +9374,10 @@ ${note}`;
     child: string,
     failures: Review["findings"],
   ): boolean {
-    if (task.origin === "planned" || (state.taskContinuations[task.id] ?? 0) > 0) return false;
+    if ((state.taskContinuations[task.id] ?? 0) > 0) return false;
+    // A planned task that writes tests continues on its own test files' failures (#1518).
+    const planned = task.origin === "planned";
+    if (planned && !task.writes.some((w) => isWrittenTestFile(w.path))) return false;
     // The checks the correction was opened for, and the files it changed: a failure of another
     // check on files it did not touch belongs to that file's correction, not to this one.
     const openedFor = new Set(
@@ -9360,7 +9408,8 @@ ${note}`;
       const touched =
         graph !== null &&
         failingFilesInOutput(output, graph.tasks).some((path) => changed.includes(path));
-      if (!regression && !openedFor.has(check) && !touched) return false;
+      if (planned ? !check.endsWith("-written") : !regression && !openedFor.has(check) && !touched)
+        return false;
       failed.push({
         id: check,
         output: `${finding.claim}. ${finding.impact}\n${output}`.slice(-CONTINUED_OUTPUT_CHARS),
@@ -9377,7 +9426,7 @@ ${note}`;
           taskId: task.id,
           stepId: child,
           finalizedBy: null,
-          reason: "correction",
+          reason: planned ? "written_tests" : "correction",
           failed,
         }),
       );
