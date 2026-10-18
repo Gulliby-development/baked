@@ -1,6 +1,7 @@
 import { isCodeFile } from "../intelligence/language-traits.js";
 import { workspacePath } from "../specs/validate.js";
 import { WorkflowFault } from "./errors.js";
+import { launchedCommand } from "./launcher.js";
 import type { RunPolicy, TaskGraph } from "./schemas.js";
 import type { Check, Task } from "./types.js";
 
@@ -142,11 +143,8 @@ export function fixerTiers(check: {
  * the whole crate per README, LICENSE and test file).
  */
 export function isWholeUnitFixer(fix: { executable: string; args: string[] }): boolean {
-  const name = fix.executable
-    .replace(/^.*[\\/]/, "")
-    .replace(/\.(?:exe|cmd|bat)$/i, "")
-    .toLowerCase();
-  return name === "cargo" && fix.args.includes("fmt") && !fix.args.includes("--");
+  const { program, args } = launchedCommand(fix.executable, fix.args);
+  return program === "cargo" && args.includes("fmt") && !args.includes("--");
 }
 
 /** The command that applies a whole-unit fixer to several files in one run. */
@@ -154,24 +152,31 @@ export function wholeUnitFixerCommand(
   fix: { executable: string; args: string[] },
   paths: readonly string[],
 ): { executable: string; args: string[] } {
-  return { executable: fix.executable, args: [...fix.args, "--", ...paths] };
+  const { args, launch } = launchedCommand(fix.executable, fix.args);
+  return (
+    launch([...args, "--", ...paths]) ?? {
+      executable: fix.executable,
+      args: [...fix.args, "--", ...paths],
+    }
+  );
 }
 
 export function fixerCommand(
   fix: { executable: string; args: string[] },
   path: string,
 ): { executable: string; args: string[] } {
-  const name = fix.executable
-    .replace(/^.*[\\/]/, "")
-    .replace(/\.(?:exe|cmd|bat)$/i, "")
-    .toLowerCase();
-  const [first] = fix.args;
-  if (name === "cargo" && fix.args.includes("fmt") && !fix.args.includes("--"))
-    return { executable: fix.executable, args: [...fix.args, "--", path] };
-  if (name === "go" && first === "fmt") return { executable: "gofmt", args: ["-w", path] };
-  if (name === "dotnet" && first === "format" && !fix.args.includes("--include"))
-    return { executable: fix.executable, args: [...fix.args, "--include", path] };
-  return { executable: fix.executable, args: [...fix.args, path] };
+  const { program: name, args, launch } = launchedCommand(fix.executable, fix.args);
+  const [first] = args;
+  const command =
+    name === "cargo" && args.includes("fmt") && !args.includes("--")
+      ? launch([...args, "--", path])
+      : name === "go" && first === "fmt"
+        ? launch(["-w", path], "gofmt")
+        : name === "dotnet" && first === "format" && !args.includes("--include")
+          ? launch([...args, "--include", path])
+          : launch([...args, path]);
+  // A path a launcher cannot pass unchanged is given to the fixer's own command line.
+  return command ?? { executable: fix.executable, args: [...fix.args, path] };
 }
 
 /** A criterion that claims the code is formatted: a formatter's name, or files "are formatted". */

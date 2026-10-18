@@ -6,6 +6,7 @@ import { defaultWorkflowPolicy } from "./defaults.js";
 import { WorkflowFault } from "./errors.js";
 import { type AgentProfile, extendToOf, PolicySchema, type RunPolicy } from "./schemas.js";
 import type { RunRow, WorkflowStore } from "./store.js";
+import { attemptSpend } from "./usage.js";
 export function reserveTokens(prompt: string, profile: AgentProfile, policy: RunPolicy): number {
   // Each tool-loop step can replay the growing context and generate another completion.
   // Native execution also enforces the total run limit between calls.
@@ -179,6 +180,30 @@ export function costRate(
   if (spentUsd !== null && spentTokens > 0) return spentUsd / spentTokens;
   const pricing = model ? findPricing(model)?.pricing : undefined;
   return pricing ? pricing.input / 1e6 : 0;
+}
+
+/**
+ * USD per token of the tokens a run still has to spend (#1505): the price its finished task
+ * attempts paid, since tasks are most of what is left. Planning stages run on other models with
+ * little cache and cost about twice as much per token, so the run's blended price forecast
+ * fecsmith front at $11.88 while it finished at $9.03 (bench round 42). Before a task attempt is
+ * priced, the blended price (`costRate`) stands in.
+ */
+export function remainingCostRate(store: WorkflowStore, runId: string): number {
+  const stageOf = new Map(store.steps(runId).map((step) => [step.id, step.stage_id]));
+  let usd = 0;
+  let tokens = 0;
+  for (const attempt of store.attempts(runId)) {
+    if (attempt.status === "running" || !attempt.used_tokens) continue;
+    if (!(stageOf.get(attempt.step_id) ?? "").startsWith("task-")) continue;
+    const cost = attemptSpend(store, runId, attempt.id, attempt.model_id)?.costUsd;
+    if (cost === null || cost === undefined) continue;
+    usd += cost;
+    tokens += attempt.used_tokens;
+  }
+  if (usd > 0 && tokens > 0) return usd / tokens;
+  const { spentUsd } = store.costUsage(runId);
+  return costRate(spentUsd > 0 ? spentUsd : null, store.run(runId).token_usage, null);
 }
 
 /**
@@ -425,7 +450,8 @@ function progressOf(store: WorkflowStore, runId: string) {
 
 /**
  * With a dollar cap (`maxCostUsd`), the tokens the run can still pay for: what it has used and
- * reserved, plus the cap's unspent dollars at the run's measured price per token. Null without a
+ * reserved, plus the cap's unspent dollars at the price its task attempts paid per token
+ * (`remainingCostRate`, #1505). Null without a
  * cap or before anything is priced. Raw tokens price a codex run at about $0.9 per million (cache
  * reads) and a claude-code run at about $3.9, so a token limit cannot stand in for the cap:
  * cfgtrace 14b1da41 stopped at its 12M token hard limit with $1.45 of its $12 cap left and its
@@ -437,7 +463,7 @@ function affordableTokens(store: WorkflowStore, runId: string, policy: RunPolicy
   if (cap === null) return null;
   const row = store.run(runId);
   const { spentUsd, reservedUsd } = store.costUsage(runId);
-  const rate = costRate(spentUsd > 0 ? spentUsd : null, row.token_usage, null);
+  const rate = remainingCostRate(store, runId);
   if (rate <= 0) return null;
   const reserved = store
     .attempts(runId)

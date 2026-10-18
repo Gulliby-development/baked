@@ -366,6 +366,7 @@ export class NativeWorkflowService implements WorkflowService {
       waitingFor: {},
       affectedTests: {},
       analysisReplans: 0,
+      derivationReturns: 0,
       analysisRaised: [],
       answeredFindings: [],
       revisedRejections: [],

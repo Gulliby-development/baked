@@ -648,6 +648,40 @@ describe("scenario: an initiative dollar budget (#1317)", () => {
     expect(t.featureOf(view, "api").runId).not.toBeNull();
   }, 30000);
 
+  // Bench round 42 (#1505): the re-forecast priced the features still to run at every run's
+  // dollars over every run's tokens, the decompose run and unpriced held tokens included.
+  test("the re-forecast prices the features left at what the feature runs paid per token", async () => {
+    const t = setup(threeFeatures, 20_000);
+    t.executor.usageStore = t.workflows.store;
+    // Without a given plan the decomposer runs and proposes the split.
+    const started = await t.start({ model: MODEL, featureAutoApproval: { maxTasks: 5, maxFiles: 5 }, budget: { maxTotalTokens: 50_000_000, maxAgentCalls: 400, maxActiveMs: 21_600_000 }, costBudget: { maxCostUsd: 6 } });
+    await t.initiatives.drive("values", new AbortController().signal);
+    const store = t.workflows.store;
+    // The decompose run is paid once, here all at the output price, and does not repeat.
+    const decompose = t.initiatives.view("values").decompose?.runId ?? started.decompose?.runId ?? "";
+    const stepId = store.beginStep(decompose, "decompose-extra");
+    const attempt = store.reserve(decompose, stepId, MODEL, 1000, JSON.parse(store.run(decompose).policy_json));
+    store.transaction(() => {
+      store.artifact(decompose, "usage", `attempts/${attempt}/usage.json`, canonical({ schemaVersion: 1, profileId: "decomposer", taskId: null, maxSteps: 10, maxTokens: 1_000_000, stopReason: "submitted", finalizedBy: null, totalTokens: 5_000, steps: [{ step: 1, inputTokens: 0, outputTokens: 5_000, cacheReadTokens: 0, cacheWriteTokens: 0, toolCalls: 0, compactedBytes: 0 }] }));
+      store.finishAttempt(decompose, attempt, "completed", 5_000);
+    });
+    await t.approveSplit();
+    await t.drive();
+    const estimate = t.initiatives.estimate("values");
+    const view = t.initiatives.view("values");
+    const runs = view.features.map((f) => f.runId).filter((id): id is string => id !== null);
+    const usd = runs.reduce((sum, id) => sum + store.costUsage(id).spentUsd, 0);
+    const tokens = runs.reduce((sum, id) => sum + store.run(id).token_usage, 0);
+    const accepted = new Set(view.features.filter((f) => f.state === "accepted").map((f) => f.id));
+    const left = (estimate?.features ?? [])
+      .filter((f) => !accepted.has(f.featureId))
+      .reduce((sum, f) => sum + Math.max(0, (f.tokens.low + f.tokens.high) / 2 - f.spent), 0);
+    expect(usd).toBeGreaterThan(0);
+    expect(view.budget.cost.spentUsd).toBeGreaterThan(usd);
+    const spent = usd + store.costUsage(decompose).spentUsd;
+    expect(view.budget.cost.forecastUsd).toBe(Math.round((spent + (usd / tokens) * left) * 100) / 100);
+  }, 30000);
+
   test("costForecast off in the base policy keeps only the shares", async () => {
     const t = setup(threeFeatures, 20_000);
     t.executor.usageStore = t.workflows.store;
@@ -1207,6 +1241,23 @@ describe("initiative runtime", () => {
     for (let i = 0; i < 4 && view.status !== "completed"; i++) view = await t.drive();
     const coreRun = t.featureOf(view, "core").runId ?? "";
     expect(JSON.parse(t.workflows.store.run(coreRun).policy_json).autoApproval?.limits).toMatchObject({ maxTasks: 24, maxFiles: 22 });
+    expect(t.workflows.store.requests(coreRun).find((r) => r.kind === "approval")?.actor).toBe("auto-approval");
+    expect(view.status).toBe("completed");
+  }, 30000);
+
+  // Bench round 42, fecsmith front (#1504): a boundary of globs and a few files counted only its
+  // literal paths, so a 19-file plan inside it went to a person under 8-task, 14-file limits.
+  test("tiered approval auto-approves a plan inside a glob boundary that is larger than the limits", async () => {
+    const modules = Array.from({ length: 18 }, (_, i) => `core-m${String(i + 1).padStart(2, "0")}.txt`);
+    const split = plan([feature("core", [], ["core.txt", "core-*.txt"]), feature("api", ["core"]), feature("docs")]);
+    const t = setup(split);
+    t.executor.extraTasks.core = modules;
+    await t.start({ plan: split, featureAutoApproval: { maxTasks: 8, maxFiles: 14 } });
+    await t.approveSplit();
+    let view = await t.drive();
+    for (let i = 0; i < 4 && view.status !== "completed"; i++) view = await t.drive();
+    const coreRun = t.featureOf(view, "core").runId ?? "";
+    expect(t.workflows.store.state(coreRun).graph?.tasks.length).toBe(19);
     expect(t.workflows.store.requests(coreRun).find((r) => r.kind === "approval")?.actor).toBe("auto-approval");
     expect(view.status).toBe("completed");
   }, 30000);

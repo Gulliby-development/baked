@@ -57,6 +57,7 @@ import {
   noteUnverifiedCriteria,
   passesWithNotes,
   REPEAT_NOTE,
+  reaskableCriteria,
   requiredChecksPass,
   reversalCandidates,
   reviewLimitAccepts,
@@ -205,6 +206,14 @@ import { type CriticCalibration, calibrateCritic, criticExamples } from "./criti
 import { crossPlatformNote } from "./cross-platform.js";
 import { git } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
+import {
+  DERIVATION_RETURN_NOTE,
+  derivationAuditExtra,
+  derivationAuditOn,
+  derivationFindings,
+  derivationProblems,
+  isDerivationFinding,
+} from "./derivation-audit.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { describeChange, keepOutside, restoreOutside, unjournaledOutside } from "./fixer-scope.js";
@@ -519,6 +528,7 @@ import {
   hasNoSource,
   type WorkspaceFacts,
   workspaceFacts,
+  workspaceInventory,
 } from "./workspace-facts.js";
 import {
   commitRunBranch,
@@ -1405,6 +1415,7 @@ export class WorkflowScheduler {
                 advance = false;
                 break;
               }
+              const audit = derivationAuditOn(policy) ? derivationAuditExtra(spec) : null;
               const analysis = AnalysisSchema.parse(
                 await this.call(
                   runId,
@@ -1422,6 +1433,7 @@ export class WorkflowScheduler {
                     ...(Object.keys(hostSplitParts(graph)).length
                       ? { hostSplit: hostSplitParts(graph) }
                       : {}),
+                    ...(audit ? { derivationAudit: audit } : {}),
                   },
                   signal,
                   undefined,
@@ -1429,10 +1441,13 @@ export class WorkflowScheduler {
                   (output) => {
                     const parsed = AnalysisSchema.safeParse(output);
                     return parsed.success
-                      ? deferredBlockingProblems(
-                          parsed.data.findings,
-                          (_, index) => parsed.data.findings[index]?.description ?? "",
-                        )
+                      ? [
+                          ...deferredBlockingProblems(
+                            parsed.data.findings,
+                            (_, index) => parsed.data.findings[index]?.description ?? "",
+                          ),
+                          ...(audit ? derivationProblems(spec, parsed.data) : []),
+                        ]
                       : [];
                   },
                 ),
@@ -1515,6 +1530,12 @@ export class WorkflowScheduler {
               }
               // Findings about check outcomes stay in the record as notes; checks run later.
               let findings = demoteDeferred(analysis.findings, (f) => f.description);
+              // The host raises the rows the audit could not reproduce; the model does not (#1465).
+              if (audit)
+                findings = [
+                  ...findings.filter((f) => !isDerivationFinding(f)),
+                  ...derivationFindings(spec, analysis),
+                ];
               // Analysis passes when no finding blocks: the rest are notes, whatever the model's verdict.
               const blocking = findings.some((f) => f.blocking);
               state.analysisPassed = !blocking && analysis.verdict !== "inconclusive";
@@ -1568,6 +1589,25 @@ export class WorkflowScheduler {
                   rerouted = v2 !== null;
                   break;
                 }
+              }
+              // A criterion row the requirements do not give goes back to the spec author once,
+              // whatever the clarification policy: the requirements settle it (#1465).
+              const derived = state.analysisPassed
+                ? []
+                : findings.filter((f) => f.blocking && isDerivationFinding(f));
+              const specify = stages.findIndex((s) => s.kind === "specify");
+              if (
+                derived.length &&
+                state.derivationReturns === 0 &&
+                specify >= 0 &&
+                this.moveTo(state, stages, specify, v2)
+              ) {
+                state.derivationReturns = 1;
+                this.pendPatch(state, policy, derived, ["spec", "plan"]);
+                state.prompt += `\n${DERIVATION_RETURN_NOTE}\n${canonical(derived.map(({ kind, refs, description }) => ({ kind, refs, description })))}`;
+                advance = false;
+                rerouted = v2 !== null;
+                break;
               }
               if (planOnly.length && state.analysisReplans === 0 && plan >= 0) {
                 if (this.moveTo(state, stages, plan, v2)) {
@@ -11009,7 +11049,14 @@ ${note}`;
       // The language dimension reviews idioms in the diff; criterion coverage is not its job.
       const diffOnly = reviewer.dimension === "language";
       let reproAdvised = false;
-      const ask = async (extra: Record<string, unknown>): Promise<Review> => {
+      // Criteria that count or list files are settled from the host's file list (#1506).
+      const inventory = diffOnly
+        ? undefined
+        : workspaceInventory(runRoot(this.store.workspace, state));
+      const ask = async (
+        extra: Record<string, unknown>,
+        maxSteps = REVIEW_ATTEMPT_STEPS,
+      ): Promise<Review> => {
         const answer = ReviewSchema.parse(
           await this.call(
             runId,
@@ -11036,6 +11083,7 @@ ${note}`;
               ...(reviewer.dimension === "correctness" && examples.length
                 ? { documentedExamples: examples }
                 : {}),
+              ...(inventory ? { workspaceInventory: inventory } : {}),
               ...extra,
             },
             signal,
@@ -11065,7 +11113,7 @@ ${note}`;
               return advice;
             },
             {
-              maxSteps: Math.min(profile.maxSteps, policy.maxAgentSteps, REVIEW_ATTEMPT_STEPS),
+              maxSteps: Math.min(profile.maxSteps, policy.maxAgentSteps, maxSteps),
               maxTokens: undefined,
             },
             canRepro ? () => ({ run_repro: reproTool(executables, repro) }) : undefined,
@@ -11091,17 +11139,23 @@ ${note}`;
       if (result.verdict === "inconclusive" && reviewer.required) {
         // One more question with the criteria it left open: a reviewer that sees the list often
         // settles them, or says what evidence would (endfix 2295dbbd, AC-001 and AC-005).
-        const open = result.coverage.filter((c) => c.verdict === "inconclusive");
+        // A criterion whose explanation already names evidence the reviewer cannot produce is
+        // not asked again (#1506): the same tools give the same answer, and it goes to the
+        // converge stage as an evidence gap. The second question gets half the steps.
+        const open = reaskableCriteria(result.coverage);
         if (open.length) {
-          result = await ask({
-            inconclusiveCriteria: {
-              note: "Your review was inconclusive on these criteria. Settle each from the code and the evidence, using run_repro where it helps, or say in the explanation which test or check would establish it. Do not leave a criterion inconclusive without a reason.",
-              criteria: open.map((c) => ({
-                criterionId: c.criterionId,
-                explanation: c.explanation,
-              })),
+          result = await ask(
+            {
+              inconclusiveCriteria: {
+                note: "Your review was inconclusive on these criteria. Settle each from the code, the evidence and extra.workspaceInventory, using run_repro where it helps, or say in the explanation which test or check would establish it. Do not leave a criterion inconclusive without a reason.",
+                criteria: open.map((c) => ({
+                  criterionId: c.criterionId,
+                  explanation: c.explanation,
+                })),
+              },
             },
-          });
+            Math.ceil(REVIEW_ATTEMPT_STEPS / 2),
+          );
         }
       }
       validateReview(

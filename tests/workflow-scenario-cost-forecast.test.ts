@@ -2,10 +2,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { findPricing } from "../src/core/llm/pricing.js";
 import { canonical } from "../src/core/specs/hash.js";
 import { budgetLimitText, canExtend } from "../src/components/workflow/format.js";
-import { growBudgetOnProgress } from "../src/core/workflows/budget.js";
+import { costRate, growBudgetOnProgress, remainingCostRate } from "../src/core/workflows/budget.js";
 import { featurePolicy, type InitiativeSettings } from "../src/core/workflows/initiatives/service.js";
 import { assertForecastFits, costForecast, forecastProgress } from "../src/core/workflows/cost-forecast.js";
 import { runReport } from "../src/core/workflows/run-report.js";
+import { verificationTokens } from "../src/core/workflows/sizing.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
 import type { RunPolicy, Task } from "../src/core/workflows/schemas.js";
 import type { AttemptUsageRecord } from "../src/core/workflows/step-budget.js";
@@ -30,7 +31,7 @@ const SPENT_TOKENS = 5_990_000;
 const CAP = Math.round(SPENT_TOKENS * INPUT * (12 / 5.62) * 100) / 100;
 const PRICE = { low: 200_000, high: 300_000 };
 
-function usage(input: number): AttemptUsageRecord {
+function usage(input: number, cacheRead = 0): AttemptUsageRecord {
   return {
     schemaVersion: 1,
     profileId: "implementer",
@@ -40,23 +41,23 @@ function usage(input: number): AttemptUsageRecord {
     stopReason: "submitted",
     finalizedBy: null,
     totalTokens: input,
-    steps: [{ step: 1, inputTokens: input, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, toolCalls: 0, compactedBytes: 0 }],
+    steps: [{ step: 1, inputTokens: input, outputTokens: 0, cacheReadTokens: cacheRead, cacheWriteTokens: 0, toolCalls: 0, compactedBytes: 0 }],
   };
 }
 
 const task = (id: string): Task => ({ id, title: id, description: id, requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: [{ path: `tests/${id}.test.ts`, action: "create" }], readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: id });
 
-function spend(store: WorkflowStore, runId: string, stage: string, policy: RunPolicy, tokens: number) {
+function spend(store: WorkflowStore, runId: string, stage: string, policy: RunPolicy, tokens: number, cacheRead = 0) {
   const stepId = store.beginStep(runId, stage);
   const attempt = store.reserve(runId, stepId, MODEL, 1000, policy);
   store.transaction(() => {
-    store.artifact(runId, "usage", `attempts/${attempt}/usage.json`, canonical(usage(tokens)));
+    store.artifact(runId, "usage", `attempts/${attempt}/usage.json`, canonical(usage(tokens, cacheRead)));
     store.finishAttempt(runId, attempt, "completed", tokens);
   });
 }
 
 /** cfgtrace at $5.62: planning spent, 7 of 23 test tasks done, each over its price. */
-async function midRun(options: { perTask: number[]; costForecast?: "ask" | "off"; policy?: Partial<RunPolicy> }) {
+async function midRun(options: { perTask: number[]; costForecast?: "ask" | "off"; taskCacheShare?: number; policy?: Partial<RunPolicy> }) {
   const policy: RunPolicy = { ...fixturePolicy, maxAgentCalls: 1000, maxTotalTokens: 16_000_000, maxCostUsd: CAP, ...(options.costForecast ? { costForecast: options.costForecast } : {}), ...options.policy };
   // The fixture model has no price, so the run starts uncapped and takes the capped policy after.
   const made = workflowFixture({ policy: { ...policy, maxCostUsd: null } });
@@ -80,7 +81,7 @@ async function midRun(options: { perTask: number[]; costForecast?: "ask" | "off"
   spend(store, runId, "plan", policy, SPENT_TOKENS - done);
   options.perTask.forEach((tokens, i) => {
     const id = tasks[i]?.id ?? "";
-    spend(store, runId, `task-${id}`, policy, tokens);
+    spend(store, runId, `task-${id}`, policy, tokens, Math.round(tokens * (options.taskCacheShare ?? 0)));
     store.transaction(() => store.taskStatus(runId, id, "implemented"));
   });
   /** Finishes one more planned task that used this many tokens. */
@@ -264,3 +265,38 @@ describe("scenario: an initiative feature's dollar cap under a dollar budget (#1
     expect(policy.maxCostUsd).toBe(SHARE);
   });
 });
+
+// fecsmith front, bench round 42 (#1505): planning paid $1.91 per million tokens, the task attempts
+// $0.79 (mostly cache reads). The forecast priced the 9.19M tokens left at the blended $0.965 and
+// read $11.88; the run finished at $9.03.
+describe("scenario: fecsmith front, the forecast prices the tokens left at the task price (#1505)", () => {
+  test("open tasks are priced at what the finished tasks paid, not the blended price with planning", async () => {
+    const { store, runId, policy } = await midRun({ perTask: OVER, taskCacheShare: 0.8 });
+    const forecast = costForecast(store, runId, policy);
+    if (!forecast) throw new Error("no forecast");
+    const blended = costRate(forecast.spentUsd, store.run(runId).token_usage, null);
+    const taskRate = remainingCostRate(store, runId);
+    // The task attempts paid less per token than the run as a whole, planning included.
+    expect(taskRate).toBeLessThan(blended);
+    const taskTokens = forecast.remainingTokens - verificationTokens();
+    expect(forecast.projectedUsd).toBeCloseTo(forecast.spentUsd + taskTokens * taskRate + verificationTokens() * blended, 6);
+    // The old rule priced every token left at the blended price.
+    expect(forecast.projectedUsd).toBeLessThan(forecast.spentUsd + forecast.remainingTokens * blended);
+  });
+
+  test("before a task attempt is priced, the blended price stands in", async () => {
+    const { store, runId } = await midRun({ perTask: [] });
+    const { spentUsd } = store.costUsage(runId);
+    expect(remainingCostRate(store, runId)).toBeCloseTo(costRate(spentUsd, store.run(runId).token_usage, null), 12);
+  });
+
+  test("a dearer later task raises the task price, so the forecast follows it", async () => {
+    const { store, runId, policy, stage } = await midRun({ perTask: OVER, taskCacheShare: 0.8 });
+    const before = remainingCostRate(store, runId);
+    // A corrective on the same model without cache: every token at the input price.
+    stage("T008", 900_000);
+    expect(remainingCostRate(store, runId)).toBeGreaterThan(before);
+    expect(costForecast(store, runId, policy)).not.toBeNull();
+  });
+});
+

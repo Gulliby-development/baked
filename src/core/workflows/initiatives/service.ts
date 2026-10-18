@@ -1415,7 +1415,7 @@ export class InitiativeService {
     const settings = this.store.settings(row);
     const facts = this.workflowFacts(settings);
     const models = settings.model ? [settings.model] : [];
-    const counts = boundaryPathCounts(plan);
+    const counts = boundaryPathCounts(plan, row.prompt);
     const features = plan.features.map((feature) => {
       const workflowId = featureWorkflowId(settings, feature);
       return {
@@ -1500,7 +1500,7 @@ export class InitiativeService {
       approved && waitingForRun.length ? this.estimateOf(row, approved, accepted) : null;
     const needs = estimate ? this.featureNeeds(estimate) : null;
     for (const feature of waitingForRun) feature.need = needs?.get(feature.id) ?? null;
-    const cost = this.costView(settings, plan, runIds, used, accepted, estimate);
+    const cost = this.costView(settings, plan, runIds, used, accepted, estimate, decompose?.id);
     const shares = splitShares(waitingForRun, remaining, cost.remainingUsd);
     for (const [index, feature] of waitingForRun.entries()) Object.assign(feature, shares[index]);
     const unstarted = waitingForRun.length;
@@ -1571,6 +1571,7 @@ export class InitiativeService {
     used: UsageView,
     accepted: ReadonlySet<string>,
     estimate: InitiativeEstimate | null,
+    decomposeRunId?: string,
   ): CostView {
     const spentUsd = runIds.reduce((sum, runId) => sum + this.spentUsd(runId), 0);
     const committedUsd = runIds.reduce((sum, runId) => sum + this.committedUsd(runId), 0);
@@ -1600,7 +1601,11 @@ export class InitiativeService {
       spentUsd: round(spentUsd),
       reservedUsd: round(Math.max(0, committedUsd - spentUsd)),
       remainingUsd: capUsd === null ? null : cents(Math.max(0, capUsd - committedUsd)),
-      forecastUsd: forecastable ? round(spentUsd + (spentUsd / used.tokens) * left) : null,
+      forecastUsd: forecastable
+        ? round(
+            spentUsd + this.featureCostRate(runIds, decomposeRunId, spentUsd / used.tokens) * left,
+          )
+        : null,
     };
   }
 
@@ -1873,6 +1878,27 @@ export class InitiativeService {
     };
   }
 
+  /**
+   * USD per token of the initiative's feature runs, for the feature tokens still to run (#1505):
+   * the dollars they spent over the tokens those dollars priced. The decompose run is paid once
+   * and does not repeat, and held or in-flight tokens carry no dollars yet, so neither enters it.
+   * `fallback` (every run's dollars over every run's tokens) stands in before a feature run spent.
+   */
+  private featureCostRate(
+    runIds: string[],
+    decomposeRunId: string | undefined,
+    fallback: number,
+  ): number {
+    let usd = 0;
+    let tokens = 0;
+    for (const runId of runIds) {
+      if (runId === decomposeRunId) continue;
+      usd += this.spentUsd(runId);
+      tokens += this.workflows.store.run(runId).token_usage;
+    }
+    return usd > 0 && tokens > 0 ? usd / tokens : fallback;
+  }
+
   /** The dollars a run spent. */
   private spentUsd(runId: string): number {
     return this.workflows.store.costUsage(runId).spentUsd;
@@ -2032,7 +2058,7 @@ function featureRunSamples(
       if (run?.status !== "completed") return [];
       if (!plans.has(link.plan_revision)) {
         const plan = initiatives.plan(initiatives.revision(row.id, link.plan_revision));
-        plans.set(link.plan_revision, { plan, counts: boundaryPathCounts(plan) });
+        plans.set(link.plan_revision, { plan, counts: boundaryPathCounts(plan, row.prompt) });
       }
       const revision = plans.get(link.plan_revision);
       const feature = revision?.plan.features.find((f) => f.id === link.feature_id);
@@ -2193,14 +2219,17 @@ export function featureApprovalDeclined(
  * The tiered limits of a feature run: the initiative's limits, raised to the files the approved
  * boundary names, with one task per file and two spare. The person approved those paths with the
  * split, so a plan that writes them is not larger than what was approved; a boundary of 11 files
- * could never pass a 10-file limit (narrowfit language and cli, #1349). Glob paths are not
- * counted, so the initiative's limits stay the floor.
+ * could never pass a 10-file limit (narrowfit language and cli, #1349). A glob names any number of
+ * files the person approved with it, so a boundary with a glob takes the host's ceiling: the
+ * allowed paths still keep every write inside the boundary. fecsmith front (`commands/*Command.java`
+ * and three files) planned 19 files against a 14-file limit and waited for a person (#1504).
  */
 export function boundaryLimits(
   auto: { maxTasks: number; maxFiles: number },
   paths: readonly string[],
 ): { maxTasks: number; maxFiles: number } {
-  const files = paths.filter((p) => !isGlobPath(p)).length;
+  if (paths.some(isGlobPath)) return { ...HOST_AUTO_APPROVAL_CEILING };
+  const files = paths.length;
   if (!files) return { maxTasks: auto.maxTasks, maxFiles: auto.maxFiles };
   return {
     maxTasks: Math.max(auto.maxTasks, Math.min(HOST_AUTO_APPROVAL_CEILING.maxTasks, files + 2)),
