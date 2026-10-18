@@ -843,13 +843,13 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "run-detail",
     group: "Workflow runs",
-    title: "Run list, detail, report, artifacts and usage",
+    title: "Run list, detail, report, artifacts, attempt context and usage",
     tui: ["/workflow"],
     cli: [
       "baked workflow list",
       "baked workflow status",
       "baked workflow report",
-      "baked workflow artifacts",
+      "baked workflow artifacts: includes attempts/ID/context.json for task context",
       "baked workflow usage",
     ],
     api: [

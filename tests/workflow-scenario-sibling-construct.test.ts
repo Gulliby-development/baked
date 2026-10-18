@@ -31,6 +31,7 @@ const planned: Task = { id: "T001", title: "Write the inline parser", descriptio
 const reproFor = (marker: string): Repro => ({ executable: "bun", args: ["-e", `const t = await Bun.file('inline.txt').text(); console.log(t.includes('${marker}') ? 'literal' : 'emphasis')`], expected: "literal", actual: "emphasis" });
 
 class ScriptedExecutor implements AgentExecutor {
+  attempts: { attemptId: string; sibling: unknown; recurring: unknown }[] = [];
   corrections: { findingIds: string[]; sibling?: { files: string[]; earlier: { id: string; repro?: Repro }[]; note: string }; recurring?: unknown; regression: string[] }[] = [];
   constructor(
     private root: string,
@@ -49,6 +50,7 @@ class ScriptedExecutor implements AgentExecutor {
       case "analysis": output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] }; break;
       case "implementation": {
         const task = request.task;
+        this.attempts.push({ attemptId: request.attemptId, sibling: data.extra.siblingFindings, recurring: data.extra.recurringFindings });
         if (task?.origin === "planned") write("ready");
         else if (this.corrections.length === 0) {
           this.corrections.push({ findingIds: task?.findingIds ?? [], regression: [] });
@@ -143,5 +145,12 @@ describe("scenario: a correction with both recurring and same-file findings (#14
     expect((third?.recurring as { earlier: { id: string }[] } | undefined)?.earlier.map((f) => f.id)).toEqual(["F1"]);
     expect(third?.sibling?.earlier.map((f) => f.id)).toEqual(["F2"]);
     expect(third?.sibling?.earlier[0]?.repro).toEqual(reproFor("link"));
+    for (const attempt of executor.attempts) {
+      const row = service.store.latestArtifact(started.runId, `attempts/${attempt.attemptId}/context.json`);
+      expect(row).toBeDefined();
+      const saved = JSON.parse(service.store.readArtifact(started.runId, row?.id ?? ""));
+      expect(saved.siblingFindings).toEqual(attempt.sibling);
+      expect(saved.recurringFindings).toEqual(attempt.recurring);
+    }
   });
 });
