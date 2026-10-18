@@ -128,10 +128,12 @@ import {
   asksUnsupportedMethod,
   assumable,
   DEFECT_NOTE,
+  hostAddedChecks,
   hostCounts,
   hostDependencyEdges,
   hostSplitParts,
   isCountNit,
+  isHostBatchCheckNit,
   isHostEdgeNit,
   isHostSplitNit,
   knownRisks,
@@ -1452,6 +1454,7 @@ export class WorkflowScheduler {
                     verifiedByRuntime: hostEdgesNote(graph, spec),
                     workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
                     hostCounts: hostCounts(graph),
+                    hostAddedChecks: hostAddedChecks(graph, policy),
                     ...(state.analysisRaised.length
                       ? { earlierFindings: state.analysisRaised }
                       : {}),
@@ -1535,6 +1538,22 @@ export class WorkflowScheduler {
                 ) {
                   finding.blocking = false;
                   finding.description = `About dependsOn edges the host adds after planning (${hostEdges.map((e) => `${e.task} after ${e.dependsOn}`).join(", ")}); kept as a note: ${finding.description}`;
+                }
+              }
+              // Covering checks, derived test checks and batching guidance belong to the host.
+              for (const finding of analysis.findings) {
+                if (
+                  finding.blocking &&
+                  isHostBatchCheckNit(
+                    finding,
+                    graph,
+                    policy.checks,
+                    hostAddedChecks(graph, policy),
+                    state.plan,
+                  )
+                ) {
+                  finding.blocking = false;
+                  finding.description = `About check wording the host appended after planning; kept as a note: ${finding.description}`;
                 }
               }
               // The host split oversized test tasks after planning; plan.md names only the original.
