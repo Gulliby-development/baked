@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runWithCwd } from "../src/core/cwd.js";
@@ -23,7 +23,7 @@ afterEach(async () => {
 });
 
 function pythonFixture() {
-  const root = mkdtempSync(join(tmpdir(), "baked-format-scope-"));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "baked-format-scope-")));
   cleanups.push(() => removeTempDir(root));
   const formatter = installRuffFormatter();
   cleanups.push(formatter.dispose);
@@ -100,6 +100,67 @@ describe("post-edit format scope (#1582)", () => {
     expect(existsSync(formatter.log)).toBe(false);
   });
 
+  for (const linkedBaseline of [false, true]) {
+    test(`refactor baselines and deduplication follow file identity through a linked root with ${linkedBaseline ? "linked" : "real"} baseline paths`, async () => {
+      const { root, formatter } = pythonFixture();
+      const linked = `${root}-link`;
+      symlinkSync(root, linked, "junction");
+      cleanups.push(() => removeTempDir(linked));
+      const router = getIntelligenceRouter(linked);
+      const fallback = spyOn(router, "executeWithFallback").mockResolvedValue(null);
+      cleanups.push(() => { fallback.mockRestore(); });
+      const beforeImages = new Map<string, string | null>();
+      const files: string[] = [];
+      for (const name of ["dirty", "clean", "new", "unknown"]) {
+        const file = join(root, `${name}.py`);
+        const alias = join(linked, `${name}.py`);
+        writeFileSync(file, "label = 'keep'\n");
+        if (name !== "unknown") {
+          const before = name === "new" ? null : name === "dirty" ? "legacy=1\n" : 'label = "keep"\n';
+          beforeImages.set(linkedBaseline ? alias : file, before);
+          // A later edit through another alias must not replace the original dirty pre-image.
+          if (name === "dirty") beforeImages.set(linkedBaseline ? file : alias, 'label = "keep"\n');
+        }
+        files.push(...(linkedBaseline ? [file, alias] : [alias, file]));
+      }
+      const results = await runWithCwd(linked, () => autoFixFiles(files, "linked-format", beforeImages));
+      expect(readFileSync(join(root, "dirty.py"), "utf8")).toBe("label = 'keep'\n");
+      expect(readFileSync(join(root, "unknown.py"), "utf8")).toBe("label = 'keep'\n");
+      for (const name of ["clean", "new"]) {
+        expect(readFileSync(join(root, `${name}.py`), "utf8")).toBe('label = "keep"\n');
+        const path = join(linkedBaseline ? root : linked, `${name}.py`);
+        expect(results.get(path)).toEqual(["format"]);
+        expect((await undoEditTool.execute({ path, tabId: "linked-format" })).success).toBe(true);
+      }
+      expect(results.size).toBe(2);
+      expect(readFileSync(formatter.log, "utf8").trim().split("\n").sort()).toEqual([
+        join(root, "clean.py"), join(root, "new.py"),
+      ].sort());
+      expect(fallback).toHaveBeenCalledTimes(8);
+    });
+  }
+
+  test("rename_file transfers the original baseline when LSP edits use a linked root", async () => {
+    const { root, formatter } = pythonFixture();
+    const linked = `${root}-link`;
+    symlinkSync(root, linked, "junction");
+    cleanups.push(() => removeTempDir(linked));
+    const from = join(root, "old.py");
+    const to = join(root, "new.py");
+    const before = "legacy=1\nlabel = 'keep'\n";
+    const edited = 'legacy = 1\nlabel = "keep"\n';
+    writeFileSync(from, before);
+    const router = getIntelligenceRouter(root);
+    const fallback = spyOn(router, "executeWithFallback").mockImplementation(async (_language, operation) =>
+      operation === "getFileRenameEdits" ? { edits: [
+        { file: join(linked, "old.py"), oldContent: before, newContent: edited },
+      ] } : null);
+    cleanups.push(() => { fallback.mockRestore(); });
+    expect((await runWithCwd(root, () => renameFileTool.execute({ from, to }))).success).toBe(true);
+    expect(readFileSync(to, "utf8")).toBe(edited);
+    expect(existsSync(formatter.log)).toBe(false);
+  });
+
   test("real Biome probes preserve dirty AST files, format clean edits and format new files", async () => {
     const root = mkdtempSync(join(tmpdir(), "baked-biome-scope-"));
     cleanups.push(() => removeTempDir(root));
@@ -127,30 +188,37 @@ describe("post-edit format scope (#1582)", () => {
     expect(readFileSync(fresh, "utf8")).toBe("export const value = { a: 2 };\n");
   }, 90_000);
 
-  test("rename_symbol carries separate baselines for the definition and its references", async () => {
-    const { root, formatter } = pythonFixture();
-    const dirty = join(root, "definition.py");
-    const clean = join(root, "reference.py");
-    const dirtyBefore = "legacy=1\nold_name = 'keep'\n";
-    const cleanBefore = 'old_name = "keep"\n';
-    writeFileSync(dirty, dirtyBefore);
-    writeFileSync(clean, cleanBefore);
-    const router = getIntelligenceRouter(root);
-    const fallback = spyOn(router, "executeWithFallback").mockResolvedValue(null);
-    const rename = spyOn(router, "executeWithFallbackTracked").mockResolvedValue({
-      backend: "fixture",
-      value: { edits: [
-        { file: dirty, oldContent: dirtyBefore, newContent: dirtyBefore.replace("old_name", "new_name") },
-        { file: clean, oldContent: cleanBefore, newContent: cleanBefore.replace("old_name", "new_name") },
-      ] },
+  for (const linkedRoot of [false, true]) {
+    test(`rename_symbol carries separate baselines for the definition and its references${linkedRoot ? " through a linked root" : ""}`, async () => {
+      const { root, formatter } = pythonFixture();
+      const workspace = linkedRoot ? `${root}-link` : root;
+      if (linkedRoot) {
+        symlinkSync(root, workspace, "junction");
+        cleanups.push(() => removeTempDir(workspace));
+      }
+      const dirty = join(root, "definition.py");
+      const clean = join(root, "reference.py");
+      const dirtyBefore = "legacy=1\nold_name = 'keep'\n";
+      const cleanBefore = 'old_name = "keep"\n';
+      writeFileSync(dirty, dirtyBefore);
+      writeFileSync(clean, cleanBefore);
+      const router = getIntelligenceRouter(workspace);
+      const fallback = spyOn(router, "executeWithFallback").mockResolvedValue(null);
+      const rename = spyOn(router, "executeWithFallbackTracked").mockResolvedValue({
+        backend: "fixture",
+        value: { edits: [
+          { file: join(workspace, "definition.py"), oldContent: dirtyBefore, newContent: dirtyBefore.replace("old_name", "new_name") },
+          { file: join(workspace, "reference.py"), oldContent: cleanBefore, newContent: cleanBefore.replace("old_name", "new_name") },
+        ] },
+      });
+      cleanups.push(() => { fallback.mockRestore(); rename.mockRestore(); });
+      const result = await runWithCwd(workspace, () => renameSymbolTool.execute({ file: dirty, symbol: "old_name", newName: "new_name" }));
+      expect(result.success).toBe(true);
+      expect(readFileSync(dirty, "utf8")).toBe(dirtyBefore.replace("old_name", "new_name"));
+      expect(readFileSync(clean, "utf8")).toBe(cleanBefore.replace("old_name", "new_name"));
+      expect(readFileSync(formatter.log, "utf8").trim().split("\n")).toEqual([clean]);
     });
-    cleanups.push(() => { fallback.mockRestore(); rename.mockRestore(); });
-    const result = await runWithCwd(root, () => renameSymbolTool.execute({ file: dirty, symbol: "old_name", newName: "new_name" }));
-    expect(result.success).toBe(true);
-    expect(readFileSync(dirty, "utf8")).toBe(dirtyBefore.replace("old_name", "new_name"));
-    expect(readFileSync(clean, "utf8")).toBe(cleanBefore.replace("old_name", "new_name"));
-    expect(readFileSync(formatter.log, "utf8").trim().split("\n")).toEqual([clean]);
-  });
+  }
 
   for (const newTarget of [false, true]) {
     test(`move_symbol preserves the source baseline and handles a ${newTarget ? "new" : "dirty existing"} target`, async () => {

@@ -3,6 +3,7 @@ import { dirname, relative, resolve } from "node:path";
 import type { ToolResult } from "../../types/index.js";
 import { getCwd } from "../cwd.js";
 import { getIntelligenceClient, getIntelligenceRouter } from "../intelligence/index.js";
+import { realPath } from "../projects/paths.js";
 import { isForbidden } from "../security/forbidden.js";
 import { pushEdit } from "./edit-stack.js";
 import { emitFileEdited } from "./file-events.js";
@@ -92,14 +93,15 @@ export const renameFileTool = {
     }
 
     // 2. Apply LSP import edits to all affected files
+    const sourcePath = realPath(from);
     const beforeImages = new Map<string, string>();
     const appliedFiles: string[] = [];
     for (const edit of lspEdits) {
       try {
         const forbidden = isForbidden(edit.file);
         if (forbidden) continue;
-        if (!beforeImages.has(resolve(edit.file)))
-          beforeImages.set(resolve(edit.file), edit.oldContent);
+        const file = realPath(edit.file);
+        if (!beforeImages.has(file)) beforeImages.set(file, edit.oldContent);
         pushEdit(edit.file, edit.oldContent, edit.newContent, args.tabId);
         toolPhase("write");
         await writeFile(edit.file, edit.newContent, "utf-8");
@@ -120,7 +122,9 @@ export const renameFileTool = {
     await mkdir(toDir, { recursive: true });
 
     const originalContent = await readFile(from, "utf-8");
-    beforeImages.set(to, beforeImages.get(from) ?? originalContent);
+    beforeImages.set(to, beforeImages.get(sourcePath) ?? originalContent);
+    // Resolve aliases while the source still exists; after the move realPath cannot follow them.
+    const remainingFiles = appliedFiles.filter((file) => realPath(file) !== sourcePath);
     pushEdit(from, originalContent, originalContent, args.tabId);
 
     try {
@@ -165,11 +169,7 @@ export const renameFileTool = {
     // 6. Auto-fix all affected files (organize imports, fix unused vars)
     try {
       const { autoFixFiles } = await import("./post-edit-fix.js");
-      const fixes = await autoFixFiles(
-        [to, ...appliedFiles.filter((file) => resolve(file) !== from)],
-        args.tabId,
-        beforeImages,
-      );
+      const fixes = await autoFixFiles([to, ...remainingFiles], args.tabId, beforeImages);
       if (fixes.size > 0) {
         const fixed = [...fixes.entries()]
           .map(([f, actions]) => `  ${relative(cwd, f)}: ${actions.join(", ")}`)
