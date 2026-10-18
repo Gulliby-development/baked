@@ -1168,7 +1168,9 @@ export class InitiativeService {
     // Small siblings share one run's fixed stages (#1352); the decomposer's prompt alone did not.
     const floored = settings.keepFeatures
       ? { plan: decomposed, merged: [] }
-      : mergeSmallSiblings(decomposed, { byDependents: settings.splitCriticalPath });
+      : mergeSmallSiblings(decomposed, {
+          byDependents: settings.splitCriticalPath || settings.basePolicy.criticalPath === "split",
+        });
     const proposed = floored.plan;
     let plan = proposed;
     let unfit: string | null = null;

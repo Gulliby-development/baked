@@ -1350,6 +1350,18 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/initiatives: the shared budget line shows up to N features at once"],
   },
   {
+    id: "initiative-critical-path",
+    group: "Initiatives",
+    title: "Review long dependency chains and merge small siblings by their dependents",
+    tui: ["/workflow: initiative start, Path split; Critical path in the split approval"],
+    cli: [
+      "baked workflow initiative start: --split-critical-path",
+      "baked workflow initiative show",
+    ],
+    api: ["/v1/initiatives: splitCriticalPath", "/v1/initiatives/:id: criticalPath"],
+    desktop: ["project/initiatives: Split the critical path; Critical path in the split approval"],
+  },
+  {
     id: "initiative-dollar-budget",
     group: "Initiatives",
     title: "A dollar cap the feature runs share, with a tolerance and a forecast stop",

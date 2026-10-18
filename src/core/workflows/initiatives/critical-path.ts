@@ -100,7 +100,8 @@ export function criticalChain(
   plan: InitiativePlan,
   request: string,
 ): { path: string[]; share: number } | null {
-  if (plan.chain || plan.features.length >= MAX_FEATURES) return null;
+  // Dropping unnecessary edges needs no extra feature slot, even at the split's maximum.
+  if (plan.chain || plan.features.length > MAX_FEATURES) return null;
   const named = namedFiles(request);
   const path = criticalPath(plan, named);
   const total = totalWork(plan, named);
