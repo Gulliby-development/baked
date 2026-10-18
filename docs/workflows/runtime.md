@@ -2,6 +2,8 @@
 
 The runtime is available through `baked workflow` and `/workflow` in the TUI. It is on by default in every project. Bun is required; SQLite and the existing BAKED providers are used. No separate server or daemon is needed; `baked serve` optionally exposes the same commands to local clients ([Local API](#local-api-baked-serve)).
 
+Runs freeze existing project inputs at startup. Approved edits to `package.json`, `bun.lock`, `bun.lockb`, `package-lock.json`, `pnpm-lock.yaml`, `tsconfig.json` and `biome.json` can continue through checks, review, acceptance and resume when the run's applied or reconciled file-patch journal proves the before/after hash chain. The original hashes stay in the input history. A private worktree edit authorizes no change to the original project file; publication there needs its own journaled patch. Outside edits, deletions and unconfirmed effects still stop the run with `input_changed`. Instructions, the constitution, skills, profiles, workflow definitions and gates retain their existing revision rules. The TUI, headless CLI and desktop API use this same core check.
+
 ## Enabling
 
 Workflows need no setup: without a `workflows` block a run uses the default policy below with no checks, and `enabled` defaults to `true`. Select a configured BAKED model; `defaultModel: "none"` does not allow starting a workflow. To change the policy, add `workflows` to `.baked/config.json` (or the global config) and keep the other settings; to turn workflows off, set `"enabled": false`. The full example is below; `policy` is required in a `workflows` block and unknown fields are rejected.
