@@ -89,6 +89,11 @@ export const InitiativeSettingsSchema = z
      * two boundary paths, same dependencies) are merged into one feature (#1352).
      */
     keepFeatures: z.boolean().default(false),
+    /**
+     * Has the decomposer split a feature that holds more than a third of the critical path, or say
+     * why it stays whole (#1522). Off by default.
+     */
+    splitCriticalPath: z.boolean().default(false),
   })
   .strict();
 export type InitiativeSettings = z.infer<typeof InitiativeSettingsSchema>;

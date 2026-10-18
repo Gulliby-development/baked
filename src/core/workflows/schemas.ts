@@ -497,6 +497,12 @@ export const PolicySchema = z
      */
     derivationAudit: z.enum(["off", "on"]).optional(),
     /**
+     * `split` has the decomposer of an initiative split a feature that holds more than a third of
+     * the critical path into features that run side by side, or say why it stays whole
+     * (initiatives/critical-path.ts, #1522). Absent means `off`, so stored policies keep their hash.
+     */
+    criticalPath: z.enum(["off", "split"]).optional(),
+    /**
      * The duplication and dead-code ratchet (quality/duplication.ts). Absent means `warn`: copies
      * and unused declarations the run adds are reported, never blocking, so stored policies keep
      * their hash. `ratchet` makes them blocking findings; `off` skips the measurement.

@@ -285,6 +285,11 @@ function FeatureCard({
             <span className="font-mono">{feature.skeleton?.map((f) => f.path).join(", ")}</span>
           </span>
         )}
+        {feature.serial && (
+          <span className="text-dim-foreground">
+            kept whole on the critical path: {feature.serial}
+          </span>
+        )}
         {feature.issue && (
           <a
             className="font-mono"
