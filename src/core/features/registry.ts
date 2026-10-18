@@ -1029,6 +1029,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs"],
   },
   {
+    id: "requested-manifest-edits",
+    group: "Workflow runs",
+    title: "Requested manifest edits, including Gradle and Gemfile, with dependency checks",
+    tui: ["/workflow: run with autoApproval.requestedManifestEdits in the policy"],
+    cli: ["baked workflow run: autoApproval.requestedManifestEdits in the policy"],
+    api: ["/v1/workflow/runs"],
+    desktop: ["project/runs: shared workflow approval and dependency findings"],
+  },
+  {
     id: "approval-review",
     group: "Workflow runs",
     title: "Approval reviewer: a model decides low-risk plans outside the auto approval limits",
