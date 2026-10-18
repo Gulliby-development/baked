@@ -846,6 +846,7 @@ export const projectTool = {
   description:
     "[TIER-1] Verify after every edit — auto-detected toolchain. " +
     "Actions: check (typecheck+lint+test in parallel), test, build, lint, format, typecheck, run, list. " +
+    "The explicit format action can reformat unrelated lines or the whole project; automatic post-edit formatting preserves existing formatting debt. " +
     "Use check after edits for full verification in one call. Fix only the failed step, then re-run just that action.",
   execute: async (args: ProjectArgs): Promise<ToolResult> => {
     assertWorkspaceMutationAllowed(getCwd());

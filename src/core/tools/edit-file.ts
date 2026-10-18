@@ -225,7 +225,7 @@ async function applyEdit(
     output += ` [normalized ${String(normalized)} mixed line endings to ${disk.eol.toUpperCase()}]`;
   }
 
-  output = await appendAutoFormatResult(filePath, updated, output, tabId);
+  output = await appendAutoFormatResult(filePath, updated, output, tabId, disk.raw);
   const checked = await appendPostEditDiagnostics(diags, filePath, output, {
     before: disk.raw,
     after: updated,

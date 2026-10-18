@@ -111,7 +111,8 @@ async function runScenario(mode: "update" | "panic", split = false, cutOff = fal
     graph.tasks = graph.tasks.map((t, index) => index < 2 ? { ...t, criterionIds: ["AC-002"] } : t);
     const combined = { ...graph.tasks[2] as Task, writes: [...(graph.tasks[2]?.writes ?? []), ...update.writes] };
     const unsplit = { ...graph, tasks: [...graph.tasks.slice(0, 2), combined] };
-    const report = sizePlan({ graph: unsplit, policy: { ...defaultWorkflowPolicy, sizing: { maxAttemptTokens: 600_000 } }, samples: [], spent: 0 });
+    // The split must exceed the expected price cap, not just the default's uncertain high end.
+    const report = sizePlan({ graph: unsplit, policy: { ...defaultWorkflowPolicy, sizing: { maxAttemptTokens: 350_000 } }, samples: [], spent: 0 });
     graph = splitTestTasks(unsplit, report, scenarioSpec) as TaskGraph;
   }
   graph.specHash = hashJson(scenarioSpec);

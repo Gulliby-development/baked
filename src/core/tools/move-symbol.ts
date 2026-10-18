@@ -68,6 +68,10 @@ class WriteTransaction {
   get paths(): string[] {
     return this.writes.map((w) => w.path);
   }
+
+  get beforeImages(): ReadonlyMap<string, string | null> {
+    return new Map(this.writes.map((write) => [resolve(write.path), write.original]));
+  }
 }
 
 interface MoveSymbolArgs {
@@ -878,7 +882,7 @@ export const moveSymbolTool = {
       // Auto-fix all affected files (organize imports, fix unused vars)
       try {
         const { autoFixFiles } = await import("./post-edit-fix.js");
-        const fixes = await autoFixFiles(allModified);
+        const fixes = await autoFixFiles(allModified, args.tabId, tx.beforeImages);
         if (fixes.size > 0) {
           const fixed = [...fixes.entries()]
             .map(([f, actions]) => `  ${relative(cwd, f)}: ${actions.join(", ")}`)

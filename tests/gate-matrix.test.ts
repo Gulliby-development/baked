@@ -23,6 +23,7 @@ import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { sizePlan, splitTestTasks } from "../src/core/workflows/sizing.js";
 import { withPerTestTimeout } from "../src/core/workflows/test-timeout.js";
 import { detectProfile } from "../src/core/tools/project.js";
+import { formatProbeCommand } from "../src/core/tools/auto-format.js";
 import {
   coveringChecks,
   fixerCommand,
@@ -485,6 +486,22 @@ for (const stack of STACKS) {
       expect({ lint: profile.lint, formatFile: profile.formatFile }).toEqual(EDIT_PROFILE[stack]);
     });
 
+    cell(stack, "post-edit formatter pre-image probe (#1582)", async () => {
+      const root = project(fixture.files);
+      const profile = await detectProfile(root);
+      const file = join(root, "original.py");
+      const command = profile.formatFile;
+      if (stack === "python") {
+        expect(formatProbeCommand(command!, file)).toContain("ruff format --stdin-filename");
+      } else if (stack === "go") {
+        expect(formatProbeCommand(command!, file)).toBe("gofmt");
+      } else if (stack === "rust") {
+        expect(formatProbeCommand(command!, file)).toContain("rustfmt --emit stdout");
+      } else {
+        expect(command).toBeNull();
+      }
+    });
+
     cell(stack, "timed-out-failure", () => {
       expect(timedOutFailure(`${FAILED_TEST_OUTPUT[stack]}\nstill running`)).toBe(true);
     });
@@ -528,6 +545,24 @@ for (const stack of STACKS) {
         expect(plannedWrittenTests(preselected(), part.writes)?.paths ?? null).toEqual(WRITTEN_TEST_ARGS[stack] ? [path] : null);
         expect(writtenTestsCheck(root, preselected(), part.writes)?.args ?? null).toEqual(WRITTEN_TEST_ARGS[stack]);
       }
+    });
+
+    cell(stack, "indivisible-test-batches-without-tests-written (#1579)", () => {
+      const original: Task = {
+        id: "T001", title: "Tests", description: "Write cases", requirementIds: ["FR-001"],
+        criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer",
+        writes: [{ path: fixture.property.path, action: "create" }], readHints: [],
+        checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior",
+      };
+      const graph = { schemaVersion: 1 as const, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [original] };
+      const policy = { ...defaultWorkflowPolicy, checks: preselected(), sizing: { maxAttemptTokens: 200_000 } };
+      expect(policy.checks.some((check) => check.id === "tests-written")).toBe(false);
+      const report = sizePlan({ graph, policy, samples: [], spent: 0 });
+      expect(report.tasks[0]!.oversized).toBe(true);
+      const part = splitTestTasks(graph, report)!.tasks[0]!;
+      expect(part.description).toContain("small batches inside this attempt");
+      expect(part.description).not.toContain("tests-written");
+      expect(part.checkIds).toEqual(original.checkIds);
     });
 
     // The mutation gate needs a required test check to run the mutants against; without one it is

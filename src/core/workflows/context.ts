@@ -1,13 +1,25 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { buildInstructionPrompt, loadInstructions } from "../instructions.js";
 import { kitGuidanceFor } from "../kit/guidance.js";
 import { canonical, hashBytes } from "../specs/hash.js";
+import { effectFile, intentRoot } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import type { AgentProfile } from "./schemas.js";
 import { specDigest } from "./spec-digest.js";
+import type { WorkflowStore } from "./store.js";
 import type { RuntimeState } from "./types.js";
+
+const MUTABLE_PROJECT_INPUTS = [
+  "package.json",
+  "bun.lock",
+  "bun.lockb",
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "tsconfig.json",
+  "biome.json",
+];
 
 export function frozenInstructions(
   workspace: string,
@@ -19,16 +31,7 @@ export function frozenInstructions(
     const path = join(instruction.scope === "project" ? workspace : homedir(), instruction.file);
     files[path] = hashBytes(readFileSync(path));
   }
-  for (const relative of [
-    "baked/constitution.md",
-    "package.json",
-    "bun.lock",
-    "bun.lockb",
-    "package-lock.json",
-    "pnpm-lock.yaml",
-    "tsconfig.json",
-    "biome.json",
-  ]) {
+  for (const relative of ["baked/constitution.md", ...MUTABLE_PROJECT_INPUTS]) {
     const path = join(workspace, relative);
     if (existsSync(path)) files[path] = hashBytes(readFileSync(path));
   }
@@ -48,10 +51,31 @@ export function frozenInstructions(
     files,
   };
 }
-export function assertFrozenInputs(state: RuntimeState): void {
-  for (const [path, expected] of Object.entries(state.frozenFiles))
+export function assertFrozenInputs(state: RuntimeState, store: WorkflowStore, runId: string): void {
+  // Frozen keys retain the supplied root; effectFile resolves the workspace root through realpath.
+  const root = realpathSync(store.workspace);
+  const mutable = new Map(
+    MUTABLE_PROJECT_INPUTS.map((path) => [join(store.workspace, path), join(root, path)]),
+  );
+  const effects = store.effects(runId).slice(state.frozenInputEffectCount);
+  for (const [path, frozen] of Object.entries(state.frozenFiles)) {
+    let expected = frozen;
+    if (mutable.has(path)) {
+      // Replay only this run's project publications. A task or run worktree has its own root;
+      // its private edits cannot authorize a change to the original project file.
+      for (const effect of effects) {
+        if (effect.kind !== "file_patch") continue;
+        if (effect.status !== "applied" && effect.status !== "reconciled") continue;
+        if (intentRoot(effect.intent_json) !== "") continue;
+        if (effectFile(store.workspace, effect.intent_json) !== mutable.get(path)) continue;
+        if (effect.before_hash !== expected || effect.after_hash === null)
+          throw new WorkflowFault("INPUT_CHANGED", `Accepted input changed: ${path}`);
+        expected = effect.after_hash;
+      }
+    }
     if (!existsSync(path) || hashBytes(readFileSync(path)) !== expected)
       throw new WorkflowFault("INPUT_CHANGED", `Accepted input changed: ${path}`);
+  }
 }
 /** Workflow artifacts are shared engineering records, so their language does not follow the request. */
 export const ARTIFACT_LANGUAGE =
