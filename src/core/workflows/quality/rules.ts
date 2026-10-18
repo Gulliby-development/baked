@@ -184,6 +184,56 @@ export function checkBuiltinRules(files: ChangedFile[], settings: RuleSettings):
   return out;
 }
 
+export interface ProcessOutput {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Runs a scanner without blocking the event loop (#1533): a synchronous spawn held the driver's
+ * thread, and with it the lease heartbeat and every deadline, for up to its whole timeout. The
+ * process is killed at `timeoutMs`, with a null status as `spawnSync` reports it.
+ */
+export async function runScanner(
+  executable: string,
+  args: string[],
+  cwd: string,
+  timeoutMs: number,
+): Promise<ProcessOutput> {
+  let proc: ReturnType<typeof Bun.spawn>;
+  try {
+    proc = Bun.spawn([executable, ...args], {
+      cwd,
+      stdout: "pipe",
+      stderr: "pipe",
+      stdin: "ignore",
+      windowsHide: true,
+    });
+  } catch (error) {
+    return {
+      status: null,
+      stdout: "",
+      stderr: error instanceof Error ? error.message : String(error),
+    };
+  }
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    proc.kill("SIGKILL");
+  }, timeoutMs);
+  try {
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(proc.stdout as ReadableStream).text(),
+      new Response(proc.stderr as ReadableStream).text(),
+      proc.exited,
+    ]);
+    return { status: timedOut ? null : code, stdout, stderr };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // --- ast-grep -------------------------------------------------------------------------------
 
 /** The ast-grep executable on this machine, or null. `sg` alone is often another program. */
@@ -209,12 +259,12 @@ interface AstGrepMatch {
  * Runs the project's ast-grep rule files on the changed files and keeps the matches on lines
  * the run added. Without ast-grep the files are listed as not run, which never blocks.
  */
-export function checkAstGrepRules(
+export async function checkAstGrepRules(
   root: string,
   files: ChangedFile[],
   settings: RuleSettings,
   executable: string | null = astGrepExecutable(),
-): { findings: RuleFinding[]; astGrep: RulesResult["astGrep"] } {
+): Promise<{ findings: RuleFinding[]; astGrep: RulesResult["astGrep"] }> {
   const ruleFiles = [...(settings.files ?? [])];
   if (!ruleFiles.length) return { findings: [], astGrep: null };
   if (!executable)
@@ -228,10 +278,12 @@ export function checkAstGrepRules(
   const out: RuleFinding[] = [];
   const notes: string[] = [];
   for (const ruleFile of ruleFiles) {
-    const result = spawnSync(
+    // Off the event loop, as Semgrep (#1533).
+    const result = await runScanner(
       executable,
       ["scan", "--rule", workspacePath(root, ruleFile), "--json=compact", ...byPath.keys()],
-      { cwd: root, encoding: "utf8", timeout: 120_000, maxBuffer: 32 * 1024 * 1024 },
+      root,
+      120_000,
     );
     let matches: AstGrepMatch[];
     try {
@@ -267,13 +319,13 @@ export function checkAstGrepRules(
 }
 
 /** The whole pack: built-in rules, then the project's ast-grep files. */
-export function checkQualityRules(
+export async function checkQualityRules(
   root: string,
   files: ChangedFile[],
   settings: RuleSettings,
   executable?: string | null,
-): RulesResult {
-  const astGrep = checkAstGrepRules(root, files, settings, executable);
+): Promise<RulesResult> {
+  const astGrep = await checkAstGrepRules(root, files, settings, executable);
   return {
     schemaVersion: 1,
     findings: [...checkBuiltinRules(files, settings), ...astGrep.findings],

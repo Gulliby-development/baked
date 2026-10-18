@@ -33,8 +33,24 @@ resolveCwdFromArgv(cliArgs);
 
 if (cliArgs[0] === "workflow" || cliArgs[0] === "doctor" || cliArgs[0] === "quick") {
   const { runWorkflowCli } = await import("./headless/workflow.js");
+  const { followSupervisor, superviseWorkflowCli, supervisedCommand } = await import(
+    "./headless/workflow-supervise.js"
+  );
   // `baked doctor` and `baked quick TEXT` are short for `baked workflow doctor` and `quick TEXT`.
-  process.exit(await runWorkflowCli(cliArgs[0] === "workflow" ? cliArgs.slice(1) : cliArgs));
+  const workflowArgs = cliArgs[0] === "workflow" ? cliArgs.slice(1) : cliArgs;
+  // A driving command runs in a driver process this one supervises (#1533).
+  if (supervisedCommand(workflowArgs)) {
+    const { loadConfig, loadEffectiveProjectConfig, mergeConfigs } = await import(
+      "./config/index.js"
+    );
+    const { stallSettings } = await import("./core/workflows/stall.js");
+    const { getCwd } = await import("./core/cwd.js");
+    const config = mergeConfigs(loadConfig(), loadEffectiveProjectConfig(getCwd()));
+    if (stallSettings(config).supervisorGraceMs > 0)
+      process.exit(await superviseWorkflowCli(workflowArgs));
+  }
+  followSupervisor();
+  process.exit(await runWorkflowCli(workflowArgs));
 }
 
 if (cliArgs[0] === "telemetry") {

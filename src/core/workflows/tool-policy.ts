@@ -1,5 +1,6 @@
 import { isAbsolute, relative } from "node:path";
 import { workspacePath } from "../specs/validate.js";
+import { toolPhase, withToolPhases } from "../tools/tool-phase.js";
 import { fileHash, intentRoot, rootField, sameContentIgnoringEol } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import {
@@ -341,10 +342,22 @@ export class WorkflowToolPolicy {
     journal("tool.started");
     toolStarted(this.runId);
     let status: "ok" | "error" | "deadline" = "ok";
+    const phase = (step: string): void => {
+      try {
+        this.store.transaction(() =>
+          this.store.emit(this.runId, {
+            type: "tool.phase",
+            payload: { attemptId: this.attemptId, tool: name, phase: step },
+          }),
+        );
+      } catch {}
+    };
     try {
-      const result = await run((hit) => {
-        if (hit) status = "deadline";
-      });
+      const result = await withToolPhases(phase, () =>
+        run((hit) => {
+          if (hit) status = "deadline";
+        }),
+      );
       resultBytes = jsonBytes(result);
       return result;
     } catch (error) {
@@ -371,6 +384,7 @@ export class WorkflowToolPolicy {
     const path = this.validate(name, args);
     if (!path) return action();
     const absolute = workspacePath(this.root, path);
+    toolPhase("pre_image");
     // The pre-image lets `workflow undo` restore the file if this edit is never committed.
     const effectId = this.store.transaction(() =>
       this.store.prepareEffect(

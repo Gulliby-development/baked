@@ -959,6 +959,20 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs"],
   },
   {
+    id: "run-supervisor",
+    group: "Workflow runs",
+    title: "Supervisor: a driver whose thread stopped is stopped and its run taken over",
+    tui: gap(1541, "the TUI drives runs in its own process"),
+    cli: [
+      "baked workflow run",
+      "baked workflow resume",
+      "baked workflow approve",
+      "baked workflow initiative drive",
+    ],
+    api: gap(1541, "baked serve drives runs in its own process"),
+    desktop: gap(1541, "through baked serve"),
+  },
+  {
     id: "run-fork",
     group: "Workflow runs",
     title: "Fork a run",

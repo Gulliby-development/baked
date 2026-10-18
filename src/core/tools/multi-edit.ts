@@ -19,6 +19,7 @@ import {
   countOccurrences,
   startPreEditDiagnostics,
 } from "./post-edit-helpers.js";
+import { toolPhase } from "./tool-phase.js";
 import { contentHash } from "./tool-utils.js";
 import { consumeAstEditNudge } from "./ts-project-detect.js";
 
@@ -228,6 +229,7 @@ export const multiEditTool = {
       const finalContent = withLineEnding(content, eol);
       pushEdit(filePath, rawContent, finalContent, args.tabId);
 
+      toolPhase("write");
       await atomicWriteFile(filePath, finalContent);
       emitFileEdited(filePath, finalContent);
 
