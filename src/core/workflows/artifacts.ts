@@ -64,6 +64,7 @@ export class WorkflowArtifacts implements ArtifactService {
     }
     state.instructionText = instructions.text;
     state.frozenFiles = instructions.files;
+    state.frozenInputEffectCount = store.effects(runId).length;
     // The working set and project memory stay the ones the run captured at creation.
     state.manifest.instructionHashes = [
       ...instructions.hashes,

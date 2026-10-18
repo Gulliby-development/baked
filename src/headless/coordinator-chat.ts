@@ -23,7 +23,6 @@ import {
 } from "../core/chat/sessions.js";
 import { getCwd } from "../core/cwd.js";
 import { SessionManager } from "../core/sessions/manager.js";
-import { WorkflowClient } from "../core/workers/workflow-client.js";
 
 export interface CoordinatorChatIO {
   out(text: string): void;
@@ -222,7 +221,6 @@ export async function coordinatorSend(args: string[]): Promise<number> {
   }
   const workspace = getCwd();
   const config = mergeConfigs(loadConfig(), loadEffectiveProjectConfig(workspace));
-  const client = new WorkflowClient(workspace, config);
   // As in `baked serve`: BAKED_TEST_SCRIPT plays scripted turns instead of a model.
   const test = scriptedHostFromEnv();
   let local: LocalCoordinator | null = null;
@@ -232,7 +230,8 @@ export async function coordinatorSend(args: string[]): Promise<number> {
     local = await LocalCoordinator.open({
       workspace,
       config,
-      client,
+      client: null,
+      supervisor: {},
       ...(test ? { host: test } : {}),
       model: () => (args.includes("--model") && model ? model : config.defaultModel),
     });
@@ -253,7 +252,6 @@ export async function coordinatorSend(args: string[]): Promise<number> {
   } finally {
     process.off("SIGINT", interrupt);
     await local?.close();
-    client.close();
   }
 }
 

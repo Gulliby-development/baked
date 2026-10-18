@@ -1157,6 +1157,9 @@ export class WorkflowStore {
     invalidate = false,
     keep: ReadonlySet<string> = new Set(),
   ): void {
+    // Remove the old graph's edges before pruning its tasks. Both ends reference tasks, so even
+    // dropping a pending leaf fails while its outgoing edges still exist (#1580).
+    this.db.run("DELETE FROM task_dependencies WHERE run_id=?", [runId]);
     if (invalidate) {
       const previous = this.findings(runId);
       if (previous.length)
@@ -1176,6 +1179,11 @@ export class WorkflowStore {
     else
       for (const task of this.tasks(runId))
         if (task.status === "pending" && !graph.tasks.some((t) => t.id === task.id)) {
+          // Keep the finding, but detach its obsolete repair assignment before deleting the task.
+          this.db.run(
+            "UPDATE findings SET repair_task_id=NULL WHERE run_id=? AND repair_task_id=?",
+            [runId, task.id],
+          );
           this.db.run("DELETE FROM tasks WHERE run_id=? AND id=?", [runId, task.id]);
         }
     const rows = new Map(this.tasks(runId).map((row) => [row.id, row]));
@@ -1188,7 +1196,6 @@ export class WorkflowStore {
       if (invalidate && kept) this.taskStatus(runId, task.id, "implemented", kept);
       else if (invalidate) this.taskStatus(runId, task.id, "invalidated");
     }
-    this.db.run("DELETE FROM task_dependencies WHERE run_id=?", [runId]);
     for (const task of graph.tasks)
       for (const dep of task.dependsOn)
         this.db.run("INSERT INTO task_dependencies VALUES (?,?,?)", [runId, task.id, dep]);

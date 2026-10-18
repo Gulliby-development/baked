@@ -134,10 +134,11 @@ export async function appendAutoFormatResult(
   updatedContent: string,
   output: string,
   tabId?: string,
+  before?: string | null,
 ): Promise<string> {
   let result = output;
   toolPhase("format");
-  const formatted = await autoFormatAfterEdit(filePath);
+  const formatted = await autoFormatAfterEdit(filePath, undefined, before);
   if (formatted) {
     const postFormatContent = await readFile(filePath, "utf-8");
     updateLastAfterHash(filePath, postFormatContent, tabId);

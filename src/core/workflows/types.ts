@@ -167,6 +167,8 @@ export const RuntimeStateSchema = z
     verificationState: z.enum(["not_verified", "current", "stale", "invalid"]),
     instructionText: z.string(),
     frozenFiles: z.record(z.string(), z.string()),
+    /** Journal entries already covered by an explicit revision's frozen input hashes. */
+    frozenInputEffectCount: z.number().int().nonnegative().default(0),
     repairPredecessors: z.record(z.string(), z.string()).default({}),
     /** Task checks already recorded but refused before their correction could be appended. */
     pendingTaskRepair: z.array(z.string()).default([]),

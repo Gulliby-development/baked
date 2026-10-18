@@ -534,6 +534,15 @@ export const FEATURES: readonly Feature[] = [
 
   // Tools and code intelligence
   {
+    id: "post-edit-formatting",
+    group: "Tools and code intelligence",
+    title: "Automatic formatting preserves pre-existing formatting differences",
+    tui: ["/tools: edit and refactor tools probe the original text before formatting"],
+    cli: ["--headless: the same core edit and refactor tools"],
+    api: ["/v1/sessions/:id: agent turns use the same core tools"],
+    desktop: ["project/chat: the same core edit and refactor tools"],
+  },
+  {
     id: "lsp",
     group: "Tools and code intelligence",
     title: "Language servers: status, install, enable, restart",
@@ -788,9 +797,9 @@ export const FEATURES: readonly Feature[] = [
     id: "run-test-sizing",
     group: "Workflow runs",
     title:
-      "Size tests by literal cases and split large test files into sequential criterion slices",
+      "Size tests by literal cases, split large test files into sequential criterion slices and replace their graph on re-plan",
     tui: ["/workflow: plan approval shows the sized tasks"],
-    cli: ["baked workflow show: plan sizing and task slices"],
+    cli: ["baked workflow show: task slices and batching guidance using available checks"],
     api: ["/v1/workflow/runs/:id: shared sizing record and tasks"],
     desktop: ["project/runs: plan approval and task slices"],
   },
@@ -996,21 +1005,27 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs"],
   },
   {
+    id: "run-frozen-input-provenance",
+    group: "Workflow runs",
+    title: "Continue approved manifest edits using the run's file-patch hash history",
+    tui: ["/workflow: stage entry, approval, resume and acceptance share the core input check"],
+    cli: ["baked workflow run: journaled project edits", "baked workflow resume"],
+    api: ["/v1/workflow/runs/:id/resume: shared frozen-input provenance check"],
+    desktop: ["project/runs: approved edits continue through the shared runtime"],
+  },
+  {
     id: "run-supervisor",
     group: "Workflow runs",
     title: "Supervisor: a driver whose thread stopped is stopped and its run taken over",
     tui: ["/workflow"],
-    cli: partial(
-      [
-        "baked workflow run",
-        "baked workflow resume",
-        "baked workflow approve",
-        "baked workflow initiative drive",
-        "baked serve --take-over",
-      ],
-      1554,
-      "runs launched by baked session coordinator send still need worker supervision",
-    ),
+    cli: [
+      "baked workflow run",
+      "baked workflow resume",
+      "baked workflow approve",
+      "baked workflow initiative drive",
+      "baked serve --take-over",
+      "baked session coordinator send",
+    ],
     api: ["/v1/health"],
     desktop: ["project/runs"],
   },

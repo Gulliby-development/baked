@@ -2,8 +2,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import {
   assumable,
+  hostAddedChecks,
   hostDependencyEdges,
   isCountNit,
+  isHostBatchCheckNit,
   isHostEdgeNit,
   knownRisks,
   persistentDefect,
@@ -12,7 +14,7 @@ import {
 } from "../src/core/workflows/analysis-notes.js";
 import type { TaskGraph } from "../src/core/workflows/schemas.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
-import { fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
+import { fixturePolicy, fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
@@ -41,6 +43,54 @@ const graph = (...tasks: ReturnType<typeof task>[]): TaskGraph => ({
   specHash: "a".repeat(64),
   planHash: "b".repeat(64),
   tasks,
+});
+
+describe("check wording appended by sizing (#1579)", () => {
+  const batch = "This criterion alone exceeds one attempt. Write its cases in small batches inside this attempt, run tests-written after each batch, and preserve earlier batches.";
+  const planned = task("T002", "tests/value.test.ts");
+  const legacy = {
+    ...planned,
+    description: `Write ready-value tests\nSizing split this task by file: write only tests/value.test.ts;  belong to the other parts of T002. ${batch}`,
+  };
+  const finding = { refs: ["tasks.json", "T002"], description: "T002's batching description requires tests-written, but the policy only has typecheck, lint and tests checks" };
+  const checks = [{ id: "typecheck" }, { id: "lint" }, { id: "tests" }];
+  test("recognizes a legacy host note even when the part keeps the original task ID", () => {
+    expect(isHostBatchCheckNit(finding, graph(legacy), checks)).toBe(true);
+    expect(isHostBatchCheckNit({ ...finding, description: "T002 requires tests-written, which is not in executionContract.checks" }, graph(legacy), checks)).toBe(true);
+    expect(isHostBatchCheckNit(finding, graph({ ...legacy, description: legacy.description.replace("this task by file:", "this test file into slices:") }), checks)).toBe(true);
+  });
+  test("keeps planner check requirements and findings about other tasks or the spec", () => {
+    expect(isHostBatchCheckNit(finding, graph(planned), checks)).toBe(false);
+    expect(isHostBatchCheckNit(finding, graph({ ...legacy, title: "Run tests-written" }), checks)).toBe(false);
+    expect(isHostBatchCheckNit(finding, graph({ ...legacy, description: `Run tests-written. ${legacy.description}` }), checks)).toBe(false);
+    expect(isHostBatchCheckNit(finding, graph({ ...legacy, checkIds: ["tests-written"] }), checks)).toBe(false);
+    expect(isHostBatchCheckNit(finding, graph(legacy), [...checks, { id: "tests-written" }])).toBe(false);
+    expect(isHostBatchCheckNit({ ...finding, refs: ["T002", "T003"] }, graph(legacy, task("T003", "tests/other.test.ts")), checks)).toBe(false);
+    expect(isHostBatchCheckNit({ ...finding, refs: ["spec.json", "AC-001", "T002"] }, graph(legacy), checks)).toBe(false);
+    expect(isHostBatchCheckNit({ ...finding, description: `${finding.description}; implementing it violates FR-001` }, graph(legacy), checks)).toBe(false);
+    expect(isHostBatchCheckNit({ ...finding, description: "T002 checkIds include tests-written, absent from the policy" }, graph(legacy), checks)).toBe(false);
+    expect(isHostBatchCheckNit({ ...finding, description: "T002 tests-written check fails because its batch uses the wrong fixture" }, graph(legacy), checks)).toBe(false);
+  });
+  test("derived check IDs are host-owned without a sizing split, but explicit planner requests are not", () => {
+    const derived = { refs: ["tasks.json", "T002"], description: "T002 requires suite-affected, missing from executionContract.checks" };
+    const added = { covering: [], derived: ["suite-written", "suite-affected"], note: "Host-derived" };
+    expect(isHostBatchCheckNit(derived, graph(planned), [{ id: "suite" }], added)).toBe(true);
+    expect(isHostBatchCheckNit({ ...derived, description: derived.description.replace("suite-affected", "suite-written") }, graph(planned), [{ id: "suite" }], added)).toBe(true);
+    expect(isHostBatchCheckNit(derived, graph({ ...planned, description: "Run suite-affected" }), [{ id: "suite" }], added)).toBe(false);
+    expect(isHostBatchCheckNit(derived, graph(planned), [{ id: "suite" }], added, "DEC-002: T002 must run suite-affected.")).toBe(false);
+    expect(isHostBatchCheckNit(derived, graph(planned), [{ id: "suite-affected" }], added)).toBe(false);
+    expect(isHostBatchCheckNit({ ...derived, description: "T002 requires invented-written, missing from executionContract.checks" }, graph(planned), [{ id: "suite" }], added)).toBe(false);
+  });
+  test("covering checks explain a DEC checkIds mismatch while spec conflicts still block", () => {
+    const policy = { ...fixturePolicy, checks: [{ ...fixturePolicy.checks[0]!, id: "lint", args: ["lint"], scope: "feature" as const }] };
+    const g = graph({ ...planned, checkIds: ["lint"] });
+    const added = hostAddedChecks(g, policy);
+    expect(added.covering).toEqual([{ task: "T002", checkIds: ["lint"] }]);
+    const f = { refs: ["plan.md", "tasks.json", "T002"], description: "DEC-002 says T002 checkIds are empty but tasks.json requires lint, contradicting the plan." };
+    expect(isHostBatchCheckNit(f, g, policy.checks, added)).toBe(true);
+    expect(isHostBatchCheckNit({ ...f, description: `${f.description} Implementing it violates AC-001.` }, g, policy.checks, added)).toBe(false);
+    expect(isHostBatchCheckNit({ ...f, description: f.description.replace("lint", "unknown-check") }, g, policy.checks, added)).toBe(false);
+  });
 });
 
 describe("dependency edges the host adds (dirdrift)", () => {

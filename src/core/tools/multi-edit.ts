@@ -257,7 +257,7 @@ export const multiEditTool = {
         output += ` [normalized ${String(normalizedLines)} mixed line endings to ${eol.toUpperCase()}]`;
       }
 
-      output = await appendAutoFormatResult(filePath, finalContent, output, args.tabId);
+      output = await appendAutoFormatResult(filePath, finalContent, output, args.tabId, rawContent);
       const checked = await appendPostEditDiagnostics(diags, filePath, output, {
         before: rawContent,
         after: finalContent,

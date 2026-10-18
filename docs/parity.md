@@ -97,6 +97,7 @@ bun test tests/feature-parity.test.ts
 
 | Feature | TUI | Headless CLI | serve API | Desktop |
 | --- | --- | --- | --- | --- |
+| Automatic formatting preserves pre-existing formatting differences | `/tools` | `--headless` | `/v1/sessions/:id` | `project/chat` |
 | Language servers: status, install, enable, restart | `/lsp`, `/lsp install`, `/lsp restart` +1 | `baked lsp status`, `baked lsp install`, `baked lsp enable` +2 | `/v1/lsp`, `/v1/lsp/restart`, `/v1/lsp/:id/install` +3 | `project/lsp`, `project/overview` |
 | BAKED kit: default styles for web projects and artifacts that have none | `/agent-features` | `--headless`, `baked workflow run` | `/v1/settings` | `settings/chat` |
 | Artifacts: HTML pages shared by every project, deployed to the user's Vercel | `/artifacts`, `/artifacts open`, `/artifacts deploy` | `baked artifacts list`, `baked artifacts show`, `baked artifacts save` +2 | `/v1/artifacts`, `/v1/artifacts/:id`, `/v1/artifacts/:id/page` +2 | `project/artifacts` |
@@ -124,7 +125,7 @@ bun test tests/feature-parity.test.ts
 | Feature | TUI | Headless CLI | serve API | Desktop |
 | --- | --- | --- | --- | --- |
 | Start a full run or a quick task | `/workflow` | `baked workflow run`, `baked quick`, `baked workflow definitions` +1 | `/v1/workflow/runs`, `/v1/workflow/definitions`, `/v1/workflow/profiles` | `project/overview` |
-| Size tests by literal cases and split large test files into sequential criterion slices | `/workflow` | `baked workflow show` | `/v1/workflow/runs/:id` | `project/runs` |
+| Size tests by literal cases, split large test files into sequential criterion slices and replace their graph on re-plan | `/workflow` | `baked workflow show` | `/v1/workflow/runs/:id` | `project/runs` |
 | Test-integrity guard: block or warn on test gaming, spec conflicts | `/workflow` | `baked workflow run`, `baked workflow answer` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/answer` | `project/overview`, `attention` |
 | Route failed checks to pending test writers or named source owners | `/workflow` | `baked workflow run`, `baked workflow artifacts` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/artifacts` | `project/runs` |
 | Tests first: failing tests approved before the code, tdd preset | `/workflow` | `baked workflow run`, `baked workflow approve`, `baked workflow reject` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/approve`, `/v1/workflow/runs/:id/reject` | `project/overview`, `attention` |
@@ -141,7 +142,8 @@ bun test tests/feature-parity.test.ts
 | Recover a stuck side effect | `/workflow` | `baked workflow recover` | `/v1/workflow/runs/:id/recover` | `project/runs` |
 | Grant another repair at a refused limit | `/workflow` | `baked workflow repair` | `/v1/workflow/runs/:id/repair` | `project/runs`, `project/initiatives` |
 | Pause, resume, accept outside changes, cancel, extend, reroute, undo edits | `/workflow` | `baked workflow pause`, `baked workflow resume`, `baked workflow cancel` +3 | `/v1/workflow/runs/:id/pause`, `/v1/workflow/runs/:id/resume`, `/v1/workflow/runs/:id/cancel` +3 | `project/runs` |
-| Supervisor: a driver whose thread stopped is stopped and its run taken over | `/workflow` | Partial [#1554](https://github.com/Gulliby-development/baked/issues/1554): runs launched by baked session coordinator send still need worker supervision | `/v1/health` | `project/runs` |
+| Continue approved manifest edits using the run's file-patch hash history | `/workflow` | `baked workflow run`, `baked workflow resume` | `/v1/workflow/runs/:id/resume` | `project/runs` |
+| Supervisor: a driver whose thread stopped is stopped and its run taken over | `/workflow` | `baked workflow run`, `baked workflow resume`, `baked workflow approve` +3 | `/v1/health` | `project/runs` |
 | Fork a run | `/workflow` | `baked workflow fork` | `/v1/workflow/runs/:id/fork` | `project/runs` |
 | Discard a run's worktree | `/workflow` | `baked workflow discard-worktree` | `/v1/workflow/runs/:id/discard-worktree` | `project/runs` |
 | Worktree sizes and cleanup | `/workflow` | `baked workflow worktrees` | `/v1/workflow/worktrees`, `/v1/workflow/worktrees/clean` | `project/runs` |
@@ -218,6 +220,5 @@ bun test tests/feature-parity.test.ts
 ### Open gaps by issue
 
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
-- [#1554](https://github.com/Gulliby-development/baked/issues/1554): Supervisor: a driver whose thread stopped is stopped and its run taken over
 
 <!-- parity:end -->

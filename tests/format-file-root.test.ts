@@ -51,7 +51,7 @@ describe("formatting a file in a task worktree", () => {
 
     const edited = join(task, "src", "b.ts");
     writeFileSync(edited, "export const b = {c:2}\n");
-    expect(await autoFormatAfterEdit(edited)).toBe(true);
+    expect(await autoFormatAfterEdit(edited, undefined, null)).toBe(true);
     expect(readFileSync(edited, "utf8")).toBe("export const b = { c: 2 };\n");
   }, 90_000);
 });

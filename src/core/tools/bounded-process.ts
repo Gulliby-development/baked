@@ -20,12 +20,12 @@ const PIPE_GRACE_MS = 1_000;
  */
 export async function runBoundedShell(
   command: string,
-  options: { cwd: string; timeoutMs: number; env?: NodeJS.ProcessEnv },
+  options: { cwd: string; timeoutMs: number; env?: NodeJS.ProcessEnv; stdin?: string },
 ): Promise<BoundedResult> {
   const proc = Bun.spawn(bunShellArgs(command), {
     cwd: options.cwd,
     windowsVerbatimArguments: IS_WIN,
-    stdin: "ignore",
+    stdin: options.stdin === undefined ? "ignore" : new TextEncoder().encode(options.stdin),
     stdout: "pipe",
     stderr: "pipe",
     // A process group of its own, so the group kill reaches the wrapper's children.

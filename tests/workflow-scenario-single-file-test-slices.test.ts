@@ -133,7 +133,7 @@ for (const [path, existing] of [["internal/cli/cli_test.go", false], ["tests/cli
     }
     const artifact = store.latestArtifact(run.runId, "sizing/plan-0.json")!;
     const report = JSON.parse(store.readArtifact(run.runId, artifact.id)) as SizingReport;
-    expect(report.caseRate?.samples).toBe(2);
+    expect(report.caseRate).toBeNull();
     for (const part of parts) {
       const size = report.tasks.find((t) => t.taskId === part.id)!;
       expect(size).toMatchObject({ cases: 2, sliceCount: 3, oversized: false });

@@ -128,10 +128,12 @@ import {
   asksUnsupportedMethod,
   assumable,
   DEFECT_NOTE,
+  hostAddedChecks,
   hostCounts,
   hostDependencyEdges,
   hostSplitParts,
   isCountNit,
+  isHostBatchCheckNit,
   isHostEdgeNit,
   isHostSplitNit,
   knownRisks,
@@ -985,7 +987,7 @@ export class WorkflowScheduler {
           const run = this.store.run(runId);
           const state = this.store.state(runId);
           const parsed = parseRunDefinition(run.definition_json);
-          assertFrozenInputs(state);
+          assertFrozenInputs(state, this.store, runId);
           if (state.approvalRoot) await this.assertWorkspace(runId, state, policy, signal);
           let stage: { id: string; kind: StageKind; profileId?: string | undefined };
           let v2: { definition: WorkflowV2; stage: Stage; gates: Gate[] } | null = null;
@@ -1453,6 +1455,7 @@ export class WorkflowScheduler {
                     verifiedByRuntime: hostEdgesNote(graph, spec),
                     workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
                     hostCounts: hostCounts(graph),
+                    hostAddedChecks: hostAddedChecks(graph, policy),
                     ...(state.analysisRaised.length
                       ? { earlierFindings: state.analysisRaised }
                       : {}),
@@ -1536,6 +1539,22 @@ export class WorkflowScheduler {
                 ) {
                   finding.blocking = false;
                   finding.description = `About dependsOn edges the host adds after planning (${hostEdges.map((e) => `${e.task} after ${e.dependsOn}`).join(", ")}); kept as a note: ${finding.description}`;
+                }
+              }
+              // Covering checks, derived test checks and batching guidance belong to the host.
+              for (const finding of analysis.findings) {
+                if (
+                  finding.blocking &&
+                  isHostBatchCheckNit(
+                    finding,
+                    graph,
+                    policy.checks,
+                    hostAddedChecks(graph, policy),
+                    state.plan,
+                  )
+                ) {
+                  finding.blocking = false;
+                  finding.description = `About check wording the host appended after planning; kept as a note: ${finding.description}`;
                 }
               }
               // The host split oversized test tasks after planning; plan.md names only the original.
@@ -12735,7 +12754,7 @@ ${note}`;
     gates: Gate[],
     signal: AbortSignal,
   ): Promise<void> {
-    assertFrozenInputs(state);
+    assertFrozenInputs(state, this.store, runId);
     dependencyContracts(this.store, state);
     await this.assertWorkspace(runId, state, policy, signal);
     // A run that ends before any tasks stage, such as Fix CI when the checks already pass, changed
@@ -12975,7 +12994,7 @@ ${note}`;
     policy: RunPolicy,
     signal: AbortSignal,
   ): Promise<void> {
-    assertFrozenInputs(state);
+    assertFrozenInputs(state, this.store, runId);
     dependencyContracts(this.store, state);
     await this.assertWorkspace(runId, state, policy, signal);
     const acceptable = (): void => {
