@@ -6,6 +6,7 @@ import { getIntelligenceClient, getIntelligenceRouter } from "../intelligence/in
 import { isForbidden } from "../security/forbidden.js";
 import { pushEdit } from "./edit-stack.js";
 import { emitFileEdited } from "./file-events.js";
+import { toolPhase } from "./tool-phase.js";
 
 interface RenameFileArgs {
   from: string;
@@ -97,6 +98,7 @@ export const renameFileTool = {
         const forbidden = isForbidden(edit.file);
         if (forbidden) continue;
         pushEdit(edit.file, edit.oldContent, edit.newContent, args.tabId);
+        toolPhase("write");
         await writeFile(edit.file, edit.newContent, "utf-8");
         emitFileEdited(edit.file, edit.newContent);
         if (client) {
@@ -118,6 +120,7 @@ export const renameFileTool = {
     pushEdit(from, originalContent, originalContent, args.tabId);
 
     try {
+      toolPhase("write");
       await rename(from, to);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

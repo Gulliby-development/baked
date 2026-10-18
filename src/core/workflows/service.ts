@@ -657,6 +657,52 @@ export class NativeWorkflowService implements WorkflowService {
     return true;
   }
   /**
+   * Takes over a run whose driver process the supervisor stopped because its main thread no
+   * longer ran (#1533: a synchronous call that never returned left the run "running" for 31 min).
+   * Called after that process is gone. Within `workflows.stall.autoResumes`, counted with the
+   * watchdog's own resumes in `stallResumes`, the run is resumed (its open edits are settled from
+   * the file hashes on the next drive) and true is returned; past it the run blocks `step_stalled`
+   * for a person. Each takeover is journaled as `stalled/takeover-N.json`.
+   */
+  async takeOverStalledDriver(runId: string, pid: number): Promise<boolean> {
+    const run = this.store.run(runId);
+    if (run.status !== "running") return false;
+    const state = this.store.state(runId);
+    const limit = stallSettings(this.config).autoResumes;
+    const attempt = state.stallResumes + 1;
+    const resumes = attempt <= limit;
+    this.store.transaction(() => {
+      this.store.artifact(
+        runId,
+        "recovery",
+        `stalled/takeover-${attempt}.json`,
+        canonical({ attempt, of: limit, pid, resumed: resumes }),
+      );
+      if (resumes) {
+        state.stallResumes = attempt;
+        this.store.saveState(runId, state);
+      }
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `errors/${newId()}.txt`,
+        `The driver process ${pid} stopped running its timers (no lease renewal, tool deadline or step watchdog) and was stopped by its supervisor`,
+      );
+      this.store.transition(runId, "blocked", "step_stalled");
+    });
+    if (!resumes) return false;
+    try {
+      await this.resume(runId, {
+        commandId: newId(),
+        expectedRevision: this.store.run(runId).revision,
+      });
+    } catch {
+      return false;
+    }
+    // A command of unknown outcome makes the resume ask a person instead (`interrupted_effect`).
+    return this.store.run(runId).status === "paused";
+  }
+  /**
    * A run that blocked because a task ended unfinished after its one restart (#1516: a watcher stop
    * left a check red, and the restarted session stopped too) resumes by itself once. The output is
    * a well-formed account of work left, not a schema fault, and the next session starts from it:

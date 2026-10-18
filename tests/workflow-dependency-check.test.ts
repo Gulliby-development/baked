@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { checkDependencies } from "../src/core/workflows/quality/dependencies.js";
 import { importedPackages, manifestDependencies, packageOfSpecifier } from "../src/core/workflows/quality/manifests.js";
 import { type RegistryFetch, typosquatOf } from "../src/core/workflows/quality/registry.js";
+import { runScanner } from "../src/core/workflows/quality/rules.js";
 import { runSast } from "../src/core/workflows/quality/sast.js";
 import { runReport } from "../src/core/workflows/run-report.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
@@ -148,7 +149,7 @@ describe("dependency check", () => {
 });
 
 describe("SAST", () => {
-  test("Semgrep ERROR matches on added lines block; others are notes; no Semgrep is inconclusive", () => {
+  test("Semgrep ERROR matches on added lines block; others are notes; no Semgrep is inconclusive", async () => {
     const file = { path: "src/db.ts", before: "const a = 1;\n", content: 'const a = 1;\ndb.query("SELECT " + id);\neval(x);\n' };
     const output = {
       results: [
@@ -158,7 +159,7 @@ describe("SAST", () => {
       ],
     };
     const calls: string[][] = [];
-    const result = runSast("/repo", [file], "p/default", "semgrep", (_exe, args) => {
+    const result = await runSast("/repo", [file], "p/default", "semgrep", (_exe, args) => {
       calls.push(args);
       return { status: 1, stdout: JSON.stringify(output), stderr: "" };
     });
@@ -167,7 +168,21 @@ describe("SAST", () => {
       ["sql-injection", 2, true],
       ["eval", 3, false],
     ]);
-    expect(runSast("/repo", [file], "p/default", null).note).toBe("Semgrep is not installed");
+    expect((await runSast("/repo", [file], "p/default", null)).note).toBe("Semgrep is not installed");
+  });
+
+  test("a scanner runs off the event loop and is stopped at its deadline (#1533)", async () => {
+    // spawnSync held the driver's thread for up to 300 s, so its lease heartbeat stopped too.
+    let ticks = 0;
+    const timer = setInterval(() => ticks++, 20);
+    const started = Date.now();
+    const result = await runScanner(process.execPath, ["-e", "await Bun.sleep(10000)"], process.cwd(), 600);
+    clearInterval(timer);
+    expect(result.status).toBeNull();
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(ticks).toBeGreaterThan(5);
+    const done = await runScanner(process.execPath, ["-e", "console.log('ok')"], process.cwd(), 10_000);
+    expect([done.status, done.stdout.trim()]).toEqual([0, "ok"]);
   });
 });
 

@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import type { ModelMessage, ProviderOptions } from "@ai-sdk/provider-utils";
 import {
   generateText,
@@ -464,7 +465,8 @@ export class NativeAgentExecutor implements AgentExecutor {
       // Syntax error count of each file before this attempt's first edit of it (#977): an edit is
       // blamed only for errors the file did not already have, such as syntax the grammar predates.
       const syntaxBefore = new Map<string, Promise<number>>();
-      const noteSyntaxBaseline = (name: string, args: Record<string, unknown>) => {
+      // Reads off the event loop (#1533): a read a scanner holds waits without stopping the timers.
+      const noteSyntaxBaseline = async (name: string, args: Record<string, unknown>) => {
         if (!["edit_file", "multi_edit"].includes(name) || typeof args.path !== "string") return;
         let path: string;
         try {
@@ -474,13 +476,15 @@ export class NativeAgentExecutor implements AgentExecutor {
         }
         if (syntaxBefore.has(path) || !syntaxCheckable(path)) return;
         let content: string | null = null;
+        // Set first, so an edit of the same path in parallel keeps this baseline.
+        let read: (count: Promise<number>) => void = () => {};
+        syntaxBefore.set(path, new Promise<number>((resolve) => (read = (n) => resolve(n))));
         try {
-          content = readFileSync(workspacePath(root, path), "utf8");
+          content = await readFile(workspacePath(root, path), "utf8");
         } catch {
           // A new file has no errors of its own yet.
         }
-        syntaxBefore.set(
-          path,
+        read(
           content === null
             ? Promise.resolve(0)
             : syntaxErrors(path, content).then((errors) => errors.length),
@@ -491,7 +495,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         if (!syntaxCheckable(path)) return [];
         let content: string;
         try {
-          content = readFileSync(workspacePath(root, path), "utf8");
+          content = await readFile(workspacePath(root, path), "utf8");
         } catch {
           return [];
         }
@@ -561,7 +565,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                       : f,
                 );
               const editMode = policy.editDiagnostics ?? "feedback";
-              noteSyntaxBaseline(name, args);
+              await noteSyntaxBaseline(name, args);
               let result = await withEditDiagnosticsMode(editMode, () =>
                 guard.execute(name, args, async () => {
                   if (EDIT_TOOLS.has(name)) {

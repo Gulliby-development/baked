@@ -1168,6 +1168,7 @@ export const WorkflowConfigSchema = z
         autoResumes: z.number().int().min(0).max(20).optional(),
         providerResumes: z.number().int().min(0).max(20).optional(),
         providerWaitMs: z.number().int().min(0).max(3_600_000).optional(),
+        supervisorGraceMs: z.number().int().min(0).max(3_600_000).optional(),
       })
       .strict()
       .optional(),
@@ -1223,6 +1224,7 @@ export const EventType = z.enum([
   "wait.progress",
   "acceptance.phase",
   "tool.started",
+  "tool.phase",
   "tool.finished",
 ]);
 const EventBase = {
@@ -1554,6 +1556,17 @@ export const EventSchema = z.discriminatedUnion("type", [
       ...EventBase,
       type: z.literal("tool.started"),
       payload: z.object({ attemptId: SafeId, tool: z.string().max(128) }).strict(),
+    })
+    .strict(),
+  // A step inside a tool call (pre-image, write, format, diagnostics), so a call that never
+  // returns names the step it stopped in (#1533).
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("tool.phase"),
+      payload: z
+        .object({ attemptId: SafeId, tool: z.string().max(128), phase: z.string().max(64) })
+        .strict(),
     })
     .strict(),
   z

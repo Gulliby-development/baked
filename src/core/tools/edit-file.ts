@@ -25,6 +25,7 @@ import {
   countOccurrences,
   startPreEditDiagnostics,
 } from "./post-edit-helpers.js";
+import { toolPhase } from "./tool-phase.js";
 import { contentHash } from "./tool-utils.js";
 import { consumeAstEditNudge } from "./ts-project-detect.js";
 
@@ -208,6 +209,7 @@ async function applyEdit(
   // Write file immediately — don't wait for diagnostics.
   // atomicWriteFile = tmp+rename so a crash mid-write never corrupts the target.
   pushEdit(filePath, disk.raw, updated, tabId);
+  toolPhase("write");
   await atomicWriteFile(filePath, updated);
   emitFileEdited(filePath, updated);
 
@@ -294,6 +296,7 @@ export const editFileTool = {
         await mkdir(dir, { recursive: true });
         const newEol = detectNewFileLineEnding(dir);
         const fileText = newEol ? withLineEnding(newStr, newEol) : args.newString;
+        toolPhase("write");
         await atomicWriteFile(filePath, fileText);
         emitFileEdited(filePath, fileText);
         const metrics = analyzeFile(newStr);

@@ -17,6 +17,7 @@ import {
   appendPostEditDiagnostics,
   startPreEditDiagnostics,
 } from "./post-edit-helpers.js";
+import { toolPhase } from "./tool-phase.js";
 import { consumeAstEditNudge } from "./ts-project-detect.js";
 
 const SUPPORTED_EXTENSIONS = new Set([
@@ -175,6 +176,7 @@ export const astEditTool = {
           const diags = await startPreEditDiagnostics(filePath, { newFile: true });
 
           pushEdit(filePath, "", content, args.tabId);
+          toolPhase("write");
           await writeFile(filePath, content, "utf-8");
           emitFileEdited(filePath, content);
 
@@ -255,6 +257,7 @@ export const astEditTool = {
       const diags = await startPreEditDiagnostics(filePath);
 
       pushEdit(filePath, before, updated, args.tabId);
+      toolPhase("write");
       await writeFile(filePath, updated, "utf-8");
       emitFileEdited(filePath, updated);
 

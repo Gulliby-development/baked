@@ -251,8 +251,8 @@ describe("anti-slop rule pack", () => {
     for (const rule of BUILTIN_RULES) expect(rule.message && rule.fix && rule.title).toBeTruthy();
   });
 
-  test("project ast-grep rule files without ast-grep are listed as not run", () => {
-    const result = checkAstGrepRules("/tmp", [created("src/a.ts", "x\n")], { files: ["rules/no-eval.yml"] }, null);
+  test("project ast-grep rule files without ast-grep are listed as not run", async () => {
+    const result = await checkAstGrepRules("/tmp", [created("src/a.ts", "x\n")], { files: ["rules/no-eval.yml"] }, null);
     expect(result.findings).toEqual([]);
     expect(result.astGrep).toEqual({ files: ["rules/no-eval.yml"], ran: false, note: "ast-grep is not installed" });
   });

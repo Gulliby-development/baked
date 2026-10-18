@@ -28,6 +28,11 @@ export interface StallSettings {
   providerResumes: number;
   /** Wait before the first provider resume; each later wait is three times the previous one. */
   providerWaitMs: number;
+  /**
+   * How long the leases of a headless driver may stay expired before its supervisor stops the
+   * driver and takes its runs over (#1533); 0 runs headless commands without a supervisor.
+   */
+  supervisorGraceMs: number;
 }
 
 export const DEFAULT_STALL_SETTINGS: StallSettings = {
@@ -42,6 +47,8 @@ export const DEFAULT_STALL_SETTINGS: StallSettings = {
   // 1, 3 and 9 minutes: long enough for a dropped connection or a capacity spike to pass.
   providerResumes: 3,
   providerWaitMs: 60_000,
+  // The file tools' deadline: a driver whose thread stays stopped past it would have been stopped.
+  supervisorGraceMs: 2 * 60_000,
 };
 
 /** The wait before provider resume number `attempt` (1-based). */

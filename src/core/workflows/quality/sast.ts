@@ -5,8 +5,8 @@
  * inconclusive and never blocks. BAKED does not install Semgrep.
  */
 import { spawnSync } from "node:child_process";
-import type { ChangedFile } from "./rules.js";
-import { addedLines } from "./rules.js";
+import type { ChangedFile, ProcessOutput } from "./rules.js";
+import { addedLines, runScanner } from "./rules.js";
 
 export type SastMode = "auto" | "off";
 export const sastOf = (policy: { sast?: SastMode | undefined }): SastMode => policy.sast ?? "auto";
@@ -55,30 +55,23 @@ export type SastRunner = (
   executable: string,
   args: string[],
   cwd: string,
-) => { status: number | null; stdout: string; stderr: string };
+) => ProcessOutput | Promise<ProcessOutput>;
 
-const runProcess: SastRunner = (executable, args, cwd) => {
-  const result = spawnSync(executable, args, {
-    cwd,
-    encoding: "utf8",
-    timeout: 300_000,
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
-};
+const runProcess: SastRunner = (executable, args, cwd) =>
+  runScanner(executable, args, cwd, 300_000);
 
 /** Runs Semgrep on the changed code files and keeps the matches on added lines. */
-export function runSast(
+export async function runSast(
   root: string,
   files: ChangedFile[],
   config: string,
   executable: string | null = semgrepExecutable(),
   run: SastRunner = runProcess,
-): SastResult {
+): Promise<SastResult> {
   const base = { schemaVersion: 1 as const, config, findings: [] as SastFinding[] };
   if (!files.length) return { ...base, ran: false, note: "no code changed" };
   if (!executable) return { ...base, ran: false, note: "Semgrep is not installed" };
-  const result = run(
+  const result = await run(
     executable,
     ["scan", "--json", "--metrics=off", "--quiet", "--config", config, ...files.map((f) => f.path)],
     root,

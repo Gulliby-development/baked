@@ -470,6 +470,25 @@ export function matchGlob(input: string, pattern: string): boolean {
   return new RegExp(`^${escaped}$`, flags).test(str);
 }
 /**
+ * {@link safeRename} off the event loop. The edit tools write through it: a rename an antivirus
+ * scanner or indexer holds on Windows then waits in a worker thread, and the tool's deadline and
+ * the run's lease heartbeat keep running (#1533).
+ */
+export async function safeRenameAsync(tmpPath: string, targetPath: string): Promise<void> {
+  const { rename, unlink } = await import("node:fs/promises");
+  if (!IS_WIN) return rename(tmpPath, targetPath);
+  try {
+    return await rename(tmpPath, targetPath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "EEXIST" && code !== "EPERM" && code !== "ENOTEMPTY") throw err;
+  }
+  try {
+    await unlink(targetPath);
+  } catch {}
+  await rename(tmpPath, targetPath);
+}
+/**
  * Crash-safe file write: write to a sibling temp file, then atomically rename
  * over the target via {@link safeRename}. A crash mid-write leaves the original
  * intact (the temp file is orphaned, never a half-written target).
@@ -482,7 +501,7 @@ export async function atomicWriteFile(targetPath: string, data: string): Promise
   const tmpPath = `${targetPath}.sf-${process.pid.toString(36)}-${Date.now().toString(36)}.tmp`;
   try {
     await writeFile(tmpPath, data, "utf-8");
-    safeRename(tmpPath, targetPath);
+    await safeRenameAsync(tmpPath, targetPath);
   } catch (err) {
     try {
       await unlink(tmpPath);

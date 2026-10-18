@@ -190,6 +190,7 @@ export interface EventPayloads {
     polls: number;
   };
   "tool.started": { attemptId: string; tool: string };
+  "tool.phase": { attemptId: string; tool: string; phase: string };
   "tool.finished": {
     attemptId: string;
     tool: string;

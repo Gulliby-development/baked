@@ -17,6 +17,7 @@ import { autoFormatAfterEdit } from "./auto-format.js";
 import { configuredDiagnosticsTimeoutMs, editDiagnosticsMode } from "./edit-diagnostics.js";
 import { dropLastEdit, updateLastAfterHash } from "./edit-stack.js";
 import { emitFileEdited } from "./file-events.js";
+import { toolPhase } from "./tool-phase.js";
 
 export interface DiagnosticsContext {
   source: DiagnosticsSource;
@@ -135,6 +136,7 @@ export async function appendAutoFormatResult(
   tabId?: string,
 ): Promise<string> {
   let result = output;
+  toolPhase("format");
   const formatted = await autoFormatAfterEdit(filePath);
   if (formatted) {
     const postFormatContent = await readFile(filePath, "utf-8");
@@ -193,6 +195,7 @@ export async function appendPostEditDiagnostics(
   revert?: EditRevert,
 ): Promise<{ output: string; rejected: boolean }> {
   if (!diagCtx) return { output, rejected: false };
+  toolPhase("diagnostics");
   try {
     const result = await compareWithBaseline(diagCtx.source, diagCtx.baseline, diagCtx.timeoutMs);
     const cwd = getCwd();
@@ -226,6 +229,7 @@ export async function appendPostEditDiagnostics(
  * functions that already exist elsewhere. Non-blocking — 500ms timeout, swallows errors.
  */
 export async function appendCloneHints(filePath: string, output: string): Promise<string> {
+  toolPhase("clone_hints");
   try {
     const { relative } = await import("node:path");
     const intel = await import("../intelligence/index.js");

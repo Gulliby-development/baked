@@ -10999,7 +10999,7 @@ ${note}`;
   ): Promise<Review["findings"]> {
     if (sastOf(policy) === "off" || !state.snapshotId) return [];
     const changed = await this.changedFiles(runId, state, isCodePath);
-    const result = runSast(
+    const result = await runSast(
       runRoot(this.store.workspace, state),
       changed,
       policy.sastConfig ?? DEFAULT_SAST_CONFIG,
@@ -11038,7 +11038,7 @@ ${note}`;
     if (!state.snapshotId) return [];
     const root = runRoot(this.store.workspace, state);
     const changed = await this.changedFiles(runId, state, isCodePath);
-    const result = checkQualityRules(root, changed, policy.qualityRules ?? {});
+    const result = await checkQualityRules(root, changed, policy.qualityRules ?? {});
     // A deterministic rule that still matches the same text after its correction would only ask
     // again: it stays in the report and becomes a known limitation (#845).
     const earlier = new Map<string, ReturnType<WorkflowStore["findings"]>[number]>();

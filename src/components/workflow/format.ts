@@ -441,6 +441,7 @@ export function eventText(event: WorkflowEvent, stages: StageView[]): string | n
     case "artifact.committed":
     case "budget.updated":
     case "tool.started":
+    case "tool.phase":
       return null;
     case "tool.finished":
       // Only a call that hit its deadline is worth a line; the rest is evidence for attribution.
