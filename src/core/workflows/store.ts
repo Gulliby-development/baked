@@ -1144,6 +1144,9 @@ export class WorkflowStore {
     invalidate = false,
     keep: ReadonlySet<string> = new Set(),
   ): void {
+    // Remove the old graph's edges before pruning its tasks. Both ends reference tasks, so even
+    // dropping a pending leaf fails while its outgoing edges still exist (#1580).
+    this.db.run("DELETE FROM task_dependencies WHERE run_id=?", [runId]);
     if (invalidate) {
       const previous = this.findings(runId);
       if (previous.length)
@@ -1175,7 +1178,6 @@ export class WorkflowStore {
       if (invalidate && kept) this.taskStatus(runId, task.id, "implemented", kept);
       else if (invalidate) this.taskStatus(runId, task.id, "invalidated");
     }
-    this.db.run("DELETE FROM task_dependencies WHERE run_id=?", [runId]);
     for (const task of graph.tasks)
       for (const dep of task.dependsOn)
         this.db.run("INSERT INTO task_dependencies VALUES (?,?,?)", [runId, task.id, dep]);
