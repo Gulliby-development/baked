@@ -12,6 +12,7 @@ import {
   commandKey,
   testCount,
 } from "../verification/output-counts.js";
+import { settledConflicts } from "./conflict-decisions.js";
 import { type CostForecast, forecastProgress } from "./cost-forecast.js";
 import { type DependencyResult, QUALITY_DEPENDENCIES } from "./quality/dependencies.js";
 import {
@@ -394,6 +395,7 @@ function collect(store: WorkflowStore, runId: string) {
       selections,
       candidates,
       amendments,
+      settled: settledConflicts(store, runId),
       outcomes: store.criticOutcomes(runId),
       usage: stagesInRunOrder(store, runUsage(store, runId)),
       forecasts: forecastProgress(store, runId),
@@ -1007,7 +1009,13 @@ function render(facts: Facts, cap: number): string {
   const decided = facts.requests.filter((r) => r.status !== "pending");
   const pending = facts.requests.filter((r) => r.status === "pending");
   const assumptions = spec?.assumptions ?? [];
-  if (decided.length || pending.length || assumptions.length || facts.amendments.length) {
+  if (
+    decided.length ||
+    pending.length ||
+    assumptions.length ||
+    facts.amendments.length ||
+    facts.settled.length
+  ) {
     out.push("## Decisions", "");
     if (decided.length || pending.length)
       out.push(
@@ -1029,6 +1037,21 @@ function render(facts: Facts, cap: number): string {
         "",
         ...list(
           assumptions.map((a) => `- ${cell(a)}`),
+          cap,
+        ),
+        "",
+      );
+    // What tasks' conflicts settled and the platform limits finished tasks declared: reviewers
+    // were given these, so findings asking for them again are notes (#1519, #1536).
+    if (facts.settled.length)
+      out.push(
+        "Settled conflicts and declared platform limits:",
+        "",
+        ...list(
+          facts.settled.map(
+            (c) =>
+              `- ${c.taskId}${c.declared ? " (declared limit)" : ""}: ${cell(c.report ? `${c.report} ${c.settled}` : c.settled)}`,
+          ),
           cap,
         ),
         "",
