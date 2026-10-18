@@ -125,6 +125,7 @@ bun test tests/feature-parity.test.ts
 | --- | --- | --- | --- | --- |
 | Start a full run or a quick task | `/workflow` | `baked workflow run`, `baked quick`, `baked workflow definitions` +1 | `/v1/workflow/runs`, `/v1/workflow/definitions`, `/v1/workflow/profiles` | `project/overview` |
 | Test-integrity guard: block or warn on test gaming, spec conflicts | `/workflow` | `baked workflow run`, `baked workflow answer` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/answer` | `project/overview`, `attention` |
+| Route failed checks to pending test writers or named source owners | `/workflow` | `baked workflow run`, `baked workflow artifacts` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/artifacts` | `project/runs` |
 | Tests first: failing tests approved before the code, tdd preset | `/workflow` | `baked workflow run`, `baked workflow approve`, `baked workflow reject` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/approve`, `/v1/workflow/runs/:id/reject` | `project/overview`, `attention` |
 | Cost cap of a run: per run, per project and in the doctor and estimate | `/workflow`, `/timeouts` | `baked workflow run`, `baked workflow doctor`, `baked workflow estimate` +1 | `/v1/workflow/runs`, `/v1/workflow/doctor`, `/v1/workflow/estimate` +1 | `project/overview`, `settings/chat` |
 | Propose the workflow and budget from the request | `/workflow` | `baked workflow propose`, `baked workflow run`, `auto-preset` | `/v1/workflow/propose` | `project/overview` |

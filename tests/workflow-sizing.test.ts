@@ -547,14 +547,26 @@ describe("runtime split of test tasks", () => {
     expect(isHostSplitNit({ refs: ["T002"], description: "T002 has no test file" }, parts)).toBe(false);
     expect(hostSplitParts(g)).toEqual({});
   });
-  test("a part keeps the criteria of its tested module; an unmatched part keeps them all (#1245)", () => {
+  test("a part keeps the criteria of its tested module; an unmatched part keeps the rest (#1245, #1563)", () => {
     const code = (id: string, path: string, criterionIds: string[]) => ({ ...task(id, [path]), criterionIds });
     const tests = { ...task("T003", ["tests/test_a.py", "tests/test_b.py", "tests/test_misc.py"]), criterionIds: ["AC-001", "AC-002", "AC-003"] };
     const g = graph(code("T001", "src/a.py", ["AC-001"]), code("T002", "src/b.py", ["AC-002"]), tests);
     const files = tests.writes.map((w) => w.path);
-    expect(partCriteria(g, tests, files)).toEqual([["AC-001"], ["AC-002"], ["AC-001", "AC-002", "AC-003"]]);
+    expect(partCriteria(g, tests, files)).toEqual([["AC-001"], ["AC-002"], ["AC-003"]]);
     // Every part matched: the criterion none of them covers stays with the first part.
     expect(partCriteria(g, tests, files.slice(0, 2))).toEqual([["AC-001", "AC-003"], ["AC-002"]]);
+  });
+  test("new test parts wait for existing-test updates while new-only parts stay parallel (#1563)", () => {
+    const tests = { ...task("T002", ["tests/new.test.ts", "tests/old.test.ts"]), writes: [{ path: "tests/new.test.ts", action: "create" as const }, { path: "tests/old.test.ts", action: "modify" as const, reason: "Update the old assertion" }], dependsOn: ["T001"], checkIds: ["typecheck", "lint", "tests"] };
+    const g = graph(task("T001", ["src/new.ts"]), tests);
+    const split = splitTestTasks(g, sized(g));
+    expect(split?.tasks[1]?.dependsOn).toEqual(["T001", "T003"]);
+    expect(split?.tasks[2]?.dependsOn).toEqual(["T001"]);
+    expect(split?.tasks[1]?.checkIds).toEqual(tests.checkIds);
+    expect(split?.tasks[1]?.description).toContain("T003 (tests/old.test.ts)");
+    expect(split?.tasks[2]?.description).toContain("updates existing assertions");
+    const created = { ...tests, writes: tests.writes.map((w) => ({ ...w, action: "create" as const })) };
+    expect(splitTestTasks(graph(g.tasks[0]!, created), sized(graph(g.tasks[0]!, created)))?.tasks.slice(1).map((t) => t.dependsOn)).toEqual([["T001"], ["T001"]]);
   });
   test("code tasks and test tasks within one attempt are left to the planner", () => {
     const g = graph(task("T001", ["src/a.ts", "src/b.ts"]), task("T002", ["tests/a.test.ts"]));

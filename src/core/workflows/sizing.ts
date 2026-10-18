@@ -849,7 +849,8 @@ export function codeTaskCheckProblems(graph: TaskGraph, policy: RunPolicy): stri
  * Splits each oversized test task into one task per test file, so the plan needs no second round
  * for it: test files rarely depend on each other, and a planner told to split a test task did not
  * (expenses-py-r4). The first file keeps the task's ID and the others get new ones; every part
- * keeps the task's checks and dependencies, and a task that depended on it depends on every part.
+ * keeps the task's checks and dependencies. New test files wait for existing-test updates, and a
+ * task that depended on the original task depends on every part.
  * A part keeps only the task's criteria that the code tasks writing its tested file cover (see
  * `partCriteria`). Returns null when no test task is oversized.
  */
@@ -888,6 +889,17 @@ export function splitTestTasks(graph: TaskGraph, report: SizingReport): TaskGrap
         description: `${task.description}\n${SPLIT_PART} write only ${write.path}; ${siblings.join(", ")} belong to the other parts of ${task.id}.${scope}`,
       };
     });
+    const updates = split.filter((part) => part.writes.some((w) => w.action === "modify"));
+    for (const part of split) {
+      if (part.writes.some((w) => w.action === "create")) {
+        part.dependsOn = [...new Set([...part.dependsOn, ...updates.map((t) => t.id)])];
+        if (updates.length)
+          part.description += ` Existing-test updates ${updates.map((t) => `${t.id} (${t.writes[0]?.path})`).join(", ")} finish before this part; leave those assertions to them.`;
+      } else if (updates.length < split.length) {
+        part.description +=
+          " This part updates existing assertions; the new test parts cover their shared acceptance cases.";
+      }
+    }
     parts.set(
       task.id,
       split.map((part) => part.id),
@@ -914,7 +926,7 @@ export function splitTestTasks(graph: TaskGraph, report: SizingReport): TaskGrap
  * The criteria of `task` each of its test files covers, in the order of `files`: those of the code
  * tasks that write the file a test file is named after (`tests/test_schema.py` for
  * `cfgtrace/schema.py`). A file whose source no code task writes, or whose code tasks share none
- * of the criteria, keeps every criterion, and a criterion no part gets goes to those parts, or to
+ * of the criteria, keeps the unassigned criteria, or all when none remain. A criterion no part gets goes to those parts, or to
  * the first part when every part matched. cfgtrace b4427c85 gave all 14 one-file parts their
  * group's whole criteria list: each wrote a file that tried to cover the group, the parts cost
  * 7.65M tokens and three of them contradicted the spec (#1245).
@@ -934,7 +946,9 @@ export function partCriteria(graph: TaskGraph, task: Task, files: string[]): str
   const open = matched.some((own) => own === null);
   return matched.map((own, index) =>
     own === null
-      ? task.criterionIds
+      ? rest.length
+        ? rest
+        : task.criterionIds
       : !open && index === 0 && rest.length
         ? task.criterionIds.filter((c) => own.includes(c) || rest.includes(c))
         : own,

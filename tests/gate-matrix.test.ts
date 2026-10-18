@@ -48,8 +48,9 @@ import {
   ruleFindingKey,
 } from "../src/core/workflows/quality/rules.js";
 import { staticCorrection } from "../src/core/workflows/scheduler.js";
+import { failureOwner } from "../src/core/workflows/task-graph.js";
 import type { Check, RunPolicy, RuntimeState } from "../src/core/workflows/schemas.js";
-import type { WorkflowStore } from "../src/core/workflows/store.js";
+import type { TaskRow, WorkflowStore } from "../src/core/workflows/store.js";
 import { scanTestIntegrity, testChanges } from "../src/core/workflows/test-integrity.js";
 import type { Task } from "../src/core/workflows/types.js";
 import {
@@ -520,6 +521,21 @@ for (const stack of STACKS) {
       for (const check of checks.filter((c) => isTestCheck(c))) {
         expect(isStaticCheck(check)).toBe(false);
       }
+    });
+
+    cell(stack, "pending-test-update-owner (#1563)", () => {
+      const path = fixture.property.path;
+      const source: Task = { id: "T001", title: "Source", description: "Source", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: [{ path: "value.txt", action: "create" }], readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Fixture" };
+      const updater: Task = { ...source, id: "T002", dependsOn: [source.id], writes: [{ path, action: "modify" }] };
+      const graph = { schemaVersion: 1 as const, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [source, updater] };
+      const rows = [{ id: source.id, status: "implemented" }, { id: updater.id, status: "pending" }] as TaskRow[];
+      const output = stack === "maven" ? "[ERROR] com.example.SumTest.commutes:42 expected result"
+        : stack === "dotnet" ? "Failed SumTests.Commutes [8 ms]"
+        : stack === "go" ? "--- FAIL: TestSum (0.00s)\n    sum_test.go:42: wrong result"
+        : stack === "rust" ? "thread 'sum' panicked at tests/sum.rs:42:5"
+        : `FAIL ${path}:42: wrong result`;
+      expect(failureOwner(graph, rows, {}, source, output)).toMatchObject({ kind: "test-update", owners: [updater.id] });
+      expect(failureOwner(graph, [{ ...rows[1], status: "verified" }] as TaskRow[], {}, source, output).kind).not.toBe("test-update");
     });
 
     // `allowNewDependencies: false` relies on this to see a dependency added to the stack's

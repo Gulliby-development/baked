@@ -794,6 +794,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/overview: New run, Test integrity", "attention"],
   },
   {
+    id: "workflow-failure-ownership",
+    group: "Workflow runs",
+    title: "Route failed checks to pending test writers or named source owners",
+    tui: ["/workflow: run tasks and diagnostic artifacts"],
+    cli: ["baked workflow run", "baked workflow artifacts"],
+    api: ["/v1/workflow/runs", "/v1/workflow/runs/:id/artifacts"],
+    desktop: ["project/runs: tasks and artifacts"],
+  },
+  {
     id: "tests-first",
     group: "Workflow runs",
     title: "Tests first: failing tests approved before the code, tdd preset",

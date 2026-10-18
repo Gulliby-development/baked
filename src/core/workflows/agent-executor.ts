@@ -124,6 +124,7 @@ import {
   toolCallName,
 } from "./step-budget.js";
 import type { EffectRow, WorkflowStore } from "./store.js";
+import { failureOwnerNote } from "./task-graph.js";
 import { pureWorkflowTools, WorkflowToolPolicy } from "./tool-policy.js";
 import type { AgentExecutor, ExecutionRequest, ExecutionResponse, Task } from "./types.js";
 import { AcceptanceDraftSchema, AcceptanceWalkSchema } from "./v2/acceptance.js";
@@ -786,11 +787,25 @@ export class NativeAgentExecutor implements AgentExecutor {
                 ...modelCheckOutput(result.output, result.evidenceId),
                 ...(hint ? { escapeHint: hint } : {}),
               };
-              if (!own) return shown;
+              const owner =
+                result.status === "failed" ? request.failureOwner?.(result.output) : undefined;
+              const ownershipNote = owner ? failureOwnerNote(owner) : undefined;
+              if (!own)
+                return {
+                  ...shown,
+                  ...(owner ? { failureOwner: owner } : {}),
+                  ...(ownershipNote ? { note: ownershipNote } : {}),
+                };
               return {
                 ...shown,
+                ...(owner ? { failureOwner: owner } : {}),
                 taskErrors: own,
-                note: `${check.id} analyzes the whole project and runs in the checks stage after the tasks are integrated; in this task's directory it also fails on files other tasks have not written yet. ${own.length ? "Only the errors in taskErrors are in this task's files: fix those and ignore the rest." : "None of its errors is in this task's files, so there is nothing to fix for it here."}`,
+                note: [
+                  ownershipNote,
+                  `${check.id} analyzes the whole project and runs in the checks stage after the tasks are integrated; in this task's directory it also fails on files other tasks have not written yet. ${own.length ? "Only the errors in taskErrors are in this task's files: fix those and ignore the rest." : "None of its errors is in this task's files, so there is nothing to fix for it here."}`,
+                ]
+                  .filter(Boolean)
+                  .join("\n"),
               };
             } finally {
               await scope.stop();
