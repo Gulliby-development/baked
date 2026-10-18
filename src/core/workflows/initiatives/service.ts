@@ -117,6 +117,8 @@ export interface InitiativeStartRequest {
   forecastStop?: boolean;
   /** Keep the decomposer's split as is instead of merging small siblings (#1352). */
   keepFeatures?: boolean;
+  /** Ask the decomposer to split a feature that dominates the critical path (#1522). */
+  splitCriticalPath?: boolean;
 }
 
 /** What an initiative reroute did to one of its open runs (`initiative.rerouted` event). */
@@ -225,6 +227,8 @@ export interface FeatureView {
    * in views stored before merging existed.
    */
   mergedFrom?: string[];
+  /** Why the decomposer kept a feature of the critical path whole (#1522). */
+  serial?: string;
 }
 
 export interface NextAction {
@@ -504,6 +508,7 @@ export class InitiativeService {
       featureIssues: request.featureIssues ?? {},
       forecastStop: request.forecastStop ?? false,
       keepFeatures: request.keepFeatures ?? false,
+      splitCriticalPath: request.splitCriticalPath ?? false,
     };
     this.checkWorkflow(settings);
     // Feature runs in worktrees need Git; refuse now rather than after the decomposer ran.
@@ -547,7 +552,11 @@ export class InitiativeService {
       workflowId: DECOMPOSE_WORKFLOW_ID,
       featureId: decomposeFeatureId(id),
       prompt: request.prompt,
-      policy: PolicySchema.parse({ ...settings.basePolicy, autoApproval: null }),
+      policy: PolicySchema.parse({
+        ...settings.basePolicy,
+        autoApproval: null,
+        ...(settings.splitCriticalPath ? { criticalPath: "split" } : {}),
+      }),
       ownerLabel: request.ownerLabel,
       ...(request.model ? { model: request.model } : {}),
     });
@@ -1761,6 +1770,7 @@ export class InitiativeService {
         spentUsd: Math.round(runs.reduce((sum, l) => sum + this.spentUsd(l.run_id), 0) * 100) / 100,
         runIds: runs.map((l) => l.run_id),
         mergedFrom: mergedFrom.get(feature.id) ?? [],
+        ...(feature.serial ? { serial: feature.serial } : {}),
       };
       views.set(feature.id, view);
       if (!approved) continue;

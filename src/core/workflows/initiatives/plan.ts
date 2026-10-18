@@ -65,6 +65,11 @@ export const InitiativeFeatureSchema = z
       )
       .max(50)
       .optional(),
+    /**
+     * Why the feature stays whole although it holds a large share of the critical path: its parts
+     * depend on each other (critical-path.ts, #1522). Absent when nobody asked.
+     */
+    serial: Text.optional(),
   })
   .strict();
 export type InitiativeFeature = z.infer<typeof InitiativeFeatureSchema>;

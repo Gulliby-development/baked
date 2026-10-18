@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { maskNonCode } from "../src/core/workflows/quality/code-mask.js";
 import {
-  codeOnly,
   generateMutants,
+  proposalFiles,
+  proposedMutants,
   isTestCheck,
   type MutationRunner,
   presetMutation,
@@ -19,8 +21,8 @@ import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workf
 describe("mutants", () => {
   test("strings and comments are not mutated", () => {
     const line = 'const a = "x < y"; // a && b';
-    expect(codeOnly(line)).toHaveLength(line.length);
-    expect(codeOnly(line).trimEnd()).toBe('const a = "     ";');
+    expect(maskNonCode("src/a.ts", line)).toHaveLength(line.length);
+    expect(maskNonCode("src/a.ts", line).trimEnd()).toBe('const a = "     ";');
     const mutants = generateMutants([
       {
         path: "src/a.ts",
@@ -35,6 +37,97 @@ describe("mutants", () => {
       ["literal", 'export const f = (n: number) => n < 1 && b ? "a < b" : 1;'],
     ]);
     expect(mutants.map((m) => m.id)).toEqual(["M1", "M2", "M3"]);
+  });
+
+  // #1521 (R43): a line in the middle of a docstring or a multi-line string was masked on its
+  // own, read as code, and its prose or CSS mutated; 5 of 12 listed survivors were such noise.
+  describe("lines inside multi-line strings and comments (#1521)", () => {
+    const cases: { language: string; path: string; content: string; code: string }[] = [
+      {
+        language: "a Python docstring",
+        path: "expenses/parsing.py",
+        content:
+          'def parse(row):\n    """Parse one row.\n\n    Returns the record or a human-readable reason.\n    Fatal errors raise if count > 0.\n    """\n    return row is not None and len(row) > 2\n',
+        code: "    return row is not None and len(row) > 2",
+      },
+      {
+        language: "a TypeScript template literal",
+        path: "src/build.ts",
+        content:
+          "const css = `\n  html, body { max-width: 100%; }\n  body { margin: 0 auto; }\n`;\nexport const wide = width > 100;\n",
+        code: "export const wide = width > 100;",
+      },
+      {
+        language: "a Java text block",
+        path: "src/main/java/a/Page.java",
+        content:
+          'class Page {\n  String html = """\n      <p>a < b && c</p>\n      width: 0;\n      """;\n  boolean small(int n) { return n < 10; }\n}\n',
+        code: "  boolean small(int n) { return n < 10; }",
+      },
+      {
+        language: "a C# raw and verbatim string",
+        path: "src/Report.cs",
+        content:
+          'class Report {\n  string a = """\n    total == 0 or more\n    """;\n  string b = @"line one\n    x > 1 ""quoted"" && y\n    ";\n  bool Big(int n) => n > 1;\n}\n',
+        code: "  bool Big(int n) => n > 1;",
+      },
+      {
+        language: "a Go raw string",
+        path: "cmd/usage.go",
+        content:
+          "package main\n\nconst usage = `usage:\n  -n 0   count == 1 means one\n`\n\nfunc ok(n int) bool { return n >= 0 }\n",
+        code: "func ok(n int) bool { return n >= 0 }",
+      },
+      {
+        language: "a Rust raw string and a block comment",
+        path: "src/lib.rs",
+        content:
+          'const HELP: &str = r#"\n  a "quoted" x < 1\n"#;\n/* x == 1\n   true or false */\nfn f<\'a>(s: &\'a str) -> bool { s.len() > 0 }\n',
+        code: "fn f<'a>(s: &'a str) -> bool { s.len() > 0 }",
+      },
+    ];
+    for (const { language, path, content, code } of cases)
+      test(`${language} gets no mutants; the code line next to it does`, () => {
+        const masked = maskNonCode(path, content);
+        expect(masked).toHaveLength(content.length);
+        expect(masked.split("\n").length).toBe(content.split("\n").length);
+        const mutants = generateMutants([{ path, before: null, content }], 50);
+        expect(mutants.length).toBeGreaterThan(0);
+        expect([...new Set(mutants.map((m) => m.original))]).toEqual([code]);
+        expect(proposalFiles([{ path, before: null, content }])[0]?.lines.map((l) => l.replace(/^\d+: /, ""))).toContain(code);
+      });
+
+    test("JavaScript code inside ${...} is still code, and a private field is not a comment", () => {
+      const content = "const s = `a ${n > 1 ? `x ${m + 1}` : 0} b`;\nthis.#count = this.#count + 1;\n";
+      const mutated = generateMutants([{ path: "src/a.ts", before: null, content }], 50).map(
+        (m) => m.mutated,
+      );
+      expect(mutated).toContain("const s = `a ${n >= 1 ? `x ${m + 1}` : 0} b`;");
+      expect(mutated).toContain("const s = `a ${n > 1 ? `x ${m - 1}` : 0} b`;");
+      expect(mutated).toContain("this.#count = this.#count - 1;");
+    });
+
+    test("an agent-proposed mutant on a docstring line is dropped", () => {
+      const file = { path: "expenses/parsing.py", before: null, content: cases[0]?.content ?? "" };
+      const proposals = [
+        {
+          criterionId: "AC-1",
+          file: file.path,
+          line: 4,
+          original: "Returns the record or a human-readable reason.",
+          mutated: "Returns the record and a human-readable reason.",
+        },
+        {
+          criterionId: "AC-1",
+          file: file.path,
+          line: 7,
+          original: "return row is not None and len(row) > 2",
+          mutated: "return row is not None and len(row) > 3",
+        },
+      ];
+      expect(proposedMutants(proposals, [file], []).map((m) => m.line)).toEqual([7]);
+      expect(proposalFiles([file])[0]?.lines.some((l) => l.includes("human-readable"))).toBe(false);
+    });
   });
 
   test("only added lines of non-test code are mutated, spread over the lines first", () => {

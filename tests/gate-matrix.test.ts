@@ -47,7 +47,7 @@ import {
 import { staticCorrection } from "../src/core/workflows/scheduler.js";
 import type { Check, RunPolicy, RuntimeState } from "../src/core/workflows/schemas.js";
 import type { WorkflowStore } from "../src/core/workflows/store.js";
-import { scanTestIntegrity } from "../src/core/workflows/test-integrity.js";
+import { addedTests, scanTestIntegrity } from "../src/core/workflows/test-integrity.js";
 import type { Task } from "../src/core/workflows/types.js";
 import {
   createTaskWorktree,
@@ -727,6 +727,68 @@ for (const stack of STACKS) {
       const last = lines.findLastIndex((line) => /assert|expect\(|Errorf/i.test(line));
       const weaker = lines.filter((_, i) => i !== last).join("\n");
       expect(rules([sample.path], weaker)).toContain("assertions");
+    });
+  });
+}
+
+/**
+ * A test file with two tests of one assertion each, by name. A correction that swaps the first for
+ * a weaker test under another name keeps every total (#1519).
+ */
+const NAMED: Record<Stack, { path: string; file: (names: [string, string]) => string }> = {
+  bun: {
+    path: "tests/primes.test.ts",
+    file: ([a, b]) => `test("${a}", () => {\n  expect(run()).toBe(1);\n});\ntest("${b}", () => {\n  expect(run()).toBe(2);\n});\n`,
+  },
+  npm: {
+    path: "test/primes.test.js",
+    file: ([a, b]) => `it("${a}", () => {\n  assert.strictEqual(run(), 1);\n});\nit("${b}", () => {\n  assert.strictEqual(run(), 2);\n});\n`,
+  },
+  python: {
+    path: "tests/test_primes.py",
+    file: ([a, b]) => `def test_${a}():\n    assert run() == 1\n\n\ndef test_${b}():\n    assert run() == 2\n`,
+  },
+  go: {
+    path: "primes_test.go",
+    file: ([a, b]) => `func Test${a}(t *testing.T) {\n\tif run() != 1 {\n\t\tt.Errorf("a")\n\t}\n}\n\nfunc Test${b}(t *testing.T) {\n\tif run() != 2 {\n\t\tt.Errorf("b")\n\t}\n}\n`,
+  },
+  rust: {
+    path: "tests/primes.rs",
+    file: ([a, b]) => `#[test]\nfn ${a}() {\n    assert_eq!(run(), 1);\n}\n\n#[test]\nfn ${b}() {\n    assert_eq!(run(), 2);\n}\n`,
+  },
+  maven: {
+    path: "src/test/java/fixture/PrimesTest.java",
+    file: ([a, b]) => `    @Test\n    void ${a}() {\n        assertEquals(1, run());\n    }\n\n    @Test\n    @DisplayName("second")\n    void ${b}() {\n        assertEquals(2, run());\n    }\n`,
+  },
+  dotnet: {
+    path: "tests/PrimesTests.cs",
+    file: ([a, b]) => `    [Fact]\n    public void ${a}()\n    {\n        Assert.Equal(1, Run());\n    }\n\n    [Theory]\n    [InlineData(2)]\n    public async Task ${b}(int n)\n    {\n        Assert.Equal(n, await Run());\n    }\n`,
+  },
+};
+
+for (const stack of STACKS) {
+  const sample = NAMED[stack];
+  const before = sample.file(["intervalWorkload", "scalarCases"]);
+  const swapped = sample.file(["literalCases", "scalarCases"]);
+  const scan = (after: string, options: Parameters<typeof scanTestIntegrity>[1] = {}) =>
+    scanTestIntegrity([{ path: sample.path, before, after }], options);
+  const name = (base: string) => (stack === "python" ? `test_${base}` : stack === "go" ? `Test${base}` : base);
+  describe(`gate matrix: ${stack} test identity`, () => {
+    cell(stack, "test identity: a test swapped for another under a new name is flagged", () => {
+      const found = scan(swapped);
+      expect(found.map((f) => f.rule)).toEqual(["test-removed"]);
+      expect(found[0]?.detail).toContain(JSON.stringify(name("intervalWorkload")));
+    });
+    cell(stack, "test identity: an added test and an edited body pass", () => {
+      expect(scan(before.replace("1", "3"))).toEqual([]);
+      expect(addedTests({ path: sample.path, before, after: swapped })).toEqual([name("literalCases")]);
+    });
+    cell(stack, "test identity: a test another finding's correction added stays, whatever the finding asks", () => {
+      const protects = new Map([[sample.path, new Map([[name("intervalWorkload"), "T011 for finding F1"]])]]);
+      const found = scan(swapped, { protects, rewrites: new Set([sample.path]) });
+      expect(found.map((f) => f.rule)).toEqual(["test-removed"]);
+      expect(found[0]?.detail).toContain("which T011 for finding F1 added");
+      expect(scan(swapped, { rewrites: new Set([sample.path]) })).toEqual([]);
     });
   });
 }

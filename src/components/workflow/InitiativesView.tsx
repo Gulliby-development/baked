@@ -696,6 +696,11 @@ export function InitiativeDetail({
                     )}
                   </text>
                 ) : null}
+                {f.serial ? (
+                  <text fg={t.textMuted}>
+                    {clip(`Kept whole on the critical path: ${f.serial}`, width - 4)}
+                  </text>
+                ) : null}
                 {f.issue ? (
                   <text fg={t.textMuted}>
                     {clip(
