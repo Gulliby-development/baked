@@ -92,10 +92,10 @@ The chat's own de-sloppify pass (`agentFeatures.desloppify`, `/agent-features`) 
 
 Models invent package names, and attackers register the names they invent. The dependency check is always on and runs at the start of each checks stage, before any command check can install or run what the run added. It reads the changes since the baseline:
 
-- **Declared dependencies**: entries added to `package.json`, `requirements*.txt`, `pyproject.toml` (PEP 621 and Poetry), `Cargo.toml`, `go.mod`, `*.csproj`/`*.fsproj`/`*.vbproj` and `pom.xml`. Workspace, file, path and git dependencies are not from a registry and are skipped. A manifest whose baseline is not known declares nothing new.
+- **Declared dependencies**: entries added to `package.json`, `requirements*.txt`, `pyproject.toml` (PEP 621 and Poetry), `Cargo.toml`, `go.mod`, `*.csproj`/`*.fsproj`/`*.vbproj`, `pom.xml`, Gradle build and settings files (`build.gradle`, `build.gradle.kts`, `settings.gradle`, `settings.gradle.kts`) and `Gemfile`. Gradle reads literal Maven coordinates and named `group`/`name` arguments inside dependency blocks, including buildscript dependencies and platform wrappers. Gemfile reads literal `gem` declarations, including groups. These readers do not execute build scripts or resolve computed names or Gradle version catalogs. Workspace, file, path and git dependencies are not from a registry and are skipped. A manifest whose baseline is not known declares nothing new.
 - **Imported packages**: bare `import`, `require` and `import()` specifiers on the JS/TS lines the run added that no `package.json` declares. Relative paths, Node, Bun and protocol specifiers and the `paths` aliases of `tsconfig.json` are not packages.
 
-Each new package is looked up in its public registry (npm with its weekly downloads, PyPI, crates.io, the Go module proxy, NuGet, Maven Central), without credentials and with an 8-second timeout. The verdicts:
+Each new package is looked up in its public registry (npm with its weekly downloads, PyPI, crates.io, the Go module proxy, NuGet, Maven Central, RubyGems), without credentials and with an 8-second timeout. The verdicts:
 
 | Verdict | Meaning | Blocks |
 | --- | --- | --- |

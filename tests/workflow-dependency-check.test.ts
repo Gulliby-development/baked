@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { checkDependencies } from "../src/core/workflows/quality/dependencies.js";
-import { importedPackages, manifestDependencies, packageOfSpecifier } from "../src/core/workflows/quality/manifests.js";
-import { type RegistryFetch, typosquatOf } from "../src/core/workflows/quality/registry.js";
+import { importedPackages, isManifestPath, manifestDependencies, packageOfSpecifier } from "../src/core/workflows/quality/manifests.js";
+import { packageFacts, type RegistryFetch, typosquatOf } from "../src/core/workflows/quality/registry.js";
 import { runScanner } from "../src/core/workflows/quality/rules.js";
 import { runSast } from "../src/core/workflows/quality/sast.js";
 import { runReport } from "../src/core/workflows/run-report.js";
@@ -36,6 +36,60 @@ function registry(known: Record<string, [number, number]>, offline = false): { f
 }
 
 describe("manifests", () => {
+  test("Gradle reads literal coordinates and named notation inside dependency blocks (#1552)", () => {
+    const text = `// dependencies { implementation("ignored:comment:1") }
+val unrelated = "ignored:outside:1"
+dependencies {
+  implementation("org.example:core:1.0")
+  testImplementation 'org.example:tests:2.0'
+  implementation platform("org.example:bom:3.0")
+  api(group = "org.example", name = "kotlin", version = "1.0")
+  runtimeOnly group: 'org.example', name: 'groovy', version: '1.0'
+  implementation(project(":local"))
+  /* implementation("ignored:block:1") */
+}
+buildscript { dependencies { classpath("org.example:plugin:1") } }
+`;
+    for (const path of ["app/build.gradle", "app/build.gradle.kts", "settings.gradle", "settings.gradle.kts"]) {
+      expect(isManifestPath(path)).toBe(true);
+      const deps = manifestDependencies(path, text);
+      expect(deps.map((d) => d.name)).toEqual(["org.example:core", "org.example:tests", "org.example:bom", "org.example:kotlin", "org.example:groovy", "org.example:plugin"]);
+      expect(deps.every((d) => d.ecosystem === "maven" && d.file === path)).toBe(true);
+      expect(deps[0]?.line).toBe(4);
+    }
+  });
+
+  test("Gemfile reads gems in groups and skips comments and local dependencies (#1552)", () => {
+    const text = `source "https://rubygems.org"
+# gem "ignored"
+gem 'rack', '~> 3' # path: 'a comment is not a local dependency'
+group :test do
+  gem("rake", "~> 13")
+end
+gem "local", path: "../local"
+gem "remote", :git => "https://example.com/gem.git"
+`;
+    expect(isManifestPath("app/Gemfile")).toBe(true);
+    expect(manifestDependencies("app/Gemfile", text)).toEqual([
+      { ecosystem: "rubygems", name: "rack", file: "app/Gemfile", line: 3 },
+      { ecosystem: "rubygems", name: "rake", file: "app/Gemfile", line: 5 },
+    ]);
+    for (const path of ["Gemfile.lock", "bunfig.toml", "Directory.Build.props", "Directory.Packages.props", "App.sln", "App.slnx"])
+      expect(isManifestPath(path)).toBe(false);
+  });
+
+  test("RubyGems lookups report existence, missing packages and unavailable registries (#1552)", async () => {
+    const urls: string[] = [];
+    const fetcher: RegistryFetch = async (url) => {
+      urls.push(url);
+      return { status: url.includes("missing") ? 404 : 200, json: async () => ({ name: "rake" }) };
+    };
+    expect(await packageFacts(fetcher, "rubygems", "rake")).toEqual({ status: "exists" });
+    expect(await packageFacts(fetcher, "rubygems", "missing")).toEqual({ status: "missing" });
+    expect(urls[0]).toBe("https://rubygems.org/api/v1/gems/rake.json");
+    expect((await packageFacts(async () => { throw new Error("offline"); }, "rubygems", "rake")).status).toBe("unknown");
+  });
+
   test("each ecosystem's manifest lists its registry dependencies", () => {
     const pkg = JSON.stringify({ dependencies: { zod: "^4", local: "workspace:*" }, devDependencies: { "@types/bun": "1" } }, null, 2);
     expect(manifestDependencies("package.json", pkg).map((d) => d.name)).toEqual(["zod", "@types/bun"]);
