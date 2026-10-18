@@ -82,6 +82,11 @@ export const InitiativePlanSchema = z
     completionCriteria: z.array(Text).min(1).max(30),
     /** Bounds are checked by `planSizeProblem`, so an oversized split is refused with a reason. */
     features: z.array(InitiativeFeatureSchema).min(1).max(100),
+    /**
+     * Why the longest dependency chain stays as it is although it holds most of the work: each
+     * feature on it needs the one before (critical-path.ts, #1551). Absent when nobody asked.
+     */
+    chain: Text.optional(),
   })
   .strict();
 export type InitiativePlan = z.infer<typeof InitiativePlanSchema>;
@@ -515,16 +520,31 @@ export const MAX_MERGED_PATHS = 8;
  * feature without paths, or with a glob among them, is left alone, since its size is unknown.
  * Siblings with the same dependencies never depend on each other, so a merge cannot form a cycle.
  */
-export function mergeSmallSiblings(plan: InitiativePlan): {
+export function mergeSmallSiblings(
+  plan: InitiativePlan,
+  options: { byDependents?: boolean } = {},
+): {
   plan: InitiativePlan;
   merged: { featureId: string; from: string[] }[];
 } {
+  // With `byDependents`, siblings merge only when the same features depend on them: a merged
+  // feature makes every dependent of each part wait for all parts. Bench round 45 (grundykit)
+  // merged table, period, misere and wythoff, so solve, which needs only table, waited for the
+  // other three, and 8 of 9 features ran in series (#1551).
+  const dependents = new Map<string, string[]>();
+  if (options.byDependents)
+    for (const feature of plan.features)
+      for (const upstream of feature.dependsOn)
+        dependents.set(upstream, [...(dependents.get(upstream) ?? []), feature.id]);
   const groups = new Map<string, string[]>();
   for (const feature of plan.features) {
     // A glob boundary is any number of files, so its size is unknown, like no paths (#1405).
     const paths = literalPathCount(feature);
     if (paths === 0 || paths >= MIN_FEATURE_PATHS) continue;
-    const key = `${[...feature.dependsOn].sort().join(",")}|${feature.mandatory}`;
+    const after = options.byDependents
+      ? `|${[...(dependents.get(feature.id) ?? [])].sort().join(",")}`
+      : "";
+    const key = `${[...feature.dependsOn].sort().join(",")}|${feature.mandatory}${after}`;
     groups.set(key, [...(groups.get(key) ?? []), feature.id]);
   }
   let current = plan;

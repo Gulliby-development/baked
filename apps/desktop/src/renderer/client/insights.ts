@@ -126,6 +126,17 @@ export interface InitiativeView {
   model?: string | null;
   /** Feature runs that execute at once: above 1 when features run in worktrees. Absent on older backends. */
   parallelRuns?: number;
+  /**
+   * The longest dependency chain of the latest plan, its share of the work, the most the split can
+   * gain over one feature at a time, and the decomposer's reason to keep a long chain. Absent on
+   * older backends.
+   */
+  criticalPath?: {
+    features: string[];
+    workShare: number;
+    speedup: number;
+    chain: string | null;
+  } | null;
   goals: string[];
   features: InitiativeFeature[];
   pendingDecisions: PendingDecision[];

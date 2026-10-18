@@ -7,6 +7,7 @@ import {
 import { costText, type InitiativeStartInput } from "../../core/workflows/initiatives/forms.js";
 import type { FeatureView, InitiativeView } from "../../core/workflows/initiatives/service.js";
 import {
+  criticalPathText,
   type InitiativeAction,
   type InitiativeActionOption,
   type InitiativeListView,
@@ -611,6 +612,9 @@ export function InitiativeDetail({
           width,
         )}
       </text>
+      {criticalPathText(view) ? (
+        <text fg={t.textMuted}>{clip(criticalPathText(view) ?? "", width)}</text>
+      ) : null}
       {estimate ? (
         <text fg={estimate.budget.fits === "yes" ? t.textMuted : t.warning}>
           {clip(`Estimate: ${estimateSummary(estimate)}`, width)}
