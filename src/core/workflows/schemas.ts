@@ -1021,6 +1021,15 @@ export const ImplementationSchema = z
     summary: Text,
     evidenceIds: z.array(SafeId),
     unresolved: z.array(Text),
+    /**
+     * What the platform cannot do that a criterion, a test or a finding asks for, and the probe or
+     * check that showed it, when the task implemented the nearest feasible behavior instead (#1536).
+     * Later reviews get them as settled conflicts.
+     */
+    platformLimits: z
+      .array(z.object({ claim: Text, evidence: Text.optional() }).strict())
+      .max(5)
+      .optional(),
   })
   .strict();
 

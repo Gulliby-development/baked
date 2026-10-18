@@ -199,7 +199,10 @@ import {
   CONFLICT_DECISION_PREFIX,
   conflictDecisions,
   decidedFindingIds,
+  declaredPlatformLimits,
+  type PlatformLimit,
   recordConflictDecision,
+  recordDeclaredLimits,
   settledConflicts,
 } from "./conflict-decisions.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
@@ -2978,13 +2981,18 @@ export class WorkflowScheduler {
    * exceeding the approximate 400-line target") do not leave it unfinished: they move to its summary
    * for the reviewers and to `tasks/size-targets/<task>.json`, and the task's checks still decide
    * it. Without this the items made it unfinished and the restart trimmed lines it could not
-   * count (#1282). A blocked or failed result stays as it is.
+   * count (#1282). A blocked or failed result stays as it is. Every task result passes here, so
+   * the platform limits a finished one declares are recorded as settled here too (#1536).
    */
-  private settleSizeTargets<T extends { outcome: string; summary: string; unresolved: string[] }>(
-    runId: string,
-    taskId: string,
-    result: T,
-  ): T {
+  private settleSizeTargets<
+    T extends {
+      outcome: string;
+      summary: string;
+      unresolved: string[];
+      platformLimits?: PlatformLimit[] | undefined;
+    },
+  >(runId: string, taskId: string, result: T): T {
+    recordDeclaredLimits(this.store, runId, taskId, declaredPlatformLimits(result));
     if (result.outcome !== "implemented" || !result.unresolved.length) return result;
     const advisory = result.unresolved.filter(advisorySizeTarget);
     if (!advisory.length) return result;
