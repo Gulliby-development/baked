@@ -29,6 +29,8 @@ export interface IntegrityFinding {
   rule: IntegrityRule;
   path: string;
   detail: string;
+  /** Every test title of the file that corrections of other findings added, for the repair. */
+  keep?: string[];
 }
 
 export interface FileChange {
@@ -106,29 +108,62 @@ const ATTRIBUTED_TEST = /\b(?:fn|fun|void|Task)\s+(`[^`]+`|\w+)\s*[(<]/;
 /** Lines below an attribute that may hold more attributes before the function. */
 const ATTRIBUTE_LINES = 8;
 
-/** The names of a file's tests, with how often each occurs (classes and suites may repeat one). */
-function testNames(lines: readonly string[]): Map<string, number> {
-  const names = new Map<string, number>();
-  const add = (name: string) => names.set(name, (names.get(name) ?? 0) + 1);
+interface TestSpan {
+  name: string;
+  /** The test's lines without its title: the rest of the line that names it and the lines below. */
+  body: string[];
+}
+
+/** Each test of a file with its lines, up to the next test or the end of the file. */
+function testSpans(lines: readonly string[]): TestSpan[] {
+  const starts: { name: string; from: number; index: number; rest: string }[] = [];
   for (const [index, line] of lines.entries()) {
     const named = NAMED_TESTS.map((pattern) => line.match(pattern)).find(Boolean);
     const name = named?.[2] ?? named?.[1];
-    if (name) {
-      add(name);
+    if (named && name) {
+      starts.push({
+        name,
+        from: index,
+        index,
+        rest: line.slice((named.index ?? 0) + named[0].length),
+      });
       continue;
     }
     const attribute = line.match(TEST_ATTRIBUTE);
     if (!attribute) continue;
     const rest = line.slice((attribute.index ?? 0) + attribute[0].length);
-    for (const next of [rest, ...lines.slice(index + 1, index + 1 + ATTRIBUTE_LINES)]) {
-      const attributed = next.match(ATTRIBUTED_TEST)?.[1];
-      if (attributed) {
-        add(attributed);
+    for (const [offset, next] of [
+      rest,
+      ...lines.slice(index + 1, index + 1 + ATTRIBUTE_LINES),
+    ].entries()) {
+      const attributed = next.match(ATTRIBUTED_TEST);
+      if (attributed?.[1]) {
+        const at = index + offset;
+        starts.push({
+          name: attributed[1],
+          from: index,
+          index: at,
+          rest: next.slice((attributed.index ?? 0) + attributed[0].length),
+        });
         break;
       }
-      if (next !== rest && TEST_ATTRIBUTE.test(next)) break;
+      if (offset > 0 && TEST_ATTRIBUTE.test(next)) break;
     }
   }
+  return starts.map((start, i) => ({
+    name: start.name,
+    body: [start.rest, ...lines.slice(start.index + 1, starts[i + 1]?.from ?? lines.length)]
+      .map((line) => line.trim().replace(/\s+/g, " "))
+      .filter((line) => !TRIVIAL_LINE.test(line)),
+  }));
+}
+/** Lines that only close or open a block: they say nothing about what a test checks. */
+const TRIVIAL_LINE = /^(?:[{}()[\];,:]|=>|async|function|\s)*$/;
+
+/** The names of a file's tests, with how often each occurs (classes and suites may repeat one). */
+function testNames(lines: readonly string[]): Map<string, number> {
+  const names = new Map<string, number>();
+  for (const { name } of testSpans(lines)) names.set(name, (names.get(name) ?? 0) + 1);
   return names;
 }
 
@@ -137,16 +172,82 @@ function missingNames(before: Map<string, number>, after: Map<string, number>): 
   return [...before].filter(([name, n]) => (after.get(name) ?? 0) < n).map(([name]) => name);
 }
 
+/** Share of a removed test's lines that a new test must keep to be the same test retitled. */
+const SAME_BODY = 0.6;
+
+interface TestMatch {
+  /** Removed names and the new name each test now has: a retitle, or several tests merged. */
+  renames: Map<string, string>;
+  /** Tests and assertions fewer because matched tests were merged into fewer ones. */
+  tests: number;
+  assertions: number;
+}
+
 /**
- * The tests a change adds to a test file, by name (#1519): null when the file is not a test file
- * or its earlier content was not kept.
+ * Pairs each test that is gone by name with a new test that keeps it (#1532): one that holds at
+ * least 60 percent of its lines, or every expected literal it compared against, as when two cases
+ * become rows of one table test. url-shortener ae4b9d3d (bench round 44) retitled a test with the
+ * same assertions, the guard reported it removed, and the corrective renamed it back, which
+ * removed the new title: two repair rounds and 2.4M tokens.
  */
-export function addedTests(change: FileChange): string[] | null {
+function matchTests(before: readonly string[], after: readonly string[]): TestMatch {
+  const was = testSpans(before);
+  const now = testSpans(after);
+  const namesBefore = testNames(before);
+  const namesAfter = testNames(after);
+  const added = new Set(missingNames(namesAfter, namesBefore));
+  const targets = now.filter((span) => added.has(span.name));
+  const renames = new Map<string, string>();
+  let tests = 0;
+  let assertions = 0;
+  const used = new Set<TestSpan>();
+  for (const name of missingNames(namesBefore, namesAfter)) {
+    const old = was.find((span) => span.name === name);
+    if (!old) continue;
+    const literals = literalsOf(old.body);
+    const target = targets.find((span) => {
+      const lines = [...span.body];
+      let kept = 0;
+      for (const line of old.body) {
+        const at = lines.indexOf(line);
+        if (at < 0) continue;
+        kept++;
+        lines.splice(at, 1);
+      }
+      if (old.body.length && kept / old.body.length >= SAME_BODY) return true;
+      const theirs = literalsOf(span.body);
+      return literals.size > 0 && [...literals].every((value) => theirs.has(value));
+    });
+    if (!target) continue;
+    renames.set(name, target.name);
+    tests++;
+    assertions += count(old.body, ASSERTIONS);
+    used.add(target);
+  }
+  for (const target of used) {
+    tests--;
+    assertions -= count(target.body, ASSERTIONS);
+  }
+  return { renames, tests: Math.max(0, tests), assertions: Math.max(0, assertions) };
+}
+
+/**
+ * What a change does to a test file's tests by name (#1519, #1532): the tests it adds, and the
+ * tests it retitles or merges with their new names. Null when the file is not a test file or its
+ * earlier content was not kept.
+ */
+export function testChanges(
+  change: FileChange,
+): { added: string[]; renamed: Record<string, string> } | null {
   if (!isTestPath(change.path) || change.before === undefined || change.after === null) return null;
-  return missingNames(
-    testNames(codeLines(change.after)),
-    testNames(codeLines(change.before ?? "")),
-  );
+  const before = codeLines(change.before ?? "");
+  const after = codeLines(change.after);
+  const { renames } = matchTests(before, after);
+  const targets = new Set(renames.values());
+  return {
+    added: missingNames(testNames(after), testNames(before)).filter((name) => !targets.has(name)),
+    renamed: Object.fromEntries(renames),
+  };
 }
 
 const quoted = (names: readonly string[]) =>
@@ -254,6 +355,11 @@ const DOC_FILE = /\.(md|mdx|rst|txt|adoc)$/i;
 const STRING_TEXT =
   /"""[\s\S]*?"""|'''[\s\S]*?'''|`[^`]*`|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/g;
 
+/** The string literals of some lines: the expected values a test compares against. */
+function literalsOf(lines: readonly string[]): Set<string> {
+  return new Set([...lines.join("\n").matchAll(STRING_TEXT)].map((match) => match[0]));
+}
+
 /** How much literal text a file holds: the expected values its assertions compare against. */
 function literalText(lines: readonly string[]): number {
   let total = 0;
@@ -356,18 +462,28 @@ export function scanTestIntegrity(
       }
       const testsAfter = count(after, TEST_CASES);
       const namesAfter = testNames(after);
-      const removed = missingNames(testNames(before), namesAfter);
-      const lost = [...(options.protects?.get(path) ?? [])].filter(
-        ([name]) => !namesAfter.has(name),
+      // A test retitled or merged with its body kept is not removed (#1532).
+      const matched = matchTests(before, after);
+      const removed = missingNames(testNames(before), namesAfter).filter(
+        (name) => !matched.renames.has(name),
       );
+      const guarded = options.protects?.get(path);
+      const lost = [...(guarded ?? [])].filter(([name]) => {
+        const renamed = matched.renames.get(name);
+        return !namesAfter.has(name) && !(renamed && namesAfter.has(renamed));
+      });
+      const keep = guarded
+        ? [...guarded.keys()].map((name) => matched.renames.get(name) ?? name)
+        : [];
       for (const [name, origin] of lost)
         findings.push({
           rule: "test-removed",
           path,
           detail: `${removed.includes(name) ? "removed" : "left out"} test ${JSON.stringify(name)}, which ${origin} added`,
+          keep: [...new Set(keep)],
         });
       const unclaimed = removed.filter((name) => !lost.some(([lostName]) => lostName === name));
-      if (!reasoned && testsAfter < testsBefore)
+      if (!reasoned && testsBefore - testsAfter > matched.tests)
         findings.push({
           rule: "test-count",
           path,
@@ -387,12 +503,12 @@ export function scanTestIntegrity(
         });
       const assertsBefore = count(before, ASSERTIONS);
       const assertsAfter = count(after, ASSERTIONS);
-      const kept = testsAfter >= testsBefore && assertsAfter > 0;
+      const kept = testsAfter + matched.tests >= testsBefore && assertsAfter > 0;
       const rewritten =
         kept &&
         (options.rewrites?.has(path) === true ||
           (options.strengthens?.has(path) === true && literalText(after) > literalText(before)));
-      if (!reasoned && !rewritten && assertsAfter < assertsBefore)
+      if (!reasoned && !rewritten && assertsBefore - assertsAfter > matched.assertions)
         findings.push({
           rule: "assertions",
           path,
@@ -459,7 +575,7 @@ export function scanTestIntegrity(
 export function integrityFix(finding: IntegrityFinding): string {
   switch (finding.rule) {
     case "test-removed":
-      return `Restore the removed tests in ${finding.path} under their names, with their assertions, and make the code pass them. If the finding you correct and the one a restored test was added for cannot both hold, report outcome spec_conflict naming both findings instead of removing the test.`;
+      return `Restore the removed tests in ${finding.path} with their assertions, under their names or with the same body under a new title, and make the code pass them.${finding.keep?.length ? ` Keep every one of these tests, which corrections of other findings added: ${finding.keep.map((name) => JSON.stringify(name)).join(", ")}.` : ""} If the finding you correct and the one a restored test was added for cannot both hold, report outcome spec_conflict naming both findings instead of removing the test.`;
     case "test-deleted":
     case "test-count":
     case "assertions":
