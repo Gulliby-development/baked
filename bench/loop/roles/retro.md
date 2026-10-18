@@ -20,6 +20,11 @@ Compute these for the rounds since the last retro, and the same for the period b
 - rounds in a row without a new P0 or P1 finding, and the difficulty level reached
 - where the round's time went (phases from `round.json` timestamps) and which phase waited the longest
 - interventions per run by category, from `ledger/metrics.csv`
+- findings by `origin` per round (`new`, `sibling-of`, `harder-round`, `model-behavior`) and the share of `sibling-of`; a share that does not fall means fixes still patch single cases
+
+## Sibling audit
+
+For every fix PR merged since the last retro that closed a `bench-loop` issue, run the sweep from the [file-issue skill](../../../.agents/skills/file-issue/SKILL.md) on current `main` (about 10 tool calls per fix). Group the results by mechanism (for example tiered approval limits, spec conflicts under `assume`, test-integrity checks). File each missed sibling with the skill and the `bench-loop` label, marker `<!-- bench-loop: RNN/retro-sibling-<n> -->`, so the backlog role can put it in the next fix set. Write the count per mechanism in `retro.md`. The audit of 2026-10-17 (#1405 to #1435) is the model for it.
 
 ## Judge earlier changes first
 
