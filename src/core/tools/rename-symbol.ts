@@ -508,7 +508,12 @@ export const renameSymbolTool = {
         }
       }
 
+      const beforeImages = new Map<string, string>();
       if (tracked) {
+        for (const edit of tracked.value.edits) {
+          const file = resolve(edit.file);
+          if (!beforeImages.has(file)) beforeImages.set(file, edit.oldContent);
+        }
         await applyEdits(tracked.value.edits, args.tabId);
       }
 
@@ -525,6 +530,7 @@ export const renameSymbolTool = {
             if (refBlocked) continue;
             const updated = replaceInCode(content, escaped, args.newName, ref);
             if (updated !== content) {
+              if (!beforeImages.has(resolve(ref))) beforeImages.set(resolve(ref), content);
               pushEdit(ref, content, updated, args.tabId);
               await writeFile(ref, updated, "utf-8");
               emitFileEdited(ref, updated);
@@ -568,7 +574,7 @@ export const renameSymbolTool = {
 
       try {
         const { autoFixFiles } = await import("./post-edit-fix.js");
-        const fixes = await autoFixFiles(uniqueFiles);
+        const fixes = await autoFixFiles(uniqueFiles, args.tabId, beforeImages);
         if (fixes.size > 0) {
           lines.push(`Auto-fixed: ${[...fixes.values()].map((a) => a.join(", ")).join("; ")}`);
         }

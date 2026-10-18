@@ -534,6 +534,15 @@ export const FEATURES: readonly Feature[] = [
 
   // Tools and code intelligence
   {
+    id: "post-edit-formatting",
+    group: "Tools and code intelligence",
+    title: "Automatic formatting preserves pre-existing formatting differences",
+    tui: ["/tools: edit and refactor tools probe the original text before formatting"],
+    cli: ["--headless: the same core edit and refactor tools"],
+    api: ["/v1/sessions/:id: agent turns use the same core tools"],
+    desktop: ["project/chat: the same core edit and refactor tools"],
+  },
+  {
     id: "lsp",
     group: "Tools and code intelligence",
     title: "Language servers: status, install, enable, restart",

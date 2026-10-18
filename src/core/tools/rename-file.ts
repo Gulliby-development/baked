@@ -92,11 +92,14 @@ export const renameFileTool = {
     }
 
     // 2. Apply LSP import edits to all affected files
+    const beforeImages = new Map<string, string>();
     const appliedFiles: string[] = [];
     for (const edit of lspEdits) {
       try {
         const forbidden = isForbidden(edit.file);
         if (forbidden) continue;
+        if (!beforeImages.has(resolve(edit.file)))
+          beforeImages.set(resolve(edit.file), edit.oldContent);
         pushEdit(edit.file, edit.oldContent, edit.newContent, args.tabId);
         toolPhase("write");
         await writeFile(edit.file, edit.newContent, "utf-8");
@@ -117,6 +120,7 @@ export const renameFileTool = {
     await mkdir(toDir, { recursive: true });
 
     const originalContent = await readFile(from, "utf-8");
+    beforeImages.set(to, beforeImages.get(from) ?? originalContent);
     pushEdit(from, originalContent, originalContent, args.tabId);
 
     try {
@@ -161,7 +165,11 @@ export const renameFileTool = {
     // 6. Auto-fix all affected files (organize imports, fix unused vars)
     try {
       const { autoFixFiles } = await import("./post-edit-fix.js");
-      const fixes = await autoFixFiles([to, ...appliedFiles]);
+      const fixes = await autoFixFiles(
+        [to, ...appliedFiles.filter((file) => resolve(file) !== from)],
+        args.tabId,
+        beforeImages,
+      );
       if (fixes.size > 0) {
         const fixed = [...fixes.entries()]
           .map(([f, actions]) => `  ${relative(cwd, f)}: ${actions.join(", ")}`)

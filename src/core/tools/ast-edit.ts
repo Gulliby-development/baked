@@ -187,7 +187,7 @@ export const astEditTool = {
 
           let output = `Created ${displayPath(filePath)} (${String(content.split("\n").length)} lines)`;
           if (deltas.length > 0) output += ` (${deltas.join(", ")})`;
-          output = await appendAutoFormatResult(filePath, content, output, args.tabId);
+          output = await appendAutoFormatResult(filePath, content, output, args.tabId, null);
           output = (await appendPostEditDiagnostics(diags, filePath, output)).output;
           const cwdHint = getCwd();
           const relHint = filePath.startsWith(`${cwdHint}/`)
@@ -274,7 +274,7 @@ export const astEditTool = {
       }
       if (deltas.length > 0) output += ` (${deltas.join(", ")})`;
 
-      output = await appendAutoFormatResult(filePath, updated, output, args.tabId);
+      output = await appendAutoFormatResult(filePath, updated, output, args.tabId, before);
       const checked = await appendPostEditDiagnostics(diags, filePath, output, {
         before,
         after: updated,
