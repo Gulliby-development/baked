@@ -179,6 +179,8 @@ export interface InitiativeEstimate {
     paths?: number;
     /** Placeholder paths of its boundary that a later feature fills; absent on older backends. */
     placeholders?: number;
+    /** Skeleton files the host writes for it, at no cost; absent on older backends. */
+    skeleton?: number;
     /** The tokens the feature run's plan sized its tasks at, once it has a plan. */
     planned?: TokenSpan;
     /** What raised the range above the size-scaled forecast, at its measured rate. */

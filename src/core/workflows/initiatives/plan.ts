@@ -212,6 +212,8 @@ export interface BoundaryPathCount {
   paths: number;
   /** Paths a later feature lists too: the feature creates a placeholder that one fills. */
   placeholders: number;
+  /** Files of the feature's own skeleton: the host writes them, so they cost no tokens (#1550). */
+  skeleton: number;
 }
 
 /** File paths a request names, such as `src/cli.ts` or `AddCommand.java`. */
@@ -259,8 +261,9 @@ export function boundaryFiles(
  * order that lists it and as a placeholder in the earlier ones. A skeleton-first split lists its
  * module stubs in the first feature and again in the features that fill them: bench round 40
  * (tonemath) listed 48 paths for 33 files, and the first feature's path floor came out 1.54 times
- * what it used (#1464). A file of the feature's own skeleton counts as a placeholder too: the
- * host writes it with no agent (#1461). A glob boundary counts the files of the request it
+ * what it used (#1464). A file of the feature's own skeleton counts apart, at no cost: the host
+ * writes it with no agent (#1461), and bench round 45 (grundykit) priced 22 such stubs at a third
+ * of a path each, 2.1M to 3.1M tokens the feature never used (#1550). A glob boundary counts the files of the request it
  * matches (`boundaryFiles`); one that matches none counts no paths and claims none.
  */
 export function boundaryPathCounts(
@@ -274,12 +277,13 @@ export function boundaryPathCounts(
   return new Map(
     plan.features.map((f): [string, BoundaryPathCount] => {
       const paths = files.get(f.id);
-      if (!paths?.length) return [f.id, { paths: 0, placeholders: 0 }];
-      const skeleton = new Set((f.skeleton ?? []).map((file) => file.path));
+      if (!paths?.length) return [f.id, { paths: 0, placeholders: 0, skeleton: 0 }];
+      const own = new Set((f.skeleton ?? []).map((file) => file.path));
+      const skeleton = paths.filter((path) => own.has(path)).length;
       const placeholders = paths.filter(
-        (path) => owner.get(path) !== f.id || skeleton.has(path),
+        (path) => !own.has(path) && owner.get(path) !== f.id,
       ).length;
-      return [f.id, { paths: paths.length - placeholders, placeholders }];
+      return [f.id, { paths: paths.length - placeholders - skeleton, placeholders, skeleton }];
     }),
   );
 }
