@@ -672,7 +672,7 @@ export class NativeWorkflowService implements WorkflowService {
     const limit = stallSettings(this.config).autoResumes;
     const attempt = state.stallResumes + 1;
     const resumes = attempt <= limit;
-    this.store.transaction(() => {
+    return this.store.transaction(() => {
       this.store.artifact(
         runId,
         "recovery",
@@ -696,18 +696,20 @@ export class NativeWorkflowService implements WorkflowService {
         `The driver ${driver.owner ? `worker ${driver.owner} of process ${driver.pid}` : `process ${driver.pid}`} stopped running its timers (no lease renewal, tool deadline or step watchdog) and was stopped by its supervisor`,
       );
       this.store.transition(runId, "blocked", "step_stalled");
+      if (!resumes) return false;
+      try {
+        // Publish the takeover and resume together: readers must not mistake the intermediate
+        // step_stalled state for an exhausted resume budget while the next worker continues.
+        this.resumeCommand(runId, {
+          commandId: newId(),
+          expectedRevision: this.store.run(runId).revision,
+        });
+      } catch {
+        return false;
+      }
+      // A command of unknown outcome makes the resume ask a person instead (`interrupted_effect`).
+      return this.store.run(runId).status === "paused";
     });
-    if (!resumes) return false;
-    try {
-      await this.resume(runId, {
-        commandId: newId(),
-        expectedRevision: this.store.run(runId).revision,
-      });
-    } catch {
-      return false;
-    }
-    // A command of unknown outcome makes the resume ask a person instead (`interrupted_effect`).
-    return this.store.run(runId).status === "paused";
   }
   /**
    * A run that blocked because a task ended unfinished after its one restart (#1516: a watcher stop
@@ -895,11 +897,20 @@ export class NativeWorkflowService implements WorkflowService {
   ): Promise<RunSnapshot> {
     this.enabled();
     const outside = options.acceptWorkspace ? await this.outsideChanges(runId) : null;
+    return this.resumeCommand(runId, command, outside);
+  }
+  /** The synchronous resume checks and writes, also used inside a takeover transaction. */
+  private resumeCommand(
+    runId: string,
+    command: CommandIdentity,
+    outside: Awaited<ReturnType<NativeWorkflowService["outsideChanges"]>> | null = null,
+  ): RunSnapshot {
+    this.enabled();
     const body = {
       runId,
       ...command,
       action: "resume",
-      ...(options.acceptWorkspace ? { acceptWorkspace: true } : {}),
+      ...(outside ? { acceptWorkspace: true } : {}),
     };
     return this.store.command(runId, command, body, () => {
       assertMutable(this.store.run(runId).status);
