@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, delimiter, join } from "node:path";
+import { commentOnlyChange } from "../intelligence/comments.js";
 import type { SandboxRequest } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import type { ProcessScope } from "../workflows/process-scope.js";
@@ -458,6 +459,22 @@ export function reproBlindToDocument(file: string | null | undefined, repro: Rep
   if (!file || !DOCUMENT.test(file.replaceAll("\\", "/"))) return false;
   const name = basename(file.replaceAll("\\", "/")).toLowerCase();
   return ![repro.executable, ...repro.args].some((arg) => arg.toLowerCase().includes(name));
+}
+
+/**
+ * Whether a finding's repro cannot see its correction, so it is evidence for the finding and not
+ * a gate on the corrective task: a document finding whose repro runs code (#1375), or a finding
+ * on a source file whose correction changed only its comments and docstrings (#1517). intsmith
+ * ca6f3023: F2 said the docstring of cfrac.py wrongly bounds the period by 2*isqrt(d), and its
+ * repro printed the code's period against that bound, which no docstring edit changes.
+ */
+export function reproCannotSeeCorrection(
+  file: string | null | undefined,
+  repro: Repro,
+  change?: { before: string; after: string } | null,
+): boolean {
+  if (reproBlindToDocument(file, repro)) return true;
+  return !!file && !!change && commentOnlyChange(file, change.before, change.after);
 }
 
 export function probeTool(

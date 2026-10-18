@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
+import { codeWithoutComments } from "../intelligence/comments.js";
 import { largerContextModel } from "../llm/context-sizes.js";
 import {
   lowerEffort,
@@ -95,7 +96,7 @@ import {
   outputShows,
   type ReproOutcome,
   reproAllows,
-  reproBlindToDocument,
+  reproCannotSeeCorrection,
   reproExecutables,
   reproTool,
   runProbe,
@@ -688,6 +689,18 @@ const coverageRequest = (state: RuntimeState): string =>
 const SCOPE_ADVICE = "plan-repairs/scope-advice.json";
 /** The planner's accepted plan that a revision by patch edits (#1058). */
 const PLAN_BASE = "revisions/base/plan.json";
+/** A corrective task's finding files before its first attempt, under `tasks/<id>/` (#1517). */
+const FINDING_FILES = "finding-files.json";
+/** Largest finding file kept for the comment-only comparison. */
+const FINDING_FILE_MAX = 1_000_000;
+/** A file's text, or null when it is missing, unreadable or larger than `FINDING_FILE_MAX`. */
+function readText(path: string): string | null {
+  try {
+    return statSync(path).size <= FINDING_FILE_MAX ? readFileSync(path, "utf8") : null;
+  } catch {
+    return null;
+  }
+}
 /** How often rejected approvals may send one run back to revise before a rejection only pauses it. */
 const MAX_REJECTION_REVISIONS = 3;
 const REJECTION_NOTE =
@@ -3558,6 +3571,38 @@ export class WorkflowScheduler {
     };
   }
   /**
+   * The files a corrective task's findings name, as they were before its first attempt (#1517),
+   * so its repro check can tell a correction that changed only comments and docstrings.
+   */
+  private recordFindingFiles(runId: string, task: Task, root: string): void {
+    if (task.origin === "planned" || !task.findingIds.length) return;
+    const path = `tasks/${task.id}/${FINDING_FILES}`;
+    if (this.store.latestArtifact(runId, path)) return;
+    if (uncommittedEdits(this.store, runId, task.id).length) return;
+    const files: Record<string, string> = {};
+    for (const finding of this.store.findings(runId)) {
+      if (!task.findingIds.includes(finding.id)) continue;
+      const file = (JSON.parse(finding.body_json) as { file?: unknown }).file;
+      if (typeof file !== "string" || file in files || codeWithoutComments(file, "") === null)
+        continue;
+      const text = readText(workspacePath(root, file));
+      if (text !== null) files[file] = text;
+    }
+    if (!Object.keys(files).length) return;
+    this.store.transaction(() =>
+      this.store.artifact(runId, "diagnostic", path, canonical({ taskId: task.id, files })),
+    );
+  }
+  /** The files `recordFindingFiles` kept for a task, by path; empty when it kept none. */
+  private findingFiles(runId: string, task: Task): Record<string, string> {
+    const row = this.store.latestArtifact(runId, `tasks/${task.id}/${FINDING_FILES}`);
+    if (!row) return {};
+    const body = JSON.parse(this.store.readArtifact(runId, row.id)) as {
+      files?: Record<string, string>;
+    };
+    return body.files ?? {};
+  }
+  /**
    * The repro check of a corrective task (#1158): runs the repro of each finding the task corrects
    * in `root` and describes the ones that still show the reported behavior. stmtsplit-update
    * T007 and T008 closed a reproduced finding as already_satisfied twice (546k tokens) while its
@@ -3591,16 +3636,31 @@ export class WorkflowScheduler {
         // can change it (#1375).
         return repro.success &&
           executables.includes(repro.data.executable) &&
-          !reproBlindToDocument(typeof body.file === "string" ? body.file : null, repro.data)
+          !reproCannotSeeCorrection(typeof body.file === "string" ? body.file : null, repro.data)
           ? [{ findingId: f.id, repro: repro.data, file: body.file }]
           : [];
       });
+    const before = this.findingFiles(runId, task);
     // A repro that runs a copy of the file the task fixes cannot see the fix (#1348).
     const writes = task.writes.map((w) => w.path);
     if (!repros.length) return undefined;
     return async (root, signal) => {
       const outcomes: { findingId: string; repro: Repro; outcome: ReproOutcome }[] = [];
-      for (const { findingId, repro, file } of repros)
+      // A correction that changed only the comments and docstrings of the finding's file cannot
+      // change what its repro prints: the repro is evidence, not a gate (#1517).
+      const evidenceOnly: string[] = [];
+      for (const { findingId, repro, file } of repros) {
+        const original = typeof file === "string" ? before[file] : undefined;
+        if (typeof file === "string" && original !== undefined) {
+          const now = readText(workspacePath(root, file));
+          if (
+            now !== null &&
+            reproCannotSeeCorrection(file, repro, { before: original, after: now })
+          ) {
+            evidenceOnly.push(findingId);
+            continue;
+          }
+        }
         outcomes.push({
           findingId,
           repro,
@@ -3613,6 +3673,7 @@ export class WorkflowScheduler {
             shadows: typeof file === "string" ? [file, ...writes] : writes,
           }),
         });
+      }
       this.store.transaction(() =>
         this.store.artifact(
           runId,
@@ -3621,6 +3682,7 @@ export class WorkflowScheduler {
           canonical({
             taskId: task.id,
             outcomes: outcomes.map(({ findingId, outcome }) => ({ findingId, ...outcome })),
+            ...(evidenceOnly.length ? { evidenceOnly } : {}),
           }),
         ),
       );
@@ -4039,6 +4101,8 @@ export class WorkflowScheduler {
       task && profile.output === "implementation"
         ? this.attributeCheck(runId, state, policy, task)
         : undefined;
+    if (task && profile.output === "implementation")
+      this.recordFindingFiles(runId, task, placement.root ?? runRoot(this.store.workspace, state));
     const reproCheck =
       task && profile.output === "implementation"
         ? this.reproCheck(runId, policy, task)
@@ -8490,16 +8554,24 @@ ${note}`;
         ...(failing ? failingFilesInOutput(failing, tasks) : []),
       ]),
     ];
+    // The conflict is with a reviewer's repro: it still reproduces while every required check
+    // passes, so its expected value is the finding's claim, not the spec (intsmith ca6f3023,
+    // #1517). The approved spec and the request win over it.
+    const reproduced =
+      first && !assume && !platform && !failing ? this.reproducedFindings(runId, task) : [];
+    const repro = reproduced.length > 0;
     const tests =
-      first && !assume && !platform ? this.conflictingTests(runId, state, task, named) : [];
+      first && !assume && !platform && !repro
+        ? this.conflictingTests(runId, state, task, named)
+        : [];
     const own =
-      first && !assume && !platform && !tests.length
+      first && !assume && !platform && !repro && !tests.length
         ? this.ownRunTests(runId, state, task, named)
         : [];
     // Two parts of the approved spec disagree, a criterion and a requirement: the requirement
     // wins, unless a test the run did not write is involved, which stays a question (#1459).
     const ranked =
-      first && !assume && !platform && state.spec
+      first && !assume && !platform && !repro && state.spec
         ? criterionAgainstRequirement(state.spec, report)
         : null;
     const foreign = named((state.rootGraph ?? state.graph)?.tasks ?? [task]).filter(
@@ -8525,9 +8597,11 @@ ${note}`;
         ? "The request is authoritative"
         : platform
           ? "The platform cannot carry or represent what one side demands: the nearest feasible behavior the task named holds"
-          : byRequirement
-            ? `The requirements ${amended.requirementIds.join(", ")} win over the criteria ${amended.criterionIds.join(", ")} that contradict them`
-            : null;
+          : repro
+            ? `The approved spec and the request win over the repros of ${reproduced.join(", ")}: they still print the finding's claim while every required check passes`
+            : byRequirement
+              ? `The requirements ${amended.requirementIds.join(", ")} win over the criteria ${amended.criterionIds.join(", ")} that contradict them`
+              : null;
     const freed = task.findingIds.length
       ? ` The repros of ${task.findingIds.join(", ")} no longer gate the task.`
       : "";
@@ -8557,6 +8631,10 @@ ${note}`;
     if (amendment) state.prompt += `\n${amendmentNote(amendmentPath, amendment)}`;
     if (byRequirement) {
       state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that criteria of the approved spec contradict its requirements: ${report.slice(0, 1500)} ${assumed} (${amendmentPath}): implement what ${amended.requirementIds.join(", ")} state, and where a test this run wrote follows the contradicting criterion, change only that assertion to what the requirements state; weaken no other test.${freed} Report implemented or already_satisfied, not spec_conflict.`;
+      return;
+    }
+    if (repro) {
+      state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that a reviewer's repro contradicts the approved spec: ${report.slice(0, 1500)} ${assumed}. Keep the behavior the spec and the checks require, correct what the finding's claim says is wrong (a comment, a docstring or a stated bound may be the only thing to fix), and do not change the code to print the repro's expected value.${freed} Report implemented or already_satisfied, not spec_conflict.`;
       return;
     }
     if (platform) {
@@ -8661,6 +8739,25 @@ ${note}`;
       ],
       specConflict: account,
     });
+  }
+  /**
+   * The findings of a corrective task whose repros still reproduced in its latest repro check
+   * (#1517). Empty for a planned task or one whose repros were never run.
+   */
+  private reproducedFindings(runId: string, task: Task): string[] {
+    if (!task.findingIds.length) return [];
+    const row = this.store
+      .artifacts(runId)
+      .filter((a) => a.logical_path.startsWith(`tasks/${task.id}/repro-check-`))
+      .at(-1);
+    if (!row) return [];
+    const body = JSON.parse(this.store.readArtifact(runId, row.id)) as {
+      outcomes?: { findingId?: unknown; status?: unknown }[];
+    };
+    return (body.outcomes ?? [])
+      .filter((o) => o.status === "reproduced" && typeof o.findingId === "string")
+      .map((o) => o.findingId as string)
+      .filter((id) => task.findingIds.includes(id));
   }
   /**
    * The test files a conflict report names that the task itself may write and that this run
