@@ -985,7 +985,7 @@ export class WorkflowScheduler {
           const run = this.store.run(runId);
           const state = this.store.state(runId);
           const parsed = parseRunDefinition(run.definition_json);
-          assertFrozenInputs(state);
+          assertFrozenInputs(state, this.store, runId);
           if (state.approvalRoot) await this.assertWorkspace(runId, state, policy, signal);
           let stage: { id: string; kind: StageKind; profileId?: string | undefined };
           let v2: { definition: WorkflowV2; stage: Stage; gates: Gate[] } | null = null;
@@ -12544,7 +12544,7 @@ ${note}`;
     gates: Gate[],
     signal: AbortSignal,
   ): Promise<void> {
-    assertFrozenInputs(state);
+    assertFrozenInputs(state, this.store, runId);
     dependencyContracts(this.store, state);
     await this.assertWorkspace(runId, state, policy, signal);
     // A run that ends before any tasks stage, such as Fix CI when the checks already pass, changed
@@ -12779,7 +12779,7 @@ ${note}`;
     policy: RunPolicy,
     signal: AbortSignal,
   ): Promise<void> {
-    assertFrozenInputs(state);
+    assertFrozenInputs(state, this.store, runId);
     dependencyContracts(this.store, state);
     await this.assertWorkspace(runId, state, policy, signal);
     const acceptable = (): void => {

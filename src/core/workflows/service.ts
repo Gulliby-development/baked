@@ -358,6 +358,7 @@ export class NativeWorkflowService implements WorkflowService {
       verificationState: "not_verified",
       instructionText: instructions.text,
       frozenFiles: instructions.files,
+      frozenInputEffectCount: 0,
       repairPredecessors: {},
       repairScope: {},
       freshTasks: {},
@@ -900,7 +901,7 @@ export class NativeWorkflowService implements WorkflowService {
       else this.assertNoRefusedEdit(runId);
       if (this.store.requests(runId).some(blocksRun))
         throw new WorkflowFault("STALE_DECISION", "Resolve pending requests before resuming");
-      assertFrozenInputs(this.store.state(runId));
+      assertFrozenInputs(this.store.state(runId), this.store, runId);
       const lease = this.store.lease(executionLeaseFor(this.store, runId));
       if (lease?.run_id === runId && leaseOwnerAlive(lease) === false) {
         const uncertain = this.store
@@ -1142,7 +1143,7 @@ export class NativeWorkflowService implements WorkflowService {
             }
         }
       } else if (decision.kind === "approve") {
-        assertFrozenInputs(state);
+        assertFrozenInputs(state, this.store, runId);
         if (
           request.kind !== "approval" ||
           request.digest !== decision.digest ||

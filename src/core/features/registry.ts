@@ -969,6 +969,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs"],
   },
   {
+    id: "run-frozen-input-provenance",
+    group: "Workflow runs",
+    title: "Continue approved manifest edits using the run's file-patch hash history",
+    tui: ["/workflow: stage entry, approval, resume and acceptance share the core input check"],
+    cli: ["baked workflow run: journaled project edits", "baked workflow resume"],
+    api: ["/v1/workflow/runs/:id/resume: shared frozen-input provenance check"],
+    desktop: ["project/runs: approved edits continue through the shared runtime"],
+  },
+  {
     id: "run-supervisor",
     group: "Workflow runs",
     title: "Supervisor: a driver whose thread stopped is stopped and its run taken over",

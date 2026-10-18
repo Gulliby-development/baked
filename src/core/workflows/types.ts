@@ -160,6 +160,8 @@ export const RuntimeStateSchema = z
     verificationState: z.enum(["not_verified", "current", "stale", "invalid"]),
     instructionText: z.string(),
     frozenFiles: z.record(z.string(), z.string()),
+    /** Journal entries already covered by an explicit revision's frozen input hashes. */
+    frozenInputEffectCount: z.number().int().nonnegative().default(0),
     repairPredecessors: z.record(z.string(), z.string()).default({}),
     /**
      * Planned files a failed task check named, by finding ID: those outside the failing task's own
