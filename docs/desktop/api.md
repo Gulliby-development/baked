@@ -764,3 +764,9 @@ Agents a project brought from other tools, and their conversion into a workflow 
 
 - Editing existing gate definitions in `baked/gates/` and project commands in `.baked/commands`; the desktop opens those files in the editor. New gates are drafted and saved with the `gate-drafts` routes.
 - Several projects in one server process. Each folder keeps its own `baked serve`.
+
+### Another repair
+
+`POST /v1/workflow/runs/RUN_ID/repair` takes `commandId`, `expectedRevision` and optional `rounds`, an integer from 1 to 100 with default 1. It records a person's grant for the currently refused repair operation and resumes through the background driver. A stale revision or an ineligible run returns 409. It leaves the approved scope and spending budgets in effect. See [granting another repair](../workflows/runtime.md#granting-another-repair).
+
+A run snapshot has `repairBlock` only while it is blocked `no_progress` on a raisable repair limit. Its fields are `limit`, `scope`, `required`, `taskIds`, and optional `transitionId`. Eligible limits are `maxTaskRepairs`, `maxRepairRounds`, `maxCorrectiveTasks`, `maxIterations`, `maxStageVisits`, and `freshRestart`. The last warns that findings repeated after a clean-context restart. Initiative features expose the eligible run snapshot as `repairRun`, so their controls use the same predicate and revision as the run screen. The desktop shows **One more repair** with the limit and tokens spent.

@@ -33,6 +33,7 @@ const commands = [
   "outcomes",
   "compare",
   "memory",
+  "repair",
   "extend",
   "reroute",
   "continue",
@@ -63,6 +64,7 @@ export const DECISION_COMMANDS: readonly WorkflowCommand[] = [
   "answer",
   "evidence",
   "accept",
+  "repair",
 ];
 export interface WorkflowArgs {
   command: WorkflowCommand;
@@ -176,6 +178,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   ],
   status: [],
   list: ["feature", "limit", "cursor", "status"],
+  repair: ["rounds", "expected-revision", "command-id", ...decisionResumeFlags],
   resume: ["expected-revision", "command-id", "accept-workspace", "events", "after"],
   approve: [
     "request",
@@ -310,10 +313,21 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
         `Invalid --status value ${JSON.stringify(result.flags[name])}. Valid statuses: ${RunStatus.options.join(", ")}`,
       );
     if (
-      ["expected-revision", "limit", "after", "tokens", "calls", "time-ms", "top"].includes(name)
+      [
+        "expected-revision",
+        "limit",
+        "after",
+        "tokens",
+        "calls",
+        "time-ms",
+        "top",
+        "rounds",
+      ].includes(name)
     ) {
       const value = Number(result.flags[name]);
-      const minimum = ["limit", "tokens", "calls", "time-ms", "top"].includes(name) ? 1 : 0;
+      const minimum = ["limit", "tokens", "calls", "time-ms", "top", "rounds"].includes(name)
+        ? 1
+        : 0;
       if (
         !Number.isSafeInteger(value) ||
         value < minimum ||
@@ -680,6 +694,8 @@ fork RUN_ID --expected-revision N --from-stage STAGE
   the run's changes as they are now; with reroute, one stage runs again on another model)
 continue RUN_ID --request ID --expected-revision N [--resume]   (answer a token checkpoint; resume then spends up to the next one. On a stopped convergence it allows one more repair round)
 accept RUN_ID --request ID --expected-revision N [--no-resume]   (a stopped convergence: accept the remaining findings as known limitations; reject stops the run)
+repair RUN_ID --expected-revision N [--rounds N] [--no-resume] [--events]
+  Grants another refused repair operation, records your decision and continues the run.
 extend RUN_ID --expected-revision N [--tokens N] [--calls N] [--time-ms N] [--cost-usd N] [--resume [--events]]
   (raise the limits of a run blocked on its budget, and the cost cap of a run started with one;
   resume continues it, or --resume in the same command)

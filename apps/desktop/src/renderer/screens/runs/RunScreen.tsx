@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { canExtendRun } from "../../../../../../src/core/workflows/extendable.js";
 import { reasonText } from "../../../../../../src/core/workflows/reasons.js";
+import { canRepairRun, repairText } from "../../../../../../src/core/workflows/repairable.js";
 import { attentionHash } from "../../../shared/attention.js";
 import { attentionApi } from "../../client/attention.js";
 import { chat } from "../../client/chat.js";
@@ -142,6 +143,22 @@ function Controls({
         <span className="text-[12px] text-[var(--err)]" role="alert">
           {error}
         </span>
+      )}
+      {canRepairRun(run) && run.repairBlock && (
+        <>
+          {run.repairBlock.limit === "freshRestart" && (
+            <span className={WARN_NOTE}>{repairText(run.repairBlock)}</span>
+          )}
+          <Button
+            variant="primary"
+            size="md"
+            disabled={busy}
+            title={`${repairText(run.repairBlock)} ${tokens(run.tokenUsage)} tokens spent.`}
+            onClick={() => void act(() => workflow.repair(projectKey, run))}
+          >
+            One more repair ({run.repairBlock.limit}, {tokens(run.tokenUsage)} spent)
+          </Button>
+        </>
       )}
       <RunMaintenance projectKey={projectKey} data={data} />
       {canAccept && (

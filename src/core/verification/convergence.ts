@@ -507,6 +507,20 @@ function correctionDepth(state: RuntimeState, taskId: string): number {
   return depth;
 }
 
+function correctionRoot(state: RuntimeState, taskId: string): string {
+  let current = taskId;
+  const seen = new Set<string>();
+  while (!seen.has(current)) {
+    seen.add(current);
+    const task = state.graph?.tasks.find((t) => t.id === current);
+    if (!task || task.origin === "planned") break;
+    const predecessor = task.findingIds.map((id) => state.repairPredecessors[id]).find(Boolean);
+    if (!predecessor) break;
+    current = predecessor;
+  }
+  return current;
+}
+
 /**
  * Adds corrective tasks for findings. `scope: "task"` is a correction a task's own failed checks
  * start during the implement stage: it is bounded by `maxTaskRepairs` per chain of corrections
@@ -554,9 +568,20 @@ export function appendCorrections(
   const limit = taskLevel
     ? (policy.maxTaskRepairs ?? DEFAULT_MAX_TASK_REPAIRS)
     : kind === "repair"
-      ? policy.maxRepairRounds + (checksRound ? (state.extraRepairRounds ?? 0) : 0)
+      ? policy.maxRepairRounds +
+        (checksRound ? (state.extraRepairRounds ?? 0) : (state.extraReviewRounds ?? 0))
       : policy.maxConvergenceRounds + state.extraConvergenceRounds;
   const cap = policy.maxCorrectiveTasks + state.extraCorrectiveTasks;
+  const exhaustedChains = taskLevel
+    ? findings.flatMap((f) => {
+        const predecessor = state.repairPredecessors[f.id];
+        if (!predecessor) return [];
+        const id = correctionRoot(state, predecessor);
+        const required =
+          correctionDepth(state, predecessor) + 1 - limit - (state.extraTaskRepairs?.[id] ?? 0);
+        return required > 0 ? [{ id, required }] : [];
+      })
+    : [];
   const findingSet = findingSetHash(findings);
   // A task-level correction repeating its task's failure is bounded by its chain length; it
   // leaves the stage-level repeat count to the checks stage and reviews.
@@ -580,22 +605,44 @@ export function appendCorrections(
   // property tests, and a regression the last convergence corrective made in another test was
   // refused with 13 of 13 tasks done (#1272). The same findings repeating still stop the run.
   const regression = checksRound && state.correctedSinceRepair === true && round > limit;
+  const repeatGranted = kind === "repair" && repeats > after && state.extraRepeatRepairs > 0;
   // The fresh-context attempt is the restart of a repeated failure, not another repair round, so
   // the round limit does not refuse it; the corrective task cap still applies.
-  const overRounds = round > limit && !fresh && !regression;
+  const overRounds = taskLevel
+    ? exhaustedChains.length > 0
+    : round > limit && !fresh && !regression;
   const countRound = (tasks: number): void => {
     store.addRound(runId, roundKind, tasks);
+    if (repeatGranted) state.extraRepeatRepairs--;
     if (checksRound) {
       if (regression) state.extraRepairRounds = (state.extraRepairRounds ?? 0) + 1;
       state.correctedSinceRepair = false;
     } else if (kind === "convergence" || reviewPass) state.correctedSinceRepair = true;
   };
-  const refuse = (setting: string, value: number, count: number): never => {
+  const refuse = (
+    setting: string,
+    value: number,
+    count: number,
+    required = taskLevel ? Math.max(1, ...exhaustedChains.map((c) => c.required)) : round - limit,
+  ): never => {
     // Not BUDGET_EXHAUSTED: `workflow extend` raises tokens, calls and time, none of which helps.
+    const advice =
+      setting === "maxConvergenceRounds"
+        ? "Narrow the spec, raise the limit with workflow revise, or fork the run."
+        : "Grant one more repair with workflow repair, narrow the spec, revise, or fork the run.";
     throw new WorkflowFault(
       "RECOVERY_REQUIRED",
-      `no_progress: ${count} finding(s) remain after the policy's ${setting} (${value}). Narrow the spec or raise ${setting} with workflow revise, or fork the run.`,
-      { reason: "no_progress", limit: setting },
+      `no_progress: ${count} finding(s) remain after the policy's ${setting} (${value}). ${advice}`,
+      {
+        reason: "no_progress",
+        limit: setting,
+        repairBlock: {
+          limit: setting,
+          scope: kind === "convergence" ? "convergence" : scope,
+          required,
+          taskIds: [...new Set(exhaustedChains.map((c) => c.id))],
+        },
+      },
     );
   };
   if (overRounds)
@@ -605,13 +652,18 @@ export function appendCorrections(
       kind === "repair" && !taskLevel ? policy.maxRepairRounds : limit,
       findings.length,
     );
-  if (repeats > after)
+  if (repeats > after && !repeatGranted)
     throw new WorkflowFault(
       "RECOVERY_REQUIRED",
       kind === "repair"
         ? `no_progress: a correction started from a clean context left the same ${findings.length} finding(s) as the ${String(after)} repair round(s) before it. Fix the cause by hand or revise the plan, then resume.`
         : "no_progress: consecutive reflection rounds repeat the same findings",
-      { reason: "no_progress", ...(kind === "repair" ? { freshRestart: true } : {}) },
+      {
+        reason: "no_progress",
+        ...(kind === "repair"
+          ? { freshRestart: true, repairBlock: { limit: "freshRestart", scope, required: 1 } }
+          : {}),
+      },
     );
   const isolate =
     "isolate the cause with run_probe (a minimal program or the failing test alone) and confirm what the code or a library actually does before editing again; if the cause lies outside the files you may edit, say so in unresolved.";
@@ -785,7 +837,7 @@ export function appendCorrections(
   // pytest run recorded against six owning files is one task, not six (cfgtrace 276e4858).
   if (run.corrective_tasks + groups.size > cap) {
     state.repairPredecessors = predecessorsBefore;
-    refuse("maxCorrectiveTasks", cap, findings.length);
+    refuse("maxCorrectiveTasks", cap, findings.length, run.corrective_tasks + groups.size - cap);
   }
   if (!taskLevel) {
     state.noProgressRounds = repeats;

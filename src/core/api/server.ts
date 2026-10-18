@@ -138,6 +138,7 @@ import {
   RecoverBody,
   RedactBody,
   RejectBody,
+  RepairBody,
   RerouteBody,
   ResumeBody,
   ReviseBody,
@@ -345,6 +346,7 @@ const MUTATIONS = [
   "approve",
   "reject",
   "answer",
+  "repair",
   "extend",
   "reroute",
   "continue",
@@ -459,6 +461,10 @@ function mutationArgs(action: Mutation, runId: string, raw: unknown): WorkflowAr
           ? { route: routes.map(([stage, model]) => `${stage}=${model}`).join(",") }
           : {}),
       });
+    }
+    case "repair": {
+      const body = RepairBody.parse(raw);
+      return args({ ...identity(body), rounds: String(body.rounds ?? 1) });
     }
     case "extend": {
       const body = ExtendBody.parse(raw);
@@ -1466,7 +1472,11 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       only("POST");
       const args = mutationArgs(action as Mutation, runId, await readJson(req));
       if (action !== "pause" && action !== "cancel") await settle(runId);
-      return json(200, action === "resume" ? await launch(args) : await execute(args), origin);
+      return json(
+        200,
+        ["resume", "repair"].includes(action) ? await launch(args) : await execute(args),
+        origin,
+      );
     }
     if (action === "deliver" || action === "deliver/execute") {
       only("POST");

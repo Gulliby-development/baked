@@ -23,6 +23,7 @@ import { migration010 } from "./migrations/010.js";
 import { migration011 } from "./migrations/011.js";
 import { migration012 } from "./migrations/012.js";
 import { migration013 } from "./migrations/013.js";
+import { RepairBlockSchema } from "./repairable.js";
 import {
   type AgentProfile,
   type CommandIdentity,
@@ -526,11 +527,23 @@ export class WorkflowStore {
       reviewNotes: { count: noteIds.length, ids: noteIds },
       ...this.stallOf(id, row.status),
       ...this.autoRetryOf(id, row),
+      ...this.repairBlockOf(id, row),
       pendingRequestIds: this.requests(id)
         .filter((r) => r.status === "pending")
         .map((r) => r.id),
       ...(row.project_id ? { projectId: row.project_id } : {}),
     };
+  }
+  private repairBlockOf(id: string, row: RunRow): Pick<RunSnapshot, "repairBlock"> {
+    if (row.status !== "blocked" || row.reason !== "no_progress") return {};
+    const diagnostic = this.artifacts(id)
+      .filter((a) => a.logical_path.startsWith("errors/"))
+      .at(-1);
+    if (!diagnostic) return {};
+    const record = this.latestArtifact(id, `repair-blocks/${diagnostic.id}.json`);
+    if (!record) return {};
+    const parsed = RepairBlockSchema.safeParse(JSON.parse(this.readArtifact(id, record.id)));
+    return parsed.success ? { repairBlock: parsed.data } : {};
   }
   /** The stalled flag of a running run: no event for longer than the default stall limit. */
   private stallOf(id: string, status: RunState): { stalled?: RunSnapshot["stalled"] } {

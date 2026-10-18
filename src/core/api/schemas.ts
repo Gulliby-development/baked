@@ -73,6 +73,9 @@ export const StartBody = z
   });
 export const CommandBody = Command.strict();
 /** `POST /v1/workflow/runs/RUN_ID/resume`: `acceptWorkspace` keeps a person's file changes (#971). */
+export const RepairBody = Command.extend({
+  rounds: z.number().int().min(1).max(100).optional(),
+}).strict();
 export const ResumeBody = Command.extend({ acceptWorkspace: z.boolean().optional() }).strict();
 /** `POST /v1/workflow/runs/RUN_ID/fork`: `fromStage` starts the fork at that stage (#855). */
 export const ForkBody = Command.extend({ fromStage: SafeId.optional() }).strict();

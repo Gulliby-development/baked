@@ -1620,6 +1620,7 @@ export type Reason = z.infer<typeof ReasonCode>;
 export type Review = z.infer<typeof ReviewSchema>;
 
 export interface RunSnapshot {
+  repairBlock?: import("./repairable.js").RepairBlock;
   runId: string;
   featureId: string;
   status: RunState;
@@ -1835,6 +1836,7 @@ export interface WorkflowService {
   pause(runId: string, command: CommandIdentity): Promise<RunSnapshot>;
   cancel(runId: string, command: CommandIdentity): Promise<RunSnapshot>;
   resume(runId: string, command: CommandIdentity): Promise<RunSnapshot>;
+  repair(runId: string, command: CommandIdentity, rounds?: number): Promise<RunSnapshot>;
   decide(runId: string, command: CommandIdentity, decision: Decision): Promise<RunSnapshot>;
   revise(runId: string, command: CommandIdentity, candidateHash: string): Promise<RunSnapshot>;
   fork(runId: string, command: CommandIdentity): Promise<RunSnapshot>;

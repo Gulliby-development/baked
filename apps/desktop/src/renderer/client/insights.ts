@@ -59,6 +59,7 @@ export interface UsageTotals {
 }
 
 export interface InitiativeFeature {
+  repairRun?: import("../../shared/api.js").RunSnapshot;
   id: string;
   title: string;
   mandatory: boolean;

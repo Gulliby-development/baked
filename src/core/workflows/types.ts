@@ -141,13 +141,20 @@ export const RuntimeStateSchema = z
     /** Convergence rounds a person allowed beyond `maxConvergenceRounds` ("one more round"). */
     extraConvergenceRounds: z.number().int().nonnegative().default(0),
     /**
-     * Repair rounds the checks stage got beyond `maxRepairRounds` because a review or convergence
-     * correction ran since its last repair round (#1272).
+     * Repair rounds beyond `maxRepairRounds`, granted by a person or because a review or
+     * convergence correction ran since the checks stage's last repair round (#1272).
      */
     extraRepairRounds: z.number().int().nonnegative().default(0),
+    /** Grants for one planned task's chain, separate review passes and definition bounds. */
+    extraTaskRepairs: z.record(z.string(), z.number().int().nonnegative()).default({}),
+    extraReviewRounds: z.number().int().nonnegative().default(0),
+    extraLoopIterations: z.record(z.string(), z.number().int().nonnegative()).default({}),
+    extraStageVisits: z.number().int().nonnegative().default(0),
+    /** Further attempts a person allowed after findings repeated from a clean context. */
+    extraRepeatRepairs: z.number().int().nonnegative().default(0),
     /** A review or convergence correction ran since the checks stage's last repair round. */
     correctedSinceRepair: z.boolean().default(false),
-    /** Corrective tasks a person allowed beyond `maxCorrectiveTasks` with that decision. */
+    /** Corrective tasks a person allowed beyond `maxCorrectiveTasks`. */
     extraCorrectiveTasks: z.number().int().nonnegative().default(0),
     /** Rounds the `assume` rule granted by itself after a contradiction stop (at most one). */
     autoExtensions: z.number().int().nonnegative().default(0),
@@ -161,6 +168,8 @@ export const RuntimeStateSchema = z
     instructionText: z.string(),
     frozenFiles: z.record(z.string(), z.string()),
     repairPredecessors: z.record(z.string(), z.string()).default({}),
+    /** Task checks already recorded but refused before their correction could be appended. */
+    pendingTaskRepair: z.array(z.string()).default([]),
     /**
      * Planned files a failed task check named, by finding ID: those outside the failing task's own
      * writes, which the correction may also write through the tasks that own them, and for a
