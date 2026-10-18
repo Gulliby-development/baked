@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { buildInstructionPrompt, loadInstructions } from "../instructions.js";
@@ -52,7 +52,11 @@ export function frozenInstructions(
   };
 }
 export function assertFrozenInputs(state: RuntimeState, store: WorkflowStore, runId: string): void {
-  const mutable = new Set(MUTABLE_PROJECT_INPUTS.map((path) => join(store.workspace, path)));
+  // Frozen keys retain the supplied root; effectFile resolves the workspace root through realpath.
+  const root = realpathSync(store.workspace);
+  const mutable = new Map(
+    MUTABLE_PROJECT_INPUTS.map((path) => [join(store.workspace, path), join(root, path)]),
+  );
   const effects = store.effects(runId).slice(state.frozenInputEffectCount);
   for (const [path, frozen] of Object.entries(state.frozenFiles)) {
     let expected = frozen;
@@ -63,7 +67,7 @@ export function assertFrozenInputs(state: RuntimeState, store: WorkflowStore, ru
         if (effect.kind !== "file_patch") continue;
         if (effect.status !== "applied" && effect.status !== "reconciled") continue;
         if (intentRoot(effect.intent_json) !== "") continue;
-        if (effectFile(store.workspace, effect.intent_json) !== path) continue;
+        if (effectFile(store.workspace, effect.intent_json) !== mutable.get(path)) continue;
         if (effect.before_hash !== expected || effect.after_hash === null)
           throw new WorkflowFault("INPUT_CHANGED", `Accepted input changed: ${path}`);
         expected = effect.after_hash;
