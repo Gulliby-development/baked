@@ -968,6 +968,7 @@ export const FEATURES: readonly Feature[] = [
       "baked workflow resume",
       "baked workflow approve",
       "baked workflow initiative drive",
+      "baked session coordinator send",
     ],
     api: gap(1541, "baked serve drives runs in its own process"),
     desktop: gap(1541, "through baked serve"),

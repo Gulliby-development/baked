@@ -664,7 +664,7 @@ export class NativeWorkflowService implements WorkflowService {
    * the file hashes on the next drive) and true is returned; past it the run blocks `step_stalled`
    * for a person. Each takeover is journaled as `stalled/takeover-N.json`.
    */
-  async takeOverStalledDriver(runId: string, pid: number): Promise<boolean> {
+  async takeOverStalledDriver(runId: string, pid: number, workerOwner?: string): Promise<boolean> {
     const run = this.store.run(runId);
     if (run.status !== "running") return false;
     const state = this.store.state(runId);
@@ -676,7 +676,13 @@ export class NativeWorkflowService implements WorkflowService {
         runId,
         "recovery",
         `stalled/takeover-${attempt}.json`,
-        canonical({ attempt, of: limit, pid, resumed: resumes }),
+        canonical({
+          attempt,
+          of: limit,
+          pid,
+          resumed: resumes,
+          ...(workerOwner ? { workerOwner } : {}),
+        }),
       );
       if (resumes) {
         state.stallResumes = attempt;
@@ -686,7 +692,7 @@ export class NativeWorkflowService implements WorkflowService {
         runId,
         "diagnostic",
         `errors/${newId()}.txt`,
-        `The driver process ${pid} stopped running its timers (no lease renewal, tool deadline or step watchdog) and was stopped by its supervisor`,
+        `The ${workerOwner ? `workflow worker ${workerOwner} in process ${pid}` : `driver process ${pid}`} stopped running its timers (no lease renewal, tool deadline or step watchdog) and was stopped by its supervisor`,
       );
       this.store.transition(runId, "blocked", "step_stalled");
     });

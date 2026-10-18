@@ -7,6 +7,10 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { AppConfig } from "../../types/index.js";
+import {
+  type CoordinatorSupervisorOptions,
+  SupervisedCoordinatorClient,
+} from "../workers/coordinator-supervisor.js";
 import { attentionItems } from "../workflows/attention.js";
 import { uniqueFeatureId } from "../workflows/feature-id.js";
 import type { InitiativeStartInput } from "../workflows/initiatives/forms.js";
@@ -248,6 +252,7 @@ export class LocalCoordinator {
     readonly chat: ChatService,
     readonly session: ChatSession,
     private readonly state: ReadonlyProjectState,
+    private readonly supervisor?: SupervisedCoordinatorClient,
   ) {}
 
   /** Opens the project's coordinator, creating it the first time. */
@@ -255,6 +260,8 @@ export class LocalCoordinator {
     workspace: string;
     config: AppConfig;
     client: CoordinatorWorkflowClient | null;
+    /** Owns replaceable workflow workers instead of the caller's fixed client. */
+    supervisor?: CoordinatorSupervisorOptions;
     /** The model new runs and a new coordinator use. */
     model: () => string;
     host?: ChatAgentHost;
@@ -270,8 +277,12 @@ export class LocalCoordinator {
       ...(options.homeDir ? { homeDir: options.homeDir } : {}),
     });
     const state = new ReadonlyProjectState(workspace, config);
-    const launcher = options.client
-      ? clientLauncher(options.client, {
+    const supervisor = options.supervisor
+      ? new SupervisedCoordinatorClient(workspace, config, options.supervisor)
+      : undefined;
+    const client = supervisor ?? options.client;
+    const launcher = client
+      ? clientLauncher(client, {
           workspace,
           config,
           model: options.model,
@@ -284,16 +295,21 @@ export class LocalCoordinator {
     try {
       const session = await chat.coordinator(true, options.model());
       if (!session) throw new Error("The coordinator could not be created");
-      return new LocalCoordinator(chat, session, state);
+      return new LocalCoordinator(chat, session, state, supervisor);
     } catch (error) {
       await chat.shutdown();
       state.close();
+      await supervisor?.close();
       throw error;
     }
   }
 
   async close(): Promise<void> {
-    await this.chat.shutdown();
-    this.state.close();
+    try {
+      await this.chat.shutdown();
+    } finally {
+      this.state.close();
+      await this.supervisor?.close();
+    }
   }
 }

@@ -53,6 +53,18 @@ export class WorkflowClient extends WorkerClient {
   get exitedOwner(): string | null {
     return this.closed ? this.owner : null;
   }
+  /** The exact worker's lease owner, used by a host that supervises it. */
+  get leaseOwner(): string | null {
+    return this.owner;
+  }
+  /** Stops a stalled worker and waits for proof that its thread has exited. */
+  async stopWorker(): Promise<void> {
+    if (this.closed) return;
+    const closed = new Promise<void>((resolve) => this.worker.addEventListener("close", resolve));
+    this.worker.terminate();
+    await closed;
+    this.close();
+  }
   private stopRelay: (() => void) | null = null;
   /**
    * `intelligence` returns this thread's intelligence client; run steps in the worker borrow it
