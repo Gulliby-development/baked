@@ -198,6 +198,7 @@ import {
   conflictDecisions,
   decidedFindingIds,
   recordConflictDecision,
+  settledConflicts,
 } from "./conflict-decisions.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
 import { costToleranceOf, currentCostCap, inCostWrapUp } from "./cost-tolerance.js";
@@ -479,6 +480,7 @@ import {
   testUpdateOwners,
 } from "./task-graph.js";
 import {
+  addedTests,
   integrityFix,
   isTestPath,
   rewriteTargets,
@@ -4409,6 +4411,11 @@ export class WorkflowScheduler {
         ? this.store.latestArtifact(runId, "assumptions/analysis.json")
         : null;
     const risks = assumed ? knownRisks(this.store.readArtifact(runId, assumed.id)) : null;
+    // What tasks' conflicts settled outranks a finding's suggested fix (#1519).
+    const settled =
+      profile.context === "review" || profile.context === "convergence"
+        ? settledConflicts(this.store, runId)
+        : [];
     // Learned rules go to the agents that write and judge code: an implementer gets the rules of
     // its task's paths, reviewers every rule with its scope (#643).
     const task = (extra as { task?: Task } | null)?.task;
@@ -4470,6 +4477,7 @@ export class WorkflowScheduler {
         ...(workingSet ? { projectWorkingSet: workingSet } : {}),
         ...(memory ? { projectMemory: memory } : {}),
         ...(risks && diffOnly !== true ? { knownRisks: risks } : {}),
+        ...(settled.length && diffOnly !== true ? { settledConflicts: settled } : {}),
         executionContract: {
           checks: policy.checks,
           // An implementer works alone; the other agents' tools are only resent on every step.
@@ -7893,6 +7901,68 @@ ${note}`;
       suggestedFix: `Run the failing tests or lint of ${task.id}'s files, fix the cause and rerun them. Keep every test that matches the spec as written.`,
     }));
   }
+  /**
+   * Records the tests a correction added, by file and name, with the findings it corrects
+   * (#1519): a later correction of another finding may not remove them.
+   */
+  private recordAddedTests(
+    runId: string,
+    task: Task,
+    changes: readonly { path: string; before: string | null | undefined; after: string | null }[],
+  ): void {
+    const added = Object.fromEntries(
+      changes.flatMap((change) => {
+        const names = addedTests(change);
+        return names?.length ? [[change.path, names]] : [];
+      }),
+    );
+    const path = `tasks/${task.id}/tests.json`;
+    if (!Object.keys(added).length && !this.store.latestArtifact(runId, path)) return;
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        path,
+        canonical({ taskId: task.id, findingIds: task.findingIds, added }),
+      ),
+    );
+  }
+  /**
+   * The tests that corrections of other findings added to the files a correction changed, with
+   * who added them for which finding (#1519). intsmith ca6f3023 (bench round 43): T011 added the
+   * width-10000 interval test for F1, T012 corrected F2 with every file of the feature in scope
+   * and replaced it with a scalar test, and two more correctives (1.37M tokens) brought it back.
+   */
+  private correctionTests(
+    runId: string,
+    task: Task,
+    changed: readonly string[],
+  ): Map<string, Map<string, string>> {
+    const own = new Set(task.findingIds);
+    const files = new Set(changed);
+    const protects = new Map<string, Map<string, string>>();
+    for (const row of this.store.artifacts(runId)) {
+      const match = /^tasks\/([^/]+)\/tests\.json$/.exec(row.logical_path);
+      if (!match || match[1] === task.id) continue;
+      const latest = this.store.latestArtifact(runId, row.logical_path);
+      if (latest?.id !== row.id) continue;
+      const body = JSON.parse(this.store.readArtifact(runId, row.id)) as {
+        taskId?: string;
+        findingIds?: string[];
+        added?: Record<string, string[]>;
+      };
+      const findingIds = body.findingIds ?? [];
+      if (!findingIds.length || findingIds.some((id) => own.has(id))) continue;
+      for (const [path, names] of Object.entries(body.added ?? {})) {
+        if (!files.has(path)) continue;
+        const byName = protects.get(path) ?? new Map<string, string>();
+        for (const name of names)
+          byName.set(name, `${body.taskId ?? match[1]} for finding ${findingIds.join(", ")}`);
+        protects.set(path, byName);
+      }
+    }
+    return protects;
+  }
   private integrityFailures(
     runId: string,
     state: RuntimeState,
@@ -7926,7 +7996,10 @@ ${note}`;
       .findings(runId)
       .filter((f) => task.findingIds.includes(f.id))
       .map((f) => JSON.parse(f.body_json) as Review["findings"][number]);
+    const corrective = task.origin !== "planned" && task.findingIds.length > 0;
+    if (corrective) this.recordAddedTests(runId, task, changes);
     const found = scanTestIntegrity(changes, {
+      protects: corrective ? this.correctionTests(runId, task, changed) : undefined,
       rewrites: task.origin === "planned" ? new Set() : rewriteTargets(ownFindings),
       strengthens: task.origin === "planned" ? new Set() : strengthenTargets(ownFindings),
       reasoned: new Set([
