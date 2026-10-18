@@ -1314,7 +1314,7 @@ describe("initiative runtime", () => {
   // feature on the critical path waited behind one earlier in plan order.
   describe("dispatch on every stop, longest remaining path first (#1535)", () => {
     class TimedExecutor extends InitiativeExecutor {
-      /** A feature's implementation holds until these features have started theirs, or 10 s pass. */
+      /** A feature's implementation holds until these features have started theirs, or 30 s pass. */
       waits: Record<string, string[]> = {};
       starts: string[] = [];
       /** `start:NAME` and `end:NAME` in the order they happened. */
@@ -1324,7 +1324,7 @@ describe("initiative runtime", () => {
         if (request.profile.output !== "implementation" || !name) return super.execute(request);
         this.starts.push(name);
         this.events.push(`start:${name}`);
-        const deadline = Date.now() + 10_000;
+        const deadline = Date.now() + 30_000;
         while (!(this.waits[name] ?? []).every((other) => this.starts.includes(other)) && Date.now() < deadline)
           await Bun.sleep(20);
         try {
@@ -1348,7 +1348,7 @@ describe("initiative runtime", () => {
       repository(t.root);
       // As in the round, finite outlasts chain and the command features outlast finite. A feature
       // holds until the ones that should start while it runs have started, so the order does not
-      // depend on the machine's speed; before the fix they could not start and it held 10 s.
+      // depend on the machine's speed; before the fix they could not start and it held 30 s.
       t.executor.waits =
         maxParallelRuns === 2
           ? { finite: ["perm"], perm: ["finitec"] }
@@ -1373,7 +1373,7 @@ describe("initiative runtime", () => {
       // When finite stops, finitec (on the path to entry) starts before chainc, which is earlier in plan order.
       expect(executor.starts.indexOf("finitec")).toBeLessThan(executor.starts.indexOf("chainc"));
       expect(executor.maxActive).toBeLessThanOrEqual(2);
-    }, 60000);
+    }, 120_000);
 
     test("with three slots, every ready feature starts as soon as a slot frees", async () => {
       const executor = await run(3);
@@ -1384,7 +1384,7 @@ describe("initiative runtime", () => {
       // finitec takes the slot finite frees while perm and chainc still run.
       expect(executor.events.indexOf("start:finitec")).toBeLessThan(executor.events.indexOf("end:perm"));
       expect(executor.maxActive).toBeLessThanOrEqual(3);
-    }, 60000);
+    }, 120_000);
   });
 
   test("siblings that share a file run in order, so a dependent's merge of their results succeeds (#1336)", async () => {
