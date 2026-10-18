@@ -660,13 +660,15 @@ export class NativeWorkflowService implements WorkflowService {
    * A run that blocked because a task ended unfinished after its one restart (#1516: a watcher stop
    * left a check red, and the restarted session stopped too) resumes by itself once. The output is
    * a well-formed account of work left, not a schema fault, and the next session starts from it:
-   * the stopped attempt's `unresolved` and the red checks' output. A pending request still holds
-   * the run for a person. The resume is journaled as a recovery artifact.
+   * the stopped attempt's `unresolved` and the red checks' output. Only under `clarification:
+   * assume`; a pending request still holds the run for a person. The resume is journaled as a recovery artifact.
    */
   private async resumeUnfinished(runId: string, signal: AbortSignal): Promise<boolean> {
     if (signal.aborted) return false;
     const run = this.store.run(runId);
     if (run.status !== "blocked" || run.reason !== "invalid_output") return false;
+    // Without `assume` an unfinished task is a person's call, as its restart is (#1516).
+    if (PolicySchema.parse(JSON.parse(run.policy_json)).clarification !== "assume") return false;
     const state = this.store.state(runId);
     if (state.unfinishedResumes >= 1 || this.store.requests(runId).some(blocksRun)) return false;
     const diagnostic = this.store
