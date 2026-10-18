@@ -1,10 +1,26 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
+import { readFileSync } from "node:fs";
+import { Backend } from "../apps/desktop/src/main/backend.js";
 import { startApiServer } from "../src/core/api/server.js";
 import { IS_WIN, killTree } from "../src/core/platform/index.js";
+import { ScriptedWorkflowExecutor } from "../src/core/workflows/scripted-executor.js";
+import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { parseServeArgs } from "../src/headless/serve.js";
-import { workflowFixture } from "./helpers/workflow-fixture.js";
+import { FixtureExecutor, workflowFixture } from "./helpers/workflow-fixture.js";
+
+class ScriptedFixture extends FixtureExecutor {
+  private readonly scripted: ScriptedWorkflowExecutor;
+  constructor(root: string) {
+    super(root);
+    this.scripted = new ScriptedWorkflowExecutor(root, "value.txt");
+  }
+  override async execute(request: ExecutionRequest) {
+    const response = await this.scripted.execute(request);
+    return { ...response, inputTokens: response.inputTokens ?? 0, outputTokens: response.outputTokens ?? 0 };
+  }
+}
 
 // #1541, the desktop side of #1533: `baked serve` drives runs on its main thread. When that thread
 // stops inside a tool call, the run stays "running" and the API stops answering. The desktop app
@@ -18,15 +34,63 @@ afterEach(async () => {
 
 const DRIVER = join(import.meta.dir, "helpers", "supervised-driver.ts");
 
-async function until(done: () => boolean, ms = 30_000): Promise<void> {
+async function until(done: () => boolean, ms = 30_000, diagnostics = () => ""): Promise<void> {
   const deadline = Date.now() + ms;
   while (!done()) {
-    if (Date.now() > deadline) throw new Error("Timed out");
+    if (Date.now() > deadline) throw new Error(`Timed out ${diagnostics()}`);
     await Bun.sleep(25);
   }
 }
 
 describe("scenario: a baked serve whose thread stopped inside multi_edit (#1541)", () => {
+  test("the desktop watcher restarts a real scripted server after tool.started and the run completes", async () => {
+    const fixture = workflowFixture({ executor: (root) => new ScriptedFixture(root) });
+    cleanups.push(fixture.dispose);
+    fixture.config.workflows.stall.supervisorGraceMs = 1_000;
+    const run = await fixture.start();
+    await fixture.service.drive(run.runId, new AbortController().signal);
+    await fixture.approve(run.runId);
+    const children: { pid: number | undefined; args: string[] }[] = [];
+    const backend = new Backend({
+      folder: fixture.root,
+      command: { command: process.execPath, prefix: [join(import.meta.dir, "helpers", "scripted-stalled-serve.ts")] },
+      tokenFile: join(fixture.root, ".baked", "serve.token"),
+      stallPollMs: 100,
+      restartDelaysMs: [20],
+      spawn: (command, args, options) => {
+        const child = spawn(command, args, {
+          ...options,
+          env: { ...options.env, SUPERVISED_CONFIG: JSON.stringify(fixture.config) },
+          stdio: ["ignore", "pipe", "pipe"],
+          windowsHide: true,
+        });
+        children.push({ pid: child.pid, args });
+        return child;
+      },
+    });
+    cleanups.push(() => backend.stop());
+    const endpoint = await backend.start();
+    const response = await fetch(`${endpoint.url}/v1/workflow/runs/${run.runId}/resume`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${endpoint.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ commandId: "scripted-resume", expectedRevision: fixture.service.store.run(run.runId).revision }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    expect(response.ok).toBe(true);
+    const store = fixture.service.store;
+    const diagnostics = () => JSON.stringify({ children, status: store.run(run.runId).status, reason: store.run(run.runId).reason, events: store.events(run.runId, 0, 100_000).slice(-8), backend: backend.state });
+    await until(() => store.events(run.runId, 0, 100_000).some((event) => event.type === "tool.started"), 15_000, diagnostics);
+    await until(() => store.run(run.runId).status === "completed", 45_000, diagnostics);
+    expect(children).toHaveLength(2);
+    expect(children[1]?.args.slice(-2)).toEqual(["--take-over", String(children[0]?.pid)]);
+    const artifact = store.latestArtifact(run.runId, "stalled/takeover-1.json");
+    expect(artifact).not.toBeNull();
+    expect(JSON.parse(store.readArtifact(run.runId, artifact!.id))).toMatchObject({ pid: children[0]?.pid, resumed: true });
+    expect(store.state(run.runId).stallResumes).toBe(1);
+    expect(store.effects(run.runId).some((effect) => effect.status === "prepared")).toBe(false);
+    expect(readFileSync(join(fixture.root, "value.txt"), "utf8")).toBe("ready");
+  }, 90_000);
+
   test("a server started with --take-over takes the run over and drives it to completion", async () => {
     const fixture = workflowFixture();
     cleanups.push(fixture.dispose);
@@ -48,7 +112,14 @@ describe("scenario: a baked serve whose thread stopped inside multi_edit (#1541)
       stdio: ["ignore", "ignore", "inherit"],
       detached: !IS_WIN,
     });
-    const exited = new Promise<void>((resolve) => hung.once("exit", () => resolve()));
+    let stopped = false;
+    const exited = new Promise<void>((resolve) => hung.once("exit", () => { stopped = true; resolve(); }));
+    cleanups.push(async () => {
+      if (stopped) return;
+      if (hung.pid !== undefined) killTree(hung.pid, "SIGKILL");
+      hung.kill("SIGKILL");
+      await exited;
+    });
     await until(() => store.events(run.runId, 0, 100_000).some((e) => e.type === "tool.started"));
     const pid = hung.pid ?? 0;
     // What the desktop app does to a server that stopped answering.

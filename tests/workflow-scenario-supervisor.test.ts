@@ -7,7 +7,7 @@ import { multiEditTool } from "../src/core/tools/multi-edit.js";
 import { withToolPhases } from "../src/core/tools/tool-phase.js";
 import { IS_WIN } from "../src/core/platform/index.js";
 import type { LeaseRow } from "../src/core/workflows/store.js";
-import { StallDetector } from "../src/core/workflows/supervisor.js";
+import { driverRuns, StallDetector } from "../src/core/workflows/supervisor.js";
 import { recoveryArgs, superviseWorkflowCli, supervisedCommand } from "../src/headless/workflow-supervise.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
 
@@ -150,6 +150,19 @@ describe("stall detector (#1533)", () => {
     expect(detector.check([lease(100)], 42, 9_000_000, 10_000)).toEqual([]);
     expect(detector.check([lease(100)], 42, 9_000_500, 10_500)).toEqual([]);
     expect(detector.check([lease(100)], 42, 9_001_000, 11_000)).toEqual(["r1"]);
+  });
+
+  test("a worker watch and takeover select only its owner within the shared process (#1541)", () => {
+    const detector = new StallDetector({ graceMs: 1_000, pollMs: 500 });
+    const own = lease(100);
+    const other = { ...lease(100, 42, "execution:other"), owner_id: "other", run_id: "r2" };
+    const leases: LeaseRow[] = [own, { ...own, resource: "mutation" }, other, lease(100, 7, "execution:foreign")];
+    const driver = { pid: 42, owner: "o" };
+    expect(driverRuns(leases, driver)).toEqual(["r1"]);
+    expect(detector.check(leases, driver, 200, 0)).toEqual([]);
+    expect(detector.check(leases, driver, 700, 500)).toEqual([]);
+    expect(detector.check(leases, driver, 1_200, 1_000)).toEqual(["r1"]);
+    expect(driverRuns([other], driver)).toEqual([]);
   });
 });
 

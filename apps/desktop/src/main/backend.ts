@@ -314,10 +314,23 @@ export class Backend {
       child,
       reason: `baked serve stopped answering for ${Math.round(graceMs / 1000)} s and was restarted`,
     };
+    this.forceStop(child);
+  }
+
+  private forceStop(child: ChildLike): void {
     // A stopped thread does not handle SIGTERM; taskkill /T also ends the commands it started.
-    if ((this.options.platform ?? process.platform) === "win32")
-      nodeSpawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
-    else child.kill("SIGKILL");
+    if ((this.options.platform ?? process.platform) === "win32" && child.pid !== undefined) {
+      const killer = nodeSpawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      // Restricted Windows accounts can stop their child but cannot enumerate its process tree.
+      // Recovery still refuses to replay a command whose descendants may be running.
+      killer.once("error", () => child.kill("SIGKILL"));
+      killer.once("exit", (code) => {
+        if (code !== 0) child.kill("SIGKILL");
+      });
+    } else child.kill("SIGKILL");
   }
 
   private exited(child: ChildLike, exitReason: string): void {
@@ -363,8 +376,7 @@ export class Backend {
       child.once("exit", finish);
       const platform = this.options.platform ?? process.platform;
       // Windows has no SIGTERM; taskkill /T also ends the Bun child of a source checkout.
-      if (platform === "win32" && child.pid !== undefined)
-        nodeSpawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+      if (platform === "win32" && child.pid !== undefined) this.forceStop(child);
       else child.kill("SIGTERM");
       const timer = setTimeout(() => {
         child.kill("SIGKILL");
