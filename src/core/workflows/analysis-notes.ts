@@ -24,10 +24,10 @@ export function hostCounts(graph: TaskGraph): { tasks: number; files: number } {
 }
 
 const SPLIT_PART =
-  /Sizing split this task by file: write only .*? belong to the other parts of (T\d+)\./;
+  /Sizing split (?:this task by file|this test file into slices): write only .*? belong to the other parts of (T\d+)\./;
 
 /**
- * The tasks the host split by file after planning (`splitTestTasks`), keyed by the planned task:
+ * The tasks the host split by file or criterion slices after planning, keyed by the planned task:
  * the first part keeps the planned ID, the others are new IDs that plan.md cannot name.
  */
 export function hostSplitParts(graph: TaskGraph): Record<string, string[]> {
