@@ -8,6 +8,7 @@
  * of its time budget is inconclusive for the mutants it did not run, never a failure.
  */
 import { launchedCommand } from "../launcher.js";
+import { isNonCodeLine, maskNonCode } from "./code-mask.js";
 import { isTestCodePath } from "./duplication.js";
 import { addedLines, type ChangedFile } from "./rules.js";
 
@@ -125,43 +126,17 @@ const OPERATORS: readonly Operator[] = [
 const SKIP_LINE =
   /^\s*(?:import\b|from\s+\S+\s+import\b|export\s+(?:\*|\{|type\b|interface\b)|package\b|using\b|use\b|#include\b|@|type\s+\w+\s*=|interface\b)/;
 
-/** The line with string literals and comments replaced by spaces, so positions stay the same. */
-export function codeOnly(line: string): string {
-  let out = "";
-  let quote: string | null = null;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i] ?? "";
-    if (quote) {
-      if (c === "\\") {
-        out += "  ";
-        i++;
-        continue;
-      }
-      if (c === quote) quote = null;
-      out += c === quote || quote === null ? c : " ";
-      continue;
-    }
-    if (c === '"' || c === "'" || c === "`") {
-      quote = c;
-      out += c;
-      continue;
-    }
-    if ((c === "/" && line[i + 1] === "/") || c === "#") return out + " ".repeat(line.length - i);
-    out += c;
-  }
-  return out;
-}
-
 /** Mutants on the lines each changed non-test code file gained, spread round-robin and capped. */
 export function generateMutants(files: ChangedFile[], max = MAX_MUTANTS): Mutant[] {
   const perLine: Mutant[][] = [];
   for (const file of files) {
     if (isTestCodePath(file.path)) continue;
     const lines = file.content.split("\n");
+    const code = maskNonCode(file.path, file.content).split("\n");
     for (const index of [...addedLines(file.before, file.content)].sort((a, b) => a - b)) {
       const original = lines[index] ?? "";
-      if (!original.trim() || SKIP_LINE.test(original)) continue;
-      const masked = codeOnly(original);
+      const masked = code[index] ?? "";
+      if (isNonCodeLine(masked) || SKIP_LINE.test(original)) continue;
       const mutants: Mutant[] = [];
       for (const operator of OPERATORS) {
         const match = operator.pattern.exec(masked);
@@ -392,10 +367,11 @@ export function proposalFiles(files: ChangedFile[]): { path: string; lines: stri
   for (const file of files) {
     if (isTestCodePath(file.path)) continue;
     const text = file.content.split("\n");
+    const code = maskNonCode(file.path, file.content).split("\n");
     const lines: string[] = [];
     for (const index of [...addedLines(file.before, file.content)].sort((a, b) => a - b)) {
       const line = text[index] ?? "";
-      if (!line.trim() || SKIP_LINE.test(line)) continue;
+      if (isNonCodeLine(code[index]) || SKIP_LINE.test(line)) continue;
       const entry = `${index + 1}: ${line}`;
       if (entry.length > left) break;
       left -= entry.length;
@@ -423,12 +399,17 @@ export function proposedMutants(
 ): Mutant[] {
   const byPath = new Map(files.map((f) => [f.path, f]));
   const perCriterion = new Map<string, number>();
+  const masked = new Map<string, string[]>();
   const seen = new Set(existing.map((m) => `${m.file}:${m.line}:${m.mutated.trim()}`));
   const out: Mutant[] = [];
   for (const proposal of proposals) {
     const file = byPath.get(proposal.file);
     if (!file || isTestCodePath(file.path) || out.length >= MAX_PROPOSED) continue;
     if (!addedLines(file.before, file.content).has(proposal.line - 1)) continue;
+    // A line inside a docstring, a multi-line string or a comment is prose, not code (#1521).
+    const code = masked.get(file.path) ?? maskNonCode(file.path, file.content).split("\n");
+    masked.set(file.path, code);
+    if (isNonCodeLine(code[proposal.line - 1])) continue;
     const original = file.content.split("\n")[proposal.line - 1] ?? "";
     const mutated = proposal.mutated.trim();
     if (original.trim() !== proposal.original.trim() || mutated === original.trim()) continue;
