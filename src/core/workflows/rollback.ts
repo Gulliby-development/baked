@@ -104,6 +104,12 @@ export function capturePreImage(
  */
 export const REFUSED_EDIT_PREFIX = "refused-edits/";
 
+/**
+ * Where a stop by a task that ended unfinished after its restart records the task (`taskId`),
+ * named after the stop's diagnostic artifact: the service resumes such a stop once (#1516).
+ */
+export const UNFINISHED_BLOCK_PREFIX = "unfinished/block-";
+
 /** The hash a path has after these edits, or undefined when one of them has an unknown outcome. */
 function hashAfter(edits: EffectRow[], start: string | null): string | null | undefined {
   let hash = start;

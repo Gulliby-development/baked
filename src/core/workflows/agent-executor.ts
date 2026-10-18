@@ -61,6 +61,7 @@ import { splitWorkflowContext } from "./context.js";
 import { assertForecastFits } from "./cost-forecast.js";
 import { fileHash, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
+import { addsDoubledEscapes, escapeHintFor } from "./escape-hint.js";
 import { keepOutside, restoreOutside } from "./fixer-scope.js";
 import { withHostConstants } from "./host-constants.js";
 import {
@@ -509,6 +510,8 @@ export class NativeAgentExecutor implements AgentExecutor {
       let edited = false;
       // Files the attempt's edit tools named, for the tests-written check it requests (#1421).
       const editedPaths = new Set<string>();
+      // Whether an edit added doubled backslash escapes, for the hint of a failed check (#1516).
+      let doubledEscapes = false;
       // A tool call is progress while it runs (it has its own deadline); the last one names a stall.
       const track = async <T>(name: string, call: () => Promise<T>): Promise<T> => {
         // The model call of this step was silent until it asked for its first tool.
@@ -563,6 +566,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                 guard.execute(name, args, async () => {
                   if (EDIT_TOOLS.has(name)) {
                     edited = true;
+                    if (addsDoubledEscapes(args)) doubledEscapes = true;
                     if (!mcp)
                       for (const path of editedPathsOf(args)) editedPaths.add(guard.path(path));
                   }
@@ -771,7 +775,13 @@ export class NativeAgentExecutor implements AgentExecutor {
                   ? (request.attributeCheck?.(check, result.output) ?? null)
                   : null;
               // The full output stays in the evidence; the model gets a bounded view (#993).
-              const shown = { ...result, ...modelCheckOutput(result.output, result.evidenceId) };
+              const hint =
+                result.status === "failed" ? escapeHintFor(result.output, doubledEscapes) : null;
+              const shown = {
+                ...result,
+                ...modelCheckOutput(result.output, result.evidenceId),
+                ...(hint ? { escapeHint: hint } : {}),
+              };
               if (!own) return shown;
               return {
                 ...shown,
