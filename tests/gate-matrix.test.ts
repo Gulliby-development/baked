@@ -18,6 +18,7 @@ import { failureSignature, testCount } from "../src/core/verification/output-cou
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { launchedCommand } from "../src/core/workflows/launcher.js";
+import { withPerTestTimeout } from "../src/core/workflows/test-timeout.js";
 import { detectProfile } from "../src/core/tools/project.js";
 import {
   coveringChecks,
@@ -424,6 +425,17 @@ for (const stack of STACKS) {
 
     cell(stack, "detection", () => {
       expect(preselected().map((c) => c.id)).toEqual(fixture.gates);
+    });
+
+    cell(stack, "suite per-test timeout (#1548)", () => {
+      const root = project(fixture.files);
+      const suite = detectGates(root).map((s) => s.check).find(isTestCheck)!;
+      const definition = JSON.stringify(suite);
+      const args = withPerTestTimeout(suite, root);
+      if (stack === "bun") expect(args.slice(-2)).toEqual(["--timeout", "30000"]);
+      else if (stack === "npm") expect(args.slice(-2)).toEqual(["--", "--testTimeout=30000"]);
+      else expect(args).toEqual(suite.args);
+      expect(JSON.stringify(suite)).toBe(definition);
     });
 
     // caesar 21bc3a53: run_probe refused java next to `mvn verify`, so its README task blocked.
