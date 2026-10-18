@@ -18,6 +18,7 @@ import { failureSignature, testCount } from "../src/core/verification/output-cou
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { launchedCommand } from "../src/core/workflows/launcher.js";
+import { detectProfile } from "../src/core/tools/project.js";
 import {
   coveringChecks,
   fixerCommand,
@@ -109,6 +110,20 @@ const DOCUMENTED_PROGRAM: Record<Stack, string> = {
   rust: "cargo",
   maven: "java",
   dotnet: "dotnet",
+};
+
+/**
+ * The edit tools' lint and per-file format commands (#1537): the Python profile read ruff only from
+ * ruff.toml, so this fixture's `[tool.ruff]` project got flake8 and black while its gates ran ruff.
+ */
+const EDIT_PROFILE: Record<Stack, { lint: string | null; formatFile: string | null }> = {
+  bun: { lint: "bun run lint", formatFile: null },
+  npm: { lint: "npm run lint", formatFile: null },
+  python: { lint: "ruff check", formatFile: "ruff format" },
+  go: { lint: "go vet ./...", formatFile: "gofmt -w" },
+  rust: { lint: "cargo clippy", formatFile: "rustfmt" },
+  maven: { lint: "mvn checkstyle:check", formatFile: null },
+  dotnet: { lint: "dotnet format --verify-no-changes", formatFile: null },
 };
 
 /** The launchers a project may start its checks through (#1507). */
@@ -414,6 +429,11 @@ for (const stack of STACKS) {
     // caesar 21bc3a53: run_probe refused java next to `mvn verify`, so its README task blocked.
     cell(stack, "README example program runs under run_probe", () => {
       expect(reproExecutables(preselected())).toContain(DOCUMENTED_PROGRAM[stack]);
+    });
+
+    cell(stack, "edit-profile", async () => {
+      const profile = await detectProfile(project(fixture.files));
+      expect({ lint: profile.lint, formatFile: profile.formatFile }).toEqual(EDIT_PROFILE[stack]);
     });
 
     cell(stack, "timed-out-failure", () => {

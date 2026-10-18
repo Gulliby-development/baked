@@ -13,6 +13,7 @@ import { assertWorkspaceMutationAllowed } from "../workflows/leases.js";
 import { ProcessScope } from "../workflows/process-scope.js";
 import { FORMAT_TIMEOUT_MS } from "./auto-format.js";
 import { runBoundedShell } from "./bounded-process.js";
+import { ruffSource as ruffConfigSource } from "./python-tooling.js";
 import { compressShellOutputFull } from "./shell-compress.js";
 import { saveTee, truncateWithTee } from "./tee.js";
 import { getToolTimeoutMs } from "./tool-timeout.js";
@@ -30,6 +31,26 @@ async function readSafe(path: string): Promise<string> {
   } catch {
     return "";
   }
+}
+
+/** Whether a Python project uses ruff, decided as the workflow gates decide it (#1537). */
+async function usesRuff(cwd: string, has: (file: string) => Promise<boolean>): Promise<boolean> {
+  return (
+    ruffConfigSource({
+      ruffToml: await has("ruff.toml"),
+      dotRuffToml: await has(".ruff.toml"),
+      pyproject: await readSafe(join(cwd, "pyproject.toml")),
+      requirements: (
+        await Promise.all(
+          (
+            await readdir(cwd).catch(() => [])
+          )
+            .filter((name) => /^requirements.*\.txt$/i.test(name))
+            .map((name) => readSafe(join(cwd, name))),
+        )
+      ).join("\n"),
+    }) !== null
+  );
 }
 
 type ProjectAction = "test" | "build" | "lint" | "format" | "typecheck" | "run" | "list" | "check";
@@ -182,17 +203,12 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
           ? "pipenv run"
           : "";
     const prefix = pm ? `${pm} ` : "";
+    const ruff = await usesRuff(cwd, has);
     profile.test = `${prefix}pytest`;
     profile.build = null;
-    profile.lint =
-      (await has("ruff.toml")) || (await has(".ruff.toml"))
-        ? `${prefix}ruff check`
-        : `${prefix}flake8`;
+    profile.lint = ruff ? `${prefix}ruff check` : `${prefix}flake8`;
     profile.typecheck = (await has("pyrightconfig.json")) ? `${prefix}pyright` : `${prefix}mypy .`;
-    profile.format =
-      (await has("ruff.toml")) || (await has(".ruff.toml"))
-        ? `${prefix}ruff format`
-        : `${prefix}black`;
+    profile.format = ruff ? `${prefix}ruff format` : `${prefix}black`;
     // Framework-specific run commands
     if (await has("manage.py")) profile.run = `${prefix}python manage.py runserver`;
     else if ((await has("app.py")) || (await has("main.py")))
@@ -565,8 +581,7 @@ export async function detectNativeChecks(cwd: string): Promise<string | null> {
         : (await has("Pipfile.lock"))
           ? "pipenv run "
           : "";
-    const lint =
-      (await has("ruff.toml")) || (await has(".ruff.toml")) ? `${pm}ruff check` : `${pm}flake8`;
+    const lint = (await usesRuff(cwd, has)) ? `${pm}ruff check` : `${pm}flake8`;
     const tc = (await has("pyrightconfig.json")) ? `${pm}pyright` : `${pm}mypy .`;
     return `${lint} && ${tc}`;
   }
