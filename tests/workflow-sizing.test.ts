@@ -374,7 +374,7 @@ describe("plan-time sizing", () => {
     expect(rate.perFile.high).toBeLessThan(80_000);
   });
 
-  test("only a task with several files is split; a plan above the ceiling asks to split the feature", () => {
+  test("an oversized single test file is flagged; a plan above the ceiling asks to split the feature", () => {
     const samples = [sample("test", 500_000), sample("test", 500_000)];
     const one = sizePlan({
       graph: graph(task("T001", ["tests/a.test.ts"])),
@@ -382,7 +382,8 @@ describe("plan-time sizing", () => {
       samples,
       spent: 0,
     });
-    expect(one.tasks[0]?.oversized).toBe(false);
+    expect(one.tasks[0]?.oversized).toBe(true);
+    expect(one.decision).toBe("split-tasks");
     expect(one.tasks[0]?.attemptTokens).toBe(400_000);
     const two = sizePlan({
       graph: graph(task("T001", ["tests/a.test.ts", "tests/b.test.ts"])),
