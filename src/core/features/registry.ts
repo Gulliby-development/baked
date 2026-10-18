@@ -886,6 +886,15 @@ export const FEATURES: readonly Feature[] = [
     ],
   },
   {
+    id: "criteria-case-check",
+    group: "Workflow runs",
+    title: "Task-end test case check: concrete input tokens, with scenario labels left to review",
+    tui: ["/workflow: task activity and diagnostic artifacts"],
+    cli: ["baked workflow artifacts"],
+    api: ["/v1/workflow/runs/:id/artifacts"],
+    desktop: ["project/runs: task activity and artifacts"],
+  },
+  {
     id: "progress-watcher",
     group: "Workflow runs",
     title: "Progress watcher: steer, then stop, a stuck agent attempt",

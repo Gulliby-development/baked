@@ -12,6 +12,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
+import { criterionCases, missingCases, writtenTestPaths } from "../src/core/verification/criteria-cases.js";
 import { reproExecutables } from "../src/core/verification/repro.js";
 import { exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
 import { failureSignature, testCount } from "../src/core/verification/output-counts.js";
@@ -410,6 +411,22 @@ function cell(stack: Stack, name: string, body: () => void | Promise<void>, time
   if (issue) test.skip(`${name} (known: ${issue})`, body);
   else test(name, body, timeout);
 }
+
+describe("gate matrix: criteria scenario labels (#1565)", () => {
+  const samples: { stack: Stack; path: string; text: string }[] = [
+    { stack: "bun", path: "tests/cli.test.ts", text: 'const path = "src/cli"; expect(run(["--path", path])).toBe(0); Join([3, 0, -2]);' },
+    { stack: "python", path: "tests/test_cli.py", text: 'path = "src/cli"\nassert run(["--path", path]) == 0\nJoin([3, 0, -2])' },
+    { stack: "go", path: "cli_test.go", text: 'path := "src/cli"; run([]string{"--path", path}); Join([]int{3, 0, -2})' },
+  ];
+  for (const sample of samples) cell(sample.stack, `${sample.stack}: labels are not missing cases`, () => {
+    const task = { criterionIds: ["AC-001"], writes: [{ path: sample.path, action: "create" as const }] };
+    const cases = criterionCases({ criteria: [{ id: "AC-001", requirementIds: ["FR-001"], given: 'the "repeated flag" and `success` scenarios', when: "tests run", then: "| Input | expected |\n| --- | --- |\n| repeated flag | last value |\n| success | zero status |\n| --path src/cli | selected |\n| Join([3,0,-2]) | joined |", method: "automated" }] }, task);
+    expect(writtenTestPaths(task)).toEqual([sample.path]);
+    expect(cases.map((c) => c.literal)).toEqual(["--path src/cli", "Join([3,0,-2])"]);
+    expect(missingCases(cases, [sample.text])).toEqual([]);
+    expect(missingCases(cases, [sample.text.replace("src/cli", "SRC")]).map((c) => c.literal)).toEqual(["--path src/cli"]);
+  });
+});
 
 /** A tool shell over a real directory with a fixed PATH, for detection only. */
 function shell(root: string, on: string[]): ToolShell {
