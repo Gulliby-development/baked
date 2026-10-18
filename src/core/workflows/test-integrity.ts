@@ -1,3 +1,4 @@
+import { blankStringLiterals } from "../intelligence/comments.js";
 import { isTestFile } from "../intelligence/language-traits.js";
 import type { RunPolicy } from "./schemas.js";
 import type { Task } from "./types.js";
@@ -58,19 +59,37 @@ export function preexistingTest(path: string, tasks: readonly Task[]): boolean {
   );
 }
 
-/** Lines that are code, not comments: commented-out tests and assertions do not count. */
+/** Whether a line is a comment: commented-out tests and assertions do not count. */
+function commentLine(line: string): boolean {
+  const trimmed = line.trim();
+  return (
+    trimmed.startsWith("//") ||
+    trimmed.startsWith("/*") ||
+    trimmed.startsWith("*") ||
+    trimmed.startsWith("<!--") ||
+    // `#[test]` and `#![allow]` are Rust attributes, not comments.
+    (trimmed.startsWith("#") && !/^#!?\[/.test(trimmed))
+  );
+}
+
+/** Lines that are code, not comments. */
 function codeLines(text: string): string[] {
-  return text.split(/\r?\n/).filter((line) => {
-    const trimmed = line.trim();
-    return !(
-      trimmed.startsWith("//") ||
-      trimmed.startsWith("/*") ||
-      trimmed.startsWith("*") ||
-      trimmed.startsWith("<!--") ||
-      // `#[test]` and `#![allow]` are Rust attributes, not comments.
-      (trimmed.startsWith("#") && !/^#!?\[/.test(trimmed))
-    );
-  });
+  return text.split(/\r?\n/).filter((line) => !commentLine(line));
+}
+
+/**
+ * The code lines of a file and, line for line, the same lines with string content blanked except
+ * test titles (#1549): tests are found on the second, so a test quoted as data in a string (a test
+ * runner's fixture) is no test, while names and bodies are read from the first.
+ */
+function codeView(path: string, text: string): { lines: string[]; marks: string[] } {
+  const raw = text.split(/\r?\n/);
+  const marked = blankStringLiterals(path, text, { titles: true }).split(/\r?\n/);
+  const kept = marked.map((line) => !commentLine(line));
+  return {
+    lines: raw.filter((_, i) => kept[i]),
+    marks: marked.filter((_, i) => kept[i]),
+  };
 }
 
 function count(lines: readonly string[], pattern: RegExp): number {
@@ -115,10 +134,13 @@ interface TestSpan {
 }
 
 /** Each test of a file with its lines, up to the next test or the end of the file. */
-function testSpans(lines: readonly string[]): TestSpan[] {
+function testSpans(lines: readonly string[], marks: readonly string[] = lines): TestSpan[] {
   const starts: { name: string; from: number; index: number; rest: string }[] = [];
   for (const [index, line] of lines.entries()) {
-    const named = NAMED_TESTS.map((pattern) => line.match(pattern)).find(Boolean);
+    // Tests are found on the marks, where string content other than titles is blank; the text
+    // at the same columns of the line is the same outside strings.
+    const mark = marks[index] ?? line;
+    const named = NAMED_TESTS.map((pattern) => mark.match(pattern)).find(Boolean);
     const name = named?.[2] ?? named?.[1];
     if (named && name) {
       starts.push({
@@ -129,14 +151,13 @@ function testSpans(lines: readonly string[]): TestSpan[] {
       });
       continue;
     }
-    const attribute = line.match(TEST_ATTRIBUTE);
+    const attribute = mark.match(TEST_ATTRIBUTE);
     if (!attribute) continue;
-    const rest = line.slice((attribute.index ?? 0) + attribute[0].length);
-    for (const [offset, next] of [
-      rest,
-      ...lines.slice(index + 1, index + 1 + ATTRIBUTE_LINES),
-    ].entries()) {
-      const attributed = next.match(ATTRIBUTED_TEST);
+    const from = (attribute.index ?? 0) + attribute[0].length;
+    const following = (all: readonly string[]) => all.slice(index + 1, index + 1 + ATTRIBUTE_LINES);
+    const nextMarks = [mark.slice(from), ...following(marks)];
+    for (const [offset, next] of [line.slice(from), ...following(lines)].entries()) {
+      const attributed = (nextMarks[offset] ?? next).match(ATTRIBUTED_TEST);
       if (attributed?.[1]) {
         const at = index + offset;
         starts.push({
@@ -147,7 +168,7 @@ function testSpans(lines: readonly string[]): TestSpan[] {
         });
         break;
       }
-      if (offset > 0 && TEST_ATTRIBUTE.test(next)) break;
+      if (offset > 0 && TEST_ATTRIBUTE.test(nextMarks[offset] ?? next)) break;
     }
   }
   return starts.map((start, i) => ({
@@ -161,9 +182,9 @@ function testSpans(lines: readonly string[]): TestSpan[] {
 const TRIVIAL_LINE = /^(?:[{}()[\];,:]|=>|async|function|\s)*$/;
 
 /** The names of a file's tests, with how often each occurs (classes and suites may repeat one). */
-function testNames(lines: readonly string[]): Map<string, number> {
+function testNames(lines: readonly string[], marks?: readonly string[]): Map<string, number> {
   const names = new Map<string, number>();
-  for (const { name } of testSpans(lines)) names.set(name, (names.get(name) ?? 0) + 1);
+  for (const { name } of testSpans(lines, marks)) names.set(name, (names.get(name) ?? 0) + 1);
   return names;
 }
 
@@ -190,11 +211,14 @@ interface TestMatch {
  * same assertions, the guard reported it removed, and the corrective renamed it back, which
  * removed the new title: two repair rounds and 2.4M tokens.
  */
-function matchTests(before: readonly string[], after: readonly string[]): TestMatch {
-  const was = testSpans(before);
-  const now = testSpans(after);
-  const namesBefore = testNames(before);
-  const namesAfter = testNames(after);
+function matchTests(
+  before: { lines: string[]; marks: string[] },
+  after: { lines: string[]; marks: string[] },
+): TestMatch {
+  const was = testSpans(before.lines, before.marks);
+  const now = testSpans(after.lines, after.marks);
+  const namesBefore = testNames(before.lines, before.marks);
+  const namesAfter = testNames(after.lines, after.marks);
   const added = new Set(missingNames(namesAfter, namesBefore));
   const targets = now.filter((span) => added.has(span.name));
   const renames = new Map<string, string>();
@@ -240,12 +264,15 @@ export function testChanges(
   change: FileChange,
 ): { added: string[]; renamed: Record<string, string> } | null {
   if (!isTestPath(change.path) || change.before === undefined || change.after === null) return null;
-  const before = codeLines(change.before ?? "");
-  const after = codeLines(change.after);
+  const before = codeView(change.path, change.before ?? "");
+  const after = codeView(change.path, change.after);
   const { renames } = matchTests(before, after);
   const targets = new Set(renames.values());
   return {
-    added: missingNames(testNames(after), testNames(before)).filter((name) => !targets.has(name)),
+    added: missingNames(
+      testNames(after.lines, after.marks),
+      testNames(before.lines, before.marks),
+    ).filter((name) => !targets.has(name)),
     renamed: Object.fromEntries(renames),
   };
 }
@@ -445,12 +472,21 @@ export function scanTestIntegrity(
     }
     const beforeRaw = change.before ?? "";
     const afterRaw = change.after ?? "";
-    const before = codeLines(beforeRaw);
-    const after = codeLines(afterRaw);
-    const grew = (pattern: RegExp, lines: [string[], string[]] = [before, after]) =>
+    const viewBefore = codeView(path, beforeRaw);
+    const viewAfter = codeView(path, afterRaw);
+    const before = viewBefore.lines;
+    const after = viewAfter.lines;
+    // The counters read the files with string content blanked: test data such as
+    // "custom_value: any text" or "# noqa" is not code or a comment (#1549). Test titles, literal
+    // comparisons and verification bypasses (a command in a string runs) read the strings.
+    const blankBefore = blankStringLiterals(path, beforeRaw);
+    const blankAfter = blankStringLiterals(path, afterRaw);
+    const codeBefore = codeLines(blankBefore);
+    const codeAfter = codeLines(blankAfter);
+    const grew = (pattern: RegExp, lines: [string[], string[]] = [codeBefore, codeAfter]) =>
       count(lines[1], pattern) - count(lines[0], pattern);
     if (isTestPath(path)) {
-      const testsBefore = count(before, TEST_CASES);
+      const testsBefore = count(codeBefore, TEST_CASES);
       if (change.after === null) {
         if (change.before !== null && !reasoned)
           findings.push({
@@ -460,11 +496,11 @@ export function scanTestIntegrity(
           });
         continue;
       }
-      const testsAfter = count(after, TEST_CASES);
-      const namesAfter = testNames(after);
+      const testsAfter = count(codeAfter, TEST_CASES);
+      const namesAfter = testNames(after, viewAfter.marks);
       // A test retitled or merged with its body kept is not removed (#1532).
-      const matched = matchTests(before, after);
-      const removed = missingNames(testNames(before), namesAfter).filter(
+      const matched = matchTests(viewBefore, viewAfter);
+      const removed = missingNames(testNames(before, viewBefore.marks), namesAfter).filter(
         (name) => !matched.renames.has(name),
       );
       const guarded = options.protects?.get(path);
@@ -501,8 +537,8 @@ export function scanTestIntegrity(
           path,
           detail: `removed test(s) ${quoted(unclaimed)} while the test count stayed ${String(testsAfter)}`,
         });
-      const assertsBefore = count(before, ASSERTIONS);
-      const assertsAfter = count(after, ASSERTIONS);
+      const assertsBefore = count(codeBefore, ASSERTIONS);
+      const assertsAfter = count(codeAfter, ASSERTIONS);
       const kept = testsAfter + matched.tests >= testsBefore && assertsAfter > 0;
       const rewritten =
         kept &&
@@ -514,7 +550,7 @@ export function scanTestIntegrity(
           path,
           detail: `assertions dropped from ${String(assertsBefore)} to ${String(assertsAfter)} (removed or commented out)`,
         });
-      const skips = unguardedSkips(after) - unguardedSkips(before);
+      const skips = unguardedSkips(codeAfter) - unguardedSkips(codeBefore);
       if (skips > 0)
         findings.push({
           rule: "skip",
@@ -548,19 +584,18 @@ export function scanTestIntegrity(
         });
     }
     if (change.after === null || DOC_FILE.test(path)) continue;
-    // Suppressions live in comments, so they are counted on every line.
-    const rawBefore = beforeRaw.split(/\r?\n/);
-    const rawAfter = afterRaw.split(/\r?\n/);
+    // Suppressions live in comments (or attributes), so they are counted on every line that is
+    // not string content.
     const suppressions =
-      grew(SUPPRESSIONS, [rawBefore, rawAfter]) +
-      (TS_FILE.test(path) ? grew(ANY_TYPE, [before, after]) : 0);
+      grew(SUPPRESSIONS, [blankBefore.split(/\r?\n/), blankAfter.split(/\r?\n/)]) +
+      (TS_FILE.test(path) ? grew(ANY_TYPE) : 0);
     if (suppressions > 0)
       findings.push({
         rule: "suppression",
         path,
         detail: `added ${String(suppressions)} type or lint suppression(s) (ts-ignore, eslint-disable, any, type: ignore, allow and similar)`,
       });
-    const bypass = grew(BYPASS, [rawBefore, rawAfter]);
+    const bypass = grew(BYPASS, [beforeRaw.split(/\r?\n/), afterRaw.split(/\r?\n/)]);
     if (bypass > 0)
       findings.push({
         rule: "verification-bypass",
@@ -583,7 +618,7 @@ export function integrityFix(finding: IntegrityFinding): string {
     case "skip":
       return `Remove the new skip, only or ignore markers from ${finding.path} and make the code pass the tests.`;
     case "suppression":
-      return `Remove the new suppressions from ${finding.path} and fix the underlying type or lint errors.`;
+      return `Remove the new suppressions from ${finding.path} and fix the underlying type or lint errors. Only code and comments count: text inside a string literal, such as test data, is not a suppression.`;
     case "test-hook":
     case "literal-branch":
       return `Remove the special case for tests from ${finding.path}; implement the general behavior the spec requires.`;

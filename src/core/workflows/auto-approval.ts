@@ -148,15 +148,11 @@ export function evaluateAutoApproval(
   const config = policy.autoApproval;
   if (!config) return { approval: null, reasons: [] };
   const writes = graph.tasks.flatMap((task) => task.writes);
+  const requested = (write: Write) =>
+    requestedWriteExempt(policy, write, context.manifestRequest ?? context.request ?? "");
   const common: string[] = [];
   for (const write of writes)
-    if (
-      needsPerson(write, context.exists, context.scaffold) &&
-      !(
-        config.requestedManifestEdits &&
-        requestedManifestEdit(write, context.manifestRequest ?? context.request ?? "")
-      )
-    )
+    if (needsPerson(write, context.exists, context.scaffold) && !requested(write))
       common.push(`${write.path} always needs a person`);
   // Under `clarification: assume` the run already decides what it may on its own; the deferral is
   // recorded in the approval body and the run report, so it is visible without a person.
@@ -185,7 +181,9 @@ export function evaluateAutoApproval(
   let reviewable = false;
   if (config.limits) {
     const limits = config.limits;
-    const scope = scopeProblems(limits, graph, context.hostSplitTasks ?? 0);
+    // A manifest edit the request names is in scope even when the allowed paths leave the
+    // manifest out, as every update scaffold does (#1547).
+    const scope = scopeProblems(limits, graph, context.hostSplitTasks ?? 0, requested);
     const problems = scope.map((p) => p.text);
     // Growth the host made itself, up to the policy's own sizing ceiling, is not a budget a person
     // has to approve; only the budget the run started with counts against the limit (#1309).
@@ -284,6 +282,19 @@ function requiredByRequest(write: Write, request: string): boolean {
 }
 
 /**
+ * A write the request names that the approval takes as asked for, whatever the always-human rule
+ * and the allowed paths say: a manifest edit under `autoApproval.requestedManifestEdits`. The
+ * always-human test, the limits' scope check and the planner's advice all use it, so the advice
+ * never calls a write fine that the approval declines (spdxok b270088e, bench round 45: the
+ * `pyproject.toml` edit the brief named passed the first and failed the second, #1547).
+ */
+function requestedWriteExempt(policy: RunPolicy, write: Write, request: string): boolean {
+  return (
+    policy.autoApproval?.requestedManifestEdits === true && requestedManifestEdit(write, request)
+  );
+}
+
+/**
  * An edit of an existing package manifest that the request names, under
  * `autoApproval.requestedManifestEdits` (#1229). A multi-project .NET, JVM or Rust workspace plan
  * must reference its new project from the scaffold's manifests. Only manifests the dependency
@@ -344,7 +355,12 @@ export function planScopeAdvice(
 ): string[] {
   const limits = policy.autoApproval?.limits;
   if (!limits) return [];
-  const required = (write: Write) => requiredByRequest(write, request);
+  // A manifest counts as required only when the request names it as one to change, by the rule
+  // the approval applies (#1547); any other file the request names cannot be dropped (#1111).
+  const required = (write: Write) =>
+    manifestFile.test(write.path) || isManifestPath(write.path)
+      ? write.action !== "delete" && requestNamesManifest(write, request)
+      : requiredByRequest(write, request);
   const always = graph.tasks
     .flatMap((task) => task.writes)
     .filter((write) => !required(write) && needsPerson(write, exists, scaffold))

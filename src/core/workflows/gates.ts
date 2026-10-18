@@ -4,7 +4,7 @@ import { loadProjectConfig, saveProjectConfig } from "../../config/index.js";
 import { gateSandbox } from "../security/sandbox.js";
 import { workspacePath } from "../specs/validate.js";
 import { ruffSource as pythonRuffSource } from "../tools/python-tooling.js";
-import { buildCheckEnv, exitStatus } from "../verification/check-runner.js";
+import { buildCheckEnv, executeCheckCommand, exitStatus } from "../verification/check-runner.js";
 import {
   MISSING_GATE_REPORT,
   readGateReport,
@@ -653,7 +653,8 @@ export async function executeGate(
   const scope = new ProcessScope();
   const started = performance.now();
   try {
-    const result = await scope.execute(
+    const result = await executeCheckCommand(
+      scope,
       parsed.executable === "bun" ? process.execPath : parsed.executable,
       parsed.args,
       {

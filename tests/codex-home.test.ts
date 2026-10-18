@@ -15,6 +15,7 @@ import {
   buildCodexNativeRequest,
   CodexAppServerSessions,
 } from "../src/core/llm/providers/codex/native.js";
+import { removeTempDir } from "./helpers/temp-dir.js";
 
 const MARKER = "Apply the personal skill at C:/Users/owner/.codex/skills/unslop/SKILL.md";
 
@@ -69,13 +70,14 @@ describe("Codex home isolation (#1462)", () => {
     process.env.LOCALAPPDATA = join(root, "profile", "AppData", "Local");
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     process.chdir(cwd);
     for (const [key, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
-    rmSync(root, { recursive: true, force: true });
+    // The fake Codex a turn started may still hold the home open on Windows.
+    await removeTempDir(root);
   });
 
   test("the isolated home shares the sign-in and settings and none of the user's instructions", () => {

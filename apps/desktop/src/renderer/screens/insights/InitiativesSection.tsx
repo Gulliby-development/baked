@@ -449,6 +449,7 @@ function EstimatePanel({ projectKey, view }: { projectKey: string; view: Initiat
               {f.placeholders
                 ? ` · ${f.placeholders} ${f.placeholders === 1 ? "placeholder" : "placeholders"}`
                 : ""}
+              {f.skeleton ? ` · ${f.skeleton} host-written` : ""}
             </span>
             <span className="font-mono text-muted-foreground">
               {f.basis === "measured"

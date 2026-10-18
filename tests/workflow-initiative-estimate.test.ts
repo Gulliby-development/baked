@@ -448,6 +448,77 @@ describe("scenario: the split estimate floored by paths at another project's rat
   });
 });
 
+describe("scenario: a feature's own skeleton costs nothing in the estimate (#1550, R45)", () => {
+  // grundykit: base owned 6 files and its skeleton held the 22 module stubs the later features
+  // fill. The host wrote the skeleton (T001, 0 tokens); base used 2.25M. At 1/3 of a path per stub
+  // the floor said 281,827 x (6 + 22/3) = 3.76M low; at 0 it says 1.69M.
+  const stubs = Array.from({ length: 22 }, (_, i) => `src/m${i}.rs`);
+  const node = (id: string, paths: string[], skeleton?: string[]): InitiativePlan["features"][number] => ({
+    id,
+    title: id,
+    boundary: { scope: id, paths },
+    contract: id,
+    dependsOn: id === "base" ? [] : ["base"],
+    mandatory: true,
+    ...(skeleton ? { skeleton: skeleton.map((path) => ({ path, content: "// stub\n" })) } : {}),
+  });
+  const own = ["src/lib.rs", "src/group.rs", "src/error.rs", "src/parse.rs", "src/table.rs", "Cargo.toml"];
+  const grundykit: InitiativePlan = {
+    schemaVersion: 1,
+    title: "grundykit",
+    goals: ["g"],
+    completionCriteria: ["c"],
+    features: [
+      node("base", [...own, ...stubs], stubs),
+      node("games", stubs.slice(0, 11)),
+      node("solver", stubs.slice(11)),
+    ],
+  };
+
+  test("skeleton files count apart, neither as paths nor as placeholders", () => {
+    expect(Object.fromEntries(boundaryPathCounts(grundykit))).toEqual({
+      base: { paths: 6, placeholders: 0, skeleton: 22 },
+      games: { paths: 11, placeholders: 0, skeleton: 0 },
+      solver: { paths: 11, placeholders: 0, skeleton: 0 },
+    });
+    // A skeleton file only its own feature lists (a registration file) is host-written too.
+    const alone = { ...grundykit, features: [node("base", own, ["src/lib.rs"])] };
+    expect(boundaryPathCounts(alone).get("base")).toEqual({ paths: 5, placeholders: 0, skeleton: 1 });
+  });
+
+  test("the path floor prices base's own files only, and the actual spend is inside the range", () => {
+    const counts = boundaryPathCounts(grundykit);
+    const features = grundykit.features.map((f) => ({ ...feature(f.id, "large"), ...counts.get(f.id) }));
+    const sample = (runId: string, tokens: number): FeatureRunSample => ({
+      runId,
+      workflowId: "sdd",
+      size: "medium",
+      tokens,
+      taskCount: 8,
+      paths: 4,
+    });
+    const samples = [sample("a", 281_827 * 4), sample("b", 426_851 * 4)];
+    const estimate = estimateInitiative({ features, history: [], samples, maxTotalTokens: 30_000_000 });
+    const base = estimate.features.find((f) => f.featureId === "base");
+    expect(base).toMatchObject({ paths: 6, skeleton: 22, floor: "paths" });
+    expect(base?.placeholders).toBeUndefined();
+    expect(base?.tokens.low).toBe(281_827 * 6);
+    expect(base?.tokens.low).toBeLessThan(2_245_117);
+    expect(base?.tokens.high).toBeGreaterThan(2_245_117);
+    expect(estimate.notes.join("\n")).toContain("A file of a feature's skeleton counts nothing");
+  });
+
+  test("a finished skeleton feature's rate is per file it wrote, not diluted by its stubs", () => {
+    const counts = boundaryPathCounts(grundykit).get("base");
+    const samples: FeatureRunSample[] = [
+      { runId: "a", workflowId: "sdd", size: "medium", tokens: 2_400_000, taskCount: 5, ...counts },
+      { runId: "b", workflowId: "sdd", size: "medium", tokens: 1_600_000, taskCount: 5, paths: 4 },
+    ];
+    const estimate = estimateInitiative({ features: [feature("x", "medium")], history: [], samples, maxTotalTokens: 10_000_000 });
+    expect(estimate.perPath).toEqual({ low: 400_000, high: 400_000 });
+  });
+});
+
 describe("scenario: a placeholder two features list counts in full once (#1464, R40)", () => {
   // tonemath: core listed its 7 files and 15 module stubs that theory, analysis and front then
   // filled, 48 boundary paths for 33 files. Core sat on the path floor at 22 x 389k = 8.57M low
@@ -479,18 +550,18 @@ describe("scenario: a placeholder two features list counts in full once (#1464, 
   test("each path counts in full only in the last feature that lists it", () => {
     const counts = boundaryPathCounts(tonemath);
     expect(Object.fromEntries(counts)).toEqual({
-      core: { paths: 7, placeholders: 15 },
-      theory: { paths: 6, placeholders: 0 },
-      analysis: { paths: 6, placeholders: 0 },
-      front: { paths: 11, placeholders: 0 },
-      docs: { paths: 3, placeholders: 0 },
+      core: { paths: 7, placeholders: 15, skeleton: 0 },
+      theory: { paths: 6, placeholders: 0, skeleton: 0 },
+      analysis: { paths: 6, placeholders: 0, skeleton: 0 },
+      front: { paths: 11, placeholders: 0, skeleton: 0 },
+      docs: { paths: 3, placeholders: 0, skeleton: 0 },
     });
     // 33 distinct files, not the 48 the boundaries list.
     expect([...counts.values()].reduce((n, c) => n + c.paths, 0)).toBe(33);
     // A glob boundary claims no path and counts none.
     const glob = { ...tonemath, features: [...tonemath.features, node("all", ["src/**"])] };
-    expect(boundaryPathCounts(glob).get("all")).toEqual({ paths: 0, placeholders: 0 });
-    expect(boundaryPathCounts(glob).get("core")).toEqual({ paths: 7, placeholders: 15 });
+    expect(boundaryPathCounts(glob).get("all")).toEqual({ paths: 0, placeholders: 0, skeleton: 0 });
+    expect(boundaryPathCounts(glob).get("core")).toEqual({ paths: 7, placeholders: 15, skeleton: 0 });
   });
 
   const sample = (runId: string, tokens: number, paths: number, placeholders = 0): FeatureRunSample => ({

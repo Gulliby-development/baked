@@ -220,6 +220,32 @@ describe("auto approval", () => {
       expect(result.approval).toBeNull();
       expect(result.reasons.join("\n")).not.toContain("always needs a person");
     });
+    // spdxok-update b270088e (R45, #1547): the scaffold's allowed paths leave the manifest out,
+    // so the limits' scope check declined the edit the always-human test had let through.
+    test("a named manifest edit outside the allowed paths is approved, for every manifest kind", () => {
+      const scoped: RunPolicy = { ...anywhere, autoApproval: { renewal: false, limits: { ...limits, allowedPaths: ["src/**", "tests/**"], maxFiles: 10 }, requestedManifestEdits: true } };
+      const reviewed: RunPolicy = { ...scoped, autoApproval: { ...(scoped.autoApproval as NonNullable<RunPolicy["autoApproval"]>), modelReview: true } };
+      for (const path of ["pyproject.toml", "package.json", "Cargo.toml", "go.mod", "pom.xml", "requirements.txt", "requirements-dev.txt", "Spdxok.csproj"]) {
+        const plan = graph([modify("src/cli.py"), modify(path)]);
+        const asked = { ...present, request: `Add a Core library. Add the CLI entry point and register it in ${path}.` };
+        const result = evaluateAutoApproval(scoped, manifest, covered, plan, [], [], asked);
+        expect(result.reasons).toEqual([]);
+        expect(result.approval?.mode).toBe("limits");
+        expect(evaluateAutoApproval(reviewed, manifest, covered, plan, [], [], asked).approval?.mode).toBe("limits");
+        expect(planScopeAdvice(scoped, plan, () => true, false, asked.request)).toEqual([]);
+        // Not named, named only to be kept as is, or deleted: still a person, and the advice says so.
+        for (const request of ["Add a Core library. Add the CLI entry point.", `Add a Core library. Keep ${path} unchanged.`]) {
+          expect(evaluateAutoApproval(scoped, manifest, covered, plan, [], [], { ...present, request }).approval).toBeNull();
+          expect(planScopeAdvice(scoped, plan, () => true, false, request).join("\n")).toContain(`${path} always needs a person`);
+        }
+        const deleted = graph([{ path, action: "delete" as const }]);
+        expect(evaluateAutoApproval(scoped, manifest, covered, deleted, [], [], asked).approval).toBeNull();
+      }
+      // A shared manifest name in a sub-package is named only by its path; a lockfile never.
+      const nested = graph([modify("tools/package.json")]);
+      expect(evaluateAutoApproval(scoped, manifest, covered, nested, [], [], { ...present, request: "Add a Core library. Register the CLI in package.json." }).approval).toBeNull();
+      expect(evaluateAutoApproval(scoped, manifest, covered, graph([modify("Cargo.lock")]), [], [], { ...present, request: "Add a Core library. Update Cargo.lock." }).approval).toBeNull();
+    });
     test("the planner is told the request may name manifest edits", () => {
       expect(plannerApprovalLimits(optedIn)?.alwaysHuman).toContain("or one the request names");
       expect(plannerApprovalLimits(anywhere)?.alwaysHuman).not.toContain("or one the request names");
