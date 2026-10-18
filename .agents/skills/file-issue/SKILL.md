@@ -54,3 +54,11 @@ Follow the rules in `AGENTS.md`: the type, labels, the board and the `Priority: 
 ## 5. When you fix an issue filed this way
 
 Fix every place listed under **Where**. Before opening the pull request, run the sweep searches again on the branch. A new place gets fixed in the same pull request, or gets its own issue linked from the pull request.
+
+Report it in a `## Sweep` section of the pull request description:
+
+- each place from **Where**, fixed;
+- each new place the second sweep found: fixed in this pull request, or the new issue's number;
+- the places you checked that are not affected, with the reason.
+
+The `PR description` workflow fails a pull request that closes a Bug issue (issue type Bug or label `bug`) when this section is missing or empty. Edit the description to fix it; no new push is needed.
