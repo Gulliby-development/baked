@@ -1314,7 +1314,8 @@ describe("initiative runtime", () => {
   // feature on the critical path waited behind one earlier in plan order.
   describe("dispatch on every stop, longest remaining path first (#1535)", () => {
     class TimedExecutor extends InitiativeExecutor {
-      delays: Record<string, number> = {};
+      /** A feature's implementation holds until these features have started theirs, or 10 s pass. */
+      waits: Record<string, string[]> = {};
       starts: string[] = [];
       /** `start:NAME` and `end:NAME` in the order they happened. */
       events: string[] = [];
@@ -1323,7 +1324,9 @@ describe("initiative runtime", () => {
         if (request.profile.output !== "implementation" || !name) return super.execute(request);
         this.starts.push(name);
         this.events.push(`start:${name}`);
-        await Bun.sleep(this.delays[name] ?? 0);
+        const deadline = Date.now() + 10_000;
+        while (!(this.waits[name] ?? []).every((other) => this.starts.includes(other)) && Date.now() < deadline)
+          await Bun.sleep(20);
         try {
           return await super.execute(request);
         } finally {
@@ -1343,8 +1346,13 @@ describe("initiative runtime", () => {
     async function run(maxParallelRuns: number) {
       const t = setup(cayley, 100, (root) => new TimedExecutor(root, cayley));
       repository(t.root);
-      // Run lengths in the proportions of the round: finite outlasts chain, the command features are long.
-      t.executor.delays = { chain: 50, finite: 3000, perm: 4500, chainc: 4500, finitec: 300, entry: 50 };
+      // As in the round, finite outlasts chain and the command features outlast finite. A feature
+      // holds until the ones that should start while it runs have started, so the order does not
+      // depend on the machine's speed; before the fix they could not start and it held 10 s.
+      t.executor.waits =
+        maxParallelRuns === 2
+          ? { finite: ["perm"], perm: ["finitec"] }
+          : { finite: ["perm", "chainc"], perm: ["finitec"] };
       if (t.workflows.config.workflows) t.workflows.config.workflows.maxParallelRuns = maxParallelRuns;
       const worktreePolicy: RunPolicy = { ...policy, executionMode: "worktree" };
       await t.start({ plan: cayley, policy: worktreePolicy, featureAutoApproval: { maxTasks: 5, maxFiles: 5 }, budget: { maxTotalTokens: 6_000_000, maxAgentCalls: 2000, maxActiveMs: 6_000_000 } });
