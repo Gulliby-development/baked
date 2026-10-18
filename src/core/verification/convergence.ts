@@ -183,6 +183,9 @@ export function classFilesInOutput(output: string, tasks: Task[]): string[] {
   // Surefire's failure list, `[ERROR]   QueryTest.method:42` or `[ERROR] QueryTest.method »`.
   for (const m of output.matchAll(/^\[(?:ERROR|FAIL\w*)\]\s+([A-Z]\w*)\.\w+(?::\d+|\s+»)/gm))
     for (const path of unambiguous(m[1] ?? "")) found.add(path);
+  // dotnet's failure summary can omit a namespace and the source path.
+  for (const m of output.matchAll(/^\s*Failed\s+(?:\w+\.)*?([A-Z]\w*)\.\w+(?:\s|\[|\(|$)/gm))
+    for (const path of unambiguous(m[1] ?? "")) found.add(path);
   return paths.filter((path) => found.has(path));
 }
 

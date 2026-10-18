@@ -61,8 +61,8 @@ function history(): string {
 }
 
 class ScriptedExecutor extends FixtureExecutor {
-  attempts: { task: Task; cap?: number; paths?: string[] }[] = [];
-  constructor(private workspace: string, private testPath: string) { super(workspace); }
+  attempts: { task: Task; cap?: number; paths?: string[]; cases: boolean }[] = [];
+  constructor(private workspace: string, private testPath: string, private existing = false) { super(workspace); }
   override async execute(request: ExecutionRequest) {
     if (request.profile.output === "spec") return { output: spec, inputTokens: 25, outputTokens: 25 };
     if (request.profile.output === "plan") {
@@ -71,17 +71,19 @@ class ScriptedExecutor extends FixtureExecutor {
         schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown),
         tasks: [task("T001", "src/cli.ts"), task("T002", this.testPath, ["T001"]), task("T003", "README.md", ["T002"])],
       };
+      if (this.existing) taskGraph.tasks[1]!.writes.push({ path: "tests/old.test.ts", action: "modify", reason: "Update legacy expectations" });
       return { output: { schemaVersion: 1, markdown, taskGraph }, inputTokens: 25, outputTokens: 25 };
     }
     if (request.profile.output === "implementation") {
       const own = request.task!;
       const extra = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}").extra;
-      this.attempts.push({ task: own, cap: request.attemptTokens, paths: extra.writtenTestsCheck?.paths });
+      this.attempts.push({ task: own, cap: request.attemptTokens, paths: extra.writtenTestsCheck?.paths, cases: !!request.caseCheck });
       const write = own.writes[0]!;
       const target = join(request.root ?? this.workspace, write.path);
       mkdirSync(dirname(target), { recursive: true });
       if (write.path === "src/cli.ts") writeFileSync(target, "export const cli = (v: string) => v;\n");
       else if (write.path === "README.md") writeFileSync(target, "# CLI\nReturns each input.\n");
+      else if (write.path === "tests/old.test.ts") appendFileSync(target, `// Updated ${own.criterionIds.join(", ")}.\n`);
       else {
         if (write.action === "create") writeFileSync(target, 'import { expect, test } from "bun:test";\nimport { cli } from "../src/cli.ts";\n');
         for (const id of own.criterionIds) {
@@ -100,13 +102,17 @@ class ScriptedExecutor extends FixtureExecutor {
   }
 }
 
-for (const path of ["internal/cli/cli_test.go", "tests/cli.test.ts", "tests/test_cli.py"]) {
-  test(`scenario: an oversized ${path} becomes ordered criterion slices with their own caps`, async () => {
+for (const [path, existing] of [["internal/cli/cli_test.go", false], ["tests/cli.test.ts", false], ["tests/test_cli.py", false], ["tests/cli.test.ts", true]] as const) {
+  test(`scenario: an oversized ${path} becomes ordered criterion slices with their own caps, existing updates=${existing}`, async () => {
     const fixture = workflowFixture({
       policy: { ...fixturePolicy, clarification: "assume", checks: [{ ...fixturePolicy.checks[0]!, id: "tests", args: ["test"] }], sizing: { maxAttemptTokens: 600_000, historyStores: [history()] } },
-      executor: (root) => new ScriptedExecutor(root, path),
+      executor: (root) => new ScriptedExecutor(root, path, existing),
     });
     cleanups.push(fixture.dispose);
+    if (existing) {
+      mkdirSync(join(fixture.root, "tests"), { recursive: true });
+      writeFileSync(join(fixture.root, "tests/old.test.ts"), 'import { expect, test } from "bun:test";\ntest("legacy", () => expect(true).toBe(true));\n');
+    }
     const run = await fixture.start();
     expect((await fixture.service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");
     const store = fixture.service.store;
@@ -119,7 +125,12 @@ for (const path of ["internal/cli/cli_test.go", "tests/cli.test.ts", "tests/test
     ]);
     expect(parts[1]!.dependsOn).toContain(parts[0]!.id);
     expect(parts[2]!.dependsOn).toContain(parts[1]!.id);
-    expect(graph.tasks.find((t) => t.id === "T003")!.dependsOn).toEqual(parts.map((t) => t.id));
+    const updates = graph.tasks.filter((t) => t.writes[0]?.path === "tests/old.test.ts");
+    expect(graph.tasks.find((t) => t.id === "T003")!.dependsOn).toEqual([...parts, ...updates].map((t) => t.id));
+    if (existing) {
+      expect(updates).toHaveLength(3);
+      for (const part of parts) for (const update of updates) expect(part.dependsOn).toContain(update.id);
+    }
     const artifact = store.latestArtifact(run.runId, "sizing/plan-0.json")!;
     const report = JSON.parse(store.readArtifact(run.runId, artifact.id)) as SizingReport;
     expect(report.caseRate?.samples).toBe(2);
@@ -136,6 +147,13 @@ for (const path of ["internal/cli/cli_test.go", "tests/cli.test.ts", "tests/test
       expect(attempts.map((a) => a.task.id)).toEqual(parts.map((t) => t.id));
       expect(attempts.map((a) => a.paths)).toEqual([[path], [path], [path]]);
       expect(attempts.every((a) => a.cap === 463_333)).toBe(true);
+      if (existing) {
+        const old = fixture.executor.attempts.filter((a) => a.task.writes[0]?.path === "tests/old.test.ts");
+        expect(attempts.every((a) => a.cases)).toBe(true);
+        expect(old).toHaveLength(3);
+        expect(old.every((a) => !a.cases)).toBe(true);
+        expect(fixture.executor.attempts.indexOf(old.at(-1)!)).toBeLessThan(fixture.executor.attempts.indexOf(attempts[0]!));
+      }
       const text = readFileSync(join(fixture.root, path), "utf8");
       for (const id of ids) expect(text.match(new RegExp(id, "g"))).toHaveLength(1);
     }

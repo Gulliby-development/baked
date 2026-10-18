@@ -4,6 +4,8 @@ import { hostSplitParts } from "../src/core/workflows/analysis-notes.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { TaskGraphSchema, type TaskGraph } from "../src/core/workflows/schemas.js";
 import { caseRate, perFileRates, plannerSizing, sizePlan, splitNote, splitTestTasks, type SizingSample } from "../src/core/workflows/sizing.js";
+import { failureOwner } from "../src/core/workflows/task-graph.js";
+import type { TaskRow } from "../src/core/workflows/store.js";
 import type { Task } from "../src/core/workflows/types.js";
 
 const ids = Array.from({ length: 6 }, (_, i) => `AC-${String(i + 1).padStart(3, "0")}`);
@@ -97,6 +99,35 @@ describe("literal case pricing and sequential test slices (#1562)", () => {
     expect(plannerSizing(policy, history).note).toContain("Each literal test case");
     expect(plannerSizing(policy, history).note).toContain("create it first, then modify it");
     expect(splitNote(report, 2)).toContain("sequential criterion slices");
+  });
+
+  test("new-file slices wait for every existing-file slice and retain failure ownership", () => {
+    const source = task("T001", "src/cli.ts");
+    const tests = { ...task("T002", "tests/new.test.ts"), dependsOn: [source.id], writes: [
+      { path: "tests/new.test.ts", action: "create" as const },
+      { path: "tests/old.test.ts", action: "modify" as const, reason: "Update legacy expectations" },
+    ] };
+    const g = graph(source, tests, { ...task("T003", "README.md"), dependsOn: [tests.id] });
+    const split = splitTestTasks(g, size(g, history, spec(40)), spec(40))!;
+    const fresh = split.tasks.filter((t) => t.writes[0]?.path === "tests/new.test.ts");
+    const updates = split.tasks.filter((t) => t.writes[0]?.path === "tests/old.test.ts");
+    expect(fresh.length).toBeGreaterThan(1);
+    expect(updates.length).toBeGreaterThan(1);
+    for (const [index, part] of fresh.entries()) {
+      expect(part.dependsOn).toEqual([source.id, ...(index ? [fresh[index - 1]!.id] : []), ...updates.map((t) => t.id)]);
+    }
+    for (const [index, part] of updates.entries()) {
+      expect(part.dependsOn).toEqual([source.id, ...(index ? [updates[index - 1]!.id] : [])]);
+    }
+    expect(split.tasks.find((t) => t.id === "T003")!.dependsOn).toEqual([...fresh, ...updates].map((t) => t.id));
+    const rows = split.tasks.map((t) => ({ id: t.id, status: t.id === source.id ? "verified" : "pending" }) as TaskRow);
+    expect(failureOwner(split, rows, {}, source, "tests/old.test.ts:1: error")).toMatchObject({ kind: "test-update", owners: updates.map((t) => t.id) });
+    for (const part of [...fresh, ...updates]) {
+      expect(failureOwner(split, rows, {}, part, "at cli (/work/src/cli.ts:4:1)")).toMatchObject({ kind: "finished", owners: [source.id] });
+      expect(failureOwner(split, rows, {}, part, `${part.writes[0]!.path}:1: error`)).toMatchObject({ kind: "self", owners: [] });
+    }
+    expect(TaskGraphSchema.safeParse(split).success).toBe(true);
+    expect(size(split, history, spec(40)).tasks.filter((t) => t.kind === "test").every((t) => !t.oversized)).toBe(true);
   });
 
   test("a file that fits after splitting by file needs no modification slices", () => {

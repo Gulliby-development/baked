@@ -241,6 +241,23 @@ describe("request_check of a whole-unit check that runs in the checks stage", ()
   });
 });
 
+describe("request_check failure ownership (#1563, #1564)", () => {
+  for (const kind of ["test-update", "finished"] as const) test(`returns ${kind} ownership advice with command evidence`, async () => {
+    const check = { id: "tests", executable: "bun", args: ["-e", "console.log('a/parse.go:82: panic'); process.exit(1)"], cwd: ".", timeoutMs: 10000, required: true, scope: "task" as const, envNames: [], writes: [] };
+    const { executor, request, seen } = await setup({ ...fixturePolicy, checks: [check] }, ["tests"], [
+      step({ name: "request_check", input: { checkId: "tests" } }),
+      () => { throw new Error("stop after ownership advice"); },
+    ]);
+    await expect(executor.execute({ ...request, failureOwner: () => ({ kind, owners: ["T002"], files: ["a/parse.go"] }), attributeCheck: kind === "finished" ? () => [] : undefined })).rejects.toThrow("stop after ownership advice");
+    const result = JSON.stringify(seen);
+    expect(result).toContain('"status":"failed"');
+    expect(result).toContain('"failureOwner":{"kind":"' + kind + '"');
+    expect(result).toContain('"evidenceId":');
+    expect(result).toContain(kind === "test-update" ? "Stop rerunning this check and submit" : "Do not rewrite tests to hide the failure");
+    if (kind === "finished") expect(result).toContain('"taskErrors":[]');
+  });
+});
+
 async function setup(
   policy: RunPolicy,
   checkIds: string[],

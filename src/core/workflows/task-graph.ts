@@ -1,7 +1,6 @@
 import { hashJson } from "../specs/hash.js";
 import { failingFilesInOutput, failingPathsInOutput } from "../verification/convergence.js";
 import { isDocFile } from "../verification/doc-examples.js";
-import { isTestFile } from "./affected-tests.js";
 import { writtenCodePaths } from "./check-policy.js";
 import type { TaskGraph } from "./schemas.js";
 import type { TaskRow } from "./store.js";
@@ -350,8 +349,73 @@ export function pendingOwners(
   return [...owners];
 }
 
-/** A Rust integration test, `tests/*.rs` of a crate, which `cargo test` runs as its own binary. */
-const isRustTestFile = (path: string): boolean => /(?:^|\/)tests\/[^/]+\.rs$/.test(path);
+export interface FailureOwner {
+  kind: "self" | "unowned" | "pending" | "test-update" | "finished";
+  owners: string[];
+  files: string[];
+}
+
+/** One ownership decision for task checks, continuations, reports and request_check. */
+export function failureOwner(
+  graph: TaskGraph | null | undefined,
+  rows: TaskRow[],
+  gates: RuntimeState["taskGates"],
+  task: Task,
+  output: string,
+  options: { crossProfile?: boolean } = {},
+): FailureOwner {
+  const files = failingFilesInOutput(output, graph?.tasks ?? []);
+  const updaters = testUpdateOwners(graph, rows, gates, task, output);
+  if (updaters.length) return { kind: "test-update", owners: updaters, files };
+  const pending = task.origin === "planned" ? pendingOwners(graph, rows, gates, task, output) : [];
+  if (pending.length) return { kind: "pending", owners: pending, files };
+  const done = new Set(
+    rows.filter((r) => ["implemented", "verified"].includes(r.status)).map((r) => r.id),
+  );
+  // Assertion excerpts can include imports. Only diagnostic locations and stack frames
+  // establish a production owner; an import printed beside a failing assertion does not.
+  const frames = output
+    .split(/\r?\n/)
+    .filter(
+      (line) =>
+        /:\d+|:\[\d+,\d+\]|^\s*at\s|^\s*File ["'].*["'], line \d+/.test(line) &&
+        !/declared here|declaration is here/.test(line),
+    )
+    .join("\n");
+  const located = new Set([
+    ...failingPathsInOutput(output, graph?.tasks ?? []),
+    ...failingFilesInOutput(frames, graph?.tasks ?? []),
+  ]);
+  const owned = files.filter(
+    (path) => located.has(path) && !isTestPath(path) && !task.writes.some((w) => w.path === path),
+  );
+  const owners = (graph?.tasks ?? []).filter(
+    (t) =>
+      t.id !== task.id &&
+      t.origin === "planned" &&
+      (options.crossProfile || t.profileId === task.profileId) &&
+      done.has(t.id) &&
+      t.writes.some((w) => w.action !== "delete" && owned.includes(w.path)),
+  );
+  const sources = owned.filter((path) => owners.some((t) => t.writes.some((w) => w.path === path)));
+  if (sources.length) return { kind: "finished", owners: owners.map((t) => t.id), files: sources };
+  return {
+    kind: files.some((path) => task.writes.some((w) => w.path === path)) ? "self" : "unowned",
+    owners: [],
+    files,
+  };
+}
+
+/** Advice returned with a failed request_check; evidence and write permissions stay unchanged. */
+export function failureOwnerNote(owner: FailureOwner): string | undefined {
+  if (owner.kind === "test-update")
+    return `This failure belongs to ${owner.owners.join(", ")}, which has not finished updating the failing tests. Stop rerunning this check and submit your work; the host hands the failure to that task and checks the integrated result.`;
+  if (owner.kind === "pending")
+    return `This failure waits for ${owner.owners.join(", ")}, which has not finished. Submit your work; the host reruns the check after those tasks finish.`;
+  if (owner.kind === "finished")
+    return `This failure names ${owner.files.join(", ")}, owned by ${owner.owners.join(", ")}, outside this task's writes. Keep the required tests and submit your work without unresolved items; the host routes a correction to those files. Do not rewrite tests to hide the failure.`;
+  return undefined;
+}
 
 /**
  * The unfinished planned tasks that update the existing tests a failed check of `task` names, when
@@ -373,7 +437,7 @@ export function testUpdateOwners(
   // source declaration it disagrees with in an indented line (mdtoc-update 952805a8, #972).
   const located = failingPathsInOutput(output, graph.tasks);
   const named = located.length ? located : failingFilesInOutput(output, graph.tasks);
-  if (!named.length || !named.every((path) => isTestFile(path) || isRustTestFile(path))) return [];
+  if (!named.length || !named.every(isTestPath)) return [];
   if (named.some((path) => task.writes.some((w) => w.path === path))) return [];
   const owners = new Set<string>();
   for (const path of named) {
