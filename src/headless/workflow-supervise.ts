@@ -13,6 +13,8 @@ import { DEFAULT_SUPERVISOR, StallDetector } from "../core/workflows/supervisor.
 
 /** Set in the driver a supervisor starts, so it does not start another one. */
 export const SUPERVISED_ENV = "BAKED_WORKFLOW_SUPERVISED";
+/** Set in that driver when the supervisor's own output is a terminal. */
+export const STDOUT_TTY_ENV = "BAKED_WORKFLOW_STDOUT_TTY";
 
 /** Workflow commands that drive a run until it stops (with `--resume` where they need it). */
 const DRIVING = new Set([
@@ -85,9 +87,15 @@ export interface SupervisorOptions {
 
 function startDriver(argv: string[], cwd: string): ChildProcess {
   const spec = getRestartSpec({ userArgs: ["workflow", ...argv] });
-  return spawn(spec.command, spec.args, {
+  // From source, the runtime's own flags (`--preload`) apply to the driver too.
+  const runtime = process.argv[1] && spec.args[0] === process.argv[1] ? process.execArgv : [];
+  return spawn(spec.command, [...runtime, ...spec.args], {
     cwd,
-    env: { ...process.env, [SUPERVISED_ENV]: "1" },
+    env: {
+      ...process.env,
+      [SUPERVISED_ENV]: "1",
+      ...(process.stdout.isTTY ? { [STDOUT_TTY_ENV]: "1" } : {}),
+    },
     stdio: ["inherit", "pipe", "inherit"],
     // Its own process group on POSIX, so stopping it stops the commands it started too.
     detached: !IS_WIN,

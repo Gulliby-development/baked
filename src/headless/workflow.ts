@@ -77,6 +77,7 @@ import {
 } from "./workflow-parse.js";
 import { formatDoctor, formatEstimate, preRunRequest } from "./workflow-pre-run.js";
 import { runRoutingCli } from "./workflow-routing.js";
+import { STDOUT_TTY_ENV } from "./workflow-supervise.js";
 
 export function workflowExit(
   snapshot: RunSnapshot,
@@ -962,7 +963,10 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     service = new NativeWorkflowService(cwd, config, undefined, readonly);
     // A run started from an interactive terminal notifies the person when it waits; scripts that
     // read the output do not.
-    if (service.attention) service.attention.systemNotifications = process.stdout.isTTY === true;
+    // A supervised driver writes through its supervisor's pipe, which says whether that is a terminal.
+    if (service.attention)
+      service.attention.systemNotifications =
+        process.stdout.isTTY === true || process.env[STDOUT_TTY_ENV] === "1";
     let lastSeq = 0;
     const existingRun = ["run", "quick"].includes(args.command) ? undefined : args.positional[0];
     if (existingRun && args.flags.events) lastSeq = service.store.snapshot(existingRun).eventSeq;
