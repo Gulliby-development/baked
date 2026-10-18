@@ -141,7 +141,7 @@ bun test tests/feature-parity.test.ts
 | Recover a stuck side effect | `/workflow` | `baked workflow recover` | `/v1/workflow/runs/:id/recover` | `project/runs` |
 | Pause, resume, accept outside changes, cancel, extend, reroute, undo edits | `/workflow` | `baked workflow pause`, `baked workflow resume`, `baked workflow cancel` +3 | `/v1/workflow/runs/:id/pause`, `/v1/workflow/runs/:id/resume`, `/v1/workflow/runs/:id/cancel` +3 | `project/runs` |
 | Continue approved manifest edits using the run's file-patch hash history | `/workflow` | `baked workflow run`, `baked workflow resume` | `/v1/workflow/runs/:id/resume` | `project/runs` |
-| Supervisor: a driver whose thread stopped is stopped and its run taken over | `/workflow` | Partial [#1554](https://github.com/Gulliby-development/baked/issues/1554): runs launched by baked session coordinator send still need worker supervision | `/v1/health` | `project/runs` |
+| Supervisor: a driver whose thread stopped is stopped and its run taken over | `/workflow` | `baked workflow run`, `baked workflow resume`, `baked workflow approve` +3 | `/v1/health` | `project/runs` |
 | Fork a run | `/workflow` | `baked workflow fork` | `/v1/workflow/runs/:id/fork` | `project/runs` |
 | Discard a run's worktree | `/workflow` | `baked workflow discard-worktree` | `/v1/workflow/runs/:id/discard-worktree` | `project/runs` |
 | Worktree sizes and cleanup | `/workflow` | `baked workflow worktrees` | `/v1/workflow/worktrees`, `/v1/workflow/worktrees/clean` | `project/runs` |
@@ -218,6 +218,5 @@ bun test tests/feature-parity.test.ts
 ### Open gaps by issue
 
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
-- [#1554](https://github.com/Gulliby-development/baked/issues/1554): Supervisor: a driver whose thread stopped is stopped and its run taken over
 
 <!-- parity:end -->

@@ -9,7 +9,7 @@ export interface TakenOverRun {
   /** False past `workflows.stall.autoResumes`: the run is blocked `step_stalled` for a person. */
   resumed: boolean;
   revision: number;
-  /** The initiative whose drive continues the run, when it is one of its features. */
+  /** The initiative whose drive continues the run, when it is a feature or decomposition run. */
   initiativeId: string | null;
 }
 
@@ -33,7 +33,11 @@ export async function takeOverDriver(
       runId,
       resumed,
       revision: service.store.run(runId).revision,
-      initiativeId: initiatives.available() ? initiatives.initiativeOfRun(runId) : null,
+      initiativeId:
+        initiatives.initiativeOfRun(runId) ??
+        (initiatives.available()
+          ? (initiatives.list().find((row) => row.decompose_run_id === runId)?.id ?? null)
+          : null),
     });
   }
   return out;
