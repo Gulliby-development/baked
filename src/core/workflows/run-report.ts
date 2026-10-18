@@ -599,18 +599,19 @@ function mutationSection(
   before: MutationResult | null = null,
 ): string[] {
   const count = (status: string) => result.mutants.filter((m) => m.status === status).length;
-  const killed = count("killed");
+  // A timed-out mutant was detected and scores with the killed ones (#1534).
+  const timeouts = count("timeout");
+  const killed = count("killed") + timeouts;
   const ran = killed + count("survived");
   const blocking = result.mutants.filter((m) => m.blocking).length;
   const extra = [
-    ...(count("timeout") ? [`${count("timeout")} timed out`] : []),
     ...(count("not-run") ? [`${count("not-run")} not run`] : []),
     ...(count("equivalent") ? [`${count("equivalent")} judged equivalent`] : []),
   ];
   const score = result.score === null ? "no score" : `score ${result.score}%`;
   const engine = result.engine && result.engine !== "built-in" ? `, ${result.engine}` : "";
   const out = [
-    `Mutation gate (\`${result.mode}\`${engine}): ${score} (${killed} of ${ran} mutants killed${extra.length ? `, ${extra.join(", ")}` : ""})${blocking ? `, ${blocking} blocking` : ""}${result.tests.length ? `; tests: ${result.tests.map(code).join(", ")}` : ""}${result.note ? `; ${result.note}` : ""}.`,
+    `Mutation gate (\`${result.mode}\`${engine}): ${score} (${killed} of ${ran} mutants killed${timeouts ? " or timed out" : ""}${extra.length ? `, ${extra.join(", ")}` : ""})${blocking ? `, ${blocking} blocking` : ""}${result.tests.length ? `; tests: ${result.tests.map(code).join(", ")}` : ""}${result.note ? `; ${result.note}` : ""}.`,
     "",
   ];
   if (before)
