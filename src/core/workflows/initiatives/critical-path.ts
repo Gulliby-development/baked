@@ -87,3 +87,30 @@ export function criticalPathProblems(plan: InitiativePlan, request: string): str
       `${feature.id} is ${Math.round(share * 100)}% of the critical path (${path.join(" -> ")}) by size and files, and features on that path run one after another. If its files form groups that do not depend on each other, split it into features with its dependsOn, each with at least ${MIN_FEATURE_PATHS} files, so they run side by side, and make the features that depend on it depend on every part. Otherwise set its serial to why its parts must stay in one feature.`,
   );
 }
+
+/**
+ * Each feature's remaining path: its own work plus the longest chain of work of the features that
+ * depend on it, directly or not. A ready feature with the longest remaining path starts first, since
+ * the initiative cannot finish before that chain does (#1535).
+ */
+export function remainingPath(plan: InitiativePlan, named: readonly string[]): Map<string, number> {
+  const dependents = new Map<string, string[]>();
+  for (const feature of plan.features)
+    for (const upstream of feature.dependsOn)
+      dependents.set(upstream, [...(dependents.get(upstream) ?? []), feature.id]);
+  const byId = new Map(plan.features.map((f) => [f.id, f] as const));
+  const memo = new Map<string, number>();
+  const visit = (id: string, seen: Set<string>): number => {
+    const known = memo.get(id);
+    if (known !== undefined) return known;
+    const feature = byId.get(id);
+    if (!feature || seen.has(id)) return 0;
+    const next = new Set(seen).add(id);
+    const after = Math.max(0, ...(dependents.get(id) ?? []).map((d) => visit(d, next)));
+    const work = featureWork(feature, named) + after;
+    memo.set(id, work);
+    return work;
+  };
+  for (const feature of plan.features) visit(feature.id, new Set());
+  return memo;
+}

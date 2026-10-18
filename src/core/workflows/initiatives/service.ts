@@ -45,6 +45,7 @@ import { HOST_AUTO_APPROVAL_CEILING, HostAutoApprovalSchema } from "../v2/defini
 import { loadDefinition } from "../v2/definitions.js";
 import { autoApprovalPolicy } from "../v2/runtime.js";
 import { mergedBase, worktreeBase } from "../worktree.js";
+import { remainingPath } from "./critical-path.js";
 import { DECOMPOSE_WORKFLOW_ID } from "./decompose.js";
 import {
   estimateInitiative,
@@ -62,6 +63,7 @@ import {
   InitiativePlanSchema,
   isGlobPath,
   mergeSmallSiblings,
+  namedFiles,
   planSizeProblem,
   type SplitEdit,
   SplitEditSchema,
@@ -948,37 +950,80 @@ export class InitiativeService {
   }
 
   /**
-   * One round of an initiative whose features run in worktrees: starts ready features while fewer
-   * than `parallelRuns` feature runs can execute, then drives those runs at the same time until
-   * each stops. False when nothing started and no run moved.
+   * One round of an initiative whose features run in worktrees: up to `parallelRuns` feature runs
+   * execute at once, and each time one stops the freed slot takes the next ready feature, the one
+   * with the longest remaining path first. Each run is driven once per round, so a run that stops
+   * without moving is not driven again until the next round. Waiting for every run of a wave before
+   * starting the next left slots empty for 8.3 minutes in bench round 44 (cayleykit, #1535). False
+   * when nothing started and no run moved.
    */
   private async driveFeatures(id: string, signal: AbortSignal): Promise<boolean> {
     const runnable = (view: InitiativeView): FeatureView[] =>
       view.features.filter((f) => f.state === "in_progress" || f.state === "paused");
-    let view = this.view(id);
+    const before = new Map<string, number>();
+    const live = new Map<string, Promise<{ runId: string; error?: unknown }>>();
     let started = false;
-    for (;;) {
-      const ready = view.features.find((f) => f.state === "ready");
-      if (
-        !ready ||
-        runnable(view).length >= view.parallelRuns ||
-        shareShortfall(view, ready) ||
-        this.forecastOver(this.store.get(id), view)
-      )
-        break;
-      if (await this.startFeature(id, ready.id)) started = true;
-      view = this.view(id);
+    let failure: { error: unknown } | null = null;
+    const fill = async (): Promise<void> => {
+      let view = this.view(id);
+      for (;;) {
+        const row = this.store.get(id);
+        const ready = this.byPath(
+          row,
+          view.features.filter((f) => f.state === "ready"),
+          view.parallelRuns > 1,
+        )[0];
+        if (
+          !ready ||
+          runnable(view).length >= view.parallelRuns ||
+          shareShortfall(view, ready) ||
+          this.forecastOver(row, view)
+        )
+          break;
+        if (await this.startFeature(id, ready.id)) started = true;
+        view = this.view(id);
+      }
+      for (const feature of runnable(view)) {
+        const runId = feature.runId ?? "";
+        if (live.size >= view.parallelRuns) break;
+        if (before.has(runId)) continue;
+        before.set(runId, this.workflows.store.run(runId).revision);
+        live.set(
+          runId,
+          this.driveRun(runId, signal).then(
+            () => ({ runId }),
+            (error: unknown) => ({ runId, error: error ?? new Error("Feature run failed") }),
+          ),
+        );
+      }
+    };
+    await fill();
+    while (live.size) {
+      const done = await Promise.race(live.values());
+      live.delete(done.runId);
+      if ("error" in done && !failure) failure = { error: done.error };
+      if (!failure && !signal.aborted) await fill();
     }
-    const runs = runnable(view)
-      .slice(0, view.parallelRuns)
-      .map((f) => f.runId ?? "");
-    const before = runs.map((runId) => this.workflows.store.run(runId).revision);
-    const results = await Promise.allSettled(runs.map((runId) => this.driveRun(runId, signal)));
-    const failed = results.find((r) => r.status === "rejected");
-    if (failed) throw failed.reason;
+    if (failure) throw failure.error;
     return (
-      started || runs.some((runId, i) => this.workflows.store.run(runId).revision !== before[i])
+      started ||
+      [...before].some(([runId, revision]) => this.workflows.store.run(runId).revision !== revision)
     );
+  }
+
+  /**
+   * Features ordered by remaining critical path, longest first, then in plan order (#1535). One
+   * feature at a time keeps plan order: the order does not change the wall time then.
+   */
+  private byPath<T extends { id: string }>(
+    row: InitiativeRow,
+    features: T[],
+    parallel: boolean,
+  ): T[] {
+    const plan = parallel && features.length > 1 ? this.approvedPlan(row) : null;
+    if (!plan) return features;
+    const rank = remainingPath(plan, namedFiles(row.prompt));
+    return [...features].sort((a, b) => (rank.get(b.id) ?? 0) - (rank.get(a.id) ?? 0));
   }
 
   /**
@@ -1513,8 +1558,15 @@ export class InitiativeService {
     const shares = splitShares(waitingForRun, remaining, cost.remainingUsd);
     for (const [index, feature] of waitingForRun.entries()) Object.assign(feature, shares[index]);
     const unstarted = waitingForRun.length;
+    // The share of the feature that starts next, by the same order the drive starts them in.
     const nextShare =
-      (waitingForRun.find((f) => f.state === "ready") ?? waitingForRun[0])?.share ?? null;
+      (
+        this.byPath(
+          row,
+          waitingForRun.filter((f) => f.state === "ready"),
+          this.parallelRuns(settings, plan, facts) > 1,
+        )[0] ?? waitingForRun[0]
+      )?.share ?? null;
     const pendingDecisions: PendingDecision[] = [
       ...this.store
         .requests(id)
@@ -1702,11 +1754,18 @@ export class InitiativeService {
       if (feature.state === "stale")
         return action("rebase", `Rebase ${feature.id} on the changed upstream contract`, feature);
       if (feature.state !== "ready") continue;
-      const shortfall = shareShortfall(view, feature);
-      if (shortfall) return action("blocked", shortfall, feature);
+      // Of the ready features, the one with the longest remaining path starts first (#1535).
+      const first =
+        this.byPath(
+          row,
+          view.features.filter((f) => f.state === "ready"),
+          parallel,
+        )[0] ?? feature;
+      const shortfall = shareShortfall(view, first);
+      if (shortfall) return action("blocked", shortfall, first);
       const over = this.forecastOver(row, view);
-      if (over) return action("blocked", over, feature);
-      return action("start", `Start feature ${feature.id}`, feature);
+      if (over) return action("blocked", over, first);
+      return action("start", `Start feature ${first.id}`, first);
     }
     if (waits[0]) return waits[0];
     const missing = view.features.filter((f) => f.mandatory && f.state !== "accepted");

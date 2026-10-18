@@ -1309,6 +1309,84 @@ describe("initiative runtime", () => {
     expect(git(t.root, "status", "--porcelain")).toBe("");
   }, 30000);
 
+  // Bench round 44, cayleykit (#1535): features started in waves behind Promise.allSettled, so a
+  // freed slot stayed empty until the slowest sibling stopped (8.3 slot-minutes), and the ready
+  // feature on the critical path waited behind one earlier in plan order.
+  describe("dispatch on every stop, longest remaining path first (#1535)", () => {
+    class TimedExecutor extends InitiativeExecutor {
+      /** A feature's implementation holds until these features have started theirs, or 30 s pass. */
+      waits: Record<string, string[]> = {};
+      starts: string[] = [];
+      /** `start:NAME` and `end:NAME` in the order they happened. */
+      events: string[] = [];
+      override async execute(request: ExecutionRequest) {
+        const name = request.task?.writes[0]?.path.replace(/\.txt$/, "");
+        if (request.profile.output !== "implementation" || !name) return super.execute(request);
+        this.starts.push(name);
+        this.events.push(`start:${name}`);
+        const deadline = Date.now() + 30_000;
+        while (!(this.waits[name] ?? []).every((other) => this.starts.includes(other)) && Date.now() < deadline)
+          await Bun.sleep(20);
+        try {
+          return await super.execute(request);
+        } finally {
+          this.events.push(`end:${name}`);
+        }
+      }
+    }
+    const cayley = plan([
+      feature("chain"),
+      feature("finite"),
+      feature("perm", ["chain"]),
+      feature("chainc", ["chain"]),
+      feature("finitec", ["chain", "finite"]),
+      feature("entry", ["finitec"]),
+    ]);
+
+    async function run(maxParallelRuns: number) {
+      const t = setup(cayley, 100, (root) => new TimedExecutor(root, cayley));
+      repository(t.root);
+      // As in the round, finite outlasts chain and the command features outlast finite. A feature
+      // holds until the ones that should start while it runs have started, so the order does not
+      // depend on the machine's speed; before the fix they could not start and it held 30 s.
+      t.executor.waits =
+        maxParallelRuns === 2
+          ? { finite: ["perm"], perm: ["finitec"] }
+          : { finite: ["perm", "chainc"], perm: ["finitec"] };
+      if (t.workflows.config.workflows) t.workflows.config.workflows.maxParallelRuns = maxParallelRuns;
+      const worktreePolicy: RunPolicy = { ...policy, executionMode: "worktree" };
+      await t.start({ plan: cayley, policy: worktreePolicy, featureAutoApproval: { maxTasks: 5, maxFiles: 5 }, budget: { maxTotalTokens: 6_000_000, maxAgentCalls: 2000, maxActiveMs: 6_000_000 } });
+      const approved = await t.approveSplit();
+      expect(approved.parallelRuns).toBe(maxParallelRuns);
+      const view = await t.drive();
+      expect(view.status).toBe("completed");
+      return t.executor;
+    }
+
+    test("with two slots, a freed slot is refilled at once and the critical-path feature goes first", async () => {
+      const executor = await run(2);
+      // perm starts when chain stops, while finite still runs; before, it waited for finite too.
+      // chain and finite start together, in either order.
+      expect(executor.starts.slice(0, 2).sort()).toEqual(["chain", "finite"]);
+      expect(executor.starts[2]).toBe("perm");
+      expect(executor.events.indexOf("start:perm")).toBeLessThan(executor.events.indexOf("end:finite"));
+      // When finite stops, finitec (on the path to entry) starts before chainc, which is earlier in plan order.
+      expect(executor.starts.indexOf("finitec")).toBeLessThan(executor.starts.indexOf("chainc"));
+      expect(executor.maxActive).toBeLessThanOrEqual(2);
+    }, 120_000);
+
+    test("with three slots, every ready feature starts as soon as a slot frees", async () => {
+      const executor = await run(3);
+      expect(executor.starts.slice(0, 2).sort()).toEqual(["chain", "finite"]);
+      expect(executor.starts.slice(2, 4).sort()).toEqual(["chainc", "perm"]);
+      // Both start when chain stops, while finite still runs.
+      expect(executor.events.indexOf("start:chainc")).toBeLessThan(executor.events.indexOf("end:finite"));
+      // finitec takes the slot finite frees while perm and chainc still run.
+      expect(executor.events.indexOf("start:finitec")).toBeLessThan(executor.events.indexOf("end:perm"));
+      expect(executor.maxActive).toBeLessThanOrEqual(3);
+    }, 120_000);
+  });
+
   test("siblings that share a file run in order, so a dependent's merge of their results succeeds (#1336)", async () => {
     // Bench round 34, sketchfold: hll, frequent, hist and member each added a `pub mod` line to
     // src/lib.rs with no dependency between them; their accepted results conflicted when sketch
