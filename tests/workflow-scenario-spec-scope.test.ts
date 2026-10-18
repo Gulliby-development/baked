@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
-import { contradictoryScope, domainExclusions, inventedBounds, narrowingBounds, type RunPolicy, type Spec } from "../src/core/workflows/schemas.js";
+import { builtinProfiles } from "../src/core/agents/profiles/builtin.js";
+import { contradictoryScope, domainExclusions, inventedBounds, narrowingBounds, type RunPolicy, type Spec, specCoverageProblems } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
@@ -255,3 +256,46 @@ class SpecExecutor implements AgentExecutor {
     return { output, inputTokens: 20, outputTokens: 30 };
   }
 }
+
+// Bench rounds 41 to 43 (#1520): the spec-author profile told the author to write a criterion's
+// input domain into the criterion ("amounts up to 1e9 with two decimals") and to say that larger
+// inputs are outside the checked domain; domainExclusions and inventedBounds send exactly that
+// back, so 28 first submissions were rejected and written again (about 30k tokens each).
+describe("the spec author's instructions agree with the spec checks (#1520)", () => {
+  const instructions = builtinProfiles.find((p) => p.id === "spec-author")?.instructions ?? "";
+  const request = "Summarize the expenses in a CSV file.";
+
+  test("the instructions never ask for a domain exclusion or a bound in a criterion", () => {
+    expect(instructions).not.toContain("outside the checked domain");
+    expect(instructions).not.toMatch(/state its input domain in the criterion/);
+  });
+
+  test("a spec written the way the instructions prescribe passes the checks", () => {
+    const assumption = instructions.match(/"(Amounts Assumed: [^"]+)"/)?.[1] ?? "";
+    expect(assumption).toContain("1e9");
+    const spec: Spec = {
+      ...fixed,
+      inScope: ["Summarize expenses"],
+      assumptions: [assumption],
+      criteria: [
+        criterion("AC-001", ["FR-001"], "the summary prints the total of the amounts with two decimals"),
+        // The instructions' other examples the checks read: a CI matrix and a layout outcome.
+        criterion("AC-002", ["FR-001"], "a CI workflow file runs the checks on a matrix of ubuntu-latest, macos-latest, windows-latest"),
+        { ...criterion("AC-003", ["FR-001"], "the pages fit a 1280 px wide viewport without horizontal scrolling"), method: "post-release" },
+      ],
+    };
+    expect(specCoverageProblems(spec, undefined, { request })).toEqual([]);
+  });
+
+  test("the domain the old instructions prescribed is sent back", () => {
+    const spec: Spec = {
+      ...fixed,
+      criteria: [
+        criterion("AC-001", ["FR-001"], "amounts up to 1e9 with two decimals are summed; inputs beyond it are outside the checked domain"),
+        criterion("AC-002", ["FR-001"], "files of up to 100,000 rows are summarized"),
+      ],
+    };
+    expect(domainExclusions(spec, request)).toEqual(["AC-001"]);
+    expect(inventedBounds(spec, request)).toEqual(["AC-002"]);
+  });
+});
