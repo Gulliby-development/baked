@@ -80,8 +80,72 @@ export function criticalPathFeatures(
   });
 }
 
-/** What goes back to the decomposer for each such feature. */
+/** A chain holding at least this share of the split's work is asked about (#1551). */
+export const CHAIN_SHARE = 0.8;
+/** A chain needs at least this many features to be asked about. */
+export const CHAIN_FEATURES = 5;
+
+/** The total work of a split, in the units of `featureWork`. */
+export function totalWork(plan: InitiativePlan, named: readonly string[]): number {
+  return plan.features.reduce((sum, f) => sum + featureWork(f, named), 0);
+}
+
+/**
+ * The critical path when it is a long chain that holds most of the split's work, unless the
+ * decomposer said why it stays (`chain`). Bench round 45 (grundykit): 8 of 9 features ran in
+ * series, the largest of them 16% of the path, so the share check of one feature never asked, and
+ * the speedup was 1.08x (#1551).
+ */
+export function criticalChain(
+  plan: InitiativePlan,
+  request: string,
+): { path: string[]; share: number } | null {
+  if (plan.chain || plan.features.length >= MAX_FEATURES) return null;
+  const named = namedFiles(request);
+  const path = criticalPath(plan, named);
+  const total = totalWork(plan, named);
+  if (path.features.length < CHAIN_FEATURES || total <= 0) return null;
+  const share = path.work / total;
+  return share >= CHAIN_SHARE ? { path: path.features, share } : null;
+}
+
+/**
+ * The critical path of a split for its approval: the chain, its share of the work, and the most
+ * the split can gain over one feature at a time with `parallelRuns` runs at once (total work over
+ * the longer of the path and an even spread).
+ */
+export function criticalPathSummary(
+  plan: InitiativePlan,
+  request: string,
+  parallelRuns: number,
+): { features: string[]; workShare: number; speedup: number; chain: string | null } | null {
+  const named = namedFiles(request);
+  const path = criticalPath(plan, named);
+  const total = totalWork(plan, named);
+  if (path.features.length === 0 || total <= 0) return null;
+  const bound = Math.max(path.work, total / Math.max(1, parallelRuns));
+  return {
+    features: path.features,
+    workShare: path.work / total,
+    speedup: total / bound,
+    chain: plan.chain ?? null,
+  };
+}
+
+/** What goes back to the decomposer for each such feature, and for a long chain. */
 export function criticalPathProblems(plan: InitiativePlan, request: string): string[] {
+  const chain = criticalChain(plan, request);
+  return [
+    ...criticalFeatureProblems(plan, request),
+    ...(chain
+      ? [
+          `The longest dependency chain (${chain.path.join(" -> ")}) holds ${Math.round(chain.share * 100)}% of the split's work by size and files, and features on it run one after another. Check each dependsOn edge on it: a feature depends only on the features whose code or contract its own tasks use (a command adapter on its own module, not on every module the program has), so drop the others. Where one feature serves dependents that need different parts of it, split it by those parts, each with at least ${MIN_FEATURE_PATHS} files, so each dependent waits only for its part. If every feature on the chain needs the one before, set the plan's chain to why.`,
+        ]
+      : []),
+  ];
+}
+
+function criticalFeatureProblems(plan: InitiativePlan, request: string): string[] {
   return criticalPathFeatures(plan, request).map(
     ({ feature, share, path }) =>
       `${feature.id} is ${Math.round(share * 100)}% of the critical path (${path.join(" -> ")}) by size and files, and features on that path run one after another. If its files form groups that do not depend on each other, split it into features with its dependsOn, each with at least ${MIN_FEATURE_PATHS} files, so they run side by side, and make the features that depend on it depend on every part. Otherwise set its serial to why its parts must stay in one feature.`,

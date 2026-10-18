@@ -13,6 +13,7 @@ import {
   budgetExtension,
   budgetFields,
   costLine,
+  criticalPathLine,
   parseUsd,
   canEditSplit,
   canExtendBudget,
@@ -672,6 +673,15 @@ describe("initiative management", () => {
     );
     expect(costLine(view)).toBeNull();
     expect(parseUsd("$12.50")).toBe(12.5);
+    // The critical path line, as the terminal shows it (#1551); absent on older backends.
+    expect(criticalPathLine(view)).toBeNull();
+    const pathed = initiativeView({
+      parallelRuns: 2,
+      criticalPath: { features: ["a", "b"], workShare: 0.8, speedup: 1.25, chain: null },
+    });
+    expect(criticalPathLine(pathed)).toBe(
+      `Critical path: a → b (2 of ${pathed.features.length} features, 80% of the work) · at most 1.25x faster than one feature at a time`,
+    );
     expect(parseUsd("0")).toBeNull();
   });
 

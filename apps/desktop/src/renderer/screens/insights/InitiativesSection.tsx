@@ -37,6 +37,7 @@ import {
   canSwitchModel,
   configurableFeatures,
   costLine,
+  criticalPathLine,
   detailStatus,
   estimateBasisText,
   estimateFit,
@@ -671,6 +672,9 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
           </Button>
         )}
       </div>
+      {criticalPathLine(view) && (
+        <p className="m-0 text-[12px] text-dim-foreground">{criticalPathLine(view)}</p>
+      )}
       {dialog?.kind === "reject" && split && (
         <RejectDialog projectKey={projectKey} view={view} decision={split} onClose={close} />
       )}
