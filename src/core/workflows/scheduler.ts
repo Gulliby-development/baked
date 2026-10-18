@@ -292,6 +292,7 @@ import { isManifestPath, manifestDependencies } from "./quality/manifests.js";
 import {
   DEFAULT_MUTATION_BUDGET_MS,
   generateMutants,
+  greenSuiteMs,
   isTestCheck,
   MAX_EQUIVALENCE_CHECKS,
   MAX_MUTANTS,
@@ -10468,7 +10469,16 @@ ${note}`;
     // In a copy, files Git ignores (a build, a virtualenv) may be missing: tests that fail there
     // without a mutant would count every mutant as killed.
     const budgetMs = policy.mutationBudgetMs ?? DEFAULT_MUTATION_BUDGET_MS;
+    const baselineStarted = Date.now();
     const baseline = copy && mutants.length && tests.length ? await runTests(budgetMs) : null;
+    // How long the suite takes green, so one mutant that hangs it cannot take the budget (#1534).
+    const greenMs =
+      baseline?.status === "passed"
+        ? Date.now() - baselineStarted
+        : greenSuiteMs(
+            this.store.checkDetails(runId),
+            tests.map((check) => check.id),
+          );
     if (baseline && baseline.status !== "passed") {
       await scope.stop();
       return {
@@ -10501,6 +10511,7 @@ ${note}`;
             },
             {
               ...(policy.mutationBudgetMs ? { budgetMs: policy.mutationBudgetMs } : {}),
+              ...(greenMs !== undefined ? { greenMs } : {}),
               ...(policy.mutationThresholds ? { thresholds: policy.mutationThresholds } : {}),
               signal,
             },

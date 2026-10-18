@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { maskNonCode } from "../src/core/workflows/quality/code-mask.js";
 import {
   generateMutants,
+  greenSuiteMs,
+  MIN_MUTANT_DEADLINE_MS,
+  mutantDeadlineMs,
   proposalFiles,
   proposedMutants,
   isTestCheck,
@@ -166,6 +169,80 @@ describe("mutants", () => {
     ]);
   });
 
+  // #1534 (R44 cayleykit): a mutant that made `dotnet test` loop ran until the 300 s budget was
+  // gone, so 18 of 24 mutants were never run and the score came from the first five.
+  describe("one hanging mutant does not take the budget (#1534)", () => {
+    const file = {
+      path: "src/Chain.cs",
+      before: "",
+      content: [1, 2, 3, 4, 5, 6].map((n) => `var v${n} = a > ${n};`).join("\n"),
+    };
+    // A fake clock: a killed mutant takes the suite's 4 s, the looping one runs until its deadline.
+    const hanging = (greenMs?: number) => {
+      let clock = 0;
+      const deadlines: number[] = [];
+      let planted = "";
+      const runner: MutationRunner = {
+        plant: async (_path, content) => {
+          planted = content;
+        },
+        restore: async () => {},
+        test: async (timeLeftMs) => {
+          deadlines.push(timeLeftMs);
+          if (planted.includes("v2 = a >= 2")) {
+            clock += timeLeftMs;
+            return { status: "timeout" };
+          }
+          clock += 4000;
+          return { status: "failed", check: "unit" };
+        },
+        now: () => clock,
+      };
+      const mutants = generateMutants([file]).filter((m) => m.operator === "boundary");
+      return {
+        deadlines,
+        run: () =>
+          runMutants("advisory", mutants, [file], ["unit"], runner, {
+            ...(greenMs !== undefined ? { greenMs } : {}),
+          }),
+      };
+    };
+
+    test("with the green suite's duration every mutant runs and the timeout scores as detected", async () => {
+      const { run, deadlines } = hanging(4000);
+      const result = await run();
+      expect(result.mutants).toHaveLength(6);
+      expect(result.mutants.map((m) => m.status)).toEqual(["killed", "timeout", "killed", "killed", "killed", "killed"]);
+      expect(result.note ?? "").not.toContain("time budget");
+      expect(result.score).toBe(100);
+      expect(deadlines.every((d) => d === mutantDeadlineMs(4000))).toBe(true);
+      expect(mutantDeadlineMs(4000)).toBe(22_000);
+    });
+
+    test("without it, the slowest finished mutant run sets the deadline", async () => {
+      const { run, deadlines } = hanging();
+      const result = await run();
+      expect(result.mutants.every((m) => m.status !== "not-run")).toBe(true);
+      // The first mutant has nothing to go by and gets the budget; the rest get a deadline.
+      expect(deadlines[0]).toBe(300_000);
+      expect(deadlines.slice(1).every((d) => d === mutantDeadlineMs(4000))).toBe(true);
+    });
+
+    test("the green duration is each test check's slowest passing run, summed", () => {
+      const rows = [
+        { check_id: "unit", status: "passed", duration_ms: 3000 },
+        { check_id: "unit", status: "passed", duration_ms: 3600 },
+        { check_id: "unit", status: "failed", duration_ms: 90_000 },
+        { check_id: "e2e", status: "passed", duration_ms: 1000 },
+      ];
+      expect(greenSuiteMs(rows, ["unit", "e2e"])).toBe(4600);
+      expect(greenSuiteMs(rows, ["unit", "never"])).toBeUndefined();
+      expect(greenSuiteMs(rows, [])).toBeUndefined();
+      expect(mutantDeadlineMs(100_000)).toBe(310_000);
+      expect(mutantDeadlineMs(1000)).toBe(MIN_MUTANT_DEADLINE_MS);
+    });
+  });
+
   test("survivors block under required, killed and timed-out ones do not; the budget leaves the rest not run", async () => {
     const file = { path: "src/a.ts", before: "", content: "const a = x > 1 && y;\nconst b = z === 2;\n" };
     const mutants = generateMutants([file]);
@@ -195,7 +272,8 @@ describe("mutants", () => {
       ["literal", "killed", false],
       ["literal", "not-run", false],
     ]);
-    expect(result.score).toBe(67);
+    // #1534: the timed-out mutant was detected and scores with the killed ones.
+    expect(result.score).toBe(75);
     expect(result.note).toContain("time budget");
     expect(planted.filter((p) => p === "restored")).toHaveLength(4);
     const advisory = await runMutants("advisory", mutants.slice(0, 1), [file], ["unit"], { ...runner, now: () => 0 });
