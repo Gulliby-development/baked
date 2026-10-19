@@ -8,6 +8,7 @@ import { TsMorphBackend } from "../intelligence/backends/ts-morph.js";
 import { memoryHintComposite } from "../memory/hints.js";
 import { isForbidden } from "../security/forbidden.js";
 import { displayPath } from "../utils/path-display.js";
+import { assertEditActive } from "./edit-deadline.js";
 import { formatMetricDelta } from "./edit-file.js";
 import { pushEdit } from "./edit-stack.js";
 import { emitFileEdited } from "./file-events.js";
@@ -171,10 +172,13 @@ export const astEditTool = {
         }
         try {
           await mkdir(dirname(filePath), { recursive: true });
+          toolPhase("analyze");
           const beforeMetrics = analyzeFile("");
           const afterMetrics = analyzeFile(content);
+          toolPhase("pre_diagnostics");
           const diags = await startPreEditDiagnostics(filePath, { newFile: true });
 
+          assertEditActive();
           pushEdit(filePath, "", content, args.tabId);
           toolPhase("write");
           await writeFile(filePath, content, "utf-8");
@@ -245,6 +249,7 @@ export const astEditTool = {
         return { success: false, output: msg, error: "stale cache" };
       }
       // CAS: verify no concurrent modification since our snapshot
+      toolPhase("cas");
       const currentOnDisk = await readFile(filePath, "utf-8");
       if (currentOnDisk !== contentOnDisk) {
         const msg = "File was modified concurrently since last read. Re-read and retry.";
@@ -252,10 +257,20 @@ export const astEditTool = {
       }
 
       // Write with full undo + diagnostics pipeline
+      toolPhase("analyze");
       const beforeMetrics = analyzeFile(before);
       const afterMetrics = analyzeFile(updated);
+      toolPhase("pre_diagnostics");
       const diags = await startPreEditDiagnostics(filePath);
 
+      // Diagnostics yield to other editors too. Validate the snapshot again before writing.
+      toolPhase("cas");
+      if ((await readFile(filePath, "utf-8")) !== contentOnDisk) {
+        const msg = "File was modified concurrently since last read. Re-read and retry.";
+        return { success: false, output: msg, error: "concurrent modification" };
+      }
+
+      assertEditActive();
       pushEdit(filePath, before, updated, args.tabId);
       toolPhase("write");
       await writeFile(filePath, updated, "utf-8");

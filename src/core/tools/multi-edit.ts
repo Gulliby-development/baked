@@ -8,7 +8,8 @@ import { atomicWriteFile } from "../platform/index.js";
 import { isForbidden } from "../security/forbidden.js";
 import { displayPath } from "../utils/path-display.js";
 import { assertWorkspaceMutationAllowed } from "../workflows/leases.js";
-import { buildRichEditError, fuzzyWhitespaceMatch } from "./edit-file.js";
+import { assertEditActive } from "./edit-deadline.js";
+import { buildRichEditError, fuzzyWhitespaceMatchAsync } from "./edit-file.js";
 import { pushEdit } from "./edit-stack.js";
 import { emitFileEdited } from "./file-events.js";
 import { dominantLineEnding, minorityLineCount, toLf, withLineEnding } from "./line-endings.js";
@@ -65,6 +66,12 @@ export const multiEditTool = {
         return { success: false, output: msg, error: msg };
       }
 
+      if (args.edits.some((edit) => edit.oldString === "")) {
+        const msg =
+          "Each multi_edit oldString must be non-empty. NO edits were applied (atomic rollback). Use edit_file to create a file.";
+        return { success: false, output: msg, error: "empty oldString (0 edits applied)" };
+      }
+
       try {
         await statAsync(filePath);
       } catch (err: unknown) {
@@ -89,6 +96,7 @@ export const multiEditTool = {
       // lineStart values (which reference the ORIGINAL file) stay accurate.
       // Sort edits top-to-bottom by lineStart so the cumulative offset is correct —
       // each edit only shifts lines below it. Edits without lineStart go last (string-match fallback).
+      toolPhase("match");
       const sortedEdits = args.edits
         .map((e) => ({ ...e, oldString: toLf(e.oldString), newString: toLf(e.newString) }))
         .sort((a, b) => {
@@ -137,7 +145,11 @@ export const multiEditTool = {
             }
 
             // Fuzzy match at range (whitespace/escape normalization)
-            const rangeFixed = fuzzyWhitespaceMatch(rangeContent, edit.oldString, edit.newString);
+            const rangeFixed = await fuzzyWhitespaceMatchAsync(
+              rangeContent,
+              edit.oldString,
+              edit.newString,
+            );
             if (rangeFixed) {
               applyLineReplace(start, end, rangeFixed.newStr);
               lineOffset += rangeFixed.newStr.split("\n").length - (end - start);
@@ -171,7 +183,7 @@ export const multiEditTool = {
         }
 
         // Fuzzy match (whitespace + escape normalization)
-        const fixed = fuzzyWhitespaceMatch(content, edit.oldString, edit.newString);
+        const fixed = await fuzzyWhitespaceMatchAsync(content, edit.oldString, edit.newString);
         if (fixed && content.includes(fixed.oldStr)) {
           const fixedOccurrences = countOccurrences(content, fixed.oldStr);
           if (fixedOccurrences === 1) {
@@ -194,14 +206,17 @@ export const multiEditTool = {
       }
 
       // Phase 2: All edits validated — compute metrics and apply
+      toolPhase("analyze");
       const beforeMetrics = analyzeFile(originalContent);
       const afterMetrics = analyzeFile(content);
 
+      toolPhase("pre_diagnostics");
       const diags = await startPreEditDiagnostics(filePath);
 
       // CAS: verify file hasn't been modified since we read it.
       // ifHash trusts the caller's last-read hash against originalContent (read this call) —
       // skips the extra disk read.
+      toolPhase("cas");
       if (args.ifHash) {
         if (contentHash(rawContent) !== args.ifHash) {
           const msg =
@@ -227,6 +242,7 @@ export const multiEditTool = {
 
       // Push single undo entry for the entire batch — write immediately
       const finalContent = withLineEnding(content, eol);
+      assertEditActive();
       pushEdit(filePath, rawContent, finalContent, args.tabId);
 
       toolPhase("write");

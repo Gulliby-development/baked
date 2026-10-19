@@ -6,6 +6,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
+  interruptedTokensLine,
   type RunUsageReport,
   toolBackendLine,
   type UsageDimension,
@@ -122,7 +123,9 @@ export function runUsageMarkdown(report: RunUsageReport): string {
     (sum, attempt) => sum + (attempt.unreportedResponses ?? 0),
     0,
   );
-  const estimated = report.attempts.filter((attempt) => attempt.usageEstimated).length;
+  const estimated = report.attempts.filter(
+    (attempt) => attempt.usageEstimated && attempt.status !== "interrupted",
+  ).length;
   interface Row {
     attempts: number;
     tokens: number;
@@ -227,6 +230,9 @@ export function runUsageMarkdown(report: RunUsageReport): string {
     `- Tokens: ${count(total.tokens)} (input ${count(total.input)}, output ${count(total.output)}, cache reads ${count(total.cacheRead)}, cache writes ${count(total.cacheWrite)})`,
     `- Estimated cost: ${cost(total.costUsd, total.unpriced)}`,
     ...(backends ? [`- Code intelligence: ${backends}`] : []),
+    ...(interruptedTokensLine(report.attempts)
+      ? [`- ${interruptedTokensLine(report.attempts)}`]
+      : []),
     ...(estimated
       ? [
           `- Estimated usage: ${count(estimated)} attempts whose provider reported no usage; their tokens and cost are estimated from the sizes of the request and the response`,
