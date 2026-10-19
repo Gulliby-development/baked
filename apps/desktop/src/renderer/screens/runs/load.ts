@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { AcceptanceRow } from "../../../../../../src/core/workflows/acceptance-rows-model.js";
 import type { HostEdit } from "../../../../../../src/core/workflows/host-edits-model.js";
 import { bridge } from "../../client/bridge.js";
 import {
@@ -35,6 +36,7 @@ export interface RunArtifacts {
   spec: Spec | null;
   plan: string | null;
   graph: TaskGraph | null;
+  rows?: AcceptanceRow[];
   hostEdits?: HostEdit[] | null;
   estimate: SavedEstimate | null;
   /** The latest routing record: the run model and the routed stages. */
@@ -94,31 +96,44 @@ export async function loadArtifacts(
     /^acceptance\/[^/]+\/[^/]+\/walk\.json$/.test(a.path),
   );
   const reviewIds = [...new Set(findingArtifacts)];
-  const [spec, planText, graph, estimate, routing, preflight, gates, walks, reviews, hostEdits] =
-    await Promise.all([
-      readJson<Spec>(key, runId, latest.get("spec.json")),
-      latest.has("plan.md")
-        ? read(key, runId, latest.get("plan.md")?.id ?? "").catch(() => null)
-        : Promise.resolve(null),
-      readJson<TaskGraph>(key, runId, latest.get("tasks.json")),
-      readJson<SavedEstimate>(key, runId, latest.get("estimates/start.json")),
-      readJson<RoutingRecord>(key, runId, latest.get("routing.json")),
-      readJson<{ checks: CheckSmoke[] }>(key, runId, latest.get("preflight/checks.json")),
-      readJson<AcceptanceGate[]>(key, runId, latest.get("definition/gates.json")),
-      Promise.all(walkEntries.map((e) => readJson<WalkRecord>(key, runId, e))),
-      Promise.all(
-        reviewIds.map(async (id) => {
-          const entry = list.find((a) => a.id === id);
-          return entry ? readJson<Review>(key, runId, entry) : null;
-        }),
-      ),
-      readJson<HostEdit[]>(key, runId, latest.get("host-edits.json")),
-    ]);
+  const [
+    spec,
+    planText,
+    graph,
+    estimate,
+    routing,
+    preflight,
+    gates,
+    walks,
+    reviews,
+    rows,
+    hostEdits,
+  ] = await Promise.all([
+    readJson<Spec>(key, runId, latest.get("spec.json")),
+    latest.has("plan.md")
+      ? read(key, runId, latest.get("plan.md")?.id ?? "").catch(() => null)
+      : Promise.resolve(null),
+    readJson<TaskGraph>(key, runId, latest.get("tasks.json")),
+    readJson<SavedEstimate>(key, runId, latest.get("estimates/start.json")),
+    readJson<RoutingRecord>(key, runId, latest.get("routing.json")),
+    readJson<{ checks: CheckSmoke[] }>(key, runId, latest.get("preflight/checks.json")),
+    readJson<AcceptanceGate[]>(key, runId, latest.get("definition/gates.json")),
+    Promise.all(walkEntries.map((e) => readJson<WalkRecord>(key, runId, e))),
+    Promise.all(
+      reviewIds.map(async (id) => {
+        const entry = list.find((a) => a.id === id);
+        return entry ? readJson<Review>(key, runId, entry) : null;
+      }),
+    ),
+    readJson<{ rows: AcceptanceRow[] }>(key, runId, latest.get("rows.json")),
+    readJson<HostEdit[]>(key, runId, latest.get("host-edits.json")),
+  ]);
   return {
     list,
     spec,
     plan: planText,
     graph,
+    ...(Array.isArray(rows?.rows) ? { rows: rows.rows } : {}),
     hostEdits: Array.isArray(hostEdits) ? hostEdits : null,
     estimate,
     routing: routing && typeof routing.runModel === "string" ? routing : null,

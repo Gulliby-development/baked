@@ -176,6 +176,7 @@ describe("tasks", () => {
 
 describe("live refetch", () => {
   test("maps events to what must be read again", () => {
+    expect(refetchFor([ev("artifact.committed", { artifactId: "rows", kind: "acceptance-rows", hash: "h" })]).artifacts).toBe(true);
     expect(refetchFor([task("T001", "running")])).toEqual({ status: false, artifacts: false, usage: false });
     expect(
       refetchFor([

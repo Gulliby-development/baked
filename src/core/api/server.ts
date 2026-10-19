@@ -499,6 +499,7 @@ function startArgs(raw: unknown): WorkflowArgs {
   if (body.candidates !== undefined) flags.candidates = String(body.candidates);
   if (body.clarification) flags.clarification = body.clarification;
   if (body.testIntegrity) flags["test-integrity"] = body.testIntegrity;
+  if (body.rowsAsData) flags["rows-as-data"] = body.rowsAsData;
   if (body.duplication) flags.duplication = body.duplication;
   if (body.sast) flags.sast = body.sast;
   if (body.mutation) flags.mutation = body.mutation;

@@ -67,7 +67,9 @@ const CHECK_COMMAND = new RegExp(
 
 /** What else decides which quoted literals are cases (#1366). */
 type CaseTask = Pick<Task, "criterionIds"> &
-  Partial<Pick<Task, "id" | "description" | "writes" | "dependsOn" | "sizingSlice">>;
+  Partial<
+    Pick<Task, "id" | "description" | "writes" | "dependsOn" | "sizingSlice" | "rows" | "rowTest">
+  >;
 
 export interface CaseContext {
   /** The run's checks: a literal that is one of their commands is checked by the host. */
@@ -409,7 +411,10 @@ export function caseCheck(
   task: CaseTask & Pick<Task, "writes">,
   context: CaseContext = {},
 ): ((root: string) => Promise<string[]>) | undefined {
-  const paths = writtenTestPaths(task);
+  const paths = [
+    ...writtenTestPaths(task),
+    ...(task.rows?.length && task.rowTest ? [task.rowTest.data] : []),
+  ];
   const cases = spec ? criterionCases(spec, task, context) : [];
   if (!paths.length || !cases.length) return undefined;
   return async (root) => {

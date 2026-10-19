@@ -282,6 +282,8 @@ Exists: `GET /v1/workflow/definitions` (each summary has `stages` and `line`: `s
 
 `POST /v1/workflow/runs` also takes `testIntegrity` (`block` or `warn`, as `--test-integrity`; see [test integrity](../workflows/runtime.md#test-integrity)); omitted, the policy decides.
 
+`POST /v1/workflow/runs` takes `rowsAsData` as `"on"` or `"off"`, overriding the workflow policy for that run. The default is off. This enables audited JSON rows and host-written Bun or pytest tests; the agent writes the harness. The desktop New run settings expose the same choice as Host-written acceptance rows. Tasks retain `rows` and `rowTest` in `tasks.json`, and the existing artifact endpoints expose the versioned `rows.json` audit data. See [acceptance rows as data](../workflows/runtime.md#acceptance-rows-as-data).
+
 `POST /v1/workflow/runs` also takes `maxCostUsd` (a positive number of US dollars, as `--max-cost-usd`); omitted, the policy's cap and then the `runBudget.maxCostUsd` setting apply ([cost cap](../workflows/runtime.md#cost-cap)). `GET /v1/workflow/doctor` and `/estimate` take it as `?maxCostUsd=`; the estimate then has `cost: {maxCostUsd, fits}` and the doctor a `budget.cost` warning when the estimate may pass the cap.
 
 `POST /v1/workflow/runs` and the `GET /v1/workflow/doctor` and `/estimate` queries take `sandbox` (`off`, `auto` or `required`, as `--sandbox`): the run's [OS sandbox](../sandbox.md), frozen in its policy; omitted, the stricter of the policy's `sandbox` and the configured `sandbox` setting applies, and `required` without a backend is refused with 400 `INVALID_DEFINITION`.

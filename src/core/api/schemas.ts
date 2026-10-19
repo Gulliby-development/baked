@@ -48,6 +48,7 @@ export const StartBody = z
     clarification: z.enum(["ask", "assume"]).optional(),
     /** What the test-integrity guard does, as `--test-integrity`; omitted, the policy decides. */
     testIntegrity: z.enum(["block", "warn"]).optional(),
+    rowsAsData: z.enum(["off", "on"]).optional(),
     /** The duplication ratchet of the run, as `--duplication`; omitted, the policy decides. */
     duplication: z.enum(["off", "warn", "ratchet"]).optional(),
     /** Semgrep on the run's diff, as `--sast`; omitted, the policy decides. */

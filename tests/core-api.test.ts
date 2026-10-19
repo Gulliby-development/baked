@@ -64,6 +64,21 @@ test("workflow API errors preserve CLI text and carry app recovery advice (#1578
   expect(desktopRecoveryText(body.error.message, body.error.recovery)).not.toContain("baked workflow");
 });
 
+test("the API freezes the acceptance rows override in the core policy (#1596)", async () => {
+  for (const mode of ["on", "off"] as const) {
+    const { fixture, post } = await setup();
+    const response = await post("/v1/workflow/runs", {
+      commandId: newId(), feature: "fixture", prompt: "Write the fixture",
+      policy: { ...fixture.service.config.workflows?.policy, rowsAsData: mode === "off" ? "on" : "off" },
+      rowsAsData: mode,
+    });
+    expect(response.status).toBe(202);
+    const snapshot = await response.json() as RunSnapshot;
+    const frozen = JSON.parse(fixture.service.store.run(snapshot.runId).policy_json);
+    expect(frozen.rowsAsData).toBe(mode === "on" ? "on" : undefined);
+  }
+});
+
 /** Reads SSE frames until `count` events arrived, then disconnects. */
 async function readEvents(response: Response, count: number): Promise<{ id: number; event: WorkflowEvent }[]> {
   if (!response.body) throw new Error("No body");

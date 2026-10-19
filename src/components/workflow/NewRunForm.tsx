@@ -42,6 +42,8 @@ const FIELDS = [
   "tests",
   "strict",
   "start",
+  // Keep the existing navigation through Start run unchanged.
+  "rows",
 ] as const;
 type FieldId = (typeof FIELDS)[number];
 const PRESETS: BudgetPresetId[] = [...BUDGET_PRESETS];
@@ -86,6 +88,7 @@ export function NewRunForm({
   // Null follows the policy; a toggle overrides it for this run.
   const [clarificationOverride, setClarification] = useState<ClarificationMode | null>(null);
   const [testsOverride, setTests] = useState<TestIntegrityMode | null>(null);
+  const [rowsOverride, setRows] = useState<boolean | null>(null);
   // The run model replaces every configured route for this run (`--model-strict`).
   const [strict, setStrict] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -108,6 +111,7 @@ export function NewRunForm({
   const checks = info?.policy.checks ?? [];
   const initial = initialExecution(info, workflowId);
   const clarification = clarificationOverride ?? (info ? clarificationOf(info.policy) : "ask");
+  const rowsAsData = rowsOverride ?? info?.policy.rowsAsData === "on";
   const testIntegrity = testsOverride ?? (info ? testIntegrityOf(info.policy) : "block");
   const execution = {
     worktree: worktreeOverride ?? initial.worktree,
@@ -154,6 +158,7 @@ export function NewRunForm({
         ...executionRequest(execution),
         clarification,
         testIntegrity,
+        ...(rowsOverride !== null ? { rowsAsData: rowsAsData ? "on" : "off" } : {}),
         ...(proposal ? { autoPreset: true } : {}),
         ...(strict ? { modelStrict: true } : {}),
         ...(typeof costCap === "number" ? { maxCostUsd: costCap } : {}),
@@ -185,7 +190,11 @@ export function NewRunForm({
       return;
     }
     const toggle =
-      focus === "execution" || focus === "clarification" || focus === "tests" || focus === "strict";
+      focus === "execution" ||
+      focus === "clarification" ||
+      focus === "tests" ||
+      focus === "rows" ||
+      focus === "strict";
     const choice = focus === "workflow" || focus === "budget" || toggle;
     if (
       (choice || focus === "writers") &&
@@ -200,6 +209,7 @@ export function NewRunForm({
       else if (focus === "execution") setWorktreeOverride(!execution.worktree);
       else if (focus === "clarification")
         setClarification(clarification === "assume" ? "ask" : "assume");
+      else if (focus === "rows") setRows(!rowsAsData);
       else if (focus === "tests") setTests(testIntegrity === "warn" ? "block" : "warn");
       else if (focus === "strict") setStrict(!strict);
       else setWriters(clampWriters(execution.writers + delta));
@@ -423,6 +433,19 @@ export function NewRunForm({
             </text>
             <text fg={t.textFaint}>{"  Ctrl+S from any field"}</text>
           </box>
+        </FocusTarget>
+        <FocusTarget active={focus === "rows"}>
+          <Field
+            label="Rows"
+            labelWidth={10}
+            focused={focus === "rows"}
+            value={
+              rowsAsData
+                ? "on: host writes audited Bun/pytest test rows"
+                : "off: agent writes tests"
+            }
+            keyHint="left/right"
+          />
         </FocusTarget>
       </Section>
       {shownError ? <text fg={t.error}>{`✗ ${shownError}`}</text> : null}

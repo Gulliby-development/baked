@@ -147,6 +147,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "model-strict",
     "clarification",
     "test-integrity",
+    "rows-as-data",
     "sandbox",
     "duplication",
     "sast",
@@ -161,6 +162,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "replay",
   ],
   quick: [
+    "rows-as-data",
     "feature",
     "prompt-file",
     "policy",
@@ -540,6 +542,12 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     throw new WorkflowFault("INVALID_DEFINITION", "--clarification accepts ask or assume");
   if (
     !result.flags.help &&
+    "rows-as-data" in result.flags &&
+    !["off", "on"].includes(String(result.flags["rows-as-data"]))
+  )
+    throw new WorkflowFault("INVALID_DEFINITION", "--rows-as-data accepts off or on");
+  if (
+    !result.flags.help &&
     "test-integrity" in result.flags &&
     !["block", "warn"].includes(String(result.flags["test-integrity"]))
   )
@@ -629,6 +637,8 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   --clarification assume lets research, spec and analysis settle blocking questions with recorded
   assumptions, shown at approval; only questions without a safe default wait for you. Default: the
   policy's clarification, otherwise ask
+  --rows-as-data on lets the host write audited JSON rows and Bun/pytest parameterized tests;
+  off is the default. The agent writes the harness.
   --test-integrity warn records test gaming in a task's diff (deleted, skipped or weakened tests,
   suppressions, special cases for test inputs) instead of sending it to a repair. Default: the
   policy's testIntegrity, otherwise block

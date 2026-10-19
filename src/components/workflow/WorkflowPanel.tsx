@@ -837,7 +837,7 @@ export function WorkflowPanel({
               ))}
             {tab === "tasks" && (
               <>
-                <TaskGraphView tasks={tasks} />
+                <TaskGraphView tasks={tasks} rows={details?.acceptanceRows?.rows} />
                 {details?.hostEdits && (
                   <ArtifactReview
                     title="Host edits (host-edits.json)"

@@ -22,6 +22,7 @@ const values: Record<string, string> = {
   prompt: "argv check",
   issue: "1",
   clarification: "assume",
+  "rows-as-data": "on",
 };
 const commands: [string, string[]][] = [
   ["run", []],

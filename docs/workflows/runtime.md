@@ -196,6 +196,34 @@ The terminal states completed/cancelled/failed are immutable; `fork RUN_ID --exp
 
 A spec author writes some criteria with literal rows, an input and the output it must give (`Input | expected` tables, or `C# → Db`), and derives the expected values by hand. A run policy with `derivationAudit: "on"` (in `workflows.policy` or a `--policy` file; absent means `off`) has the analyze stage check them ([derivation-audit](../../src/core/workflows/derivation-audit.ts)). Every automated criterion whose given, when or then has a table cell boundary (`a | b`, not `||`) or a `→` arrow is audited: the analyzer gets those criteria and their requirements in full as `extra.derivationAudit`, also when the spec is digested, recomputes each row from the requirements alone, and records one entry per row in the analysis's `derivations` (`criterionId`, `row`, `recomputed`, `matches`, `derivation`). An analysis that leaves an audited criterion without an entry is turned back inside `submit_result` until it is complete, at most twice. A row the request itself states is authoritative: when the requirements give another value, the analyzer records the mismatch and names the requirement as what is wrong. The host raises the rows with `matches: false` as one blocking finding per criterion (`DERIVE-<criterion>`, kind `inconsistency`, refs `spec.json`, the criterion and its requirements), each row with the recomputed value and the derivation. Such findings go back to the specify stage once, whatever the `clarification` setting, with the note that the requirements outrank the criteria (under `revision: "patch"` as a revision by patch of the spec and plan); a row the next analysis still cannot reproduce goes the usual way, to a person or, under `assume`, through the analysis returns. Each audited criterion costs the analyzer a derivation per row, so the setting is off by default; bench rounds 40 and 42 each had a spec with a wrong derived row that analysis did not recompute, which surfaced only as a failing test and a spec conflict (0.65M to 0.8M tokens of rework, and once a question to a person).
 
+### Acceptance rows as data
+
+`rowsAsData: "on"` in `workflows.policy` or a policy file enables host-written acceptance data and parameterized tests. The default is off. A run can override the policy with `baked workflow run --rows-as-data on|off` or `baked workflow quick --rows-as-data on|off`. The TUI new-run form has a Rows field after Start run; Tab from Start run reaches it, and left/right toggles it. The desktop New run settings have a Host-written acceptance rows checkbox. `POST /v1/workflow/runs` accepts `rowsAsData: "on"` or `"off"`. Explicit off overrides an enabled policy; absent and off add nothing to the frozen policy.
+
+This setting requires an analyze stage. Workflows without one, including the default `quick` preset, refuse an enabled start before making changes. Use `sdd`, a custom workflow that analyzes its plan, or `--rows-as-data off`.
+
+The planner can mark a pure call-and-compare test task with `rows: ["AC-001"]` and this contract:
+
+```json
+{
+  "rows": ["AC-001"],
+  "rowTest": {
+    "framework": "bun",
+    "harness": "tests/double-harness.ts",
+    "test": "tests/double.test.ts",
+    "data": "tests/double.rows.json"
+  }
+}
+```
+
+All three paths must be declared in the task's writes. The test and data must be new files with no other writer. The host writes those two files; the agent writes the harness and any ordinary tests the task owns. For Bun the harness exports `actual(input)` and may return a promise. For pytest, use `framework: "pytest"`, a `.py` harness defining `actual(input)`, and a `test_*.py` test path. The host emits `test.each` or `pytest.mark.parametrize` and compares the harness result with each expected value.
+
+Selected automated criteria must have complete two-column `Input | Expected` tables. Each cell must contain a JSON literal, optionally enclosed in backticks. Objects, arrays, strings, booleans and null remain typed data. Unsafe numeric magnitudes, non-finite numbers, expressions, extra columns and pipe characters inside cells are unsupported. Keep those cases, property tests, stateful flows, process tests and file tests in ordinary agent-written tests. Other frameworks currently use ordinary tests too.
+
+Enabling this setting also enables the derivation audit during analyze. Each selected row must have its own matching audit entry; a criterion-level entry cannot stand for several rows. Mismatches go through the existing spec revision process. After a successful analysis, the host stores a versioned `rows.json` artifact with spec, graph and analysis hashes, the original row text, criterion IDs and stable row IDs such as `AC-001:1`. The terminal and desktop Tasks views display its row data. The artifact is also available through `baked workflow artifacts` and the existing API artifact endpoints. Task definitions expose `rows` and `rowTest` in `tasks.json`.
+
+Before an implementation attempt, the host writes the selected JSON rows and framework tests through the effect journal in the attempt's directory. Serial tasks, parallel task worktrees and resumed services use the same code. A changed spec requires a fresh analysis. The host refuses to replace an existing file with different content. Generated files are read-only to agent edits, and submission checks reject altered row data or tests. The task-end case walk reads the JSON data alongside the tests. The generated tests run through the normal task checks and mutation gate, and reviewers receive an instruction to review the harness and preserve the audited data. Sizing excludes generated files and emitted row cases from the agent estimate, while preserving other cases and the criterion overhead. It keeps a rows task whole so a split cannot create competing writers of its data or test file.
+
 ### Project memory
 
 A run starts with what earlier runs of the same workspace learned, so it does not ask the same question or rediscover the same facts again. At creation the run reads the 30 newest runs in `.baked/workflows.sqlite` ([project-memory](../../src/core/workflows/project-memory.ts)) and collects:

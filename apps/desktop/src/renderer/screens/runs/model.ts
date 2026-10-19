@@ -34,6 +34,8 @@ export interface Task {
   writes: { path: string; action: string; content?: string }[];
   checkIds: string[];
   origin: string;
+  rows?: string[];
+  rowTest?: { framework: "bun" | "pytest"; harness: string; test: string; data: string };
 }
 /** Whether the host writes the task's files with no agent (`hostWritten` in task-graph.ts). */
 export const hostWritten = (task: Pick<Task, "writes">): boolean =>
@@ -509,6 +511,7 @@ const ARTIFACT_KINDS = new Set([
   "estimate",
   "routing",
   "acceptance",
+  "acceptance-rows",
   "gates",
   "report",
 ]);

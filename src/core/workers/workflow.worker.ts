@@ -149,6 +149,7 @@ const StartInput = z
     maxConcurrentWriters: z.number().int().min(1).max(MAX_CONCURRENT_WRITERS).optional(),
     clarification: z.enum(["ask", "assume"]).optional(),
     testIntegrity: z.enum(["block", "warn"]).optional(),
+    rowsAsData: z.enum(["off", "on"]).optional(),
     autoPreset: z.boolean().optional(),
     modelStrict: z.boolean().optional(),
     maxCostUsd: z.number().positive().finite().optional(),
@@ -273,6 +274,7 @@ const ctx = createWorkerHandler(
           : {}),
         ...(request.clarification ? { clarification: request.clarification } : {}),
         ...(request.testIntegrity ? { testIntegrity: request.testIntegrity } : {}),
+        ...(request.rowsAsData ? { rowsAsData: request.rowsAsData } : {}),
         ...(request.modelStrict ? { modelStrict: true } : {}),
         ...(request.maxCostUsd !== undefined ? { maxCostUsd: request.maxCostUsd } : {}),
       });

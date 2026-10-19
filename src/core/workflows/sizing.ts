@@ -3,7 +3,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { isManifestFile, isTestFile } from "../intelligence/language-traits.js";
 import { isTestOf } from "../verification/convergence.js";
-import { criterionCases, type SpecText } from "../verification/criteria-cases.js";
+import {
+  type CaseContext,
+  criterionCases,
+  missingCases,
+  type SpecText,
+} from "../verification/criteria-cases.js";
+import { literalRows } from "./acceptance-rows.js";
 import { MAX_EXTENDED_MS } from "./budget.js";
 import { DEFAULT_STAGE_RANGES, historyStorePaths, rangeOf, type TokenRange } from "./estimate.js";
 import { type HostEdit, plannerGraph, recordGraphEdits } from "./host-edits.js";
@@ -125,17 +131,34 @@ export const fileKind = (path: string): FileKind =>
         : "code";
 
 type Written = { path: string; action: WriteAction };
+type SizingTask = Pick<Task, "writes"> & Partial<Pick<Task, "rows" | "rowTest">>;
+/** A selected criterion may also name ordinary cases; only its emitted row cases are free. */
+function pricedCaseCount(
+  spec: SpecText,
+  task: Parameters<typeof criterionCases>[1],
+  context: CaseContext,
+): number {
+  const rows = task.rows?.length ? literalRows(spec, task.rows) : [];
+  return criterionCases(spec, task, context).filter(
+    (item) =>
+      !rows.some(
+        (row) =>
+          row.criterionId === item.criterionId && missingCases([item], [row.source]).length === 0,
+      ),
+  ).length;
+}
 /** The files an agent writes for the task: none when the host writes them (#1460). */
-function written(task: Pick<Task, "writes">): Written[] {
+function written(task: SizingTask): Written[] {
   if (hostWritten(task)) return [];
+  const generated = task.rows?.length && task.rowTest ? [task.rowTest.test, task.rowTest.data] : [];
   return task.writes.flatMap((w) =>
-    w.action === "delete" ? [] : [{ path: w.path, action: w.action }],
+    w.action === "delete" || generated.includes(w.path) ? [] : [{ path: w.path, action: w.action }],
   );
 }
-function writtenFiles(task: Pick<Task, "writes">): string[] {
+function writtenFiles(task: SizingTask): string[] {
   return written(task).map((w) => w.path);
 }
-export function taskKind(task: Pick<Task, "writes">): TaskKind {
+export function taskKind(task: SizingTask): TaskKind {
   const kinds = new Set(writtenFiles(task).map(fileKind));
   return kinds.size === 1 ? ([...kinds][0] as FileKind) : "mixed";
 }
@@ -244,14 +267,14 @@ export function samplesFrom(
             criteria: task.criterionIds?.length ?? 0,
             ...(spec && task.criterionIds
               ? {
-                  cases: criterionCases(
+                  cases: pricedCaseCount(
                     spec,
                     { ...task, criterionIds: task.criterionIds },
                     {
                       tasks: planned.map((t) => ({ ...t, criterionIds: t.criterionIds ?? [] })),
                       includeBroad: true,
                     },
-                  ).length,
+                  ),
                 }
               : {}),
           });
@@ -621,7 +644,7 @@ function testTaskLimit(samples: SizingSample[], model: string | null): TestTaskL
 
 /** Test history prices a whole task. Only cold starts multiply a default by the case count. */
 export function priceTask(
-  task: Pick<Task, "writes"> & Partial<Pick<Task, "criterionIds" | "sizingSlice">>,
+  task: SizingTask & Partial<Pick<Task, "criterionIds" | "sizingSlice">>,
   rates: Rates,
   tests: TestTaskRates = { all: null, buckets: {}, hasCases: false },
   cases = 0,
@@ -718,10 +741,10 @@ export function sizePlan(input: {
       const kind = taskKind(task);
       const cases =
         input.spec && kind === "test"
-          ? criterionCases(input.spec, task, {
+          ? pricedCaseCount(input.spec, task, {
               tasks: input.graph.tasks,
               includeBroad: true,
-            }).length
+            })
           : 0;
       const estimate = priceTask(task, rates, tests, cases);
       const files = writtenFiles(task).length;
@@ -1016,7 +1039,7 @@ export function splitTestTasks(
   const parts = new Map<string, string[]>();
   const origins = new Map<string, string>();
   const tasks = graph.tasks.flatMap((task) => {
-    if (!oversized.has(task.id) || task.sizingSlice) return [task];
+    if (!oversized.has(task.id) || task.sizingSlice || task.rows?.length) return [task];
     const files = task.writes.filter((write) => write.action !== "delete");
     const deletes = task.writes.filter((write) => write.action === "delete");
     const criteria = partCriteria(
