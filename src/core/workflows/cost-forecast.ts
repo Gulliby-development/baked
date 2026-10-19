@@ -27,7 +27,7 @@ export interface CostForecast {
   ratio: number;
   measuredTasks: number;
   openTasks: number;
-  /** Tokens still expected: the open tasks at the measured ratio, and the verification. */
+  /** Tokens still expected: open tasks at their own kind's ratio (1 until measured), and verification. */
   remainingTokens: number;
 }
 
@@ -89,7 +89,9 @@ export function costForecast(
   const costs = open.map((t) => ({
     id: tasks.id,
     models: tasks.models,
-    tokens: mid(t) * (byKind.get(t.kind) ?? ratio),
+    // A priced kind without a finished task keeps its own estimate. Another kind's overrun
+    // does not measure it, and must not inflate the forecast or the initiative's held cap.
+    tokens: mid(t) * (byKind.get(t.kind) ?? 1),
   }));
   const later = stages.slice(stages.indexOf(tasks) + 1).filter((s) => s.models.length);
   const weights = later.map((s) => DEFAULT_STAGE_RANGES[s.id]?.high ?? 60_000);
