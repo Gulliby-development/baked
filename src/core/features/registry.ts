@@ -1074,6 +1074,16 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs: approved edits continue through the shared runtime"],
   },
   {
+    id: "run-provider-health",
+    group: "Workflow runs",
+    title:
+      "Unreachable providers wait on health probes without spending active time or recovery resumes",
+    tui: ["/workflow: provider wait and next health probe"],
+    cli: ["baked workflow status: providerWait", "baked workflow resume"],
+    api: ["/v1/workflow/runs/:id: waiting/provider and providerWait"],
+    desktop: ["project/runs: provider wait and next health probe"],
+  },
+  {
     id: "run-execution-time",
     group: "Workflow runs",
     title: "Run and initiative active budgets and execution deadlines exclude host suspend gaps",

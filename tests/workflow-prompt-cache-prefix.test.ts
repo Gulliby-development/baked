@@ -4,6 +4,7 @@
  * from the prompt cache instead of writing it again (#995).
  */
 import { afterEach, describe, expect, test } from "bun:test";
+import { anthropicResponse } from "./helpers/anthropic-response.js";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import {
   type ClaudeCodeProcess,
@@ -94,7 +95,7 @@ describe("the run-level prompt prefix", () => {
     const bodies: Body[] = [];
     const fetchMock = async (_url: unknown, init?: RequestInit) => {
       bodies.push(JSON.parse(String(init?.body)) as Body);
-      return Response.json({
+      return anthropicResponse({
         id: `msg_${bodies.length}`,
         type: "message",
         role: "assistant",

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { LanguageModelV3, LanguageModelV3GenerateResult } from "@ai-sdk/provider";
-import { MockLanguageModelV3 } from "ai/test";
+import { MockLanguageModelV3 } from "./helpers/workflow-model.js";
 import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
 import { getProvider } from "../src/core/llm/providers/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";

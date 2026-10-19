@@ -837,6 +837,7 @@ export const ReasonCode = z.enum([
   "verification_failed",
   "check_unavailable",
   "provider_unavailable",
+  "provider",
   "provider_account",
   "tool_denied",
   "storage_failure",
@@ -1677,6 +1678,8 @@ export interface RunSnapshot {
    * (`workflows.stall.providerResumes`): when it retries, and which resume that is.
    */
   autoRetry?: { at: string; attempt: number; of: number };
+  /** Provider probes run without spending recovery attempts or active time. */
+  providerWait?: { modelId: string; probe: number; retryAt: string };
   pendingRequestIds: string[];
   /** The project of the run's workspace when it was created. */
   projectId?: string;

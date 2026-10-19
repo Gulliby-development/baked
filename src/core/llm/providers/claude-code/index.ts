@@ -6,6 +6,7 @@ import type {
   SharedV3Warning,
 } from "@ai-sdk/provider";
 import { parseOpusVersion } from "../../model-id.js";
+import { providerResponded } from "../../provider-health.js";
 import { cliReasoningEffort } from "../cli-effort.js";
 import type { ContextSizeOption, ProviderDefinition, ProviderModelInfo } from "../types.js";
 import { assertClaudeCodeReady, getClaudeCodeLoginStatus } from "./cli.js";
@@ -91,6 +92,7 @@ export function createClaudeCodeLanguageModel(
       ...(effort ? { effort } : {}),
       parts: buildClaudeCodePromptParts(options),
       abortSignal: options.abortSignal,
+      onResponse: () => providerResponded(options.abortSignal),
     });
     const parsed = parseClaudeCodeResponse(result.structured, result.text);
     return {

@@ -292,6 +292,8 @@ Exists: `GET /v1/workflow/definitions` (each summary has `stages` and `line`: `s
 
 The run snapshot also has `reviewNotes`: `{count, ids}` of the review and convergence findings that started no correction (the [run report](../workflows/runtime.md#run-report) lists them; absent from older servers).
 
+A run waiting on an unreachable provider has `status: "waiting"`, `reason: "provider"` and `providerWait: {modelId, probe, retryAt}`. The server probes with backoff and resumes when the provider responds, without spending recovery resumes or active time. The desktop run header shows the wait and next probe; pause and cancel stop it. See [provider health waits](../workflows/runtime.md#stalls-deadlines-and-automatic-resume).
+
 A run snapshot also has `autoRetry`: `{at, attempt, of}` only while a run blocked with `provider_unavailable` waits for its [automatic resume](../workflows/runtime.md#stalls-deadlines-and-automatic-resume).
 
 The `body_json` of an `approval` request lists `writes`, `checks`, `profiles`, `deferredCriteria` and `assumptions`, and, when the spec lists the request's deliverables, `requestCoverage[]`: `{deliverable, requirementIds, criterionIds, outOfScope, mapped}` per deliverable, where `deliverable` and `outOfScope` quote the request and `mapped` is false for a deliverable nothing covers (see [request coverage](../workflows/runtime.md#request-coverage)).

@@ -18,6 +18,7 @@ const REASONS: Record<string, string> = {
   verification_failed: "checks or reviews did not pass",
   check_unavailable:
     "a required check cannot be started (its executable is missing or not runnable)",
+  provider: "waiting for the model provider to answer a health probe",
   provider_unavailable: "the model provider is unavailable",
   provider_account:
     "the model provider refused the account or its CLI is missing: add credits or wait for a usage limit to reset, fix the API key, install the CLI or switch the run to another model",
