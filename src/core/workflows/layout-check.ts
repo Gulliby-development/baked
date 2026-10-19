@@ -7,6 +7,7 @@
  */
 import { buildSafeEnv } from "../spawn.js";
 import { workspacePath } from "../specs/validate.js";
+import { executionClock } from "./execution-clock.js";
 import type { LayoutCheck } from "./schemas.js";
 import {
   type LayoutPage,
@@ -62,7 +63,7 @@ const message = (error: unknown): string =>
 
 /** Polls the address until the app answers anything, the app exits or the time is up. */
 async function served(url: string, app: TerminalApp, until: number, signal: AbortSignal) {
-  while (Date.now() < until && !signal.aborted && !app.exited) {
+  while (executionClock.now() < until && !signal.aborted && !app.exited) {
     try {
       await fetch(url, { signal: AbortSignal.timeout(2000), redirect: "manual" });
       return true;
@@ -94,7 +95,7 @@ export const browserLayoutProbe: LayoutProbe = {
         return { status: "unavailable", reason: `the app did not start: ${message(error)}` };
       }
       app.closeInput();
-      const until = Date.now() + check.timeoutMs;
+      const until = executionClock.now() + check.timeoutMs;
       if (!(await served(check.url, app, until, signal)))
         return {
           status: "unavailable",
@@ -106,7 +107,10 @@ export const browserLayoutProbe: LayoutProbe = {
       let screenshot: string | undefined;
       for (const path of check.pages) {
         signal.throwIfAborted();
-        const httpStatus = await page.goto(`${base}${path}`, Math.max(1000, until - Date.now()));
+        const httpStatus = await page.goto(
+          `${base}${path}`,
+          Math.max(1000, until - executionClock.now()),
+        );
         pages.push({ path, httpStatus, ...(await page.read()) });
         screenshot ??= await page.screenshot();
       }

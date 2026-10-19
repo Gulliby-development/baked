@@ -1,4 +1,5 @@
 import { WorkflowFault } from "./errors.js";
+import { executionClock, executionTimeout } from "./execution-clock.js";
 
 /**
  * Deadlines and stall limits of workflow runs (`workflows.stall` in the configuration). A stalled
@@ -110,7 +111,7 @@ export async function withDeadline<T>(
   action: () => Promise<T>,
 ): Promise<T> {
   if (!(ms > 0)) return action();
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let cancel: (() => void) | undefined;
   const pending = action();
   // A call abandoned at its deadline may still fail later; nobody awaits that.
   pending.catch(() => {});
@@ -118,11 +119,11 @@ export async function withDeadline<T>(
     return await Promise.race([
       pending,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new ToolDeadlineError(tool, ms)), ms);
+        cancel = executionTimeout(() => reject(new ToolDeadlineError(tool, ms)), ms);
       }),
     ]);
   } finally {
-    if (timer) clearTimeout(timer);
+    cancel?.();
   }
 }
 
@@ -134,28 +135,28 @@ const progress = new Map<string, Progress>();
 const entry = (runId: string): Progress => {
   let value = progress.get(runId);
   if (!value) {
-    value = { at: Date.now(), tools: 0 };
+    value = { at: executionClock.now(), tools: 0 };
     progress.set(runId, value);
   }
   return value;
 };
 /** Marks a sign of life of a run in this process: an event, a tool call, a model step. */
 export function touchProgress(runId: string): void {
-  entry(runId).at = Date.now();
+  entry(runId).at = executionClock.now();
 }
 /** Tool calls start and end inside their own deadline, so a call in flight is progress. */
 export function toolStarted(runId: string): void {
   const value = entry(runId);
   value.tools++;
-  value.at = Date.now();
+  value.at = executionClock.now();
 }
 export function toolEnded(runId: string): void {
   const value = entry(runId);
   value.tools = Math.max(0, value.tools - 1);
-  value.at = Date.now();
+  value.at = executionClock.now();
 }
 /** Milliseconds since the run last showed progress in this process, 0 while a tool is in flight. */
-export function silentMs(runId: string, now = Date.now()): number {
+export function silentMs(runId: string, now = executionClock.now()): number {
   const value = progress.get(runId);
   if (!value || value.tools > 0) return 0;
   return Math.max(0, now - value.at);

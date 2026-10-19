@@ -8,6 +8,7 @@ import {
   sandboxLaunch,
 } from "../security/sandbox.js";
 import { OUTPUT_GRACE_MS } from "../spawn.js";
+import { executionClock, executionTimeout } from "./execution-clock.js";
 
 function stopTree(child: ChildProcess, scope: string, force = false): void {
   if (!child.pid) return;
@@ -85,7 +86,7 @@ export class ProcessScope {
     },
   ): Promise<ProcessResult> {
     options.signal.throwIfAborted();
-    const started = performance.now();
+    const started = executionClock.now();
     const scope = randomUUID();
     const batch = process.platform === "win32" && !options.verbatim && isWindowsBatch(executable);
     const direct = batch ? windowsBatchInvocation(executable, args) : { executable, args };
@@ -144,7 +145,7 @@ export class ProcessScope {
       };
       const timer =
         options.timeoutMs > 0
-          ? setTimeout(() => {
+          ? executionTimeout(() => {
               timedOut = true;
               stop();
             }, options.timeoutMs)
@@ -170,7 +171,7 @@ export class ProcessScope {
         }
       });
       const cleanup = (): void => {
-        if (timer) clearTimeout(timer);
+        timer?.();
         if (hardKill) clearTimeout(hardKill);
         if (outputGrace) clearTimeout(outputGrace);
         this.children.delete(child);
@@ -194,7 +195,7 @@ export class ProcessScope {
           timedOut,
           cancelled,
           truncated,
-          durationMs: Math.ceil(performance.now() - started),
+          durationMs: Math.ceil(executionClock.now() - started),
           ...(launch ? { sandbox: launch.applied } : {}),
         });
       };

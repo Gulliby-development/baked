@@ -1,6 +1,9 @@
 import { rowFiles, rowsArtifact } from "../src/core/workflows/acceptance-rows.js";
+import { runScanner } from "../src/core/workflows/quality/rules.js";
+import { suspendClock } from "./helpers/suspend-clock.js";
 import { caseCheck } from "../src/core/verification/criteria-cases.js";
-import { fixtureSpec } from "./helpers/workflow-fixture.js";
+import { fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
+import { ProcessScope } from "../src/core/workflows/process-scope.js";
 import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
 import { growthLimit, type InitiativeView, rebaseView, shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.js";
@@ -91,6 +94,47 @@ import {
  */
 
 type Stack = "bun" | "npm" | "python" | "go" | "rust" | "maven" | "dotnet";
+
+describe("gate execution after host suspend (#1610)", () => {
+  test("the mutation tool's shared budget clock excludes suspend", async () => {
+    const fixture = workflowFixture();
+    const scope = new ProcessScope();
+    const wake = suspendClock();
+    try {
+      const scheduler = fixture.service.scheduler as unknown as {
+        toolShell(runId: string, policy: RunPolicy, root: string, scope: ProcessScope, check: undefined, signal: AbortSignal): ToolShell;
+      };
+      const shell = scheduler.toolShell("sleep-test", fixture.policy, fixture.root, scope, undefined, new AbortController().signal);
+      const before = shell.now();
+      wake.jump();
+      expect(shell.now() - before).toBeLessThan(5_000);
+    } finally {
+      wake.restore();
+      await scope.stop();
+      await fixture.dispose();
+    }
+  });
+
+  test.each(["command", "scanner"] as const)("%s timeout excludes the sleep gap", async (kind) => {
+    const root = mkdtempSync(join(tmpdir(), "baked-gate-suspend-"));
+    const wake = suspendClock();
+    try {
+      const args = ["-e", "await Bun.sleep(200); console.log('gate finished')"];
+      const pending = kind === "command"
+        ? executeGate(root, { id: "sleep", executable: "bun", args, cwd: ".", timeoutMs: 10_000, required: true, scope: "feature", envNames: [], writes: [] }, new AbortController().signal)
+        : runScanner(process.execPath, args, root, 10_000);
+      // Spawning and arming the timeout happen before the first await in both runners.
+      wake.jump();
+      const result = await pending;
+      expect(result.status).toBe(kind === "command" ? "passed" : 0);
+      if ("durationMs" in result) expect(result.durationMs).toBeLessThan(10_000);
+      expect("stdout" in result ? result.stdout : result.outputTail).toContain("gate finished");
+    } finally {
+      wake.restore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("host-written acceptance rows in the case-walk and mutation gates (#1596)", () => {
   test.each(["bun", "pytest"] as const)("%s retains every case in its JSON data and keeps generated tests out of mutation proposals", async (framework) => {

@@ -63,6 +63,7 @@ import { assertForecastFits } from "./cost-forecast.js";
 import { fileHash, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { addsDoubledEscapes, escapeHintFor } from "./escape-hint.js";
+import { executionClock } from "./execution-clock.js";
 import { keepOutside, restoreOutside } from "./fixer-scope.js";
 import { withHostConstants } from "./host-constants.js";
 import {
@@ -327,7 +328,7 @@ export class NativeAgentExecutor implements AgentExecutor {
     const stall = new AbortController();
     const watch: AttemptWatch = {
       settings,
-      lastAt: Date.now(),
+      lastAt: executionClock.now(),
       lastTool: null,
       tools: 0,
       deadlines: 0,
@@ -337,10 +338,10 @@ export class NativeAgentExecutor implements AgentExecutor {
     const interval = setInterval(
       () => {
         const limit = silenceLimitMs(settings, request.runId);
-        if (watch.tools > 0 || Date.now() - watch.lastAt < limit) return;
+        if (watch.tools > 0 || executionClock.now() - watch.lastAt < limit) return;
         stall.abort(
           stalledFault(
-            `Attempt ${request.attemptId} of ${request.profile.id} made no progress for ${Math.round((Date.now() - watch.lastAt) / 60_000)} min (last tool: ${watch.lastTool ?? "none"}; limit ${Math.round(limit / 60_000)} min${limit < settings.stepStallMs ? ", from the run's own model calls" : ""})`,
+            `Attempt ${request.attemptId} of ${request.profile.id} made no progress for ${Math.round((executionClock.now() - watch.lastAt) / 60_000)} min (last tool: ${watch.lastTool ?? "none"}; limit ${Math.round(limit / 60_000)} min${limit < settings.stepStallMs ? ", from the run's own model calls" : ""})`,
           ),
         );
       },
@@ -527,18 +528,18 @@ export class NativeAgentExecutor implements AgentExecutor {
       const track = async <T>(name: string, call: () => Promise<T>): Promise<T> => {
         // The model call of this step was silent until it asked for its first tool.
         if (watch.calledAt !== null) {
-          recordModelSilence(request.runId, Date.now() - watch.calledAt);
+          recordModelSilence(request.runId, executionClock.now() - watch.calledAt);
           watch.calledAt = null;
         }
         watch.tools++;
         toolCalls++;
         watch.lastTool = name;
-        watch.lastAt = Date.now();
+        watch.lastAt = executionClock.now();
         try {
           return await call();
         } finally {
           watch.tools--;
-          watch.lastAt = Date.now();
+          watch.lastAt = executionClock.now();
           touchProgress(request.runId);
         }
       };
@@ -831,7 +832,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         let probes = 0;
         const probe = probeTool(probeable, async (input) => {
           const scope = new ProcessScope();
-          const started = Date.now();
+          const started = executionClock.now();
           try {
             const outcome = await runProbe(scope, input, {
               root,
@@ -851,7 +852,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                     taskId: request.task?.id ?? null,
                     executable: input.executable,
                     args: input.args,
-                    durationMs: Date.now() - started,
+                    durationMs: executionClock.now() - started,
                     ...outcome,
                   }),
                 ),
@@ -1247,12 +1248,13 @@ export class NativeAgentExecutor implements AgentExecutor {
       let lastCallUsage: LanguageModelUsage | undefined;
       // Each model step of a run also goes to the model events view of this process.
       let stepStartedAt = Date.now();
+      let stepExecutionAt = executionClock.now();
       const recordStep = (usage: Partial<LanguageModelUsage> | undefined, failure?: unknown) => {
         recordModelCall({
           modelId: request.profile.model,
           source: "run",
           startedAt: stepStartedAt,
-          durationMs: Math.max(0, Date.now() - stepStartedAt),
+          durationMs: Math.ceil(executionClock.now() - stepExecutionAt),
           state: failure === undefined ? "ok" : "error",
           runId: request.runId,
           agentId: request.profile.id,
@@ -1270,6 +1272,7 @@ export class NativeAgentExecutor implements AgentExecutor {
               }),
         });
         stepStartedAt = Date.now();
+        stepExecutionAt = executionClock.now();
       };
       // A call past the output cap reports no usage: it is charged as a step at its estimate.
       const chargeOutputLimit = (error: unknown): boolean => {
@@ -1316,10 +1319,10 @@ export class NativeAgentExecutor implements AgentExecutor {
           headers: provider.headers,
           onStepEnd: (step) => {
             if (watch.calledAt !== null) {
-              recordModelSilence(request.runId, Date.now() - watch.calledAt);
+              recordModelSilence(request.runId, executionClock.now() - watch.calledAt);
               watch.calledAt = null;
             }
-            watch.lastAt = Date.now();
+            watch.lastAt = executionClock.now();
             touchProgress(request.runId);
             finished.push(step);
             recordStep(step.usage);
@@ -1330,8 +1333,8 @@ export class NativeAgentExecutor implements AgentExecutor {
             );
           },
           prepareStep: ({ stepNumber, steps: done, ...history }) => {
-            watch.lastAt = Date.now();
-            watch.calledAt = Date.now();
+            watch.lastAt = executionClock.now();
+            watch.calledAt = executionClock.now();
             request.signal.throwIfAborted();
             // Compaction and the finalize notice are recomputed from the clean history each step.
             const messages = cleanStepMessages(history);
