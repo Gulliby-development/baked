@@ -79,6 +79,7 @@ import {
   fingerprint,
   requiresSecurityReview,
 } from "../verification/findings.js";
+import { noteSiblingFindings } from "../verification/initiative-ownership.js";
 import {
   type BaselineCount,
   baselineRegression,
@@ -2344,9 +2345,13 @@ export class WorkflowScheduler {
               // the run report and starts no repair, and a criterion that fails only because of
               // such findings counts as met.
               const checksPass = requiredChecksPass(this.store, runId, state, policy);
+              const siblingNotes = noteSiblingFindings(state, "convergence", review.findings);
               const notes = new Set(
                 review.findings
-                  .filter((f) => passesWithNotes(f, review.coverage, checksPass))
+                  .filter(
+                    (f) =>
+                      siblingNotes.has(f.id) || passesWithNotes(f, review.coverage, checksPass),
+                  )
                   .map((f) => f.id),
               );
               // Below high severity, a correctness claim the host does not reproduce, and any claim
@@ -2356,6 +2361,7 @@ export class WorkflowScheduler {
               const outcomes = new Map<string, ReproOutcome>();
               for (const finding of review.findings)
                 if (
+                  !siblingNotes.has(finding.id) &&
                   (convergenceReproGated(finding) || confidenceOnlyNote(finding, minConfidence)) &&
                   finding.repro &&
                   executables.length
@@ -4695,6 +4701,7 @@ export class WorkflowScheduler {
       profile,
       {
         ...input,
+        ...(state.initiativeBounds ? { initiativeBounds: state.initiativeBounds } : {}),
         ...(propertyNote ? { propertyTests: propertyNote } : {}),
         ...(crossPlatform ? { crossPlatform } : {}),
         ...(specSize ? { specSize } : {}),
@@ -11787,6 +11794,7 @@ ${note}`;
         if (outcome.status === "rejected") throw outcome.reason;
         const { reviewer, result } = outcome.value;
         state.reviews[reviewer.key] = result;
+        const siblingNotes = noteSiblingFindings(state, reviewer.dimension, result.findings);
         // Advisory reviewers, findings below the blocking severities and inferred notes are
         // recorded, not repaired.
         // Below the severity floor, a spec-based finding with a repro still competes: it repairs
@@ -11797,6 +11805,7 @@ ${note}`;
         const candidates = reviewer.required
           ? result.findings.filter(
               (f) =>
+                !siblingNotes.has(f.id) &&
                 reviewer.blocking.includes(f.severity) &&
                 (severities.includes(f.severity) || confirmableSpecFinding(f)) &&
                 (findingBlocks(f, policy.reviewMinConfidence) || unconfident(f)),

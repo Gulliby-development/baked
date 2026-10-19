@@ -1702,6 +1702,11 @@ export interface StartRequest {
    * plan must write them in one host-written task with exactly this content (#1461).
    */
   hostFiles?: { path: string; content: string }[];
+  /** Approved boundaries used to route review findings to their owning initiative feature. */
+  initiativeBounds?: {
+    featureId: string;
+    features: { id: string; scope: string; paths: string[] }[];
+  };
   /**
    * Execution mode requested for this run (CLI `--worktree`). It overrides the policy and the
    * definition; omitted, the definition's `execution`, then the policy's `executionMode` apply.

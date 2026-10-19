@@ -27,6 +27,7 @@ import {
 } from "./class-sweep.js";
 import { findingSetHash } from "./convergence-stop.js";
 import { isFailedTestLine } from "./failed-test-line.js";
+import { noteSiblingFindings } from "./initiative-ownership.js";
 import { reproCannotSeeCorrection } from "./repro.js";
 
 /**
@@ -523,12 +524,20 @@ export function appendCorrections(
   runId: string,
   state: RuntimeState,
   policy: RunPolicy,
-  findings: Review["findings"],
+  submittedFindings: Review["findings"],
   kind: "repair" | "convergence",
   scope: "round" | "task" | "review" = "round",
 ): void {
   if (!state.graph || !state.rootGraph || !state.spec || !state.approvalRoot)
     throw new WorkflowFault("STALE_DECISION", "Repair requires an approved root graph");
+  const siblingNotes = noteSiblingFindings(
+    state,
+    scope === "review" ? "review" : kind,
+    submittedFindings,
+  );
+  for (const id of siblingNotes) store.findingStatus(runId, id, "resolved");
+  const findings = submittedFindings.filter((finding) => !siblingNotes.has(finding.id));
+  if (!findings.length) return;
   const run = store.run(runId);
   const taskLevel = kind === "repair" && scope === "task";
   const chain = taskLevel
@@ -741,7 +750,7 @@ export function appendCorrections(
     if (!base || (finding.file && !base.writes.some((w) => w.path === finding.file)))
       throw new WorkflowFault(
         "INPUT_CHANGED",
-        "Correction requires writes outside the approved task scope",
+        `Correction requires writes outside the approved task scope${finding.file ? `: ${finding.file}` : ""}. Revise the run's plan or replan the initiative feature to approve the required path.`,
       );
     state.repairPredecessors[finding.id] = base.id;
     const fileKey = finding.file

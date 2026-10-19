@@ -103,7 +103,8 @@ describe("scenario: a person's edit while the run is stopped (#971)", () => {
   test("accepting with nothing changed outside the run is refused", async () => {
     const { root, service, runId } = await blocked();
     writeFileSync(join(root, "README.md"), "fixture\n");
-    await expect(service.resume(runId, { commandId: newId(), expectedRevision: (await service.get(runId)).revision }, { acceptWorkspace: true })).rejects.toThrow("no outside changes");
+    await expect(service.resume(runId, { commandId: newId(), expectedRevision: (await service.get(runId)).revision }, { acceptWorkspace: true })).rejects.toThrow(`baked workflow revise ${runId}`);
+    await expect(service.resume(runId, { commandId: newId(), expectedRevision: (await service.get(runId)).revision }, { acceptWorkspace: true })).rejects.toThrow("initiative replan ID --feature F");
   });
 
   test("the headless CLI takes --accept-workspace on resume", () => {

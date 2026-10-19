@@ -1282,6 +1282,10 @@ export class InitiativeService {
       workflowId: featureWorkflowId(settings, feature),
       featureId: runFeature,
       prompt: featurePrompt(row, plan, feature, upstream),
+      initiativeBounds: {
+        featureId,
+        features: plan.features.map((f) => ({ id: f.id, ...f.boundary })),
+      },
       policy,
       ...(declined ? { autoApprovalDeclined: declined } : {}),
       ownerLabel: settings.ownerLabel,
