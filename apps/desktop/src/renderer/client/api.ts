@@ -1,4 +1,4 @@
-import { recoveryOf } from "../../../../../src/core/workflows/remedies.js";
+import { recoveryOf } from "../../../../../src/core/workflows/remedies-model.js";
 import type { ApiErrorBody, ApiResponse, RunList } from "../../shared/api.js";
 import type { HttpMethod } from "../../shared/bridge.js";
 import { bridge } from "./bridge.js";

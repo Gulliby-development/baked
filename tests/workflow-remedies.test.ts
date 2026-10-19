@@ -2,7 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { desktopRecoveryText } from "../apps/desktop/src/renderer/client/remedies.js";
 import { tuiErrorText, tuiRecoveryText } from "../src/components/workflow/remedies.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
-import { errorRecovery, recoveryAdvice, recoveryOf, type Remedy } from "../src/core/workflows/remedies.js";
+import {
+  errorRecovery,
+  RecoveryAdviceSchema,
+  recoveryAdvice,
+  recoveryOf,
+  type Remedy,
+} from "../src/core/workflows/remedies.js";
 
 describe("workflow recovery text (#1578)", () => {
   const actions: Remedy["action"][] = ["resume", "extend", "accept-workspace", "reroute", "revise", "replan", "deliver", "recover", "fork", "cancel", "pause"];
@@ -32,5 +38,42 @@ describe("workflow recovery text (#1578)", () => {
     expect(desktopRecoveryText("old message")).toBe("old message");
     expect(tuiErrorText(new Error("old error"))).toBe("old error");
     expect(recoveryOf({ summary: "incomplete" })).toBeUndefined();
+  });
+
+  test("dependency-free recovery parsing agrees with the core schema", () => {
+    const valid = recoveryAdvice("CLI message", "Summary", {
+      action: "resume",
+      runId: "RUN",
+      initiativeId: "idea",
+      featureId: "feature",
+      setting: "budget",
+    });
+    const inputs: unknown[] = [
+      valid,
+      recoveryAdvice("CLI message", "Summary"),
+      { ...valid, extra: "ignored", remedies: [{ action: "cancel", extra: true }] },
+      { ...valid, remedies: [{ action: "resume", runId: undefined }] },
+      null,
+      undefined,
+      [],
+      "message",
+      { ...valid, message: null },
+      { ...valid, summary: 1 },
+      { ...valid, remedies: null },
+      { ...valid, remedies: [null] },
+      { ...valid, remedies: [[]] },
+      { ...valid, remedies: [{}] },
+      { ...valid, remedies: [{ action: "unknown" }] },
+      ...["runId", "initiativeId", "featureId", "setting"].flatMap((key) =>
+        [null, 1, false, [], {}].map((value) => ({
+          ...valid,
+          remedies: [{ action: "resume", [key]: value }],
+        })),
+      ),
+    ];
+    for (const input of inputs) {
+      const parsed = RecoveryAdviceSchema.safeParse(input);
+      expect(recoveryOf(input)).toEqual(parsed.success ? parsed.data : undefined);
+    }
   });
 });

@@ -2,7 +2,7 @@ import {
   type RecoveryAdvice,
   type Remedy,
   renderRecovery,
-} from "../../../../../src/core/workflows/remedies.js";
+} from "../../../../../src/core/workflows/remedies-model.js";
 
 function label(remedy: Remedy): string {
   const run = remedy.runId ? `run ${remedy.runId}` : "the run";

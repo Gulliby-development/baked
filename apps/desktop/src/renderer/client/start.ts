@@ -1,4 +1,4 @@
-import type { RecoveryAdvice } from "../../../../../src/core/workflows/remedies.js";
+import type { RecoveryAdvice } from "../../../../../src/core/workflows/remedies-model.js";
 import type { RunSnapshot } from "../../shared/api.js";
 import { preRunQuery } from "../screens/start/logic.js";
 import { ApiError, call } from "./api.js";

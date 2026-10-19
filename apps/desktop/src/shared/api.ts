@@ -3,7 +3,7 @@
  * `baked serve` mirror `src/core/api/server.ts` and the workflow core; only the fields the app
  * reads are declared.
  */
-import type { RecoveryAdvice } from "../../../../src/core/workflows/remedies.js";
+import type { RecoveryAdvice } from "../../../../src/core/workflows/remedies-model.js";
 
 export type RunState =
   | "created"
