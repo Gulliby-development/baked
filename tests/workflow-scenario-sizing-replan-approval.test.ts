@@ -1,0 +1,170 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { hashBytes, hashJson } from "../src/core/specs/hash.js";
+import { featurePolicy } from "../src/core/workflows/initiatives/service.js";
+import { InitiativeSettingsSchema } from "../src/core/workflows/initiatives/store.js";
+import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
+import type { ExecutionRequest, Task } from "../src/core/workflows/types.js";
+import { FixtureExecutor, fixturePolicy, fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
+
+// R49 (#1627): sizing asks the planner to create slices and the next planning pass loses the
+// host's task-count exemption. The same replacement is submitted whole or as a patch.
+const cleanups: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+});
+
+const markdown = "# Plan\n## Context\nValues\n## Decisions\nDEC-001: FR-001 needs values.\n## Components\nsrc/sim.ts, src/rates.ts, src/main.ts and value files\n## Data\nText\n## Verification\nCheck values\n## Risks\nNone for fixture";
+const task = (id: string, paths: string[]): Task => ({
+  id, title: `Create ${paths.join(", ")}`, description: `Create ${paths.join(", ")}`,
+  requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer",
+  writes: paths.map((path) => ({ path, action: "create" as const })), readHints: [],
+  checkIds: ["check"], origin: "planned", findingIds: [], rationale: "Required behavior",
+});
+const code = ["src/sim.ts", "src/rates.ts", "src/main.ts"];
+const values = ["value-0.txt", "value-1.txt", "value-2.txt"];
+const initial = (count: number) => [task("T001", code), ...Array.from({ length: count - 1 }, (_, i) => {
+  const own = task(`T${String(i + 2).padStart(3, "0")}`, [values[Math.min(i, 2)]!]);
+  if (i > 2) {
+    own.writes[0]!.action = "modify";
+    own.dependsOn = [`T${String(i + 1).padStart(3, "0")}`];
+  }
+  return own;
+})];
+
+class ScriptedExecutor extends FixtureExecutor {
+  plans = 0;
+  revisions = 0;
+  analyses = 0;
+  sizingNotes: string[] = [];
+  constructor(root: string, private count: number, private stop: AbortController, private outside: boolean, private hostTests: boolean, private unrelated: boolean) { super(root); }
+
+  override async execute(request: ExecutionRequest) {
+    const output = request.profile.output;
+    if (output === "analysis" && ++this.analyses === 2 && this.unrelated) {
+      const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}");
+      return { output: {
+        schemaVersion: 1, inputHash: data.inputHash, verdict: "needs_revision",
+        findings: [{ id: "F1", kind: "inconsistency", refs: ["plan.md"], description: "The plan must describe corrupt input in its Risks section", blocking: true }],
+      }, inputTokens: 25, outputTokens: 25 };
+    }
+    if (output === "plan" || output === "revision") {
+      const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}");
+      if (output === "revision") {
+        this.revisions++;
+        this.sizingNotes.push(data.extra.revision.findings[0].description);
+        return { output: { schemaVersion: 1, operations: [{ op: "set", path: "taskGraph/tasks", value: this.slices() }] }, inputTokens: 25, outputTokens: 25 };
+      }
+      this.plans++;
+      if (this.plans > 1) this.sizingNotes.push(request.prompt);
+      const taskGraph: TaskGraph = {
+        schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(fixtureSpec), planHash: hashBytes(markdown),
+        tasks: this.plans === 1 ? this.original() : this.slices(),
+      };
+      return { output: { schemaVersion: 1, markdown, taskGraph }, inputTokens: 25, outputTokens: 25 };
+    }
+    // Approval is the assertion boundary. Stop before any implementation changes the fixture.
+    if (output === "implementation") {
+      this.stop.abort();
+      throw new DOMException("Stopped after approval", "AbortError");
+    }
+    return super.execute(request);
+  }
+
+  private original() {
+    const tasks = initial(this.count);
+    if (this.hostTests) tasks[1] = task("T002", ["tests/a.test.ts", "tests/b.test.ts"]);
+    return tasks;
+  }
+
+  private slices() {
+    return [
+      ...this.original().map((t, i) => i === 0 ? task(t.id, [code[0]!]) : this.hostTests && i === 1 ? task(t.id, ["tests/a.test.ts"]) : t),
+      task(`T${String(this.count + 1).padStart(3, "0")}`, [code[1]!]),
+      task(`T${String(this.count + 2).padStart(3, "0")}`, [this.outside ? "outside.txt" : code[2]!]),
+      ...(this.hostTests ? [task(`T${String(this.count + 3).padStart(3, "0")}`, ["tests/b.test.ts"])] : []),
+    ];
+  }
+}
+
+async function scenario(revision?: "patch", initiative = false, count = 8, outside = false, hostTests = false, unrelated = false) {
+  const controller = new AbortController();
+  const base: RunPolicy = {
+    ...fixturePolicy, revision, clarification: "assume", sizing: { maxAttemptTokens: 10_000 },
+    checks: [{ ...fixturePolicy.checks[0]!, args: ["--version"] }],
+    autoApproval: { renewal: false, limits: { maxTasks: 8, maxFiles: 20, allowedPaths: ["src/**", "tests/**", "value-*.txt"], allowDelete: false, allowNewDependencies: false, maxTotalTokens: fixturePolicy.maxTotalTokens } },
+  };
+  const settings = InitiativeSettingsSchema.parse({ workflowId: "sdd", basePolicy: base, featureAutoApproval: { maxTasks: 8, maxFiles: 20 }, budget: null, model: null, ownerLabel: "test" });
+  // Literal paths keep boundaryLimits at 8 tasks; a glob would raise the limit to 500.
+  const policy = initiative ? featurePolicy(settings, { tokens: 2_000_000, calls: 200, activeMs: 3_600_000 }, {
+    id: "fixture", title: "Values", boundary: { scope: "Values", paths: [...code, ...values] }, contract: "Values exist", dependsOn: [], mandatory: true,
+  }, false) : base;
+  // Several tasks share each boundary path, so the feature still has eight tasks before sizing.
+  const fixture = workflowFixture({ policy, executor: (root) => new ScriptedExecutor(root, count, controller, outside, hostTests, unrelated) });
+  cleanups.push(fixture.dispose);
+  const run = await fixture.start();
+  await fixture.service.drive(run.runId, controller.signal);
+  const store = fixture.service.store;
+  const approval = store.requests(run.runId).find((r) => r.kind === "approval");
+  const report = store.latestArtifact(run.runId, "sizing/plan-0.json");
+  expect(report).toBeDefined();
+  expect(JSON.parse(store.readArtifact(run.runId, report!.id)).decision).toBe("split-tasks");
+  expect(store.state(run.runId).graph?.tasks).toHaveLength(count + (hostTests ? 3 : 2));
+  if (hostTests) {
+    const first = store.artifacts(run.runId).find((a) => a.logical_path === "tasks.json");
+    expect(JSON.parse(store.readArtifact(run.runId, first!.id)).tasks).toHaveLength(count + 1);
+  }
+  return { fixture, approval, body: JSON.parse(approval?.body_json ?? "{}"), state: store.state(run.runId) };
+}
+
+describe("scenario: a sizing replan preserves the approval task count (#1627)", () => {
+  for (const revision of [undefined, "patch"] as const) {
+    test(`eight planned tasks become ten and retain limits approval, revision=${revision ?? "full"}`, async () => {
+      const { fixture, approval, body, state } = await scenario(revision);
+      expect(body.autoApproval.declined ?? []).toEqual([]);
+      expect(approval).toMatchObject({ status: "accepted", actor: "auto-approval" });
+      expect(body.autoApproval.mode).toBe("limits");
+      expect(state.hostSplitTasks).toBe(2);
+      expect(state.sizingPlannedTasks).toBeNull();
+      expect(fixture.executor.plans).toBe(revision ? 1 : 2);
+      expect(fixture.executor.revisions).toBe(revision ? 1 : 0);
+      expect(fixture.executor.sizingNotes[0]).toContain("at most 8 planned tasks");
+    });
+
+    test(`host test splits are still excluded when the planner takes over, revision=${revision ?? "full"}`, async () => {
+      const { approval, body, state } = await scenario(revision, false, 8, false, true);
+      expect(body.autoApproval.declined ?? []).toEqual([]);
+      expect(approval).toMatchObject({ status: "accepted", actor: "auto-approval" });
+      expect(body.autoApproval.mode).toBe("limits");
+      expect(state.hostSplitTasks).toBe(3);
+    });
+  }
+
+  test("a plan already above the limit still needs a person after sizing", async () => {
+    const { approval, body } = await scenario(undefined, false, 9);
+    expect(approval?.status).toBe("pending");
+    expect(body.autoApproval.declined).toContain("Limits: 9 tasks exceed 8");
+  });
+
+  for (const revision of [undefined, "patch"] as const) {
+    test(`an initiative feature retains tiered approval after sizing, revision=${revision ?? "full"}`, async () => {
+      const { approval, body } = await scenario(revision, true);
+      expect(body.autoApproval.declined ?? []).toEqual([]);
+      expect(approval).toMatchObject({ status: "accepted", actor: "auto-approval" });
+      expect(body.autoApproval.mode).toBe("limits");
+    });
+  }
+
+  test("a sizing slice outside the allowed paths still needs a person", async () => {
+    const { approval, body } = await scenario("patch", false, 8, true);
+    expect(approval?.status).toBe("pending");
+    expect(body.autoApproval.declined).toContain("Limits: outside.txt is outside the allowed paths");
+  });
+
+  test("an unrelated later replan cannot inherit the sizing task allowance", async () => {
+    const { fixture, approval, body, state } = await scenario(undefined, false, 8, false, false, true);
+    expect(fixture.executor.plans).toBe(3);
+    expect(approval?.status).toBe("pending");
+    expect(body.autoApproval.declined).toContain("Limits: 10 tasks exceed 8");
+    expect(state.hostSplitTasks).toBe(0);
+  });
+});

@@ -82,7 +82,7 @@ function needsPerson(write: Write, exists?: (path: string) => boolean, scaffold 
 export interface ApprovalContext {
   /** Whether a path exists in the workspace the tasks will write to. */
   exists?: (path: string) => boolean;
-  /** Tasks the host added by splitting a planned task; the person approved the plan, not these. */
+  /** Tasks added by host splits or a sizing replan; excluded from the planned task count. */
   hostSplitTasks?: number;
   /** The run's baseline holds no source files (empty or scaffold only). */
   scaffold?: boolean;
@@ -352,6 +352,7 @@ export function planScopeAdvice(
   exists?: (path: string) => boolean,
   scaffold = false,
   request = "",
+  hostSplitTasks = 0,
 ): string[] {
   const limits = policy.autoApproval?.limits;
   if (!limits) return [];
@@ -366,7 +367,10 @@ export function planScopeAdvice(
     .filter((write) => !required(write) && needsPerson(write, exists, scaffold))
     .map((write) => `${write.path} always needs a person`);
   const problems = [
-    ...new Set([...always, ...scopeProblems(limits, graph, 0, required).map((p) => p.text)]),
+    ...new Set([
+      ...always,
+      ...scopeProblems(limits, graph, hostSplitTasks, required).map((p) => p.text),
+    ]),
   ];
   if (!problems.length) return [];
   return [

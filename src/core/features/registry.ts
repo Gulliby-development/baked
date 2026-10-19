@@ -816,7 +816,7 @@ export const FEATURES: readonly Feature[] = [
     id: "run-test-sizing",
     group: "Workflow runs",
     title:
-      "Price test tasks by task-cost quantiles, refresh pending caps from the run, split above observed case capacity with distinct part titles and report both token caps",
+      "Price test tasks, refresh pending caps, split above observed case capacity and preserve approval task counts through sizing replans",
     tui: ["/workflow: plan approval shows the sized tasks"],
     cli: ["baked workflow show: task slices and batching guidance using available checks"],
     api: ["/v1/workflow/runs/:id: shared sizing record and tasks"],
