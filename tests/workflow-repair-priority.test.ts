@@ -27,6 +27,15 @@ describe("task repair priority (#1612)", () => {
     expect(readyTasks({ ...graph, tasks: [source, tests, other, dependent] }, rows, {}, {}, { F1: source.id }).map((t) => t.id)).toEqual([tests.id, other.id]);
     expect(readyTasks({ ...graph, tasks: [source, tests, { ...repair, origin: "convergence" }] }, rows, {}, {}, { F1: source.id }).map((t) => t.id)).toEqual([tests.id, repair.id]);
   });
+  test("a document's first run keeps its order unless it reads or writes repaired files", () => {
+    const doc = task("T005", "docs/guide.md", [source.id]);
+    const withDoc = { ...graph, tasks: [source, doc, tests, other, repair] };
+    const docRows = [...rows, { id: doc.id, status: "pending" } as TaskRow];
+    const ready = (tasks: Task[]) => readyTasks({ ...withDoc, tasks }, docRows, {}, {}, { F1: source.id }).map((t) => t.id);
+    expect(ready(withDoc.tasks)).toEqual([doc.id, repair.id, other.id]);
+    expect(ready([source, { ...doc, readHints: ["src/differ.ts"] }, tests, other, repair])).toEqual([repair.id, other.id]);
+    expect(ready([source, doc, tests, other, { ...repair, writes: doc.writes }])).toEqual([repair.id, tests.id, other.id]);
+  });
   test("matching keeps assertion values, ignores ANSI and line numbers, and rejects mixed failures", () => {
     const open = [{ taskId: repair.id, output: "Expected: 2\nReceived: 1" }];
     expect(sameFailureAsOpenFinding("other.test.ts:900: Expected: 2\nReceived: 1", open)).toEqual([repair.id]);

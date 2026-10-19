@@ -9252,6 +9252,31 @@ ${note}`;
     output: string,
     options: { crossProfile?: boolean } = {},
   ) {
+    const rows = this.store.tasks(runId);
+    const repairs =
+      task.origin === "planned"
+        ? (state.graph?.tasks ?? []).filter(
+            (t) =>
+              t.origin === "repair" &&
+              rows.some(
+                (row) =>
+                  row.id === t.id &&
+                  (["pending", "running", "invalidated", "interrupted"].includes(row.status) ||
+                    (row.status === "implemented" && !hasTaskGate(row, state.taskGates))),
+              ),
+          )
+        : [];
+    // Ordinary ownership needs only the approved graph and task state. Read durable finding
+    // evidence only when an unfinished repair could own this planned task's failure.
+    if (!repairs.length)
+      return failureOwner(
+        state.rootGraph ?? state.graph,
+        rows,
+        state.taskGates,
+        task,
+        output,
+        options,
+      );
     const pendingFindings = this.store
       .findings(runId)
       .filter((row) => row.status === "open" || row.status === "confirmed")
@@ -9259,18 +9284,24 @@ ${note}`;
         const finding = JSON.parse(row.body_json) as Review["findings"][number];
         const evidence = this.commandOutput(runId, finding.evidenceIds);
         return evidence
-          ? (state.graph?.tasks ?? [])
+          ? repairs
               .filter((t) => t.findingIds.includes(row.id))
               .map((t) => ({ taskId: t.id, output: evidence }))
           : [];
       });
-    return failureOwner(state.graph, this.store.tasks(runId), state.taskGates, task, output, {
+    return failureOwner(state.graph, rows, state.taskGates, task, output, {
       ...options,
       pendingFindings,
       waitingFor: Object.fromEntries(
-        [...new Set([...Object.keys(state.waitingFor), ...Object.keys(state.deferredChecks)])].map(
-          (id) => [id, [...(state.waitingFor[id] ?? []), ...(state.deferredChecks[id] ?? [])]],
-        ),
+        [
+          ...new Set([
+            ...Object.keys(state.waitingFor ?? {}),
+            ...Object.keys(state.deferredChecks ?? {}),
+          ]),
+        ].map((id) => [
+          id,
+          [...(state.waitingFor?.[id] ?? []), ...(state.deferredChecks?.[id] ?? [])],
+        ]),
       ),
     });
   }

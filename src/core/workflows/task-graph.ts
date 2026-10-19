@@ -36,14 +36,17 @@ function affectedByRepair(
 ): boolean {
   const paths = repair.writes.map((w) => w.path);
   return (
-    graph.tasks.some(
-      (base) =>
-        base.origin === "planned" &&
-        taskDependsOn(graph, task.id, base.id, waitingFor) &&
-        base.writes.some((w) => paths.includes(w.path)),
-    ) ||
+    (!documentsOnly(task) &&
+      graph.tasks.some(
+        (base) =>
+          base.origin === "planned" &&
+          taskDependsOn(graph, task.id, base.id, waitingFor) &&
+          base.writes.some((w) => paths.includes(w.path)),
+      )) ||
     task.readHints.some((path) => paths.includes(path)) ||
-    task.writes.some((w) => paths.some((source) => isTestOf(w.path, source)))
+    task.writes.some(
+      (w) => paths.includes(w.path) || paths.some((source) => isTestOf(w.path, source)),
+    )
   );
 }
 export function hasTaskGate(row: TaskRow, gates: RuntimeState["taskGates"]): boolean {
@@ -111,17 +114,21 @@ export function readyTasks(
         ),
       ),
   );
+  const affected = (task: Task, repair: Task): boolean =>
+    task.origin === "planned" &&
+    !taskDependsOn(graph, repair.id, task.id, waitingFor) &&
+    affectedByRepair(graph, task, repair, waitingFor);
+  // Move a repair to the first ready task it holds back. Earlier unrelated tasks keep their
+  // order, including a document's first run, whose dependency is not a failing code check.
+  const order = new Map(available.map((t, index) => [t, index]));
+  for (const repair of repairs) {
+    if (!order.has(repair)) continue;
+    const first = available.findIndex((t) => affected(t, repair));
+    if (first >= 0) order.set(repair, Math.min(order.get(repair) ?? first, first));
+  }
   return available
-    .filter(
-      (t) =>
-        t.origin !== "planned" ||
-        !repairs.some(
-          (repair) =>
-            !taskDependsOn(graph, repair.id, t.id, waitingFor) &&
-            affectedByRepair(graph, t, repair, waitingFor),
-        ),
-    )
-    .sort((a, b) => Number(repairs.includes(b)) - Number(repairs.includes(a)));
+    .filter((t) => !repairs.some((repair) => affected(t, repair)))
+    .sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
 }
 
 /**
