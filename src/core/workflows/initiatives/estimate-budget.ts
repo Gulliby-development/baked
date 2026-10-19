@@ -5,6 +5,8 @@ export function estimateBudgetText(
   withMargin: number,
 ): string {
   if (tokens.high > budget.maxTotalTokens)
-    return `${tokens.low > budget.maxTotalTokens ? "does not fit the budget" : "low end fits the budget"}; high end exceeds the budget, consider extending to ${withMargin.toLocaleString("en-US")} tokens with margin`;
-  return budget.fits === "yes" ? "fits the budget" : "may not fit the budget with margin";
+    return `${tokens.low > budget.maxTotalTokens ? "does not fit the shared budget" : "low end fits the shared budget"}; high end exceeds the shared budget, consider extending to ${withMargin.toLocaleString("en-US")} tokens with margin`;
+  return budget.fits === "yes"
+    ? "fits the shared budget"
+    : "may not fit the shared budget with margin";
 }
