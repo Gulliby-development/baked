@@ -841,7 +841,8 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "test-integrity",
     group: "Workflow runs",
-    title: "Test-integrity guard: block or warn on test gaming, spec conflicts",
+    title:
+      "Test-integrity guard: block or warn on test gaming; explicit spec test removals take precedence",
     tui: ["/workflow: new run, Tests field; spec conflicts in the decision view"],
     cli: ["baked workflow run: --test-integrity", "baked workflow answer"],
     api: ["/v1/workflow/runs: testIntegrity", "/v1/workflow/runs/:id/answer"],
