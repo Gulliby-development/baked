@@ -124,6 +124,7 @@ bun test tests/feature-parity.test.ts
 
 | Feature | TUI | Headless CLI | serve API | Desktop |
 | --- | --- | --- | --- | --- |
+| Journal every task file changed by an automatic fixer, including directory-wide fixers | `/workflow` | `baked workflow run`, `baked workflow resume`, `baked workflow undo` | `/v1/workflow/runs/:id` | `project/runs` |
 | Start a full run or a quick task | `/workflow` | `baked workflow run`, `baked quick`, `baked workflow definitions` +1 | `/v1/workflow/runs`, `/v1/workflow/definitions`, `/v1/workflow/profiles` | `project/overview` |
 | Price test tasks by task-cost quantiles, refresh pending caps from the run, split above observed case capacity with distinct part titles and report both token caps | `/workflow` | `baked workflow show` | `/v1/workflow/runs/:id` | `project/runs` |
 | Test-integrity guard: block or warn on test gaming, spec conflicts | `/workflow` | `baked workflow run`, `baked workflow answer` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/answer` | `project/overview`, `attention` |

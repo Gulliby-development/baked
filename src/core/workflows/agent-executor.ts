@@ -934,40 +934,40 @@ export class NativeAgentExecutor implements AgentExecutor {
             let reverted: string[] = [];
             try {
               const outputs: string[] = [];
-              const runFixer = async (command: { executable: string; args: string[] }) => {
+              const runFixer = async (
+                command: { executable: string; args: string[] },
+                targets: string[],
+              ) => {
                 const executable =
                   command.executable === "bun" ? process.execPath : command.executable;
-                return executeCheckCommand(scope, executable, command.args, {
-                  cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
-                  env: buildCheckEnv(check),
-                  timeoutMs: check.timeoutMs,
-                  signal: request.signal,
-                  sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
-                });
+                const once = () =>
+                  executeCheckCommand(scope, executable, command.args, {
+                    cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+                    env: buildCheckEnv(check),
+                    timeoutMs: check.timeoutMs,
+                    signal: request.signal,
+                    sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
+                  });
+                // A directory argument or wrapper can make any fixer rewrite sibling task files.
+                // Capture every pre-image before running it, as for a whole-unit formatter, so
+                // later edits and resume recognize those changes as this attempt's own (#1593).
+                // Distinct paths avoid nesting a guard inside its own serialized path queue.
+                return [...new Set(paths)].reduceRight<() => Promise<unknown>>(
+                  (inner, path) => () => guard.execute("edit_file", { path }, inner),
+                  async () => {
+                    const result = await once();
+                    outputs.push(`${targets.join(", ")}: exit ${String(result.exitCode)}`);
+                  },
+                )();
               };
               try {
                 for (const fix of tiers) {
                   if (isWholeUnitFixer(fix)) {
                     if (!codePaths.length) continue;
-                    // One run for all the task's code files, still recorded as an edit of each.
-                    const once = async () => {
-                      const result = await runFixer(wholeUnitFixerCommand(fix, codePaths));
-                      outputs.push(`${codePaths.join(", ")}: exit ${String(result.exitCode)}`);
-                    };
-                    // Distinct paths: calls on one path wait for each other, so a nested
-                    // second call on the same path would wait for itself.
-                    await [...new Set(codePaths)].reduceRight<() => Promise<unknown>>(
-                      (inner, path) => () => guard.execute("edit_file", { path }, inner),
-                      once,
-                    )();
+                    await runFixer(wholeUnitFixerCommand(fix, codePaths), codePaths);
                     continue;
                   }
-                  // One run per file, each recorded like an edit, so undo and rollback see it.
-                  for (const path of paths)
-                    await guard.execute("edit_file", { path }, async () => {
-                      const result = await runFixer(fixerCommand(fix, path));
-                      outputs.push(`${path}: exit ${String(result.exitCode)}`);
-                    });
+                  for (const path of paths) await runFixer(fixerCommand(fix, path), [path]);
                 }
               } finally {
                 // Also when a run throws: a whole-crate formatter may already have rewritten
