@@ -194,6 +194,13 @@ export class InitiativeStore {
   settings(row: InitiativeRow): InitiativeSettings {
     return InitiativeSettingsSchema.parse(JSON.parse(row.settings_json));
   }
+  /** The initiative whose split this run is decomposing, if it is linked to one. */
+  decompositionOfRun(runId: string): InitiativeRow | null {
+    if (!this.available()) return null;
+    return this.db
+      .query<InitiativeRow, [string]>("SELECT * FROM initiatives WHERE decompose_run_id=? LIMIT 1")
+      .get(runId);
+  }
   create(row: {
     id: string;
     title: string;

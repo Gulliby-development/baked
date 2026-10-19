@@ -52,7 +52,13 @@ export function requestedDeliverable(finding: {
       finding.claim,
     );
   if (!asks) return null;
-  if (/\b(tests?|tests-written|coverage)\b/i.test(text)) return "test";
+  // Criterion coverage in a review is an assessment, not a request to deliver test files.
+  if (
+    /\b(tests?|tests-written|(?:test|code|mutation|branch|statement|line|function) coverage)\b/i.test(
+      text,
+    )
+  )
+    return "test";
   if (/\b(documentation|docs)\b/i.test(text)) return "docs";
   return null;
 }

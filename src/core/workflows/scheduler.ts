@@ -241,9 +241,11 @@ import {
 import { outputTail } from "./gates.js";
 import { criticalPathProblems } from "./initiatives/critical-path.js";
 import {
+  type InitiativePlan,
   InitiativePlanSchema,
   MAX_FEATURES,
   MIN_FEATURES,
+  mergeSmallSiblings,
   planStructureProblems,
   testOwnershipProblems,
 } from "./initiatives/plan.js";
@@ -2106,6 +2108,20 @@ export class WorkflowScheduler {
               break;
             }
             case "decompose": {
+              const initiatives = new InitiativeStore(this.store);
+              const initiative = initiatives.decompositionOfRun(runId);
+              const settings = initiative ? initiatives.settings(initiative) : null;
+              const ownershipProblems = (plan: InitiativePlan): string[] => {
+                const structure = planStructureProblems(plan);
+                if (structure.length) return structure;
+                // The approved boundary includes paths supplied by the host's sibling merge.
+                const proposed =
+                  settings && !settings.keepFeatures
+                    ? mergeSmallSiblings(plan, { byDependents: policy.criticalPath === "split" })
+                        .plan
+                    : plan;
+                return testOwnershipProblems(proposed);
+              };
               const plan = InitiativePlanSchema.parse(
                 await this.call(
                   runId,
@@ -2128,8 +2144,7 @@ export class WorkflowScheduler {
                     const parsed = InitiativePlanSchema.safeParse(output);
                     return parsed.success
                       ? [
-                          ...planStructureProblems(parsed.data),
-                          ...testOwnershipProblems(parsed.data),
+                          ...ownershipProblems(parsed.data),
                           ...(policy.criticalPath === "split"
                             ? criticalPathProblems(parsed.data, state.requestText || state.prompt)
                             : []),
@@ -2138,7 +2153,7 @@ export class WorkflowScheduler {
                   },
                 ),
               );
-              const problems = [...planStructureProblems(plan), ...testOwnershipProblems(plan)];
+              const problems = ownershipProblems(plan);
               if (problems.length) throw new WorkflowFault("OUTPUT_INVALID", problems.join("\n"));
               state.initiativePlan = canonical(plan);
               this.store.transaction(() =>

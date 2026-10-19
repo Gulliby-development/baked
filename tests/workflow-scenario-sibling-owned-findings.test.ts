@@ -6,6 +6,7 @@ import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { appendCorrections } from "../src/core/verification/convergence.js";
 import { fingerprint } from "../src/core/verification/findings.js";
+import { requestedDeliverable } from "../src/core/verification/deliverable-paths.js";
 import type { InitiativePlan } from "../src/core/workflows/initiatives/plan.js";
 import { InitiativeService } from "../src/core/workflows/initiatives/service.js";
 import type { InitiativeSettings } from "../src/core/workflows/initiatives/store.js";
@@ -147,6 +148,46 @@ async function scenario(file: string, stage: "review" | "convergence", legacy = 
 }
 
 describe("scenario: sibling-owned review findings do not deadlock an initiative (#1590)", () => {
+  test("criterion coverage does not request tests, while code coverage does", () => {
+    expect(requestedDeliverable({ kind: "missing", claim: "Criterion AC-001 has no coverage", suggestedFix: "Implement or demonstrate AC-001 within approved task scope and repeat checks." })).toBeNull();
+    expect(requestedDeliverable({ kind: "missing", claim: "Code coverage is missing", suggestedFix: "Supply code coverage" })).toBe("test");
+  });
+
+  for (const mode of ["merge", "keep", "different-dependents"] as const) {
+    test(`test ownership follows the proposed split: ${mode}`, async () => {
+      const root = mkdtempSync(join(tmpdir(), "baked-merged-test-owner-"));
+      const split: InitiativePlan = { schemaVersion: 1, title: "Split", goals: ["Adapters work"], completionCriteria: ["All delivered"], features: [
+        { id: "adapters", title: "Adapters", boundary: { scope: "Adapters", paths: ["src/a.py"] }, contract: "Adapters work", dependsOn: [], mandatory: true },
+        { id: "tests", title: "Tests", boundary: { scope: "Tests", paths: ["tests/test_a.py"] }, contract: "Adapters tested", dependsOn: [], mandatory: true },
+        { id: "docs", title: "Docs", boundary: { scope: "Docs", paths: ["docs/commands.md"] }, contract: "Commands documented", dependsOn: ["tests"], mandatory: true },
+        { id: "notes", title: "Notes", boundary: { scope: "Notes", paths: ["notes.txt"] }, contract: "Notes written", dependsOn: ["docs"], mandatory: true },
+      ] };
+      const executor: AgentExecutor = { async execute(request) {
+        expect(request.profile.output).toBe("initiativePlan");
+        const problems = request.validate?.(split) ?? [];
+        if (mode === "merge") {
+          expect(problems).toEqual([]);
+          return { output: split, inputTokens: 20, outputTokens: 30 };
+        }
+        expect(problems.join("\n")).toContain("testedBy");
+        const repaired = { ...split, features: split.features.map((feature) => feature.id === "adapters"
+          ? { ...feature, boundary: { ...feature.boundary, paths: [...feature.boundary.paths, "tests/unit_a.py"] } }
+          : feature) };
+        expect(request.validate?.(repaired)).toEqual([]);
+        return { output: repaired, inputTokens: 20, outputTokens: 30 };
+      } };
+      const service = new NativeWorkflowService(root, { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: false, defaultWorkflow: "sdd", policy } }, executor);
+      cleanups.push(async () => { await service.shutdown(); service.close(); await removeTempDir(root); });
+      const initiatives = new InitiativeService(service);
+      await initiatives.start({ commandId: newId(), initiativeId: "split", prompt: "Build adapters, tests and docs", ownerLabel: "test", policy, keepFeatures: mode === "keep", splitCriticalPath: mode === "different-dependents" });
+      const view = await initiatives.drive("split", new AbortController().signal);
+      expect(view.status).toBe("awaiting_approval");
+      const proposed = initiatives.store.plan(initiatives.store.revision("split", initiatives.store.get("split").plan_revision!));
+      expect(proposed.features).toHaveLength(mode === "merge" ? 3 : 4);
+      expect(proposed.features[0]?.boundary.paths).toContain(mode === "merge" ? "tests/test_a.py" : "tests/unit_a.py");
+    }, 60000);
+  }
+
   test("#1594 decomposition returns a source-only boundary for a named test owner", async () => {
     const root = mkdtempSync(join(tmpdir(), "baked-test-owner-plan-"));
     const split: InitiativePlan = { schemaVersion: 1, title: "Split", goals: ["Adapters work"], completionCriteria: ["All delivered"], features: [
