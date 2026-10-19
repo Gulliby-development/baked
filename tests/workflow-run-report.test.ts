@@ -27,6 +27,21 @@ async function completedRun() {
 }
 
 describe("run report", () => {
+  test("#1594 a sibling note removes only its duplicate legacy limitation", async () => {
+    const { fx, runId } = await completedRun();
+    const store = fx.service.store;
+    const state = store.state(runId);
+    const sibling = { findingId: "F001", severity: "medium" as const, kind: "missing", criterionIds: ["AC-001"], file: "tests/test_x.py", symbol: null, claim: "Adapter tests are missing", impact: "Missing coverage", decidedBy: "notes" as const, round: 0 };
+    state.limitations = [sibling, { ...sibling, file: "value.txt", claim: "An unrelated accepted limitation" }];
+    state.reviewNotes = [{ findingId: "F001", source: "convergence", severity: "medium", kind: "missing", basis: "spec", file: sibling.file, symbol: null, claim: `${sibling.claim} Owned by initiative feature entry: tests. Its own review checks this path.`, reason: "owned_by_sibling", repeatOf: null, snapshotId: state.snapshotId }];
+    store.transaction(() => store.saveState(runId, state));
+    const report = runReport(store, runId);
+    const limitations = report.slice(report.indexOf("## Known limitations"), report.indexOf("## Review notes"));
+    expect(limitations).toContain("An unrelated accepted limitation");
+    expect(limitations).not.toContain(sibling.claim);
+    expect(report).toContain(state.reviewNotes[0]!.claim);
+  }, 60000);
+
   test("covers what was done, tasks, checks, criteria, findings, decisions, usage and artifacts", async () => {
     const { fx, runId } = await completedRun();
     const report = runReport(fx.service.store, runId);

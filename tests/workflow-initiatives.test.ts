@@ -787,9 +787,9 @@ describe("initiative runtime", () => {
     // needed by language, each paid a run's research, spec, plan, analysis and review.
     const kinds = ["alldiff", "sum", "count", "table", "element", "require"];
     const narrowfit = plan([
-      feature("core", [], ["internal/core/a.go", "internal/core/b.go", "internal/core/c.go"]),
-      ...kinds.map((k) => feature(k, ["core"], [`internal/constraint/${k}.go`])),
-      feature("language", ["core", ...kinds], ["internal/lang/a.go", "internal/lang/b.go", "internal/lang/c.go"]),
+      { ...feature("core", [], ["internal/core/a.go", "internal/core/b.go", "internal/core/c.go"]), testedBy: "language" },
+      ...kinds.map((k) => ({ ...feature(k, ["core"], [`internal/constraint/${k}.go`]), testedBy: "language" })),
+      feature("language", ["core", ...kinds], ["internal/lang/a.go", "internal/lang/b.go", "internal/lang/c_test.go"]),
     ]);
     const t = setup(narrowfit);
     await t.start();
@@ -820,7 +820,7 @@ describe("initiative runtime", () => {
   test("a small leaf feature of the decomposer runs the light workflow; keepFeatures keeps its spec workflow", async () => {
     // Bench round 36, seqmill: the documentation leaf ran sdd for $1.42 against about $0.5 for a
     // quick run; nothing pins a leaf's spec.
-    const three = (id: string) => [`${id}/a.py`, `${id}/b.py`, `${id}/c.py`];
+    const three = (id: string) => [`${id}/a.py`, `${id}/b.py`, `${id}/test_c.py`];
     const seqmill = plan([
       { ...feature("core", [], three("core")), workflow: "sdd" },
       { ...feature("engine", ["core"], three("engine")), workflow: "sdd" },
@@ -989,7 +989,7 @@ describe("initiative runtime", () => {
   });
 
   test("small siblings merge only with the same dependencies, up to the path cap and the feature minimum", () => {
-    const one = (id: string, deps: string[] = []) => feature(id, deps, [`${id}.go`]);
+    const one = (id: string, deps: string[] = []) => feature(id, deps, [`${id}.txt`]);
     // Different dependencies, a feature without paths and a three-path feature stay apart.
     const mixed = plan([
       feature("core", [], ["a", "b", "c"]),
@@ -1846,7 +1846,7 @@ describe("scenario: a split that fixes a crate skeleton (#1461)", () => {
       featureId: "core",
       into: [
         { id: "core", title: "Core", paths: ["core.txt", "src/lib.rs"] },
-        { id: "mods", title: "Modules", paths: ["src/a.rs", "src/b.rs", "src/lib.rs"] },
+        { id: "mods", title: "Modules", paths: ["src/a.rs", "src/b.rs", "src/lib.rs", "tests/mods.rs"] },
       ],
     });
     expect(parts.features.find((f) => f.id === "core")?.skeleton?.map((f) => f.path)).toEqual(["src/lib.rs"]);

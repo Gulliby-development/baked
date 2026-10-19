@@ -125,7 +125,7 @@ bun test tests/feature-parity.test.ts
 | Feature | TUI | Headless CLI | serve API | Desktop |
 | --- | --- | --- | --- | --- |
 | Start a full run or a quick task | `/workflow` | `baked workflow run`, `baked quick`, `baked workflow definitions` +1 | `/v1/workflow/runs`, `/v1/workflow/definitions`, `/v1/workflow/profiles` | `project/overview` |
-| Size tests by literal cases, split large test files into sequential criterion slices and replace their graph on re-plan | `/workflow` | `baked workflow show` | `/v1/workflow/runs/:id` | `project/runs` |
+| Walk and price shared criterion cases once per owning test task, split large test files into sequential criterion slices and replace their graph on re-plan | `/workflow` | `baked workflow show` | `/v1/workflow/runs/:id` | `project/runs` |
 | Test-integrity guard: block or warn on test gaming, spec conflicts | `/workflow` | `baked workflow run`, `baked workflow answer` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/answer` | `project/overview`, `attention` |
 | Recovery advice names the action available in each app | `/workflow` | `baked workflow status`, `baked workflow initiative show` | `/v1/workflow/runs/:id`, `/v1/initiatives/:id` | `project/runs`, `project/initiatives`, `attention` |
 | Route failed checks to pending test writers or named source owners | `/workflow` | `baked workflow run`, `baked workflow artifacts` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/artifacts` | `project/runs` |
@@ -182,7 +182,7 @@ bun test tests/feature-parity.test.ts
 
 | Feature | TUI | Headless CLI | serve API | Desktop |
 | --- | --- | --- | --- | --- |
-| Review findings on sibling-owned paths become notes naming their owner | `/workflow` | `baked workflow report` | `/v1/workflow/runs/:id/report` | `project/runs` |
+| Initiative deliverables have writable owners; deferred findings and mutation checks follow them | `/workflow` | `baked workflow report` | `/v1/workflow/runs/:id/report` | `project/runs` |
 | Start an initiative | `/workflow` | `baked workflow initiative` | `/v1/initiatives` | `project/initiatives` |
 | Initiative view: approve split, pause, resume, switch model | `/workflow` | `baked workflow initiative` | `/v1/initiatives/:id`, `/v1/initiatives/:id/events`, `/v1/initiatives/:id/approve` +3 | `project/initiatives`, `attention` |
 | Reject, merge, split, rename, remove, re-plan, extend | `/workflow` | `baked workflow initiative` | `/v1/initiatives/:id/reject`, `/v1/initiatives/:id/merge`, `/v1/initiatives/:id/split` +4 | `project/initiatives` |

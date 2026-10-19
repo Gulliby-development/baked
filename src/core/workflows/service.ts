@@ -852,20 +852,25 @@ export class NativeWorkflowService implements WorkflowService {
         const plan = initiatives.plan(initiatives.revision(initiativeId, link.plan_revision));
         state.initiativeBounds = {
           featureId: link.feature_id,
-          features: plan.features.map((feature) => ({ id: feature.id, ...feature.boundary })),
+          features: plan.features.map((feature) => ({
+            id: feature.id,
+            ...feature.boundary,
+            ...(feature.testedBy ? { testedBy: feature.testedBy } : {}),
+          })),
         };
-        this.store.transaction(() => {
-          // A prior binary may already have recorded the sibling finding as a blocker.
-          // Acceptance checks that table as well as the current review.
-          const findings = this.store
-            .findings(runId)
-            .filter((finding) => !["resolved", "refuted"].includes(finding.status))
-            .map((finding) => JSON.parse(finding.body_json) as Review["findings"][number]);
-          for (const id of noteSiblingFindings(state, "review", findings))
-            this.store.findingStatus(runId, id, "resolved");
-          this.store.saveState(runId, state);
-        });
       }
+    }
+    if (state.initiativeBounds) {
+      this.store.transaction(() => {
+        // Re-route old blockers even when a prior binary already saved boundary metadata.
+        const findings = this.store
+          .findings(runId)
+          .filter((finding) => !["resolved", "refuted"].includes(finding.status))
+          .map((finding) => JSON.parse(finding.body_json) as Review["findings"][number]);
+        for (const id of noteSiblingFindings(state, "review", findings))
+          this.store.findingStatus(runId, id, "resolved");
+        this.store.saveState(runId, state);
+      });
     }
     const controller = new AbortController();
     const abort = (): void => controller.abort(signal.reason);

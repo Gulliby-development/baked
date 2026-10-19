@@ -66,11 +66,16 @@ const CHECK_COMMAND = new RegExp(
 );
 
 /** What else decides which quoted literals are cases (#1366). */
+type CaseTask = Pick<Task, "criterionIds"> &
+  Partial<Pick<Task, "id" | "description" | "writes" | "dependsOn" | "sizingSlice">>;
+
 export interface CaseContext {
   /** The run's checks: a literal that is one of their commands is checked by the host. */
   checks?: readonly Pick<Check, "executable" | "args">[];
   /** The plan's tasks: a criterion most of them carry is about the whole repository. */
-  tasks?: readonly Pick<Task, "criterionIds">[];
+  tasks?: readonly CaseTask[];
+  /** Pricing has always counted broad criteria; only the task-end walk exempts them. */
+  includeBroad?: boolean;
 }
 
 /** Whether a quoted literal is a command of the project's checks rather than a case. */
@@ -99,15 +104,16 @@ export function isCheckCommand(literal: string, checks: CaseContext["checks"] = 
  */
 export function criterionCases(
   spec: SpecText,
-  task: Pick<Task, "criterionIds">,
+  task: CaseTask,
   context: CaseContext = {},
 ): CriterionCase[] {
   const cases: CriterionCase[] = [];
   const seen = new Set<string>();
   const sets = closedSets(spec);
   const add = (criterionId: string, literal: string, word?: true) => {
-    if (seen.has(literal) || isCheckCommand(literal, context.checks)) return;
-    seen.add(literal);
+    const key = `${criterionId}:${literal}`;
+    if (seen.has(key) || isCheckCommand(literal, context.checks)) return;
+    seen.add(key);
     cases.push({ criterionId, literal, ...(word ? { word } : {}) });
   };
   const tasks = context.tasks ?? [];
@@ -115,7 +121,6 @@ export function criterionCases(
     tasks.length >= 3 && tasks.filter((t) => t.criterionIds.includes(id)).length * 2 > tasks.length;
   for (const criterion of spec.criteria) {
     if (!task.criterionIds.includes(criterion.id) || criterion.method !== "automated") continue;
-    if (broad(criterion.id)) continue;
     for (const [field, text] of [criterion.given, criterion.when, criterion.then].entries()) {
       for (const match of text.matchAll(QUOTED)) {
         const literal = (match[1] ?? match[2] ?? match[3] ?? "").trim();
@@ -134,7 +139,88 @@ export function criterionCases(
         add(criterion.id, member, true);
     }
   }
-  return cases;
+  const owned = partitionCases(cases, task, tasks);
+  const applicable = owned.filter((c) => {
+    const carriers = tasks.filter(
+      (t) =>
+        t.criterionIds.includes(c.criterionId) &&
+        t.writes &&
+        writtenTestPaths({ writes: t.writes }).length,
+    );
+    const scoped =
+      task.id &&
+      tasks.some((t) => t.id === task.id) &&
+      carriers.length > 1 &&
+      carriers.some(
+        (t) =>
+          t.sizingSlice ||
+          cases.some(
+            (row) =>
+              row.criterionId === c.criterionId &&
+              !missingCases([row], [t.description ?? ""]).length,
+          ),
+      );
+    return context.includeBroad || !broad(c.criterionId) || scoped;
+  });
+  return applicable.filter(
+    (c, i) => applicable.findIndex((other) => other.literal === c.literal) === i,
+  );
+}
+
+/** Each shared case belongs to one test task. Unclaimed rows go to the last carrier (#1597). */
+function partitionCases(
+  cases: CriterionCase[],
+  task: CaseTask,
+  tasks: readonly CaseTask[],
+): CriterionCase[] {
+  // A corrective or a caller without a plan identity still checks its complete criterion.
+  if (!task.id || !tasks.some((t) => t.id === task.id)) return cases;
+  const ordered: CaseTask[] = [];
+  const visited = new Set<CaseTask>();
+  const visit = (t: CaseTask) => {
+    if (visited.has(t)) return;
+    visited.add(t);
+    for (const id of t.dependsOn ?? []) {
+      const dependency = tasks.find((other) => other.id === id);
+      if (dependency) visit(dependency);
+    }
+    ordered.push(t);
+  };
+  for (const t of tasks) visit(t);
+  const owners = new Map<CriterionCase, string | undefined>();
+  for (const id of new Set(cases.map((c) => c.criterionId))) {
+    const carriers = ordered.filter(
+      (t) =>
+        t.criterionIds.includes(id) && t.writes && writtenTestPaths({ writes: t.writes }).length,
+    );
+    if (carriers.length < 2 || !carriers.some((t) => t.id === task.id)) continue;
+    const rows = cases.filter((c) => c.criterionId === id);
+    const sliced = carriers.every(
+      (t) => t.sizingSlice && t.sizingSlice.taskId === carriers[0]?.sizingSlice?.taskId,
+    );
+    const remaining: CriterionCase[] = [];
+    for (const row of rows) {
+      const named = carriers.filter((t) => !missingCases([row], [t.description ?? ""]).length);
+      if (named.length === 1 || (named.length > 1 && !sliced)) owners.set(row, named[0]?.id);
+      else remaining.push(row);
+    }
+    if (sliced) {
+      // Shares describe case weight, not literal text. Divide the unnamed rows in plan order.
+      const total = carriers.reduce((sum, t) => sum + (t.sizingSlice?.share ?? 0), 0);
+      let share = 0;
+      let start = 0;
+      for (const [index, carrier] of carriers.entries()) {
+        share += carrier.sizingSlice?.share ?? 0;
+        const end =
+          index === carriers.length - 1
+            ? remaining.length
+            : Math.floor((remaining.length * share) / total);
+        for (const row of remaining.slice(start, end)) owners.set(row, carrier.id);
+        start = end;
+      }
+    } else for (const row of remaining) owners.set(row, carriers.at(-1)?.id);
+  }
+  return cases.filter((c) => !owners.has(c) || owners.get(c) === task.id);
 }
 
 /** The parts of a spec that name a closed set: its prose, requirements and criteria. */
@@ -320,7 +406,7 @@ export const writtenTestPaths = (task: Pick<Task, "writes">): string[] =>
  */
 export function caseCheck(
   spec: SpecText | null | undefined,
-  task: Pick<Task, "criterionIds" | "writes">,
+  task: CaseTask & Pick<Task, "writes">,
   context: CaseContext = {},
 ): ((root: string) => Promise<string[]>) | undefined {
   const paths = writtenTestPaths(task);
