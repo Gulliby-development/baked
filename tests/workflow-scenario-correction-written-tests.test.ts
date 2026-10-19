@@ -100,15 +100,13 @@ describe("scenario: md-site T008, a correction's tests-written check (#1373)", (
     await service.decide(run.runId, { commandId: newId(), expectedRevision: waiting.revision }, { kind: "approve", requestId: approval.id, digest: approval.digest });
     const done = await service.drive(run.runId, new AbortController().signal);
     const runs = service.store.artifacts(run.runId).filter((a) => a.logical_path.startsWith("checks/tests-written/")).map((a) => (JSON.parse(service.store.readArtifact(run.runId, a.id)) as { definition: { args: string[] } }).definition.args);
-    // T002 and T003 run their own tests, each twice: it goes back to itself once with the
-    // failure (#1518) and keeps its test. Then each correction runs the test its finding points
-    // at, once: before the fix T002's correction also ran the slug test, failed on it, and ran
-    // again after the slug test's correction.
+    // Each test task continues once on its own assertion (#1518), then its repair runs before
+    // the next test task (#1612). A repair checks only the test its finding points at.
     const render = ["test", "./tests/render.test.ts"];
     const slug = ["test", "./tests/slug.test.ts"];
-    expect(runs).toEqual([render, render, slug, slug, render, slug]);
+    expect(runs).toEqual([render, render, render, slug, slug, slug]);
     expect(executor.corrections).toEqual([
-      { writes: ["src/render.ts", "src/slug.ts", "tests/render.test.ts", "tests/slug.test.ts"], written: ["tests/render.test.ts"] },
+      { writes: ["src/render.ts", "src/slug.ts", "tests/render.test.ts"], written: ["tests/render.test.ts"] },
       { writes: ["src/slug.ts", "tests/slug.test.ts"], written: ["tests/slug.test.ts"] },
     ]);
     const findings = service.store.findings(run.runId).map((f) => JSON.parse(f.body_json) as { claim: string; suggestedFix: string });

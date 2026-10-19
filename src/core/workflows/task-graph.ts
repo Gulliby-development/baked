@@ -1,11 +1,54 @@
 import { hashJson } from "../specs/hash.js";
-import { failingFilesInOutput, failingPathsInOutput } from "../verification/convergence.js";
+import {
+  failingFilesInOutput,
+  failingPathsInOutput,
+  isTestOf,
+} from "../verification/convergence.js";
 import { isDocFile } from "../verification/doc-examples.js";
 import { writtenCodePaths } from "./check-policy.js";
 import type { TaskGraph } from "./schemas.js";
 import type { TaskRow } from "./store.js";
 import { isTestPath } from "./test-integrity.js";
 import type { RuntimeState, Task } from "./types.js";
+
+function taskDependsOn(
+  graph: TaskGraph,
+  from: string,
+  to: string,
+  waitingFor: RuntimeState["waitingFor"],
+  seen = new Set<string>(),
+): boolean {
+  if (from === to) return true;
+  if (seen.has(from)) return false;
+  seen.add(from);
+  return [
+    ...(graph.tasks.find((t) => t.id === from)?.dependsOn ?? []),
+    ...(waitingFor[from] ?? []),
+  ].some((id) => taskDependsOn(graph, id, to, waitingFor, seen));
+}
+
+/** Whether the task uses files the repair writes, through its dependencies or explicit reads. */
+function affectedByRepair(
+  graph: TaskGraph,
+  task: Task,
+  repair: Task,
+  waitingFor: RuntimeState["waitingFor"],
+): boolean {
+  const paths = repair.writes.map((w) => w.path);
+  return (
+    (!documentsOnly(task) &&
+      graph.tasks.some(
+        (base) =>
+          base.origin === "planned" &&
+          taskDependsOn(graph, task.id, base.id, waitingFor) &&
+          base.writes.some((w) => paths.includes(w.path)),
+      )) ||
+    task.readHints.some((path) => paths.includes(path)) ||
+    task.writes.some(
+      (w) => paths.includes(w.path) || paths.some((source) => isTestOf(w.path, source)),
+    )
+  );
+}
 export function hasTaskGate(row: TaskRow, gates: RuntimeState["taskGates"]): boolean {
   const gate = gates[row.id];
   return (
@@ -20,6 +63,7 @@ export function readyTasks(
   rows: TaskRow[],
   gates: RuntimeState["taskGates"] = {},
   waitingFor: RuntimeState["waitingFor"] = {},
+  predecessors: RuntimeState["repairPredecessors"] = {},
 ): Task[] {
   const statuses = new Map(rows.map((r) => [r.id, r.status]));
   const ready = graph.tasks.filter(
@@ -48,11 +92,43 @@ export function readyTasks(
   // were already right (zonevet cc41bbb9, ecfit 25614519: 1.07M tokens, #1248).
   const settledByChecks = (t: Task): boolean =>
     t.origin === "planned" && t.checkIds.length > 0 && gates[t.id]?.definitionHash === hashJson(t);
-  return correcting
+  const available = correcting
     ? ready.filter(
         (t) => !(statuses.get(t.id) === "invalidated" && (documentsOnly(t) || settledByChecks(t))),
       )
     : ready;
+  // A task-level repair settles a known defect before downstream tasks test it again (#1612).
+  // Keep unrelated work available to parallel writers, and retain dependency order on resume.
+  const repairs = graph.tasks.filter(
+    (t) =>
+      t.origin === "repair" &&
+      ["pending", "running", "invalidated", "interrupted"].includes(
+        statuses.get(t.id) ?? "pending",
+      ) &&
+      t.findingIds.some((id) =>
+        graph.tasks.some(
+          (base) =>
+            base.id === predecessors[id] &&
+            base.origin === "planned" &&
+            ["implemented", "verified", "blocked"].includes(statuses.get(base.id) ?? "pending"),
+        ),
+      ),
+  );
+  const affected = (task: Task, repair: Task): boolean =>
+    task.origin === "planned" &&
+    !taskDependsOn(graph, repair.id, task.id, waitingFor) &&
+    affectedByRepair(graph, task, repair, waitingFor);
+  // Move a repair to the first ready task it holds back. Earlier unrelated tasks keep their
+  // order, including a document's first run, whose dependency is not a failing code check.
+  const order = new Map(available.map((t, index) => [t, index]));
+  for (const repair of repairs) {
+    if (!order.has(repair)) continue;
+    const first = available.findIndex((t) => affected(t, repair));
+    if (first >= 0) order.set(repair, Math.min(order.get(repair) ?? first, first));
+  }
+  return available
+    .filter((t) => !repairs.some((repair) => affected(t, repair)))
+    .sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
 }
 
 /**
@@ -355,6 +431,65 @@ export interface FailureOwner {
   files: string[];
 }
 
+/** Assertion values or messages, independent of the test name and diagnostic location. */
+export function assertionFailureSignature(output: string): string {
+  const outputLines = Bun.stripANSI(output).split(/\r?\n/);
+  const assertions: string[] = [];
+  for (let index = 0; index < outputLines.length; index++) {
+    let assertion =
+      /\b(expected\s*[:<].*|(?:received|actual)\s*:.*|(?:left|right)\s*:.*|(?:got|want)(?::\s*|\s+).*|assert\s+.+|AssertionError:\s*.+|assertion failed:\s*.+)/i.exec(
+        outputLines[index] ?? "",
+      )?.[1];
+    if (!assertion) continue;
+    // Array/object headers alone identify no value. Keep their complete multiline value;
+    // truncated output must not make unrelated assertions match (#1612).
+    if (/^(?:expected|received|actual|left|right)\s*:\s*[[{]/i.test(assertion)) {
+      const balance = (line: string): number => {
+        const unquoted = line.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, "");
+        return (unquoted.match(/[[{]/g)?.length ?? 0) - (unquoted.match(/[\]}]/g)?.length ?? 0);
+      };
+      let depth = balance(assertion);
+      while (depth > 0 && index + 1 < outputLines.length) {
+        const next = outputLines[++index] ?? "";
+        depth += balance(next);
+        assertion += `\n${next}`;
+      }
+      if (depth !== 0) return "";
+    }
+    if (/^(?:expected|received|actual|left|right)\s*:\s*$/i.test(assertion)) return "";
+    assertions.push(
+      assertion
+        .split(/("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g)
+        .map((part, i) => (i % 2 ? part : part.replace(/\s+/g, " ")))
+        .join("")
+        .trim(),
+    );
+  }
+  return [...new Set(assertions)].sort().join("\n");
+}
+
+export interface PendingFindingFailure {
+  taskId: string;
+  output: string;
+}
+
+/** Only nonempty, equal assertions from durable check evidence identify a shared failure. */
+export function sameFailureAsOpenFinding(
+  output: string,
+  findings: readonly PendingFindingFailure[],
+): string[] {
+  const signature = assertionFailureSignature(output);
+  return signature
+    ? [
+        ...new Set(
+          findings
+            .filter((f) => assertionFailureSignature(f.output) === signature)
+            .map((f) => f.taskId),
+        ),
+      ]
+    : [];
+}
+
 /** One ownership decision for task checks, continuations, reports and request_check. */
 export function failureOwner(
   graph: TaskGraph | null | undefined,
@@ -362,9 +497,34 @@ export function failureOwner(
   gates: RuntimeState["taskGates"],
   task: Task,
   output: string,
-  options: { crossProfile?: boolean } = {},
+  options: {
+    crossProfile?: boolean;
+    pendingFindings?: readonly PendingFindingFailure[];
+    waitingFor?: RuntimeState["waitingFor"];
+  } = {},
 ): FailureOwner {
   const files = failingFilesInOutput(output, graph?.tasks ?? []);
+  const waitingFor = options.waitingFor ?? {};
+  const matching =
+    task.origin === "planned"
+      ? sameFailureAsOpenFinding(output, options.pendingFindings ?? []).filter(
+          (id) =>
+            graph?.tasks.some(
+              (t) =>
+                t.id === id &&
+                t.origin === "repair" &&
+                !taskDependsOn(graph, id, task.id, waitingFor) &&
+                affectedByRepair(graph, task, t, waitingFor),
+            ) &&
+            rows.some(
+              (r) =>
+                r.id === id &&
+                (["pending", "running", "invalidated", "interrupted"].includes(r.status) ||
+                  (r.status === "implemented" && !hasTaskGate(r, gates))),
+            ),
+        )
+      : [];
+  if (matching.length) return { kind: "pending", owners: matching, files };
   const updaters = testUpdateOwners(graph, rows, gates, task, output);
   if (updaters.length) return { kind: "test-update", owners: updaters, files };
   const pending = task.origin === "planned" ? pendingOwners(graph, rows, gates, task, output) : [];
