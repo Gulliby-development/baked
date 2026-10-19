@@ -288,6 +288,17 @@ for (const [width, height] of SIZES) {
       await press(view, "return");
       expect(started.at(-1)).toMatchObject({ executionMode: "inline", clarification: "assume", testIntegrity: "warn", modelStrict: true, maxCostUsd: 2.5 });
       expect(started.at(-1)?.maxConcurrentWriters).toBeUndefined();
+      expect(started.at(-1)?.rowsAsData).toBeUndefined();
+      // Rows follows Start run, so opting in does not intercept the existing navigation.
+      await press(view, "tab");
+      await press(view, "right");
+      expect(flat(await frame(view, width, height, "rows-on"))).toContain("on: host writes audited");
+      await press(view, "s", { ctrl: true });
+      expect(started.at(-1)?.rowsAsData).toBe("on");
+      await press(view, "right");
+      await press(view, "s", { ctrl: true });
+      expect(started.at(-1)?.rowsAsData).toBe("off");
+      await press(view, "up");
       for (let i = 0; i < 4; i++) await press(view, "up");
       await press(view, "right");
       text = await frame(view, width, height, "worktree");

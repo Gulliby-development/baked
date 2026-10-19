@@ -198,7 +198,7 @@ A spec author writes some criteria with literal rows, an input and the output it
 
 ### Acceptance rows as data
 
-`rowsAsData: "on"` in `workflows.policy` or a policy file enables host-written acceptance data and parameterized tests. The default is off. A run can override the policy with `baked workflow run --rows-as-data on|off` or `baked workflow quick --rows-as-data on|off`. The TUI new-run form has a Rows field. The desktop New run settings have a Host-written acceptance rows checkbox. `POST /v1/workflow/runs` accepts `rowsAsData: "on"` or `"off"`. Explicit off overrides an enabled policy; absent and off add nothing to the frozen policy.
+`rowsAsData: "on"` in `workflows.policy` or a policy file enables host-written acceptance data and parameterized tests. The default is off. A run can override the policy with `baked workflow run --rows-as-data on|off` or `baked workflow quick --rows-as-data on|off`. The TUI new-run form has a Rows field after Start run; Tab from Start run reaches it, and left/right toggles it. The desktop New run settings have a Host-written acceptance rows checkbox. `POST /v1/workflow/runs` accepts `rowsAsData: "on"` or `"off"`. Explicit off overrides an enabled policy; absent and off add nothing to the frozen policy.
 
 This setting requires an analyze stage. Workflows without one, including the default `quick` preset, refuse an enabled start before making changes. Use `sdd`, a custom workflow that analyzes its plan, or `--rows-as-data off`.
 

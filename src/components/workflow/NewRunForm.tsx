@@ -40,9 +40,10 @@ const FIELDS = [
   "writers",
   "clarification",
   "tests",
-  "rows",
   "strict",
   "start",
+  // Keep the existing navigation through Start run unchanged.
+  "rows",
 ] as const;
 type FieldId = (typeof FIELDS)[number];
 const PRESETS: BudgetPresetId[] = [...BUDGET_PRESETS];
@@ -397,19 +398,6 @@ export function NewRunForm({
             keyHint="←/→"
           />
         </FocusTarget>
-        <FocusTarget active={focus === "rows"}>
-          <Field
-            label="Rows"
-            labelWidth={10}
-            focused={focus === "rows"}
-            value={
-              rowsAsData
-                ? "on: host writes audited Bun/pytest test rows"
-                : "off: agent writes tests"
-            }
-            keyHint="left/right"
-          />
-        </FocusTarget>
         <Field
           label="Model"
           labelWidth={10}
@@ -445,6 +433,19 @@ export function NewRunForm({
             </text>
             <text fg={t.textFaint}>{"  Ctrl+S from any field"}</text>
           </box>
+        </FocusTarget>
+        <FocusTarget active={focus === "rows"}>
+          <Field
+            label="Rows"
+            labelWidth={10}
+            focused={focus === "rows"}
+            value={
+              rowsAsData
+                ? "on: host writes audited Bun/pytest test rows"
+                : "off: agent writes tests"
+            }
+            keyHint="left/right"
+          />
         </FocusTarget>
       </Section>
       {shownError ? <text fg={t.error}>{`✗ ${shownError}`}</text> : null}
