@@ -935,7 +935,8 @@ export class ChatSession {
    * session has no model to run it with.
    */
   wake(lines: string[]): boolean {
-    if (!this.isCoordinator || lines.length === 0 || !this.model) return false;
+    if (this.owner.shuttingDown || !this.isCoordinator || lines.length === 0 || !this.model)
+      return false;
     this.submit({ text: wakePrompt(lines), verbatim: true, hidden: true });
     return true;
   }
@@ -963,6 +964,7 @@ export class ChatSession {
   }
 
   private submit(input: QueuedInput): { turnId: string; queued: boolean } {
+    if (this.owner.shuttingDown) throw new ChatError("SESSION_BUSY", "The server is shutting down");
     if (this.rewinding) throw new ChatError("SESSION_BUSY", "Wait for the undo or redo to finish");
     const running = this.turn ?? this.compaction;
     if (running) {
@@ -1083,6 +1085,7 @@ export class ChatSession {
    * and when the conversation is too short for a summary to save anything.
    */
   compact(trigger: CompactTrigger = "manual"): { compactionId: string } {
+    if (this.owner.shuttingDown) throw new ChatError("SESSION_BUSY", "The server is shutting down");
     if (this.busy) throw new ChatError("SESSION_BUSY", "Wait for the running turn to finish");
     const { host } = this.owner;
     if (!host.compact) throw new ChatError("NOT_SUPPORTED", "This server cannot compact sessions");
@@ -1183,7 +1186,7 @@ export class ChatSession {
     });
     this.emitSession();
     // Messages sent while compacting start the next turn.
-    if (this.queue.length > 0 && status !== "interrupted") {
+    if (!this.owner.shuttingDown && this.queue.length > 0 && status !== "interrupted") {
       const [first, ...rest] = this.queue;
       this.queue = [];
       if (first) this.sendQueued(first);
@@ -1728,6 +1731,11 @@ export class ChatSession {
     });
     if (notice) this.emit({ type: "notice", message: notice.message });
     this.emitSession();
+    // Shutdown can begin while the final save waits, after this.turn was cleared.
+    if (this.owner.shuttingDown) {
+      this.queue = [];
+      return;
+    }
     if (notice?.execute) {
       // The accepted plan runs first; messages sent meanwhile are steered into it.
       const queued = this.queue;
@@ -1882,6 +1890,11 @@ export class ChatService {
 
   get workspace(): string {
     return this.options.workspace;
+  }
+
+  /** Prevents sessions from starting more work once shutdown begins. */
+  get shuttingDown(): boolean {
+    return this.closed;
   }
 
   /**
