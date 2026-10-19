@@ -966,7 +966,7 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "criteria-case-check",
     group: "Workflow runs",
-    title: "Task-end test case check: concrete input tokens, with scenario labels left to review",
+    title: "Task-end test case check: separate table inputs and equivalent escape spellings",
     tui: ["/workflow: task activity and diagnostic artifacts"],
     cli: ["baked workflow artifacts"],
     api: ["/v1/workflow/runs/:id/artifacts"],
