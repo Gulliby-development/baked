@@ -87,6 +87,19 @@ export const renameFileTool = {
       if (tracked?.value) {
         lspEdits = tracked.value.edits;
       }
+    } else if (!client) {
+      const renameResult = await boundedEditWork(
+        () =>
+          router.executeWithFallback(
+            router.detectLanguage(from),
+            "getFileRenameEdits",
+            (b) =>
+              b.getFileRenameEdits?.([{ oldPath: from, newPath: to }]) ?? Promise.resolve(null),
+          ),
+        configuredDiagnosticsTimeoutMs(),
+        null,
+      );
+      if (renameResult) lspEdits = renameResult.edits;
     }
 
     // 2. Apply LSP import edits to all affected files
@@ -145,6 +158,16 @@ export const renameFileTool = {
     // 4. Notify LSP servers that the rename completed
     if (client) {
       client.routerNotifyFilesRenamed([{ oldPath: from, newPath: to }]);
+    } else {
+      await boundedEditWork(
+        () =>
+          router.executeWithFallback(router.detectLanguage(from), "notifyFilesRenamed", (b) => {
+            b.notifyFilesRenamed?.([{ oldPath: from, newPath: to }]);
+            return Promise.resolve(null);
+          }),
+        configuredDiagnosticsTimeoutMs(),
+        null,
+      );
     }
 
     // 5. Report
