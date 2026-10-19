@@ -1,3 +1,4 @@
+import { withEditDeadline } from "../tools/edit-deadline.js";
 import { WorkflowFault } from "./errors.js";
 import { executionClock, executionTimeout } from "./execution-clock.js";
 
@@ -112,14 +113,19 @@ export async function withDeadline<T>(
 ): Promise<T> {
   if (!(ms > 0)) return action();
   let cancel: (() => void) | undefined;
-  const pending = action();
+  const controller = new AbortController();
+  const pending = withEditDeadline(controller.signal, action);
   // A call abandoned at its deadline may still fail later; nobody awaits that.
   pending.catch(() => {});
   try {
     return await Promise.race([
       pending,
       new Promise<never>((_, reject) => {
-        cancel = executionTimeout(() => reject(new ToolDeadlineError(tool, ms)), ms);
+        cancel = executionTimeout(() => {
+          const error = new ToolDeadlineError(tool, ms);
+          controller.abort(error);
+          reject(error);
+        }, ms);
       }),
     ]);
   } finally {

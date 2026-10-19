@@ -780,6 +780,16 @@ export const FEATURES: readonly Feature[] = [
 
   // Workflow runs
   {
+    id: "workflow-submit-refusal-recovery",
+    group: "Workflow runs",
+    title:
+      "Replay a refused submission once with repair tools; continue after an empty format correction",
+    tui: ["/workflow: shared attempt recovery"],
+    cli: ["baked workflow run: shared attempt recovery"],
+    api: ["/v1/workflow/runs: shared attempt recovery"],
+    desktop: ["project/runs: shared attempt recovery"],
+  },
+  {
     id: "workflow-fixer-journal",
     group: "Workflow runs",
     title: "Journal every task file changed by an automatic fixer, including directory-wide fixers",
@@ -856,7 +866,7 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "workflow-failure-ownership",
     group: "Workflow runs",
-    title: "Route failed checks to pending test writers or named source owners",
+    title: "Prioritize task repairs and defer matching failures to their pending repair",
     tui: ["/workflow: run tasks and diagnostic artifacts"],
     cli: ["baked workflow run", "baked workflow artifacts"],
     api: ["/v1/workflow/runs", "/v1/workflow/runs/:id/artifacts"],
@@ -1086,9 +1096,19 @@ export const FEATURES: readonly Feature[] = [
     ],
   },
   {
+    id: "run-edit-preparation",
+    group: "Workflow runs",
+    title:
+      "Edit preparation journals phases, bounds worker diagnostics and yields during fuzzy matching",
+    tui: ["/workflow: tool.phase events and shared edit tools"],
+    cli: ["baked workflow run", "baked workflow resume"],
+    api: ["/v1/workflow/runs/:id/events"],
+    desktop: ["project/runs: shared tool preparation and deadlines"],
+  },
+  {
     id: "run-supervisor",
     group: "Workflow runs",
-    title: "Supervisor: a driver whose thread stopped is stopped and its run taken over",
+    title: "Supervisor takeover preserves recorded tokens as an incomplete estimate",
     tui: ["/workflow"],
     cli: [
       "baked workflow run",
@@ -1523,7 +1543,7 @@ export const FEATURES: readonly Feature[] = [
     id: "initiative-dollar-budget",
     group: "Initiatives",
     title:
-      "A shared dollar cap with measured point forecasts, provider prices and one tolerance ceiling",
+      "A shared dollar cap with point forecasts priced by remaining stages and models, and one tolerance ceiling",
     tui: [
       "/workflow: initiatives, $N in the start form's budget and B, dollars on the budget line",
     ],

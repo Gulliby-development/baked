@@ -1425,13 +1425,18 @@ export class WorkflowStore {
     /** Why a failed attempt failed, so a 429 or a crash is visible on the attempt itself (#1068). */
     failure?: unknown,
   ): void {
+    // Recovery has no final provider response. Keep the completed steps as a lower-bound
+    // estimate instead of overwriting the durable running total with null (#1616).
+    const tokens =
+      status === "interrupted" ? (usedTokens ?? this.recordedUsage(runId, id)) : usedTokens;
+    const incomplete = estimated || status === "interrupted";
     const update = this.db.run(
       "UPDATE attempts SET status=?,used_tokens=?,usage_complete=?,ended_at=? WHERE run_id=? AND id=? AND status='running'",
-      [status, usedTokens, usedTokens === null ? 0 : 1, Date.now(), runId, id],
+      [status, tokens, tokens === null ? 0 : 1, Date.now(), runId, id],
     );
     if (update.changes !== 1)
       throw new WorkflowFault("REVISION_CONFLICT", "Attempt no longer running");
-    this.db.run("UPDATE runs SET token_usage=token_usage+? WHERE id=?", [usedTokens ?? 0, runId]);
+    this.db.run("UPDATE runs SET token_usage=token_usage+? WHERE id=?", [tokens ?? 0, runId]);
     const model = this.attempts(runId).find((a) => a.id === id)?.model_id ?? null;
     // The split of the attempt's tokens and its priced cost, so a series can compare providers
     // whose tokens are mostly cache traffic (#936).
@@ -1442,9 +1447,9 @@ export class WorkflowStore {
       payload: {
         attemptId: id,
         status,
-        usageComplete: usedTokens !== null && !estimated,
-        usedTokens,
-        ...(estimated ? { usageEstimated: true } : {}),
+        usageComplete: tokens !== null && !incomplete,
+        usedTokens: tokens,
+        ...(incomplete && tokens !== null ? { usageEstimated: true } : {}),
         ...(spend ? { spend } : {}),
         ...(status === "failed" && failure !== undefined ? { error: attemptError(failure) } : {}),
       },

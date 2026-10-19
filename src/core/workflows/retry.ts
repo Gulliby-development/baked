@@ -280,10 +280,14 @@ export function failedOwnEdits(
 
 /**
  * A model call that ended on text instead of a submission, after the continuation and the format
- * correction (R7: four of six interventions). The fault carries the text it ended with.
+ * correction (R7: four of six interventions), or whose correction returned no result (#1615).
+ * Both endings let the task scheduler recover from the host's files and checks.
  */
 export function endedOnProse(error: unknown): error is WorkflowFault {
-  return error instanceof WorkflowFault && error.details.reason === "prose_end";
+  return (
+    error instanceof WorkflowFault &&
+    (error.details.reason === "prose_end" || error.details.reason === "no_submission")
+  );
 }
 
 /** Whether an attempt used its token cap without submitting a result (`attemptCapFault`). */

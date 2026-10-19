@@ -124,13 +124,14 @@ bun test tests/feature-parity.test.ts
 
 | Feature | TUI | Headless CLI | serve API | Desktop |
 | --- | --- | --- | --- | --- |
+| Replay a refused submission once with repair tools; continue after an empty format correction | `/workflow` | `baked workflow run` | `/v1/workflow/runs` | `project/runs` |
 | Journal every task file changed by an automatic fixer, including directory-wide fixers | `/workflow` | `baked workflow run`, `baked workflow resume`, `baked workflow undo` | `/v1/workflow/runs/:id` | `project/runs` |
 | Start a full run or a quick task | `/workflow` | `baked workflow run`, `baked quick`, `baked workflow definitions` +1 | `/v1/workflow/runs`, `/v1/workflow/definitions`, `/v1/workflow/profiles` | `project/overview` |
 | Price test tasks by task-cost quantiles, refresh pending caps from the run, split above observed case capacity with distinct part titles and report both token caps | `/workflow` | `baked workflow show` | `/v1/workflow/runs/:id` | `project/runs` |
 | Opt-in audited acceptance rows as JSON and Bun/pytest tests | `/workflow` | `baked workflow run`, `baked workflow quick`, `baked workflow artifacts` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/artifacts` | `project/overview`, `project/runs` |
 | Test-integrity guard: block or warn on test gaming, spec conflicts | `/workflow` | `baked workflow run`, `baked workflow answer` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/answer` | `project/overview`, `attention` |
 | Recovery advice names the action available in each app | `/workflow` | `baked workflow status`, `baked workflow initiative show` | `/v1/workflow/runs/:id`, `/v1/initiatives/:id` | `project/runs`, `project/initiatives`, `attention` |
-| Route failed checks to pending test writers or named source owners | `/workflow` | `baked workflow run`, `baked workflow artifacts` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/artifacts` | `project/runs` |
+| Prioritize task repairs and defer matching failures to their pending repair | `/workflow` | `baked workflow run`, `baked workflow artifacts` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/artifacts` | `project/runs` |
 | Tests first: failing tests approved before the code, tdd preset | `/workflow` | `baked workflow run`, `baked workflow approve`, `baked workflow reject` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/approve`, `/v1/workflow/runs/:id/reject` | `project/overview`, `attention` |
 | Cost cap of a run: per run, per project and in the doctor and estimate | `/workflow`, `/timeouts` | `baked workflow run`, `baked workflow doctor`, `baked workflow estimate` +1 | `/v1/workflow/runs`, `/v1/workflow/doctor`, `/v1/workflow/estimate` +1 | `project/overview`, `settings/chat` |
 | Propose the workflow and budget from the request | `/workflow` | `baked workflow propose`, `baked workflow run`, `auto-preset` | `/v1/workflow/propose` | `project/overview` |
@@ -149,7 +150,8 @@ bun test tests/feature-parity.test.ts
 | Continue approved manifest edits using the run's file-patch hash history | `/workflow` | `baked workflow run`, `baked workflow resume` | `/v1/workflow/runs/:id/resume` | `project/runs` |
 | Unreachable providers wait on health probes without spending active time or recovery resumes | `/workflow` | `baked workflow status`, `baked workflow resume` | `/v1/workflow/runs/:id` | `project/runs` |
 | Run and initiative active budgets and execution deadlines exclude host suspend gaps | `/workflow` | `baked workflow run`, `baked workflow resume`, `baked workflow initiative drive` | `/v1/workflow/runs` | `project/runs`, `project/initiatives` |
-| Supervisor: a driver whose thread stopped is stopped and its run taken over | `/workflow` | `baked workflow run`, `baked workflow resume`, `baked workflow approve` +3 | `/v1/health` | `project/runs` |
+| Edit preparation journals phases, bounds worker diagnostics and yields during fuzzy matching | `/workflow` | `baked workflow run`, `baked workflow resume` | `/v1/workflow/runs/:id/events` | `project/runs` |
+| Supervisor takeover preserves recorded tokens as an incomplete estimate | `/workflow` | `baked workflow run`, `baked workflow resume`, `baked workflow approve` +3 | `/v1/health` | `project/runs` |
 | Fork a run | `/workflow` | `baked workflow fork` | `/v1/workflow/runs/:id/fork` | `project/runs` |
 | Discard a run's worktree | `/workflow` | `baked workflow discard-worktree` | `/v1/workflow/runs/:id/discard-worktree` | `project/runs` |
 | Worktree sizes and cleanup | `/workflow` | `baked workflow worktrees` | `/v1/workflow/worktrees`, `/v1/workflow/worktrees/clean` | `project/runs` |
@@ -195,7 +197,7 @@ bun test tests/feature-parity.test.ts
 | Estimate a split: a difficulty level and a token range from run history | `/workflow` | `baked workflow initiative estimate` | `/v1/initiatives/:id/estimate` | `project/initiatives` |
 | Independent features run side by side in worktrees | `/workflow` | `baked workflow initiative drive`, `baked workflow initiative show` | `/v1/initiatives/:id` | `project/initiatives` |
 | Review long dependency chains and merge small siblings by their dependents | `/workflow` | `baked workflow initiative start`, `baked workflow initiative show` | `/v1/initiatives`, `/v1/initiatives/:id` | `project/initiatives` |
-| A shared dollar cap with measured point forecasts, provider prices and one tolerance ceiling | `/workflow` | `baked workflow initiative start`, `baked workflow initiative extend`, `baked workflow initiative show` | `/v1/initiatives`, `/v1/initiatives/:id`, `/v1/initiatives/:id/extend` | `project/initiatives` |
+| A shared dollar cap with point forecasts priced by remaining stages and models, and one tolerance ceiling | `/workflow` | `baked workflow initiative start`, `baked workflow initiative extend`, `baked workflow initiative show` | `/v1/initiatives`, `/v1/initiatives/:id`, `/v1/initiatives/:id/extend` | `project/initiatives` |
 
 ### Projects and setup
 

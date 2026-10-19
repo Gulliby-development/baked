@@ -8,6 +8,7 @@ import { atomicWriteFile } from "../platform/index.js";
 import { isForbidden } from "../security/forbidden.js";
 import { displayPath } from "../utils/path-display.js";
 import { assertWorkspaceMutationAllowed } from "../workflows/leases.js";
+import { assertEditActive } from "./edit-deadline.js";
 import { pushEdit } from "./edit-stack.js";
 import { emitFileEdited } from "./file-events.js";
 import {
@@ -80,11 +81,45 @@ export function fuzzyWhitespaceMatch(
   oldStr: string,
   newStr: string,
 ): { oldStr: string; newStr: string } | null {
+  const scan = fuzzyMatches(content, oldStr, newStr);
+  let next = scan.next();
+  while (!next.done) next = scan.next();
+  return next.value;
+}
+
+/** Yield during long scans so the host can renew leases and enforce the tool deadline. */
+export async function fuzzyWhitespaceMatchAsync(
+  content: string,
+  oldStr: string,
+  newStr: string,
+  timeoutMs = 2500,
+): Promise<{ oldStr: string; newStr: string } | null> {
+  const deadline = performance.now() + timeoutMs;
+  const scan = fuzzyMatches(content, oldStr, newStr);
+  for (;;) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assertEditActive();
+    if (performance.now() >= deadline)
+      throw new Error(
+        "Fuzzy edit matching timed out. Re-read the file and use exact text with lineStart.",
+      );
+    const next = scan.next();
+    if (next.done) return next.value;
+  }
+}
+
+function* fuzzyMatches(
+  content: string,
+  oldStr: string,
+  newStr: string,
+): Generator<void, { oldStr: string; newStr: string } | null> {
+  if (!oldStr) return null;
   const contentLines = content.split("\n");
   const oldLines = oldStr.split("\n");
   if (oldLines.length === 0) return null;
 
   // Try progressively looser normalization: whitespace-only, then escape-aware
+  let work = 0;
   for (const normalize of [
     // Level 1: whitespace normalization only
     (line: string) => line.replace(/^[\t ]+/, "").trimEnd(),
@@ -112,6 +147,7 @@ export function fuzzyWhitespaceMatch(
     for (let i = 0; i <= contentLines.length - oldLines.length; i++) {
       let match = true;
       for (let j = 0; j < oldLines.length; j++) {
+        if (++work % 256 === 0) yield;
         if (normalize(contentLines[i + j] as string) !== normalizedOld[j]) {
           match = false;
           break;
@@ -119,7 +155,8 @@ export function fuzzyWhitespaceMatch(
       }
       if (match) {
         const actualOld = contentLines.slice(i, i + oldLines.length).join("\n");
-        if (content.split(actualOld).length - 1 !== 1) continue;
+        const first = content.indexOf(actualOld);
+        if (!actualOld || content.indexOf(actualOld, first + actualOld.length) !== -1) continue;
 
         const correctedNew = correctIndentation(oldLines, contentLines, i, newStr);
         return { oldStr: actualOld, newStr: correctedNew };
@@ -182,16 +219,19 @@ async function applyEdit(
   tabId?: string,
   ifHash?: string,
 ): Promise<ToolResult> {
+  toolPhase("analyze");
   const beforeMetrics = analyzeFile(content);
   const afterMetrics = analyzeFile(updatedLf);
   const updated = withLineEnding(updatedLf, disk.eol);
   const normalized = minorityLineCount(disk.raw);
 
+  toolPhase("pre_diagnostics");
   const diags = await startPreEditDiagnostics(filePath);
 
   // CAS: verify file hasn't been modified since we read it (prevents concurrent edit races).
   // When ifHash is supplied we trust the caller's last-read hash against `content` and
   // skip the extra disk read — `content` was already read this call for the match.
+  toolPhase("cas");
   if (ifHash) {
     if (contentHash(disk.raw) !== ifHash) {
       const msg =
@@ -208,6 +248,7 @@ async function applyEdit(
 
   // Write file immediately — don't wait for diagnostics.
   // atomicWriteFile = tmp+rename so a crash mid-write never corrupts the target.
+  assertEditActive();
   pushEdit(filePath, disk.raw, updated, tabId);
   toolPhase("write");
   await atomicWriteFile(filePath, updated);
@@ -296,6 +337,7 @@ export const editFileTool = {
         await mkdir(dir, { recursive: true });
         const newEol = detectNewFileLineEnding(dir);
         const fileText = newEol ? withLineEnding(newStr, newEol) : args.newString;
+        assertEditActive();
         toolPhase("write");
         await atomicWriteFile(filePath, fileText);
         emitFileEdited(filePath, fileText);
@@ -333,6 +375,7 @@ export const editFileTool = {
       // This prevents edits landing at the wrong location when oldString
       // matches multiple places in the file.
       // ═══════════════════════════════════════════════════════════════
+      toolPhase("match");
       if (args.lineStart != null) {
         const range = resolveLineRange(content, oldStr, args.lineStart);
         if (range) {
@@ -370,7 +413,7 @@ export const editFileTool = {
           }
 
           // Try fuzzy match against the range content
-          const rangeFixed = fuzzyWhitespaceMatch(rangeContent, oldStr, newStr);
+          const rangeFixed = await fuzzyWhitespaceMatchAsync(rangeContent, oldStr, newStr);
           if (rangeFixed) {
             const before = lines.slice(0, range.start);
             const after = lines.slice(range.end);
@@ -436,7 +479,7 @@ export const editFileTool = {
       let resolvedNew = newStr;
 
       if (!content.includes(oldStr)) {
-        const fixed = fuzzyWhitespaceMatch(content, oldStr, newStr);
+        const fixed = await fuzzyWhitespaceMatchAsync(content, oldStr, newStr);
         if (fixed) {
           resolvedOld = fixed.oldStr;
           resolvedNew = fixed.newStr;

@@ -36,7 +36,13 @@ import {
 import type { SpecAmendment } from "./spec-amendment.js";
 import type { ArtifactRow, CriticOutcomeRow, WorkflowStore } from "./store.js";
 import type { Check } from "./types.js";
-import { type RunUsageReport, runUsage, toolBackendLine, toolTokensLine } from "./usage.js";
+import {
+  interruptedTokensLine,
+  type RunUsageReport,
+  runUsage,
+  toolBackendLine,
+  toolTokensLine,
+} from "./usage.js";
 import { HOST_SPEC_OUTCOME, parseRunDefinition } from "./v2/runtime.js";
 import { changesOf, type FileChange, readRoutingSummary } from "./view.js";
 
@@ -1129,6 +1135,8 @@ function render(facts: Facts, cap: number): string {
       ".",
     "",
   );
+  const interrupted = interruptedTokensLine(usage.attempts);
+  if (interrupted) out.push(interrupted, "");
   if (usage.stages.length)
     out.push(
       ...table(

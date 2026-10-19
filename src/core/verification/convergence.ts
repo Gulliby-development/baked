@@ -877,12 +877,31 @@ export function appendCorrections(
     state.previousFindingSet = findingSet;
   }
   const root = state.rootGraph;
+  // A task-level repair may amend completed tests, but cannot create a future test or take
+  // over a shared test file whose next planned slice has still to run (#1612).
+  const taskRows = taskLevel ? store.tasks(runId) : [];
+  const finished = new Set(
+    taskRows
+      .filter((row) => ["implemented", "verified", "blocked"].includes(row.status))
+      .map((row) => row.id),
+  );
+  const availableTest = (path: string): boolean =>
+    !taskLevel ||
+    testedStem(path) === null ||
+    (state.expectedFiles?.[path] !== undefined &&
+      !root.tasks.some((t) => !finished.has(t.id) && t.writes.some((w) => w.path === path)) &&
+      root.tasks.some(
+        (t) => finished.has(t.id) && t.writes.some((w) => w.path === path && w.action !== "delete"),
+      ));
   // A planned file the correction needs: its owner of the same profile joins the group, so the
   // correction may write it and the acceptance rule still finds it related.
   const writable = (group: { bases: Task[] }): string[] =>
-    group.bases.flatMap((b) => correctionWrites(b, root, null)).map((w) => w.path);
+    group.bases
+      .flatMap((b) => correctionWrites(b, root, null))
+      .map((w) => w.path)
+      .filter(availableTest);
   const join = (group: { base: Task; bases: Task[] }, path: string): void => {
-    if (writable(group).includes(path)) return;
+    if (!availableTest(path) || writable(group).includes(path)) return;
     const owner = root.tasks.find(
       (t) => t.profileId === group.base.profileId && t.writes.some((w) => w.path === path),
     );
@@ -917,7 +936,8 @@ export function appendCorrections(
     }
     const written = writable(group);
     for (const path of planned)
-      if (written.some((source) => isTestOf(path, source))) join(group, path);
+      if (availableTest(path) && written.some((source) => isTestOf(path, source)))
+        join(group, path);
     for (const finding of group.findings) {
       const kind = requestedDeliverable(finding);
       if (!kind || canHold(writable(group), kind)) continue;
@@ -953,7 +973,9 @@ export function appendCorrections(
     return {
       ...base,
       writes: mergeCorrectionWrites(
-        bases.flatMap((b) => correctionWrites(b, root, state.expectedFiles)),
+        bases
+          .flatMap((b) => correctionWrites(b, root, state.expectedFiles))
+          .filter((w) => availableTest(w.path)),
         state.expectedFiles,
       ),
       checkIds: unique(bases.flatMap((b) => correctionChecks(b, root))),

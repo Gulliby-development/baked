@@ -1,7 +1,9 @@
 import { canonical, hashJson } from "../specs/hash.js";
-import { costRate, growCostCapToForecast, remainingCostRate } from "./budget.js";
+import { growCostCapToForecast } from "./budget.js";
 import { costCeilingUsd, costToleranceOf, currentCostCap } from "./cost-tolerance.js";
 import { WorkflowFault } from "./errors.js";
+import { DEFAULT_STAGE_RANGES } from "./estimate.js";
+import { forecastSamples, forecastStageCost, runForecastStages } from "./forecast-price.js";
 import { hostGrowth } from "./host-growth.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { type SizingReport, verificationTokens } from "./sizing.js";
@@ -13,8 +15,7 @@ const MIN_MEASURED_TASKS = 3;
 /**
  * Where a run with a dollar cap is heading (#1246): what it spent, plus the planned tasks still
  * open at their price times how far the finished tasks of the same kind went over theirs, plus
- * the final review and convergence, in dollars: open tasks at the price per token the finished
- * tasks paid, the review at the run's blended price (#1505).
+ * the final review and convergence, in dollars at each remaining stage's routed model price.
  */
 export interface CostForecast {
   capUsd: number;
@@ -82,20 +83,33 @@ export function costForecast(
   const byKind = new Map<string, number>();
   for (const kind of new Set(measured.map((t) => t.kind)))
     byKind.set(kind, ratioOf(measured.filter((t) => t.kind === kind)));
-  const taskTokens = open.reduce((sum, t) => sum + mid(t) * (byKind.get(t.kind) ?? ratio), 0);
-  const remainingTokens = Math.round(taskTokens + verificationTokens());
-  const row = store.run(runId);
+  const stages = runForecastStages(store, runId, policy);
+  const tasks = stages.find((s) => s.type === "tasks");
+  if (!tasks) return null;
+  const costs = open.map((t) => ({
+    id: tasks.id,
+    models: tasks.models,
+    tokens: mid(t) * (byKind.get(t.kind) ?? ratio),
+  }));
+  const later = stages.slice(stages.indexOf(tasks) + 1).filter((s) => s.models.length);
+  const weights = later.map((s) => DEFAULT_STAGE_RANGES[s.id]?.high ?? 60_000);
+  const total = weights.reduce((sum, n) => sum + n, 0);
+  costs.push(
+    ...later.map((s, i) => ({
+      id: s.id,
+      models: s.models,
+      tokens: total > 0 ? (verificationTokens() * (weights[i] ?? 0)) / total : 0,
+    })),
+  );
+  const remainingTokens = Math.round(costs.reduce((sum, s) => sum + s.tokens, 0));
   const { spentUsd, reservedUsd } = store.costUsage(runId);
-  // Open tasks at the price the finished tasks paid; the final review and convergence run on the
-  // review models, at the run's blended price as before (#1505).
-  const taskRate = remainingCostRate(store, runId);
-  const rate = costRate(spentUsd > 0 ? spentUsd : null, row.token_usage, null);
-  if (rate <= 0 || taskRate <= 0) return null;
+  const remainingUsd = forecastStageCost(forecastSamples(store, [runId]), costs);
+  if (remainingUsd === null) return null;
   return {
     capUsd: cap,
     ceilingUsd: costCeilingUsd(store, runId, policy) ?? cap,
     spentUsd,
-    projectedUsd: spentUsd + reservedUsd + taskTokens * taskRate + verificationTokens() * rate,
+    projectedUsd: spentUsd + reservedUsd + remainingUsd,
     ratio,
     measuredTasks: measured.length,
     openTasks: open.length,

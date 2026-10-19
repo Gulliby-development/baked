@@ -2,7 +2,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 /**
  * Steps inside a tool call (#1533): a workflow journals each one as `tool.phase`, so a call that
- * never returns names the step it stopped in (write, format, diagnostics). Outside a journaled
+ * never returns names the step it stopped in (match, analyze, pre_diagnostics, cas, write,
+ * format, diagnostics). Outside a journaled
  * call, reporting a phase does nothing.
  */
 const reporter = new AsyncLocalStorage<(phase: string) => void>();
