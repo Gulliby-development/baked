@@ -797,7 +797,7 @@ export const FEATURES: readonly Feature[] = [
     id: "run-test-sizing",
     group: "Workflow runs",
     title:
-      "Size tests by literal cases, split large test files into sequential criterion slices and replace their graph on re-plan",
+      "Walk and price shared criterion cases once per owning test task, split large test files into sequential criterion slices and replace their graph on re-plan",
     tui: ["/workflow: plan approval shows the sized tasks"],
     cli: ["baked workflow show: task slices and batching guidance using available checks"],
     api: ["/v1/workflow/runs/:id: shared sizing record and tasks"],
