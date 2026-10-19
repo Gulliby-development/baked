@@ -64,6 +64,7 @@ import {
   ruleFindingKey,
 } from "../src/core/workflows/quality/rules.js";
 import { staticCorrection } from "../src/core/workflows/scheduler.js";
+import { ASSERTION_FAILURES } from "./helpers/assertion-failures.js";
 import { failureOwner } from "../src/core/workflows/task-graph.js";
 import type { Check, RunPolicy, RuntimeState } from "../src/core/workflows/schemas.js";
 import type { TaskRow, WorkflowStore } from "../src/core/workflows/store.js";
@@ -742,6 +743,18 @@ for (const stack of STACKS) {
       for (const check of checks.filter((c) => isTestCheck(c))) {
         expect(isStaticCheck(check)).toBe(false);
       }
+    });
+
+    cell(stack, "same-assertion-pending-repair (#1612)", () => {
+      const source: Task = { id: "T001", title: "Source", description: "Source", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: [{ path: "value.txt", action: "create" }], readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Fixture" };
+      const tests: Task = { ...source, id: "T003", dependsOn: [source.id], writes: [{ path: fixture.property.path, action: "create" }] };
+      const repair: Task = { ...source, id: "T006", origin: "repair", findingIds: ["F1"] };
+      const graph = { schemaVersion: 1 as const, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [source, tests, repair] };
+      const rows = [{ id: source.id, status: "verified" }, { id: tests.id, status: "running" }, { id: repair.id, status: "pending" }] as TaskRow[];
+      const failure = stack === "dotnet" ? (name: string) => `Failed ${name}.Order [8 ms]\nAssert.Equal() Failure: Collections differ\nExpected: [removed, changed]\nActual: [changed, removed]`
+        : ASSERTION_FAILURES[stack as keyof typeof ASSERTION_FAILURES] ?? ASSERTION_FAILURES.bun;
+      expect(failureOwner(graph, rows, {}, tests, failure("Caller"), { pendingFindings: [{ taskId: repair.id, output: failure("Differ") }] })).toMatchObject({ kind: "pending", owners: [repair.id] });
+      expect(failureOwner(graph, rows, {}, tests, failure("Caller"), { pendingFindings: [] }).kind).not.toBe("pending");
     });
 
     cell(stack, "pending-test-update-owner (#1563)", () => {

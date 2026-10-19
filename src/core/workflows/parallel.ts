@@ -38,7 +38,7 @@ export interface BatchPlan {
 }
 
 /**
- * The next batch: ready tasks in graph order, up to `limit`, pairwise disjoint by written paths
+ * The next batch: ready tasks in scheduling order, up to `limit`, pairwise disjoint by written paths
  * and created directories. An overlapping task moves to a later batch, unless the policy allows
  * overlapping writes; then it joins and a conflict is resolved at integration.
  */

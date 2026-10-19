@@ -329,6 +329,8 @@ Failed task checks, reported defects and `request_check` use the same failure ow
 
 When output names a production file outside the test task's writes that a finished task of the same profile owns, the host opens a correction without continuing the test task, including after a cutoff. Its first scope contains the named production files and the failing tests. Only output without named production owners falls back to the tests' import closure. Sibling corrections use the same preference, so Go package imports and JVM package references do not merge failures with distinct named owners. A failed `request_check` includes `failureOwner` and advice to submit the required tests and let the owner settle the failure. The advice grants no additional write access. A summary report can also route to an owner with a different profile; that owner's correction uses its own approved paths.
 
+A task-level repair runs before ready planned tasks that depend on the files it repairs. Unrelated tasks can still run in parallel. Its test write scope includes only files already written by finished tasks, so it does not create a later task's tests. If another task uses files the repair writes and its assertion values or message match the recorded command evidence of an open finding with an unfinished repair, its first failed check defers to that repair. The host checks it again after the repair finishes without spending another implementation attempt. Test names and diagnostic locations do not identify the shared failure. These rules apply through the shared core to the terminal app, headless CLI, local API and desktop app.
+
 Undo is an explicit command:
 
 ```sh

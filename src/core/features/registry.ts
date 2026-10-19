@@ -856,7 +856,7 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "workflow-failure-ownership",
     group: "Workflow runs",
-    title: "Route failed checks to pending test writers or named source owners",
+    title: "Prioritize task repairs and defer matching failures to their pending repair",
     tui: ["/workflow: run tasks and diagnostic artifacts"],
     cli: ["baked workflow run", "baked workflow artifacts"],
     api: ["/v1/workflow/runs", "/v1/workflow/runs/:id/artifacts"],

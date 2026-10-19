@@ -88,13 +88,13 @@ describe("scenario: cimatrix 5670e55c, a README task and failures already in cor
     const done = await service.drive(run.runId, new AbortController().signal);
     expect(done.status).toBe("completed");
     expect(readFileSync(join(root, "render.txt"), "utf8")).toBe("fine");
-    // The README task ran while the renderer's correction was still to come.
-    expect(executor.implemented.indexOf("T003")).toBeLessThan(executor.implemented.indexOf("T004"));
-    // One defect, one correction: the README task's report attached to the open finding.
+    // The known renderer defect is repaired before the README task runs (#1612).
+    expect(executor.implemented.indexOf("T004")).toBeLessThan(executor.implemented.indexOf("T003"));
+    // One defect, one correction: the README report verifies the already repaired result.
     expect(service.store.run(run.runId).corrective_tasks).toBe(1);
     const report = JSON.parse(service.store.readArtifact(run.runId, service.store.latestArtifact(run.runId, "tasks/defects/T003.json")?.id ?? "")) as { findings: string[]; covered?: { checkId: string }[] };
     expect(report.findings).toEqual([]);
-    expect(report.covered?.[0]?.checkId).toBe("tests");
+    expect(report.covered).toBeUndefined();
     // The corrective task is titled by what its finding claims, not by the finding's id.
     expect(executor.titles[0]).toBe("Correct: Required check tests failed (render.txt)");
   });
