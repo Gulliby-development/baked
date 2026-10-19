@@ -16,6 +16,7 @@ import {
   type StageProgress,
   type StartEstimate,
 } from "./estimate.js";
+import type { RecoveryAdvice } from "./remedies.js";
 import { type RoutingSummary, routingSummary } from "./routing.js";
 import {
   type ClarificationMode,
@@ -29,6 +30,7 @@ import {
   type WorkflowEvent,
 } from "./schemas.js";
 import type { NativeWorkflowService } from "./service.js";
+import { stopRecovery } from "./stop-detail.js";
 import type { RunRow, StepRow, WorkflowStore } from "./store.js";
 import { loadGateLibrary } from "./v2/library.js";
 import { type RunGate, runGates, type WorkflowLine, workflowLine } from "./v2/line.js";
@@ -204,6 +206,7 @@ export interface RunDetails {
   criteria: CriterionView[];
   /** Latest runtime error message recorded for the run, if any. */
   lastError: string | null;
+  recovery?: RecoveryAdvice;
   /** The limits a run may be approved automatically within, shown for the life of the run. */
   autoApproval: string | null;
 }
@@ -370,6 +373,7 @@ function detailsOf(store: WorkflowStore, runId: string): RunDetails {
     specMarkdown: state.spec ? renderSpec(state.spec) : null,
     plan: state.plan,
     lastError: lastErrorOf(store, runId),
+    recovery: stopRecovery(store, runId),
     autoApproval: autoApprovalText(JSON.parse(store.run(runId).policy_json) as RunPolicy),
     criteria:
       state.spec?.criteria.map((c) => {

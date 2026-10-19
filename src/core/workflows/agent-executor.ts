@@ -85,6 +85,7 @@ import { ProcessScope } from "./process-scope.js";
 import { EDIT_TOOLS } from "./progress-watch.js";
 import { isTargetedRead, outlineLargeReads } from "./read-outline.js";
 import { settleInterruptedEdits } from "./recovery.js";
+import { recoveryAdvice } from "./remedies.js";
 import { isOutputLimit, isTransient } from "./retry.js";
 import { RevisionSchema } from "./revision-patch.js";
 import {
@@ -451,7 +452,11 @@ export class NativeAgentExecutor implements AgentExecutor {
             watch.abort(
               new WorkflowFault(
                 "INPUT_CHANGED",
-                `Edits to ${path} were refused ${String(count)} times in attempt ${request.attemptId}: File changed outside this attempt. Keep the file as it is with \`baked workflow resume ${request.runId} --accept-workspace\`, or put back the content the run wrote and resume`,
+                recoveryAdvice(
+                  `Edits to ${path} were refused ${String(count)} times in attempt ${request.attemptId}: File changed outside this attempt. Keep the file as it is with \`baked workflow resume ${request.runId} --accept-workspace\`, or put back the content the run wrote and resume`,
+                  `Edits to ${path} were refused ${count} times because the file changed outside this attempt. Keep these changes, or restore the content the run wrote before retrying.`,
+                  { action: "accept-workspace", runId: request.runId },
+                ),
                 {
                   path,
                   refusals: count,

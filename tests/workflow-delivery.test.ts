@@ -1,3 +1,5 @@
+import { errorRecovery } from "../src/core/workflows/remedies.js";
+import { expectRecovery } from "./helpers/workflow-remedies.js";
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -172,7 +174,11 @@ async function refusal(action: Promise<unknown>): Promise<WorkflowFault> {
   try {
     await action;
   } catch (error) {
-    if (error instanceof WorkflowFault) return error;
+    if (error instanceof WorkflowFault) {
+      if (error.details.reason === "not_delivered" || error.details.reason === "not_approved") expectRecovery(error.message, errorRecovery(error), "deliver");
+      if (error.details.reason === "unknown_outcome") expectRecovery(error.message, errorRecovery(error), "recover");
+      return error;
+    }
     throw error;
   }
   throw new Error("Expected the delivery to be refused");

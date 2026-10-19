@@ -13,7 +13,10 @@ test("desktop run and initiative buttons share eligibility and show the refused 
 
 test("desktop repair helpers bundle without backend dependencies", async () => {
   const result = await Bun.build({
-    entrypoints: [resolve(import.meta.dir, "../../../src/core/workflows/repairable.ts")],
+    entrypoints: [
+      resolve(import.meta.dir, "../../../src/core/workflows/repairable.ts"),
+      resolve(import.meta.dir, "../src/renderer/client/remedies.ts"),
+    ],
     target: "browser",
     plugins: [{
       name: "no-backend-dependencies",

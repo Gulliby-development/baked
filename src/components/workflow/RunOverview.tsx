@@ -17,6 +17,7 @@ import {
   stageGlyph,
   stageText,
 } from "./format.js";
+import { tuiRecoveryText } from "./remedies.js";
 import { StageGates } from "./StageGates.js";
 import { usd } from "./UsageView.js";
 
@@ -122,7 +123,9 @@ export function RunOverview({
         <text fg={t.textMuted}>{`Approved automatically within: ${details.autoApproval}`}</text>
       ) : null}
       {!driveError && details?.lastError && ["blocked", "failed"].includes(snapshot.status) ? (
-        <text fg={t.error}>{`✗ Last error: ${details.lastError}`}</text>
+        <text
+          fg={t.error}
+        >{`✗ Last error: ${tuiRecoveryText(details.lastError, details.recovery)}`}</text>
       ) : null}
       {driveError ? (
         <>

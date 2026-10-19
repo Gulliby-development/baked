@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { desktopRecoveryText } from "../apps/desktop/src/renderer/client/remedies.js";
+import { tuiRecoveryText } from "../src/components/workflow/remedies.js";
+import { readWorkflowView } from "../src/core/workflows/view.js";
+import { stopRecovery } from "../src/core/workflows/stop-detail.js";
 import { startApiServer } from "../src/core/api/server.js";
 import { canRepairRun } from "../src/core/workflows/repairable.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
@@ -81,6 +85,18 @@ describe("scenario: a person grants one more repair (#1577)", () => {
     expect(stopped.reason).toBe("no_progress");
     expect(stopped.repairBlock?.limit).toBe(limit);
     expect(canRepairRun(stopped)).toBe(true);
+    const recovery = stopRecovery(service.store, runId);
+    expect(recovery?.remedies).toContainEqual({ action: "repair", runId });
+    const status = await executeWorkflowCommand(service, parseWorkflowArgs(["status", runId])) as { recovery: unknown; stopDetail: string };
+    expect(status.recovery).toEqual(recovery);
+    expect(status.stopDetail).toContain("workflow repair");
+    const details = readWorkflowView(service, runId).details;
+    expect(details?.recovery).toEqual(recovery);
+    const tui = tuiRecoveryText(details?.lastError ?? "", recovery);
+    const desktop = desktopRecoveryText(status.stopDetail, recovery);
+    expect(tui).toContain("press O");
+    expect(desktop).toContain("choose One more repair");
+    for (const text of [tui, desktop]) expect(text).not.toContain("workflow repair");
     const before = service.store.state(runId);
     const digest = stopped.approvalDigest;
     const implementations = executor.implementations;
@@ -122,6 +138,11 @@ describe("scenario: a person grants one more repair (#1577)", () => {
     const send = (body: unknown) => fetch(`${server.url}/v1/workflow/runs/${runId}/repair`, {
       method: "POST", headers: { Authorization: `Bearer ${server.token}`, "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
+    const response = await fetch(`${server.url}/v1/workflow/runs/${runId}`, {
+      headers: { Authorization: `Bearer ${server.token}` },
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json() as { recovery: { remedies: unknown[] } }).recovery.remedies).toContainEqual({ action: "repair", runId });
     expect((await send({ commandId: newId(), expectedRevision: stopped.revision, rounds: 0 })).status).toBe(400);
     expect((await send({ commandId: newId(), expectedRevision: stopped.revision - 1 })).status).toBe(409);
     executor.allowRepair = true;

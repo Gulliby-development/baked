@@ -41,6 +41,7 @@ import { fileHash } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { closingReference, type IssueSource } from "./issue-source.js";
 import { mutationLeaseFor, WorkspaceLeases } from "./leases.js";
+import { type RecoveryAdvice, recoveryAdvice } from "./remedies.js";
 import { PULL_REQUEST_BODY_LIMIT, runReport } from "./run-report.js";
 import {
   type Decision,
@@ -167,7 +168,7 @@ const DELIVERY_STAGE = "delivery";
 function refuse(
   code: WorkflowErrorCode,
   reason: string,
-  message: string,
+  message: string | RecoveryAdvice,
   details: Record<string, unknown> = {},
 ): WorkflowFault {
   return new WorkflowFault(code, message, { reason, ...details });
@@ -921,7 +922,11 @@ function followedDelivery(
     throw refuse(
       "INPUT_CHANGED",
       "not_delivered",
-      `Run ${followed} has no pushed delivery to follow up. Deliver it first with \`baked workflow deliver ${followed}\`.`,
+      recoveryAdvice(
+        `Run ${followed} has no pushed delivery to follow up. Deliver it first with \`baked workflow deliver ${followed}\`.`,
+        `Run ${followed} has no pushed delivery to follow up.`,
+        { action: "deliver", runId: followed },
+      ),
     );
   return delivered;
 }
@@ -1169,7 +1174,11 @@ export async function executeDelivery(
     throw refuse(
       "STALE_DECISION",
       "not_approved",
-      "No approved delivery plan. Run `baked workflow deliver RUN_ID`, then approve its request.",
+      recoveryAdvice(
+        "No approved delivery plan. Run `baked workflow deliver RUN_ID`, then approve its request.",
+        "No approved delivery plan. Prepare a delivery, then approve its request.",
+        { action: "deliver", runId },
+      ),
     );
   const answer = request.answer_json
     ? (JSON.parse(request.answer_json) as Partial<Decision>)
@@ -1444,7 +1453,11 @@ class DeliveryExecution {
       throw refuse(
         "RECOVERY_REQUIRED",
         "unknown_outcome",
-        `The outcome of ${effect.intent.operation} is unknown and could not be checked (${probe.message}). Resolve recovery request for effect ${effect.id} with \`baked workflow recover\`, or retry when the remote answers.`,
+        recoveryAdvice(
+          `The outcome of ${effect.intent.operation} is unknown and could not be checked (${probe.message}). Resolve recovery request for effect ${effect.id} with \`baked workflow recover\`, or retry when the remote answers.`,
+          `The outcome of ${effect.intent.operation} is unknown and could not be checked (${probe.message}). Resolve the recovery request for effect ${effect.id}, or retry when the remote answers.`,
+          { action: "recover", runId: this.runId },
+        ),
         { effectId: effect.id },
       );
     }

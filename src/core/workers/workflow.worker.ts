@@ -2,6 +2,7 @@ import "../sdk-warnings.js";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import { tuiErrorText } from "../../components/workflow/remedies.js";
 import { executeWorkflowCommand } from "../../headless/workflow.js";
 import { parseWorkflowArgs } from "../../headless/workflow-parse.js";
 import { recoveryArgs } from "../../headless/workflow-supervise.js";
@@ -93,9 +94,7 @@ function driveInitiative(id: string): void {
   initiativeErrors.delete(id);
   void currentInitiatives()
     .drive(id, controller.signal)
-    .catch((err: unknown) =>
-      initiativeErrors.set(id, err instanceof Error ? err.message : String(err)),
-    )
+    .catch((err: unknown) => initiativeErrors.set(id, tuiErrorText(err)))
     .finally(() => {
       controllers.delete(key);
       initiativeDrives.delete(id);
@@ -126,7 +125,7 @@ async function takeOverStalled(owners: string[]): Promise<void> {
         .catch((err: unknown) =>
           ctx.emit("drive-error", {
             runId: run.runId,
-            message: err instanceof Error ? err.message : String(err),
+            message: tuiErrorText(err),
           }),
         )
         .finally(() => {
@@ -285,7 +284,7 @@ const ctx = createWorkerHandler(
         .catch((err: unknown) =>
           ctx.emit("drive-error", {
             runId: run.runId,
-            message: err instanceof Error ? err.message : String(err),
+            message: tuiErrorText(err),
           }),
         )
         .finally(() => {

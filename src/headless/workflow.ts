@@ -53,7 +53,7 @@ import {
   type RunState,
 } from "../core/workflows/schemas.js";
 import { NativeWorkflowService } from "../core/workflows/service.js";
-import { stopDetail } from "../core/workflows/stop-detail.js";
+import { stopDetail, stopRecovery } from "../core/workflows/stop-detail.js";
 import { newId } from "../core/workflows/store.js";
 import { runUsage } from "../core/workflows/usage.js";
 import { runUsageMarkdown } from "../core/workflows/usage-markdown.js";
@@ -402,6 +402,10 @@ export async function executeWorkflowCommand(
         preflight: readCheckPreflight(service.store, runId),
         acceptance: walkThroughs(service.store, runId),
         forkStages: service.forkStages(runId),
+        recovery:
+          snapshot.status === "blocked" || snapshot.status === "failed"
+            ? stopRecovery(service.store, runId)
+            : undefined,
         stopDetail:
           snapshot.status === "blocked" || snapshot.status === "failed"
             ? stopDetail(service.store, runId)

@@ -49,6 +49,12 @@ A required check whose executable cannot be started stops the run at once. At st
 
 A monetary cap is currently rejected: the current BAKED provider metadata has no verified shared source of exact prices. Use token/time/call limits; usage left unknown by a crash keeps its reservation. Arbitrary command hooks and compound effects are forbidden inside a workflow; MCP tools run only where a profile and the policy grant them (see [MCP tools](#mcp-tools)). Approved commands run as checks. The ECC import does not enable hooks.
 
+### Recovery advice
+
+Provider-account stops, repeated edit refusals, convergence-limit stops, initiative blockers and budget shortfalls carry recovery advice from the core. The terminal app names the corresponding key, such as R to retry, A to accept changes, M to switch model or B to extend the initiative budget. Its doctor output names the recovery decision, and delivery advice names the `/workflow deliver` command in the app. The desktop names its buttons and decisions, including Retry, Accept changes, Switch model, Extend budget and recovery decisions in Needs you. Open the named feature run to handle a run blocker. Policy or spec changes still require revision before retrying; extending tokens does not raise a convergence limit.
+
+The headless CLI keeps recovery commands in its messages. API clients receive optional structured `recovery` advice beside the legacy text. A `no_progress` stop on a repair limit includes a `repair` remedy, rendered as `O` in the TUI and One more repair in desktop. Stored advice belongs to one diagnostic and does not carry over to a later stop.
+
 ### MCP tools
 
 Workflow agents get no MCP tool by default: the built-in profiles and the default policy grant none. A tool is offered to an agent only when both its profile's `allowedTools` and the policy's `allowedTools` grant it, the same two lists that bound the built-in tools. A grant names one tool as the chat sees it, `mcp__SERVER__TOOL`, or every tool of a server, `mcp__SERVER__*`, with the server's name as in `mcpServers` ([MCP servers](../extensions.md#mcp-servers)), characters other than letters, digits, `_` and `-` replaced by `_`. For example, a project profile `baked/agents/docs-researcher.json` with `"allowedTools": ["read", "navigate", "mcp__docs__search", "submit_result"]` and a policy with `"mcp__docs__*"` in its `allowedTools` offer the researcher only `search` of the `docs` server.

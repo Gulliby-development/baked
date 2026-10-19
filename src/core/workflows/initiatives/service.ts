@@ -26,6 +26,7 @@ import {
   tokenText,
 } from "../estimate.js";
 import { plannedRunTokens } from "../plan-cost.js";
+import { type RecoveryAdvice, recoveryAdvice } from "../remedies.js";
 import {
   type CommandIdentity,
   DEFAULT_MAX_PARALLEL_RUNS,
@@ -39,7 +40,7 @@ import {
 } from "../schemas.js";
 import type { NativeWorkflowService, PlannedReroute } from "../service.js";
 import { terminalStates } from "../state-machine.js";
-import { stopDetail } from "../stop-detail.js";
+import { stopDetail, stopRecovery } from "../stop-detail.js";
 import { newId, WorkflowStore } from "../store.js";
 import type { IssueSource } from "../types.js";
 import { HOST_AUTO_APPROVAL_CEILING, HostAutoApprovalSchema } from "../v2/definition.js";
@@ -220,6 +221,7 @@ export interface FeatureView {
   contractHash: string | null;
   /** Why the feature cannot continue now, in words. */
   blockers: string[];
+  recovery?: RecoveryAdvice;
   pendingRequests: PendingDecision[];
   /** Everything this feature's runs spent, superseded runs included. */
   usage: UsageView;
@@ -251,6 +253,7 @@ export interface NextAction {
   featureId: string | null;
   runId: string | null;
   message: string;
+  recovery?: RecoveryAdvice;
 }
 
 export interface InitiativeView {
@@ -324,9 +327,9 @@ function shareTooSmall(share: UsageView | null): boolean {
  * 29.15M of 30M, and the budget was extended only after the fact (#1311).
  */
 function shareShortfall(
-  view: Pick<InitiativeView, "budget" | "features">,
+  view: Pick<InitiativeView, "initiativeId" | "budget" | "features">,
   feature: Pick<FeatureView, "id" | "share" | "need" | "shareUsd">,
-): string | null {
+): RecoveryAdvice | null {
   const cost = view.budget.cost;
   if (cost.capUsd !== null && cost.ceilingUsd !== null) {
     const ceiling =
@@ -335,16 +338,32 @@ function shareShortfall(
         : `${usd(cost.capUsd)} cap`;
     if (cost.forecastUsd !== null && cost.forecastUsd > cost.ceilingUsd) {
       const accepted = view.features.filter((f) => f.state === "accepted").length;
-      return `The initiative's cost forecast is ${usd(cost.forecastUsd)}, above its ${ceiling}: ${usd(cost.spentUsd)} spent with ${accepted} of ${view.features.length} features accepted. Raise the dollar budget to at least ${usd(Math.ceil(cost.forecastUsd))} with baked workflow initiative extend --budget-usd N to start ${feature.id}, or pause the initiative.`;
+      return recoveryAdvice(
+        `The initiative's cost forecast is ${usd(cost.forecastUsd)}, above its ${ceiling}: ${usd(cost.spentUsd)} spent with ${accepted} of ${view.features.length} features accepted. Raise the dollar budget to at least ${usd(Math.ceil(cost.forecastUsd))} with baked workflow initiative extend --budget-usd N to start ${feature.id}, or pause the initiative.`,
+        `The initiative's cost forecast is ${usd(cost.forecastUsd)}, above its ${ceiling}: ${usd(cost.spentUsd)} spent with ${accepted} of ${view.features.length} features accepted. Raise the dollar budget to at least ${usd(Math.ceil(cost.forecastUsd))} to start ${feature.id}, or pause the initiative.`,
+        { action: "extend", initiativeId: view.initiativeId },
+      );
     }
     if ((feature.shareUsd ?? 0) < MIN_SHARE_USD)
-      return `The shared dollar budget is exhausted: ${feature.id} would start with ${usd(feature.shareUsd ?? 0)} of the ${ceiling}, ${usd(cost.spentUsd)} spent. Raise it with baked workflow initiative extend --budget-usd N.`;
+      return recoveryAdvice(
+        `The shared dollar budget is exhausted: ${feature.id} would start with ${usd(feature.shareUsd ?? 0)} of the ${ceiling}, ${usd(cost.spentUsd)} spent. Raise it with baked workflow initiative extend --budget-usd N.`,
+        `The shared dollar budget is exhausted: ${feature.id} would start with ${usd(feature.shareUsd ?? 0)} of the ${ceiling}, ${usd(cost.spentUsd)} spent.`,
+        { action: "extend", initiativeId: view.initiativeId },
+      );
   }
   const share = feature.share;
   if (shareTooSmall(share))
-    return `The shared budget is exhausted: ${feature.id} would start with ${share?.tokens ?? 0} tokens, ${share?.calls ?? 0} calls and ${share?.activeMs ?? 0} ms. Raise it with baked workflow initiative extend.`;
+    return recoveryAdvice(
+      `The shared budget is exhausted: ${feature.id} would start with ${share?.tokens ?? 0} tokens, ${share?.calls ?? 0} calls and ${share?.activeMs ?? 0} ms. Raise it with baked workflow initiative extend.`,
+      `The shared budget is exhausted: ${feature.id} would start with ${share?.tokens ?? 0} tokens, ${share?.calls ?? 0} calls and ${share?.activeMs ?? 0} ms.`,
+      { action: "extend", initiativeId: view.initiativeId },
+    );
   if (share && feature.need && share.tokens < feature.need.low)
-    return `The shared budget is short: ${feature.id} would start with ${share.tokens} tokens, below its estimate of ${feature.need.low}-${feature.need.high}. Raise it with baked workflow initiative extend.`;
+    return recoveryAdvice(
+      `The shared budget is short: ${feature.id} would start with ${share.tokens} tokens, below its estimate of ${feature.need.low}-${feature.need.high}. Raise it with baked workflow initiative extend.`,
+      `The shared budget is short: ${feature.id} would start with ${share.tokens} tokens, below its estimate of ${feature.need.low}-${feature.need.high}.`,
+      { action: "extend", initiativeId: view.initiativeId },
+    );
   return null;
 }
 
@@ -1457,14 +1476,21 @@ export class InitiativeService {
    * The forecast-stop message when the initiative has `forecastStop` on and the low end of the
    * estimate of its approved split is above the shared budget; null otherwise.
    */
-  private forecastOver(row: InitiativeRow, view: Pick<InitiativeView, "features">): string | null {
+  private forecastOver(
+    row: InitiativeRow,
+    view: Pick<InitiativeView, "features">,
+  ): RecoveryAdvice | null {
     if (!this.store.settings(row).forecastStop) return null;
     const plan = this.approvedPlan(row);
     if (!plan) return null;
     const accepted = new Set(view.features.filter((f) => f.state === "accepted").map((f) => f.id));
     const estimate = this.estimateOf(row, plan, accepted);
     if (estimate.tokens.low <= estimate.budget.maxTotalTokens) return null;
-    return `The forecast is over the shared budget: ${rangeText(estimate.tokens)} tokens against ${tokenText(estimate.budget.maxTotalTokens)}. Raise it with baked workflow initiative extend, or trim the split.`;
+    return recoveryAdvice(
+      `The forecast is over the shared budget: ${rangeText(estimate.tokens)} tokens against ${tokenText(estimate.budget.maxTotalTokens)}. Raise it with baked workflow initiative extend, or trim the split.`,
+      `The forecast is over the shared budget: ${rangeText(estimate.tokens)} tokens against ${tokenText(estimate.budget.maxTotalTokens)}. Raise the budget, or trim the split.`,
+      { action: "extend", initiativeId: row.id },
+    );
   }
 
   /**
@@ -1695,10 +1721,16 @@ export class InitiativeService {
   private nextAction(row: InitiativeRow, view: InitiativeView): NextAction {
     const action = (
       kind: NextAction["kind"],
-      message: string,
+      message: string | RecoveryAdvice,
       feature: FeatureView | null = null,
       runId: string | null = feature?.runId ?? null,
-    ): NextAction => ({ kind, featureId: feature?.id ?? null, runId, message });
+    ): NextAction => ({
+      kind,
+      featureId: feature?.id ?? null,
+      runId,
+      message: typeof message === "string" ? message : message.message,
+      ...(typeof message === "string" ? {} : { recovery: message }),
+    });
     switch (row.status) {
       case "completed":
         return action("done", "Every mandatory feature has an accepted result.");
@@ -1720,13 +1752,19 @@ export class InitiativeService {
           return action("finish_decompose", "Read the proposed split", null, run.runId);
         if (view.pendingDecisions.some((d) => d.scope === "decompose"))
           return action("decide", "The decompose run waits for a decision", null, run.runId);
-        if (run.status === "blocked")
+        if (run.status === "blocked") {
+          const recorded = stopRecovery(this.workflows.store, run.runId);
           return action(
             "blocked",
-            `The decompose run is blocked (${run.reason}); resolve it with baked workflow resume ${run.runId}`,
+            recoveryAdvice(
+              `The decompose run is blocked (${run.reason}); resolve it with baked workflow resume ${run.runId}`,
+              `The decompose run is blocked (${run.reason}).${recorded ? ` ${recorded.summary}` : ""}`,
+              ...(recorded?.remedies ?? [{ action: "resume" as const, runId: run.runId }]),
+            ),
             null,
             run.runId,
           );
+        }
         if (run.status === "failed" || run.status === "cancelled")
           return action(
             "blocked",
@@ -1757,7 +1795,17 @@ export class InitiativeService {
         feature.state === "needs_decision"
           ? action("decide", `Feature ${feature.id} waits for a decision`, feature)
           : feature.state === "blocked"
-            ? action("blocked", `Feature ${feature.id}: ${feature.blockers.join("; ")}`, feature)
+            ? action(
+                "blocked",
+                feature.recovery
+                  ? {
+                      ...feature.recovery,
+                      message: `Feature ${feature.id}: ${feature.blockers.join("; ")}`,
+                      summary: `Feature ${feature.id}: ${feature.recovery.summary}`,
+                    }
+                  : `Feature ${feature.id}: ${feature.blockers.join("; ")}`,
+                feature,
+              )
             : null;
       if (wait && !parallel) return wait;
       if (wait) {
@@ -1793,9 +1841,19 @@ export class InitiativeService {
     const missing = view.features.filter((f) => f.mandatory && f.state !== "accepted");
     if (missing.length === 0)
       return action("complete", "Every mandatory feature has an accepted result.");
+    const message = missing.map((f) => `${f.id}: ${f.blockers.join("; ") || f.state}`).join(" | ");
+    const recovered = missing.filter((f) => f.recovery);
     return action(
       "blocked",
-      missing.map((f) => `${f.id}: ${f.blockers.join("; ") || f.state}`).join(" | "),
+      recovered.length
+        ? recoveryAdvice(
+            message,
+            missing
+              .map((f) => `${f.id}: ${f.recovery?.summary ?? (f.blockers.join("; ") || f.state)}`)
+              .join(" | "),
+            ...recovered.flatMap((f) => f.recovery?.remedies ?? []),
+          )
+        : message,
     );
   }
 
@@ -1945,6 +2003,12 @@ export class InitiativeService {
         view.blockers = [
           `run ${link.run_id} is blocked (${run.reason})${refusal ? `: ${refusal.split("\n")[0]?.slice(0, 600)}` : ""}; resolve it with baked workflow ${canRepairRun(run) ? "repair" : "resume"} ${link.run_id}`,
         ];
+        const recorded = stopRecovery(this.workflows.store, link.run_id);
+        view.recovery = recoveryAdvice(
+          view.blockers[0] ?? "",
+          `Run ${link.run_id} is blocked (${run.reason}).${recorded ? ` ${recorded.summary}` : ""}`,
+          ...(recorded?.remedies ?? [{ action: "resume" as const, runId: link.run_id }]),
+        );
       } else view.state = run.status === "paused" ? "paused" : "in_progress";
     }
     return [...views.values()];

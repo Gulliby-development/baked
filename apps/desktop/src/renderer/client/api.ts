@@ -1,7 +1,9 @@
+import { recoveryOf } from "../../../../../src/core/workflows/remedies-model.js";
 import type { ApiErrorBody, ApiResponse, RunList } from "../../shared/api.js";
 import type { HttpMethod } from "../../shared/bridge.js";
 import { bridge } from "./bridge.js";
 import { invalidateProject, invalidateRead } from "./cache.js";
+import { desktopRecoveryText } from "./remedies.js";
 
 export class ApiError extends Error {
   constructor(
@@ -27,7 +29,10 @@ function unwrap<T>(response: ApiResponse<unknown>): T {
   throw new ApiError(
     response.status,
     error?.code ?? "HTTP_ERROR",
-    error?.message ?? `Request failed with ${response.status}`,
+    desktopRecoveryText(
+      error?.message ?? `Request failed with ${response.status}`,
+      recoveryOf(error?.recovery),
+    ),
     problems,
     typeof error?.reason === "string" ? error.reason : null,
   );

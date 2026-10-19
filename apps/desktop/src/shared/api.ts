@@ -3,6 +3,7 @@
  * `baked serve` mirror `src/core/api/server.ts` and the workflow core; only the fields the app
  * reads are declared.
  */
+import type { RecoveryAdvice } from "../../../../src/core/workflows/remedies-model.js";
 
 export type RunState =
   | "created"
@@ -137,7 +138,7 @@ export interface Health {
 
 export interface ApiErrorBody {
   /** `reason` is a workflow refusal's cause, such as `git_required`; absent on older backends. */
-  error: { code: string; message: string; reason?: string };
+  error: { code: string; message: string; reason?: string; recovery?: RecoveryAdvice };
 }
 
 export interface ApiResponse<T = unknown> {

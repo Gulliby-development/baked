@@ -13,6 +13,7 @@ import { commandMayBeRunning, isExecutionLease, leaseOwnerAlive } from "./leases
 import { libraryDocsCheck } from "./library-docs.js";
 import { unmatchedMcpGrants } from "./mcp-grants.js";
 import { estimatePrepared, type ModelUse, plannedStages } from "./pre-run.js";
+import { type RecoveryAdvice, recoveryAdvice } from "./remedies.js";
 import { reachableModels } from "./routing.js";
 import { PolicySchema, workflowsEnabled } from "./schemas.js";
 import { type PreparedStart, prepareStart } from "./start.js";
@@ -36,6 +37,7 @@ export interface DoctorCheck {
   title: string;
   detail?: string;
   fix?: string;
+  recovery?: RecoveryAdvice;
   /** The model, command or path the line is about. */
   subject?: string;
 }
@@ -481,6 +483,11 @@ function leaseCheck(store: WorkflowStore): DoctorCheck {
       status: "fail",
       title: `Run ${owner} stopped with a command of unknown outcome`,
       fix: `baked workflow recover ${owner}`,
+      recovery: recoveryAdvice(
+        `baked workflow recover ${owner}`,
+        `Run ${owner} stopped with a command of unknown outcome.`,
+        { action: "recover", runId: owner },
+      ),
       subject: owner,
     };
   return {

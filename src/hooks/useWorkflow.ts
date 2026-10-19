@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { GatesApi } from "../components/workflow/GatesView.js";
 import type { InitiativesApi } from "../components/workflow/InitiativesView.js";
 import type { RoutingApi } from "../components/workflow/RoutingView.js";
+import { tuiErrorText } from "../components/workflow/remedies.js";
 import type { UsageLoader } from "../components/workflow/UsageView.js";
 import type { WorkflowEditorApi } from "../components/workflow/WorkflowEditor.js";
 import {
@@ -142,7 +143,7 @@ export function useWorkflow(workspace: string, runId: string | null, visible: bo
           setError(null);
         }
       } catch (err) {
-        if (!disposed) setError(err instanceof Error ? err.message : String(err));
+        if (!disposed) setError(tuiErrorText(err));
       } finally {
         inFlight = false;
       }
@@ -170,7 +171,7 @@ export function useWorkflow(workspace: string, runId: string | null, visible: bo
       const forked = action === "fork" || (typeof action === "object" && "fork" in action);
       if (forked && result.runId !== runId) useWorkflowStore.getState().select(result.runId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(tuiErrorText(err));
     }
   };
   return { service, snapshot: snapshot?.runId === runId ? snapshot : null, error, generation, act };
@@ -204,7 +205,7 @@ export function useWorkflowRuns(workspace: string, visible: boolean) {
         setRuns(nextRuns);
         setError(null);
       } catch (err) {
-        if (!disposed) setError(err instanceof Error ? err.message : String(err));
+        if (!disposed) setError(tuiErrorText(err));
       } finally {
         inFlight = false;
       }

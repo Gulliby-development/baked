@@ -1,10 +1,13 @@
 import { reasonText } from "../../components/workflow/format.js";
+import { tuiErrorText, tuiRecoveryText } from "../../components/workflow/remedies.js";
 import { loadConfig, loadProjectConfig, mergeConfigs } from "../../config/index.js";
 import { parseWorkflowArgs, workflowHelp } from "../../headless/workflow-parse.js";
+import { formatDoctor } from "../../headless/workflow-pre-run.js";
 import { workflowSession } from "../../hooks/useWorkflow.js";
 import { useUIStore } from "../../stores/ui.js";
 import { useWorkflowStore } from "../../stores/workflow.js";
 import { type CriticOutcomes, formatCriticOutcomes } from "../workflows/critic-outcomes.js";
+import type { DoctorReport } from "../workflows/doctor.js";
 import type { RunSnapshot } from "../workflows/schemas.js";
 import { QUICK_WORKFLOW_ID } from "../workflows/v2/definitions.js";
 import type { CommandHandler } from "./types.js";
@@ -34,8 +37,25 @@ const isWrittenReport = (
 ): value is { runId: string; path: string; bytes: number; usage?: true } =>
   !!value && typeof value === "object" && "path" in value && "bytes" in value && "runId" in value;
 
+const isDoctorReport = (value: unknown): value is DoctorReport =>
+  !!value &&
+  typeof value === "object" &&
+  "checks" in value &&
+  Array.isArray(value.checks) &&
+  "ready" in value &&
+  "workflowId" in value &&
+  "runModel" in value;
+
 /** Short chat summary; the panel carries the details. Unknown result shapes stay as JSON. */
 export function formatWorkflowResult(result: unknown): string {
+  if (isDoctorReport(result))
+    return formatDoctor({
+      ...result,
+      checks: result.checks.map((check) => ({
+        ...check,
+        fix: tuiRecoveryText(check.fix ?? "", check.recovery),
+      })),
+    });
   if (isSnapshot(result)) {
     const reason = result.reason !== "none" ? ` — ${reasonText(result.reason)}` : "";
     const waiting = result.pendingRequestIds.length
@@ -132,10 +152,14 @@ export function register(map: Map<string, CommandHandler>): void {
     if (args.command === "run" && args.flags.model === undefined)
       tokens.push("--model", ctx.chat.activeModel);
     const service = workflowSession(ctx.cwd);
-    const result = await service.command(tokens, new AbortController().signal, (runId) => {
-      useWorkflowStore.getState().select(runId, ctx.tabMgr.activeTabId);
-      useUIStore.getState().openModal("workflow");
-    });
+    const result = await service
+      .command(tokens, new AbortController().signal, (runId) => {
+        useWorkflowStore.getState().select(runId, ctx.tabMgr.activeTabId);
+        useUIStore.getState().openModal("workflow");
+      })
+      .catch((error: unknown) => {
+        throw new Error(tuiErrorText(error));
+      });
     if (
       args.command !== "report" &&
       args.flags.format !== "md" &&

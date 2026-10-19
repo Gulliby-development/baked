@@ -66,6 +66,7 @@ import { uniqueFeatureId } from "../workflows/feature-id.js";
 import { initiativeStartRequest } from "../workflows/initiatives/forms.js";
 import { InitiativeService } from "../workflows/initiatives/service.js";
 import { redactSecrets } from "../workflows/redaction.js";
+import { errorRecovery, type RecoveryAdvice } from "../workflows/remedies.js";
 import {
   PolicySchema,
   type RunSnapshot,
@@ -310,6 +311,7 @@ function errorOf(error: unknown): {
   message: string;
   /** A WorkflowFault's `details.reason`, so a client can offer the repair (`git_required`). */
   reason?: string;
+  recovery?: RecoveryAdvice;
 } {
   if (error instanceof ApiError)
     return { status: error.status, code: error.code, message: error.message };
@@ -320,6 +322,7 @@ function errorOf(error: unknown): {
       status: faultStatus(error.code),
       code: error.code,
       message: error.message,
+      recovery: errorRecovery(error),
       ...(typeof error.details.reason === "string" ? { reason: error.details.reason } : {}),
     };
   if (error instanceof ZodError)
@@ -748,10 +751,25 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       headers: headers(origin, { "Content-Type": "application/json; charset=utf-8" }),
     });
   const failure = (error: unknown, origin: string | null): Response => {
-    const { status, code, message, reason } = errorOf(error);
+    const { status, code, message, reason, recovery } = errorOf(error);
     return json(
       status,
-      { error: { code, message: redactSecrets(message), ...(reason ? { reason } : {}) } },
+      {
+        error: {
+          code,
+          message: redactSecrets(message),
+          ...(reason ? { reason } : {}),
+          ...(recovery
+            ? {
+                recovery: {
+                  ...recovery,
+                  message: redactSecrets(recovery.message),
+                  summary: redactSecrets(recovery.summary),
+                },
+              }
+            : {}),
+        },
+      },
       origin,
     );
   };

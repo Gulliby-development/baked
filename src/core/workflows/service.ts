@@ -84,6 +84,7 @@ import {
   PROJECT_MEMORY_ARTIFACT,
   renderProjectMemory,
 } from "./project-memory.js";
+import { recoveryAdvice } from "./remedies.js";
 import { canRepairRun } from "./repairable.js";
 import { abortableDelay } from "./retry.js";
 import {
@@ -1053,7 +1054,13 @@ export class NativeWorkflowService implements WorkflowService {
       )
         throw new WorkflowFault(
           "STALE_DECISION",
-          `The run stopped again with the same diagnostic after the last resume, so another resume would repeat the same attempt. Change the input instead: revise the run (\`baked workflow revise ${runId}\`), run an initiative feature again (\`baked workflow initiative replan ID --feature F\`), or cancel it`,
+          recoveryAdvice(
+            `The run stopped again with the same diagnostic after the last resume, so another resume would repeat the same attempt. Change the input instead: revise the run (\`baked workflow revise ${runId}\`), run an initiative feature again (\`baked workflow initiative replan ID --feature F\`), or cancel it`,
+            "The run stopped again with the same diagnostic after the last resume. Change the input before trying again.",
+            { action: "revise", runId },
+            { action: "replan", runId },
+            { action: "cancel", runId },
+          ),
           { reason: "repeated_invalid_output" },
         );
       // Resuming is the operator's decision to try again: a task whose implementation did not
@@ -1092,7 +1099,11 @@ export class NativeWorkflowService implements WorkflowService {
       return;
     throw new WorkflowFault(
       "STALE_DECISION",
-      `${refused.path} still differs from what the run recorded, so its edits would be refused again. Keep it with \`baked workflow resume ${runId} --accept-workspace\`, or put back the content the run wrote and resume`,
+      recoveryAdvice(
+        `${refused.path} still differs from what the run recorded, so its edits would be refused again. Keep it with \`baked workflow resume ${runId} --accept-workspace\`, or put back the content the run wrote and resume`,
+        `${refused.path} still differs from what the run recorded. Keep these changes, or restore the content the run wrote before retrying.`,
+        { action: "accept-workspace", runId },
+      ),
       { path: refused.path },
     );
   }

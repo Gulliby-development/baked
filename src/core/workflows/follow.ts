@@ -10,6 +10,7 @@ import { configuredPullRequests, latestPushedDelivery } from "./delivery.js";
 import type { CommitCheck, PullRequestProvider, ReviewThread } from "./delivery-provider.js";
 import { WorkflowFault } from "./errors.js";
 import { uniqueFeatureId } from "./feature-id.js";
+import { type RecoveryAdvice, recoveryAdvice } from "./remedies.js";
 import type { WorkflowStore } from "./store.js";
 
 export interface PullRequestChecks {
@@ -35,8 +36,11 @@ export interface FollowOptions {
 }
 export type FollowOutcome = PullRequestChecks & { outcome: "passed" | "failed" | "timeout" };
 
-const refuse = (code: "NOT_FOUND" | "CAPABILITY_DENIED", reason: string, message: string) =>
-  new WorkflowFault(code, message, { reason });
+const refuse = (
+  code: "NOT_FOUND" | "CAPABILITY_DENIED",
+  reason: string,
+  message: string | RecoveryAdvice,
+) => new WorkflowFault(code, message, { reason });
 
 /** One read of the checks on the commit the run's latest delivery pushed. */
 export async function pullRequestChecks(
@@ -51,7 +55,11 @@ export async function pullRequestChecks(
     throw refuse(
       "NOT_FOUND",
       "not_delivered",
-      `Run ${runId} has no pushed delivery to follow. Deliver it first with \`baked workflow deliver ${runId}\`.`,
+      recoveryAdvice(
+        `Run ${runId} has no pushed delivery to follow. Deliver it first with \`baked workflow deliver ${runId}\`.`,
+        `Run ${runId} has no pushed delivery to follow.`,
+        { action: "deliver", runId },
+      ),
     );
   const { result } = delivered;
   // A pushed delivery always has a remote; a local one is never returned here.
@@ -182,7 +190,11 @@ export async function pullRequestReviews(
     throw refuse(
       "NOT_FOUND",
       "not_delivered",
-      `Run ${runId} has no pushed delivery to follow. Deliver it first with \`baked workflow deliver ${runId}\`.`,
+      recoveryAdvice(
+        `Run ${runId} has no pushed delivery to follow. Deliver it first with \`baked workflow deliver ${runId}\`.`,
+        `Run ${runId} has no pushed delivery to follow.`,
+        { action: "deliver", runId },
+      ),
     );
   const { result } = delivered;
   const pull = result.pullRequest;

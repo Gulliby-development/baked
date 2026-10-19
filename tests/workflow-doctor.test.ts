@@ -12,6 +12,8 @@ import { estimatePreRun, type PastRun } from "../src/core/workflows/estimate.js"
 import { parseWorkflowArgs } from "../src/headless/workflow-parse.js";
 import { formatDoctor, formatEstimate } from "../src/headless/workflow-pre-run.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
+import { newId } from "../src/core/workflows/store.js";
+import { expectRecovery } from "./helpers/workflow-remedies.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -48,6 +50,19 @@ const past = (over: Partial<PastRun>): PastRun => ({
 const price = { input: 2, cacheRead: 0.5, output: 10, match: "table" as const };
 
 describe("doctor", () => {
+  test("a dead owner with an uncertain command names the recovery decision (#1578)", async () => {
+    const f = fixture();
+    const run = await f.start();
+    const store = f.service.store;
+    const step = store.beginStep(run.runId, "uncertain-command");
+    const attempt = store.reserve(run.runId, step, null, 0, f.policy);
+    store.prepareEffect(run.runId, attempt, "command", { checkId: "check" }, null, null);
+    store.putLease({ resource: "execution", owner_id: newId(), owner_epoch: 1, run_id: run.runId, expires_at: Date.now() - 1, process_identity_json: JSON.stringify({ pid: 2147483647, startedAt: 0, instance: "gone" }) });
+    const report = await runDoctor(f.root, f.config, {}, healthy());
+    const check = report.checks.find((c) => c.id === "workspace.busy");
+    expect(check?.status).toBe("fail");
+    expectRecovery(check?.fix ?? "", check?.recovery, "recover");
+  });
   test("reports the run's OS sandbox against the backend", async () => {
     const { root, config } = fixture();
     const missing = () => ({ backend: "bwrap" as const, available: false, path: null, reason: "bwrap is not installed" });

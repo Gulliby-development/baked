@@ -1,3 +1,5 @@
+import { errorRecovery, type RecoveryAdvice } from "../workflows/remedies.js";
+
 declare var self: Worker;
 
 // ── Message Types ──────────────────────────────────────────────────────
@@ -20,6 +22,7 @@ interface ErrorMessage {
   id: number;
   message: string;
   stack?: string;
+  recovery?: RecoveryAdvice;
 }
 
 interface EventMessage {
@@ -137,6 +140,7 @@ export function createWorkerHandler(
         id: msg.id,
         message: error.message,
         stack: error.stack,
+        recovery: errorRecovery(error),
       } satisfies ErrorMessage);
     }
   }
@@ -370,6 +374,7 @@ export class WorkerClient {
           this.pending.delete(msg.id);
           const err = new Error(msg.message);
           if (msg.stack) err.stack = msg.stack;
+          if (msg.recovery) Object.assign(err, { details: { recovery: msg.recovery } });
           p.reject(err);
         }
         break;

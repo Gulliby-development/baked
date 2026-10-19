@@ -349,6 +349,7 @@ import { DEFAULT_SAST_CONFIG, QUALITY_SAST, runSast, sastClaim, sastOf } from ".
 import { carriesOver, changedSince, previousRound } from "./re-review.js";
 import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery.js";
+import { recoveryAdvice } from "./remedies.js";
 import { RepairBlockSchema } from "./repairable-schema.js";
 import { deliverableProblems, repairDeliverables, requestCoverage } from "./request-coverage.js";
 import {
@@ -2663,6 +2664,13 @@ export class WorkflowScheduler {
               ? fault.message
               : String(fault),
         );
+        if (fault instanceof WorkflowFault && fault.details.recovery)
+          this.store.artifact(
+            runId,
+            "recovery",
+            `recovery/advice-${diagnostic.id}.json`,
+            canonical(fault.details.recovery),
+          );
         const repair = RepairBlockSchema.safeParse(
           fault instanceof WorkflowFault ? fault.details.repairBlock : undefined,
         );
@@ -4368,7 +4376,11 @@ export class WorkflowScheduler {
       if (refusal && !signal.aborted)
         throw new WorkflowFault(
           "OUTPUT_INVALID",
-          `${profile.model} refused the request: ${refusalAdvice(refusal, error)}, or move the run to another model with baked workflow reroute ${runId} --model ID --expected-revision N. ${error instanceof Error ? error.message : String(error)}`,
+          recoveryAdvice(
+            `${profile.model} refused the request: ${refusalAdvice(refusal, error)}, or move the run to another model with baked workflow reroute ${runId} --model ID --expected-revision N. ${error instanceof Error ? error.message : String(error)}`,
+            `${profile.model} refused the request: ${refusalAdvice(refusal, error)}. ${error instanceof Error ? error.message : String(error)}`,
+            { action: "reroute", runId },
+          ),
           { reason: "provider_account" },
         );
       // An attempt that used its steps without submitting and changed nothing is repeated once
@@ -12519,7 +12531,13 @@ ${note}`;
         if (count > bound)
           throw new WorkflowFault(
             "RECOVERY_REQUIRED",
-            `no_progress: loop ${transition.id} reached its bound of ${transition.loop.maxIterations}`,
+            recoveryAdvice(
+              `no_progress: loop ${transition.id} reached its bound of ${transition.loop.maxIterations}. Grant one more repair with workflow repair, revise, or fork the run.`,
+              `no_progress: loop ${transition.id} reached its bound of ${transition.loop.maxIterations}`,
+              { action: "repair", runId },
+              { action: "revise", runId, setting: "maxIterations" },
+              { action: "fork", runId },
+            ),
             {
               reason: "no_progress",
               repairBlock: {
@@ -12542,7 +12560,13 @@ ${note}`;
         if (position.total + 1 > v2.definition.limits.maxStageVisits + state.extraStageVisits)
           throw new WorkflowFault(
             "RECOVERY_REQUIRED",
-            `no_progress: the run reached ${v2.definition.limits.maxStageVisits} stage visits`,
+            recoveryAdvice(
+              `no_progress: the run reached ${v2.definition.limits.maxStageVisits} stage visits. Grant one more repair with workflow repair, revise, or fork the run.`,
+              `no_progress: the run reached ${v2.definition.limits.maxStageVisits} stage visits`,
+              { action: "repair", runId },
+              { action: "revise", runId, setting: "maxStageVisits" },
+              { action: "fork", runId },
+            ),
             {
               reason: "no_progress",
               repairBlock: { limit: "maxStageVisits", scope: "run", required: 1 },

@@ -1,6 +1,7 @@
 import { canonical, hashJson } from "../specs/hash.js";
 import { WorkflowFault } from "../workflows/errors.js";
 import { counterexampleOf } from "../workflows/quality/properties.js";
+import { recoveryAdvice } from "../workflows/remedies.js";
 import {
   CorrectionSchema,
   DEFAULT_FRESH_RESTART_AFTER,
@@ -641,7 +642,13 @@ export function appendCorrections(
         : "Grant one more repair with workflow repair, narrow the spec, revise, or fork the run.";
     throw new WorkflowFault(
       "RECOVERY_REQUIRED",
-      `no_progress: ${count} finding(s) remain after the policy's ${setting} (${value}). ${advice}`,
+      recoveryAdvice(
+        `no_progress: ${count} finding(s) remain after the policy's ${setting} (${value}). ${advice}`,
+        `no_progress: ${count} finding(s) remain after the policy's ${setting} (${value}). Narrow the spec or raise ${setting}.`,
+        ...(setting === "maxConvergenceRounds" ? [] : [{ action: "repair" as const, runId }]),
+        { action: "revise", runId, setting },
+        { action: "fork", runId },
+      ),
       {
         reason: "no_progress",
         limit: setting,
@@ -665,7 +672,12 @@ export function appendCorrections(
     throw new WorkflowFault(
       "RECOVERY_REQUIRED",
       kind === "repair"
-        ? `no_progress: a correction started from a clean context left the same ${findings.length} finding(s) as the ${String(after)} repair round(s) before it. Fix the cause by hand or revise the plan, then resume.`
+        ? recoveryAdvice(
+            `no_progress: a correction started from a clean context left the same ${findings.length} finding(s) as the ${String(after)} repair round(s) before it. Grant one more repair with workflow repair, fix the cause by hand or revise the plan, then resume.`,
+            `no_progress: a correction started from a clean context left the same ${findings.length} finding(s) as the ${String(after)} repair round(s) before it. Another repair may repeat them again.`,
+            { action: "repair", runId },
+            { action: "revise", runId },
+          )
         : "no_progress: consecutive reflection rounds repeat the same findings",
       {
         reason: "no_progress",

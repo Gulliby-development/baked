@@ -5,6 +5,7 @@
  */
 import { z } from "zod";
 import { WorkflowFault } from "../errors.js";
+import type { RecoveryAdvice } from "../remedies.js";
 import { canRepairRun, repairText } from "../repairable.js";
 import { newId } from "../store.js";
 import {
@@ -44,12 +45,16 @@ export const initiativeIsTerminal = (view: Pick<InitiativeView, "status">): bool
   TERMINAL.includes(view.status);
 
 /** Why the initiative or one of its features cannot continue, in words, without duplicates. */
-export function initiativeBlockers(view: InitiativeView): string[] {
+export function initiativeBlockers(
+  view: InitiativeView,
+  render: (message: string, advice?: RecoveryAdvice) => string = (message) => message,
+): string[] {
   const blockers = view.features
     .filter((f) => f.state === "blocked" || f.state === "failed")
-    .map((f) => `${f.id}: ${f.blockers.join("; ") || f.state}`);
-  if (view.next.kind === "blocked" && !blockers.some((b) => view.next.message.includes(b)))
-    blockers.unshift(view.next.message);
+    .map((f) => `${f.id}: ${render(f.blockers.join("; ") || f.state, f.recovery)}`);
+  const next = render(view.next.message, view.next.recovery);
+  if (view.next.kind === "blocked" && !blockers.some((b) => next.includes(b)))
+    blockers.unshift(next);
   return blockers;
 }
 
@@ -70,9 +75,12 @@ export function criticalPathText(
   return `Critical path: ${path.features.join(" -> ")} (${path.features.length} of ${view.features.length} features, ${Math.round(path.workShare * 100)}% of the work)${gain}${kept}`;
 }
 
-export function summarizeInitiative(view: InitiativeView): InitiativeSummary {
+export function summarizeInitiative(
+  view: InitiativeView,
+  render: (message: string, advice?: RecoveryAdvice) => string = (message) => message,
+): InitiativeSummary {
   const mandatory = view.features.filter((f) => f.mandatory);
-  const blockers = initiativeIsTerminal(view) ? [] : initiativeBlockers(view);
+  const blockers = initiativeIsTerminal(view) ? [] : initiativeBlockers(view, render);
   return {
     initiativeId: view.initiativeId,
     title: view.title,
@@ -87,7 +95,7 @@ export function summarizeInitiative(view: InitiativeView): InitiativeSummary {
     needsYou:
       !initiativeIsTerminal(view) &&
       (view.pendingDecisions.length > 0 || blockers.length > 0 || view.status === "paused"),
-    next: view.next.message,
+    next: render(view.next.message, view.next.recovery),
   };
 }
 

@@ -16,7 +16,15 @@ import {
 } from "../src/components/workflow/format.js";
 import { orderRuns } from "../src/components/workflow/RunList.js";
 import { formatWorkflowResult } from "../src/core/commands/workflow.js";
+import { recoveryAdvice } from "../src/core/workflows/remedies.js";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
+
+test("the TUI doctor names the recovery decision rather than a CLI command (#1578)", () => {
+  const report = { schemaVersion: 1, workflowId: "sdd", runModel: null, ready: false, estimate: null, checks: [{ id: "workspace.busy", status: "fail", title: "An uncertain command holds the workspace", fix: "baked workflow recover RUN", recovery: recoveryAdvice("baked workflow recover RUN", "Resolve the uncertain command.", { action: "recover", runId: "RUN" }) }] };
+  const text = formatWorkflowResult(report);
+  expect(text).toContain("Open run RUN and answer its recovery decision");
+  expect(text).not.toContain("baked workflow");
+});
 import { hashBytes } from "../src/core/specs/hash.js";
 import { readRunFileDiff } from "../src/core/workflows/run-diff.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";

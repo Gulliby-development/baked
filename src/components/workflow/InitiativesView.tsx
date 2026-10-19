@@ -25,6 +25,7 @@ import { FocusTarget } from "../ui/FocusTarget.js";
 import { Hint, PremiumPopup, Section } from "../ui/index.js";
 import { errorHint, formatDuration, formatTokens } from "./format.js";
 import { InitiativeStartForm } from "./InitiativeStartForm.js";
+import { tuiErrorText, tuiRecoveryText } from "./remedies.js";
 
 /** Everything the initiative screen needs from the outside, so it renders the same in tests. */
 export interface InitiativesApi {
@@ -198,7 +199,7 @@ export function InitiativesPopup({
         setData(next);
         setError(null);
       } catch (err) {
-        if (!disposed) setError(err instanceof Error ? err.message : String(err));
+        if (!disposed) setError(tuiErrorText(err));
       } finally {
         inFlight = false;
       }
@@ -235,7 +236,7 @@ export function InitiativesPopup({
         await api.act(id, action);
         setFlash({ kind: "ok", message: `${label}: done` });
       } catch (err) {
-        setFlash({ kind: "err", message: err instanceof Error ? err.message : String(err) });
+        setFlash({ kind: "err", message: tuiErrorText(err) });
       } finally {
         setBusy(false);
         setEpoch((e) => e + 1);
@@ -261,7 +262,7 @@ export function InitiativesPopup({
       setTyping(null);
       void run(label, action, selected.initiativeId);
     } catch (err) {
-      setFlash({ kind: "err", message: err instanceof Error ? err.message : String(err) });
+      setFlash({ kind: "err", message: tuiErrorText(err) });
     }
   };
 
@@ -340,8 +341,7 @@ export function InitiativesPopup({
         (estimate) => {
           if (estimate) setEstimates((all) => ({ ...all, [id]: estimate }));
         },
-        (err: unknown) =>
-          setFlash({ kind: "err", message: err instanceof Error ? err.message : String(err) }),
+        (err: unknown) => setFlash({ kind: "err", message: tuiErrorText(err) }),
       );
       return;
     }
@@ -500,7 +500,7 @@ export function InitiativeList({
   return (
     <box flexDirection="column">
       {views.map((view, i) => {
-        const s = summarizeInitiative(view);
+        const s = summarizeInitiative(view, tuiRecoveryText);
         const isSelected = i === cursor;
         const bg = isSelected ? t.bgPopupHighlight : t.bgPopup;
         const color = s.needsYou ? t.warning : STATUS_COLOR[view.status](t);
@@ -558,7 +558,10 @@ export function InitiativeList({
             </box>
             {isSelected ? (
               <text bg={bg} fg={t.textMuted}>
-                {clip(`    ${view.title} — ${view.next.message}`, width - 2)}
+                {clip(
+                  `    ${view.title} — ${tuiRecoveryText(view.next.message, view.next.recovery)}`,
+                  width - 2,
+                )}
               </text>
             ) : null}
           </box>
@@ -584,7 +587,7 @@ export function InitiativeDetail({
 }) {
   const t = useTheme();
   const split = pendingSplitApproval(view);
-  const blockers = initiativeIsTerminal(view) ? [] : initiativeBlockers(view);
+  const blockers = initiativeIsTerminal(view) ? [] : initiativeBlockers(view, tuiRecoveryText);
   const { limits, used } = view.budget;
   const cost = costText(view.budget.cost);
   const plan =
@@ -621,7 +624,10 @@ export function InitiativeDetail({
         </text>
       ) : null}
       <text fg={view.next.kind === "blocked" ? t.error : t.info}>
-        {clip(`Next: ${view.next.message || view.next.kind}`, width)}
+        {clip(
+          `Next: ${tuiRecoveryText(view.next.message, view.next.recovery) || view.next.kind}`,
+          width,
+        )}
       </text>
       {split ? (
         <Hint kind="warn">
@@ -725,7 +731,9 @@ export function InitiativeDetail({
                     )}
                   </text>
                 ) : f.blockers.length ? (
-                  <text fg={t.error}>{clip(`✗ ${f.blockers.join("; ")}`, width - 4)}</text>
+                  <text fg={t.error}>
+                    {clip(`✗ ${tuiRecoveryText(f.blockers.join("; "), f.recovery)}`, width - 4)}
+                  </text>
                 ) : null}
               </box>
             ) : null}

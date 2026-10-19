@@ -813,6 +813,22 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/overview: New run, Test integrity", "attention"],
   },
   {
+    id: "workflow-recovery-advice",
+    group: "Workflow runs",
+    title: "Recovery advice names the action available in each app",
+    tui: ["/workflow: run diagnostics and initiative blockers name keys and decisions"],
+    cli: ["baked workflow status: keeps CLI recovery commands", "baked workflow initiative show"],
+    api: [
+      "/v1/workflow/runs/:id: optional recovery advice beside stopDetail",
+      "/v1/initiatives/:id: optional recovery advice beside blockers and next.message",
+    ],
+    desktop: [
+      "project/runs: recovery action names",
+      "project/initiatives: feature and budget blockers",
+      "attention: recovery decisions",
+    ],
+  },
+  {
     id: "workflow-failure-ownership",
     group: "Workflow runs",
     title: "Route failed checks to pending test writers or named source owners",

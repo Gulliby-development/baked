@@ -7,6 +7,7 @@ import type {
   InitiativeView,
   StartInitiativeBody,
 } from "../../client/insights.js";
+import { desktopRecoveryText } from "../../client/remedies.js";
 import { featureSlug } from "../start/logic.js";
 
 /** How the Initiatives screen shows statuses; the core stays the authority on what they mean. */
@@ -92,7 +93,7 @@ export function featureRow(feature: InitiativeFeature): FeatureRow {
       return {
         mark: "!",
         tone: "err",
-        label: feature.blockers[0] ?? feature.state,
+        label: desktopRecoveryText(feature.blockers[0] ?? feature.state, feature.recovery),
         link,
       };
     case "waiting":

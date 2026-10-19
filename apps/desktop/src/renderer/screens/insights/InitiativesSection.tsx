@@ -8,6 +8,7 @@ import type {
   InitiativeView,
 } from "../../client/insights.js";
 import { insights } from "../../client/insights.js";
+import { desktopRecoveryText } from "../../client/remedies.js";
 import { workflow } from "../../client/workflow.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Badge } from "../../components/ui/badge.js";
@@ -644,7 +645,9 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
         </div>
       )}
       {counts.total === 0 ? (
-        <Empty>{view.next.message || "No features yet."}</Empty>
+        <Empty>
+          {desktopRecoveryText(view.next.message, view.next.recovery) || "No features yet."}
+        </Empty>
       ) : (
         <FeatureBoard
           projectKey={projectKey}
@@ -670,7 +673,7 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
           {tokens(view.budget.limits.maxTotalTokens)} tokens
           {costLine(view) && ` · ${costLine(view)}`} · plan revision {view.planRevision}
           {(view.parallelRuns ?? 1) > 1 && ` · up to ${view.parallelRuns} features at once`}
-          {view.next.message && ` · ${view.next.message}`}
+          {view.next.message && ` · ${desktopRecoveryText(view.next.message, view.next.recovery)}`}
         </p>
         {canExtendBudget(view) && (
           <Button
