@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { LanguageModelV3, LanguageModelV3GenerateResult } from "@ai-sdk/provider";
-import { MockLanguageModelV3 } from "ai/test";
+import { MockLanguageModelV3 } from "./helpers/workflow-model.js";
 import { getProvider } from "../src/core/llm/providers/index.js";
 import {
   affectedTestCheck,

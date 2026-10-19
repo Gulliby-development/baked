@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { LanguageModelV3, LanguageModelV3GenerateResult, LanguageModelV3Prompt } from "@ai-sdk/provider";
-import { MockLanguageModelV3 } from "ai/test";
+import { MockLanguageModelV3 } from "./helpers/workflow-model.js";
 import { getProvider } from "../src/core/llm/providers/index.js";
 import { NativeAgentExecutor } from "../src/core/workflows/agent-executor.js";
 import { attentionMessage } from "../src/core/workflows/attention-notify.js";

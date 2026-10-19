@@ -21,6 +21,7 @@ import { hasToolHooks } from "../hooks/index.js";
 import { formatSyntaxErrors, syntaxCheckable, syntaxErrors } from "../intelligence/syntax-check.js";
 import { knownModelContextWindow } from "../llm/models.js";
 import { resolveModel } from "../llm/provider.js";
+import { withProviderHealth } from "../llm/provider-health.js";
 import {
   buildProviderOptions,
   type CacheTTL,
@@ -1226,7 +1227,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         },
       });
       const meta = { profileId: request.profile.id, taskId: request.task?.id ?? null };
-      const model = this.attemptModel(request, policy);
+      const model = this.attemptModel(request, policy, watch);
       const effort = sentEffort(provider.providerOptions);
       const writeUsage = (usage: AttemptUsageRecord) =>
         this.store.transaction(() =>
@@ -1658,9 +1659,20 @@ export class NativeAgentExecutor implements AgentExecutor {
    * The attempt's model: the provider's, or with `modelCalls` in the policy one that records
    * each call in the run, or answers from a recording (#856).
    */
-  private attemptModel(request: ExecutionRequest, policy: RunPolicy): LanguageModel {
+  private attemptModel(
+    request: ExecutionRequest,
+    policy: RunPolicy,
+    watch: AttemptWatch,
+  ): LanguageModel {
     const calls = policy.modelCalls;
-    const model = () => resolveModel(request.profile.model);
+    const model = () =>
+      withProviderHealth(resolveModel(request.profile.model), request.profile.model, {
+        pending: request.providerPending,
+        progress: () => {
+          watch.lastAt = executionClock.now();
+          touchProgress(request.runId);
+        },
+      });
     if (!calls?.record && !calls?.replay) return model();
     const key = recordingKey(request.profile.id, request.task?.id);
     const paths = this.store.artifacts(request.runId).map((a) => a.logical_path);

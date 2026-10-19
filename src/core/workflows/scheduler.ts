@@ -24,6 +24,7 @@ import {
 } from "../llm/model-routing.js";
 import { modelVendor } from "../llm/model-vendor.js";
 import { knownModelContextWindow } from "../llm/models.js";
+import { ProviderUnreachableError } from "../llm/provider-health.js";
 import { runSandbox } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
@@ -239,7 +240,7 @@ import {
 } from "./derivation-audit.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
-import { executionClock, executionTimeout } from "./execution-clock.js";
+import { ExecutionBudgetClock, executionClock, executionTimeout } from "./execution-clock.js";
 import { describeChange, keepOutside, restoreOutside, unjournaledOutside } from "./fixer-scope.js";
 import {
   FORK_SEED_ARTIFACT,
@@ -534,7 +535,14 @@ import {
 } from "./tests-first.js";
 import { takeHashRefusals } from "./tool-policy.js";
 import { transientSqliteError } from "./transient-sqlite.js";
-import type { AgentExecutor, Check, HostTool, RuntimeState, Task } from "./types.js";
+import type {
+  AgentExecutor,
+  Check,
+  ExecutionRequest,
+  HostTool,
+  RuntimeState,
+  Task,
+} from "./types.js";
 import { acceptanceGrants, blocksRun } from "./v2/acceptance.js";
 import { type BrowserDriverOptions, runAcceptanceGate } from "./v2/acceptance-gate.js";
 import {
@@ -908,6 +916,18 @@ export class WorkflowScheduler {
     this.journal = new EffectJournal(store, leases);
     this.checks = new CheckRunner(store, this.processes);
   }
+  private providerActivity = () => ({
+    pending: () => (_responded: boolean) => {},
+    finish: () => {},
+  });
+  private async execute(request: ExecutionRequest) {
+    const activity = this.providerActivity();
+    try {
+      return await this.executor.execute({ ...request, providerPending: activity.pending });
+    } finally {
+      activity.finish();
+    }
+  }
   async drive(runId: string, outerSignal: AbortSignal): Promise<void> {
     // A reroute between drives writes a new routing revision; read it again.
     this.routing.delete(runId);
@@ -935,14 +955,15 @@ export class WorkflowScheduler {
     outerSignal.addEventListener("abort", abort, { once: true });
     if (outerSignal.aborted) abort();
     const signal = controller.signal;
-    const started = executionClock.now();
+    const budgetClock = new ExecutionBudgetClock();
+    this.providerActivity = () => budgetClock.track();
+    const started = budgetClock.now();
     const activeBefore = this.store.run(runId).active_ms;
-    let idleMs = 0;
-    let idleFrom: number | null = null;
     const arm = () =>
       executionTimeout(
         () => controller.abort(new WorkflowFault("BUDGET_EXHAUSTED", "Active deadline exhausted")),
-        Math.max(1, policy.maxActiveMs - activeBefore - (executionClock.now() - started - idleMs)),
+        Math.max(1, policy.maxActiveMs - activeBefore - (budgetClock.now() - started)),
+        budgetClock,
       );
     let timeout = arm();
     this.rearmDeadline = () => {
@@ -952,13 +973,11 @@ export class WorkflowScheduler {
     // A wait stage sleeps between polls; that time is not active time.
     this.idle = async <T>(sleep: () => Promise<T>): Promise<T> => {
       timeout();
-      const from = executionClock.now();
-      idleFrom = from;
+      const end = budgetClock.pending();
       try {
         return await sleep();
       } finally {
-        idleFrom = null;
-        idleMs += executionClock.now() - from;
+        end(false);
         timeout = arm();
       }
     };
@@ -969,9 +988,7 @@ export class WorkflowScheduler {
     // ran in a timer, so it killed the command with an uncaught exception (bench round 32, #1313).
     // The write is tried once more, and an interval still unrecorded goes with the next flush.
     const recordActive = (): void => {
-      const now = executionClock.now();
-      const idle = idleMs + (idleFrom === null ? 0 : now - idleFrom);
-      const add = Math.ceil(now - started - idle - recorded);
+      const add = Math.ceil(budgetClock.now() - started - recorded);
       if (add <= 0) return;
       for (let tries = 2; tries > 0; tries--) {
         try {
@@ -2784,6 +2801,24 @@ export class WorkflowScheduler {
               hash: fault.details.hash ?? null,
             }),
           );
+        if (reason === "provider" && fault instanceof WorkflowFault) {
+          this.store.artifact(
+            runId,
+            "recovery",
+            "provider/wait.json",
+            canonical({
+              modelId: fault.details.modelId,
+              probe: 0,
+              retryAt: new Date().toISOString(),
+            }),
+          );
+          this.store.transition(
+            runId,
+            outerSignal.aborted ? "paused" : "waiting",
+            outerSignal.aborted ? "user_pause" : "provider",
+          );
+          return;
+        }
         this.store.transition(
           runId,
           outerSignal.aborted ? "paused" : "blocked",
@@ -2797,6 +2832,10 @@ export class WorkflowScheduler {
       timeout();
       this.idle = (sleep) => sleep();
       this.rearmDeadline = () => {};
+      this.providerActivity = () => ({
+        pending: () => (_responded: boolean) => {},
+        finish: () => {},
+      });
       outerSignal.removeEventListener("abort", abort);
       leaseSignal.removeEventListener("abort", leaseLost);
       // A run that waits keeps its gate's result; one that stopped or failed will change the code.
@@ -4385,7 +4424,7 @@ export class WorkflowScheduler {
           root,
         );
       }
-      const result = await this.executor.execute({
+      const result = await this.execute({
         runId,
         attemptId: attempt,
         profile,
@@ -4480,6 +4519,11 @@ export class WorkflowScheduler {
             error,
           ),
         );
+      if (error instanceof ProviderUnreachableError && !signal.aborted)
+        throw new WorkflowFault("OUTPUT_INVALID", error.message, {
+          reason: "provider",
+          modelId: error.modelId,
+        });
       const wrote = this.store.effects(runId).some((effect) => effect.attempt_id === attempt);
       const editedFiles = () =>
         this.store
@@ -7245,6 +7289,7 @@ ${note}`;
         error instanceof WorkflowFault &&
         (["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code) ||
           error.details.reason === "provider_account" ||
+          error.details.reason === "provider" ||
           error.details.reason === "check_unavailable")
       )
         return { kind: "fatal", entry, error };

@@ -1,3 +1,4 @@
+import { ProviderUnreachableError } from "../llm/provider-health.js";
 import { WorkflowFault } from "./errors.js";
 
 interface ProviderError {
@@ -166,6 +167,7 @@ export function isOutputLimit(error: unknown): boolean {
 
 /** A provider failure worth trying again: a timeout, rate limit, overload or network error. */
 export function isTransient(error: unknown): boolean {
+  if (error instanceof ProviderUnreachableError) return true;
   if (error instanceof WorkflowFault || accountRefusal(error) || isOutputLimit(error)) return false;
   if (isOAuthRefreshCollision(error) || isCapacityError(error)) return true;
   const info = error as ProviderError | undefined;

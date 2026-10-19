@@ -550,6 +550,8 @@ export interface HostTool {
   execute(input: unknown): Promise<unknown>;
 }
 export interface ExecutionRequest {
+  /** Account a provider call's silence separately until its first response or outage. */
+  providerPending?: () => (responded: boolean) => void;
   runId: string;
   attemptId: string;
   profile: AgentProfile;

@@ -126,6 +126,11 @@ export function headline(
             next: "If no other BAKED window runs it, press P: pausing releases the workspace.",
           };
     case "waiting":
+      if (snapshot.reason === "provider")
+        return {
+          now: `Waiting at ${at}: ${reasonText(snapshot.reason)}.${snapshot.providerWait ? ` Next probe at ${new Date(snapshot.providerWait.retryAt).toLocaleTimeString()}.` : ""}`,
+          next: "Recovery is automatic. P pauses, C cancels.",
+        };
       return {
         now: `Waiting at ${at}: ${reasonText(snapshot.reason)}.`,
         next: "Press Enter to open the decision.",

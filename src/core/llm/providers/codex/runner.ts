@@ -16,6 +16,7 @@ import type {
 } from "@ai-sdk/provider";
 import { getCwd } from "../../../cwd.js";
 import { trackProcess } from "../../../process-tracker.js";
+import { providerResponded } from "../../provider-health.js";
 import { cliReasoningEffort } from "../cli-effort.js";
 import {
   imageExtension,
@@ -34,6 +35,7 @@ export interface CodexRunnerCall {
   parts: CodexPromptParts;
   schema: JSONSchema7;
   abortSignal?: AbortSignal;
+  onResponse?: () => void;
   /** Reasoning effort (`model_reasoning_effort`); Codex's default when absent. */
   effort?: string;
   /** Codex's own web search is on for this call (#1239). */
@@ -446,7 +448,12 @@ export class CodexCliRunner implements CodexRunner {
     ];
 
     try {
-      return await runCodexProcess(args, renderCodexTurnInput(call.parts), call.abortSignal);
+      return await runCodexProcess(
+        args,
+        renderCodexTurnInput(call.parts),
+        call.abortSignal,
+        call.onResponse,
+      );
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -457,6 +464,7 @@ async function runCodexProcess(
   args: string[],
   prompt: string,
   abortSignal?: AbortSignal,
+  onResponse?: () => void,
 ): Promise<CodexRunnerResult> {
   const child = spawn(codexCommand(), args, { signal: abortSignal, env: codexRunEnv() });
   trackProcess(child);
@@ -508,6 +516,10 @@ async function runCodexProcess(
         continue;
       }
 
+      if (event.type === "item.completed" || event.type === "item.updated") {
+        const item = event.item as { type?: string } | undefined;
+        if (["agent_message", "reasoning", "web_search"].includes(item?.type ?? "")) onResponse?.();
+      }
       if (event.type === "item.completed") {
         const item = event.item as { type?: string; text?: string; query?: unknown } | undefined;
         if (item?.type === "agent_message" && typeof item.text === "string") {
@@ -580,6 +592,7 @@ export function createCodexLanguageModel(
         parts,
         schema: buildCodexSchema(options),
         abortSignal: options.abortSignal,
+        onResponse: () => providerResponded(options.abortSignal),
         effort: cliReasoningEffort(options.providerOptions, "codex"),
         ...(codexWebSearch(options.providerOptions) ? { webSearch: true } : {}),
       });

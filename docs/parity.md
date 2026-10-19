@@ -147,6 +147,7 @@ bun test tests/feature-parity.test.ts
 | Grant another repair at a refused limit | `/workflow` | `baked workflow repair` | `/v1/workflow/runs/:id/repair` | `project/runs`, `project/initiatives` |
 | Pause, resume, accept outside changes, cancel, extend, reroute, undo edits | `/workflow` | `baked workflow pause`, `baked workflow resume`, `baked workflow cancel` +3 | `/v1/workflow/runs/:id/pause`, `/v1/workflow/runs/:id/resume`, `/v1/workflow/runs/:id/cancel` +3 | `project/runs` |
 | Continue approved manifest edits using the run's file-patch hash history | `/workflow` | `baked workflow run`, `baked workflow resume` | `/v1/workflow/runs/:id/resume` | `project/runs` |
+| Unreachable providers wait on health probes without spending active time or recovery resumes | `/workflow` | `baked workflow status`, `baked workflow resume` | `/v1/workflow/runs/:id` | `project/runs` |
 | Run and initiative active budgets and execution deadlines exclude host suspend gaps | `/workflow` | `baked workflow run`, `baked workflow resume`, `baked workflow initiative drive` | `/v1/workflow/runs` | `project/runs`, `project/initiatives` |
 | Supervisor: a driver whose thread stopped is stopped and its run taken over | `/workflow` | `baked workflow run`, `baked workflow resume`, `baked workflow approve` +3 | `/v1/health` | `project/runs` |
 | Fork a run | `/workflow` | `baked workflow fork` | `/v1/workflow/runs/:id/fork` | `project/runs` |
