@@ -25,14 +25,14 @@ export interface CriterionCase {
 }
 
 /** Quoted spans: "...", `...` and the typographic double quotes. */
-const QUOTED = /"([^"\n]+)"|`([^`\n]+)`|\u201c([^\u201d\n]+)\u201d/g;
+const QUOTED = /"((?:\\[^\n]|[^"\\\n])+)"|`([^`\n]+)`|\u201c([^\u201d\n]+)\u201d/g;
 /** A placeholder the test fills with a concrete value: `<file>`, `{name}`, `...`. */
 const PLACEHOLDER = /<[^<>\s][^<>]*>|\{[^{}]+\}|\.\.\.|\u2026/g;
 
 /** Prose labels are for the reviewer, not strings a test must repeat (#1565). */
 function literalCase(literal: string, code = false, value = false): boolean {
   const concrete = literal.replace(PLACEHOLDER, "");
-  if (concrete.replace(/\W/g, "").length < 2) return false;
+  if (concrete.replace(/[^\p{L}\p{N}_]/gu, "").length < 2) return false;
   return (
     value ||
     /\d|(?:^|\s)--?[A-Za-z]|[=<>:+*%{}[\]]/.test(concrete) ||
@@ -113,7 +113,7 @@ export function criterionCases(
   const seen = new Set<string>();
   const sets = closedSets(spec);
   const add = (criterionId: string, literal: string, word?: true) => {
-    const key = `${criterionId}:${literal}`;
+    const key = `${criterionId}:${normalizeLiteral(literal)}`;
     if (seen.has(key) || isCheckCommand(literal, context.checks)) return;
     seen.add(key);
     cases.push({ criterionId, literal, ...(word ? { word } : {}) });
@@ -124,19 +124,20 @@ export function criterionCases(
   for (const criterion of spec.criteria) {
     if (!task.criterionIds.includes(criterion.id) || criterion.method !== "automated") continue;
     for (const [field, text] of [criterion.given, criterion.when, criterion.then].entries()) {
-      for (const match of text.matchAll(QUOTED)) {
+      const table = tableInputs(text);
+      for (const match of table.prose.matchAll(QUOTED)) {
         const literal = (match[1] ?? match[2] ?? match[3] ?? "").trim();
         if (
           !literalCase(
             literal,
             match[2] !== undefined,
-            VALUE_CONTEXT.test(text.slice(0, match.index)),
+            VALUE_CONTEXT.test(table.prose.slice(0, match.index)),
           )
         )
           continue;
         add(criterion.id, literal);
       }
-      for (const input of tableInputs(text)) add(criterion.id, input);
+      for (const input of table.inputs) add(criterion.id, input);
       for (const member of enumeratedMembers(text, sets, `${criterion.id}:${field}`))
         add(criterion.id, member, true);
     }
@@ -165,7 +166,10 @@ export function criterionCases(
     return context.includeBroad || !broad(c.criterionId) || scoped;
   });
   return applicable.filter(
-    (c, i) => applicable.findIndex((other) => other.literal === c.literal) === i,
+    (c, i) =>
+      applicable.findIndex(
+        (other) => normalizeLiteral(other.literal) === normalizeLiteral(c.literal),
+      ) === i,
   );
 }
 
@@ -333,59 +337,112 @@ const HEADER_CELL =
 const SEPARATOR_CELL = /^:?-{2,}:?$/;
 
 /**
- * The first cells of the data rows of a criterion's table (`input | expected`): each row's input
- * is a case when it names a concrete literal, rather than a scenario label (#1565).
+ * Split explicit input spans in the first cell, leaving context words out.
+ * Standalone cells still need a concrete literal rather than a scenario label (#1565).
+ * Return the remaining cells and prose for the usual quoted-span walk.
  */
-function tableInputs(text: string): string[] {
+function tableInputs(text: string): { inputs: string[]; prose: string } {
   const rows = text
     .split(/\r?\n/)
     .filter((line) => line.includes("|"))
-    .map((line) =>
-      line
+    .map((line) => ({
+      line,
+      cells: line
         .trim()
         .replace(/^\||\|$/g, "")
         .split("|")
         .map((cell) => cell.trim()),
-    )
-    .filter((cells) => cells.length >= 2);
-  if (rows.length < 2) return [];
+    }))
+    .filter(({ cells }) => cells.length >= 2);
+  if (rows.length < 2) return { inputs: [], prose: text };
   const inputs: string[] = [];
-  rows.forEach((cells, index) => {
+  rows.forEach(({ cells }, index) => {
     if (cells.every((cell) => SEPARATOR_CELL.test(cell))) return;
-    const next = rows[index + 1];
+    const next = rows[index + 1]?.cells;
     if (next?.every((cell) => SEPARATOR_CELL.test(cell))) return;
     const raw = cells[0] ?? "";
-    const cell = raw.replace(/^[`"\u201c]|[`"\u201d]$/g, "").trim();
-    if (HEADER_CELL.test(cell)) return;
-    if (!literalCase(cell, raw.startsWith("`"))) return;
-    inputs.push(cell);
+    if (HEADER_CELL.test(raw.replace(/^[`"\u201c]|[`"\u201d]$/g, ""))) return;
+    const spans = [...raw.matchAll(QUOTED)];
+    if (spans.length) {
+      for (const span of spans) {
+        // A role annotation (`...` as `url`) names the parameter, not another input.
+        if (/\bas\s*$/i.test(raw.slice(0, span.index))) continue;
+        const literal = (span[1] ?? span[2] ?? span[3] ?? "").trim();
+        if (literalCase(literal, span[2] !== undefined, spans.length > 1 || raw !== span[0]))
+          inputs.push(literal);
+      }
+    } else if (literalCase(raw)) inputs.push(raw);
   });
-  return inputs;
+  const tableLines = new Map(rows.map((row) => [row.line, row.cells.slice(1).join(" | ")]));
+  return {
+    inputs,
+    prose: text
+      .split(/\r?\n/)
+      .map((line) => tableLines.get(line) ?? line)
+      .join("\n"),
+  };
+}
+
+/** Decode one source or JSON escape layer, preserving intentional literal escape text (#1614). */
+export function normalizeLiteral(source: string): string {
+  return source.replace(
+    /\\(?:u\{([\da-fA-F]{1,6})\}|u([\da-fA-F]{4})|x([\da-fA-F]{2})|([ntr"'`\\]))/g,
+    (
+      spelling: string,
+      point: string | undefined,
+      unicode: string | undefined,
+      hex: string | undefined,
+      simple: string | undefined,
+    ) => {
+      const digits = point ?? unicode ?? hex;
+      if (digits !== undefined) {
+        const value = Number.parseInt(digits, 16);
+        return value <= 0x10ffff ? String.fromCodePoint(value) : spelling;
+      }
+      return simple === "n"
+        ? "\n"
+        : simple === "t"
+          ? "\t"
+          : simple === "r"
+            ? "\r"
+            : (simple ?? spelling);
+    },
+  );
 }
 
 const escapeRegex = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const SEPARATOR = String.raw`[\s"'\x60,()[\]]+`;
 /** Keep flags, paths, identifiers and signed numbers; discard grouping syntax and conjunctions. */
 const SIGNIFICANT_TOKEN =
-  /--?[A-Za-z][\w-]*|[A-Za-z_$][\w$]*(?:[./\\-][\w$]+)*|-?\d\w*(?:\.\d+)?|[!=<>]=+|[+*%]/g;
+  /--?[A-Za-z][\w-]*|[\p{L}_$][\p{L}\p{N}_$]*(?:[./\\-][\p{L}\p{N}_$]+)*|-?\p{N}[\p{L}\p{N}_]*(?:\.\p{N}+)?|[!=<>]=+|[+*%]/gu;
 
 /**
  * Whether one test file holds all significant tokens of a literal, in any order or grouping.
  * Placeholders stand for test-specific values; case and token boundaries still matter.
  */
 export function testsHold(text: string, literal: string): boolean {
-  const unescaped = text.replace(/\\(["'\\`])/g, "$1");
-  const tokens = literal.replace(PLACEHOLDER, " ").match(SIGNIFICANT_TOKEN) ?? [];
+  const unescaped = normalizeLiteral(text);
+  const normalized = normalizeLiteral(literal);
+  if (!normalized.replace(PLACEHOLDER, "")) return false;
+  const tokens = normalized.replace(PLACEHOLDER, " ").match(SIGNIFICANT_TOKEN) ?? [];
   const significant = tokens.filter((token) => token !== "and" && token !== "or");
-  if (!significant.length) return false;
   // Keep exact spellings of punctuation-heavy values, including absolute and Windows paths.
-  const exact = literal
+  const exact = normalized
     .split(PLACEHOLDER)
-    .map((part) => part.split(/\s+/).filter(Boolean).map(escapeRegex).join(SEPARATOR))
+    .map((part) =>
+      part.trim()
+        ? part.split(/\s+/).filter(Boolean).map(escapeRegex).join(SEPARATOR)
+        : escapeRegex(part),
+    )
     .join("[\\s\\S]*?");
   const held = (pattern: string) =>
-    new RegExp(`(?<![A-Za-z0-9_$./\\\\-])${pattern}(?![A-Za-z0-9_$./\\\\-])`).test(unescaped);
-  return held(exact) || significant.every((token) => held(escapeRegex(token)));
+    new RegExp(`(?<![\\p{L}\\p{N}_$./-])${pattern}(?![\\p{L}\\p{N}_$./\\\\-])`, "u").test(
+      unescaped,
+    );
+  return (
+    held(exact) ||
+    (significant.length > 0 && significant.every((token) => held(escapeRegex(token))))
+  );
 }
 
 /** The cases no text holds. */
