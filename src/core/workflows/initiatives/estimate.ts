@@ -94,6 +94,8 @@ export interface FeatureEstimate {
   workflowId: string;
   size: FeatureSize;
   tokens: TokenRange;
+  /** Point forecast before range floors widen it; dollar forecasts use this without a margin. */
+  expectedTokens: number;
   tasks: TokenRange;
   basis: FeatureEstimateBasis;
   /** Past runs the range comes from; 0 for generic ranges. */
@@ -241,6 +243,7 @@ function estimateFeature(
     return {
       ...head,
       tokens: measured,
+      expectedTokens: middle(measured),
       tasks: hasTasks
         ? (rangeOf(pool.map((s) => s.taskCount)) ?? { low: 0, high: 0 })
         : { low: 0, high: 0 },
@@ -269,7 +272,14 @@ function estimateFeature(
       }
     : { low: 0, high: 0 };
   const basis: FeatureEstimateBasis = run.basis;
-  return { ...head, tokens, tasks, basis, samples: basis === "defaults" ? 0 : run.samples };
+  return {
+    ...head,
+    tokens,
+    expectedTokens: middle(tokens),
+    tasks,
+    basis,
+    samples: basis === "defaults" ? 0 : run.samples,
+  };
 }
 
 /** The estimate in one line for a screen: level, tasks, tokens, what to plan for, the budget. */
@@ -284,8 +294,8 @@ const fitsOf = (high: number, low: number, limit: number): "yes" | "maybe" | "no
 /** Measured features with criteria needed before the estimate prices features by criteria. */
 export const MIN_CRITERIA_SAMPLES = 2;
 
-/** Bounds of the measured-to-forecast ratio that scales the features still to run. */
-const RATIO_BOUNDS = { low: 0.25, high: 5 } as const;
+/** Maximum measured-to-forecast ratio that scales the features still to run. */
+const MAX_RATIO = 5;
 
 /**
  * The features as they stand: an accepted one at its measured tokens, the rest at their forecast
@@ -311,8 +321,10 @@ function reforecast(
   const ratioOf = (features: FeatureEstimate[]): number | null => {
     const forecast = features.reduce((total, f) => total + middle(f.tokens), 0);
     const measured = features.reduce((total, f) => total + used(f).spent, 0);
+    // Cheap accepted features must calibrate the remaining work below 25% of the prior too.
+    // A lower bound inflated the dollar forecast despite a spend rate that fit the cap (#1607).
     return features.length && forecast > 0 && measured > 0
-      ? Math.min(RATIO_BOUNDS.high, Math.max(RATIO_BOUNDS.low, measured / forecast))
+      ? Math.min(MAX_RATIO, measured / forecast)
       : null;
   };
   const ratio = ratioOf(accepted);
@@ -354,7 +366,14 @@ function reforecast(
     const { spent, accepted: done, criteria, planned } = used(f);
     const known = { ...(criteria ? { criteria } : {}), ...(planned ? { planned } : {}) };
     if (done)
-      return { ...f, ...known, tokens: { low: spent, high: spent }, basis: "measured", spent };
+      return {
+        ...f,
+        ...known,
+        tokens: { low: spent, high: spent },
+        expectedTokens: spent,
+        basis: "measured",
+        spent,
+      };
     const scale = bySize[f.size] ?? ratio;
     const base = scale === null ? f.tokens : scaled(f.tokens, scale);
     // Floors from what is known of the feature itself: its spec's criteria, its boundary's paths,
@@ -381,6 +400,9 @@ function reforecast(
       ...f,
       ...known,
       tokens: { low: Math.max(tokens.low, spent), high: Math.max(tokens.high, spent) },
+      // Flooring the range's low end raises its midpoint even when its calibrated midpoint
+      // already matches measured spend. Floor the point forecast independently (#1607).
+      expectedTokens: Math.max(middle(base), ...floors.map(([, r]) => middle(r)), spent),
       basis: scale === null && !floor ? f.basis : "calibrated",
       ...(floor ? { floor } : {}),
       spent,

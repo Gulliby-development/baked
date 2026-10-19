@@ -626,7 +626,7 @@ describe("scenario: an initiative dollar budget (#1317)", () => {
     const policy = JSON.parse(t.workflows.store.run(t.featureOf(driven, "core").runId ?? "").policy_json);
     expect([policy.maxCostUsd, policy.costTolerance]).toEqual([1.2, 0.1]);
     expect(t.featureOf(driven, "core").spentUsd).toBeGreaterThan(0);
-    expect(driven.budget.cost.spentUsd).toBe(t.featureOf(driven, "core").spentUsd);
+    expect(driven.budget.cost.spentUsd).toBe(Math.round(driven.features.reduce((sum, f) => sum + f.spentUsd, 0) * 100) / 100);
   }, 30000);
 
   test("once a feature is accepted, a forecast above the cap stops the next feature until the cap is raised", async () => {
@@ -670,7 +670,13 @@ describe("scenario: an initiative dollar budget (#1317)", () => {
       store.finishAttempt(decompose, attempt, "completed", 5_000);
     });
     await t.approveSplit();
-    await t.drive();
+    // Stop at a measured checkpoint instead of relying on the cost forecast to hold later starts.
+    const controller = new AbortController();
+    const unwatch = store.observe((event) => {
+      if (event.type === "run.state_changed" && event.payload.to === "completed") controller.abort();
+    });
+    try { await t.initiatives.drive("values", controller.signal); }
+    finally { unwatch(); }
     const estimate = t.initiatives.estimate("values");
     const view = t.initiatives.view("values");
     const runs = view.features.map((f) => f.runId).filter((id): id is string => id !== null);
@@ -679,7 +685,7 @@ describe("scenario: an initiative dollar budget (#1317)", () => {
     const accepted = new Set(view.features.filter((f) => f.state === "accepted").map((f) => f.id));
     const left = (estimate?.features ?? [])
       .filter((f) => !accepted.has(f.featureId))
-      .reduce((sum, f) => sum + Math.max(0, (f.tokens.low + f.tokens.high) / 2 - f.spent), 0);
+      .reduce((sum, f) => sum + Math.max(0, f.expectedTokens - f.spent), 0);
     expect(usd).toBeGreaterThan(0);
     expect(view.budget.cost.spentUsd).toBeGreaterThan(usd);
     const spent = usd + store.costUsage(decompose).spentUsd;

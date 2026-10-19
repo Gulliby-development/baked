@@ -150,6 +150,39 @@ describe("initiative estimate", () => {
     expect(estimate.budget.fits).toBe("no");
   });
 
+  test.each(["small", "medium", "large"] as const)("%s features calibrate below 25 percent without raising the dollar point forecast (#1607)", (size) => {
+    const features = ["a", "b", "c"].map((id) => ({ ...feature(id, size), paths: 1 }));
+    const estimate = estimateInitiative({
+      features, history: [], samples: [], maxTotalTokens: 30_000_000,
+      progress: { features: { a: { spent: 40_000, accepted: true }, b: { spent: 40_000, accepted: true } }, overhead: 0 },
+    });
+    expect(estimate.progress.ratio).toBeLessThan(0.25);
+    expect(estimate.progress.bySize[size]).toBe(estimate.progress.ratio!);
+    expect(estimate.features.map((f) => f.expectedTokens)).toEqual([40_000, 40_000, 40_000]);
+    const next = estimate.features[2]!;
+    // The path floor raises the low end, so the resulting range's midpoint is no longer the
+    // calibrated point forecast. Keep that uncertainty for token reserves, not dollar stops.
+    expect(next.tokens.low).toBe(40_000);
+    expect((next.tokens.low + next.tokens.high) / 2).toBeGreaterThan(next.expectedTokens);
+    expect(estimate.withMargin).toBe(80_000 + Math.round(next.tokens.high * 1.25));
+  });
+
+  test.each(["criteria", "plan", "spent"] as const)("the dollar point forecast still respects the feature's %s floor (#1607)", (floor) => {
+    const estimate = estimateInitiative({
+      features: ["a", "b", "c"].map((id) => ({ ...feature(id, "medium"), paths: 1 })),
+      history: [], samples: [], maxTotalTokens: 30_000_000,
+      progress: { features: {
+        a: { spent: 40_000, accepted: true, criteria: 1 },
+        b: { spent: 40_000, accepted: true, criteria: 1 },
+        c: { spent: floor === "spent" ? 400_000 : 10_000, accepted: false,
+          ...(floor === "criteria" ? { criteria: 10 } : {}),
+          ...(floor === "plan" ? { planned: { low: 300_000, high: 500_000 } } : {}),
+        },
+      }, overhead: 0 },
+    });
+    expect(estimate.features[2]?.expectedTokens).toBe(400_000);
+  });
+
   test("a feature with a written spec is forecast at no less than its criteria times the measured rate (#1312)", () => {
     const features = [feature("a", "small"), feature("b", "small"), feature("c", "small")];
     const sample = (runId: string, tokens: number, criteria: number): FeatureRunSample => ({
