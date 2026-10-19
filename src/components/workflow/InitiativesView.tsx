@@ -619,15 +619,12 @@ export function InitiativeDetail({
         <text fg={t.textMuted}>{clip(criticalPathText(view) ?? "", width)}</text>
       ) : null}
       {estimate ? (
-        <text fg={estimate.budget.fits === "yes" ? t.textMuted : t.warning}>
-          {clip(`Estimate: ${estimateSummary(estimate)}`, width)}
+        <text fg={estimate.budget.fits === "yes" ? t.textMuted : t.warning} wrapMode="word">
+          {`Estimate: ${estimateSummary(estimate)}`}
         </text>
       ) : null}
-      <text fg={view.next.kind === "blocked" ? t.error : t.info}>
-        {clip(
-          `Next: ${tuiRecoveryText(view.next.message, view.next.recovery) || view.next.kind}`,
-          width,
-        )}
+      <text fg={view.next.kind === "blocked" ? t.error : t.info} wrapMode="word">
+        {`Next: ${tuiRecoveryText(view.next.message, view.next.recovery) || view.next.kind}`}
       </text>
       {split ? (
         <Hint kind="warn">

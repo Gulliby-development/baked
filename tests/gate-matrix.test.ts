@@ -2,6 +2,7 @@ import { rowFiles, rowsArtifact } from "../src/core/workflows/acceptance-rows.js
 import { caseCheck } from "../src/core/verification/criteria-cases.js";
 import { fixtureSpec } from "./helpers/workflow-fixture.js";
 import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
+import { growthLimit, type InitiativeView, rebaseView, shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { directoryFixers, directoryFixerScenario } from "./helpers/directory-fixer-scenario.js";
 import { spawnSync } from "node:child_process";
@@ -1661,6 +1662,29 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
 });
 
 // A gate's failed output can stop on a repair limit on every stack; the grant does not waive it.
+describe("initiative start budget gate (#1605)", () => {
+  test.each([899_999, 900_000, 1_000_000])("pool %s protects waiting lows before starting a feature", (tokens) => {
+    const before = {
+      initiativeId: "pictures",
+      budget: { remaining: { tokens, calls: 100, activeMs: 1_000_000 }, cost: { capUsd: null } },
+      features: [
+        { id: "pictures", size: "small", share: null, shareUsd: null, need: null },
+        { id: "docs", size: "large", share: { tokens, calls: 100, activeMs: 1_000_000 }, shareUsd: null, need: { low: 200_000, high: 1_000_000 } },
+      ],
+    } as unknown as InitiativeView;
+    const view = rebaseView(before, "pictures", { low: 700_000, high: 800_000 });
+    const pictures = view.features.find((f) => f.id === "pictures")!;
+    expect(growthLimit(view, "pictures")).toBe(tokens - 200_000);
+    if (tokens < 900_000) {
+      expect(shareShortfall(view, pictures)?.remedies).toContainEqual({ action: "extend", initiativeId: "pictures" });
+    } else {
+      expect(shareShortfall(view, pictures)).toBeNull();
+      expect(pictures.share?.tokens).toBeGreaterThanOrEqual(700_000);
+      expect(view.features.reduce((sum, f) => sum + (f.share?.tokens ?? 0), 0)).toBeLessThanOrEqual(tokens);
+    }
+  });
+});
+
 describe("repair-limit decisions (#1577)", () => {
   test.each(STACKS)("%s offers grants only for a recorded repair-limit stop", () => {
     const repairBlock: RepairBlock = { limit: "maxRepairRounds", scope: "round", required: 1, taskIds: [] };

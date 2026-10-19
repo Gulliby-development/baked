@@ -1,3 +1,4 @@
+import { estimateBudgetText } from "../../../../../../src/core/workflows/initiatives/estimate-budget.js";
 import type {
   FeatureState,
   InitiativeEstimate,
@@ -521,12 +522,10 @@ export function estimateBasisText(estimate: InitiativeEstimate): string {
 
 /** The estimate against the shared budget, with its tone. */
 export function estimateFit(estimate: InitiativeEstimate): { text: string; tone: Tone } {
-  const margin = Math.round(estimate.margin * 100);
-  if (estimate.budget.fits === "yes")
-    return { text: `Fits the shared budget with a ${margin}% margin`, tone: "ok" };
-  if (estimate.budget.fits === "maybe")
-    return { text: `May not fit the shared budget with a ${margin}% margin`, tone: "warn" };
-  return { text: "Does not fit the shared budget", tone: "err" };
+  return {
+    text: estimateBudgetText(estimate.tokens, estimate.budget, estimate.withMargin),
+    tone: estimate.budget.fits === "yes" ? "ok" : estimate.budget.fits === "maybe" ? "warn" : "err",
+  };
 }
 
 export const COORDINATOR_INITIATIVE_PREFIX = "Plan this as an initiative: ";

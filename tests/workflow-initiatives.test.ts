@@ -533,14 +533,14 @@ describe("scenario: an initiative budget shared by estimated need (#1311)", () =
     );
   };
 
-  test("a feature whose share is below its estimate stops before it starts, with the numbers", async () => {
+  test("a feature whose low estimate cannot fit beside the other reserves stops before it starts", async () => {
     const t = await measured();
     const estimate = t.initiatives.estimate("values");
     const lows = (estimate?.features ?? []).reduce((sum, f) => sum + f.tokens.low, 0);
     let view = await second(t, { maxTotalTokens: Math.floor(lows * 0.8), maxAgentCalls: 400, maxActiveMs: 21_600_000 });
     view = await t.initiatives.drive("second", new AbortController().signal);
     expect(view.next.kind).toBe("blocked");
-    expect(view.next.message).toMatch(/^The shared budget is short: core would start with \d+ tokens, below its estimate of \d+-\d+\. /);
+    expect(view.next.message).toMatch(/^The shared budget is short: core has \d+ tokens available after reserving the other waiting features' low estimates, below its estimate of \d+-\d+\. /);
     expectRecovery(view.next.message, view.next.recovery, "extend");
     expect(view.features.every((f) => f.runId === null)).toBe(true);
   }, 30000);

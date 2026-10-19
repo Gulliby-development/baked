@@ -1396,6 +1396,16 @@ export const FEATURES: readonly Feature[] = [
 
   // Initiatives
   {
+    id: "initiative-budget-reserves",
+    group: "Initiatives",
+    title:
+      "Feature token shares protect low estimates; split approval warns when the high end exceeds the pool",
+    tui: ["/workflow: initiatives, split approval warning and B to extend budget"],
+    cli: ["baked workflow initiative show", "baked workflow initiative extend"],
+    api: ["/v1/initiatives/:id: next.recovery, feature shares", "/v1/initiatives/:id/extend"],
+    desktop: ["project/initiatives: split approval warning and Extend budget"],
+  },
+  {
     id: "initiative-finding-ownership",
     group: "Initiatives",
     title:

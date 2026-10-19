@@ -7,6 +7,7 @@ import { type InitiativesApi, InitiativesPopup } from "../src/components/workflo
 import { NewRunForm } from "../src/components/workflow/NewRunForm.js";
 import { PremiumPopup } from "../src/components/ui/index.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
+import { recoveryAdvice } from "../src/core/workflows/remedies.js";
 import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.js";
 import type { InitiativeStartInput } from "../src/core/workflows/initiatives/forms.js";
 import type { InitiativeView } from "../src/core/workflows/initiatives/service.js";
@@ -361,7 +362,35 @@ test("T estimates the split and shows its level, tokens and each feature's range
     text = await frame(view, 120, 40, "estimate");
     expect(asked).toEqual(["billing"]);
     expect(flat(text)).toContain(`Estimate: Level ${estimate.level} · ~${estimate.tasks.low}-${estimate.tasks.high} tasks`);
-    expect(flat(text)).toContain("over the budget");
+    expect(flat(text)).toContain("high end exceeds the shared budget");
     expect(flat(text)).toMatch(/estimate \d+k-\d+(\.\d)?[kM] tokens/);
+  } finally { await act(async () => view.renderer.destroy()); }
+});
+
+test("the split warning wraps through its extension offer", async () => {
+  const warning = "The estimate's high end (30.7M tokens) exceeds the shared budget (30M). Consider extending to 38375000 tokens, including margin, before approving, or approve with this risk. Approve the split or edit it.";
+  const recovery = recoveryAdvice(`${warning} Use baked workflow initiative extend.`, warning, { action: "extend", initiativeId: "billing" });
+  const split = initiativeView({
+    initiativeId: "billing", status: "awaiting_approval", approvedPlanRevision: null,
+    pendingDecisions: [{ scope: "initiative", featureId: null, runId: null, requestId: "split-1", kind: "split_approval", digest: "d".repeat(64) }],
+    next: { kind: "await_split_approval", featureId: null, runId: null, message: recovery.message, recovery },
+  });
+  const api: InitiativesApi = {
+    load: async () => ({ initiatives: [split], driving: [], errors: {} }),
+    act: async () => split,
+  };
+  let view!: View;
+  await act(async () => {
+    view = await testRender(
+      <InitiativesPopup api={api} width={80} height={40} selectedId={split.initiativeId} onSelect={() => {}} onBack={() => {}} onOpenRun={() => {}} />,
+      { width: 80, height: 40 },
+    );
+  });
+  try {
+    const text = flat(await frame(view, 80, 40, "split-warning"));
+    expect(text).toContain("exceeds the shared budget");
+    expect(text).toContain("Consider extending to 38375000 tokens");
+    expect(text).toContain("Press B to extend budget");
+    expect(text).not.toContain("baked workflow initiative extend");
   } finally { await act(async () => view.renderer.destroy()); }
 });
