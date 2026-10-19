@@ -516,6 +516,7 @@ import {
 import {
   integrityFix,
   isTestPath,
+  requestedTestRemovals,
   rewriteTargets,
   scanTestIntegrity,
   strengthenTargets,
@@ -8679,14 +8680,21 @@ ${note}`;
     const amendments = this.amendments(runId);
     const amending = amendments.some((a) => task.findingIds.includes(a.findingId));
     // A correction whose finding asks for its test file to be rewritten may drop assertions.
+    const settled = this.store.latestArtifact(runId, `assumptions/conflicts/${task.id}.json`);
+    const removalIds = settled
+      ? ((
+          JSON.parse(this.store.readArtifact(runId, settled.id)) as { removalFindingIds?: string[] }
+        ).removalFindingIds ?? [])
+      : [];
     const ownFindings = this.store
       .findings(runId)
-      .filter((f) => task.findingIds.includes(f.id))
+      .filter((f) => task.findingIds.includes(f.id) || removalIds.includes(f.id))
       .map((f) => JSON.parse(f.body_json) as Review["findings"][number]);
     const corrective = task.origin !== "planned" && task.findingIds.length > 0;
     if (corrective) this.recordAddedTests(runId, task, changes);
     const found = scanTestIntegrity(changes, {
       protects: corrective ? this.correctionTests(runId, task, changed) : undefined,
+      removalFindings: corrective ? ownFindings : [],
       rewrites: task.origin === "planned" ? new Set() : rewriteTargets(ownFindings),
       strengthens: task.origin === "planned" ? new Set() : strengthenTargets(ownFindings),
       reasoned: new Set([
@@ -8924,6 +8932,7 @@ ${note}`;
         return { path, before: kept, after: read(path) };
       }),
       {
+        removalFindings: corrected,
         rewrites: rewriteTargets(corrected),
         strengthens: strengthenTargets(corrected),
         reasoned: new Set([
@@ -8997,6 +9006,72 @@ ${note}`;
     const account = { taskId: task.id, summary: result.summary, unresolved: result.unresolved };
     const report = [result.summary, ...result.unresolved].join(" ");
     const assumedPath = `assumptions/conflicts/${task.id}.json`;
+    // A fully confident spec finding that explicitly names test removals outranks our guard,
+    // even under clarification ask. Bind only the host findings, preserving the spec finding.
+    if (!this.store.latestArtifact(runId, assumedPath)) {
+      const findings = this.store
+        .findings(runId)
+        .map((f) => JSON.parse(f.body_json) as Review["findings"][number]);
+      const guards = findings.filter(
+        (f) =>
+          task.findingIds.includes(f.id) &&
+          /^Test integrity \((?:test-removed|test-count|assertions|test-deleted)\)/.test(f.claim),
+      );
+      const mentioned = new Set(report.match(/[\w-]+/g) ?? []);
+      const protectedTests = this.correctionTests(
+        runId,
+        task,
+        guards.flatMap((f) => f.file ?? []),
+      );
+      const removals = findings.filter(
+        (f) =>
+          f.basis === "spec" &&
+          f.confidence === 1 &&
+          mentioned.has(f.id) &&
+          guards.some((guard) => {
+            if (!guard.file || guard.file !== f.file || !mentioned.has(guard.id)) return false;
+            const names = [
+              ...(protectedTests.get(guard.file)?.keys() ?? []),
+              ...`${guard.claim}\n${guard.suggestedFix}`
+                .matchAll(/"([^"\n]+)"/g)
+                .map((m) => m[1] ?? ""),
+            ];
+            const requested = requestedTestRemovals(guard.file, names, [f]);
+            return requested.file || requested.names.size > 0;
+          }),
+      );
+      if (
+        removals.length &&
+        guards.length === task.findingIds.length &&
+        guards.every((guard) => removals.some((f) => f.file === guard.file))
+      ) {
+        const assumed = `The spec findings ${removals.map((f) => f.id).join(", ")} win over the test-integrity host findings ${task.findingIds.join(", ")}. Apply only the test removals those spec findings request and keep every other test and assertion.`;
+        this.store.transaction(() => {
+          this.store.artifact(
+            runId,
+            "diagnostic",
+            `tasks/conflicts/${task.id}.json`,
+            canonical(account),
+          );
+          this.store.artifact(
+            runId,
+            "assumption",
+            assumedPath,
+            canonical({ ...account, assumed, removalFindingIds: removals.map((f) => f.id) }),
+          );
+          recordConflictDecision(this.store, runId, {
+            requestId: `assumed-${task.id}`,
+            taskId: task.id,
+            findingIds: task.findingIds,
+            answer: assumed,
+          });
+          this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
+          this.store.finishStep(runId, child, "failed");
+        });
+        state.prompt += `\nSettled spec conflict (${assumedPath}): ${assumed} Report implemented or already_satisfied, not spec_conflict.`;
+        return;
+      }
+    }
     const first =
       policy.clarification === "assume" && !this.store.latestArtifact(runId, assumedPath);
     // A documentation task torn between the rule for examples and the request's worked example

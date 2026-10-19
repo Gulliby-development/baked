@@ -1143,11 +1143,21 @@ for (const stack of STACKS) {
   const before = sample.file(["intervalWorkload", "scalarCases"]);
   const swapped = sample.file(["literalCases", "scalarCases"], 3);
   const renamed = sample.file(["serializedLocation", "scalarCases"]);
-  const scan = (after: string, options: Parameters<typeof scanTestIntegrity>[1] = {}) =>
+  const scan = (after: string | null, options: Parameters<typeof scanTestIntegrity>[1] = {}) =>
     scanTestIntegrity([{ path: sample.path, before, after }], options);
   const name = (base: string) => (stack === "python" ? `test_${base}` : stack === "go" ? `Test${base}` : base);
   const protects = new Map([[sample.path, new Map([[name("intervalWorkload"), "T011 for finding F1"]])]]);
   describe(`gate matrix: ${stack} test identity`, () => {
+    cell(stack, "test identity: explicit spec removal overrides sibling protection only for named tests", () => {
+      const marker = { bun: 'test("scalarCases"', npm: 'it("scalarCases"', python: "def test_scalarCases", go: "func TestscalarCases", rust: "#[test]\nfn scalarCases", maven: '    @Test\n    @DisplayName', dotnet: "    [Theory]" }[stack];
+      const after = before.slice(before.indexOf(marker));
+      const finding = { basis: "spec", file: sample.path, claim: "The spec assigns this test to another module", suggestedFix: `Remove ${name("intervalWorkload")}` };
+      expect(scan(after, { protects, removalFindings: [finding] })).toEqual([]);
+      expect(scan(after, { protects, removalFindings: [{ ...finding, basis: "inferred" }] }).map((f) => f.rule)).toContain("test-removed");
+      expect(scan("", { protects, removalFindings: [finding] }).map((f) => f.rule)).toContain("test-count");
+      expect(scan(null, { protects, removalFindings: [finding] }).map((f) => f.rule)).toContain("test-deleted");
+      expect(scan(null, { protects, removalFindings: [{ ...finding, suggestedFix: `Remove all tests from ${sample.path}` }] })).toEqual([]);
+    });
     cell(stack, "test identity: a test swapped for another under a new name is flagged", () => {
       const found = scan(swapped);
       expect(found.map((f) => f.rule)).toEqual(["test-removed"]);
