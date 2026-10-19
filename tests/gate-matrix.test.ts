@@ -550,6 +550,25 @@ for (const stack of STACKS) {
       if (written) expect(plannedWrittenTests(preselected(), writes)?.timeoutMs).toBe(written.timeoutMs);
     });
 
+    cell(stack, "test-task-price-and-case-capacity (#1595)", () => {
+      const original: Task = {
+        id: "T001", title: "Tests", description: "Write cases", requirementIds: ["FR-001"],
+        criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer",
+        writes: [{ path: fixture.property.path, action: "create" }], readHints: [],
+        checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior",
+      };
+      const graph = { schemaVersion: 1 as const, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [original] };
+      const samples = [100_000, ...Array<number>(8).fill(1_000_000), 5_000_000].map((tokens, i) => ({
+        runId: `h${i}`, taskId: "T001", kind: "test" as const, action: "create" as const,
+        source: "project" as const, files: 1, tokens, model: null, cases: 12,
+      }));
+      for (const cases of [8, 12, 13]) {
+        const spec = { criteria: [{ id: "AC-001", method: "automated", given: Array.from({ length: cases }, (_, i) => `input "case-${i}"`).join("; "), when: "it runs", then: "it passes" }] };
+        const report = sizePlan({ graph, policy: { ...defaultWorkflowPolicy, sizing: { maxAttemptTokens: 600_000 } }, samples, spent: 0, spec });
+        expect(report.tasks[0]).toMatchObject({ estimate: { low: 1_000_000, high: 1_000_000 }, attemptTokens: 600_000, cases, oversized: cases > 12 });
+      }
+    });
+
     cell(stack, "sequential-test-slices-written-tests", () => {
       const path = fixture.property.path;
       const root = project({ ...fixture.files, [path]: fixture.property.seeded });

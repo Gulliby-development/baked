@@ -452,6 +452,7 @@ import {
   plannerSizing,
   rateHistory,
   type SizingReport,
+  samplesFrom,
   sizePlan,
   sizingHistory,
   splitNote,
@@ -4871,6 +4872,54 @@ ${note}`;
     this.raiseBudget(runId, state, policy, report);
     return "continue";
   }
+  /** Reprice unstarted tasks from completed, checked tasks of this run before the next batch. */
+  private refreshTaskSizing(runId: string, state: RuntimeState, policy: RunPolicy): void {
+    if (!policy.sizing || !state.graph) return;
+    const rows = this.store.tasks(runId);
+    const finished = new Set(
+      rows
+        .filter(
+          (r) =>
+            r.status === "verified" ||
+            (r.status === "implemented" && hasTaskGate(r, state.taskGates)),
+        )
+        .map((r) => r.id),
+    );
+    const current = samplesFrom(
+      join(this.store.workspace, ".baked", "workflows.sqlite"),
+      "project",
+      runId,
+    ).filter((s) => s.kind === "test" && finished.has(s.taskId));
+    if (!current.length) return;
+    const path = `sizing/progress-${hashJson(current)}.json`;
+    if (this.store.latestArtifact(runId, path)) return;
+    // Never replace a continuation's larger cap or resize already-running parallel workers.
+    const pending = new Set(rows.filter((r) => r.status === "pending").map((r) => r.id));
+    const started = new Set(this.store.steps(runId).map((s) => s.stage_id));
+    const taskIds = new Set(
+      state.graph.tasks
+        .filter((t) => t.origin === "planned" && pending.has(t.id) && !started.has(`task-${t.id}`))
+        .map((t) => t.id),
+    );
+    if (!taskIds.size) return;
+    const report = sizePlan({
+      graph: state.graph,
+      taskIds,
+      spec: state.spec,
+      policy,
+      samples: [...current, ...sizingHistory(this.store.workspace, policy)],
+      spent: this.store.run(runId).token_usage,
+      model: this.sizingModel(runId, state.graph),
+      loopShares: loopHistory(this.store.workspace, policy),
+      tokenRates: rateHistory(this.store.workspace, policy),
+    });
+    this.store.transaction(() => {
+      this.store.artifact(runId, "sizing", path, canonical(report));
+      for (const task of report.tasks) state.taskBudgets[task.taskId] = task.attemptTokens;
+      this.raiseBudget(runId, state, policy, report);
+      this.store.saveState(runId, state);
+    });
+  }
   /**
    * Grows the run budget to the sized price, up to the policy's ceiling, and the active-time cap
    * to the time that budget needs at the observed rate. A plan sent back to be
@@ -5317,6 +5366,7 @@ ${note}`;
     if (!state.graph || !state.approvalRoot)
       throw new WorkflowFault("STALE_DECISION", "Approved tasks required");
     for (;;) {
+      this.refreshTaskSizing(runId, state, policy);
       const rows = this.store.tasks(runId);
       const checking = this.checkableTask(state.graph, rows, state);
       if (
@@ -5934,6 +5984,7 @@ ${note}`;
     // Tasks whose worker was lost in this drive; the run stops once nothing else can progress.
     const lost = new Map<string, string>();
     for (;;) {
+      this.refreshTaskSizing(runId, state, policy);
       const rows = this.store.tasks(runId);
       const current = state.graph ?? graph;
       const checking = this.checkableTask(current, rows, state);
