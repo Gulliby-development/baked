@@ -925,7 +925,7 @@ export class NativeWorkflowService implements WorkflowService {
         if (!canRepairRun(run) || !block)
           throw new WorkflowFault("STALE_DECISION", "This run is not blocked on a repair limit");
         const state = this.store.state(runId);
-        assertFrozenInputs(state);
+        assertFrozenInputs(state, this.store, runId);
         // One grant covers the refused operation even when it needs several corrective tasks.
         const extra = block.required + rounds - 1;
         switch (block.limit) {

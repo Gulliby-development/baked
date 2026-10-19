@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { runActions } from "../src/components/workflow/format.js";
 import { initiativeActions } from "../src/core/workflows/initiatives/view-model.js";
+import { RepairBlockSchema } from "../src/core/workflows/repairable-schema.js";
 import { canRepairRun, repairText, type RepairBlock } from "../src/core/workflows/repairable.js";
 import type { RunSnapshot } from "../src/core/workflows/schemas.js";
 import { featureView, initiativeView } from "./helpers/initiative-views.js";
@@ -13,6 +14,23 @@ const run: RunSnapshot = {
 };
 
 describe("repair controls use the shared core predicate", () => {
+  test("backend diagnostics still validate repair scope and default task IDs", () => {
+    expect(RepairBlockSchema.parse({
+      limit: "maxStageVisits", scope: "run", required: 1,
+    })).toEqual({ limit: "maxStageVisits", scope: "run", required: 1, taskIds: [] });
+    for (const diagnostic of [
+      { ...block, required: 0 },
+      { ...block, required: 1.5 },
+      { ...block, taskIds: [] },
+      { ...block, scope: "run" },
+      { ...block, limit: "maxIterations", scope: "transition" },
+      { ...block, limit: "maxRepairRounds", scope: "task" },
+      { ...block, extra: true },
+    ]) expect(RepairBlockSchema.safeParse(diagnostic).success).toBe(false);
+    expect(RepairBlockSchema.safeParse({
+      ...block, limit: "maxIterations", scope: "transition", transitionId: "retry",
+    }).success).toBe(true);
+  });
   test("TUI run and initiative controls use O and the run revision", () => {
     expect(runActions(run).find((a) => a.key === "O")?.action).toBe("repair");
     expect(runActions(run).some((a) => a.action === "resume")).toBe(false);

@@ -23,7 +23,7 @@ import { migration010 } from "./migrations/010.js";
 import { migration011 } from "./migrations/011.js";
 import { migration012 } from "./migrations/012.js";
 import { migration013 } from "./migrations/013.js";
-import { RepairBlockSchema } from "./repairable.js";
+import { RepairBlockSchema } from "./repairable-schema.js";
 import {
   type AgentProfile,
   type CommandIdentity,

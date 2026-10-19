@@ -1,41 +1,23 @@
-import { z } from "zod";
-
 /** The refused operation, recorded with the diagnostic that stopped this run. */
-export const RepairBlockSchema = z
-  .object({
-    limit: z.enum([
-      "maxTaskRepairs",
-      "maxRepairRounds",
-      "maxCorrectiveTasks",
-      "maxIterations",
-      "maxStageVisits",
-      "freshRestart",
-    ]),
-    scope: z.enum(["task", "round", "review", "convergence", "transition", "run"]),
-    required: z.number().int().positive(),
-    taskIds: z.array(z.string()).default([]),
-    transitionId: z.string().optional(),
-  })
-  .strict()
-  .refine(
-    (block) =>
-      block.limit !== "maxTaskRepairs" || (block.scope === "task" && block.taskIds.length > 0),
-  )
-  .refine(
-    (block) =>
-      block.limit !== "maxIterations" ||
-      (block.scope === "transition" && Boolean(block.transitionId)),
-  )
-  .refine(
-    (block) =>
-      block.limit !== "maxRepairRounds" || block.scope === "round" || block.scope === "review",
-  );
-export type RepairBlock = z.infer<typeof RepairBlockSchema>;
+export interface RepairBlock {
+  limit:
+    | "maxTaskRepairs"
+    | "maxRepairRounds"
+    | "maxCorrectiveTasks"
+    | "maxIterations"
+    | "maxStageVisits"
+    | "freshRestart";
+  scope: "task" | "round" | "review" | "convergence" | "transition" | "run";
+  required: number;
+  taskIds: string[];
+  transitionId?: string | undefined;
+}
 
 /** Shared by the service, run controls and initiative feature controls. */
 interface RepairCandidate {
   status: string;
   reason?: string;
+  /** The store validates the diagnostic before exposing it in a run snapshot. */
   repairBlock?: RepairBlock | undefined;
   pendingRequestIds?: readonly string[];
 }
@@ -47,7 +29,7 @@ export function canRepairRun(
     run.status === "blocked" &&
     run.reason === "no_progress" &&
     !run.pendingRequestIds?.length &&
-    RepairBlockSchema.safeParse(run.repairBlock).success
+    run.repairBlock !== undefined
   );
 }
 
