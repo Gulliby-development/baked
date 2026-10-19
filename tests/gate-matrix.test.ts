@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
 import { criterionCases, missingCases, writtenTestPaths } from "../src/core/verification/criteria-cases.js";
 import { reproExecutables } from "../src/core/verification/repro.js";
+import { noteSiblingFindings } from "../src/core/verification/initiative-ownership.js";
 import { exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
 import { failureSignature, testCount } from "../src/core/verification/output-counts.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
@@ -1560,4 +1561,20 @@ describe("repair-limit decisions (#1577)", () => {
     expect(canRepairRun({ status: "blocked", reason: "no_progress" })).toBe(false);
     expect(canRepairRun({ status: "blocked", reason: "verification_failed", repairBlock })).toBe(false);
   });
+});
+
+// Ownership is independent of the check program: an initiative's review gate must not ask
+// the current feature to correct a file reserved for a downstream feature (#1590).
+test("review gate keeps sibling-owned missing tests as notes", () => {
+  const state: Pick<RuntimeState, "initiativeBounds" | "reviewNotes" | "snapshotId"> = {
+    initiativeBounds: { featureId: "adapters", features: [
+      { id: "adapters", scope: "Adapters", paths: ["src/adapter.py"] },
+      { id: "entry", scope: "Entry acceptance", paths: ["tests/**"] },
+    ] },
+    reviewNotes: [], snapshotId: null,
+  };
+  const finding = { id: "F001", kind: "missing" as const, severity: "medium" as const, basis: "spec" as const, requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "tests/test_x.py", symbol: null, evidenceIds: [], claim: "Acceptance tests are missing", impact: "Tests are absent", suggestedFix: "Add tests" };
+  expect([...noteSiblingFindings(state, "correctness", [finding])]).toEqual(["F001"]);
+  expect(state.reviewNotes[0]).toMatchObject({ reason: "owned_by_sibling", claim: expect.stringContaining("feature entry") });
+  expect([...noteSiblingFindings(state, "correctness", [{ ...finding, id: "F002", file: "src/adapter.py" }])]).toEqual([]);
 });

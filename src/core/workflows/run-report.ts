@@ -983,11 +983,12 @@ function render(facts: Facts, cap: number): string {
       severity: "below the blocking severities",
       advisory: "advisory review",
       repro: "repro did not show it",
+      owned_by_sibling: "owned by a sibling initiative feature",
     } as const;
     out.push(
       "## Review notes",
       "",
-      `${state.reviewNotes.length} review finding(s) started no correction. They are kept here as notes: an edge case the spec does not name (basis inferred), a confidence below the review threshold, a severity below the ones this run repairs, an advisory review, or a claim its repro did not show. **Repeats** names the earlier note on the same kind, file and symbol that a later round raised again.`,
+      `${state.reviewNotes.length} review finding(s) started no correction. They are kept here as notes: an edge case the spec does not name (basis inferred), a confidence below the review threshold, a severity below the ones this run repairs, an advisory review, a claim its repro did not show, or a path owned by a sibling initiative feature named in the claim. **Repeats** names the earlier note on the same kind, file and symbol that a later round raised again.`,
       "",
       ...table(
         ["Note", "Review", "Severity", "Kind", "Where", "Claim", "Why not repaired", "Repeats"],

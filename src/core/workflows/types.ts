@@ -79,9 +79,9 @@ export const ReviewNoteSchema = z
     claim: z.string(),
     /**
      * Why it starts no correction: an `inferred` edge case, a severity below the blocking ones,
-     * an advisory reviewer, or a repro that did not show it.
+     * an advisory reviewer, a repro that did not show it, or a path owned by a sibling feature.
      */
-    reason: z.enum(["inferred", "confidence", "severity", "advisory", "repro"]),
+    reason: z.enum(["inferred", "confidence", "severity", "advisory", "repro", "owned_by_sibling"]),
     /** The earlier note on the same kind, file and symbol from an earlier snapshot, if any. */
     repeatOf: z.string().nullable(),
     snapshotId: z.string().nullable(),
@@ -383,6 +383,17 @@ export const RuntimeStateSchema = z
     report: z.string().nullable().default(null),
     /** Canonical split proposed by a decompose stage. */
     initiativePlan: z.string().nullable().default(null),
+    /** Approved initiative boundaries, retained across resume, revision and rebase. */
+    initiativeBounds: z
+      .object({
+        featureId: SafeId,
+        features: z.array(
+          z.object({ id: SafeId, scope: z.string(), paths: z.array(z.string()) }).strict(),
+        ),
+      })
+      .strict()
+      .nullable()
+      .default(null),
     /**
      * Upstream contracts the host pins for a feature of an initiative. When set, they replace the
      * dependencies the spec author returns, so readiness is decided by the initiative and not by

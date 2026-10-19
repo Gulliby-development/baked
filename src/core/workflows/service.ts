@@ -20,6 +20,7 @@ import {
   noteRejectedManual,
   noteStoppedInconclusive,
 } from "../verification/convergence-stop.js";
+import { noteSiblingFindings } from "../verification/initiative-ownership.js";
 import { hostDiff, sourceManifest } from "../verification/snapshot.js";
 import { NativeAgentExecutor } from "./agent-executor.js";
 import { supersedeResearch } from "./analysis-notes.js";
@@ -67,6 +68,7 @@ import {
   forkStagePosition,
   forkStages,
 } from "./fork-stage.js";
+import { InitiativeStore } from "./initiatives/store.js";
 import {
   commandProcessMayRun,
   executionLeaseFor,
@@ -114,6 +116,7 @@ import {
   PolicySchema,
   ProfileSchema,
   ResearchSchema,
+  type Review,
   type RunPolicy,
   type RunSnapshot,
   type RunState,
@@ -399,6 +402,7 @@ export class NativeWorkflowService implements WorkflowService {
       position: v2 ? initialPosition(v2) : null,
       report: null,
       initiativePlan: null,
+      initiativeBounds: request.initiativeBounds ?? null,
       hostDependencies,
       hostFiles: request.hostFiles?.length ? request.hostFiles : null,
       diff: null,
@@ -834,6 +838,34 @@ export class NativeWorkflowService implements WorkflowService {
     if (this.store.requests(runId).some(blocksRun)) return this.store.snapshot(runId);
     if (this.active.has(runId))
       throw new WorkflowFault("WORKSPACE_BUSY", "Run already executing in this process");
+    // Runs saved before initiative boundaries were persisted recover them from their approved
+    // plan revision, so resuming the original ownership stop does not require a new run.
+    const state = this.store.state(runId);
+    if (!state.initiativeBounds) {
+      const initiatives = new InitiativeStore(this.store);
+      const initiativeId = initiatives.initiativeOfRun(runId);
+      const link = initiativeId
+        ? initiatives.links(initiativeId).find((entry) => entry.run_id === runId)
+        : null;
+      if (initiativeId && link) {
+        const plan = initiatives.plan(initiatives.revision(initiativeId, link.plan_revision));
+        state.initiativeBounds = {
+          featureId: link.feature_id,
+          features: plan.features.map((feature) => ({ id: feature.id, ...feature.boundary })),
+        };
+        this.store.transaction(() => {
+          // A prior binary may already have recorded the sibling finding as a blocker.
+          // Acceptance checks that table as well as the current review.
+          const findings = this.store
+            .findings(runId)
+            .filter((finding) => !["resolved", "refuted"].includes(finding.status))
+            .map((finding) => JSON.parse(finding.body_json) as Review["findings"][number]);
+          for (const id of noteSiblingFindings(state, "review", findings))
+            this.store.findingStatus(runId, id, "resolved");
+          this.store.saveState(runId, state);
+        });
+      }
+    }
     const controller = new AbortController();
     const abort = (): void => controller.abort(signal.reason);
     signal.addEventListener("abort", abort, { once: true });
@@ -1094,7 +1126,10 @@ export class NativeWorkflowService implements WorkflowService {
   ): void {
     const state = this.store.state(runId);
     if (!changes.length || !state.expectedFiles)
-      throw new WorkflowFault("STALE_DECISION", "The workspace has no outside changes to accept");
+      throw new WorkflowFault(
+        "STALE_DECISION",
+        `The workspace has no outside changes to accept. --accept-workspace only accepts file changes; it cannot expand the approved task scope. Revise the run (\`baked workflow revise ${runId}\`) or replan the initiative feature (\`baked workflow initiative replan ID --feature F\`) to change its plan or boundary.`,
+      );
     const expected = { ...state.expectedFiles };
     for (const change of changes) {
       if ((expected[change.path] ?? null) !== change.before)
@@ -1637,6 +1672,7 @@ export class NativeWorkflowService implements WorkflowService {
           );
       }
       state.hostDependencies = pinned;
+      state.initiativeBounds = previous.initiativeBounds;
       const policy = PolicySchema.parse(candidate.policy);
       if (
         executionModeOf(policy) !==
