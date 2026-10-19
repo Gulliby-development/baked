@@ -71,6 +71,7 @@ import {
   SplitEditSchema,
   sequenceSharedPaths,
   sizeWeight,
+  testOwnershipProblems,
   topologicalOrder,
   validateInitiativePlan,
 } from "./plan.js";
@@ -1198,6 +1199,8 @@ export class InitiativeService {
     let lightened: { featureId: string; from: string; to: string }[] = [];
     let unavailable: string[] = [];
     try {
+      const ownership = testOwnershipProblems(proposed);
+      if (ownership.length) throw new WorkflowFault("OUTPUT_INVALID", ownership.join("\n"));
       plan = this.fitWorkflows(proposed, settings, true);
       // A small feature nothing depends on runs the light workflow: nobody pins its spec.
       if (!settings.keepFeatures) {
@@ -1286,7 +1289,11 @@ export class InitiativeService {
       prompt: featurePrompt(row, plan, feature, upstream),
       initiativeBounds: {
         featureId,
-        features: plan.features.map((f) => ({ id: f.id, ...f.boundary })),
+        features: plan.features.map((f) => ({
+          id: f.id,
+          ...f.boundary,
+          ...(f.testedBy ? { testedBy: f.testedBy } : {}),
+        })),
       },
       policy,
       ...(declined ? { autoApprovalDeclined: declined } : {}),

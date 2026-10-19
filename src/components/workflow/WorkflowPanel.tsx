@@ -836,7 +836,15 @@ export function WorkflowPanel({
                 </text>
               ))}
             {tab === "tasks" && (
-              <TaskGraphView tasks={tasks} rows={details?.acceptanceRows?.rows} />
+              <>
+                <TaskGraphView tasks={tasks} rows={details?.acceptanceRows?.rows} />
+                {details?.hostEdits && (
+                  <ArtifactReview
+                    title="Host edits (host-edits.json)"
+                    content={JSON.stringify(details.hostEdits, null, 2)}
+                  />
+                )}
+              </>
             )}
             {tab === "spec" && (
               <ArtifactReview

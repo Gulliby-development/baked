@@ -6,6 +6,8 @@
 import { z } from "zod";
 import { matchGlob } from "../../platform/index.js";
 import { hashJson } from "../../specs/hash.js";
+import { canHold, deliverableKind } from "../../verification/deliverable-paths.js";
+import { isCodePath } from "../check-policy.js";
 import { WorkflowFault } from "../errors.js";
 import { HOST_CONTENT_MAX_CHARS, SafeId } from "../schemas.js";
 
@@ -46,6 +48,8 @@ export const InitiativeFeatureSchema = z
       .strict(),
     /** The verifiable contract this feature provides to the features that depend on it. */
     contract: Text,
+    /** Feature that delivers this feature's tests when its own boundary cannot hold them. */
+    testedBy: FeatureKey.optional(),
     dependsOn: z.array(FeatureKey),
     /** The initiative completes only when every mandatory feature has an accepted result. */
     mandatory: z.boolean(),
@@ -123,6 +127,41 @@ export function planStructureProblems(plan: InitiativePlan): string[] {
   return [...problems, ...skeletonProblems(plan)];
 }
 
+/** Reject a source-only split unless it names a test owner that runs after the source. */
+export function testOwnershipProblems(plan: InitiativePlan): string[] {
+  const problems: string[] = [];
+  const reaches = (id: string, target: string, seen = new Set<string>()): boolean => {
+    if (id === target) return true;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return (
+      plan.features
+        .find((feature) => feature.id === id)
+        ?.dependsOn.some((upstream) => reaches(upstream, target, seen)) ?? false
+    );
+  };
+  for (const feature of plan.features) {
+    const source = feature.boundary.paths.some(
+      (path) =>
+        isCodePath(path) &&
+        !deliverableKind(path) &&
+        !feature.skeleton?.some((file) => file.path === path),
+    );
+    if (!source || canHold(feature.boundary.paths, "test")) continue;
+    const owner = plan.features.find((candidate) => candidate.id === feature.testedBy);
+    if (
+      !owner ||
+      owner.id === feature.id ||
+      !canHold(owner.boundary.paths, "test") ||
+      !reaches(owner.id, feature.id)
+    )
+      problems.push(
+        `${feature.id} has source paths but no writable test path. Add tests to its boundary or set testedBy to a feature with test paths that depends on it, and leave those tests out of this feature's criteria.`,
+      );
+  }
+  return problems;
+}
+
 /**
  * Problems of the features' skeletons: each file is one literal path of its feature's boundary,
  * listed once in the whole split, so exactly one run writes it.
@@ -156,7 +195,7 @@ export function planSizeProblem(plan: InitiativePlan): string | null {
 /** Every problem of a plan: structure first, then the size bound. */
 export function validateInitiativePlan(plan: InitiativePlan): string[] {
   const size = planSizeProblem(plan);
-  return [...planStructureProblems(plan), ...(size ? [size] : [])];
+  return [...planStructureProblems(plan), ...testOwnershipProblems(plan), ...(size ? [size] : [])];
 }
 
 function findCycle(plan: InitiativePlan): string[] | null {
@@ -375,6 +414,7 @@ export function featureDigest(feature: InitiativeFeature): string {
     contract: feature.contract,
     dependsOn: [...feature.dependsOn].sort(),
     mandatory: feature.mandatory,
+    ...(feature.testedBy ? { testedBy: feature.testedBy } : {}),
     // Another workflow is another run; the size only weighs the next budget share.
     ...(feature.workflow ? { workflow: feature.workflow } : {}),
     // Left out when there is none, so features approved before skeletons keep their digest.
@@ -478,16 +518,28 @@ function mergeFeatures(
   const id = mergedId ?? merged[0]?.id ?? "";
   if (!ids.has(id) && plan.features.some((f) => f.id === id))
     throw new WorkflowFault("INVALID_DEFINITION", `Feature ${id} already exists`);
+  const testOwners = unique(
+    merged.flatMap((feature) =>
+      feature.testedBy && !ids.has(feature.testedBy) ? [feature.testedBy] : [],
+    ),
+  );
+  const paths = unique(merged.flatMap((feature) => feature.boundary.paths));
+  if (testOwners.length > 1 && !canHold(paths, "test"))
+    throw new WorkflowFault(
+      "INVALID_DEFINITION",
+      "Merged source features need one test owner or writable test paths",
+    );
   const combined: InitiativeFeature = {
     id,
     title: title ?? merged.map((f) => f.title).join(" + "),
     boundary: {
       scope: merged.map((f) => f.boundary.scope).join("\n"),
-      paths: unique(merged.flatMap((f) => f.boundary.paths)),
+      paths,
     },
     contract: merged.map((f) => f.contract).join("\n"),
     dependsOn: unique(merged.flatMap((f) => f.dependsOn)).filter((d) => !ids.has(d)),
     mandatory: merged.some((f) => f.mandatory),
+    ...(testOwners[0] && !canHold(paths, "test") ? { testedBy: testOwners[0] } : {}),
     ...largestOf(merged),
     ...(merged.some((f) => f.skeleton?.length)
       ? { skeleton: merged.flatMap((f) => f.skeleton ?? []) }
@@ -500,6 +552,7 @@ function mergeFeatures(
     if (ids.has(feature.id)) continue;
     features.push({
       ...feature,
+      ...(feature.testedBy && ids.has(feature.testedBy) ? { testedBy: id } : {}),
       dependsOn: unique(feature.dependsOn.map((d) => (ids.has(d) ? id : d))),
     });
   }
@@ -544,7 +597,7 @@ export function mergeSmallSiblings(
     const after = options.byDependents
       ? `|${[...(dependents.get(feature.id) ?? [])].sort().join(",")}`
       : "";
-    const key = `${[...feature.dependsOn].sort().join(",")}|${feature.mandatory}${after}`;
+    const key = `${[...feature.dependsOn].sort().join(",")}|${feature.mandatory}|${feature.testedBy ?? ""}${after}`;
     groups.set(key, [...(groups.get(key) ?? []), feature.id]);
   }
   let current = plan;
@@ -636,6 +689,7 @@ export function applySplitEdit(plan: InitiativePlan, edit: SplitEdit): Initiativ
           paths: part.paths ?? original.boundary.paths,
         },
         contract: part.contract ?? original.contract,
+        ...(original.testedBy ? { testedBy: original.testedBy } : {}),
         dependsOn: original.dependsOn,
         mandatory: original.mandatory,
         ...(original.workflow ? { workflow: original.workflow } : {}),

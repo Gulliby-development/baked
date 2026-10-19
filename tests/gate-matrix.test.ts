@@ -18,12 +18,13 @@ import { join } from "node:path";
 import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
 import { criterionCases, missingCases, writtenTestPaths } from "../src/core/verification/criteria-cases.js";
 import { reproExecutables } from "../src/core/verification/repro.js";
-import { noteSiblingFindings } from "../src/core/verification/initiative-ownership.js";
+import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
 import { failureSignature, testCount } from "../src/core/verification/output-counts.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { launchedCommand } from "../src/core/workflows/launcher.js";
+import { type HostEdit, hostOnlyEvidence, plannerGraph } from "../src/core/workflows/host-edits.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { sizePlan, splitTestTasks } from "../src/core/workflows/sizing.js";
 import { withPerTestTimeout } from "../src/core/workflows/test-timeout.js";
@@ -581,6 +582,25 @@ for (const stack of STACKS) {
       if (written) expect(plannedWrittenTests(preselected(), writes)?.timeoutMs).toBe(written.timeoutMs);
     });
 
+    cell(stack, "test-task-price-and-case-capacity (#1595)", () => {
+      const original: Task = {
+        id: "T001", title: "Tests", description: "Write cases", requirementIds: ["FR-001"],
+        criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer",
+        writes: [{ path: fixture.property.path, action: "create" }], readHints: [],
+        checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior",
+      };
+      const graph = { schemaVersion: 1 as const, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [original] };
+      const samples = [100_000, ...Array<number>(8).fill(1_000_000), 5_000_000].map((tokens, i) => ({
+        runId: `h${i}`, taskId: "T001", kind: "test" as const, action: "create" as const,
+        source: "project" as const, files: 1, tokens, model: null, cases: 12,
+      }));
+      for (const cases of [8, 12, 13]) {
+        const spec = { criteria: [{ id: "AC-001", method: "automated", given: Array.from({ length: cases }, (_, i) => `input "case-${i}"`).join("; "), when: "it runs", then: "it passes" }] };
+        const report = sizePlan({ graph, policy: { ...defaultWorkflowPolicy, sizing: { maxAttemptTokens: 600_000 } }, samples, spent: 0, spec });
+        expect(report.tasks[0]).toMatchObject({ estimate: { low: 1_000_000, high: 1_000_000 }, attemptTokens: 600_000, cases, oversized: cases > 12 });
+      }
+    });
+
     cell(stack, "sequential-test-slices-written-tests", () => {
       const path = fixture.property.path;
       const root = project({ ...fixture.files, [path]: fixture.property.seeded });
@@ -612,10 +632,16 @@ for (const stack of STACKS) {
       expect(policy.checks.some((check) => check.id === "tests-written")).toBe(false);
       const report = sizePlan({ graph, policy, samples: [], spent: 0 });
       expect(report.tasks[0]!.oversized).toBe(true);
-      const part = splitTestTasks(graph, report)!.tasks[0]!;
+      const edits: HostEdit[] = [];
+      const split = splitTestTasks(graph, report, null, edits)!;
+      const part = split.tasks[0]!;
       expect(part.description).toContain("small batches inside this attempt");
       expect(part.description).not.toContain("tests-written");
       expect(part.checkIds).toEqual(original.checkIds);
+      // #1583: the analysis gate uses provenance for the same host text on every stack.
+      const description = edits.find((edit) => edit.field === "description")!;
+      expect(hostOnlyEvidence({ kind: "inconsistency", refs: ["tasks.json", part.id], description: `${part.id} adds "preserve earlier batches".` }, edits, "")).toContainEqual(description);
+      expect(plannerGraph(split, edits)).toEqual(graph);
     });
 
     // The mutation gate needs a required test check to run the mutants against; without one it is
@@ -1651,4 +1677,31 @@ test("review gate keeps sibling-owned missing tests as notes", () => {
   expect([...noteSiblingFindings(state, "correctness", [finding])]).toEqual(["F001"]);
   expect(state.reviewNotes[0]).toMatchObject({ reason: "owned_by_sibling", claim: expect.stringContaining("feature entry") });
   expect([...noteSiblingFindings(state, "correctness", [{ ...finding, id: "F002", file: "src/adapter.py" }])]).toEqual([]);
+});
+
+test("#1594 review and mutation gates route pathless deliverables without hiding local defects", () => {
+  const bounds: RuntimeState["initiativeBounds"] = { featureId: "adapters", features: [
+    { id: "adapters", scope: "Adapters", paths: ["src/adapter.py"], testedBy: "entry" },
+    { id: "entry", scope: "Acceptance and docs", paths: ["tests/**", "docs/**"] },
+  ] };
+  const base = { id: "F001", kind: "missing" as const, severity: "medium" as const, requirementIds: [], criterionIds: [], file: null, symbol: null, evidenceIds: [], claim: "Acceptance tests have not been delivered", impact: "Missing coverage", suggestedFix: "Supply adapter tests" };
+  for (const finding of [base,
+    { ...base, claim: "Missing tests/test_x.py", suggestedFix: "Deliver coverage" },
+    { ...base, claim: "Missing documentation", suggestedFix: "Write docs/commands.md" },
+    { ...base, repro: { executable: "python", args: ["tests/test_x.py"], actual: "missing", expected: "ready" } },
+  ]) expect(ownerOfFinding(finding, bounds)?.id).toBe("entry");
+  // Give the current feature its own tests/docs so kind inference cannot mask a path-parser bug.
+  const withLocalTargets = { ...bounds, features: [{ ...bounds.features[0]!, paths: ["src/adapter.py", "tests/local.py", "docs/local.md"] }, bounds.features[1]!] };
+  for (const finding of [
+    { ...base, claim: "Missing tests/test_x.py", suggestedFix: "Deliver coverage" },
+    { ...base, claim: "Acceptance is incomplete", suggestedFix: "Update docs/commands.md" },
+    { ...base, claim: "Acceptance script is incomplete", suggestedFix: "Fix the script", repro: { executable: "python", args: ["tests/test_x.py"], actual: "missing", expected: "ready" } },
+    { ...base, claim: "Missing .\\tests\\test_x.py", suggestedFix: "Deliver coverage" },
+  ]) expect(ownerOfFinding(finding, withLocalTargets)?.id).toBe("entry");
+  expect(ownerOfFinding({ ...base, file: "src/adapter.py" }, bounds)).toBeUndefined();
+  expect(ownerOfFinding({ ...base, claim: "src/adapter.py and tests/test_x.py disagree" }, bounds)).toBeUndefined();
+  expect(ownerOfFinding({ ...base, kind: "correctness", claim: "The adapter returns the wrong value", suggestedFix: "Fix the calculation" }, bounds)).toBeUndefined();
+  expect(ownerOfFinding(base, { ...bounds, features: [{ ...bounds.features[0]!, paths: ["src/**"] }, bounds.features[1]!] })).toBeUndefined();
+  expect(ownerOfFinding(base, { ...bounds, features: [{ ...bounds.features[0]!, paths: ["src/*/adapter.py"] }, bounds.features[1]!] })).toBeUndefined();
+  expect(ownerOfFinding(base, { ...bounds, features: [{ ...bounds.features[0]!, testedBy: undefined }, bounds.features[1]!, { id: "other", scope: "Other tests", paths: ["test/**"] }] })).toBeUndefined();
 });

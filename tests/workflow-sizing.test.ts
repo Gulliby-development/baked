@@ -21,7 +21,7 @@ import {
   RESERVE_BOUNDS,
   repairReserveShare,
   type SizingSample,
-  criterionRate,
+  testTaskRates,
   priceTask,
   samplesFrom,
   sizePlan,
@@ -441,62 +441,20 @@ describe("plan-time sizing", () => {
   });
 });
 
-// cfgtrace b4427c85: one-file test parts priced at the per-file test rate (high 180k) used 547k on
-// average, 7.65M tokens in all, because each covered several criteria (#1265).
-describe("test tasks priced from their criteria", () => {
-  const withCriteria = (tokens: number, criteria: number, more: Partial<SizingSample> = {}) =>
-    sample("test", tokens, 1, { criteria, ...more });
-  const covering = (id: string, paths: string[], criterionIds: string[]) => ({ ...task(id, paths), criterionIds });
-
-  test("the rate per criterion is measured from finished test tasks, never a constant", () => {
-    expect(criterionRate([])).toBeNull();
-    // One task is not enough, and samples without criteria (older history) do not count.
-    expect(criterionRate([withCriteria(400_000, 4), sample("test", 300_000)])).toBeNull();
-    expect(criterionRate([withCriteria(400_000, 4), withCriteria(600_000, 4)])).toEqual({
-      perCriterion: { low: 125_000, high: 125_000 },
-      samples: 2,
-      basis: "project",
-      model: null,
-    });
-    // The planned model's own tasks decide once it ran enough of them.
-    const mixed = [
-      withCriteria(400_000, 4, { model: "a" }),
-      withCriteria(400_000, 4, { model: "a" }),
-      withCriteria(800_000, 4, { model: "b" }),
-      withCriteria(800_000, 4, { model: "b" }),
-    ];
-    expect(criterionRate(mixed, "b")?.perCriterion).toEqual({ low: 200_000, high: 200_000 });
-  });
-
-  test("a test task costs at least its criteria at that rate; code tasks keep the per-file price", () => {
-    const rates = perFileRates([sample("test", 150_000), sample("test", 180_000), sample("code", 50_000), sample("code", 60_000)]);
-    const rate = criterionRate([withCriteria(400_000, 4), withCriteria(600_000, 4)]);
-    const five = covering("T002", ["tests/test_schema.py"], ["AC-001", "AC-002", "AC-003", "AC-004", "AC-005"]);
-    expect(priceTask(five, rates)).toEqual({ low: 150_000, high: 180_000 });
-    expect(priceTask(five, rates, rate)).toEqual({ low: 625_000, high: 625_000 });
-    // A test task of one criterion is still priced per file when that is higher.
-    expect(priceTask(covering("T003", ["tests/test_cli.py"], ["AC-001"]), rates, rate)).toEqual({ low: 150_000, high: 180_000 });
-    const code = covering("T001", ["src/schema.py"], ["AC-001", "AC-002", "AC-003", "AC-004", "AC-005"]);
-    expect(priceTask(code, rates, rate)).toEqual(priceTask(code, rates));
-  });
-
-  test("the plan's sizing prices its test tasks by criteria and records the rate", () => {
-    const samples = [sample("test", 150_000), sample("test", 180_000), withCriteria(400_000, 4), withCriteria(600_000, 4)];
-    const report = sizePlan({
-      graph: graph(covering("T001", ["tests/test_schema.py"], ["AC-001", "AC-002", "AC-003"])),
-      policy: policy({ maxAttemptTokens: 600_000 }),
-      samples,
-      spent: 0,
-    });
-    expect(report.criterionRate?.samples).toBe(2);
-    expect(report.tasks[0]?.estimate.high).toBe(Math.max(report.rates.test.create.perFile.high, 3 * (report.criterionRate?.perCriterion.high ?? 0)));
-    expect(report.tasks[0]?.attemptTokens).toBe(report.tasks[0]?.estimate.high);
-  });
-
-  test("the planner is told the price per criterion when history has one", () => {
-    const note = (samples: SizingSample[]) => plannerSizing(policy({ maxAttemptTokens: 600_000 }), samples).note;
-    expect(note([])).not.toContain("per criterion");
-    expect(note([withCriteria(400_000, 4), withCriteria(600_000, 4)])).toContain("125k tokens per criterion");
+describe("whole test-task pricing (#1595)", () => {
+  test("quantiles use equal-count tasks and prefer project and model samples", () => {
+    const own = [sample("test", 400_000, 4, { cases: 10, model: "a" }), sample("test", 600_000, 4, { cases: 10, model: "a" })];
+    const shared = own.map((s) => ({ ...s, tokens: 8_000_000, source: "shared" as const }));
+    expect(testTaskRates([...own, ...shared]).all).toMatchObject({ basis: "project", perTask: { low: 500_000, high: 600_000 }, samples: 2 });
+    const other = own.map((s) => ({ ...s, model: "b", tokens: 800_000 }));
+    expect(testTaskRates([...own, ...other], "b").all).toMatchObject({ model: "b", perTask: { low: 800_000, high: 800_000 } });
+    expect(testTaskRates([]).all).toBeNull();
+    const rates = perFileRates(own);
+    const tests = testTaskRates(own);
+    expect(priceTask(task("T001", ["tests/a.test.ts"]), rates, tests, 10)).toEqual({ low: 500_000, high: 600_000 });
+    const code = task("T002", ["src/a.ts"]);
+    expect(priceTask(code, rates, tests, 10)).toEqual(priceTask(code, rates));
+    expect(plannerSizing(policy({}), own).note).toContain("90th percentile");
   });
 });
 

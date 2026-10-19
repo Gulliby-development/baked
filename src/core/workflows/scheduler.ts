@@ -65,6 +65,7 @@ import {
   STYLE_UNSHOWN,
 } from "../verification/convergence-stop.js";
 import { caseCheck as criteriaCaseCheck } from "../verification/criteria-cases.js";
+import { canHold } from "../verification/deliverable-paths.js";
 import { type DocExampleResult, isDocFile, runDocExamples } from "../verification/doc-examples.js";
 import {
   currentEvidence,
@@ -79,7 +80,12 @@ import {
   fingerprint,
   requiresSecurityReview,
 } from "../verification/findings.js";
-import { noteSiblingFindings } from "../verification/initiative-ownership.js";
+import {
+  deferredOwners,
+  noteSiblingFindings,
+  ownerOfFinding,
+  specBoundaryProblems,
+} from "../verification/initiative-ownership.js";
 import {
   type BaselineCount,
   baselineRegression,
@@ -144,14 +150,11 @@ import {
   hostCounts,
   hostDependencyEdges,
   hostSplitParts,
-  isCountNit,
-  isHostBatchCheckNit,
-  isHostEdgeNit,
-  isHostSplitNit,
   knownRisks,
   namesExampleRule,
   namesPlatformLimit,
   namesRequestSide,
+  noteHostEdits,
   persistentDefect,
   REQUEST_NOTE,
   repeatedFacet,
@@ -244,13 +247,18 @@ import {
   seedBytes,
 } from "./fork-stage.js";
 import { outputTail } from "./gates.js";
+import { HOST_ADDITIONS, HOST_EDITS_PATH, type HostEdit, recordGraphEdits } from "./host-edits.js";
 import { criticalPathProblems } from "./initiatives/critical-path.js";
 import {
+  type InitiativePlan,
   InitiativePlanSchema,
   MAX_FEATURES,
   MIN_FEATURES,
+  mergeSmallSiblings,
   planStructureProblems,
+  testOwnershipProblems,
 } from "./initiatives/plan.js";
+import { InitiativeStore } from "./initiatives/store.js";
 import { featureWorkflowChoices } from "./initiatives/workflows.js";
 import { changeReach, correctiveSources, repairChangedFiles } from "./invalidation.js";
 import {
@@ -463,6 +471,7 @@ import {
   plannerSizing,
   rateHistory,
   type SizingReport,
+  samplesFrom,
   sizePlan,
   sizingHistory,
   splitNote,
@@ -617,28 +626,28 @@ function planGraph(
   policy: RunPolicy,
   profiles: AgentProfile[],
   stageProfile?: string,
+  edits?: HostEdit[],
 ): TaskGraph {
-  const graph = withCommandDependencies(
-    withReadDependencies(
-      withModuleDependencies(
-        withDerivedRequirements(spec, {
-          ...withImplementationProfiles(
-            withoutApprovalRemarks(plan.taskGraph),
-            profiles,
-            stageProfile,
-          ),
-          specHash: hashJson(spec),
-          planHash: hashBytes(plan.markdown),
-        }),
-      ),
-    ),
-    spec,
+  let graph = plan.taskGraph;
+  const apply = (kind: string, transform: (input: TaskGraph) => TaskGraph) => {
+    graph = recordGraphEdits(graph, transform(graph), kind, edits);
+  };
+  apply("approval-remarks", withoutApprovalRemarks);
+  apply("implementation-profile", (input) =>
+    withImplementationProfiles(input, profiles, stageProfile),
   );
+  graph = { ...graph, specHash: hashJson(spec), planHash: hashBytes(plan.markdown) };
+  apply("derived-requirements", (input) => withDerivedRequirements(spec, input));
+  apply("module-dependencies", withModuleDependencies);
+  apply("read-dependencies", withReadDependencies);
+  apply("command-dependencies", (input) => withCommandDependencies(input, spec));
   // Tests first runs the test tasks before the code; otherwise a test task waits for its code.
-  return withCoveringChecks(
-    testsFirstOf(policy) === "off" ? withTestDependencies(graph) : withTestsFirstOrder(graph),
-    policy,
+  apply(
+    "test-dependencies",
+    testsFirstOf(policy) === "off" ? withTestDependencies : withTestsFirstOrder,
   );
+  apply("covering-checks", (input) => withCoveringChecks(input, policy));
+  return graph;
 }
 
 /** What the analyzer is told the host verified, including the dependency edges the host owns. */
@@ -1118,6 +1127,7 @@ export class WorkflowScheduler {
                 // The host makes a host-bound criterion checkable itself (#1015).
                 return [
                   ...size,
+                  ...specBoundaryProblems(parsed.data, state.initiativeBounds),
                   ...specCoverageProblems(hostRepairs(parsed.data), policy.checks, {
                     request: statedRequest(state, this.store.requests(runId)),
                   }),
@@ -1307,6 +1317,7 @@ export class WorkflowScheduler {
                     planner,
                     {
                       checks: policy.checks,
+                      hostAdditions: HOST_ADDITIONS,
                       // The approval reviewer decides approvals; no task can be assigned to it.
                       profiles: profiles.filter((p) => p.output !== "approval-review"),
                       workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
@@ -1402,8 +1413,41 @@ export class WorkflowScheduler {
               }
               if (problems.length)
                 throw new WorkflowFault("INVALID_REFERENCE", problems.join("\n"));
-              const planned = planGraph(spec, plan, policy, profiles, this.tasksProfile(runId));
-              const graph = policy.sizing ? this.splitTests(runId, planned, policy) : planned;
+              state.hostEdits = [];
+              recordGraphEdits(
+                submittedPlan.taskGraph,
+                plan.taskGraph,
+                "criterion-coverage",
+                state.hostEdits,
+              );
+              const planned = planGraph(
+                spec,
+                plan,
+                policy,
+                profiles,
+                this.tasksProfile(runId),
+                state.hostEdits,
+              );
+              const graph = policy.sizing
+                ? this.splitTests(runId, planned, policy, state.hostEdits)
+                : planned;
+              for (const task of graph.tasks.filter(hostWritten))
+                state.hostEdits.push({
+                  task: task.id,
+                  field: "execution",
+                  kind: "content-written",
+                  before: "agent",
+                  after: "host",
+                  text: "",
+                });
+              state.hostEdits.push({
+                task: null,
+                field: "hostCounts",
+                kind: "counts",
+                before: hostCounts(plan.taskGraph),
+                after: hostCounts(graph),
+                text: "",
+              });
               state.graph = graph;
               state.hostSplitTasks = graph.tasks.length - planned.tasks.length;
               state.rootGraph = structuredClone(state.graph);
@@ -1413,6 +1457,12 @@ export class WorkflowScheduler {
               this.store.transaction(() => {
                 this.store.artifact(runId, "plan", "plan.md", state.plan ?? "");
                 this.store.artifact(runId, "tasks", "tasks.json", canonical(state.graph));
+                this.store.artifact(
+                  runId,
+                  "host-edits",
+                  HOST_EDITS_PATH,
+                  canonical(state.hostEdits),
+                );
                 this.store.syncTasks(runId, graph);
               });
               await this.publish(runId, stepId, state, policy, signal);
@@ -1443,6 +1493,7 @@ export class WorkflowScheduler {
                 { markdown: state.plan, taskGraph: graph },
                 policy,
                 profiles,
+                state.hostEdits,
               );
               if (problems.length) {
                 this.wait("clarification", state, {
@@ -1472,6 +1523,7 @@ export class WorkflowScheduler {
                     verifiedByRuntime: hostEdgesNote(graph, spec),
                     workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
                     hostCounts: hostCounts(graph),
+                    hostEdits: state.hostEdits ?? [],
                     hostAddedChecks: hostAddedChecks(graph, policy),
                     ...(state.analysisRaised.length
                       ? { earlierFindings: state.analysisRaised }
@@ -1521,6 +1573,27 @@ export class WorkflowScheduler {
               }
               // The host inventory outranks the model: a finding that a listed file does not exist is a note.
               const facts = this.recordFacts(runId, runRoot(this.store.workspace, state));
+              const hostNotes = noteHostEdits(
+                analysis.findings,
+                state.hostEdits ?? [],
+                state.plan,
+                { graph, policy, spec },
+              );
+              if (hostNotes.length)
+                this.store.transaction(() =>
+                  this.store.artifact(
+                    runId,
+                    "analysis-notes",
+                    "analysis/host-notes.json",
+                    canonical({
+                      graphHash: hashJson(graph),
+                      findings: analysis.findings.filter((finding) =>
+                        hostNotes.some((note) => note.findingId === finding.id),
+                      ),
+                      notes: hostNotes,
+                    }),
+                  ),
+                );
               for (const finding of analysis.findings) {
                 if (
                   finding.blocking &&
@@ -1531,66 +1604,12 @@ export class WorkflowScheduler {
                   finding.description = `Contradicted by the workspace facts (facts/workspace.json); kept as a note: ${finding.description}`;
                 }
               }
-              // The host computed the task and file counts; a finding that only compares them is a note.
-              const counts = hostCounts(graph);
-              for (const finding of analysis.findings) {
-                if (finding.blocking && isCountNit(finding.description)) {
-                  finding.blocking = false;
-                  finding.description = `Counts are computed by the host (${String(counts.tasks)} tasks, ${String(counts.files)} distinct files); kept as a note: ${finding.description}`;
-                }
-              }
               // The spec schema has three verification methods; a finding that asks for another one
               // cannot be satisfied by the spec author, so it is a note (#1065).
               for (const finding of analysis.findings) {
                 if (finding.blocking && asksUnsupportedMethod(finding.description)) {
                   finding.blocking = false;
                   finding.description = `Asks for a verification method the spec schema does not have (only ${VERIFICATION_METHODS.join(", ")}; automated covers the reviewer reading a file); kept as a note: ${finding.description}`;
-                }
-              }
-              // The host adds some dependsOn edges after planning; plan.md cannot mention them and the
-              // planner cannot remove them, so a finding about them is a note.
-              const hostEdges = hostDependencyEdges(graph, spec);
-              const taskIds = graph.tasks.map((t) => t.id);
-              for (const finding of analysis.findings) {
-                if (
-                  finding.blocking &&
-                  finding.kind === "inconsistency" &&
-                  isHostEdgeNit(finding, hostEdges, taskIds)
-                ) {
-                  finding.blocking = false;
-                  finding.description = `About dependsOn edges the host adds after planning (${hostEdges.map((e) => `${e.task} after ${e.dependsOn}`).join(", ")}); kept as a note: ${finding.description}`;
-                }
-              }
-              // Covering checks, derived test checks and batching guidance belong to the host.
-              for (const finding of analysis.findings) {
-                if (
-                  finding.blocking &&
-                  isHostBatchCheckNit(
-                    finding,
-                    graph,
-                    policy.checks,
-                    hostAddedChecks(graph, policy),
-                    state.plan,
-                  )
-                ) {
-                  finding.blocking = false;
-                  finding.description = `About check wording the host appended after planning; kept as a note: ${finding.description}`;
-                }
-              }
-              // The host split oversized test tasks after planning; plan.md names only the original.
-              const split = hostSplitParts(graph);
-              for (const finding of analysis.findings) {
-                if (
-                  finding.blocking &&
-                  finding.kind !== "scope" &&
-                  isHostSplitNit(finding, split)
-                ) {
-                  finding.blocking = false;
-                  finding.description = `About tasks the host split by file or criterion slices after planning (${Object.entries(
-                    split,
-                  )
-                    .map(([original, ids]) => `${original}: ${ids.join(", ")}`)
-                    .join("; ")}); kept as a note: ${finding.description}`;
                 }
               }
               // Findings about check outcomes stay in the record as notes; checks run later.
@@ -2116,7 +2135,7 @@ export class WorkflowScheduler {
                   state,
                   policy,
                   this.requireProfile(profile),
-                  {},
+                  { hostEdits: state.hostEdits ?? [] },
                   signal,
                 ),
               );
@@ -2127,6 +2146,20 @@ export class WorkflowScheduler {
               break;
             }
             case "decompose": {
+              const initiatives = new InitiativeStore(this.store);
+              const initiative = initiatives.decompositionOfRun(runId);
+              const settings = initiative ? initiatives.settings(initiative) : null;
+              const ownershipProblems = (plan: InitiativePlan): string[] => {
+                const structure = planStructureProblems(plan);
+                if (structure.length) return structure;
+                // The approved boundary includes paths supplied by the host's sibling merge.
+                const proposed =
+                  settings && !settings.keepFeatures
+                    ? mergeSmallSiblings(plan, { byDependents: policy.criticalPath === "split" })
+                        .plan
+                    : plan;
+                return testOwnershipProblems(proposed);
+              };
               const plan = InitiativePlanSchema.parse(
                 await this.call(
                   runId,
@@ -2149,7 +2182,7 @@ export class WorkflowScheduler {
                     const parsed = InitiativePlanSchema.safeParse(output);
                     return parsed.success
                       ? [
-                          ...planStructureProblems(parsed.data),
+                          ...ownershipProblems(parsed.data),
                           ...(policy.criticalPath === "split"
                             ? criticalPathProblems(parsed.data, state.requestText || state.prompt)
                             : []),
@@ -2158,7 +2191,7 @@ export class WorkflowScheduler {
                   },
                 ),
               );
-              const problems = planStructureProblems(plan);
+              const problems = ownershipProblems(plan);
               if (problems.length) throw new WorkflowFault("OUTPUT_INVALID", problems.join("\n"));
               state.initiativePlan = canonical(plan);
               this.store.transaction(() =>
@@ -2387,6 +2420,16 @@ export class WorkflowScheduler {
               // such findings counts as met.
               const checksPass = requiredChecksPass(this.store, runId, state, policy);
               const siblingNotes = noteSiblingFindings(state, "convergence", review.findings);
+              for (const [criterionId, owners] of deferredOwners(review, state.initiativeBounds)) {
+                const coverage = review.coverage.find((item) => item.criterionId === criterionId);
+                if (coverage) {
+                  coverage.verdict = "deferred";
+                  coverage.explanation = `Deferred to initiative feature ${owners.join(", ")}. ${coverage.explanation}`;
+                  this.store.transaction(() =>
+                    this.store.criterion(runId, state.snapshotId ?? "", coverage),
+                  );
+                }
+              }
               const notes = new Set(
                 review.findings
                   .filter(
@@ -2449,7 +2492,9 @@ export class WorkflowScheduler {
               // drops a criterion only these findings name, and an unreproduced claim that was the
               // only one naming an inconclusive criterion then left it unlimited, so acceptance
               // threw after all the work was done (lockorder 6487b225, #1225).
-              const noted = review.findings.filter((f) => notes.has(f.id) && repairing(f));
+              const noted = review.findings.filter(
+                (f) => !siblingNotes.has(f.id) && notes.has(f.id) && repairing(f),
+              );
               // An unreproduced claim that would have repaired is a known limitation, so the criterion
               // it fails is accepted with it and the run report names the claim.
               const unshown = review.findings.filter((f) => unreproduced.has(f.id) && repairing(f));
@@ -3291,7 +3336,12 @@ export class WorkflowScheduler {
     return progressed;
   }
   /** Split oversized tests by file and then by criteria within a file, before analysis. */
-  private splitTests(runId: string, graph: TaskGraph, policy: RunPolicy): TaskGraph {
+  private splitTests(
+    runId: string,
+    graph: TaskGraph,
+    policy: RunPolicy,
+    edits?: HostEdit[],
+  ): TaskGraph {
     const spec = this.store.state(runId).spec;
     const report = sizePlan({
       graph,
@@ -3301,7 +3351,7 @@ export class WorkflowScheduler {
       spent: this.store.run(runId).token_usage,
       model: this.sizingModel(runId, graph),
     });
-    const split = splitTestTasks(graph, report, spec);
+    const split = splitTestTasks(graph, report, spec, edits);
     if (!split) return graph;
     const revision = this.store.state(runId).sizingReplans;
     this.store.transaction(() =>
@@ -3893,6 +3943,7 @@ export class WorkflowScheduler {
     plan: { markdown: string; taskGraph: TaskGraph },
     policy: RunPolicy,
     profiles: AgentProfile[],
+    edits?: readonly HostEdit[],
   ): string[] {
     const graph = planGraph(spec, plan, policy, profiles, this.tasksProfile(runId));
     const problems: string[] = rowPlanProblems(spec, graph, policy);
@@ -3910,6 +3961,7 @@ export class WorkflowScheduler {
         graph,
         (path) => createdByRunLineage(this.store, runId, path, fileHash(workspacePath(root, path))),
         policy.allowOverlappingWrites === true,
+        edits,
       ),
     );
     if (presetOf(parseRunDefinition(this.store.run(runId).definition_json)) === HARDEN_PRESET)
@@ -4970,6 +5022,54 @@ ${note}`;
     this.raiseBudget(runId, state, policy, report);
     return "continue";
   }
+  /** Reprice unstarted tasks from completed, checked tasks of this run before the next batch. */
+  private refreshTaskSizing(runId: string, state: RuntimeState, policy: RunPolicy): void {
+    if (!policy.sizing || !state.graph) return;
+    const rows = this.store.tasks(runId);
+    const finished = new Set(
+      rows
+        .filter(
+          (r) =>
+            r.status === "verified" ||
+            (r.status === "implemented" && hasTaskGate(r, state.taskGates)),
+        )
+        .map((r) => r.id),
+    );
+    const current = samplesFrom(
+      join(this.store.workspace, ".baked", "workflows.sqlite"),
+      "project",
+      runId,
+    ).filter((s) => s.kind === "test" && finished.has(s.taskId));
+    if (!current.length) return;
+    const path = `sizing/progress-${hashJson(current)}.json`;
+    if (this.store.latestArtifact(runId, path)) return;
+    // Never replace a continuation's larger cap or resize already-running parallel workers.
+    const pending = new Set(rows.filter((r) => r.status === "pending").map((r) => r.id));
+    const started = new Set(this.store.steps(runId).map((s) => s.stage_id));
+    const taskIds = new Set(
+      state.graph.tasks
+        .filter((t) => t.origin === "planned" && pending.has(t.id) && !started.has(`task-${t.id}`))
+        .map((t) => t.id),
+    );
+    if (!taskIds.size) return;
+    const report = sizePlan({
+      graph: state.graph,
+      taskIds,
+      spec: state.spec,
+      policy,
+      samples: [...current, ...sizingHistory(this.store.workspace, policy)],
+      spent: this.store.run(runId).token_usage,
+      model: this.sizingModel(runId, state.graph),
+      loopShares: loopHistory(this.store.workspace, policy),
+      tokenRates: rateHistory(this.store.workspace, policy),
+    });
+    this.store.transaction(() => {
+      this.store.artifact(runId, "sizing", path, canonical(report));
+      for (const task of report.tasks) state.taskBudgets[task.taskId] = task.attemptTokens;
+      this.raiseBudget(runId, state, policy, report);
+      this.store.saveState(runId, state);
+    });
+  }
   /**
    * Grows the run budget to the sized price, up to the policy's ceiling, and the active-time cap
    * to the time that budget needs at the observed rate. A plan sent back to be
@@ -5416,6 +5516,7 @@ ${note}`;
     if (!state.graph || !state.approvalRoot)
       throw new WorkflowFault("STALE_DECISION", "Approved tasks required");
     for (;;) {
+      this.refreshTaskSizing(runId, state, policy);
       const rows = this.store.tasks(runId);
       const checking = this.checkableTask(state.graph, rows, state);
       if (
@@ -6033,6 +6134,7 @@ ${note}`;
     // Tasks whose worker was lost in this drive; the run stops once nothing else can progress.
     const lost = new Map<string, string>();
     for (;;) {
+      this.refreshTaskSizing(runId, state, policy);
       const rows = this.store.tasks(runId);
       const current = state.graph ?? graph;
       const checking = this.checkableTask(current, rows, state);
@@ -10554,13 +10656,98 @@ ${note}`;
     signal: AbortSignal,
   ): Promise<Review["findings"]> {
     const preset = presetOf(parseRunDefinition(this.store.run(runId).definition_json));
-    const mode = mutationOf(policy, preset);
-    if (mode === "off" || !state.snapshotId) return [];
+    let mode = mutationOf(policy, preset);
+    if (!state.snapshotId) return [];
     // A harden run changes no code: its mutants go into the module its tasks test.
     const harden = preset === HARDEN_PRESET;
-    const files = harden
-      ? await this.hardenModule(state)
-      : await this.changedFiles(runId, state, isCodePath);
+    const files =
+      mode === "off"
+        ? []
+        : harden
+          ? await this.hardenModule(state)
+          : await this.changedFiles(runId, state, isCodePath);
+    const bounds = state.initiativeBounds;
+    const current = bounds?.features.find((feature) => feature.id === bounds.featureId);
+    const testRequest = {
+      id: "mutation-owner",
+      kind: "missing" as const,
+      severity: "high" as const,
+      requirementIds: [],
+      criterionIds: [],
+      file: null,
+      symbol: null,
+      evidenceIds: [],
+      claim: "Acceptance tests are missing",
+      impact: "Mutation coverage needs tests",
+      suggestedFix: "Add tests",
+    };
+    const owner =
+      current && !canHold(current.paths, "test") ? ownerOfFinding(testRequest, bounds) : undefined;
+    if (owner && !harden) {
+      if (mode === "off") return [];
+      // Keep the original changed lines. The owner's checks run these mutants after its tests
+      // land, rather than presenting a premature zero score to this feature's reviewers.
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "quality",
+          "quality/mutation-deferred.json",
+          canonical({ ownerId: owner.id, mode, files }),
+        ),
+      );
+      return [];
+    }
+    if (bounds && !harden) {
+      const initiatives = new InitiativeStore(this.store);
+      const initiativeId = initiatives.initiativeOfRun(runId);
+      if (initiativeId) {
+        for (const feature of bounds.features) {
+          if (feature.id === bounds.featureId || canHold(feature.paths, "test")) continue;
+          const sourceBounds = { ...bounds, featureId: feature.id };
+          if (ownerOfFinding(testRequest, sourceBounds)?.id !== bounds.featureId) continue;
+          const link = initiatives.current(initiativeId, feature.id);
+          if (!link || this.store.run(link.run_id).status !== "completed") continue;
+          const deferred = this.store.latestArtifact(link.run_id, "quality/mutation-deferred.json");
+          const prior = this.store.latestArtifact(link.run_id, QUALITY_MUTATION);
+          // A source feature's enabled gate follows its tests even when the owner's preset
+          // normally leaves mutation off. Do not schedule gates the source never enabled.
+          if (!deferred && !prior) continue;
+          const saved = deferred
+            ? (JSON.parse(this.store.readArtifact(link.run_id, deferred.id)) as {
+                mode: MutationMode;
+                files: ChangedFile[];
+              })
+            : null;
+          const sourceMode =
+            saved?.mode ??
+            (prior
+              ? (JSON.parse(this.store.readArtifact(link.run_id, prior.id)) as MutationResult).mode
+              : "off");
+          if (sourceMode === "required" || (sourceMode === "advisory" && mode === "off"))
+            mode = sourceMode;
+          const source = saved
+            ? saved.files
+            : // Runs from an older binary may have already measured a premature score.
+              await this.changedFiles(
+                link.run_id,
+                { ...this.store.state(link.run_id), worktree: state.worktree },
+                isCodePath,
+              );
+          const root = runRoot(this.store.workspace, state);
+          const contents = await readCodeFiles(
+            root,
+            source.map((file) => file.path),
+            isCodePath,
+          );
+          for (const file of source) {
+            const content = contents.files.get(file.path);
+            if (content !== undefined && !files.some((own) => own.path === file.path))
+              files.push({ ...file, content });
+          }
+        }
+      }
+    }
+    if (mode === "off") return [];
     // Nothing waits for an advisory score, so the review starts while it runs in a copy (#1147).
     if (mode === "advisory" && !harden && (await this.mutateBeside(runId, state, policy, files)))
       return [];
@@ -11138,13 +11325,23 @@ ${note}`;
           (t) => t.readHints.includes(m.file) && t.writes.some((w) => isTestCodePath(w.path)),
         );
       // The test file of a related task, so the correction may write the test that kills it.
-      const testFile = tasks
-        .filter(
-          (t) =>
-            t === owner || (owner && t.criterionIds.some((id) => owner.criterionIds.includes(id))),
-        )
-        .flatMap((t) => t.writes.map((w) => w.path))
-        .find((path) => isTestCodePath(path) && isCodePath(path));
+      const testFile =
+        tasks
+          .filter(
+            (t) =>
+              t === owner ||
+              (owner && t.criterionIds.some((id) => owner.criterionIds.includes(id))),
+          )
+          .flatMap((t) => t.writes.map((w) => w.path))
+          .find((path) => isTestCodePath(path) && isCodePath(path)) ??
+        (state.initiativeBounds
+          ? tasks
+              .flatMap((task) => task.writes)
+              .find(
+                (write) =>
+                  write.action !== "delete" && isTestCodePath(write.path) && isCodePath(write.path),
+              )?.path
+          : undefined);
       const change = m.description
         ? `mutated${by} (${m.description.slice(0, 160)}) at \`${m.original.trim().slice(0, 160)}\``
         : `changed${by} from \`${m.original.trim().slice(0, 160)}\` to \`${m.mutated.trim().slice(0, 160)}\``;

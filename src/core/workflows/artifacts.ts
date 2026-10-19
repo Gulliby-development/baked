@@ -82,6 +82,7 @@ export class WorkflowArtifacts implements ArtifactService {
     state.spec = request.spec ? SpecSchema.parse(request.spec) : state.spec;
     state.plan = request.plan ?? state.plan;
     state.graph = request.graph ? TaskGraphSchema.parse(request.graph) : state.graph;
+    if (request.graph) state.hostEdits = [];
     let policy = PolicySchema.parse(request.policy ?? JSON.parse(store.run(runId).policy_json));
     const complete = Boolean(state.spec && state.plan && state.graph);
     // A definition revision may come before the run has a package; a package revision needs all of it.

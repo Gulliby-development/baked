@@ -125,7 +125,7 @@ bun test tests/feature-parity.test.ts
 | Feature | TUI | Headless CLI | serve API | Desktop |
 | --- | --- | --- | --- | --- |
 | Start a full run or a quick task | `/workflow` | `baked workflow run`, `baked quick`, `baked workflow definitions` +1 | `/v1/workflow/runs`, `/v1/workflow/definitions`, `/v1/workflow/profiles` | `project/overview` |
-| Walk and price shared criterion cases once per owning test task, split large test files into sequential criterion slices and replace their graph on re-plan | `/workflow` | `baked workflow show` | `/v1/workflow/runs/:id` | `project/runs` |
+| Price test tasks by task-cost quantiles, refresh pending caps from the run, split above observed case capacity with distinct part titles and report both token caps | `/workflow` | `baked workflow show` | `/v1/workflow/runs/:id` | `project/runs` |
 | Opt-in audited acceptance rows as JSON and Bun/pytest tests | `/workflow` | `baked workflow run`, `baked workflow quick`, `baked workflow artifacts` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/artifacts` | `project/overview`, `project/runs` |
 | Test-integrity guard: block or warn on test gaming, spec conflicts | `/workflow` | `baked workflow run`, `baked workflow answer` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/answer` | `project/overview`, `attention` |
 | Recovery advice names the action available in each app | `/workflow` | `baked workflow status`, `baked workflow initiative show` | `/v1/workflow/runs/:id`, `/v1/initiatives/:id` | `project/runs`, `project/initiatives`, `attention` |
@@ -134,6 +134,7 @@ bun test tests/feature-parity.test.ts
 | Cost cap of a run: per run, per project and in the doctor and estimate | `/workflow`, `/timeouts` | `baked workflow run`, `baked workflow doctor`, `baked workflow estimate` +1 | `/v1/workflow/runs`, `/v1/workflow/doctor`, `/v1/workflow/estimate` +1 | `project/overview`, `settings/chat` |
 | Propose the workflow and budget from the request | `/workflow` | `baked workflow propose`, `baked workflow run`, `auto-preset` | `/v1/workflow/propose` | `project/overview` |
 | Run list, detail, report, artifacts, attempt context and usage | `/workflow` | `baked workflow list`, `baked workflow status`, `baked workflow report` +2 | `/v1/workflow/runs`, `/v1/workflow/runs/:id`, `/v1/workflow/runs/:id/events` +3 | `project/runs` |
+| Task graph host edits and analysis ownership | `/workflow` | `baked workflow artifacts` | `/v1/workflow/runs/:id/artifacts` | `project/runs` |
 | Record a run's model calls and replay them without the provider | Not needed: a debugging aid for BAKED itself | `baked workflow run`, `baked workflow recording` | Not needed: a debugging aid for BAKED itself | Not needed: a debugging aid for BAKED itself |
 | Critic outcome log and calibration: scores with checks, acceptance, delivery, survival | `/workflow` | `baked workflow outcomes` | `/v1/workflow/critic`, `/v1/workflow/runs/:id/report` | `settings/routing`, `project/runs` |
 | Best-of-N: implement each planned task several times and keep the best candidate | `/workflow` | `baked workflow run` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `project/overview`, `project/runs` |
@@ -182,7 +183,7 @@ bun test tests/feature-parity.test.ts
 
 | Feature | TUI | Headless CLI | serve API | Desktop |
 | --- | --- | --- | --- | --- |
-| Review findings on sibling-owned paths become notes naming their owner | `/workflow` | `baked workflow report` | `/v1/workflow/runs/:id/report` | `project/runs` |
+| Initiative deliverables have writable owners; deferred findings and mutation checks follow them | `/workflow` | `baked workflow report` | `/v1/workflow/runs/:id/report` | `project/runs` |
 | Start an initiative | `/workflow` | `baked workflow initiative` | `/v1/initiatives` | `project/initiatives` |
 | Initiative view: approve split, pause, resume, switch model | `/workflow` | `baked workflow initiative` | `/v1/initiatives/:id`, `/v1/initiatives/:id/events`, `/v1/initiatives/:id/approve` +3 | `project/initiatives`, `attention` |
 | Reject, merge, split, rename, remove, re-plan, extend | `/workflow` | `baked workflow initiative` | `/v1/initiatives/:id/reject`, `/v1/initiatives/:id/merge`, `/v1/initiatives/:id/split` +4 | `project/initiatives` |

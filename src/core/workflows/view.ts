@@ -17,6 +17,7 @@ import {
   type StageProgress,
   type StartEstimate,
 } from "./estimate.js";
+import type { HostEdit } from "./host-edits.js";
 import type { RecoveryAdvice } from "./remedies.js";
 import { type RoutingSummary, routingSummary } from "./routing.js";
 import {
@@ -202,6 +203,7 @@ export interface CriterionView {
   evidenceIds: string[];
 }
 export interface RunDetails {
+  hostEdits?: HostEdit[];
   title: string | null;
   prompt: string;
   specMarkdown: string | null;
@@ -386,6 +388,7 @@ function detailsOf(store: WorkflowStore, runId: string): RunDetails {
     specMarkdown: state.spec ? renderSpec(state.spec) : null,
     plan: state.plan,
     ...(acceptanceRows ? { acceptanceRows } : {}),
+    hostEdits: state.hostEdits,
     lastError: lastErrorOf(store, runId),
     recovery: stopRecovery(store, runId),
     autoApproval: autoApprovalText(JSON.parse(store.run(runId).policy_json) as RunPolicy),

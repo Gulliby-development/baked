@@ -13,7 +13,7 @@ describe("decomposer feature floor", () => {
     expect(text).toContain("at least three files or a group of at least three related behaviors");
     expect(text).toContain("merge a smaller one into a sibling with the same dependencies");
     expect(text).toContain("The host merges features of one or two paths");
-    expect(decomposer?.version).toBe("1.7.0");
+    expect(decomposer?.version).toBe("1.8.0");
   });
 
   // Bench round 42, fecsmith (#1504): the brief named every command file, the decomposer wrote

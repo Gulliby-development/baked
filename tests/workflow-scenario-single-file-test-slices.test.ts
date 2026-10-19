@@ -9,8 +9,8 @@ import type { SizingReport } from "../src/core/workflows/sizing.js";
 import type { ExecutionRequest, Task } from "../src/core/workflows/types.js";
 import { FixtureExecutor, fixturePolicy, fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 
-// #1562: youngkit's one-file test task was priced at 1.39M with a 600k cap, but was
-// neither marked oversized nor split. Exercise the real scheduler through approval and execution.
+// #1562/#1595: split by the largest completed case count, preserving ordering and checks.
+// The whole-task price can exceed the cap without causing extra slices.
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
@@ -47,12 +47,12 @@ function history(): string {
     INSERT INTO steps VALUES ('h1','s1','task-T001'),('h2','s1','task-T001');
     INSERT INTO attempts VALUES ('h1','s1','m',1390000),('h2','s1','m',1390000);`);
   for (const run of ["h1", "h2"]) {
-    db.query("INSERT INTO tasks VALUES (?,?,?,?)").run(run, "T001", JSON.stringify(task("T001", "tests/cli.test.ts")), "verified");
-    if (run === "h1") db.query("INSERT INTO artifacts VALUES (?, 'spec.json', 1, ?, NULL)").run(run, JSON.stringify(spec));
+    db.query("INSERT INTO tasks VALUES (?,?,?,?)").run(run, "T001", JSON.stringify({ ...task("T001", "tests/cli.test.ts"), criterionIds: ids.slice(0, 2) }), "verified");
+    if (run === "h1") db.query("INSERT INTO artifacts VALUES (?, 'spec.json', 1, ?, NULL)").run(run, JSON.stringify({ ...spec, criteria: spec.criteria.slice(0, 2) }));
     else {
       const blob = ".baked/workflow-runs/h2/blobs/spec";
       mkdirSync(dirname(join(root, blob)), { recursive: true });
-      writeFileSync(join(root, blob), JSON.stringify(spec));
+      writeFileSync(join(root, blob), JSON.stringify({ ...spec, criteria: spec.criteria.slice(0, 2) }));
       db.query("INSERT INTO artifacts VALUES (?, 'spec.json', 1, NULL, ?)").run(run, blob);
     }
   }
@@ -133,12 +133,12 @@ for (const [path, existing] of [["internal/cli/cli_test.go", false], ["tests/cli
     }
     const artifact = store.latestArtifact(run.runId, "sizing/plan-0.json")!;
     const report = JSON.parse(store.readArtifact(run.runId, artifact.id)) as SizingReport;
-    expect(report.caseRate).toBeNull();
+    expect(report.testTaskLimit?.cases).toBe(2);
     for (const part of parts) {
       const size = report.tasks.find((t) => t.taskId === part.id)!;
       expect(size).toMatchObject({ cases: 2, sliceCount: 3, oversized: false });
-      expect(size.estimate.high).toBeLessThanOrEqual(600_000);
-      expect(store.state(run.runId).taskBudgets[part.id]).toBe(size.estimate.high);
+      expect(size.estimate.high).toBe(1_390_000);
+      expect(store.state(run.runId).taskBudgets[part.id]).toBe(size.attemptTokens);
     }
     if (path.endsWith(".ts")) {
       await fixture.approve(run.runId);
@@ -146,7 +146,7 @@ for (const [path, existing] of [["internal/cli/cli_test.go", false], ["tests/cli
       const attempts = fixture.executor.attempts.filter((a) => a.task.writes[0]!.path === path);
       expect(attempts.map((a) => a.task.id)).toEqual(parts.map((t) => t.id));
       expect(attempts.map((a) => a.paths)).toEqual([[path], [path], [path]]);
-      expect(attempts.every((a) => a.cap === 463_333)).toBe(true);
+      expect(attempts.map((a) => a.cap)).toEqual([existing ? 250_000 : 600_000, 250_000, 250_000]);
       if (existing) {
         const old = fixture.executor.attempts.filter((a) => a.task.writes[0]?.path === "tests/old.test.ts");
         expect(attempts.every((a) => a.cases)).toBe(true);

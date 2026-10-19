@@ -852,20 +852,25 @@ export class NativeWorkflowService implements WorkflowService {
         const plan = initiatives.plan(initiatives.revision(initiativeId, link.plan_revision));
         state.initiativeBounds = {
           featureId: link.feature_id,
-          features: plan.features.map((feature) => ({ id: feature.id, ...feature.boundary })),
+          features: plan.features.map((feature) => ({
+            id: feature.id,
+            ...feature.boundary,
+            ...(feature.testedBy ? { testedBy: feature.testedBy } : {}),
+          })),
         };
-        this.store.transaction(() => {
-          // A prior binary may already have recorded the sibling finding as a blocker.
-          // Acceptance checks that table as well as the current review.
-          const findings = this.store
-            .findings(runId)
-            .filter((finding) => !["resolved", "refuted"].includes(finding.status))
-            .map((finding) => JSON.parse(finding.body_json) as Review["findings"][number]);
-          for (const id of noteSiblingFindings(state, "review", findings))
-            this.store.findingStatus(runId, id, "resolved");
-          this.store.saveState(runId, state);
-        });
       }
+    }
+    if (state.initiativeBounds) {
+      this.store.transaction(() => {
+        // Re-route old blockers even when a prior binary already saved boundary metadata.
+        const findings = this.store
+          .findings(runId)
+          .filter((finding) => !["resolved", "refuted"].includes(finding.status))
+          .map((finding) => JSON.parse(finding.body_json) as Review["findings"][number]);
+        for (const id of noteSiblingFindings(state, "review", findings))
+          this.store.findingStatus(runId, id, "resolved");
+        this.store.saveState(runId, state);
+      });
     }
     const controller = new AbortController();
     const abort = (): void => controller.abort(signal.reason);
@@ -1756,6 +1761,8 @@ export class NativeWorkflowService implements WorkflowService {
         state.reviewNotes = [];
         state.manifest.correctionHashes = [];
         state.rootGraph = structuredClone(state.graph);
+        if (state.hostEdits)
+          this.store.artifact(runId, "host-edits", "host-edits.json", canonical(state.hostEdits));
         state.manifest.rootGraphHash = hashJson(state.graph);
         state.manifest.effectiveGraphHash = hashJson(state.graph);
         state.expectedFiles = null;
@@ -2241,6 +2248,7 @@ export class NativeWorkflowService implements WorkflowService {
           state.manifest.specHash = hashJson(state.spec);
           state.plan = null;
           state.graph = null;
+          state.hostEdits = undefined;
           state.rootGraph = null;
           state.manifest.planHash = null;
           state.manifest.rootGraphHash = null;
@@ -2264,6 +2272,8 @@ export class NativeWorkflowService implements WorkflowService {
       // Dependents find a feature's accepted contract through this artifact.
       if (state.spec) this.store.artifact(id, "spec", "spec.json", canonical(state.spec));
       if (state.graph) this.store.syncTasks(id, state.graph);
+      if (state.graph && state.hostEdits)
+        this.store.artifact(id, "host-edits", "host-edits.json", canonical(state.hostEdits));
       if (seed) {
         this.store.artifact(id, "fork", FORK_SEED_ARTIFACT, canonical(seed));
         this.store.setApproval(id, parentApproval);

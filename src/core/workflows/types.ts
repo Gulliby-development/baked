@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { RouteEffort } from "../llm/model-routing.js";
+import { HostEditSchema } from "./host-edits-schema.js";
 import { PresetChoiceSchema } from "./preset-router.js";
 import {
   type AgentProfile,
@@ -97,6 +98,7 @@ export const RuntimeStateSchema = z
     spec: SpecSchema.nullable(),
     plan: z.string().nullable(),
     graph: TaskGraphSchema.nullable(),
+    hostEdits: z.array(HostEditSchema).optional(),
     rootGraph: TaskGraphSchema.nullable(),
     research: z.string().nullable(),
     analysisPassed: z.boolean(),
@@ -388,7 +390,14 @@ export const RuntimeStateSchema = z
       .object({
         featureId: SafeId,
         features: z.array(
-          z.object({ id: SafeId, scope: z.string(), paths: z.array(z.string()) }).strict(),
+          z
+            .object({
+              id: SafeId,
+              scope: z.string(),
+              paths: z.array(z.string()),
+              testedBy: SafeId.optional(),
+            })
+            .strict(),
         ),
       })
       .strict()
