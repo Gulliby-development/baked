@@ -11,7 +11,7 @@ import {
 } from "../src/core/workflows/remedies.js";
 
 describe("workflow recovery text (#1578)", () => {
-  const actions: Remedy["action"][] = ["resume", "extend", "accept-workspace", "reroute", "revise", "replan", "deliver", "recover", "fork", "cancel", "pause"];
+  const actions: Remedy["action"][] = ["resume", "repair", "extend", "accept-workspace", "reroute", "revise", "replan", "deliver", "recover", "fork", "cancel", "pause"];
   test.each(actions)("%s keeps the CLI command and renders app actions", (action) => {
     const advice = recoveryAdvice("Use baked workflow command RUN", "The run needs a decision.", { action, runId: "RUN", initiativeId: "idea" });
     const fault = new WorkflowFault("STALE_DECISION", advice, { reason: "example" });
@@ -26,6 +26,10 @@ describe("workflow recovery text (#1578)", () => {
     if (action === "resume") {
       expect(tui).toContain("press R");
       expect(desktop).toContain("choose Retry");
+    }
+    if (action === "repair") {
+      expect(tui).toContain("press O");
+      expect(desktop).toContain("choose One more repair");
     }
     if (action === "accept-workspace") {
       expect(tui).toContain("press A");

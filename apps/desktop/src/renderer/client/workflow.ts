@@ -78,6 +78,8 @@ export const workflow = {
       ...command(run),
       ...(options.acceptWorkspace ? { acceptWorkspace: true } : {}),
     }),
+  repair: (key: string, run: Pick<RunSnapshot, "runId" | "revision">, rounds = 1) =>
+    call<RunSnapshot>(key, "POST", runPath(run.runId, "repair"), { ...command(run), rounds }),
   pause: (key: string, run: Pick<RunSnapshot, "runId" | "revision">) =>
     call<RunSnapshot>(key, "POST", runPath(run.runId, "pause"), command(run)),
   cancel: (key: string, run: Pick<RunSnapshot, "runId" | "revision">) =>

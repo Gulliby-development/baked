@@ -85,6 +85,7 @@ import {
   renderProjectMemory,
 } from "./project-memory.js";
 import { recoveryAdvice } from "./remedies.js";
+import { canRepairRun } from "./repairable.js";
 import { abortableDelay } from "./retry.js";
 import {
   REFUSED_EDIT_PREFIX,
@@ -354,6 +355,12 @@ export class NativeWorkflowService implements WorkflowService {
       noProgressRounds: 0,
       extraConvergenceRounds: 0,
       extraRepairRounds: 0,
+      pendingTaskRepair: [],
+      extraTaskRepairs: {},
+      extraReviewRounds: 0,
+      extraLoopIterations: {},
+      extraStageVisits: 0,
+      extraRepeatRepairs: 0,
       correctedSinceRepair: false,
       extraCorrectiveTasks: 0,
       decidedFindings: [],
@@ -932,6 +939,74 @@ export class NativeWorkflowService implements WorkflowService {
     this.enabled();
     const outside = options.acceptWorkspace ? await this.outsideChanges(runId) : null;
     return this.resumeCommand(runId, command, outside);
+  }
+  /** A person's grant applies only to the operation refused by the current diagnostic. */
+  async repair(runId: string, command: CommandIdentity, rounds = 1): Promise<RunSnapshot> {
+    this.enabled();
+    return this.store.command(
+      runId,
+      command,
+      { runId, ...command, action: "repair", rounds },
+      () => {
+        if (!Number.isSafeInteger(rounds) || rounds < 1 || rounds > 100)
+          throw new WorkflowFault(
+            "INVALID_DEFINITION",
+            "Repair rounds must be an integer between 1 and 100",
+          );
+        const run = this.store.snapshot(runId);
+        const block = run.repairBlock;
+        if (!canRepairRun(run) || !block)
+          throw new WorkflowFault("STALE_DECISION", "This run is not blocked on a repair limit");
+        const state = this.store.state(runId);
+        assertFrozenInputs(state, this.store, runId);
+        // One grant covers the refused operation even when it needs several corrective tasks.
+        const extra = block.required + rounds - 1;
+        switch (block.limit) {
+          case "maxTaskRepairs":
+            for (const id of block.taskIds)
+              state.extraTaskRepairs[id] = (state.extraTaskRepairs[id] ?? 0) + extra;
+            break;
+          case "maxRepairRounds":
+            if (block.scope === "review") state.extraReviewRounds += extra;
+            else state.extraRepairRounds += extra;
+            break;
+          case "maxCorrectiveTasks":
+            state.extraCorrectiveTasks += extra;
+            break;
+          case "maxIterations":
+            if (!block.transitionId)
+              throw new WorkflowFault("STALE_DECISION", "Missing refused transition");
+            state.extraLoopIterations[block.transitionId] =
+              (state.extraLoopIterations[block.transitionId] ?? 0) + extra;
+            break;
+          case "maxStageVisits":
+            state.extraStageVisits += extra;
+            break;
+          case "freshRestart":
+            state.extraRepeatRepairs += extra;
+            break;
+        }
+        this.store.artifact(
+          runId,
+          "recovery",
+          `repair-grants/${command.commandId}.json`,
+          canonical({
+            approvedBy: "user",
+            commandId: command.commandId,
+            block,
+            rounds,
+            extra,
+            tokenUsage: run.tokenUsage,
+          }),
+        );
+        this.store.saveState(runId, state);
+        // Use the normal resume checks and task recovery in the same command transaction.
+        this.resumeCommand(runId, {
+          commandId: `${command.commandId}-resume`,
+          expectedRevision: run.revision,
+        });
+      },
+    );
   }
   /** The synchronous resume checks and writes, also used inside a takeover transaction. */
   private resumeCommand(
@@ -1658,6 +1733,7 @@ export class NativeWorkflowService implements WorkflowService {
         state.manualCriteria = {};
         state.correctionHashes = [];
         state.repairPredecessors = {};
+        state.pendingTaskRepair = [];
         state.widenedCorrections = [];
         state.narrowedCorrections = {};
         state.quickFixes = {};
@@ -1667,6 +1743,11 @@ export class NativeWorkflowService implements WorkflowService {
         state.noProgressRounds = 0;
         state.extraConvergenceRounds = 0;
         state.extraRepairRounds = 0;
+        state.extraTaskRepairs = {};
+        state.extraReviewRounds = 0;
+        state.extraLoopIterations = {};
+        state.extraStageVisits = 0;
+        state.extraRepeatRepairs = 0;
         state.correctedSinceRepair = false;
         state.extraCorrectiveTasks = 0;
         state.decidedFindings = [];
@@ -2117,6 +2198,7 @@ export class NativeWorkflowService implements WorkflowService {
       state.rootGraph = state.graph ? structuredClone(state.graph) : null;
       state.manifest.rootGraphHash = state.graph ? hashJson(state.graph) : null;
       state.repairPredecessors = {};
+      state.pendingTaskRepair = [];
       state.widenedCorrections = [];
       state.narrowedCorrections = {};
       state.quickFixes = {};
@@ -2126,6 +2208,11 @@ export class NativeWorkflowService implements WorkflowService {
       state.noProgressRounds = 0;
       state.extraConvergenceRounds = 0;
       state.extraRepairRounds = 0;
+      state.extraTaskRepairs = {};
+      state.extraReviewRounds = 0;
+      state.extraLoopIterations = {};
+      state.extraStageVisits = 0;
+      state.extraRepeatRepairs = 0;
       state.correctedSinceRepair = false;
       state.extraCorrectiveTasks = 0;
       state.decidedFindings = [];

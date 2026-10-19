@@ -53,7 +53,7 @@ A monetary cap is currently rejected: the current BAKED provider metadata has no
 
 Provider-account stops, repeated edit refusals, convergence-limit stops, initiative blockers and budget shortfalls carry recovery advice from the core. The terminal app names the corresponding key, such as R to retry, A to accept changes, M to switch model or B to extend the initiative budget. Its doctor output names the recovery decision, and delivery advice names the `/workflow deliver` command in the app. The desktop names its buttons and decisions, including Retry, Accept changes, Switch model, Extend budget and recovery decisions in Needs you. Open the named feature run to handle a run blocker. Policy or spec changes still require revision before retrying; extending tokens does not raise a convergence limit.
 
-The headless CLI keeps recovery commands in its messages. API clients receive optional structured `recovery` advice beside the legacy text. Stored advice belongs to one diagnostic and does not carry over to a later stop.
+The headless CLI keeps recovery commands in its messages. API clients receive optional structured `recovery` advice beside the legacy text. A `no_progress` stop on a repair limit includes a `repair` remedy, rendered as `O` in the TUI and One more repair in desktop. Stored advice belongs to one diagnostic and does not carry over to a later stop.
 
 ### MCP tools
 
@@ -1450,3 +1450,18 @@ Limitations: event payloads and artifact contents are returned as `baked workflo
 | 130 | pause/cancel |
 
 Management commands return 0 when the change is stored. `status`, `list`, `artifacts` and `export` are available with the feature flag off and do not call a model. `--events` prints JSONL with the stored sequence numbers and a final snapshot; `--after N` sets the replay point for run/resume. The process does not continue working after the CLI exits.
+
+## Granting another repair
+
+A run blocked with `no_progress` at `maxTaskRepairs`, `maxRepairRounds`, `maxCorrectiveTasks`, a v2 loop's `maxIterations`, or `maxStageVisits` offers **One more repair**. The TUI uses **O** in the run view and on the selected blocked initiative feature. The desktop run and initiative feature show the same action, with the refused limit and tokens spent. If the same findings repeated after a clean-context restart, the action warns that another repair may repeat them again.
+
+```sh
+baked workflow repair RUN_ID --expected-revision N
+baked workflow repair RUN_ID --expected-revision N --rounds 2
+```
+
+The command records the person's grant and continues the run. `--no-resume` records the grant and leaves the run paused; `--events` streams progress when it continues. `--rounds` defaults to 1 and accepts integers from 1 to 100. A grant covers the refused operation, including all corrective tasks it needs. Additional rounds add units to that limit. A stage-visit grant adds visits, so a path through several more stages may need several visits. Task grants apply to the refused planned task's correction chain, checks and review rounds have separate counters, and loop grants apply to the refused transition. A clean-context repeat grant permits that many further repair attempts; findings that still repeat stop again when the grant is spent.
+
+Grants persist in `repair-grants/COMMAND_ID.json` artifacts with `approvedBy: "user"`, the refused operation and tokens spent. Replaying the command ID does not grant twice; a stale revision is refused. Scope approval, checks and token/call/time/cost budgets still apply. Revising the package or forking resets the grant counters. Baseline failures and failures outside the approved write scope do not offer this action; fix those files or revise the plan.
+
+`POST /v1/workflow/runs/RUN_ID/repair` takes `{commandId, expectedRevision, rounds?}` and resumes in the server's background driver. An active initiative continues after its repaired feature stops. Run snapshots expose `repairBlock` only for the current eligible stop, with `limit`, `scope`, `required`, `taskIds` and an optional `transitionId`. Every interface uses the core `canRepairRun` predicate.

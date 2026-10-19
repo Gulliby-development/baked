@@ -7,6 +7,8 @@ import {
 function label(remedy: Remedy): string {
   const run = remedy.runId ? `run ${remedy.runId}` : "the run";
   switch (remedy.action) {
+    case "repair":
+      return `Open ${run} and choose One more repair`;
     case "resume":
       return `Open ${run} and choose Retry`;
     case "accept-workspace":

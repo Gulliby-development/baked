@@ -989,6 +989,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs"],
   },
   {
+    id: "run-repair",
+    group: "Workflow runs",
+    title: "Grant another repair at a refused limit",
+    tui: ["/workflow: O on the run or initiative feature"],
+    cli: ["baked workflow repair"],
+    api: ["/v1/workflow/runs/:id/repair"],
+    desktop: ["project/runs: One more repair", "project/initiatives: feature One more repair"],
+  },
+  {
     id: "run-control",
     group: "Workflow runs",
     title: "Pause, resume, accept outside changes, cancel, extend, reroute, undo edits",

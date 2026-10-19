@@ -28,7 +28,7 @@ const commands: [string, string[]][] = [
   ["quick", []],
   ["doctor", []],
   ["estimate", []],
-  ...["deliver", "approve", "extend", "reroute", "revise", "recover", "undo", "resume"].map(
+  ...["deliver", "approve", "repair", "extend", "reroute", "revise", "recover", "undo", "resume"].map(
     (command): [string, string[]] => [command, ["no-such-run"]],
   ),
 ];

@@ -6,6 +6,7 @@
 import { z } from "zod";
 import { WorkflowFault } from "../errors.js";
 import type { RecoveryAdvice } from "../remedies.js";
+import { canRepairRun, repairText } from "../repairable.js";
 import { newId } from "../store.js";
 import {
   canExtendBudget,
@@ -162,6 +163,13 @@ export const InitiativeActionSchema = z.discriminatedUnion("kind", [
       maxAgentCalls: z.number().int().min(1).optional(),
       maxActiveMs: z.number().int().min(1).optional(),
       maxCostUsd: z.number().positive().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("repair"),
+      runId: z.string(),
+      expectedRevision: z.number().int().min(0),
     })
     .strict(),
   z.object({ kind: z.literal("drive") }).strict(),
@@ -370,6 +378,17 @@ export function initiativeActions(
       },
     );
   }
+  if (!initiativeIsTerminal(view) && feature?.repairRun && canRepairRun(feature.repairRun))
+    options.push({
+      key: "O",
+      label: "one more repair",
+      action: {
+        kind: "repair",
+        runId: feature.repairRun.runId,
+        expectedRevision: feature.repairRun.revision,
+      },
+      confirm: `${repairText(feature.repairRun.repairBlock)} ${feature.repairRun.tokenUsage} tokens spent. Grant one more repair? Y confirms; N keeps it blocked.`,
+    });
   if (feature && canReplanFeature(view, feature))
     options.push({
       key: "X",
@@ -437,6 +456,11 @@ export async function applyInitiativeAction(
         }),
         drive: true,
       };
+    case "repair":
+      if (!initiatives.view(id).features.some((f) => f.runId === action.runId && f.repairRun))
+        throw new WorkflowFault("STALE_DECISION", "This feature no longer offers another repair");
+      await initiatives.workflows.repair(action.runId, command);
+      return { view: initiatives.view(id), drive: true };
     case "resume":
       return { view: await initiatives.resume(id, command), drive: true };
     case "pause":

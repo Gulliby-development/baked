@@ -1,3 +1,4 @@
+import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
@@ -1550,6 +1551,16 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
         900_000,
       );
   }
+});
+
+// A gate's failed output can stop on a repair limit on every stack; the grant does not waive it.
+describe("repair-limit decisions (#1577)", () => {
+  test.each(STACKS)("%s offers grants only for a recorded repair-limit stop", () => {
+    const repairBlock: RepairBlock = { limit: "maxRepairRounds", scope: "round", required: 1, taskIds: [] };
+    expect(canRepairRun({ status: "blocked", reason: "no_progress", repairBlock })).toBe(true);
+    expect(canRepairRun({ status: "blocked", reason: "no_progress" })).toBe(false);
+    expect(canRepairRun({ status: "blocked", reason: "verification_failed", repairBlock })).toBe(false);
+  });
 });
 
 // Ownership is independent of the check program: an initiative's review gate must not ask

@@ -445,6 +445,12 @@ export async function executeWorkflowCommand(
     }
     case "accept":
       return decideThenResume({ kind: "accept", requestId: stringFlag(args, "request") });
+    case "repair": {
+      const repaired = await service.repair(runId, identity(), Number(args.flags.rounds ?? 1));
+      if (args.flags["no-resume"] === true) return repaired;
+      onDrive?.(runId);
+      return service.drive(runId, signal);
+    }
     case "extend": {
       const number = (flag: string): number | undefined =>
         typeof args.flags[flag] === "string" ? Number(args.flags[flag]) : undefined;

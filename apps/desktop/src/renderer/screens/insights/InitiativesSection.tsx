@@ -1,4 +1,5 @@
 import { useEffect, useId, useState } from "react";
+import { canRepairRun, repairText } from "../../../../../../src/core/workflows/repairable.js";
 import { chat } from "../../client/chat.js";
 import type {
   FeatureSize,
@@ -8,6 +9,7 @@ import type {
 } from "../../client/insights.js";
 import { insights } from "../../client/insights.js";
 import { desktopRecoveryText } from "../../client/remedies.js";
+import { workflow } from "../../client/workflow.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Badge } from "../../components/ui/badge.js";
 import { Button } from "../../components/ui/button.js";
@@ -152,7 +154,10 @@ function ModelSwitch({
 /** The dialog the initiative detail shows, if any. */
 type Open =
   | { kind: "reject" | "merge" | "extend" }
-  | { kind: "rename" | "split" | "remove" | "replan" | "workflow"; feature: InitiativeFeature };
+  | {
+      kind: "rename" | "split" | "remove" | "replan" | "workflow" | "repair";
+      feature: InitiativeFeature;
+    };
 
 /** The actions of one feature row: split edits while the split is editable, then re-plan. */
 function FeatureActions({
@@ -166,8 +171,12 @@ function FeatureActions({
 }) {
   const editable = canEditSplit(view);
   const replan = canReplanFeature(view, feature);
-  if (!editable && !replan) return null;
-  const action = (kind: "rename" | "split" | "remove" | "replan" | "workflow", label: string) => (
+  const repair = feature.repairRun && canRepairRun(feature.repairRun);
+  if (!editable && !replan && !repair) return null;
+  const action = (
+    kind: "rename" | "split" | "remove" | "replan" | "workflow" | "repair",
+    label: string,
+  ) => (
     <Button
       variant="secondary"
       size="sm"
@@ -184,6 +193,7 @@ function FeatureActions({
       {editable && action("rename", "Rename")}
       {editable && canSplitFeature(view) && action("split", "Split")}
       {editable && canRemoveFeature(view) && action("remove", "Remove")}
+      {repair && action("repair", "One more repair")}
       {replan && action("replan", "Re-plan")}
     </span>
   );
@@ -515,6 +525,7 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
     }
   };
   const share = (n: number): string => `${counts.total ? (n / counts.total) * 100 : 0}%`;
+  const repair = dialog?.kind === "repair" ? dialog.feature.repairRun : null;
   const parts = [
     counts.done && `${counts.done} done`,
     counts.inProgress && `${counts.inProgress} in progress`,
@@ -719,6 +730,15 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
           submitLabel="Remove"
           danger
           onSubmit={() => insights.removeFeature(projectKey, view, dialog.feature.id)}
+          onClose={close}
+        />
+      )}
+      {dialog?.kind === "repair" && repair?.repairBlock && (
+        <FormDialog
+          title="One more repair"
+          submitLabel="Grant and resume"
+          description={`${repairText(repair.repairBlock)} ${tokens(repair.tokenUsage)} tokens spent.`}
+          onSubmit={() => workflow.repair(projectKey, repair)}
           onClose={close}
         />
       )}

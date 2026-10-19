@@ -1,6 +1,7 @@
 /** Recovery data and helpers shared with the desktop renderer, without runtime dependencies. */
 export const REMEDY_ACTIONS = [
   "resume",
+  "repair",
   "extend",
   "accept-workspace",
   "reroute",

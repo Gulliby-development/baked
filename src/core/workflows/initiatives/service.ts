@@ -1,3 +1,4 @@
+import { canRepairRun } from "../repairable.js";
 /**
  * Initiatives (docs/workflows/runtime.md, "Initiatives"): a large request split
  * into 3..12 features with contracts and a dependency DAG, one approval of the split, and feature
@@ -184,6 +185,7 @@ export interface CostView {
 }
 
 export interface FeatureView {
+  repairRun?: RunSnapshot;
   id: string;
   title: string;
   mandatory: boolean;
@@ -1992,13 +1994,14 @@ export class InitiativeService {
         view.state = "waiting";
         view.blockers = waiting;
       } else if (run.status === "blocked") {
+        if (canRepairRun(run)) view.repairRun = run;
         view.state = "blocked";
         // A provider refusal names its own remedy (credits, a usage limit's reset, a reroute), which
         // a bare reason hides from whoever reads the initiative (#1395).
         const refusal =
           run.reason === "provider_account" ? stopDetail(this.workflows.store, link.run_id) : null;
         view.blockers = [
-          `run ${link.run_id} is blocked (${run.reason})${refusal ? `: ${refusal.split("\n")[0]?.slice(0, 600)}` : ""}; resolve it with baked workflow resume ${link.run_id}`,
+          `run ${link.run_id} is blocked (${run.reason})${refusal ? `: ${refusal.split("\n")[0]?.slice(0, 600)}` : ""}; resolve it with baked workflow ${canRepairRun(run) ? "repair" : "resume"} ${link.run_id}`,
         ];
         const recorded = stopRecovery(this.workflows.store, link.run_id);
         view.recovery = recoveryAdvice(

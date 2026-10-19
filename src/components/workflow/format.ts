@@ -7,6 +7,7 @@ import { rangeText, type StartEstimate } from "../../core/workflows/estimate.js"
 import { canExtendRun } from "../../core/workflows/extendable.js";
 import { detectGates } from "../../core/workflows/gates.js";
 import { reasonText } from "../../core/workflows/reasons.js";
+import { canRepairRun, repairText } from "../../core/workflows/repairable.js";
 import type { RunSnapshot, WorkflowEvent } from "../../core/workflows/schemas.js";
 import type { Check } from "../../core/workflows/types.js";
 import type {
@@ -132,6 +133,11 @@ export function headline(
     case "paused":
       return { now: `Paused at ${at}.`, next: "Press R to resume." };
     case "blocked":
+      if (canRepairRun(snapshot) && snapshot.repairBlock)
+        return {
+          now: `Blocked at ${at}: ${repairText(snapshot.repairBlock)}`,
+          next: `${formatTokens(snapshot.tokenUsage)} tokens spent. Press O to grant one more repair and continue, F to fork, or C to cancel.`,
+        };
       if (snapshot.reason === "budget_exhausted")
         return {
           now: `Blocked at ${at}: ${budget ? budgetLimitText(budget) : reasonText(snapshot.reason)}.`,
@@ -209,6 +215,7 @@ export interface RunAction {
     | "fork"
     | "discard-worktree"
     | "decide"
+    | "repair"
     | "extend"
     | "undo"
     | "reroute"
@@ -273,13 +280,15 @@ export function runActions(
   if (
     s === "created" ||
     s === "paused" ||
-    (s === "blocked" && snapshot.reason !== "budget_exhausted")
+    (s === "blocked" && snapshot.reason !== "budget_exhausted" && !canRepairRun(snapshot))
   )
     actions.push({
       key: "R",
       label: s === "created" ? "start" : s === "blocked" ? "retry" : "resume",
       action: "resume",
     });
+  if (canRepairRun(snapshot))
+    actions.push({ key: "O", label: "one more repair", action: "repair" });
   // Keeps the files a person changed outside the run instead of restoring them.
   if (s === "blocked" && snapshot.reason === "input_changed")
     actions.push({ key: "A", label: "accept changes", action: "accept-workspace" });

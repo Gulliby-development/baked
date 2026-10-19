@@ -350,6 +350,7 @@ import { carriesOver, changedSince, previousRound } from "./re-review.js";
 import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery.js";
 import { recoveryAdvice } from "./remedies.js";
+import { RepairBlockSchema } from "./repairable-schema.js";
 import { deliverableProblems, repairDeliverables, requestCoverage } from "./request-coverage.js";
 import {
   type AccountRefusal,
@@ -1988,6 +1989,16 @@ export class WorkflowScheduler {
                 break;
               }
               await this.recordCheckBaseline(runId, state, policy, signal);
+              if (state.pendingTaskRepair.length) {
+                const ids = new Set(state.pendingTaskRepair);
+                const findings = this.store
+                  .findings(runId)
+                  .filter((f) => ids.has(f.id))
+                  .map(
+                    (f) => ({ ...JSON.parse(f.body_json), id: f.id }) as Review["findings"][number],
+                  );
+                this.repair(runId, state, policy, findings, "repair", "task");
+              }
               if ((policy.maxConcurrentWriters > 1 || candidateCount(policy) > 1) && state.worktree)
                 await this.implementParallel(runId, stepId, state, policy, profiles, signal);
               else await this.implement(runId, stepId, state, policy, profiles, signal);
@@ -2659,6 +2670,16 @@ export class WorkflowScheduler {
             "recovery",
             `recovery/advice-${diagnostic.id}.json`,
             canonical(fault.details.recovery),
+          );
+        const repair = RepairBlockSchema.safeParse(
+          fault instanceof WorkflowFault ? fault.details.repairBlock : undefined,
+        );
+        if (reason === "no_progress" && repair.success)
+          this.store.artifact(
+            runId,
+            "recovery",
+            `repair-blocks/${diagnostic.id}.json`,
+            canonical(repair.data),
           );
         // A task that ended unfinished after its restart (#1516): the service resumes it once.
         if (fault instanceof WorkflowFault && typeof fault.details.unfinishedTask === "string")
@@ -12496,19 +12517,36 @@ ${note}`;
       if (transition.loop) {
         const count = (position.loops[transition.id] ?? 0) + 1;
         // "One more round" at a convergence decision allows the loop one more pass as well, and
-        // so does a checks repair round granted for a regression after a correction (#1272).
+        // so do grants for checks or review rounds, including a regression after a correction (#1272).
         const bound =
           transition.loop.maxIterations +
+          (state.extraLoopIterations[transition.id] ?? 0) +
           (position.repairKind === "convergence"
             ? state.extraConvergenceRounds
             : stageKind(v2.stage) === "checks"
               ? (state.extraRepairRounds ?? 0)
-              : 0);
+              : stageKind(v2.stage) === "review"
+                ? state.extraReviewRounds
+                : 0);
         if (count > bound)
           throw new WorkflowFault(
             "RECOVERY_REQUIRED",
-            `no_progress: loop ${transition.id} reached its bound of ${transition.loop.maxIterations}`,
-            { reason: "no_progress" },
+            recoveryAdvice(
+              `no_progress: loop ${transition.id} reached its bound of ${transition.loop.maxIterations}. Grant one more repair with workflow repair, revise, or fork the run.`,
+              `no_progress: loop ${transition.id} reached its bound of ${transition.loop.maxIterations}`,
+              { action: "repair", runId },
+              { action: "revise", runId, setting: "maxIterations" },
+              { action: "fork", runId },
+            ),
+            {
+              reason: "no_progress",
+              repairBlock: {
+                limit: "maxIterations",
+                scope: "transition",
+                transitionId: transition.id,
+                required: count - bound,
+              },
+            },
           );
         position.loops[transition.id] = count;
         // Returning before the approval needs a new one: the plan it covered will change.
@@ -12519,11 +12557,20 @@ ${note}`;
         }
       }
       if (target) {
-        if (position.total + 1 > v2.definition.limits.maxStageVisits)
+        if (position.total + 1 > v2.definition.limits.maxStageVisits + state.extraStageVisits)
           throw new WorkflowFault(
             "RECOVERY_REQUIRED",
-            `no_progress: the run reached ${v2.definition.limits.maxStageVisits} stage visits`,
-            { reason: "no_progress" },
+            recoveryAdvice(
+              `no_progress: the run reached ${v2.definition.limits.maxStageVisits} stage visits. Grant one more repair with workflow repair, revise, or fork the run.`,
+              `no_progress: the run reached ${v2.definition.limits.maxStageVisits} stage visits`,
+              { action: "repair", runId },
+              { action: "revise", runId, setting: "maxStageVisits" },
+              { action: "fork", runId },
+            ),
+            {
+              reason: "no_progress",
+              repairBlock: { limit: "maxStageVisits", scope: "run", required: 1 },
+            },
           );
         position.total++;
         position.visits[target.id] = (position.visits[target.id] ?? 0) + 1;
@@ -12721,7 +12768,8 @@ ${note}`;
       state.stageIndex = index;
       return true;
     }
-    if (position.total + 1 > v2.definition.limits.maxStageVisits) return false;
+    if (position.total + 1 > v2.definition.limits.maxStageVisits + state.extraStageVisits)
+      return false;
     position.stageId = target.id;
     position.outcome = null;
     position.findings = [];
@@ -12851,10 +12899,15 @@ ${note}`;
     const open = scope === "task" ? this.openCorrections(runId, state) : new Set<string>();
     const fresh = findings.filter((f) => !open.has(f.id));
     if (!fresh.length) return;
+    if (scope === "task") {
+      state.pendingTaskRepair = fresh.map((f) => f.id);
+      this.store.transaction(() => this.store.saveState(runId, state));
+    }
     this.store.transaction(() => {
       this.amendSpec(runId, state, fresh);
       appendCorrections(this.store, runId, state, policy, fresh, kind, scope);
       this.markQuickFixes(runId, state, policy, fresh);
+      if (scope === "task") state.pendingTaskRepair = [];
       // A v2 run keeps its position: a task's repair runs in the tasks stage it is in, and a
       // stage's failure goes back along the definition's repair transition (#853).
       const parsed = parseRunDefinition(this.store.run(runId).definition_json);

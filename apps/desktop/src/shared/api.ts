@@ -92,6 +92,7 @@ export interface AttentionItem {
 }
 
 export interface RunSnapshot {
+  repairBlock?: import("../../../../src/core/workflows/repairable.js").RepairBlock;
   runId: string;
   featureId: string;
   status: RunState;
