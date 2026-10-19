@@ -5,8 +5,8 @@ import { costCeilingUsd, costToleranceOf } from "./cost-tolerance.js";
 import { defaultWorkflowPolicy } from "./defaults.js";
 import { WorkflowFault } from "./errors.js";
 import { type AgentProfile, extendToOf, PolicySchema, type RunPolicy } from "./schemas.js";
+import { forecastRate, forecastSamples } from "./stage-price.js";
 import type { RunRow, WorkflowStore } from "./store.js";
-import { attemptSpend } from "./usage.js";
 export function reserveTokens(prompt: string, profile: AgentProfile, policy: RunPolicy): number {
   // Each tool-loop step can replay the growing context and generate another completion.
   // Native execution also enforces the total run limit between calls.
@@ -169,7 +169,7 @@ export function assertCostCapPriced(policy: RunPolicy, routing: RoutingRecord): 
 }
 
 /**
- * USD per token the run has paid so far, used to price the tokens its open attempts reserve.
+ * USD per token the run has paid so far, used before a stage has measured prices.
  * Before anything is priced, the attempt model's input price stands in.
  */
 export function costRate(
@@ -190,20 +190,37 @@ export function costRate(
  * priced, the blended price (`costRate`) stands in.
  */
 export function remainingCostRate(store: WorkflowStore, runId: string): number {
-  const stageOf = new Map(store.steps(runId).map((step) => [step.id, step.stage_id]));
-  let usd = 0;
-  let tokens = 0;
-  for (const attempt of store.attempts(runId)) {
-    if (attempt.status === "running" || !attempt.used_tokens) continue;
-    if (!(stageOf.get(attempt.step_id) ?? "").startsWith("task-")) continue;
-    const cost = attemptSpend(store, runId, attempt.id, attempt.model_id)?.costUsd;
-    if (cost === null || cost === undefined) continue;
-    usd += cost;
-    tokens += attempt.used_tokens;
+  return callCostRate(store, runId, "implement");
+}
+
+/**
+ * Price a call from finished attempts of its owning stage, preserving its cache mix on the
+ * requested model. Without stage samples, use the blended run price, then the model's input
+ * price. With no model, return the stage's paid average for token affordability.
+ */
+export function callCostRate(
+  store: WorkflowStore,
+  runId: string,
+  stage: string,
+  model: string | null = null,
+): number {
+  const samples = forecastSamples(store, [runId]).filter(
+    (a) => a.status !== "running" && a.costUsd !== null && (a.usedTokens ?? 0) > 0,
+  );
+  const matching = samples.filter((a) => a.stage === stage);
+  const tokens = matching.reduce((sum, a) => sum + (a.usedTokens ?? 0), 0);
+  if (tokens > 0) {
+    if (model !== null) return forecastRate(samples, stage, model) ?? 0;
+    return matching.reduce((sum, a) => sum + (a.costUsd ?? 0), 0) / tokens;
   }
-  if (usd > 0 && tokens > 0) return usd / tokens;
-  const { spentUsd } = store.costUsage(runId);
-  return costRate(spentUsd > 0 ? spentUsd : null, store.run(runId).token_usage, null);
+  const run = store.run(runId);
+  const spentUsd =
+    run.estimated_cost_microusd !== null
+      ? run.estimated_cost_microusd / 1e6
+      : samples.length
+        ? samples.reduce((sum, a) => sum + (a.costUsd ?? 0), 0)
+        : null;
+  return costRate(spentUsd, run.token_usage, model);
 }
 
 /**
@@ -313,7 +330,7 @@ function recordGrowth(
 }
 
 /**
- * Grows a run's cost cap so its tolerance ceiling covers a forecast of `projectedUsd`, when the
+ * Grows a run's cost cap to a forecast of `projectedUsd` plus tolerance headroom, when the
  * policy lets the cap grow (`sizing.maxRunCostUsd`, what an initiative can spare for the feature)
  * that far. Recorded like every host growth (`approvedBy: "sizing"`, `kind: "forecast-growth"`).
  * Returns whether the forecast now fits. An initiative feature whose finished tasks ran over their
@@ -334,9 +351,9 @@ export function growCostCapToForecast(
     policy.maxCostUsd = stored.maxCostUsd;
   const bound = policy.sizing?.maxRunCostUsd;
   if (policy.maxCostUsd === null || bound === undefined) return false;
-  const needed = Math.ceil((projectedUsd / (1 + tolerance)) * 100) / 100;
-  if (needed <= policy.maxCostUsd) return true;
-  if (needed > bound) return false;
+  if (projectedUsd <= policy.maxCostUsd * (1 + tolerance)) return true;
+  if (projectedUsd > bound * (1 + tolerance)) return false;
+  const needed = Math.min(bound, Math.ceil(projectedUsd * (1 + tolerance) * 100) / 100);
   recordGrowth(
     store,
     runId,

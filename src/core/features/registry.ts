@@ -884,7 +884,8 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "run-cost-cap",
     group: "Workflow runs",
-    title: "Cost cap of a run: per run, per project and in the doctor and estimate",
+    title:
+      "Cost cap of a run: calls and reservations use stage prices, bounded growth adds tolerance headroom",
     tui: ["/workflow: new run, Cost cap field", "/timeouts: Workflow Cost Cap"],
     cli: [
       "baked workflow run: --max-cost-usd",

@@ -1,5 +1,6 @@
 import { join, resolve } from "node:path";
 import type { RunPolicy } from "./schemas.js";
+import { DEFAULT_MIX } from "./stage-price.js";
 import { readStoreHistory, type WorkflowStore } from "./store.js";
 
 /**
@@ -356,7 +357,7 @@ export interface TokenMix {
  * Attempts record input plus output, with cache reads inside input, and no cache writes. Agent
  * loops re-send long contexts and write little, so most tokens are input and many are cached.
  */
-export const DEFAULT_MIX: TokenMix = { input: 0.6, cacheRead: 0.3, output: 0.1 };
+export { DEFAULT_MIX } from "./stage-price.js";
 /** Used for an agent stage that neither history nor the stage defaults know. */
 export const GENERIC_AGENT_RANGE: TokenRange = { low: 15_000, high: 60_000 };
 
