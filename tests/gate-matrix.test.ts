@@ -3,6 +3,7 @@ import { runScanner } from "../src/core/workflows/quality/rules.js";
 import { suspendClock } from "./helpers/suspend-clock.js";
 import { caseCheck } from "../src/core/verification/criteria-cases.js";
 import { fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
+import { cellSamples, cellSpec, omittedCellInput, withoutCellInput } from "./helpers/criteria-cell-fixtures.js";
 import { ProcessScope } from "../src/core/workflows/process-scope.js";
 import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
 import { growthLimit, type InitiativeView, rebaseView, shareShortfall } from "../src/core/workflows/initiatives/service.js";
@@ -521,6 +522,22 @@ describe("gate matrix: shared criterion rows (#1597)", () => {
       expect(missingCases(cases, [rows[index]!])).toEqual([]);
       expect(missingCases(cases, [])).toHaveLength(1);
     }
+  });
+});
+
+describe("gate matrix: multi-input criteria cells and escapes (#1614)", () => {
+  for (const sample of cellSamples) cell(sample.stack, `${sample.stack}: table inputs compare by value`, async () => {
+    const root = project({ [sample.path]: sample.text });
+    const task = { criterionIds: ["AC-001"], writes: [{ path: sample.path, action: "create" as const }] };
+    const cases = criterionCases(cellSpec, task);
+    expect(cases).toHaveLength(14);
+    const check = caseCheck(cellSpec, task);
+    expect(check).toBeDefined();
+    expect(await check?.(root)).toEqual([]);
+    writeFileSync(join(root, sample.path), withoutCellInput(sample.text));
+    expect(await check?.(root)).toEqual([
+      `AC-001 names ${JSON.stringify(omittedCellInput)}, and no test file this task writes (${sample.path}) contains it.`,
+    ]);
   });
 });
 

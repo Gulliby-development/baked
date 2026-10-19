@@ -2,7 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
-import { criterionCases, isCheckCommand, missingCases, testsHold } from "../src/core/verification/criteria-cases.js";
+import { criterionCases, isCheckCommand, missingCases, normalizeLiteral, testsHold } from "../src/core/verification/criteria-cases.js";
+import { cellSamples, cellSpec, omittedCellInput, withoutCellInput } from "./helpers/criteria-cell-fixtures.js";
 import type { Spec } from "../src/core/workflows/schemas.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
@@ -24,6 +25,56 @@ const criterion = (id: string, then: string, method: "automated" | "manual" = "a
   when: "`cochange --path src/cli` and `cochange --path SRC` run",
   then,
   method,
+});
+
+describe("multi-input table cells and escape spellings (#1614)", () => {
+  test("input spans become separate cases without context words", () => {
+    const cases = criterionCases(cellSpec, { criterionIds: ["AC-001"] });
+    expect(cases.map((c) => c.literal)).toEqual([
+      "https://user:pass@example.com/a", "https://\u4f8b\u3048.\u30c6\u30b9\u30c8/\u9053", "https://example.com/a%20b", "HTTPS://example.com/a",
+      '"0 R."', '"00 R."', omittedCellInput, '"001 R."', '"+1 R."', '"\\u0661 R."',
+      "0001ALICE 0015{\\n0002BOB   0120}\\n...", "layout.json", "ALT", "caf\\u00e9\\tend\\r",
+    ]);
+    for (const sample of cellSamples) {
+      expect(missingCases(cases, [sample.text])).toEqual([]);
+      expect(missingCases(cases, [withoutCellInput(sample.text)]).map((c) => c.literal)).toEqual([omittedCellInput]);
+    }
+  });
+
+  test("normalizes one layer of supported escapes on both sides", () => {
+    expect(normalizeLiteral(String.raw`\u00e9\u{1f600}\x21\n\t\r\\`)).toBe("\u00e9\u{1f600}!\n\t\r\\");
+    for (const spelling of [String.raw`caf\u00e9`, String.raw`caf\u{e9}`, String.raw`caf\xe9`, "caf\u00e9"]) {
+      expect(testsHold(`"${spelling}"`, "caf\u00e9")).toBe(true);
+      expect(testsHold('"caf\u00e9"', spelling)).toBe(true);
+      expect(testsHold('"cafe"', spelling)).toBe(false);
+    }
+    expect(normalizeLiteral(String.raw`\u{110000}\uZZZZ\xZZ\q`)).toBe(String.raw`\u{110000}\uZZZZ\xZZ\q`);
+    expect(testsHold(String.raw`"root\leaf"`, "leaf")).toBe(true);
+    expect(testsHold('"caf\u00e9Extra"', "caf\u00e9")).toBe(false);
+    expect(testsHold('"caf\u00c9"', "caf\u00e9")).toBe(false);
+    expect(testsHold('"0 R."', '"\\u0661 R."')).toBe(false);
+    expect(testsHold('LayoutCommand.run(new String[] {""})', 'LayoutCommand.run([""])')).toBe(true);
+    expect(normalizeLiteral(String.raw`\\n`)).toBe(String.raw`\n`);
+    expect(testsHold(String.raw`"\\n"`, String.raw`\n`)).toBe(false);
+    expect(testsHold(String.raw`"\\n"`, String.raw`\\n`)).toBe(true);
+    expect(testsHold(String.raw`"\\u00e9"`, String.raw`\u00e9`)).toBe(false);
+  });
+
+  test("deduplicates alternate literal spellings and preserves escaped quotes in prose", () => {
+    const text = 'input "caf\\u00e9" and "caf\u00e9"; output "invalid \\"name\\""';
+    const spec = { criteria: [{ ...cellSpec.criteria[0]!, given: text, when: "run", then: "done" }] };
+    expect(criterionCases(spec, { criterionIds: ["AC-001"] }).map((c) => c.literal)).toEqual(["caf\\u00e9", 'invalid \\"name\\"']);
+  });
+
+  test("preserves concrete quoted expected outputs beside the split inputs", () => {
+    const spec = { criteria: [{ ...cellSpec.criteria[0]!, then: '| Input | Expected |\n| --- | --- |\n| `input-1`, `input-2` | `error-42` |' }] };
+    expect(criterionCases(spec, { criterionIds: ["AC-001"] }).map((c) => c.literal)).toEqual(["error-42", "input-1", "input-2"]);
+  });
+
+  test("standalone quoted table labels still belong to review (#1565)", () => {
+    const spec = { criteria: [{ ...cellSpec.criteria[0]!, then: '| Input | Expected |\n| --- | --- |\n| `success` | zero status |\n| "repeated flag" | last value |\n| `--path src/cli` | selected |' }] };
+    expect(criterionCases(spec, { criterionIds: ["AC-001"] }).map((c) => c.literal)).toEqual(["--path src/cli"]);
+  });
 });
 
 describe("the quoted cases of a task's criteria", () => {
