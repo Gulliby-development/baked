@@ -1009,6 +1009,11 @@ export class NativeAgentExecutor implements AgentExecutor {
       if (!resultSchema) throw new WorkflowFault("OUTPUT_INVALID", "Unknown profile output schema");
       const schema = withHostConstants(request.profile.output, resultSchema);
       let submitted: unknown;
+      let lastRefusal: { accepted: false; errors: string[]; instruction: string } | undefined;
+      const refuse = (errors: string[], instruction: string) => {
+        lastRefusal = { accepted: false, errors, instruction };
+        return lastRefusal;
+      };
       let rejected = 0;
       let taskEndChecked = false;
       let editsNoted = false;
@@ -1038,12 +1043,10 @@ export class NativeAgentExecutor implements AgentExecutor {
                 canonical({ errors, submitted: parsed }),
               ),
             );
-            return {
-              accepted: false,
+            return refuse(
               errors,
-              instruction:
-                "The result was not accepted. Fix every listed problem and call submit_result again with the complete corrected result.",
-            };
+              "The result was not accepted. Fix every listed problem and call submit_result again with the complete corrected result.",
+            );
           }
           // An agent that hit a refusal outside BAKED's tools (Codex's own read-only sandbox) can
           // report a blocked task with "no changes were made" after BAKED applied its edits (#846).
@@ -1057,14 +1060,12 @@ export class NativeAgentExecutor implements AgentExecutor {
             editsNoted = true;
             const written = appliedPaths(this.store.effects(request.runId), request.attemptId);
             if (written.length)
-              return {
-                accepted: false,
-                errors: [
+              return refuse(
+                [
                   `This attempt applied edits to ${written.join(", ")} with BAKED's edit tools; they are in the workspace. Only edit_file, multi_edit and delete_file change files, and no sandbox setting refuses them.`,
                 ],
-                instruction:
-                  "Check the files as they are now. If the task is done, submit outcome implemented; if something is still missing, finish it with BAKED's edit tools or submit blocked naming what remains, not that no changes were made. The next submission is accepted.",
-              };
+                "Check the files as they are now. If the task is done, submit outcome implemented; if something is still missing, finish it with BAKED's edit tools or submit blocked naming what remains, not that no changes were made. The next submission is accepted.",
+              );
           }
           // A file this attempt wrote that does not parse is refused here, in the attempt that
           // broke it, not found by a whole-unit check after another task (#977). The same errors
@@ -1074,8 +1075,9 @@ export class NativeAgentExecutor implements AgentExecutor {
             const broken = (await Promise.all(written.map(syntaxRegressions))).flat();
             const key = broken.join("\n");
             if (broken.length) {
-              const refuse = syntaxRefusals < MAX_SYNTAX_REFUSALS && key !== lastSyntaxRefusal;
-              if (refuse) {
+              const shouldRefuse =
+                syntaxRefusals < MAX_SYNTAX_REFUSALS && key !== lastSyntaxRefusal;
+              if (shouldRefuse) {
                 syntaxRefusals++;
                 lastSyntaxRefusal = key;
               }
@@ -1084,16 +1086,14 @@ export class NativeAgentExecutor implements AgentExecutor {
                   request.runId,
                   "diagnostic",
                   `attempts/${request.attemptId}/syntax-${crypto.randomUUID()}.json`,
-                  canonical({ accepted: !refuse, errors: broken }),
+                  canonical({ accepted: !shouldRefuse, errors: broken }),
                 ),
               );
-              if (refuse)
-                return {
-                  accepted: false,
-                  errors: broken.map((line) => `Syntax error: ${line}`),
-                  instruction:
-                    "These files written by this task do not parse. Fix each listed line, then call submit_result again with the complete result. If the code is valid and only newer than the syntax checker, submit again unchanged: the same errors are not refused twice.",
-                };
+              if (shouldRefuse)
+                return refuse(
+                  broken.map((line) => `Syntax error: ${line}`),
+                  "These files written by this task do not parse. Fix each listed line, then call submit_result again with the complete result. If the code is valid and only newer than the syntax checker, submit again unchanged: the same errors are not refused twice.",
+                );
             }
           }
           // A case the criteria quote that the task's tests leave out goes back here, not to a
@@ -1117,12 +1117,10 @@ export class NativeAgentExecutor implements AgentExecutor {
                   canonical({ missing }),
                 ),
               );
-              return {
-                accepted: false,
-                errors: missing,
-                instruction:
-                  "The criteria this task covers quote these cases, and the test files it writes do not contain them. Add a test for each one that checks the exact expected output and exit code, then call submit_result again with the complete result. If a case is already tested in another spelling, submit again unchanged: the same list is not refused twice.",
-              };
+              return refuse(
+                missing,
+                "The criteria this task covers quote these cases, and the test files it writes do not contain them. Add a test for each one that checks the exact expected output and exit code, then call submit_result again with the complete result. If a case is already tested in another spelling, submit again unchanged: the same list is not refused twice.",
+              );
             }
           }
           if (
@@ -1134,12 +1132,10 @@ export class NativeAgentExecutor implements AgentExecutor {
             taskEndChecked = true;
             const typeErrors = await request.taskEndCheck(root, request.signal);
             if (typeErrors.length)
-              return {
-                accepted: false,
-                errors: typeErrors,
-                instruction:
-                  "The project's type check reports these errors in the files this task writes. Fix them, then call submit_result again with the complete result. This check runs once; the next submission is accepted.",
-              };
+              return refuse(
+                typeErrors,
+                "The project's type check reports these errors in the files this task writes. Fix them, then call submit_result again with the complete result. This check runs once; the next submission is accepted.",
+              );
           }
           // A correction that reports its finding fixed while the finding's repro still shows it
           // goes back here, not to another repair round (stmtsplit-update T007 and T008 ended
@@ -1153,12 +1149,10 @@ export class NativeAgentExecutor implements AgentExecutor {
             const live = await request.reproCheck(root, request.signal);
             if (live.length) {
               reproRefusals++;
-              return {
-                accepted: false,
-                errors: live,
-                instruction:
-                  "The host ran the repro of each finding this task corrects on the files as they are now, and these still show the reported behavior, so the task is not done. Fix the cause with BAKED's edit tools, confirm with run_repro that no finding reproduces, then call submit_result again with the complete result. If the fix needs a file outside this task's write scope, submit blocked and name that file in unresolved.",
-              };
+              return refuse(
+                live,
+                "The host ran the repro of each finding this task corrects on the files as they are now, and these still show the reported behavior, so the task is not done. Fix the cause with BAKED's edit tools, confirm with run_repro that no finding reproduces, then call submit_result again with the complete result. If the fix needs a file outside this task's write scope, submit blocked and name that file in unresolved.",
+              );
             }
           }
           submitted = parsed;
@@ -1243,7 +1237,9 @@ export class NativeAgentExecutor implements AgentExecutor {
           ),
         );
       // Usage is persisted as each step finishes, so a loop that throws keeps its real spend.
-      const finished: StepLike[] = [];
+      const finished: Array<
+        StepLike & { toolCalls: readonly { toolName: string; input?: unknown }[] }
+      > = [];
       // Usage of the latest model call, which a step rejected for its tool choice never reports.
       let lastCallUsage: LanguageModelUsage | undefined;
       // Each model step of a run also goes to the model events view of this process.
@@ -1298,65 +1294,95 @@ export class NativeAgentExecutor implements AgentExecutor {
         // Anthropic prompt cache: a breakpoint after the tools and system prompt, and the
         // automatic one after the newest message, so each step re-reads the earlier ones.
         const cacheTtl = this.config.cache?.ttl ?? "5m";
-        const generated = await generateText({
-          model,
-          instructions: {
-            role: "system",
-            content: request.profile.instructions,
-            providerOptions: getEphemeralCache(cacheTtl),
-          },
-          messages: [opening],
-          tools: available,
-          stopWhen: [
-            () => submitted !== undefined,
-            isStepCount(request.maxSteps),
-            ({ steps: done }) => budget.overBudget(done),
-          ],
-          maxRetries: 0,
-          maxOutputTokens: request.profile.maxOutputTokens,
-          abortSignal: modelCalls.signal,
-          providerOptions: withAutomaticCache(provider.providerOptions, cacheTtl),
-          headers: provider.headers,
-          onStepEnd: (step) => {
-            if (watch.calledAt !== null) {
-              recordModelSilence(request.runId, executionClock.now() - watch.calledAt);
-              watch.calledAt = null;
-            }
-            watch.lastAt = executionClock.now();
-            touchProgress(request.runId);
-            finished.push(step);
-            recordStep(step.usage);
-            this.store.recordAttemptUsage(
-              request.runId,
-              request.attemptId,
-              budget.consumed(finished),
-            );
-          },
-          prepareStep: ({ stepNumber, steps: done, ...history }) => {
-            watch.lastAt = executionClock.now();
-            watch.calledAt = executionClock.now();
-            request.signal.throwIfAborted();
-            // Compaction and the finalize notice are recomputed from the clean history each step.
-            const messages = cleanStepMessages(history);
-            const prepared = budget.prepare({ stepNumber, steps: done, messages });
-            this.store.expandReservation(
-              request.runId,
-              request.attemptId,
-              budget.reservation(done, prepared.messages ?? messages),
-              policy,
-            );
-            return prepared;
-          },
-          onLanguageModelCallEnd: ({ usage }) => {
-            lastCallUsage = usage;
-          },
-        });
-        result = {
-          steps: generated.steps,
-          text: generated.text,
-          usage: generated.usage,
-          messages: generated.response.messages,
-        };
+        let messages: ModelMessage[] = [opening];
+        for (let recovery = 0; ; recovery++) {
+          const earlier = [...finished];
+          const generated = await generateText({
+            model,
+            instructions: {
+              role: "system",
+              content: request.profile.instructions,
+              providerOptions: getEphemeralCache(cacheTtl),
+            },
+            messages,
+            tools: available,
+            stopWhen: [
+              () => submitted !== undefined,
+              isStepCount(request.maxSteps - earlier.length),
+              ({ steps: done }) => budget.overBudget([...earlier, ...done]),
+            ],
+            maxRetries: 0,
+            maxOutputTokens: request.profile.maxOutputTokens,
+            abortSignal: modelCalls.signal,
+            providerOptions: withAutomaticCache(provider.providerOptions, cacheTtl),
+            headers: provider.headers,
+            onStepEnd: (step) => {
+              if (watch.calledAt !== null) {
+                recordModelSilence(request.runId, executionClock.now() - watch.calledAt);
+                watch.calledAt = null;
+              }
+              watch.lastAt = executionClock.now();
+              touchProgress(request.runId);
+              finished.push(step);
+              recordStep(step.usage);
+              this.store.recordAttemptUsage(
+                request.runId,
+                request.attemptId,
+                budget.consumed(finished),
+              );
+            },
+            prepareStep: ({ stepNumber, steps: done, ...history }) => {
+              watch.lastAt = executionClock.now();
+              watch.calledAt = executionClock.now();
+              request.signal.throwIfAborted();
+              // Compaction and the finalize notice are recomputed from the clean history each step.
+              const messages = cleanStepMessages(history);
+              const steps = [...earlier, ...done];
+              const prepared = budget.prepare({
+                stepNumber: earlier.length + stepNumber,
+                steps,
+                messages,
+              });
+              this.store.expandReservation(
+                request.runId,
+                request.attemptId,
+                budget.reservation(steps, prepared.messages ?? messages),
+                policy,
+              );
+              return prepared;
+            },
+            onLanguageModelCallEnd: ({ usage }) => {
+              lastCallUsage = usage;
+            },
+          });
+          result = {
+            steps: finished,
+            text: generated.text,
+            usage: sumUsage(finished),
+            messages: [...messages.slice(1), ...generated.response.messages],
+          };
+          // A status report after a refusal still needs work. Replay the exact refusal once with
+          // all granted tools, in this attempt and within its original step and token limits.
+          if (
+            recovery > 0 ||
+            submitted !== undefined ||
+            !lastRefusal ||
+            request.signal.aborted ||
+            generated.steps.at(-1)?.toolCalls.length !== 0 ||
+            generated.steps.at(-1)?.finishReason === "length" ||
+            finished.length >= request.maxSteps ||
+            budget.overBudget(finished)
+          )
+            break;
+          messages = [
+            opening,
+            ...(result.messages ?? []),
+            {
+              role: "user",
+              content: `Your submit_result was refused. Continue working on the listed problems before submitting again.\n${canonical(lastRefusal)}`,
+            },
+          ];
+        }
       } catch (error) {
         // A forced submit step answered with text. Keep that text for the format correction
         // below, and record the rejected step's spend, which never reaches onStepEnd.
@@ -1601,6 +1627,12 @@ export class NativeAgentExecutor implements AgentExecutor {
               // A plain-text reply is still parsed as the result, as with AI SDK 6.
               if (!ToolChoiceViolationError.isInstance(error)) throw error;
             }
+            if (submitted === undefined && !correctedText.trim())
+              throw new WorkflowFault(
+                "OUTPUT_INVALID",
+                `Profile ${request.profile.id} returned no result from format correction`,
+                { reason: "no_submission" },
+              );
             submitted = schema.parse(submitted ?? JSON.parse(correctedText));
             this.store.transaction(() =>
               this.store.finishAttempt(request.runId, attempt, "completed", correctionTokens),
@@ -1627,6 +1659,8 @@ export class NativeAgentExecutor implements AgentExecutor {
             // A provider outage is not invalid output: the scheduler retries or falls back, and
             // retries a response past the output cap at a lower effort.
             if (isTransient(error) || isOutputLimit(error)) throw error;
+            if (error instanceof WorkflowFault && error.details.reason === "no_submission")
+              throw error;
             throw new WorkflowFault(
               "OUTPUT_INVALID",
               `Profile ${request.profile.id} returned invalid output after one format correction`,

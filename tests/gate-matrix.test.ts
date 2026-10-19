@@ -1,4 +1,5 @@
 import { rowFiles, rowsArtifact } from "../src/core/workflows/acceptance-rows.js";
+import { proseAfterRefusalScenario, refusalKinds } from "./helpers/prose-after-refusal-scenario.js";
 import { runScanner } from "../src/core/workflows/quality/rules.js";
 import { suspendClock } from "./helpers/suspend-clock.js";
 import { caseCheck } from "../src/core/verification/criteria-cases.js";
@@ -94,6 +95,12 @@ import {
  */
 
 type Stack = "bun" | "npm" | "python" | "go" | "rust" | "maven" | "dotnet";
+
+describe("submission gates followed by prose (#1615)", () => {
+  test.each(refusalKinds)("%s keeps the refusal and permits repair in the same attempt", async (kind) => {
+    await proseAfterRefusalScenario(kind);
+  }, 60000);
+});
 
 describe("gate execution after host suspend (#1610)", () => {
   test("the mutation tool's shared budget clock excludes suspend", async () => {

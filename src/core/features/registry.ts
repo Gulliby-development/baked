@@ -780,6 +780,16 @@ export const FEATURES: readonly Feature[] = [
 
   // Workflow runs
   {
+    id: "workflow-submit-refusal-recovery",
+    group: "Workflow runs",
+    title:
+      "Replay a refused submission once with repair tools; continue after an empty format correction",
+    tui: ["/workflow: shared attempt recovery"],
+    cli: ["baked workflow run: shared attempt recovery"],
+    api: ["/v1/workflow/runs: shared attempt recovery"],
+    desktop: ["project/runs: shared attempt recovery"],
+  },
+  {
     id: "workflow-fixer-journal",
     group: "Workflow runs",
     title: "Journal every task file changed by an automatic fixer, including directory-wide fixers",
