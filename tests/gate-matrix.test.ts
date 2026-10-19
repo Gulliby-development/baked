@@ -1,4 +1,5 @@
 import { rowFiles, rowsArtifact } from "../src/core/workflows/acceptance-rows.js";
+import { evaluateAutoApproval, planScopeAdvice } from "../src/core/workflows/auto-approval.js";
 import { proseAfterRefusalScenario, refusalKinds } from "./helpers/prose-after-refusal-scenario.js";
 import { runScanner } from "../src/core/workflows/quality/rules.js";
 import { suspendClock } from "./helpers/suspend-clock.js";
@@ -68,7 +69,7 @@ import {
 import { staticCorrection } from "../src/core/workflows/scheduler.js";
 import { ASSERTION_FAILURES } from "./helpers/assertion-failures.js";
 import { failureOwner } from "../src/core/workflows/task-graph.js";
-import type { Check, RunPolicy, RuntimeState } from "../src/core/workflows/schemas.js";
+import type { Check, RunPolicy, RuntimeState, TaskGraph } from "../src/core/workflows/schemas.js";
 import type { TaskRow, WorkflowStore } from "../src/core/workflows/store.js";
 import { scanTestIntegrity, testChanges } from "../src/core/workflows/test-integrity.js";
 import type { Task } from "../src/core/workflows/types.js";
@@ -677,6 +678,25 @@ for (const stack of STACKS) {
         const report = sizePlan({ graph, policy: { ...defaultWorkflowPolicy, sizing: { maxAttemptTokens: 600_000 } }, samples, spent: 0, spec });
         expect(report.tasks[0]).toMatchObject({ estimate: { low: 1_000_000, high: 1_000_000 }, attemptTokens: 600_000, cases, oversized: cases > 12 });
       }
+    });
+
+    cell(stack, "sizing-replan-approval-task-count (#1627)", () => {
+      const graph: TaskGraph = {
+        schemaVersion: 1, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64),
+        tasks: Array.from({ length: 10 }, (_, i) => ({
+          id: `T${String(i + 1).padStart(3, "0")}`, title: "Test slice", description: "Write cases",
+          requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer",
+          writes: [{ path: fixture.property.path, action: "modify" }], readHints: [], checkIds: [],
+          origin: "planned", findingIds: [], rationale: "Required behavior",
+        })),
+      };
+      const policy = {
+        ...defaultWorkflowPolicy,
+        autoApproval: { renewal: false, limits: { maxTasks: 8, maxFiles: 20, allowedPaths: ["**"], allowDelete: false, allowNewDependencies: false, maxTotalTokens: defaultWorkflowPolicy.maxTotalTokens } },
+      };
+      expect(planScopeAdvice(policy, graph, undefined, false, "", 2)).toEqual([]);
+      expect(evaluateAutoApproval(policy, {} as Parameters<typeof evaluateAutoApproval>[1], fixtureSpec, graph, [], [], { hostSplitTasks: 2 }).approval?.mode).toBe("limits");
+      expect(planScopeAdvice(policy, graph).join(" ")).toContain("10 tasks exceed 8");
     });
 
     cell(stack, "sequential-test-slices-written-tests", () => {

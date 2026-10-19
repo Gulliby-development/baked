@@ -219,8 +219,10 @@ export const RuntimeStateSchema = z
     coverageRaised: z.boolean().default(false),
     /** Criteria the planner could not cover that already sent the run back to specify once (#780). */
     uncoveredReturned: z.array(z.string()).default([]),
-    /** Tasks the host added by splitting oversized test tasks; they do not count against the auto-approval task limit. */
+    /** Tasks added by host splits or the planner answering a sizing split; excluded from the approval task limit. */
     hostSplitTasks: z.number().int().nonnegative().default(0),
+    /** Planner task count before a pending sizing replan; consumed when its replacement plan is stored. */
+    sizingPlannedTasks: z.number().int().nonnegative().nullable().default(null),
     /**
      * Planned tasks whose task check failed only on files that tasks still to run own, by the
      * owners they wait for. The check runs again once the owners are done; no repair starts.

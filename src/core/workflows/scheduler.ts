@@ -1288,6 +1288,9 @@ export class WorkflowScheduler {
                   (path) => existsSync(join(runRoot(this.store.workspace, state), path)),
                   this.baselineScaffold(runId, state),
                   state.requestText || state.prompt,
+                  state.sizingPlannedTasks === null
+                    ? 0
+                    : Math.max(0, parsed.data.taskGraph.tasks.length - state.sizingPlannedTasks),
                 );
                 if (advice.length) {
                   scopeAdvised = true;
@@ -1450,7 +1453,13 @@ export class WorkflowScheduler {
                 text: "",
               });
               state.graph = graph;
-              state.hostSplitTasks = graph.tasks.length - planned.tasks.length;
+              // A sizing replan may make the planner create the slices the host used to add.
+              // Keep the pre-sizing count for this replacement, then clear it so an unrelated
+              // later plan cannot inherit the exemption.
+              state.hostSplitTasks =
+                graph.tasks.length -
+                Math.min(planned.tasks.length, state.sizingPlannedTasks ?? planned.tasks.length);
+              state.sizingPlannedTasks = null;
               state.rootGraph = structuredClone(state.graph);
               state.manifest.planHash = hashBytes(state.plan);
               state.manifest.rootGraphHash = hashJson(state.graph);
@@ -4932,7 +4941,12 @@ export class WorkflowScheduler {
       const plan = stages.findIndex((stage) => stage.kind === "plan");
       if (plan >= 0) {
         this.raiseBudget(runId, state, policy, report);
-        const note = splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask);
+        const note = splitNote(
+          report,
+          plannerSizing(policy, samples, model).maxCodeFilesPerTask,
+          plannerApprovalLimits(policy)?.maxTasks,
+        );
+        state.sizingPlannedTasks = Math.max(0, graph.tasks.length - state.hostSplitTasks);
         // Under `revision: "patch"` the planner splits the oversized tasks with edit operations;
         // a whole new plan cost ratesim 029a5aec 170k tokens to split one skeleton task (#1112).
         this.pendPatch(
