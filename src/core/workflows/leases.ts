@@ -4,7 +4,6 @@ import { join, relative, resolve } from "node:path";
 import { processTreeAlive } from "../platform/index.js";
 import { canonical } from "../specs/hash.js";
 import { WorkflowFault } from "./errors.js";
-import { executionClock } from "./execution-clock.js";
 import { DEFAULT_STALL_SETTINGS, silentMs } from "./stall.js";
 import { type LeaseResource, type LeaseRow, newId, WorkflowStore } from "./store.js";
 import { transientSqliteError } from "./transient-sqlite.js";
@@ -315,7 +314,8 @@ export class WorkspaceLeases {
    */
   private tolerable(error: unknown): boolean {
     if (!transientSqliteError(error)) return false;
-    const now = executionClock.now();
+    // Ownership is shared across processes, so renewal failures use wall time even over suspend.
+    const now = Date.now();
     this.failingSince ??= now;
     return now - this.failingSince < LEASE_TTL_MS - HEARTBEAT_MS;
   }
