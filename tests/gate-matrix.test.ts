@@ -1,5 +1,6 @@
 import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
 import { growthLimit, type InitiativeView, rebaseView, shareShortfall } from "../src/core/workflows/initiatives/service.js";
+import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.js";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { directoryFixers, directoryFixerScenario } from "./helpers/directory-fixer-scenario.js";
 import { spawnSync } from "node:child_process";
@@ -1630,6 +1631,33 @@ describe("initiative start budget gate (#1605)", () => {
       expect(view.features.reduce((sum, f) => sum + (f.share?.tokens ?? 0), 0)).toBeLessThanOrEqual(tokens);
     }
   });
+});
+
+describe("initiative dollar forecast gate (#1607)", () => {
+  for (const tolerance of [0, 0.2, 0.25])
+    test.each([252_000, 500_000])(`accepted spend of %s tokens per feature, tolerance ${tolerance}`, (spent) => {
+      const estimate = estimateInitiative({
+        features: Array.from({ length: 12 }, (_, i) => ({ id: `f${i + 1}`, title: `f${i + 1}`, size: "medium" as const, workflowId: "sdd", paths: 1,
+          stages: [{ id: "specify", type: "agent", models: [] }, { id: "implement", type: "tasks", models: [] }],
+        })),
+        history: [], samples: [], maxTotalTokens: 20_000_000,
+        progress: { features: { f1: { spent, accepted: true }, f2: { spent, accepted: true } }, overhead: 0 },
+      });
+      const forecastUsd = Math.round(estimate.features.reduce((sum, f) => sum + f.expectedTokens * 9e-6, 0) * 100) / 100;
+      const view = {
+        initiativeId: "values",
+        budget: { remaining: { tokens: 20_000_000, calls: 1000, activeMs: 21_600_000 },
+          cost: { capUsd: 30, ceilingUsd: 30 * (1 + tolerance), spentUsd: 2 * spent * 9e-6, forecastUsd },
+        },
+        features: estimate.features.map((f, i) => ({ id: f.featureId, size: f.size, state: i < 2 ? "accepted" : "ready",
+          share: i < 2 ? null : { tokens: 1_000_000, calls: 100, activeMs: 1_000_000 }, shareUsd: i < 2 ? null : 2.5, need: f.tokens,
+        })),
+      } as unknown as InitiativeView;
+      expect(forecastUsd).toBe(Math.round(12 * spent * 9e-6 * 100) / 100);
+      const shortfall = shareShortfall(view, view.features[2]!);
+      if (spent === 252_000) expect(shortfall).toBeNull();
+      else expect(shortfall?.message).toContain("The initiative's cost forecast is");
+    });
 });
 
 describe("repair-limit decisions (#1577)", () => {

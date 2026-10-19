@@ -178,8 +178,8 @@ export interface CostView {
   /** cap - (spent of finished runs + caps of open runs); null without a cap. */
   remainingUsd: number | null;
   /**
-   * The projected total once a feature is accepted (#1312): what was spent, plus the tokens the
-   * re-forecast leaves for the features not accepted yet at the initiative's measured price. Null
+   * The projected total once a feature is accepted (#1312): what was spent, plus the point
+   * forecasts still to run at the initiative's measured feature price, without a margin. Null
    * without a cap, before a feature is accepted, or while nothing is priced.
    */
   forecastUsd: number | null;
@@ -1721,7 +1721,8 @@ export class InitiativeService {
     const tolerance = budget
       ? initiativeCostTolerance(budget.costTolerance, plan?.features.length ?? 0)
       : 0;
-    // The re-forecast's tokens still to run, at the price this initiative's runs have paid so far.
+    // Point forecasts, rather than midpoints of conservatively floored ranges (#1607), at the
+    // price the feature runs paid. Tolerance applies only to the ceiling, not to this projection.
     const forecastable =
       capUsd !== null &&
       estimate !== null &&
@@ -1732,7 +1733,7 @@ export class InitiativeService {
     const left = forecastable
       ? estimate.features
           .filter((f) => !accepted.has(f.featureId))
-          .reduce((sum, f) => sum + Math.max(0, (f.tokens.low + f.tokens.high) / 2 - f.spent), 0)
+          .reduce((sum, f) => sum + Math.max(0, f.expectedTokens - f.spent), 0)
       : 0;
     const round = (n: number): number => Math.round(n * 100) / 100;
     return {
