@@ -2,7 +2,7 @@
  * The estimate of a split initiative: a difficulty level and a token range, per feature and in
  * total. Every number is a forecast from the runs this project already stored (or the generic
  * ranges of `estimate.ts` when there are none), never a provider-specific constant, and it is
- * computed only when someone asks for it: nothing gates on it.
+ * used by split approval warnings, feature budget reserves and the optional forecast stop.
  */
 import {
   DEFAULT_TASK_COUNT,
@@ -13,6 +13,7 @@ import {
   type TokenRange,
   tokenText,
 } from "../estimate.js";
+import { estimateBudgetText } from "./estimate-budget.js";
 import type { FeatureSize } from "./plan.js";
 
 /** The margin added on top of the high end, for the token figure to plan the budget with. */
@@ -273,12 +274,7 @@ function estimateFeature(
 
 /** The estimate in one line for a screen: level, tasks, tokens, what to plan for, the budget. */
 export function estimateSummary(estimate: InitiativeEstimate): string {
-  const fits =
-    estimate.budget.fits === "yes"
-      ? "fits the budget"
-      : estimate.budget.fits === "maybe"
-        ? "may not fit the budget"
-        : "over the budget";
+  const fits = estimateBudgetText(estimate.tokens, estimate.budget, estimate.withMargin);
   return `Level ${estimate.level} · ~${estimate.tasks.low}-${estimate.tasks.high} tasks · ${rangeText(estimate.tokens)} tokens · plan for ${tokenText(estimate.withMargin)} · ${fits}`;
 }
 
@@ -479,12 +475,11 @@ export function estimateInitiative(input: {
       : []),
   ];
   const fits = fitsOf(withMargin, tokens.low, input.maxTotalTokens);
-  const budgetText =
-    fits === "yes"
-      ? "fits the budget"
-      : fits === "maybe"
-        ? "may not fit the budget"
-        : "does not fit the budget";
+  const budgetText = estimateBudgetText(
+    tokens,
+    { maxTotalTokens: input.maxTotalTokens, fits },
+    withMargin,
+  );
   return {
     schemaVersion: 1,
     level,

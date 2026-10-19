@@ -323,11 +323,11 @@ function shareTooSmall(share: UsageView | null): boolean {
 }
 
 /**
- * Why a ready feature may not start on its share, or null. Below the low end of its estimate it
- * stops for a decision before it starts: notesift's docs would have started with 0.8M tokens after
- * 29.15M of 30M, and the budget was extended only after the fact (#1311).
+ * Why a ready feature may not start, or null. Its low estimate must fit after reserving the
+ * other waiting features' lows; a weighted share alone can be smaller even when the pool covers
+ * them all (#1605). Exhausted token, call, time and dollar budgets still stop a start (#1311).
  */
-function shareShortfall(
+export function shareShortfall(
   view: Pick<InitiativeView, "initiativeId" | "budget" | "features">,
   feature: Pick<FeatureView, "id" | "share" | "need" | "shareUsd">,
 ): RecoveryAdvice | null {
@@ -359,10 +359,11 @@ function shareShortfall(
       `The shared budget is exhausted: ${feature.id} would start with ${share?.tokens ?? 0} tokens, ${share?.calls ?? 0} calls and ${share?.activeMs ?? 0} ms.`,
       { action: "extend", initiativeId: view.initiativeId },
     );
-  if (share && feature.need && share.tokens < feature.need.low)
+  const available = growthLimit(view, feature.id);
+  if (feature.need && available !== null && available < feature.need.low)
     return recoveryAdvice(
-      `The shared budget is short: ${feature.id} would start with ${share.tokens} tokens, below its estimate of ${feature.need.low}-${feature.need.high}. Raise it with baked workflow initiative extend.`,
-      `The shared budget is short: ${feature.id} would start with ${share.tokens} tokens, below its estimate of ${feature.need.low}-${feature.need.high}.`,
+      `The shared budget is short: ${feature.id} has ${available} tokens available after reserving the other waiting features' low estimates, below its estimate of ${feature.need.low}-${feature.need.high}. Raise it with baked workflow initiative extend.`,
+      `The shared budget is short: ${feature.id} has ${available} tokens available after reserving the other waiting features' low estimates, below its estimate of ${feature.need.low}-${feature.need.high}.`,
       { action: "extend", initiativeId: view.initiativeId },
     );
   return null;
@@ -380,8 +381,8 @@ function tokenWeights(features: Pick<FeatureView, "size" | "need">[]): number[] 
 }
 
 /**
- * The shares of the features waiting for a run: tokens and dollars by estimated need (dollars
- * follow the token weights, as both price the same work), calls and active time by size.
+ * The shares of the features waiting for a run: tokens by estimated need, with affordable low
+ * estimates protected; dollars by the original token weights, calls and active time by size.
  */
 function splitShares(
   features: Pick<FeatureView, "size" | "need">[],
@@ -391,10 +392,34 @@ function splitShares(
   const weights = features.reduce((sum, f) => sum + sizeWeight(f), 0);
   const byNeed = tokenWeights(features);
   const needTotal = byNeed.reduce((sum, w) => sum + w, 0);
+  const tokens = byNeed.map((weight) => Math.floor((remaining.tokens * weight) / needTotal));
+  // Keep weighted shares when they cover every low estimate. Otherwise reserve the lows that
+  // would be underfunded and split what is left among the others, repeating if needed (#1605).
+  const lows = features.map((f) => f.need?.low ?? 0);
+  if (lows.reduce((sum, low) => sum + low, 0) <= remaining.tokens) {
+    let pool = remaining.tokens;
+    let pending = features.map((_, index) => index);
+    while (pending.length) {
+      const weights = pending.reduce((sum, index) => sum + (byNeed[index] ?? 0), 0);
+      const short = pending.filter(
+        (index) => (pool * (byNeed[index] ?? 0)) / weights < (lows[index] ?? 0),
+      );
+      if (!short.length) {
+        for (const index of pending)
+          tokens[index] = Math.floor((pool * (byNeed[index] ?? 0)) / weights);
+        break;
+      }
+      for (const index of short) {
+        tokens[index] = lows[index] ?? 0;
+        pool -= tokens[index] ?? 0;
+      }
+      pending = pending.filter((index) => !short.includes(index));
+    }
+  }
   return features.map((feature, index) => ({
     share: {
       ...share(remaining, weights, sizeWeight(feature)),
-      tokens: share(remaining, needTotal, byNeed[index]).tokens,
+      tokens: tokens[index] ?? 0,
     },
     shareUsd:
       remainingUsd === null ? null : cents((remainingUsd * (byNeed[index] ?? 0)) / needTotal),
@@ -467,7 +492,7 @@ export function planBudget(settings: InitiativeSettings, plan: InitiativePlan): 
 export const MIN_SHARE = { maxTotalTokens: 1000, maxAgentCalls: 1, maxActiveMs: 1000 } as const;
 
 export const BUDGET_RULE =
-  "Each feature run starts with a share of the remaining shared budget, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included), times the feature's weight, divided by the weights of the features of the approved plan without a run. Tokens are weighted by each feature's estimated need (the high end of its estimate), calls and time by size (small 1, medium 2, large 4). A feature whose share is below the low end of its estimate does not start until the budget is raised. A feature run grows its own budget only up to what remains after the low ends of the features still waiting. A starting feature's calls and active time are what remains less a floor for each other waiting feature (the base policy's per-run limit scaled by size, at most its share), never below its own share. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000. With a dollar budget (--budget-usd), dollars are split like tokens and each feature run gets its share as its maxCostUsd (never above the base policy's own) with the initiative's costTolerance; open runs hold their caps. No feature starts on less than $0.01, or once a feature is accepted and the projected total passes the cap and its tolerance.";
+  "Each feature run starts with a share of the remaining shared budget, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included), times the feature's weight, divided by the weights of the features of the approved plan without a run. Tokens are weighted by each feature's estimated need (the high end of its estimate), calls and time by size (small 1, medium 2, large 4). When the remaining pool covers the waiting features' low estimates, token shares reserve any lows that the weighted split would underfund and divide the rest by the same weights. A feature starts only if the remaining pool minus the other waiting features' low estimates covers its own low estimate. Otherwise it waits for a budget extension. A feature run grows its own budget only up to what remains after the low ends of the features still waiting. A starting feature's calls and active time are what remains less a floor for each other waiting feature (the base policy's per-run limit scaled by size, at most its share), never below its own share. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000. With a dollar budget (--budget-usd), dollars use the original token weights and each feature run gets its share as its maxCostUsd (never above the base policy's own) with the initiative's costTolerance; open runs hold their caps. No feature starts on less than $0.01, or once a feature is accepted and the projected total passes the cap and its tolerance.";
 
 /** Digest a person approves for a plan revision: the plan, the budget and the frozen settings. */
 export function splitDigest(
@@ -1725,6 +1750,32 @@ export class InitiativeService {
     };
   }
 
+  /** Warn on the proposed revision before approval, including edits to an approved split. */
+  private splitApprovalMessage(row: InitiativeRow, view: InitiativeView): string | RecoveryAdvice {
+    const message = `Approve the split (plan revision ${row.plan_revision}) or edit it.`;
+    const plan = this.store.plan(this.store.revision(row.id, row.plan_revision));
+    const accepted = new Set(
+      view.features
+        .filter((f) => {
+          const proposed = plan.features.find((p) => p.id === f.id);
+          return (
+            f.state === "accepted" &&
+            proposed &&
+            featureDigest(proposed) === this.store.current(row.id, f.id)?.feature_digest
+          );
+        })
+        .map((f) => f.id),
+    );
+    const estimate = this.estimateOf(row, plan, accepted);
+    if (estimate.tokens.high <= estimate.budget.maxTotalTokens) return message;
+    const warning = `The estimate's high end (${tokenText(estimate.tokens.high)} tokens) exceeds the shared budget (${tokenText(estimate.budget.maxTotalTokens)}). Consider extending to ${estimate.withMargin} tokens, including margin, before approving, or approve with this risk.`;
+    return recoveryAdvice(
+      `${warning} Use baked workflow initiative extend ${row.id} --tokens ${estimate.withMargin} --expected-revision ${row.revision}. ${message}`,
+      `${warning} ${message}`,
+      { action: "extend", initiativeId: row.id },
+    );
+  }
+
   private nextAction(row: InitiativeRow, view: InitiativeView): NextAction {
     const action = (
       kind: NextAction["kind"],
@@ -1749,7 +1800,7 @@ export class InitiativeService {
         return action(
           "await_split_approval",
           view.pendingDecisions.some((d) => d.scope === "initiative")
-            ? `Approve the split (plan revision ${row.plan_revision}) or edit it.`
+            ? this.splitApprovalMessage(row, view)
             : row.reason || "Edit the split to propose a new revision.",
         );
       case "decomposing": {
@@ -2426,7 +2477,10 @@ function costPolicy(
  * its share to its own planning floor and sizing ceiling and held that, so the features after it
  * started on what was left (#1311). Null when no feature has an estimate.
  */
-export function growthLimit(view: InitiativeView, featureId: string): number | null {
+export function growthLimit(
+  view: Pick<InitiativeView, "budget" | "features">,
+  featureId: string,
+): number | null {
   const waiting = view.features.filter((f) => f.share !== null);
   if (!waiting.some((f) => f.need)) return null;
   const reserve = waiting
