@@ -97,7 +97,7 @@ for (const [label, samples] of [["three-sample controls", controls], ["crossmill
       const report = JSON.parse(store.readArtifact(run.runId, store.latestArtifact(run.runId, "sizing/plan-0.json")!.id)) as SizingReport;
       expect(report.tasks.find((t) => t.taskId === "T002")!.oversized).toBe(false);
       if (cases === 2) expect(report.tasks.find((t) => t.taskId === "T002")!.estimate.high).toBeLessThanOrEqual(Math.max(...samples.map((s) => s.tokens)));
-      if (samples.length < 6) expect(report.caseRate).toBeNull();
+      expect(report.testTaskRates.all?.samples).toBe(samples.length);
       expect(store.state(run.runId).sizingReplans).toBe(0);
     }, 120_000);
   }

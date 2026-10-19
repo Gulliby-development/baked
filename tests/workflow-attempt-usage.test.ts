@@ -235,7 +235,8 @@ describe("an attempt at its token cap", () => {
       code: "BUDGET_EXHAUSTED",
       details: { reason: "attempt_cap", cap: 30_000 },
     });
-    expect(String(error)).toContain("used 30000 tokens without submitting a result (attempt cap 30000)");
+    expect(String(error)).toContain("uncached-token cap");
+    expect(String(error)).toContain("uncached tokens 30000/30000, total tokens 30000/150000");
   });
 });
 
@@ -258,6 +259,18 @@ describe("an attempt whose steps replay a cached context (#1070)", () => {
     await expect(executor.execute({ ...request, attemptTokens: 160_000 })).resolves.toMatchObject({ output: result });
     const usage = usageRecord();
     expect(usage).toMatchObject({ stopReason: "submitted", finalizedBy: null, maxTokens: 160_000, totalTokens: 324_000, cappedTokens: 36_000 });
+  });
+
+  test("names the all-token cap and both totals when cached steps exhaust it (#1595)", async () => {
+    const cached = cachedStep(100_000, 99_000, 0, { name: "unknown_tool", input: {} });
+    const text = { ...cached, content: [{ type: "text" as const, text: "unfinished" }], finishReason: { unified: "stop" as const, raw: undefined } };
+    scriptModel([...Array.from({ length: 9 }, () => cached), text]);
+    const { executor, request, usageRecord } = await nativeAttempt({ ...fixturePolicy, maxTotalTokens: 10_000_000 });
+    const error = await executor.execute({ ...request, maxSteps: 32, attemptTokens: 250_000 }).catch((e: unknown) => e);
+    expect(String(error)).toContain("all-token cap");
+    expect(error).toMatchObject({ code: "BUDGET_EXHAUSTED", details: { reason: "attempt_cap", capKind: "all-token cap", tokens: 10_000, cap: 250_000, totalTokens: 1_000_000, allTokensCap: 1_000_000 } });
+    expect(String(error)).toContain("uncached tokens 10000/250000, total tokens 1000000/1000000");
+    expect(usageRecord()).toMatchObject({ stopReason: "tokens", finalizedBy: "tokens", totalTokens: 1_000_000, cappedTokens: 10_000, allTokensCap: 1_000_000 });
   });
 
   test("still finalizes before the run's free budget, which counts the cache reads", async () => {
