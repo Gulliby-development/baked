@@ -418,6 +418,26 @@ function cell(stack: Stack, name: string, body: () => void | Promise<void>, time
   else test(name, body, timeout);
 }
 
+describe("gate matrix: shared criterion rows (#1597)", () => {
+  for (const [stack, path] of [
+    ["bun", "tests/cli.test.ts"], ["python", "tests/test_cli.py"], ["rust", "tests/cli.rs"],
+  ] as const) cell(stack, `${stack}: each test task owns one shared row`, () => {
+    const rows = ["--ascending", "--descending", "--stdin"];
+    const tasks = rows.map((row, index) => ({
+      id: `T00${index + 1}`, criterionIds: ["AC-001"], description: `Test only ${row}`,
+      writes: [{ path, action: "create" as const }],
+    }));
+    const spec = { criteria: [{ id: "AC-001", requirementIds: ["FR-001"], given: "CLI input", when: "it runs",
+      then: rows.map((row) => `input "${row}"`).join("; "), method: "automated" as const }] };
+    for (const [index, task] of tasks.entries()) {
+      const cases = criterionCases(spec, task, { tasks });
+      expect(cases.map((c) => c.literal)).toEqual([rows[index]!]);
+      expect(missingCases(cases, [rows[index]!])).toEqual([]);
+      expect(missingCases(cases, [])).toHaveLength(1);
+    }
+  });
+});
+
 describe("gate matrix: criteria scenario labels (#1565)", () => {
   const samples: { stack: Stack; path: string; text: string }[] = [
     { stack: "bun", path: "tests/cli.test.ts", text: 'const path = "src/cli"; expect(run(["--path", path])).toBe(0); Join([3, 0, -2]);' },

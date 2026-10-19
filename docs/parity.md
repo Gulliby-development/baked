@@ -125,7 +125,7 @@ bun test tests/feature-parity.test.ts
 | Feature | TUI | Headless CLI | serve API | Desktop |
 | --- | --- | --- | --- | --- |
 | Start a full run or a quick task | `/workflow` | `baked workflow run`, `baked quick`, `baked workflow definitions` +1 | `/v1/workflow/runs`, `/v1/workflow/definitions`, `/v1/workflow/profiles` | `project/overview` |
-| Size tests by literal cases, split large test files into sequential criterion slices and replace their graph on re-plan | `/workflow` | `baked workflow show` | `/v1/workflow/runs/:id` | `project/runs` |
+| Walk and price shared criterion cases once per owning test task, split large test files into sequential criterion slices and replace their graph on re-plan | `/workflow` | `baked workflow show` | `/v1/workflow/runs/:id` | `project/runs` |
 | Test-integrity guard: block or warn on test gaming, spec conflicts | `/workflow` | `baked workflow run`, `baked workflow answer` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/answer` | `project/overview`, `attention` |
 | Recovery advice names the action available in each app | `/workflow` | `baked workflow status`, `baked workflow initiative show` | `/v1/workflow/runs/:id`, `/v1/initiatives/:id` | `project/runs`, `project/initiatives`, `attention` |
 | Route failed checks to pending test writers or named source owners | `/workflow` | `baked workflow run`, `baked workflow artifacts` | `/v1/workflow/runs`, `/v1/workflow/runs/:id/artifacts` | `project/runs` |
