@@ -89,6 +89,8 @@ export type FeatureEstimateBasis =
   | "defaults";
 
 export interface FeatureEstimate {
+  /** Dollar range on the workflow's routed models; absent without a shared dollar budget. */
+  costUsd?: TokenRange | null;
   featureId: string;
   title: string;
   workflowId: string;

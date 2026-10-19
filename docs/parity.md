@@ -187,7 +187,7 @@ bun test tests/feature-parity.test.ts
 
 | Feature | TUI | Headless CLI | serve API | Desktop |
 | --- | --- | --- | --- | --- |
-| Feature token shares protect low estimates; split approval warns when the high end exceeds the pool | `/workflow` | `baked workflow initiative show`, `baked workflow initiative extend` | `/v1/initiatives/:id`, `/v1/initiatives/:id/extend` | `project/initiatives` |
+| Feature token shares and dollar growth protect low estimates; split approval warns on underfunded shares | `/workflow` | `baked workflow initiative show`, `baked workflow initiative extend` | `/v1/initiatives/:id`, `/v1/initiatives/:id/extend` | `project/initiatives` |
 | Initiative deliverables have writable owners; deferred findings and mutation checks follow them | `/workflow` | `baked workflow report` | `/v1/workflow/runs/:id/report` | `project/runs` |
 | Start an initiative | `/workflow` | `baked workflow initiative` | `/v1/initiatives` | `project/initiatives` |
 | Initiative view: approve split, pause, resume, switch model | `/workflow` | `baked workflow initiative` | `/v1/initiatives/:id`, `/v1/initiatives/:id/events`, `/v1/initiatives/:id/approve` +3 | `project/initiatives`, `attention` |
@@ -196,7 +196,7 @@ bun test tests/feature-parity.test.ts
 | Estimate a split: a difficulty level and a token range from run history | `/workflow` | `baked workflow initiative estimate` | `/v1/initiatives/:id/estimate` | `project/initiatives` |
 | Independent features run side by side in worktrees | `/workflow` | `baked workflow initiative drive`, `baked workflow initiative show` | `/v1/initiatives/:id` | `project/initiatives` |
 | Review long dependency chains and merge small siblings by their dependents | `/workflow` | `baked workflow initiative start`, `baked workflow initiative show` | `/v1/initiatives`, `/v1/initiatives/:id` | `project/initiatives` |
-| A shared dollar cap with point forecasts priced by remaining stages and models, and one tolerance ceiling | `/workflow` | `baked workflow initiative start`, `baked workflow initiative extend`, `baked workflow initiative show` | `/v1/initiatives`, `/v1/initiatives/:id`, `/v1/initiatives/:id/extend` | `project/initiatives` |
+| A shared dollar cap with priced low reserves, call growth independent of tokens, and remaining-stage forecasts | `/workflow` | `baked workflow initiative start`, `baked workflow initiative extend`, `baked workflow initiative show` | `/v1/initiatives`, `/v1/initiatives/:id`, `/v1/initiatives/:id/extend` | `project/initiatives` |
 
 ### Projects and setup
 

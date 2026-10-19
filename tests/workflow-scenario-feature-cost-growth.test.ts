@@ -122,6 +122,7 @@ describe("scenario: a feature's dollar cap grows with its tokens (#1353)", () =>
       share: { tokens, calls: 100, activeMs: 3_600_000 },
       shareUsd,
       need: needLow === null ? null : { low: needLow, high: needLow * 2 },
+      needUsd: needLow === null ? null : { low: (needLow * shareUsd) / tokens, high: (needLow * 2 * shareUsd) / tokens },
     });
     // sum and two others wait; the others need half their token shares at the low end.
     const view = {

@@ -1,7 +1,7 @@
 import type { RoutingRecord } from "../llm/model-routing.js";
 import { findPricing } from "../llm/pricing.js";
 import { canonical, hashJson } from "../specs/hash.js";
-import { costCeilingUsd } from "./cost-tolerance.js";
+import { costCeilingUsd, costToleranceOf } from "./cost-tolerance.js";
 import { defaultWorkflowPolicy } from "./defaults.js";
 import { WorkflowFault } from "./errors.js";
 import { type AgentProfile, extendToOf, PolicySchema, type RunPolicy } from "./schemas.js";
@@ -233,21 +233,24 @@ const GROWTH_STEP = 0.5;
  * The cost cap after the host grows the token budget to `maxTotalTokens`. A cap that may grow
  * (`sizing.maxRunCostUsd`, set by an initiative from its unspent dollars) grows in proportion to
  * the tokens, up to that bound; any other cap stays. Every host growth of the token budget goes
- * through here, so the sizing raise and auto-growth agree (#1411). Bench round 35 (narrowfit sum):
+ * through here, so the sizing raise and auto-growth agree (#1411). `neededUsd` also lets a call
+ * grow the dollar cap without growing tokens, within the same approved bound (#1625).
+ * Bench round 35 (narrowfit sum):
  * auto-growth raised 1,527,292 tokens to 2,290,938 while the cap stayed $1.46, and the run stopped
  * on the cap with 62% of them used (#1353).
  */
-export function grownCostCap(policy: RunPolicy, maxTotalTokens: number): number | null {
+export function grownCostCap(
+  policy: RunPolicy,
+  maxTotalTokens: number,
+  neededUsd = policy.maxCostUsd ?? 0,
+): number | null {
   const growCostTo = policy.sizing?.maxRunCostUsd;
   if (policy.maxCostUsd === null || growCostTo === undefined) return policy.maxCostUsd;
-  if (maxTotalTokens <= policy.maxTotalTokens) return policy.maxCostUsd;
-  return Math.max(
-    policy.maxCostUsd,
-    Math.min(
-      growCostTo,
-      Math.ceil(((policy.maxCostUsd * maxTotalTokens) / policy.maxTotalTokens) * 100) / 100,
-    ),
-  );
+  const proportional =
+    maxTotalTokens > policy.maxTotalTokens
+      ? Math.ceil(((policy.maxCostUsd * maxTotalTokens) / policy.maxTotalTokens) * 100) / 100
+      : policy.maxCostUsd;
+  return Math.max(policy.maxCostUsd, Math.min(growCostTo, Math.max(neededUsd, proportional)));
 }
 
 /**
@@ -259,7 +262,13 @@ function recordGrowth(
   runId: string,
   policy: RunPolicy,
   maxTotalTokens: number,
-  kind: "auto-growth" | "planning-floor" | "planning-growth" | "auto-extend" | "forecast-growth",
+  kind:
+    | "auto-growth"
+    | "planning-floor"
+    | "planning-growth"
+    | "auto-extend"
+    | "forecast-growth"
+    | "call-growth",
   detail: Record<string, unknown>,
   costTo?: number,
 ): void {
@@ -316,7 +325,13 @@ export function growCostCapToForecast(
   policy: RunPolicy,
   projectedUsd: number,
   tolerance: number,
+  kind: "forecast-growth" | "call-growth" = "forecast-growth",
 ): boolean {
+  // A parallel attempt may already have grown the policy. Keep that revision when growing again.
+  const stored = PolicySchema.parse(JSON.parse(store.run(runId).policy_json));
+  if (stored.maxTotalTokens > policy.maxTotalTokens) policy.maxTotalTokens = stored.maxTotalTokens;
+  if (stored.maxCostUsd !== null && stored.maxCostUsd > (policy.maxCostUsd ?? Infinity))
+    policy.maxCostUsd = stored.maxCostUsd;
   const bound = policy.sizing?.maxRunCostUsd;
   if (policy.maxCostUsd === null || bound === undefined) return false;
   const needed = Math.ceil((projectedUsd / (1 + tolerance)) * 100) / 100;
@@ -327,9 +342,9 @@ export function growCostCapToForecast(
     runId,
     policy,
     policy.maxTotalTokens,
-    "forecast-growth",
+    kind,
     { projectedUsd, maxRunCostUsd: bound },
-    needed,
+    grownCostCap(policy, policy.maxTotalTokens, needed) ?? needed,
   );
   return true;
 }
@@ -553,6 +568,20 @@ export function assertAttemptFits(
   const remaining = store.remainingTokens(runId, policy, attemptId);
   if (remaining >= attemptTokens) return;
   const committed = policy.maxTotalTokens - remaining;
+  // Token extensions also consult affordability. Give an initiative's approved dollar growth
+  // room a chance before that check refuses an otherwise affordable attempt (#1625).
+  const rate = remainingCostRate(store, runId);
+  if (rate > 0) {
+    const { spentUsd, reservedUsd } = store.costUsage(runId, attemptId);
+    growCostCapToForecast(
+      store,
+      runId,
+      policy,
+      spentUsd + reservedUsd + attemptTokens * rate,
+      costToleranceOf(store, runId, policy),
+      "call-growth",
+    );
+  }
   if (growBudgetOnProgress(store, runId, policy, committed + attemptTokens)) return;
   if (policy.sizing?.maxRunTokens == null) return;
   const left = store.remainingTokens(runId, policy, attemptId);
