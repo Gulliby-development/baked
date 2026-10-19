@@ -1,5 +1,5 @@
 import { expectRecovery } from "./helpers/workflow-remedies.js";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1392,6 +1392,22 @@ describe("initiative runtime", () => {
       expect(executor.maxActive).toBeLessThanOrEqual(3);
     }, 120_000);
   });
+
+  test("a small worktree initiative bounds Git process creation (#1589)", async () => {
+    const t = setup();
+    repository(t.root);
+    const spawns = spyOn(Bun, "spawn");
+    try {
+      await t.start({ plan: threeFeatures, policy: { ...policy, executionMode: "worktree" }, featureAutoApproval: { maxTasks: 5, maxFiles: 5 } });
+      await t.approveSplit();
+      expect((await t.drive()).status).toBe("completed");
+      const calls = spawns.mock.calls.filter(([cmd]) => Array.isArray(cmd) && cmd[0] === "git");
+      // The original runtime started over 350 Git processes for these three one-file features.
+      expect(calls.length).toBeLessThanOrEqual(200);
+    } finally {
+      spawns.mockRestore();
+    }
+  }, 30000);
 
   test("siblings that share a file run in order, so a dependent's merge of their results succeeds (#1336)", async () => {
     // Bench round 34, sketchfold: hll, frequent, hist and member each added a `pub mod` line to

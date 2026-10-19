@@ -1,13 +1,40 @@
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { lstat, readdir, readFile, readlink } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import ignore from "ignore";
 import { processOutput } from "../spawn.js";
 import { hashBytes, hashJson } from "../specs/hash.js";
+import {
+  git,
+  gitEnvironmentKey,
+  gitFileStamp,
+  gitWorktreePaths,
+} from "../workflows/delivery-git.js";
 import { WorkflowFault } from "../workflows/errors.js";
 
 const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
+
+const trackedFiles = new Map<string, { stamp: string; files: string[] }>();
+
+/** A source scan needs only tracked names, not HEAD or the working copy's status. */
+async function gitTrackedFiles(workspace: string): Promise<string[]> {
+  if (!existsSync(join(workspace, ".git"))) return [];
+  const paths = await gitWorktreePaths(workspace);
+  const key = `${resolve(workspace)}\0${paths?.index ?? ""}\0${gitEnvironmentKey()}`;
+  const stamp = paths ? gitFileStamp(paths.index) : null;
+  const cached = trackedFiles.get(key);
+  if (stamp && cached?.stamp === stamp) return cached.files;
+  const result = await git(workspace, ["ls-files", "-z", "--cached"], { timeoutMs: 10000 });
+  if (result.code !== 0) throw new Error(`Cannot read repository baseline: ${result.stderr}`);
+  const files = result.stdout.split("\0").filter(Boolean);
+  // Do not cache a read raced by an index update, or a missing/unborn index.
+  if (stamp && paths && gitFileStamp(paths.index) === stamp) {
+    if (trackedFiles.size >= 128) trackedFiles.delete(trackedFiles.keys().next().value ?? "");
+    trackedFiles.set(key, { stamp, files });
+  }
+  return files;
+}
 
 export async function gitBaseline(
   workspace: string,
@@ -93,7 +120,7 @@ export async function sourceManifest(
 ): Promise<Record<string, string>> {
   const files: Record<string, string> = {};
   const excluded = [".git", ".baked", "node_modules"];
-  const tracked = new Set((await gitBaseline(workspace))?.tracked ?? []);
+  const tracked = new Set(await gitTrackedFiles(workspace));
   type Rules = { base: string; matcher: ReturnType<typeof ignore> };
   async function walk(directory: string, inherited: Rules[]): Promise<void> {
     signal?.throwIfAborted();

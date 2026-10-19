@@ -1,6 +1,6 @@
 import { errorRecovery } from "../src/core/workflows/remedies.js";
 import { expectRecovery } from "./helpers/workflow-remedies.js";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { hashBytes } from "../src/core/specs/hash.js";
 import { executeDelivery, prepareDelivery, type PreparedDelivery } from "../src/core/workflows/delivery.js";
 import { classifyRemoteFailure, internalPath, looksSecret } from "../src/core/workflows/delivery-git.js";
+import * as gitPlumbing from "../src/core/workflows/delivery-git.js";
 import {
   type CommitCheck,
   githubPullRequests,
@@ -220,6 +221,38 @@ describe("Git delivery", () => {
     expect(without.files.map((f) => f.path)).toEqual(["value.txt"]);
   });
 
+  test("a failed batched mode read refuses delivery preparation (#1589)", async () => {
+    const s = await completedRun();
+    const original = gitPlumbing.git;
+    const commands = spyOn(gitPlumbing, "git").mockImplementation((workspace, args, options) => {
+      if (args[0] === "ls-tree" && args.includes("-r"))
+        return Promise.resolve({ code: 128, stdout: "", bytes: new Uint8Array(), stderr: "Cannot read tree" });
+      return original(workspace, args, options);
+    });
+    try {
+      await expect(prepare(s, { specs: true })).rejects.toThrow("Cannot read delivery file modes");
+    } finally {
+      commands.mockRestore();
+    }
+  });
+
+  test("delivery reads file modes and updates its temporary index in batches (#1589)", async () => {
+    const s = await completedRun();
+    const spawns = spyOn(Bun, "spawn");
+    try {
+      const prepared = await prepare(s, { specs: true });
+      expect(prepared.plan.files.length).toBeGreaterThan(1);
+      await approve(s, prepared);
+      const result = await execute(s);
+      expect(result.commit).toBeTruthy();
+      const commands = spawns.mock.calls.flatMap(([cmd]) => Array.isArray(cmd) && cmd[0] === "git" ? [cmd] : []);
+      expect(commands.filter((cmd) => cmd.includes("ls-tree"))).toHaveLength(1);
+      expect(commands.filter((cmd) => cmd.includes("update-index"))).toHaveLength(1);
+    } finally {
+      spawns.mockRestore();
+    }
+  });
+
   test("delivers only the run's files to a branch, a push and a pull request with evidence", async () => {
     const s = await completedRun({ userChanges: true });
     const headBefore = git(s.root, "rev-parse", "HEAD");
@@ -428,7 +461,7 @@ describe("Git delivery", () => {
       ["deploy.txt", "-----BEGIN RSA PRIVATE KEY-----\nabc\n"],
       ["certs/server.pem", "certificate\n"],
     ] as const) {
-      Bun.spawnSync(["mkdir", "-p", join(s.root, "certs")]);
+      mkdirSync(join(s.root, "certs"), { recursive: true });
       writeFileSync(join(s.root, path), content);
       store.transaction(() => {
         const id = store.prepareEffect(s.runId, attemptId, "file_patch", { path }, null, hashBytes(content));
@@ -955,7 +988,7 @@ describe("delivery building blocks", () => {
   test("migration 003 upgrades a version 2 database and keeps its rows", () => {
     const root = mkdtempSync(join(tmpdir(), "baked-delivery-migration-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));
-    Bun.spawnSync(["mkdir", "-p", join(root, ".baked")]);
+    mkdirSync(join(root, ".baked"), { recursive: true });
     const db = new Database(join(root, ".baked", "workflows.sqlite"));
     db.exec(migration001);
     db.exec(migration002);
