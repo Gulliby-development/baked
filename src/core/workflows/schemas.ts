@@ -129,6 +129,17 @@ export const TaskSchema = z
         })
         .strict(),
     ),
+    /** Opt-in literal criteria expanded by the host; the agent writes only rowTest.harness. */
+    rows: z.array(CriterionId).min(1).max(200).optional(),
+    rowTest: z
+      .object({
+        framework: z.enum(["bun", "pytest"]),
+        harness: RelativePath,
+        test: RelativePath,
+        data: RelativePath,
+      })
+      .strict()
+      .optional(),
     readHints: z.array(RelativePath),
     /**
      * An existing file that shows the pattern the task's code should follow (structure, naming,
@@ -506,6 +517,8 @@ export const PolicySchema = z
      * their hash.
      */
     derivationAudit: z.enum(["off", "on"]).optional(),
+    /** Host-written audited acceptance rows and parameterized tests; absent means off (#1596). */
+    rowsAsData: z.enum(["off", "on"]).optional(),
     /**
      * `split` has the decomposer of an initiative split a feature that holds more than a third of
      * the critical path into features that run side by side, or say why it stays whole
@@ -1736,6 +1749,8 @@ export interface StartRequest {
   clarification?: ClarificationMode;
   /** What the test-integrity guard does in this run (CLI `--test-integrity MODE`); it overrides the policy. */
   testIntegrity?: "block" | "warn";
+  /** Host-written acceptance rows for Bun and pytest; omitted, the policy decides. */
+  rowsAsData?: "off" | "on";
   /** The duplication ratchet of this run (CLI `--duplication MODE`); it overrides the policy. */
   duplication?: "off" | "warn" | "ratchet";
   /** Semgrep on the run's diff (CLI `--sast MODE`); it overrides the policy. */

@@ -110,6 +110,18 @@ export class WorkflowToolPolicy {
     )
       throw new WorkflowFault("CAPABILITY_DENIED", `Unclassified or mutating tool denied: ${name}`);
     const path = this.path(args.path);
+    const generated =
+      this.store.state(this.runId).rootGraph?.tasks ??
+      this.store.state(this.runId).graph?.tasks ??
+      [];
+    if (
+      this.policy.rowsAsData === "on" &&
+      generated.some((t) => t.rows?.length && [t.rowTest?.test, t.rowTest?.data].includes(path))
+    )
+      throw new WorkflowFault(
+        "CAPABILITY_DENIED",
+        `Host-written acceptance file is read-only: ${path}. Edit its harness instead.`,
+      );
     const write = this.task.writes.find((w) => w.path === path);
     if (!write || (write.action === "delete") !== (name === "delete_file"))
       throw new WorkflowFault("CAPABILITY_DENIED", `Task ${this.task.id} cannot write ${path}`);

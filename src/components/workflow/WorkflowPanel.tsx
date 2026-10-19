@@ -835,7 +835,9 @@ export function WorkflowPanel({
                     : "Nothing waits for you right now. You will be brought here when a decision is needed."}
                 </text>
               ))}
-            {tab === "tasks" && <TaskGraphView tasks={tasks} />}
+            {tab === "tasks" && (
+              <TaskGraphView tasks={tasks} rows={details?.acceptanceRows?.rows} />
+            )}
             {tab === "spec" && (
               <ArtifactReview
                 title="Specification"

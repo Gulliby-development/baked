@@ -258,6 +258,14 @@ export function TasksTab({
                 <td className="font-mono">{t.id}</td>
                 <td>
                   {t.title}
+                  {t.rows?.length ? (
+                    <span
+                      className="ml-2 text-dim-foreground"
+                      title={`Harness: ${t.rowTest?.harness}; data: ${t.rowTest?.data}`}
+                    >
+                      host rows: {t.rows.join(", ")}
+                    </span>
+                  ) : null}
                   {hostWritten(t) && (
                     <span
                       className="ml-2 text-dim-foreground"
@@ -277,6 +285,38 @@ export function TasksTab({
           </tbody>
         </table>
       </div>
+      {data.artifacts.rows?.length ? (
+        <section
+          className={cn(PANEL, "flex flex-col gap-[10px]")}
+          aria-label="Audited acceptance rows"
+        >
+          <h3 className={LABEL}>Audited acceptance rows (rows.json)</h3>
+          <div className="overflow-x-auto">
+            <table className={TABLE}>
+              <thead>
+                <tr>
+                  <th>Row</th>
+                  <th>Input</th>
+                  <th>Expected</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.artifacts.rows.map((row) => (
+                  <tr key={row.id}>
+                    <td className="font-mono">{row.id}</td>
+                    <td>
+                      <code>{JSON.stringify(row.input)}</code>
+                    </td>
+                    <td>
+                      <code>{JSON.stringify(row.expected)}</code>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
     </div>
   );
 }

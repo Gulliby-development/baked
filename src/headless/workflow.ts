@@ -358,6 +358,9 @@ export async function executeWorkflowCommand(
         ...(args.flags.clarification === "ask" || args.flags.clarification === "assume"
           ? { clarification: args.flags.clarification }
           : {}),
+        ...(args.flags["rows-as-data"] === "on" || args.flags["rows-as-data"] === "off"
+          ? { rowsAsData: args.flags["rows-as-data"] }
+          : {}),
         ...(args.flags["test-integrity"] === "block" || args.flags["test-integrity"] === "warn"
           ? { testIntegrity: args.flags["test-integrity"] }
           : {}),

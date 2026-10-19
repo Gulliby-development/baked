@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { AcceptanceRow } from "../../../../../../src/core/workflows/acceptance-rows-model.js";
 import { bridge } from "../../client/bridge.js";
 import {
   type ArtifactEntry,
@@ -34,6 +35,7 @@ export interface RunArtifacts {
   spec: Spec | null;
   plan: string | null;
   graph: TaskGraph | null;
+  rows?: AcceptanceRow[];
   estimate: SavedEstimate | null;
   /** The latest routing record: the run model and the routed stages. */
   routing: RoutingRecord | null;
@@ -92,7 +94,7 @@ export async function loadArtifacts(
     /^acceptance\/[^/]+\/[^/]+\/walk\.json$/.test(a.path),
   );
   const reviewIds = [...new Set(findingArtifacts)];
-  const [spec, planText, graph, estimate, routing, preflight, gates, walks, reviews] =
+  const [spec, planText, graph, estimate, routing, preflight, gates, walks, reviews, rows] =
     await Promise.all([
       readJson<Spec>(key, runId, latest.get("spec.json")),
       latest.has("plan.md")
@@ -110,12 +112,14 @@ export async function loadArtifacts(
           return entry ? readJson<Review>(key, runId, entry) : null;
         }),
       ),
+      readJson<{ rows: AcceptanceRow[] }>(key, runId, latest.get("rows.json")),
     ]);
   return {
     list,
     spec,
     plan: planText,
     graph,
+    ...(Array.isArray(rows?.rows) ? { rows: rows.rows } : {}),
     estimate,
     routing: routing && typeof routing.runModel === "string" ? routing : null,
     preflight: Array.isArray(preflight?.checks) ? preflight.checks : null,

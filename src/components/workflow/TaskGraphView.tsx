@@ -1,7 +1,9 @@
 import { useTheme } from "../../core/theme/index.js";
+import type { AcceptanceRow } from "../../core/workflows/acceptance-rows-model.js";
 import type { TaskRow } from "../../core/workflows/store.js";
 import { hostWritten } from "../../core/workflows/task-graph.js";
 import type { Task } from "../../core/workflows/types.js";
+import { ArtifactReview } from "./ArtifactReview.js";
 
 const GLYPH: Record<TaskRow["status"], string> = {
   pending: "·",
@@ -14,7 +16,7 @@ const GLYPH: Record<TaskRow["status"], string> = {
   invalidated: "↺",
   interrupted: "‖",
 };
-export function TaskGraphView({ tasks }: { tasks: TaskRow[] }) {
+export function TaskGraphView({ tasks, rows }: { tasks: TaskRow[]; rows?: AcceptanceRow[] }) {
   const t = useTheme();
   if (tasks.length === 0) return <text fg={t.textMuted}>Tasks appear after the plan stage.</text>;
   const done = tasks.filter((r) => r.status === "verified" || r.status === "implemented").length;
@@ -42,6 +44,9 @@ export function TaskGraphView({ tasks }: { tasks: TaskRow[] }) {
               {`${GLYPH[row.status]} ${row.id} ${task.title}`}
               {task.origin !== "planned" ? <span fg={t.warning}>{` (${task.origin})`}</span> : null}
               {hostWritten(task) ? <span fg={t.textMuted}>{" (host-written)"}</span> : null}
+              {task.rows?.length ? (
+                <span fg={t.textMuted}>{` (host rows: ${task.rows.join(", ")})`}</span>
+              ) : null}
             </text>
             <text fg={t.textFaint}>
               {`   ${row.status}${task.dependsOn.length ? ` · after ${task.dependsOn.join(", ")}` : ""} · criteria ${task.criterionIds.join(", ")}`}
@@ -57,6 +62,12 @@ export function TaskGraphView({ tasks }: { tasks: TaskRow[] }) {
           </box>
         );
       })}
+      {rows?.length ? (
+        <ArtifactReview
+          title="Audited acceptance rows (rows.json)"
+          content={JSON.stringify(rows, null, 2)}
+        />
+      ) : null}
     </box>
   );
 }

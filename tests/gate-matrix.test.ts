@@ -1,3 +1,6 @@
+import { rowFiles, rowsArtifact } from "../src/core/workflows/acceptance-rows.js";
+import { caseCheck } from "../src/core/verification/criteria-cases.js";
+import { fixtureSpec } from "./helpers/workflow-fixture.js";
 import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
@@ -84,6 +87,34 @@ import {
  */
 
 type Stack = "bun" | "npm" | "python" | "go" | "rust" | "maven" | "dotnet";
+
+describe("host-written acceptance rows in the case-walk and mutation gates (#1596)", () => {
+  test.each(["bun", "pytest"] as const)("%s retains every case in its JSON data and keeps generated tests out of mutation proposals", async (framework) => {
+    const root = mkdtempSync(join(tmpdir(), "baked-row-gate-"));
+    try {
+      const spec = { ...fixtureSpec, criteria: [{ ...fixtureSpec.criteria[0]!, given: "a number", when: "it is doubled", then: "Input | Expected\n12 | 24\n34 | 68" }] };
+      const harness = framework === "bun" ? "tests/harness.ts" : "tests/harness.py";
+      const file = framework === "bun" ? "tests/rows.test.ts" : "tests/test_rows.py";
+      const task: Task = { id: "T001", title: "Rows", description: "Write actual(input)", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", origin: "planned", findingIds: [], rationale: "Test", readHints: [], checkIds: [],
+        rows: ["AC-001"], rowTest: { framework, harness, test: file, data: "tests/rows.json" },
+        writes: [harness, file, "tests/rows.json"].map((path) => ({ path, action: "create" })) };
+      const graph = { schemaVersion: 1 as const, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [task] };
+      const artifact = rowsArtifact(spec, graph, { schemaVersion: 1, inputHash: "a".repeat(64), verdict: "pass", findings: [] });
+      const files = rowFiles(task, artifact);
+      mkdirSync(join(root, "tests"));
+      for (const generated of files) writeFileSync(join(root, generated.path), generated.content);
+      const check = caseCheck(spec, task);
+      expect(check).toBeDefined();
+      expect(await check?.(root)).toEqual([]);
+      writeFileSync(join(root, "tests/rows.json"), JSON.stringify(artifact.rows.slice(0, 1)));
+      expect((await check?.(root))?.join()).toContain("34");
+      const changes = files.map((generated) => ({ path: generated.path, before: "", content: generated.content }));
+      expect(proposalFiles(changes)).toEqual([]);
+      expect(generateMutants(changes)).toEqual([]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
 const STACKS: Stack[] = ["bun", "npm", "python", "go", "rust", "maven", "dotnet"];
 
 /** The gates a failure of which is corrected only in the files its output names (#1067). */
@@ -1482,6 +1513,29 @@ const available = (needs: string[][]) =>
   });
 
 describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
+  test("pytest executes host rows and fails a wrong harness (#1596)", () => {
+    const root = project({});
+    const spec = { ...fixtureSpec, criteria: [{ ...fixtureSpec.criteria[0]!, given: "a JSON value", when: "it is returned", then: 'Input | Expected\n{"ok":true,"value":null} | {"ok":true,"value":null}\n[12,24] | [12,24]' }] };
+    const task: Task = { id: "T001", title: "Rows", description: "Write actual(input)", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", origin: "planned", findingIds: [], rationale: "Test", readHints: [], checkIds: [], rows: ["AC-001"],
+      rowTest: { framework: "pytest", harness: "tests/harness.py", test: "tests/test_rows.py", data: "tests/rows.json" },
+      writes: ["tests/harness.py", "tests/test_rows.py", "tests/rows.json"].map((path) => ({ path, action: "create" })) };
+    const graph = { schemaVersion: 1 as const, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [task] };
+    const files = rowFiles(task, rowsArtifact(spec, graph, { schemaVersion: 1, inputHash: "a".repeat(64), verdict: "pass", findings: [] }));
+    mkdirSync(join(root, "tests"));
+    for (const generated of files) writeFileSync(join(root, generated.path), generated.content);
+    const python = Bun.which("python") ?? Bun.which("python3");
+    if (!python) throw new Error("The gate-matrix toolchain tier requires Python and pytest");
+    const run = () => spawnSync(python, ["-m", "pytest", "-q", "tests/test_rows.py"], {
+      cwd: root, encoding: "utf8", timeout: 30000,
+      env: { ...process.env, PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1", PYTEST_ADDOPTS: "" },
+    });
+    writeFileSync(join(root, "tests/harness.py"), "def actual(value):\n    return value\n");
+    const passing = run();
+    expect({ status: passing.status, output: passing.status === 0 ? "" : passing.stdout + passing.stderr }).toEqual({ status: 0, output: "" });
+    writeFileSync(join(root, "tests/harness.py"), "def actual(value):\n    return None\n");
+    expect(run().status).toBe(1);
+  });
+
   // A misaligned struct passes `go vet` and fails the format gate; the per-file fixer repairs it
   // (bench round 41, fpbits internal/core/format.go, #1480). The same for an unformatted Python file.
   const unformatted: [Stack, string, Record<string, string>, string, string[][]][] = [

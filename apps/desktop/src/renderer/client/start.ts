@@ -180,6 +180,8 @@ export interface StartBody {
   clarification?: "ask" | "assume";
   /** What the test-integrity guard does (`--test-integrity`); omitted, the policy decides. */
   testIntegrity?: "block" | "warn";
+  /** Host-written acceptance rows for Bun and pytest; omitted, the policy decides. */
+  rowsAsData?: "off" | "on";
   /** The run's OS sandbox (`--sandbox`); omitted, the policy and the sandbox setting decide. */
   sandbox?: "off" | "auto" | "required";
   /** The run model overrides every configured route (`--model-strict`). */

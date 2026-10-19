@@ -16,6 +16,8 @@ The chat settings that the terminal pickers edit (provider options, chat router 
 
 ## Example
 
+`workflows.policy.rowsAsData` accepts `"off"` or `"on"` and defaults to off. On enables audited JSON acceptance rows and host-written Bun or pytest tests. The run-start controls can override it for one run. See [acceptance rows as data](workflows/runtime.md#acceptance-rows-as-data) for the task contract and framework limits.
+
 ```json
 {
   "defaultModel": "anthropic/claude-sonnet-4-5",

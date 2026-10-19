@@ -804,6 +804,22 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs: plan approval and task slices"],
   },
   {
+    id: "acceptance-rows-as-data",
+    group: "Workflow runs",
+    title: "Opt-in audited acceptance rows as JSON and Bun/pytest tests",
+    tui: ["/workflow: new run Rows setting, tasks and rows.json artifact"],
+    cli: [
+      "baked workflow run: --rows-as-data on|off",
+      "baked workflow quick: --rows-as-data on|off",
+      "baked workflow artifacts",
+    ],
+    api: ["/v1/workflow/runs: rowsAsData", "/v1/workflow/runs/:id/artifacts"],
+    desktop: [
+      "project/overview: New run, Acceptance rows",
+      "project/runs: tasks and rows.json artifact",
+    ],
+  },
+  {
     id: "test-integrity",
     group: "Workflow runs",
     title: "Test-integrity guard: block or warn on test gaming, spec conflicts",

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { ROUTING_ARTIFACT, RoutingRecordSchema } from "../llm/model-routing.js";
 import { renderSpec } from "../specs/render.js";
 import { workspacePath } from "../specs/validate.js";
+import { ROWS_ARTIFACT, type RowsArtifact } from "./acceptance-rows.js";
 import { BUDGET_PRESETS, type BudgetPresetId, budgetUsage } from "./budget.js";
 import { CHECK_PREFLIGHT_ARTIFACT, type CheckSmoke } from "./check-preflight.js";
 import { askedForecast, FORECAST_STOP } from "./cost-forecast.js";
@@ -62,6 +63,8 @@ export interface StartRunInput {
   clarification?: ClarificationMode;
   /** What the test-integrity guard does, as `--test-integrity`; omitted, the policy decides. */
   testIntegrity?: "block" | "warn";
+  /** Host-written acceptance rows for Bun and pytest; omitted, the policy decides. */
+  rowsAsData?: "off" | "on";
   /** The form proposed the workflow from the request (`--auto-preset`); the run records it. */
   autoPreset?: boolean;
   /** The run model overrides the configured routes, as `--model-strict`. */
@@ -203,6 +206,7 @@ export interface RunDetails {
   prompt: string;
   specMarkdown: string | null;
   plan: string | null;
+  acceptanceRows?: RowsArtifact;
   criteria: CriterionView[];
   /** Latest runtime error message recorded for the run, if any. */
   lastError: string | null;
@@ -367,11 +371,21 @@ function lastErrorOf(store: WorkflowStore, runId: string): string | null {
 }
 function detailsOf(store: WorkflowStore, runId: string): RunDetails {
   const state = store.state(runId);
+  let acceptanceRows: RowsArtifact | null = null;
+  const artifact = store.latestArtifact(runId, ROWS_ARTIFACT);
+  if (artifact) {
+    try {
+      acceptanceRows = JSON.parse(store.readArtifact(runId, artifact.id)) as RowsArtifact;
+    } catch {
+      // A redacted or missing row artifact is unavailable to the view.
+    }
+  }
   return {
     title: state.spec?.title ?? null,
     prompt: state.prompt,
     specMarkdown: state.spec ? renderSpec(state.spec) : null,
     plan: state.plan,
+    ...(acceptanceRows ? { acceptanceRows } : {}),
     lastError: lastErrorOf(store, runId),
     recovery: stopRecovery(store, runId),
     autoApproval: autoApprovalText(JSON.parse(store.run(runId).policy_json) as RunPolicy),

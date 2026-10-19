@@ -120,6 +120,7 @@ export async function prepareStart(
     | "candidates"
     | "clarification"
     | "testIntegrity"
+    | "rowsAsData"
     | "duplication"
     | "sast"
     | "mutation"
@@ -158,6 +159,16 @@ export async function prepareStart(
       error instanceof Error ? error.message : String(error),
     );
   }
+  if (
+    (request.rowsAsData ?? policy.rowsAsData) === "on" &&
+    !(loaded.schemaVersion === 1
+      ? loaded.definition.stages.some((stage) => stage.kind === "analyze")
+      : loaded.definition.stages.some((stage) => stageKind(stage) === "analyze"))
+  )
+    throw new WorkflowFault(
+      "INVALID_DEFINITION",
+      'Acceptance rows as data requires an analyze stage. Choose a workflow such as sdd, or set rowsAsData to "off".',
+    );
   let routing = routingRecord(
     config,
     registry,
@@ -239,6 +250,7 @@ export async function prepareStart(
     sandbox: policySandbox,
     clarification: _clarification,
     testIntegrity: _testIntegrity,
+    rowsAsData: policyRowsAsData,
     testsFirst: _testsFirst,
     duplication: _duplication,
     qualityRules: requestRules,
@@ -327,6 +339,7 @@ export async function prepareStart(
     ...(allowOverlappingWrites ? { allowOverlappingWrites } : {}),
     ...(clarification === "assume" ? { clarification } : {}),
     ...(testIntegrity === "warn" ? { testIntegrity } : {}),
+    ...((request.rowsAsData ?? policyRowsAsData) === "on" ? { rowsAsData: "on" } : {}),
     ...(testsFirst !== "off" ? { testsFirst } : {}),
     ...(editDiagnostics === "reject" ? { editDiagnostics } : {}),
     ...(libraryDocs ? { libraryDocs } : {}),

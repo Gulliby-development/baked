@@ -195,6 +195,7 @@ export function NewRunScreen({ project }: SectionProps) {
   // Null follows the configured policy; the checkbox overrides it for this run.
   const [assumeOverride, setAssume] = useState<boolean | null>(null);
   const [warnOverride, setWarn] = useState<boolean | null>(null);
+  const [rowsOverride, setRows] = useState<boolean | null>(null);
   // Empty follows the policy and the sandbox setting; a choice overrides them for this run.
   const [sandbox, setSandbox] = useState<"" | "off" | "auto" | "required">("");
   const [strict, setStrict] = useState(false);
@@ -228,6 +229,7 @@ export function NewRunScreen({ project }: SectionProps) {
   const route = useRoute(key, workflow, model);
   const launcher = useStartRun(key);
   const assume = assumeOverride ?? policy.policy?.clarification === "assume";
+  const rowsAsData = rowsOverride ?? policy.policy?.rowsAsData === "on";
   const warnTests = warnOverride ?? policy.policy?.testIntegrity === "warn";
 
   const definition = useMemo(
@@ -313,6 +315,7 @@ export function NewRunScreen({ project }: SectionProps) {
       // Sent only when changed here, so a backend without the field still starts the run.
       ...(assumeOverride !== null ? { clarification: assume ? "assume" : "ask" } : {}),
       ...(warnOverride !== null ? { testIntegrity: warnTests ? "warn" : "block" } : {}),
+      ...(rowsOverride !== null ? { rowsAsData: rowsAsData ? "on" : "off" } : {}),
       ...(sandbox ? { sandbox } : {}),
       ...(proposal ? { autoPreset: true } : {}),
       ...(strict ? { modelStrict: true } : {}),
@@ -328,6 +331,7 @@ export function NewRunScreen({ project }: SectionProps) {
     writers > 1 ? `${writers} writers` : worktree ? "in a worktree" : "in place",
     assume ? "assumptions on" : "questions wait for you",
     ...(warnTests ? ["test guard warns only"] : []),
+    ...(rowsAsData ? ["host-written acceptance rows"] : []),
     model || "default model",
     ...(strict ? ["run model overrides routes"] : []),
     ...(typeof costCap === "number" ? [`cost cap $${costCap}`] : []),
@@ -531,6 +535,20 @@ export function NewRunScreen({ project }: SectionProps) {
                 {assume
                   ? "The agents pick conventional defaults and list them at approval; only questions without a safe default wait for you."
                   : "The run waits for your answers to blocking questions."}
+              </span>
+            </fieldset>
+            <fieldset className={FIELDSET}>
+              <legend className={LEGEND}>Acceptance rows</legend>
+              <label className={CHECK}>
+                <input
+                  type="checkbox"
+                  checked={rowsAsData}
+                  onChange={(e) => setRows(e.target.checked)}
+                />
+                Host-written acceptance rows
+              </label>
+              <span className={HINT}>
+                Write audited JSON rows as Bun or pytest tests. The agent writes the harness.
               </span>
             </fieldset>
             <fieldset className={FIELDSET}>

@@ -115,6 +115,17 @@ import { addReviewNotes, noteReason } from "../verification/review-notes.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
 import { baselineDebt, baselineKeys, taskErrors } from "../verification/task-end-check.js";
 import {
+  ROWS_ARTIFACT,
+  ROWS_NOTE,
+  type RowsArtifact,
+  rowAuditProblems,
+  rowFileProblems,
+  rowFiles,
+  rowPlanProblems,
+  rowsArtifact,
+  rowsAsDataOn,
+} from "./acceptance-rows.js";
+import {
   affectedTestCheck,
   affectedTestsFor,
   holdsWrittenTests,
@@ -1308,6 +1319,7 @@ export class WorkflowScheduler {
                             },
                           }
                         : {}),
+                      ...(rowsAsDataOn(policy) ? { acceptanceRows: { note: ROWS_NOTE } } : {}),
                       ...(testsFirstOf(policy) !== "off"
                         ? {
                             testsFirst: testsFirstNote(
@@ -1445,7 +1457,10 @@ export class WorkflowScheduler {
                 advance = false;
                 break;
               }
-              const audit = derivationAuditOn(policy) ? derivationAuditExtra(spec) : null;
+              const audit =
+                derivationAuditOn(policy) || rowsAsDataOn(policy)
+                  ? derivationAuditExtra(spec)
+                  : null;
               const analysis = AnalysisSchema.parse(
                 await this.call(
                   runId,
@@ -1478,6 +1493,9 @@ export class WorkflowScheduler {
                             (_, index) => parsed.data.findings[index]?.description ?? "",
                           ),
                           ...(audit ? derivationProblems(spec, parsed.data) : []),
+                          ...(rowsAsDataOn(policy)
+                            ? rowAuditProblems(spec, graph, parsed.data, false)
+                            : []),
                         ]
                       : [];
                   },
@@ -1761,6 +1779,18 @@ export class WorkflowScheduler {
                     : f,
                 );
                 state.analysisPassed = true;
+              }
+              if (state.analysisPassed && rowsAsDataOn(policy)) {
+                const problems = rowAuditProblems(spec, graph, analysis);
+                if (problems.length) throw new WorkflowFault("OUTPUT_INVALID", problems.join("\n"));
+                this.store.transaction(() =>
+                  this.store.artifact(
+                    runId,
+                    "acceptance-rows",
+                    ROWS_ARTIFACT,
+                    canonical(rowsArtifact(spec, graph, analysis)),
+                  ),
+                );
               }
               if (!state.analysisPassed) {
                 this.wait("clarification", state, { findings });
@@ -3865,7 +3895,7 @@ export class WorkflowScheduler {
     profiles: AgentProfile[],
   ): string[] {
     const graph = planGraph(spec, plan, policy, profiles, this.tasksProfile(runId));
-    const problems: string[] = [];
+    const problems: string[] = rowPlanProblems(spec, graph, policy);
     const root = this.rootOf(runId);
     try {
       validatePackage(root, spec, plan.markdown, graph);
@@ -4068,7 +4098,7 @@ export class WorkflowScheduler {
     state: RuntimeState,
     policy: RunPolicy,
     stageProfile: AgentProfile,
-    extra: unknown,
+    inputExtra: unknown,
     signal: AbortSignal,
     task?: Task,
     retry = 0,
@@ -4095,6 +4125,31 @@ export class WorkflowScheduler {
       outputLimit?: { effort?: RouteEffort; tries: number };
     } = {},
   ): Promise<unknown> {
+    let extra = inputExtra;
+    let generatedRows: ReturnType<typeof rowFiles> = [];
+    if (task?.rows?.length && stageProfile.output === "implementation") {
+      const artifact = this.store.latestArtifact(runId, ROWS_ARTIFACT);
+      if (!rowsAsDataOn(policy) || !artifact || !state.spec)
+        throw new WorkflowFault(
+          "ARTIFACT_MISSING",
+          "Audited rows.json is required before implementation",
+        );
+      const rows = JSON.parse(this.store.readArtifact(runId, artifact.id)) as RowsArtifact;
+      if (rows.specHash !== hashJson(state.spec))
+        throw new WorkflowFault(
+          "INPUT_CHANGED",
+          "Acceptance rows belong to an earlier spec; analyze again",
+        );
+      generatedRows = rowFiles(task, rows);
+      extra = {
+        ...(extra as Record<string, unknown>),
+        acceptanceRows: {
+          artifact: ROWS_ARTIFACT,
+          files: generatedRows.map((file) => file.path),
+          note: "The host writes the audited row data and parameterized tests. Write only the actual(input) harness and any ordinary tests this task owns. Review and corrections must preserve the host-written files.",
+        },
+      };
+    }
     const route = this.route(runId, stepId, stageProfile);
     const effort = placement.outputLimit ? placement.outputLimit.effort : route.effort;
     const fallbackIndex = placement.fallbackIndex ?? 0;
@@ -4204,13 +4259,19 @@ export class WorkflowScheduler {
       task && profile.output === "implementation"
         ? this.reproCheck(runId, policy, task)
         : undefined;
-    const caseCheck =
+    const literalCaseCheck =
       task && profile.output === "implementation"
         ? criteriaCaseCheck(state.spec, this.caseTask(state, task), {
             checks: policy.checks,
             tasks: (state.rootGraph ?? state.graph)?.tasks ?? [],
           })
         : undefined;
+    const caseCheck = generatedRows.length
+      ? async (root: string) => [
+          ...(await rowFileProblems(root, generatedRows)),
+          ...((await literalCaseCheck?.(root)) ?? []),
+        ]
+      : literalCaseCheck;
     // A digested spec (#1019) comes with the tool that reads its criteria in full.
     const digested =
       digestsSpec(state.spec, profile, policy) ||
@@ -4248,6 +4309,27 @@ export class WorkflowScheduler {
               ),
             }),
           ),
+        );
+      }
+      for (const file of generatedRows) {
+        const root = placement.root ?? runRoot(this.store.workspace, state);
+        const absolute = workspacePath(root, file.path);
+        if (fileHash(absolute) === hashBytes(file.content)) continue;
+        // Generated files are create-only. A later edit is never silently replaced on resume.
+        if (fileHash(absolute) !== null)
+          throw new WorkflowFault(
+            "INPUT_CHANGED",
+            `Host-written acceptance file changed: ${file.path}`,
+          );
+        const before = this.store.transaction(() => capturePreImage(this.store, runId, absolute));
+        this.journal.publish(
+          runId,
+          attempt,
+          file.path,
+          Buffer.from(file.content),
+          before,
+          "file_patch",
+          root,
         );
       }
       const result = await this.executor.execute({
@@ -4292,6 +4374,11 @@ export class WorkflowScheduler {
         ...(host ? { hostTools: host } : {}),
         ...(effort ? { effort } : {}),
       });
+      const rowProblems = await rowFileProblems(
+        placement.root ?? runRoot(this.store.workspace, state),
+        generatedRows,
+      );
+      if (rowProblems.length) throw new WorkflowFault("OUTPUT_INVALID", rowProblems.join("\n"));
       const parsed = outputSchemas[profile.output]?.safeParse(result.output);
       if (!parsed?.success)
         throw new WorkflowFault("OUTPUT_INVALID", `Invalid ${profile.output} result`, {
@@ -4639,9 +4726,21 @@ export class WorkflowScheduler {
     state: RuntimeState,
     policy: RunPolicy,
     profile: AgentProfile,
-    extra: unknown,
+    inputExtra: unknown,
     compact = false,
   ): string {
+    let extra = inputExtra;
+    if (rowsAsDataOn(policy) && state.graph?.tasks.some((task) => task.rows?.length))
+      extra = {
+        ...(extra as Record<string, unknown>),
+        hostAcceptanceRows: {
+          artifact: ROWS_ARTIFACT,
+          tasks: state.graph.tasks
+            .filter((task) => task.rows?.length)
+            .map((task) => ({ taskId: task.id, rows: task.rows, rowTest: task.rowTest })),
+          note: "The host transcribes audited JSON rows and emits parameterized tests. Review the harness and ordinary tests; preserve host-written row data and assertions. Stateful and non-JSON cases remain agent-written.",
+        },
+      };
     // The agents that start a run see the project's working set; later ones get the research.
     const workingSet =
       state.workingSet &&
