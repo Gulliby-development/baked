@@ -123,9 +123,9 @@ describe("scenario: initiative lows fit but high-end weighted shares do not (#16
     expect(response.status).toBe(200);
     expect((await response.json() as InitiativeView).next).toEqual(view.next);
     const estimate = initiatives.estimate("tight")!;
-    expect(estimate.label).toContain("high end exceeds the budget");
-    expect(estimateSummary(estimate)).toContain("high end exceeds the budget");
-    expect(estimateFit(estimate).text).toContain("high end exceeds the budget");
+    expect(estimate.label).toContain("high end exceeds the shared budget");
+    expect(estimateSummary(estimate)).toContain("high end exceeds the shared budget");
+    expect(estimateFit(estimate).text).toContain("high end exceeds the shared budget");
   });
 
   test("starts with reserved lows, then continues after acceptance, resume and replan", async () => {

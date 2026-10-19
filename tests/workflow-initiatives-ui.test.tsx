@@ -351,7 +351,7 @@ test("T estimates the split and shows its level, tokens and each feature's range
     text = await frame(view, 120, 40, "estimate");
     expect(asked).toEqual(["billing"]);
     expect(flat(text)).toContain(`Estimate: Level ${estimate.level} · ~${estimate.tasks.low}-${estimate.tasks.high} tasks`);
-    expect(flat(text)).toContain("high end exceeds the budget");
+    expect(flat(text)).toContain("high end exceeds the shared budget");
     expect(flat(text)).toMatch(/estimate \d+k-\d+(\.\d)?[kM] tokens/);
   } finally { await act(async () => view.renderer.destroy()); }
 });
