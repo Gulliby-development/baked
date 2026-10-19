@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { HostEdit } from "../../../../../../src/core/workflows/host-edits-schema.js";
+import type { HostEdit } from "../../../../../../src/core/workflows/host-edits-model.js";
 import { bridge } from "../../client/bridge.js";
 import {
   type ArtifactEntry,

@@ -1,7 +1,7 @@
-import type { HostEdit } from "./host-edits-schema.js";
+import type { HostEdit } from "./host-edits-model.js";
 import type { TaskGraph } from "./schemas.js";
 
-export type { HostEdit } from "./host-edits-schema.js";
+export type { HostEdit } from "./host-edits-model.js";
 
 export const HOST_EDITS_PATH = "host-edits.json";
 export const HOST_ADDITIONS = [

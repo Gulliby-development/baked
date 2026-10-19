@@ -1,4 +1,7 @@
 import { z } from "zod";
+import type { HostEdit } from "./host-edits-model.js";
+
+export type { HostEdit } from "./host-edits-model.js";
 
 export const HostEditSchema = z.object({
   task: z.string().nullable(),
@@ -7,5 +10,4 @@ export const HostEditSchema = z.object({
   before: z.unknown(),
   after: z.unknown(),
   text: z.string(),
-});
-export type HostEdit = z.infer<typeof HostEditSchema>;
+}) satisfies z.ZodType<HostEdit>;
