@@ -338,7 +338,16 @@ const ctx = createWorkerHandler(
         await runtime.extendBudget(id, command);
         const paused = await runtime.get(id);
         await runtime.resume(id, { commandId: newId(), expectedRevision: paused.revision });
-      } else if (input === "resume") await runtime.resume(id, command);
+      } else if (typeof input === "object" && input !== null && "repair" in input)
+        await runtime.repair(id, {
+          ...command,
+          expectedRevision: z
+            .number()
+            .int()
+            .nonnegative()
+            .parse((input as { repair: unknown }).repair),
+        });
+      else if (input === "resume") await runtime.resume(id, command);
       else if (input === "accept-workspace")
         await runtime.resume(id, command, { acceptWorkspace: true });
       else await runtime.decide(id, command, DecisionSchema.parse(input));
@@ -348,6 +357,7 @@ const ctx = createWorkerHandler(
         !["cancelled", "completed", "failed"].includes(state.status) &&
         (typeof input === "string" ||
           "reroute" in (input as object) ||
+          "repair" in (input as object) ||
           DecisionSchema.parse(input).kind !== "reject")
       )
         return runtime.drive(id, new AbortController().signal);

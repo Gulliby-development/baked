@@ -39,6 +39,7 @@ export type WorkflowAction =
   | "cancel"
   | "fork"
   | "discard-worktree"
+  | { repair: number }
   | "extend"
   | { reroute: string }
   | { fork: string }

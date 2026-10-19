@@ -454,6 +454,7 @@ export function WorkflowPanel({
         .catch((err: unknown) =>
           setFlash({ kind: "err", message: err instanceof Error ? err.message : String(err) }),
         );
+    else if (action.action === "repair") void act({ repair: snapshot.revision });
     else if (action.action === "checks") void readChecks(snapshot.runId);
     else if (action.action === "reviews") void readChecks(snapshot.runId, true);
     else if (action.action === "undo") {
