@@ -1,4 +1,5 @@
 import { rowFiles, rowsArtifact } from "../src/core/workflows/acceptance-rows.js";
+import { decoySamples, residualSamples, residualSpec } from "./helpers/criteria-residual-fixtures.js";
 import { proseAfterRefusalScenario, refusalKinds } from "./helpers/prose-after-refusal-scenario.js";
 import { runScanner } from "../src/core/workflows/quality/rules.js";
 import { suspendClock } from "./helpers/suspend-clock.js";
@@ -97,6 +98,41 @@ import {
  */
 
 type Stack = "bun" | "npm" | "python" | "go" | "rust" | "maven" | "dotnet";
+
+describe("criterion cell classification and diagnostic decoys (#1629)", () => {
+  for (const sample of residualSamples) test(`${sample.stack}: ${sample.name} in task-end and pricing walks`, async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-residual-cell-"));
+    try {
+      const task = { criterionIds: ["AC-001"], writes: [{ path: sample.path, action: "create" as const }] };
+      const spec = residualSpec(sample);
+      for (const includeBroad of [false, true]) {
+        const cases = criterionCases(spec, task, { includeBroad });
+        expect(cases.map((c) => c.literal)).toEqual([...sample.cases]);
+        expect(missingCases(cases, [sample.text])).toEqual([]);
+        // A wrong byte or candidate must still be missing after formatting normalization.
+        if (cases.length) expect(missingCases(cases, [""])).toHaveLength(cases.length);
+      }
+      const file = join(root, sample.path);
+      mkdirSync(join(file, ".."), { recursive: true });
+      writeFileSync(file, sample.text);
+      expect((await caseCheck(spec, task)?.(root)) ?? []).toEqual([]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  for (const sample of decoySamples) test(`${sample.stack}: assertion messages cannot stand in for an input`, async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-decoy-cell-"));
+    try {
+      const task = { criterionIds: ["AC-001"], writes: [{ path: sample.path, action: "create" as const }] };
+      const spec = { ...fixtureSpec, criteria: [{ ...fixtureSpec.criteria[0]!, then: 'input `--case-42` is accepted' }] };
+      const file = join(root, sample.path);
+      mkdirSync(join(file, ".."), { recursive: true });
+      writeFileSync(file, sample.decoy);
+      const check = caseCheck(spec, task)!;
+      expect((await check(root))[0]).toContain("message alone is a decoy");
+      writeFileSync(file, sample.text);
+      expect(await check(root)).toEqual([]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
 
 describe("submission gates followed by prose (#1615)", () => {
   test.each(refusalKinds)("%s keeps the refusal and permits repair in the same attempt", async (kind) => {
