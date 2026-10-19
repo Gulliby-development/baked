@@ -780,6 +780,15 @@ export const FEATURES: readonly Feature[] = [
 
   // Workflow runs
   {
+    id: "workflow-fixer-journal",
+    group: "Workflow runs",
+    title: "Journal every task file changed by an automatic fixer, including directory-wide fixers",
+    tui: ["/workflow: shared fixer effects, undo and resume"],
+    cli: ["baked workflow run: apply_fix", "baked workflow resume", "baked workflow undo"],
+    api: ["/v1/workflow/runs/:id: shared fixer effects and recovery"],
+    desktop: ["project/runs: shared fixer effects, undo and resume"],
+  },
+  {
     id: "run-start",
     group: "Workflow runs",
     title: "Start a full run or a quick task",

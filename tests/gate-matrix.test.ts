@@ -1,5 +1,6 @@
 import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { directoryFixers, directoryFixerScenario } from "./helpers/directory-fixer-scenario.js";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -84,6 +85,13 @@ import {
  */
 
 type Stack = "bun" | "npm" | "python" | "go" | "rust" | "maven" | "dotnet";
+
+describe("gate matrix: directory-wide fixer effects (#1593)", () => {
+  for (const fixer of directoryFixers)
+    test(`${fixer.name}: sibling edits are journaled before editing and resuming`, async () => {
+      await directoryFixerScenario(fixer);
+    }, 60000);
+});
 const STACKS: Stack[] = ["bun", "npm", "python", "go", "rust", "maven", "dotnet"];
 
 /** The gates a failure of which is corrected only in the files its output names (#1067). */
