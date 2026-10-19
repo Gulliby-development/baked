@@ -21,6 +21,7 @@ import { failureSignature, testCount } from "../src/core/verification/output-cou
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { launchedCommand } from "../src/core/workflows/launcher.js";
+import { type HostEdit, hostOnlyEvidence, plannerGraph } from "../src/core/workflows/host-edits.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { sizePlan, splitTestTasks } from "../src/core/workflows/sizing.js";
 import { withPerTestTimeout } from "../src/core/workflows/test-timeout.js";
@@ -600,10 +601,16 @@ for (const stack of STACKS) {
       expect(policy.checks.some((check) => check.id === "tests-written")).toBe(false);
       const report = sizePlan({ graph, policy, samples: [], spent: 0 });
       expect(report.tasks[0]!.oversized).toBe(true);
-      const part = splitTestTasks(graph, report)!.tasks[0]!;
+      const edits: HostEdit[] = [];
+      const split = splitTestTasks(graph, report, null, edits)!;
+      const part = split.tasks[0]!;
       expect(part.description).toContain("small batches inside this attempt");
       expect(part.description).not.toContain("tests-written");
       expect(part.checkIds).toEqual(original.checkIds);
+      // #1583: the analysis gate uses provenance for the same host text on every stack.
+      const description = edits.find((edit) => edit.field === "description")!;
+      expect(hostOnlyEvidence({ kind: "inconsistency", refs: ["tasks.json", part.id], description: `${part.id} adds "preserve earlier batches".` }, edits, "")).toContainEqual(description);
+      expect(plannerGraph(split, edits)).toEqual(graph);
     });
 
     // The mutation gate needs a required test check to run the mutants against; without one it is

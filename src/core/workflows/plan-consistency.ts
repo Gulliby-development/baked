@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { isTestFile as isLanguageTestFile } from "../intelligence/language-traits.js";
 import { workspacePath } from "../specs/validate.js";
+import { type HostEdit, plannerGraph } from "./host-edits.js";
 import type { AgentProfile, Spec, TaskGraph } from "./schemas.js";
 import { fileKind, SLICE_PART, SPLIT_PART } from "./sizing.js";
 import type { Task } from "./types.js";
@@ -426,6 +427,7 @@ export function planConsistencyProblems(
   createdByRun: (path: string) => boolean = () => false,
   /** The run's policy lets independent tasks write the same path (integrated by an integrator). */
   overlappingWrites = false,
+  edits?: readonly HostEdit[],
 ): string[] {
   const problems: string[] = [];
   const known = new Set([
@@ -494,7 +496,7 @@ export function planConsistencyProblems(
       }
   problems.push(...unwiredEntryPoints(graph));
   problems.push(...undeclaredRustModules(workspace, graph));
-  problems.push(...copiedTaskTexts(graph));
+  problems.push(...copiedTaskTexts(graph, edits));
   return problems;
 }
 
@@ -509,7 +511,8 @@ const baseName = (path: string): string => path.slice(path.lastIndexOf("/") + 1)
  * DiffIgnoreStyleTests.cs following CliTests layout ...", while T004 and T005 modify CliTests.cs
  * and DocsTests.cs, so two tasks worked from an instruction outside their write scope.
  */
-export function copiedTaskTexts(graph: TaskGraph): string[] {
+export function copiedTaskTexts(input: TaskGraph, edits?: readonly HostEdit[]): string[] {
+  const graph = plannerGraph(input, edits);
   const problems: string[] = [];
   const text = (description: string): string =>
     description.replace(/\s+/g, " ").trim().toLowerCase();

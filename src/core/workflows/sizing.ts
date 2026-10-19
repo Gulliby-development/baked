@@ -6,6 +6,7 @@ import { isTestOf } from "../verification/convergence.js";
 import { criterionCases, type SpecText } from "../verification/criteria-cases.js";
 import { MAX_EXTENDED_MS } from "./budget.js";
 import { DEFAULT_STAGE_RANGES, historyStorePaths, rangeOf, type TokenRange } from "./estimate.js";
+import { type HostEdit, plannerGraph, recordGraphEdits } from "./host-edits.js";
 import { extendToOf, type RunPolicy, SpecSchema, type TaskGraph } from "./schemas.js";
 import { DEFAULT_MAX_ATTEMPT_TOKENS } from "./step-budget.js";
 import type { WorkflowStore } from "./store.js";
@@ -965,11 +966,15 @@ export function withTestDependencies(graph: TaskGraph): TaskGraph {
  * Returned to the planner at submission when sizing is on: a task that writes source code and
  * does not name the policy's typecheck check would show its type errors only in a later task.
  */
-export function codeTaskCheckProblems(graph: TaskGraph, policy: RunPolicy): string[] {
+export function codeTaskCheckProblems(
+  graph: TaskGraph,
+  policy: RunPolicy,
+  edits?: readonly HostEdit[],
+): string[] {
   const id = policy.sizing ? typecheckCheckId(policy) : null;
   if (!id) return [];
-  return graph.tasks
-    .filter(
+  return plannerGraph(graph, edits)
+    .tasks.filter(
       (task) =>
         writtenFiles(task).some((path) => fileKind(path) === "code" && SOURCE.test(path)) &&
         !task.checkIds.includes(id),
@@ -1001,6 +1006,7 @@ export function splitTestTasks(
   graph: TaskGraph,
   report: SizingReport,
   spec?: SpecText | null,
+  edits?: HostEdit[],
 ): TaskGraph | null {
   const oversized = new Set(
     report.tasks.filter((task) => task.oversized && task.kind === "test").map((t) => t.taskId),
@@ -1008,6 +1014,7 @@ export function splitTestTasks(
   if (!oversized.size) return null;
   let next = Math.max(...graph.tasks.map((task) => Number(task.id.slice(1)))) + 1;
   const parts = new Map<string, string[]>();
+  const origins = new Map<string, string>();
   const tasks = graph.tasks.flatMap((task) => {
     if (!oversized.has(task.id) || task.sizingSlice) return [task];
     const files = task.writes.filter((write) => write.action !== "delete");
@@ -1143,9 +1150,10 @@ export function splitTestTasks(
       task.id,
       split.map((part) => part.id),
     );
+    for (const part of split) origins.set(part.id, task.id);
     return split;
   });
-  return {
+  const result = {
     ...graph,
     tasks: tasks.map((task) => ({
       ...task,
@@ -1159,6 +1167,7 @@ export function splitTestTasks(
       ],
     })),
   };
+  return recordGraphEdits(graph, result, "sizing-split", edits, origins);
 }
 
 /**

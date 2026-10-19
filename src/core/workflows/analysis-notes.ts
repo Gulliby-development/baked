@@ -1,5 +1,6 @@
 import type { z } from "zod";
 import { coveringChecks } from "./check-policy.js";
+import { HOST_EDITS_PATH, type HostEdit, hostOnlyEvidence } from "./host-edits.js";
 import {
   withCommandDependencies,
   withModuleDependencies,
@@ -11,6 +12,56 @@ import { withTestDependencies } from "./sizing.js";
 import type { Check } from "./types.js";
 
 type Research = z.infer<typeof ResearchSchema>;
+
+/** One ownership decision for all host transformations, with evidence retained for the report. */
+export function noteHostEdits(
+  findings: Array<{
+    id: string;
+    kind: string;
+    refs: string[];
+    description: string;
+    blocking: boolean;
+  }>,
+  edits: readonly HostEdit[],
+  plan: string,
+  legacy?: { graph: TaskGraph; policy: RunPolicy; spec: Spec },
+) {
+  const notes: Array<{ findingId: string; hostEdits: HostEdit[] }> = [];
+  for (const finding of findings) {
+    if (!finding.blocking) continue;
+    const owned = isCountNit(finding.description)
+      ? edits.filter((edit) => edit.kind === "counts")
+      : hostOnlyEvidence(finding, edits, plan);
+    // Older runs and unstructured findings have no field/quote evidence. Preserve their
+    // existing demotions; new host transformations need only ledger entries.
+    const precise =
+      finding.refs.some((ref) => /T\d{3,}[/.#:]\w+/.test(ref)) ||
+      /"[^"\n]+"|`[^`\n]+`|'[^'\n]{4,}'/.test(finding.description);
+    const compatible =
+      legacy &&
+      !precise &&
+      (isCountNit(finding.description) ||
+        (finding.kind === "inconsistency" &&
+          isHostEdgeNit(
+            finding,
+            hostDependencyEdges(legacy.graph, legacy.spec),
+            legacy.graph.tasks.map((task) => task.id),
+          )) ||
+        isHostBatchCheckNit(
+          finding,
+          legacy.graph,
+          legacy.policy.checks,
+          hostAddedChecks(legacy.graph, legacy.policy),
+          plan,
+        ) ||
+        (finding.kind !== "scope" && isHostSplitNit(finding, hostSplitParts(legacy.graph))));
+    if (!owned.length && !compatible) continue;
+    notes.push({ findingId: finding.id, hostEdits: owned });
+    finding.blocking = false;
+    finding.description = `About host edits (${HOST_EDITS_PATH}); kept as a note: ${finding.description}`;
+  }
+  return notes;
+}
 
 /**
  * Helpers for the analysis and clarification loop. Runs of bench round 02 spent about 30 of 48
