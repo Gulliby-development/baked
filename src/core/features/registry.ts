@@ -1431,7 +1431,7 @@ export const FEATURES: readonly Feature[] = [
     id: "initiative-budget-reserves",
     group: "Initiatives",
     title:
-      "Feature token shares protect low estimates; split approval warns when the high end exceeds the pool",
+      "Feature token shares and dollar growth protect low estimates; split approval warns on underfunded shares",
     tui: ["/workflow: initiatives, split approval warning and B to extend budget"],
     cli: ["baked workflow initiative show", "baked workflow initiative extend"],
     api: ["/v1/initiatives/:id: next.recovery, feature shares", "/v1/initiatives/:id/extend"],
@@ -1533,7 +1533,7 @@ export const FEATURES: readonly Feature[] = [
     id: "initiative-dollar-budget",
     group: "Initiatives",
     title:
-      "A shared dollar cap with point forecasts priced by remaining stages and models, and one tolerance ceiling",
+      "A shared dollar cap with priced low reserves, call growth independent of tokens, and remaining-stage forecasts",
     tui: [
       "/workflow: initiatives, $N in the start form's budget and B, dollars on the budget line",
     ],

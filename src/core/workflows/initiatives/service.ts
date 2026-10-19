@@ -223,6 +223,8 @@ export interface FeatureView {
   need: TokenRange | null;
   /** The dollar share the feature starts with, split like its token share; null without a cap. */
   shareUsd: number | null;
+  /** Priced low and high estimates, independent of the allocated dollar share. */
+  needUsd?: TokenRange | null;
   /** The workflow feature ID of this feature's runs. */
   runFeatureId: string;
   /** The GitHub issue the feature's runs start from and their delivery closes; null without one. */
@@ -451,12 +453,13 @@ export function rebaseView(
   view: InitiativeView,
   featureId: string,
   need: TokenRange | null,
+  needUsd: TokenRange | null = null,
 ): InitiativeView {
   const target = view.features.find((f) => f.id === featureId);
   if (!target) return view;
   const waiting = [
     ...view.features.filter((f) => f.share !== null && f.id !== featureId),
-    { ...target, need },
+    { ...target, need, needUsd },
   ];
   const shares = splitShares(
     waiting,
@@ -507,7 +510,7 @@ export function planBudget(settings: InitiativeSettings, plan: InitiativePlan): 
 export const MIN_SHARE = { maxTotalTokens: 1000, maxAgentCalls: 1, maxActiveMs: 1000 } as const;
 
 export const BUDGET_RULE =
-  "Each feature run starts with a share of the remaining shared budget, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included), times the feature's weight, divided by the weights of the features of the approved plan without a run. Tokens are weighted by each feature's estimated need (the high end of its estimate), calls and time by size (small 1, medium 2, large 4). When the remaining pool covers the waiting features' low estimates, token shares reserve any lows that the weighted split would underfund and divide the rest by the same weights. A feature starts only if the remaining pool minus the other waiting features' low estimates covers its own low estimate. Otherwise it waits for a budget extension. A feature run grows its own budget only up to what remains after the low ends of the features still waiting. A starting feature's calls and active time are what remains less a floor for each other waiting feature (the base policy's per-run limit scaled by size, at most its share), never below its own share. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000. With a dollar budget (--budget-usd), dollars use the original token weights and each feature run gets its share as its maxCostUsd (never above the base policy's own) with the initiative's costTolerance; open runs hold their caps. No feature starts on less than $0.01, or once a feature is accepted and the projected total passes the cap and its tolerance.";
+  "Each feature run starts with a share of the remaining shared budget, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included), times the feature's weight, divided by the weights of the features of the approved plan without a run. Tokens are weighted by each feature's estimated need (the high end of its estimate), calls and time by size (small 1, medium 2, large 4). When the remaining pool covers the waiting features' low estimates, token shares reserve any lows that the weighted split would underfund and divide the rest by the same weights. A feature starts only if the remaining pool minus the other waiting features' low estimates covers its own low estimate. Otherwise it waits for a budget extension. A feature run grows its own budget only up to what remains after the low ends of the features still waiting. A starting feature's calls and active time are what remains less a floor for each other waiting feature (the base policy's per-run limit scaled by size, at most its share), never below its own share. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000. With a dollar budget (--budget-usd), dollars use the original token weights and each feature run gets its share as its maxCostUsd with the initiative's costTolerance. Its cap may grow independently of tokens, only up to the remaining dollars less the priced low estimates of the other waiting features (their whole shares when unpriced). Split approval warns on dollar shares below their own priced lows; open runs hold their caps. No feature starts on less than $0.01, or once a feature is accepted and the projected total passes the cap and its tolerance.";
 
 /** Digest a person approves for a plan revision: the plan, the budget and the frozen settings. */
 export function splitDigest(
@@ -1407,8 +1410,10 @@ export class InitiativeService {
     const accepted = new Set(
       before.features.filter((f) => f.state === "accepted" && f.id !== featureId).map((f) => f.id),
     );
-    const need = this.featureNeeds(this.estimateOf(row, plan, accepted)).get(featureId) ?? null;
-    const current = rebaseView(before, featureId, need);
+    const estimate = this.estimateOf(row, plan, accepted);
+    const need = this.featureNeeds(estimate).get(featureId) ?? null;
+    const needUsd = estimate.features.find((f) => f.featureId === featureId)?.costUsd ?? null;
+    const current = rebaseView(before, featureId, need, needUsd);
     const rebased = current.features.find((f) => f.id === featureId);
     const rebaseShare = {
       ...(rebased?.share ?? zero()),
@@ -1598,7 +1603,7 @@ export class InitiativeService {
       if (planned) entry.planned = planned;
       spent[link.feature_id] = entry;
     }
-    return estimateInitiative({
+    const estimate = estimateInitiative({
       features,
       history,
       samples: [
@@ -1614,6 +1619,8 @@ export class InitiativeService {
         overhead: row.decompose_run_id ? this.usage(row.decompose_run_id).tokens : 0,
       },
     });
+    this.priceFeatureNeeds(row, estimate, history);
+    return estimate;
   }
 
   /** What the initiative is, where every feature stands and why, and what happens next. */
@@ -1649,7 +1656,10 @@ export class InitiativeService {
         ? this.estimateOf(row, approved, accepted, 0)
         : null;
     const needs = estimate ? this.featureNeeds(estimate) : null;
-    for (const feature of waitingForRun) feature.need = needs?.get(feature.id) ?? null;
+    for (const feature of waitingForRun) {
+      feature.need = needs?.get(feature.id) ?? null;
+      feature.needUsd = estimate?.features.find((f) => f.featureId === feature.id)?.costUsd ?? null;
+    }
     const cost = this.costView(row, settings, plan, runIds, used, accepted, estimate);
     const shares = splitShares(waitingForRun, remaining, cost.remainingUsd);
     for (const [index, feature] of waitingForRun.entries()) Object.assign(feature, shares[index]);
@@ -1778,13 +1788,34 @@ export class InitiativeService {
         .map((f) => f.id),
     );
     const estimate = this.estimateOf(row, plan, accepted);
-    if (estimate.tokens.high <= estimate.budget.maxTotalTokens) return message;
-    const warning = `The estimate's high end (${tokenText(estimate.tokens.high)} tokens) exceeds the shared budget (${tokenText(estimate.budget.maxTotalTokens)}). Consider extending to ${estimate.withMargin} tokens, including margin, before approving, or approve with this risk.`;
-    return recoveryAdvice(
-      `${warning} Use baked workflow initiative extend ${row.id} --tokens ${estimate.withMargin} --expected-revision ${row.revision}. ${message}`,
-      `${warning} ${message}`,
-      { action: "extend", initiativeId: row.id },
-    );
+    const needs = this.featureNeeds(estimate);
+    const waiting = plan.features
+      .filter((f) => {
+        const current = this.store.current(row.id, f.id);
+        return !accepted.has(f.id) && (!current || current.feature_digest !== featureDigest(f));
+      })
+      .map((f) => ({ ...f, size: f.size ?? "medium", need: needs.get(f.id) ?? null }));
+    const shares = splitShares(waiting, view.budget.remaining, view.budget.cost.remainingUsd);
+    const dollarWarnings = waiting.flatMap((f, index) => {
+      const low = estimate.features.find((e) => e.featureId === f.id)?.costUsd?.low;
+      const share = shares[index]?.shareUsd;
+      return low !== undefined && share != null && share < low
+        ? [
+            `Feature ${f.id}'s dollar share (${usd(share)}) is below its low estimate (${usd(low)}). Its cap can grow only into dollars left after the other waiting features' low estimates. Consider extending the dollar budget or trimming the split before approving, or approve with this risk.`,
+          ]
+        : [];
+    });
+    const tokenWarning =
+      estimate.tokens.high > estimate.budget.maxTotalTokens
+        ? `The estimate's high end (${tokenText(estimate.tokens.high)} tokens) exceeds the shared budget (${tokenText(estimate.budget.maxTotalTokens)}). Consider extending to ${estimate.withMargin} tokens, including margin, before approving, or approve with this risk.`
+        : "";
+    const warning = [tokenWarning, ...dollarWarnings].filter(Boolean).join(" ");
+    if (!warning) return message;
+    const extend = `Use baked workflow initiative extend ${row.id}${tokenWarning ? ` --tokens ${estimate.withMargin}` : " --budget-usd N"} --expected-revision ${row.revision}.`;
+    return recoveryAdvice(`${warning} ${extend} ${message}`, `${warning} ${message}`, {
+      action: "extend",
+      initiativeId: row.id,
+    });
   }
 
   private nextAction(row: InitiativeRow, view: InitiativeView): NextAction {
@@ -2103,6 +2134,83 @@ export class InitiativeService {
     };
   }
 
+  /** Resolve the same routed stages for dollar reserves and the point forecast. */
+  private plannedFeatureStages(settings: InitiativeSettings, workflowId: string): PlannedStage[] {
+    const workspace = this.workflows.workspace;
+    const policy = settings.basePolicy;
+    const model = settings.model ?? this.workflows.config.defaultModel;
+    if (!model) return [];
+    const config = explicitModelConfig(this.workflows.config, model);
+    const loaded = loadDefinition(workspace, workflowId, policy);
+    const registry = routedProfiles(workspace, config, model);
+    const gates = loadGateLibrary(workspace, policy).gates;
+    const routing = reviewIndependence(
+      config,
+      routingRecord(
+        config,
+        registry,
+        model,
+        workflowId,
+        loaded.definition.stages.map((s) => s.id),
+        undefined,
+      ),
+      loaded.definition,
+      policy,
+      gates,
+      registry.list().map((p) => p.profile),
+      availableVendorModels(
+        (getCachedProviderStatuses() ?? []).filter((p) => p.available).map((p) => p.id),
+      ),
+    );
+    if (routing.refuse) return [];
+    return plannedStages({ loaded, policy, routing: routing.record, gates: [...gates.values()] });
+  }
+
+  /** Dollar ranges use routed model prices, never the dollars allocated per token. */
+  private priceFeatureNeeds(
+    row: InitiativeRow,
+    estimate: InitiativeEstimate,
+    history: PastRun[],
+  ): void {
+    const settings = this.store.settings(row);
+    if (!settings.costBudget) return;
+    const samples = forecastSamples(
+      this.workflows.store,
+      this.store.links(row.id).map((l) => l.run_id),
+    );
+    const planned = new Map<string, PlannedStage[]>();
+    for (const feature of estimate.features) {
+      if (!planned.has(feature.workflowId))
+        planned.set(feature.workflowId, this.plannedFeatureStages(settings, feature.workflowId));
+      const stages = planned.get(feature.workflowId) ?? [];
+      if (!stages.length) continue;
+      const priced = estimatePreRun({
+        history,
+        workflowId: feature.workflowId,
+        stages,
+        maxTotalTokens: 0,
+        price: () => null,
+      });
+      const weights = priced.stages.map((s) => ({
+        id: s.stageId,
+        models: s.models,
+        tokens:
+          ((s.tokens.low + s.tokens.high) / 2) *
+          (s.type === "tasks" ? SIZE_TASK_FACTOR[feature.size] : SIZE_STAGE_FACTOR[feature.size]),
+      }));
+      const total = weights.reduce((sum, s) => sum + s.tokens, 0);
+      const rate =
+        total > 0
+          ? forecastStageCost(
+              samples,
+              weights.map((s) => ({ ...s, tokens: s.tokens / total })),
+            )
+          : null;
+      feature.costUsd =
+        rate === null ? null : { low: feature.tokens.low * rate, high: feature.tokens.high * rate };
+    }
+  }
+
   /** Price unaccepted features' remaining point tokens with their remaining workflow stages. */
   private remainingFeatureCost(
     row: InitiativeRow,
@@ -2130,42 +2238,7 @@ export class InitiativeService {
         stages = runForecastStages(store, runId, policy);
       } else {
         if (!planned.has(feature.workflowId)) {
-          const workspace = this.workflows.workspace;
-          const policy = settings.basePolicy;
-          const model = settings.model ?? this.workflows.config.defaultModel;
-          if (!model) return null;
-          const config = explicitModelConfig(this.workflows.config, model);
-          const loaded = loadDefinition(workspace, feature.workflowId, policy);
-          const registry = routedProfiles(workspace, config, model);
-          const gates = loadGateLibrary(workspace, policy).gates;
-          const routing = reviewIndependence(
-            config,
-            routingRecord(
-              config,
-              registry,
-              model,
-              feature.workflowId,
-              loaded.definition.stages.map((s) => s.id),
-              undefined,
-            ),
-            loaded.definition,
-            policy,
-            gates,
-            registry.list().map((p) => p.profile),
-            availableVendorModels(
-              (getCachedProviderStatuses() ?? []).filter((p) => p.available).map((p) => p.id),
-            ),
-          );
-          if (routing.refuse) return null;
-          planned.set(
-            feature.workflowId,
-            plannedStages({
-              loaded,
-              policy,
-              routing: routing.record,
-              gates: [...gates.values()],
-            }),
-          );
+          planned.set(feature.workflowId, this.plannedFeatureStages(settings, feature.workflowId));
         }
         stages = planned.get(feature.workflowId) ?? [];
       }
@@ -2489,7 +2562,7 @@ export function featurePolicy(
       : null;
   const cost = costPolicy(settings, shareUsd);
   const grown = growTo !== null ? grownSizing(base, maxTotalTokens, growTo) : base.sizing;
-  // The dollar cap grows with the token budget, up to what the initiative can spare (#1353). The
+  // The dollar cap grows for tokens, forecasts or calls, up to what the initiative can spare. The
   // base policy's own cap does not bound it: the initiative's dollar budget does (#1503).
   const costTo =
     cost.maxCostUsd !== undefined && cost.maxCostUsd !== null && growUsd !== null
@@ -2497,9 +2570,7 @@ export function featurePolicy(
       : null;
   // Set without a token ceiling too: the cost forecast grows the cap toward it (#1503).
   const sizing =
-    costTo !== null && costTo > (cost.maxCostUsd ?? 0)
-      ? { ...grown, maxRunCostUsd: costTo }
-      : grown;
+    costTo !== null ? { ...grown, maxRunCostUsd: Math.max(cost.maxCostUsd ?? 0, costTo) } : grown;
   return PolicySchema.parse({
     ...base,
     maxTotalTokens,
@@ -2595,10 +2666,10 @@ export function growthLimit(
 }
 
 /**
- * The dollars a starting feature's cap may grow to with its token budget: what the dollar budget
- * has left less, for every other feature still waiting, the low end of its estimate at its share's
- * price per token (its whole dollar share when it has no estimate). A feature's cap was its share,
- * fixed at start, while its token budget grew: bench round 35's sum feature stopped on its $1.46
+ * The dollars a starting feature's cap may grow to independently of tokens: the remaining dollar
+ * budget less the priced low estimates of the other waiting features. Unpriced features reserve
+ * their whole shares. A feature's cap was fixed at its share while its token budget grew:
+ * bench round 35's sum feature stopped on its $1.46
  * cap with 62% of its grown tokens unused and $14 of the initiative unspent (#1353). Null without a
  * dollar budget.
  */
@@ -2607,11 +2678,7 @@ export function costGrowthLimit(view: InitiativeView, featureId: string): number
   if (remaining === null || remaining === undefined) return null;
   const reserve = view.features
     .filter((f) => f.share !== null && f.id !== featureId)
-    .reduce((sum, f) => {
-      const usd = f.shareUsd ?? 0;
-      const tokens = f.share?.tokens ?? 0;
-      return sum + (f.need && tokens > 0 ? Math.min(usd, (f.need.low * usd) / tokens) : usd);
-    }, 0);
+    .reduce((sum, f) => sum + (f.needUsd?.low ?? f.shareUsd ?? 0), 0);
   return Math.max(0, remaining - reserve);
 }
 

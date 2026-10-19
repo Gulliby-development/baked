@@ -6,8 +6,8 @@ import { findPricing } from "../llm/pricing.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { writeViaTemp } from "./atomic-write.js";
-import { costRate, growBudgetOnProgress } from "./budget.js";
-import { costCeilingUsd, currentCostCap } from "./cost-tolerance.js";
+import { costRate, growBudgetOnProgress, growCostCapToForecast } from "./budget.js";
+import { costCeilingUsd, costToleranceOf, currentCostCap } from "./cost-tolerance.js";
 import { WorkflowFault } from "./errors.js";
 import type { PastRun } from "./estimate.js";
 import { executionClock } from "./execution-clock.js";
@@ -1553,7 +1553,17 @@ export class WorkflowStore {
     const row = this.run(runId);
     const requestedUsd =
       tokens * costRate(this.costOf(runId, row.estimated_cost_microusd), row.token_usage, model);
-    if (spentUsd + reservedUsd + requestedUsd > cap)
+    if (
+      spentUsd + reservedUsd + requestedUsd > cap &&
+      !growCostCapToForecast(
+        this,
+        runId,
+        policy,
+        spentUsd + reservedUsd + requestedUsd,
+        costToleranceOf(this, runId, policy),
+        "call-growth",
+      )
+    )
       throw new WorkflowFault(
         "BUDGET_EXHAUSTED",
         cap > (maxCostUsd ?? cap)
