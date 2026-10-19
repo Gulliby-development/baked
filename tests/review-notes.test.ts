@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { addReviewNotes, noteReason } from "../src/core/verification/review-notes.js";
 import type { Review } from "../src/core/workflows/schemas.js";
-import type { ReviewNote } from "../src/core/workflows/types.js";
+import { siblingOwner } from "../src/core/verification/initiative-ownership.js";
+import type { ReviewNote, RuntimeState } from "../src/core/workflows/types.js";
 
 const finding = (fields: Partial<Review["findings"][number]>): Review["findings"][number] => ({
   id: "LANG-001",
@@ -53,4 +54,16 @@ describe("review notes", () => {
     expect(noteReason(finding({ basis: "spec" }), ["high"], 0.5)).toBe("severity");
     expect(noteReason(finding({ basis: "spec", severity: "high" }), ["high"], 0.5)).toBe("repro");
   });
+});
+
+test("ownership respects current, shared, glob and Windows paths", () => {
+  const bounds: RuntimeState["initiativeBounds"] = { featureId: "adapters", features: [
+    { id: "entry", scope: "Entry", paths: ["tests/**", "shared.py"] },
+    { id: "adapters", scope: "Adapters", paths: ["shared.py", "src/*.py"] },
+  ] };
+  expect(siblingOwner("tests/test_x.py", bounds)?.id).toBe("entry");
+  expect(siblingOwner(".\\tests\\test_x.py", bounds)?.id).toBe("entry");
+  for (const file of [null, "shared.py", "src/adapter.py", "unowned.py"]) expect(siblingOwner(file, bounds)).toBeUndefined();
+  expect(siblingOwner("tests/test_x.py", null)).toBeUndefined();
+  expect(siblingOwner("tests/test_x.py", { ...bounds, featureId: "missing" })).toBeUndefined();
 });
