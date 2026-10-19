@@ -258,6 +258,10 @@ export interface AttemptUsageRecord {
    * written before the cap left them out, which counted `totalTokens`.
    */
   cappedTokens?: number;
+  /** Effective cap on total tokens, including the step floor. */
+  allTokensCap?: number;
+  /** Remaining run budget available to this attempt. */
+  ceilingTokens?: number;
   /** Sum of the steps' model requests; absent when the provider reports none. */
   modelRequests?: number;
   /**
@@ -680,6 +684,8 @@ export class AttemptStepController {
       finalizedBy: this.finalizedBy,
       totalTokens,
       cappedTokens,
+      allTokensCap: this.allTokensCap(steps),
+      ...(this.ceiling !== undefined ? { ceilingTokens: this.ceiling } : {}),
       ...(reported.length ? { modelRequests: reported.reduce((a, b) => a + b, 0) } : {}),
       ...(lost ? { unreportedResponses: lost } : {}),
       ...(queries.length

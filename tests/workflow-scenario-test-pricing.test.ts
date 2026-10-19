@@ -9,11 +9,8 @@ import type { SizingReport } from "../src/core/workflows/sizing.js";
 import type { ExecutionRequest, Task } from "../src/core/workflows/types.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
-// Bench round 28, cfgtrace b4427c85 (#1265). Sizing priced each one-file test task at the per-file
-// test rate of history (high 180k), and the attempt cap stayed at that price, while the parts used
-// 547k on average: a test task's work follows the criteria it covers. With finished test tasks in
-// history, a test task is now priced at least at its criteria times their measured rate per
-// criterion, and its attempt cap follows.
+// #1265 exposed the per-file underestimate for test tasks. #1595 replaces its criterion
+// multiplier with whole-task history, so file count and criterion count do not multiply overhead.
 
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
@@ -47,17 +44,19 @@ function history(): string {
     CREATE TABLE tasks (run_id TEXT, id TEXT, definition_json TEXT, status TEXT);
     CREATE TABLE steps (run_id TEXT, id TEXT, stage_id TEXT);
     CREATE TABLE attempts (run_id TEXT, step_id TEXT, model_id TEXT, used_tokens INTEGER);
+    CREATE TABLE artifacts (run_id TEXT, logical_path TEXT, revision INTEGER, inline_content TEXT, blob_path TEXT);
     INSERT INTO runs VALUES ('h1','completed'),('h2','completed');
     INSERT INTO steps VALUES ('h1','s1','task-T001'),('h2','s1','task-T001');
     INSERT INTO attempts VALUES ('h1','s1','m',800000),('h2','s1','m',800000);`);
   const files = ["tests/test_a.py", "tests/test_b.py", "tests/test_c.py", "tests/test_d.py"];
   const insert = db.query("INSERT INTO tasks VALUES (?,?,?,?)");
   for (const run of ["h1", "h2"]) insert.run(run, "T001", JSON.stringify(task("T001", files, ["AC-001", "AC-002"])), "verified");
+  for (const run of ["h1", "h2"]) db.query("INSERT INTO artifacts VALUES (?, 'spec.json', 1, ?, NULL)").run(run, JSON.stringify({ ...spec, criteria: spec.criteria.slice(0, 2).map((c, i) => ({ ...c, given: `input "case-${i}"` })) }));
   db.close();
   return path;
 }
 
-test("a one-file test task covering three criteria is priced and capped by its criteria", async () => {
+test("a one-file test task uses the whole-task cost of history instead of a criterion multiplier", async () => {
   const policy: RunPolicy = {
     ...fixturePolicy,
     clarification: "assume",
@@ -89,9 +88,9 @@ test("a one-file test task covering three criteria is priced and capped by its c
   if (!plan) throw new Error("no sizing");
   const report = JSON.parse(store.readArtifact(run.runId, plan.id)) as SizingReport;
   const tests = report.tasks.find((t) => t.taskId === "T002");
-  expect(tests?.estimate).toEqual({ low: 1_200_000, high: 1_200_000 });
-  expect(store.state(run.runId).taskBudgets.T002).toBe(1_200_000);
+  expect(tests?.estimate).toEqual({ low: 800_000, high: 800_000 });
+  expect(store.state(run.runId).taskBudgets.T002).toBe(800_000);
   // 800k over 2 criteria is 400k a criterion; the per-file rate is only 200k a file.
-  expect(report.criterionRate).toMatchObject({ perCriterion: { low: 400_000, high: 400_000 }, samples: 2 });
+  expect(report.testTaskRates.all).toMatchObject({ perTask: { low: 800_000, high: 800_000 }, samples: 2 });
   expect(report.rates.test.create.perFile.high).toBeLessThan(400_000);
 });

@@ -92,5 +92,11 @@ for (const mode of ["named", "remainder", "slices"] as const) {
     expect(fixture.executor.absent[0]).toContain('AC-001 names "--stdin"');
     expect(report.tasks.filter((t) => t.kind === "test").map((t) => t.cases)).toEqual([1, 1, 1]);
     expect(store.state(run.runId).graph!.tasks).toHaveLength(8);
+    const progress = store.artifacts(run.runId).filter((a) => a.logical_path.startsWith("sizing/progress-"));
+    expect(progress.length).toBeGreaterThan(0);
+    for (const artifact of progress) {
+      const update = JSON.parse(store.readArtifact(run.runId, artifact.id)) as SizingReport;
+      expect(update.tasks.filter((t) => t.kind === "test").every((t) => t.cases === 1)).toBe(true);
+    }
   }, 120_000);
 }

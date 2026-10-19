@@ -139,14 +139,11 @@ import {
   hostCounts,
   hostDependencyEdges,
   hostSplitParts,
-  isCountNit,
-  isHostBatchCheckNit,
-  isHostEdgeNit,
-  isHostSplitNit,
   knownRisks,
   namesExampleRule,
   namesPlatformLimit,
   namesRequestSide,
+  noteHostEdits,
   persistentDefect,
   REQUEST_NOTE,
   repeatedFacet,
@@ -239,6 +236,7 @@ import {
   seedBytes,
 } from "./fork-stage.js";
 import { outputTail } from "./gates.js";
+import { HOST_ADDITIONS, HOST_EDITS_PATH, type HostEdit, recordGraphEdits } from "./host-edits.js";
 import { criticalPathProblems } from "./initiatives/critical-path.js";
 import {
   type InitiativePlan,
@@ -462,6 +460,7 @@ import {
   plannerSizing,
   rateHistory,
   type SizingReport,
+  samplesFrom,
   sizePlan,
   sizingHistory,
   splitNote,
@@ -616,28 +615,28 @@ function planGraph(
   policy: RunPolicy,
   profiles: AgentProfile[],
   stageProfile?: string,
+  edits?: HostEdit[],
 ): TaskGraph {
-  const graph = withCommandDependencies(
-    withReadDependencies(
-      withModuleDependencies(
-        withDerivedRequirements(spec, {
-          ...withImplementationProfiles(
-            withoutApprovalRemarks(plan.taskGraph),
-            profiles,
-            stageProfile,
-          ),
-          specHash: hashJson(spec),
-          planHash: hashBytes(plan.markdown),
-        }),
-      ),
-    ),
-    spec,
+  let graph = plan.taskGraph;
+  const apply = (kind: string, transform: (input: TaskGraph) => TaskGraph) => {
+    graph = recordGraphEdits(graph, transform(graph), kind, edits);
+  };
+  apply("approval-remarks", withoutApprovalRemarks);
+  apply("implementation-profile", (input) =>
+    withImplementationProfiles(input, profiles, stageProfile),
   );
+  graph = { ...graph, specHash: hashJson(spec), planHash: hashBytes(plan.markdown) };
+  apply("derived-requirements", (input) => withDerivedRequirements(spec, input));
+  apply("module-dependencies", withModuleDependencies);
+  apply("read-dependencies", withReadDependencies);
+  apply("command-dependencies", (input) => withCommandDependencies(input, spec));
   // Tests first runs the test tasks before the code; otherwise a test task waits for its code.
-  return withCoveringChecks(
-    testsFirstOf(policy) === "off" ? withTestDependencies(graph) : withTestsFirstOrder(graph),
-    policy,
+  apply(
+    "test-dependencies",
+    testsFirstOf(policy) === "off" ? withTestDependencies : withTestsFirstOrder,
   );
+  apply("covering-checks", (input) => withCoveringChecks(input, policy));
+  return graph;
 }
 
 /** What the analyzer is told the host verified, including the dependency edges the host owns. */
@@ -1307,6 +1306,7 @@ export class WorkflowScheduler {
                     planner,
                     {
                       checks: policy.checks,
+                      hostAdditions: HOST_ADDITIONS,
                       // The approval reviewer decides approvals; no task can be assigned to it.
                       profiles: profiles.filter((p) => p.output !== "approval-review"),
                       workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
@@ -1401,8 +1401,41 @@ export class WorkflowScheduler {
               }
               if (problems.length)
                 throw new WorkflowFault("INVALID_REFERENCE", problems.join("\n"));
-              const planned = planGraph(spec, plan, policy, profiles, this.tasksProfile(runId));
-              const graph = policy.sizing ? this.splitTests(runId, planned, policy) : planned;
+              state.hostEdits = [];
+              recordGraphEdits(
+                submittedPlan.taskGraph,
+                plan.taskGraph,
+                "criterion-coverage",
+                state.hostEdits,
+              );
+              const planned = planGraph(
+                spec,
+                plan,
+                policy,
+                profiles,
+                this.tasksProfile(runId),
+                state.hostEdits,
+              );
+              const graph = policy.sizing
+                ? this.splitTests(runId, planned, policy, state.hostEdits)
+                : planned;
+              for (const task of graph.tasks.filter(hostWritten))
+                state.hostEdits.push({
+                  task: task.id,
+                  field: "execution",
+                  kind: "content-written",
+                  before: "agent",
+                  after: "host",
+                  text: "",
+                });
+              state.hostEdits.push({
+                task: null,
+                field: "hostCounts",
+                kind: "counts",
+                before: hostCounts(plan.taskGraph),
+                after: hostCounts(graph),
+                text: "",
+              });
               state.graph = graph;
               state.hostSplitTasks = graph.tasks.length - planned.tasks.length;
               state.rootGraph = structuredClone(state.graph);
@@ -1412,6 +1445,12 @@ export class WorkflowScheduler {
               this.store.transaction(() => {
                 this.store.artifact(runId, "plan", "plan.md", state.plan ?? "");
                 this.store.artifact(runId, "tasks", "tasks.json", canonical(state.graph));
+                this.store.artifact(
+                  runId,
+                  "host-edits",
+                  HOST_EDITS_PATH,
+                  canonical(state.hostEdits),
+                );
                 this.store.syncTasks(runId, graph);
               });
               await this.publish(runId, stepId, state, policy, signal);
@@ -1442,6 +1481,7 @@ export class WorkflowScheduler {
                 { markdown: state.plan, taskGraph: graph },
                 policy,
                 profiles,
+                state.hostEdits,
               );
               if (problems.length) {
                 this.wait("clarification", state, {
@@ -1468,6 +1508,7 @@ export class WorkflowScheduler {
                     verifiedByRuntime: hostEdgesNote(graph, spec),
                     workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
                     hostCounts: hostCounts(graph),
+                    hostEdits: state.hostEdits ?? [],
                     hostAddedChecks: hostAddedChecks(graph, policy),
                     ...(state.analysisRaised.length
                       ? { earlierFindings: state.analysisRaised }
@@ -1514,6 +1555,27 @@ export class WorkflowScheduler {
               }
               // The host inventory outranks the model: a finding that a listed file does not exist is a note.
               const facts = this.recordFacts(runId, runRoot(this.store.workspace, state));
+              const hostNotes = noteHostEdits(
+                analysis.findings,
+                state.hostEdits ?? [],
+                state.plan,
+                { graph, policy, spec },
+              );
+              if (hostNotes.length)
+                this.store.transaction(() =>
+                  this.store.artifact(
+                    runId,
+                    "analysis-notes",
+                    "analysis/host-notes.json",
+                    canonical({
+                      graphHash: hashJson(graph),
+                      findings: analysis.findings.filter((finding) =>
+                        hostNotes.some((note) => note.findingId === finding.id),
+                      ),
+                      notes: hostNotes,
+                    }),
+                  ),
+                );
               for (const finding of analysis.findings) {
                 if (
                   finding.blocking &&
@@ -1524,66 +1586,12 @@ export class WorkflowScheduler {
                   finding.description = `Contradicted by the workspace facts (facts/workspace.json); kept as a note: ${finding.description}`;
                 }
               }
-              // The host computed the task and file counts; a finding that only compares them is a note.
-              const counts = hostCounts(graph);
-              for (const finding of analysis.findings) {
-                if (finding.blocking && isCountNit(finding.description)) {
-                  finding.blocking = false;
-                  finding.description = `Counts are computed by the host (${String(counts.tasks)} tasks, ${String(counts.files)} distinct files); kept as a note: ${finding.description}`;
-                }
-              }
               // The spec schema has three verification methods; a finding that asks for another one
               // cannot be satisfied by the spec author, so it is a note (#1065).
               for (const finding of analysis.findings) {
                 if (finding.blocking && asksUnsupportedMethod(finding.description)) {
                   finding.blocking = false;
                   finding.description = `Asks for a verification method the spec schema does not have (only ${VERIFICATION_METHODS.join(", ")}; automated covers the reviewer reading a file); kept as a note: ${finding.description}`;
-                }
-              }
-              // The host adds some dependsOn edges after planning; plan.md cannot mention them and the
-              // planner cannot remove them, so a finding about them is a note.
-              const hostEdges = hostDependencyEdges(graph, spec);
-              const taskIds = graph.tasks.map((t) => t.id);
-              for (const finding of analysis.findings) {
-                if (
-                  finding.blocking &&
-                  finding.kind === "inconsistency" &&
-                  isHostEdgeNit(finding, hostEdges, taskIds)
-                ) {
-                  finding.blocking = false;
-                  finding.description = `About dependsOn edges the host adds after planning (${hostEdges.map((e) => `${e.task} after ${e.dependsOn}`).join(", ")}); kept as a note: ${finding.description}`;
-                }
-              }
-              // Covering checks, derived test checks and batching guidance belong to the host.
-              for (const finding of analysis.findings) {
-                if (
-                  finding.blocking &&
-                  isHostBatchCheckNit(
-                    finding,
-                    graph,
-                    policy.checks,
-                    hostAddedChecks(graph, policy),
-                    state.plan,
-                  )
-                ) {
-                  finding.blocking = false;
-                  finding.description = `About check wording the host appended after planning; kept as a note: ${finding.description}`;
-                }
-              }
-              // The host split oversized test tasks after planning; plan.md names only the original.
-              const split = hostSplitParts(graph);
-              for (const finding of analysis.findings) {
-                if (
-                  finding.blocking &&
-                  finding.kind !== "scope" &&
-                  isHostSplitNit(finding, split)
-                ) {
-                  finding.blocking = false;
-                  finding.description = `About tasks the host split by file or criterion slices after planning (${Object.entries(
-                    split,
-                  )
-                    .map(([original, ids]) => `${original}: ${ids.join(", ")}`)
-                    .join("; ")}); kept as a note: ${finding.description}`;
                 }
               }
               // Findings about check outcomes stay in the record as notes; checks run later.
@@ -2097,7 +2105,7 @@ export class WorkflowScheduler {
                   state,
                   policy,
                   this.requireProfile(profile),
-                  {},
+                  { hostEdits: state.hostEdits ?? [] },
                   signal,
                 ),
               );
@@ -3298,7 +3306,12 @@ export class WorkflowScheduler {
     return progressed;
   }
   /** Split oversized tests by file and then by criteria within a file, before analysis. */
-  private splitTests(runId: string, graph: TaskGraph, policy: RunPolicy): TaskGraph {
+  private splitTests(
+    runId: string,
+    graph: TaskGraph,
+    policy: RunPolicy,
+    edits?: HostEdit[],
+  ): TaskGraph {
     const spec = this.store.state(runId).spec;
     const report = sizePlan({
       graph,
@@ -3308,7 +3321,7 @@ export class WorkflowScheduler {
       spent: this.store.run(runId).token_usage,
       model: this.sizingModel(runId, graph),
     });
-    const split = splitTestTasks(graph, report, spec);
+    const split = splitTestTasks(graph, report, spec, edits);
     if (!split) return graph;
     const revision = this.store.state(runId).sizingReplans;
     this.store.transaction(() =>
@@ -3900,6 +3913,7 @@ export class WorkflowScheduler {
     plan: { markdown: string; taskGraph: TaskGraph },
     policy: RunPolicy,
     profiles: AgentProfile[],
+    edits?: readonly HostEdit[],
   ): string[] {
     const graph = planGraph(spec, plan, policy, profiles, this.tasksProfile(runId));
     const problems: string[] = [];
@@ -3917,6 +3931,7 @@ export class WorkflowScheduler {
         graph,
         (path) => createdByRunLineage(this.store, runId, path, fileHash(workspacePath(root, path))),
         policy.allowOverlappingWrites === true,
+        edits,
       ),
     );
     if (presetOf(parseRunDefinition(this.store.run(runId).definition_json)) === HARDEN_PRESET)
@@ -4908,6 +4923,54 @@ ${note}`;
     this.raiseBudget(runId, state, policy, report);
     return "continue";
   }
+  /** Reprice unstarted tasks from completed, checked tasks of this run before the next batch. */
+  private refreshTaskSizing(runId: string, state: RuntimeState, policy: RunPolicy): void {
+    if (!policy.sizing || !state.graph) return;
+    const rows = this.store.tasks(runId);
+    const finished = new Set(
+      rows
+        .filter(
+          (r) =>
+            r.status === "verified" ||
+            (r.status === "implemented" && hasTaskGate(r, state.taskGates)),
+        )
+        .map((r) => r.id),
+    );
+    const current = samplesFrom(
+      join(this.store.workspace, ".baked", "workflows.sqlite"),
+      "project",
+      runId,
+    ).filter((s) => s.kind === "test" && finished.has(s.taskId));
+    if (!current.length) return;
+    const path = `sizing/progress-${hashJson(current)}.json`;
+    if (this.store.latestArtifact(runId, path)) return;
+    // Never replace a continuation's larger cap or resize already-running parallel workers.
+    const pending = new Set(rows.filter((r) => r.status === "pending").map((r) => r.id));
+    const started = new Set(this.store.steps(runId).map((s) => s.stage_id));
+    const taskIds = new Set(
+      state.graph.tasks
+        .filter((t) => t.origin === "planned" && pending.has(t.id) && !started.has(`task-${t.id}`))
+        .map((t) => t.id),
+    );
+    if (!taskIds.size) return;
+    const report = sizePlan({
+      graph: state.graph,
+      taskIds,
+      spec: state.spec,
+      policy,
+      samples: [...current, ...sizingHistory(this.store.workspace, policy)],
+      spent: this.store.run(runId).token_usage,
+      model: this.sizingModel(runId, state.graph),
+      loopShares: loopHistory(this.store.workspace, policy),
+      tokenRates: rateHistory(this.store.workspace, policy),
+    });
+    this.store.transaction(() => {
+      this.store.artifact(runId, "sizing", path, canonical(report));
+      for (const task of report.tasks) state.taskBudgets[task.taskId] = task.attemptTokens;
+      this.raiseBudget(runId, state, policy, report);
+      this.store.saveState(runId, state);
+    });
+  }
   /**
    * Grows the run budget to the sized price, up to the policy's ceiling, and the active-time cap
    * to the time that budget needs at the observed rate. A plan sent back to be
@@ -5354,6 +5417,7 @@ ${note}`;
     if (!state.graph || !state.approvalRoot)
       throw new WorkflowFault("STALE_DECISION", "Approved tasks required");
     for (;;) {
+      this.refreshTaskSizing(runId, state, policy);
       const rows = this.store.tasks(runId);
       const checking = this.checkableTask(state.graph, rows, state);
       if (
@@ -5971,6 +6035,7 @@ ${note}`;
     // Tasks whose worker was lost in this drive; the run stops once nothing else can progress.
     const lost = new Map<string, string>();
     for (;;) {
+      this.refreshTaskSizing(runId, state, policy);
       const rows = this.store.tasks(runId);
       const current = state.graph ?? graph;
       const checking = this.checkableTask(current, rows, state);

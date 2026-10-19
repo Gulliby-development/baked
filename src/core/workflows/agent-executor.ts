@@ -114,6 +114,7 @@ import {
   touchProgress,
 } from "./stall.js";
 import {
+  ALL_TOKENS_FACTOR,
   AttemptStepController,
   type AttemptUsageRecord,
   DEFAULT_MAX_ATTEMPT_TOKENS,
@@ -1498,6 +1499,11 @@ export class NativeAgentExecutor implements AgentExecutor {
           request.profile.id,
           usage.cappedTokens ?? usage.totalTokens,
           usage.maxTokens,
+          {
+            totalTokens: usage.totalTokens,
+            allTokensCap: budget.allTokensCap(result.steps),
+            ...(usage.ceilingTokens !== undefined ? { ceilingTokens: usage.ceilingTokens } : {}),
+          },
         );
       // An attempt that had to edit and was finalized by the run's free budget before any edit
       // did not fail its task: the budget stopped it, and an extension lets the task go on
@@ -1736,12 +1742,27 @@ export function sentEffort(
  * the cap is not a run limit, so `workflow extend` cannot help, and a resume continues the task on
  * the edits already in place (#935).
  */
-export const attemptCapFault = (profileId: string, tokens: number, cap: number): WorkflowFault =>
-  new WorkflowFault(
+export const attemptCapFault = (
+  profileId: string,
+  tokens: number,
+  cap: number,
+  totals: { totalTokens: number; allTokensCap: number; ceilingTokens?: number } = {
+    totalTokens: tokens,
+    allTokensCap: cap * ALL_TOKENS_FACTOR,
+  },
+): WorkflowFault => {
+  const capKind =
+    tokens >= cap
+      ? "uncached-token cap"
+      : totals.totalTokens >= totals.allTokensCap
+        ? "all-token cap"
+        : "run-budget ceiling";
+  return new WorkflowFault(
     "BUDGET_EXHAUSTED",
-    `Profile ${profileId} used ${String(tokens)} tokens without submitting a result (attempt cap ${String(cap)})`,
-    { reason: "attempt_cap", tokens, cap },
+    `Profile ${profileId} reached the ${capKind} without submitting a result: uncached tokens ${tokens}/${cap}, total tokens ${totals.totalTokens}/${totals.allTokensCap}${totals.ceilingTokens !== undefined ? `, run-budget ceiling ${totals.ceilingTokens}` : ""}`,
+    { reason: "attempt_cap", capKind, tokens, cap, ...totals },
   );
+};
 
 /** Reads an attempt may make before an edit before an unchanged re-read is answered short. */
 export const REREADS_BEFORE_STUB = 3;
