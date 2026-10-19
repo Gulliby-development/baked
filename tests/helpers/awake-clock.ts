@@ -15,7 +15,9 @@ export function awakeClock() {
   const performanceNow = spyOn(performance, "now").mockImplementation(() => mono() + elapsed);
   const timeouts = spyOn(globalThis, "setTimeout").mockImplementation(((fn: () => void, delay = 0, ...args: unknown[]) => {
     const id = timeout(fn, delay, ...args);
-    if (delay >= 1000) timers.set(id, { at: elapsed + delay, fire: () => fn(...args) });
+    // A deadline's final poll can be just below one second after real callback overhead.
+    // Leaving that poll on real time lets a later simulated answer beat the deadline.
+    if (delay > 0) timers.set(id, { at: elapsed + delay, fire: () => fn(...args) });
     return id;
   }) as typeof setTimeout);
   const intervals = spyOn(globalThis, "setInterval").mockImplementation(((fn: () => void, delay = 0, ...args: unknown[]) => {

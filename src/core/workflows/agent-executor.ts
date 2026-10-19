@@ -268,6 +268,8 @@ interface AttemptWatch {
   lastAt: number;
   lastTool: string | null;
   tools: number;
+  /** Unanswered calls have their own adapter deadline in provider-health. */
+  providers: number;
   deadlines: number;
   /** When the model call of the current step started, until it asks for a tool or ends. */
   calledAt: number | null;
@@ -332,6 +334,7 @@ export class NativeAgentExecutor implements AgentExecutor {
       lastAt: executionClock.now(),
       lastTool: null,
       tools: 0,
+      providers: 0,
       deadlines: 0,
       calledAt: null,
       abort: (error) => stall.abort(error),
@@ -339,7 +342,8 @@ export class NativeAgentExecutor implements AgentExecutor {
     const interval = setInterval(
       () => {
         const limit = silenceLimitMs(settings, request.runId);
-        if (watch.tools > 0 || executionClock.now() - watch.lastAt < limit) return;
+        if (watch.tools > 0 || watch.providers > 0 || executionClock.now() - watch.lastAt < limit)
+          return;
         stall.abort(
           stalledFault(
             `Attempt ${request.attemptId} of ${request.profile.id} made no progress for ${Math.round((executionClock.now() - watch.lastAt) / 60_000)} min (last tool: ${watch.lastTool ?? "none"}; limit ${Math.round(limit / 60_000)} min${limit < settings.stepStallMs ? ", from the run's own model calls" : ""})`,
@@ -1701,7 +1705,15 @@ export class NativeAgentExecutor implements AgentExecutor {
     const calls = policy.modelCalls;
     const model = () =>
       withProviderHealth(resolveModel(request.profile.model), request.profile.model, {
-        pending: request.providerPending,
+        stage: request.profile.output,
+        pending: () => {
+          watch.providers++;
+          const settle = request.providerPending?.();
+          return (responded) => {
+            watch.providers--;
+            settle?.(responded);
+          };
+        },
         progress: () => {
           watch.lastAt = executionClock.now();
           touchProgress(request.runId);

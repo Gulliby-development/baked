@@ -385,6 +385,8 @@ import {
   isInputTooLarge,
   isOutputLimit,
   isTransient,
+  PROVIDER_ZERO_TOKEN_LIMIT,
+  recordProviderOutcome,
   reportsLostTool,
   retryAfterMs,
   retryDelay,
@@ -4494,6 +4496,7 @@ export class WorkflowScheduler {
           `attempts/${attempt}/result.json`,
           canonical(output),
         );
+        recordProviderOutcome(this.store, runId, attempt, profile.id, task?.id);
       });
       if (
         this.store.run(runId).input_hash !== inputHash ||
@@ -4516,6 +4519,27 @@ export class WorkflowScheduler {
             error,
           ),
         );
+      const emptyFailures = signal.aborted
+        ? 0
+        : recordProviderOutcome(this.store, runId, attempt, profile.id, task?.id, error);
+      if (emptyFailures >= PROVIDER_ZERO_TOKEN_LIMIT) {
+        this.store.artifact(
+          runId,
+          "recovery",
+          "provider/circuit.json",
+          canonical({ open: true, attemptId: attempt, failures: emptyFailures }),
+        );
+        throw new WorkflowFault(
+          "OUTPUT_INVALID",
+          recoveryAdvice(
+            `${profile.model} returned no tokens in ${emptyFailures} consecutive unreachable attempts for ${profile.id}. Automatic retries stopped. Check the provider and reasoning effort, then resume or reroute the run.`,
+            "Repeated zero-token provider failures need your decision before another attempt.",
+            { action: "resume", runId },
+            { action: "reroute", runId },
+          ),
+          { reason: "no_progress", providerCircuit: true },
+        );
+      }
       if (error instanceof ProviderUnreachableError && !signal.aborted)
         throw new WorkflowFault("OUTPUT_INVALID", error.message, {
           reason: "provider",
@@ -7320,6 +7344,7 @@ ${note}`;
         (["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code) ||
           error.details.reason === "provider_account" ||
           error.details.reason === "provider" ||
+          error.details.providerCircuit === true ||
           error.details.reason === "check_unavailable")
       )
         return { kind: "fatal", entry, error };
