@@ -1364,7 +1364,8 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "initiative-finding-ownership",
     group: "Initiatives",
-    title: "Review findings on sibling-owned paths become notes naming their owner",
+    title:
+      "Initiative deliverables have writable owners; deferred findings and mutation checks follow them",
     tui: ["/workflow: run report, Review notes"],
     cli: ["baked workflow report"],
     api: ["/v1/workflow/runs/:id/report"],

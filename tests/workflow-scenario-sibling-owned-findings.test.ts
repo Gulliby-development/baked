@@ -16,6 +16,8 @@ import { newId } from "../src/core/workflows/store.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
 import { removeTempDir } from "./helpers/temp-dir.js";
 import { fixturePolicy, fixtureSpec } from "./helpers/workflow-fixture.js";
+import { planStructureProblems } from "../src/core/workflows/initiatives/plan.js";
+import { QUALITY_MUTATION, type MutationResult } from "../src/core/workflows/quality/mutation.js";
 
 // R47 crossmill (#1590): adapters cannot finish because entry owns the acceptance-test file
 // their review asks them to create. Reduce the stored initiative to those two features.
@@ -35,7 +37,7 @@ const finding = (file: string, evidenceIds: string[] = []): Review["findings"][n
 class ScriptedExecutor implements AgentExecutor {
   corrections: Task[] = [];
   seenBounds: unknown[] = [];
-  constructor(private file: string, private stage: "review" | "convergence") {}
+  constructor(private file: string, private stage: "review" | "convergence", private shape: Partial<Review["findings"][number]> = {}, private mutation = false) {}
   async execute(request: ExecutionRequest) {
     const data = Object.assign({}, ...request.prompt.split("\n").slice(-2).map((line) => JSON.parse(line))) as {
       inputHash: string; snapshotHash: string; spec: Spec | null;
@@ -50,26 +52,29 @@ class ScriptedExecutor implements AgentExecutor {
       case "spec": output = { ...fixtureSpec, featureId: data.extra.featureId }; break;
       case "plan": {
         const spec = data.spec!;
-        const file = adapter ? "adapter.txt" : this.file;
+        const file = adapter ? (this.mutation ? "src/adapter.ts" : "adapter.txt") : this.file;
         const markdown = `# Plan\n## Context\nCreate ${file}.\n## Decisions\nDEC-001: FR-001 needs ready.\n## Components\n${file}\n## Data\nText\n## Verification\nCheck ready\n## Risks\nNone for fixture`;
-        output = { schemaVersion: 1, markdown, taskGraph: { schemaVersion: 1, featureId, revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown), tasks: [{ id: "T001", title: `Create ${file}`, description: "Write ready", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: [{ path: file, action: "create" }], readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior" }] } };
+        output = { schemaVersion: 1, markdown, taskGraph: { schemaVersion: 1, featureId, revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown), tasks: [{ id: "T001", title: `Create ${file}`, description: "Write ready", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: [{ path: file, action: this.mutation && !adapter ? "modify" : "create" }], readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior" }] } };
         break;
       }
       case "analysis": output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] }; break;
+      case "mutants": output = { schemaVersion: 1, mutants: [] }; break;
       case "implementation": {
         if (request.task?.origin !== "planned") this.corrections.push(request.task!);
         for (const write of request.task?.writes ?? []) {
           const file = join(request.root!, write.path);
           mkdirSync(dirname(file), { recursive: true });
-          writeFileSync(file, "ready");
+          writeFileSync(file, this.mutation
+            ? (adapter ? "export function answer(value: number) { return value + 1; }\n" : 'import { expect, test } from "bun:test";\nimport { answer } from "../src/adapter";\ntest("answer", () => { expect(answer(2)).toBe(3); expect(answer(0)).toBe(1); });\n')
+            : "ready");
         }
         output = { schemaVersion: 1, taskId: request.task?.id, outcome: "implemented", summary: "Wrote ready", evidenceIds: [], unresolved: [] };
         break;
       }
       case "review": case "convergence": {
         this.seenBounds.push(data.extra.initiativeBounds);
-        const raises = adapter && request.profile.output === this.stage && (this.stage === "convergence" || data.extra.dimension === "correctness");
-        output = { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: raises ? "changes_requested" : "pass", coverage: [{ criterionId: "AC-001", verdict: raises ? "fail" : "pass", evidenceIds, explanation: raises ? "Acceptance work belongs to entry" : "Checks pass" }], findings: raises ? [finding(this.file, evidenceIds)] : [] };
+        const raises = !this.mutation && adapter && request.profile.output === this.stage && (this.stage === "convergence" || data.extra.dimension === "correctness");
+        output = { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: raises ? "changes_requested" : "pass", coverage: [{ criterionId: "AC-001", verdict: raises ? "fail" : "pass", evidenceIds, explanation: raises ? "Acceptance work belongs to entry" : "Checks pass" }], findings: raises ? [{ ...finding(this.file, evidenceIds), ...this.shape }] : [] };
         break;
       }
       default: throw new Error(`Unexpected profile ${request.profile.output}`);
@@ -78,17 +83,22 @@ class ScriptedExecutor implements AgentExecutor {
   }
 }
 
-async function scenario(file: string, stage: "review" | "convergence", legacy = false) {
+async function scenario(file: string, stage: "review" | "convergence", legacy = false, shape: Partial<Review["findings"][number]> = {}, mutation = false) {
   const root = mkdtempSync(join(tmpdir(), "baked-sibling-owner-"));
-  const executor = new ScriptedExecutor(file, stage);
-  const service = new NativeWorkflowService(root, { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: false, defaultWorkflow: "sdd", policy } }, executor);
+  const executor = new ScriptedExecutor(file, stage, shape, mutation);
+  if (mutation) {
+    mkdirSync(join(root, "tests"));
+    writeFileSync(join(root, file), 'import { test } from "bun:test"; test("placeholder", () => {});\n');
+  }
+  const runPolicy = mutation ? { ...policy, mutation: "required" as const, mutationEngine: "built-in" as const, mutationBudgetMs: 20000, checks: [{ ...policy.checks[0]!, args: ["test", file] }] } : policy;
+  const service = new NativeWorkflowService(root, { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: false, defaultWorkflow: "sdd", policy: runPolicy } }, executor);
   cleanups.push(async () => { await service.shutdown(); service.close(); await removeTempDir(root); });
   const initiatives = new InitiativeService(service);
   const split: InitiativePlan = { schemaVersion: 1, title: "Crossmill", goals: ["Adapters and entry work"], completionCriteria: ["All work delivered"], features: [
-    { id: "adapters", title: "Adapters", boundary: { scope: "Command adapters", paths: ["adapter.txt"] }, contract: "Adapters are ready", dependsOn: [], mandatory: true, workflow: "sdd" },
+    { id: "adapters", title: "Adapters", boundary: { scope: "Command adapters", paths: [mutation ? "src/adapter.ts" : "adapter.txt"] }, contract: "Adapters are ready; entry delivers acceptance tests", dependsOn: [], mandatory: true, workflow: "sdd" },
     { id: "entry", title: "Entry", boundary: { scope: "Entry and integration acceptance", paths: [file] }, contract: "Entry is ready", dependsOn: ["adapters"], mandatory: true, workflow: "sdd" },
   ] };
-  const settings: InitiativeSettings = { workflowId: "sdd", basePolicy: policy, budget: null, costBudget: null, featureAutoApproval: null, autoApprovalConfirmation: null, model: null, ownerLabel: "test", featureIssues: {}, forecastStop: false, keepFeatures: true, splitCriticalPath: false };
+  const settings: InitiativeSettings = { workflowId: "sdd", basePolicy: runPolicy, budget: null, costBudget: null, featureAutoApproval: null, autoApprovalConfirmation: null, model: null, ownerLabel: "test", featureIssues: {}, forecastStop: false, keepFeatures: true, splitCriticalPath: false };
   // Seed the reduced approved plan directly: proposing a new initiative requires three features,
   // which is unrelated to this ownership regression. Drive still uses real feature scheduling.
   initiatives.store.transaction(() => {
@@ -137,6 +147,107 @@ async function scenario(file: string, stage: "review" | "convergence", legacy = 
 }
 
 describe("scenario: sibling-owned review findings do not deadlock an initiative (#1590)", () => {
+  test("#1594 decomposition returns a source-only boundary for a named test owner", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-test-owner-plan-"));
+    const split: InitiativePlan = { schemaVersion: 1, title: "Split", goals: ["Adapters work"], completionCriteria: ["All delivered"], features: [
+      { id: "adapters", title: "Adapters", boundary: { scope: "Adapters", paths: ["src/a.py", "src/b.py", "src/c.py"] }, contract: "Adapters work", dependsOn: [], mandatory: true },
+      { id: "entry", title: "Entry tests", boundary: { scope: "Acceptance", paths: ["tests/test_x.py"] }, contract: "Adapters tested", dependsOn: ["adapters"], mandatory: true },
+      { id: "docs", title: "Docs", boundary: { scope: "Docs", paths: ["docs/commands.md"] }, contract: "Commands documented", dependsOn: [], mandatory: true },
+    ] };
+    let sentBack = false;
+    const executor: AgentExecutor = { async execute(request) {
+      expect(request.profile.output).toBe("initiativePlan");
+      expect(request.validate?.(split).join("\n")).toContain("testedBy");
+      sentBack = true;
+      const repaired = { ...split, features: split.features.map((feature) => feature.id === "adapters" ? { ...feature, testedBy: "entry" } : feature) };
+      expect(request.validate?.(repaired)).toEqual([]);
+      expect(planStructureProblems(repaired)).toEqual([]);
+      return { output: repaired, inputTokens: 20, outputTokens: 30 };
+    } };
+    const service = new NativeWorkflowService(root, { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: false, defaultWorkflow: "sdd", policy } }, executor);
+    cleanups.push(async () => { await service.shutdown(); service.close(); await removeTempDir(root); });
+    const initiatives = new InitiativeService(service);
+    await initiatives.start({ commandId: newId(), initiativeId: "split", prompt: "Build adapters, tests and docs", ownerLabel: "test", policy, keepFeatures: true });
+    const view = await initiatives.drive("split", new AbortController().signal);
+    expect(sentBack).toBe(true);
+    expect(view.status).toBe("awaiting_approval");
+    const proposed = initiatives.store.plan(initiatives.store.revision("split", initiatives.store.get("split").plan_revision!));
+    expect(proposed.features[0]?.testedBy).toBe("entry");
+  }, 60000);
+
+  test("#1594 spec submission returns criteria whose evidence only a sibling can deliver", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-test-owner-spec-"));
+    const delegate = new ScriptedExecutor("tests/test_x.py", "review");
+    let validated = false;
+    const executor: AgentExecutor = { async execute(request) {
+      const result = await delegate.execute(request);
+      if (request.profile.output === "spec") {
+        const spec = result.output as Spec;
+        for (const then of ["tests/test_x.py covers the adapters", "Acceptance tests are delivered with adapter coverage"]) {
+          const bad = { ...spec, criteria: [{ ...spec.criteria[0]!, then }] };
+          expect(request.validate?.(bad).join("\n")).toContain("outside adapters");
+        }
+        expect(request.validate?.(spec)).toEqual([]);
+        validated = true;
+      }
+      return result;
+    } };
+    const service = new NativeWorkflowService(root, { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: false, defaultWorkflow: "sdd", policy } }, executor);
+    cleanups.push(async () => { await service.shutdown(); service.close(); await removeTempDir(root); });
+    const snapshot = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Make adapter ready", policy, ownerLabel: "test", initiativeBounds: { featureId: "adapters", features: [
+      { id: "adapters", scope: "Adapter", paths: ["adapter.txt"], testedBy: "entry" },
+      { id: "entry", scope: "Tests", paths: ["tests/test_x.py"] },
+    ] } });
+    await service.drive(snapshot.runId, new AbortController().signal);
+    expect(validated).toBe(true);
+    expect((await service.get(snapshot.runId)).status).toBe("waiting");
+  }, 60000);
+  for (const stage of ["review", "convergence"] as const) {
+    for (const [label, file, shape] of [
+      ["pathless tests", "tests/test_x.py", { file: null, claim: "The required adapter acceptance tests have not been delivered", suggestedFix: "Supply the handwritten in-memory adapter tests" }],
+      ["claim-only path", "tests/test_x.py", { file: null, claim: "Missing acceptance coverage in tests/test_x.py", suggestedFix: "Deliver acceptance coverage" }],
+      ["docs path", "docs/commands.md", { file: null, claim: "Missing docs/commands.md", suggestedFix: "Deliver documentation" }],
+    ] as const) {
+      test(`#1594 ${stage}: ${label} defers to entry without an implementer attempt`, async () => {
+        const { executor, service, initiatives, runId } = await scenario(file, stage, false, shape);
+        expect(await service.get(runId)).toMatchObject({ status: "completed" });
+        expect(initiatives.view("crossmill").status).toBe("completed");
+        expect(executor.corrections).toEqual([]);
+        expect(service.store.run(runId).corrective_tasks).toBe(0);
+        const state = service.store.state(runId);
+        expect(state.limitations).toEqual([]);
+        expect(state.reviewNotes).toContainEqual(expect.objectContaining({ reason: "owned_by_sibling", claim: expect.stringContaining("feature entry") }));
+        const report = runReport(service.store, runId);
+        expect(report).not.toContain("## Known limitations");
+        if (stage === "convergence") expect(report).toContain("Final review: **deferred to entry**");
+        const fallback = { ...finding(file), ...shape, id: "F-pathless-fallback" };
+        const before = state.graph?.tasks.length;
+        service.store.transaction(() => {
+          for (const [kind, scope] of [["convergence", "round"], ["repair", "review"], ["repair", "task"]] as const)
+            appendCorrections(service.store, runId, state, policy, [fallback], kind, scope);
+        });
+        expect(state.graph?.tasks.length).toBe(before);
+        expect(() => service.store.transaction(() => appendCorrections(service.store, runId,
+          { ...state, initiativeBounds: null }, policy, [{ ...finding(file), file: null, claim: "Acceptance tests are missing", suggestedFix: "Add tests" }], "repair", "task"))).toThrow("writable test path");
+      }, 60000);
+    }
+  }
+
+  test("#1594 the test owner's mutation gate measures deferred source after tests land", async () => {
+    const { service, initiatives, executor, runId } = await scenario("tests/adapter.test.ts", "review", false, {}, true);
+    expect(await service.get(runId)).toMatchObject({ status: "completed" });
+    expect(initiatives.view("crossmill").status).toBe("completed");
+    expect(executor.corrections).toEqual([]);
+    expect(service.store.latestArtifact(runId, QUALITY_MUTATION)).toBeNull();
+    const deferred = service.store.latestArtifact(runId, "quality/mutation-deferred.json");
+    expect(deferred).toBeTruthy();
+    const entry = initiatives.store.current("crossmill", "entry")!.run_id;
+    const artifact = service.store.latestArtifact(entry, QUALITY_MUTATION)!;
+    expect(artifact).toBeTruthy();
+    const result = JSON.parse(service.store.readArtifact(entry, artifact.id)) as MutationResult;
+    expect(result.mutants.length).toBeGreaterThan(0);
+    expect(result.mutants.every((mutant) => mutant.file === "src/adapter.ts" && mutant.status === "killed")).toBe(true);
+  }, 60000);
   for (const stage of ["review", "convergence"] as const) {
     for (const file of ["tests/test_x.py", "docs/commands.md", "src/entry.py"]) {
       test(`${stage}: ${file} is a note naming entry and both features finish`, async () => {

@@ -181,7 +181,7 @@ bun test tests/feature-parity.test.ts
 
 | Feature | TUI | Headless CLI | serve API | Desktop |
 | --- | --- | --- | --- | --- |
-| Review findings on sibling-owned paths become notes naming their owner | `/workflow` | `baked workflow report` | `/v1/workflow/runs/:id/report` | `project/runs` |
+| Initiative deliverables have writable owners; deferred findings and mutation checks follow them | `/workflow` | `baked workflow report` | `/v1/workflow/runs/:id/report` | `project/runs` |
 | Start an initiative | `/workflow` | `baked workflow initiative` | `/v1/initiatives` | `project/initiatives` |
 | Initiative view: approve split, pause, resume, switch model | `/workflow` | `baked workflow initiative` | `/v1/initiatives/:id`, `/v1/initiatives/:id/events`, `/v1/initiatives/:id/approve` +3 | `project/initiatives`, `attention` |
 | Reject, merge, split, rename, remove, re-plan, extend | `/workflow` | `baked workflow initiative` | `/v1/initiatives/:id/reject`, `/v1/initiatives/:id/merge`, `/v1/initiatives/:id/split` +4 | `project/initiatives` |

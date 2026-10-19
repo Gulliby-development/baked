@@ -1286,7 +1286,11 @@ export class InitiativeService {
       prompt: featurePrompt(row, plan, feature, upstream),
       initiativeBounds: {
         featureId,
-        features: plan.features.map((f) => ({ id: f.id, ...f.boundary })),
+        features: plan.features.map((f) => ({
+          id: f.id,
+          ...f.boundary,
+          ...(f.testedBy ? { testedBy: f.testedBy } : {}),
+        })),
       },
       policy,
       ...(declined ? { autoApprovalDeclined: declined } : {}),
