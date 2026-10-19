@@ -6,6 +6,7 @@
 
 import type { z } from "zod";
 import { modelVendor } from "../llm/model-vendor.js";
+import { deferredOwners, ownerOfFinding } from "../verification/initiative-ownership.js";
 import {
   type BaselineCount,
   CHECK_BASELINE_PATH,
@@ -877,8 +878,24 @@ function render(facts: Facts, cap: number): string {
       "",
     );
   }
-  if (state.convergence)
-    out.push(`Final review: **${state.convergence.verdict.replaceAll("_", " ")}**.`, "");
+  if (state.convergence) {
+    const review = state.convergence;
+    const owners = review.findings.map(
+      (finding) => ownerOfFinding(finding, state.initiativeBounds)?.id,
+    );
+    const deferred =
+      owners.length > 0 &&
+      owners.every(Boolean) &&
+      review.coverage.every(
+        (item) =>
+          item.verdict === "pass" ||
+          deferredOwners(review, state.initiativeBounds).has(item.criterionId),
+      );
+    out.push(
+      `Final review: **${deferred ? `deferred to ${[...new Set(owners)].join(", ")}` : review.verdict.replaceAll("_", " ")}**.`,
+      "",
+    );
+  }
 
   const open = facts.findings.filter((f) => f.status === "open" || f.status === "confirmed");
   out.push("## Findings", "");
@@ -942,15 +959,25 @@ function render(facts: Facts, cap: number): string {
     );
   }
 
-  if (state.limitations.length) {
+  const limitations = state.limitations.filter(
+    (limitation) =>
+      !state.reviewNotes.some(
+        (note) =>
+          note.reason === "owned_by_sibling" &&
+          note.findingId === limitation.findingId &&
+          note.file === limitation.file &&
+          note.claim.startsWith(`${limitation.claim} Owned by initiative feature `),
+      ),
+  );
+  if (limitations.length) {
     out.push(
       "## Known limitations",
       "",
-      `${state.limitations.length} finding(s) were accepted instead of repaired, so the criteria they name may not hold in every case: a stopped convergence accepted by a person or the assume rule, or a low partial finding about test or documentation strength behind verified behavior (notes), or a convergence claim below high severity that its repro did not show (repro gate), or a review finding below high severity left when the review rounds were used up with every required check passing (review round limit), or an automated criterion only another environment can prove (for example another operating system), which the run could not verify.`,
+      `${limitations.length} finding(s) were accepted instead of repaired, so the criteria they name may not hold in every case: a stopped convergence accepted by a person or the assume rule, or a low partial finding about test or documentation strength behind verified behavior (notes), or a convergence claim below high severity that its repro did not show (repro gate), or a review finding below high severity left when the review rounds were used up with every required check passing (review round limit), or an automated criterion only another environment can prove (for example another operating system), which the run could not verify.`,
       "",
       ...table(
         ["Finding", "Severity", "Criteria", "Where", "Claim", "Accepted by"],
-        state.limitations.map((l) => [
+        limitations.map((l) => [
           l.findingId,
           l.severity,
           l.criterionIds.join(", "),

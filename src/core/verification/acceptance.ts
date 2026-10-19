@@ -16,6 +16,7 @@ import { correctionAuthorized } from "./convergence.js";
 import { limitedCriteria } from "./convergence-stop.js";
 import { validateEvidence } from "./evidence.js";
 import { requiresSecurityReview } from "./findings.js";
+import { deferredOwners } from "./initiative-ownership.js";
 
 /**
  * The review dimensions of a v1 run: correctness, security when the change triggers it, and
@@ -201,6 +202,11 @@ function acceptance(
       continue;
     }
     const result = convergence.coverage.find((c) => c.criterionId === criterion.id);
+    if (
+      result?.verdict === "deferred" &&
+      deferredOwners(convergence, state.initiativeBounds).has(criterion.id)
+    )
+      continue;
     if (
       criterion.method === "post-release" &&
       result?.verdict === "deferred" &&

@@ -388,7 +388,14 @@ export const RuntimeStateSchema = z
       .object({
         featureId: SafeId,
         features: z.array(
-          z.object({ id: SafeId, scope: z.string(), paths: z.array(z.string()) }).strict(),
+          z
+            .object({
+              id: SafeId,
+              scope: z.string(),
+              paths: z.array(z.string()),
+              testedBy: SafeId.optional(),
+            })
+            .strict(),
         ),
       })
       .strict()

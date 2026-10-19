@@ -26,6 +26,7 @@ import {
   testSweepStep,
 } from "./class-sweep.js";
 import { findingSetHash } from "./convergence-stop.js";
+import { canHold, requestedDeliverable } from "./deliverable-paths.js";
 import { isFailedTestLine } from "./failed-test-line.js";
 import { noteSiblingFindings } from "./initiative-ownership.js";
 import { reproCannotSeeCorrection } from "./repro.js";
@@ -552,6 +553,17 @@ export function appendCorrections(
   for (const id of siblingNotes) store.findingStatus(runId, id, "resolved");
   const findings = submittedFindings.filter((finding) => !siblingNotes.has(finding.id));
   if (!findings.length) return;
+  for (const finding of findings) {
+    const kind = requestedDeliverable(finding);
+    const paths = state.rootGraph.tasks.flatMap((task) =>
+      task.writes.filter((write) => write.action !== "delete").map((write) => write.path),
+    );
+    if (kind && !canHold(paths, kind))
+      throw new WorkflowFault(
+        "INPUT_CHANGED",
+        `Finding ${finding.id} needs a writable ${kind} path, but the approved tasks have none. Re-plan to approve its target or assign an initiative owner.`,
+      );
+  }
   const run = store.run(runId);
   const taskLevel = kind === "repair" && scope === "task";
   const chain = taskLevel
@@ -906,6 +918,26 @@ export function appendCorrections(
     const written = writable(group);
     for (const path of planned)
       if (written.some((source) => isTestOf(path, source))) join(group, path);
+    for (const finding of group.findings) {
+      const kind = requestedDeliverable(finding);
+      if (!kind || canHold(writable(group), kind)) continue;
+      const targets = root.tasks
+        .filter(
+          (task) =>
+            task.profileId === group.base.profileId &&
+            task.criterionIds.some((id) => finding.criterionIds.includes(id)),
+        )
+        .flatMap((task) =>
+          task.writes.filter((write) => write.action !== "delete").map((write) => write.path),
+        )
+        .filter((path) => canHold([path], kind));
+      for (const path of targets) join(group, path);
+      if (!canHold(writable(group), kind))
+        throw new WorkflowFault(
+          "INPUT_CHANGED",
+          `Finding ${finding.id} has no writable ${kind} target in its corrective task. Re-plan to approve the required deliverable.`,
+        );
+    }
   }
   const additions = [...groups].map(([key, { base, bases, findings: grouped }]) => {
     const ids = grouped.map((f) => f.id);
