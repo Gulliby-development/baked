@@ -2,9 +2,10 @@ import { awakeClock } from "./helpers/awake-clock.js";
 import { ExecutionBudgetClock } from "../src/core/workflows/execution-clock.js";
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import type { LanguageModelV4, LanguageModelV4StreamPart } from "@ai-sdk/provider";
+import { UnsupportedFunctionalityError } from "@ai-sdk/provider";
 import { generateText, type LanguageModel } from "ai";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
-import { PROVIDER_FIRST_BYTE_MS, ProviderUnreachableError, probeProvider, providerBackoffMs, withProviderHealth } from "../src/core/llm/provider-health.js";
+import { PROVIDER_FIRST_BYTE_MS, ProviderUnreachableError, probeProvider, providerBackoffMs, providerResponded, withProviderHealth } from "../src/core/llm/provider-health.js";
 import { anthropic } from "../src/core/llm/providers/anthropic.js";
 import { createClaudeCodeLanguageModel } from "../src/core/llm/providers/claude-code/index.js";
 import { copilot } from "../src/core/llm/providers/copilot.js";
@@ -167,4 +168,46 @@ test("a probe with reasoning but no completed answer still reports a reachable p
     clock.advance(61_000);
     expect(await request).toMatchObject({ usage: {} });
   } finally { clock.restore(); }
+});
+
+test.each([new Error("Not implemented"), new UnsupportedFunctionalityError({ functionality: "streaming" })])("generation-only adapters retain their result and account for a response: %s", async (error) => {
+  const settled: boolean[] = [];
+  let calls = 0;
+  const base = streaming(() => { throw error; });
+  base.doGenerate = async () => {
+    calls++;
+    return { content: [{ type: "text", text: "OK" }], finishReason: finish.finishReason, usage: finish.usage, warnings: [] };
+  };
+  const result = await generateText({ model: withProviderHealth(base, "fixture/model", { pending: () => (ok) => settled.push(ok) }), prompt: "Hi", maxRetries: 0 });
+  expect(result.text).toBe("OK");
+  expect(result.usage.inputTokens).toBe(2);
+  expect(calls).toBe(1);
+  expect(settled).toEqual([true]);
+});
+
+test("a generation-only adapter that hangs still times out and excludes its unanswered time", async () => {
+  const settled: boolean[] = [];
+  let sent: AbortSignal | undefined;
+  const base = streaming(() => { throw new Error("Not implemented"); });
+  base.doGenerate = async (options) => { sent = options.abortSignal; return new Promise(() => {}); };
+  await expect(generateText({ model: withProviderHealth(base, "fixture/model", { firstByteMs: 20, pending: () => (ok) => settled.push(ok) }), prompt: "Hi", maxRetries: 0 })).rejects.toBeInstanceOf(ProviderUnreachableError);
+  expect(sent?.aborted).toBe(true);
+  expect(settled).toEqual([false]);
+});
+
+test("an incomplete stream fails without making a second generation request", async () => {
+  let calls = 0;
+  const base = streaming((controller) => { controller.close(); });
+  base.doGenerate = async () => { calls++; throw new Error("must not retry"); };
+  await expect(generateText({ model: withProviderHealth(base, "fixture/model"), prompt: "Hi", maxRetries: 0 })).rejects.toBeInstanceOf(ProviderUnreachableError);
+  expect(calls).toBe(0);
+});
+
+test("an adapter that reports model traffic before failing cannot fall back to a second request", async () => {
+  let calls = 0;
+  const base = streaming(() => {});
+  base.doStream = async (options) => { providerResponded(options.abortSignal); throw new Error("Not implemented"); };
+  base.doGenerate = async () => { calls++; throw new Error("must not retry"); };
+  await expect(generateText({ model: withProviderHealth(base, "fixture/model"), prompt: "Hi", maxRetries: 0 })).rejects.toThrow("Not implemented");
+  expect(calls).toBe(0);
 });

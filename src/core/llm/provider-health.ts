@@ -4,6 +4,7 @@ import type {
   LanguageModelV4GenerateResult,
   LanguageModelV4StreamPart,
 } from "@ai-sdk/provider";
+import { UnsupportedFunctionalityError } from "@ai-sdk/provider";
 import { generateText, type LanguageModel, type LanguageModelUsage, wrapLanguageModel } from "ai";
 import { executionTimeout } from "../workflows/execution-clock.js";
 
@@ -91,7 +92,28 @@ export function withProviderHealth(
             signal.addEventListener("abort", abort, { once: true });
           });
           const collect = async (): Promise<LanguageModelV4GenerateResult> => {
-            const generated = await adapted.doStream({ ...params, abortSignal: signal });
+            const options = { ...params, abortSignal: signal };
+            let generated: Awaited<ReturnType<typeof adapted.doStream>>;
+            try {
+              generated = await adapted.doStream(options);
+            } catch (error) {
+              // Some adapters only implement generation. Keep the same deadline and signal,
+              // and fall back only when streaming is explicitly unsupported, before any output.
+              if (
+                responded ||
+                !(
+                  (error instanceof Error && error.message === "Not implemented") ||
+                  (UnsupportedFunctionalityError.isInstance(error) &&
+                    /stream/i.test(error.functionality))
+                )
+              )
+                throw error;
+              signal.throwIfAborted();
+              const result = await adapted.doGenerate(options);
+              signal.throwIfAborted();
+              response();
+              return result;
+            }
             if (signal.aborted) void generated.stream.cancel().catch(() => {});
             signal.throwIfAborted();
             const streamReader = generated.stream.getReader();
