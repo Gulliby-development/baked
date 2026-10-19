@@ -188,7 +188,7 @@ export function samplesFrom(
         .map((row) => ({
           id: row.id,
           ...(JSON.parse(row.definition_json) as Pick<Task, "writes" | "origin"> &
-            Partial<Pick<Task, "criterionIds">>),
+            Partial<Pick<Task, "criterionIds" | "description" | "dependsOn" | "sizingSlice">>),
         }));
       const byModel = db
         .query<{ stage: string; model: string; tokens: number | null }, [string]>(
@@ -234,7 +234,16 @@ export function samplesFrom(
             model: modelOf.get(`task-${task.id}`)?.model ?? null,
             criteria: task.criterionIds?.length ?? 0,
             ...(spec && task.criterionIds
-              ? { cases: criterionCases(spec, { criterionIds: task.criterionIds }).length }
+              ? {
+                  cases: criterionCases(
+                    spec,
+                    { ...task, criterionIds: task.criterionIds },
+                    {
+                      tasks: planned.map((t) => ({ ...t, criterionIds: t.criterionIds ?? [] })),
+                      includeBroad: true,
+                    },
+                  ).length,
+                }
               : {}),
           });
       }
@@ -716,7 +725,13 @@ export function sizePlan(input: {
     .filter((task) => writtenFiles(task).length > 0)
     .map((task): TaskSize => {
       const kind = taskKind(task);
-      const cases = input.spec && kind === "test" ? criterionCases(input.spec, task).length : 0;
+      const cases =
+        input.spec && kind === "test"
+          ? criterionCases(input.spec, task, {
+              tasks: input.graph.tasks,
+              includeBroad: true,
+            }).length
+          : 0;
       const estimate = priceTask(task, rates, perCriterion, cases, perCase, limit);
       const files = writtenFiles(task).length;
       return {
@@ -1015,7 +1030,16 @@ export function splitTestTasks(
       const own = criteria[fileIndex] ?? task.criterionIds;
       const base = { ...task, criterionIds: own, writes: [write] };
       const cases = (ids: string[]) =>
-        spec ? criterionCases(spec, { criterionIds: ids }).length : 0;
+        spec
+          ? criterionCases(
+              spec,
+              { ...task, criterionIds: ids },
+              {
+                tasks: graph.tasks,
+                includeBroad: true,
+              },
+            ).length
+          : 0;
       const weights = new Map(own.map((id) => [id, Math.max(1, cases([id]))]));
       const weight = (ids: string[]) => ids.reduce((sum, id) => sum + (weights.get(id) ?? 1), 0);
       const total = weight(own);
