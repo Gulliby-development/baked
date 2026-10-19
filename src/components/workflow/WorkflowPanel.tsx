@@ -835,7 +835,17 @@ export function WorkflowPanel({
                     : "Nothing waits for you right now. You will be brought here when a decision is needed."}
                 </text>
               ))}
-            {tab === "tasks" && <TaskGraphView tasks={tasks} />}
+            {tab === "tasks" && (
+              <>
+                <TaskGraphView tasks={tasks} />
+                {details?.hostEdits && (
+                  <ArtifactReview
+                    title="Host edits (host-edits.json)"
+                    content={JSON.stringify(details.hostEdits, null, 2)}
+                  />
+                )}
+              </>
+            )}
             {tab === "spec" && (
               <ArtifactReview
                 title="Specification"

@@ -1756,6 +1756,8 @@ export class NativeWorkflowService implements WorkflowService {
         state.reviewNotes = [];
         state.manifest.correctionHashes = [];
         state.rootGraph = structuredClone(state.graph);
+        if (state.hostEdits)
+          this.store.artifact(runId, "host-edits", "host-edits.json", canonical(state.hostEdits));
         state.manifest.rootGraphHash = hashJson(state.graph);
         state.manifest.effectiveGraphHash = hashJson(state.graph);
         state.expectedFiles = null;
@@ -2241,6 +2243,7 @@ export class NativeWorkflowService implements WorkflowService {
           state.manifest.specHash = hashJson(state.spec);
           state.plan = null;
           state.graph = null;
+          state.hostEdits = undefined;
           state.rootGraph = null;
           state.manifest.planHash = null;
           state.manifest.rootGraphHash = null;
@@ -2264,6 +2267,8 @@ export class NativeWorkflowService implements WorkflowService {
       // Dependents find a feature's accepted contract through this artifact.
       if (state.spec) this.store.artifact(id, "spec", "spec.json", canonical(state.spec));
       if (state.graph) this.store.syncTasks(id, state.graph);
+      if (state.graph && state.hostEdits)
+        this.store.artifact(id, "host-edits", "host-edits.json", canonical(state.hostEdits));
       if (seed) {
         this.store.artifact(id, "fork", FORK_SEED_ARTIFACT, canonical(seed));
         this.store.setApproval(id, parentApproval);

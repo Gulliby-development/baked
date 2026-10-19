@@ -897,6 +897,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs"],
   },
   {
+    id: "host-edits-ledger",
+    group: "Workflow runs",
+    title: "Task graph host edits and analysis ownership",
+    tui: ["/workflow: Tasks, host-edits.json"],
+    cli: ["baked workflow artifacts: host-edits.json and analysis/host-notes.json"],
+    api: ["/v1/workflow/runs/:id/artifacts"],
+    desktop: ["project/runs: Tasks, host-edits.json"],
+  },
+  {
     id: "model-call-recording",
     group: "Workflow runs",
     title: "Record a run's model calls and replay them without the provider",

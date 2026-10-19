@@ -158,6 +158,14 @@ export function TasksTab({
   const levels = taskLevels(graph);
   return (
     <div className="flex flex-col gap-5">
+      {data.artifacts.hostEdits && (
+        <details className={PANEL}>
+          <summary>Host edits (host-edits.json)</summary>
+          <pre className="overflow-x-auto whitespace-pre-wrap text-[12px]">
+            {JSON.stringify(data.artifacts.hostEdits, null, 2)}
+          </pre>
+        </details>
+      )}
       <p className={LEDE}>
         {writers.length > 1
           ? "Each writer works in its own git worktree. The integrator merges finished tasks back into the run branch in dependency order."

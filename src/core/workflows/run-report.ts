@@ -1127,6 +1127,13 @@ function render(facts: Facts, cap: number): string {
   const tools = toolTokensLine(usage.tools ?? []);
   if (tools) out.push(`Tool calls (tokens of the steps that made them): ${tools}.`, "");
 
+  if (state.hostEdits?.length)
+    out.push(
+      "## Host edits",
+      "",
+      `The host recorded ${state.hostEdits.length} task graph edits in ${code("host-edits.json")}. Host-only analysis findings are notes with their ledger entries in ${code("analysis/host-notes.json")} when present.`,
+      "",
+    );
   out.push("## Artifacts", "");
   const hidden = facts.internalArtifacts
     ? ` ${count(facts.internalArtifacts)} internal artifacts (attempt outputs, state, baselines) are not listed.`
