@@ -141,7 +141,9 @@ export function runUsage(
         toolBackends: usage?.toolBackends ?? [],
         tools: usage ? stepToolTokens(usage.steps) : [],
         unreportedResponses: usage?.unreportedResponses ?? 0,
-        usageEstimated: usage?.estimatedUsage !== undefined,
+        usageEstimated:
+          usage?.estimatedUsage !== undefined ||
+          (attempt.status === "interrupted" && attempt.used_tokens !== null),
       };
     });
   const byStage = new Map<string, RunUsageReport["stages"][number]>();
@@ -219,6 +221,15 @@ export function runUsage(
         ? attempts
         : [...attempts].sort((a, b) => (b.usedTokens ?? 0) - (a.usedTokens ?? 0)).slice(0, top),
   };
+}
+
+/** Interrupted totals are lower bounds from the steps persisted before the driver stopped. */
+export function interruptedTokensLine(attempts: readonly AttemptUsageRow[]): string | null {
+  const interrupted = attempts.filter((a) => a.status === "interrupted");
+  if (!interrupted.length) return null;
+  const tokens = interrupted.reduce((sum, a) => sum + (a.usedTokens ?? 0), 0);
+  const unknown = interrupted.filter((a) => a.usedTokens === null).length;
+  return `Tokens of interrupted attempts: ${tokens.toLocaleString("en-US")} included as an estimate from recorded steps; final usage is incomplete${unknown ? `; ${unknown} attempts have no recorded usage` : ""}.`;
 }
 
 /** Calls and step tokens by tool for one attempt's steps; steps without tool names are skipped. */

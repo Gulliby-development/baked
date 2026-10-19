@@ -5,6 +5,8 @@ import { getCwd } from "../cwd.js";
 import { getIntelligenceClient, getIntelligenceRouter } from "../intelligence/index.js";
 import { realPath } from "../projects/paths.js";
 import { isForbidden } from "../security/forbidden.js";
+import { assertEditActive, boundedEditWork } from "./edit-deadline.js";
+import { configuredDiagnosticsTimeoutMs } from "./edit-diagnostics.js";
 import { pushEdit } from "./edit-stack.js";
 import { emitFileEdited } from "./file-events.js";
 import { toolPhase } from "./tool-phase.js";
@@ -75,20 +77,15 @@ export const renameFileTool = {
 
     // 1. Ask LSP for import edits BEFORE moving the file
     let lspEdits: Array<{ file: string; oldContent: string; newContent: string }> = [];
-    if (client) {
-      const tracked = await client.routerGetFileRenameEdits([{ oldPath: from, newPath: to }]);
+    toolPhase("pre_diagnostics");
+    if (client?.isReady) {
+      const tracked = await boundedEditWork(
+        () => client.routerGetFileRenameEdits([{ oldPath: from, newPath: to }]),
+        configuredDiagnosticsTimeoutMs(),
+        null,
+      );
       if (tracked?.value) {
         lspEdits = tracked.value.edits;
-      }
-    } else {
-      const language = router.detectLanguage(from);
-      const renameResult = await router.executeWithFallback(
-        language,
-        "getFileRenameEdits",
-        (b) => b.getFileRenameEdits?.([{ oldPath: from, newPath: to }]) ?? Promise.resolve(null),
-      );
-      if (renameResult) {
-        lspEdits = renameResult.edits;
       }
     }
 
@@ -102,6 +99,7 @@ export const renameFileTool = {
         if (forbidden) continue;
         const file = realPath(edit.file);
         if (!beforeImages.has(file)) beforeImages.set(file, edit.oldContent);
+        assertEditActive();
         pushEdit(edit.file, edit.oldContent, edit.newContent, args.tabId);
         toolPhase("write");
         await writeFile(edit.file, edit.newContent, "utf-8");
@@ -125,6 +123,7 @@ export const renameFileTool = {
     beforeImages.set(to, beforeImages.get(sourcePath) ?? originalContent);
     // Resolve aliases while the source still exists; after the move realPath cannot follow them.
     const remainingFiles = appliedFiles.filter((file) => realPath(file) !== sourcePath);
+    assertEditActive();
     pushEdit(from, originalContent, originalContent, args.tabId);
 
     try {
@@ -146,12 +145,6 @@ export const renameFileTool = {
     // 4. Notify LSP servers that the rename completed
     if (client) {
       client.routerNotifyFilesRenamed([{ oldPath: from, newPath: to }]);
-    } else {
-      const language = router.detectLanguage(from);
-      router.executeWithFallback(language, "notifyFilesRenamed", (b) => {
-        b.notifyFilesRenamed?.([{ oldPath: from, newPath: to }]);
-        return Promise.resolve(null);
-      });
     }
 
     // 5. Report
@@ -163,7 +156,9 @@ export const renameFileTool = {
         ...appliedFiles.map((f) => `  ${relative(cwd, f)}`),
       );
     } else if (lspEdits.length === 0) {
-      output.push("No import updates needed.");
+      output.push(
+        "No import updates returned. Check imports if the intelligence worker was unavailable or timed out.",
+      );
     }
 
     // 6. Auto-fix all affected files (organize imports, fix unused vars)

@@ -147,7 +147,7 @@ describe("edit tool phases (#1533)", () => {
       () => multiEditTool.execute({ path: file, edits: [{ oldString: "two", newString: "three" }] }),
     );
     expect(result.success).toBe(true);
-    expect(phases[0]).toBe("write");
+    expect(phases.slice(0, 5)).toEqual(["match", "analyze", "pre_diagnostics", "cas", "write"]);
     expect(phases).toContain("format");
     expect(phases.indexOf("format")).toBeGreaterThan(0);
   });

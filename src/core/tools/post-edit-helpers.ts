@@ -10,10 +10,10 @@ import {
   takeBaseline,
   totalNewErrors,
 } from "../intelligence/post-edit.js";
-import type { CodeAction } from "../intelligence/types.js";
 import { atomicWriteFile } from "../platform/index.js";
 import { displayPath } from "../utils/path-display.js";
 import { autoFormatAfterEdit } from "./auto-format.js";
+import { assertEditActive, boundedEditWork } from "./edit-deadline.js";
 import { configuredDiagnosticsTimeoutMs, editDiagnosticsMode } from "./edit-diagnostics.js";
 import { dropLastEdit, updateLastAfterHash } from "./edit-stack.js";
 import { emitFileEdited } from "./file-events.js";
@@ -29,34 +29,17 @@ export interface DiagnosticsContext {
 const MAX_DEPENDENTS = 8;
 const WORKTREE_PREFIX = /^\.baked\/worktrees\/[^/]+\/[^/]+\//;
 
-/** Diagnostics and quick fixes from the language servers, through the worker when it runs. */
+/** Diagnostics and quick fixes stay on the intelligence worker, including cold server startup. */
 export function intelligenceSource(
   intel: typeof import("../intelligence/index.js"),
 ): DiagnosticsSource {
   const client = intel.getIntelligenceClient();
-  const router = intel.getIntelligenceRouter(getCwd());
   return {
     diagnostics: async (file) => {
-      if (client) return (await client.routerGetDiagnostics(file))?.value ?? null;
-      return router.executeWithFallback(router.detectLanguage(file), "getDiagnostics", (b) =>
-        b.getDiagnostics ? b.getDiagnostics(file) : Promise.resolve(null),
-      );
+      return (await client?.routerGetDiagnostics(file))?.value ?? null;
     },
     fixes: async (file, diag) => {
-      let actions: CodeAction[] | null;
-      if (client) {
-        actions = (await client.routerGetCodeActions(file, diag.line, diag.line))?.value ?? null;
-      } else {
-        actions = await router.executeWithFallback(
-          router.detectLanguage(file),
-          "getCodeActions",
-          (b) => {
-            if (!b.getCodeActions) return Promise.resolve(null);
-            const codes = diag.code !== undefined ? [diag.code] : undefined;
-            return b.getCodeActions(file, diag.line, diag.line, codes);
-          },
-        );
-      }
+      const actions = (await client?.routerGetCodeActions(file, diag.line, diag.line))?.value;
       if (!actions) return [];
       return actions
         .filter((a) => a.kind === "quickfix" || a.isPreferred)
@@ -102,25 +85,30 @@ export async function startPreEditDiagnostics(
   filePath: string,
   options: { newFile?: boolean } = {},
 ): Promise<DiagnosticsContext | null> {
+  const timeoutMs = configuredDiagnosticsTimeoutMs();
   try {
-    const intel = await import("../intelligence/index.js");
-    if (!intel.isIntelligenceReady()) return null;
-    const timeoutMs = configuredDiagnosticsTimeoutMs();
-    const source = intelligenceSource(intel);
-    // A file being created has no errors yet and nothing imports it.
-    if (options.newFile)
-      return {
-        source,
-        baseline: { file: filePath, before: [], dependents: new Map(), missedDependents: 0 },
-        timeoutMs,
-      };
-    const dependents = await Promise.race([
-      importersOf(intel, filePath).catch((): string[] => []),
-      new Promise<string[]>((r) => setTimeout(() => r([]), timeoutMs)),
-    ]);
-    const baseline = await takeBaseline(source, filePath, dependents, timeoutMs);
-    return { source, baseline, timeoutMs };
+    return await boundedEditWork(
+      async () => {
+        const intel = await import("../intelligence/index.js");
+        if (!intel.getIntelligenceClient()?.isReady) return null;
+        const source = intelligenceSource(intel);
+        // A file being created has no errors yet and nothing imports it.
+        if (options.newFile)
+          return {
+            source,
+            baseline: { file: filePath, before: [], dependents: new Map(), missedDependents: 0 },
+            timeoutMs,
+          };
+        const dependents = await importersOf(intel, filePath).catch((): string[] => []);
+        assertEditActive();
+        const baseline = await takeBaseline(source, filePath, dependents, timeoutMs);
+        return { source, baseline, timeoutMs };
+      },
+      timeoutMs,
+      null,
+    );
   } catch {
+    assertEditActive();
     return null;
   }
 }
@@ -266,6 +254,7 @@ export async function appendCloneHints(filePath: string, output: string): Promis
  * for large files with long needles.
  */
 export function countOccurrences(haystack: string, needle: string): number {
+  if (!needle) return 0;
   let count = 0;
   let pos = haystack.indexOf(needle, 0);
   while (pos !== -1) {

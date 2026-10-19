@@ -1076,9 +1076,19 @@ export const FEATURES: readonly Feature[] = [
     ],
   },
   {
+    id: "run-edit-preparation",
+    group: "Workflow runs",
+    title:
+      "Edit preparation journals phases, bounds worker diagnostics and yields during fuzzy matching",
+    tui: ["/workflow: tool.phase events and shared edit tools"],
+    cli: ["baked workflow run", "baked workflow resume"],
+    api: ["/v1/workflow/runs/:id/events"],
+    desktop: ["project/runs: shared tool preparation and deadlines"],
+  },
+  {
     id: "run-supervisor",
     group: "Workflow runs",
-    title: "Supervisor: a driver whose thread stopped is stopped and its run taken over",
+    title: "Supervisor takeover preserves recorded tokens as an incomplete estimate",
     tui: ["/workflow"],
     cli: [
       "baked workflow run",
