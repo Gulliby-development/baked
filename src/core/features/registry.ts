@@ -1337,6 +1337,15 @@ export const FEATURES: readonly Feature[] = [
 
   // Initiatives
   {
+    id: "initiative-finding-ownership",
+    group: "Initiatives",
+    title: "Review findings on sibling-owned paths become notes naming their owner",
+    tui: ["/workflow: run report, Review notes"],
+    cli: ["baked workflow report"],
+    api: ["/v1/workflow/runs/:id/report"],
+    desktop: ["project/runs: run report, Review notes"],
+  },
+  {
     id: "initiative-start",
     group: "Initiatives",
     title: "Start an initiative",
