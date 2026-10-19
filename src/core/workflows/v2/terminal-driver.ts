@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { killTree, PROCESS_SCOPE_ENV, scopedProcesses } from "../../platform/index.js";
 import { type SandboxRequest, sandboxEnv, sandboxLaunch } from "../../security/sandbox.js";
+import { executionTimeout } from "../execution-clock.js";
 
 /** Output kept per application; older output is dropped first. */
 const MAX_OUTPUT = 1024 * 1024;
@@ -119,7 +120,7 @@ export class TerminalApp {
     if (condition()) return true;
     return new Promise((resolve) => {
       const done = (value: boolean): void => {
-        clearTimeout(timer);
+        cancel();
         this.waiters.delete(check);
         signal?.removeEventListener("abort", aborted);
         resolve(value);
@@ -129,7 +130,7 @@ export class TerminalApp {
         else if (this.exit) done(condition());
       };
       const aborted = (): void => done(false);
-      const timer = setTimeout(() => done(condition()), Math.max(0, timeoutMs));
+      const cancel = executionTimeout(() => done(condition()), Math.max(0, timeoutMs));
       this.waiters.add(check);
       signal?.addEventListener("abort", aborted, { once: true });
       check();

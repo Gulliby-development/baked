@@ -1064,6 +1064,18 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs: approved edits continue through the shared runtime"],
   },
   {
+    id: "run-execution-time",
+    group: "Workflow runs",
+    title: "Run and initiative active budgets and execution deadlines exclude host suspend gaps",
+    tui: ["/workflow: active time and progress use the shared execution clock"],
+    cli: ["baked workflow run", "baked workflow resume", "baked workflow initiative drive"],
+    api: ["/v1/workflow/runs: active time excludes host suspend gaps"],
+    desktop: [
+      "project/runs: active time and progress",
+      "project/initiatives: shared active budget",
+    ],
+  },
+  {
     id: "run-supervisor",
     group: "Workflow runs",
     title: "Supervisor: a driver whose thread stopped is stopped and its run taken over",

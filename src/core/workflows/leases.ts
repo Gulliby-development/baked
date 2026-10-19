@@ -314,6 +314,7 @@ export class WorkspaceLeases {
    */
   private tolerable(error: unknown): boolean {
     if (!transientSqliteError(error)) return false;
+    // Ownership is shared across processes, so renewal failures use wall time even over suspend.
     const now = Date.now();
     this.failingSince ??= now;
     return now - this.failingSince < LEASE_TTL_MS - HEARTBEAT_MS;

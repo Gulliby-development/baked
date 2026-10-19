@@ -11,6 +11,7 @@ import { spawnSync } from "node:child_process";
 import { extname } from "node:path";
 import { blankStringLiterals } from "../../intelligence/comments.js";
 import { workspacePath } from "../../specs/validate.js";
+import { executionTimeout } from "../execution-clock.js";
 import { BUILTIN_RULES, type RuleSeverity } from "./builtin-rules.js";
 import { isTestCodePath } from "./duplication.js";
 
@@ -220,7 +221,7 @@ export async function runScanner(
     };
   }
   let timedOut = false;
-  const timer = setTimeout(() => {
+  const cancel = executionTimeout(() => {
     timedOut = true;
     proc.kill("SIGKILL");
   }, timeoutMs);
@@ -232,7 +233,7 @@ export async function runScanner(
     ]);
     return { status: timedOut ? null : code, stdout, stderr };
   } finally {
-    clearTimeout(timer);
+    cancel();
   }
 }
 

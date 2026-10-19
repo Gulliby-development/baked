@@ -16,6 +16,7 @@ import { executeCheckCommand } from "../../verification/check-runner.js";
 import { changedPaths, sourceManifest } from "../../verification/snapshot.js";
 import { fileHash } from "../effects.js";
 import { WorkflowFault } from "../errors.js";
+import { executionClock, executionTimeout } from "../execution-clock.js";
 import { leaseOwnerAlive } from "../leases.js";
 import { ProcessScope } from "../process-scope.js";
 import { redactSecrets } from "../redaction.js";
@@ -536,8 +537,8 @@ export class WalkSession {
       // The terminal driver has no outbound grant; only a loopback readiness URL is polled.
       if (!["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))
         throw new WorkflowFault("CAPABILITY_DENIED", "A readiness URL must be on loopback");
-      const deadline = Date.now() + limit;
-      while (Date.now() < deadline && !app.exited && !this.signal.aborted) {
+      const deadline = executionClock.now() + limit;
+      while (executionClock.now() < deadline && !app.exited && !this.signal.aborted) {
         try {
           const response = await fetch(url, { signal: AbortSignal.timeout(1000) });
           if (response.status < 500) return true;
@@ -950,7 +951,12 @@ export async function runAcceptanceGate(
   phase("walking", gate.acceptance.scenario.title);
   const excluded = generatedPaths(host.policy);
   const before = await sourceManifest(workspace, excluded, host.signal);
-  const deadline = AbortSignal.any([host.signal, AbortSignal.timeout(gate.timeoutMs)]);
+  const timeout = new AbortController();
+  const cancelTimeout = executionTimeout(
+    () => timeout.abort(new Error("Acceptance timeout")),
+    gate.timeoutMs,
+  );
+  const deadline = AbortSignal.any([host.signal, timeout.signal]);
   const current: { session: WalkSession | null } = { session: null };
   let walk: AcceptanceWalk | null = null;
   let failure: string | null = null;
@@ -981,6 +987,7 @@ export async function runAcceptanceGate(
       ? `the walk-through exceeded its timeout of ${gate.timeoutMs} ms`
       : message(error);
   } finally {
+    cancelTimeout();
     await current.session?.close();
   }
   const session = current.session as WalkSession | null;

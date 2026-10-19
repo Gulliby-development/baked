@@ -10,6 +10,7 @@ import { costRate, growBudgetOnProgress } from "./budget.js";
 import { costCeilingUsd, currentCostCap } from "./cost-tolerance.js";
 import { WorkflowFault } from "./errors.js";
 import type { PastRun } from "./estimate.js";
+import { executionClock } from "./execution-clock.js";
 import { migration001 } from "./migrations/001.js";
 import { migration002 } from "./migrations/002.js";
 import { migration003 } from "./migrations/003.js";
@@ -554,7 +555,7 @@ export class WorkflowStore {
       )
       .get(id);
     if (!last) return {};
-    const silent = Date.now() - last.at;
+    const silent = executionClock.since(last.at);
     return silent >= DEFAULT_STALL_SETTINGS.stepStallMs
       ? { stalled: { silentMs: silent, lastEventAt: new Date(last.at).toISOString() } }
       : {};

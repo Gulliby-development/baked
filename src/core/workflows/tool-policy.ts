@@ -3,6 +3,7 @@ import { workspacePath } from "../specs/validate.js";
 import { toolPhase, withToolPhases } from "../tools/tool-phase.js";
 import { fileHash, intentRoot, rootField, sameContentIgnoringEol } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
+import { executionClock } from "./execution-clock.js";
 import {
   accountIdentityMessage,
   findAccountIdentity,
@@ -321,7 +322,7 @@ export class WorkflowToolPolicy {
     name: string,
     run: (deadlineHit: (hit: boolean) => void) => Promise<unknown>,
   ): Promise<unknown> {
-    const started = Date.now();
+    const started = executionClock.now();
     let resultBytes: number | undefined;
     let failure: string | undefined;
     const journal = (
@@ -340,7 +341,7 @@ export class WorkflowToolPolicy {
                     attemptId: this.attemptId,
                     tool: name,
                     status: status ?? "ok",
-                    durationMs: Date.now() - started,
+                    durationMs: Math.ceil(executionClock.now() - started),
                     ...(resultBytes !== undefined ? { resultBytes } : {}),
                     ...(failure !== undefined ? { error: failure } : {}),
                   },

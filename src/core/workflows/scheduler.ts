@@ -239,6 +239,7 @@ import {
 } from "./derivation-audit.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
+import { executionClock, executionTimeout } from "./execution-clock.js";
 import { describeChange, keepOutside, restoreOutside, unjournaledOutside } from "./fixer-scope.js";
 import {
   FORK_SEED_ARTIFACT,
@@ -934,30 +935,30 @@ export class WorkflowScheduler {
     outerSignal.addEventListener("abort", abort, { once: true });
     if (outerSignal.aborted) abort();
     const signal = controller.signal;
-    const started = performance.now();
+    const started = executionClock.now();
     const activeBefore = this.store.run(runId).active_ms;
     let idleMs = 0;
     let idleFrom: number | null = null;
     const arm = () =>
-      setTimeout(
+      executionTimeout(
         () => controller.abort(new WorkflowFault("BUDGET_EXHAUSTED", "Active deadline exhausted")),
-        Math.max(1, policy.maxActiveMs - activeBefore - (performance.now() - started - idleMs)),
+        Math.max(1, policy.maxActiveMs - activeBefore - (executionClock.now() - started - idleMs)),
       );
     let timeout = arm();
     this.rearmDeadline = () => {
-      clearTimeout(timeout);
+      timeout();
       timeout = arm();
     };
     // A wait stage sleeps between polls; that time is not active time.
     this.idle = async <T>(sleep: () => Promise<T>): Promise<T> => {
-      clearTimeout(timeout);
-      const from = performance.now();
+      timeout();
+      const from = executionClock.now();
       idleFrom = from;
       try {
         return await sleep();
       } finally {
         idleFrom = null;
-        idleMs += performance.now() - from;
+        idleMs += executionClock.now() - from;
         timeout = arm();
       }
     };
@@ -968,7 +969,7 @@ export class WorkflowScheduler {
     // ran in a timer, so it killed the command with an uncaught exception (bench round 32, #1313).
     // The write is tried once more, and an interval still unrecorded goes with the next flush.
     const recordActive = (): void => {
-      const now = performance.now();
+      const now = executionClock.now();
       const idle = idleMs + (idleFrom === null ? 0 : now - idleFrom);
       const add = Math.ceil(now - started - idle - recorded);
       if (add <= 0) return;
@@ -2793,7 +2794,7 @@ export class WorkflowScheduler {
       forgetProgress(runId);
       clearInterval(poll);
       clearInterval(flush);
-      clearTimeout(timeout);
+      timeout();
       this.idle = (sleep) => sleep();
       this.rearmDeadline = () => {};
       outerSignal.removeEventListener("abort", abort);
@@ -11005,12 +11006,12 @@ ${note}`;
     // In a copy, files Git ignores (a build, a virtualenv) may be missing: tests that fail there
     // without a mutant would count every mutant as killed.
     const budgetMs = policy.mutationBudgetMs ?? DEFAULT_MUTATION_BUDGET_MS;
-    const baselineStarted = Date.now();
+    const baselineStarted = executionClock.now();
     const baseline = copy && mutants.length && tests.length ? await runTests(budgetMs) : null;
     // How long the suite takes green, so one mutant that hangs it cannot take the budget (#1534).
     const greenMs =
       baseline?.status === "passed"
-        ? Date.now() - baselineStarted
+        ? executionClock.now() - baselineStarted
         : greenSuiteMs(
             this.store.checkDetails(runId),
             tests.map((check) => check.id),
@@ -11043,7 +11044,7 @@ ${note}`;
                 if (bytes) writeFileSync(workspacePath(root, path), bytes);
               },
               test: runTests,
-              now: () => Date.now(),
+              now: () => executionClock.now(),
             },
             {
               ...(policy.mutationBudgetMs ? { budgetMs: policy.mutationBudgetMs } : {}),
@@ -11102,7 +11103,7 @@ ${note}`;
       ...toolShellFiles(root),
       remove: (path) => rmSync(workspacePath(root, path), { recursive: true, force: true }),
       which: (command) => Bun.which(command),
-      now: () => Date.now(),
+      now: () => executionClock.now(),
     };
   }
   /**
