@@ -7,6 +7,7 @@ import { testTaskRates, perFileRates, plannerSizing, sizePlan, splitNote, splitT
 import { failureOwner } from "../src/core/workflows/task-graph.js";
 import type { TaskRow } from "../src/core/workflows/store.js";
 import type { Task } from "../src/core/workflows/types.js";
+import { cellSpec } from "./helpers/criteria-cell-fixtures.js";
 
 const ids = Array.from({ length: 6 }, (_, i) => `AC-${String(i + 1).padStart(3, "0")}`);
 const task = (id: string, path: string, criterionIds = ids): Task => ({
@@ -26,6 +27,14 @@ const spec = (rows: number): SpecText => ({ criteria: ids.map((id, index) => ({
 const size = (g: TaskGraph, samples = history, text?: SpecText) => sizePlan({ graph: g, policy, samples, spent: 0, spec: text });
 
 describe("literal case pricing and sequential test slices (#1562)", () => {
+  test("counts separate cell inputs once for pricing and case capacity (#1614)", () => {
+    const g = graph(task("T001", "tests/parser.test.ts", ["AC-001"]));
+    const report = size(g, [], cellSpec);
+    expect(report.tasks[0]!.cases).toBe(14);
+    expect(report.tasks[0]!.estimate.high).toBe(14 * 75_000);
+    const split = splitTestTasks(g, report, cellSpec)!;
+    expect(size(split, [], cellSpec).tasks.reduce((sum, item) => sum + (item.cases ?? 0), 0)).toBe(14);
+  });
   test("case capacity splits forty rows without multiplying the measured task price", () => {
     const g = graph(task("T001", "tests/cli.test.ts"));
     const small = size(g, history, spec(6));
