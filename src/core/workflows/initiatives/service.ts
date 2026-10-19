@@ -11,6 +11,8 @@ import { canRepairRun } from "../repairable.js";
 import { existsSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { ROUTING_ARTIFACT } from "../../llm/model-routing.js";
+import { getCachedProviderStatuses } from "../../llm/provider.js";
+import { availableVendorModels } from "../../llm/vendor-models.js";
 import { matchGlob } from "../../platform/index.js";
 import { hashJson } from "../../specs/hash.js";
 import { type BudgetLimits, budgetUsage, limitsOf } from "../budget.js";
@@ -19,14 +21,24 @@ import { type AcceptedContract, acceptedContract } from "../dependencies.js";
 import { WorkflowFault } from "../errors.js";
 import {
   estimateHistory,
+  estimatePreRun,
   historyStorePaths,
   type PastRun,
+  type PlannedStage,
   rangeText,
   type TokenRange,
   tokenText,
 } from "../estimate.js";
+import { forecastSamples, forecastStageCost, runForecastStages } from "../forecast-price.js";
 import { plannedRunTokens } from "../plan-cost.js";
+import { plannedStages } from "../pre-run.js";
 import { type RecoveryAdvice, recoveryAdvice } from "../remedies.js";
+import {
+  explicitModelConfig,
+  reviewIndependence,
+  routedProfiles,
+  routingRecord,
+} from "../routing.js";
 import {
   type CommandIdentity,
   DEFAULT_MAX_PARALLEL_RUNS,
@@ -45,6 +57,7 @@ import { newId, WorkflowStore } from "../store.js";
 import type { IssueSource } from "../types.js";
 import { HOST_AUTO_APPROVAL_CEILING, HostAutoApprovalSchema } from "../v2/definition.js";
 import { loadDefinition } from "../v2/definitions.js";
+import { loadGateLibrary } from "../v2/library.js";
 import { autoApprovalPolicy } from "../v2/runtime.js";
 import { mergedBase, worktreeBase } from "../worktree.js";
 import { criticalPathSummary, remainingPath } from "./critical-path.js";
@@ -54,6 +67,8 @@ import {
   type FeatureRunSample,
   type InitiativeEstimate,
   type InitiativeProgress,
+  SIZE_STAGE_FACTOR,
+  SIZE_TASK_FACTOR,
 } from "./estimate.js";
 import {
   applySplitEdit,
@@ -179,7 +194,7 @@ export interface CostView {
   remainingUsd: number | null;
   /**
    * The projected total once a feature is accepted (#1312): what was spent, plus the point
-   * forecasts still to run at the initiative's measured feature price, without a margin. Null
+   * forecasts still to run at their stage and model prices, without a margin. Null
    * without a cap, before a feature is accepted, or while nothing is priced.
    */
   forecastUsd: number | null;
@@ -1627,11 +1642,15 @@ export class InitiativeService {
     // Features without a run share what remains: tokens by estimated need, calls and time by size.
     const waitingForRun = approved ? features.filter((f) => f.runId === null) : [];
     const accepted = new Set(features.filter((f) => f.state === "accepted").map((f) => f.id));
+    // Keep the token estimate and dollar stage mix on the same fresh history snapshot. A feature
+    // can finish within the cache's five seconds, immediately before the next start gate.
     const estimate =
-      approved && waitingForRun.length ? this.estimateOf(row, approved, accepted) : null;
+      approved && features.some((f) => f.state !== "accepted")
+        ? this.estimateOf(row, approved, accepted, 0)
+        : null;
     const needs = estimate ? this.featureNeeds(estimate) : null;
     for (const feature of waitingForRun) feature.need = needs?.get(feature.id) ?? null;
-    const cost = this.costView(settings, plan, runIds, used, accepted, estimate, decompose?.id);
+    const cost = this.costView(row, settings, plan, runIds, used, accepted, estimate);
     const shares = splitShares(waitingForRun, remaining, cost.remainingUsd);
     for (const [index, feature] of waitingForRun.entries()) Object.assign(feature, shares[index]);
     const unstarted = waitingForRun.length;
@@ -1706,13 +1725,13 @@ export class InitiativeService {
 
   /** The initiative's dollars: spent, held by open runs, and the cap with its forecast. */
   private costView(
+    row: InitiativeRow,
     settings: InitiativeSettings,
     plan: InitiativePlan | null,
     runIds: string[],
     used: UsageView,
     accepted: ReadonlySet<string>,
     estimate: InitiativeEstimate | null,
-    decomposeRunId?: string,
   ): CostView {
     const spentUsd = runIds.reduce((sum, runId) => sum + this.spentUsd(runId), 0);
     const committedUsd = runIds.reduce((sum, runId) => sum + this.committedUsd(runId), 0);
@@ -1721,8 +1740,7 @@ export class InitiativeService {
     const tolerance = budget
       ? initiativeCostTolerance(budget.costTolerance, plan?.features.length ?? 0)
       : 0;
-    // Point forecasts, rather than midpoints of conservatively floored ranges (#1607), at the
-    // price the feature runs paid. Tolerance applies only to the ceiling, not to this projection.
+    // Point forecasts use the stages and models still to run. Tolerance belongs to the ceiling.
     const forecastable =
       capUsd !== null &&
       estimate !== null &&
@@ -1730,11 +1748,7 @@ export class InitiativeService {
       settings.basePolicy.costForecast !== "off" &&
       spentUsd > 0 &&
       used.tokens > 0;
-    const left = forecastable
-      ? estimate.features
-          .filter((f) => !accepted.has(f.featureId))
-          .reduce((sum, f) => sum + Math.max(0, f.expectedTokens - f.spent), 0)
-      : 0;
+    const left = forecastable ? this.remainingFeatureCost(row, settings, estimate, accepted) : null;
     const round = (n: number): number => Math.round(n * 100) / 100;
     return {
       capUsd,
@@ -1743,11 +1757,7 @@ export class InitiativeService {
       spentUsd: round(spentUsd),
       reservedUsd: round(Math.max(0, committedUsd - spentUsd)),
       remainingUsd: capUsd === null ? null : cents(Math.max(0, capUsd - committedUsd)),
-      forecastUsd: forecastable
-        ? round(
-            spentUsd + this.featureCostRate(runIds, decomposeRunId, spentUsd / used.tokens) * left,
-          )
-        : null,
+      forecastUsd: left === null ? null : round(spentUsd + left),
     };
   }
 
@@ -2093,25 +2103,119 @@ export class InitiativeService {
     };
   }
 
-  /**
-   * USD per token of the initiative's feature runs, for the feature tokens still to run (#1505):
-   * the dollars they spent over the tokens those dollars priced. The decompose run is paid once
-   * and does not repeat, and held or in-flight tokens carry no dollars yet, so neither enters it.
-   * `fallback` (every run's dollars over every run's tokens) stands in before a feature run spent.
-   */
-  private featureCostRate(
-    runIds: string[],
-    decomposeRunId: string | undefined,
-    fallback: number,
-  ): number {
+  /** Price unaccepted features' remaining point tokens with their remaining workflow stages. */
+  private remainingFeatureCost(
+    row: InitiativeRow,
+    settings: InitiativeSettings,
+    estimate: InitiativeEstimate,
+    accepted: ReadonlySet<string>,
+  ): number | null {
+    const store = this.workflows.store;
+    const links = this.store.links(row.id);
+    const samples = forecastSamples(
+      store,
+      links.map((l) => l.run_id),
+    );
+    const history = estimateHistory(store, this.workflows.workspace, settings.basePolicy);
+    const planned = new Map<string, PlannedStage[]>();
     let usd = 0;
-    let tokens = 0;
-    for (const runId of runIds) {
-      if (runId === decomposeRunId) continue;
-      usd += this.spentUsd(runId);
-      tokens += this.workflows.store.run(runId).token_usage;
+    for (const feature of estimate.features) {
+      if (accepted.has(feature.featureId)) continue;
+      const left = Math.max(0, feature.expectedTokens - feature.spent);
+      if (!left) continue;
+      const runId = links.filter((l) => l.feature_id === feature.featureId).at(-1)?.run_id;
+      let stages: PlannedStage[];
+      if (runId) {
+        const policy = PolicySchema.parse(JSON.parse(store.run(runId).policy_json));
+        stages = runForecastStages(store, runId, policy);
+      } else {
+        if (!planned.has(feature.workflowId)) {
+          const workspace = this.workflows.workspace;
+          const policy = settings.basePolicy;
+          const model = settings.model ?? this.workflows.config.defaultModel;
+          if (!model) return null;
+          const config = explicitModelConfig(this.workflows.config, model);
+          const loaded = loadDefinition(workspace, feature.workflowId, policy);
+          const registry = routedProfiles(workspace, config, model);
+          const gates = loadGateLibrary(workspace, policy).gates;
+          const routing = reviewIndependence(
+            config,
+            routingRecord(
+              config,
+              registry,
+              model,
+              feature.workflowId,
+              loaded.definition.stages.map((s) => s.id),
+              undefined,
+            ),
+            loaded.definition,
+            policy,
+            gates,
+            registry.list().map((p) => p.profile),
+            availableVendorModels(
+              (getCachedProviderStatuses() ?? []).filter((p) => p.available).map((p) => p.id),
+            ),
+          );
+          if (routing.refuse) return null;
+          planned.set(
+            feature.workflowId,
+            plannedStages({
+              loaded,
+              policy,
+              routing: routing.record,
+              gates: [...gates.values()],
+            }),
+          );
+        }
+        stages = planned.get(feature.workflowId) ?? [];
+      }
+      if (!stages.length) return null;
+      const priced = estimatePreRun({
+        history,
+        workflowId: feature.workflowId,
+        stages,
+        maxTotalTokens: 0,
+        price: () => null,
+      });
+      const weights = priced.stages.map((s) => ({
+        id: s.stageId,
+        models: s.models,
+        tokens:
+          ((s.tokens.low + s.tokens.high) / 2) *
+          (s.type === "tasks" ? SIZE_TASK_FACTOR[feature.size] : SIZE_STAGE_FACTOR[feature.size]),
+      }));
+      const total = weights.reduce((sum, s) => sum + s.tokens, 0);
+      const own = runId ? forecastSamples(store, [runId]) : [];
+      const latest = new Map(
+        (runId ? store.steps(runId) : [])
+          .filter((s) => !s.parent_step_id)
+          .map((s) => [s.stage_id, s.status]),
+      );
+      for (const stage of weights) {
+        const spent = own
+          .filter((a) => a.stage === stage.id)
+          .reduce((sum, a) => sum + (a.usedTokens ?? 0), 0);
+        stage.tokens =
+          latest.get(stage.id) === "completed" || latest.get(stage.id) === "skipped"
+            ? 0
+            : Math.max(
+                0,
+                (total > 0 ? (stage.tokens / total) * feature.expectedTokens : 0) - spent,
+              );
+      }
+      const remaining = weights.reduce((sum, s) => sum + s.tokens, 0);
+      if (remaining === 0) continue;
+      const cost = forecastStageCost(
+        samples,
+        weights.map((s) => ({
+          ...s,
+          tokens: (s.tokens / remaining) * left,
+        })),
+      );
+      if (cost === null) return null;
+      usd += cost;
     }
-    return usd > 0 && tokens > 0 ? usd / tokens : fallback;
+    return usd;
   }
 
   /** The dollars a run spent. */

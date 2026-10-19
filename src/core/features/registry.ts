@@ -1513,7 +1513,7 @@ export const FEATURES: readonly Feature[] = [
     id: "initiative-dollar-budget",
     group: "Initiatives",
     title:
-      "A shared dollar cap with measured point forecasts, provider prices and one tolerance ceiling",
+      "A shared dollar cap with point forecasts priced by remaining stages and models, and one tolerance ceiling",
     tui: [
       "/workflow: initiatives, $N in the start form's budget and B, dollars on the budget line",
     ],

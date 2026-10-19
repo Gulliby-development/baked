@@ -18,15 +18,14 @@ export interface ModelUse {
   usedBy: string[];
 }
 
-function profileModel(prepared: PreparedStart, profileId: string): string | null {
+type StagePlan = Pick<PreparedStart, "loaded" | "policy" | "routing" | "gates">;
+
+function profileModel(prepared: StagePlan, profileId: string): string | null {
   return prepared.routing.profiles[profileId]?.model ?? null;
 }
 
 /** Review agents of a stage: the bound AI review gates of a v2 definition, else the policy's. */
-function reviewProfiles(
-  prepared: PreparedStart,
-  stage: Parameters<typeof reviewersOf>[0],
-): string[] {
+function reviewProfiles(prepared: StagePlan, stage: Parameters<typeof reviewersOf>[0]): string[] {
   if (prepared.loaded.schemaVersion === 2) {
     try {
       return reviewersOf(stage, prepared.gates).flatMap((r) =>
@@ -41,7 +40,7 @@ function reviewProfiles(
 }
 
 /** The definition's stages with the models their agents use, as the run would resolve them. */
-export function plannedStages(prepared: PreparedStart): PlannedStage[] {
+export function plannedStages(prepared: StagePlan): PlannedStage[] {
   const definition = asV2(prepared.loaded, prepared.policy);
   return definition.stages.map((stage) => {
     const routed = prepared.routing.stages[stage.id]?.model;

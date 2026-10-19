@@ -24,14 +24,14 @@ export const ESTIMATE_MARGIN = 0.25;
  */
 export const LEVEL_TASKS = [8, 12.5, 18.5, 26] as const;
 /** How many tasks a feature of each size plans next to a typical run of its workflow. */
-const SIZE_TASK_FACTOR: Record<FeatureSize, number> = { small: 0.5, medium: 1, large: 2 };
+export const SIZE_TASK_FACTOR: Record<FeatureSize, number> = { small: 0.5, medium: 1, large: 2 };
 /**
  * How the stages around the tasks (research, spec, plan, review) of a feature of each size compare
  * with a typical run's: a larger feature writes a longer spec and has more to review. Bench round 34
  * (sketchfold): with those stages at a typical run's cost at every size, a large feature was
  * forecast at 2.4 times a small one and cost 3.4 to 5.5 times as much (#1338).
  */
-const SIZE_STAGE_FACTOR: Record<FeatureSize, number> = { small: 0.6, medium: 1, large: 1.6 };
+export const SIZE_STAGE_FACTOR: Record<FeatureSize, number> = { small: 0.6, medium: 1, large: 1.6 };
 /**
  * What a placeholder path costs next to a path a feature writes in full: the stub a feature
  * creates for a later feature to fill. Bench round 40 (tonemath): 20 stub tasks used 2.58M tokens,
