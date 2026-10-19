@@ -25,10 +25,12 @@ import {
   classifyRemoteFailure,
   git,
   gitMode,
+  gitWorktreePaths,
   internalPath,
   looksSecret,
   type RemoteFailure,
   statusPaths,
+  treeModes,
 } from "./delivery-git.js";
 import {
   githubPullRequests,
@@ -194,20 +196,18 @@ export function configuredPullRequests(config: AppConfig): PullRequestProvider {
 }
 
 async function assertRepository(workspace: string): Promise<void> {
-  const inside = await git(workspace, ["rev-parse", "--show-toplevel"]);
-  if (inside.code !== 0)
+  const inside = await gitWorktreePaths(workspace);
+  if (!inside)
     throw refuse(
       "CAPABILITY_DENIED",
       "git_required",
       "Git delivery requires a Git repository. This workspace is a plain directory: run `git init`, commit a baseline and add a remote, or copy the changed files by hand.",
     );
-  const top = inside.stdout.trim();
-  const prefix = (await git(workspace, ["rev-parse", "--show-prefix"])).stdout.trim();
-  if (prefix !== "")
+  if (inside.prefix !== "")
     throw refuse(
       "CAPABILITY_DENIED",
       "git_required",
-      `Git delivery requires the workspace to be the root of its repository (${top}).`,
+      `Git delivery requires the workspace to be the root of its repository (${inside.top}).`,
     );
 }
 
@@ -257,15 +257,6 @@ async function workingCopyConflicts(
     if (current !== (await contentAt(workspace, base, file.path))) conflicts.push(file.path);
   }
   return conflicts;
-}
-
-async function modeAt(
-  workspace: string,
-  commit: string,
-  path: string,
-): Promise<"100644" | "100755"> {
-  const entry = (await git(workspace, ["ls-tree", commit, "--", path])).stdout;
-  return entry.startsWith("100755") ? "100755" : "100644";
 }
 
 function baselineOf(
@@ -538,6 +529,14 @@ export async function prepareDelivery(
   const excluded: DeliveryExclusion[] = [];
   const dirty: string[] = [];
   const mismatched: { path: string; cause: string }[] = [];
+  const modeResult = await git(workspace, ["ls-tree", "-r", "-z", base]);
+  if (modeResult.code !== 0)
+    throw refuse(
+      "CAPABILITY_DENIED",
+      "commit_failed",
+      `Cannot read delivery file modes: ${modeResult.stderr.trim()}`,
+    );
+  const modes = treeModes(modeResult.stdout);
   for (const path of candidates) {
     if (internalPath(path)) {
       excluded.push({ path, reason: "internal" });
@@ -605,11 +604,7 @@ export async function prepareDelivery(
       hash: current,
       // A modified file keeps its committed mode, so a platform without executable bits
       // (Windows) cannot silently drop one; a new file takes the bit from the working tree.
-      mode: !stat
-        ? null
-        : atBase === null
-          ? gitMode(stat.mode)
-          : await modeAt(workspace, base, path),
+      mode: !stat ? null : atBase === null ? gitMode(stat.mode) : (modes.get(path) ?? "100644"),
     });
   }
   if (dirty.length)
@@ -1671,22 +1666,19 @@ class DeliveryExecution {
         return result.stdout.trim();
       };
       await step(["read-tree", this.plan.base.commit]);
+      const updates: string[] = [];
       for (const file of this.plan.files) {
         if (file.action === "delete") {
-          await step(["update-index", "--force-remove", "--", file.path]);
+          updates.push(`0 ${"0".repeat(this.plan.base.commit.length)}\t${file.path}\0`);
           continue;
         }
         const bytes = contents.get(file.path);
         if (!bytes)
           throw refuse("INPUT_CHANGED", "dirty_files", `Missing content for ${file.path}`);
         const blob = await step(["hash-object", "-w", "--stdin", `--path=${file.path}`], bytes);
-        await step([
-          "update-index",
-          "--add",
-          "--cacheinfo",
-          `${file.mode ?? "100644"},${blob},${file.path}`,
-        ]);
+        updates.push(`${file.mode ?? "100644"} ${blob}\t${file.path}\0`);
       }
+      if (updates.length) await step(["update-index", "-z", "--index-info"], updates.join(""));
       const tree = await step(["write-tree"]);
       const date = `${this.plan.createdAt} +0000`;
       const commit = await step(

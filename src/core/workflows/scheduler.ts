@@ -213,7 +213,7 @@ import { costToleranceOf, currentCostCap, inCostWrapUp } from "./cost-tolerance.
 import { coverageFinding } from "./coverage.js";
 import { type CriticCalibration, calibrateCritic, criticExamples } from "./critic-calibration.js";
 import { crossPlatformNote } from "./cross-platform.js";
-import { git } from "./delivery-git.js";
+import { git, gitWorktreePaths } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
 import {
   DERIVATION_RETURN_NOTE,
@@ -10524,9 +10524,8 @@ ${note}`;
     await this.settleMutation(runId, true);
     const root = runRoot(this.store.workspace, state);
     // The copy checks out the whole repository, so it stands in for the run only at its top.
-    const top = await git(root, ["rev-parse", "--show-toplevel"]);
-    if (top.code !== 0 || realpathSync.native(top.stdout.trim()) !== realpathSync.native(root))
-      return false;
+    const top = await gitWorktreePaths(root);
+    if (!top || realpathSync.native(top.top) !== realpathSync.native(root)) return false;
     let path: string;
     try {
       const base = await runContentCommit(this.store, runId, {

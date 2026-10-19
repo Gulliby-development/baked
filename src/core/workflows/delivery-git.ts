@@ -1,5 +1,69 @@
 /** Git plumbing for delivery. Nothing here touches the checkout, the index or HEAD of the user. */
+import { statSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { buildSafeEnv, processOutput } from "../spawn.js";
+
+/** Detects atomic replacement as well as in-place writes, including sub-millisecond changes. */
+export function gitFileStamp(path: string): string | null {
+  try {
+    const stat = statSync(path, { bigint: true });
+    return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+  } catch {
+    return null;
+  }
+}
+
+interface WorktreePaths {
+  top: string;
+  prefix: string;
+  index: string;
+}
+const worktreePaths = new Map<string, { stamp: string; value: Promise<WorktreePaths | null> }>();
+
+/** Git environment overrides can select another repository or index in the same directory. */
+export function gitEnvironmentKey(): string {
+  return JSON.stringify(
+    Object.entries(process.env)
+      .filter(([key]) => key.toUpperCase().startsWith("GIT_"))
+      .sort(([a], [b]) => a.localeCompare(b)),
+  );
+}
+
+/** Cache only locations, never mutable refs, HEAD or status. Recreated worktrees get a new stamp. */
+export async function gitWorktreePaths(workspace: string): Promise<WorktreePaths | null> {
+  const key = `${resolve(workspace)}\0${gitEnvironmentKey()}`;
+  const stamp = gitFileStamp(join(workspace, ".git"));
+  const cached = worktreePaths.get(key);
+  if (stamp && cached?.stamp === stamp) return cached.value;
+  const value = (async () => {
+    const result = await git(workspace, [
+      "rev-parse",
+      "--path-format=absolute",
+      "--show-toplevel",
+      "--show-prefix",
+      "--git-path",
+      "index",
+    ]);
+    if (result.code !== 0) return null;
+    const [top, prefix, index] = result.stdout.trimEnd().split("\n");
+    return top && index && prefix !== undefined ? { top, prefix, index } : null;
+  })();
+  // A subdirectory has no marker to validate, so it is deliberately not cached.
+  if (stamp) {
+    if (worktreePaths.size >= 128) worktreePaths.delete(worktreePaths.keys().next().value ?? "");
+    const entry = { stamp, value };
+    worktreePaths.set(key, entry);
+    void value.then(
+      (paths) => {
+        if (!paths && worktreePaths.get(key) === entry) worktreePaths.delete(key);
+      },
+      () => {
+        if (worktreePaths.get(key) === entry) worktreePaths.delete(key);
+      },
+    );
+  }
+  return value;
+}
 
 export interface GitResult {
   code: number;
@@ -89,6 +153,17 @@ export function internalPath(path: string): boolean {
 /** Mode of a file as Git stores it: executable or regular. */
 export function gitMode(mode: number): "100755" | "100644" {
   return mode & 0o111 ? "100755" : "100644";
+}
+
+/** Modes keyed by literal path from one recursive, NUL-delimited ls-tree read. */
+export function treeModes(output: string): Map<string, "100755" | "100644"> {
+  const modes = new Map<string, "100755" | "100644">();
+  for (const entry of output.split("\0")) {
+    const tab = entry.indexOf("\t");
+    if (tab >= 0)
+      modes.set(entry.slice(tab + 1), entry.startsWith("100755 ") ? "100755" : "100644");
+  }
+  return modes;
 }
 
 /** Paths of `git status --porcelain=v1 -z` output; a rename or copy lists its target path. */

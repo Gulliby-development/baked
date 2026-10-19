@@ -19,7 +19,15 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { canonical } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
-import { git, gitMode, internalPath, looksSecret, statusPaths } from "./delivery-git.js";
+import {
+  git,
+  gitMode,
+  gitWorktreePaths,
+  internalPath,
+  looksSecret,
+  statusPaths,
+  treeModes,
+} from "./delivery-git.js";
 import { WorkflowFault } from "./errors.js";
 import type { WorkflowStore } from "./store.js";
 import type { RuntimeState, WorktreeState } from "./types.js";
@@ -105,13 +113,13 @@ export async function worktreeBase(workspace: string): Promise<string> {
       reason: "git_required",
       ...(gitInit ? { gitInit } : {}),
     });
-  const top = await git(workspace, ["rev-parse", "--show-prefix"]);
-  if (top.code !== 0)
+  const top = await gitWorktreePaths(workspace);
+  if (!top)
     throw refuse(
       `Worktree execution needs a Git repository. ${GIT_INIT_HINT}, or run the workflow inline.`,
       true,
     );
-  if (top.stdout.trim())
+  if (top.prefix)
     throw refuse("Worktree execution needs the workspace to be the root of its Git repository.");
   const head = (await git(workspace, ["rev-parse", "--verify", "--quiet", "HEAD"])).stdout.trim();
   if (!head)
@@ -303,8 +311,8 @@ export async function runContentCommit(
   const env = { GIT_INDEX_FILE: index };
   try {
     // The worktree's own index only speeds up hashing; the content comes from its files.
-    const own = await git(root, ["rev-parse", "--path-format=absolute", "--git-path", "index"]);
-    if (own.code === 0 && existsSync(own.stdout.trim())) copyFileSync(own.stdout.trim(), index);
+    const own = await gitWorktreePaths(root);
+    if (own && existsSync(own.index)) copyFileSync(own.index, index);
     else await required(root, ["read-tree", "HEAD"], { env });
     // An exclude pathspec that names an ignored path fails the add ("paths are ignored"); the
     // linked node_modules is a junction on Windows, which .gitignore already covers.
@@ -325,8 +333,10 @@ export async function runContentCommit(
       { env },
     );
     const tree = await required(root, ["write-tree"], { env });
-    const head = await required(root, ["rev-parse", "HEAD"]);
-    if (tree === (await required(root, ["rev-parse", "HEAD^{tree}"]))) return head;
+    const [head = "", headTree] = (
+      await required(root, ["rev-parse", "HEAD", "HEAD^{tree}"])
+    ).split("\n");
+    if (tree === headTree) return head;
     return await required(root, ["commit-tree", tree, "-p", head, "--no-gpg-sign", "-F", "-"], {
       input: `Content of run ${runId} for its task worktrees\n`,
       env: await commitEnv(store, runId),
@@ -530,13 +540,15 @@ export async function commitRunBranch(
   const env = { GIT_INDEX_FILE: join(directory, "index") };
   try {
     await required(root, ["read-tree", worktree.baseHead], { env });
+    const modes = treeModes(await required(root, ["ls-tree", "-r", "-z", worktree.baseHead]));
+    const updates: string[] = [];
     for (const path of [...new Set(paths)].sort()) {
       if (internalPath(path)) continue;
       const absolute = workspacePath(root, path);
       const stat = existsSync(absolute) ? lstatSync(absolute) : null;
       if (stat?.isSymbolicLink() || looksSecret(path)) continue;
       if (!stat) {
-        await required(root, ["update-index", "--force-remove", "--", path], { env });
+        updates.push(`0 ${"0".repeat(worktree.baseHead.length)}\t${path}\0`);
         continue;
       }
       const bytes = readFileSync(absolute);
@@ -544,13 +556,15 @@ export async function commitRunBranch(
       const blob = await required(root, ["hash-object", "-w", "--stdin", `--path=${path}`], {
         input: bytes,
       });
-      const entry = (await git(root, ["ls-tree", worktree.baseHead, "--", path])).stdout;
       // A file the baseline has keeps its committed mode; a new file takes the working tree's.
-      const mode = entry ? (entry.startsWith("100755") ? "100755" : "100644") : gitMode(stat.mode);
-      await required(root, ["update-index", "--add", "--cacheinfo", `${mode},${blob},${path}`], {
-        env,
-      });
+      const mode = modes.get(path) ?? gitMode(stat.mode);
+      updates.push(`${mode} ${blob}\t${path}\0`);
     }
+    if (updates.length)
+      await required(root, ["update-index", "-z", "--index-info"], {
+        env,
+        input: updates.join(""),
+      });
     const tree = await required(root, ["write-tree"], { env });
     if (tree === (await required(root, ["rev-parse", `${worktree.baseHead}^{tree}`]))) return null;
     const commit = await required(
