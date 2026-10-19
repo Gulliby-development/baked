@@ -68,8 +68,9 @@ async function run(options: { planned: number; perTask: number[]; spent: number;
     maxCostUsd: options.cap,
     ...(options.costTolerance === undefined ? {} : { costTolerance: options.costTolerance }),
   };
-  // The fixture model has no price, so the run starts uncapped and takes the capped policy after.
+  // Start uncapped, then seed the scenario's capped state and measured usage.
   const made = workflowFixture({ policy: { ...policy, maxCostUsd: null } });
+  made.config.defaultModel = MODEL;
   cleanups.push(made.dispose);
   const { store } = made.service;
   const { runId } = await made.start();

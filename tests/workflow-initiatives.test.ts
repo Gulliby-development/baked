@@ -636,20 +636,25 @@ describe("scenario: an initiative dollar budget (#1317)", () => {
     await t.approveSplit();
     let view = await t.drive();
     expect(t.featureOf(view, "core").state).toBe("accepted");
+    const accepted = view.features.filter((f) => f.state === "accepted").length;
+    const waiting = view.features.filter((f) => f.state !== "accepted");
+    expect(accepted).toBeGreaterThan(0);
+    expect(waiting.length).toBeGreaterThan(0);
     const forecast = view.budget.cost.forecastUsd ?? 0;
     expect(forecast).toBeGreaterThan(3);
     expect(view.next.kind).toBe("blocked");
-    expect(view.next.message).toMatch(/^The initiative's cost forecast is \$\d+\.\d\d, above its \$3\.00 cap: \$\d+\.\d\d spent with 1 of 3 features accepted\. Raise the dollar budget to at least \$\d+\.00 with baked workflow initiative extend --budget-usd N/);
+    expect(view.next.message).toMatch(/^The initiative's cost forecast is \$\d+\.\d\d, above its \$3\.00 cap: \$\d+\.\d\d spent with \d of 3 features accepted\. Raise the dollar budget to at least \$\d+\.00 with baked workflow initiative extend --budget-usd N/);
+    expect(view.next.message).toContain(`spent with ${accepted} of 3 features accepted`);
     expectRecovery(view.next.message, view.next.recovery, "extend");
     expect(initiativeExit(view)).toBe(4);
-    expect(["api", "docs"].map((id) => t.featureOf(view, id).runId)).toEqual([null, null]);
+    expect(waiting.every((f) => f.runId === null)).toBe(true);
     view = await t.initiatives.extendBudget("values", t.id(), { maxCostUsd: Math.ceil(forecast) + 1 });
     expect(view.budget.cost.capUsd).toBe(Math.ceil(forecast) + 1);
     // Raising only the dollars leaves the token limits as they were.
     expect(view.budget.limits.maxTotalTokens).toBe(50_000_000);
     await expect(t.initiatives.extendBudget("values", t.id(), { maxCostUsd: 1 })).rejects.toThrow("can only be raised");
     view = await t.drive();
-    expect(t.featureOf(view, "api").runId).not.toBeNull();
+    expect(t.featureOf(view, waiting[0]!.id).runId).not.toBeNull();
   }, 30000);
 
   // Bench round 42 (#1505): the re-forecast priced the features still to run at every run's

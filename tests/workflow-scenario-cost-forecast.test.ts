@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { findPricing } from "../src/core/llm/pricing.js";
+import { ROUTING_ARTIFACT, type RoutingRecord } from "../src/core/llm/model-routing.js";
 import { canonical } from "../src/core/specs/hash.js";
 import { budgetLimitText, canExtend } from "../src/components/workflow/format.js";
 import { costRate, growBudgetOnProgress, remainingCostRate } from "../src/core/workflows/budget.js";
@@ -31,7 +32,7 @@ const SPENT_TOKENS = 5_990_000;
 const CAP = Math.round(SPENT_TOKENS * INPUT * (12 / 5.62) * 100) / 100;
 const PRICE = { low: 200_000, high: 300_000 };
 
-function usage(input: number, cacheRead = 0): AttemptUsageRecord {
+function usage(input: number, cacheRead = 0, cacheWrite = 0): AttemptUsageRecord {
   return {
     schemaVersion: 1,
     profileId: "implementer",
@@ -41,7 +42,7 @@ function usage(input: number, cacheRead = 0): AttemptUsageRecord {
     stopReason: "submitted",
     finalizedBy: null,
     totalTokens: input,
-    steps: [{ step: 1, inputTokens: input, outputTokens: 0, cacheReadTokens: cacheRead, cacheWriteTokens: 0, toolCalls: 0, compactedBytes: 0 }],
+    steps: [{ step: 1, inputTokens: input, outputTokens: 0, cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite, toolCalls: 0, compactedBytes: 0 }],
   };
 }
 
@@ -59,8 +60,9 @@ function spend(store: WorkflowStore, runId: string, stage: string, policy: RunPo
 /** cfgtrace at $5.62: planning spent, 7 of 23 test tasks done, each over its price. */
 async function midRun(options: { perTask: number[]; costForecast?: "ask" | "off"; taskCacheShare?: number; policy?: Partial<RunPolicy> }) {
   const policy: RunPolicy = { ...fixturePolicy, maxAgentCalls: 1000, maxTotalTokens: 16_000_000, maxCostUsd: CAP, ...(options.costForecast ? { costForecast: options.costForecast } : {}), ...options.policy };
-  // The fixture model has no price, so the run starts uncapped and takes the capped policy after.
+  // Start uncapped, then seed the scenario's capped state and measured usage.
   const made = workflowFixture({ policy: { ...policy, maxCostUsd: null } });
+  made.config.defaultModel = MODEL;
   cleanups.push(made.dispose);
   const { store } = made.service;
   const run = await made.start();
@@ -270,6 +272,54 @@ describe("scenario: an initiative feature's dollar cap under a dollar budget (#1
 // $0.79 (mostly cache reads). The forecast priced the 9.19M tokens left at the blended $0.965 and
 // read $11.88; the run finished at $9.03.
 describe("scenario: fecsmith front, the forecast prices the tokens left at the task price (#1505)", () => {
+  test("R48: remaining review uses its stage mix and routed model with one ceiling band", async () => {
+    const { store, runId, policy } = await midRun({ perTask: Array(7).fill(250_000), taskCacheShare: 0.8 });
+    // A previous review round measured 70% cache reads and 20% writes. Child calls belong to review.
+    for (const stage of ["review", "converge"]) {
+      const parent = store.beginStep(runId, stage);
+      const step = store.beginStep(runId, stage === "review" ? "dimension-correctness" : "audit", parent);
+      const attempt = store.reserve(runId, step, MODEL, 1000, policy);
+      store.artifact(runId, "usage", `attempts/${attempt}/usage.json`, canonical(usage(100_000, 70_000, 20_000)));
+      store.finishAttempt(runId, attempt, "completed", 100_000);
+    }
+    const cheaper = "anthropic/claude-haiku-4-5";
+    const artifact = store.latestArtifact(runId, ROUTING_ARTIFACT)!;
+    const routing = JSON.parse(store.readArtifact(runId, artifact.id)) as RoutingRecord;
+    const price = findPricing(cheaper)!.pricing;
+    const taskRate = INPUT * 0.2 + findPricing(MODEL)!.pricing.cacheRead / 1e6 * 0.8;
+    const spent = store.costUsage(runId).spentUsd;
+    const reviewAt = (model: string) => {
+      const p = findPricing(model)!.pricing;
+      return verificationTokens() * (0.1 * p.input + 0.7 * p.cacheRead + 0.2 * p.cacheWrite) / 1e6;
+    };
+    const taskTokens = 16 * 250_000;
+    const before = costForecast(store, runId, policy)!;
+    expect(before.projectedUsd).toBeCloseTo(spent + taskTokens * taskRate + reviewAt(MODEL), 6);
+    for (const stage of ["review", "converge"])
+      routing.stages[stage] = { model: cheaper, source: "scenario reroute" };
+    store.artifact(runId, "routing", ROUTING_ARTIFACT, canonical(routing));
+    const expected = spent + taskTokens * taskRate + reviewAt(cheaper);
+    expect(costForecast(store, runId, policy)?.projectedUsd).toBeCloseTo(expected, 6);
+    expect(expected).toBeLessThan(before.projectedUsd);
+    // Route the remaining tasks too; the 80% cache mix must be repriced on that model.
+    routing.stages.implement = { model: cheaper, source: "scenario reroute" };
+    store.artifact(runId, "routing", ROUTING_ARTIFACT, canonical(routing));
+    const repriced = spent + taskTokens * (price.input * 0.2 + price.cacheRead * 0.8) / 1e6 + reviewAt(cheaper);
+    for (const tolerance of ["off", 0.25, "auto"] as const) {
+      const cap = Math.ceil(repriced * 100) / 100;
+      const changed = { ...policy, costTolerance: tolerance, maxCostUsd: cap };
+      store.setPolicy(runId, changed);
+      expect(costForecast(store, runId, changed)?.projectedUsd).toBeCloseTo(repriced, 6);
+      expect(() => assertForecastFits(store, runId, changed)).not.toThrow();
+    }
+    // Three candidates with a repeating two-model list give Sonnet two shares and Haiku one.
+    const contested = { ...policy, candidates: 3, candidateModels: [MODEL, cheaper] };
+    store.setPolicy(runId, contested);
+    const mixedRate = (2 * taskRate + (price.input * 0.2 + price.cacheRead * 0.8) / 1e6) / 3;
+    expect(costForecast(store, runId, contested)?.projectedUsd)
+      .toBeCloseTo(spent + taskTokens * mixedRate + reviewAt(cheaper), 6);
+  });
+
   test("open tasks are priced at what the finished tasks paid, not the blended price with planning", async () => {
     const { store, runId, policy } = await midRun({ perTask: OVER, taskCacheShare: 0.8 });
     const forecast = costForecast(store, runId, policy);
@@ -279,7 +329,10 @@ describe("scenario: fecsmith front, the forecast prices the tokens left at the t
     // The task attempts paid less per token than the run as a whole, planning included.
     expect(taskRate).toBeLessThan(blended);
     const taskTokens = forecast.remainingTokens - verificationTokens();
-    expect(forecast.projectedUsd).toBeCloseTo(forecast.spentUsd + taskTokens * taskRate + verificationTokens() * blended, 6);
+    const price = findPricing(MODEL)!.pricing;
+    // No earlier review exists, so its model uses the default mix rather than planning's rate.
+    const reviewRate = (0.6 * price.input + 0.3 * price.cacheRead + 0.1 * price.output) / 1e6;
+    expect(forecast.projectedUsd).toBeCloseTo(forecast.spentUsd + taskTokens * taskRate + verificationTokens() * reviewRate, 6);
     // The old rule priced every token left at the blended price.
     expect(forecast.projectedUsd).toBeLessThan(forecast.spentUsd + forecast.remainingTokens * blended);
   });
