@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
 import { criterionCases, missingCases, writtenTestPaths } from "../src/core/verification/criteria-cases.js";
 import { reproExecutables } from "../src/core/verification/repro.js";
-import { noteSiblingFindings } from "../src/core/verification/initiative-ownership.js";
+import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
 import { failureSignature, testCount } from "../src/core/verification/output-counts.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
@@ -425,6 +425,26 @@ function cell(stack: Stack, name: string, body: () => void | Promise<void>, time
   if (issue) test.skip(`${name} (known: ${issue})`, body);
   else test(name, body, timeout);
 }
+
+describe("gate matrix: shared criterion rows (#1597)", () => {
+  for (const [stack, path] of [
+    ["bun", "tests/cli.test.ts"], ["python", "tests/test_cli.py"], ["rust", "tests/cli.rs"],
+  ] as const) cell(stack, `${stack}: each test task owns one shared row`, () => {
+    const rows = ["--ascending", "--descending", "--stdin"];
+    const tasks = rows.map((row, index) => ({
+      id: `T00${index + 1}`, criterionIds: ["AC-001"], description: `Test only ${row}`,
+      writes: [{ path, action: "create" as const }],
+    }));
+    const spec = { criteria: [{ id: "AC-001", requirementIds: ["FR-001"], given: "CLI input", when: "it runs",
+      then: rows.map((row) => `input "${row}"`).join("; "), method: "automated" as const }] };
+    for (const [index, task] of tasks.entries()) {
+      const cases = criterionCases(spec, task, { tasks });
+      expect(cases.map((c) => c.literal)).toEqual([rows[index]!]);
+      expect(missingCases(cases, [rows[index]!])).toEqual([]);
+      expect(missingCases(cases, [])).toHaveLength(1);
+    }
+  });
+});
 
 describe("gate matrix: criteria scenario labels (#1565)", () => {
   const samples: { stack: Stack; path: string; text: string }[] = [
@@ -1585,4 +1605,31 @@ test("review gate keeps sibling-owned missing tests as notes", () => {
   expect([...noteSiblingFindings(state, "correctness", [finding])]).toEqual(["F001"]);
   expect(state.reviewNotes[0]).toMatchObject({ reason: "owned_by_sibling", claim: expect.stringContaining("feature entry") });
   expect([...noteSiblingFindings(state, "correctness", [{ ...finding, id: "F002", file: "src/adapter.py" }])]).toEqual([]);
+});
+
+test("#1594 review and mutation gates route pathless deliverables without hiding local defects", () => {
+  const bounds: RuntimeState["initiativeBounds"] = { featureId: "adapters", features: [
+    { id: "adapters", scope: "Adapters", paths: ["src/adapter.py"], testedBy: "entry" },
+    { id: "entry", scope: "Acceptance and docs", paths: ["tests/**", "docs/**"] },
+  ] };
+  const base = { id: "F001", kind: "missing" as const, severity: "medium" as const, requirementIds: [], criterionIds: [], file: null, symbol: null, evidenceIds: [], claim: "Acceptance tests have not been delivered", impact: "Missing coverage", suggestedFix: "Supply adapter tests" };
+  for (const finding of [base,
+    { ...base, claim: "Missing tests/test_x.py", suggestedFix: "Deliver coverage" },
+    { ...base, claim: "Missing documentation", suggestedFix: "Write docs/commands.md" },
+    { ...base, repro: { executable: "python", args: ["tests/test_x.py"], actual: "missing", expected: "ready" } },
+  ]) expect(ownerOfFinding(finding, bounds)?.id).toBe("entry");
+  // Give the current feature its own tests/docs so kind inference cannot mask a path-parser bug.
+  const withLocalTargets = { ...bounds, features: [{ ...bounds.features[0]!, paths: ["src/adapter.py", "tests/local.py", "docs/local.md"] }, bounds.features[1]!] };
+  for (const finding of [
+    { ...base, claim: "Missing tests/test_x.py", suggestedFix: "Deliver coverage" },
+    { ...base, claim: "Acceptance is incomplete", suggestedFix: "Update docs/commands.md" },
+    { ...base, claim: "Acceptance script is incomplete", suggestedFix: "Fix the script", repro: { executable: "python", args: ["tests/test_x.py"], actual: "missing", expected: "ready" } },
+    { ...base, claim: "Missing .\\tests\\test_x.py", suggestedFix: "Deliver coverage" },
+  ]) expect(ownerOfFinding(finding, withLocalTargets)?.id).toBe("entry");
+  expect(ownerOfFinding({ ...base, file: "src/adapter.py" }, bounds)).toBeUndefined();
+  expect(ownerOfFinding({ ...base, claim: "src/adapter.py and tests/test_x.py disagree" }, bounds)).toBeUndefined();
+  expect(ownerOfFinding({ ...base, kind: "correctness", claim: "The adapter returns the wrong value", suggestedFix: "Fix the calculation" }, bounds)).toBeUndefined();
+  expect(ownerOfFinding(base, { ...bounds, features: [{ ...bounds.features[0]!, paths: ["src/**"] }, bounds.features[1]!] })).toBeUndefined();
+  expect(ownerOfFinding(base, { ...bounds, features: [{ ...bounds.features[0]!, paths: ["src/*/adapter.py"] }, bounds.features[1]!] })).toBeUndefined();
+  expect(ownerOfFinding(base, { ...bounds, features: [{ ...bounds.features[0]!, testedBy: undefined }, bounds.features[1]!, { id: "other", scope: "Other tests", paths: ["test/**"] }] })).toBeUndefined();
 });
