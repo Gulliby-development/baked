@@ -638,7 +638,8 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   assumptions, shown at approval; only questions without a safe default wait for you. Default: the
   policy's clarification, otherwise ask
   --rows-as-data on lets the host write audited JSON rows and Bun/pytest parameterized tests;
-  off is the default. The agent writes the harness.
+  off is the default. The agent writes the harness. Requires an analyze stage; otherwise ignored
+  with a warning and the agent writes ordinary tests.
   --test-integrity warn records test gaming in a task's diff (deleted, skipped or weakened tests,
   suppressions, special cases for test inputs) instead of sending it to a repair. Default: the
   policy's testIntegrity, otherwise block
