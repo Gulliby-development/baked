@@ -41,6 +41,7 @@ BAKED is a TypeScript coding agent with an OpenTUI/React terminal UI and a headl
 - Preserve access controls, approval callbacks, secret handling, and coordination when changing tools.
 - Keep comments focused on non-obvious intent. Keep documentation technical: setup, behavior, architecture, troubleshooting, and development.
 - Preserve user changes already present in the working directory.
+- Hot harness modules ([`.github/hot-modules.json`](.github/hot-modules.json): cost forecast, sizing, cap growth, auto-approval, provider timers, scheduler retry) follow an error budget ([docs/bench-loop.md](docs/bench-loop.md#hot-modules)): at most one behavior change per hot module per bench round, and after a round with two or more stops caused by fresh fixes only reverts and regression fixes in those modules until a round passes without one. A pull request that changes one is labelled `hot-module` and runs the module's tests and the forecast replay on their own. A module that shows two escapes in a month (`bun scripts/hot-modules.ts escape`) is added to the list in the same pull request as its fix; a new file of a listed module's computation joins that module's `paths`.
 - Provider names in runtime code (Claude, OpenAI, Codex, GitHub Copilot, GitHub Models) describe supported integrations. Do not rename them when editing these instructions or other contributor documentation.
 
 ## Language
