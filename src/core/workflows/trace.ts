@@ -136,6 +136,7 @@ export interface TraceExport {
 export interface RecordingEntry {
   runId: string;
   featureId: string;
+  workflowId: string;
   status: string;
   reason: string;
   /** The Git commit of the run's first workspace snapshot: the tree a replay starts from. */
@@ -161,8 +162,14 @@ export function exportRecordings(
   const db = new Database(source, { readonly: true });
   try {
     const runs = db
-      .query("SELECT id, feature_id, status, reason FROM runs ORDER BY created_at")
-      .all() as { id: string; feature_id: string; status: string; reason: string }[];
+      .query("SELECT id, feature_id, status, reason, definition_json FROM runs ORDER BY created_at")
+      .all() as {
+      id: string;
+      feature_id: string;
+      status: string;
+      reason: string;
+      definition_json: string;
+    }[];
     const keep = options.runIds ? new Set(options.runIds) : null;
     const entries: RecordingEntry[] = [];
     mkdirSync(outDir, { recursive: true });
@@ -194,6 +201,7 @@ export function exportRecordings(
       entries.push({
         runId: run.id,
         featureId: run.feature_id,
+        workflowId: (JSON.parse(run.definition_json) as { id?: string }).id ?? "",
         status: run.status,
         reason: run.reason,
         gitHead: head?.git_head ?? null,
