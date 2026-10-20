@@ -1,0 +1,19 @@
+{
+  "files": {
+    "src/main/kotlin/Sum.kt": "fun sum(a: Int, b: Int): Int {\n    TODO()\n}\n",
+    "src/main/kotlin/SumSpec.kt": "class SumSpec\n",
+    "build.gradle.kts": "dependencies {\n    implementation(\"com.squareup.okio:okio:3.9.0\")\n}\n"
+  },
+  "expected": {
+    "tests": [
+      "src/main/kotlin/SumSpec.kt"
+    ],
+    "manifests": null,
+    "dependencies": [
+      "build.gradle.kts: maven com.squareup.okio:okio"
+    ],
+    "placeholders": [
+      "src/main/kotlin/Sum.kt:2"
+    ]
+  }
+}

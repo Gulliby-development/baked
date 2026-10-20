@@ -1,0 +1,29 @@
+{
+  "id": "rust-rle",
+  "language": "rust",
+  "toolchain": "cargo",
+  "requires": [
+    "cargo"
+  ],
+  "allowedPaths": [
+    "src/**",
+    "tests/**",
+    "README.md"
+  ],
+  "checks": [
+    {
+      "id": "cargo-test",
+      "executable": "cargo",
+      "args": [
+        "test",
+        "--quiet"
+      ],
+      "fix": {
+        "executable": "cargo",
+        "args": [
+          "fmt"
+        ]
+      }
+    }
+  ]
+}

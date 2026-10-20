@@ -1,0 +1,22 @@
+{
+  "id": "lua-trim",
+  "language": "lua",
+  "toolchain": "lua",
+  "requires": [
+    "lua"
+  ],
+  "allowedPaths": [
+    "src/**",
+    "tests/**",
+    "README.md"
+  ],
+  "checks": [
+    {
+      "id": "lua-tests",
+      "executable": "lua",
+      "args": [
+        "tests/run.lua"
+      ]
+    }
+  ]
+}

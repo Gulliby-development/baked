@@ -1,0 +1,52 @@
+{
+  "_doc": "Hot harness modules (#1718, #1723): code where a fix has repeatedly caused the next bench stop. One list for the error budget rule in AGENTS.md, the hot-module label on pull requests and the weekly mutation run. A module's tests are the test files that import one of its paths. Add a module (or a path) in the same PR as a fix when it shows two escapes in a month (`bun scripts/hot-modules.ts escape`). See docs/bench-loop.md#hot-modules.",
+  "modules": [
+    {
+      "id": "cost-forecast",
+      "title": "Cost forecast and pricing",
+      "paths": [
+        "src/core/workflows/cost-forecast.ts",
+        "src/core/workflows/forecast-price.ts",
+        "src/core/workflows/stage-price.ts",
+        "src/core/workflows/plan-cost.ts"
+      ]
+    },
+    {
+      "id": "sizing",
+      "title": "Sizing and estimates",
+      "paths": [
+        "src/core/workflows/sizing.ts",
+        "src/core/workflows/estimate.ts",
+        "src/core/workflows/initiatives/estimate.ts"
+      ]
+    },
+    {
+      "id": "cap-growth",
+      "title": "Budgets, cost caps and host growth",
+      "paths": [
+        "src/core/workflows/budget.ts",
+        "src/core/workflows/host-growth.ts",
+        "src/core/workflows/cost-tolerance.ts"
+      ]
+    },
+    {
+      "id": "auto-approval",
+      "title": "Auto-approval",
+      "paths": ["src/core/workflows/auto-approval.ts"]
+    },
+    {
+      "id": "provider-timers",
+      "title": "Provider timers and stall limits",
+      "paths": [
+        "src/core/llm/provider-health.ts",
+        "src/core/workflows/stall.ts",
+        "src/core/workflows/execution-clock.ts"
+      ]
+    },
+    {
+      "id": "scheduler-retry",
+      "title": "Scheduler retry and provider circuit",
+      "paths": ["src/core/workflows/retry.ts"]
+    }
+  ]
+}

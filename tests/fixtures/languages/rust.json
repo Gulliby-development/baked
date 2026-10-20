@@ -1,0 +1,21 @@
+{
+  "files": {
+    "src/lib.rs": "pub fn sum(a: i32, b: i32) -> i32 {\n    todo!()\n}\n",
+    "src/tests.rs": "use super::*;\n",
+    "Cargo.toml": "[package]\nname = \"fixture\"\n\n[dependencies]\nserde = \"1\"\n"
+  },
+  "expected": {
+    "tests": [
+      "src/tests.rs"
+    ],
+    "manifests": [
+      "Cargo.toml"
+    ],
+    "dependencies": [
+      "Cargo.toml: crates serde"
+    ],
+    "placeholders": [
+      "src/lib.rs:2"
+    ]
+  }
+}

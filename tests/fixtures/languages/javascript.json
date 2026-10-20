@@ -1,0 +1,19 @@
+{
+  "files": {
+    "src/sum.js": "export function sum(a, b) {\n  throw new Error(\"not implemented\");\n}\n",
+    "src/sum.spec.js": "import { sum } from './sum.js';\n",
+    "package.json": "{\"name\": \"fixture\", \"devDependencies\": {\"vitest\": \"^2.0.0\"}}"
+  },
+  "expected": {
+    "tests": null,
+    "manifests": [
+      "package.json"
+    ],
+    "dependencies": [
+      "package.json: npm vitest"
+    ],
+    "placeholders": [
+      "src/sum.js:2"
+    ]
+  }
+}
