@@ -1644,9 +1644,54 @@ export class WorkflowStore {
     return { spentUsd: spent ?? 0, reservedUsd };
   }
   /**
-   * Refuses a model call the dollar cap (`maxCostUsd`, plus its `costTolerance`) no longer covers:
-   * the cost spent, the cost other open attempts reserve and this call's tokens at its stage's rate.
-   * A model without a price is refused too, so it can never spend outside the cap.
+   * The dollar cap's decision on a model call of `tokens` on `stepId` (#1740): `pass` when the cost
+   * spent, the cost other open attempts reserve and this call's tokens at `rate` (its stage's,
+   * `callCostRate`) fit the cap and its tolerance; `grow` when the cap grew to cover them
+   * (`call-growth`); `stop` otherwise. Null without a cap. The bench-trace replay runs it at every
+   * recorded attempt.
+   */
+  costCapDecision(
+    runId: string,
+    stepId: string,
+    policy: RunPolicy,
+    model: string,
+    tokens: number,
+    attemptId?: string,
+    rate: typeof callCostRate = callCostRate,
+  ): {
+    decision: "pass" | "grow" | "stop";
+    spentUsd: number;
+    reservedUsd: number;
+    requestedUsd: number;
+    ceilingUsd: number;
+  } | null {
+    const cap = costCeilingUsd(this, runId, policy);
+    if (cap === null) return null;
+    const prices = runPrices(this, runId);
+    const { spentUsd, reservedUsd } = this.costUsage(runId, attemptId, prices);
+    const requestedUsd =
+      tokens *
+      rate(this, runId, costStageOf(this, runId, stepId, prices.steps), model, prices.samples);
+    const needed = spentUsd + reservedUsd + requestedUsd;
+    const decision =
+      needed <= cap
+        ? "pass"
+        : growCostCapToForecast(
+              this,
+              runId,
+              policy,
+              needed,
+              costToleranceOf(this, runId, policy),
+              "call-growth",
+            )
+          ? "grow"
+          : "stop";
+    return { decision, spentUsd, reservedUsd, requestedUsd, ceilingUsd: cap };
+  }
+  /**
+   * Refuses a model call the dollar cap (`maxCostUsd`, plus its `costTolerance`) no longer covers
+   * (`costCapDecision`). A model without a price is refused too, so it can never spend outside the
+   * cap.
    */
   private assertCostFits(
     runId: string,
@@ -1656,49 +1701,23 @@ export class WorkflowStore {
     tokens: number,
     attemptId?: string,
   ): void {
-    const cap = costCeilingUsd(this, runId, policy);
-    if (cap === null) return;
+    if (costCeilingUsd(this, runId, policy) === null) return;
     const maxCostUsd = currentCostCap(this, runId, policy);
     if (findPricing(model) === null)
       throw stopFault("cost", `No price is known for ${model}, so the run's cost cap cannot hold`, {
         model,
         maxCostUsd,
       });
-    const prices = runPrices(this, runId);
-    const { spentUsd, reservedUsd } = this.costUsage(runId, attemptId, prices);
-    const requestedUsd =
-      tokens *
-      callCostRate(
-        this,
-        runId,
-        costStageOf(this, runId, stepId, prices.steps),
-        model,
-        prices.samples,
-      );
-    if (
-      spentUsd + reservedUsd + requestedUsd > cap &&
-      !growCostCapToForecast(
-        this,
-        runId,
-        policy,
-        spentUsd + reservedUsd + requestedUsd,
-        costToleranceOf(this, runId, policy),
-        "call-growth",
-      )
-    )
-      throw stopFault(
-        "cost",
-        cap > (maxCostUsd ?? cap)
-          ? "The next model call would pass the run's cost ceiling (its cap and tolerance)"
-          : "The next model call would pass the run's cost cap",
-        {
-          spentUsd,
-          reservedUsd,
-          requestedUsd,
-          maxCostUsd,
-          ceilingUsd: cap,
-        },
-      );
+    const checked = this.costCapDecision(runId, stepId, policy, model, tokens, attemptId);
+    if (!checked || checked.decision !== "stop") return;
+    const { spentUsd, reservedUsd, requestedUsd, ceilingUsd } = checked;
+    throw stopFault(
+      "cost",
+      ceilingUsd > (maxCostUsd ?? ceilingUsd)
+        ? "The next model call would pass the run's cost ceiling (its cap and tolerance)"
+        : "The next model call would pass the run's cost cap",
+      { spentUsd, reservedUsd, requestedUsd, maxCostUsd, ceilingUsd },
+    );
   }
   /**
    * What the run's open attempts reserve in dollars (`costUsage`), for a run with a cost cap and

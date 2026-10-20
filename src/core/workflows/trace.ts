@@ -10,11 +10,13 @@ import {
 } from "../llm/provider-health.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
+import { callCostRate } from "./budget.js";
 import { assertForecastFits, costForecast } from "./cost-forecast.js";
 import { WorkflowFault } from "./errors.js";
 import { type ShareGateRecord, shareShortfall } from "./initiatives/service.js";
 import { recordingOf } from "./model-recording.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
+import { costStageOf } from "./stage-price.js";
 import { WorkflowStore } from "./store.js";
 
 /**
@@ -498,11 +500,36 @@ export interface RunReplay {
   removedStops: number;
   /** The forecast over what the run finally cost, at the first forecast past 25%, 50% and 75% of it. */
   ratios: { at: number; ratio: number }[];
+  /** Each recorded attempt's reservation against the current per-call cost cap (#1740). */
+  costCap: CostCapBoundary[];
+  /** Attempts the recording started that the current cost cap refuses. */
+  newCostStops: number;
   /** Each recorded model call against the current first-response deadline. */
   firstByte: FirstByteBoundary[];
   /** Calls the current deadline would end as an outage that got their answer in the recording. */
   newFirstByteStops: number;
 }
+
+/**
+ * A recorded attempt's reservation against the per-call cost cap (`costCapDecision`, #1740): every
+ * recorded attempt passed it, growing the cap or not, so a `stop` is a refusal the round did not
+ * see.
+ */
+export interface CostCapBoundary {
+  attemptId: string;
+  at: number;
+  stage: string;
+  model: string;
+  tokens: number;
+  replayed: "pass" | "grow" | "stop";
+  requestedUsd: number;
+  spentUsd: number;
+  reservedUsd: number;
+  ceilingUsd: number;
+}
+
+/** A call's dollars per token; `callCostRate` unless a test passes another. */
+export type CallRate = typeof callCostRate;
 
 /** The first-response deadline of a call; `providerFirstByteMs` unless a test passes another. */
 export type FirstByteLimit = (provider: string, context: CallReasoning) => number;
@@ -818,6 +845,7 @@ const decisionOf = (
 function replayRun(
   store: WorkflowStore,
   runId: string,
+  callRate: CallRate = callCostRate,
 ): Omit<RunReplay, "firstByte" | "newFirstByteStops"> | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -845,9 +873,16 @@ function replayRun(
     .sort((a, b) => b.createdAt - a.createdAt);
   const priced = db
     .query(
-      "SELECT rowid AS r, id, started_at FROM attempts WHERE run_id=? AND model_id IS NOT NULL ORDER BY started_at, rowid",
+      "SELECT rowid AS r, id, step_id, model_id, reserved_tokens, started_at FROM attempts WHERE run_id=? AND model_id IS NOT NULL ORDER BY started_at, rowid",
     )
-    .all(runId) as { r: number; id: string; started_at: number }[];
+    .all(runId) as {
+    r: number;
+    id: string;
+    step_id: string;
+    model_id: string;
+    reserved_tokens: number;
+    started_at: number;
+  }[];
   if (!priced.length) return null;
   const capped =
     final.maxCostUsd !== null || revisions.some((r) => typeof r.previous.maxCostUsd === "number");
@@ -888,6 +923,7 @@ function replayRun(
     ...(JSON.parse(e.payload_json) as { stepId: string; status?: string }),
   }));
   const boundaries: ReplayBoundary[] = [];
+  const costCap: CostCapBoundary[] = [];
   for (let i = priced.length - 1; i >= 0; i--) {
     const attempt = priced[i];
     if (!attempt) continue;
@@ -936,6 +972,36 @@ function replayRun(
       );
     })();
     const policy = policyAt(t);
+    // The attempt's reservation against the cost cap, as `reserve` checked it before the
+    // attempt started. Its tokens are the largest the attempt reserved (`expandReservation`
+    // checks a raise the same way, later and with more spent). A growth it writes is undone
+    // before the forecast replay.
+    const checked = store.costCapDecision(
+      runId,
+      attempt.step_id,
+      structuredClone(policy),
+      attempt.model_id,
+      attempt.reserved_tokens,
+      attempt.id,
+      callRate,
+    );
+    if (checked)
+      costCap.unshift({
+        attemptId: attempt.id,
+        at: t,
+        stage: costStageOf(store, runId, attempt.step_id),
+        model: attempt.model_id,
+        tokens: attempt.reserved_tokens,
+        replayed: checked.decision,
+        requestedUsd: checked.requestedUsd,
+        spentUsd: checked.spentUsd,
+        reservedUsd: checked.reservedUsd,
+        ceilingUsd: checked.ceilingUsd,
+      });
+    db.transaction(() => {
+      db.run("DELETE FROM artifacts WHERE run_id=? AND created_at>?", [runId, t]);
+      db.run("UPDATE runs SET policy_json=? WHERE id=?", [canonical(policy), runId]);
+    })();
     const forecast = costForecast(store, runId, policy);
     let replayed: ForecastDecision = "pass";
     const before = store.artifacts(runId).length;
@@ -983,13 +1049,15 @@ function replayRun(
     newGrowth: boundaries.filter((b) => b.replayed === "grow" && b.recorded === "pass").length,
     removedStops: boundaries.filter((b) => b.recorded === "stop" && b.replayed !== "stop").length,
     ratios,
+    costCap,
+    newCostStops: costCap.filter((b) => b.replayed === "stop").length,
   };
 }
 
 /** Replays the forecast gate of every run in the trace at `path` with a dollar cap. */
 export function replayTrace(
   path: string,
-  options: { firstByteLimit?: FirstByteLimit; shareGate?: ShareGate } = {},
+  options: { firstByteLimit?: FirstByteLimit; shareGate?: ShareGate; callRate?: CallRate } = {},
 ): TraceReplay {
   const { store, dispose } = openTrace(path);
   try {
@@ -1003,7 +1071,7 @@ export function replayTrace(
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
-      const replay = replayRun(store, runId) ?? {
+      const replay = replayRun(store, runId, options.callRate) ?? {
         runId,
         featureId: store.run(runId).feature_id,
         finalUsd: null,
@@ -1012,6 +1080,8 @@ export function replayTrace(
         newGrowth: 0,
         removedStops: 0,
         ratios: [],
+        costCap: [],
+        newCostStops: 0,
       };
       if (!replay.boundaries.length && !firstByte.length) continue;
       runs.push({

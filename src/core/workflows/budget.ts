@@ -196,14 +196,38 @@ export function remainingCostRate(
   runId: string,
   prices: RunPrices = runPrices(store, runId),
 ): number {
-  return callCostRate(store, runId, "implement", null, prices.samples);
+  return callCostRate(
+    store,
+    runId,
+    "implement",
+    null,
+    prices.samples,
+    sizedTaskModel(store, runId),
+  );
+}
+
+/**
+ * The model the latest plan sizing priced the tasks for, or null before one. Before a task attempt
+ * is priced, the remaining tokens are priced on it at the task stage's mix (#1740).
+ */
+function sizedTaskModel(store: WorkflowStore, runId: string): string | null {
+  const latest = store
+    .artifacts(runId)
+    .filter((a) => a.kind === "sizing" && a.logical_path.startsWith("sizing/plan-"))
+    .at(-1);
+  if (!latest) return null;
+  const model = (JSON.parse(store.readArtifact(runId, latest.id)) as { model?: unknown }).model;
+  return typeof model === "string" ? model : null;
 }
 
 /**
  * Price a call from finished attempts of its owning stage, preserving its cache mix on the
- * requested model. Without stage samples, use the blended run price, then the model's input
- * price. With no model, return the stage's paid average for token affordability. Callers that
- * price several calls of one run pass its `forecastSamples` once (#1647).
+ * requested model. Without stage samples, a priced model's call is priced at the stage's own mix
+ * (`forecastRate`, `stageMix`): the blended run price carried planning's uncached one-step calls
+ * into the first task call, which caches most of its input (#1740, as #1712 for the plan price).
+ * An unpriced model falls back to the blended run price, then nothing. With no model, return the
+ * stage's paid average for token affordability; `unsampledModel` prices a stage without samples
+ * there. Callers that price several calls of one run pass its `forecastSamples` once (#1647).
  */
 export function callCostRate(
   store: WorkflowStore,
@@ -211,6 +235,7 @@ export function callCostRate(
   stage: string,
   model: string | null = null,
   runSamples: AttemptUsageRow[] = forecastSamples(store, [runId]),
+  unsampledModel: string | null = null,
 ): number {
   const samples = runSamples.filter(
     (a) => a.status !== "running" && a.costUsd !== null && (a.usedTokens ?? 0) > 0,
@@ -221,6 +246,9 @@ export function callCostRate(
     if (model !== null) return forecastRate(samples, stage, model) ?? 0;
     return matching.reduce((sum, a) => sum + (a.costUsd ?? 0), 0) / tokens;
   }
+  const priced = model ?? unsampledModel;
+  const own = priced === null ? null : forecastRate(samples, stage, priced);
+  if (own !== null) return own;
   const run = store.run(runId);
   const spentUsd =
     run.estimated_cost_microusd !== null

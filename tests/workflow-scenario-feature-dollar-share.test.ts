@@ -5,7 +5,7 @@ import { desktopRecoveryText } from "../apps/desktop/src/renderer/client/remedie
 import { tuiRecoveryText } from "../src/components/workflow/remedies.js";
 import { startApiServer } from "../src/core/api/server.js";
 import { canonical, hashBytes, hashJson } from "../src/core/specs/hash.js";
-import { assertAttemptFits, grownCostCap } from "../src/core/workflows/budget.js";
+import { assertAttemptFits, grownCostCap, remainingCostRate } from "../src/core/workflows/budget.js";
 import { costForecast } from "../src/core/workflows/cost-forecast.js";
 import type { InitiativePlan } from "../src/core/workflows/initiatives/plan.js";
 import { costGrowthLimit, featurePolicy, InitiativeService, type InitiativeView, rebaseView } from "../src/core/workflows/initiatives/service.js";
@@ -201,14 +201,16 @@ describe("scenario: feature dollars grow independently of tokens (#1625)", () =>
     store.setPolicy(run.runId, policy);
     const stale = structuredClone(policy);
     const step = store.beginStep(run.runId, "implement");
-    const first = store.reserve(run.runId, step, MODEL, 50_000, policy);
+    // The first implement calls are priced at the task mix ($1.44 per million on this model,
+    // #1740), so 100k tokens pass the $0.11 ceiling where 50k at the input price did.
+    const first = store.reserve(run.runId, step, MODEL, 100_000, policy);
     expect(policy.maxCostUsd!).toBeGreaterThan(0.1);
-    const second = store.reserve(run.runId, step, MODEL, 50_000, stale);
+    const second = store.reserve(run.runId, step, MODEL, 100_000, stale);
     store.expandReservation(run.runId, first, 200_000, policy);
     const stored = JSON.parse(store.run(run.runId).policy_json) as RunPolicy;
     expect(stored.maxCostUsd!).toBeLessThanOrEqual(1);
     expect(stored.maxTotalTokens).toBe(1_000_000);
-    expect(() => store.expandReservation(run.runId, second, 500_000, stale)).toThrow("cost ceiling");
+    expect(() => store.expandReservation(run.runId, second, 700_000, stale)).toThrow("cost ceiling");
     expect(() => store.reserve(run.runId, step, "unknown/model", 1, policy)).toThrow("No price is known");
     const fixed = { ...policy, maxCostUsd: 0.1, sizing: undefined };
     store.setPolicy(run.runId, fixed);
@@ -216,6 +218,17 @@ describe("scenario: feature dollars grow independently of tokens (#1625)", () =>
     expect(grownCostCap(fixed, 1_000_000, 10)).toBe(0.1);
     expect(grownCostCap(policy, 1_000_000, 10)).toBe(1);
     expect(grownCostCap({ ...policy, maxCostUsd: 0.07 }, policy.maxTotalTokens)).toBe(0.07);
+  });
+
+  test("before a task is priced, the remaining tokens are priced on the sized task model at the task mix (#1740)", async () => {
+    const fixture = workflowFixture(); cleanups.push(fixture.dispose);
+    const { runId } = await fixture.start();
+    const store = fixture.service.store;
+    // Nothing spent and no plan sizing: the blended price falls back to nothing.
+    expect(remainingCostRate(store, runId)).toBe(0);
+    store.transaction(() => store.artifact(runId, "sizing", "sizing/plan-1.json", canonical({ model: MODEL })));
+    // $3 input, $0.30 cache reads, $15 output at 15/80/5: $1.44 per million.
+    expect(remainingCostRate(store, runId)).toBeCloseTo(1.44e-6, 12);
   });
 
   test("an unpriced corrective at its token ceiling can use approved dollar growth before the affordability check", async () => {
