@@ -1,4 +1,5 @@
 import { rowFiles, rowsArtifact } from "../src/core/workflows/acceptance-rows.js";
+import { CALL_COST_MODELS, NEXT_CALL, perCallCostScenario } from "./helpers/per-call-cost-scenario.js";
 import { decoySamples, residualSamples, residualSpec } from "./helpers/criteria-residual-fixtures.js";
 import { evaluateAutoApproval, planScopeAdvice } from "../src/core/workflows/auto-approval.js";
 import { proseAfterRefusalScenario, refusalKinds } from "./helpers/prose-after-refusal-scenario.js";
@@ -1850,6 +1851,17 @@ describe("initiative start budget gate (#1605)", () => {
       expect(pictures.share?.tokens).toBeGreaterThanOrEqual(700_000);
       expect(view.features.reduce((sum, f) => sum + (f.share?.tokens ?? 0), 0)).toBeLessThanOrEqual(tokens);
     }
+  });
+});
+
+describe("per-call cost gate (#1630)", () => {
+  test.each(CALL_COST_MODELS)("%s reserves at the finished task price after expensive planning", async (model) => {
+    const { fixture, store, runId, policy, rate } = await perCallCostScenario(model);
+    try {
+      store.reserve(runId, store.beginStep(runId, "task-next"), model, NEXT_CALL, policy);
+      expect(store.costUsage(runId).reservedUsd).toBeCloseTo(NEXT_CALL * rate, 10);
+      expect(() => store.reserve(runId, store.beginStep(runId, "task-parallel"), model, NEXT_CALL, policy)).toThrow("cost ceiling");
+    } finally { await fixture.dispose(); }
   });
 });
 

@@ -6,7 +6,7 @@ import { findPricing } from "../llm/pricing.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { writeViaTemp } from "./atomic-write.js";
-import { costRate, growBudgetOnProgress, growCostCapToForecast } from "./budget.js";
+import { callCostRate, growBudgetOnProgress, growCostCapToForecast } from "./budget.js";
 import { costCeilingUsd, costToleranceOf, currentCostCap } from "./cost-tolerance.js";
 import { WorkflowFault } from "./errors.js";
 import type { PastRun } from "./estimate.js";
@@ -40,6 +40,7 @@ import {
   type WorkflowDefinition,
   type WorkflowEvent,
 } from "./schemas.js";
+import { costStageOf } from "./stage-price.js";
 import { DEFAULT_STALL_SETTINGS, touchProgress } from "./stall.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import { hostWritten } from "./task-graph.js";
@@ -1382,7 +1383,7 @@ export class WorkflowStore {
         (projected > policy.maxTotalTokens && !growBudgetOnProgress(this, runId, policy, projected))
       )
         throw new WorkflowFault("BUDGET_EXHAUSTED", "Run agent/token/time budget exhausted");
-      if (modelId) this.assertCostFits(runId, policy, modelId, tokens);
+      if (modelId) this.assertCostFits(runId, stepId, policy, modelId, tokens);
       this.assertBelowCheckpoint(runId, policy, row.token_usage + reserved + tokens);
       const id = newId();
       const ordinal = this.attempts(runId).filter((a) => a.step_id === stepId).length + 1;
@@ -1525,7 +1526,7 @@ export class WorkflowStore {
   }
   /**
    * The run's cost against its dollar cap: what finished attempts cost, and the tokens every
-   * other open attempt still reserves priced at the run's rate so far (`costRate`), so parallel
+   * other open attempt still reserves priced at its owning stage's rate (`callCostRate`), so parallel
    * attempts reserve against what is left instead of all starting on the same remainder.
    */
   costUsage(runId: string, attemptId?: string): { spentUsd: number; reservedUsd: number } {
@@ -1534,18 +1535,22 @@ export class WorkflowStore {
     const reservedUsd = this.attempts(runId)
       .filter((a) => !a.usage_complete && a.id !== attemptId && a.model_id !== null)
       .reduce(
-        (sum, a) => sum + a.reserved_tokens * costRate(spent, row.token_usage, a.model_id),
+        (sum, a) =>
+          sum +
+          a.reserved_tokens *
+            callCostRate(this, runId, costStageOf(this, runId, a.step_id), a.model_id),
         0,
       );
     return { spentUsd: spent ?? 0, reservedUsd };
   }
   /**
    * Refuses a model call the dollar cap (`maxCostUsd`, plus its `costTolerance`) no longer covers:
-   * the cost spent, the cost other open attempts reserve and this call's tokens at the run's rate.
+   * the cost spent, the cost other open attempts reserve and this call's tokens at its stage's rate.
    * A model without a price is refused too, so it can never spend outside the cap.
    */
   private assertCostFits(
     runId: string,
+    stepId: string,
     policy: RunPolicy,
     model: string,
     tokens: number,
@@ -1561,9 +1566,8 @@ export class WorkflowStore {
         { reason: "cost", model, maxCostUsd },
       );
     const { spentUsd, reservedUsd } = this.costUsage(runId, attemptId);
-    const row = this.run(runId);
     const requestedUsd =
-      tokens * costRate(this.costOf(runId, row.estimated_cost_microusd), row.token_usage, model);
+      tokens * callCostRate(this, runId, costStageOf(this, runId, stepId), model);
     if (
       spentUsd + reservedUsd + requestedUsd > cap &&
       !growCostCapToForecast(
@@ -1645,8 +1649,9 @@ export class WorkflowStore {
             maxTotalTokens: policy.maxTotalTokens,
           },
         );
-      const model = this.attempts(runId).find((a) => a.id === attemptId)?.model_id ?? null;
-      if (model) this.assertCostFits(runId, policy, model, tokens, attemptId);
+      const attempt = this.attempts(runId).find((a) => a.id === attemptId);
+      if (attempt?.model_id)
+        this.assertCostFits(runId, attempt.step_id, policy, attempt.model_id, tokens, attemptId);
       this.assertBelowCheckpoint(runId, policy, run.token_usage + reserved + tokens);
       this.db.run(
         "UPDATE attempts SET reserved_tokens=MAX(reserved_tokens,?) WHERE run_id=? AND id=? AND status='running'",
