@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
+import { agentTaskCount, planScopeAdvice } from "../src/core/workflows/auto-approval.js";
 import { featurePolicy } from "../src/core/workflows/initiatives/service.js";
 import { InitiativeSettingsSchema } from "../src/core/workflows/initiatives/store.js";
 import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
@@ -36,7 +37,7 @@ class ScriptedExecutor extends FixtureExecutor {
   revisions = 0;
   analyses = 0;
   sizingNotes: string[] = [];
-  constructor(root: string, private count: number, private stop: AbortController, private outside: boolean, private hostTests: boolean, private unrelated: boolean) { super(root); }
+  constructor(root: string, private count: number, private stop: AbortController, private outside: boolean, private hostTests: boolean, private unrelated: boolean, private marker = false) { super(root); }
 
   override async execute(request: ExecutionRequest) {
     const output = request.profile.output;
@@ -73,6 +74,8 @@ class ScriptedExecutor extends FixtureExecutor {
   private original() {
     const tasks = initial(this.count);
     if (this.hostTests) tasks[1] = task("T002", ["tests/a.test.ts", "tests/b.test.ts"]);
+    // An empty package marker the host writes from its content: no agent attempt, no tokens (#1658).
+    if (this.marker) tasks.push({ ...task("T100", []), title: "Create package initializer", writes: [{ path: "src/__init__.py", action: "create", content: "" }] });
     return tasks;
   }
 
@@ -86,7 +89,7 @@ class ScriptedExecutor extends FixtureExecutor {
   }
 }
 
-async function scenario(revision?: "patch", initiative = false, count = 8, outside = false, hostTests = false, unrelated = false) {
+async function scenario(revision?: "patch", initiative = false, count = 8, outside = false, hostTests = false, unrelated = false, marker = false) {
   const controller = new AbortController();
   const base: RunPolicy = {
     ...fixturePolicy, revision, clarification: "assume", sizing: { maxAttemptTokens: 10_000 },
@@ -96,10 +99,10 @@ async function scenario(revision?: "patch", initiative = false, count = 8, outsi
   const settings = InitiativeSettingsSchema.parse({ workflowId: "sdd", basePolicy: base, featureAutoApproval: { maxTasks: 8, maxFiles: 20 }, budget: null, model: null, ownerLabel: "test" });
   // Literal paths keep boundaryLimits at 8 tasks; a glob would raise the limit to 500.
   const policy = initiative ? featurePolicy(settings, { tokens: 2_000_000, calls: 200, activeMs: 3_600_000 }, {
-    id: "fixture", title: "Values", boundary: { scope: "Values", paths: [...code, ...values] }, contract: "Values exist", dependsOn: [], mandatory: true,
+    id: "fixture", title: "Values", boundary: { scope: "Values", paths: [...code, ...values, ...(marker ? ["src/__init__.py"] : [])] }, contract: "Values exist", dependsOn: [], mandatory: true,
   }, false) : base;
   // Several tasks share each boundary path, so the feature still has eight tasks before sizing.
-  const fixture = workflowFixture({ policy, executor: (root) => new ScriptedExecutor(root, count, controller, outside, hostTests, unrelated) });
+  const fixture = workflowFixture({ policy, executor: (root) => new ScriptedExecutor(root, count, controller, outside, hostTests, unrelated, marker) });
   cleanups.push(fixture.dispose);
   const run = await fixture.start();
   await fixture.service.drive(run.runId, controller.signal);
@@ -108,7 +111,7 @@ async function scenario(revision?: "patch", initiative = false, count = 8, outsi
   const report = store.latestArtifact(run.runId, "sizing/plan-0.json");
   expect(report).toBeDefined();
   expect(JSON.parse(store.readArtifact(run.runId, report!.id)).decision).toBe("split-tasks");
-  expect(store.state(run.runId).graph?.tasks).toHaveLength(count + (hostTests ? 3 : 2));
+  expect(store.state(run.runId).graph?.tasks).toHaveLength(count + (hostTests ? 3 : 2) + (marker ? 1 : 0));
   if (hostTests) {
     const first = store.artifacts(run.runId).find((a) => a.logical_path === "tasks.json");
     expect(JSON.parse(store.readArtifact(run.runId, first!.id)).tasks).toHaveLength(count + 1);
@@ -166,5 +169,42 @@ describe("scenario: a sizing replan preserves the approval task count (#1627)", 
     expect(approval?.status).toBe("pending");
     expect(body.autoApproval.declined).toContain("Limits: 10 tasks exceed 8");
     expect(state.hostSplitTasks).toBe(0);
+  });
+});
+
+// R50, expenses-py (#1658): eight agent tasks and an empty `__init__.py` the host writes were
+// declined as "9 tasks exceed 8", and the plan waited 11.3 h for a person.
+describe("scenario: host-written tasks do not count against the task limit (#1658)", () => {
+  for (const revision of [undefined, "patch"] as const) {
+    test(`eight agent tasks and an empty package marker keep limits approval, revision=${revision ?? "full"}`, async () => {
+      const { approval, body } = await scenario(revision, false, 8, false, false, false, true);
+      expect(body.autoApproval.declined ?? []).toEqual([]);
+      expect(approval).toMatchObject({ status: "accepted", actor: "auto-approval" });
+      expect(body.autoApproval.mode).toBe("limits");
+    });
+  }
+
+  test("an initiative feature with a package marker keeps tiered approval", async () => {
+    const { approval, body } = await scenario("patch", true, 8, false, false, false, true);
+    expect(body.autoApproval.declined ?? []).toEqual([]);
+    expect(approval).toMatchObject({ status: "accepted", actor: "auto-approval" });
+  });
+
+  test("nine agent tasks still need a person, and the reason says the marker was not counted", async () => {
+    const { approval, body } = await scenario(undefined, false, 9, false, false, false, true);
+    expect(approval?.status).toBe("pending");
+    expect(body.autoApproval.declined).toContain("Limits: 9 tasks exceed 8 (1 host-written not counted)");
+  });
+
+  test("the planner's advice counts agent tasks only", () => {
+    const policy: RunPolicy = {
+      ...fixturePolicy,
+      autoApproval: { renewal: false, limits: { maxTasks: 8, maxFiles: 20, allowedPaths: ["src/**", "value-*.txt"], allowDelete: false, allowNewDependencies: false, maxTotalTokens: fixturePolicy.maxTotalTokens } },
+    };
+    const marker: Task = { ...task("T100", []), writes: [{ path: "src/__init__.py", action: "create", content: "" }] };
+    const graph = (count: number): TaskGraph => ({ schemaVersion: 1, featureId: "fixture", revision: 1, specHash: "a", planHash: "b", tasks: [...initial(count), marker] });
+    expect(agentTaskCount(graph(8))).toEqual({ agent: 8, host: 1 });
+    expect(planScopeAdvice(policy, graph(8))).toEqual([]);
+    expect(planScopeAdvice(policy, graph(9))[0]).toContain("9 tasks exceed 8 (1 host-written not counted)");
   });
 });
