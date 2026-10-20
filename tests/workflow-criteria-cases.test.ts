@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { criterionCases, isCheckCommand, missingCases, normalizeLiteral, testsHold } from "../src/core/verification/criteria-cases.js";
 import { cellSamples, cellSpec, omittedCellInput, withoutCellInput } from "./helpers/criteria-cell-fixtures.js";
+import { caseEvidence } from "../src/core/verification/criteria-evidence.js";
 import type { Spec } from "../src/core/workflows/schemas.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
@@ -14,6 +15,44 @@ import { fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 // test task's criteria against its test files inside the attempt.
 
 const cleanups: (() => void | Promise<void>)[] = [];
+
+describe("literal-cell residual boundaries (#1629)", () => {
+  test("keeps numeric inputs and explicitly introduced path values, but drops written scope files", () => {
+    const spec = { criteria: [{ ...fixtureSpec.criteria[0]!,
+      given: 'modify `README.md`; at least `30` tests; input "src/example.rs"',
+      when: 'at least "22" tests; input "30"', then: 'Input | Expected\n42 | answer' }] };
+    const task = { criterionIds: ["AC-001"], writes: [{ path: "README.md", action: "modify" as const }] };
+    expect(criterionCases(spec, task).map((c) => c.literal)).toEqual(["src/example.rs", "30", "42"]);
+  });
+
+  test("retains field values that are actual inputs rather than expected properties", () => {
+    const spec = { criteria: [{ ...fixtureSpec.criteria[0]!, then: 'Input | Expected\nx=42 | accepted\nmagic=true | accepted' }] };
+    expect(criterionCases(spec, { criterionIds: ["AC-001"] }).map((c) => c.literal)).toEqual(["42", "true"]);
+  });
+
+  test("formatted lists still require the right bytes, signs and candidate text", () => {
+    expect(testsHold('check([0x65, 0x63, 0xFF, 0x0A])', "[0x65,0x63,0xFF,0x0A]")).toBe(true);
+    expect(testsHold('check([0x65, 0x63, 0xFE, 0x0A])', "[0x65,0x63,0xFF,0x0A]")).toBe(false);
+    expect(testsHold("run(['ls', 'a.txt'])", '["ls","a.txt"]')).toBe(true);
+    expect(testsHold("run(['ls', 'b.txt'])", '["ls","a.txt"]')).toBe(false);
+    expect(testsHold('assert_eq!(ShError("oops".into()).0, "oops");', 'ShError( "oops".into() ).0')).toBe(true);
+    expect(testsHold('assert_eq!(ShError("oops".into()).1, "oops");', 'ShError( "oops".into() ).0')).toBe(false);
+    expect(testsHold('usage("single|double")', 'usage: tool quote [--style single | double] ...')).toBe(false);
+    expect(testsHold('assert_eq!(out, "usage: tool quote [--style single|double] ...")', 'usage: tool quote [--style single | double] ...')).toBe(true);
+  });
+
+  test("filters only diagnostic arguments, retaining expected strings and other uses", () => {
+    const rust = 'assert_eq!(actual(), "--case-42", "missing --other-9");';
+    const evidence = caseEvidence("tests/cases.rs", rust);
+    expect(testsHold(evidence, "--case-42")).toBe(true);
+    expect(testsHold(evidence, "--other-9")).toBe(false);
+    expect(testsHold(caseEvidence("tests/cases.rs", 'assert!(check("--case-42"), "--case-42");'), "--case-42")).toBe(true);
+    expect(testsHold(caseEvidence("tests/cases.rs", 'let input = "--case-42"; assert!(ok, "--case-42");'), "--case-42")).toBe(true);
+    expect(testsHold(caseEvidence("tests/cases.rs", 'assert!(\ncheck((1, 2), &[3, 4]),\n"--case-42"\n);'), "--case-42")).toBe(false);
+    const json = '[{"input": "assert!(true, \\\"--case-42\\\")"}]';
+    expect(caseEvidence("tests/rows.json", json)).toBe(json);
+  });
+});
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });

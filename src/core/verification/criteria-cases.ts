@@ -4,6 +4,7 @@ import { launchedCommand } from "../workflows/launcher.js";
 import { isTestCodePath } from "../workflows/quality/duplication.js";
 import type { Spec } from "../workflows/schemas.js";
 import type { Check, Task } from "../workflows/types.js";
+import { caseEvidence } from "./criteria-evidence.js";
 
 /**
  * The cases the criteria spell out, walked against the test files a task wrote (#1250). Bench
@@ -112,7 +113,12 @@ export function criterionCases(
   const cases: CriterionCase[] = [];
   const seen = new Set<string>();
   const sets = closedSets(spec);
-  const add = (criterionId: string, literal: string, word?: true) => {
+  const add = (criterionId: string, literal: string, word?: true, source = "", expected = "") => {
+    const values = caseValues(literal, source, expected, task);
+    if (!values.includes(literal)) {
+      for (const value of values) add(criterionId, value, word);
+      return;
+    }
     const key = `${criterionId}:${normalizeLiteral(literal)}`;
     if (seen.has(key) || isCheckCommand(literal, context.checks)) return;
     seen.add(key);
@@ -135,9 +141,10 @@ export function criterionCases(
           )
         )
           continue;
-        add(criterion.id, literal);
+        add(criterion.id, literal, undefined, table.prose.slice(0, match.index), criterion.then);
       }
-      for (const input of table.inputs) add(criterion.id, input);
+      for (const input of table.inputs)
+        add(criterion.id, input.literal, undefined, input.source, input.expected);
       for (const member of enumeratedMembers(text, sets, `${criterion.id}:${field}`))
         add(criterion.id, member, true);
     }
@@ -341,7 +348,10 @@ const SEPARATOR_CELL = /^:?-{2,}:?$/;
  * Standalone cells still need a concrete literal rather than a scenario label (#1565).
  * Return the remaining cells and prose for the usual quoted-span walk.
  */
-function tableInputs(text: string): { inputs: string[]; prose: string } {
+function tableInputs(text: string): {
+  inputs: { literal: string; source: string; expected: string }[];
+  prose: string;
+} {
   const rows = text
     .split(/\r?\n/)
     .filter((line) => line.includes("|"))
@@ -355,13 +365,19 @@ function tableInputs(text: string): { inputs: string[]; prose: string } {
     }))
     .filter(({ cells }) => cells.length >= 2);
   if (rows.length < 2) return { inputs: [], prose: text };
-  const inputs: string[] = [];
+  const inputs: { literal: string; source: string; expected: string }[] = [];
   rows.forEach(({ cells }, index) => {
     if (cells.every((cell) => SEPARATOR_CELL.test(cell))) return;
     const next = rows[index + 1]?.cells;
     if (next?.every((cell) => SEPARATOR_CELL.test(cell))) return;
     const raw = cells[0] ?? "";
+    const push = (literal: string, source = "") =>
+      inputs.push({ literal, source, expected: cells.slice(1).join(" ") });
     if (HEADER_CELL.test(raw.replace(/^[`"\u201c]|[`"\u201d]$/g, ""))) return;
+    if (/^[A-Za-z_]\w*\s*=(?!=)/.test(raw)) {
+      push(raw);
+      return;
+    }
     const spans = [...raw.matchAll(QUOTED)];
     if (spans.length) {
       for (const span of spans) {
@@ -369,9 +385,9 @@ function tableInputs(text: string): { inputs: string[]; prose: string } {
         if (/\bas\s*$/i.test(raw.slice(0, span.index))) continue;
         const literal = (span[1] ?? span[2] ?? span[3] ?? "").trim();
         if (literalCase(literal, span[2] !== undefined, spans.length > 1 || raw !== span[0]))
-          inputs.push(literal);
+          push(literal, raw.slice(0, span.index));
       }
-    } else if (literalCase(raw)) inputs.push(raw);
+    } else if (literalCase(raw)) push(raw);
   });
   const tableLines = new Map(rows.map((row) => [row.line, row.cells.slice(1).join(" | ")]));
   return {
@@ -381,6 +397,40 @@ function tableInputs(text: string): { inputs: string[]; prose: string } {
       .map((line) => tableLines.get(line) ?? line)
       .join("\n"),
   };
+}
+
+/** Scope and coverage requirements are not test inputs. Assignments name their values (#1629). */
+function caseValues(literal: string, source: string, expected: string, task: CaseTask): string[] {
+  const sentence = source.split(/[.!?\n]/).at(-1) ?? "";
+  const valueContext = VALUE_CONTEXT.test(source);
+  if (!valueContext && /^\d+$/.test(literal) && /\b(?:at least|minimum|count)\b/i.test(sentence))
+    return [];
+  if (/\b(?:at least|minimum|count)\b[^\n]*\d+[^\n]*\btests?\b/i.test(literal)) return [];
+  const path = literal.replace(/\\/g, "/").replace(/^\.\//, "");
+  const paths = path.split(/\s*[,;]\s*/);
+  if (
+    !valueContext &&
+    paths.every(
+      (p) =>
+        task.writes?.some((w) => w.path.replace(/\\/g, "/") === p) ||
+        /^(?:\.?\.?\/)?(?:[\w.-]+\/)+[\w.-]+\.[A-Za-z]\w*$/.test(p),
+    )
+  )
+    return [];
+  const assignments = [...literal.matchAll(/(?:^|[,;]\s*)([A-Za-z_]\w*)\s*=\s*(?!=)/g)];
+  if (assignments[0]?.index === 0) {
+    return assignments.flatMap((match, index) => {
+      const key = match[1] ?? "";
+      const value = literal
+        .slice(match.index + match[0].length, assignments[index + 1]?.index)
+        .trim();
+      // A field/value expectation can be asserted as a property without spelling `field=value`.
+      if (new RegExp(`\\b${key}\\b`).test(expected) && /^(?:true|false|\d+)$/.test(value))
+        return [];
+      return literalCase(value, true, true) ? [value] : [];
+    });
+  }
+  return [literal];
 }
 
 /** Decode one source or JSON escape layer, preserving intentional literal escape text (#1614). */
@@ -441,8 +491,18 @@ export function testsHold(text: string, literal: string): boolean {
     );
   return (
     held(exact) ||
+    // Formatters change whitespace and quote style inside lists and expressions.
+    (/[[\](]/.test(normalized) && testsHoldCompact(unescaped, normalized)) ||
     (significant.length > 0 && significant.every((token) => held(escapeRegex(token))))
   );
+}
+
+function testsHoldCompact(text: string, literal: string): boolean {
+  const compact = (value: string) => value.replace(/[\s"'`]/g, "");
+  return new RegExp(
+    `(?<![\\p{L}\\p{N}_$./-])${escapeRegex(compact(literal))}(?![\\p{L}\\p{N}_$./\\\\-])`,
+    "u",
+  ).test(compact(text));
 }
 
 /** The cases no text holds. */
@@ -475,12 +535,22 @@ export function caseCheck(
   const cases = spec ? criterionCases(spec, task, context) : [];
   if (!paths.length || !cases.length) return undefined;
   return async (root) => {
-    const texts = (
-      await Promise.all(paths.map((path) => readFile(join(root, path), "utf8").catch(() => null)))
-    ).filter((text): text is string => text !== null);
-    return missingCases(cases, texts).map(
-      (c) =>
-        `${c.criterionId} names ${JSON.stringify(c.literal)}, and no test file this task writes (${paths.join(", ")}) contains it.`,
+    const files = await Promise.all(
+      paths.map(async (path) => {
+        const text = await readFile(join(root, path), "utf8").catch(() => "");
+        return { text, evidence: caseEvidence(path, text) };
+      }),
+    );
+    return missingCases(
+      cases,
+      files.map((file) => file.evidence),
+    ).map((c) =>
+      missingCases(
+        [c],
+        files.map((file) => file.text),
+      ).length
+        ? `${c.criterionId} names ${JSON.stringify(c.literal)}, and no test file this task writes (${paths.join(", ")}) contains it.`
+        : `${c.criterionId} names ${JSON.stringify(c.literal)}, found only in an assertion message in ${paths.join(", ")}. Use it as a test input or expected value; the message alone is a decoy.`,
     );
   };
 }
