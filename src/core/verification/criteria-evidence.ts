@@ -1,18 +1,26 @@
+import { testConventions } from "../intelligence/test-frameworks.js";
 import { maskNonCode } from "../workflows/quality/code-mask.js";
 
-/** Remove diagnostic arguments, keeping input and expected-value arguments in place (#1629). */
+/** A call: a callee with its receiver, or a fluent method after a call (`.as(`, `.Be(`). */
+const CALL = /(\.\s*)?\b([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*!?)\s*(?:<[^<>()\n]*>\s*)?\(/g;
+
+/**
+ * Remove diagnostic arguments, keeping input and expected-value arguments in place (#1629). Which
+ * arguments are messages comes from the assertion table of the file's frameworks (#1650).
+ */
 export function caseEvidence(path: string, text: string): string {
   // Host-written acceptance data is evidence, even when a value resembles assertion code.
   if (path.endsWith(".json")) return text;
+  const { calls, messageArgument } = testConventions(path);
   const code = maskNonCode(path, text);
   const out = text.split("");
   const blank = (start: number, end: number) => {
     for (let i = start; i < end; i++) if (out[i] !== "\n") out[i] = " ";
   };
-  for (const call of code.matchAll(
-    /\b(assert(?:_eq|_ne)?!|assert|assertEquals|assertNotEquals|assertTrue|assertFalse|Assert\.(?:True|False|AreEqual|AreNotEqual)|expect|[A-Za-z_]\w*\.(?:Fatalf?|Errorf?))\s*\(/g,
-  )) {
-    const name = call[1] ?? "";
+  for (const call of code.matchAll(CALL)) {
+    const callee = (call[1] ? "." : "") + (call[2] ?? "").replace(/\s+/g, "");
+    const rule = calls.find((c) => c.callee.test(callee));
+    if (!rule) continue;
     const start = call.index + call[0].length;
     const stack: string[] = [];
     const args: [number, number][] = [];
@@ -22,7 +30,7 @@ export function caseEvidence(path: string, text: string): string {
       if ("([{".includes(c)) stack.push(c);
       else if (")]}".includes(c)) {
         if (!stack.length) {
-          args.push([from, i]);
+          if (code.slice(from, i).trim()) args.push([from, i]);
           break;
         }
         stack.pop();
@@ -31,31 +39,32 @@ export function caseEvidence(path: string, text: string): string {
         from = i + 1;
       }
     }
-    const message = /\.(?:Fatalf?|Errorf?)$/.test(name)
-      ? 0
-      : /(?:_eq|_ne)!$|(?:AreEqual|AreNotEqual)$/.test(name)
-        ? 2
-        : /^(?:assertEquals|assertNotEquals)$/.test(name)
-          ? 2
-          : 1;
-    for (const [begin, end] of args.slice(message)) blank(begin, end);
+    const texts = args.map(([begin, end]) => code.slice(begin, end));
+    const head = code.slice(0, call.index);
+    const chain = head.slice(
+      Math.max(head.lastIndexOf(";"), head.lastIndexOf("{"), head.lastIndexOf("}")) + 1,
+    );
+    const messages = new Set(rule.messages(texts, { code, chain }));
+    for (const [i, arg] of texts.entries()) if (messageArgument?.test(arg)) messages.add(i);
+    for (const i of messages) {
+      const span = args[i];
+      if (span) blank(span[0], span[1]);
+    }
   }
-  // Python's assert condition, message has no enclosing call.
+  // Python's assert condition, message has no enclosing call; the statement may span lines.
   if (path.endsWith(".py")) {
-    let offset = 0;
-    for (const line of code.split("\n")) {
-      if (/^\s*assert\b/.test(line)) {
-        let depth = 0;
-        for (let i = 0; i < line.length; i++) {
-          if ("([{".includes(line[i] ?? "")) depth++;
-          else if (")]}".includes(line[i] ?? "")) depth--;
-          else if (line[i] === "," && !depth) {
-            blank(offset + i, offset + line.length);
-            break;
-          }
-        }
+    for (const statement of code.matchAll(/^[ \t]*assert\b/gm)) {
+      let depth = 0;
+      let message = -1;
+      let i = statement.index + statement[0].length;
+      for (; i < code.length; i++) {
+        const c = code[i] ?? "";
+        if ("([{".includes(c)) depth++;
+        else if (")]}".includes(c)) depth--;
+        else if (c === "," && !depth && message < 0) message = i;
+        else if ((c === "\n" && !depth && code[i - 1] !== "\\") || (c === ";" && !depth)) break;
       }
-      offset += line.length + 1;
+      if (message >= 0) blank(message, i);
     }
   }
   return out.join("");
