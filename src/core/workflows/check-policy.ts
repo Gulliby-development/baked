@@ -55,7 +55,24 @@ export const writtenCodePaths = (task: Pick<Task, "writes">): string[] =>
  * linter, formatter or type checker). Test suites are not: they need other tasks' code to pass.
  */
 export const isStaticCheck = (check: Check): boolean =>
-  Boolean(check.fix) || STATIC_COMMAND.test([check.id, check.executable, ...check.args].join(" "));
+  Boolean(check.fix) ||
+  (!runsAggregateTarget(check) &&
+    STATIC_COMMAND.test([check.id, check.executable, ...check.args].join(" ")));
+
+/** Task runners whose targets the gate fallback offers (#1488). */
+const TASK_RUNNER = /^(?:make|gmake|mingw32-make|just|task)$/;
+
+/**
+ * A task runner's `check` target: in the projects the fallback serves it is the test suite
+ * (autotools' `make check`) or tests plus lint, not a linter, so it is no file-local static
+ * check that runs after every code task and is corrected as diagnostics only (#1680).
+ */
+function runsAggregateTarget(check: Pick<Check, "executable" | "args">): boolean {
+  const program = (check.executable.replaceAll("\\", "/").split("/").at(-1) ?? "")
+    .replace(/\.(?:exe|cmd|bat)$/i, "")
+    .toLowerCase();
+  return TASK_RUNNER.test(program) && check.args.some((arg) => arg.toLowerCase() === "check");
+}
 
 /**
  * Static checks that analyze a whole compilation unit: they resolve every module, import and
