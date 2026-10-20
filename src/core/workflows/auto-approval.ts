@@ -11,6 +11,7 @@ import {
   type Spec,
   type TaskGraph,
 } from "./schemas.js";
+import { SLICE_PART, SPLIT_PART } from "./sizing.js";
 import type { ArtifactRow, RequestRow } from "./store.js";
 import { hostWritten } from "./task-graph.js";
 import { isAcceptanceRequest } from "./v2/acceptance.js";
@@ -83,7 +84,10 @@ function needsPerson(write: Write, exists?: (path: string) => boolean, scaffold 
 export interface ApprovalContext {
   /** Whether a path exists in the workspace the tasks will write to. */
   exists?: (path: string) => boolean;
-  /** Tasks added by host splits or a sizing replan; excluded from the planned task count. */
+  /**
+   * Planned tasks the planner added when it answered a sizing split, fixed at that replan (#1711).
+   * Excluded from the planned task count; slices and parts of one task count once anyway.
+   */
   hostSplitTasks?: number;
   /** The run's baseline holds no source files (empty or scaffold only). */
   scaffold?: boolean;
@@ -216,19 +220,40 @@ export function evaluateAutoApproval(
 
 type Limits = NonNullable<NonNullable<RunPolicy["autoApproval"]>["limits"]>;
 
+const partOf = new RegExp(
+  `(?:${[SPLIT_PART, SLICE_PART].map((note) => note.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})[^\n]*?other parts of (T\\d+)`,
+);
+
 /**
- * The tasks an agent runs, against the task limit: without the tasks the host writes from the
- * plan's content (an empty `__init__.py`, a fixed stub; no attempt, no tokens) and without the
- * slices host sizing added. Sizing and the history store leave host-written tasks out too; counting
- * them sent expenses-py's plan of 8 agent tasks and an empty package marker to a person, who
- * answered 11.3 h later (bench round 50, #1658). Their files still count against `maxFiles`.
+ * The planned task a task belongs to: the task sizing cut it from (`sizingSlice.taskId`, or the
+ * task its by-file part note names), else itself. Slices keep their group through every later
+ * plan, so the same graph counts the same on every planning pass (#1711).
+ */
+export function plannedTaskKey(
+  task: Pick<TaskGraph["tasks"][number], "id" | "description" | "sizingSlice">,
+): string {
+  return task.sizingSlice?.taskId ?? partOf.exec(task.description)?.[1] ?? task.id;
+}
+
+/**
+ * The tasks an agent runs, against the task limit: one per planned task, so the slices and
+ * by-file parts sizing cut from one task count once (url-shortener and md-site, bench round 51,
+ * were declined with 9 and 14 tasks of 8 and 7 planned ones, #1711); without the tasks the host
+ * writes from the plan's content (an empty `__init__.py`, a fixed stub; no attempt, no tokens,
+ * #1658); and without the tasks the planner added answering a sizing split (`sizingTasks`, #1627).
+ * Their files still count against `maxFiles`.
  */
 export function agentTaskCount(
   graph: Pick<TaskGraph, "tasks">,
-  hostSplitTasks = 0,
-): { agent: number; host: number } {
-  const host = graph.tasks.filter((task) => hostWritten(task)).length;
-  return { agent: Math.max(0, graph.tasks.length - host - hostSplitTasks), host };
+  sizingTasks = 0,
+): { agent: number; host: number; slices: number } {
+  const agentTasks = graph.tasks.filter((task) => !hostWritten(task));
+  const groups = new Set(agentTasks.map(plannedTaskKey)).size;
+  return {
+    agent: Math.max(0, groups - sizingTasks),
+    host: graph.tasks.length - agentTasks.length,
+    slices: agentTasks.length - groups,
+  };
 }
 
 /**
@@ -243,12 +268,18 @@ function scopeProblems(
 ): { text: string; reviewable: boolean }[] {
   const writes = graph.tasks.flatMap((task) => task.writes);
   const problems: { text: string; reviewable: boolean }[] = [];
-  const { agent: planned, host } = agentTaskCount(graph, hostSplitTasks);
-  if (planned > limits.maxTasks)
+  const { agent: planned, host, slices } = agentTaskCount(graph, hostSplitTasks);
+  if (planned > limits.maxTasks) {
+    const left = [
+      ...(slices ? [`${slices} sizing ${slices === 1 ? "slice" : "slices"}`] : []),
+      ...(hostSplitTasks ? [`${hostSplitTasks} added for sizing`] : []),
+      ...(host ? [`${host} host-written`] : []),
+    ];
     problems.push({
-      text: `${planned} tasks exceed ${limits.maxTasks}${host ? ` (${host} host-written not counted)` : ""}`,
+      text: `${planned} tasks exceed ${limits.maxTasks}${left.length ? ` (${left.join(", ")} not counted)` : ""}`,
       reviewable: true,
     });
+  }
   const files = new Set(writes.map((write) => write.path.toLowerCase()));
   if (files.size > limits.maxFiles)
     problems.push({ text: `${files.size} files exceed ${limits.maxFiles}`, reviewable: true });
@@ -399,7 +430,7 @@ export function planScopeAdvice(
   ];
   if (!problems.length) return [];
   return [
-    `This plan needs a person at approval: ${problems.join("; ")}. Automatic approval covers at most ${limits.maxTasks} tasks (tasks the host writes from their content do not count) and ${limits.maxFiles} files under ${limits.allowedPaths.join(", ")}${limits.allowDelete ? "" : " without deletions"}. Drop writes the requirements do not need (an optional refactor, a type or helper that can live in a file already written) and merge small tasks. If every listed write is needed, submit the plan again unchanged: it is accepted and a person approves it once at approval, which authorizes every write it lists. Do not mention approval in task descriptions or rationales; the tasks run only after the person approved.`,
+    `This plan needs a person at approval: ${problems.join("; ")}. Automatic approval covers at most ${limits.maxTasks} tasks (slices of one task count once; tasks the host writes from their content do not count) and ${limits.maxFiles} files under ${limits.allowedPaths.join(", ")}${limits.allowDelete ? "" : " without deletions"}. Drop writes the requirements do not need (an optional refactor, a type or helper that can live in a file already written) and merge small tasks. If every listed write is needed, submit the plan again unchanged: it is accepted and a person approves it once at approval, which authorizes every write it lists. Do not mention approval in task descriptions or rationales; the tasks run only after the person approved.`,
   ];
 }
 
