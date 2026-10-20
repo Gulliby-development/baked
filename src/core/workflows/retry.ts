@@ -1,4 +1,4 @@
-import { ProviderUnreachableError } from "../llm/provider-health.js";
+import { connectionError, ProviderUnreachableError } from "../llm/provider-health.js";
 import { canonical, hashJson } from "../specs/hash.js";
 import { WorkflowFault } from "./errors.js";
 import type { WorkflowStore } from "./store.js";
@@ -206,11 +206,22 @@ export function isOutputLimit(error: unknown): boolean {
   return OUTPUT_LIMIT.test(`${info?.message ?? ""} ${info?.responseBody ?? ""}`);
 }
 
+/** A provider CLI that a signal ended mid-turn; the abort of a run's own call is handled first. */
+const CLI_KILLED = /\b(?:Codex(?: exec| app-server)?|Claude Code) exited with signal\b/;
+
 /** A provider failure worth trying again: a timeout, rate limit, overload or network error. */
 export function isTransient(error: unknown): boolean {
   if (error instanceof ProviderUnreachableError) return true;
   if (error instanceof WorkflowFault || accountRefusal(error) || isOutputLimit(error)) return false;
   if (isOAuthRefreshCollision(error) || isCapacityError(error)) return true;
+  // A connection that closes after the answer started is wrapped by the SDK as "Failed to process
+  // successful response" (status 200) with the reset as its cause; it was final for every HTTP
+  // provider, and a CLI killed by a signal for both CLIs (provider fault matrix, #1719).
+  if (
+    connectionError(error) ||
+    CLI_KILLED.test((error as ProviderError | undefined)?.message ?? "")
+  )
+    return true;
   const info = error as ProviderError | undefined;
   if (info?.name === "TimeoutError") return true;
   const status = info?.statusCode;
