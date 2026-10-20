@@ -98,6 +98,17 @@ if (command === "export" && args.length === 2) {
         );
         for (const b of initiative.shareGate.filter((b) => b.recorded !== b.replayed))
           console.log(`    ${b.featureId}: recorded ${b.recorded}, now ${b.replayed}`);
+        console.log(
+          `  initiative ${initiative.initiativeId}: ${initiative.starts.length} starts rewound, new parks ${initiative.newStartStops}, final ${usd(initiative.finalUsd)}` +
+            (initiative.missingHistory.length
+              ? `, ${initiative.missingHistory.length} history stores not in the corpus`
+              : ""),
+        );
+        for (const b of initiative.starts)
+          console.log(
+            `    ${b.featureId} at ${b.accepted}/${b.features} accepted: ${b.replayed} ` +
+              `(forecast ${usd(b.forecastUsd)}, ceiling ${usd(b.ceilingUsd)}, spent ${usd(b.spentUsd)})`,
+          );
       }
     }
 } else {

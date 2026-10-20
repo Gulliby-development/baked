@@ -2,7 +2,10 @@ import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { DEFAULT_CONFIG } from "../../config/index.js";
+import type { AppConfig } from "../../types/index.js";
 import { builtinProfiles } from "../agents/profiles/builtin.js";
+import { ModelRoutingSchema } from "../llm/model-routing.js";
 import {
   type CallReasoning,
   type CallTiming,
@@ -13,9 +16,11 @@ import { workspacePath } from "../specs/validate.js";
 import { callCostRate } from "./budget.js";
 import { assertForecastFits, costForecast } from "./cost-forecast.js";
 import { WorkflowFault } from "./errors.js";
-import { type ShareGateRecord, shareShortfall } from "./initiatives/service.js";
+import type { initiativePriceSamples } from "./initiatives/forecast.js";
+import { InitiativeService, type ShareGateRecord, shareShortfall } from "./initiatives/service.js";
 import { recordingOf } from "./model-recording.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
+import { NativeWorkflowService } from "./service.js";
 import { costStageOf } from "./stage-price.js";
 import { WorkflowStore } from "./store.js";
 
@@ -746,11 +751,35 @@ export interface ShareGateBoundary {
   replayed: "pass" | "park";
 }
 
+/**
+ * One feature start of an initiative with the trace rewound to that moment: the initiative's view
+ * computed again by the current code (its estimate, prices and dollar forecast) and the start gate
+ * asked again. Every boundary is a start the recording made.
+ */
+export interface InitiativeStartBoundary {
+  featureId: string;
+  at: number;
+  /** Features accepted when it started, of the split's features. */
+  accepted: number;
+  features: number;
+  spentUsd: number;
+  forecastUsd: number | null;
+  ceilingUsd: number | null;
+  replayed: "pass" | "park";
+}
+
 export interface InitiativeReplay {
   initiativeId: string;
   shareGate: ShareGateBoundary[];
-  /** Features the recording started that the current gate parks. */
+  /** Features the recording started that the current gate parks on the recorded inputs. */
   newShareStops: number;
+  starts: InitiativeStartBoundary[];
+  /** Features the recording started that the current gate parks on recomputed inputs. */
+  newStartStops: number;
+  /** What the initiative spent in the end, its split run included. */
+  finalUsd: number | null;
+  /** The policy's history stores the corpus has no trace of; their runs price nothing. */
+  missingHistory: string[];
 }
 
 export type ShareGate = (
@@ -765,7 +794,7 @@ export type ShareGate = (
 export function replayShareGate(
   store: WorkflowStore,
   gate: ShareGate = shareShortfall,
-): InitiativeReplay[] {
+): Pick<InitiativeReplay, "initiativeId" | "shareGate" | "newShareStops">[] {
   const rows = store.connection
     .query(
       "SELECT initiative_id, payload_json FROM initiative_events WHERE type='feature.share_gate' ORDER BY initiative_id, seq",
@@ -789,6 +818,271 @@ export function replayShareGate(
   }));
 }
 
+/** Measured stage usage for an initiative's prices; `initiativePriceSamples` unless a test passes an older one. */
+export type PriceSamples = typeof initiativePriceSamples;
+
+/** The corpus trace of a history store the policy names, or null; see `corpusHistoryTrace`. */
+export type HistoryTrace = (store: string) => string | null;
+
+/**
+ * A bench app the runner kept at `.../RNN/app` is `RNN/app.sqlite.gz` in the corpus at `root`.
+ * Apps from before the corpus (R44 and older) have no trace.
+ */
+export function corpusHistoryTrace(root: string): HistoryTrace {
+  return (store) => {
+    const dir = store.replace(/[\\/]+$/, "").replace(/[\\/]\.baked[\\/]workflows\.sqlite$/, "");
+    const match = /(?:^|[\\/])(R\d+)[\\/]([^\\/]+)$/.exec(dir);
+    const trace = match ? join(root, match[1] ?? "", `${match[2]}.sqlite.gz`) : null;
+    return trace && existsSync(trace) ? trace : null;
+  };
+}
+
+const NO_AGENTS = {
+  execute: () => Promise.reject(new Error("A trace replay runs no agents")),
+};
+
+/**
+ * Replays the start gate (`shareShortfall`, with the dollar forecast in it) at every feature
+ * start of the trace's initiatives (#1707). From the last start back to the first, the trace is
+ * rewound to the moment the start was linked: later runs, links, events and requests removed,
+ * the runs still going then rewound like a run replay. The initiative's history stores are
+ * replaced by their corpus traces, so its estimate and prices read what the round's runner read.
+ * A start made under an earlier split revision is not replayed.
+ */
+export function replayInitiativeStarts(
+  path: string,
+  options: { gate?: ShareGate; priceSamples?: PriceSamples; historyTrace?: HistoryTrace } = {},
+): Omit<InitiativeReplay, "shareGate" | "newShareStops">[] {
+  const gate = options.gate ?? shareShortfall;
+  const historyTrace = options.historyTrace ?? corpusHistoryTrace(dirname(dirname(path)));
+  const probe = openTrace(path);
+  let ids: string[];
+  try {
+    ids = (
+      probe.store.connection.query("SELECT id FROM initiatives ORDER BY created_at").all() as {
+        id: string;
+      }[]
+    ).map((r) => r.id);
+  } finally {
+    probe.dispose();
+  }
+  // Each initiative gets its own copies: a rewind removes every later run of the trace.
+  return ids.map((id) => replayStarts(path, id, gate, options.priceSamples, historyTrace));
+}
+
+/**
+ * The runner's model routing as the trace's latest routing record before `t` shows it: each
+ * profile's route names the configured class, role or profile it came from. Features without a
+ * run are routed with it, as the runner routed them; without it every stage would run on the
+ * initiative's model and be priced there.
+ */
+function routingAt(db: Database, t: number): Pick<AppConfig, "modelRouting"> {
+  const row = db
+    .query(
+      "SELECT inline_content AS content FROM artifacts WHERE kind='routing' AND created_at<? ORDER BY created_at DESC LIMIT 1",
+    )
+    .get(t) as { content: string | null } | null;
+  if (!row?.content) return {};
+  const record = JSON.parse(row.content) as {
+    profiles?: Record<string, { model?: string; effort?: string; source?: string }>;
+  };
+  const routing: Record<string, Record<string, { model: string; effort?: string }>> = {};
+  for (const route of Object.values(record.profiles ?? {})) {
+    const [, kind, name] =
+      /^modelRouting\.(classes|roles|profiles)\.(.+)$/.exec(route.source ?? "") ?? [];
+    if (!kind || !name || !route.model) continue;
+    routing[kind] = {
+      ...routing[kind],
+      [name]: { model: route.model, ...(route.effort ? { effort: route.effort } : {}) },
+    };
+  }
+  const parsed = ModelRoutingSchema.safeParse(routing);
+  return parsed.success && Object.keys(routing).length ? { modelRouting: parsed.data } : {};
+}
+
+/** Tables other than `runs` whose rows belong to a run. */
+function runTables(db: Database): string[] {
+  return (db.query("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[])
+    .map((t) => t.name)
+    .filter(
+      (name) =>
+        name !== "runs" &&
+        (db.query(`PRAGMA table_info("${name}")`).all() as { name: string }[]).some(
+          (c) => c.name === "run_id",
+        ),
+    );
+}
+
+/** Removes runs with all their rows, inside the caller's transaction. */
+function removeRuns(db: Database, tables: string[], runIds: Iterable<string>): void {
+  // Rows of a removed run go in any order; the keys must hold once they are all gone.
+  db.run("PRAGMA defer_foreign_keys=ON");
+  for (const runId of runIds) {
+    for (const table of tables) db.run(`DELETE FROM "${table}" WHERE run_id=?`, [runId]);
+    db.run("DELETE FROM runs WHERE id=?", [runId]);
+  }
+}
+
+function replayStarts(
+  path: string,
+  initiativeId: string,
+  gate: ShareGate,
+  priceSamples: PriceSamples | undefined,
+  historyTrace: HistoryTrace,
+): Omit<InitiativeReplay, "shareGate" | "newShareStops"> {
+  const { store, workspace, dispose } = openTrace(path);
+  const histories = new Map<string, ReturnType<typeof openTrace>>();
+  try {
+    const db = store.connection;
+    const row = db
+      .query("SELECT settings_json, decompose_run_id FROM initiatives WHERE id=?")
+      .get(initiativeId) as { settings_json: string; decompose_run_id: string | null };
+    const settings = JSON.parse(row.settings_json) as {
+      basePolicy?: { sizing?: { historyStores?: string[] } };
+    };
+    const missingHistory: string[] = [];
+    const sizing = settings.basePolicy?.sizing;
+    if (sizing?.historyStores) {
+      const mapped: string[] = [];
+      for (const named of sizing.historyStores) {
+        const trace = historyTrace(named);
+        if (trace && !histories.has(trace)) histories.set(trace, openTrace(trace));
+        const history = trace ? histories.get(trace) : undefined;
+        if (history) mapped.push(history.workspace);
+        else missingHistory.push(named);
+      }
+      sizing.historyStores = mapped;
+      db.run("UPDATE initiatives SET settings_json=? WHERE id=?", [
+        JSON.stringify(settings),
+        initiativeId,
+      ]);
+    }
+    const links = db
+      .query(
+        "SELECT feature_id, run_id, created_at FROM initiative_runs WHERE initiative_id=? ORDER BY created_at, rowid",
+      )
+      .all(initiativeId) as { feature_id: string; run_id: string; created_at: number }[];
+    const linked = [
+      ...new Set([
+        ...(row.decompose_run_id ? [row.decompose_run_id] : []),
+        ...links.map((l) => l.run_id),
+      ]),
+    ];
+    const finalUsd = linked.reduce((sum, runId) => sum + store.costUsage(runId).spentUsd, 0);
+    const revisedAt = (
+      db
+        .query("SELECT MAX(created_at) AS at FROM initiative_revisions WHERE initiative_id=?")
+        .get(initiativeId) as { at: number | null }
+    ).at;
+    const tables = runTables(db);
+    const runIds = (db.query("SELECT id FROM runs").all() as { id: string }[]).map((r) => r.id);
+    const rewinders = new Map(runIds.map((runId) => [runId, runRewinder(store, runId)]));
+    const states = new Map(
+      runIds.map((runId) => [
+        runId,
+        (
+          db
+            .query(
+              "SELECT at, payload_json FROM events WHERE run_id=? AND type='run.state_changed' ORDER BY seq",
+            )
+            .all(runId) as { at: number; payload_json: string }[]
+        ).map((e) => ({
+          at: e.at,
+          ...(JSON.parse(e.payload_json) as { to: string; reason: string }),
+        })),
+      ]),
+    );
+    const starts: InitiativeStartBoundary[] = [];
+    for (const link of [...links].reverse()) {
+      const t = link.created_at;
+      if (revisedAt !== null && revisedAt >= t) break;
+      db.transaction(() => {
+        const late = new Set([
+          link.run_id,
+          ...links.filter((l) => l.created_at >= t).map((l) => l.run_id),
+          ...(db.query("SELECT id FROM runs WHERE created_at>=?").all(t) as { id: string }[]).map(
+            (r) => r.id,
+          ),
+        ]);
+        removeRuns(db, tables, late);
+        db.run("DELETE FROM initiative_runs WHERE initiative_id=? AND created_at>=?", [
+          initiativeId,
+          t,
+        ]);
+        db.run("DELETE FROM initiative_events WHERE initiative_id=? AND at>=?", [initiativeId, t]);
+        db.run("DELETE FROM initiative_requests WHERE initiative_id=? AND created_at>=?", [
+          initiativeId,
+          t,
+        ]);
+        db.run(
+          "UPDATE initiative_requests SET status='pending', answer_json=NULL, actor=NULL, decided_at=NULL WHERE initiative_id=? AND decided_at>=?",
+          [initiativeId, t],
+        );
+        db.run("UPDATE initiatives SET status='active', reason='' WHERE id=?", [initiativeId]);
+        for (const runId of runIds) {
+          if (late.has(runId) || !rewinders.has(runId)) continue;
+          const state = states
+            .get(runId)
+            ?.filter((e) => e.at < t)
+            .at(-1);
+          rewinders.get(runId)?.(t, undefined, ["state"]);
+          db.run("UPDATE runs SET status=?, reason=? WHERE id=?", [
+            state?.to ?? "running",
+            state?.reason ?? "none",
+            runId,
+          ]);
+        }
+        for (const runId of late) rewinders.delete(runId);
+      })();
+      // A history store of the same round holds runs the runner had not made or finished yet.
+      for (const history of histories.values()) {
+        const hdb = history.store.connection;
+        const later = (
+          hdb.query("SELECT id FROM runs WHERE created_at>=? OR updated_at>?").all(t, t) as {
+            id: string;
+          }[]
+        ).map((r) => r.id);
+        if (later.length) hdb.transaction(() => removeRuns(hdb, runTables(hdb), later))();
+      }
+      const service = new NativeWorkflowService(
+        workspace,
+        { ...DEFAULT_CONFIG, ...routingAt(db, t) },
+        NO_AGENTS,
+        true,
+      );
+      try {
+        const initiatives = new InitiativeService(service);
+        if (priceSamples) initiatives.priceSamples = priceSamples;
+        const view = initiatives.view(initiativeId);
+        const feature = view.features.find((f) => f.id === link.feature_id);
+        const cost = view.budget.cost;
+        starts.unshift({
+          featureId: link.feature_id,
+          at: t,
+          accepted: view.features.filter((f) => f.state === "accepted").length,
+          features: view.features.length,
+          spentUsd: cost.spentUsd,
+          forecastUsd: cost.forecastUsd,
+          ceilingUsd: cost.ceilingUsd,
+          replayed: feature && gate(view, feature) ? "park" : "pass",
+        });
+      } finally {
+        service.close();
+      }
+    }
+    return {
+      initiativeId,
+      starts,
+      newStartStops: starts.filter((b) => b.replayed === "park").length,
+      finalUsd: finalUsd > 0 ? Math.round(finalUsd * 100) / 100 : null,
+      missingHistory,
+    };
+  } finally {
+    dispose();
+    for (const history of histories.values()) history.dispose();
+  }
+}
+
 export interface TraceReplay {
   trace: string;
   runs: RunReplay[];
@@ -803,7 +1097,11 @@ interface RevisionRecord {
 }
 
 /** Opens a trace in a scratch workspace; `dispose` removes it. */
-export function openTrace(path: string): { store: WorkflowStore; dispose: () => void } {
+export function openTrace(path: string): {
+  store: WorkflowStore;
+  workspace: string;
+  dispose: () => void;
+} {
   const workspace = mkdtempSync(join(tmpdir(), "baked-replay-"));
   mkdirSync(join(workspace, ".baked"), { recursive: true });
   const bytes = readFileSync(path);
@@ -812,6 +1110,7 @@ export function openTrace(path: string): { store: WorkflowStore; dispose: () => 
   const store = new WorkflowStore(workspace);
   return {
     store,
+    workspace,
     dispose: () => {
       store.close();
       rmSync(workspace, { recursive: true, force: true });
@@ -836,6 +1135,81 @@ const decisionOf = (
     return "grow";
   return "pass";
 };
+
+/**
+ * Rewinds one run's attempts, artifacts, events, tasks and steps to the moment `t`: later rows
+ * are removed, and an attempt that was still running then is running again. With `current`, the
+ * attempt that starts at `t` is kept as the running one. Kinds in `keep` stay, as the run state
+ * an initiative's feature views read.
+ */
+function runRewinder(
+  store: WorkflowStore,
+  runId: string,
+): (t: number, current?: { r: number; id: string }, keep?: string[]) => void {
+  const db = store.connection;
+  const taskEvents = (
+    db
+      .query(
+        "SELECT at, payload_json FROM events WHERE run_id=? AND type='task.state_changed' ORDER BY seq",
+      )
+      .all(runId) as { at: number; payload_json: string }[]
+  ).map((e) => ({
+    at: e.at,
+    ...(JSON.parse(e.payload_json) as { taskId: string; to: string; generation?: number }),
+  }));
+  const stepEvents = (
+    db
+      .query(
+        "SELECT at, type, payload_json FROM events WHERE run_id=? AND type IN ('stage.started','stage.finished') ORDER BY seq",
+      )
+      .all(runId) as { at: number; type: string; payload_json: string }[]
+  ).map((e) => ({
+    at: e.at,
+    type: e.type,
+    ...(JSON.parse(e.payload_json) as { stepId: string; status?: string }),
+  }));
+  return (t, current, keep = []) => {
+    db.run("DELETE FROM attempts WHERE run_id=? AND (started_at>? OR (started_at=? AND rowid>?))", [
+      runId,
+      t,
+      t,
+      current?.r ?? Number.MAX_SAFE_INTEGER,
+    ]);
+    db.run(
+      "UPDATE attempts SET status='running', used_tokens=NULL, usage_complete=0, ended_at=NULL WHERE run_id=? AND (ended_at IS NULL OR ended_at>? OR id=?)",
+      [runId, t, current?.id ?? ""],
+    );
+    const kept = keep.length ? ` AND kind NOT IN (${keep.map(() => "?").join(",")})` : "";
+    db.run(`DELETE FROM artifacts WHERE run_id=? AND created_at>?${kept}`, [runId, t, ...keep]);
+    db.run("DELETE FROM events WHERE run_id=? AND at>?", [runId, t]);
+    const tasks = db.query("SELECT id FROM tasks WHERE run_id=?").all(runId) as { id: string }[];
+    for (const task of tasks) {
+      const last = taskEvents.filter((e) => e.taskId === task.id && e.at <= t).at(-1);
+      db.run("UPDATE tasks SET status=?, generation=? WHERE run_id=? AND id=?", [
+        last?.to ?? "pending",
+        last?.generation ?? 0,
+        runId,
+        task.id,
+      ]);
+    }
+    const steps = db.query("SELECT id FROM steps WHERE run_id=?").all(runId) as { id: string }[];
+    for (const step of steps) {
+      const events = stepEvents.filter((e) => e.stepId === step.id && e.at <= t);
+      const finished = events.filter((e) => e.type === "stage.finished").at(-1);
+      if (!events.length) {
+        const used = db
+          .query("SELECT 1 FROM attempts WHERE run_id=? AND step_id=? LIMIT 1")
+          .get(runId, step.id);
+        if (!used) continue;
+      }
+      db.run("UPDATE steps SET status=? WHERE run_id=? AND id=?", [
+        finished?.status ?? "running",
+        runId,
+        step.id,
+      ]);
+    }
+  };
+}
 
 /**
  * Replays the forecast gate of one run: from its last attempt back to its first, the store is
@@ -901,27 +1275,7 @@ function replayRun(
     }
     return PolicySchema.parse(policy);
   };
-  const taskEvents = (
-    db
-      .query(
-        "SELECT at, payload_json FROM events WHERE run_id=? AND type='task.state_changed' ORDER BY seq",
-      )
-      .all(runId) as { at: number; payload_json: string }[]
-  ).map((e) => ({
-    at: e.at,
-    ...(JSON.parse(e.payload_json) as { taskId: string; to: string; generation?: number }),
-  }));
-  const stepEvents = (
-    db
-      .query(
-        "SELECT at, type, payload_json FROM events WHERE run_id=? AND type IN ('stage.started','stage.finished') ORDER BY seq",
-      )
-      .all(runId) as { at: number; type: string; payload_json: string }[]
-  ).map((e) => ({
-    at: e.at,
-    type: e.type,
-    ...(JSON.parse(e.payload_json) as { stepId: string; status?: string }),
-  }));
+  const rewind = runRewinder(store, runId);
   const boundaries: ReplayBoundary[] = [];
   const costCap: CostCapBoundary[] = [];
   for (let i = priced.length - 1; i >= 0; i--) {
@@ -930,42 +1284,7 @@ function replayRun(
     const t = attempt.started_at;
     const next = priced[i + 1]?.started_at ?? Number.POSITIVE_INFINITY;
     db.transaction(() => {
-      db.run(
-        "DELETE FROM attempts WHERE run_id=? AND (started_at>? OR (started_at=? AND rowid>?))",
-        [runId, t, t, attempt.r],
-      );
-      db.run(
-        "UPDATE attempts SET status='running', used_tokens=NULL, usage_complete=0, ended_at=NULL WHERE run_id=? AND (ended_at IS NULL OR ended_at>? OR id=?)",
-        [runId, t, attempt.id],
-      );
-      db.run("DELETE FROM artifacts WHERE run_id=? AND created_at>?", [runId, t]);
-      db.run("DELETE FROM events WHERE run_id=? AND at>?", [runId, t]);
-      const tasks = db.query("SELECT id FROM tasks WHERE run_id=?").all(runId) as { id: string }[];
-      for (const task of tasks) {
-        const last = taskEvents.filter((e) => e.taskId === task.id && e.at <= t).at(-1);
-        db.run("UPDATE tasks SET status=?, generation=? WHERE run_id=? AND id=?", [
-          last?.to ?? "pending",
-          last?.generation ?? 0,
-          runId,
-          task.id,
-        ]);
-      }
-      const steps = db.query("SELECT id FROM steps WHERE run_id=?").all(runId) as { id: string }[];
-      for (const step of steps) {
-        const events = stepEvents.filter((e) => e.stepId === step.id && e.at <= t);
-        const finished = events.filter((e) => e.type === "stage.finished").at(-1);
-        if (!events.length) {
-          const used = db
-            .query("SELECT 1 FROM attempts WHERE run_id=? AND step_id=? LIMIT 1")
-            .get(runId, step.id);
-          if (!used) continue;
-        }
-        db.run("UPDATE steps SET status=? WHERE run_id=? AND id=?", [
-          finished?.status ?? "running",
-          runId,
-          step.id,
-        ]);
-      }
+      rewind(t, attempt);
       db.run(
         "UPDATE runs SET policy_json=?, estimated_cost_microusd=NULL, status='running' WHERE id=?",
         [canonical(policyAt(t)), runId],
@@ -1057,8 +1376,20 @@ function replayRun(
 /** Replays the forecast gate of every run in the trace at `path` with a dollar cap. */
 export function replayTrace(
   path: string,
-  options: { firstByteLimit?: FirstByteLimit; shareGate?: ShareGate; callRate?: CallRate } = {},
+  options: {
+    firstByteLimit?: FirstByteLimit;
+    shareGate?: ShareGate;
+    callRate?: CallRate;
+    priceSamples?: PriceSamples;
+    historyTrace?: HistoryTrace;
+  } = {},
 ): TraceReplay {
+  // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
+  const starts = replayInitiativeStarts(path, {
+    ...(options.shareGate ? { gate: options.shareGate } : {}),
+    ...(options.priceSamples ? { priceSamples: options.priceSamples } : {}),
+    ...(options.historyTrace ? { historyTrace: options.historyTrace } : {}),
+  });
   const { store, dispose } = openTrace(path);
   try {
     const runIds = (
@@ -1091,7 +1422,23 @@ export function replayTrace(
           .length,
       });
     }
-    return { trace: path, runs, initiatives: replayShareGate(store, options.shareGate) };
+    const gates = replayShareGate(store, options.shareGate);
+    const initiatives = [
+      ...new Set([...starts.map((i) => i.initiativeId), ...gates.map((i) => i.initiativeId)]),
+    ].map((initiativeId): InitiativeReplay => {
+      const gate = gates.find((i) => i.initiativeId === initiativeId);
+      return {
+        initiativeId,
+        shareGate: gate?.shareGate ?? [],
+        newShareStops: gate?.newShareStops ?? 0,
+        starts: [],
+        newStartStops: 0,
+        finalUsd: null,
+        missingHistory: [],
+        ...starts.find((i) => i.initiativeId === initiativeId),
+      };
+    });
+    return { trace: path, runs, initiatives };
   } finally {
     dispose();
   }

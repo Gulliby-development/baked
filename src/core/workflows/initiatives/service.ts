@@ -612,6 +612,11 @@ const add = (a: UsageView, b: UsageView): UsageView => ({
 export class InitiativeService {
   readonly store: InitiativeStore;
   private active = new Map<string, AbortController>();
+  /**
+   * The measured stage usage that prices the features still to run. The replay passes an older
+   * pricing here to show a forecast regression on a recorded round (#1707).
+   */
+  priceSamples: typeof initiativePriceSamples = initiativePriceSamples;
   constructor(readonly workflows: NativeWorkflowService) {
     this.store = new InitiativeStore(workflows.store);
   }
@@ -2403,7 +2408,7 @@ export class InitiativeService {
   ): void {
     const settings = this.store.settings(row);
     if (!settings.costBudget) return;
-    const samples = initiativePriceSamples(
+    const samples = this.priceSamples(
       this.workflows.store,
       this.store.links(row.id).map((l) => l.run_id),
       history,
@@ -2452,7 +2457,7 @@ export class InitiativeService {
     const store = this.workflows.store;
     const links = this.store.links(row.id);
     const history = estimateHistory(store, this.workflows.workspace, settings.basePolicy);
-    const samples = initiativePriceSamples(
+    const samples = this.priceSamples(
       store,
       links.map((l) => l.run_id),
       history,
