@@ -28,13 +28,14 @@ test("scenario: an empty Python multi_edit match returns without blocking the dr
   const file = join(fixture.root, "test_expenses.py");
   const original = "assert total() == 1\n";
   writeFileSync(file, original);
-  // Isolate the synchronous infinite loop on main so the regression fails in seconds.
-  const result = spawnSync(process.execPath, [join(import.meta.dir, "helpers/python-empty-multi-edit.ts"), file], { timeout: 5000, encoding: "utf8", windowsHide: true });
+  // Isolate the synchronous infinite loop on main so the regression stops at the child's timeout.
+  // A cold Bun start on a Windows runner took over 5 s, so the limit leaves room for it.
+  const result = spawnSync(process.execPath, [join(import.meta.dir, "helpers/python-empty-multi-edit.ts"), file], { timeout: 20000, encoding: "utf8", windowsHide: true });
   expect(result.error).toBeUndefined();
   expect(result.status).toBe(0);
   expect(JSON.parse(result.stdout)).toMatchObject({ success: false, error: "empty oldString (0 edits applied)" });
   expect(readFileSync(file, "utf8")).toBe(original);
-}, 10000);
+}, 30000);
 
 /** Completed model steps survive a driver disappearing before its final response. */
 class ScriptedExecutor extends FixtureExecutor {
