@@ -12,9 +12,10 @@ BAKED's host decisions are replayed on recorded bench rounds before a change mer
 - **Traces:** `tests/fixtures/bench-traces/RNN/<app>.sqlite.gz`. Each is an anonymised copy of a bench app's `.baked/workflows.sqlite`, written by `bun scripts/bench-trace.ts export <workspace> <out>`. The export (`exportTrace` in `src/core/workflows/trace.ts`) does the following:
   - keeps only the artifact kinds in `KEPT_ARTIFACTS`;
   - drops the tables in `DROPPED_TABLES`;
-  - blanks every string under a key in `PROSE`.
+  - replaces every string under a key in `PROSE`, and every other string that contains whitespace, with a stand-in `KEY-N` (`StandIns`). The same text gets the same stand-in across the whole trace, so equality checks between artifacts and columns still hold;
+  - keeps the run's `state` artifact with the content in `STATE_CONTENT` (spec, plan, research, reports) stood in, and rewrites every contract hash to the hash of the scrubbed spec, so a replay that reopens the run through `openTrace` sees the same features, runs and shares the round saw.
 
-  Policies and workflow definitions stay whole, because they hold settings and enums, not prose. `.gitignore` ignores `*.sqlite*` everywhere except under this folder.
+  Policies and workflow definitions stay whole, because they hold settings and enums, not prose. Traces exported before #1707 have no `state` artifact; re-export them with the current code before a hook needs the run state. `.gitignore` ignores `*.sqlite*` everywhere except under this folder.
 - **Replay:** `replayTrace` in `trace.ts`. It runs each hook over every run of a trace and reports where the current code decides differently from the recording.
 - **Gate:** `tests/forecast-replay-corpus.test.ts` is part of `bun run test`, so it runs in the required `check` job. A decision the recording did not make fails the suite. The only exception is a run listed in `tests/fixtures/bench-traces/accepted.json` as `"RNN/app.sqlite.gz#RUN_ID": { "<counter>": n, "reason": "..." }`.
 - **CLI:** `bun scripts/bench-trace.ts replay <trace>... [--json]` prints each run's differing decisions.
