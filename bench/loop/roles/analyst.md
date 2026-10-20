@@ -59,6 +59,10 @@ For a run with `group: "update"`, tag every finding `brownfield` and add:
 
 Skip things that are not BAKED's problem (a model's typo the review caught and fixed is BAKED working). A fix for a `model-only` problem is a mechanism that detects and recovers from it, never prompt wording tuned to one model. Merge duplicates: the same cause seen in three apps is one finding with three pieces of evidence.
 
+## Replay differences
+
+When the round's traces replay with a decision the round's runner did not make (`bun scripts/bench-trace.ts replay`), main now decides differently on a real run. That is a finding, unless a fix merged during the round explains it and has its `accepted.json` entry. The [replay-corpus skill](../../../.agents/skills/replay-corpus/SKILL.md) says how to read and bisect one.
+
 ## Done
 
 Return `ok` with the number of findings by severity and the top one in one sentence.

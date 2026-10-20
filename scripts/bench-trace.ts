@@ -44,13 +44,20 @@ if (command === "export" && args.length === 2) {
         const ratios = run.ratios.map((r) => `${r.at * 100}%: ${r.ratio.toFixed(2)}x`).join(", ");
         console.log(
           `  ${run.featureId} ${run.runId}: final ${usd(run.finalUsd)}, ${run.boundaries.length} attempts, ` +
-            `new stops ${run.newStops}, new growth ${run.newGrowth}, stops removed ${run.removedStops}` +
+            `new stops ${run.newStops}, new growth ${run.newGrowth}, stops removed ${run.removedStops}, ` +
+            `first-response stops ${run.newFirstByteStops} of ${run.firstByte.length} calls` +
             (ratios ? `, forecast/final ${ratios}` : ""),
         );
         for (const b of run.boundaries.filter((b) => b.recorded !== b.replayed))
           console.log(
             `    ${new Date(b.at).toISOString()} ${b.attemptId}: recorded ${b.recorded}, now ${b.replayed} ` +
               `(forecast ${usd(b.projectedUsd)}, ceiling ${usd(b.ceilingUsd)}, spent ${usd(b.spentUsd)})`,
+          );
+        for (const b of run.firstByte.filter((b) => b.recorded !== b.replayed))
+          console.log(
+            `    ${b.attemptId} call ${b.call} (${b.provider} ${b.stage ?? "?"} ${b.effort ?? "default"}): ` +
+              `recorded ${b.recorded}, now ${b.replayed} (first response ${b.firstByteMs === null ? "none" : `${Math.round(b.firstByteMs / 1000)} s`}` +
+              `${b.estimated ? " estimated" : ""}, deadline ${Math.round(b.limitMs / 1000)} s)`,
           );
       }
     }
