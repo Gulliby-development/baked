@@ -123,11 +123,57 @@ function pythonPlaceholder(lines: readonly string[], index: number): number[] | 
   return [index];
 }
 
-const placeholderLine = lineRule(
-  // "todo" counts only as the whole message or before ":", "!", "." or "-": "Todo with id 3
-  // does not exist" is an ordinary error of a todo app (#845).
-  /(?:throw\s+new\s+\w*Error\(\s*["'`](?:(?:not\s+(?:yet\s+)?implemented|unimplemented)\b|todo\s*(?:["'`]|[:!.-]))|\btodo!\(|\bunimplemented!\(|panic\(\s*"(?:not\s+implemented\b|todo\s*(?:"|[:!.-]))|throw\s+new\s+(?:NotImplementedException|UnsupportedOperationException)\(\s*\))/i,
+/**
+ * A message that says the code is missing. "todo" counts only as the whole message or before
+ * ":", "!", "." or "-": "Todo with id 3 does not exist" is an ordinary error of a todo app (#845).
+ */
+const NOT_IMPLEMENTED = String.raw`(?:(?:not\s+(?:yet\s+)?implemented|unimplemented)\b|todo\s*(?:["'\x60]|[:!.-]))`;
+
+/**
+ * The placeholder statement of each language (#1679): an exception or panic whose message says
+ * the code is missing (JavaScript and TypeScript `Error`, Java, Kotlin, C# and PHP exceptions, Go's
+ * `panic`, Lua's `error`), Rust's `todo!`/`unimplemented!`, and .NET's `NotImplementedException`
+ * with or without a message.
+ */
+const PLACEHOLDER = new RegExp(
+  [
+    String.raw`throw\s+new\s+\\?[\w.\\]*(?:Error|Exception)\(\s*["'\x60]${NOT_IMPLEMENTED}`,
+    String.raw`\btodo!\(|\bunimplemented!\(`,
+    String.raw`(?<![\w.:])(?:panic|error)\(\s*["'\x60]${NOT_IMPLEMENTED}`,
+    String.raw`throw\s+new\s+(?:System\.)?NotImplementedException\(`,
+  ].join("|"),
+  "i",
 );
+
+/** Kotlin's built-in `TODO()`, by case: a `todo(...)` call is ordinary code of a todo app. */
+const KOTLIN_TODO = /(?<![\w.$])TODO\(/;
+
+/** Java's bare `UnsupportedOperationException()`, a stub unless it is a mutator's contract. */
+const JAVA_UNSUPPORTED = /throw\s+new\s+(?:java\.lang\.)?UnsupportedOperationException\(\s*\)/;
+const JAVA_UNSUPPORTED_STATEMENT = new RegExp(String.raw`${JAVA_UNSUPPORTED.source}\s*;?`);
+
+/**
+ * The header of a collection or iterator mutator, which a read-only type overrides to throw
+ * `UnsupportedOperationException` as `Iterator.remove` and the `Collection` methods document: a
+ * return type, the method name and its parameters, not a call statement.
+ */
+const JAVA_MUTATOR =
+  /[\w>\]?]\s+(?:remove|removeAll|removeIf|retainAll|add|addAll|addFirst|addLast|set|put|putAll|putIfAbsent|clear|replaceAll|sort|push|pop|offer|poll|compute|computeIfAbsent|computeIfPresent|merge)\s*\([^;]*$/;
+
+function placeholderLine(lines: readonly string[], index: number): number[] | null {
+  const line = lines[index] ?? "";
+  if (PLACEHOLDER.test(line) || KOTLIN_TODO.test(line)) return [index];
+  if (!JAVA_UNSUPPORTED.test(line)) return null;
+  // The method header within the three code lines above (or on this line) names a mutator.
+  let seen = 0;
+  for (let i = index; i >= 0 && seen <= 3; i--) {
+    const text = lines[i] ?? "";
+    if (!text.trim()) continue;
+    if (JAVA_MUTATOR.test(text.replace(JAVA_UNSUPPORTED_STATEMENT, ""))) return null;
+    seen++;
+  }
+  return [index];
+}
 
 const DEFAULT_VALUE = /^return(?:\s+(?:null|undefined|\[\]|\{\}|""|''|``|false|0|-1|None))?\s*;?$/;
 
