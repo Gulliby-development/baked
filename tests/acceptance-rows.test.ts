@@ -4,11 +4,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { StartBody } from "../src/core/api/schemas.js";
 import { builtinProfiles } from "../src/core/agents/profiles/builtin.js";
+import { sddWorkflow } from "../src/core/workflows/builtin/sdd.js";
 import { literalRows, rowAuditProblems, rowFiles, rowPlanProblems, rowsArtifact } from "../src/core/workflows/acceptance-rows.js";
 import type { Analysis, Spec, Task, TaskGraph } from "../src/core/workflows/schemas.js";
 import { prepareStart } from "../src/core/workflows/start.js";
 import { sizePlan } from "../src/core/workflows/sizing.js";
 import { WorkflowToolPolicy } from "../src/core/workflows/tool-policy.js";
+import { builtinPresets, instantiatePreset } from "../src/core/workflows/v2/definitions.js";
+import { stageKind } from "../src/core/workflows/v2/runtime.js";
 import { parseWorkflowArgs } from "../src/headless/workflow-parse.js";
 import { fixturePolicy, fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 
@@ -135,6 +138,47 @@ describe("rows setting across run entry points", () => {
     const on = await prepareStart(fixture.root, fixture.config, { ...base, rowsAsData: "on" });
     expect(on.policy.rowsAsData).toBe("on");
     expect((await prepareStart(fixture.root, fixture.config, { ...base, policy: on.policy, rowsAsData: "off" })).policy).toEqual(original.policy);
-    await expect(prepareStart(fixture.root, fixture.config, { ...base, workflowId: "quick", rowsAsData: "on" })).rejects.toThrow("requires an analyze stage");
+    const quick = await prepareStart(fixture.root, fixture.config, { ...base, workflowId: "quick", rowsAsData: "on" });
+    expect(quick.policy.rowsAsData).toBeUndefined();
+    expect(quick.routing.warnings?.[0]).toContain("rowsAsData is ignored for workflow quick");
+  });
+
+  test("every preset normalizes requested and inherited rows according to its analyze stage", async () => {
+    const fixture = workflowFixture(); cleanups.push(fixture.dispose);
+    for (const args of [["init"], ["config", "user.email", "fixture@example.invalid"], ["config", "user.name", "Fixture"], ["-c", "core.hooksPath=", "commit", "--allow-empty", "-m", "Fixture"]])
+      expect(Bun.spawnSync(["git", ...args], { cwd: fixture.root }).exitCode).toBe(0);
+    for (const [workflowId, definition] of builtinPresets) {
+      const analyzes = definition.stages.some((stage) => stageKind(stage) === "analyze");
+      for (const inherited of [false, true]) {
+        const prepared = await prepareStart(fixture.root, fixture.config, {
+          workflowId, policy: { ...fixturePolicy, ...(inherited ? { rowsAsData: "on" as const } : {}) },
+          ...(!inherited ? { rowsAsData: "on" as const } : {}),
+        });
+        expect(prepared.policy.rowsAsData).toBe(analyzes ? "on" : undefined);
+        expect(prepared.routing.warnings?.some((warning) => warning.includes("rowsAsData is ignored")) ?? false).toBe(!analyzes);
+      }
+    }
+  });
+
+  test("custom definitions and explicit off preserve analyze-stage semantics", async () => {
+    const fixture = workflowFixture(); cleanups.push(fixture.dispose);
+    const directory = join(fixture.root, "baked", "workflows");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "custom-analysis.json"), JSON.stringify({ ...sddWorkflow, id: "custom-analysis",
+      stages: sddWorkflow.stages.map((stage) => stage.kind === "analyze" ? { ...stage, id: "audit" } : stage),
+    }));
+    writeFileSync(join(directory, "custom-quick.json"), JSON.stringify({
+      ...instantiatePreset(builtinPresets.get("quick")!, fixturePolicy), id: "custom-quick",
+    }));
+    const policy = { ...fixturePolicy, rowsAsData: "on" as const };
+    for (const workflowId of ["custom-analysis", "custom-quick", "quick"]) {
+      const analyzes = workflowId === "custom-analysis";
+      const prepared = await prepareStart(fixture.root, fixture.config, { workflowId, policy });
+      expect(prepared.policy.rowsAsData).toBe(analyzes ? "on" : undefined);
+      expect(prepared.routing.warnings?.some((warning) => warning.includes("rowsAsData is ignored")) ?? false).toBe(!analyzes);
+      const off = await prepareStart(fixture.root, fixture.config, { workflowId, policy, rowsAsData: "off" });
+      expect(off.policy.rowsAsData).toBeUndefined();
+      expect(off.routing.warnings?.some((warning) => warning.includes("rowsAsData is ignored")) ?? false).toBe(false);
+    }
   });
 });

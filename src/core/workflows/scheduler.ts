@@ -24,6 +24,7 @@ import {
 } from "../llm/model-routing.js";
 import { modelVendor } from "../llm/model-vendor.js";
 import { knownModelContextWindow } from "../llm/models.js";
+import { ProviderUnreachableError } from "../llm/provider-health.js";
 import { runSandbox } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
@@ -239,7 +240,7 @@ import {
 } from "./derivation-audit.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
-import { executionClock, executionTimeout } from "./execution-clock.js";
+import { ExecutionBudgetClock, executionClock, executionTimeout } from "./execution-clock.js";
 import { describeChange, keepOutside, restoreOutside, unjournaledOutside } from "./fixer-scope.js";
 import {
   FORK_SEED_ARTIFACT,
@@ -384,6 +385,8 @@ import {
   isInputTooLarge,
   isOutputLimit,
   isTransient,
+  PROVIDER_ZERO_TOKEN_LIMIT,
+  recordProviderOutcome,
   reportsLostTool,
   retryAfterMs,
   retryDelay,
@@ -515,6 +518,7 @@ import {
 import {
   integrityFix,
   isTestPath,
+  requestedTestRemovals,
   rewriteTargets,
   scanTestIntegrity,
   strengthenTargets,
@@ -534,7 +538,14 @@ import {
 } from "./tests-first.js";
 import { takeHashRefusals } from "./tool-policy.js";
 import { transientSqliteError } from "./transient-sqlite.js";
-import type { AgentExecutor, Check, HostTool, RuntimeState, Task } from "./types.js";
+import type {
+  AgentExecutor,
+  Check,
+  ExecutionRequest,
+  HostTool,
+  RuntimeState,
+  Task,
+} from "./types.js";
 import { acceptanceGrants, blocksRun } from "./v2/acceptance.js";
 import { type BrowserDriverOptions, runAcceptanceGate } from "./v2/acceptance-gate.js";
 import {
@@ -908,6 +919,18 @@ export class WorkflowScheduler {
     this.journal = new EffectJournal(store, leases);
     this.checks = new CheckRunner(store, this.processes);
   }
+  private providerActivity = () => ({
+    pending: () => (_responded: boolean) => {},
+    finish: () => {},
+  });
+  private async execute(request: ExecutionRequest) {
+    const activity = this.providerActivity();
+    try {
+      return await this.executor.execute({ ...request, providerPending: activity.pending });
+    } finally {
+      activity.finish();
+    }
+  }
   async drive(runId: string, outerSignal: AbortSignal): Promise<void> {
     // A reroute between drives writes a new routing revision; read it again.
     this.routing.delete(runId);
@@ -935,14 +958,15 @@ export class WorkflowScheduler {
     outerSignal.addEventListener("abort", abort, { once: true });
     if (outerSignal.aborted) abort();
     const signal = controller.signal;
-    const started = executionClock.now();
+    const budgetClock = new ExecutionBudgetClock();
+    this.providerActivity = () => budgetClock.track();
+    const started = budgetClock.now();
     const activeBefore = this.store.run(runId).active_ms;
-    let idleMs = 0;
-    let idleFrom: number | null = null;
     const arm = () =>
       executionTimeout(
         () => controller.abort(new WorkflowFault("BUDGET_EXHAUSTED", "Active deadline exhausted")),
-        Math.max(1, policy.maxActiveMs - activeBefore - (executionClock.now() - started - idleMs)),
+        Math.max(1, policy.maxActiveMs - activeBefore - (budgetClock.now() - started)),
+        budgetClock,
       );
     let timeout = arm();
     this.rearmDeadline = () => {
@@ -952,13 +976,11 @@ export class WorkflowScheduler {
     // A wait stage sleeps between polls; that time is not active time.
     this.idle = async <T>(sleep: () => Promise<T>): Promise<T> => {
       timeout();
-      const from = executionClock.now();
-      idleFrom = from;
+      const end = budgetClock.pending();
       try {
         return await sleep();
       } finally {
-        idleFrom = null;
-        idleMs += executionClock.now() - from;
+        end(false);
         timeout = arm();
       }
     };
@@ -969,9 +991,7 @@ export class WorkflowScheduler {
     // ran in a timer, so it killed the command with an uncaught exception (bench round 32, #1313).
     // The write is tried once more, and an interval still unrecorded goes with the next flush.
     const recordActive = (): void => {
-      const now = executionClock.now();
-      const idle = idleMs + (idleFrom === null ? 0 : now - idleFrom);
-      const add = Math.ceil(now - started - idle - recorded);
+      const add = Math.ceil(budgetClock.now() - started - recorded);
       if (add <= 0) return;
       for (let tries = 2; tries > 0; tries--) {
         try {
@@ -1288,6 +1308,9 @@ export class WorkflowScheduler {
                   (path) => existsSync(join(runRoot(this.store.workspace, state), path)),
                   this.baselineScaffold(runId, state),
                   state.requestText || state.prompt,
+                  state.sizingPlannedTasks === null
+                    ? 0
+                    : Math.max(0, parsed.data.taskGraph.tasks.length - state.sizingPlannedTasks),
                 );
                 if (advice.length) {
                   scopeAdvised = true;
@@ -1450,7 +1473,13 @@ export class WorkflowScheduler {
                 text: "",
               });
               state.graph = graph;
-              state.hostSplitTasks = graph.tasks.length - planned.tasks.length;
+              // A sizing replan may make the planner create the slices the host used to add.
+              // Keep the pre-sizing count for this replacement, then clear it so an unrelated
+              // later plan cannot inherit the exemption.
+              state.hostSplitTasks =
+                graph.tasks.length -
+                Math.min(planned.tasks.length, state.sizingPlannedTasks ?? planned.tasks.length);
+              state.sizingPlannedTasks = null;
               state.rootGraph = structuredClone(state.graph);
               state.manifest.planHash = hashBytes(state.plan);
               state.manifest.rootGraphHash = hashJson(state.graph);
@@ -2784,6 +2813,24 @@ export class WorkflowScheduler {
               hash: fault.details.hash ?? null,
             }),
           );
+        if (reason === "provider" && fault instanceof WorkflowFault) {
+          this.store.artifact(
+            runId,
+            "recovery",
+            "provider/wait.json",
+            canonical({
+              modelId: fault.details.modelId,
+              probe: 0,
+              retryAt: new Date().toISOString(),
+            }),
+          );
+          this.store.transition(
+            runId,
+            outerSignal.aborted ? "paused" : "waiting",
+            outerSignal.aborted ? "user_pause" : "provider",
+          );
+          return;
+        }
         this.store.transition(
           runId,
           outerSignal.aborted ? "paused" : "blocked",
@@ -2797,6 +2844,10 @@ export class WorkflowScheduler {
       timeout();
       this.idle = (sleep) => sleep();
       this.rearmDeadline = () => {};
+      this.providerActivity = () => ({
+        pending: () => (_responded: boolean) => {},
+        finish: () => {},
+      });
       outerSignal.removeEventListener("abort", abort);
       leaseSignal.removeEventListener("abort", leaseLost);
       // A run that waits keeps its gate's result; one that stopped or failed will change the code.
@@ -4379,7 +4430,7 @@ export class WorkflowScheduler {
           root,
         );
       }
-      const result = await this.executor.execute({
+      const result = await this.execute({
         runId,
         attemptId: attempt,
         profile,
@@ -4445,6 +4496,7 @@ export class WorkflowScheduler {
           `attempts/${attempt}/result.json`,
           canonical(output),
         );
+        recordProviderOutcome(this.store, runId, attempt, profile.id, task?.id);
       });
       if (
         this.store.run(runId).input_hash !== inputHash ||
@@ -4467,6 +4519,32 @@ export class WorkflowScheduler {
             error,
           ),
         );
+      const emptyFailures = signal.aborted
+        ? 0
+        : recordProviderOutcome(this.store, runId, attempt, profile.id, task?.id, error);
+      if (emptyFailures >= PROVIDER_ZERO_TOKEN_LIMIT) {
+        this.store.artifact(
+          runId,
+          "recovery",
+          "provider/circuit.json",
+          canonical({ open: true, attemptId: attempt, failures: emptyFailures }),
+        );
+        throw new WorkflowFault(
+          "OUTPUT_INVALID",
+          recoveryAdvice(
+            `${profile.model} returned no tokens in ${emptyFailures} consecutive unreachable attempts for ${profile.id}. Automatic retries stopped. Check the provider and reasoning effort, then resume or reroute the run.`,
+            "Repeated zero-token provider failures need your decision before another attempt.",
+            { action: "resume", runId },
+            { action: "reroute", runId },
+          ),
+          { reason: "no_progress", providerCircuit: true },
+        );
+      }
+      if (error instanceof ProviderUnreachableError && !signal.aborted)
+        throw new WorkflowFault("OUTPUT_INVALID", error.message, {
+          reason: "provider",
+          modelId: error.modelId,
+        });
       const wrote = this.store.effects(runId).some((effect) => effect.attempt_id === attempt);
       const editedFiles = () =>
         this.store
@@ -4932,7 +5010,12 @@ export class WorkflowScheduler {
       const plan = stages.findIndex((stage) => stage.kind === "plan");
       if (plan >= 0) {
         this.raiseBudget(runId, state, policy, report);
-        const note = splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask);
+        const note = splitNote(
+          report,
+          plannerSizing(policy, samples, model).maxCodeFilesPerTask,
+          plannerApprovalLimits(policy)?.maxTasks,
+        );
+        state.sizingPlannedTasks = Math.max(0, graph.tasks.length - state.hostSplitTasks);
         // Under `revision: "patch"` the planner splits the oversized tasks with edit operations;
         // a whole new plan cost ratesim 029a5aec 170k tokens to split one skeleton task (#1112).
         this.pendPatch(
@@ -7260,6 +7343,8 @@ ${note}`;
         error instanceof WorkflowFault &&
         (["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code) ||
           error.details.reason === "provider_account" ||
+          error.details.reason === "provider" ||
+          error.details.providerCircuit === true ||
           error.details.reason === "check_unavailable")
       )
         return { kind: "fatal", entry, error };
@@ -8620,14 +8705,21 @@ ${note}`;
     const amendments = this.amendments(runId);
     const amending = amendments.some((a) => task.findingIds.includes(a.findingId));
     // A correction whose finding asks for its test file to be rewritten may drop assertions.
+    const settled = this.store.latestArtifact(runId, `assumptions/conflicts/${task.id}.json`);
+    const removalIds = settled
+      ? ((
+          JSON.parse(this.store.readArtifact(runId, settled.id)) as { removalFindingIds?: string[] }
+        ).removalFindingIds ?? [])
+      : [];
     const ownFindings = this.store
       .findings(runId)
-      .filter((f) => task.findingIds.includes(f.id))
+      .filter((f) => task.findingIds.includes(f.id) || removalIds.includes(f.id))
       .map((f) => JSON.parse(f.body_json) as Review["findings"][number]);
     const corrective = task.origin !== "planned" && task.findingIds.length > 0;
     if (corrective) this.recordAddedTests(runId, task, changes);
     const found = scanTestIntegrity(changes, {
       protects: corrective ? this.correctionTests(runId, task, changed) : undefined,
+      removalFindings: corrective ? ownFindings : [],
       rewrites: task.origin === "planned" ? new Set() : rewriteTargets(ownFindings),
       strengthens: task.origin === "planned" ? new Set() : strengthenTargets(ownFindings),
       reasoned: new Set([
@@ -8865,6 +8957,7 @@ ${note}`;
         return { path, before: kept, after: read(path) };
       }),
       {
+        removalFindings: corrected,
         rewrites: rewriteTargets(corrected),
         strengthens: strengthenTargets(corrected),
         reasoned: new Set([
@@ -8938,6 +9031,72 @@ ${note}`;
     const account = { taskId: task.id, summary: result.summary, unresolved: result.unresolved };
     const report = [result.summary, ...result.unresolved].join(" ");
     const assumedPath = `assumptions/conflicts/${task.id}.json`;
+    // A fully confident spec finding that explicitly names test removals outranks our guard,
+    // even under clarification ask. Bind only the host findings, preserving the spec finding.
+    if (!this.store.latestArtifact(runId, assumedPath)) {
+      const findings = this.store
+        .findings(runId)
+        .map((f) => JSON.parse(f.body_json) as Review["findings"][number]);
+      const guards = findings.filter(
+        (f) =>
+          task.findingIds.includes(f.id) &&
+          /^Test integrity \((?:test-removed|test-count|assertions|test-deleted)\)/.test(f.claim),
+      );
+      const mentioned = new Set(report.match(/[\w-]+/g) ?? []);
+      const protectedTests = this.correctionTests(
+        runId,
+        task,
+        guards.flatMap((f) => f.file ?? []),
+      );
+      const removals = findings.filter(
+        (f) =>
+          f.basis === "spec" &&
+          f.confidence === 1 &&
+          mentioned.has(f.id) &&
+          guards.some((guard) => {
+            if (!guard.file || guard.file !== f.file || !mentioned.has(guard.id)) return false;
+            const names = [
+              ...(protectedTests.get(guard.file)?.keys() ?? []),
+              ...`${guard.claim}\n${guard.suggestedFix}`
+                .matchAll(/"([^"\n]+)"/g)
+                .map((m) => m[1] ?? ""),
+            ];
+            const requested = requestedTestRemovals(guard.file, names, [f]);
+            return requested.file || requested.names.size > 0;
+          }),
+      );
+      if (
+        removals.length &&
+        guards.length === task.findingIds.length &&
+        guards.every((guard) => removals.some((f) => f.file === guard.file))
+      ) {
+        const assumed = `The spec findings ${removals.map((f) => f.id).join(", ")} win over the test-integrity host findings ${task.findingIds.join(", ")}. Apply only the test removals those spec findings request and keep every other test and assertion.`;
+        this.store.transaction(() => {
+          this.store.artifact(
+            runId,
+            "diagnostic",
+            `tasks/conflicts/${task.id}.json`,
+            canonical(account),
+          );
+          this.store.artifact(
+            runId,
+            "assumption",
+            assumedPath,
+            canonical({ ...account, assumed, removalFindingIds: removals.map((f) => f.id) }),
+          );
+          recordConflictDecision(this.store, runId, {
+            requestId: `assumed-${task.id}`,
+            taskId: task.id,
+            findingIds: task.findingIds,
+            answer: assumed,
+          });
+          this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
+          this.store.finishStep(runId, child, "failed");
+        });
+        state.prompt += `\nSettled spec conflict (${assumedPath}): ${assumed} Report implemented or already_satisfied, not spec_conflict.`;
+        return;
+      }
+    }
     const first =
       policy.clarification === "assume" && !this.store.latestArtifact(runId, assumedPath);
     // A documentation task torn between the rule for examples and the request's worked example

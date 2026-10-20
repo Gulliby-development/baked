@@ -119,6 +119,7 @@ export interface RunSnapshot {
   stalled?: { silentMs: number; lastEventAt: string | null };
   /** Present while a run blocked by a provider outage waits for its automatic resume. */
   autoRetry?: { at: string; attempt: number; of: number };
+  providerWait?: { modelId: string; probe: number; retryAt: string };
   approvalDigest?: string | null;
   projectId?: string;
 }

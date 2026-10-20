@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { LanguageModelV3, LanguageModelV3GenerateResult } from "@ai-sdk/provider";
-import { MockLanguageModelV3 } from "ai/test";
+import { MockLanguageModelV3 } from "./helpers/workflow-model.js";
 import { getProvider } from "../src/core/llm/providers/index.js";
 import { MODEL_OUTPUT_LIMIT, modelCheckOutput } from "../src/core/verification/check-runner.js";
 import { NativeAgentExecutor } from "../src/core/workflows/agent-executor.js";

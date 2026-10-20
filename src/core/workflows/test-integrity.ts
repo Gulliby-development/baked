@@ -129,6 +129,8 @@ const ATTRIBUTE_LINES = 8;
 
 interface TestSpan {
   name: string;
+  from: number;
+  to: number;
   /** The test's lines without its title: the rest of the line that names it and the lines below. */
   body: string[];
 }
@@ -173,6 +175,8 @@ function testSpans(lines: readonly string[], marks: readonly string[] = lines): 
   }
   return starts.map((start, i) => ({
     name: start.name,
+    from: start.from,
+    to: starts[i + 1]?.from ?? lines.length,
     body: [start.rest, ...lines.slice(start.index + 1, starts[i + 1]?.from ?? lines.length)]
       .map((line) => line.trim().replace(/\s+/g, " "))
       .filter((line) => !TRIVIAL_LINE.test(line)),
@@ -416,6 +420,8 @@ function compared(lines: readonly string[]): Map<string, number> {
 const inputLike = (value: string): boolean => !/^[\w.:/-]+$/.test(value);
 
 export interface ScanOptions {
+  /** A corrective's spec findings that explicitly request removal or relocation of tests. */
+  removalFindings?: readonly TestRemovalFinding[];
   /** Paths whose writes the approved plan gave a reason: fewer tests or assertions are planned. */
   reasoned?: ReadonlySet<string>;
   /**
@@ -431,14 +437,77 @@ export interface ScanOptions {
   strengthens?: ReadonlySet<string>;
   /**
    * Tests that a correction of another finding added, by path and name, with who added them
-   * (#1519): a change that leaves one out is reported whatever its own finding asks, since two
-   * findings that need opposite tests are a conflict to report, not one to settle by editing.
+   * (#1519): a change that leaves one out is reported unless a spec finding explicitly requests
+   * its removal. Other conflicts still need a spec_conflict report.
    */
   protects?: ReadonlyMap<string, ReadonlyMap<string, string>>;
   /** Contents of test files the task can see, for literals that special-case test inputs. */
   testSources?: readonly string[];
   /** Request, spec and plan text: a literal they name is a requirement, not a test input. */
   specText?: string;
+}
+
+export interface TestRemovalFinding {
+  basis?: string;
+  file: string | null;
+  claim: string;
+  suggestedFix: string;
+}
+
+const REMOVE_TEST = /\b(?:remove|delete|drop|move|relocate)\b/i;
+const KEEP_TEST = /\b(?:not|never|don't|without)\s+(?:remove|delete|drop|move|relocate)\b/i;
+const TEST_REMOVAL_OBJECT =
+  /^(?:(?:all|the|these|those|three|\d+|existing|misplaced|redundant|out-of-scope)\s+)*(?:tests?\b|them\b)/i;
+const REMOVE_FILE_TESTS =
+  /\b(?:remove|delete|drop|move|relocate)\s+(?:(?:all|the|these|those|existing|misplaced|out-of-scope)\s+)*(?:tests?(?=\s+(?:from|in|of|to|into|out of)\b|[.!;]?\s*$)|(?:test\s+)?file\b)/i;
+const escapePattern = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Spec authority applies only to tests named literally or by an identifier glob (#1628). */
+export function requestedTestRemovals(
+  path: string,
+  names: Iterable<string>,
+  findings: readonly TestRemovalFinding[],
+): { names: Set<string>; file: boolean } {
+  const requested = new Set<string>();
+  let file = false;
+  const candidates = [...names];
+  for (const finding of findings) {
+    const action = REMOVE_TEST.exec(finding.suggestedFix);
+    if (
+      finding.basis !== "spec" ||
+      finding.file !== path ||
+      finding.claim.startsWith("Test integrity") ||
+      !action ||
+      KEEP_TEST.test(finding.suggestedFix)
+    )
+      continue;
+    const text = `${finding.claim}\n${finding.suggestedFix}`;
+    const object = finding.suggestedFix.slice(action.index + action[0].length).trim();
+    const globs = [...text.matchAll(/\b[\w]+[\w*?]*[*?][\w*?]*/g)].map(([glob]) => ({
+      token: glob,
+      pattern: new RegExp(
+        `^${glob
+          .split(/([*?])/)
+          .map((part) => (part === "*" ? ".*" : part === "?" ? "." : escapePattern(part)))
+          .join("")}$`,
+      ),
+    }));
+    const matched = candidates.filter((name) => {
+      const literal = new RegExp(`(?<![\\w])${escapePattern(name)}(?![\\w])`);
+      const named = literal.test(text) || globs.some((glob) => glob.pattern.test(name));
+      return (
+        named &&
+        (TEST_REMOVAL_OBJECT.test(object) ||
+          literal.test(object) ||
+          globs.some((glob) => glob.pattern.test(name) && object.includes(glob.token)))
+      );
+    });
+    for (const name of matched) requested.add(name);
+    // A file-wide instruction must say so. An unnamed scope claim grants no exception.
+    if (!matched.length && REMOVE_FILE_TESTS.test(finding.suggestedFix)) file = true;
+  }
+  if (file) for (const name of candidates) requested.add(name);
+  return { names: requested, file };
 }
 
 /**
@@ -465,8 +534,21 @@ export function scanTestIntegrity(
   for (const change of changes) {
     const { path } = change;
     const reasoned = options.reasoned?.has(path) === true;
+    const guarded = options.protects?.get(path);
+    const spans =
+      isTestPath(path) && typeof change.before === "string"
+        ? (() => {
+            const view = codeView(path, change.before);
+            return testSpans(view.lines, view.marks);
+          })()
+        : [];
+    const requested = requestedTestRemovals(
+      path,
+      [...spans.map((span) => span.name), ...(guarded?.keys() ?? [])],
+      options.removalFindings ?? [],
+    );
     if (change.before === undefined) {
-      if (isTestPath(path) && change.after === null && !reasoned)
+      if (isTestPath(path) && change.after === null && !reasoned && !requested.file)
         findings.push({ rule: "test-deleted", path, detail: "deleted the test file" });
       continue;
     }
@@ -488,7 +570,12 @@ export function scanTestIntegrity(
     if (isTestPath(path)) {
       const testsBefore = count(codeBefore, TEST_CASES);
       if (change.after === null) {
-        if (change.before !== null && !reasoned)
+        const allRequested =
+          requested.file ||
+          (spans.length > 0 &&
+            spans.every((span) => requested.names.has(span.name)) &&
+            spans.length === testsBefore);
+        if (change.before !== null && !reasoned && !allRequested)
           findings.push({
             rule: "test-deleted",
             path,
@@ -501,16 +588,33 @@ export function scanTestIntegrity(
       // A test retitled or merged with its body kept is not removed (#1532).
       const matched = matchTests(viewBefore, viewAfter);
       const removed = missingNames(testNames(before, viewBefore.marks), namesAfter).filter(
-        (name) => !matched.renames.has(name),
+        (name) => !matched.renames.has(name) && !requested.names.has(name),
       );
-      const guarded = options.protects?.get(path);
       const lost = [...(guarded ?? [])].filter(([name]) => {
         const renamed = matched.renames.get(name);
-        return !namesAfter.has(name) && !(renamed && namesAfter.has(renamed));
+        return (
+          !requested.names.has(name) &&
+          !namesAfter.has(name) &&
+          !(renamed && namesAfter.has(renamed))
+        );
       });
       const keep = guarded
-        ? [...guarded.keys()].map((name) => matched.renames.get(name) ?? name)
+        ? [...guarded.keys()]
+            .filter((name) => !requested.names.has(name))
+            .map((name) => matched.renames.get(name) ?? name)
         : [];
+      // Count only the removed cases the spec names. Keep guarding every other assertion.
+      const excluded = spans.filter(
+        (span) =>
+          requested.names.has(span.name) &&
+          !namesAfter.has(span.name) &&
+          !matched.renames.has(span.name),
+      );
+      const excludedCode = excluded.flatMap((span) =>
+        codeLines(blankStringLiterals(path, before.slice(span.from, span.to).join("\n"))),
+      );
+      const removedTests = count(excludedCode, TEST_CASES);
+      const removedAssertions = count(excludedCode, ASSERTIONS);
       for (const [name, origin] of lost)
         findings.push({
           rule: "test-removed",
@@ -519,7 +623,7 @@ export function scanTestIntegrity(
           keep: [...new Set(keep)],
         });
       const unclaimed = removed.filter((name) => !lost.some(([lostName]) => lostName === name));
-      if (!reasoned && testsBefore - testsAfter > matched.tests)
+      if (!reasoned && !requested.file && testsBefore - testsAfter > matched.tests + removedTests)
         findings.push({
           rule: "test-count",
           path,
@@ -527,6 +631,7 @@ export function scanTestIntegrity(
         });
       else if (
         !reasoned &&
+        !requested.file &&
         options.rewrites?.has(path) !== true &&
         options.strengthens?.has(path) !== true &&
         unclaimed.length
@@ -539,12 +644,17 @@ export function scanTestIntegrity(
         });
       const assertsBefore = count(codeBefore, ASSERTIONS);
       const assertsAfter = count(codeAfter, ASSERTIONS);
-      const kept = testsAfter + matched.tests >= testsBefore && assertsAfter > 0;
+      const kept = testsAfter + matched.tests + removedTests >= testsBefore && assertsAfter > 0;
       const rewritten =
         kept &&
         (options.rewrites?.has(path) === true ||
           (options.strengthens?.has(path) === true && literalText(after) > literalText(before)));
-      if (!reasoned && !rewritten && assertsBefore - assertsAfter > matched.assertions)
+      if (
+        !reasoned &&
+        !requested.file &&
+        !rewritten &&
+        assertsBefore - assertsAfter > matched.assertions + removedAssertions
+      )
         findings.push({
           rule: "assertions",
           path,
@@ -608,13 +718,15 @@ export function scanTestIntegrity(
 
 /** The instruction a repair gets for an integrity finding. */
 export function integrityFix(finding: IntegrityFinding): string {
+  const specRemoval =
+    " A spec-basis finding explicitly requesting removal or relocation of named tests takes precedence over this host guard. Apply only those removals and keep every other test and assertion.";
   switch (finding.rule) {
     case "test-removed":
-      return `Restore the removed tests in ${finding.path} with their assertions, under their names or with the same body under a new title, and make the code pass them.${finding.keep?.length ? ` Keep every one of these tests, which corrections of other findings added: ${finding.keep.map((name) => JSON.stringify(name)).join(", ")}.` : ""} If the finding you correct and the one a restored test was added for cannot both hold, report outcome spec_conflict naming both findings instead of removing the test.`;
+      return `Restore the removed tests in ${finding.path} with their assertions, under their names or with the same body under a new title, and make the code pass them.${finding.keep?.length ? ` Keep every one of these tests, which corrections of other findings added: ${finding.keep.map((name) => JSON.stringify(name)).join(", ")}.` : ""}${specRemoval} If the findings still cannot both hold, report outcome spec_conflict naming both findings instead of removing another test.`;
     case "test-deleted":
     case "test-count":
     case "assertions":
-      return `Restore the removed tests and assertions in ${finding.path} and make the code pass them. If the spec and the tests cannot both hold, report outcome spec_conflict instead of changing the tests.`;
+      return `Restore the removed tests and assertions in ${finding.path} and make the code pass them.${specRemoval} If the spec and the tests still cannot both hold, report outcome spec_conflict instead of changing other tests.`;
     case "skip":
       return `Remove the new skip, only or ignore markers from ${finding.path} and make the code pass the tests.`;
     case "suppression":

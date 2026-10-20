@@ -79,6 +79,24 @@ test("the API freezes the acceptance rows override in the core policy (#1596)", 
   }
 });
 
+test("the API starts a workflow without analyze and exposes its ignored rows warning (#1640)", async () => {
+  for (const inherited of [false, true]) {
+    const { fixture, post, call } = await setup();
+    const response = await post("/v1/workflow/runs", {
+      commandId: newId(), feature: "fixture", prompt: "Write the fixture", workflow: "quick",
+      policy: { ...fixture.policy, ...(inherited ? { rowsAsData: "on" } : {}) },
+      ...(!inherited ? { rowsAsData: "on" } : {}),
+    });
+    expect(response.status).toBe(202);
+    const snapshot = await response.json() as RunSnapshot;
+    expect(JSON.parse(fixture.service.store.run(snapshot.runId).policy_json).rowsAsData).toBeUndefined();
+    const status = await call(`/v1/workflow/runs/${snapshot.runId}`);
+    expect(status.status).toBe(200);
+    const body = await status.json() as { routing: { warnings: string[] } };
+    expect(body.routing.warnings[0]).toContain("rowsAsData is ignored for workflow quick");
+  }
+});
+
 /** Reads SSE frames until `count` events arrived, then disconnects. */
 async function readEvents(response: Response, count: number): Promise<{ id: number; event: WorkflowEvent }[]> {
   if (!response.body) throw new Error("No body");

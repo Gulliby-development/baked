@@ -529,6 +529,7 @@ export class WorkflowStore {
       reviewNotes: { count: noteIds.length, ids: noteIds },
       ...this.stallOf(id, row.status),
       ...this.autoRetryOf(id, row),
+      ...this.providerWaitOf(id, row),
       ...this.repairBlockOf(id, row),
       pendingRequestIds: this.requests(id)
         .filter((r) => r.status === "pending")
@@ -565,6 +566,16 @@ export class WorkflowStore {
    * The pending automatic resume of a run blocked with `provider_unavailable`: the latest
    * `provider/resume-N.json` the service journaled before its wait, while that wait is not over.
    */
+  private providerWaitOf(id: string, row: RunRow): Pick<RunSnapshot, "providerWait"> {
+    if (row.status !== "waiting" || row.reason !== "provider") return {};
+    const artifact = this.latestArtifact(id, "provider/wait.json");
+    if (!artifact) return {};
+    return {
+      providerWait: JSON.parse(this.readArtifact(id, artifact.id)) as NonNullable<
+        RunSnapshot["providerWait"]
+      >,
+    };
+  }
   private autoRetryOf(id: string, row: RunRow): { autoRetry?: RunSnapshot["autoRetry"] } {
     if (row.status !== "blocked" || row.reason !== "provider_unavailable") return {};
     const attempt = this.state(id).providerResumes;
