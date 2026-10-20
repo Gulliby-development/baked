@@ -5,13 +5,13 @@ import type { ToolResult } from "../../types/index.js";
 import { getCwd } from "../cwd.js";
 import { logBackgroundError } from "../diagnostics/errors.js";
 import { bunShellArgs, IS_WIN } from "../platform/index.js";
-import { realPath } from "../projects/paths.js";
 import { chatSandbox, SandboxUnavailableError, sandboxNotice } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { executeCheckCommand } from "../verification/check-runner.js";
 import { assertWorkspaceMutationAllowed } from "../workflows/leases.js";
 import { ProcessScope } from "../workflows/process-scope.js";
-import { FORMAT_TIMEOUT_MS } from "./auto-format.js";
+import { pythonEnvironment } from "../workflows/toolchain.js";
+import { FORMAT_TIMEOUT_MS, singleFileFormat } from "./auto-format.js";
 import { runBoundedShell } from "./bounded-process.js";
 import { ruffSource as ruffConfigSource } from "./python-tooling.js";
 import { compressShellOutputFull } from "./shell-compress.js";
@@ -175,7 +175,10 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
     profile.lint = "cargo clippy";
     profile.typecheck = "cargo check";
     profile.run = "cargo run";
-    profile.format = "rustfmt";
+    // The whole crate with its own edition; one file goes through `singleFileFormat`, which adds
+    // the edition and `skip_children` that bare rustfmt lacks (#1681).
+    profile.format = "cargo fmt";
+    profile.formatFile = "rustfmt";
     return profile;
   }
 
@@ -195,14 +198,7 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
 
   // Python
   if ((await has("pyproject.toml")) || (await has("setup.py")) || (await has("requirements.txt"))) {
-    const pm = (await has("uv.lock"))
-      ? "uv run"
-      : (await has("poetry.lock"))
-        ? "poetry run"
-        : (await has("Pipfile.lock"))
-          ? "pipenv run"
-          : "";
-    const prefix = pm ? `${pm} ` : "";
+    const prefix = pythonPrefix(cwd);
     const ruff = await usesRuff(cwd, has);
     profile.test = `${prefix}pytest`;
     profile.build = null;
@@ -463,6 +459,15 @@ async function detectJsLinter(cwd: string, runner = ""): Promise<string | null> 
   return null;
 }
 
+/** The configuration files prettier reads. */
+const PRETTIER_CONFIGS = [
+  ".prettierrc",
+  ...["json", "json5", "yml", "yaml", "toml", "js", "cjs", "mjs", "ts", "cts", "mts"].map(
+    (ext) => `.prettierrc.${ext}`,
+  ),
+  ...["js", "cjs", "mjs", "ts", "cts", "mts"].map((ext) => `prettier.config.${ext}`),
+];
+
 async function detectJsFormatter(cwd: string, runner = ""): Promise<string | null> {
   const has = async (f: string) => {
     try {
@@ -475,19 +480,13 @@ async function detectJsFormatter(cwd: string, runner = ""): Promise<string | nul
   const run = runner ? `${runner} ` : "";
   if ((await has("biome.json")) || (await has("biome.jsonc"))) return `${run}biome format --write`;
   if ((await has("dprint.json")) || (await has("dprint.jsonc"))) return `${run}dprint fmt`;
-  if (
-    (await has(".prettierrc")) ||
-    (await has(".prettierrc.js")) ||
-    (await has(".prettierrc.json")) ||
-    (await has(".prettierrc.yml")) ||
-    (await has(".prettierrc.yaml")) ||
-    (await has(".prettierrc.cjs")) ||
-    (await has(".prettierrc.mjs")) ||
-    (await has("prettier.config.js")) ||
-    (await has("prettier.config.cjs")) ||
-    (await has("prettier.config.mjs"))
-  )
-    return `${run}prettier --write`;
+  for (const name of PRETTIER_CONFIGS) if (await has(name)) return `${run}prettier --write`;
+  // Prettier also reads its options from a `prettier` key in package.json (#1681).
+  try {
+    const manifest = JSON.parse(await readFile(join(cwd, "package.json"), "utf8")) as unknown;
+    if (manifest && typeof manifest === "object" && "prettier" in manifest)
+      return `${run}prettier --write`;
+  } catch {}
   return null;
 }
 
@@ -523,6 +522,12 @@ async function detectJsTypecheck(cwd: string): Promise<string | null> {
   if ((await has("deno.json")) || (await has("deno.lock"))) return "deno check .";
   const pm = await detectJsPm(cwd);
   return pm === "pnpm" ? "pnpm tsc --noEmit" : "npx tsc --noEmit";
+}
+
+/** `uv run `, `poetry run `, ... for a Python project whose lockfile names its environment, or "". */
+function pythonPrefix(cwd: string): string {
+  const environment = pythonEnvironment((file) => existsSync(join(cwd, file)));
+  return environment ? `${environment.join(" ")} ` : "";
 }
 
 /**
@@ -574,13 +579,7 @@ export async function detectNativeChecks(cwd: string): Promise<string | null> {
 
   // Python
   if ((await has("pyproject.toml")) || (await has("setup.py")) || (await has("requirements.txt"))) {
-    const pm = (await has("uv.lock"))
-      ? "uv run "
-      : (await has("poetry.lock"))
-        ? "poetry run "
-        : (await has("Pipfile.lock"))
-          ? "pipenv run "
-          : "";
+    const pm = pythonPrefix(cwd);
     const lint = (await usesRuff(cwd, has)) ? `${pm}ruff check` : `${pm}flake8`;
     const tc = (await has("pyrightconfig.json")) ? `${pm}pyright` : `${pm}mypy .`;
     return `${lint} && ${tc}`;
@@ -877,7 +876,9 @@ export const projectTool = {
         // Prefer formatAndLint (fixes both lint + format in one pass), then dedicated formatter, then lint --fix
         if (args.file) {
           // Whole-project commands cannot be narrowed by appending a path.
-          command = profile.formatFile ? `${profile.formatFile} ${shellQuote(args.file)}` : null;
+          command = profile.formatFile
+            ? singleFileFormat(profile.formatFile, resolve(cwd, args.file))
+            : null;
           break;
         }
         const isCombo = !!profile.formatAndLint;
@@ -1107,7 +1108,7 @@ export async function formatFile(filePath: string, cwd?: string): Promise<boolea
 
   // The formatter's working directory is a real path; a file path through a symlink (macOS
   // `/var` is `/private/var`) would look outside the project to it.
-  const command = `${profile.formatFile} ${shellQuote(realPath(filePath))}`;
+  const command = singleFileFormat(profile.formatFile, filePath);
   try {
     const result = await runBoundedShell(command, {
       cwd: effectiveCwd,

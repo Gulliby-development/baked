@@ -1,6 +1,10 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import type { Readable } from "node:stream";
+import {
+  type SupervisorClock,
+  systemSupervisorClock,
+} from "../../../../src/core/workflows/supervisor-clock.js";
 import type { BackendState, Health } from "../shared/api.js";
 import type { BackendCommand } from "./backend-command.js";
 
@@ -35,6 +39,8 @@ export interface BackendOptions {
   stopGraceMs?: number;
   /** How often a running backend's health is checked for a stopped thread (#1541). */
   stallPollMs?: number;
+  /** Independent supervisor time; tests advance it after observing the stalled driver. */
+  stallClock?: SupervisorClock;
   platform?: NodeJS.Platform;
   onState?: (state: BackendState) => void;
 }
@@ -77,7 +83,7 @@ export class Backend {
   private startedAt = 0;
   private stderr: string[] = [];
   private current: BackendState = { kind: "stopped" };
-  private watchTimer: ReturnType<typeof setInterval> | null = null;
+  private stopWatch: (() => void) | null = null;
   /** The stopped server whose runs the next one takes over, and the one stopped for not answering. */
   private takeOver: number | null = null;
   private stalled: { child: ChildLike; reason: string } | null = null;
@@ -264,20 +270,21 @@ export class Backend {
     this.unwatch();
     if (!(graceMs > 0)) return;
     const pollMs = this.options.stallPollMs ?? 5000;
-    let answered = performance.now();
+    const clock = this.options.stallClock ?? systemSupervisorClock;
+    let answered = clock.now();
     let last = answered;
     let checking = false;
-    const timer = setInterval(() => {
+    const stop = clock.every(pollMs, () => {
       if (this.child !== child) {
-        clearInterval(timer);
+        stop();
         return;
       }
-      const now = performance.now();
+      const now = clock.now();
       if (now - last > pollMs * 3) answered = now;
       last = now;
       if (now - answered >= graceMs) {
-        clearInterval(timer);
-        if (this.watchTimer === timer) this.watchTimer = null;
+        stop();
+        if (this.stopWatch === stop) this.stopWatch = null;
         this.stopStalled(child, graceMs);
         return;
       }
@@ -289,21 +296,20 @@ export class Backend {
       })
         .then(
           () => {
-            answered = performance.now();
+            answered = clock.now();
           },
           () => undefined,
         )
         .finally(() => {
           checking = false;
         });
-    }, pollMs);
-    timer.unref?.();
-    this.watchTimer = timer;
+    });
+    this.stopWatch = stop;
   }
 
   private unwatch(): void {
-    if (this.watchTimer) clearInterval(this.watchTimer);
-    this.watchTimer = null;
+    this.stopWatch?.();
+    this.stopWatch = null;
   }
 
   /** Kills a server that stopped answering; the exit handler restarts it with `--take-over`. */

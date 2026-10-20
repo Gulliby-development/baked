@@ -1,7 +1,8 @@
 /**
  * Fails a pull request that closes a Bug issue but has no `## Sweep` section in its description.
  * The section reports the sibling sweep from `.agents/skills/file-issue/SKILL.md`: the places the
- * issue lists that were fixed, and what re-running the sweep on the branch found.
+ * issue lists that were fixed, what re-running the sweep on the branch found, and a `Languages:` line
+ * saying which supported languages the fix covers (or that the bug is not bound to a language).
  * Usage (in CI): PR_BODY, GITHUB_REPOSITORY and GITHUB_TOKEN set; bun scripts/check-sweep-section.ts
  */
 
@@ -9,6 +10,8 @@ const CLOSING_REFERENCE =
   /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+(?:([\w.-]+\/[\w.-]+))?#(\d+)\b/gi;
 const SWEEP_HEADING = /^(#{2,6})\s+Sweep\b.*$/im;
 const ANY_HEADING = /^(#{1,6})\s/;
+/** A `Languages:` line, also as a list item or in bold: `- **Languages:** ...`. */
+const LANGUAGES_LINE = /^\s*(?:[-*+]\s+)?(?:\*\*|__)?Languages(?:\*\*|__)?\s*:/im;
 
 export interface ClosedIssue {
   number: number;
@@ -51,6 +54,9 @@ export function sweepProblem(body: string, closed: ClosedIssue[]): string | null
   if (section === "") {
     return `The "## Sweep" section is empty; this pull request closes Bug issue ${bugs.join(", ")}.`;
   }
+  if (!LANGUAGES_LINE.test(section)) {
+    return `The "## Sweep" section has no "Languages:" line; this pull request closes Bug issue ${bugs.join(", ")}. Name the languages the fix covers, or write "Languages: not language-bound" with the reason.`;
+  }
   return null;
 }
 
@@ -87,7 +93,7 @@ if (import.meta.main) {
   const problem = sweepProblem(body, closed);
   if (problem) {
     console.error(
-      `${problem} Add a "## Sweep" section that lists the places from the issue you fixed and what re-running the sweep on this branch found (fixed here, or a linked new issue). See .agents/skills/file-issue/SKILL.md, step 5.`,
+      `${problem} Add a "## Sweep" section that lists the places from the issue you fixed, what re-running the sweep on this branch found (fixed here, or a linked new issue) and a "Languages:" line. See .agents/skills/file-issue/SKILL.md, step 6.`,
     );
     process.exit(1);
   }

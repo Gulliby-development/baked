@@ -165,7 +165,9 @@ describe("Rust project (Cargo.toml)", () => {
     expect(p.build).toBe("cargo build");
     expect(p.lint).toBe("cargo clippy");
     expect(p.typecheck).toBe("cargo check");
-    expect(p.format).toBe("rustfmt");
+    // The whole crate with its edition; one file goes through rustfmt with the edition (#1681).
+    expect(p.format).toBe("cargo fmt");
+    expect(p.formatFile).toBe("rustfmt");
   });
 });
 

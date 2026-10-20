@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { Backend } from "../apps/desktop/src/main/backend.js";
 import { startApiServer } from "../src/core/api/server.js";
 import { IS_WIN, killTree } from "../src/core/platform/index.js";
@@ -9,6 +9,7 @@ import { ScriptedWorkflowExecutor } from "../src/core/workflows/scripted-executo
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { parseServeArgs } from "../src/headless/serve.js";
 import { FixtureExecutor, workflowFixture } from "./helpers/workflow-fixture.js";
+import { ManualSupervisorClock } from "./helpers/supervisor-clock.js";
 
 class ScriptedFixture extends FixtureExecutor {
   private readonly scripted: ScriptedWorkflowExecutor;
@@ -51,11 +52,13 @@ describe("scenario: a baked serve whose thread stopped inside multi_edit (#1541)
     await fixture.service.drive(run.runId, new AbortController().signal);
     await fixture.approve(run.runId);
     const children: { pid: number | undefined; args: string[] }[] = [];
+    const clock = new ManualSupervisorClock();
     const backend = new Backend({
       folder: fixture.root,
       command: { command: process.execPath, prefix: [join(import.meta.dir, "helpers", "scripted-stalled-serve.ts")] },
       tokenFile: join(fixture.root, ".baked", "serve.token"),
       stallPollMs: 100,
+      stallClock: clock,
       restartDelaysMs: [20],
       spawn: (command, args, options) => {
         const child = spawn(command, args, {
@@ -80,6 +83,16 @@ describe("scenario: a baked serve whose thread stopped inside multi_edit (#1541)
     const store = fixture.service.store;
     const diagnostics = () => JSON.stringify({ children, status: store.run(run.runId).status, reason: store.run(run.runId).reason, events: store.events(run.runId, 0, 100_000).slice(-8), backend: backend.state });
     await until(() => store.events(run.runId, 0, 100_000).some((event) => event.type === "tool.started"), 15_000, diagnostics);
+    const stalled = join(fixture.root, ".baked", "scripted-stalled.json");
+    await until(() => existsSync(stalled), 15_000, diagnostics);
+    expect(JSON.parse(readFileSync(stalled, "utf8"))).toEqual({ runId: run.runId, pid: children[0]?.pid });
+    // Startup and healthy work cannot consume the synthetic stall's grace period. Advance only
+    // once the first process has journaled its stuck call, then leave the replacement's time alone.
+    clock.advance(900);
+    expect(children).toHaveLength(1);
+    expect(backend.state.kind).toBe("running");
+    clock.advance(100);
+    expect(Reflect.get(backend, "takeOver")).toBe(children[0]?.pid);
     await until(() => store.run(run.runId).status === "completed", 45_000, diagnostics);
     expect(children).toHaveLength(2);
     expect(children[1]?.args.slice(-2)).toEqual(["--take-over", String(children[0]?.pid)]);

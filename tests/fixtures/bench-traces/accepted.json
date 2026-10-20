@@ -1,0 +1,14 @@
+{
+  "R48/recmill.sqlite.gz#04b0cca1-ff12-469b-8bf0-2beae05d2f73": {
+    "newGrowth": 1,
+    "reason": "#1648 (PR #1665): an open kind is priced from its own estimate until three tasks of it finish. The replay matches the recording on main just before #1665 (730420d2) and grows from e43b2fe2 on."
+  },
+  "R49/shexpand.sqlite.gz#9aa8719b-2341-444d-805d-f374d0560499": {
+    "newGrowth": 1,
+    "reason": "#1631 (PR #1637): an unmeasured task kind keeps its own estimate. The replay matches the recording at e4a29564 and grows from ad338495 (the #1637 merge) on."
+  },
+  "R49/shexpand.sqlite.gz#41395500-8efa-4f81-869a-e05f779c2f7a": {
+    "newGrowth": 2,
+    "reason": "#1648 (PR #1665): an open kind is priced from its own estimate until three tasks of it finish. The replay matches the recording on main just before #1665 (730420d2) and grows from e43b2fe2 on."
+  }
+}

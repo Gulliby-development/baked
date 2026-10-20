@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   coveringChecks,
   isStaticCheck,
@@ -7,6 +10,7 @@ import {
   taskCheckList,
   withCoveringChecks,
 } from "../src/core/workflows/check-policy.js";
+import { detectGates } from "../src/core/workflows/gates.js";
 import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
 import type { Check, Task } from "../src/core/workflows/types.js";
 import { fixturePolicy } from "./helpers/workflow-fixture.js";
@@ -146,5 +150,33 @@ describe("whole-unit checks are not covering checks", () => {
     expect(
       taskCheckList(rust, task("T002", ["src/parse.rs"], ["cargo-clippy", "cargo-fmt"])).map((c) => c.id),
     ).toEqual([]);
+  });
+});
+
+describe("a task runner's check target is not a linter (#1680)", () => {
+  const RUNNERS: Record<string, [string, string]> = {
+    make: ["Makefile", "check:\n\t./run-tests.sh\nlint:\n\tluacheck src\n"],
+    just: ["justfile", "check:\n    ./run-tests.sh\nlint:\n    luacheck src\n"],
+    task: ["Taskfile.yml", "version: '3'\ntasks:\n  check:\n    cmds:\n      - ./run-tests.sh\n  lint:\n    cmds:\n      - luacheck src\n"],
+  };
+  test.each(Object.keys(RUNNERS))("%s check runs in the checks stage, not after each code task", (runner) => {
+    const [file, text] = RUNNERS[runner] as [string, string];
+    const root = mkdtempSync(join(tmpdir(), "baked-runner-check-"));
+    try {
+      writeFileSync(join(root, file), text);
+      const gates = detectGates(root).map((s) => ({ ...s.check, scope: "feature" as const }));
+      expect(gates.map((g) => `${g.id}=${g.executable} ${g.args.join(" ")}`).sort()).toEqual([`check=${runner} check`, `lint=${runner} lint`]);
+      const gated: RunPolicy = { ...fixturePolicy, checks: gates };
+      for (const path of ["src/sum.c", "src/sum.lua", "src/Sum.php"])
+        expect(coveringChecks(gated, { writes: [{ path, action: "create" }] }).map((c) => c.id)).toEqual(["lint"]);
+      expect(isStaticCheck(gates.find((g) => g.id === "check") as Check)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("checks that analyze source keep their static role", () => {
+    for (const [executable, args] of [["cargo", ["check"]], ["deno", ["check", "main.ts"]], ["ruff", ["check", "."]], ["make", ["lint"]], ["make.exe", ["format-check"]]] as const)
+      expect([executable, isStaticCheck({ ...check("x", [...args], "feature"), id: args[0], executable })]).toEqual([executable, true]);
   });
 });

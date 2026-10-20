@@ -40,7 +40,7 @@ import {
   type WorkflowDefinition,
   type WorkflowEvent,
 } from "./schemas.js";
-import { costStageOf } from "./stage-price.js";
+import { costStageOf, type RunPrices, runPrices } from "./stage-price.js";
 import { DEFAULT_STALL_SETTINGS, touchProgress } from "./stall.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import { hostWritten } from "./task-graph.js";
@@ -343,6 +343,9 @@ function costCapOf(policyJson: string): { maxCostUsd?: number } {
   const cap = (JSON.parse(policyJson) as { maxCostUsd?: unknown }).maxCostUsd;
   return typeof cap === "number" ? { maxCostUsd: cap } : {};
 }
+/** Parsed artifacts a store keeps; the oldest is dropped past this. */
+const PARSED_ARTIFACTS = 4096;
+
 export class WorkflowStore {
   private readonly db: Database;
   readonly path: string;
@@ -976,6 +979,44 @@ export class WorkflowStore {
       )
       .all(id);
   }
+  /**
+   * Changes whenever a run's price samples can (#1647): an attempt starts, finishes or records
+   * tokens, a step is added, or an attempt's usage is written. A reservation alone leaves it as is.
+   */
+  priceStamp(runId: string): string {
+    return (
+      this.db
+        .query<{ stamp: string }, [string]>(
+          "SELECT (SELECT COUNT(*) || ':' || TOTAL(COALESCE(used_tokens,0)) || ':' || TOTAL(COALESCE(ended_at,0)) || ':' || TOTAL(usage_complete) FROM attempts WHERE run_id=?1) || '/' || (SELECT COUNT(*) FROM steps WHERE run_id=?1) || '/' || (SELECT COUNT(*) || ':' || TOTAL(revision) FROM artifacts WHERE run_id=?1 AND logical_path LIKE 'attempts/%/usage.json') AS stamp",
+        )
+        .get(runId)?.stamp ?? ""
+    );
+  }
+  /** The latest revision of each artifact whose path matches the LIKE `pattern`, in one query. */
+  latestArtifacts(id: string, pattern: string): ArtifactRow[] {
+    return this.db
+      .query<ArtifactRow, [string, string, string]>(
+        "SELECT a.* FROM artifacts a JOIN (SELECT logical_path, MAX(revision) AS revision FROM artifacts WHERE run_id=? AND logical_path LIKE ? GROUP BY logical_path) l ON a.logical_path=l.logical_path AND a.revision=l.revision WHERE a.run_id=?",
+      )
+      .all(id, pattern, id);
+  }
+  /**
+   * An artifact's content parsed as JSON. Artifacts are immutable, so the parse is kept by ID
+   * (#1647: pricing a capped run read every attempt's usage again before every model call).
+   */
+  readArtifactJson<T>(runId: string, row: ArtifactRow): T {
+    const key = `${runId}/${row.id}`;
+    const cached = this.parsedArtifacts.get(key);
+    if (cached && cached.hash === row.content_hash) return cached.value as T;
+    const value = JSON.parse(this.readArtifact(runId, row.id)) as T;
+    if (this.parsedArtifacts.size >= PARSED_ARTIFACTS) {
+      const oldest = this.parsedArtifacts.keys().next().value;
+      if (oldest !== undefined) this.parsedArtifacts.delete(oldest);
+    }
+    this.parsedArtifacts.set(key, { hash: row.content_hash, value });
+    return value;
+  }
+  private readonly parsedArtifacts = new Map<string, { hash: string; value: unknown }>();
   latestArtifact(id: string, path: string): ArtifactRow | null {
     return this.db
       .query<ArtifactRow, [string, string]>(
@@ -1476,8 +1517,7 @@ export class WorkflowStore {
     if (model === null) return null;
     const row = this.latestArtifact(runId, `attempts/${attemptId}/usage.json`);
     if (!row) return null;
-    const usage = JSON.parse(this.readArtifact(runId, row.id)) as AttemptUsageRecord;
-    return attemptCost(model, usage);
+    return attemptCost(model, this.readArtifactJson<AttemptUsageRecord>(runId, row));
   }
   /**
    * Adds a finished attempt's cost to the run row. The first priced attempt of a run recorded
@@ -1529,18 +1569,31 @@ export class WorkflowStore {
    * other open attempt still reserves priced at its owning stage's rate (`callCostRate`), so parallel
    * attempts reserve against what is left instead of all starting on the same remainder.
    */
-  costUsage(runId: string, attemptId?: string): { spentUsd: number; reservedUsd: number } {
+  costUsage(
+    runId: string,
+    attemptId?: string,
+    known?: RunPrices,
+  ): { spentUsd: number; reservedUsd: number } {
     const row = this.run(runId);
     const spent = this.costOf(runId, row.estimated_cost_microusd);
-    const reservedUsd = this.attempts(runId)
-      .filter((a) => !a.usage_complete && a.id !== attemptId && a.model_id !== null)
-      .reduce(
-        (sum, a) =>
-          sum +
-          a.reserved_tokens *
-            callCostRate(this, runId, costStageOf(this, runId, a.step_id), a.model_id),
-        0,
-      );
+    const open = this.attempts(runId).filter(
+      (a) => !a.usage_complete && a.id !== attemptId && a.model_id !== null,
+    );
+    // The run's price samples and steps are read once for all its open attempts (#1647).
+    const prices = open.length ? (known ?? runPrices(this, runId)) : null;
+    const reservedUsd = open.reduce(
+      (sum, a) =>
+        sum +
+        a.reserved_tokens *
+          callCostRate(
+            this,
+            runId,
+            costStageOf(this, runId, a.step_id, prices?.steps),
+            a.model_id,
+            prices?.samples,
+          ),
+      0,
+    );
     return { spentUsd: spent ?? 0, reservedUsd };
   }
   /**
@@ -1565,9 +1618,17 @@ export class WorkflowStore {
         `No price is known for ${model}, so the run's cost cap cannot hold`,
         { reason: "cost", model, maxCostUsd },
       );
-    const { spentUsd, reservedUsd } = this.costUsage(runId, attemptId);
+    const prices = runPrices(this, runId);
+    const { spentUsd, reservedUsd } = this.costUsage(runId, attemptId, prices);
     const requestedUsd =
-      tokens * callCostRate(this, runId, costStageOf(this, runId, stepId), model);
+      tokens *
+      callCostRate(
+        this,
+        runId,
+        costStageOf(this, runId, stepId, prices.steps),
+        model,
+        prices.samples,
+      );
     if (
       spentUsd + reservedUsd + requestedUsd > cap &&
       !growCostCapToForecast(
@@ -2030,6 +2091,7 @@ export class WorkflowStore {
       // Explicit redaction is the sole content-mutation exception. The original hash and
       // metadata remain, so ordinary reads fail integrity validation after redaction.
       if (target.inline_content !== null) {
+        this.parsedArtifacts.delete(`${runId}/${artifactId}`);
         this.db.exec("DROP TRIGGER artifacts_no_update");
         this.db.run("UPDATE artifacts SET inline_content='[redacted]' WHERE run_id=? AND id=?", [
           runId,

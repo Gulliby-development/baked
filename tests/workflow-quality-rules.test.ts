@@ -126,6 +126,38 @@ describe("anti-slop rule pack", () => {
     expect(rulesOf([created("main.go", 'panic("todo")\npanic("Todo list is empty")\n')])).toEqual(["placeholder-body:1:block"]);
   });
 
+  test("each language's placeholder statement is a placeholder (#1679)", () => {
+    const stubs: Array<[string, string]> = [
+      ["src/main/kotlin/App.kt", "fun total(xs: List<Int>): Int {\n    TODO()\n}\n"],
+      ["src/main/kotlin/Sum.kt", 'fun total(xs: List<Int>): Int = TODO("sum")\n'],
+      ["src/App/Report.cs", 'public int Total() {\n    throw new NotImplementedException("later");\n}\n'],
+      ["src/App/Sum.cs", "public int Total() {\n    throw new System.NotImplementedException();\n}\n"],
+      ["src/main/java/com/x/Report.java", 'public int total() {\n    throw new UnsupportedOperationException("Not implemented");\n}\n'],
+      ["src/main/java/com/x/Sum.java", "public int total() {\n    throw new UnsupportedOperationException();\n}\n"],
+      ["internal/report/report.go", 'func Total() int {\n\tpanic("unimplemented")\n}\n'],
+      ["src/Report.php", "function total() {\n    throw new \\LogicException('Not implemented');\n}\n"],
+      ["src/report.lua", 'local function total()\n  error("not implemented")\nend\n'],
+    ];
+    for (const [path, content] of stubs) {
+      const line = content.split("\n").length > 2 ? 2 : 1;
+      expect([path, rulesOf([created(path, content)])]).toEqual([path, [`placeholder-body:${line}:block`]]);
+    }
+  });
+
+  test("ordinary code that resembles a placeholder is not one (#1679)", () => {
+    const allowed: Array<[string, string]> = [
+      // Iterator.remove and the Collection mutators document UnsupportedOperationException.
+      ["src/main/java/com/x/ReadOnlyIterator.java", "@Override\npublic void remove() {\n    throw new UnsupportedOperationException();\n}\n"],
+      ["src/main/java/com/x/Frozen.java", "@Override public boolean add(E e) { throw new UnsupportedOperationException(); }\n"],
+      ["src/main/java/com/x/View.java", "@Override\npublic V put(\n        K key, V value) {\n    throw new UnsupportedOperationException();\n}\n"],
+      // A todo app's calls and logs.
+      ["src/todos.kt", "fun add(item: String) = todo(item)\nval t = Todo(\"x\")\n"],
+      ["src/log.ts", 'console.error("not implemented in this browser");\n'],
+      ["main.go", 'log.Printf("error(\\"todo: x\\")")\n'],
+    ];
+    for (const [path, content] of allowed) expect([path, rulesOf([created(path, content)])]).toEqual([path, []]);
+  });
+
   test("a Python function whose body only raises NotImplementedError is a placeholder (#937)", () => {
     const stubs: Array<[string, number]> = [
       ["def parse(text):\n    raise NotImplementedError\n", 2],

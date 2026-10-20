@@ -158,6 +158,17 @@ export function hostContentProblems(graph: Pick<TaskGraph, "tasks">): string[] {
 }
 
 /**
+ * Whether two contents differ in whitespace only, as a formatter lays them out. A planner that
+ * formatted the split's stubs for the project's formatter check had its plan refused and wrote a
+ * second host task to format them (bench round 50, selwhy, #1662).
+ */
+function sameLayoutFree(a: string | undefined, b: string): boolean {
+  if (a === undefined) return false;
+  const words = (text: string) => text.replace(/\s+/g, " ").trim();
+  return a === b || words(a) === words(b);
+}
+
+/**
  * Plan problems of a run whose files are fixed before planning (an initiative feature's skeleton,
  * #1461): every file is written by one host-written task with exactly its content, and no other
  * task creates it.
@@ -172,7 +183,8 @@ export function hostFileProblems(
   for (const file of files) {
     const writer = graph.tasks.find(
       (t) =>
-        hostWritten(t) && t.writes.some((w) => w.path === file.path && w.content === file.content),
+        hostWritten(t) &&
+        t.writes.some((w) => w.path === file.path && sameLayoutFree(w.content, file.content)),
     );
     if (writer) owners.add(writer.id);
     else wrong.push(file.path);
@@ -185,7 +197,7 @@ export function hostFileProblems(
   const problems: string[] = [];
   if (wrong.length || owners.size > 1)
     problems.push(
-      `extra.hostFiles fixes the content of ${files.map((f) => f.path).join(", ")}: write all of them in one task whose writes carry exactly that content${wrong.length ? `; ${wrong.join(", ")} ${wrong.length === 1 ? "is" : "are"} not written that way` : ""}.`,
+      `extra.hostFiles fixes the content of ${files.map((f) => f.path).join(", ")}: write all of them in one task whose writes carry exactly that content${wrong.length ? `; ${wrong.join(", ")} ${wrong.length === 1 ? "is" : "are"} not written that way` : ""}. Whitespace may follow the project's formatter; nothing else may differ.`,
     );
   for (const task of creators)
     problems.push(

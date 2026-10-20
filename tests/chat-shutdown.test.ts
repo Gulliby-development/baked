@@ -1,9 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ScriptedChatHost } from "../src/core/chat/scripted-host.js";
 import { ChatService, type ChatSession } from "../src/core/chat/sessions.js";
+import { removeTempDir } from "./helpers/temp-dir.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -40,7 +41,7 @@ test.each(["turn", "compaction"] as const)(
       // Also drain an escaped turn when checking the unfixed implementation.
       await session.settled();
       await chat.shutdown();
-      rmSync(root, { recursive: true, force: true });
+      await removeTempDir(root);
     });
     if (operation === "compaction") {
       for (let i = 0; i < 3; i++) {

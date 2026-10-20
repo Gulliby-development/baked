@@ -72,7 +72,7 @@ import {
 import { staticCorrection } from "../src/core/workflows/scheduler.js";
 import { ASSERTION_FAILURES } from "./helpers/assertion-failures.js";
 import { failureOwner } from "../src/core/workflows/task-graph.js";
-import type { Check, RunPolicy, RuntimeState, TaskGraph } from "../src/core/workflows/schemas.js";
+import { type Check, type RunPolicy, type RuntimeState, type TaskGraph, uncontractedBuildCriteria } from "../src/core/workflows/schemas.js";
 import type { TaskRow, WorkflowStore } from "../src/core/workflows/store.js";
 import { scanTestIntegrity, testChanges } from "../src/core/workflows/test-integrity.js";
 import type { Task } from "../src/core/workflows/types.js";
@@ -90,9 +90,13 @@ test("#1643 initiative ceiling gate uses central stage prices from shared histor
       expect(view.budget.cost).toMatchObject({ capUsd: 30, tolerance: 0.25, ceilingUsd: 37.5, spentUsd: 0.72 });
       expect(view.next).toMatchObject({ kind: "start", featureId: "f2" });
       expect(shareShortfall(view, view.features[1]!)).toBeNull();
-      const over = { ...view, budget: { ...view.budget, cost: { ...view.budget.cost, forecastUsd: 37.51 } } };
+      // One accepted skeleton measures nothing: a forecast over the ceiling advises (#1659).
+      expect(view.budget.cost).toMatchObject({ measuredFeatures: 0, forecastBinding: false });
+      const advisory = { ...view, budget: { ...view.budget, cost: { ...view.budget.cost, forecastUsd: 37.51 } } };
+      expect(shareShortfall(advisory, view.features[1]!)).toBeNull();
+      const over = { ...view, budget: { ...view.budget, cost: { ...view.budget.cost, forecastUsd: 37.51, forecastBinding: true } } };
       expect(shareShortfall(over, view.features[1]!)?.message).toContain("above its $37.50 ceiling");
-      const at = { ...view, budget: { ...view.budget, cost: { ...view.budget.cost, forecastUsd: 37.5 } } };
+      const at = { ...view, budget: { ...view.budget, cost: { ...view.budget.cost, forecastUsd: 37.5, forecastBinding: true } } };
       expect(shareShortfall(at, view.features[1]!)).toBeNull();
       const estimate = initiatives.estimate("values", 0);
       expect(view.budget.cost.forecastUsd).toBeCloseTo(0.72 + estimate.features.slice(1)
@@ -204,14 +208,22 @@ describe("gate execution after host suspend (#1610)", () => {
 });
 
 describe("host-written acceptance rows in the case-walk and mutation gates (#1596)", () => {
-  test.each(["bun", "pytest"] as const)("%s retains every case in its JSON data and keeps generated tests out of mutation proposals", async (framework) => {
+  // #1660: every framework, including the Java and C# tests that hold the rows as literals.
+  const layouts = {
+    bun: { harness: "tests/harness.ts", test: "tests/rows.test.ts" },
+    pytest: { harness: "tests/harness.py", test: "tests/test_rows.py" },
+    go: { harness: "tests/harness.go", test: "tests/rows_test.go", package: "tests" },
+    junit: { harness: "tests/Harness.java", test: "tests/RowsTest.java", package: "tests" },
+    rust: { harness: "tests/harness.rs", test: "tests/rows.rs" },
+    xunit: { harness: "tests/Harness.cs", test: "tests/RowsTest.cs", package: "Tests" },
+  } as const;
+  test.each(Object.keys(layouts) as (keyof typeof layouts)[])("%s retains every case in its JSON data and keeps generated tests out of mutation proposals", async (framework) => {
     const root = mkdtempSync(join(tmpdir(), "baked-row-gate-"));
     try {
-      const spec = { ...fixtureSpec, criteria: [{ ...fixtureSpec.criteria[0]!, given: "a number", when: "it is doubled", then: "Input | Expected\n12 | 24\n34 | 68" }] };
-      const harness = framework === "bun" ? "tests/harness.ts" : "tests/harness.py";
-      const file = framework === "bun" ? "tests/rows.test.ts" : "tests/test_rows.py";
+      const spec = { ...fixtureSpec, criteria: [{ ...fixtureSpec.criteria[0]!, given: "a number", when: "it is doubled", then: "Input | Scenario | Expected\n12 | small | 24\n34 | large | 68" }] };
+      const { harness, test: file } = layouts[framework];
       const task: Task = { id: "T001", title: "Rows", description: "Write actual(input)", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", origin: "planned", findingIds: [], rationale: "Test", readHints: [], checkIds: [],
-        rows: ["AC-001"], rowTest: { framework, harness, test: file, data: "tests/rows.json" },
+        rows: ["AC-001"], rowTest: { ...layouts[framework], framework, data: "tests/rows.json" },
         writes: [harness, file, "tests/rows.json"].map((path) => ({ path, action: "create" })) };
       const graph = { schemaVersion: 1 as const, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [task] };
       const artifact = rowsArtifact(spec, graph, { schemaVersion: 1, inputHash: "a".repeat(64), verdict: "pass", findings: [] });
@@ -221,8 +233,12 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
       const check = caseCheck(spec, task);
       expect(check).toBeDefined();
       expect(await check?.(root)).toEqual([]);
-      writeFileSync(join(root, "tests/rows.json"), JSON.stringify(artifact.rows.slice(0, 1)));
-      expect((await check?.(root))?.join()).toContain("34");
+      // Java and C# tests hold the rows themselves, and the host refuses any change to that file.
+      if (framework === "junit" || framework === "xunit") expect(files[1]?.content).toMatch(/\b34L?\b.*\b68L?\b/);
+      else {
+        writeFileSync(join(root, "tests/rows.json"), JSON.stringify(artifact.rows.slice(0, 1)));
+        expect((await check?.(root))?.join()).toContain("34");
+      }
       const changes = files.map((generated) => ({ path: generated.path, before: "", content: generated.content }));
       expect(proposalFiles(changes)).toEqual([]);
       expect(generateMutants(changes)).toEqual([]);
@@ -616,7 +632,8 @@ describe("gate matrix: criteria scenario labels (#1565)", () => {
     const task = { criterionIds: ["AC-001"], writes: [{ path: sample.path, action: "create" as const }] };
     const cases = criterionCases({ criteria: [{ id: "AC-001", requirementIds: ["FR-001"], given: 'the "repeated flag" and `success` scenarios', when: "tests run", then: "| Input | expected |\n| --- | --- |\n| repeated flag | last value |\n| success | zero status |\n| --path src/cli | selected |\n| Join([3,0,-2]) | joined |", method: "automated" }] }, task);
     expect(writtenTestPaths(task)).toEqual([sample.path]);
-    expect(cases.map((c) => c.literal)).toEqual(["--path src/cli", "Join([3,0,-2])"]);
+    // An expression cell asks for its literal arguments (#1663).
+    expect(cases.map((c) => c.literal)).toEqual(["--path src/cli", "[3,0,-2]"]);
     expect(missingCases(cases, [sample.text])).toEqual([]);
     expect(missingCases(cases, [sample.text.replace("src/cli", "SRC")]).map((c) => c.literal)).toEqual(["--path src/cli"]);
   });
@@ -642,6 +659,74 @@ function shell(root: string, on: string[]): ToolShell {
     now: () => 0,
   };
 }
+
+// A Python project whose lockfile names its environment (#1655): the gates run in it, and its
+// test task still gets a tests-written check. The bare interpreter outside an activated uv
+// environment has no pytest, and `uv run pytest` built no per-task check.
+const PYTHON_ENVIRONMENTS: [string, string, string][] = [
+  ["uv.lock", "uv", "run"],
+  ["poetry.lock", "poetry", "run"],
+  ["Pipfile.lock", "pipenv", "run"],
+];
+describe("gate matrix: python environments", () => {
+  for (const [lockfile, runner, verb] of PYTHON_ENVIRONMENTS)
+    cell("python", `${lockfile}: gates and the written-tests check run in the environment`, () => {
+      const fixture = FIXTURES.python;
+      const path = fixture.property.path;
+      const root = project({ ...fixture.files, [lockfile]: "", [path]: fixture.property.seeded });
+      const checks = detectGates(root).filter((s) => s.preselected).map((s) => s.check);
+      expect(checks.map((c) => [c.id, c.executable, ...c.args.slice(0, 2)])).toEqual([
+        ["pytest", runner, verb, "pytest"],
+        ["ruff", runner, verb, "ruff"],
+      ]);
+      expect(checks.find((c) => c.id === "ruff")?.fix).toEqual({ executable: runner, args: [verb, "ruff", "check", "--fix"] });
+      const written = writtenTestsCheck(root, checks, [{ path, action: "create" }]);
+      expect(written && [written.executable, ...written.args]).toEqual([runner, verb, "pytest", "-q", `./${path}`]);
+    });
+});
+
+describe("gate matrix: format and type-check gates (#1685)", () => {
+  const gates = (files: Record<string, string>) =>
+    detectGates(project(files)).map((s) => [s.check.id, [s.check.executable, ...s.check.args].join(" "), s.check.fix ? [s.check.fix.executable, ...s.check.fix.args].join(" ") : null, s.preselected]);
+  const pkg = (extra: Record<string, unknown>) => JSON.stringify({ name: "p", ...extra });
+
+  for (const name of ["format:check", "fmt:check", "check-format", "format-check", "prettier:check"])
+    cell("bun", `a "${name}" script is a preselected format gate`, () => {
+      const scripts = { [name]: "prettier --check .", format: "prettier --write ." };
+      expect(gates({ "package.json": pkg({ scripts }), "bun.lock": "" })).toContainEqual(["format", `bun run ${name}`, "bun run format", true]);
+    });
+
+  cell("npm", "a formatter config without a check script is offered, not preselected", () => {
+    expect(gates({ "package.json": pkg({ prettier: {} }), "package-lock.json": "{}" })).toContainEqual(["format", "npx prettier --check .", "npx prettier --write .", false]);
+    expect(gates({ "package.json": pkg({}), "pnpm-lock.yaml": "", ".prettierrc.yaml": "" })).toContainEqual(["format", "pnpm exec prettier --check .", "pnpm exec prettier --write .", false]);
+    expect(gates({ "package.json": pkg({}), "bun.lock": "", "biome.json": "{}" })).toContainEqual(["format", "bunx biome format .", "bunx biome format --write .", false]);
+    expect(gates({ "package.json": pkg({}), "yarn.lock": "", "dprint.json": "{}" })).toContainEqual(["format", "yarn dprint check", "yarn dprint fmt", false]);
+    const scripted = gates({ "package.json": pkg({ scripts: { "format:check": "biome format ." } }), "bun.lock": "", "biome.json": "{}" });
+    expect(scripted.filter(([id]) => id === "format")).toEqual([["format", "bun run format:check", null, true]]);
+    expect(gates({ "package.json": pkg({ scripts: { lint: "eslint ." } }), "bun.lock": "" }).map(([id]) => id)).toEqual(["lint"]);
+  });
+
+  const python = (pyproject: string, extra: Record<string, string> = {}) => gates({ "pyproject.toml": `[project]\nname = "p"\n${pyproject}`, ...extra });
+
+  cell("python", "black gets a preselected format gate unless ruff formats", () => {
+    expect(python("[tool.black]\nline-length = 100\n")).toContainEqual(["black", "black --check .", "black .", true]);
+    expect(python("", { "requirements-dev.txt": "black==24.1.0\n" })).toContainEqual(["black", "black --check .", "black .", true]);
+    expect(python("", { "requirements.txt": "black-extras\n" }).map(([id]) => id)).not.toContain("black");
+    expect(python("[tool.black]\n[tool.ruff]\n[tool.ruff.format]\n").map(([id]) => id)).not.toContain("black");
+    expect(python("[tool.black]\n", { "uv.lock": "" })).toContainEqual(["black", "uv run black --check .", "uv run black .", true]);
+  });
+
+  cell("python", "mypy and pyright configs get a preselected whole-unit type-check gate", () => {
+    for (const [extra, pyproject] of [[{ "mypy.ini": "[mypy]\n" }, ""], [{}, "[tool.mypy]\nstrict = true\n"], [{ "setup.cfg": "[mypy]\n" }, ""]] as const)
+      expect(python(pyproject, extra)).toContainEqual(["mypy", "mypy .", null, true]);
+    expect(python("", { "pyrightconfig.json": "{}" })).toContainEqual(["pyright", "pyright", null, true]);
+    expect(python("[tool.pyright]\n[tool.mypy]\n").filter(([id]) => id === "mypy" || id === "pyright").map(([id]) => id)).toEqual(["pyright"]);
+    expect(python("[tool.mypy]\n", { "poetry.lock": "" })).toContainEqual(["mypy", "poetry run mypy .", null, true]);
+    const typecheck = detectGates(project({ "pyproject.toml": "[tool.mypy]\n" })).find((s) => s.check.id === "mypy")!.check;
+    expect(isWholeUnitCheck(typecheck)).toBe(true);
+    expect(python("").map(([id]) => id)).toEqual([]);
+  });
+});
 
 for (const stack of STACKS) {
   const fixture = FIXTURES[stack];
@@ -1235,6 +1320,80 @@ for (const stack of STACKS) {
       expect(scan(renamed)).toEqual([]);
       expect(scan(renamed, { protects })).toEqual([]);
       expect(testChanges({ path: sample.path, before, after: renamed })).toEqual({ added: [], renamed: { [name("intervalWorkload")]: name("serializedLocation") } });
+    });
+  });
+}
+
+/** The build command a process test of the stack runs before it starts the program (#1661). */
+const PROCESS_BUILD: Record<Stack, string> = {
+  bun: "bun run build",
+  npm: "npm run build",
+  python: "python -m build",
+  go: "go build -o BIN ../..",
+  rust: "cargo build",
+  maven: "mvn package",
+  dotnet: "dotnet build",
+};
+
+for (const stack of STACKS) {
+  const checks = () => detectGates(project(FIXTURES[stack].files)).filter((s) => s.preselected).map((s) => s.check);
+  const criterion = (given: string, when: string, then: string) => ({
+    ...fixtureSpec,
+    criteria: [{ ...fixtureSpec.criteria[0]!, id: "AC-009", given, when, then }],
+  });
+  describe(`gate matrix: ${stack} build criteria`, () => {
+    cell(stack, "build criteria: a process test that builds the program is proven by the stack's checks", () => {
+      const spec = criterion("the sole process test", `it runs \`${PROCESS_BUILD[stack]}\` and then the built program`, "the program prints the tree");
+      expect(uncontractedBuildCriteria(spec, checks())).toEqual([]);
+    });
+    cell(stack, "build criteria: a production build is proven only where a check compiles the project", () => {
+      const spec = criterion("the release", "it is prepared", "the production build succeeds");
+      const compiled = stack === "go" || stack === "rust" || stack === "maven" || stack === "dotnet";
+      expect(uncontractedBuildCriteria(spec, checks())).toEqual(compiled ? [] : ["AC-009"]);
+    });
+  });
+}
+
+/**
+ * A test file in a framework style the guard read only by name (#1651): FluentAssertions, Go
+ * subtests, tokio and rstest tests. A corrective that drops one assertion or one test is flagged.
+ */
+const FRAMEWORK_STYLE: Partial<Record<Stack, { path: string; file: string; assertion: string; test: string; name: string }>> = {
+  dotnet: {
+    path: "tests/PrimesTests.cs",
+    file: `    [Fact]\n    public void Primes()\n    {\n        Run(2).Should().BeTrue();\n        Run(4).Should().BeFalse();\n    }\n\n    [Fact]\n    public void Composites()\n    {\n        Run(9).Should().BeFalse();\n    }\n`,
+    assertion: "        Run(4).Should().BeFalse();\n",
+    test: `\n    [Fact]\n    public void Composites()\n    {\n        Run(9).Should().BeFalse();\n    }\n`,
+    name: "Composites",
+  },
+  go: {
+    path: "primes_test.go",
+    file: `func TestPrimes(t *testing.T) {\n\tt.Run("two", func(t *testing.T) {\n\t\trequire.True(t, run(2))\n\t\trequire.False(t, run(4))\n\t})\n\tt.Run("nine", func(t *testing.T) {\n\t\trequire.False(t, run(9))\n\t})\n}\n`,
+    assertion: "\t\trequire.False(t, run(4))\n",
+    test: `\tt.Run("nine", func(t *testing.T) {\n\t\trequire.False(t, run(9))\n\t})\n`,
+    name: "TestPrimes/nine",
+  },
+  rust: {
+    path: "tests/primes.rs",
+    file: `#[tokio::test(flavor = "multi_thread")]\nasync fn primes() {\n    assert!(run(2).await);\n    assert!(!run(4).await);\n}\n\n#[rstest]\nfn composites() {\n    assert!(!block_on(run(9)));\n}\n`,
+    assertion: "    assert!(!run(4).await);\n",
+    test: `\n#[rstest]\nfn composites() {\n    assert!(!block_on(run(9)));\n}\n`,
+    name: "composites",
+  },
+};
+
+for (const stack of STACKS) {
+  const sample = FRAMEWORK_STYLE[stack];
+  if (!sample) continue;
+  const scan = (after: string) => scanTestIntegrity([{ path: sample.path, before: sample.file, after }]);
+  describe(`gate matrix: ${stack} framework styles`, () => {
+    cell(stack, "framework styles: a corrective that removes an assertion is flagged", () => {
+      expect(scan(sample.file.replace(sample.assertion, "")).map((f) => f.rule)).toEqual(["assertions"]);
+    });
+    cell(stack, "framework styles: a corrective that removes a test is flagged by name", () => {
+      const found = scan(sample.file.replace(sample.test, ""));
+      expect(found.map((f) => f.rule)).toContain("test-count");
+      expect(found[0]?.detail).toContain(JSON.stringify(sample.name));
     });
   });
 }
@@ -1879,7 +2038,7 @@ describe("initiative dollar forecast gate (#1607)", () => {
       const view = {
         initiativeId: "values",
         budget: { remaining: { tokens: 20_000_000, calls: 1000, activeMs: 21_600_000 },
-          cost: { capUsd: 30, ceilingUsd: 30 * (1 + tolerance), spentUsd: 5 * spent * 9e-6, forecastUsd },
+          cost: { capUsd: 30, ceilingUsd: 30 * (1 + tolerance), spentUsd: 5 * spent * 9e-6, forecastUsd, measuredFeatures: 5, forecastBinding: true },
         },
         features: estimate.features.map((f, i) => ({ id: f.featureId, size: f.size, state: i < 5 ? "accepted" : "ready",
           share: i < 5 ? null : { tokens: 1_000_000, calls: 100, activeMs: 1_000_000 }, shareUsd: i < 5 ? null : 2.5, need: f.tokens,

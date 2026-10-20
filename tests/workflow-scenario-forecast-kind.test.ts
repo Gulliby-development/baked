@@ -93,7 +93,12 @@ describe("scenario: code overruns do not scale unmeasured test tasks (#1631)", (
     expect(tests).toHaveLength(2);
     const midpoint = tests.reduce((sum, t) => sum + (t.estimate.low + t.estimate.high) / 2, 0);
     const high = tests.reduce((sum, t) => sum + t.estimate.high, 0);
-    expect(forecast.remainingTokens - verificationTokens()).toBe(midpoint);
+    // The forecast is taken before T004's attempt runs: its reservation is already counted in
+    // dollars, so that much of T004's price is not counted again (#1648).
+    const stageOf = new Map(store.steps(runId).map((s) => [s.id, s.stage_id]));
+    const held = store.attempts(runId).find((a) => a.model_id !== null && stageOf.get(a.step_id) === "task-T004")!.reserved_tokens;
+    expect(held).toBeGreaterThan(0);
+    expect(forecast.remainingTokens - verificationTokens()).toBe(midpoint - held);
     expect(forecast.remainingTokens - verificationTokens()).toBeLessThanOrEqual(high * 1.5);
     expect(forecast.projectedUsd).toBeLessThanOrEqual(CAP);
     const revisions = store.artifacts(runId).filter((a) => a.kind === "policy-revision").map((a) => JSON.parse(store.readArtifact(runId, a.id)) as { kind: string });

@@ -42,6 +42,8 @@ export const InitiativeStartInputSchema = z.strictObject({
   keepFeatures: z.boolean().optional(),
   /** Ask the decomposer to split a feature that dominates the critical path. */
   splitCriticalPath: z.boolean().optional(),
+  /** Let a small feature that others depend on run the light workflow with a host-made contract. */
+  lightContracts: z.boolean().optional(),
 });
 export type InitiativeStartInput = z.infer<typeof InitiativeStartInputSchema>;
 
@@ -86,6 +88,7 @@ export function initiativeStartRequest(
     ...(form.forecastStop ? { forecastStop: true } : {}),
     ...(form.keepFeatures ? { keepFeatures: true } : {}),
     ...(form.splitCriticalPath ? { splitCriticalPath: true } : {}),
+    ...(form.lightContracts ? { lightContracts: true } : {}),
     ownerLabel: identity.ownerLabel,
   };
 }
@@ -179,7 +182,11 @@ export function costText(cost: CostView | undefined): string | null {
   return [
     `${usd(cost.spentUsd)} of ${usd(cost.capUsd)}${ceiling}`,
     `${usd(cost.remainingUsd ?? 0)} left`,
-    ...(cost.forecastUsd !== null ? [`forecast ${usd(cost.forecastUsd)}`] : []),
+    ...(cost.forecastUsd !== null
+      ? [
+          `forecast ${usd(cost.forecastUsd)}${cost.forecastNotice ? ` (advisory: ${cost.measuredFeatures} measured features)` : ""}`,
+        ]
+      : []),
   ].join(" · ");
 }
 

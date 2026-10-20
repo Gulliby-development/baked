@@ -131,6 +131,7 @@ import {
   rowPlanProblems,
   rowsArtifact,
   rowsAsDataOn,
+  SPEC_ROWS_NOTE,
 } from "./acceptance-rows.js";
 import {
   affectedTestCheck,
@@ -175,7 +176,13 @@ import {
   policyDecisions,
   withoutApprovalRemarks,
 } from "./auto-approval.js";
-import { budgetUsage, grownCostCap, raiseToStartEstimate, reserveTokens } from "./budget.js";
+import {
+  adoptStoredLimits,
+  budgetUsage,
+  grownCostCap,
+  raiseToStartEstimate,
+  reserveTokens,
+} from "./budget.js";
 import {
   type CandidateResult,
   type CandidateSelection,
@@ -250,6 +257,7 @@ import {
 } from "./fork-stage.js";
 import { outputTail } from "./gates.js";
 import { HOST_ADDITIONS, HOST_EDITS_PATH, type HostEdit, recordGraphEdits } from "./host-edits.js";
+import { isStoreError, recordHostError } from "./host-error.js";
 import { criticalPathProblems } from "./initiatives/critical-path.js";
 import {
   type InitiativePlan,
@@ -766,12 +774,6 @@ export function outOfScopeFailure(
   const named = failingFilesInOutput(checked.output, tasks);
   return named.some((path) => task.writes.some((w) => w.path === path)) ? [] : named;
 }
-/** A SQLite failure is a host fault, never a model's invalid output. */
-function isStoreError(error: unknown): boolean {
-  if (!(error instanceof Error) || error instanceof WorkflowFault) return false;
-  const code = (error as { code?: unknown }).code;
-  return error.name === "SQLiteError" || (typeof code === "string" && code.startsWith("SQLITE_"));
-}
 /** The start of the restart reason for an edit of the task's own file that did not apply. */
 const EDIT_RETRY = "an edit of its own file did not apply";
 /** Lines of a failed check's output a restarted or resumed session gets (#1516). */
@@ -1190,6 +1192,7 @@ export class WorkflowScheduler {
                     {
                       featureId: run.feature_id,
                       workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
+                      ...(rowsAsDataOn(policy) ? { acceptanceRows: { note: SPEC_ROWS_NOTE } } : {}),
                     },
                     signal,
                     undefined,
@@ -2757,7 +2760,10 @@ export class WorkflowScheduler {
                       ? "storage_failure"
                       : code === "STALE_DECISION" || code === "ARTIFACT_MISSING"
                         ? "host_state"
-                        : "invalid_output";
+                        : // An exception of BAKED's own code is no model's output (#1653).
+                          fault instanceof WorkflowFault
+                          ? "invalid_output"
+                          : "host_error";
         const diagnostic = this.store.artifact(
           runId,
           "diagnostic",
@@ -2769,6 +2775,7 @@ export class WorkflowScheduler {
               ? fault.message
               : String(fault),
         );
+        if (reason === "host_error") recordHostError(this.store, runId, diagnostic.id, fault);
         if (fault instanceof WorkflowFault && fault.details.recovery)
           this.store.artifact(
             runId,
@@ -3110,9 +3117,7 @@ export class WorkflowScheduler {
     const usage = attempt
       ? this.store.latestArtifact(runId, `attempts/${attempt.id}/usage.json`)
       : undefined;
-    return usage
-      ? (JSON.parse(this.store.readArtifact(runId, usage.id)) as AttemptUsageRecord)
-      : undefined;
+    return usage ? this.store.readArtifactJson<AttemptUsageRecord>(runId, usage) : undefined;
   }
   /**
    * Why a task that ended without a complete implementation gets one more attempt in a fresh
@@ -5153,6 +5158,8 @@ ${note}`;
     policy: RunPolicy,
     report: SizingReport,
   ): void {
+    // The drive's copy misses what the executor grew since: writing it back undid that (#1704).
+    adoptStoredLimits(this.store, runId, policy);
     const tokens = report.budgetAfter > policy.maxTotalTokens;
     const time = report.activeTime.after > policy.maxActiveMs;
     if (!tokens && !time) return;
@@ -10850,7 +10857,7 @@ ${note}`;
         evidenceId,
         claim: `Property test missing for ${c.id}: the criterion holds over ${c.domain} inputs, and no test file of its tasks has a property-based test`,
         impact: "Example tests miss edge inputs of the domain the criterion covers.",
-        suggestedFix: `${c.note ? `Remove the fallback: ${c.note}. ` : ""}Add a property-based test for ${c.id}${file ? ` in ${file}` : ""} with the property library the project has (fast-check, Hypothesis, proptest, jqwik, rapid, FsCheck), or without one a generator with a fixed seed in the project's test framework, that generates inputs over the whole ${c.domain} domain and asserts the criterion, or a loop over every value of a bounded domain of at least 100 values. Do not add a dependency for it.`,
+        suggestedFix: `${c.note ? `Remove the fallback: ${c.note}. ` : ""}Add a property-based test for ${c.id}${file ? ` in ${file}` : ""} with the property library the project has (fast-check, Hypothesis, proptest, jqwik, Kotest property, rapid, FsCheck, CsCheck), or without one a generator with a fixed seed in the project's test framework, that generates inputs over the whole ${c.domain} domain and asserts the criterion, or a loop over every value of a bounded domain of at least 100 values. Do not add a dependency for it.`,
       });
       return {
         ...finding,

@@ -77,11 +77,16 @@ function makeStore(
     attemptTaskGenerations: () => new Map(),
     artifacts: () => artifacts,
     latestArtifact: (_id: string, path: string) => artifacts.find((a) => a.logical_path === path) ?? null,
+    latestArtifacts: (_id: string, pattern: string) => {
+      const like = new RegExp(`^${pattern.split("%").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`);
+      return artifacts.filter((a, i) => like.test(a.logical_path) && artifacts.findIndex((b) => b.logical_path === a.logical_path) === i);
+    },
     readArtifact: (_id: string, id: string) => {
       const content = byId.get(id);
       if (content === undefined) throw new Error(`Missing fixture artifact ${id}`);
       return content;
     },
+    readArtifactJson: (_id: string, row: ArtifactRow) => JSON.parse(byId.get(row.id) ?? "null"),
   } as unknown as WorkflowStore;
 }
 

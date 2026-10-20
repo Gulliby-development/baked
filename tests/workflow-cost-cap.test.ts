@@ -185,3 +185,30 @@ describe("cost cap (maxCostUsd)", () => {
     ).rejects.toThrow(/no cost cap to raise/);
   });
 });
+
+describe("pricing a capped run's reservations (#1647)", () => {
+  test("expandReservation reads no usage artifact again however many attempts finished", async () => {
+    const capped = { ...ROOMY, maxCostUsd: 1_000 };
+    const { store, runId, stepId, spend } = await runningRun(capped);
+    for (let i = 0; i < 400; i++) spend(1_000);
+    const open = [0, 1, 2].map(() => store.reserve(runId, stepId, MODEL, 1_000, capped));
+    const reads: string[] = [];
+    const readArtifact = store.readArtifact.bind(store);
+    store.readArtifact = (run: string, id: string) => {
+      reads.push(id);
+      return readArtifact(run, id);
+    };
+    // The first call parses each finished attempt's usage once.
+    store.expandReservation(runId, open[0] ?? "", 2_000, capped);
+    expect(reads.length).toBeLessThanOrEqual(400);
+    reads.length = 0;
+    for (const attempt of open) store.expandReservation(runId, attempt, 3_000, capped);
+    expect(reads).toEqual([]);
+    // A newly finished attempt is read once, and its spending counts.
+    const before = store.costUsage(runId).spentUsd;
+    spend(1_000);
+    store.expandReservation(runId, open[1] ?? "", 4_000, capped);
+    expect(reads).toHaveLength(1);
+    expect(store.costUsage(runId).spentUsd).toBeCloseTo(before + 1_000 * INPUT, 9);
+  }, 60_000);
+});

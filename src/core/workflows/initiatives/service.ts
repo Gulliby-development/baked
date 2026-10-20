@@ -75,6 +75,7 @@ import {
   applySplitEdit,
   boundaryPathCounts,
   featureDigest,
+  foldSkeletonFeatures,
   type InitiativeFeature,
   InitiativeId,
   type InitiativePlan,
@@ -95,6 +96,7 @@ import {
   type BudgetLimitsValue,
   CostBudgetSchema,
   type CostToleranceValue,
+  FORECAST_BINDING_FEATURES,
   type InitiativeEvent,
   type InitiativeRow,
   type InitiativeRunRow,
@@ -106,9 +108,11 @@ import {
   type FeatureWorkflow,
   featureWorkflow,
   featureWorkflowChoices,
+  LIGHT_LEAF_WORKFLOW,
   lightenSmallLeaves,
   planWorkflowProblems,
   restoreContractWorkflows,
+  withLightContract,
 } from "./workflows.js";
 
 export interface InitiativeStartRequest {
@@ -140,6 +144,8 @@ export interface InitiativeStartRequest {
   keepFeatures?: boolean;
   /** Ask the decomposer to split a feature that dominates the critical path (#1522). */
   splitCriticalPath?: boolean;
+  /** Let a small feature that others depend on run the light workflow with a host-made contract (#1664). */
+  lightContracts?: boolean;
 }
 
 /** What an initiative reroute did to one of its open runs (`initiative.rerouted` event). */
@@ -199,6 +205,16 @@ export interface CostView {
    * without a cap, before a feature is accepted, or while nothing is priced.
    */
   forecastUsd: number | null;
+  /** Accepted features that are not a host-written skeleton: the forecast's measured samples. */
+  measuredFeatures: number;
+  /**
+   * Whether a forecast above the ceiling stops the next feature: with `forecastStop` on, or once
+   * `FORECAST_BINDING_FEATURES` features are measured. Before that the forecast is an
+   * extrapolation, and the caps on spent and reserved dollars bound the money (#1659).
+   */
+  forecastBinding: boolean;
+  /** Why a forecast above the ceiling does not stop the initiative yet; null otherwise. */
+  forecastNotice: string | null;
 }
 
 export interface FeatureView {
@@ -355,7 +371,7 @@ export function shareShortfall(
       cost.ceilingUsd > cost.capUsd
         ? `${usd(cost.ceilingUsd)} ceiling (the ${usd(cost.capUsd)} cap and its tolerance)`
         : `${usd(cost.capUsd)} cap`;
-    if (cost.forecastUsd !== null && cost.forecastUsd > cost.ceilingUsd) {
+    if (cost.forecastUsd !== null && cost.forecastUsd > cost.ceilingUsd && cost.forecastBinding) {
       const accepted = view.features.filter((f) => f.state === "accepted").length;
       return recoveryAdvice(
         `The initiative's cost forecast is ${usd(cost.forecastUsd)}, above its ${ceiling}: ${usd(cost.spentUsd)} spent with ${accepted} of ${view.features.length} features accepted. Raise the dollar budget to at least ${usd(Math.ceil(cost.forecastUsd))} with baked workflow initiative extend --budget-usd N to start ${feature.id}, or pause the initiative.`,
@@ -588,6 +604,7 @@ export class InitiativeService {
       forecastStop: request.forecastStop ?? false,
       keepFeatures: request.keepFeatures ?? false,
       splitCriticalPath: request.splitCriticalPath ?? false,
+      lightContracts: request.lightContracts ?? false,
     };
     this.checkWorkflow(settings);
     // Feature runs in worktrees need Git; refuse now rather than after the decomposer ran.
@@ -1136,7 +1153,10 @@ export class InitiativeService {
       if (!known.has(workflowId))
         known.set(
           workflowId,
-          featureWorkflow(this.workflows.workspace, settings.basePolicy, workflowId),
+          withLightContract(
+            featureWorkflow(this.workflows.workspace, settings.basePolicy, workflowId),
+            lightContracts(settings),
+          ),
         );
       return known.get(workflowId) ?? null;
     };
@@ -1149,6 +1169,7 @@ export class InitiativeService {
   private workflowChoices(settings: InitiativeSettings): FeatureWorkflow[] {
     return featureWorkflowChoices(this.workflows.workspace, settings.basePolicy, {
       tiered: settings.featureAutoApproval !== null,
+      lightContracts: lightContracts(settings),
     });
   }
 
@@ -1232,11 +1253,16 @@ export class InitiativeService {
     const decomposed = InitiativePlanSchema.parse(JSON.parse(state.initiativePlan));
     const settings = this.store.settings(row);
     // Small siblings share one run's fixed stages (#1352); the decomposer's prompt alone did not.
-    const floored = settings.keepFeatures
+    // A feature that is only skeleton runs inside a dependent instead of a run of its own (#1662).
+    const folded = settings.keepFeatures
       ? { plan: decomposed, merged: [] }
-      : mergeSmallSiblings(decomposed, {
+      : foldSkeletonFeatures(decomposed);
+    const siblings = settings.keepFeatures
+      ? { plan: folded.plan, merged: [] }
+      : mergeSmallSiblings(folded.plan, {
           byDependents: settings.splitCriticalPath || settings.basePolicy.criticalPath === "split",
         });
+    const floored = { plan: siblings.plan, merged: [...folded.merged, ...siblings.merged] };
     const proposed = floored.plan;
     let plan = proposed;
     let unfit: string | null = null;
@@ -1248,7 +1274,9 @@ export class InitiativeService {
       plan = this.fitWorkflows(proposed, settings, true);
       // A small feature nothing depends on runs the light workflow: nobody pins its spec.
       if (!settings.keepFeatures) {
-        const light = lightenSmallLeaves(plan, this.workflowChoices(settings));
+        const light = lightenSmallLeaves(plan, this.workflowChoices(settings), new Set(), {
+          withDependents: lightContracts(settings),
+        });
         plan = light.plan;
         lightened = light.lightened;
         unavailable = light.unavailable;
@@ -1284,6 +1312,30 @@ export class InitiativeService {
   }
 
   /** Starts a feature's run; false when its upstream results conflict and it waits for a person. */
+  /**
+   * Records once for each count of measured features that a feature starts while the forecast
+   * is above the ceiling but not yet binding (#1659), so `initiative events` and
+   * `/v1/initiatives/ID/events` show the warning a stop used to give.
+   */
+  private noteAdvisoryForecast(id: string, featureId: string, cost: CostView): void {
+    if (cost.forecastNotice === null) return;
+    const noted = this.store
+      .eventsOfType(id, "cost.forecast_advisory")
+      .some(
+        (p) =>
+          (p as { measuredFeatures?: number } | null)?.measuredFeatures === cost.measuredFeatures,
+      );
+    if (noted) return;
+    this.store.emit(id, "cost.forecast_advisory", {
+      featureId,
+      forecastUsd: cost.forecastUsd,
+      ceilingUsd: cost.ceilingUsd,
+      spentUsd: cost.spentUsd,
+      measuredFeatures: cost.measuredFeatures,
+      message: cost.forecastNotice,
+    });
+  }
+
   private async startFeature(id: string, featureId: string): Promise<boolean> {
     const row = this.store.get(id);
     const plan = this.approvedPlan(row);
@@ -1295,6 +1347,7 @@ export class InitiativeService {
     const waiting = current.features.find((f) => f.id === featureId);
     const sized = waiting?.share;
     if (!sized) throw new WorkflowFault("BUDGET_EXHAUSTED", "No budget share is available");
+    this.noteAdvisoryForecast(id, featureId, current.budget.cost);
     const share = { ...sized, ...guardGrowth(current, featureId, settings.basePolicy) };
     const previous = this.store.links(id).filter((l) => l.feature_id === featureId).length;
     const runFeature = runFeatureId(id, featureId);
@@ -1323,6 +1376,7 @@ export class InitiativeService {
       growthLimit(current, featureId),
       waiting?.shareUsd ?? null,
       costGrowthLimit(current, featureId),
+      current.budget.cost.forecastBinding,
     );
     const declined = featureApprovalDeclined(settings, feature, false, policy);
     // A derived command ID makes a start after a crash return the same run instead of a second one.
@@ -1354,6 +1408,7 @@ export class InitiativeService {
       ...(settings.featureAutoApproval ? { boundaryAutoApproval: true } : {}),
       ...(settings.featureIssues[featureId] ? { issue: settings.featureIssues[featureId] } : {}),
       ...(feature.skeleton?.length ? { hostFiles: feature.skeleton } : {}),
+      ...(lightContract(settings, plan, feature) ? { contract: feature.contract } : {}),
       ...(baseCommit ? { baseCommit } : {}),
     });
     this.store.transaction(() => {
@@ -1434,6 +1489,7 @@ export class InitiativeService {
       growthLimit(current, featureId),
       rebased?.shareUsd ?? null,
       costGrowthLimit(current, featureId),
+      current.budget.cost.forecastBinding,
     );
     const declined = featureApprovalDeclined(settings, feature, true, policy);
     const snapshot = await this.workflows.rebase(
@@ -1761,14 +1817,27 @@ export class InitiativeService {
       used.tokens > 0;
     const left = forecastable ? this.remainingFeatureCost(row, settings, estimate, accepted) : null;
     const round = (n: number): number => Math.round(n * 100) / 100;
+    const ceilingUsd = capUsd === null ? null : round(capUsd * (1 + tolerance));
+    const forecastUsd = left === null ? null : round(spentUsd + left);
+    const measuredFeatures = estimate
+      ? estimate.features.filter((f) => accepted.has(f.featureId) && !f.skeleton).length
+      : accepted.size;
+    const forecastBinding =
+      settings.forecastStop === true || measuredFeatures >= FORECAST_BINDING_FEATURES;
     return {
       capUsd,
       tolerance,
-      ceilingUsd: capUsd === null ? null : round(capUsd * (1 + tolerance)),
+      ceilingUsd,
       spentUsd: round(spentUsd),
       reservedUsd: round(Math.max(0, committedUsd - spentUsd)),
       remainingUsd: capUsd === null ? null : cents(Math.max(0, capUsd - committedUsd)),
-      forecastUsd: left === null ? null : round(spentUsd + left),
+      forecastUsd,
+      measuredFeatures,
+      forecastBinding,
+      forecastNotice:
+        forecastUsd !== null && ceilingUsd !== null && forecastUsd > ceilingUsd && !forecastBinding
+          ? `The cost forecast of ${usd(forecastUsd)} is above the ${usd(ceilingUsd)} ceiling. It is advisory until ${FORECAST_BINDING_FEATURES} features are measured (${measuredFeatures} so far): features keep starting while their spent and reserved dollars fit the budget.`
+          : null,
     };
   }
 
@@ -2547,6 +2616,7 @@ export function featurePolicy(
   growTo: number | null = null,
   shareUsd: number | null = null,
   growUsd: number | null = null,
+  forecastBinding = false,
 ): RunPolicy {
   const tokens = "tokens" in share ? share.tokens : share.maxTotalTokens;
   const calls = "calls" in share ? share.calls : share.maxAgentCalls;
@@ -2565,7 +2635,7 @@ export function featurePolicy(
           maxTotalTokens,
         })
       : null;
-  const cost = costPolicy(settings, shareUsd);
+  const cost = costPolicy(settings, shareUsd, forecastBinding);
   const grown = growTo !== null ? grownSizing(base, maxTotalTokens, growTo) : base.sizing;
   // The dollar cap grows for tokens, forecasts or calls, up to what the initiative can spare. The
   // base policy's own cap does not bound it: the initiative's dollar budget does (#1503).
@@ -2643,12 +2713,18 @@ export function boundaryLimits(
 function costPolicy(
   settings: InitiativeSettings,
   shareUsd: number | null,
-): Pick<RunPolicy, "maxCostUsd" | "costTolerance"> | Record<string, never> {
+  forecastBinding: boolean,
+): Pick<RunPolicy, "maxCostUsd" | "costTolerance" | "costForecast"> | Record<string, never> {
   const budget = settings.costBudget;
   if (!budget || shareUsd === null) return {};
   return {
     maxCostUsd: Math.max(MIN_SHARE_USD, cents(shareUsd)),
     costTolerance: budget.costTolerance,
+    // The feature's cap and the initiative's spare dollars bound its money; until the
+    // initiative's forecast is binding, the run's own forecast only advises (#1659).
+    ...(forecastBinding || settings.basePolicy.costForecast === "off"
+      ? {}
+      : { costForecast: "advise" as const }),
   };
 }
 
@@ -2740,6 +2816,22 @@ function grownSizing(base: RunPolicy, share: number, growTo: number): RunPolicy[
 /** The smallest sizing ceiling a policy accepts. */
 const MIN_GROWTH_TOKENS = 10_000;
 
+const lightContracts = (settings: InitiativeSettings): boolean =>
+  settings.lightContracts || settings.basePolicy.lightContracts === "on";
+
+/** A feature on the light workflow that others depend on: its run records their contract (#1664). */
+function lightContract(
+  settings: InitiativeSettings,
+  plan: InitiativePlan,
+  feature: InitiativeFeature,
+): boolean {
+  return (
+    lightContracts(settings) &&
+    featureWorkflowId(settings, feature) === LIGHT_LEAF_WORKFLOW &&
+    plan.features.some((f) => f.dependsOn.includes(feature.id))
+  );
+}
+
 /** The request a feature run starts from: its place in the initiative and the contracts around it. */
 export function featurePrompt(
   row: InitiativeRow,
@@ -2772,14 +2864,16 @@ export function featurePrompt(
     `Contract this feature provides to the features that depend on it: ${feature.contract}`,
     ...(feature.skeleton?.length
       ? [
-          `The split fixes the whole content of ${feature.skeleton.map((f) => f.path).join(", ")}: one task writes them as host-written files with exactly that content (extra.hostFiles), and later features replace the stubs.`,
+          `The split fixes the whole content of ${feature.skeleton.map((f) => f.path).join(", ")}: one task writes them as host-written files with exactly that content (extra.hostFiles; whitespace may follow the project's formatter), and later features replace the stubs.`,
         ]
       : []),
   ];
   for (const { feature: dependency, contract } of upstream) {
     const definition = plan.features.find((f) => f.id === dependency.id);
     lines.push(
-      `Upstream feature ${dependency.id} provides: ${definition?.contract ?? ""} Its accepted specification is specs/${contract.featureId}/spec.json (contract hash ${contract.contractHash}).`,
+      definition?.workflow === LIGHT_LEAF_WORKFLOW
+        ? `Upstream feature ${dependency.id} provides: ${definition.contract} It ran the light workflow, so this contract is its whole accepted specification (contract hash ${contract.contractHash}); read its code for the details.`
+        : `Upstream feature ${dependency.id} provides: ${definition?.contract ?? ""} Its accepted specification is specs/${contract.featureId}/spec.json (contract hash ${contract.contractHash}).`,
     );
   }
   if (others.length)

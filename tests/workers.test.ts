@@ -86,6 +86,15 @@ function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * Waits until `done()` holds, up to `ms`. A fixed delay before an assertion failed on a slow
+ * macOS runner (the worker's first message took longer than 200 ms).
+ */
+async function until(done: () => boolean, ms = 10_000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!done() && Date.now() < end) await delay(10);
+}
+
 // ── Worker Store ──────────────────────────────────────────────────────────
 
 describe("Worker Store (stores/workers.ts)", () => {
@@ -427,7 +436,7 @@ describe("RPC Framework (rpc.ts)", () => {
       });
 
       await client.emitEvent("test-event", { payload: 42 });
-      await delay(50);
+      await until(() => received !== null);
       expect(received).toEqual({ payload: 42 });
     });
 
@@ -438,7 +447,7 @@ describe("RPC Framework (rpc.ts)", () => {
       client.on("multi", () => calls.push(3));
 
       await client.emitEvent("multi", null);
-      await delay(50);
+      await until(() => calls.length === 3);
       expect(calls).toEqual([1, 2, 3]);
     });
 
@@ -451,7 +460,7 @@ describe("RPC Framework (rpc.ts)", () => {
       client.on("safe", () => calls.push(3));
 
       await client.emitEvent("safe", null);
-      await delay(50);
+      await until(() => calls.length === 2);
       expect(calls).toEqual([1, 3]);
     });
 
@@ -461,7 +470,7 @@ describe("RPC Framework (rpc.ts)", () => {
       client.on("toggle", fn);
 
       await client.emitEvent("toggle", null);
-      await delay(50);
+      await until(() => count === 1);
       expect(count).toBe(1);
 
       client.off("toggle", fn);
@@ -548,7 +557,7 @@ describe("RPC Framework (rpc.ts)", () => {
       await client.echo("warmup");
       client.statusChanges.length = 0;
       client.fireCrash();
-      await delay(200);
+      await until(() => client.statusChanges.length > 0);
       expect(client.statusChanges.length).toBeGreaterThan(0);
     });
 
@@ -1448,7 +1457,7 @@ describe("Deadlock & Hang resistance", () => {
     });
 
     client.fireMethod("callbackTest", "fire-cb", "test-data");
-    await delay(200);
+    await until(() => callbackFired);
 
     expect(callbackFired).toBe(true);
     // Client is still functional

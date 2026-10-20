@@ -94,6 +94,44 @@ describe("spec-side checks", () => {
     expect(uncontractedBuildCriteria({ ...fixed, criteria: [{ ...build, method: "manual" as const }] }, contract)).toEqual([]);
     expect(uncontractedBuildCriteria({ ...fixed, criteria: [{ ...build, then: "the build command of the CLI prints the target" }] }, contract)).toEqual([]);
   });
+  // R50 selwhy front AC-009 (#1661): a Go process test that runs `go build` was refused twice
+  // with the checks vet, gofmt and tests, although `go test` compiles every package.
+  test("a check that compiles the project, or a test that runs the build, proves a build criterion", () => {
+    const check = (id: string, executable: string, args: string[]) => ({ id, executable, args });
+    const processTest = {
+      ...criterion("AC-009", ["FR-001"]),
+      given: "the sole process test",
+      when: "it runs `go build -o BIN ../..` and then `BIN tree -`",
+      then: "the tree of the document is printed",
+    };
+    const spec = { ...fixed, criteria: [...fixed.criteria, processTest] };
+    const go = [check("vet", "go", ["vet", "./..."]), check("gofmt", "gofmt", ["-l", "."]), check("tests", "go", ["test", "./..."])];
+    expect(uncontractedBuildCriteria(spec, go)).toEqual([]);
+    expect(specCoverageProblems(spec, go).join(" ")).not.toContain("needs a build");
+    const production = { ...fixed, criteria: [...fixed.criteria, { ...processTest, given: "the release", when: "it is prepared", then: "the production build succeeds" }] };
+    // Each toolchain's compiling checks.
+    for (const checks of [
+      go,
+      [check("vet", "go", ["vet", "./..."])],
+      [check("tests", "cargo", ["test"]), check("clippy", "cargo", ["clippy", "--", "-D", "warnings"])],
+      [check("check", "cargo", ["check"])],
+      [check("tests", "dotnet", ["test", "--nologo"])],
+      [check("tests", "mvn", ["-B", "-q", "test"])],
+      [check("tests", "./gradlew", ["test"])],
+      [check("typecheck", "npx", ["tsc", "-p", "."])],
+    ])
+      expect(uncontractedBuildCriteria(production, checks)).toEqual([]);
+    // Checks that do not compile: the zoneslot contract, tsc --noEmit, pytest, a formatter.
+    const js = [check("typecheck", "bun", ["run", "typecheck"]), check("lint", "bun", ["run", "lint"]), check("tests", "bun", ["test"])];
+    for (const checks of [js, [check("typecheck", "npx", ["tsc", "--noEmit"])], [check("tests", "python", ["-m", "pytest"])], [check("gofmt", "gofmt", ["-l", "."])]])
+      expect(uncontractedBuildCriteria(production, checks)).toEqual(["AC-009"]);
+    // A test that runs the build itself is proven by the test check, in any toolchain.
+    for (const command of ["cargo build", "dotnet build", "bun run build"]) {
+      const builds = { ...fixed, criteria: [...fixed.criteria, { ...processTest, when: `it runs \`${command}\` and then the built program` }] };
+      expect(uncontractedBuildCriteria(builds, js)).toEqual([]);
+      expect(uncontractedBuildCriteria(builds, [check("lint", "bun", ["run", "lint"])])).toEqual(["AC-009"]);
+    }
+  });
   test("the task graph check still reports the spec defects", () => {
     const graph = { schemaVersion: 1 as const, featureId: "fixture", revision: 1, specHash: "", planHash: "", tasks: [] };
     expect(validateTaskGraph(base, graph)).toContain("requirement without criterion FR-001");

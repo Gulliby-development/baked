@@ -112,12 +112,13 @@ const LIBRARIES: readonly {
   {
     language: "Java/Kotlin",
     files: /\.(?:java|kt)$/,
-    library: "jqwik",
-    uses: /@Property\b|\bnet\.jqwik\b/,
+    library: "jqwik or Kotest property",
+    // Kotest's `checkAll`/`forAll` come from `io.kotest.property` (#1686).
+    uses: /@Property\b|\bnet\.jqwik\b|\bio\.kotest\.property\b/,
     shim: /$^/,
     seeded: /\bRandom\(\s*\d+L?\s*\)[\s\S]*\b(?:for|repeat)\s*\(/,
     exhaustive:
-      /\bfor\s*\(\s*(?:int|long|var|val)\s+\w+\s*=\s*-?\d+L?\s*;\s*\w+\s*<=?\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)|\bfor\s*\(\s*\w+\s+in\s+-?\d+\s*(?:\.\.|until)\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)/,
+      /\bfor\s*\(\s*(?:int|long|var|val)\s+\w+\s*=\s*-?\d+L?\s*;\s*\w+\s*<=?\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)|\bfor\s*\(\s*\w+\s+in\s+-?\d+\s*(?:\.\.|until)\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)|\b(?:Int|Long)Stream\.range(?:Closed)?\(\s*-?\d+L?\s*,\s*(?:\d{3,}|\d+\s*<<\s*\d+)|\(\s*-?\d+\s*(?:\.\.|until)\s*(?:\d{3,}|\d+\s*<<\s*\d+)\s*\)\s*\.(?:forEach|map|all|none|filter)\b/,
   },
   {
     language: "Go",
@@ -132,12 +133,12 @@ const LIBRARIES: readonly {
   {
     language: "C#/F#",
     files: /\.(?:cs|fs)$/,
-    library: "FsCheck",
-    uses: /\bFsCheck\b|\[Property\b|Prop\.ForAll/,
+    library: "FsCheck or CsCheck",
+    uses: /\bFsCheck\b|\[Property\b|Prop\.ForAll|\bCsCheck\b|\bGen\.\w+(?:\.\w+|\[[^\]]*\]|\([^)]*\))*\.Sample\(/,
     shim: /$^/,
     seeded: /\bRandom\(\s*\d+\s*\)[\s\S]*\b(?:for|foreach)\s*\(/,
     exhaustive:
-      /\bfor\s*\(\s*(?:int|long|var)\s+\w+\s*=\s*-?\d+\s*;\s*\w+\s*<=?\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)|\bfor\s+\w+\s+in\s+-?\d+\s*\.\.\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)/,
+      /\bfor\s*\(\s*(?:int|long|var)\s+\w+\s*=\s*-?\d+\s*;\s*\w+\s*<=?\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)|\bfor\s+\w+\s+in\s+-?\d+\s*\.\.\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)|\bEnumerable\.Range\(\s*-?\d+\s*,\s*(?:\d{3,}|\d+\s*<<\s*\d+)/,
   },
 ];
 
@@ -239,11 +240,28 @@ export function propertyLibraries(probe: LibraryProbe): Record<string, boolean> 
     // Starting Python is slow (and on Windows `python3` can be the Store alias), so only a
     // project with Python in it is asked.
     Python: venv || (python && probe.pythonImports("hypothesis") === true),
-    Rust: mentions(["Cargo.toml"], /^\s*(?:proptest|quickcheck)\s*=/m),
-    "Java/Kotlin": mentions(["pom.xml", "build.gradle", "build.gradle.kts"], /\bjqwik\b/),
+    // A `proptest = ...` line or a `[dev-dependencies.proptest]` table, in the root or a member crate.
+    Rust: mentions(
+      cargoManifests(probe),
+      /^\s*(?:proptest|quickcheck)\s*=|^\s*\[(?:(?:dev-|build-)?dependencies|workspace\.dependencies)\.(?:proptest|quickcheck)\]/m,
+    ),
+    "Java/Kotlin": mentions(
+      ["pom.xml", "build.gradle", "build.gradle.kts"],
+      /\bjqwik\b|\bkotest-property\b/,
+    ),
     Go: true,
-    "C#/F#": mentions(projects, /\bFsCheck\b/),
+    "C#/F#": mentions(projects, /\b(?:FsCheck|CsCheck)\b/),
   };
+}
+
+/** The root Cargo.toml and those of its workspace members (`members = ["crates/*", "cli"]`). */
+function cargoManifests(probe: LibraryProbe): string[] {
+  const root = probe.read("Cargo.toml") ?? "";
+  const members = /^\s*members\s*=\s*\[([^\]]*)\]/m.exec(root)?.[1] ?? "";
+  const dirs = [...members.matchAll(/["']([^"']+)["']/g)].flatMap(([, member = ""]) =>
+    member.endsWith("/*") ? probe.list(member.slice(0, -2)) : [member],
+  );
+  return ["Cargo.toml", ...dirs.map((dir) => `${dir.replace(/\/$/, "")}/Cargo.toml`)];
 }
 
 /** What the agents are told while the mode is `auto`, by the stage they run. */

@@ -9,6 +9,13 @@ import { HOST_AUTO_APPROVAL_CEILING } from "../v2/definition.js";
 import { FeatureKey, InitiativeId, type InitiativePlan, InitiativePlanSchema } from "./plan.js";
 
 /** The workflow schema version that adds initiatives (migration 004). */
+/**
+ * Accepted non-skeleton features before the initiative's dollar forecast stops a feature start
+ * (#1659). In bench rounds 48 to 50 every forecast stop came after one or two accepted features,
+ * at 1.3 to 3.1 times what the initiative then cost.
+ */
+export const FORECAST_BINDING_FEATURES = 5;
+
 export const INITIATIVES_SCHEMA_VERSION = 4;
 
 export const InitiativeStatus = z.enum([
@@ -94,6 +101,11 @@ export const InitiativeSettingsSchema = z
      * why it stays whole (#1522). Off by default.
      */
     splitCriticalPath: z.boolean().default(false),
+    /**
+     * Lets a small feature that other features depend on run the light workflow, with a host-made
+     * spec that states its contract for them to pin (#1664). Off by default.
+     */
+    lightContracts: z.boolean().default(false),
   })
   .strict();
 export type InitiativeSettings = z.infer<typeof InitiativeSettingsSchema>;

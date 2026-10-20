@@ -6,7 +6,8 @@ const REASONS: Record<string, string> = {
   user_pause: "paused by you",
   owner_lost: "the process that ran it stopped",
   step_stalled: "an agent call made no progress and was stopped",
-  input_changed: "instructions or configuration changed since approval",
+  input_changed:
+    "instructions or configuration changed since approval; the diagnostic names the file: accept the change, restore the file, or revise the run",
   workspace_busy: "another run or edit holds the workspace",
   budget_exhausted: "the token, call or time budget is used up",
   attempt_cap:
@@ -26,6 +27,8 @@ const REASONS: Record<string, string> = {
   storage_failure: "workflow storage failed",
   invalid_output: "a model returned output that failed validation",
   host_state: "the host's own state was stale or incomplete (not a model's output)",
+  host_error:
+    "BAKED failed internally; this is not a model problem: resume once, and if it stops the same way, export the run and report it",
   interrupted_effect: "an interrupted command needs recovery",
   dependency_failed: "a dependency did not complete",
   replay_diverged:

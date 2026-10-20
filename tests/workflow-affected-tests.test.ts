@@ -9,6 +9,7 @@ import {
   affectedTestCheck,
   affectedTests,
   affectedTestsFor,
+  isCompiledTestFile,
   isTestFile,
 } from "../src/core/workflows/affected-tests.js";
 import { NativeAgentExecutor } from "../src/core/workflows/agent-executor.js";
@@ -67,6 +68,16 @@ describe("isTestFile", () => {
     expect(isTestFile("src/store.ts")).toBe(false);
     expect(isTestFile("pkg/store.go")).toBe(false);
     expect(isTestFile("src/testing.py")).toBe(false);
+  });
+
+  test("a Django tests.py and the files of a .NET test project are tests (#1683)", () => {
+    expect(isTestFile("polls/tests.py")).toBe(true);
+    expect(isTestFile("polls/tests_helpers.py")).toBe(false);
+    expect(isCompiledTestFile("App.UnitTests/WhenAdding.cs")).toBe(true);
+    expect(isCompiledTestFile("src/App.IntegrationTests/Api/WhenCalling.cs")).toBe(true);
+    expect(isCompiledTestFile("App.Tests/CalculatorShould.cs")).toBe(true);
+    expect(isCompiledTestFile("App/Calculator.cs")).toBe(false);
+    expect(isCompiledTestFile("App.UnitTests/obj/Generated.cs")).toBe(false);
   });
 });
 

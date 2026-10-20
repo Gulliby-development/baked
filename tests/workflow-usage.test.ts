@@ -84,11 +84,13 @@ function makeStore(
     attempts: () => attempts,
     attemptTaskGenerations: () => new Map(),
     latestArtifact: (_id, path) => artifacts.get(path) ?? null,
+    latestArtifacts: (_id: string, pattern: string) => [...artifacts.values()].filter((a) => likePath(pattern).test(a.logical_path)),
     readArtifact: (_id, id) => {
       const content = contents.get(id);
       if (content === undefined) throw new Error(`Missing fixture artifact ${id}`);
       return content;
     },
+    readArtifactJson: (_id: string, row: ArtifactRow) => JSON.parse(contents.get(row.id) ?? "null"),
   } as unknown as WorkflowStore;
 }
 
@@ -487,3 +489,8 @@ describe("usage cost and input/output split", () => {
     });
   });
 });
+
+/** A SQL LIKE pattern with `%` wildcards as a regular expression. */
+function likePath(pattern: string): RegExp {
+  return new RegExp(`^${pattern.split("%").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`);
+}

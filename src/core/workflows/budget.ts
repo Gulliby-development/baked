@@ -5,8 +5,9 @@ import { costCeilingUsd, costToleranceOf } from "./cost-tolerance.js";
 import { defaultWorkflowPolicy } from "./defaults.js";
 import { WorkflowFault } from "./errors.js";
 import { type AgentProfile, extendToOf, PolicySchema, type RunPolicy } from "./schemas.js";
-import { forecastRate, forecastSamples } from "./stage-price.js";
+import { forecastRate, forecastSamples, type RunPrices, runPrices } from "./stage-price.js";
 import type { RunRow, WorkflowStore } from "./store.js";
+import type { AttemptUsageRow } from "./usage.js";
 export function reserveTokens(prompt: string, profile: AgentProfile, policy: RunPolicy): number {
   // Each tool-loop step can replay the growing context and generate another completion.
   // Native execution also enforces the total run limit between calls.
@@ -189,22 +190,28 @@ export function costRate(
  * fecsmith front at $11.88 while it finished at $9.03 (bench round 42). Before a task attempt is
  * priced, the blended price (`costRate`) stands in.
  */
-export function remainingCostRate(store: WorkflowStore, runId: string): number {
-  return callCostRate(store, runId, "implement");
+export function remainingCostRate(
+  store: WorkflowStore,
+  runId: string,
+  prices: RunPrices = runPrices(store, runId),
+): number {
+  return callCostRate(store, runId, "implement", null, prices.samples);
 }
 
 /**
  * Price a call from finished attempts of its owning stage, preserving its cache mix on the
  * requested model. Without stage samples, use the blended run price, then the model's input
- * price. With no model, return the stage's paid average for token affordability.
+ * price. With no model, return the stage's paid average for token affordability. Callers that
+ * price several calls of one run pass its `forecastSamples` once (#1647).
  */
 export function callCostRate(
   store: WorkflowStore,
   runId: string,
   stage: string,
   model: string | null = null,
+  runSamples: AttemptUsageRow[] = forecastSamples(store, [runId]),
 ): number {
-  const samples = forecastSamples(store, [runId]).filter(
+  const samples = runSamples.filter(
     (a) => a.status !== "running" && a.costUsd !== null && (a.usedTokens ?? 0) > 0,
   );
   const matching = samples.filter((a) => a.stage === stage);
@@ -271,6 +278,20 @@ export function grownCostCap(
 }
 
 /**
+ * Raises the caller's copy of the run policy to the limits stored for the run. The executor and
+ * parallel attempts grow the stored limits on their own copies, so a revision written from an
+ * older copy undid their growth: R50 selwhy markup's sizing refresh put a $3.01 cap back to
+ * $2.32 two minutes after a forecast growth (#1434, #1704).
+ */
+export function adoptStoredLimits(store: WorkflowStore, runId: string, policy: RunPolicy): void {
+  const stored = PolicySchema.parse(JSON.parse(store.run(runId).policy_json));
+  if (stored.maxTotalTokens > policy.maxTotalTokens) policy.maxTotalTokens = stored.maxTotalTokens;
+  if (stored.maxActiveMs > policy.maxActiveMs) policy.maxActiveMs = stored.maxActiveMs;
+  if (stored.maxCostUsd !== null && stored.maxCostUsd > (policy.maxCostUsd ?? Infinity))
+    policy.maxCostUsd = stored.maxCostUsd;
+}
+
+/**
  * Records a budget growth the host made on its own as a policy revision (`approvedBy: "sizing"`,
  * never an operator decision), stores the policy and updates the object the caller drives with.
  */
@@ -278,7 +299,7 @@ function recordGrowth(
   store: WorkflowStore,
   runId: string,
   policy: RunPolicy,
-  maxTotalTokens: number,
+  target: number,
   kind:
     | "auto-growth"
     | "planning-floor"
@@ -289,6 +310,8 @@ function recordGrowth(
   detail: Record<string, unknown>,
   costTo?: number,
 ): void {
+  adoptStoredLimits(store, runId, policy);
+  const maxTotalTokens = Math.max(target, policy.maxTotalTokens);
   const before = hashJson(policy);
   const maxCostUsd = costTo ?? grownCostCap(policy, maxTotalTokens);
   const after = PolicySchema.parse({ ...policy, maxTotalTokens, maxCostUsd });
@@ -345,10 +368,7 @@ export function growCostCapToForecast(
   kind: "forecast-growth" | "call-growth" = "forecast-growth",
 ): boolean {
   // A parallel attempt may already have grown the policy. Keep that revision when growing again.
-  const stored = PolicySchema.parse(JSON.parse(store.run(runId).policy_json));
-  if (stored.maxTotalTokens > policy.maxTotalTokens) policy.maxTotalTokens = stored.maxTotalTokens;
-  if (stored.maxCostUsd !== null && stored.maxCostUsd > (policy.maxCostUsd ?? Infinity))
-    policy.maxCostUsd = stored.maxCostUsd;
+  adoptStoredLimits(store, runId, policy);
   const bound = policy.sizing?.maxRunCostUsd;
   if (policy.maxCostUsd === null || bound === undefined) return false;
   if (projectedUsd <= policy.maxCostUsd * (1 + tolerance)) return true;
@@ -382,10 +402,7 @@ export function growBudgetOnProgress(
   const ceiling = policy.sizing?.maxRunTokens ?? null;
   if (ceiling === null) return false;
   // Another worker of this run may have grown the stored budget already.
-  const stored = PolicySchema.parse(JSON.parse(store.run(runId).policy_json));
-  if (stored.maxTotalTokens > policy.maxTotalTokens) policy.maxTotalTokens = stored.maxTotalTokens;
-  if (stored.maxCostUsd !== null && stored.maxCostUsd > (policy.maxCostUsd ?? Infinity))
-    policy.maxCostUsd = stored.maxCostUsd;
+  adoptStoredLimits(store, runId, policy);
   if (projected <= policy.maxTotalTokens) return true;
   if (policy.maxTotalTokens >= ceiling) return extendUnderAssume(store, runId, policy, projected);
   const finished = store
@@ -494,8 +511,9 @@ function affordableTokens(store: WorkflowStore, runId: string, policy: RunPolicy
   const cap = costCeilingUsd(store, runId, policy);
   if (cap === null) return null;
   const row = store.run(runId);
-  const { spentUsd, reservedUsd } = store.costUsage(runId);
-  const rate = remainingCostRate(store, runId);
+  const prices = runPrices(store, runId);
+  const { spentUsd, reservedUsd } = store.costUsage(runId, undefined, prices);
+  const rate = remainingCostRate(store, runId, prices);
   if (rate <= 0) return null;
   const reserved = store
     .attempts(runId)
@@ -587,9 +605,10 @@ export function assertAttemptFits(
   const committed = policy.maxTotalTokens - remaining;
   // Token extensions also consult affordability. Give an initiative's approved dollar growth
   // room a chance before that check refuses an otherwise affordable attempt (#1625).
-  const rate = remainingCostRate(store, runId);
+  const prices = runPrices(store, runId);
+  const rate = remainingCostRate(store, runId, prices);
   if (rate > 0) {
-    const { spentUsd, reservedUsd } = store.costUsage(runId, attemptId);
+    const { spentUsd, reservedUsd } = store.costUsage(runId, attemptId, prices);
     growCostCapToForecast(
       store,
       runId,

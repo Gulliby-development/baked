@@ -396,6 +396,7 @@ No other messages. Progress goes into `state.json` and the round folder.
 
 1. Fill `rounds/RNN/report.md` from `templates/round-report.md`, BAKED-side metrics and the check of last round's fixes before the app tables: tables per group (control, new, update, experiment), comparisons with the previous round and with the first loop round, findings and issues, fixes merged with their expected effect, a Published table (repo links, CI results, logo outcome), budget use, open blockers.
 2. Append one row per run to `ledger/metrics.csv`.
+   Export the usage trace of every app of the round, so the next forecast, sizing or cap change replays on it before it merges (#1649): from the fixer's checkout, `bun scripts/bench-trace.ts export C:\Project\baked-bench\RNN\<app> tests/fixtures/bench-traces/RNN/<app>.sqlite.gz` for each app folder (updates and controls included), then `bun scripts/bench-trace.ts replay tests/fixtures/bench-traces/RNN/*.sqlite.gz` and `bun test tests/forecast-replay-corpus.test.ts`. Open a pull request `feature/bench-traces-rNN` with the traces. A replay difference on the round's own traces is a finding: the current main decides differently from the runner the round used, which is expected only for fixes merged during the round, and those go into `tests/fixtures/bench-traces/accepted.json` with the fix's issue as the reason. The trace drops prompts, model output, file contents and prose; check it is under 2 MB per app and mention any larger one in the report.
 3. Send the round result message.
 4. If `state.round` is a multiple of `retro.everyRounds`, set `state.phase = "retro"` and run phase 11; its one-line summary and any owner-tier proposals go into the round message (sent after the retro in that case).
 5. Set `state.round += 1`, `state.phase = "prepare"`.
@@ -423,6 +424,6 @@ Every change is a line in `ledger/loop-changes.jsonl` with its PR. The next retr
 - Evidence over opinion: every claim about a run cites the run id and the artifact, event or command output it comes from.
 - Think beyond tuning (owner's rule): for each problem, give the point fix and the broader capability that would make the whole class of problem rarer.
 - Keep estimates and fixes provider-agnostic: no constants calibrated on one provider; when unsure a task fits, split it or give a large margin.
-- Never put secrets, tokens, local paths, user names, run logs or `.baked/` content into anything public.
+- Never put secrets, tokens, local paths, user names, run logs or `.baked/` content into anything public. The one exception is the anonymised usage traces that `scripts/bench-trace.ts export` writes for `tests/fixtures/bench-traces/` (phase 10).
 - Respect licenses: never copy code from repositories with incompatible licenses into apps or into BAKED; ideas are fine, code is not.
 - Idempotence: look before you create, reuse what exists, record what you created in the ledger the same step.
