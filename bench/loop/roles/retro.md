@@ -20,6 +20,7 @@ Compute these for the rounds since the last retro, and the same for the period b
 - rounds in a row without a new P0 or P1 finding, and the difficulty level reached
 - where the round's time went (phases from `round.json` timestamps) and which phase waited the longest
 - interventions per run by category, from `ledger/metrics.csv`
+- escapes by `escapedLayer` per round and over the last three rounds, ranked, with `faultOrigin` counts; name the top layer and the check it lacks. The first retro after these fields were added backfills them for rounds R50 and R51 from their `findings.md`
 - findings by `origin` per round (`new`, `sibling-of`, `harder-round`, `model-behavior`) and the share of `sibling-of`; a share that does not fall means fixes still patch single cases
 
 ## Sibling audit
