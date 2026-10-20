@@ -200,10 +200,10 @@ describe("a row's literal as each language's table-driven test spells it (#1709)
   });
 
   test("only the criteria the report names are contested", () => {
-    const rows = contestedRows(spec, "AC-005 requires column 16", [csTest(DROPPED, ERROR16)], [derivation(true)]);
+    const rows = contestedRows(spec, "AC-005 requires column 16", [csTest(DROPPED, ERROR16)], [derivation(true)], []);
     expect(rows.map((r) => r.criterion.id)).toEqual(["AC-005"]);
     expect(rows[0]?.misquoted).toEqual([{ literal: INPUT, quoted: cs(DROPPED) }]);
-    expect(contestedRows(spec, "AC-0050 and the request disagree", [], undefined)).toEqual([]);
+    expect(contestedRows(spec, "AC-0050 and the request disagree", [], undefined, [])).toEqual([]);
   });
 });
 
