@@ -75,6 +75,7 @@ import {
   applySplitEdit,
   boundaryPathCounts,
   featureDigest,
+  foldSkeletonFeatures,
   type InitiativeFeature,
   InitiativeId,
   type InitiativePlan,
@@ -1243,11 +1244,16 @@ export class InitiativeService {
     const decomposed = InitiativePlanSchema.parse(JSON.parse(state.initiativePlan));
     const settings = this.store.settings(row);
     // Small siblings share one run's fixed stages (#1352); the decomposer's prompt alone did not.
-    const floored = settings.keepFeatures
+    // A feature that is only skeleton runs inside a dependent instead of a run of its own (#1662).
+    const folded = settings.keepFeatures
       ? { plan: decomposed, merged: [] }
-      : mergeSmallSiblings(decomposed, {
+      : foldSkeletonFeatures(decomposed);
+    const siblings = settings.keepFeatures
+      ? { plan: folded.plan, merged: [] }
+      : mergeSmallSiblings(folded.plan, {
           byDependents: settings.splitCriticalPath || settings.basePolicy.criticalPath === "split",
         });
+    const floored = { plan: siblings.plan, merged: [...folded.merged, ...siblings.merged] };
     const proposed = floored.plan;
     let plan = proposed;
     let unfit: string | null = null;
@@ -2830,7 +2836,7 @@ export function featurePrompt(
     `Contract this feature provides to the features that depend on it: ${feature.contract}`,
     ...(feature.skeleton?.length
       ? [
-          `The split fixes the whole content of ${feature.skeleton.map((f) => f.path).join(", ")}: one task writes them as host-written files with exactly that content (extra.hostFiles), and later features replace the stubs.`,
+          `The split fixes the whole content of ${feature.skeleton.map((f) => f.path).join(", ")}: one task writes them as host-written files with exactly that content (extra.hostFiles; whitespace may follow the project's formatter), and later features replace the stubs.`,
         ]
       : []),
   ];
