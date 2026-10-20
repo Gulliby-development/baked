@@ -9,6 +9,8 @@ export function recoverRun(store: WorkflowStore, journal: EffectJournal, runId: 
       store.finishAttempt(runId, attempt.id, "interrupted", null);
       store.finishStep(runId, attempt.step_id, "interrupted");
     }
+    // Child steps of a stage that threw have no running attempt of their own (#1745).
+    store.endOpenSteps(runId, null, "running", "interrupted");
     for (const task of store.tasks(runId).filter((t) => t.status === "running"))
       store.taskStatus(runId, task.id, "invalidated");
     if (unknown.length) {
