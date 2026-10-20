@@ -22,12 +22,12 @@ describe("literal-cell residual boundaries (#1629)", () => {
       given: 'modify `README.md`; at least `30` tests; input "src/example.rs"',
       when: 'at least "22" tests; input "30"', then: 'Input | Expected\n42 | answer' }] };
     const task = { criterionIds: ["AC-001"], writes: [{ path: "README.md", action: "modify" as const }] };
-    expect(criterionCases(spec, task).map((c) => c.literal)).toEqual(["src/example.rs", "30", "42"]);
+    expect(criterionCases(spec, task, { checks: [] }).map((c) => c.literal)).toEqual(["src/example.rs", "30", "42"]);
   });
 
   test("retains field values that are actual inputs rather than expected properties", () => {
     const spec = { criteria: [{ ...fixtureSpec.criteria[0]!, then: 'Input | Expected\nx=42 | accepted\nmagic=true | accepted' }] };
-    expect(criterionCases(spec, { criterionIds: ["AC-001"] }).map((c) => c.literal)).toEqual(["42", "true"]);
+    expect(criterionCases(spec, { criterionIds: ["AC-001"] }, { checks: [] }).map((c) => c.literal)).toEqual(["42", "true"]);
   });
 
   test("formatted lists still require the right bytes, signs and candidate text", () => {
@@ -68,7 +68,7 @@ const criterion = (id: string, then: string, method: "automated" | "manual" = "a
 
 describe("multi-input table cells and escape spellings (#1614)", () => {
   test("input spans become separate cases without context words", () => {
-    const cases = criterionCases(cellSpec, { criterionIds: ["AC-001"] });
+    const cases = criterionCases(cellSpec, { criterionIds: ["AC-001"] }, { checks: [] });
     expect(cases.map((c) => c.literal)).toEqual([
       "https://user:pass@example.com/a", "https://\u4f8b\u3048.\u30c6\u30b9\u30c8/\u9053", "https://example.com/a%20b", "HTTPS://example.com/a",
       '"0 R."', '"00 R."', omittedCellInput, '"001 R."', '"+1 R."', '"\\u0661 R."',
@@ -102,17 +102,17 @@ describe("multi-input table cells and escape spellings (#1614)", () => {
   test("deduplicates alternate literal spellings and preserves escaped quotes in prose", () => {
     const text = 'input "caf\\u00e9" and "caf\u00e9"; output "invalid \\"name\\""';
     const spec = { criteria: [{ ...cellSpec.criteria[0]!, given: text, when: "run", then: "done" }] };
-    expect(criterionCases(spec, { criterionIds: ["AC-001"] }).map((c) => c.literal)).toEqual(["caf\\u00e9", 'invalid \\"name\\"']);
+    expect(criterionCases(spec, { criterionIds: ["AC-001"] }, { checks: [] }).map((c) => c.literal)).toEqual(["caf\\u00e9", 'invalid \\"name\\"']);
   });
 
   test("preserves concrete quoted expected outputs beside the split inputs", () => {
     const spec = { criteria: [{ ...cellSpec.criteria[0]!, then: '| Input | Expected |\n| --- | --- |\n| `input-1`, `input-2` | `error-42` |' }] };
-    expect(criterionCases(spec, { criterionIds: ["AC-001"] }).map((c) => c.literal)).toEqual(["error-42", "input-1", "input-2"]);
+    expect(criterionCases(spec, { criterionIds: ["AC-001"] }, { checks: [] }).map((c) => c.literal)).toEqual(["error-42", "input-1", "input-2"]);
   });
 
   test("standalone quoted table labels still belong to review (#1565)", () => {
     const spec = { criteria: [{ ...cellSpec.criteria[0]!, then: '| Input | Expected |\n| --- | --- |\n| `success` | zero status |\n| "repeated flag" | last value |\n| `--path src/cli` | selected |' }] };
-    expect(criterionCases(spec, { criterionIds: ["AC-001"] }).map((c) => c.literal)).toEqual(["--path src/cli"]);
+    expect(criterionCases(spec, { criterionIds: ["AC-001"] }, { checks: [] }).map((c) => c.literal)).toEqual(["--path src/cli"]);
   });
 });
 
@@ -125,13 +125,13 @@ describe("the quoted cases of a task's criteria", () => {
         criterion("AC-003", 'it prints "other task"'),
       ],
     };
-    const cases = criterionCases(spec, { criterionIds: ["AC-001", "AC-002"] });
+    const cases = criterionCases(spec, { criterionIds: ["AC-001", "AC-002"] }, { checks: [] });
     expect(cases.map((c) => c.literal)).toEqual(["cochange --path src/cli", "cochange --path SRC", "no matching files"]);
   });
 
   test("leave out one-character spans and spans that are only a placeholder", () => {
     const spec = { criteria: [criterion("AC-001", 'the separator "," and "<file>" and "<file>: invalid name"')] };
-    const literals = criterionCases(spec, { criterionIds: ["AC-001"] }).map((c) => c.literal);
+    const literals = criterionCases(spec, { criterionIds: ["AC-001"] }, { checks: [] }).map((c) => c.literal);
     expect(literals).toContain("<file>: invalid name");
     expect(literals).not.toContain(",");
     expect(literals).not.toContain("<file>");
@@ -161,12 +161,12 @@ describe("the quoted cases of a task's criteria", () => {
       "| Join([3,0,-2]) | joined values |",
     ].join("\n");
     const spec = { criteria: [{ ...criterion("AC-001", table), given: 'input scenarios include "repeated flag", `success`, and \u201crank/unrank\u201d', when: "tests run" }] };
-    expect(criterionCases(spec, { criterionIds: ["AC-001"] }).map((c) => c.literal)).toEqual([
+    expect(criterionCases(spec, { criterionIds: ["AC-001"] }, { checks: [] }).map((c) => c.literal)).toEqual([
       // An expression cell asks for its literal arguments (#1663).
       "--max-part=5 and --max-part 5", "[3,0,-2]",
     ]);
     // Plain English remains a case when the criterion explicitly names output text.
-    expect(criterionCases({ criteria: [{ ...spec.criteria[0]!, then: 'it prints "no matching files" and returns "success"' }] }, { criterionIds: ["AC-001"] }).map((c) => c.literal)).toEqual(["no matching files", "success"]);
+    expect(criterionCases({ criteria: [{ ...spec.criteria[0]!, then: 'it prints "no matching files" and returns "success"' }] }, { criterionIds: ["AC-001"] }, { checks: [] }).map((c) => c.literal)).toEqual(["no matching files", "success"]);
   });
 
   test("significant tokens can move or change grouping but cannot disappear (#1565)", () => {
@@ -238,7 +238,7 @@ describe("quoted commands and repository-level criteria (#1366)", () => {
 
   test("a quoted check command is not a case", () => {
     const spec = { criteria: [repositoryLevel, criterion("AC-002", 'it prints "no matching files"')] };
-    const literals = criterionCases(spec, { criterionIds: ["AC-002", "AC-009"] }).map((c) => c.literal);
+    const literals = criterionCases(spec, { criterionIds: ["AC-002", "AC-009"] }, { checks: [] }).map((c) => c.literal);
     expect(literals).toEqual(["cochange --path src/cli", "cochange --path SRC", "no matching files"]);
     expect(isCheckCommand("cargo test --all")).toBe(true);
     expect(isCheckCommand("python -m pytest -q")).toBe(true);
@@ -279,10 +279,10 @@ describe("quoted commands and repository-level criteria (#1366)", () => {
   test("a criterion the plan gives to most tasks has no cases", () => {
     const spec = { criteria: [{ ...repositoryLevel, then: 'the build prints "ready" and the help lists "--path"' }, criterion("AC-002", 'it prints "no matching files"')] };
     const tasks = [{ criterionIds: ["AC-009"] }, { criterionIds: ["AC-009", "AC-002"] }, { criterionIds: ["AC-009"] }, { criterionIds: ["AC-003"] }];
-    expect(criterionCases(spec, { criterionIds: ["AC-002", "AC-009"] }, { tasks }).map((c) => c.criterionId)).toEqual(["AC-002", "AC-002", "AC-002"]);
+    expect(criterionCases(spec, { criterionIds: ["AC-002", "AC-009"] }, { checks: [], tasks }).map((c) => c.criterionId)).toEqual(["AC-002", "AC-002", "AC-002"]);
     // With the criterion on half of the tasks or fewer, its literals stay cases.
     const fewer = [{ criterionIds: ["AC-009"] }, { criterionIds: ["AC-002"] }, { criterionIds: ["AC-003"] }];
-    expect(criterionCases(spec, { criterionIds: ["AC-009"] }, { tasks: fewer }).map((c) => c.literal)).toEqual(["ready", "--path"]);
+    expect(criterionCases(spec, { criterionIds: ["AC-009"] }, { checks: [], tasks: fewer }).map((c) => c.literal)).toEqual(["ready", "--path"]);
   });
 });
 
@@ -336,7 +336,7 @@ describe("enumerated sets and table rows (#1482)", () => {
 
   test("a criterion naming members of a closed set asks for each one", () => {
     const spec = { inScope: [formats], criteria: [steps("it crosses zero for bf16, f32 or e5m2")] };
-    const cases = criterionCases(spec, { criterionIds: ["AC-004"] });
+    const cases = criterionCases(spec, { criterionIds: ["AC-004"] }, { checks: [] });
     expect(cases.map((c) => c.literal)).toEqual(["Steps", "bf16", "f32", "e5m2"]);
     const missing = missingCases(cases, ['test("Steps", () => { steps("bf16"); steps("f32x"); })']);
     expect(missing.map((c) => c.literal)).toEqual(["f32", "e5m2"]);
@@ -344,13 +344,13 @@ describe("enumerated sets and table rows (#1482)", () => {
 
   test("all N things takes the set of that size", () => {
     const spec = { requirements: [{ id: "FR-001", text: formats, priority: "must" as const, verification: "automated" as const, sourceRefs: [] }], criteria: [steps("it is exact for all six formats")] };
-    const literals = criterionCases(spec, { criterionIds: ["AC-004"] }).map((c) => c.literal);
+    const literals = criterionCases(spec, { criterionIds: ["AC-004"] }, { checks: [] }).map((c) => c.literal);
     expect(literals).toEqual(["Steps", "f16", "bf16", "f32", "f64", "e4m3", "e5m2"]);
     // A whole word: bf16 does not stand for f16.
-    const cases = criterionCases(spec, { criterionIds: ["AC-004"] });
+    const cases = criterionCases(spec, { criterionIds: ["AC-004"] }, { checks: [] });
     expect(missingCases(cases, ["Steps bf16 f32 f64 e4m3 e5m2"]).map((c) => c.literal)).toEqual(["f16"]);
     // A count that matches no set, or two sets, asks for nothing.
-    expect(criterionCases({ ...spec, criteria: [steps("it is exact for all five formats")] }, { criterionIds: ["AC-004"] }).map((c) => c.literal)).toEqual(["Steps"]);
+    expect(criterionCases({ ...spec, criteria: [steps("it is exact for all five formats")] }, { criterionIds: ["AC-004"] }, { checks: [] }).map((c) => c.literal)).toEqual(["Steps"]);
   });
 
   test("plain words, ids, file names and sets the spec does not spell out elsewhere are not cases", () => {
@@ -361,16 +361,16 @@ describe("enumerated sets and table rows (#1482)", () => {
         { ...steps("f16 or bf16 round"), id: "AC-005" },
       ],
     };
-    expect(criterionCases(spec, { criterionIds: ["AC-004"] }).map((c) => c.literal)).toEqual(["Steps"]);
+    expect(criterionCases(spec, { criterionIds: ["AC-004"] }, { checks: [] }).map((c) => c.literal)).toEqual(["Steps"]);
     // Without a spelled-out set elsewhere, a list is left to the review.
-    expect(criterionCases({ criteria: spec.criteria }, { criterionIds: ["AC-005"] }).map((c) => c.literal)).toEqual(["Steps"]);
+    expect(criterionCases({ criteria: spec.criteria }, { criterionIds: ["AC-005"] }, { checks: [] }).map((c) => c.literal)).toEqual(["Steps"]);
     // The defining list itself is not asked for by its own text.
-    expect(criterionCases({ criteria: [steps(formats)] }, { criterionIds: ["AC-004"] }).map((c) => c.literal)).toEqual(["Steps"]);
+    expect(criterionCases({ criteria: [steps(formats)] }, { criterionIds: ["AC-004"] }, { checks: [] }).map((c) => c.literal)).toEqual(["Steps"]);
   });
 
   test("each data row's input cell is a case, not the header or the separator", () => {
     const table = "it prints:\n| input | expected |\n| --- | --- |\n| `0x3c00` | 1 |\n| 0x7bff | 65504 |\n| <bits> | any |";
-    const cases = criterionCases({ criteria: [steps(table)] }, { criterionIds: ["AC-004"] });
+    const cases = criterionCases({ criteria: [steps(table)] }, { criterionIds: ["AC-004"] }, { checks: [] });
     // `0x3c00` is also a quoted span; a case is listed once.
     expect(cases.map((c) => c.literal)).toEqual(["Steps", "0x3c00", "0x7bff"]);
     expect(missingCases(cases, ['Steps(0x3c00) == "1"']).map((c) => c.literal)).toEqual(["0x7bff"]);

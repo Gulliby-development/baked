@@ -62,6 +62,8 @@ const CHECK_COMMAND = new RegExp(
     String.raw`node\s+--test\b`,
     String.raw`make\s+(?:test|check|lint|build)\b`,
     RUNNER + TOOL,
+    // The arguments of a Python check run by an interpreter path: `.venv/bin/python -m ruff` (#1762).
+    String.raw`-m\s+` + TOOL,
     String.raw`(?:mvn|mvnw|gradle|gradlew|\.\/gradlew|\.\/mvnw)\b.*\b(?:test|verify|check|build)\b`,
   ].join("|")})`,
 );
@@ -73,26 +75,51 @@ type CaseTask = Pick<Task, "criterionIds"> &
   >;
 
 export interface CaseContext {
-  /** The run's checks: a literal that is one of their commands is checked by the host. */
-  checks?: readonly Pick<Check, "executable" | "args">[];
+  /**
+   * The run's checks: a literal that is one of their commands is checked by the host. Required,
+   * so that no caller prices or walks a host command as a case (#1762).
+   */
+  checks: readonly Pick<Check, "executable" | "args">[];
   /** The plan's tasks: a criterion most of them carry is about the whole repository. */
   tasks?: readonly CaseTask[];
   /** Pricing has always counted broad criteria; only the task-end walk exempts them. */
   includeBroad?: boolean;
 }
 
+/**
+ * The spellings a spec may quote for one check: the full command, the command it launches
+ * (`cmd /c mvn verify` as `mvn verify`, #1507), and the arguments alone when they name more than a
+ * bare subcommand (`-m ruff check .` and `ruff check .` after "python.exe with", #1762).
+ */
+function checkSpellings(check: Pick<Check, "executable" | "args">): {
+  commands: string[][];
+  args: string[][];
+} {
+  const { program, args } = toolchainCommand(check.executable, check.args);
+  const tails = [args, ...(args[0] === "-m" ? [args.slice(1)] : [])];
+  return {
+    commands: [
+      [check.executable, ...check.args],
+      [program, ...args],
+    ],
+    args: tails.filter((tail) => tail.length >= 2 || (tail.length === 1 && tail !== args)),
+  };
+}
+
 /** Whether a quoted literal is a command of the project's checks rather than a case. */
 export function isCheckCommand(literal: string, checks: CaseContext["checks"] = []): boolean {
   const spelled = literal.trim().replace(/\s+/g, " ");
+  const words = spelled.split(" ");
+  // A check quoted with extra flags (`vendor/bin/phpunit --testdox`) is still the check.
+  const runs = (command: string[]) =>
+    command.length <= words.length &&
+    command.every((word, i) => words[i] === word) &&
+    words.slice(command.length).every((word) => word.startsWith("-"));
   return (
     CHECK_COMMAND.test(spelled) ||
     checks.some((check) => {
-      // A check behind a launcher (`cmd /c mvn verify`) is quoted as the command it runs (#1507).
-      const { program, args } = toolchainCommand(check.executable, check.args);
-      return (
-        [check.executable, ...check.args].join(" ") === spelled ||
-        [program, ...args].join(" ") === spelled
-      );
+      const { commands, args } = checkSpellings(check);
+      return commands.some(runs) || args.some((tail) => tail.join(" ") === spelled);
     })
   );
 }
@@ -108,7 +135,7 @@ export function isCheckCommand(literal: string, checks: CaseContext["checks"] = 
 export function criterionCases(
   spec: SpecText,
   task: CaseTask,
-  context: CaseContext = {},
+  context: CaseContext,
 ): CriterionCase[] {
   const cases: CriterionCase[] = [];
   const seen = new Set<string>();
@@ -599,7 +626,7 @@ export const writtenTestPaths = (task: Pick<Task, "writes">): string[] =>
 export function caseCheck(
   spec: SpecText | null | undefined,
   task: CaseTask & Pick<Task, "writes">,
-  context: CaseContext = {},
+  context: CaseContext,
 ): ((root: string) => Promise<string[]>) | undefined {
   const paths = [
     ...writtenTestPaths(task),

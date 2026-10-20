@@ -145,7 +145,7 @@ describe("literal case pricing and sequential test slices (#1562)", () => {
     const split = splitTestTasks(g, report, text)!;
     expect(split.tasks).toHaveLength(1);
     expect(split.tasks[0]!.criterionIds).toEqual([ids[0]!]);
-    expect(criterionCases(text, split.tasks[0]!).length).toBe(40);
+    expect(criterionCases(text, split.tasks[0]!, { checks: [] }).length).toBe(40);
     expect(split.tasks[0]!.description).toContain("small batches inside this attempt");
     const repeated = splitTestTasks(split, size(split, history, text), text)!;
     expect(repeated.tasks[0]!.description).toBe(split.tasks[0]!.description);

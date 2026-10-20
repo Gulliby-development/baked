@@ -234,7 +234,13 @@ import {
   recordDeclaredLimits,
   settledConflicts,
 } from "./conflict-decisions.js";
-import { auditVerified, type ContestedRow, contestedRows, verbatimRow } from "./conflict-rows.js";
+import {
+  auditVerified,
+  type ContestedRow,
+  contestedRows,
+  quotedCheckCommands,
+  verbatimRow,
+} from "./conflict-rows.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
 import { costToleranceOf, currentCostCap, inCostWrapUp } from "./cost-tolerance.js";
 import { coverageFinding } from "./coverage.js";
@@ -3435,7 +3441,7 @@ export class WorkflowScheduler {
       spent: this.store.run(runId).token_usage,
       model: this.sizingModel(runId, graph),
     });
-    const split = splitTestTasks(graph, report, spec, edits);
+    const split = splitTestTasks(graph, report, spec, edits, policy.checks);
     if (!split) return graph;
     const revision = this.store.state(runId).sizingReplans;
     this.store.transaction(() =>
@@ -9100,7 +9106,7 @@ ${note}`;
     root: string,
   ): void {
     const report = [result.summary, ...result.unresolved].join(" ");
-    const rows = this.contestedRows(runId, state, task, report, root);
+    const rows = this.contestedRows(runId, state, task, report, root, policy.checks);
     const account = {
       taskId: task.id,
       summary: result.summary,
@@ -9109,6 +9115,7 @@ ${note}`;
     };
     const assumedPath = `assumptions/conflicts/${task.id}.json`;
     if (this.settleContestedRows(runId, state, child, task, rows, account, report)) return;
+    if (this.settleCheckCommands(runId, state, child, task, policy, account, report)) return;
     // A fully confident spec finding that explicitly names test removals outranks our guard,
     // even under clarification ask. Bind only the host findings, preserving the spec finding.
     if (!this.store.latestArtifact(runId, assumedPath)) {
@@ -9389,6 +9396,7 @@ ${note}`;
     task: Task,
     report: string,
     root: string,
+    checks: RunPolicy["checks"],
   ): ContestedRow[] {
     if (!state.spec) return [];
     const paths = [
@@ -9413,7 +9421,7 @@ ${note}`;
         derivations = (JSON.parse(this.store.readArtifact(runId, analysis.id)) as Analysis)
           .derivations;
       } catch {}
-    return contestedRows(state.spec, report, tests, derivations);
+    return contestedRows(state.spec, report, tests, derivations, checks);
   }
   /**
    * A conflict about a criterion row that is not one (#1709): the task's test changed the row's
@@ -9486,6 +9494,48 @@ ${note}`;
       return true;
     }
     return false;
+  }
+  /**
+   * A conflict about commands of the run's checks only: the host runs them, so they are not test
+   * requirements and nobody is asked (#1762). Settled once per task.
+   */
+  private settleCheckCommands(
+    runId: string,
+    state: RuntimeState,
+    child: string,
+    task: Task,
+    policy: RunPolicy,
+    account: Record<string, unknown>,
+    report: string,
+  ): boolean {
+    const commands = quotedCheckCommands(report, policy.checks);
+    const path = `assumptions/conflicts/${task.id}-checks.json`;
+    if (!commands.length || this.store.latestArtifact(runId, path)) return false;
+    const settled = `${commands.map((c) => JSON.stringify(c)).join(", ")} ${commands.length === 1 ? "is a command" : "are commands"} of the run's checks, which the host runs after the task. Host-run checks are not test requirements: tests never start them, and the case check does not ask for them`;
+    this.store.transaction(() => {
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `tasks/conflicts/${task.id}.json`,
+        canonical(account),
+      );
+      this.store.artifact(
+        runId,
+        "assumption",
+        path,
+        canonical({ ...account, assumed: settled, commands }),
+      );
+      recordConflictDecision(this.store, runId, {
+        requestId: `checks-${task.id}`,
+        taskId: task.id,
+        findingIds: task.findingIds,
+        answer: `Settled by the host (${path}): ${settled}.`,
+      });
+      this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
+      this.store.finishStep(runId, child, "failed");
+    });
+    state.prompt += `\nSettled spec conflict (${path}): task ${task.id} reported: ${report.slice(0, 1200)} ${settled}. Write the tests the criteria's other cases need, and report implemented or already_satisfied, not spec_conflict.`;
+    return true;
   }
   /**
    * The findings of a corrective task whose repros still reproduced in its latest repro check

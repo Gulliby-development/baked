@@ -132,7 +132,7 @@ describe("criterion cell classification and diagnostic decoys (#1629)", () => {
       const task = { criterionIds: ["AC-001"], writes: [{ path: sample.path, action: "create" as const }] };
       const spec = residualSpec(sample);
       for (const includeBroad of [false, true]) {
-        const cases = criterionCases(spec, task, { includeBroad });
+        const cases = criterionCases(spec, task, { checks: [], includeBroad });
         expect(cases.map((c) => c.literal)).toEqual([...sample.cases]);
         expect(missingCases(cases, [sample.text])).toEqual([]);
         // A wrong byte or candidate must still be missing after formatting normalization.
@@ -141,7 +141,7 @@ describe("criterion cell classification and diagnostic decoys (#1629)", () => {
       const file = join(root, sample.path);
       mkdirSync(join(file, ".."), { recursive: true });
       writeFileSync(file, sample.text);
-      expect((await caseCheck(spec, task)?.(root)) ?? []).toEqual([]);
+      expect((await caseCheck(spec, task, { checks: [] })?.(root)) ?? []).toEqual([]);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   for (const sample of decoySamples) test(`${sample.stack}: assertion messages cannot stand in for an input`, async () => {
@@ -152,7 +152,7 @@ describe("criterion cell classification and diagnostic decoys (#1629)", () => {
       const file = join(root, sample.path);
       mkdirSync(join(file, ".."), { recursive: true });
       writeFileSync(file, sample.decoy);
-      const check = caseCheck(spec, task)!;
+      const check = caseCheck(spec, task, { checks: [] })!;
       expect((await check(root))[0]).toContain("message alone is a decoy");
       writeFileSync(file, sample.text);
       expect(await check(root)).toEqual([]);
@@ -230,7 +230,7 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
       const files = rowFiles(task, artifact);
       mkdirSync(join(root, "tests"));
       for (const generated of files) writeFileSync(join(root, generated.path), generated.content);
-      const check = caseCheck(spec, task);
+      const check = caseCheck(spec, task, { checks: [] });
       expect(check).toBeDefined();
       expect(await check?.(root)).toEqual([]);
       // Java and C# tests hold the rows themselves, and the host refuses any change to that file.
@@ -688,7 +688,7 @@ describe("gate matrix: shared criterion rows (#1597)", () => {
     const spec = { criteria: [{ id: "AC-001", requirementIds: ["FR-001"], given: "CLI input", when: "it runs",
       then: rows.map((row) => `input "${row}"`).join("; "), method: "automated" as const }] };
     for (const [index, task] of tasks.entries()) {
-      const cases = criterionCases(spec, task, { tasks });
+      const cases = criterionCases(spec, task, { checks: [], tasks });
       expect(cases.map((c) => c.literal)).toEqual([rows[index]!]);
       expect(missingCases(cases, [rows[index]!])).toEqual([]);
       expect(missingCases(cases, [])).toHaveLength(1);
@@ -700,9 +700,9 @@ describe("gate matrix: multi-input criteria cells and escapes (#1614)", () => {
   for (const sample of cellSamples) cell(sample.stack, `${sample.stack}: table inputs compare by value`, async () => {
     const root = project({ [sample.path]: sample.text });
     const task = { criterionIds: ["AC-001"], writes: [{ path: sample.path, action: "create" as const }] };
-    const cases = criterionCases(cellSpec, task);
+    const cases = criterionCases(cellSpec, task, { checks: [] });
     expect(cases).toHaveLength(14);
-    const check = caseCheck(cellSpec, task);
+    const check = caseCheck(cellSpec, task, { checks: [] });
     expect(check).toBeDefined();
     expect(await check?.(root)).toEqual([]);
     writeFileSync(join(root, sample.path), withoutCellInput(sample.text));
@@ -720,7 +720,7 @@ describe("gate matrix: criteria scenario labels (#1565)", () => {
   ];
   for (const sample of samples) cell(sample.stack, `${sample.stack}: labels are not missing cases`, () => {
     const task = { criterionIds: ["AC-001"], writes: [{ path: sample.path, action: "create" as const }] };
-    const cases = criterionCases({ criteria: [{ id: "AC-001", requirementIds: ["FR-001"], given: 'the "repeated flag" and `success` scenarios', when: "tests run", then: "| Input | expected |\n| --- | --- |\n| repeated flag | last value |\n| success | zero status |\n| --path src/cli | selected |\n| Join([3,0,-2]) | joined |", method: "automated" }] }, task);
+    const cases = criterionCases({ criteria: [{ id: "AC-001", requirementIds: ["FR-001"], given: 'the "repeated flag" and `success` scenarios', when: "tests run", then: "| Input | expected |\n| --- | --- |\n| repeated flag | last value |\n| success | zero status |\n| --path src/cli | selected |\n| Join([3,0,-2]) | joined |", method: "automated" }] }, task, { checks: [] });
     expect(writtenTestPaths(task)).toEqual([sample.path]);
     // An expression cell asks for its literal arguments (#1663).
     expect(cases.map((c) => c.literal)).toEqual(["--path src/cli", "[3,0,-2]"]);
