@@ -38,9 +38,23 @@ The bench loop tunes BAKED by building small, useful apps with it, round after r
 - **Publishing.** CI templates in `bench/loop/templates/ci/`: `bun`, `vite`, `python`, `go`, `dotnet`, `rust`, `java`, all on `ubuntu-latest`, `windows-latest` and `macos-latest`.
 
 - **Model noise.** When no other experiment is planned, one new app per round runs its review stages on another vendor's model (`review.rotateReviewer`), so a single reviewer's habits do not pass for BAKED behavior. Cross-model re-runs are capped by `confirm.maxTokensPerRound` (3M) and count toward the round budget.
-- **Cloud smoke runs.** A scheduled cloud session outside the loop runs short `quick` smoke rounds on `main` with a cheaper model after fixes merge and files only `invariant` and `recovery` findings, as issues labelled `bench-loop` and `smoke`; the backlog role ranks them with its own.
+- **Cloud smoke runs.** A scheduled cloud session outside the loop runs short `quick` smoke rounds on `main` with a cheaper model after fixes merge and files only `invariant` and `recovery` findings, as issues labelled `bench-loop` and `smoke`; the backlog role ranks them with its own. Each smoke round also runs one [mini-suite](#nightly-mini-suite) task per language with k = 2 and posts the pass^k table to #861.
 
 Control apps keep the same prompts, workflow and reference model every round and are never published, so their numbers show whether BAKED improved. The runner stays on one commit for the whole round; fixes merged during a round are measured in the next one.
+
+## Nightly mini-suite
+
+A level-5 round builds one app in one language, so it catches a language-bound regression only in the round that happens to use that language. `bench/suite/` holds small tasks in every supported language: TypeScript on Bun, JavaScript on npm, Python with pytest, Go, Rust, Java with Maven, Kotlin with Gradle, C# on .NET, PHP, Lua and C with make. Some tasks rebuild past stops (`origin` in `task.json`). Each task has a brief (`prompt.md`), a seed repository, a hidden acceptance check (`check.sh` with its tests in `hidden/`) and a reference solution.
+
+```sh
+bun run bench:suite --per-language --k 2        # one task per language, rotating by day
+bun run bench:suite --k 3                       # every task three times
+bun run bench:suite --self-check                # no model: check fails on the seed, passes on the solution
+```
+
+The runner copies the seed into a fresh git repository and writes the task's checks and allowed paths into `.baked/config.json`. It runs `baked workflow quick --budget quick --model <model> --model-strict --worktree` and approves a plan that stays inside the allowed paths. After a completed run it runs the hidden check in the run's worktree. Any other stop counts as an intervention and ends the trial. The default model is `claude-code/haiku`, and a task whose toolchain is missing is reported as skipped. The table lists pass^k (the chance that k trials all pass), passes, interventions per run, tokens and cost per task. Results go to `bench-suite-results/<date>/`.
+
+A capability task whose pass^k falls from 1 is filed as a bench-loop issue with its run ids. A task that keeps pass^k = 1 for five nights graduates to `bench/suite/regression.json`, and regression tasks must stay at 100%. The task format, the self-check and the graduation rules are in the [bench-suite skill](../.agents/skills/bench-suite/SKILL.md).
 
 ## Files
 
@@ -51,6 +65,7 @@ Control apps keep the same prompts, workflow and reference model every round and
 | [`bench/loop/config.json`](../bench/loop/config.json) | Default settings, copied once to the loop root on the machine |
 | [`bench/loop/templates/`](../bench/loop/templates/round-report.md) | Run and verification records, findings, round report, publish record, README, logo prompt, CI workflows, ledger seeds, round 1 briefs |
 | [`bench/loop/templates/claude-settings.local.json`](../bench/loop/templates/claude-settings.local.json) | Allow rules for creating and publishing repositories in Gulliby-development, copied to `.claude/settings.local.json` in the loop root |
+| [`bench/suite/`](../bench/suite/lib.ts) | Nightly mini-suite: tasks, runner (`run.ts`) and regression list |
 | [`bench/loop/controls/`](../bench/loop/controls/README.md) | Where the control app prompts come from |
 
 Start the loop session with the loop root as its working folder. On first start the loop copies the settings template to `<loop root>/.claude/settings.local.json` if missing (and re-checks each round, never overwriting an existing file); Claude Code reads that file from the session's project folder, so otherwise the allow rules do not apply and `gh repo create` / `gh repo edit --visibility public` may be blocked. The `.claude` folder is not part of the repository.

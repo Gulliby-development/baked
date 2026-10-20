@@ -1,0 +1,24 @@
+{
+  "id": "java-maven-palindrome",
+  "language": "java",
+  "toolchain": "maven",
+  "requires": [
+    "java",
+    "mvn"
+  ],
+  "allowedPaths": [
+    "src/**",
+    "README.md"
+  ],
+  "checks": [
+    {
+      "id": "maven-verify",
+      "executable": "mvn",
+      "args": [
+        "-B",
+        "-q",
+        "verify"
+      ]
+    }
+  ]
+}

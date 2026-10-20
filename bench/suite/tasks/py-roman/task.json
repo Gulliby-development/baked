@@ -1,0 +1,43 @@
+{
+  "id": "py-roman",
+  "language": "python",
+  "toolchain": "pytest",
+  "requires": [
+    "python3",
+    "pytest",
+    "ruff"
+  ],
+  "allowedPaths": [
+    "src/**",
+    "tests/**",
+    "README.md",
+    "pyproject.toml"
+  ],
+  "checks": [
+    {
+      "id": "pytest",
+      "executable": "pytest",
+      "args": [
+        "-q"
+      ]
+    },
+    {
+      "id": "ruff",
+      "executable": "ruff",
+      "args": [
+        "check",
+        "src",
+        "tests"
+      ],
+      "fix": {
+        "executable": "ruff",
+        "args": [
+          "check",
+          "--fix",
+          "src",
+          "tests"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+package.path = arg[1] .. "/src/?.lua;" .. package.path
+local t = require("text")
+assert(t.trim("  a b \t\n") == "a b")
+assert(t.starts_with("a.b", "a."))
+assert(not t.starts_with("axb", "a."))
+assert(t.pad_left("7", 3, "0") == "007")
+assert(t.pad_left("1234", 3) == "1234")
+assert(t.pad_left("x", 2) == " x")
+assert(not pcall(t.pad_left, "x", 3, "ab"))
+print("ok")

@@ -1,0 +1,22 @@
+{
+  "id": "ts-bun-slugify",
+  "language": "typescript",
+  "toolchain": "bun",
+  "requires": [
+    "bun"
+  ],
+  "allowedPaths": [
+    "src/**",
+    "tests/**",
+    "README.md"
+  ],
+  "checks": [
+    {
+      "id": "bun-test",
+      "executable": "bun",
+      "args": [
+        "test"
+      ]
+    }
+  ]
+}
