@@ -2,11 +2,17 @@
   "files": {
     "src/main/java/Sum.java": "class Sum {\n  int sum(int a, int b) {\n    throw new IllegalStateException(\"not implemented\");\n  }\n}\n",
     "src/test/java/SumTest.java": "class SumTest {}\n",
-    "pom.xml": "<project>\n  <dependencies>\n    <dependency>\n      <groupId>com.google.guava</groupId>\n      <artifactId>guava</artifactId>\n      <version>33.0.0-jre</version>\n    </dependency>\n  </dependencies>\n</project>\n"
+    "pom.xml": "<project>\n  <dependencies>\n    <dependency>\n      <groupId>com.google.guava</groupId>\n      <artifactId>guava</artifactId>\n      <version>33.0.0-jre</version>\n    </dependency>\n  </dependencies>\n</project>\n",
+    "src/test/java/SumPropertyTest.java": "import net.jqwik.api.*;\nclass SumPropertyTest {\n  @Property\n  boolean adds(@ForAll int a) { return a + 0 == a; }\n}\n"
+  },
+  "outputs": {
+    "tests": "[ERROR] Tests run: 3, Failures: 1, Errors: 0, Skipped: 0\n",
+    "testsGrown": "[ERROR] Tests run: 4, Failures: 1, Errors: 0, Skipped: 0\n"
   },
   "expected": {
     "tests": [
-      "src/test/java/SumTest.java"
+      "src/test/java/SumTest.java",
+      "src/test/java/SumPropertyTest.java"
     ],
     "manifests": [
       "pom.xml"
@@ -16,6 +22,19 @@
     ],
     "placeholders": [
       "src/main/java/Sum.java:3"
+    ],
+    "gates": [
+      "maven-verify"
+    ],
+    "testRunners": [
+      "maven 3",
+      "signature stable"
+    ],
+    "mutation": [
+      "pit: src/main/java/Sum.java"
+    ],
+    "properties": [
+      "src/test/java/SumPropertyTest.java: library"
     ]
   }
 }

@@ -243,12 +243,18 @@ function inCallOrder(calls: RecordedCall[]): RecordedCall[] {
 
 /** The model calls a run recorded, in the order it stored them (`workflow recording`). */
 export function runRecording(store: WorkflowStore, runId: string): Recording {
-  const calls = store
-    .artifacts(runId)
-    .filter((artifact) => artifact.logical_path.startsWith(RECORDING_PREFIX))
-    .map((artifact) =>
-      RecordedCallSchema.parse(JSON.parse(store.readArtifact(runId, artifact.id))),
-    );
+  return recordingOf(
+    runId,
+    store
+      .artifacts(runId)
+      .filter((artifact) => artifact.logical_path.startsWith(RECORDING_PREFIX))
+      .map((artifact) => store.readArtifact(runId, artifact.id)),
+  );
+}
+
+/** A recording of the stored `recordings/` artifacts of a run, as JSON texts. */
+export function recordingOf(runId: string, artifacts: string[]): Recording {
+  const calls = artifacts.map((text) => RecordedCallSchema.parse(JSON.parse(text)));
   if (!calls.length)
     throw new WorkflowFault(
       "NOT_FOUND",

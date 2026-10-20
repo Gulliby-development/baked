@@ -9,6 +9,10 @@
     ],
     "manifests": null,
     "dependencies": null,
-    "placeholders": null
+    "placeholders": null,
+    "gates": null,
+    "testRunners": null,
+    "mutation": null,
+    "properties": null
   }
 }

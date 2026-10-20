@@ -2,11 +2,17 @@
   "files": {
     "src/lib.rs": "pub fn sum(a: i32, b: i32) -> i32 {\n    todo!()\n}\n",
     "src/tests.rs": "use super::*;\n",
-    "Cargo.toml": "[package]\nname = \"fixture\"\n\n[dependencies]\nserde = \"1\"\n"
+    "Cargo.toml": "[package]\nname = \"fixture\"\n\n[dependencies]\nserde = \"1\"\n",
+    "tests/props.rs": "proptest! {\n    #[test]\n    fn adds(a in 0i32..100) { assert_eq!(a + 0, a); }\n}\n"
+  },
+  "outputs": {
+    "tests": "test sum_commutes ... FAILED\ntest result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n",
+    "testsGrown": "test sum_commutes ... FAILED\ntest result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s\n"
   },
   "expected": {
     "tests": [
-      "src/tests.rs"
+      "src/tests.rs",
+      "tests/props.rs"
     ],
     "manifests": [
       "Cargo.toml"
@@ -16,6 +22,21 @@
     ],
     "placeholders": [
       "src/lib.rs:2"
+    ],
+    "gates": [
+      "cargo-fmt",
+      "cargo-clippy",
+      "cargo-test"
+    ],
+    "testRunners": [
+      "cargo 3",
+      "signature stable"
+    ],
+    "mutation": [
+      "cargo-mutants: src/lib.rs"
+    ],
+    "properties": [
+      "tests/props.rs: library"
     ]
   }
 }

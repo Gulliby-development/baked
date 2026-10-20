@@ -12,6 +12,10 @@
     "dependencies": null,
     "placeholders": [
       "src/sum.c:2"
-    ]
+    ],
+    "gates": null,
+    "testRunners": null,
+    "mutation": null,
+    "properties": null
   }
 }
