@@ -304,9 +304,15 @@ function requestedWriteExempt(policy: RunPolicy, write: Write, request: string):
  */
 function requestedManifestEdit(write: Write, request: string): boolean {
   return (
-    write.action !== "delete" && isManifestPath(write.path) && requestNamesManifest(write, request)
+    write.action !== "delete" &&
+    isManifestPath(write.path) &&
+    !PERSON_ONLY_MANIFEST.test(write.path.replaceAll("\\", "/")) &&
+    requestNamesManifest(write, request)
   );
 }
+
+/** Manifests the dependency check reads (#1682) whose edits still go to a person: MSBuild props run build logic. */
+const PERSON_ONLY_MANIFEST = /(?:^|\/)Directory\.(?:Build|Packages)\.props$/;
 
 /** Manifest names every package of a monorepo repeats; the request names one only by its path. */
 const SHARED_MANIFEST =
