@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
@@ -19,6 +19,10 @@ import { runRoot } from "../src/core/workflows/worktree.js";
 // rewrite drops it.
 const cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
+// The test preload points HOME at an empty profile, where rustup finds no default toolchain;
+// os.homedir() still names the real home (as in the gate matrix's toolchain tier).
+process.env.RUSTUP_HOME ??= join(homedir(), ".rustup");
+process.env.CARGO_HOME ??= join(homedir(), ".cargo");
 const has = (command: string[]) => {
   if (Bun.which(command[0] ?? "") === null) return false;
   return Bun.spawnSync(command, { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
@@ -117,7 +121,9 @@ class ScriptedExecutor implements AgentExecutor {
 }
 
 describe("scenario: inline acceptance rows in a brief that fixes the test files (#1763)", () => {
-  test.each(TOOLCHAINS.map((t) => [t.framework, t]))("%s: the plan names one test file, and the host writes all 12 rows into it", async (_framework, toolchain) => {
+  // BAKED derives a cargo check from a written .rs test file, so without a working cargo the rust
+  // row cannot pass its baseline at all.
+  test.each(TOOLCHAINS.filter((t) => t.framework !== "rust" || t.run).map((t) => [t.framework, t]))("%s: the plan names one test file, and the host writes all 12 rows into it", async (_framework, toolchain) => {
     const root = mkdtempSync(join(tmpdir(), "baked-rows-inline-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));
     for (const [path, content] of Object.entries({ ...toolchain.project, [toolchain.test]: toolchain.existing })) {
@@ -149,8 +155,6 @@ describe("scenario: inline acceptance rows in a brief that fixes the test files 
     const done = await service.drive(run.runId, new AbortController().signal);
     if (done.status !== "completed") {
       const errs = service.store.artifacts(run.runId).filter((a) => a.logical_path.startsWith("errors/") || a.logical_path.includes("check"));
-      const g = service.store.state(run.runId).graph;
-      console.log("GRAPH", JSON.stringify(g?.tasks.map((t) => ({ id: t.id, origin: t.origin, rows: t.rows, rowTest: t.rowTest, writes: t.writes, title: t.title, sizingSlice: t.sizingSlice }))));
       throw new Error(`${done.status} ${done.reason}: ${errs.map((a) => service.store.readArtifact(run.runId, a.id).slice(0, 1500)).join("\n---\n")}`);
     }
     expect(executor.implementations).toBe(1);
