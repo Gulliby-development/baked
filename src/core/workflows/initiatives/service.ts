@@ -17,7 +17,7 @@ import { matchGlob } from "../../platform/index.js";
 import { hashJson } from "../../specs/hash.js";
 import { type BudgetLimits, budgetUsage, limitsOf } from "../budget.js";
 import { autoCostTolerance } from "../cost-tolerance.js";
-import { type AcceptedContract, acceptedContract } from "../dependencies.js";
+import { type AcceptedContract, acceptedContract, providesContract } from "../dependencies.js";
 import { WorkflowFault } from "../errors.js";
 import {
   estimateHistory,
@@ -1409,7 +1409,7 @@ export class InitiativeService {
       ...(settings.featureAutoApproval ? { boundaryAutoApproval: true } : {}),
       ...(settings.featureIssues[featureId] ? { issue: settings.featureIssues[featureId] } : {}),
       ...(feature.skeleton?.length ? { hostFiles: feature.skeleton } : {}),
-      ...(lightContract(settings, plan, feature) ? { contract: feature.contract } : {}),
+      ...(lightContract(settings, feature) ? { contract: feature.contract } : {}),
       ...(baseCommit ? { baseCommit } : {}),
     });
     this.store.transaction(() => {
@@ -2119,8 +2119,10 @@ export class InitiativeService {
             `${u.id}'s contract changed since this run was planned; the plan must be re-approved`,
         );
       // A workflow without a spec gives no contract; nothing depends on such a feature, so its
-      // verified result is its acceptance.
-      const specless = facts(workflowId)?.contract === false;
+      // verified result is its acceptance. So does a light run that recorded no contract (#1750).
+      const specless =
+        facts(workflowId)?.contract === false ||
+        !providesContract(this.workflows.store, link.run_id);
       if (run.status === "completed") {
         const accepted = specless ? null : acceptedContract(this.workflows.store, runFeature);
         if (waiting.length) {
@@ -2823,17 +2825,14 @@ const MIN_GROWTH_TOKENS = 10_000;
 const lightContracts = (settings: InitiativeSettings): boolean =>
   settings.lightContracts || settings.basePolicy.lightContracts === "on";
 
-/** A feature on the light workflow that others depend on: its run records their contract (#1664). */
-function lightContract(
-  settings: InitiativeSettings,
-  plan: InitiativePlan,
-  feature: InitiativeFeature,
-): boolean {
-  return (
-    lightContracts(settings) &&
-    featureWorkflowId(settings, feature) === LIGHT_LEAF_WORKFLOW &&
-    plan.features.some((f) => f.dependsOn.includes(feature.id))
-  );
+/**
+ * A feature on the light workflow while `lightContracts` is on: its run records its host-made spec
+ * as the contract (#1664). Every such feature records one, dependents or not, because the setting
+ * counts the light workflow as one that provides a contract, so status reads one for each, and a
+ * replan or an extension can give it a dependent after it ran (#1750).
+ */
+function lightContract(settings: InitiativeSettings, feature: InitiativeFeature): boolean {
+  return lightContracts(settings) && featureWorkflowId(settings, feature) === LIGHT_LEAF_WORKFLOW;
 }
 
 /** The request a feature run starts from: its place in the initiative and the contracts around it. */
