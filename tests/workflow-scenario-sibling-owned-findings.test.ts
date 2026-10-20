@@ -99,7 +99,7 @@ async function scenario(file: string, stage: "review" | "convergence", legacy = 
     { id: "adapters", title: "Adapters", boundary: { scope: "Command adapters", paths: [mutation ? "src/adapter.ts" : "adapter.txt"] }, contract: "Adapters are ready; entry delivers acceptance tests", dependsOn: [], mandatory: true, workflow: "sdd" },
     { id: "entry", title: "Entry", boundary: { scope: "Entry and integration acceptance", paths: [file] }, contract: "Entry is ready", dependsOn: ["adapters"], mandatory: true, workflow: "sdd" },
   ] };
-  const settings: InitiativeSettings = { workflowId: "sdd", basePolicy: runPolicy, budget: null, costBudget: null, featureAutoApproval: null, autoApprovalConfirmation: null, model: null, ownerLabel: "test", featureIssues: {}, forecastStop: false, keepFeatures: true, splitCriticalPath: false };
+  const settings: InitiativeSettings = { workflowId: "sdd", basePolicy: runPolicy, budget: null, costBudget: null, featureAutoApproval: null, autoApprovalConfirmation: null, model: null, ownerLabel: "test", featureIssues: {}, forecastStop: false, keepFeatures: true, splitCriticalPath: false, lightContracts: false };
   // Seed the reduced approved plan directly: proposing a new initiative requires three features,
   // which is unrelated to this ownership regression. Drive still uses real feature scheduling.
   initiatives.store.transaction(() => {

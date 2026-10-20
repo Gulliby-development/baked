@@ -288,6 +288,7 @@ export class NativeWorkflowService implements WorkflowService {
             request.featureId,
             request.prompt,
             policy.checks.some((c) => c.required),
+            request.contract,
           )
         : null;
     const spec =
@@ -437,6 +438,9 @@ export class NativeWorkflowService implements WorkflowService {
         project?.id ?? null,
       );
       this.store.artifact(id, "routing", ROUTING_ARTIFACT, canonical(routing));
+      // A light feature run that others depend on records its host-made spec as their contract.
+      if (spec && request.contract !== undefined)
+        this.store.artifact(id, "spec", "spec.json", canonical(spec));
       if (smoke?.length)
         this.store.artifact(
           id,

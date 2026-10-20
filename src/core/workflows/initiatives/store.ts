@@ -94,6 +94,11 @@ export const InitiativeSettingsSchema = z
      * why it stays whole (#1522). Off by default.
      */
     splitCriticalPath: z.boolean().default(false),
+    /**
+     * Lets a small feature that other features depend on run the light workflow, with a host-made
+     * spec that states its contract for them to pin (#1664). Off by default.
+     */
+    lightContracts: z.boolean().default(false),
   })
   .strict();
 export type InitiativeSettings = z.infer<typeof InitiativeSettingsSchema>;

@@ -50,6 +50,7 @@ import {
   lightenSmallLeaves,
   planWorkflowProblems,
   restoreContractWorkflows,
+  withLightContract,
 } from "../src/core/workflows/initiatives/workflows.js";
 
 const cleanups: (() => void)[] = [];
@@ -952,6 +953,74 @@ describe("initiative runtime", () => {
     }
     expect(view.status).toBe("completed");
   }, 30000);
+
+  test("with lightContracts a small feature others depend on runs quick, and its dependent pins the host-made contract (#1664)", async () => {
+    // Bench round 50, selwhy: one-file command features that the cli feature joined ran sdd, and
+    // their fixed stages cost 1.1x to 4.4x their task tokens (plan 156k for a one-task graph).
+    const selwhy = plan([
+      { ...feature("core", [], ["core.txt", "core/b.txt", "core/c.txt"]), workflow: "sdd" },
+      { ...feature("tree", ["core"], ["tree.txt"]), workflow: "sdd" },
+      { ...feature("cli", ["tree"], ["cli.txt", "cli/b.txt", "cli/c.txt"]), workflow: "sdd", size: "medium" as const },
+    ]);
+    const off = setup(selwhy);
+    await off.start();
+    expect(off.featureOf(await off.drive(), "tree").workflowId).toBe("sdd");
+    // The run policy turns it on too, as the bench loop sets its policy.
+    const byPolicy = setup(selwhy);
+    await byPolicy.start({ policy: { ...policy, lightContracts: "on" } });
+    expect(byPolicy.featureOf(await byPolicy.drive(), "tree").workflowId).toBe("quick");
+
+    const t = setup(selwhy);
+    await t.start({ lightContracts: true });
+    let view = await t.drive();
+    expect(view.features.map((f) => [f.id, f.workflowId])).toEqual([
+      ["core", "sdd"],
+      ["tree", "quick"],
+      ["cli", "sdd"],
+    ]);
+    expect(t.initiatives.store.eventsOfType("values", "split.lightened")).toEqual([
+      { planRevision: 1, lightened: [{ featureId: "tree", from: "sdd", to: "quick" }] },
+    ]);
+    await t.approveSplit();
+    for (let i = 0; i < 12 && view.status !== "completed"; i++) {
+      view = await t.drive();
+      const waiting = view.pendingDecisions.find((d) => d.scope === "feature" && d.kind === "approval");
+      if (waiting?.featureId) await t.approveFeature(waiting.featureId);
+    }
+    expect(view.status).toBe("completed");
+    const tree = t.featureOf(view, "tree").runId ?? "";
+    const spec = t.workflows.store.state(tree).spec;
+    expect(spec?.requirements[0]?.text).toContain("Contract for dependent features: tree.txt holds the value of tree");
+    expect(t.workflows.store.latestArtifact(tree, "spec.json")).toBeTruthy();
+    const cli = t.featureOf(view, "cli").runId ?? "";
+    expect(t.workflows.store.state(cli).spec?.dependencies).toEqual([
+      { featureId: "values_tree", contractHash: hashJson(spec) },
+    ]);
+  }, 60000);
+
+  test("lightContracts counts quick as a contract workflow and moves small features with dependents (#1664)", () => {
+    const choices = [
+      { id: "sdd", description: "", schemaVersion: 1 as const, contract: true, execution: "inline" as const, stages: [] },
+      { id: "quick", description: "", schemaVersion: 2 as const, contract: false, execution: "inline" as const, stages: [] },
+    ];
+    const contracts = choices.map((c) => withLightContract(c, true) ?? c);
+    expect(contracts.map((c) => c.contract)).toEqual([true, true]);
+    expect(withLightContract(choices[1] ?? null, false)?.contract).toBe(false);
+    const split = plan([
+      { ...feature("core", [], ["a", "b", "c"]), workflow: "sdd" },
+      { ...feature("tree", ["core"], ["tree.go"]), workflow: "sdd" },
+      { ...feature("login", ["core"], ["src/auth.ts"]), workflow: "sdd" },
+      { ...feature("cli", ["tree", "login"], ["x", "y", "z"]), workflow: "sdd", size: "medium" as const },
+    ]);
+    // Off: tree has a dependent and stays; on: it moves, a risky path still stays.
+    expect(lightenSmallLeaves(split, choices).lightened).toEqual([]);
+    const moved = lightenSmallLeaves(split, contracts, new Set(), { withDependents: true });
+    expect(moved.lightened).toEqual([{ featureId: "tree", from: "sdd", to: "quick" }]);
+    expect(planWorkflowProblems(moved.plan, contracts)).toEqual([]);
+    expect(restoreContractWorkflows(moved.plan, contracts, "sdd").restored).toEqual([]);
+    // Without the setting the same plan is refused for its dependents.
+    expect(planWorkflowProblems(moved.plan, choices)).toHaveLength(1);
+  });
 
   test("a light feature that still gains a dependent is moved back to a spec workflow (#1406)", () => {
     const choices = [
