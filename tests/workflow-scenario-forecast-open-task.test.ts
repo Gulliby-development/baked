@@ -103,7 +103,7 @@ async function runScenario(tasks: number, script: Script, cap: number) {
   };
   const stageOf = new Map(store.steps(runId).map((s) => [s.id, s.stage_id]));
   /** What the attempts of a task reserved, in order. */
-  const reserved = (taskId: string) => store.attempts(runId).filter((a) => stageOf.get(a.step_id) === `task-${taskId}`).map((a) => a.reserved_tokens);
+  const reserved = (taskId: string) => store.attempts(runId).filter((a) => a.model_id !== null && stageOf.get(a.step_id) === `task-${taskId}`).map((a) => a.reserved_tokens);
   const revisions = store.artifacts(runId).filter((a) => a.kind === "policy-revision").map((a) => JSON.parse(store.readArtifact(runId, a.id)) as { kind: string });
   return {
     done, store, runId, midOf, reserved,
