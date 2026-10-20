@@ -268,8 +268,8 @@ interface AttemptWatch {
   lastAt: number;
   lastTool: string | null;
   tools: number;
-  /** Unanswered calls have their own adapter deadline in provider-health. */
-  providers: number;
+  /** Buffering adapters use their first-byte deadline until they report model activity. */
+  bufferedProviders: number;
   deadlines: number;
   /** When the model call of the current step started, until it asks for a tool or ends. */
   calledAt: number | null;
@@ -334,7 +334,7 @@ export class NativeAgentExecutor implements AgentExecutor {
       lastAt: executionClock.now(),
       lastTool: null,
       tools: 0,
-      providers: 0,
+      bufferedProviders: 0,
       deadlines: 0,
       calledAt: null,
       abort: (error) => stall.abort(error),
@@ -342,7 +342,11 @@ export class NativeAgentExecutor implements AgentExecutor {
     const interval = setInterval(
       () => {
         const limit = silenceLimitMs(settings, request.runId);
-        if (watch.tools > 0 || watch.providers > 0 || executionClock.now() - watch.lastAt < limit)
+        if (
+          watch.tools > 0 ||
+          watch.bufferedProviders > 0 ||
+          executionClock.now() - watch.lastAt < limit
+        )
           return;
         stall.abort(
           stalledFault(
@@ -1703,14 +1707,18 @@ export class NativeAgentExecutor implements AgentExecutor {
     watch: AttemptWatch,
   ): LanguageModel {
     const calls = policy.modelCalls;
-    const model = () =>
-      withProviderHealth(resolveModel(request.profile.model), request.profile.model, {
+    const model = () => {
+      const resolved = resolveModel(request.profile.model);
+      const buffered =
+        typeof resolved !== "string" &&
+        (resolved.provider === "codex" || resolved.provider === "claude-code");
+      return withProviderHealth(resolved, request.profile.model, {
         stage: request.profile.output,
         pending: () => {
-          watch.providers++;
+          if (buffered) watch.bufferedProviders++;
           const settle = request.providerPending?.();
           return (responded) => {
-            watch.providers--;
+            if (buffered) watch.bufferedProviders--;
             settle?.(responded);
           };
         },
@@ -1719,6 +1727,7 @@ export class NativeAgentExecutor implements AgentExecutor {
           touchProgress(request.runId);
         },
       });
+    };
     if (!calls?.record && !calls?.replay) return model();
     const key = recordingKey(request.profile.id, request.task?.id);
     const paths = this.store.artifacts(request.runId).map((a) => a.logical_path);
