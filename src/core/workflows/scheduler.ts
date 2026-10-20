@@ -13835,14 +13835,57 @@ export function correctionFocus(
       symbol?: string | null;
       claim?: string;
       suggestedFix?: string;
+      repeatOf?: string | null;
     };
     add(files, body.file);
     add(symbols, body.symbol);
     for (const path of state.repairScope?.[finding.id] ?? []) add(files, path);
+    // A repeat of a corrected finding is fixed where that correction changed the code (#1764).
+    if (body.repeatOf)
+      for (const path of correctedFiles(store, runId, state, body.repeatOf)) add(files, path);
     for (const path of pathsInOutput(`${body.claim ?? ""}\n${body.suggestedFix ?? ""}`, [task]))
       add(files, path);
   }
   return { files: files.filter((path) => task.writes.some((w) => w.path === path)), symbols };
+}
+/**
+ * The files the corrective tasks of a finding changed, from their applied file effects. md-site
+ * T075 (bench round 52) corrected F-003, a repeat of F-002 that T074 had fixed in one function,
+ * with all ten project files to write and none to focus on: 2.46M tokens for a 710-byte diff
+ * (#1764).
+ */
+export function correctedFiles(
+  store: WorkflowStore,
+  runId: string,
+  state: RuntimeState,
+  findingId: string,
+): string[] {
+  const tasks = new Set(
+    (state.graph?.tasks ?? [])
+      .filter((t) => t.origin !== "planned" && t.findingIds.includes(findingId))
+      .map((t) => `task-${t.id}`),
+  );
+  if (!tasks.size) return [];
+  const steps = new Set(
+    store
+      .steps(runId)
+      .filter((step) => tasks.has(step.stage_id))
+      .map((step) => step.id),
+  );
+  const attempts = new Set(
+    store
+      .attempts(runId)
+      .filter((attempt) => steps.has(attempt.step_id))
+      .map((attempt) => attempt.id),
+  );
+  const files: string[] = [];
+  for (const effect of store.effects(runId)) {
+    if (effect.kind !== "file_patch" || !attempts.has(effect.attempt_id)) continue;
+    if (effect.status !== "applied" && effect.status !== "reconciled") continue;
+    const path = (JSON.parse(effect.intent_json) as { path?: string }).path;
+    if (path && !files.includes(path)) files.push(path);
+  }
+  return files;
 }
 /** The last name of a symbol a reviewer reported: `Parser.parseInline()` is `parseInline`. */
 const symbolKey = (symbol: string | null | undefined): string =>

@@ -5,7 +5,12 @@
  */
 import { canonical } from "../specs/hash.js";
 
-export type WatchSignal = "repeated-reads" | "no-edits" | "same-failure" | "no-edit-tool";
+export type WatchSignal =
+  | "repeated-reads"
+  | "no-edits"
+  | "same-failure"
+  | "no-edit-tool"
+  | "unchecked-spend";
 export interface WatchFinding {
   signal: WatchSignal;
   /** One sentence for the steering message, the event and the activity feed. */
@@ -34,6 +39,8 @@ export const REPEATED_READS = 3;
 export const NO_EDIT_STEPS = 10;
 /** The same check output in a row, this many times. */
 export const SAME_FAILURES = 3;
+/** The share of its token cap an attempt may spend before it checks or submits its edits. */
+export const UNCHECKED_SPEND_SHARE = 0.5;
 
 const short = (value: unknown): string => {
   const text = canonical(value ?? null);
@@ -43,7 +50,11 @@ const short = (value: unknown): string => {
 /** The first rule the steps break, checked in a fixed order; null while the attempt progresses. */
 export function watchSteps(
   steps: readonly WatchStep[],
-  options: { mustEdit: boolean },
+  options: {
+    mustEdit: boolean;
+    /** Capped tokens the attempt used so far and its cap, for `unchecked-spend`. */
+    spend?: { used: number; cap: number };
+  },
 ): WatchFinding | null {
   let lastEdit = -1;
   steps.forEach((step, index) => {
@@ -85,6 +96,26 @@ export function watchSteps(
         detail: `${busy} steps without an edit${lastEdit >= 0 ? " since the last one" : ""}`,
       };
   }
+  // Half the cap spent with edits no check has run on since: md-site T075 (bench round 52) ended
+  // at its uncached cap after 1.22M tokens, 2 edits and no submission, and its restart spent as
+  // much again for a 710-byte fix (#1764).
+  const spend = options.spend;
+  if (
+    options.mustEdit &&
+    spend &&
+    spend.cap > 0 &&
+    spend.used >= UNCHECKED_SPEND_SHARE * spend.cap
+  ) {
+    let lastCheck = -1;
+    steps.forEach((step, index) => {
+      if (step.toolCalls?.some((call) => CHECK_TOOLS.has(call.toolName))) lastCheck = index;
+    });
+    if (lastEdit >= 0 && lastCheck < lastEdit)
+      return {
+        signal: "unchecked-spend",
+        detail: `${Math.round((100 * spend.used) / spend.cap)}% of this attempt's token cap is spent and the latest edits were never checked`,
+      };
+  }
   return null;
 }
 
@@ -99,13 +130,15 @@ export function steeringNotice(finding: WatchFinding): string {
       "Running it again will not change the result. Change the code or the approach before the next run, or call submit_result with the failure as unresolved.",
     "no-edit-tool":
       "Call one of these tools now to apply the change; they are in this session's tool list.",
+    "unchecked-spend":
+      "Do not read more. Run request_check (or run_repro on the finding's repro) on your edits now, then call submit_result; when a check still fails, submit with the failure as unresolved so the next attempt continues from your edits.",
   };
   return `Progress watcher: ${finding.detail}. ${advice[finding.signal]} If the same pattern continues, the host ends this attempt early.`;
 }
 
 /**
  * Whether the pattern the watcher steered on went on in the steps after the steering message:
- * an edit counts as progress and clears it; otherwise a repeated read of the same input, the same
+ * an edit counts as progress and clears it (a check, for `unchecked-spend`); otherwise a repeated read of the same input, the same
  * check result again, or `stopAfter` more steps without an edit for `no-edits`.
  */
 export function stillStuck(
@@ -116,6 +149,13 @@ export function stillStuck(
 ): "stuck" | "progress" | "waiting" {
   const before = steps.slice(0, steeredAt);
   const after = steps.slice(steeredAt);
+  // Only a check clears unchecked spend; another edit without one is more of the same.
+  if (finding.signal === "unchecked-spend")
+    return after.some((step) => step.toolCalls?.some((call) => CHECK_TOOLS.has(call.toolName)))
+      ? "progress"
+      : after.filter((step) => (step.toolCalls ?? []).length > 0).length >= stopAfter
+        ? "stuck"
+        : "waiting";
   if (after.some((step) => step.toolCalls?.some((call) => EDIT_TOOLS.has(call.toolName))))
     return "progress";
   if (after.length < 1) return "waiting";
