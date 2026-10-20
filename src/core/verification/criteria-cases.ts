@@ -557,6 +557,11 @@ export function testsHold(text: string, literal: string): boolean {
     );
   return (
     held(exact) ||
+    // A backslash literal (`s/(a)/&\1\n\t\!\0/`) as a language with escaped strings spells it,
+    // `"s/(a)/&\\1\\n"` in C#, Java or Go: one decoded layer turns `\n` into a newline on one
+    // side only (#1709).
+    (literal.includes("\\") &&
+      text.replace(/\\/g, "").includes(literal.replace(/\\/g, "").trim())) ||
     // Formatters change whitespace and quote style inside lists and expressions.
     (/[[\](]/.test(normalized) && testsHoldCompact(unescaped, normalized)) ||
     (significant.length > 0 && significant.every((token) => held(escapeRegex(token))))
