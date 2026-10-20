@@ -56,7 +56,7 @@ type Write = TaskGraph["tasks"][number]["writes"][number];
 
 /** Paths that always need a person, whatever the limits (design section 5.2). */
 const alwaysHuman =
-  /^(?:\.git|\.baked|baked|specs|\.github|\.gitlab|\.circleci|\.husky)(?:\/|$)|(?:^|\/)(?:AGENTS\.md|CLAUDE\.md|constitution\.md|package\.json|bunfig\.toml|Cargo\.toml|go\.(?:mod|sum)|pyproject\.toml|requirements[^/]*\.txt|Gemfile|[^/]*\.(?:csproj|fsproj|vbproj)|pom\.xml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?|Directory\.(?:Packages|Build)\.props|[^/]*[.-]lock(?:b|\.[^/]*)?|tsconfig[^/]*|biome[^/]*|\.env(?:\.[^/]*)?|\.gitlab-ci\.yml|azure-pipelines\.yml|Jenkinsfile|[^/]*\.(?:pem|key|crt|cer|p12|pfx|jks|keystore))$/i;
+  /^(?:\.git|\.baked|baked|specs|\.github|\.gitlab|\.circleci|\.husky)(?:\/|$)|(?:^|\/)(?:AGENTS\.md|CLAUDE\.md|constitution\.md|package\.json|bunfig\.toml|Cargo\.toml|go\.(?:mod|sum)|pyproject\.toml|requirements[^/]*\.txt|Gemfile|[^/]*\.(?:csproj|fsproj|vbproj)|pom\.xml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?|Directory\.(?:Packages|Build)\.props|Directory\.Build\.targets|[^/]*[.-]lock(?:b|\.[^/]*)?|tsconfig[^/]*|biome[^/]*|\.env(?:\.[^/]*)?|\.gitlab-ci\.yml|azure-pipelines\.yml|Jenkinsfile|[^/]*\.(?:pem|key|crt|cer|p12|pfx|jks|keystore))$/i;
 
 /** Whether writing `path` always needs a person: secrets, CI and deployment config, manifests. */
 export function alwaysNeedsPerson(path: string): boolean {
@@ -68,7 +68,7 @@ export function alwaysNeedsPerson(path: string): boolean {
  * starts and changes nothing a person has reviewed; modifying one stays with a person.
  */
 const manifestFile =
-  /(?:^|\/)(?:package\.json|bunfig\.toml|Cargo\.toml|go\.mod|pyproject\.toml|requirements[^/]*\.txt|Gemfile|[^/]*\.(?:csproj|fsproj|vbproj)|pom\.xml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?|Directory\.(?:Packages|Build)\.props|tsconfig[^/]*|biome[^/]*)$/i;
+  /(?:^|\/)(?:package\.json|bunfig\.toml|Cargo\.toml|go\.mod|pyproject\.toml|requirements[^/]*\.txt|Gemfile|[^/]*\.(?:csproj|fsproj|vbproj)|pom\.xml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?|Directory\.(?:Packages|Build)\.props|Directory\.Build\.targets|tsconfig[^/]*|biome[^/]*)$/i;
 
 /**
  * Whether a write needs a person whatever the limits; `exists` tells which files are already there.
@@ -159,12 +159,13 @@ export function evaluateAutoApproval(
   const config = policy.autoApproval;
   if (!config) return { approval: null, reasons: [] };
   const writes = graph.tasks.flatMap((task) => task.writes);
-  const requested = (write: Write) =>
-    requestedWriteExempt(policy, write, context.manifestRequest ?? context.request ?? "");
+  const manifestRequest = context.manifestRequest ?? context.request ?? "";
+  const requested = (write: Write) => requestedWriteExempt(policy, write, manifestRequest);
+  const ruleOf = (write: Write) => requestedWriteRule(policy, write, manifestRequest);
   const common: string[] = [];
   for (const write of writes)
     if (needsPerson(write, context.exists, context.scaffold) && !requested(write))
-      common.push(`${write.path} always needs a person`);
+      common.push(personText(write, ruleOf(write)));
   // Under `clarification: assume` the run already decides what it may on its own; the deferral is
   // recorded in the approval body and the run report, so it is visible without a person.
   if (
@@ -195,7 +196,7 @@ export function evaluateAutoApproval(
     const limits = config.limits;
     // A manifest edit the request names is in scope even when the allowed paths leave the
     // manifest out, as every update scaffold does (#1547).
-    const counted = scopeProblems(limits, graph, context.hostSplitTasks ?? 0, requested);
+    const counted = scopeProblems(limits, graph, context.hostSplitTasks ?? 0, requested, ruleOf);
     // Over the task or file count is a size judgment and can run in shadow; paths and deletes
     // guard what the run may touch and always decline.
     const mode = stopMode(policy, "approval-scope");
@@ -276,13 +277,15 @@ export function agentTaskCount(
 
 /**
  * Where a task graph leaves the limits' scope: task and file counts, paths and deletions. A
- * deletion is never left to the approval reviewer.
+ * deletion is never left to the approval reviewer, and neither is a request-named manifest or tool
+ * config that `ruleOf` keeps with a person: its message names that rule, not the allowed paths.
  */
 function scopeProblems(
   limits: Limits,
   graph: TaskGraph,
   hostSplitTasks = 0,
   required: (write: Write) => boolean = () => false,
+  ruleOf: (write: Write) => string | undefined = () => undefined,
 ): { text: string; reviewable: boolean; count?: true }[] {
   const writes = graph.tasks.flatMap((task) => task.writes);
   const problems: { text: string; reviewable: boolean; count?: true }[] = [];
@@ -309,8 +312,14 @@ function scopeProblems(
   const globs = limits.allowedPaths.map((pattern) => new Bun.Glob(pattern.toLowerCase()));
   for (const write of writes) {
     if (required(write)) continue;
-    if (!globs.some((glob) => glob.match(write.path.toLowerCase())))
-      problems.push({ text: `${write.path} is outside the allowed paths`, reviewable: true });
+    if (!globs.some((glob) => glob.match(write.path.toLowerCase()))) {
+      const rule = ruleOf(write);
+      problems.push(
+        rule
+          ? { text: personText(write, rule), reviewable: false }
+          : { text: `${write.path} is outside the allowed paths`, reviewable: true },
+      );
+    }
     if (write.action === "delete" && !limits.allowDelete)
       problems.push({ text: `${write.path} would be deleted`, reviewable: false });
   }
@@ -335,7 +344,7 @@ export function plannerApprovalLimits(policy: RunPolicy): {
     maxFiles: limits.maxFiles,
     allowedPaths: limits.allowedPaths,
     allowDelete: limits.allowDelete,
-    alwaysHuman: `repository metadata (.git, .github and other CI folders, .baked, specs), agent instructions, package manifests that already exist (creating one is allowed, and editing one on a workspace without source files${policy.autoApproval?.requestedManifestEdits ? " or one the request names" : ""}), lockfiles, tool configs (tsconfig, biome), .env files and keys`,
+    alwaysHuman: `repository metadata (.git, .github and other CI folders, .baked, specs), agent instructions, package manifests that already exist (creating one is allowed, and editing one on a workspace without source files${policy.autoApproval?.requestedManifestEdits ? " or one the request names: a dependency manifest, a solution or go.work file, or a Directory.Build.props, Directory.Build.targets, Directory.Packages.props, global.json, NuGet.config, gradle.properties, .mvn/maven.config or rust-toolchain.toml the plan writes whole in a host-written task with plain properties only" : ""}), lockfiles, tool configs (tsconfig, biome), .env files and keys`,
   };
 }
 
@@ -356,36 +365,205 @@ function requiredByRequest(write: Write, request: string): boolean {
 
 /**
  * A write the request names that the approval takes as asked for, whatever the always-human rule
- * and the allowed paths say: a manifest edit under `autoApproval.requestedManifestEdits`. The
- * always-human test, the limits' scope check and the planner's advice all use it, so the advice
- * never calls a write fine that the approval declines (spdxok b270088e, bench round 45: the
- * `pyproject.toml` edit the brief named passed the first and failed the second, #1547).
+ * and the allowed paths say: a manifest or tool config whose kind is exempt under
+ * `autoApproval.requestedManifestEdits` (see `CONFIG_KINDS`). The always-human test, the limits'
+ * scope check and the planner's advice all use it, so the advice never calls a write fine that
+ * the approval declines (spdxok b270088e, bench round 45: the `pyproject.toml` edit the brief
+ * named passed the first and failed the second, #1547).
  */
 function requestedWriteExempt(policy: RunPolicy, write: Write, request: string): boolean {
   return (
-    policy.autoApproval?.requestedManifestEdits === true && requestedManifestEdit(write, request)
+    policy.autoApproval?.requestedManifestEdits === true && namedConfigRule(write, request) === null
   );
 }
 
 /**
- * An edit of an existing package manifest that the request names, under
- * `autoApproval.requestedManifestEdits` (#1229). A multi-project .NET, JVM or Rust workspace plan
- * must reference its new project from the scaffold's manifests. Only manifests the dependency
- * check reads qualify: with `allowNewDependencies` false a package the edit adds still blocks the
- * run unless the request or spec names it (#802). Deletes, lockfiles, tool configs and
- * `Directory.Packages.props` keep needing a person.
+ * The rule that keeps a request-named manifest or tool config with a person under
+ * `autoApproval.requestedManifestEdits`, so the approval and the planner's advice say the same
+ * sentence instead of "outside the allowed paths" (#1710). Undefined when the write is exempt, the
+ * request does not name it, or the setting is off.
  */
-function requestedManifestEdit(write: Write, request: string): boolean {
-  return (
-    write.action !== "delete" &&
-    isManifestPath(write.path) &&
-    !PERSON_ONLY_MANIFEST.test(write.path.replaceAll("\\", "/")) &&
-    requestNamesManifest(write, request)
-  );
+function requestedWriteRule(policy: RunPolicy, write: Write, request: string): string | undefined {
+  if (policy.autoApproval?.requestedManifestEdits !== true) return undefined;
+  return namedConfigRule(write, request) ?? undefined;
 }
 
-/** Manifests the dependency check reads (#1682) whose edits still go to a person: MSBuild props run build logic. */
-const PERSON_ONLY_MANIFEST = /(?:^|\/)Directory\.(?:Build|Packages)\.props$/;
+function personText(write: Write, rule: string | undefined): string {
+  return rule ? `${write.path} needs a person: ${rule}` : `${write.path} always needs a person`;
+}
+
+/**
+ * A manifest or tool config a request may name. A kind without `rule` is exempt when named: the
+ * dependency check reads it (#802), or it only lists projects. A kind with `inert` is exempt when
+ * the plan holds the write's whole content (a host-written task) and that content runs no code and
+ * fetches nothing; any other write of it keeps its rule.
+ */
+interface ConfigKind {
+  matches: (path: string) => boolean;
+  rule?: string;
+  inert?: (content: string) => boolean;
+}
+
+const named = (pattern: RegExp) => (path: string) => pattern.test(path);
+
+const MSBUILD_RULE =
+  "MSBuild props and targets run build logic; one is approved only when the plan writes it whole with PropertyGroup properties alone";
+
+/** Properties that run commands, chain or import targets, or redirect restore and tool paths. */
+const MSBUILD_ACTIVE_PROPERTY =
+  /(?:Event|DependsOn|Targets?|Props|Command|Exe|ToolPath|Tasks?)$|^(?:Custom|MSBuild|Restore|NuGet)/i;
+const MSBUILD_PROPERTY =
+  /<([\w.-]+)((?:\s+(?:Condition|Label)\s*=\s*"[^"]*")*)\s*>([^<]*)<\/\1\s*>/g;
+const MSBUILD_PIN =
+  /<PackageVersion(?:\s+(?:Include|Version|VersionOverride|Condition)\s*=\s*"[^"]*")+\s*\/>/g;
+const MSBUILD_GROUP =
+  /<(PropertyGroup|ItemGroup)((?:\s+(?:Condition|Label)\s*=\s*"[^"]*")*)\s*>([\s\S]*?)<\/\1\s*>/g;
+
+/**
+ * MSBuild content that only sets properties (and, in `Directory.Packages.props`, pins package
+ * versions): no `Import`, `Target`, `Exec`, `UsingTask`, `PackageReference`, `Sdk` attribute,
+ * property function or property that hooks a command or target into the build.
+ */
+function msbuildInert(pins: boolean) {
+  return (content: string): boolean => {
+    const xml = content
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/^﻿?\s*<\?xml[^>]*\?>/, "")
+      .trim();
+    const root = /^<Project((?:\s+[\w:.-]+\s*=\s*"[^"]*")*)\s*>([\s\S]*)<\/Project\s*>$/.exec(xml);
+    if (!root) return false;
+    const attributes = [...(root[1] ?? "").matchAll(/([\w:.-]+)\s*=/g)].map((m) => m[1] ?? "");
+    if (!attributes.every((name) => /^(?:xmlns(?::\w+)?|ToolsVersion)$/.test(name))) return false;
+    let inert = true;
+    const rest = (root[2] ?? "").replace(
+      MSBUILD_GROUP,
+      (_, group: string, _attrs, body: string) => {
+        if (group === "ItemGroup" && !pins) inert = false;
+        const left =
+          group === "ItemGroup"
+            ? body.replace(MSBUILD_PIN, "")
+            : body.replace(MSBUILD_PROPERTY, (_m, name: string, _a, value: string) => {
+                if (MSBUILD_ACTIVE_PROPERTY.test(name) || value.includes("$([")) inert = false;
+                return "";
+              });
+        if (left.trim()) inert = false;
+        return "";
+      },
+    );
+    return inert && !rest.trim();
+  };
+}
+
+/** Lines of `key = value` (or `key: value`) and `[section]` headers, with comments. */
+function keyValue(content: string): boolean {
+  return content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !/^[#;!]/.test(line))
+    .every((line) => /^(?:\[[\w.-]+\]|[\w.-]+\s*[=:]\s*.*)$/.test(line));
+}
+
+/**
+ * Every manifest and tool config kind a request may name, with the rule for a request-named write
+ * of it (#1710). One table for every toolchain, so the approval, the scope check and the planner's
+ * advice cannot drift apart for one kind.
+ */
+const CONFIG_KINDS: readonly ConfigKind[] = [
+  {
+    matches: named(/(?:^|\/)Directory\.Build\.(?:props|targets)$/i),
+    rule: MSBUILD_RULE,
+    inert: msbuildInert(false),
+  },
+  {
+    matches: named(/(?:^|\/)Directory\.Packages\.props$/i),
+    rule: `${MSBUILD_RULE} and PackageVersion pins`,
+    inert: msbuildInert(true),
+  },
+  { matches: isManifestPath },
+  { matches: named(/(?:^|\/)(?:[^/]+\.slnx?|go\.work)$/i) },
+  {
+    matches: named(/(?:^|\/)global\.json$/i),
+    rule: "global.json msbuild-sdks load build code",
+    inert: (content) => {
+      try {
+        const parsed: unknown = JSON.parse(content);
+        return typeof parsed === "object" && parsed !== null && !("msbuild-sdks" in parsed);
+      } catch {
+        return false;
+      }
+    },
+  },
+  {
+    matches: named(/(?:^|\/)nuget\.config$/i),
+    rule: "NuGet.config package sources and credentials decide where packages come from",
+    inert: (content) =>
+      /^\s*(?:<\?xml[^>]*\?>\s*)?<configuration\b/.test(content) &&
+      !/packageSource|credential|<add\s[^>]*value\s*=\s*"[a-z]+:/i.test(content),
+  },
+  {
+    matches: named(/(?:^|\/)gradle\.properties$/i),
+    rule: "gradle.properties passes JVM options to every build; only plain properties without agents are approved",
+    inert: (content) => keyValue(content) && !/-(?:javaagent|agentpath|agentlib)/i.test(content),
+  },
+  {
+    matches: named(/(?:^|\/)\.mvn\/maven\.config$/i),
+    rule: "maven.config passes options to every Maven build; only -D properties, -P profiles and -T, -B, -q, -e, -ntp are approved",
+    inert: (content) =>
+      content
+        .split(/\s+/)
+        .filter(Boolean)
+        .every((token) =>
+          /^(?:-D[\w.-]+(?:=\S*)?|-P\S+|-T\S+|-B|--batch-mode|-ntp|--no-transfer-progress|-q|--quiet|-e|--errors)$/.test(
+            token,
+          ),
+        ),
+  },
+  {
+    matches: named(/(?:^|\/)rust-toolchain(?:\.toml)?$/i),
+    rule: "rust-toolchain selects the compiler; a toolchain path runs any binary",
+    inert: (content) =>
+      /^\s*[\w.-]+\s*$/.test(content) || (keyValue(content) && !/^\s*path\s*=/m.test(content)),
+  },
+  {
+    matches: named(/(?:^|\/)\.cargo\/config(?:\.toml)?$/i),
+    rule: "Cargo config sets linkers, runners and compiler flags for every build",
+  },
+  { matches: named(/(?:^|\/)setup\.py$/i), rule: "setup.py is Python code the install runs" },
+  { matches: named(/(?:^|\/)tox\.ini$/i), rule: "tox.ini runs commands" },
+  { matches: named(/(?:^|\/)[^/]+\.gemspec$/i), rule: "a gemspec is Ruby code" },
+  {
+    matches: named(/(?:^|\/)bunfig\.toml$/i),
+    rule: "bunfig.toml sets preload scripts and package registries",
+  },
+  {
+    matches: named(/(?:^|\/)(?:tsconfig|biome)[^/]*$/i),
+    rule: "tsconfig and biome configs set what the checks enforce",
+  },
+  {
+    matches: named(/(?:^|\/)(?:[^/]*[.-]lock(?:b|\.[^/]*)?|go\.sum)$/i),
+    rule: "lock files are written by the package manager",
+  },
+];
+
+/** The manifest or tool config kind of a path, if it is one. */
+function configKind(path: string): ConfigKind | undefined {
+  const normalized = path.replaceAll("\\", "/");
+  return CONFIG_KINDS.find((kind) => kind.matches(normalized));
+}
+
+/**
+ * For a manifest or tool config the request names as one to change: null when its kind exempts
+ * the write, else the rule that keeps it with a person. Undefined for a delete, another file, or a
+ * file the request does not name.
+ */
+function namedConfigRule(write: Write, request: string): string | null | undefined {
+  if (write.action === "delete") return undefined;
+  const kind = configKind(write.path);
+  if (!kind || !requestNamesManifest(write, request)) return undefined;
+  if (!kind.rule) return null;
+  if (kind.inert && write.content !== undefined && kind.inert(write.content)) return null;
+  return kind.rule;
+}
 
 /** Manifest names every package of a monorepo repeats; the request names one only by its path. */
 const SHARED_MANIFEST =
@@ -435,20 +613,25 @@ export function planScopeAdvice(
 ): string[] {
   const limits = policy.autoApproval?.limits;
   if (!limits) return [];
-  // A manifest counts as required only when the request names it as one to change, by the rule
-  // the approval applies (#1547); any other file the request names cannot be dropped (#1111).
+  // A manifest or tool config counts as required only when the request names it as one to
+  // change, by the rule the approval applies (#1547); one whose kind keeps it with a person is
+  // reported with that rule, word for word as the approval declines it (#1710). Any other file the
+  // request names cannot be dropped (#1111).
+  const ruleOf = (write: Write) => requestedWriteRule(policy, write, request);
   const required = (write: Write) =>
-    manifestFile.test(write.path) || isManifestPath(write.path)
-      ? write.action !== "delete" && requestNamesManifest(write, request)
+    configKind(write.path)
+      ? write.action !== "delete" &&
+        requestNamesManifest(write, request) &&
+        ruleOf(write) === undefined
       : requiredByRequest(write, request);
   const always = graph.tasks
     .flatMap((task) => task.writes)
     .filter((write) => !required(write) && needsPerson(write, exists, scaffold))
-    .map((write) => `${write.path} always needs a person`);
+    .map((write) => personText(write, ruleOf(write)));
   const problems = [
     ...new Set([
       ...always,
-      ...scopeProblems(limits, graph, hostSplitTasks, required).map((p) => p.text),
+      ...scopeProblems(limits, graph, hostSplitTasks, required, ruleOf).map((p) => p.text),
     ]),
   ];
   if (!problems.length) return [];
