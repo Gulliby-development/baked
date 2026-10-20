@@ -3265,6 +3265,7 @@ export class WorkflowScheduler {
     // gets both lists (#1423).
     const siblings = this.siblingContext(runId, task);
     if (!earlier.length) return siblings;
+    const corrections = repeatCorrections(this.store, runId, task);
     return {
       ...siblings,
       recurringFindings: {
@@ -3273,6 +3274,9 @@ export class WorkflowScheduler {
           id: f.id,
           claim: f.claim,
           ...(f.repro ? { repro: f.repro } : {}),
+          // The fix a repeated finding got, so this correction extends it instead of
+          // rediscovering it (#1774).
+          ...(corrections.has(f.id) ? { correction: corrections.get(f.id) } : {}),
         })),
         note: "Earlier corrections of this run already patched these symbols for the findings listed here, and the findings this task corrects are the next case of the same input. Do not add another special case: rewrite the symbol for its whole input class. First state the input grammar or contract it must handle (for a parser: tokenize code spans, links and delimiters first, then interpret them; no placeholder substitution), then rewrite it, and add table-driven tests with one row per finding here and per finding this task corrects. The host runs the repro of every listed finding before it accepts submit_result, and run_repro runs them too.",
       },
@@ -3295,6 +3299,20 @@ export class WorkflowScheduler {
           ...(f.repro ? { repro: f.repro } : {}),
         })),
         note: "Earlier corrections of this run already fixed these findings in the same file, and a review found the case this task corrects only afterwards. Do not fix only the reported case: name the construct it is about (for example multiline inline code, or emphasis next to a code span), list every context the construct can appear in (inside a blockquote, a list item, a heading or a table cell, nested in another construct, next to a line that looks like a block marker), make it work in each, and add one table-driven test with a row per context. The host runs the repro of every finding listed here before it accepts submit_result.",
+      },
+    };
+  }
+  /**
+   * What the earlier attempts of a task read, so a session that continues or restarts it after a
+   * cap or watcher stop starts from that knowledge instead of surveying the project again (#1774).
+   */
+  private earlierReadsContext(runId: string, taskId: string): Record<string, unknown> {
+    const reads = earlierReads(this.store, runId, taskId);
+    if (!reads.length) return {};
+    return {
+      earlierReads: {
+        reads,
+        note: "Earlier sessions of this task already read these (tool, targets, how often, bytes). What they read is not in your context: the files this task writes are in taskFiles, and earlierEdits or previousAttempt say what was done. Do not survey the project again; read only the spans the fix still needs, then check and submit.",
       },
     };
   }
@@ -4476,6 +4494,8 @@ export class WorkflowScheduler {
           "correctionFocus",
           "cutOffChecks",
           "earlierEdits",
+          "earlierReads",
+          "previousAttempt",
         ];
         this.store.transaction(() =>
           this.store.artifact(
@@ -5950,6 +5970,7 @@ ${note}`;
               unresolvedMeans: UNRESOLVED_MEANING,
               ...(await this.libraryDocsContext(runId, policy, root, task)),
               ...this.previousAttempt(runId, task.id),
+              ...this.earlierReadsContext(runId, task.id),
               ...this.recurringContext(runId, task),
               ...this.cutOffChecks(runId, task.id),
               ...(focus.files.length
@@ -7135,6 +7156,7 @@ ${note}`;
         ...fresh.extra,
         unresolvedMeans: UNRESOLVED_MEANING,
         ...this.previousAttempt(runId, task.id),
+        ...this.earlierReadsContext(runId, task.id),
         ...this.cutOffChecks(runId, task.id),
       };
       const needed = reserveTokens(
@@ -13949,6 +13971,91 @@ export function recurringFindings(
       },
     ];
   });
+}
+/** Distinct reads of earlier attempts a task's next session is told about, most repeated first. */
+const EARLIER_READS = 30;
+/**
+ * What the earlier attempts of a task read, by tool and target, with how often and how many
+ * bytes, for the session that continues or restarts it. md-site T075 (bench round 52) ended at
+ * its token cap without a submission, and its second attempt spent 1.24M tokens reading the same
+ * project again for a 710-byte fix (#1774).
+ */
+export function earlierReads(
+  store: WorkflowStore,
+  runId: string,
+  taskId: string,
+): { tool: string; targets: string[]; times: number; bytes: number }[] {
+  const steps = new Set(
+    store
+      .steps(runId)
+      .filter((step) => step.stage_id === `task-${taskId}`)
+      .map((step) => step.id),
+  );
+  if (!steps.size) return [];
+  const reads = new Map<
+    string,
+    { tool: string; targets: string[]; times: number; bytes: number }
+  >();
+  for (const attempt of store.attempts(runId)) {
+    if (!steps.has(attempt.step_id)) continue;
+    for (const row of store.latestArtifacts(runId, `reads/${attempt.id}/%`)) {
+      const read = readSummary(store.readArtifact(runId, row.id));
+      if (!read.targets.length) continue;
+      const key = `${read.tool} ${read.targets.join(" ")}`;
+      const seen = reads.get(key);
+      if (seen) {
+        seen.times += 1;
+        seen.bytes += read.bytes;
+      } else reads.set(key, { ...read, times: 1 });
+    }
+  }
+  return [...reads.values()].sort((a, b) => b.times - a.times).slice(0, EARLIER_READS);
+}
+/** Characters of an earlier correction's patch a repeat finding's corrective gets. */
+const REPEAT_PATCH_CHARS = 8000;
+/**
+ * The patch of the finished correction of each earlier finding this correction's findings repeat
+ * (`repeatOf`), by that finding's id. md-site T075 (bench round 52) corrected F-003, a repeat of
+ * F-002 that T074 had fixed for a tab before `javascript:`, without that fix in view: it re-read
+ * the project and spent 2.46M tokens on a 710-byte change (#1774).
+ */
+export function repeatCorrections(
+  store: WorkflowStore,
+  runId: string,
+  task: Task,
+): Map<string, { taskId: string; patch: string }> {
+  const found = new Map<string, { taskId: string; patch: string }>();
+  if (task.origin === "planned" || !task.findingIds.length) return found;
+  const repeated = new Set(
+    store.findings(runId).flatMap((f) => {
+      if (!task.findingIds.includes(f.id)) return [];
+      const repeatOf = (JSON.parse(f.body_json) as { repeatOf?: string | null }).repeatOf;
+      return repeatOf ? [repeatOf] : [];
+    }),
+  );
+  if (!repeated.size) return found;
+  for (const row of store.tasks(runId)) {
+    if (row.id === task.id || !["implemented", "verified"].includes(row.status)) continue;
+    const ids = ((JSON.parse(row.definition_json) as Task).findingIds ?? []).filter((id) =>
+      repeated.has(id),
+    );
+    if (!ids.length) continue;
+    const diff = store.latestArtifact(runId, `tasks/${row.id}/diff.json`);
+    if (!diff) continue;
+    const patch = String(
+      (JSON.parse(store.readArtifact(runId, diff.id)) as { patch?: unknown }).patch ?? "",
+    );
+    if (patch)
+      for (const id of ids)
+        found.set(id, {
+          taskId: row.id,
+          patch:
+            patch.length > REPEAT_PATCH_CHARS
+              ? `${patch.slice(0, REPEAT_PATCH_CHARS)}\n... patch cut; read the files for the rest`
+              : patch,
+        });
+  }
+  return found;
 }
 /**
  * The earlier findings of the run in the same file as a correction's findings, on another symbol

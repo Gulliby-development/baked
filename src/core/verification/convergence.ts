@@ -493,6 +493,15 @@ function reproStep(finding: Pick<Review["findings"][number], "repro" | "file">):
 const SIBLING_STEP =
   "\nThe review shows one case. Look for the same defect in sibling code paths (other commands, options, branches or callers that share the faulty pattern) and fix every case you find, checking each one as you checked the reported one.";
 
+/**
+ * The last step of a correction for a finding that repeats an earlier corrected one (#1774): the
+ * earlier fix covered one case of a class, so this one names the class instead of looking for
+ * sibling code paths in general. md-site (bench round 52): a tab before `javascript:` was fixed,
+ * then a U+0001 before it was found and corrected for 2.46M tokens.
+ */
+const repeatStep = (repeatOf: string): string =>
+  `\nThis finding repeats ${repeatOf}, which an earlier correction of this run fixed for one case only; its patch is under recurringFindings in your input. Name the class of input both findings belong to (for example every control or whitespace character before a URL scheme, not only a tab), extend that fix to the whole class where it changed the code, and add one table-driven test with a row per case, both findings' cases included.`;
+
 /** The group key prefix of a class sweep's findings (#1160). */
 const SWEEP_KEY = "sweep\n";
 
@@ -995,7 +1004,7 @@ export function appendCorrections(
       description: grouped
         .map(
           (finding) =>
-            `${grouped.length > 1 ? `Finding ${finding.id}: ` : ""}${finding.claim}\nImpact: ${finding.impact}\nProposed fix: ${finding.suggestedFix}${reproStep(finding)}${(kind === "convergence" || reviewPass) && !sweep && !checkRunFinding(finding) ? SIBLING_STEP : ""}`,
+            `${grouped.length > 1 ? `Finding ${finding.id}: ` : ""}${finding.claim}\nImpact: ${finding.impact}\nProposed fix: ${finding.suggestedFix}${reproStep(finding)}${(kind === "convergence" || reviewPass) && !sweep && !checkRunFinding(finding) ? (finding.repeatOf ? repeatStep(finding.repeatOf) : SIBLING_STEP) : ""}`,
         )
         .join("\n\n")
         .concat(sweep),

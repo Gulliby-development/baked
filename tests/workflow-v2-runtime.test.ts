@@ -1060,10 +1060,13 @@ describe("a stopped convergence asks for a decision", () => {
     expect(waiting.status).toBe("completed");
     expect(service.store.requests(run.runId).filter((r) => r.kind === "convergence")).toHaveLength(0);
     expect(service.store.run(run.runId).convergence_rounds).toBe(2);
-    // Each correction of a reviewer's finding is told to look for the same defect next to it.
+    // A correction of a reviewer's finding is told to look for the same defect next to it; the
+    // correction of the repeat names the class the earlier fix covered one case of (#1774).
     const corrections = service.store.state(run.runId).graph?.tasks.filter((t) => t.origin === "convergence") ?? [];
     expect(corrections).toHaveLength(2);
-    for (const task of corrections) expect(task.description).toContain("Look for the same defect in sibling code paths");
+    expect(corrections[0]?.description).toContain("Look for the same defect in sibling code paths");
+    expect(corrections[1]?.description).toContain("This finding repeats G1");
+    expect(corrections[1]?.description).toContain("Name the class of input");
   }, 60000);
 
   test("the same reproduction named as a repeat still stops the run", async () => {
