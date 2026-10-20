@@ -39,7 +39,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: |
           # A pull request that changes how these tests run still runs them, to prove the change.
-          if [ "$EVENT" = "pull_request" ] && ! git diff --name-only "$BASE_SHA" HEAD | grep -Eq '^(\.github/workflows/os-tests\.yml|scripts/test-shard\.ts)$'; then
+          if [ "$EVENT" = "pull_request" ] && ! git diff --name-only "$BASE_SHA" HEAD | grep -Eq '^(\.github/workflows/os-tests\.yml|scripts/(test-shard|flaky-ledger)\.ts)$'; then
             echo "Pull request: these platforms run in the merge queue."
             echo "run=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -50,7 +50,7 @@ jobs:
           fi
           changed="$(git diff --name-only "$BASE_SHA" HEAD)"
           echo "$changed"
-          pattern='^(package\.json$|bun\.lock$|bunfig\.toml$|tsconfig\.json$|\.gitattributes$|\.github/workflows/os-tests\.yml$|scripts/test-shard\.ts$|tests/setup/|src/core/(platform|workflows|verification|tools|sessions|memory|hooks|security|utils|workers|git|checkpoints|mcp|terminal|projects)/|src/core/(spawn|process-tracker|secrets|cwd)\.ts$|src/headless/)'
+          pattern='^(package\.json$|bun\.lock$|bunfig\.toml$|tsconfig\.json$|\.gitattributes$|\.github/workflows/os-tests\.yml$|scripts/(test-shard|flaky-ledger)\.ts$|tests/setup/|src/core/(platform|workflows|verification|tools|sessions|memory|hooks|security|utils|workers|git|checkpoints|mcp|terminal|projects)/|src/core/(spawn|process-tracker|secrets|cwd)\.ts$|src/headless/)'
           if echo "$changed" | grep -Eq "$pattern"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
@@ -94,7 +94,17 @@ jobs:
           # A test above 80 percent of its time limit fails the nightly run against main; in the merge
           # queue it is only an annotation, so it does not eject a pull request before it times out.
           SLOW_TESTS_FAIL: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '1' || '0' }}
+          # A failed shard reruns each failed test alone and writes whether it is likely flaky.
+          FLAKY_LEDGER: ${{ runner.temp }}/flaky-ledger.json
         run: bun scripts/test-shard.ts ${{ matrix.shard }} ${{ matrix.shards }}
+      - name: Upload the flaky test ledger
+        if: failure() && needs.scope.outputs.run == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: flaky-ledger-${{ matrix.os }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/flaky-ledger.json
+          if-no-files-found: ignore
+          retention-days: 90
 
   # The required checks: one per platform, green only when every shard of it passed.
   test:

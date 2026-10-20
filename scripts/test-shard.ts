@@ -44,4 +44,11 @@ const slowCode = existsSync(report)
       { stdio: ["inherit", "inherit", "inherit"] },
     ).exited
   : 0;
+// A failed run reruns each failed test alone and records whether it is likely flaky (#1724). The
+// shard still fails: the ledger only says which failures to fix as flakes.
+const ledger = process.env.FLAKY_LEDGER;
+if (code !== 0 && ledger && existsSync(report))
+  await Bun.spawn(["bun", join(import.meta.dir, "flaky-ledger.ts"), report, timeout, ledger], {
+    stdio: ["inherit", "inherit", "inherit"],
+  }).exited;
 process.exit(code || slowCode);
