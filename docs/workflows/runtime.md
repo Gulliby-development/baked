@@ -1097,6 +1097,8 @@ baked workflow run --replay recordings/health.json "Add a health endpoint"
 
 `--replay FILE` starts a run that answers each model call from the recording instead of the provider. Calls are matched by profile and task, by the attempt's order for that key, and by the call's number within the attempt. The run starts only when the file exists and is a valid recording. When a request's fingerprint differs from the recorded one, or the recording has no call at that point, the run blocks with reason `replay_diverged`, and the message names the key, attempt and call and the first prompt message that differs. A replayed run records the calls it served, so `workflow recording` of the replay can be compared with the original. Streaming calls are not replayed.
 
+An initiative records the same way: `baked workflow initiative start ID ... --record-model-calls` puts the option in the initiative's base policy, so the decompose run and every feature run record their calls. The bench loop starts every run and initiative with it, and `bun scripts/bench-trace.ts recordings WORKSPACE OUT_DIR [--run RUN_ID ...]` writes the recording of each run that recorded calls as `OUT_DIR/RUN_ID.json.gz` (the format `--replay` reads, gzip-compressed) with a `manifest.json` of the runs: feature, status, reason, the Git commit of the run's first workspace snapshot and the call count (#1715). Only runs of public bench apps are exported, because a recording holds the prompts and the model's answers.
+
 ## Import, export and retention
 
 ```sh

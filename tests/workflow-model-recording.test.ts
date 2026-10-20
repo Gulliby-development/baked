@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LanguageModelV3, LanguageModelV3GenerateResult } from "@ai-sdk/provider";
@@ -11,10 +11,12 @@ import { WorkspaceLeases } from "../src/core/workflows/leases.js";
 import {
   fingerprintRequest,
   type Recording,
+  readRecording,
   runRecording,
   withModelCalls,
 } from "../src/core/workflows/model-recording.js";
 import { reasonText } from "../src/core/workflows/reasons.js";
+import { exportRecordings } from "../src/core/workflows/trace.js";
 import { type AgentProfile, ProfileSchema, type RunPolicy } from "../src/core/workflows/schemas.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { removeTempDir } from "./helpers/temp-dir.js";
@@ -186,5 +188,28 @@ describe("record and replay of model calls (#856)", () => {
   test("a run that recorded nothing has no recording to export", async () => {
     const run = await researchAttempt(fixturePolicy);
     expect(() => runRecording(run.store, run.runId)).toThrow("recorded no model calls");
+  });
+});
+
+describe("bench recordings for the replay corpus (#1715)", () => {
+  test("exports each recording run's calls in the replay format, with a manifest", async () => {
+    scriptModel([step({ name: "no_such_tool", input: {} }), step({ name: "submit_result", input: research })]);
+    const recorded = await researchAttempt(withModelCalls(fixturePolicy, { record: true }));
+    await recorded.execute();
+    const out = scratch();
+    const entries = exportRecordings(recorded.store.workspace, out);
+    expect(entries).toEqual([
+      expect.objectContaining({ runId: recorded.runId, calls: 2, file: `${recorded.runId}.json.gz` }),
+    ]);
+    expect(JSON.parse(readFileSync(join(out, "manifest.json"), "utf8"))).toEqual(entries);
+    const unzipped = join(out, "recording.json");
+    writeFileSync(unzipped, Bun.gunzipSync(readFileSync(join(out, `${recorded.runId}.json.gz`))));
+    expect(readRecording(unzipped)).toEqual(runRecording(recorded.store, recorded.runId));
+  });
+
+  test("a workspace whose runs recorded nothing exports no recording", async () => {
+    const run = await researchAttempt(fixturePolicy);
+    const out = scratch();
+    expect(exportRecordings(run.store.workspace, out)).toEqual([]);
   });
 });

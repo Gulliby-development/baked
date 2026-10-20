@@ -1779,6 +1779,23 @@ describe("initiative CLI", () => {
   });
 });
 
+describe("scenario: a bench initiative records its model calls (#1715)", () => {
+  test("--record-model-calls carries into the feature runs' policies", async () => {
+    const t = setup();
+    writeFileSync(join(t.root, "split.json"), JSON.stringify(threeFeatures));
+    const signal = new AbortController().signal;
+    const run = (argv: string[]) => executeInitiativeCommand(t.initiatives, parseInitiativeArgs(argv), signal);
+    let view = (await run(["start", "values", "--prompt", "Add values", "--plan", "split.json", "--record-model-calls"])) as InitiativeView;
+    const request = view.pendingDecisions.find((d) => d.scope === "initiative");
+    view = (await run(["approve", "values", "--request", request?.requestId ?? "", "--digest", request?.digest ?? "", "--expected-revision", String(view.revision)])) as InitiativeView;
+    const runIds = view.features.flatMap((f) => (f.runId ? [f.runId] : []));
+    expect(runIds.length).toBeGreaterThan(0);
+    for (const runId of runIds)
+      expect(JSON.parse(t.workflows.store.run(runId).policy_json).modelCalls).toEqual({ record: true });
+    expect(initiativeHelp).toContain("--record-model-calls");
+  });
+});
+
 describe("initiative reroute", () => {
   const runModel = (workflows: NativeWorkflowService, runId: string): string => {
     const row = workflows.store.latestArtifact(runId, "routing.json");
