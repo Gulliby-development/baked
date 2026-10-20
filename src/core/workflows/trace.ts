@@ -473,7 +473,8 @@ export function corpusCallProfile(paths: string[]): CallProfile {
         for (const { call, estimated } of recordedCalls(store, id)) {
           if (call.retryAfter) {
             const wait = retryAfterOf(call.retryAfter, Date.now());
-            if (wait !== null) (retryAfterMs[call.provider] ??= []).push(wait);
+            if (wait !== null)
+              retryAfterMs[call.provider] = [...(retryAfterMs[call.provider] ?? []), wait];
           }
           if (call.firstByteMs === null || call.status !== undefined) continue;
           const key = `${call.provider}|${call.stage ?? ""}|${call.effort ?? ""}`;
