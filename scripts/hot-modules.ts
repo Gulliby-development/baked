@@ -10,9 +10,10 @@
  *     Escape rate per module: the share of bug-fix merges followed, within the two bench rounds
  *     that measure them, by a new bench-loop issue naming a file of the same module.
  *     `--by-file` treats every source file a fix touched as its own module, to find new hot ones.
- *   bun scripts/hot-modules.ts mutate --module <id> [--max N] [--budget-min M] [--out report.json] [--recent-days D]
+ *   bun scripts/hot-modules.ts mutate --module <id> [--max N] [--budget-min M] [--out report.json] [--issue issue.md] [--recent-days D]
  *     Runs the built-in mutation engine over the module's files with the module's tests and
  *     reports surviving mutants; the report says whether the module had a bug fix in the last D days.
+ *     With `--issue`, survivors in a module with such a fix are written as an issue body to that file.
  *
  * Issues come from `gh api --paginate --slurp 'repos/OWNER/REPO/issues?labels=bench-loop&state=all&per_page=100'`;
  * rounds from the bench stats `rounds.json` (`report-YYYYMMDDTHHMMSS-*.md` names give each round's end).
@@ -149,6 +150,18 @@ export function fileModules(fixes: FixMerge[]): HotModule[] {
   return [...files].sort().map((file) => ({ id: file, title: file, paths: [file] }));
 }
 
+/**
+ * The `## Where` section of a bug issue (the file-issue skill's list of defect sites), or the whole
+ * body when it has none: a file the issue only mentions in passing is not where the bug is.
+ */
+export function whereSection(body: string): string {
+  const heading = /^#{2,3}\s+Where\b.*$/im.exec(body);
+  if (!heading) return body;
+  const rest = body.slice(heading.index + heading[0].length);
+  const next = /^#{1,3}\s/m.exec(rest);
+  return next ? rest.slice(0, next.index) : rest;
+}
+
 /** Reads `gh api --paginate [--slurp]` output for the issues endpoint; pull requests and ideas are dropped. */
 export function parseIssues(json: string): LoopIssue[] {
   type Raw = {
@@ -178,7 +191,7 @@ export function parseIssues(json: string): LoopIssue[] {
     .map((issue) => ({
       number: issue.number,
       createdAt: issue.created_at ?? issue.createdAt ?? "",
-      text: `${issue.title ?? ""}\n${issue.body ?? ""}`,
+      text: `${issue.title ?? ""}\n${whereSection(issue.body ?? "")}`,
     }));
 }
 
@@ -307,6 +320,21 @@ export function mutationMarkdown(run: ModuleMutation): string {
   return `${lines.join("\n")}\n`;
 }
 
+/**
+ * The issue body for survivors in a module a bug fix touched recently, or null: a recent fix whose
+ * scenario test guards only its own path is what the weekly run is for (#1723).
+ */
+export function mutationIssue(run: ModuleMutation): string | null {
+  if (!run.recentFixes.length || !run.result.mutants.some((m) => m.status === "survived")) return null;
+  return [
+    "Priority: P2",
+    "",
+    `The weekly mutation run of hot module \`${run.module}\` left mutants alive in code that ${run.recentFixes.join(", ")} changed recently. Each survivor is a change of behavior no test of the module notices: add a test that kills it, or say why it is equivalent.`,
+    "",
+    mutationMarkdown(run),
+  ].join("\n");
+}
+
 function flag(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
   return index >= 0 ? args[index + 1] : undefined;
@@ -381,6 +409,9 @@ if (import.meta.main) {
     if (out) writeFileSync(out, `${JSON.stringify(run, null, 2)}\n`);
     const markdown = mutationMarkdown(run);
     console.log(markdown);
+    const issue = flag(args, "--issue");
+    const body = mutationIssue(run);
+    if (issue && body) writeFileSync(issue, body);
     if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, markdown);
   } else {
     console.error("Usage: bun scripts/hot-modules.ts touched|escape|mutate ...");

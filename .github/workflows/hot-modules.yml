@@ -1,0 +1,114 @@
+name: Hot modules
+
+# The hot harness modules of .github/hot-modules.json (#1718, #1723). A pull request that changes
+# one is labelled `hot-module`, its step summary names the modules and the error budget, and the
+# modules' tests and the forecast replay run on their own so a red result names the module. Weekly,
+# BAKED's own mutation gate runs on each module; survivors in a module with a recent bug fix are
+# filed as an issue.
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hot-modules-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  touched:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.4.3"
+
+      - run: bun install --frozen-lockfile
+
+      - name: Hot modules touched
+        id: hot
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: bun scripts/hot-modules.ts touched --base "$BASE"
+
+      # Labelling needs a token that can write; a pull request from a fork gets a read-only one.
+      - name: Label the pull request
+        if: steps.hot.outputs.modules != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh label create hot-module --repo "$REPO" --color d93f0b --description "Changes a hot harness module (.github/hot-modules.json)" 2>/dev/null || true
+          gh pr edit "$PR" --repo "$REPO" --add-label hot-module
+
+      - name: Module tests and forecast replay
+        if: steps.hot.outputs.modules != ''
+        env:
+          TESTS: ${{ steps.hot.outputs.tests }}
+        run: bun test --timeout 30000 $TESTS tests/forecast-replay-corpus.test.ts tests/forecast-trace-replay.test.ts
+
+  mutation:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      issues: write
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [cost-forecast, sizing, cap-growth, auto-approval, provider-timers, scheduler-retry]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.4.3"
+
+      - run: bun install --frozen-lockfile
+
+      - name: Mutation run
+        env:
+          MODULE: ${{ matrix.module }}
+        run: bun scripts/hot-modules.ts mutate --module "$MODULE" --max 24 --budget-min 45 --out mutation.json --issue issue.md
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: mutation-${{ matrix.module }}
+          path: mutation.json
+
+      # Survivors in a module with a bug fix in the last 14 days become one open issue per module.
+      - name: File surviving mutants
+        if: hashFiles('issue.md') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODULE: ${{ matrix.module }}
+          REPO: ${{ github.repository }}
+        run: |
+          title="Surviving mutants in hot module $MODULE"
+          existing=$(gh issue list --repo "$REPO" --state open --search "\"$title\" in:title" --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$REPO" --body-file issue.md
+          else
+            gh issue create --repo "$REPO" --title "$title" --label area:ci --body-file issue.md
+          fi
