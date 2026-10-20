@@ -1,6 +1,12 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadProjectConfig, saveProjectConfig } from "../../config/index.js";
+import {
+  type LanguageRecord,
+  none,
+  rowOf,
+  SUPPORTED_LANGUAGES,
+} from "../intelligence/language-records.js";
 import { gateSandbox } from "../security/sandbox.js";
 import { workspacePath } from "../specs/validate.js";
 import { ruffSource as pythonRuffSource } from "../tools/python-tooling.js";
@@ -740,17 +746,57 @@ function runnerGates(workspace: string): GateSuggestion[] {
   return out;
 }
 
+/** The toolchain detectors, in the order their gates are suggested. */
+const TOOLCHAIN_GATES = {
+  npm: scriptGates,
+  python: pythonGates,
+  go: goGates,
+  dotnet: dotnetGates,
+  cargo: cargoGates,
+  maven: mavenGates,
+} as const;
+export type GateToolchain = keyof typeof TOOLCHAIN_GATES;
+
+/**
+ * The toolchain whose gates each supported language gets (#1717, #1733). A language without a
+ * detector has a `none` row: its gates come from a Makefile, justfile, Taskfile or CI run step
+ * (`runnerGates`).
+ */
+export const GATE_TOOLCHAINS: LanguageRecord<GateToolchain> = {
+  typescript: "npm",
+  javascript: "npm",
+  vue: "npm",
+  svelte: "npm",
+  rescript: "npm",
+  python: "python",
+  go: "go",
+  rust: "cargo",
+  csharp: "dotnet",
+  java: "maven",
+  kotlin: none("Gradle has no gate detector yet (#1749); a Maven Kotlin project gets the Java row"),
+  scala: none("sbt has no gate detector"),
+  c: none("C builds through Make or CMake, read by the runner detector"),
+  cpp: none("C++ builds through Make or CMake, read by the runner detector"),
+  ruby: none("Rake and Bundler have no gate detector"),
+  php: none("Composer has no gate detector yet (#1491)"),
+  swift: none("SwiftPM has no gate detector"),
+  lua: none("LuaRocks has no gate detector yet (#1495)"),
+  elixir: none("Mix has no gate detector"),
+  dart: none("dart and flutter have no gate detector"),
+  zig: none("zig build has no gate detector"),
+  bash: none("shell scripts have no toolchain"),
+  ocaml: none("dune has no gate detector"),
+  objc: none("Xcode projects have no gate detector"),
+  solidity: none("Foundry has no gate detector; a Hardhat project is an npm package"),
+};
+
 export function detectGates(workspace: string, configured: Check[] = []): GateSuggestion[] {
   const known = new Set(configured.map((c) => formatCommandLine(c.executable, c.args)));
   const ids = new Set(configured.map((c) => c.id));
-  const toolchain = [
-    ...scriptGates(workspace),
-    ...pythonGates(workspace),
-    ...goGates(workspace),
-    ...dotnetGates(workspace),
-    ...cargoGates(workspace),
-    ...mavenGates(workspace),
-  ];
+  const used = new Set(SUPPORTED_LANGUAGES.map((l) => rowOf(GATE_TOOLCHAINS, l)));
+  const toolchain = (Object.keys(TOOLCHAIN_GATES) as GateToolchain[])
+    .filter((key) => used.has(key))
+    .flatMap((key) => TOOLCHAIN_GATES[key](workspace));
   return (toolchain.length ? toolchain : runnerGates(workspace)).filter(
     (s) => !ids.has(s.check.id) && !known.has(formatCommandLine(s.check.executable, s.check.args)),
   );
