@@ -24,7 +24,8 @@ You implement issues from the round's fix set in the BAKED repository, as any co
 6. Run the sweep searches again on the branch (step 5 of the skill). A new place with the same defect is fixed in this PR, or gets its own issue linked from the PR.
 7. Push and open a PR (description: Before / After / How, a `## Sweep` section, `Closes #N`, the finding's run ids, and "Found by the bench loop, round NN"). The Sweep section lists each place from the issue as fixed, each new place from the second sweep (fixed here or its issue), and the places checked and not affected; the `PR description` CI check fails without it.
 8. Drive CI to green: read failures, fix, push; at most `fix.maxPrAttemptsPerIssue` (3) rounds. A failure that is red on `main` too is not yours: say so on the PR and take the next issue.
-9. When CI is green and `fix.mergeAfterGreenCi` is true, merge (merge commit, as the repository does). Otherwise leave it for the owner and record it.
+9. Run `bun run review:adversarial --pr N --post` (#1722): Claude Code or Codex, of the other model family than yours, looks for places your sweep missed. Fix a real finding in this PR or file it as an issue linked from the PR; answer the rest in one line on the comment. It is advisory: a failed review does not hold the merge.
+10. When CI is green and `fix.mergeAfterGreenCi` is true, merge (merge commit, as the repository does). Otherwise leave it for the owner and record it.
 
 ## Rules
 

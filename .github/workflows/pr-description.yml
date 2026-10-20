@@ -30,34 +30,3 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
           GITHUB_TOKEN: ${{ github.token }}
         run: bun scripts/check-sweep-section.ts
-
-  # An advisory second look at a Bug fix's sweep by a model of another family than the fixer's
-  # (scripts/adversarial-review.ts, #1722). It posts one comment and never fails the pull request.
-  # Without an API key and a model for the reviewing family (secrets ANTHROPIC_API_KEY or
-  # OPENAI_API_KEY, variables ADVERSARIAL_REVIEW_ANTHROPIC_MODEL or ADVERSARIAL_REVIEW_OPENAI_MODEL)
-  # it only builds the prompt.
-  adversarial-review:
-    if: github.event_name == 'pull_request' && github.event.action != 'edited' && github.actor != 'dependabot[bot]'
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    permissions:
-      contents: read
-      issues: write
-      pull-requests: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version: "1.4.3"
-
-      - name: Review the sweep
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ADVERSARIAL_REVIEW_ANTHROPIC_MODEL: ${{ vars.ADVERSARIAL_REVIEW_ANTHROPIC_MODEL }}
-          ADVERSARIAL_REVIEW_OPENAI_MODEL: ${{ vars.ADVERSARIAL_REVIEW_OPENAI_MODEL }}
-        run: bun scripts/adversarial-review.ts --pr ${{ github.event.pull_request.number }} --post
