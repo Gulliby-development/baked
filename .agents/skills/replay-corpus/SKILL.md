@@ -18,6 +18,7 @@ BAKED's host decisions are replayed on recorded bench rounds before a change mer
 - **Replay:** `replayTrace` in `trace.ts`. It runs each hook over every run of a trace and reports where the current code decides differently from the recording.
 - **Gate:** `tests/forecast-replay-corpus.test.ts` is part of `bun run test`, so it runs in the required `check` job. A decision the recording did not make fails the suite. The only exception is a run listed in `tests/fixtures/bench-traces/accepted.json` as `"RNN/app.sqlite.gz#RUN_ID": { "<counter>": n, "reason": "..." }`.
 - **CLI:** `bun scripts/bench-trace.ts replay <trace>... [--json]` prints each run's differing decisions.
+- **Recordings:** `tests/fixtures/bench-recordings/RNN/<app>/RUN_ID.json.gz` and its `manifest.json`, written by `bun scripts/bench-trace.ts recordings <workspace> <out-dir> --run RUN_ID`. Every bench run and initiative records its model calls (`--record-model-calls`); a recording holds the prompts and the model's answers, so only the runs that stopped are kept, and only from public bench apps. They are the input of the replay to the first divergent request (#1715 step 2), which compares the decisions that need the model's answers.
 
 ## Hooks today
 
@@ -51,6 +52,6 @@ When your change means to decide differently on a recorded run, add that run to 
 
 ## Bench loop
 
-- **Publisher (phase 10):** after each round, export every app (updates and controls included) from a checkout of current main and run the replay and the corpus test. Open a `feature/bench-traces-rNN` pull request with the traces. A trace above 2 MB is mentioned in the round report. Run `git status` before committing to confirm the `.sqlite.gz` files are staged.
+- **Publisher (phase 10):** after each round, export every app (updates and controls included) from a checkout of current main and run the replay and the corpus test. Open a `feature/bench-traces-rNN` pull request with the traces. Add the recording of every run that stopped (a forecast, budget, provider or gate stop, or an intervention) to the same pull request. A trace above 2 MB is mentioned in the round report. Run `git status` before committing to confirm the `.sqlite.gz` files are staged.
 - **Analyst:** a replay difference on the round's own traces is a finding, because main decides differently from the round's runner. It is expected only for fixes merged during the round; those go into `accepted.json` with the fix's issue as the reason. Each new stop the round shows makes that run part of the corpus automatically, once its trace merges.
 - Traces leave the runner only through this export. Nothing else from `.baked/` goes into the repository.

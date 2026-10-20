@@ -5,6 +5,7 @@
  *   bun scripts/bench-trace.ts export <workspace> <out.sqlite.gz> [--run RUN_ID ...]
  *   bun scripts/bench-trace.ts replay <trace.sqlite.gz> ... [--json]
  *   bun scripts/bench-trace.ts latencies <trace.sqlite.gz> ... [--json]
+ *   bun scripts/bench-trace.ts recordings <workspace> <out-dir> [--run RUN_ID ...]
  *
  * `export` writes the anonymised trace of a workspace's workflow database (see
  * src/core/workflows/trace.ts); the bench loop stores one per app per round under
@@ -12,13 +13,15 @@
  * recorded attempt and prints the stops and cap growth that differ from the recorded run.
  * `latencies` prints the healthy first-byte percentiles and retry-after waits of the recorded
  * calls by provider, stage and effort: what the provider fault matrix tests limits against (#1729).
+ * `recordings` writes the model calls of runs started with `--record-model-calls` (#1715).
  */
-import { corpusCallProfile, exportTrace, replayTrace } from "../src/core/workflows/trace.js";
+import { corpusCallProfile, exportRecordings, exportTrace, replayTrace } from "../src/core/workflows/trace.js";
 
 const usage =
   "Usage: bun scripts/bench-trace.ts export <workspace> <out.sqlite.gz> [--run RUN_ID ...]\n" +
   "       bun scripts/bench-trace.ts replay <trace.sqlite.gz> ... [--json]\n" +
-  "       bun scripts/bench-trace.ts latencies <trace.sqlite.gz> ... [--json]";
+  "       bun scripts/bench-trace.ts latencies <trace.sqlite.gz> ... [--json]\n" +
+  "       bun scripts/bench-trace.ts recordings <workspace> <out-dir> [--run RUN_ID ...]";
 
 const [command, ...rest] = process.argv.slice(2);
 const flags = rest.filter((a) => a.startsWith("--"));
@@ -51,6 +54,12 @@ if (command === "export" && args.length === 2) {
     for (const [provider, waits] of Object.entries(profile.retryAfterMs))
       console.log(`${provider} retry-after: ${waits.map((ms) => `${Math.ceil(ms / 1000)} s`).join(", ")}`);
   }
+} else if (command === "recordings" && args.length === 2) {
+  const [workspace = "", outDir = ""] = args;
+  const entries = exportRecordings(workspace, outDir, runIds.length ? { runIds } : {});
+  for (const entry of entries)
+    console.log(`${entry.file}: ${entry.featureId}, ${entry.calls} calls, ${entry.status}`);
+  if (!entries.length) console.log("No run recorded its model calls (--record-model-calls)");
 } else if (command === "replay" && args.length > 0) {
   const replays = args.map((path) => replayTrace(path));
   if (flags.includes("--json")) console.log(JSON.stringify(replays, null, 2));
