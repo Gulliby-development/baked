@@ -1,0 +1,21 @@
+{
+  "files": {
+    "src/Sum.sol": "contract Sum {\n  function sum(uint a, uint b) public pure returns (uint) {\n    revert(\"not implemented\");\n  }\n}\n",
+    "test/Sum.t.sol": "contract SumTest {}\n",
+    "src/Sum.t.sol": "contract SumTest2 {}\n",
+    "foundry.toml": "[profile.default]\n"
+  },
+  "expected": {
+    "tests": [
+      "test/Sum.t.sol",
+      "src/Sum.t.sol"
+    ],
+    "manifests": [
+      "foundry.toml"
+    ],
+    "dependencies": null,
+    "placeholders": [
+      "src/Sum.sol:3"
+    ]
+  }
+}

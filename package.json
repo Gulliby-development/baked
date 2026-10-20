@@ -50,6 +50,7 @@
     "lint:fix": "biome check --write src/",
     "format": "biome format --write src/",
     "test": "bun test --timeout 30000",
+    "bench:suite": "bun bench/suite/run.ts",
     "test:coverage": "bun test --timeout 30000 --coverage --coverage-reporter=text --coverage-reporter=lcov --coverage-dir=coverage",
     "test:coverage:html": "bun run test:coverage && genhtml coverage/lcov.info --output-directory coverage/html --dark-mode && open coverage/html/index.html",
     "typecheck": "bun check",

@@ -1529,15 +1529,21 @@ export class NativeWorkflowService implements WorkflowService {
         state.prompt += `\nUser clarification${asking ? ` (answers the questions of the ${asking.id} stage; they are resolved)` : ""}:\n${canonical(decision.answers)}`;
         // An answer to a task's spec conflict is a decision of the run: the findings the task
         // corrects are decided, so their repros stop gating it and it is not asked again (#1350).
-        const conflict = body.specConflict as { taskId?: unknown } | undefined;
+        const conflict = body.specConflict as
+          | { taskId?: unknown; criterionIds?: unknown }
+          | undefined;
         if (typeof conflict?.taskId === "string") {
           const taskId = conflict.taskId;
           const findingIds = state.graph?.tasks.find((t) => t.id === taskId)?.findingIds ?? [];
+          const criterionIds = Array.isArray(conflict.criterionIds)
+            ? conflict.criterionIds.filter((id): id is string => typeof id === "string")
+            : [];
           recordConflictDecision(this.store, runId, {
             requestId: request.id,
             taskId,
             findingIds,
             answer: canonical(decision.answers),
+            ...(criterionIds.length ? { criterionIds } : {}),
           });
           if (findingIds.length)
             state.prompt += `\nThis answer decides the findings ${findingIds.join(", ")} that task ${taskId} corrects (${CONFLICT_DECISION_PREFIX}${request.id}.json): their repros no longer gate the task.`;

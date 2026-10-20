@@ -18,6 +18,7 @@ minimumReleaseAgeExcludes = [
 
 [test]
 coverageSkipTestFiles = true
-# apps/desktop is its own package with its own dependencies and test run.
-pathIgnorePatterns = ["apps/**"]
+# apps/desktop is its own package with its own dependencies and test run;
+# bench suite tasks hold hidden checks that only run inside a task workspace.
+pathIgnorePatterns = ["apps/**", "bench/suite/tasks/**"]
 preload = ["./tests/setup/isolate-home.ts"]

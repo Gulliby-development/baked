@@ -61,6 +61,7 @@ improvements
 
 # Benchmark artifacts
 bench/results-*.json
+bench-suite-results/
 benchmarks/results-*.json
 
 # Local agent settings
@@ -79,6 +80,7 @@ benchmarks/results-*.json
 .agents/skills/*
 !.agents/skills/file-issue/
 !.agents/skills/replay-corpus/
+!.agents/skills/bench-suite/
 
 # Audit logs
 audit_issue.json

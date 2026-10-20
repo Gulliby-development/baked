@@ -1,0 +1,14 @@
+{
+  "files": {
+    "bin/sum.sh": "sum() {\n  echo $(($1 + $2))\n}\n",
+    "bin/sum_test.sh": "source bin/sum.sh\n"
+  },
+  "expected": {
+    "tests": [
+      "bin/sum_test.sh"
+    ],
+    "manifests": null,
+    "dependencies": null,
+    "placeholders": null
+  }
+}

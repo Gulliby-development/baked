@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
-import { agentTaskCount, planScopeAdvice } from "../src/core/workflows/auto-approval.js";
+import { agentTaskCount, evaluateAutoApproval, planScopeAdvice } from "../src/core/workflows/auto-approval.js";
 import { featurePolicy } from "../src/core/workflows/initiatives/service.js";
 import { InitiativeSettingsSchema } from "../src/core/workflows/initiatives/store.js";
 import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
@@ -145,7 +145,7 @@ describe("scenario: a sizing replan preserves the approval task count (#1627)", 
   test("a plan already above the limit still needs a person after sizing", async () => {
     const { approval, body } = await scenario(undefined, false, 9);
     expect(approval?.status).toBe("pending");
-    expect(body.autoApproval.declined).toContain("Limits: 9 tasks exceed 8");
+    expect(body.autoApproval.declined).toContain("Limits: 9 tasks exceed 8 (2 added for sizing not counted)");
   });
 
   for (const revision of [undefined, "patch"] as const) {
@@ -163,12 +163,14 @@ describe("scenario: a sizing replan preserves the approval task count (#1627)", 
     expect(body.autoApproval.declined).toContain("Limits: outside.txt is outside the allowed paths");
   });
 
-  test("an unrelated later replan cannot inherit the sizing task allowance", async () => {
+  // R51 (#1711): url-shortener's third planning pass cleared the allowance and the same graph
+  // that passed on pass 2 was declined with "9 tasks exceed 8".
+  test("a later replan of the same graph keeps the sizing allowance, so every pass decides the same", async () => {
     const { fixture, approval, body, state } = await scenario(undefined, false, 8, false, false, true);
     expect(fixture.executor.plans).toBe(3);
-    expect(approval?.status).toBe("pending");
-    expect(body.autoApproval.declined).toContain("Limits: 10 tasks exceed 8");
-    expect(state.hostSplitTasks).toBe(0);
+    expect(body.autoApproval.declined ?? []).toEqual([]);
+    expect(approval).toMatchObject({ status: "accepted", actor: "auto-approval" });
+    expect(state.hostSplitTasks).toBe(2);
   });
 });
 
@@ -193,7 +195,7 @@ describe("scenario: host-written tasks do not count against the task limit (#165
   test("nine agent tasks still need a person, and the reason says the marker was not counted", async () => {
     const { approval, body } = await scenario(undefined, false, 9, false, false, false, true);
     expect(approval?.status).toBe("pending");
-    expect(body.autoApproval.declined).toContain("Limits: 9 tasks exceed 8 (1 host-written not counted)");
+    expect(body.autoApproval.declined).toContain("Limits: 9 tasks exceed 8 (2 added for sizing, 1 host-written not counted)");
   });
 
   test("the planner's advice counts agent tasks only", () => {
@@ -203,8 +205,46 @@ describe("scenario: host-written tasks do not count against the task limit (#165
     };
     const marker: Task = { ...task("T100", []), writes: [{ path: "src/__init__.py", action: "create", content: "" }] };
     const graph = (count: number): TaskGraph => ({ schemaVersion: 1, featureId: "fixture", revision: 1, specHash: "a", planHash: "b", tasks: [...initial(count), marker] });
-    expect(agentTaskCount(graph(8))).toEqual({ agent: 8, host: 1 });
+    expect(agentTaskCount(graph(8))).toEqual({ agent: 8, host: 1, slices: 0 });
     expect(planScopeAdvice(policy, graph(8))).toEqual([]);
     expect(planScopeAdvice(policy, graph(9))[0]).toContain("9 tasks exceed 8 (1 host-written not counted)");
+  });
+});
+
+// R51 (#1711): url-shortener (13 tasks in 8 planned ones) and md-site (14 tasks in 7) waited for a
+// person, while expenses-py with the same shape passed, because slices counted by pass history.
+describe("scenario: sizing slices of one planned task count once (#1711)", () => {
+  const limits = { maxTasks: 8, maxFiles: 40, allowedPaths: ["**"], allowDelete: false, allowNewDependencies: false, maxTotalTokens: fixturePolicy.maxTotalTokens };
+  const policy: RunPolicy = { ...fixturePolicy, autoApproval: { renewal: false, limits } };
+  const graphOf = (tasks: Task[]): TaskGraph => ({ schemaVersion: 1, featureId: "fixture", revision: 1, specHash: "a", planHash: "b", tasks });
+  const slices = (from: string, path: string, count: number, firstId: number): Task[] =>
+    Array.from({ length: count }, (_, index) => ({
+      ...task(index === 0 ? from : `T${String(firstId + index).padStart(3, "0")}`, [path]),
+      sizingSlice: { taskId: from, index, count, share: 1 / count },
+    }));
+  const plain = (count: number, first = 1) => Array.from({ length: count }, (_, i) => task(`T${String(first + i).padStart(3, "0")}`, [`src/m${first + i}.ts`]));
+  // url-shortener: 5 code tasks and three test tasks cut into 3, 2 and 3 slices.
+  const urlShortener = graphOf([...plain(5), ...slices("T006", "tests/a.test.ts", 3, 20), ...slices("T007", "tests/b.test.ts", 2, 30), ...slices("T008", "tests/c.test.ts", 3, 40)]);
+  // md-site: 4 plain tasks, a group of 4, a group of 5 and the docs task.
+  const mdSite = graphOf([...plain(4), ...slices("T005", "tests/render.test.ts", 4, 20), ...slices("T006", "tests/parse.test.ts", 5, 30), task("T007", ["README.md"])]);
+  // A part the host cut by file names its task in its note even without a slice record.
+  const byFile = graphOf([...plain(7), task("T008", ["tests/x.test.ts"]), { ...task("T009", ["tests/y.test.ts"]), description: "Tests\nSizing split this task by file: write only tests/y.test.ts; tests/x.test.ts belong to the other parts of T008." }]);
+
+  test("the recorded R51 shapes are within a limit of 8, whatever the pass", () => {
+    expect(urlShortener.tasks).toHaveLength(13);
+    expect(agentTaskCount(urlShortener)).toEqual({ agent: 8, host: 0, slices: 5 });
+    expect(mdSite.tasks).toHaveLength(14);
+    expect(agentTaskCount(mdSite)).toEqual({ agent: 7, host: 0, slices: 7 });
+    expect(agentTaskCount(byFile)).toEqual({ agent: 8, host: 0, slices: 1 });
+    for (const graph of [urlShortener, mdSite, byFile]) {
+      expect(planScopeAdvice(policy, graph)).toEqual([]);
+      expect(evaluateAutoApproval(policy, {} as Parameters<typeof evaluateAutoApproval>[1], fixtureSpec, graph, [], []).reasons.join("\n")).not.toContain("tasks exceed");
+    }
+  });
+
+  test("nine distinct planned tasks are still declined, and the reason names the slices left out", () => {
+    const nine = graphOf([...plain(9), ...slices("T010", "tests/z.test.ts", 3, 20)]);
+    expect(planScopeAdvice(policy, nine)[0]).toContain("10 tasks exceed 8 (2 sizing slices not counted)");
+    expect(planScopeAdvice(policy, graphOf(plain(9)))[0]).toContain("9 tasks exceed 8");
   });
 });

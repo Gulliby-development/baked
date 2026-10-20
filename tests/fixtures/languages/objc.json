@@ -1,0 +1,14 @@
+{
+  "files": {
+    "Sources/Sum.m": "@implementation Sum\n@end\n",
+    "Sources/SumTests.m": "@implementation SumTests\n@end\n"
+  },
+  "expected": {
+    "tests": [
+      "Sources/SumTests.m"
+    ],
+    "manifests": null,
+    "dependencies": null,
+    "placeholders": null
+  }
+}

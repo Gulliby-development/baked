@@ -43,6 +43,7 @@ A bug is bound to a language when the failing code branches on a language, a fil
 
 Take the list of languages from the code on current `main`, not from memory, because it grows:
 
+- `src/core/intelligence/language-records.ts` (`SUPPORTED_LANGUAGES`): the programming languages BAKED supports, and the `LanguageRecord` tables keyed by them.
 - `src/core/intelligence/types.ts` (`EXT_TO_LANGUAGE`): every language BAKED detects by extension.
 - `src/core/intelligence/language-traits.ts` (`LANGUAGE_TRAITS`): code, source, test-file and manifest rules per language.
 - `src/core/workflows/gates.ts` (`detectGates` and the `*Gates` helpers): the toolchains whose checks BAKED proposes and whose output it parses.
@@ -63,6 +64,8 @@ Then file:
 - When a language needs its own fix (its own parser, toolchain, manifest or convention), file a separate Bug issue for it with this skill, titled with the language, and link it from this issue and back. Do not leave a reproducing language only as a note.
 - A **different defect** gets its own issue too, as in step 2.
 
+When the failing code reads a per-language table that is not yet a `LanguageRecord`, the fix converts it, as the [AGENTS.md rule on per-language records](../../../AGENTS.md#working-conventions) asks: one row for every supported language, the record registered in `tests/language-parity.test.ts`, and a golden in each language's fixture. Say so under **Suggested fix**.
+
 Record the result in the issue's **Sweep** section under a `Languages:` line that names every language and its group. A bug that is not bound to a language says `Languages: not language-bound` with the reason in a few words.
 
 ## 4. Check for duplicates
@@ -79,10 +82,11 @@ Follow the rules in `AGENTS.md`: the type, labels, the board and the `Priority: 
 - **Sweep:** what you searched, the same-defect places, the linked related issues, the places checked and not affected, and the `Languages:` line from step 3.
 - **Suggested fix:** prefer one shared helper or rule that all the places use over separate patches at each site.
 - **Tests:** a test that fails without the fix. For P0 and P1 bench findings this is a scripted scenario test. Add one case per affected toolchain, language or path from the sweep.
+- **Maintainability:** when the suggested fix adds a shared helper, table or registry that later code must use or extend, name the rule that keeps it complete: a line in `AGENTS.md`, or a skill under `.agents/skills/` linked from it when the rule is large (see "Keep extension points maintainable" in `AGENTS.md`). Otherwise write `None`.
 
 ## 6. When you fix an issue filed this way
 
-Fix every place listed under **Where**. Before opening the pull request, run the sweep searches again on the branch. A new place gets fixed in the same pull request, or gets its own issue linked from the pull request.
+Fix every place listed under **Where**. If the issue names a rule under **Maintainability**, add that rule to `AGENTS.md` (or the linked skill) in the same pull request. Before opening the pull request, run the sweep searches again on the branch. A new place gets fixed in the same pull request, or gets its own issue linked from the pull request.
 
 Report it in a `## Sweep` section of the pull request description:
 

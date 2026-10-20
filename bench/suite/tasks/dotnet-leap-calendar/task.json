@@ -1,0 +1,24 @@
+{
+  "id": "dotnet-leap-calendar",
+  "language": "csharp",
+  "toolchain": "dotnet",
+  "requires": [
+    "dotnet"
+  ],
+  "allowedPaths": [
+    "Calendar/**",
+    "Calendar.Tests/**",
+    "README.md"
+  ],
+  "checks": [
+    {
+      "id": "dotnet-test",
+      "executable": "dotnet",
+      "args": [
+        "test",
+        "Calendar.Tests",
+        "--nologo"
+      ]
+    }
+  ]
+}
