@@ -1709,12 +1709,11 @@ export class NativeAgentExecutor implements AgentExecutor {
     const calls = policy.modelCalls;
     const model = () => {
       const resolved = resolveModel(request.profile.model);
-      const buffered =
-        typeof resolved !== "string" &&
-        (resolved.provider === "codex" || resolved.provider === "claude-code");
       return withProviderHealth(resolved, request.profile.model, {
         stage: request.profile.output,
-        pending: () => {
+        // A call that may reason silently (a CLI adapter, or high effort on a provider whose
+        // reasoning does not stream) is not a stall while it waits (#1652).
+        pending: (buffered) => {
           if (buffered) watch.bufferedProviders++;
           const settle = request.providerPending?.();
           return (responded) => {
