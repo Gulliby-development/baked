@@ -816,7 +816,7 @@ export const FEATURES: readonly Feature[] = [
     id: "run-test-sizing",
     group: "Workflow runs",
     title:
-      "Price test tasks by task-cost quantiles, refresh pending caps from the run, split above observed case capacity with distinct part titles and report both token caps",
+      "Price test tasks, refresh pending caps, split above observed case capacity and preserve approval task counts through sizing replans",
     tui: ["/workflow: plan approval shows the sized tasks"],
     cli: ["baked workflow show: task slices and batching guidance using available checks"],
     api: ["/v1/workflow/runs/:id: shared sizing record and tasks"],
@@ -825,7 +825,8 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "acceptance-rows-as-data",
     group: "Workflow runs",
-    title: "Opt-in audited acceptance rows as JSON and Bun/pytest tests",
+    title:
+      "Opt-in audited acceptance rows as JSON and Bun/pytest tests; ignored with a run warning without an analyze stage",
     tui: ["/workflow: new run Rows setting, tasks and rows.json artifact"],
     cli: [
       "baked workflow run: --rows-as-data on|off",
@@ -841,7 +842,8 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "test-integrity",
     group: "Workflow runs",
-    title: "Test-integrity guard: block or warn on test gaming, spec conflicts",
+    title:
+      "Test-integrity guard: block or warn on test gaming; explicit spec test removals take precedence",
     tui: ["/workflow: new run, Tests field; spec conflicts in the decision view"],
     cli: ["baked workflow run: --test-integrity", "baked workflow answer"],
     api: ["/v1/workflow/runs: testIntegrity", "/v1/workflow/runs/:id/answer"],
@@ -1073,6 +1075,15 @@ export const FEATURES: readonly Feature[] = [
     cli: ["baked workflow run: journaled project edits", "baked workflow resume"],
     api: ["/v1/workflow/runs/:id/resume: shared frozen-input provenance check"],
     desktop: ["project/runs: approved edits continue through the shared runtime"],
+  },
+  {
+    id: "run-provider-health",
+    group: "Workflow runs",
+    title: "Adapter-aware provider deadlines and durable zero-token retry limits",
+    tui: ["/workflow: provider wait, next health probe and no_progress retry decision"],
+    cli: ["baked workflow status: providerWait", "baked workflow resume"],
+    api: ["/v1/workflow/runs/:id: waiting/provider, providerWait and no_progress diagnostics"],
+    desktop: ["project/runs: provider wait, next health probe and retry decision"],
   },
   {
     id: "run-execution-time",

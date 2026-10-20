@@ -52,6 +52,84 @@ export const executionClock = new ExecutionClock();
 // a host sleep. Consumers also sample before deciding, regardless of timer callback ordering.
 setInterval(() => executionClock.now(), EXECUTION_SAMPLE_MS).unref();
 
+interface ExecutionSpan {
+  from: number;
+  to?: number;
+}
+
+/** Per-drive time. Unanswered calls are provisional until a response or an outage decides them. */
+export class ExecutionBudgetClock {
+  private excluded: ExecutionSpan[] = [];
+  private working: ExecutionSpan[] = [];
+  constructor(private clock: Pick<ExecutionClock, "now"> = executionClock) {}
+
+  now(): number {
+    const now = this.clock.now();
+    const edges: { at: number; idle: number; working: number }[] = [];
+    for (const [spans, working] of [
+      [this.excluded, false],
+      [this.working, true],
+    ] as const)
+      for (const span of spans) {
+        edges.push({ at: span.from, idle: working ? 0 : 1, working: working ? 1 : 0 });
+        edges.push({ at: span.to ?? now, idle: working ? 0 : -1, working: working ? -1 : 0 });
+      }
+    edges.sort((a, b) => a.at - b.at);
+    let idle = 0;
+    let working = 0;
+    let skipped = 0;
+    let last = 0;
+    for (const edge of edges) {
+      if (idle > 0 && working === 0) skipped += edge.at - last;
+      idle += edge.idle;
+      working += edge.working;
+      last = edge.at;
+    }
+    return now - skipped;
+  }
+
+  /** A wait stage with no model work, always excluded. */
+  pending(): (responded: boolean) => void {
+    const span: ExecutionSpan = { from: this.clock.now() };
+    this.excluded.push(span);
+    let settled = false;
+    return (responded) => {
+      if (settled) return;
+      settled = true;
+      span.to = this.clock.now();
+      if (responded) this.excluded.splice(this.excluded.indexOf(span), 1);
+    };
+  }
+
+  /** Other attempts' healthy work still counts while a parallel call is unreachable. */
+  track(): { pending: () => (responded: boolean) => void; finish: () => void } {
+    let active: ExecutionSpan | undefined = { from: this.clock.now() };
+    this.working.push(active);
+    let settle: ((responded: boolean) => void) | undefined;
+    return {
+      pending: () => {
+        const from = this.clock.now();
+        if (active) active.to = from;
+        active = undefined;
+        const end = this.pending();
+        let settled = false;
+        settle = (responded) => {
+          if (settled) return;
+          settled = true;
+          end(responded);
+          active = { from: responded ? from : this.clock.now() };
+          this.working.push(active);
+        };
+        return settle;
+      },
+      finish: () => {
+        settle?.(false);
+        if (active) active.to = this.clock.now();
+      },
+    };
+  }
+}
+
 /** Returns a cancellation function. Every callback checks execution time again after wake. */
 export function executionTimeout(
   callback: () => void,

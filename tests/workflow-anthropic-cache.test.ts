@@ -4,6 +4,7 @@
  * previous request byte for byte, and cache reads and writes reach the attempt's usage.
  */
 import { afterEach, describe, expect, test } from "bun:test";
+import { anthropicResponse } from "./helpers/anthropic-response.js";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { findPricing } from "../src/core/llm/pricing.js";
 import { getProvider } from "../src/core/llm/providers/index.js";
@@ -37,7 +38,7 @@ function scriptAnthropic(contents: unknown[][]): Body[] {
     bodies.push(JSON.parse(String(init?.body)) as Body);
     const content = contents[bodies.length - 1];
     if (!content) throw new Error("script exhausted");
-    return Response.json({
+    return anthropicResponse({
       id: `msg_${bodies.length}`,
       type: "message",
       role: "assistant",

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LanguageModelV3, LanguageModelV3GenerateResult } from "@ai-sdk/provider";
-import { MockLanguageModelV3 } from "ai/test";
+import { MockLanguageModelV3 } from "./helpers/workflow-model.js";
 import { ProfileRegistry } from "../src/core/agents/profiles/registry.js";
 import { getProvider } from "../src/core/llm/providers/index.js";
 import { disposeMCPManager, getMCPManager } from "../src/core/mcp/index.js";

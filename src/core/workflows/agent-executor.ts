@@ -21,6 +21,7 @@ import { hasToolHooks } from "../hooks/index.js";
 import { formatSyntaxErrors, syntaxCheckable, syntaxErrors } from "../intelligence/syntax-check.js";
 import { knownModelContextWindow } from "../llm/models.js";
 import { resolveModel } from "../llm/provider.js";
+import { withProviderHealth } from "../llm/provider-health.js";
 import {
   buildProviderOptions,
   type CacheTTL,
@@ -267,6 +268,8 @@ interface AttemptWatch {
   lastAt: number;
   lastTool: string | null;
   tools: number;
+  /** Buffering adapters use their first-byte deadline until they report model activity. */
+  bufferedProviders: number;
   deadlines: number;
   /** When the model call of the current step started, until it asks for a tool or ends. */
   calledAt: number | null;
@@ -331,6 +334,7 @@ export class NativeAgentExecutor implements AgentExecutor {
       lastAt: executionClock.now(),
       lastTool: null,
       tools: 0,
+      bufferedProviders: 0,
       deadlines: 0,
       calledAt: null,
       abort: (error) => stall.abort(error),
@@ -338,7 +342,12 @@ export class NativeAgentExecutor implements AgentExecutor {
     const interval = setInterval(
       () => {
         const limit = silenceLimitMs(settings, request.runId);
-        if (watch.tools > 0 || executionClock.now() - watch.lastAt < limit) return;
+        if (
+          watch.tools > 0 ||
+          watch.bufferedProviders > 0 ||
+          executionClock.now() - watch.lastAt < limit
+        )
+          return;
         stall.abort(
           stalledFault(
             `Attempt ${request.attemptId} of ${request.profile.id} made no progress for ${Math.round((executionClock.now() - watch.lastAt) / 60_000)} min (last tool: ${watch.lastTool ?? "none"}; limit ${Math.round(limit / 60_000)} min${limit < settings.stepStallMs ? ", from the run's own model calls" : ""})`,
@@ -1220,7 +1229,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         },
       });
       const meta = { profileId: request.profile.id, taskId: request.task?.id ?? null };
-      const model = this.attemptModel(request, policy);
+      const model = this.attemptModel(request, policy, watch);
       const effort = sentEffort(provider.providerOptions);
       const writeUsage = (usage: AttemptUsageRecord) =>
         this.store.transaction(() =>
@@ -1692,9 +1701,33 @@ export class NativeAgentExecutor implements AgentExecutor {
    * The attempt's model: the provider's, or with `modelCalls` in the policy one that records
    * each call in the run, or answers from a recording (#856).
    */
-  private attemptModel(request: ExecutionRequest, policy: RunPolicy): LanguageModel {
+  private attemptModel(
+    request: ExecutionRequest,
+    policy: RunPolicy,
+    watch: AttemptWatch,
+  ): LanguageModel {
     const calls = policy.modelCalls;
-    const model = () => resolveModel(request.profile.model);
+    const model = () => {
+      const resolved = resolveModel(request.profile.model);
+      const buffered =
+        typeof resolved !== "string" &&
+        (resolved.provider === "codex" || resolved.provider === "claude-code");
+      return withProviderHealth(resolved, request.profile.model, {
+        stage: request.profile.output,
+        pending: () => {
+          if (buffered) watch.bufferedProviders++;
+          const settle = request.providerPending?.();
+          return (responded) => {
+            if (buffered) watch.bufferedProviders--;
+            settle?.(responded);
+          };
+        },
+        progress: () => {
+          watch.lastAt = executionClock.now();
+          touchProgress(request.runId);
+        },
+      });
+    };
     if (!calls?.record && !calls?.replay) return model();
     const key = recordingKey(request.profile.id, request.task?.id);
     const paths = this.store.artifacts(request.runId).map((a) => a.logical_path);
