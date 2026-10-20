@@ -46,6 +46,27 @@ export const PLACEHOLDER_SHARE = 1 / 3;
 export const pathWeight = (f: { paths?: number; placeholders?: number }): number =>
   (f.paths ?? 0) + PLACEHOLDER_SHARE * (f.placeholders ?? 0);
 
+/**
+ * Finished features of a size, with paths, needed before a feature's paths place it within them.
+ * Bench rounds 45 to 52: within a size, a feature's tokens follow its paths (medium features about
+ * 0.27M plus 0.38M per path), and the size's middle priced R52 srcwhere's two-path modules like
+ * six-path ones (#1767).
+ */
+export const MIN_PATH_FIT_SAMPLES = 4;
+/**
+ * How closely tokens must follow paths in those features for the fit to place one. Rounds 45 to 52
+ * at the split: medium features follow their paths (0.61), large ones hardly (0.14), and a fit of
+ * large features from earlier rounds priced R49 shexpand's large features 15% lower than its size's
+ * middle, where they cost 1.4 to 2.5 times their forecast.
+ */
+export const MIN_PATH_FIT_CORRELATION = 0.5;
+
+/** Tokens against path weight over finished features: `base + perPath * pathWeight`. */
+export interface PathFit {
+  base: number;
+  perPath: number;
+}
+
 /** A finished feature run of an earlier initiative, with the size its plan gave the feature. */
 export interface FeatureRunSample {
   runId: string;
@@ -119,6 +140,8 @@ export interface FeatureEstimate {
    * paths or the plan's sized tasks (each times its measured rate); absent when nothing did.
    */
   floor?: FeatureFloor;
+  /** The fit over finished features of its size that placed it by its paths, when one did. */
+  pathFit?: PathFit;
 }
 
 export type FeatureFloor = "criteria" | "paths" | "plan";
@@ -218,6 +241,32 @@ function taskCounts(history: PastRun[], workflowId: string): TokenRange {
   );
 }
 
+/**
+ * Least squares of tokens on path weight over `pool`, and each
+ * sample's residual. Null with fewer than `MIN_PATH_FIT_SAMPLES` samples that name paths, when
+ * they all name the same number, or when their tokens follow their paths less closely than
+ * `MIN_PATH_FIT_CORRELATION`.
+ */
+function pathFitOf(pool: FeatureRunSample[]): (PathFit & { residuals: number[] }) | null {
+  const named = pool.filter((s) => pathWeight(s) > 0);
+  if (named.length < MIN_PATH_FIT_SAMPLES) return null;
+  const xs = named.map(pathWeight);
+  const mx = xs.reduce((a, b) => a + b, 0) / xs.length;
+  const my = named.reduce((a, s) => a + s.tokens, 0) / named.length;
+  const sxx = xs.reduce((a, x) => a + (x - mx) ** 2, 0);
+  if (sxx === 0) return null;
+  const sxy = named.reduce((a, s, i) => a + ((xs[i] ?? 0) - mx) * (s.tokens - my), 0);
+  const syy = named.reduce((a, s) => a + (s.tokens - my) ** 2, 0);
+  if (syy === 0 || sxy / Math.sqrt(sxx * syy) < MIN_PATH_FIT_CORRELATION) return null;
+  const perPath = sxy / sxx;
+  const base = my - perPath * mx;
+  return {
+    base,
+    perPath,
+    residuals: named.map((s, i) => s.tokens - (base + perPath * (xs[i] ?? 0))),
+  };
+}
+
 function estimateFeature(
   feature: FeatureToEstimate,
   history: PastRun[],
@@ -240,17 +289,33 @@ function estimateFeature(
   const sameWorkflow = sized.filter((s) => s.workflowId === feature.workflowId);
   const pool = sameWorkflow.length >= 2 ? sameWorkflow : sized;
   const measured = rangeOf(pool.map((s) => s.tokens));
-  if (measured)
+  // A feature that names paths sits where its paths put it among them, with their spread around
+  // the fit; never below the cheapest of them.
+  const fit = pathWeight(feature) > 0 && measured ? pathFitOf(pool) : null;
+  const cheapest = Math.min(...pool.map((s) => s.tokens));
+  const placed =
+    fit &&
+    rangeOf(
+      fit.residuals.map((r) =>
+        Math.max(cheapest, fit.base + fit.perPath * pathWeight(feature) + r),
+      ),
+    );
+  if (measured) {
+    const tokens = placed ?? measured;
     return {
       ...head,
-      tokens: measured,
-      expectedTokens: middle(measured),
+      tokens,
+      expectedTokens: middle(tokens),
       tasks: hasTasks
         ? (rangeOf(pool.map((s) => s.taskCount)) ?? { low: 0, high: 0 })
         : { low: 0, high: 0 },
       basis: "initiative-history",
       samples: pool.length,
+      ...(placed && fit
+        ? { pathFit: { base: Math.round(fit.base), perPath: Math.round(fit.perPath) } }
+        : {}),
     };
+  }
   // Otherwise a typical run of the feature's workflow scaled by the feature's size: its tasks by the
   // planned task count, the stages around them less steeply.
   const factor = SIZE_TASK_FACTOR[feature.size];
@@ -487,6 +552,16 @@ export function estimateInitiative(input: {
           `A feature whose spec is written is forecast at no less than ${rangeText(perCriterion)} tokens per acceptance criterion, as measured on finished features.`,
         ]
       : []),
+    ...[
+      ...new Map(
+        features
+          .filter((f) => f.basis !== "measured" && f.pathFit)
+          .map((f) => [f.size, f.pathFit as PathFit]),
+      ),
+    ].map(
+      ([size, fit]) =>
+        `A ${size} feature still to run is placed among finished ${size} features by its paths: about ${tokenText(Math.max(0, fit.base))} plus ${tokenText(fit.perPath)} per path.`,
+    ),
     ...(perPath && features.some((f) => f.basis !== "measured" && pathWeight(f) && !f.criteria)
       ? [
           `A feature still to run is forecast at no less than ${rangeText(perPath)} tokens per path of its boundary, as measured on ${perPathSamples.features} finished features${perPathSamples.shared ? ` (${perPathSamples.shared} of other projects)` : ""}.`,

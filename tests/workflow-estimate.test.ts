@@ -204,7 +204,29 @@ describe("estimates in a real run", () => {
     // Too few runs of the planned model: every run counts, and the estimate says the models mix.
     const mixed = estimatePreRun({ history: [...codex, ...claude.slice(0, 2)], workflowId: "sdd", stages, maxTotalTokens: 800000, price: () => null });
     expect(mixed.samples).toBe(6);
-    expect(mixed.notes.some((n) => n.startsWith("Fewer than 3 earlier runs of claude-code/opus"))).toBe(true);
+    expect(mixed.notes.some((n) => n.startsWith("Fewer than 3 earlier runs of sdd on claude-code/opus"))).toBe(true);
+  });
+
+  // R52 srcwhere (#1767): eight decompose runs and two one-task feature runs of the initiative's
+  // model keyed the history, so a feature's stages put a fifth of its tokens on its tasks.
+  test("runs of other workflows on the planned model do not key the history", () => {
+    const stages = [
+      { id: "plan", type: "agent", models: ["codex/astra"] },
+      { id: "implement", type: "tasks", models: ["codex/astra"] },
+    ];
+    const sdd = (model: string, implement: number) =>
+      past({ workflowId: "sdd", model, taskCount: 4, taskTokens: implement, stageTokens: { plan: 30000, implement } });
+    const decompose = Array.from({ length: 8 }, () => past({ workflowId: "initiative-decompose", model: "codex/astra", taskCount: 0, taskTokens: 0, stageTokens: { decompose: 90000 } }));
+    const small = [sdd("codex/astra", 20000), sdd("codex/astra", 24000)];
+    const others = [sdd("codex/luna", 800000), sdd("codex/luna", 900000), sdd("codex/luna", 1000000), sdd("codex/luna", 1100000)];
+    const estimate = estimatePreRun({ history: [...decompose, ...small, ...others], workflowId: "sdd", stages, maxTotalTokens: 0, price: () => null });
+    expect(estimate.samples).toBe(6);
+    expect(estimate.notes.some((n) => n.startsWith("History of codex/astra only"))).toBe(false);
+    const implement = estimate.stages.find((s) => s.stageId === "implement")!.tokens;
+    expect(implement.low).toBeGreaterThan(200000);
+    // A third run of sdd on the planned model keys it again.
+    const keyed = estimatePreRun({ history: [...decompose, ...small, sdd("codex/astra", 28000), ...others], workflowId: "sdd", stages, maxTotalTokens: 0, price: () => null });
+    expect(keyed.samples).toBe(3);
   });
 
   test("a run in progress shows a re-estimate and a forecast the panel can render", async () => {

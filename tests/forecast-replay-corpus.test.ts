@@ -127,12 +127,19 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     expect(stopped!.forecastUsd!).toBeGreaterThan(stopped!.ceilingUsd!);
   }, 120000);
 
-  test("the rewound forecast is the one the runner recorded: R52 srcwhere's advisory at vlq", () => {
-    // The runner's advisory (cost.forecast_advisory) said $46.80 at 2 of 12. Planned features are
-    // routed with the runner's model routing from the trace; on the default routing every stage ran
-    // on the initiative's model and the replay said $49.99.
+  test("#1767: R52 srcwhere forecasts near its final cost from its first starts, where the runner said $46.80", () => {
+    // The runner's advisory (cost.forecast_advisory) said $46.80 at 2 of 12, and the replay at the
+    // #1784 merge said the same. Planned features then took their stage weights from two one-task
+    // runs and priced four fifths of their tokens at planning rates, and a two-path module like a
+    // six-path one.
     const [replay] = replayInitiativeStarts(join(ROOT, "R52", "srcwhere.sqlite.gz"));
-    expect(replay?.starts.find((b) => b.featureId === "vlq")).toMatchObject({ accepted: 2, forecastUsd: 46.8, replayed: "pass" });
+    const vlq = replay?.starts.find((b) => b.featureId === "vlq");
+    expect(vlq).toMatchObject({ accepted: 2, replayed: "pass" });
+    expect(vlq!.forecastUsd!).toBeLessThan(18.34 * 1.6);
+    expect(vlq!.forecastUsd!).toBeLessThan(vlq!.ceilingUsd!);
+    const ratios = replay!.starts.filter((b) => b.forecastUsd !== null).map((b) => b.forecastUsd! / replay!.finalUsd!);
+    expect(Math.max(...ratios)).toBeLessThan(1.6);
+    expect(replay?.newStartStops).toBe(0);
   }, 120000);
 
   test("the rewind sees only what existed at each start, its history stores included", () => {
