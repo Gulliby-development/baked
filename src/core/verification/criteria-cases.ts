@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { rowDataPaths } from "../workflows/acceptance-rows.js";
 import { isTestCodePath } from "../workflows/quality/duplication.js";
 import type { Spec } from "../workflows/schemas.js";
 import { toolchainCommand } from "../workflows/toolchain.js";
@@ -704,10 +705,7 @@ export function caseCheck(
   task: CaseTask & Pick<Task, "writes">,
   context: CaseContext,
 ): ((root: string) => Promise<string[]>) | undefined {
-  const paths = [
-    ...writtenTestPaths(task),
-    ...(task.rows?.length && task.rowTest ? [task.rowTest.data] : []),
-  ];
+  const paths = [...writtenTestPaths(task), ...rowDataPaths(task)];
   const cases = spec ? criterionCases(spec, task, context) : [];
   if (!paths.length || !cases.length) return undefined;
   return async (root) => {

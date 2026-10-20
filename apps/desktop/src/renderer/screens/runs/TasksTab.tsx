@@ -269,7 +269,11 @@ export function TasksTab({
                   {t.rows?.length ? (
                     <span
                       className="ml-2 text-dim-foreground"
-                      title={`Harness: ${t.rowTest?.harness}; data: ${t.rowTest?.data}`}
+                      title={
+                        t.rowTest?.mode === "inline"
+                          ? `Rows block in ${t.rowTest.test}`
+                          : `Harness: ${t.rowTest?.harness}; data: ${t.rowTest?.data}`
+                      }
                     >
                       host rows: {t.rows.join(", ")}
                     </span>

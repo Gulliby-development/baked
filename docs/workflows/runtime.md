@@ -235,6 +235,26 @@ All three paths must be declared in the task's writes. The test and data must be
 
 Java's input is built from `Map<String, Object>`, `List<Object>`, `Long`, `Double`, `String`, `Boolean` and `null`; its result may use any numeric type, arrays or collections. Java and C# hold the rows as escaped literals in the test (Java has no JSON reader in its standard library, and a .NET test runs from its output directory), and the data file still holds them for review. Two Go harnesses in one package directory would both define `Actual`, so the planner gets one per directory.
 
+**Inline mode.** A brief that names the test files a feature may write leaves no room for the harness, test and data files above, so in bench round 52 no planner selected any of 248 audited rows (#1763). With `"mode": "inline"` the task names only a test file it already writes, new or existing, and no other task writes it:
+
+```json
+{
+  "rows": ["AC-001"],
+  "rowTest": { "mode": "inline", "framework": "pytest", "test": "tests/test_text.py" }
+}
+```
+
+The host appends the rows and their parameterized test to the end of that file, between `BEGIN acceptance rows` and `END acceptance rows` comments, before the agent's attempt; for Go it also puts an import block, with aliased standard-library imports, right after the package clause. The agent defines the harness the block calls in the same file, next to the task's ordinary tests. After the attempt the host puts the block back if an edit dropped or changed it, so the checks always run the audited rows; a corrective task that carries the same rows gets the same block. The blocks use only the language's standard library and its test framework, so no dependency is added: Rust gets its own `AcceptanceJson` value type instead of `serde_json`.
+
+| `framework` | Harness in the test file | Host block | `package` |
+| --- | --- | --- | --- |
+| `bun` | `function acceptanceActual(input)`, which may return a promise | `test.each` over the rows | not used |
+| `pytest` | `def acceptance_actual(input)` in a `test_*.py` or `*_test.py` file | `pytest.mark.parametrize` over the rows | not used |
+| `go` | `func acceptanceActual(input any) (any, error)` in a `_test.go` file, one per package directory | a `TestAcceptanceRows<File>` with one subtest per row | the Go package name |
+| `junit` | `static Object acceptanceActual(Object input)` in the `*Test.java` class named after the file | a second class `<Class>AcceptanceRowsTest` with one `DynamicTest` per row | the Java package of the file's directory |
+| `rust` | `fn acceptance_actual(input: &AcceptanceJson) -> AcceptanceJson` in `tests/<name>.rs` | `AcceptanceJson` (with the `AcceptanceJsonRead` accessors and `From` for numbers, strings, booleans, `Vec` and `Option`) and one `#[test]` over the rows | not used |
+| `xunit` | a static `object? AcceptanceActual(JsonNode? input)` in the class named after the `.cs` file | a second class `<Class>AcceptanceRows` with an xUnit `[Theory]` per row, naming the harness by its full name | the C# namespace of the file's class |
+
 Selected automated criteria must have complete `Input | Expected` tables. A third column headed Scenario, Case, Name, Description or Label names each case; the host keeps it as the row's `label` and does not compare it, and an audit entry may quote the row with or without it. Each Input and Expected cell must contain a JSON literal, optionally enclosed in backticks. Objects, arrays, strings, booleans and null remain typed data. Unsafe numeric magnitudes, non-finite numbers, expressions, other columns and pipe characters inside cells are unsupported. Keep those cases, property tests, stateful flows, process tests and file tests in ordinary agent-written tests. With the setting on, the spec author gets the same table rules as `extra.acceptanceRows`, so pure call-and-compare criteria are written in this shape (several arguments go in one JSON array or object) rather than as call expressions or command lines, which no host-written test can read (bench round 50: 0 rows in four runs, #1660).
 
 Enabling this setting also enables the derivation audit during analyze. Each selected row must have its own matching audit entry; a criterion-level entry cannot stand for several rows. Mismatches go through the existing spec revision process. After a successful analysis, the host stores a versioned `rows.json` artifact with spec, graph and analysis hashes, the original row text, criterion IDs and stable row IDs such as `AC-001:1`. The terminal and desktop Tasks views display its row data, and the Usage section of `baked workflow report` says how many rows the host wrote and how many tokens the harness tasks' attempts used, or that no criterion had a host-readable table. The artifact is also available through `baked workflow artifacts` and the existing API artifact endpoints. Task definitions expose `rows` and `rowTest` in `tasks.json`.

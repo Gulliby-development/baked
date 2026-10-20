@@ -26,6 +26,8 @@ import { DEPENDENCY_MANIFESTS, manifestDependencies } from "../src/core/workflow
 import { detectMutationTool, MUTATION_TOOLS } from "../src/core/workflows/quality/mutation-tools.js";
 import { PROPERTY_LIBRARIES, propertyTestKind } from "../src/core/workflows/quality/properties.js";
 import { checkBuiltinRules } from "../src/core/workflows/quality/rules.js";
+import { INLINE_HARNESS, inlineRowFile } from "../src/core/workflows/acceptance-rows-inline.js";
+import { TaskSchema } from "../src/core/workflows/schemas.js";
 
 // Language parity (#1717): every language-bound record has a row for every supported language,
 // and every row is exercised by the language's fixture project in `tests/fixtures/languages/`.
@@ -173,3 +175,17 @@ for (const language of SUPPORTED_LANGUAGES)
         for (const output of never) expect(actual).not.toContain(output);
       });
   });
+
+// #1763: every acceptance-rows framework has both modes, and the inline block needs no file or
+// dependency the brief may forbid: only the language's standard library and its test framework.
+describe("acceptance rows: every framework has the file and the inline mode (#1763)", () => {
+  const frameworks = TaskSchema.shape.rowTest.unwrap().options[0].shape.framework.options;
+  test.each(frameworks.map((framework) => [framework]))("%s", (framework) => {
+    expect(INLINE_HARNESS[framework]).toBeTruthy();
+    const pkg = framework === "go" ? "calc" : framework === "junit" ? "com.ex.calc" : "Calc.Tests";
+    const test = { bun: "tests/a.test.ts", pytest: "tests/test_a.py", go: "calc/a_test.go", junit: "src/test/java/com/ex/calc/ATest.java", rust: "tests/a.rs", xunit: "Calc.Tests/ATest.cs" }[framework];
+    const file = inlineRowFile({ mode: "inline", framework, test, package: pkg }, [{ id: "AC-001:1", criterionId: "AC-001", input: 1, expected: 2, source: "1 | 2" }]);
+    expect(file.tail).toContain(INLINE_HARNESS[framework]);
+    expect(file.tail).not.toMatch(/serde_json|import junit|org\.json|Newtonsoft/);
+  });
+});

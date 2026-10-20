@@ -9,7 +9,7 @@ import {
   missingCases,
   type SpecText,
 } from "../verification/criteria-cases.js";
-import { literalRows } from "./acceptance-rows.js";
+import { hostRowPaths, literalRows } from "./acceptance-rows.js";
 import { MAX_EXTENDED_MS } from "./budget.js";
 import { DEFAULT_STAGE_RANGES, historyStorePaths, rangeOf, type TokenRange } from "./estimate.js";
 import { type HostEdit, plannerGraph, recordGraphEdits } from "./host-edits.js";
@@ -150,7 +150,7 @@ function pricedCaseCount(
 /** The files an agent writes for the task: none when the host writes them (#1460). */
 function written(task: SizingTask): Written[] {
   if (hostWritten(task)) return [];
-  const generated = task.rows?.length && task.rowTest ? [task.rowTest.test, task.rowTest.data] : [];
+  const generated = hostRowPaths(task);
   return task.writes.flatMap((w) =>
     w.action === "delete" || generated.includes(w.path) ? [] : [{ path: w.path, action: w.action }],
   );
