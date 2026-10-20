@@ -60,7 +60,7 @@ export function sweepProblem(body: string, closed: ClosedIssue[]): string | null
   return null;
 }
 
-async function fetchIssue(repository: string, number: number, token: string): Promise<ClosedIssue | null> {
+export async function fetchIssue(repository: string, number: number, token: string): Promise<ClosedIssue | null> {
   const response = await fetch(`https://api.github.com/repos/${repository}/issues/${number}`, {
     headers: {
       Accept: "application/vnd.github+json",

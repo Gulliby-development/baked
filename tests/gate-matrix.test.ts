@@ -841,6 +841,24 @@ for (const stack of STACKS) {
       expect(planScopeAdvice(policy, graph).join(" ")).toContain("10 tasks exceed 8");
     });
 
+    cell(stack, "sizing-slices-count-once (#1711)", () => {
+      // R51: a test file cut into slices over several planning passes counts as one planned task.
+      const tasks = Array.from({ length: 12 }, (_, i) => ({
+        id: `T${String(i + 1).padStart(3, "0")}`, title: "Test slice", description: "Write cases",
+        requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer",
+        writes: [{ path: i < 7 ? `src/m${i}.txt` : fixture.property.path, action: i <= 7 ? "create" as const : "modify" as const }],
+        readHints: [], checkIds: [], origin: "planned" as const, findingIds: [], rationale: "Required behavior",
+        ...(i >= 7 ? { sizingSlice: { taskId: "T008", index: i - 7, count: 5, share: 0.2 } } : {}),
+      }));
+      const graph: TaskGraph = { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks };
+      const policy = {
+        ...defaultWorkflowPolicy,
+        autoApproval: { renewal: false, limits: { maxTasks: 8, maxFiles: 20, allowedPaths: ["**"], allowDelete: false, allowNewDependencies: false, maxTotalTokens: defaultWorkflowPolicy.maxTotalTokens } },
+      };
+      expect(planScopeAdvice(policy, graph)).toEqual([]);
+      expect(evaluateAutoApproval(policy, {} as Parameters<typeof evaluateAutoApproval>[1], fixtureSpec, graph, [], []).approval?.mode).toBe("limits");
+    });
+
     cell(stack, "sequential-test-slices-written-tests", () => {
       const path = fixture.property.path;
       const root = project({ ...fixture.files, [path]: fixture.property.seeded });
