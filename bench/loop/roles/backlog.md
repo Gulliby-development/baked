@@ -27,6 +27,10 @@ You turn the round's findings and scout ideas into GitHub issues on the BAKED pr
 - Treat open issues labelled `smoke` (filed by the cloud smoke runs) like this round's findings: dedupe against them and rank them for the fix set.
 - A finding's point fix and broader option may be one issue (when the broad option is the fix) or two linked issues (Bug + Feature).
 
+## Adversarial sweep review
+
+Once per round, before choosing the fix set, run `bun run review:adversarial --since <start of the previous round> --post` in `paths.dev` (#1722). It reviews every open or merged pull request that closed a Bug issue since then, once per head commit, with the Claude Code or Codex CLI of the other model family than the fixer's, and posts the result as an advisory comment on the pull request. Treat a missed place it names like a finding: confirm it on current `main` with the [file-issue skill](../../../.agents/skills/file-issue/SKILL.md), then comment on the fix's issue or file a new Bug with the marker `<!-- bench-loop: RNN/adversarial-<pr> -->`. List each reviewed pull request and what came of its findings in `backlog.md`. A review that fails (CLI not logged in, limit reached) is noted there and does not stop the round.
+
 ## Choosing the fix set
 
 Pick up to `maxFixIssuesPerRound` (6) issues, in this order:
@@ -35,6 +39,8 @@ Pick up to `maxFixIssuesPerRound` (6) issues, in this order:
 3. P1 issues seen in 2 or more apps.
 4. At least `minBroadFeaturesPerRound` (1) broad feature, the one with the largest expected effect. `idea`-labelled large ideas (scout ideas included) compete here: rank them with the same rules as other issues (expected effect on the main metrics, evidence in this round's findings, size). The top one goes into the fix set when there is room, as the round's broad feature. The loop triages ideas; the owner is not asked to pick.
 5. Other P1, then P2 quick wins.
+
+Hot modules ([`.github/hot-modules.json`](../../../.github/hot-modules.json), [error budget](../../../docs/bench-loop.md#hot-modules)): take at most one behavior change per hot module into the fix set; others on the same module wait for the next round. When this round had two or more stops caused by last round's fixes, the fix set takes only reverts and regression fixes in those modules, and `backlog.md` says so.
 
 Skip issues labelled `needs-gulliby` or `deferred`, issues another thread or person is working on (assigned, linked open PR, "In progress" on the board), and and issues that only the owner can decide. `idea` items are not skipped: ranked ideas that do not fit this round stay `idea` on the board, listed in `backlog.md` with their rank.
 

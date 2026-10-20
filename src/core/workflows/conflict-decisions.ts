@@ -12,6 +12,11 @@ export interface ConflictDecision {
   /** Findings the answer decides: their repros no longer gate the task. */
   findingIds: string[];
   answer: string;
+  /**
+   * The criteria the conflict contested (#1709): a person's answer overrules their rows for the
+   * task, so the case walk no longer demands the literals the answer replaced.
+   */
+  criterionIds?: string[];
 }
 
 /** Records the answer as a decision of the run. */
@@ -46,6 +51,13 @@ export function conflictDecisions(store: WorkflowStore, runId: string): Conflict
                 taskId: body.taskId,
                 findingIds: body.findingIds.filter((id): id is string => typeof id === "string"),
                 answer: body.answer,
+                ...(Array.isArray(body.criterionIds)
+                  ? {
+                      criterionIds: body.criterionIds.filter(
+                        (id): id is string => typeof id === "string",
+                      ),
+                    }
+                  : {}),
               },
             ]
           : [];

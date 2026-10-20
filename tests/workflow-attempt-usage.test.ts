@@ -114,6 +114,23 @@ describe("attempt usage of a failing native attempt", () => {
     ]);
   });
 
+  test("each model call's timing is kept with the usage for trace replay (#1715)", async () => {
+    scriptModel([
+      step(1000, 100, { name: "unknown_tool", input: {} }),
+      () => {
+        throw new Error("provider unavailable");
+      },
+    ]);
+    const { executor, request, usageRecord } = await nativeAttempt();
+    await expect(executor.execute(request)).rejects.toThrow("provider unavailable");
+    const calls = (usageRecord() as { calls?: { provider: string; stage?: string; firstByteMs: number | null }[] }).calls;
+    // The answered call has its first response; the failed one has none.
+    expect(calls?.map((c) => [c.provider, c.stage, c.firstByteMs === null])).toEqual([
+      ["mock-provider", "research", false],
+      ["mock-provider", "research", true],
+    ]);
+  });
+
   test("a budget refusal between steps keeps the spend of the steps that ran", async () => {
     // The first step fits; after it the cap (the 40,000 left of 50,000) is still above two such
     // steps, but the run limit refuses the next one once another attempt takes 25,000 more.
