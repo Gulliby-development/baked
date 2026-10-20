@@ -176,7 +176,13 @@ import {
   policyDecisions,
   withoutApprovalRemarks,
 } from "./auto-approval.js";
-import { budgetUsage, grownCostCap, raiseToStartEstimate, reserveTokens } from "./budget.js";
+import {
+  adoptStoredLimits,
+  budgetUsage,
+  grownCostCap,
+  raiseToStartEstimate,
+  reserveTokens,
+} from "./budget.js";
 import {
   type CandidateResult,
   type CandidateSelection,
@@ -5152,6 +5158,8 @@ ${note}`;
     policy: RunPolicy,
     report: SizingReport,
   ): void {
+    // The drive's copy misses what the executor grew since: writing it back undid that (#1704).
+    adoptStoredLimits(this.store, runId, policy);
     const tokens = report.budgetAfter > policy.maxTotalTokens;
     const time = report.activeTime.after > policy.maxActiveMs;
     if (!tokens && !time) return;
