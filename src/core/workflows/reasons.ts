@@ -26,6 +26,8 @@ const REASONS: Record<string, string> = {
   storage_failure: "workflow storage failed",
   invalid_output: "a model returned output that failed validation",
   host_state: "the host's own state was stale or incomplete (not a model's output)",
+  host_error:
+    "BAKED failed internally; this is not a model problem: resume once, and if it stops the same way, export the run and report it",
   interrupted_effect: "an interrupted command needs recovery",
   dependency_failed: "a dependency did not complete",
   replay_diverged:

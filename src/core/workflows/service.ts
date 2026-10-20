@@ -70,6 +70,7 @@ import {
   forkStagePosition,
   forkStages,
 } from "./fork-stage.js";
+import { isStoreError, recordHostError } from "./host-error.js";
 import { InitiativeStore } from "./initiatives/store.js";
 import {
   commandProcessMayRun,
@@ -642,16 +643,21 @@ export class NativeWorkflowService implements WorkflowService {
             });
           } catch (error) {
             const reason =
-              error instanceof WorkflowFault && error.code === "INPUT_CHANGED"
-                ? "input_changed"
-                : "host_state";
+              error instanceof WorkflowFault
+                ? error.code === "INPUT_CHANGED"
+                  ? "input_changed"
+                  : "host_state"
+                : isStoreError(error)
+                  ? "storage_failure"
+                  : "host_error";
             this.store.transition(runId, "blocked", reason);
-            this.store.artifact(
+            const diagnostic = this.store.artifact(
               runId,
               "diagnostic",
               `errors/${newId()}.txt`,
               error instanceof Error ? error.message : String(error),
             );
+            if (reason === "host_error") recordHostError(this.store, runId, diagnostic.id, error);
             return false;
           }
           return true;

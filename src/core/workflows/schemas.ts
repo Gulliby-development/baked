@@ -843,6 +843,7 @@ export const ReasonCode = z.enum([
   "storage_failure",
   "invalid_output",
   "host_state",
+  "host_error",
   "interrupted_effect",
   "dependency_failed",
   "replay_diverged",
