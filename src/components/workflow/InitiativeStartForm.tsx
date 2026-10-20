@@ -21,6 +21,7 @@ const FIELDS = [
   "forecast",
   "features",
   "path",
+  "contracts",
   "start",
 ] as const;
 type FieldId = (typeof FIELDS)[number];
@@ -63,6 +64,7 @@ export function InitiativeStartForm({
   const [forecastStop, setForecastStop] = useState(false);
   const [keepFeatures, setKeepFeatures] = useState(false);
   const [splitPath, setSplitPath] = useState(false);
+  const [lightContracts, setLightContracts] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const modelMissing = !model || model === "none";
@@ -96,6 +98,7 @@ export function InitiativeStartForm({
       ...(forecastStop ? { forecastStop: true } : {}),
       ...(keepFeatures ? { keepFeatures: true } : {}),
       ...(splitPath ? { splitCriticalPath: true } : {}),
+      ...(lightContracts ? { lightContracts: true } : {}),
     };
   };
   const submit = async (): Promise<void> => {
@@ -159,12 +162,19 @@ export function InitiativeStartForm({
     )
       setSplitPath((v) => !v);
     else if (
+      focus === "contracts" &&
+      (evt.name === "left" || evt.name === "right" || evt.name === "space") &&
+      handled()
+    )
+      setLightContracts((v) => !v);
+    else if (
       evt.name === "return" &&
       (focus === "workflow" ||
         focus === "tiered" ||
         focus === "forecast" ||
         focus === "features" ||
-        focus === "path") &&
+        focus === "path" ||
+        focus === "contracts") &&
       handled()
     )
       move(1);
@@ -286,6 +296,19 @@ export function InitiativeStartForm({
               splitPath
                 ? "‹ split ›  a feature that dominates the critical path is split to run in parallel"
                 : "‹ as split ›  the decomposer's chain of features is kept"
+            }
+            keyHint="←/→"
+          />
+        </FocusTarget>
+        <FocusTarget active={focus === "contracts"}>
+          <Field
+            label="Contracts"
+            labelWidth={10}
+            focused={focus === "contracts"}
+            value={
+              lightContracts
+                ? "‹ light ›  a small feature others depend on runs quick with a host-made contract"
+                : "‹ full ›  a feature others depend on writes a full spec"
             }
             keyHint="←/→"
           />

@@ -408,6 +408,8 @@ export interface StartFields {
   keepFeatures?: boolean;
   /** Ask the decomposer to split a feature that dominates the critical path. */
   splitCriticalPath?: boolean;
+  /** Let a small feature others depend on run the light workflow with a host-made contract. */
+  lightContracts?: boolean;
 }
 
 /** The body of `POST /v1/initiatives` for the form, or the first reason it cannot be sent. */
@@ -445,6 +447,7 @@ export function startBody(
   if (fields.forecastStop) body.forecastStop = true;
   if (fields.keepFeatures) body.keepFeatures = true;
   if (fields.splitCriticalPath) body.splitCriticalPath = true;
+  if (fields.lightContracts) body.lightContracts = true;
   return { ok: true, body };
 }
 

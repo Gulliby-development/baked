@@ -90,10 +90,18 @@ export const HOST_SPEC_OUTCOME = "The request is done as stated.";
  * The specification of a definition without a spec stage. Quick fix, Spike and Review only have
  * no specification, but the plan validation, the reviewers and acceptance work on requirement and
  * criterion IDs. The host states the request as the single requirement: automated when a required
- * command gate can check it, otherwise manual, so a person confirms it.
+ * command gate can check it, otherwise manual, so a person confirms it. An initiative feature's
+ * `contract` (what its dependents rely on) is stated in scope and in the requirement, so the
+ * review checks it and a dependent that pins this spec reads it (#1664).
  */
-export function hostSpec(featureId: string, prompt: string, automated: boolean): Spec {
+export function hostSpec(
+  featureId: string,
+  prompt: string,
+  automated: boolean,
+  contract?: string,
+): Spec {
   const text = prompt.trim().slice(0, 4000);
+  const promised = contract?.trim() ? `Contract for dependent features: ${contract.trim()}` : null;
   const title = text.split("\n")[0]?.slice(0, 120) || featureId;
   return {
     schemaVersion: 1,
@@ -102,14 +110,14 @@ export function hostSpec(featureId: string, prompt: string, automated: boolean):
     title,
     problem: text,
     outcome: HOST_SPEC_OUTCOME,
-    inScope: [text],
+    inScope: promised ? [text, promised] : [text],
     outOfScope: [],
     assumptions: ["The request is the whole specification; this definition has no spec stage."],
     openQuestions: [],
     requirements: [
       {
         id: "FR-001",
-        text,
+        text: promised ? `${text}\n\n${promised}` : text,
         priority: "must",
         verification: automated ? "automated" : "manual",
         sourceRefs: [],

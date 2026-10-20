@@ -1,14 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { importEcc } from "../agents/profiles/importers/ecc.js";
-import { WORKING_SET_ARTIFACT } from "../projects/working-set.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { importSpecKit } from "../specs/importers/spec-kit.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
-import { frozenInstructions } from "./context.js";
+import { adoptCurrentInstructions, frozenInstructions } from "./context.js";
 import { fileHash } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
-import { PROJECT_MEMORY_ARTIFACT } from "./project-memory.js";
 import { redactSecrets } from "./redaction.js";
 import {
   type ArtifactService,
@@ -51,29 +49,7 @@ export class WorkflowArtifacts implements ArtifactService {
     // A definition revision replaces the definition and gate files itself (definitionCandidate).
     const replaced =
       request.definition !== undefined ? /\/(?:\.baked|baked)\/(workflows|gates)\//i : null;
-    for (const [path, hash] of Object.entries(state.frozenFiles)) {
-      const normal = path.replaceAll("\\", "/");
-      if (/\/(?:\.baked|baked)\/(skills|agents|workflows|gates)\//i.test(normal)) {
-        if (fileHash(path) !== hash && !replaced?.test(normal))
-          throw new WorkflowFault(
-            "INPUT_CHANGED",
-            "A frozen skill, gate or definition changed; revise the definition with candidate --workflow, or start a run with the revised profile",
-          );
-        instructions.files[path] = hash;
-      }
-    }
-    state.instructionText = instructions.text;
-    state.frozenFiles = instructions.files;
-    state.frozenInputEffectCount = store.effects(runId).length;
-    // The working set and project memory stay the ones the run captured at creation.
-    state.manifest.instructionHashes = [
-      ...instructions.hashes,
-      ...state.manifest.instructionHashes.filter(
-        (h) => h.source === WORKING_SET_ARTIFACT || h.source === PROJECT_MEMORY_ARTIFACT,
-      ),
-    ];
-    state.manifest.constitutionHash =
-      instructions.files[join(store.workspace, "baked/constitution.md")] ?? null;
+    adoptCurrentInstructions(state, store, runId, instructions, replaced);
     for (const path of Object.keys(state.published)) {
       const current = fileHash(workspacePath(runRoot(store.workspace, state), path));
       if (current === null) delete state.published[path];

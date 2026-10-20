@@ -131,6 +131,7 @@ import {
   rowPlanProblems,
   rowsArtifact,
   rowsAsDataOn,
+  SPEC_ROWS_NOTE,
 } from "./acceptance-rows.js";
 import {
   affectedTestCheck,
@@ -1191,6 +1192,7 @@ export class WorkflowScheduler {
                     {
                       featureId: run.feature_id,
                       workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
+                      ...(rowsAsDataOn(policy) ? { acceptanceRows: { note: SPEC_ROWS_NOTE } } : {}),
                     },
                     signal,
                     undefined,
@@ -3115,9 +3117,7 @@ export class WorkflowScheduler {
     const usage = attempt
       ? this.store.latestArtifact(runId, `attempts/${attempt.id}/usage.json`)
       : undefined;
-    return usage
-      ? (JSON.parse(this.store.readArtifact(runId, usage.id)) as AttemptUsageRecord)
-      : undefined;
+    return usage ? this.store.readArtifactJson<AttemptUsageRecord>(runId, usage) : undefined;
   }
   /**
    * Why a task that ended without a complete implementation gets one more attempt in a fresh
@@ -10857,7 +10857,7 @@ ${note}`;
         evidenceId,
         claim: `Property test missing for ${c.id}: the criterion holds over ${c.domain} inputs, and no test file of its tasks has a property-based test`,
         impact: "Example tests miss edge inputs of the domain the criterion covers.",
-        suggestedFix: `${c.note ? `Remove the fallback: ${c.note}. ` : ""}Add a property-based test for ${c.id}${file ? ` in ${file}` : ""} with the property library the project has (fast-check, Hypothesis, proptest, jqwik, rapid, FsCheck), or without one a generator with a fixed seed in the project's test framework, that generates inputs over the whole ${c.domain} domain and asserts the criterion, or a loop over every value of a bounded domain of at least 100 values. Do not add a dependency for it.`,
+        suggestedFix: `${c.note ? `Remove the fallback: ${c.note}. ` : ""}Add a property-based test for ${c.id}${file ? ` in ${file}` : ""} with the property library the project has (fast-check, Hypothesis, proptest, jqwik, Kotest property, rapid, FsCheck, CsCheck), or without one a generator with a fixed seed in the project's test framework, that generates inputs over the whole ${c.domain} domain and asserts the criterion, or a loop over every value of a bounded domain of at least 100 values. Do not add a dependency for it.`,
       });
       return {
         ...finding,

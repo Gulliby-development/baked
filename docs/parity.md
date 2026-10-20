@@ -197,6 +197,7 @@ bun test tests/feature-parity.test.ts
 | Estimate a split: a difficulty level and a token range from run history | `/workflow` | `baked workflow initiative estimate` | `/v1/initiatives/:id/estimate` | `project/initiatives` |
 | Independent features run side by side in worktrees | `/workflow` | `baked workflow initiative drive`, `baked workflow initiative show` | `/v1/initiatives/:id` | `project/initiatives` |
 | Review long dependency chains and merge small siblings by their dependents | `/workflow` | `baked workflow initiative start`, `baked workflow initiative show` | `/v1/initiatives`, `/v1/initiatives/:id` | `project/initiatives` |
+| Small features that others depend on run the light workflow with a host-made contract | `/workflow` | `baked workflow initiative start` | `/v1/initiatives` | `project/initiatives` |
 | A shared dollar cap with priced low reserves and central remaining-stage forecasts using shared history | `/workflow` | `baked workflow initiative start`, `baked workflow initiative extend`, `baked workflow initiative show` | `/v1/initiatives`, `/v1/initiatives/:id`, `/v1/initiatives/:id/extend` | `project/initiatives` |
 
 ### Projects and setup

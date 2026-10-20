@@ -59,13 +59,28 @@ export function featureWorkflow(
 export function featureWorkflowChoices(
   workspace: string,
   policy: RunPolicy,
-  options: { tiered: boolean },
+  options: { tiered: boolean; lightContracts?: boolean },
 ): FeatureWorkflow[] {
   return listDefinitions(workspace, policy)
     .filter((d) => !d.problems.length && d.writes)
     .filter((d) => !options.tiered || d.schemaVersion === 1 || tieredPreset(d))
-    .map((d) => featureWorkflow(workspace, policy, d.id))
+    .map((d) =>
+      withLightContract(featureWorkflow(workspace, policy, d.id), options.lightContracts === true),
+    )
     .filter((w): w is FeatureWorkflow => w !== null);
+}
+
+/**
+ * The light workflow counted as one that provides a contract when the initiative lets it (#1664):
+ * its run records a host-made spec that states the feature's contract, and dependents pin that.
+ */
+export function withLightContract(
+  workflow: FeatureWorkflow | null,
+  lightContracts: boolean,
+): FeatureWorkflow | null {
+  return workflow && lightContracts && workflow.id === LIGHT_LEAF_WORKFLOW && !workflow.contract
+    ? { ...workflow, contract: true }
+    : workflow;
 }
 
 const tieredPreset = (d: { id: string; source: "builtin" | "project"; schemaVersion: 1 | 2 }) =>
@@ -173,13 +188,17 @@ export function lightenSmallLeaves(
   plan: InitiativePlan,
   choices: readonly FeatureWorkflow[],
   keep: ReadonlySet<string> = new Set(),
+  /** Also move small features that others depend on (`lightContracts`, #1664). */
+  options: { withDependents?: boolean } = {},
 ): {
   plan: InitiativePlan;
   lightened: { featureId: string; from: string; to: string }[];
   /** Leaves the rule fits that keep their workflow because the light one cannot run here. */
   unavailable: string[];
 } {
-  const light = choices.find((c) => c.id === LIGHT_LEAF_WORKFLOW && !c.contract);
+  const light = choices.find(
+    (c) => c.id === LIGHT_LEAF_WORKFLOW && (options.withDependents || !c.contract),
+  );
   const lightened: { featureId: string; from: string; to: string }[] = [];
   const unavailable: string[] = [];
   const features = plan.features.map((feature) => {
@@ -195,7 +214,8 @@ export function lightenSmallLeaves(
       keep.has(feature.id) ||
       !from ||
       !small ||
-      hasDependents(plan, feature) ||
+      from === LIGHT_LEAF_WORKFLOW ||
+      (!options.withDependents && hasDependents(plan, feature)) ||
       !choices.find((c) => c.id === from)?.contract
     )
       return feature;

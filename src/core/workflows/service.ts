@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import type { AppConfig } from "../../types/index.js";
 import { SharedRootContext } from "../context/shared-root.js";
 import { ROUTING_ARTIFACT, type RoutingRecord, RoutingRecordSchema } from "../llm/model-routing.js";
@@ -48,7 +48,14 @@ import {
 } from "./check-preflight.js";
 import { answerInvalidatesAnalysis, clarificationResumeIndex } from "./clarification.js";
 import { CONFLICT_DECISION_PREFIX, recordConflictDecision } from "./conflict-decisions.js";
-import { assertFrozenInputs } from "./context.js";
+import {
+  adoptCurrentInstructions,
+  assertFrozenInputs,
+  changedFrozenInputs,
+  FROZEN_DEFINITION_PATH,
+  frozenInputAdvice,
+  frozenInstructions,
+} from "./context.js";
 import { refreshCriticOutcomes } from "./critic-outcomes.js";
 import { decideDelivery, isDeliveryRequest } from "./delivery.js";
 import {
@@ -187,6 +194,13 @@ function rerouteBody(runId: string, command: CommandIdentity, request: RerouteRe
 const INVALID_OUTPUT_NOTE =
   "The previous attempt of this stage was rejected as invalid output with the diagnostic below. Correct what it names in this attempt.";
 
+/** A file a person changed outside the run; `frozen` marks an instruction or configuration file the run froze. */
+export interface OutsideChange {
+  path: string;
+  before: string | null;
+  after: string | null;
+  frozen?: true;
+}
 export class NativeWorkflowService implements WorkflowService {
   readonly store: WorkflowStore;
   readonly leases: WorkspaceLeases;
@@ -289,6 +303,7 @@ export class NativeWorkflowService implements WorkflowService {
             request.featureId,
             request.prompt,
             policy.checks.some((c) => c.required),
+            request.contract,
           )
         : null;
     const spec =
@@ -438,6 +453,9 @@ export class NativeWorkflowService implements WorkflowService {
         project?.id ?? null,
       );
       this.store.artifact(id, "routing", ROUTING_ARTIFACT, canonical(routing));
+      // A light feature run that others depend on records its host-made spec as their contract.
+      if (spec && request.contract !== undefined)
+        this.store.artifact(id, "spec", "spec.json", canonical(spec));
       if (smoke?.length)
         this.store.artifact(
           id,
@@ -1250,19 +1268,37 @@ export class NativeWorkflowService implements WorkflowService {
    * The source files that differ from what the run expects and that none of the run's own
    * journaled edits explain: a person's changes in the run's workspace.
    */
-  async outsideChanges(
-    runId: string,
-  ): Promise<{ path: string; before: string | null; after: string | null }[]> {
+  async outsideChanges(runId: string): Promise<OutsideChange[]> {
     const state = this.store.state(runId);
     const expected = state.expectedFiles;
-    if (!expected) return [];
-    const policy = PolicySchema.parse(JSON.parse(this.store.run(runId).policy_json));
-    const files = await sourceManifest(runRoot(this.workspace, state), generatedPaths(policy));
-    return [...new Set([...Object.keys(files), ...Object.keys(expected)])]
-      .filter((path) => files[path] !== expected[path])
-      .filter((path) => runWrittenHash(this.store, runId, path) !== (files[path] ?? null))
-      .sort()
-      .map((path) => ({ path, before: expected[path] ?? null, after: files[path] ?? null }));
+    const changes: OutsideChange[] = [];
+    if (expected) {
+      const policy = PolicySchema.parse(JSON.parse(this.store.run(runId).policy_json));
+      const files = await sourceManifest(runRoot(this.workspace, state), generatedPaths(policy));
+      changes.push(
+        ...[...new Set([...Object.keys(files), ...Object.keys(expected)])]
+          .filter((path) => files[path] !== expected[path])
+          .filter((path) => runWrittenHash(this.store, runId, path) !== (files[path] ?? null))
+          .sort()
+          .map((path) => ({ path, before: expected[path] ?? null, after: files[path] ?? null })),
+      );
+    }
+    // A changed instruction or configuration file the run froze is accepted too (#1654), named
+    // relative to the workspace when it lies there.
+    for (const path of changedFrozenInputs(state, this.store, runId)) {
+      if (FROZEN_DEFINITION_PATH.test(path.replaceAll("\\", "/"))) continue;
+      const shown = relative(this.workspace, path);
+      const name =
+        shown && !shown.startsWith("..") && !isAbsolute(shown) ? shown.replaceAll("\\", "/") : path;
+      if (changes.some((change) => change.path === name)) continue;
+      changes.push({
+        path: name,
+        before: state.frozenFiles[path] ?? null,
+        after: fileHash(path),
+        frozen: true,
+      });
+    }
+    return changes;
   }
   /**
    * Keeps a person's changes to the run's workspace as the run's baseline (#971, rotaplan
@@ -1270,31 +1306,55 @@ export class NativeWorkflowService implements WorkflowService {
    * change with no way back). The accepted paths with their hashes are an operator record; the
    * run's own edits stay journaled, so `workflow undo` still restores what the run wrote.
    */
-  private acceptOutsideChanges(
-    runId: string,
-    changes: { path: string; before: string | null; after: string | null }[],
-  ): void {
+  private acceptOutsideChanges(runId: string, outside: OutsideChange[]): void {
+    const changes = outside.filter((change) => !change.frozen);
     const state = this.store.state(runId);
-    if (!changes.length || !state.expectedFiles)
+    const frozen = this.acceptFrozenChanges(runId, state);
+    if (!frozen.length && (!changes.length || !state.expectedFiles))
       throw new WorkflowFault(
         "STALE_DECISION",
         `The workspace has no outside changes to accept. --accept-workspace only accepts file changes; it cannot expand the approved task scope. Revise the run (\`baked workflow revise ${runId}\`) or replan the initiative feature (\`baked workflow initiative replan ID --feature F\`) to change its plan or boundary.`,
       );
-    const expected = { ...state.expectedFiles };
-    for (const change of changes) {
-      if ((expected[change.path] ?? null) !== change.before)
-        throw new WorkflowFault("STALE_DECISION", `${change.path} changed again; check it again`);
-      if (change.after === null) delete expected[change.path];
-      else expected[change.path] = change.after;
+    if (changes.length && state.expectedFiles) {
+      const expected = { ...state.expectedFiles };
+      for (const change of changes) {
+        if ((expected[change.path] ?? null) !== change.before)
+          throw new WorkflowFault("STALE_DECISION", `${change.path} changed again; check it again`);
+        if (change.after === null) delete expected[change.path];
+        else expected[change.path] = change.after;
+      }
+      state.expectedFiles = expected;
     }
     this.store.artifact(
       runId,
       "recovery",
       `operator/accepted-workspace-${newId()}.json`,
-      canonical({ acceptedBy: "operator", changes }),
+      canonical({ acceptedBy: "operator", changes, ...(frozen.length ? { frozen } : {}) }),
     );
-    state.expectedFiles = expected;
     this.store.saveState(runId, state);
+  }
+  /**
+   * A person's edit to an instruction or configuration file the run froze is kept the same way
+   * (#1654): the run adopts the current files, as a revision does, instead of blocking on the
+   * changed input again. A frozen skill, agent, workflow or gate file still needs a definition
+   * revision.
+   */
+  private acceptFrozenChanges(runId: string, state: RuntimeState) {
+    const changed = changedFrozenInputs(state, this.store, runId);
+    if (!changed.length) return [];
+    const definition = changed.find((path) =>
+      FROZEN_DEFINITION_PATH.test(path.replaceAll("\\", "/")),
+    );
+    if (definition)
+      throw new WorkflowFault("INPUT_CHANGED", frozenInputAdvice(runId, definition), {
+        path: definition,
+      });
+    return adoptCurrentInstructions(
+      state,
+      this.store,
+      runId,
+      frozenInstructions(this.store.workspace, this.config.instructionFiles),
+    );
   }
   /**
    * Resuming a run that blocked on invalid output repeats the stage that produced it. The agent

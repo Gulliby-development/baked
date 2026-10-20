@@ -241,6 +241,8 @@ export interface StartInitiativeBody {
   keepFeatures?: boolean;
   /** Ask the decomposer to split a feature that dominates the critical path. */
   splitCriticalPath?: boolean;
+  /** Let a small feature others depend on run the light workflow with a host-made contract. */
+  lightContracts?: boolean;
 }
 
 /** One new feature of a split (`POST /v1/initiatives/:id/split`). */

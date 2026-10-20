@@ -35,7 +35,13 @@ export interface Task {
   checkIds: string[];
   origin: string;
   rows?: string[];
-  rowTest?: { framework: "bun" | "pytest"; harness: string; test: string; data: string };
+  rowTest?: {
+    framework: "bun" | "pytest" | "go" | "junit" | "rust" | "xunit";
+    package?: string;
+    harness: string;
+    test: string;
+    data: string;
+  };
 }
 /** Whether the host writes the task's files with no agent (`hostWritten` in task-graph.ts). */
 export const hostWritten = (task: Pick<Task, "writes">): boolean =>

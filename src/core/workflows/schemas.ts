@@ -133,7 +133,13 @@ export const TaskSchema = z
     rows: z.array(CriterionId).min(1).max(200).optional(),
     rowTest: z
       .object({
-        framework: z.enum(["bun", "pytest"]),
+        framework: z.enum(["bun", "pytest", "go", "junit", "rust", "xunit"]),
+        /** The Go package, Java package or C# namespace of the harness and the host's test. */
+        package: z
+          .string()
+          .max(200)
+          .regex(/^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/)
+          .optional(),
         harness: RelativePath,
         test: RelativePath,
         data: RelativePath,
@@ -527,6 +533,12 @@ export const PolicySchema = z
      * (initiatives/critical-path.ts, #1522). Absent means `off`, so stored policies keep their hash.
      */
     criticalPath: z.enum(["off", "split"]).optional(),
+    /**
+     * `on` lets a small initiative feature that other features depend on run the light workflow:
+     * its host-made spec states the feature's contract and is recorded as the run's spec.json, so
+     * dependents pin it (#1664). Absent means `off`, so stored policies keep their hash.
+     */
+    lightContracts: z.enum(["off", "on"]).optional(),
     /**
      * The duplication and dead-code ratchet (quality/duplication.ts). Absent means `warn`: copies
      * and unused declarations the run adds are reported, never blocking, so stored policies keep
@@ -1722,6 +1734,12 @@ export interface StartRequest {
    * plan must write them in one host-written task with exactly this content (#1461).
    */
   hostFiles?: { path: string; content: string }[];
+  /**
+   * The contract this run provides to the initiative features that depend on it. A definition
+   * without a spec stage states it in its host-made spec and records that spec as the run's
+   * spec.json, the artifact a dependent pins (#1664).
+   */
+  contract?: string;
   /** Approved boundaries used to route review findings to their owning initiative feature. */
   initiativeBounds?: {
     featureId: string;
@@ -2154,25 +2172,50 @@ export function repairLayoutCriteria(
   return { spec: { ...spec, criteria }, repaired, method: "post-release" };
 }
 
-// A criterion that the project's build succeeds, or a build command named outright.// A criterion that the project's build succeeds, or a build command named outright.
+// A criterion that the project's build succeeds, or a build command named outright.
 const BUILD_CLAIM =
   /\b(?:production|release|project|package|app(?:lication)?|the) build (?:succeeds|passes|completes|works|runs)\b|\bbuilds? (?:successfully|cleanly|without (?:errors?|warnings?))\b|\b(?:npm|bun|pnpm|yarn) run build\b|\b(?:cargo|go|dotnet|gradlew?) build\b|\bmvn (?:package|install|verify)\b/i;
 /** What a check runs, for the spec checks that compare criteria with the execution contract. */
 type CheckCommand = { id: string; executable: string; args: readonly string[] };
-// A declared check that builds the project.
-const BUILD_CHECK =
-  /\b(?:build|bundle|assemble|compile|package)\b|\bmvn\b.*\b(?:verify|install)\b/i;
+/**
+ * A declared check that builds the project: one named for a build, or a command that compiles the
+ * project before it tests, vets or lints it (#1661): `go test` and `go vet`, `cargo test`, `check`
+ * and `clippy`, `dotnet test`, Maven's and Gradle's test and check goals, and `tsc` that emits.
+ */
+const BUILD_CHECK = new RegExp(
+  [
+    String.raw`\b(?:build|bundle|assemble|compile|package)\b`,
+    String.raw`\bmvnw?\b.*\b(?:compile|test|verify|install)\b`,
+    String.raw`\bgo\s+(?:test|vet|install)\b`,
+    String.raw`\bcargo\s+(?:test|check|clippy|nextest|run)\b`,
+    String.raw`\bdotnet\s+(?:test|publish|pack)\b`,
+    String.raw`\bgradlew?(?:\.bat)?\b.*\b(?:test|check)\b`,
+  ].join("|"),
+  "i",
+);
+const tscEmits = (command: string) => /\btsc\b/.test(command) && !/--noEmit\b/.test(command);
+// A test suite check, which runs a test that builds the project itself.
+const TEST_CHECK = /\btests?\b|\b(?:pytest|jest|vitest|mocha)\b/i;
 
 /**
  * Automated criteria that need a build while no declared check builds the project. Convergence
  * proves a criterion only with the checks of the execution contract, so such a criterion ends
  * inconclusive however the build goes (zoneslot-update fc3e9c49 AC-010: "production build
- * succeeds", the contract had typecheck, lint and tests, and the run noted a false alarm).
+ * succeeds", the contract had typecheck, lint and tests, and the run noted a false alarm). A build
+ * that a test runs itself is proven by the test check (R50 selwhy front AC-009, #1661).
  */
 export function uncontractedBuildCriteria(spec: Spec, checks: readonly CheckCommand[]): string[] {
-  if (checks.some((c) => BUILD_CHECK.test([c.id, c.executable, ...c.args].join(" ")))) return [];
+  const commands = checks.map((c) => [c.id, c.executable, ...c.args].join(" "));
+  if (commands.some((command) => BUILD_CHECK.test(command) || tscEmits(command))) return [];
+  const tests = commands.some((command) => TEST_CHECK.test(command));
   return spec.criteria
-    .filter((c) => c.method === "automated" && BUILD_CLAIM.test(`${c.given}\n${c.when}\n${c.then}`))
+    .filter((c) => {
+      if (c.method !== "automated" || !BUILD_CLAIM.test(`${c.given}\n${c.when}\n${c.then}`))
+        return false;
+      // The Given or When names a test that runs the build: "the process test runs `go build`".
+      const setup = `${c.given}\n${c.when}`;
+      return !(tests && /\btests?\b/i.test(setup) && BUILD_CLAIM.test(setup));
+    })
     .map((c) => c.id);
 }
 

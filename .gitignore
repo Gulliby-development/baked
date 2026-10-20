@@ -98,6 +98,8 @@ __hooks_test__/
 *.db-wal
 *.db-shm
 *.sqlite*
+# Anonymised bench-round usage traces replayed by tests/forecast-replay-corpus.test.ts (#1649).
+!tests/fixtures/bench-traces/**/*.sqlite.gz
 
 # Temp and editor/OS files
 *.tmp

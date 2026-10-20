@@ -72,7 +72,7 @@ import {
 import { staticCorrection } from "../src/core/workflows/scheduler.js";
 import { ASSERTION_FAILURES } from "./helpers/assertion-failures.js";
 import { failureOwner } from "../src/core/workflows/task-graph.js";
-import type { Check, RunPolicy, RuntimeState, TaskGraph } from "../src/core/workflows/schemas.js";
+import { type Check, type RunPolicy, type RuntimeState, type TaskGraph, uncontractedBuildCriteria } from "../src/core/workflows/schemas.js";
 import type { TaskRow, WorkflowStore } from "../src/core/workflows/store.js";
 import { scanTestIntegrity, testChanges } from "../src/core/workflows/test-integrity.js";
 import type { Task } from "../src/core/workflows/types.js";
@@ -208,14 +208,22 @@ describe("gate execution after host suspend (#1610)", () => {
 });
 
 describe("host-written acceptance rows in the case-walk and mutation gates (#1596)", () => {
-  test.each(["bun", "pytest"] as const)("%s retains every case in its JSON data and keeps generated tests out of mutation proposals", async (framework) => {
+  // #1660: every framework, including the Java and C# tests that hold the rows as literals.
+  const layouts = {
+    bun: { harness: "tests/harness.ts", test: "tests/rows.test.ts" },
+    pytest: { harness: "tests/harness.py", test: "tests/test_rows.py" },
+    go: { harness: "tests/harness.go", test: "tests/rows_test.go", package: "tests" },
+    junit: { harness: "tests/Harness.java", test: "tests/RowsTest.java", package: "tests" },
+    rust: { harness: "tests/harness.rs", test: "tests/rows.rs" },
+    xunit: { harness: "tests/Harness.cs", test: "tests/RowsTest.cs", package: "Tests" },
+  } as const;
+  test.each(Object.keys(layouts) as (keyof typeof layouts)[])("%s retains every case in its JSON data and keeps generated tests out of mutation proposals", async (framework) => {
     const root = mkdtempSync(join(tmpdir(), "baked-row-gate-"));
     try {
-      const spec = { ...fixtureSpec, criteria: [{ ...fixtureSpec.criteria[0]!, given: "a number", when: "it is doubled", then: "Input | Expected\n12 | 24\n34 | 68" }] };
-      const harness = framework === "bun" ? "tests/harness.ts" : "tests/harness.py";
-      const file = framework === "bun" ? "tests/rows.test.ts" : "tests/test_rows.py";
+      const spec = { ...fixtureSpec, criteria: [{ ...fixtureSpec.criteria[0]!, given: "a number", when: "it is doubled", then: "Input | Scenario | Expected\n12 | small | 24\n34 | large | 68" }] };
+      const { harness, test: file } = layouts[framework];
       const task: Task = { id: "T001", title: "Rows", description: "Write actual(input)", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", origin: "planned", findingIds: [], rationale: "Test", readHints: [], checkIds: [],
-        rows: ["AC-001"], rowTest: { framework, harness, test: file, data: "tests/rows.json" },
+        rows: ["AC-001"], rowTest: { ...layouts[framework], framework, data: "tests/rows.json" },
         writes: [harness, file, "tests/rows.json"].map((path) => ({ path, action: "create" })) };
       const graph = { schemaVersion: 1 as const, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [task] };
       const artifact = rowsArtifact(spec, graph, { schemaVersion: 1, inputHash: "a".repeat(64), verdict: "pass", findings: [] });
@@ -225,8 +233,12 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
       const check = caseCheck(spec, task);
       expect(check).toBeDefined();
       expect(await check?.(root)).toEqual([]);
-      writeFileSync(join(root, "tests/rows.json"), JSON.stringify(artifact.rows.slice(0, 1)));
-      expect((await check?.(root))?.join()).toContain("34");
+      // Java and C# tests hold the rows themselves, and the host refuses any change to that file.
+      if (framework === "junit" || framework === "xunit") expect(files[1]?.content).toMatch(/\b34L?\b.*\b68L?\b/);
+      else {
+        writeFileSync(join(root, "tests/rows.json"), JSON.stringify(artifact.rows.slice(0, 1)));
+        expect((await check?.(root))?.join()).toContain("34");
+      }
       const changes = files.map((generated) => ({ path: generated.path, before: "", content: generated.content }));
       expect(proposalFiles(changes)).toEqual([]);
       expect(generateMutants(changes)).toEqual([]);
@@ -647,6 +659,31 @@ function shell(root: string, on: string[]): ToolShell {
     now: () => 0,
   };
 }
+
+// A Python project whose lockfile names its environment (#1655): the gates run in it, and its
+// test task still gets a tests-written check. The bare interpreter outside an activated uv
+// environment has no pytest, and `uv run pytest` built no per-task check.
+const PYTHON_ENVIRONMENTS: [string, string, string][] = [
+  ["uv.lock", "uv", "run"],
+  ["poetry.lock", "poetry", "run"],
+  ["Pipfile.lock", "pipenv", "run"],
+];
+describe("gate matrix: python environments", () => {
+  for (const [lockfile, runner, verb] of PYTHON_ENVIRONMENTS)
+    cell("python", `${lockfile}: gates and the written-tests check run in the environment`, () => {
+      const fixture = FIXTURES.python;
+      const path = fixture.property.path;
+      const root = project({ ...fixture.files, [lockfile]: "", [path]: fixture.property.seeded });
+      const checks = detectGates(root).filter((s) => s.preselected).map((s) => s.check);
+      expect(checks.map((c) => [c.id, c.executable, ...c.args.slice(0, 2)])).toEqual([
+        ["pytest", runner, verb, "pytest"],
+        ["ruff", runner, verb, "ruff"],
+      ]);
+      expect(checks.find((c) => c.id === "ruff")?.fix).toEqual({ executable: runner, args: [verb, "ruff", "check", "--fix"] });
+      const written = writtenTestsCheck(root, checks, [{ path, action: "create" }]);
+      expect(written && [written.executable, ...written.args]).toEqual([runner, verb, "pytest", "-q", `./${path}`]);
+    });
+});
 
 for (const stack of STACKS) {
   const fixture = FIXTURES[stack];
@@ -1240,6 +1277,36 @@ for (const stack of STACKS) {
       expect(scan(renamed)).toEqual([]);
       expect(scan(renamed, { protects })).toEqual([]);
       expect(testChanges({ path: sample.path, before, after: renamed })).toEqual({ added: [], renamed: { [name("intervalWorkload")]: name("serializedLocation") } });
+    });
+  });
+}
+
+/** The build command a process test of the stack runs before it starts the program (#1661). */
+const PROCESS_BUILD: Record<Stack, string> = {
+  bun: "bun run build",
+  npm: "npm run build",
+  python: "python -m build",
+  go: "go build -o BIN ../..",
+  rust: "cargo build",
+  maven: "mvn package",
+  dotnet: "dotnet build",
+};
+
+for (const stack of STACKS) {
+  const checks = () => detectGates(project(FIXTURES[stack].files)).filter((s) => s.preselected).map((s) => s.check);
+  const criterion = (given: string, when: string, then: string) => ({
+    ...fixtureSpec,
+    criteria: [{ ...fixtureSpec.criteria[0]!, id: "AC-009", given, when, then }],
+  });
+  describe(`gate matrix: ${stack} build criteria`, () => {
+    cell(stack, "build criteria: a process test that builds the program is proven by the stack's checks", () => {
+      const spec = criterion("the sole process test", `it runs \`${PROCESS_BUILD[stack]}\` and then the built program`, "the program prints the tree");
+      expect(uncontractedBuildCriteria(spec, checks())).toEqual([]);
+    });
+    cell(stack, "build criteria: a production build is proven only where a check compiles the project", () => {
+      const spec = criterion("the release", "it is prepared", "the production build succeeds");
+      const compiled = stack === "go" || stack === "rust" || stack === "maven" || stack === "dotnet";
+      expect(uncontractedBuildCriteria(spec, checks())).toEqual(compiled ? [] : ["AC-009"]);
     });
   });
 }

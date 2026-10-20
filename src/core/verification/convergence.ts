@@ -29,6 +29,7 @@ import { findingSetHash } from "./convergence-stop.js";
 import { canHold, requestedDeliverable } from "./deliverable-paths.js";
 import { isFailedTestLine } from "./failed-test-line.js";
 import { noteSiblingFindings } from "./initiative-ownership.js";
+import { growingCounts } from "./output-counts.js";
 import { reproCannotSeeCorrection } from "./repro.js";
 
 /**
@@ -299,16 +300,26 @@ export function failureSignature(output: string): string {
     .filter((line) => FAILURE_LINE.test(line) || isFailedTestLine(line))
     .map((line) =>
       line
-        .replace(/\[[\d.]+\s*m?s\]/gi, "")
+        .replace(/\[<?\s*[\d.]+\s*m?s\]/gi, "")
         .replace(/\(\d+(?:\.\d+)?\s*m?s\)/gi, "")
         // Go's package line ends with its elapsed time (`FAIL\tpkg\t0.212s`), which differs
         // between runs of the same failure (aclvet 5684de0e, #1189).
         .replace(/^(\s*(?:FAIL|ok)\s.*?)\s+\d+(?:\.\d+)?m?s(?:\s+\(cached\))?\s*$/, "$1")
+        // vitest's failed-test line ends with a bare time (` × adds 3ms`).
+        .replace(/^(\s*[✗✕✘×✖]\s.*?)\s+\d+(?:\.\d+)?\s?m?s\s*$/, "$1")
+        // Maven Surefire's `Time elapsed: 0.052 s <<< FAILURE!` and dotnet's summary
+        // `Duration: 45 ms` (or `< 1 ms`, `1 m 2 s`) are on the failure lines themselves (#1678).
+        .replace(
+          /\b(Time elapsed|Duration):\s*<?\s*\d[\d.,]*\s*(?:ms|s|sec|m|min)\b(?:\s+\d[\d.,]*\s*(?:ms|s|sec)\b)*/gi,
+          "$1",
+        )
         .replace(/(?:[A-Za-z]:)?(?:\/[\w.@-]+)+\/([\w.-]+)/g, "$1")
         .replace(/:\d+(?::\d+)?/g, "")
         .replace(/\s+/g, " ")
         .trim(),
     )
+    // Surefire's `Tests run: 4` and dotnet's `Passed: 3, Total: 4` grow as tasks add passing tests.
+    .map(growingCounts)
     .filter(Boolean);
   return [...new Set(lines)].sort().slice(0, 6).join(" | ").slice(0, 400);
 }

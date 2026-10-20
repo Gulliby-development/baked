@@ -65,6 +65,13 @@ describe("the language table", () => {
     ["SumTests.swift", "Sum.swift"],
     ["sum_test.exs", "sum.ex"],
     ["test_sum.c", "sum.c"],
+    // #1683: Django, Rust test modules, .NET test projects, NestJS end-to-end tests.
+    ["polls/tests.py", "src/tests_helpers.py"],
+    ["src/parser/tests.rs", "src/parser/contests.rs"],
+    ["src/lib_tests.rs", "src/lib.rs"],
+    ["App.Tests/CalculatorShould.cs", "App/Calculator.cs"],
+    ["src/App.UnitTests/Adding/WhenAdding.cs", "src/App/Adding.cs"],
+    ["src/app.e2e-spec.ts", "src/app.controller.ts"],
   ];
   test("every language's test files are tests for test integrity, sizing, duplication, baselines and review notes alike", () => {
     for (const [test, near] of tests) {

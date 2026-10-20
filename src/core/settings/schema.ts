@@ -1019,7 +1019,7 @@ export const SETTINGS: readonly SettingDefinition[] = [
     page: "code-quality",
     section: "Tests",
     label: "Property-based tests",
-    help: "The spec author marks criteria that must hold for a whole input domain (numbers, strings, parsing, round trips, invariants); each gets a property-based test (fast-check, Hypothesis, proptest, jqwik, rapid, FsCheck) and the run is blocked until it has one. A failing property's shrunk counterexample goes into the finding. preset follows the workflow (auto for standard and full runs, off for quick).",
+    help: "The spec author marks criteria that must hold for a whole input domain (numbers, strings, parsing, round trips, invariants); each gets a property-based test (fast-check, Hypothesis, proptest, jqwik, Kotest property, rapid, FsCheck, CsCheck) and the run is blocked until it has one. A failing property's shrunk counterexample goes into the finding. preset follows the workflow (auto for standard and full runs, off for quick).",
     scopes: BOTH,
     type: "enum",
     default: "preset",

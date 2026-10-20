@@ -5,8 +5,9 @@ import { costCeilingUsd, costToleranceOf } from "./cost-tolerance.js";
 import { defaultWorkflowPolicy } from "./defaults.js";
 import { WorkflowFault } from "./errors.js";
 import { type AgentProfile, extendToOf, PolicySchema, type RunPolicy } from "./schemas.js";
-import { forecastRate, forecastSamples } from "./stage-price.js";
+import { forecastRate, forecastSamples, type RunPrices, runPrices } from "./stage-price.js";
 import type { RunRow, WorkflowStore } from "./store.js";
+import type { AttemptUsageRow } from "./usage.js";
 export function reserveTokens(prompt: string, profile: AgentProfile, policy: RunPolicy): number {
   // Each tool-loop step can replay the growing context and generate another completion.
   // Native execution also enforces the total run limit between calls.
@@ -189,22 +190,28 @@ export function costRate(
  * fecsmith front at $11.88 while it finished at $9.03 (bench round 42). Before a task attempt is
  * priced, the blended price (`costRate`) stands in.
  */
-export function remainingCostRate(store: WorkflowStore, runId: string): number {
-  return callCostRate(store, runId, "implement");
+export function remainingCostRate(
+  store: WorkflowStore,
+  runId: string,
+  prices: RunPrices = runPrices(store, runId),
+): number {
+  return callCostRate(store, runId, "implement", null, prices.samples);
 }
 
 /**
  * Price a call from finished attempts of its owning stage, preserving its cache mix on the
  * requested model. Without stage samples, use the blended run price, then the model's input
- * price. With no model, return the stage's paid average for token affordability.
+ * price. With no model, return the stage's paid average for token affordability. Callers that
+ * price several calls of one run pass its `forecastSamples` once (#1647).
  */
 export function callCostRate(
   store: WorkflowStore,
   runId: string,
   stage: string,
   model: string | null = null,
+  runSamples: AttemptUsageRow[] = forecastSamples(store, [runId]),
 ): number {
-  const samples = forecastSamples(store, [runId]).filter(
+  const samples = runSamples.filter(
     (a) => a.status !== "running" && a.costUsd !== null && (a.usedTokens ?? 0) > 0,
   );
   const matching = samples.filter((a) => a.stage === stage);
@@ -504,8 +511,9 @@ function affordableTokens(store: WorkflowStore, runId: string, policy: RunPolicy
   const cap = costCeilingUsd(store, runId, policy);
   if (cap === null) return null;
   const row = store.run(runId);
-  const { spentUsd, reservedUsd } = store.costUsage(runId);
-  const rate = remainingCostRate(store, runId);
+  const prices = runPrices(store, runId);
+  const { spentUsd, reservedUsd } = store.costUsage(runId, undefined, prices);
+  const rate = remainingCostRate(store, runId, prices);
   if (rate <= 0) return null;
   const reserved = store
     .attempts(runId)
@@ -597,9 +605,10 @@ export function assertAttemptFits(
   const committed = policy.maxTotalTokens - remaining;
   // Token extensions also consult affordability. Give an initiative's approved dollar growth
   // room a chance before that check refuses an otherwise affordable attempt (#1625).
-  const rate = remainingCostRate(store, runId);
+  const prices = runPrices(store, runId);
+  const rate = remainingCostRate(store, runId, prices);
   if (rate > 0) {
-    const { spentUsd, reservedUsd } = store.costUsage(runId, attemptId);
+    const { spentUsd, reservedUsd } = store.costUsage(runId, attemptId, prices);
     growCostCapToForecast(
       store,
       runId,

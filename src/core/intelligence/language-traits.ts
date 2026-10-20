@@ -31,11 +31,13 @@ export const LANGUAGE_TRAITS: Partial<Record<Language, LanguageTraits>> = {
   },
   python: {
     code: true,
-    tests: /(?:^|\/)(?:test_[^/]*|[^/]*_test|conftest)\.py$/i,
+    // Django's `startapp` puts an app's tests in `tests.py` (#1683).
+    tests: /(?:^|\/)(?:test_[^/]*|[^/]*_test|conftest|tests)\.py$/i,
     manifests: /^(?:pyproject\.toml|requirements(?:[.-][\w-]+)?\.txt|setup\.(?:py|cfg)|Pipfile)$/i,
   },
   go: { code: true, tests: /_test\.go$/i, manifests: /^go\.(?:mod|work)$/i },
-  rust: { code: true, manifests: /^Cargo\.toml$/i },
+  // A `#[cfg(test)] mod tests;` module file, and `name_tests.rs` beside its source (#1683).
+  rust: { code: true, tests: /(?:^|\/)tests\.rs$|_tests?\.rs$/, manifests: /^Cargo\.toml$/i },
   java: {
     code: true,
     tests: /(?:Tests?|IT)\.java$/,
@@ -45,7 +47,9 @@ export const LANGUAGE_TRAITS: Partial<Record<Language, LanguageTraits>> = {
   scala: { code: true, tests: /(?:Tests?|Spec|Suite)\.scala$/, manifests: /^build\.sbt$/i },
   csharp: {
     code: true,
-    tests: /Tests?\.cs$/,
+    // Every file of a test project (`App.Tests/`, `App.UnitTests/`), whatever its class is called (#1683).
+    tests:
+      /Tests?\.cs$|(?:^|\/)[^/]+\.(?:Unit|Integration|Functional|Acceptance|E2E)?Tests?\/(?:[^/]+\/)*[^/]+\.cs$/,
     manifests:
       /^(?:global\.json|Directory\.(?:Build|Packages)\.(?:props|targets)|[^/]+\.(?:csproj|fsproj|vbproj|sln|slnx))$/i,
   },
@@ -117,5 +121,8 @@ export function isTestFile(path: string): boolean {
   if (TEST_DIR.test(normalized)) return true;
   const traits = traitsOf(normalized);
   if (!traits?.code) return false;
-  return /\.(?:test|spec)\.\w+$/i.test(normalized) || traits.tests?.test(normalized) === true;
+  // NestJS end-to-end tests are `name.e2e-spec.ts` (#1683).
+  return (
+    /\.(?:e2e-)?(?:test|spec)\.\w+$/i.test(normalized) || traits.tests?.test(normalized) === true
+  );
 }
