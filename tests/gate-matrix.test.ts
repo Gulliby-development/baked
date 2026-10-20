@@ -648,6 +648,31 @@ function shell(root: string, on: string[]): ToolShell {
   };
 }
 
+// A Python project whose lockfile names its environment (#1655): the gates run in it, and its
+// test task still gets a tests-written check. The bare interpreter outside an activated uv
+// environment has no pytest, and `uv run pytest` built no per-task check.
+const PYTHON_ENVIRONMENTS: [string, string, string][] = [
+  ["uv.lock", "uv", "run"],
+  ["poetry.lock", "poetry", "run"],
+  ["Pipfile.lock", "pipenv", "run"],
+];
+describe("gate matrix: python environments", () => {
+  for (const [lockfile, runner, verb] of PYTHON_ENVIRONMENTS)
+    cell("python", `${lockfile}: gates and the written-tests check run in the environment`, () => {
+      const fixture = FIXTURES.python;
+      const path = fixture.property.path;
+      const root = project({ ...fixture.files, [lockfile]: "", [path]: fixture.property.seeded });
+      const checks = detectGates(root).filter((s) => s.preselected).map((s) => s.check);
+      expect(checks.map((c) => [c.id, c.executable, ...c.args.slice(0, 2)])).toEqual([
+        ["pytest", runner, verb, "pytest"],
+        ["ruff", runner, verb, "ruff"],
+      ]);
+      expect(checks.find((c) => c.id === "ruff")?.fix).toEqual({ executable: runner, args: [verb, "ruff", "check", "--fix"] });
+      const written = writtenTestsCheck(root, checks, [{ path, action: "create" }]);
+      expect(written && [written.executable, ...written.args]).toEqual([runner, verb, "pytest", "-q", `./${path}`]);
+    });
+});
+
 for (const stack of STACKS) {
   const fixture = FIXTURES[stack];
   describe(`gate matrix: ${stack}`, () => {
