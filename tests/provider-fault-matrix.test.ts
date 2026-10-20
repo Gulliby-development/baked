@@ -4,7 +4,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateText, jsonSchema, tool } from "ai";
-import { type CallTiming, ProviderUnreachableError, withProviderHealth } from "../src/core/llm/provider-health.js";
+import { FirstByteHistory } from "../src/core/llm/first-byte-history.js";
+import {
+  ADAPTIVE_FIRST_BYTE_FLOOR_MS,
+  adaptiveFirstByteMs,
+  type CallTiming,
+  ProviderUnreachableError,
+  withProviderHealth,
+} from "../src/core/llm/provider-health.js";
 import { isStoreError } from "../src/core/workflows/host-error.js";
 import { accountRefusal, isRateLimit, isTransient, retryDelay } from "../src/core/workflows/retry.js";
 import { WorkflowStore } from "../src/core/workflows/store.js";
@@ -35,13 +42,17 @@ const CLI = new Set<FaultProvider>(["codex", "claude-code"]);
  * One call of `shape`: by default a plan-stage call at maximum effort, the call shape of R50's
  * slowest first bytes.
  */
-async function start(provider: FaultProvider, fault: Fault, shape: { stage: string; effort: string } = { stage: "plan", effort: "xhigh" }) {
+async function start(provider: FaultProvider, fault: Fault, shape: { stage: string; effort: string } = { stage: "plan", effort: "xhigh" }, history?: FirstByteHistory) {
   const clock = awakeClock();
   const faulty = faultyModel(provider, fault);
   cleanups.push(() => { faulty.restore(); clock.restore(); });
   let settled = false;
+  // With a history, the call takes the workflow executor's adaptive deadline (#1766).
+  const adaptive = history
+    ? { firstByteLimit: (ceilingMs: number, c: { stage?: string | undefined; effort?: string | undefined }) => adaptiveFirstByteMs(ceilingMs, history.healthy(`${provider}/model`, c.stage, c.effort)) }
+    : {};
   const pending = generateText({
-    model: withProviderHealth(faulty.model, `${provider}/model`, { stage: shape.stage }),
+    model: withProviderHealth(faulty.model, `${provider}/model`, { stage: shape.stage, ...adaptive }),
     prompt: "Plan the change",
     maxRetries: 0,
     tools: { read: tool({ description: "Read a file", inputSchema: jsonSchema({ type: "object", properties: { path: { type: "string" } }, required: ["path"] }) }) },
@@ -97,6 +108,23 @@ describe.each(FAULT_PROVIDERS.map((provider) => [provider]))("provider fault mat
     expect(isTransient(error)).toBe(true);
   });
 
+  test("a call that never answers after three 50 s answers of its shape is an outage at the adaptive deadline (#1766)", async () => {
+    // Silent providers wait twice the shape's p95, at least 3 minutes; Anthropic keeps its minute.
+    const deadline = provider === "anthropic" ? 60 : ADAPTIVE_FIRST_BYTE_FLOOR_MS / 1000;
+    const history = new FirstByteHistory();
+    for (let i = 0; i < 3; i++)
+      history.record(`${provider}/model`, { provider, stage: "plan", effort: "xhigh", firstByteMs: 50_000, durationMs: 60_000 });
+    const running = await start(provider, { kind: "hang" }, undefined, history);
+    await running.advance((deadline - 5) * 1_000);
+    expect(running.settled()).toBe(false);
+    await running.advance(7_000);
+    const { error, calls } = await running.outcome();
+    expect(error).toBeInstanceOf(ProviderUnreachableError);
+    expect((error as Error).message).toContain(`${deadline} seconds`);
+    expect(calls).toBe(1);
+    expect(isTransient(error)).toBe(true);
+  });
+
   test(`a 429 with the recorded retry-after (${RECORDED_RETRY_AFTER_S} s) is a rate limit that waits at least as long as asked`, async () => {
     const { error } = await call(provider, { kind: "status", status: 429, retryAfter: String(RECORDED_RETRY_AFTER_S) }, 1_000);
     expect(error).not.toBeInstanceOf(ProviderUnreachableError);
@@ -141,6 +169,31 @@ describe.each(FAULT_PROVIDERS.map((provider) => [provider]))("provider fault mat
     expect(error).toBeUndefined();
     expect(result?.text).toBe("");
     expect(result?.finishReason).toBe("stop");
+  });
+});
+
+describe("adaptive first-response deadline (#1766)", () => {
+  test("is the ceiling until three calls answered, then twice their p95 between 3 minutes and the ceiling", () => {
+    const ceiling = 10 * 60_000;
+    expect(adaptiveFirstByteMs(ceiling, [])).toBe(ceiling);
+    expect(adaptiveFirstByteMs(ceiling, [50_000, 60_000])).toBe(ceiling);
+    expect(adaptiveFirstByteMs(ceiling, [50_000, 60_000, 70_000])).toBe(ADAPTIVE_FIRST_BYTE_FLOOR_MS);
+    // R52's specify calls: 66 to 166 s.
+    expect(adaptiveFirstByteMs(ceiling, [66_000, 115_000, 120_000, 166_000])).toBe(332_000);
+    expect(adaptiveFirstByteMs(ceiling, [300_000, 400_000, 502_000])).toBe(ceiling);
+    // A 60 s deadline stays as it is.
+    expect(adaptiveFirstByteMs(60_000, [1_000, 1_000, 1_000])).toBe(60_000);
+  });
+
+  test("history keeps only answered calls, per model, stage and effort", () => {
+    const history = new FirstByteHistory();
+    const call = { provider: "codex", stage: "spec", effort: "xhigh", durationMs: 1 };
+    history.record("codex/a", { ...call, firstByteMs: 10 });
+    history.record("codex/a", { ...call, firstByteMs: null });
+    history.record("codex/a", { ...call, firstByteMs: 20, status: 429 });
+    history.record("codex/b", { ...call, firstByteMs: 30 });
+    expect(history.healthy("codex/a", "spec", "xhigh")).toEqual([10]);
+    expect(history.healthy("codex/a", "plan", "xhigh")).toEqual([]);
   });
 });
 
