@@ -13,10 +13,11 @@ You turn one app's run into findings that make BAKED better. You look at every t
 - the same app's results in earlier rounds (control apps) from `ledger/metrics.csv`
 - the run's `routing.json` (models by role and stage), for `seenOn`
 - `config.json` `confirm` (cross-model confirmation model and budget) and the round's confirmation tokens so far in `state.json`
+- the run's `wouldStop` records (`workflow status RUN --json`) and, for an initiative, its `decision.would_stop` events (`workflow initiative events ID --json`)
 
 ## Output
 
-`rounds/RNN/apps/<app>/findings.md`, one section per finding (shape in `templates/finding.md`), and a line per finding in `ledger/findings.jsonl` with `status: "new"`, `"known:#N"` or `"watch"`, plus `kind`, `origin`, `faultOrigin`, `escapedLayer`, `seenOn` and `confirmation` (see [Findings and model noise](../AGENTS.md#findings-and-model-noise)).
+`rounds/RNN/apps/<app>/findings.md`, one section per finding (shape in `templates/finding.md`), and a line per finding in `ledger/findings.jsonl` with `status: "new"`, `"known:#N"` or `"watch"`, plus `kind`, `origin`, `faultOrigin`, `escapedLayer`, `seenOn` and `confirmation` (see [Findings and model noise](../AGENTS.md#findings-and-model-noise)). A line per would-stop record in `ledger/would-stops.jsonl` (step 7).
 
 ## What to look for
 
@@ -28,7 +29,13 @@ Go through the run in order and ask at each stage:
 4. **Outcome.** For a blocked or failed run: the exact cause, the first event where it went wrong, and whether a resume would have helped.
 5. **Workflow fit.** Was the workflow right for this task type? Would `quick`, `standard` or a split into an initiative have been cheaper or more reliable? Update `ledger/workflow-map.md` with the evidence (a row's confidence goes up with each measured run).
 6. **Code intelligence.** For each app, note from `round.json` `lsp` whether its language had a server, and which backend served code queries (language server, ts-morph, tree-sitter or regex fallback) if the run's events or tool results record it; say "not recorded" when they do not. Compare navigation, rename, diagnostics and post-edit fixes with and without a server across apps and rounds, and write a finding when a missing server visibly cost tokens, retries or interventions, or when a present server misbehaved.
-7. **Provider effects.** Cost or behavior that differs by provider or model. Say what an adaptive mechanism would do; never propose a constant tuned to one provider.
+7. **Would-stops.** Every `decision.would_stop` record is a stop or decline that a reason in `shadow` or `advisory` mode would have made (see [Shadow stop reasons](../AGENTS.md#shadow-stop-reasons)). For each one, read what happened after it and give a verdict:
+   - `justified`: the run or initiative went on to the loss the stop guards against. For a forecast, it finished above the cap or ceiling the record named, or stopped later on the cost cap. For `approval-scope`, the plan's extra tasks or files needed a correction, a revert or an intervention.
+   - `false`: it went on without that loss. A forecast finished within its ceiling; a plan over the count limits finished without a correction caused by its size.
+   - `unknown`: the run ended before the outcome was known (cancelled, blocked for another reason). Say which.
+
+   Write one line per record to `ledger/would-stops.jsonl`: `round`, `app`, `runId` (or `initiativeId`), `reason`, `mode`, `key`, `verdict`, `actual` (the measured outcome, for example the final cost against the ceiling) and `why` in one line. A `false` verdict is also a finding (`kind: "invariant"`, `escapedLayer: "shadow"`): the reason would have stopped a run that did not need it, so it is not ready for `enforce`.
+8. **Provider effects.** Cost or behavior that differs by provider or model. Say what an adaptive mechanism would do; never propose a constant tuned to one provider.
 
 ## Kind, models and confirmation
 
