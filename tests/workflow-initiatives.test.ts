@@ -647,7 +647,7 @@ describe("scenario: an initiative dollar budget (#1317)", () => {
     t.executor.usageStore = t.workflows.store;
     await startPriced(t, 3, { costBudget: { maxCostUsd: 3, costTolerance: 0.1 } });
     const view = await t.approveSplit();
-    expect(view.budget.cost).toEqual({ capUsd: 3, tolerance: 0.1, ceilingUsd: 3.3, spentUsd: 0, reservedUsd: 0, remainingUsd: 3, forecastUsd: null, measuredFeatures: 0, forecastBinding: false, forecastNotice: null });
+    expect(view.budget.cost).toEqual({ capUsd: 3, tolerance: 0.1, ceilingUsd: 3.3, spentUsd: 0, reservedUsd: 0, remainingUsd: 3, forecastUsd: null, measuredFeatures: 0, forecastBinding: false, forecastMode: "enforce", forecastNotice: null });
     // Without estimates, dollars follow the size weights: core 2, api 2, docs 1 of 5.
     expect(view.features.map((f) => [f.id, f.size, f.shareUsd])).toEqual([["core", "medium", 1.2], ["api", "medium", 1.2], ["docs", "small", 0.6]]);
     const driven = await t.drive();

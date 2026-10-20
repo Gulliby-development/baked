@@ -184,7 +184,7 @@ export function costText(cost: CostView | undefined): string | null {
     `${usd(cost.remainingUsd ?? 0)} left`,
     ...(cost.forecastUsd !== null
       ? [
-          `forecast ${usd(cost.forecastUsd)}${cost.forecastNotice ? ` (advisory: ${cost.measuredFeatures} measured features)` : ""}`,
+          `forecast ${usd(cost.forecastUsd)}${cost.forecastNotice ? (cost.forecastBinding ? " (advisory)" : ` (advisory: ${cost.measuredFeatures} measured features)`) : ""}`,
         ]
       : []),
   ].join(" · ");

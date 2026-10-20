@@ -53,7 +53,7 @@ import {
 import type { NativeWorkflowService, PlannedReroute } from "../service.js";
 import { terminalStates } from "../state-machine.js";
 import { stopDetail, stopRecovery } from "../stop-detail.js";
-import { stopFault } from "../stop-reasons.js";
+import { type StopMode, stopFault, stopMode } from "../stop-reasons.js";
 import { newId, WorkflowStore } from "../store.js";
 import type { IssueSource } from "../types.js";
 import { HOST_AUTO_APPROVAL_CEILING, HostAutoApprovalSchema } from "../v2/definition.js";
@@ -215,6 +215,11 @@ export interface CostView {
    * extrapolation, and the caps on spent and reserved dollars bound the money (#1659).
    */
   forecastBinding: boolean;
+  /**
+   * The mode of the `initiative-forecast` stop reason (#1714): outside `enforce` a binding
+   * forecast above the ceiling records a `decision.would_stop` event and features keep starting.
+   */
+  forecastMode: StopMode;
   /** Why a forecast above the ceiling does not stop the initiative yet; null otherwise. */
   forecastNotice: string | null;
 }
@@ -358,6 +363,16 @@ function shareTooSmall(share: UsageView | null): boolean {
   );
 }
 
+/** Whether a binding dollar forecast is above the ceiling, whatever the stop's mode. */
+function forecastOverCeiling(cost: CostView): boolean {
+  return (
+    cost.forecastUsd !== null &&
+    cost.ceilingUsd !== null &&
+    cost.forecastUsd > cost.ceilingUsd &&
+    cost.forecastBinding
+  );
+}
+
 /**
  * Why a ready feature may not start, or null. Its low estimate must fit after reserving the
  * other waiting features' lows; a weighted share alone can be smaller even when the pool covers
@@ -373,7 +388,12 @@ export function shareShortfall(
       cost.ceilingUsd > cost.capUsd
         ? `${usd(cost.ceilingUsd)} ceiling (the ${usd(cost.capUsd)} cap and its tolerance)`
         : `${usd(cost.capUsd)} cap`;
-    if (cost.forecastUsd !== null && cost.forecastUsd > cost.ceilingUsd && cost.forecastBinding) {
+    if (
+      cost.forecastUsd !== null &&
+      cost.forecastUsd > cost.ceilingUsd &&
+      cost.forecastBinding &&
+      cost.forecastMode === "enforce"
+    ) {
       const accepted = view.features.filter((f) => f.state === "accepted").length;
       return recoveryAdvice(
         `The initiative's cost forecast is ${usd(cost.forecastUsd)}, above its ${ceiling}: ${usd(cost.spentUsd)} spent with ${accepted} of ${view.features.length} features accepted. Raise the dollar budget to at least ${usd(Math.ceil(cost.forecastUsd))} with baked workflow initiative extend --budget-usd N to start ${feature.id}, or pause the initiative.`,
@@ -1338,6 +1358,54 @@ export class InitiativeService {
     });
   }
 
+  /**
+   * Records, once per key, that a forecast stop in `shadow` or `advisory` mode would have held
+   * this start (#1714): the dollar forecast once per count of measured features, the token
+   * forecast of `forecastStop` once per plan revision and accepted count.
+   */
+  private noteForecastWouldStop(row: InitiativeRow, featureId: string, view: InitiativeView): void {
+    const cost = view.budget.cost;
+    if (cost.forecastMode === "enforce") return;
+    const mode = cost.forecastMode;
+    const accepted = view.features.filter((f) => f.state === "accepted").length;
+    const stops: { key: string; summary: string; inputs: Record<string, unknown> }[] = [];
+    if (forecastOverCeiling(cost))
+      stops.push({
+        key: `usd-m${cost.measuredFeatures}`,
+        summary: `The initiative's cost forecast is ${usd(cost.forecastUsd ?? 0)}, above its ${usd(cost.ceilingUsd ?? 0)} ceiling: ${usd(cost.spentUsd)} spent with ${accepted} of ${view.features.length} features accepted. ${featureId} would not start.`,
+        inputs: {
+          forecastUsd: cost.forecastUsd,
+          ceilingUsd: cost.ceilingUsd,
+          spentUsd: cost.spentUsd,
+          measuredFeatures: cost.measuredFeatures,
+        },
+      });
+    const tokens = this.tokenForecastOver(row, view);
+    if (tokens)
+      stops.push({
+        key: `tokens-r${row.approved_plan_revision}-a${accepted}`,
+        summary: `${tokens.summary} ${featureId} would not start.`,
+        inputs: tokens.inputs,
+      });
+    const seen = this.store.eventsOfType(row.id, "decision.would_stop");
+    for (const stop of stops) {
+      if (
+        seen.some(
+          (p) =>
+            (p as { reason?: string } | null)?.reason === "initiative-forecast" &&
+            (p as { key?: string }).key === stop.key,
+        )
+      )
+        continue;
+      this.store.emit(row.id, "decision.would_stop", {
+        reason: "initiative-forecast",
+        mode,
+        featureId,
+        ...stop,
+      });
+    }
+  }
+
   private async startFeature(id: string, featureId: string): Promise<boolean> {
     const row = this.store.get(id);
     const plan = this.approvedPlan(row);
@@ -1350,6 +1418,7 @@ export class InitiativeService {
     const sized = waiting?.share;
     if (!sized) throw stopFault("budget-share", "No budget share is available");
     this.noteAdvisoryForecast(id, featureId, current.budget.cost);
+    this.noteForecastWouldStop(row, featureId, current);
     const share = { ...sized, ...guardGrowth(current, featureId, settings.basePolicy) };
     const previous = this.store.links(id).filter((l) => l.feature_id === featureId).length;
     const runFeature = runFeatureId(id, featureId);
@@ -1589,19 +1658,33 @@ export class InitiativeService {
    */
   private forecastOver(
     row: InitiativeRow,
-    view: Pick<InitiativeView, "features">,
+    view: Pick<InitiativeView, "features" | "budget">,
   ): RecoveryAdvice | null {
+    if (view.budget.cost.forecastMode !== "enforce") return null;
+    const over = this.tokenForecastOver(row, view);
+    if (!over) return null;
+    return recoveryAdvice(
+      `${over.summary} Raise it with baked workflow initiative extend, or trim the split.`,
+      `${over.summary} Raise the budget, or trim the split.`,
+      { action: "extend", initiativeId: row.id },
+    );
+  }
+
+  /** The token forecast above the shared budget with `forecastStop` on, whatever its mode. */
+  private tokenForecastOver(
+    row: InitiativeRow,
+    view: Pick<InitiativeView, "features">,
+  ): { summary: string; inputs: Record<string, unknown> } | null {
     if (!this.store.settings(row).forecastStop) return null;
     const plan = this.approvedPlan(row);
     if (!plan) return null;
     const accepted = new Set(view.features.filter((f) => f.state === "accepted").map((f) => f.id));
     const estimate = this.estimateOf(row, plan, accepted);
     if (estimate.tokens.low <= estimate.budget.maxTotalTokens) return null;
-    return recoveryAdvice(
-      `The forecast is over the shared budget: ${rangeText(estimate.tokens)} tokens against ${tokenText(estimate.budget.maxTotalTokens)}. Raise it with baked workflow initiative extend, or trim the split.`,
-      `The forecast is over the shared budget: ${rangeText(estimate.tokens)} tokens against ${tokenText(estimate.budget.maxTotalTokens)}. Raise the budget, or trim the split.`,
-      { action: "extend", initiativeId: row.id },
-    );
+    return {
+      summary: `The forecast is over the shared budget: ${rangeText(estimate.tokens)} tokens against ${tokenText(estimate.budget.maxTotalTokens)}.`,
+      inputs: { tokens: estimate.tokens, maxTotalTokens: estimate.budget.maxTotalTokens },
+    };
   }
 
   /**
@@ -1826,6 +1909,8 @@ export class InitiativeService {
       : accepted.size;
     const forecastBinding =
       settings.forecastStop === true || measuredFeatures >= FORECAST_BINDING_FEATURES;
+    const forecastMode = stopMode(settings.basePolicy, "initiative-forecast");
+    const over = forecastUsd !== null && ceilingUsd !== null && forecastUsd > ceilingUsd;
     return {
       capUsd,
       tolerance,
@@ -1836,10 +1921,13 @@ export class InitiativeService {
       forecastUsd,
       measuredFeatures,
       forecastBinding,
+      forecastMode,
       forecastNotice:
-        forecastUsd !== null && ceilingUsd !== null && forecastUsd > ceilingUsd && !forecastBinding
+        over && !forecastBinding
           ? `The cost forecast of ${usd(forecastUsd)} is above the ${usd(ceilingUsd)} ceiling. It is advisory until ${FORECAST_BINDING_FEATURES} features are measured (${measuredFeatures} so far): features keep starting while their spent and reserved dollars fit the budget.`
-          : null,
+          : over && forecastMode === "advisory"
+            ? `The cost forecast of ${usd(forecastUsd)} is above the ${usd(ceilingUsd)} ceiling. The forecast stop is advisory: features keep starting while their spent and reserved dollars fit the budget.`
+            : null,
     };
   }
 
