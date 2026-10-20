@@ -207,7 +207,7 @@ const GROWING_COUNTS: [RegExp, string][] = [
  * worktree path counts as the workspace: the baseline is measured in the run worktree and a later
  * check may run in a task worktree (mouse-mover-update 3d7389cf, #1055).
  */
-const growingCounts = (text: string): string =>
+export const growingCounts = (text: string): string =>
   GROWING_COUNTS.reduce((out, [pattern, to]) => out.replace(pattern, to), text);
 
 export function failureSignature(output: string, root: string): string {
