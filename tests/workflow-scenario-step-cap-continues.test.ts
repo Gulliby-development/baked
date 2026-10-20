@@ -106,10 +106,14 @@ describe("scenario: an attempt that edited and used its steps (#1478)", () => {
       const saved = JSON.parse(fixture.service.store.readArtifact(request.runId, artifact?.id ?? ""));
       const sent = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}").extra;
       expect(saved.earlierEdits).toEqual(sent.earlierEdits);
+      expect(saved.earlierReads).toEqual(sent.earlierReads);
       return saved;
     });
     expect(records[0].earlierEdits).toBeUndefined();
     expect(records[1].earlierEdits).toMatchObject({ paths: ["value.txt"], patch: expect.stringContaining("draft") });
+    // The continuation is told what the first attempt kept reading (#1774).
+    expect(records[0].earlierReads).toBeUndefined();
+    expect(records[1].earlierReads.reads[0]).toMatchObject({ tool: "read", targets: ["value.txt"] });
   }, 60000);
 
   test("an attempt that used its steps and changed nothing is repeated with more steps", async () => {
