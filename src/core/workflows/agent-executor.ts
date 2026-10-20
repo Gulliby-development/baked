@@ -21,7 +21,7 @@ import { hasToolHooks } from "../hooks/index.js";
 import { formatSyntaxErrors, syntaxCheckable, syntaxErrors } from "../intelligence/syntax-check.js";
 import { knownModelContextWindow } from "../llm/models.js";
 import { resolveModel } from "../llm/provider.js";
-import { withProviderHealth } from "../llm/provider-health.js";
+import { type CallTiming, withProviderHealth } from "../llm/provider-health.js";
 import {
   buildProviderOptions,
   type CacheTTL,
@@ -274,6 +274,8 @@ interface AttemptWatch {
   deadlines: number;
   /** When the model call of the current step started, until it asks for a tool or ends. */
   calledAt: number | null;
+  /** Each model call's timing, kept in the attempt's usage record for trace replay (#1715). */
+  calls: CallTiming[];
   abort(error: Error): void;
 }
 
@@ -338,6 +340,7 @@ export class NativeAgentExecutor implements AgentExecutor {
       bufferedProviders: 0,
       deadlines: 0,
       calledAt: null,
+      calls: [],
       abort: (error) => stall.abort(error),
     };
     const interval = setInterval(
@@ -1242,6 +1245,7 @@ export class NativeAgentExecutor implements AgentExecutor {
               ...(backends.size ? { toolBackends: [...backends.values()] } : {}),
               ...(effort ? { effort } : {}),
               ...(webSearch ? { webSearch } : {}),
+              ...(watch.calls.length ? { calls: watch.calls } : {}),
             }),
           ),
         );
@@ -1710,6 +1714,7 @@ export class NativeAgentExecutor implements AgentExecutor {
       const resolved = resolveModel(request.profile.model);
       return withProviderHealth(resolved, request.profile.model, {
         stage: request.profile.output,
+        timing: (call) => watch.calls.push(call),
         // A call that may reason silently (a CLI adapter, or high effort on a provider whose
         // reasoning does not stream) is not a stall while it waits (#1652).
         pending: (buffered) => {

@@ -40,6 +40,8 @@ Pick up to `maxFixIssuesPerRound` (6) issues, in this order:
 4. At least `minBroadFeaturesPerRound` (1) broad feature, the one with the largest expected effect. `idea`-labelled large ideas (scout ideas included) compete here: rank them with the same rules as other issues (expected effect on the main metrics, evidence in this round's findings, size). The top one goes into the fix set when there is room, as the round's broad feature. The loop triages ideas; the owner is not asked to pick.
 5. Other P1, then P2 quick wins.
 
+Hot modules ([`.github/hot-modules.json`](../../../.github/hot-modules.json), [error budget](../../../docs/bench-loop.md#hot-modules)): take at most one behavior change per hot module into the fix set; others on the same module wait for the next round. When this round had two or more stops caused by last round's fixes, the fix set takes only reverts and regression fixes in those modules, and `backlog.md` says so.
+
 Skip issues labelled `needs-gulliby` or `deferred`, issues another thread or person is working on (assigned, linked open PR, "In progress" on the board), and and issues that only the owner can decide. `idea` items are not skipped: ranked ideas that do not fit this round stay `idea` on the board, listed in `backlog.md` with their rank.
 
 ## Done

@@ -87,6 +87,7 @@ import {
   planSizeProblem,
   type SplitEdit,
   SplitEditSchema,
+  sequenceDocumentation,
   sequenceSharedPaths,
   sizeWeight,
   testOwnershipProblems,
@@ -2464,7 +2465,9 @@ export class InitiativeService {
         .filter((f) => !choices.find((c) => c.id === featureWorkflowId(settings, f))?.contract)
         .map((f) => f.id),
     );
-    const sequenced = sequenceSharedPaths(proposed, withRuns, noContract);
+    // Documentation follows the code it describes (#1751).
+    const documented = sequenceDocumentation(proposed, withRuns);
+    const sequenced = sequenceSharedPaths(documented.plan, withRuns, noContract);
     // A light feature that still gained a dependent writes a spec after all (#1406).
     const repaired = restoreContractWorkflows(sequenced.plan, choices, settings.workflowId);
     const plan = repaired.plan;
@@ -2474,10 +2477,11 @@ export class InitiativeService {
     for (const request of this.store.requests(id).filter((r) => r.status === "pending"))
       this.store.decide(id, request.id, "superseded", { planRevision: revision });
     this.store.addRevision(id, plan, budget, digest, source, edit);
-    if (sequenced.added.length || repaired.restored.length)
+    if (sequenced.added.length || documented.added.length || repaired.restored.length)
       this.store.emit(id, "split.sequenced", {
         planRevision: revision,
         added: sequenced.added,
+        ...(documented.added.length ? { documented: documented.added } : {}),
         ...(repaired.restored.length ? { restored: repaired.restored } : {}),
       });
     this.store.request(id, revision, digest);

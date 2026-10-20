@@ -14,6 +14,10 @@
     "dependencies": null,
     "placeholders": [
       "lib/sum.dart:2"
-    ]
+    ],
+    "gates": null,
+    "testRunners": null,
+    "mutation": null,
+    "properties": null
   }
 }

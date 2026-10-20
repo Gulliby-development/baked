@@ -16,6 +16,10 @@
     "dependencies": null,
     "placeholders": [
       "src/Sum.sol:3"
-    ]
+    ],
+    "gates": null,
+    "testRunners": null,
+    "mutation": null,
+    "properties": null
   }
 }

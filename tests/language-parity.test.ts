@@ -1,6 +1,7 @@
-import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import {
   isNoRow,
   type LanguageRecord,
@@ -14,8 +15,16 @@ import {
   TEST_CONVENTIONS,
 } from "../src/core/intelligence/language-traits.js";
 import { detectLanguageFromPath } from "../src/core/intelligence/types.js";
+import {
+  failureSignature,
+  TEST_RUNNERS,
+  testCount,
+} from "../src/core/verification/output-counts.js";
+import { detectGates, GATE_TOOLCHAINS } from "../src/core/workflows/gates.js";
 import { PLACEHOLDERS } from "../src/core/workflows/quality/builtin-rules.js";
 import { DEPENDENCY_MANIFESTS, manifestDependencies } from "../src/core/workflows/quality/manifests.js";
+import { detectMutationTool, MUTATION_TOOLS } from "../src/core/workflows/quality/mutation-tools.js";
+import { PROPERTY_LIBRARIES, propertyTestKind } from "../src/core/workflows/quality/properties.js";
 import { checkBuiltinRules } from "../src/core/workflows/quality/rules.js";
 
 // Language parity (#1717): every language-bound record has a row for every supported language,
@@ -26,33 +35,59 @@ import { checkBuiltinRules } from "../src/core/workflows/quality/rules.js";
 type Files = Record<string, string>;
 interface Fixture {
   files: Files;
+  /** Check output the language's test runner prints: a failing run, and the same run with one more passing test. */
+  outputs?: { tests: string; testsGrown: string };
   expected: Record<string, string[] | null>;
 }
+
+const roots: string[] = [];
+afterAll(() => {
+  for (const root of roots) rmSync(root, { recursive: true, force: true });
+});
+
+/** The fixture's files in a temporary directory, for code that reads a workspace. */
+function workspace(files: Files): string {
+  const root = mkdtempSync(join(tmpdir(), "baked-language-parity-"));
+  roots.push(root);
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), content);
+  }
+  return root;
+}
+
+const ofLanguage = (language: SupportedLanguage, files: Files) =>
+  Object.entries(files).filter(([path]) => detectLanguageFromPath(path) === language);
 
 /** The language-bound records and the public function that reads each, over a fixture's files. */
 const RECORDS: Record<
   string,
-  { record: LanguageRecord<unknown>; run: (language: SupportedLanguage, files: Files) => string[] }
+  {
+    record: LanguageRecord<unknown>;
+    run: (language: SupportedLanguage, fixture: Fixture) => string[];
+    /** Outputs a row with data must never give, whatever its golden says. */
+    never?: string[];
+  }
 > = {
   tests: {
     record: TEST_CONVENTIONS,
-    run: (language, files) =>
+    run: (language, { files }) =>
       Object.keys(files).filter((path) => detectLanguageFromPath(path) === language && isTestFile(path)),
   },
   manifests: {
     record: MANIFEST_NAMES,
-    run: (_, files) => Object.keys(files).filter(isManifestFile),
+    run: (_, { files }) => Object.keys(files).filter(isManifestFile),
   },
   dependencies: {
     record: DEPENDENCY_MANIFESTS,
-    run: (_, files) =>
+    run: (_, { files }) =>
       Object.entries(files).flatMap(([path, text]) =>
         manifestDependencies(path, text).map((d) => `${d.file}: ${d.ecosystem} ${d.name}`),
       ),
   },
   placeholders: {
     record: PLACEHOLDERS,
-    run: (language, files) =>
+    run: (language, { files }) =>
       checkBuiltinRules(
         Object.entries(files)
           .filter(([path]) => detectLanguageFromPath(path) === language)
@@ -61,6 +96,51 @@ const RECORDS: Record<
       )
         .filter((finding) => finding.rule === "placeholder-body")
         .map((finding) => `${finding.file}:${finding.line}`),
+  },
+  gates: {
+    record: GATE_TOOLCHAINS,
+    run: (_, { files }) => detectGates(workspace(files)).map((s) => s.check.id),
+  },
+  testRunners: {
+    record: TEST_RUNNERS,
+    // The runner's count, and whether the failure signature ignores one more passing test (#1425).
+    run: (_, { outputs }) => {
+      if (!outputs) return [];
+      const count = testCount(outputs.tests);
+      const stable =
+        failureSignature(outputs.tests, "/repo") === failureSignature(outputs.testsGrown, "/repo");
+      return [count ? `${count.tool} ${count.count}` : "no count", stable ? "signature stable" : "signature changed"];
+    },
+    never: ["no count", "signature changed"],
+  },
+  mutation: {
+    record: MUTATION_TOOLS,
+    // Every tool counts as installed, so the record alone decides which one the files get.
+    run: (language, { files }) => {
+      const found = detectMutationTool(
+        ofLanguage(language, files).map(([path, content]) => ({ path, content, before: null })),
+        {
+          root: "/repo",
+          scratch: "/scratch",
+          platform: "linux",
+          run: async () => ({ exitCode: 0, output: "", timedOut: false }),
+          read: (path) => files[path] ?? "pitest-maven info.solidsoft.pitest",
+          exists: () => true,
+          remove: () => {},
+          which: (command) => `/usr/bin/${command}`,
+          now: () => 0,
+        },
+      );
+      return found ? [`${found.tool}: ${found.files.map((f) => f.path).join(", ")}`] : [];
+    },
+  },
+  properties: {
+    record: PROPERTY_LIBRARIES,
+    run: (language, { files }) =>
+      ofLanguage(language, files).flatMap(([path, content]) => {
+        const kind = propertyTestKind(path, content);
+        return kind ? [`${path}: ${kind}`] : [];
+      }),
   },
 };
 
@@ -78,16 +158,18 @@ test("every supported language has a fixture project, and every fixture a suppor
 
 for (const language of SUPPORTED_LANGUAGES)
   describe(`language parity: ${language}`, () => {
-    for (const [name, { record, run }] of Object.entries(RECORDS))
+    for (const [name, { record, run, never = [] }] of Object.entries(RECORDS))
       test(name, () => {
-        const { files, expected } = fixture(language);
-        const golden = expected?.[name];
-        const actual = run(language, files);
+        const data = fixture(language);
+        const golden = data.expected?.[name];
+        const actual = run(language, data);
         const row = record[language];
         // A missing golden prints what the record gives, ready to paste into the fixture.
         expect({ [name]: golden === undefined ? "missing" : golden }).toEqual({
           [name]: isNoRow(row) ? null : actual,
         });
-        if (!isNoRow(row)) expect(actual.length).toBeGreaterThan(0);
+        if (isNoRow(row)) return;
+        expect(actual.length).toBeGreaterThan(0);
+        for (const output of never) expect(actual).not.toContain(output);
       });
   });

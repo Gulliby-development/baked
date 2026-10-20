@@ -5,7 +5,7 @@ import type { LanguageModelV4, LanguageModelV4StreamPart } from "@ai-sdk/provide
 import { UnsupportedFunctionalityError } from "@ai-sdk/provider";
 import { generateText, type LanguageModel } from "ai";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
-import { PROVIDER_FIRST_BYTE_MS, ProviderUnreachableError, probeProvider, providerBackoffMs, providerFirstByteMs, providerResponded, withProviderHealth } from "../src/core/llm/provider-health.js";
+import { type CallTiming, PROVIDER_FIRST_BYTE_MS, ProviderUnreachableError, probeProvider, providerBackoffMs, providerFirstByteMs, providerResponded, withProviderHealth } from "../src/core/llm/provider-health.js";
 import { anthropic } from "../src/core/llm/providers/anthropic.js";
 import { createClaudeCodeLanguageModel } from "../src/core/llm/providers/claude-code/index.js";
 import { copilot } from "../src/core/llm/providers/copilot.js";
@@ -145,6 +145,26 @@ describe("silent reasoning on providers other than the CLI adapters (#1652)", ()
       expect((await pending).text).toBe("OK");
       // The attempt's silence watchdog counts the call as a buffered provider too.
       expect(silent).toEqual([true]);
+    } finally { clock.restore(); }
+  });
+
+  test("each call reports its first-response time and what its deadline depends on (#1715)", async () => {
+    const clock = awakeClock();
+    const calls: CallTiming[] = [];
+    try {
+      const pending = generateText({
+        model: withProviderHealth(slowFirstPart("openai.responses", 90_000), "openai/model", { stage: "plan", timing: (call) => calls.push(call) }),
+        prompt: "Hi", maxRetries: 0, providerOptions: { openai: { reasoningEffort: "xhigh" } },
+      });
+      await Bun.sleep(1);
+      clock.advance(91_000);
+      await pending;
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({ provider: "openai.responses", stage: "plan", effort: "xhigh", streamsReasoning: false });
+      expect(calls[0]!.firstByteMs).toBeGreaterThanOrEqual(90_000);
+      expect(calls[0]!.durationMs).toBeGreaterThanOrEqual(calls[0]!.firstByteMs!);
+      // The replay recomputes the deadline from these fields alone.
+      expect(providerFirstByteMs(calls[0]!.provider, calls[0]!)).toBe(600_000);
     } finally { clock.restore(); }
   });
 
