@@ -10,7 +10,7 @@ import { DEFAULT_MIX } from "../src/core/workflows/estimate.js";
 import { PolicySchema, type Task } from "../src/core/workflows/schemas.js";
 import { DEFAULT_PER_FILE, verificationTokens } from "../src/core/workflows/sizing.js";
 import type { WorkflowStore } from "../src/core/workflows/store.js";
-import { exportTrace, replayTrace } from "../src/core/workflows/trace.js";
+import { exportTrace, openTrace, replayTrace } from "../src/core/workflows/trace.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
@@ -107,6 +107,27 @@ describe("usage traces of recorded runs (#1649)", () => {
       expect((db.query("SELECT COUNT(*) AS n FROM evidence").get() as { n: number }).n).toBe(0);
     } finally {
       db.close();
+    }
+  }, 60000);
+
+  test("a trace keeps the run state readable, with stand-ins for its prose (#1707)", async () => {
+    const { fixture, runId, out } = await recordedRun();
+    exportTrace(fixture.root, out);
+    const { store, dispose } = openTrace(out);
+    try {
+      const state = store.state(runId);
+      const original = fixture.service.store.state(runId);
+      expect(state.prompt).toMatch(/^prompt-\d+$/);
+      expect(state.verificationState).toBe(original.verificationState);
+      expect(state.graph?.tasks.length).toBe(original.graph?.tasks.length);
+      // Equal prose stays equal and distinct prose stays distinct, without its text.
+      const descriptions = (state.graph?.tasks ?? []).map((t) => t.description);
+      const before = (original.graph?.tasks ?? []).map((t) => t.description);
+      expect(new Set(descriptions).size).toBe(new Set(before).size);
+      expect(descriptions.every((d) => /^description-\d+$/.test(d))).toBe(true);
+      expect(store.snapshot(runId).status).toBe("completed");
+    } finally {
+      dispose();
     }
   }, 60000);
 
