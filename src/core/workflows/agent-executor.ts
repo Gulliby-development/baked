@@ -19,9 +19,14 @@ import { SharedRootContext } from "../context/shared-root.js";
 import { recordModelCall } from "../diagnostics/model-events.js";
 import { hasToolHooks } from "../hooks/index.js";
 import { formatSyntaxErrors, syntaxCheckable, syntaxErrors } from "../intelligence/syntax-check.js";
+import { FirstByteHistory } from "../llm/first-byte-history.js";
 import { knownModelContextWindow } from "../llm/models.js";
 import { resolveModel } from "../llm/provider.js";
-import { type CallTiming, withProviderHealth } from "../llm/provider-health.js";
+import {
+  adaptiveFirstByteMs,
+  type CallTiming,
+  withProviderHealth,
+} from "../llm/provider-health.js";
 import {
   buildProviderOptions,
   type CacheTTL,
@@ -313,6 +318,8 @@ export class NativeAgentExecutor implements AgentExecutor {
   private readonly ownsRootContext: boolean;
   /** Recordings a replay run reads, by path, loaded once per executor. */
   private readonly replays = new Map<string, RecordedCall[]>();
+  /** First-response times of the workspace's calls, read once per executor (#1766). */
+  private firstBytes: FirstByteHistory | null = null;
   /** Without `rootContext`, the executor creates and disposes a root of its own. */
   constructor(
     private store: WorkflowStore,
@@ -1700,6 +1707,32 @@ export class NativeAgentExecutor implements AgentExecutor {
    * MCP tools that both the profile and the run policy grant. Only the servers those grants name
    * are connected; a server that fails to connect contributes no tools.
    */
+  /** The recorded calls of the workspace's latest attempts, newest last (#1766). */
+  private firstByteHistory(): FirstByteHistory {
+    if (this.firstBytes) return this.firstBytes;
+    const history = new FirstByteHistory();
+    const rows = this.store.connection
+      .query(
+        `SELECT a.run_id, a.id, t.model_id FROM artifacts a
+         JOIN attempts t ON t.run_id = a.run_id AND a.logical_path = 'attempts/' || t.id || '/usage.json'
+         WHERE a.kind = 'usage' AND t.model_id IS NOT NULL AND a.revision =
+           (SELECT MAX(b.revision) FROM artifacts b WHERE b.run_id = a.run_id AND b.logical_path = a.logical_path)
+         ORDER BY a.created_at DESC LIMIT 200`,
+      )
+      .all() as { run_id: string; id: string; model_id: string }[];
+    for (const row of rows.reverse()) {
+      try {
+        const usage = JSON.parse(this.store.readArtifact(row.run_id, row.id)) as {
+          calls?: CallTiming[];
+        };
+        for (const call of usage.calls ?? []) history.record(row.model_id, call);
+      } catch {
+        // An unreadable usage record only leaves its calls out of the history.
+      }
+    }
+    this.firstBytes = history;
+    return history;
+  }
   /**
    * The attempt's model: the provider's, or with `modelCalls` in the policy one that records
    * each call in the run, or answers from a recording (#856).
@@ -1712,9 +1745,18 @@ export class NativeAgentExecutor implements AgentExecutor {
     const calls = policy.modelCalls;
     const model = () => {
       const resolved = resolveModel(request.profile.model);
+      const history = this.firstByteHistory();
       return withProviderHealth(resolved, request.profile.model, {
         stage: request.profile.output,
-        timing: (call) => watch.calls.push(call),
+        firstByteLimit: (ceilingMs, call) =>
+          adaptiveFirstByteMs(
+            ceilingMs,
+            history.healthy(request.profile.model, call.stage, call.effort),
+          ),
+        timing: (call) => {
+          watch.calls.push(call);
+          history.record(request.profile.model, call);
+        },
         // A call that may reason silently (a CLI adapter, or high effort on a provider whose
         // reasoning does not stream) is not a stall while it waits (#1652).
         pending: (buffered) => {
