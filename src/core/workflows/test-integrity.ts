@@ -1,5 +1,6 @@
 import { blankStringLiterals } from "../intelligence/comments.js";
 import { isTestFile } from "../intelligence/language-traits.js";
+import { testConventions } from "../intelligence/test-frameworks.js";
 import type { RunPolicy } from "./schemas.js";
 import type { Task } from "./types.js";
 
@@ -98,31 +99,7 @@ function count(lines: readonly string[], pattern: RegExp): number {
   return total;
 }
 
-const TEST_CASES = new RegExp(
-  [
-    // JavaScript and TypeScript: it(...), test(...), test.each(...)(...)
-    String.raw`(?:^|[^.\w$])(?:it|test)(?:\.(?:each|concurrent|only|skip|todo|failing)\b[^(]*)?\s*\(`,
-    // Python
-    String.raw`^\s*(?:async\s+)?def\s+test\w*\s*\(`,
-    // Go
-    String.raw`^func\s+Test\w*\s*\(`,
-    // Rust
-    String.raw`#\[(?:tokio::)?test\]`,
-    // Java, Kotlin, C#
-    String.raw`@(?:Test|ParameterizedTest)\b`,
-    String.raw`\[(?:Fact|Theory|Test|TestMethod|TestCase)\b`,
-  ].join("|"),
-  "g",
-);
-/** Tests named on their own line: Python and Go functions, JavaScript and TypeScript titles. */
-const NAMED_TESTS = [
-  /^\s*(?:async\s+)?def\s+(test\w*)\s*\(/,
-  /^func\s+(Test\w*)\s*\(/,
-  /(?:^|[^.\w$])(?:it|test)(?:\.(?:concurrent|only|skip|todo|failing))?\s*\(\s*(["'`])((?:(?!\1)[^\\\n])+)\1/,
-];
-/** Rust, Java, Kotlin and C# mark a test with an attribute above the function that names it. */
-const TEST_ATTRIBUTE =
-  /#\[(?:tokio::)?test\]|@(?:Test|ParameterizedTest)\b|\[(?:Fact|Theory|Test|TestMethod|TestCase)\b/;
+/** The function a test attribute marks (Rust, Java, Kotlin, C#), which names the test. */
 const ATTRIBUTED_TEST = /\b(?:fn|fun|void|Task)\s+(`[^`]+`|\w+)\s*[(<]/;
 /** Lines below an attribute that may hold more attributes before the function. */
 const ATTRIBUTE_LINES = 8;
@@ -136,24 +113,35 @@ interface TestSpan {
 }
 
 /** Each test of a file with its lines, up to the next test or the end of the file. */
-function testSpans(lines: readonly string[], marks: readonly string[] = lines): TestSpan[] {
+function testSpans(
+  path: string,
+  lines: readonly string[],
+  marks: readonly string[] = lines,
+): TestSpan[] {
+  const { named: namedTests, attribute: testAttribute } = testConventions(path);
   const starts: { name: string; from: number; index: number; rest: string }[] = [];
+  // The test function a subtest runs in: Go's `t.Run("empty", ...)` in `TestParse` is `TestParse/empty`.
+  let parent = "";
   for (const [index, line] of lines.entries()) {
     // Tests are found on the marks, where string content other than titles is blank; the text
-    // at the same columns of the line is the same outside strings.
+    // at the same columns of the line is the same outside strings, so names are read from it.
     const mark = marks[index] ?? line;
-    const named = NAMED_TESTS.map((pattern) => mark.match(pattern)).find(Boolean);
-    const name = named?.[2] ?? named?.[1];
-    if (named && name) {
+    const found = namedTests
+      .map((test) => ({ test, match: test.pattern.exec(mark) }))
+      .find(({ match }) => match?.indices?.groups?.name);
+    const at = found?.match?.indices?.groups?.name;
+    if (found?.match && at) {
+      const own = line.slice(at[0], at[1]);
+      if (!found.test.sub) parent = own;
       starts.push({
-        name,
+        name: found.test.sub && parent ? `${parent}/${own}` : own,
         from: index,
         index,
-        rest: line.slice((named.index ?? 0) + named[0].length),
+        rest: line.slice(found.match.index + found.match[0].length),
       });
       continue;
     }
-    const attribute = mark.match(TEST_ATTRIBUTE);
+    const attribute = mark.match(testAttribute);
     if (!attribute) continue;
     const from = (attribute.index ?? 0) + attribute[0].length;
     const following = (all: readonly string[]) => all.slice(index + 1, index + 1 + ATTRIBUTE_LINES);
@@ -170,7 +158,7 @@ function testSpans(lines: readonly string[], marks: readonly string[] = lines): 
         });
         break;
       }
-      if (offset > 0 && TEST_ATTRIBUTE.test(nextMarks[offset] ?? next)) break;
+      if (offset > 0 && testAttribute.test(nextMarks[offset] ?? next)) break;
     }
   }
   return starts.map((start, i) => ({
@@ -186,9 +174,13 @@ function testSpans(lines: readonly string[], marks: readonly string[] = lines): 
 const TRIVIAL_LINE = /^(?:[{}()[\];,:]|=>|async|function|\s)*$/;
 
 /** The names of a file's tests, with how often each occurs (classes and suites may repeat one). */
-function testNames(lines: readonly string[], marks?: readonly string[]): Map<string, number> {
+function testNames(
+  path: string,
+  lines: readonly string[],
+  marks?: readonly string[],
+): Map<string, number> {
   const names = new Map<string, number>();
-  for (const { name } of testSpans(lines, marks)) names.set(name, (names.get(name) ?? 0) + 1);
+  for (const { name } of testSpans(path, lines, marks)) names.set(name, (names.get(name) ?? 0) + 1);
   return names;
 }
 
@@ -216,13 +208,15 @@ interface TestMatch {
  * removed the new title: two repair rounds and 2.4M tokens.
  */
 function matchTests(
+  path: string,
   before: { lines: string[]; marks: string[] },
   after: { lines: string[]; marks: string[] },
 ): TestMatch {
-  const was = testSpans(before.lines, before.marks);
-  const now = testSpans(after.lines, after.marks);
-  const namesBefore = testNames(before.lines, before.marks);
-  const namesAfter = testNames(after.lines, after.marks);
+  const was = testSpans(path, before.lines, before.marks);
+  const now = testSpans(path, after.lines, after.marks);
+  const namesBefore = testNames(path, before.lines, before.marks);
+  const namesAfter = testNames(path, after.lines, after.marks);
+  const { assertions: assertionForms } = testConventions(path);
   const added = new Set(missingNames(namesAfter, namesBefore));
   const targets = now.filter((span) => added.has(span.name));
   const renames = new Map<string, string>();
@@ -249,12 +243,12 @@ function matchTests(
     if (!target) continue;
     renames.set(name, target.name);
     tests++;
-    assertions += count(old.body, ASSERTIONS);
+    assertions += count(old.body, assertionForms);
     used.add(target);
   }
   for (const target of used) {
     tests--;
-    assertions -= count(target.body, ASSERTIONS);
+    assertions -= count(target.body, assertionForms);
   }
   return { renames, tests: Math.max(0, tests), assertions: Math.max(0, assertions) };
 }
@@ -270,12 +264,12 @@ export function testChanges(
   if (!isTestPath(change.path) || change.before === undefined || change.after === null) return null;
   const before = codeView(change.path, change.before ?? "");
   const after = codeView(change.path, change.after);
-  const { renames } = matchTests(before, after);
+  const { renames } = matchTests(change.path, before, after);
   const targets = new Set(renames.values());
   return {
     added: missingNames(
-      testNames(after.lines, after.marks),
-      testNames(before.lines, before.marks),
+      testNames(change.path, after.lines, after.marks),
+      testNames(change.path, before.lines, before.marks),
     ).filter((name) => !targets.has(name)),
     renamed: Object.fromEntries(renames),
   };
@@ -287,8 +281,6 @@ const quoted = (names: readonly string[]) =>
     .map((name) => JSON.stringify(name))
     .join(", ") + (names.length > 5 ? ` and ${String(names.length - 5)} more` : "");
 
-const ASSERTIONS =
-  /\bexpect\s*\(|\bassert\w*\b|\bAssert\.\w+|\bt\.(?:Error|Errorf|Fatal|Fatalf)\b|\brequire\.\w+\s*\(/g;
 const SKIPS = new RegExp(
   [
     String.raw`\b(?:it|test|describe|suite|context)\.(?:skip|only|todo)\b`,
@@ -539,7 +531,7 @@ export function scanTestIntegrity(
       isTestPath(path) && typeof change.before === "string"
         ? (() => {
             const view = codeView(path, change.before);
-            return testSpans(view.lines, view.marks);
+            return testSpans(path, view.lines, view.marks);
           })()
         : [];
     const requested = requestedTestRemovals(
@@ -554,6 +546,7 @@ export function scanTestIntegrity(
     }
     const beforeRaw = change.before ?? "";
     const afterRaw = change.after ?? "";
+    const { cases: testCases, assertions: assertionForms } = testConventions(path);
     const viewBefore = codeView(path, beforeRaw);
     const viewAfter = codeView(path, afterRaw);
     const before = viewBefore.lines;
@@ -568,7 +561,7 @@ export function scanTestIntegrity(
     const grew = (pattern: RegExp, lines: [string[], string[]] = [codeBefore, codeAfter]) =>
       count(lines[1], pattern) - count(lines[0], pattern);
     if (isTestPath(path)) {
-      const testsBefore = count(codeBefore, TEST_CASES);
+      const testsBefore = count(codeBefore, testCases);
       if (change.after === null) {
         const allRequested =
           requested.file ||
@@ -583,11 +576,11 @@ export function scanTestIntegrity(
           });
         continue;
       }
-      const testsAfter = count(codeAfter, TEST_CASES);
-      const namesAfter = testNames(after, viewAfter.marks);
+      const testsAfter = count(codeAfter, testCases);
+      const namesAfter = testNames(path, after, viewAfter.marks);
       // A test retitled or merged with its body kept is not removed (#1532).
-      const matched = matchTests(viewBefore, viewAfter);
-      const removed = missingNames(testNames(before, viewBefore.marks), namesAfter).filter(
+      const matched = matchTests(path, viewBefore, viewAfter);
+      const removed = missingNames(testNames(path, before, viewBefore.marks), namesAfter).filter(
         (name) => !matched.renames.has(name) && !requested.names.has(name),
       );
       const lost = [...(guarded ?? [])].filter(([name]) => {
@@ -613,8 +606,8 @@ export function scanTestIntegrity(
       const excludedCode = excluded.flatMap((span) =>
         codeLines(blankStringLiterals(path, before.slice(span.from, span.to).join("\n"))),
       );
-      const removedTests = count(excludedCode, TEST_CASES);
-      const removedAssertions = count(excludedCode, ASSERTIONS);
+      const removedTests = count(excludedCode, testCases);
+      const removedAssertions = count(excludedCode, assertionForms);
       for (const [name, origin] of lost)
         findings.push({
           rule: "test-removed",
@@ -642,8 +635,8 @@ export function scanTestIntegrity(
           path,
           detail: `removed test(s) ${quoted(unclaimed)} while the test count stayed ${String(testsAfter)}`,
         });
-      const assertsBefore = count(codeBefore, ASSERTIONS);
-      const assertsAfter = count(codeAfter, ASSERTIONS);
+      const assertsBefore = count(codeBefore, assertionForms);
+      const assertsAfter = count(codeAfter, assertionForms);
       const kept = testsAfter + matched.tests + removedTests >= testsBefore && assertsAfter > 0;
       const rewritten =
         kept &&

@@ -11,18 +11,61 @@ import { executionTimeout } from "../workflows/execution-clock.js";
 export const PROVIDER_FIRST_BYTE_MS = 60_000;
 export const PROVIDER_BACKOFF_MAX_MS = 5 * 60_000;
 
-/** CLI transports can buffer all reasoning until a turn finishes, including native fallback. */
-export function providerFirstByteMs(
-  provider: string,
-  context: { stage?: string; effort?: string } = {},
-): number {
-  if (provider !== "codex" && provider !== "claude-code") return PROVIDER_FIRST_BYTE_MS;
+/** CLI transports buffer all reasoning until a turn finishes, including native fallback. */
+const BUFFERED_CLI = new Set(["codex", "claude-code"]);
+const PLANNING_STAGES = ["spec", "plan", "task-graph"];
+
+export interface CallReasoning {
+  stage?: string | undefined;
+  effort?: string | undefined;
+  /** The call streams its reasoning as it thinks (an OpenAI reasoning summary). */
+  streamsReasoning?: boolean | undefined;
+}
+
+/**
+ * Whether a call may think silently for minutes before its first output (#1639, #1652). CLI
+ * adapters buffer every turn. Any other model may too at high effort or on a planning stage,
+ * unless its reasoning streams: Anthropic's thinking deltas, or an OpenAI reasoning summary.
+ * An OpenAI Responses model at `xhigh` streams nothing while it thinks, since the summary is off
+ * unless configured (`openaiReasoningSummary`).
+ */
+export function silentReasoning(provider: string, context: CallReasoning = {}): boolean {
+  if (BUFFERED_CLI.has(provider)) return true;
+  if (provider === "anthropic" || provider.startsWith("anthropic.") || context.streamsReasoning)
+    return false;
+  return (
+    PLANNING_STAGES.includes(context.stage ?? "") ||
+    ["high", "xhigh", "max"].includes(context.effort ?? "")
+  );
+}
+
+/** The first-response deadline of a call: long for silent reasoning, 60 s otherwise. */
+export function providerFirstByteMs(provider: string, context: CallReasoning = {}): number {
+  if (!silentReasoning(provider, context)) return PROVIDER_FIRST_BYTE_MS;
   if (
-    ["spec", "plan", "task-graph"].includes(context.stage ?? "") ||
+    PLANNING_STAGES.includes(context.stage ?? "") ||
     ["xhigh", "max"].includes(context.effort ?? "")
   )
     return 10 * 60_000;
   return context.effort === "high" ? 7.5 * 60_000 : 5 * 60_000;
+}
+
+/**
+ * The effort and reasoning summary a call sends. The options are keyed by the provider family
+ * (`openai`), while the adapter names itself `openai.responses` or `openai.chat`.
+ */
+export function callReasoning(
+  options: Record<string, Record<string, unknown> | undefined> | undefined,
+): { effort?: string; streamsReasoning: boolean } {
+  let effort: string | undefined;
+  let streamsReasoning = false;
+  for (const entry of Object.values(options ?? {})) {
+    const sent = entry?.effort ?? entry?.reasoningEffort;
+    if (effort === undefined && typeof sent === "string") effort = sent;
+    const summary = entry?.reasoningSummary;
+    if (typeof summary === "string" && summary !== "off") streamsReasoning = true;
+  }
+  return { ...(effort !== undefined ? { effort } : {}), streamsReasoning };
 }
 
 export class ProviderUnreachableError extends Error {
@@ -54,8 +97,11 @@ function connectionError(error: unknown): boolean {
 }
 
 export interface ProviderWatch {
-  /** Tentatively withhold unanswered time. A real response charges it; an outage excludes it. */
-  pending?: () => (responded: boolean) => void;
+  /**
+   * Tentatively withhold unanswered time. A real response charges it; an outage excludes it.
+   * `silent` says the call may reason silently (`silentReasoning`), so its quiet is not a stall.
+   */
+  pending?: (silent: boolean) => (responded: boolean) => void;
   progress?: () => void;
   firstByteMs?: number;
   /** Output kind of the workflow profile, also used by continuations and format correction. */
@@ -83,15 +129,10 @@ export function withProviderHealth(
           ? AbortSignal.any([params.abortSignal, controller.signal])
           : controller.signal;
         signal.throwIfAborted();
-        const settle = watch.pending?.();
+        const reasoning = { stage: watch.stage, ...callReasoning(params.providerOptions) };
+        const settle = watch.pending?.(silentReasoning(adapted.provider, reasoning));
         let responded = false;
-        const effort = params.providerOptions?.[adapted.provider]?.reasoningEffort;
-        const firstByteMs =
-          watch.firstByteMs ??
-          providerFirstByteMs(adapted.provider, {
-            stage: watch.stage,
-            effort: typeof effort === "string" ? effort : undefined,
-          });
+        const firstByteMs = watch.firstByteMs ?? providerFirstByteMs(adapted.provider, reasoning);
         const cancel = executionTimeout(
           () =>
             controller.abort(

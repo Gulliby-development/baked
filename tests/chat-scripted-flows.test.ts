@@ -4,11 +4,12 @@
  * coordinator confirm worded as a step to approve.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ChatScript, ScriptedChatHost } from "../src/core/chat/scripted-host.js";
 import { type ChatEvent, ChatService, type ChatSession } from "../src/core/chat/sessions.js";
+import { removeTempDir } from "./helpers/temp-dir.js";
 
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -25,7 +26,7 @@ function service(script: ChatScript) {
   });
   cleanups.push(async () => {
     await chat.shutdown();
-    rmSync(root, { recursive: true, force: true });
+    await removeTempDir(root);
   });
   return chat;
 }

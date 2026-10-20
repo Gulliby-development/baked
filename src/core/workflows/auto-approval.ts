@@ -12,6 +12,7 @@ import {
   type TaskGraph,
 } from "./schemas.js";
 import type { ArtifactRow, RequestRow } from "./store.js";
+import { hostWritten } from "./task-graph.js";
 import { isAcceptanceRequest } from "./v2/acceptance.js";
 
 /** The built-in profile that decides packages `autoApproval.modelReview` sends to it. */
@@ -216,6 +217,21 @@ export function evaluateAutoApproval(
 type Limits = NonNullable<NonNullable<RunPolicy["autoApproval"]>["limits"]>;
 
 /**
+ * The tasks an agent runs, against the task limit: without the tasks the host writes from the
+ * plan's content (an empty `__init__.py`, a fixed stub; no attempt, no tokens) and without the
+ * slices host sizing added. Sizing and the history store leave host-written tasks out too; counting
+ * them sent expenses-py's plan of 8 agent tasks and an empty package marker to a person, who
+ * answered 11.3 h later (bench round 50, #1658). Their files still count against `maxFiles`.
+ */
+export function agentTaskCount(
+  graph: Pick<TaskGraph, "tasks">,
+  hostSplitTasks = 0,
+): { agent: number; host: number } {
+  const host = graph.tasks.filter((task) => hostWritten(task)).length;
+  return { agent: Math.max(0, graph.tasks.length - host - hostSplitTasks), host };
+}
+
+/**
  * Where a task graph leaves the limits' scope: task and file counts, paths and deletions. A
  * deletion is never left to the approval reviewer.
  */
@@ -227,9 +243,12 @@ function scopeProblems(
 ): { text: string; reviewable: boolean }[] {
   const writes = graph.tasks.flatMap((task) => task.writes);
   const problems: { text: string; reviewable: boolean }[] = [];
-  const planned = graph.tasks.length - hostSplitTasks;
+  const { agent: planned, host } = agentTaskCount(graph, hostSplitTasks);
   if (planned > limits.maxTasks)
-    problems.push({ text: `${planned} tasks exceed ${limits.maxTasks}`, reviewable: true });
+    problems.push({
+      text: `${planned} tasks exceed ${limits.maxTasks}${host ? ` (${host} host-written not counted)` : ""}`,
+      reviewable: true,
+    });
   const files = new Set(writes.map((write) => write.path.toLowerCase()));
   if (files.size > limits.maxFiles)
     problems.push({ text: `${files.size} files exceed ${limits.maxFiles}`, reviewable: true });
@@ -374,7 +393,7 @@ export function planScopeAdvice(
   ];
   if (!problems.length) return [];
   return [
-    `This plan needs a person at approval: ${problems.join("; ")}. Automatic approval covers at most ${limits.maxTasks} tasks and ${limits.maxFiles} files under ${limits.allowedPaths.join(", ")}${limits.allowDelete ? "" : " without deletions"}. Drop writes the requirements do not need (an optional refactor, a type or helper that can live in a file already written) and merge small tasks. If every listed write is needed, submit the plan again unchanged: it is accepted and a person approves it once at approval, which authorizes every write it lists. Do not mention approval in task descriptions or rationales; the tasks run only after the person approved.`,
+    `This plan needs a person at approval: ${problems.join("; ")}. Automatic approval covers at most ${limits.maxTasks} tasks (tasks the host writes from their content do not count) and ${limits.maxFiles} files under ${limits.allowedPaths.join(", ")}${limits.allowDelete ? "" : " without deletions"}. Drop writes the requirements do not need (an optional refactor, a type or helper that can live in a file already written) and merge small tasks. If every listed write is needed, submit the plan again unchanged: it is accepted and a person approves it once at approval, which authorizes every write it lists. Do not mention approval in task descriptions or rationales; the tasks run only after the person approved.`,
   ];
 }
 

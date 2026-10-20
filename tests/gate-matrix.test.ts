@@ -1269,6 +1269,50 @@ for (const stack of STACKS) {
   });
 }
 
+/**
+ * A test file in a framework style the guard read only by name (#1651): FluentAssertions, Go
+ * subtests, tokio and rstest tests. A corrective that drops one assertion or one test is flagged.
+ */
+const FRAMEWORK_STYLE: Partial<Record<Stack, { path: string; file: string; assertion: string; test: string; name: string }>> = {
+  dotnet: {
+    path: "tests/PrimesTests.cs",
+    file: `    [Fact]\n    public void Primes()\n    {\n        Run(2).Should().BeTrue();\n        Run(4).Should().BeFalse();\n    }\n\n    [Fact]\n    public void Composites()\n    {\n        Run(9).Should().BeFalse();\n    }\n`,
+    assertion: "        Run(4).Should().BeFalse();\n",
+    test: `\n    [Fact]\n    public void Composites()\n    {\n        Run(9).Should().BeFalse();\n    }\n`,
+    name: "Composites",
+  },
+  go: {
+    path: "primes_test.go",
+    file: `func TestPrimes(t *testing.T) {\n\tt.Run("two", func(t *testing.T) {\n\t\trequire.True(t, run(2))\n\t\trequire.False(t, run(4))\n\t})\n\tt.Run("nine", func(t *testing.T) {\n\t\trequire.False(t, run(9))\n\t})\n}\n`,
+    assertion: "\t\trequire.False(t, run(4))\n",
+    test: `\tt.Run("nine", func(t *testing.T) {\n\t\trequire.False(t, run(9))\n\t})\n`,
+    name: "TestPrimes/nine",
+  },
+  rust: {
+    path: "tests/primes.rs",
+    file: `#[tokio::test(flavor = "multi_thread")]\nasync fn primes() {\n    assert!(run(2).await);\n    assert!(!run(4).await);\n}\n\n#[rstest]\nfn composites() {\n    assert!(!block_on(run(9)));\n}\n`,
+    assertion: "    assert!(!run(4).await);\n",
+    test: `\n#[rstest]\nfn composites() {\n    assert!(!block_on(run(9)));\n}\n`,
+    name: "composites",
+  },
+};
+
+for (const stack of STACKS) {
+  const sample = FRAMEWORK_STYLE[stack];
+  if (!sample) continue;
+  const scan = (after: string) => scanTestIntegrity([{ path: sample.path, before: sample.file, after }]);
+  describe(`gate matrix: ${stack} framework styles`, () => {
+    cell(stack, "framework styles: a corrective that removes an assertion is flagged", () => {
+      expect(scan(sample.file.replace(sample.assertion, "")).map((f) => f.rule)).toEqual(["assertions"]);
+    });
+    cell(stack, "framework styles: a corrective that removes a test is flagged by name", () => {
+      const found = scan(sample.file.replace(sample.test, ""));
+      expect(found.map((f) => f.rule)).toContain("test-count");
+      expect(found[0]?.detail).toContain(JSON.stringify(sample.name));
+    });
+  });
+}
+
 for (const stack of STACKS) {
   const sample = SYNTAX[stack];
   describe(`gate matrix: ${stack} syntax gate`, () => {
