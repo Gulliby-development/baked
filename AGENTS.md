@@ -39,6 +39,7 @@ BAKED is a TypeScript coding agent with an OpenTUI/React terminal UI and a headl
 - Follow strict TypeScript and the existing Biome configuration. Avoid `any`, unused variables, and unrelated formatting changes.
 - Prefer small changes to existing modules. Keep agent logic independent of the terminal UI.
 - Preserve access controls, approval callbacks, secret handling, and coordination when changing tools.
+- A new provider adapter joins the provider fault matrix (`FAULT_PROVIDERS` in `tests/helpers/faulty-provider.ts`, run by `tests/provider-fault-matrix.test.ts`) in the same pull request, and a new timer, retry or limit on model calls adds the fault profile that exercises it, with the class it expects: an answer, an outage, a retry, a model mistake or a host fault.
 - Keep comments focused on non-obvious intent. Keep documentation technical: setup, behavior, architecture, troubleshooting, and development.
 - Preserve user changes already present in the working directory.
 - Provider names in runtime code (Claude, OpenAI, Codex, GitHub Copilot, GitHub Models) describe supported integrations. Do not rename them when editing these instructions or other contributor documentation.
