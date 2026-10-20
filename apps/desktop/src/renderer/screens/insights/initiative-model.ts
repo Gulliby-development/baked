@@ -311,7 +311,7 @@ export function costLine(view: Pick<InitiativeView, "budget">): string | null {
     `${usd(cost.remainingUsd ?? 0)} left`,
     ...(cost.forecastUsd !== null
       ? [
-          `forecast ${usd(cost.forecastUsd)}${cost.forecastNotice ? ` (advisory: ${cost.measuredFeatures ?? 0} measured features)` : ""}`,
+          `forecast ${usd(cost.forecastUsd)}${cost.forecastNotice ? (cost.forecastBinding ? " (advisory)" : ` (advisory: ${cost.measuredFeatures ?? 0} measured features)`) : ""}`,
         ]
       : []),
   ].join(" · ");

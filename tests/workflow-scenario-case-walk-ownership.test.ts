@@ -88,19 +88,19 @@ describe("the case walk demands only what a task owns (#1771)", () => {
       "tests/cli_tests.rs": '#[test]\nfn usage() {\n    assert!(usage_text().contains("period [--cycles <n>]"));\n}\n',
       "tests/docs_tests.rs": '#[test]\nfn readme_has_the_required_sections() {\n    assert!(readme().contains("## period"));\n}\n',
     });
-    const check = caseCheck({ criteria: spec }, T006, { tasks });
+    const check = caseCheck({ criteria: spec }, T006, { checks: [], tasks });
     expect(check ? await check(root) : []).toEqual([]);
   });
 
   test("the README text belongs to the task that writes the README", () => {
-    expect(criterionCases({ criteria: spec }, T003, { tasks }).map((c) => c.literal)).toEqual([
+    expect(criterionCases({ criteria: spec }, T003, { checks: [], tasks }).map((c) => c.literal)).toEqual([
       ", default 3). For example",
       "reports the period 5. Any reported period is a pattern detected in the finite sequence",
     ]);
   });
 
   test("a test name belongs to the sibling task whose description names it", () => {
-    expect(criterionCases({ criteria: spec }, T004, { tasks }).map((c) => c.literal)).toEqual([
+    expect(criterionCases({ criteria: spec }, T004, { checks: [], tasks }).map((c) => c.literal)).toEqual([
       "two_cycles_are_enough_when_requested",
     ]);
   });
@@ -108,12 +108,12 @@ describe("the case walk demands only what a task owns (#1771)", () => {
   test("an unrestricted test task still owes the README text it is not given elsewhere", () => {
     const docs = task("T006", "Test the README sections.", ["AC-008"], ["tests/docs_tests.rs"]);
     const alone = [docs];
-    expect(criterionCases({ criteria: [README] }, docs, { tasks: alone }).map((c) => c.literal)).toHaveLength(2);
+    expect(criterionCases({ criteria: [README] }, docs, { checks: [], tasks: alone }).map((c) => c.literal)).toHaveLength(2);
   });
 
   test("a restricted task still owes the case its description names", async () => {
     const root = workspace({ "tests/cli_tests.rs": "#[test]\nfn usage() {}\n" });
-    const check = caseCheck({ criteria: spec }, T006, { tasks });
+    const check = caseCheck({ criteria: spec }, T006, { checks: [], tasks });
     expect(check ? await check(root) : []).toEqual([
       'AC-007 names "period [--cycles <n>]", and no test file this task writes (tests/cli_tests.rs, tests/docs_tests.rs) contains it.',
     ]);
@@ -122,7 +122,7 @@ describe("the case walk demands only what a task owns (#1771)", () => {
   test('"prints only one line" is not an edit limit', () => {
     const one = criterion("AC-001", "the CLI", "it runs `sum --strict 1 2`", "it prints only one line");
     const t = task("T001", "Test that sum prints only one line.", ["AC-001"], ["tests/sum_test.py"]);
-    expect(criterionCases({ criteria: [one] }, t, { tasks: [t] }).map((c) => c.literal)).toEqual(["sum --strict 1 2"]);
+    expect(criterionCases({ criteria: [one] }, t, { checks: [], tasks: [t] }).map((c) => c.literal)).toEqual(["sum --strict 1 2"]);
   });
 });
 
@@ -149,8 +149,8 @@ describe("case ownership in every language (#1771)", () => {
       // A code task keeps AC-002 off most of the plan, so the broad-criterion exemption does not apply.
       const code = task("T000", "Add --cycles.", ["AC-001"], ["src/period.txt"]);
       const plan = [code, writer, owner, update];
-      const check = caseCheck({ criteria }, update, { tasks: plan });
+      const check = caseCheck({ criteria }, update, { checks: [], tasks: plan });
       expect(check ? await check(workspace({ [own]: "// docs test\n" })) : []).toEqual([]);
-      expect(criterionCases({ criteria }, owner, { tasks: plan }).map((c) => c.literal)).toEqual([name]);
+      expect(criterionCases({ criteria }, owner, { checks: [], tasks: plan }).map((c) => c.literal)).toEqual([name]);
     });
 });

@@ -1,4 +1,8 @@
-import { criterionCases } from "../verification/criteria-cases.js";
+import {
+  type CaseContext,
+  criterionCases,
+  isCheckCommand,
+} from "../verification/criteria-cases.js";
 import type { Analysis, Spec } from "./schemas.js";
 
 /**
@@ -96,9 +100,10 @@ export function contestedRows(
   report: string,
   tests: string[],
   derivations: Analysis["derivations"],
+  checks: CaseContext["checks"],
 ): ContestedRow[] {
   return citedCriteria(spec, report).map((criterion) => {
-    const cases = criterionCases(spec, { criterionIds: [criterion.id] });
+    const cases = criterionCases(spec, { criterionIds: [criterion.id] }, { checks });
     const misquoted = cases.flatMap((c) => {
       const quoted = misquotation(c.literal, tests);
       return quoted === null ? [] : [{ literal: c.literal, quoted }];
@@ -130,4 +135,18 @@ export function verbatimRow(row: ContestedRow): string {
     ? ` The task's test spells ${row.misquoted.map((m) => `${JSON.stringify(m.literal)} as ${JSON.stringify(m.quoted)}`).join(", ")}.`
     : "";
   return `${criterion.id} as written: Given ${criterion.given}; When ${criterion.when}; Then ${criterion.then}.${audit}${misquoted}`;
+}
+
+/**
+ * The commands of the run's checks a conflict report quotes, when everything it quotes is one: a
+ * task torn between a criterion that names a host check and a brief that forbids starting it
+ * (srcwhere T007, bench round 52: "-m ruff check ."). Empty when the report quotes anything else.
+ */
+export function quotedCheckCommands(report: string, checks: CaseContext["checks"]): string[] {
+  const quoted = [...report.matchAll(/"([^"\n]{2,})"|`([^`\n]{2,})`/g)].map((m) =>
+    (m[1] ?? m[2] ?? "").trim(),
+  );
+  return quoted.length && quoted.every((q) => isCheckCommand(q, checks))
+    ? [...new Set(quoted)]
+    : [];
 }
