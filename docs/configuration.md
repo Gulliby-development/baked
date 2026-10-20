@@ -16,7 +16,7 @@ The chat settings that the terminal pickers edit (provider options, chat router 
 
 ## Example
 
-`workflows.policy.rowsAsData` accepts `"off"` or `"on"` and defaults to off. On enables audited JSON acceptance rows and host-written Bun or pytest tests when the workflow has an analyze stage. Without one, the run ignores the setting with a persisted warning and uses ordinary agent-written tests. The run-start controls can override it for one run. See [acceptance rows as data](workflows/runtime.md#acceptance-rows-as-data) for the task contract and framework limits.
+`workflows.policy.rowsAsData` accepts `"off"` or `"on"` and defaults to off. On enables audited JSON acceptance rows and host-written tests (Bun, pytest, Go, JUnit, Rust, xUnit), as their own files or as a block in a test file the task already writes, when the workflow has an analyze stage. Without one, the run ignores the setting with a persisted warning and uses ordinary agent-written tests. The run-start controls can override it for one run. See [acceptance rows as data](workflows/runtime.md#acceptance-rows-as-data) for the task contract and framework limits.
 
 ```json
 {

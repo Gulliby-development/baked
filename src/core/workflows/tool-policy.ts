@@ -1,6 +1,7 @@
 import { isAbsolute, relative } from "node:path";
 import { workspacePath } from "../specs/validate.js";
 import { toolPhase, withToolPhases } from "../tools/tool-phase.js";
+import { hostRowPaths } from "./acceptance-rows.js";
 import { fileHash, intentRoot, rootField, sameContentIgnoringEol } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { executionClock } from "./execution-clock.js";
@@ -115,10 +116,7 @@ export class WorkflowToolPolicy {
       this.store.state(this.runId).rootGraph?.tasks ??
       this.store.state(this.runId).graph?.tasks ??
       [];
-    if (
-      this.policy.rowsAsData === "on" &&
-      generated.some((t) => t.rows?.length && [t.rowTest?.test, t.rowTest?.data].includes(path))
-    )
+    if (this.policy.rowsAsData === "on" && generated.some((t) => hostRowPaths(t).includes(path)))
       throw new WorkflowFault(
         "CAPABILITY_DENIED",
         `Host-written acceptance file is read-only: ${path}. Edit its harness instead.`,
