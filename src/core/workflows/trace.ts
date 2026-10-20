@@ -433,6 +433,37 @@ export function replayFirstByte(
   runId: string,
   limit: FirstByteLimit = providerFirstByteMs,
 ): FirstByteBoundary[] {
+  // A refused call (a 429, say) answered before any deadline; it is the retry ladder's, not this.
+  const answered = recordedCalls(store, runId).filter(({ call }) => call.status === undefined);
+  return answered.map(({ attemptId, call, index, estimated }) => {
+    const limitMs = limit(call.provider, call);
+    const replayed =
+      call.firstByteMs !== null ? call.firstByteMs > limitMs : call.durationMs >= limitMs;
+    return {
+      attemptId,
+      call: index,
+      provider: call.provider,
+      stage: call.stage ?? null,
+      effort: call.effort ?? null,
+      firstByteMs: call.firstByteMs,
+      durationMs: call.durationMs,
+      estimated,
+      limitMs,
+      recorded: call.firstByteMs === null ? "stop" : "pass",
+      replayed: replayed ? "stop" : "pass",
+    };
+  });
+}
+
+/**
+ * Each model call of a run's attempts, from the `calls` of their `usage.json`. Traces recorded
+ * before calls were kept stand in a completed, one-step buffered CLI attempt as one call whose
+ * first response is the attempt's length (`estimated`).
+ */
+function recordedCalls(
+  store: WorkflowStore,
+  runId: string,
+): { attemptId: string; call: CallTiming; index: number; estimated: boolean }[] {
   const attempts = store.connection
     .query(
       "SELECT id, model_id, status, started_at, ended_at FROM attempts WHERE run_id=? AND model_id IS NOT NULL ORDER BY started_at, rowid",
@@ -444,8 +475,7 @@ export function replayFirstByte(
     started_at: number;
     ended_at: number | null;
   }[];
-  const boundaries: FirstByteBoundary[] = [];
-  for (const attempt of attempts) {
+  return attempts.flatMap((attempt) => {
     const saved = store.latestArtifact(runId, `attempts/${attempt.id}/usage.json`);
     const usage = saved
       ? (JSON.parse(store.readArtifact(runId, saved.id)) as {
@@ -476,26 +506,103 @@ export function replayFirstByte(
         },
       ];
     }
-    for (const [index, call] of calls.entries()) {
-      const limitMs = limit(call.provider, call);
-      const replayed =
-        call.firstByteMs !== null ? call.firstByteMs > limitMs : call.durationMs >= limitMs;
-      boundaries.push({
-        attemptId: attempt.id,
-        call: index,
-        provider: call.provider,
-        stage: call.stage ?? null,
-        effort: call.effort ?? null,
-        firstByteMs: call.firstByteMs,
-        durationMs: call.durationMs,
-        estimated,
-        limitMs,
-        recorded: call.firstByteMs === null ? "stop" : "pass",
-        replayed: replayed ? "stop" : "pass",
-      });
+    return calls.map((call, index) => ({ attemptId: attempt.id, call, index, estimated }));
+  });
+}
+
+/** Healthy first responses of one call shape across the corpus (#1729). */
+export interface FirstByteProfile {
+  provider: string;
+  stage: string | null;
+  effort: string | null;
+  calls: number;
+  p50Ms: number;
+  p99Ms: number;
+  maxMs: number;
+  /** True when every sample is an attempt's length rather than a recorded call (older traces). */
+  estimated: boolean;
+}
+
+/** What the recorded rounds say about providers' latencies and refusals, for fault profiles. */
+export interface CallProfile {
+  firstByte: FirstByteProfile[];
+  /** The `retry-after` waits providers sent with refusals, in milliseconds, by provider. */
+  retryAfterMs: Record<string, number[]>;
+}
+
+const percentile = (sorted: number[], p: number): number =>
+  sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(p * sorted.length) - 1))] ?? 0;
+
+/** The `retry-after` header in milliseconds: seconds, or an HTTP date relative to `at`. */
+function retryAfterOf(value: string, at: number): number | null {
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const date = Date.parse(value);
+  return Number.isNaN(date) ? null : Math.max(0, date - at);
+}
+
+/**
+ * The latencies and refusal waits of every recorded call in the traces at `paths`, grouped by
+ * provider, stage and effort: the parameters the provider fault matrix tests limits against, so
+ * a round with slower healthy calls moves them without a hand-written number (#1729).
+ */
+export function corpusCallProfile(paths: string[]): CallProfile {
+  const groups = new Map<string, { sample: FirstByteProfile; values: number[] }>();
+  const retryAfterMs: Record<string, number[]> = {};
+  for (const path of paths) {
+    const { store, dispose } = openTrace(path);
+    try {
+      for (const { id } of store.connection.query("SELECT id FROM runs").all() as {
+        id: string;
+      }[])
+        for (const { call, estimated } of recordedCalls(store, id)) {
+          if (call.retryAfter) {
+            const wait = retryAfterOf(call.retryAfter, Date.now());
+            if (wait !== null)
+              retryAfterMs[call.provider] = [...(retryAfterMs[call.provider] ?? []), wait];
+          }
+          if (call.firstByteMs === null || call.status !== undefined) continue;
+          const key = `${call.provider}|${call.stage ?? ""}|${call.effort ?? ""}`;
+          const group = groups.get(key) ?? {
+            sample: {
+              provider: call.provider,
+              stage: call.stage ?? null,
+              effort: call.effort ?? null,
+              calls: 0,
+              p50Ms: 0,
+              p99Ms: 0,
+              maxMs: 0,
+              estimated: true,
+            },
+            values: [],
+          };
+          group.values.push(call.firstByteMs);
+          group.sample.estimated &&= estimated;
+          groups.set(key, group);
+        }
+    } finally {
+      dispose();
     }
   }
-  return boundaries;
+  const firstByte = [...groups.values()]
+    .map(({ sample, values }) => {
+      const sorted = values.sort((a, b) => a - b);
+      return {
+        ...sample,
+        calls: sorted.length,
+        p50Ms: percentile(sorted, 0.5),
+        p99Ms: percentile(sorted, 0.99),
+        maxMs: sorted.at(-1) ?? 0,
+      };
+    })
+    .sort(
+      (a, b) =>
+        a.provider.localeCompare(b.provider) ||
+        (a.stage ?? "").localeCompare(b.stage ?? "") ||
+        (a.effort ?? "").localeCompare(b.effort ?? ""),
+    );
+  for (const waits of Object.values(retryAfterMs)) waits.sort((a, b) => a - b);
+  return { firstByte, retryAfterMs };
 }
 
 export interface TraceReplay {
