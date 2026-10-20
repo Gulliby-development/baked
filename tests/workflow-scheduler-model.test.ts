@@ -157,8 +157,11 @@ async function driveAndSettle(host: Host, model: Model, index: number) {
   const crashes = host.executor.crashes;
   await host.drive(id);
   const crashed = host.executor.crashes > crashes;
-  // An armed crash hits the first implementation attempt the drive makes.
-  if (model.armed && implementing) expect(crashed).toBe(true);
+  // An armed crash hits the first implementation attempt the drive makes. A fork whose shared
+  // workspace another run changed stops on input_changed before it makes one.
+  const row = host.store.run(id);
+  const inputChanged = row.status === "blocked" && row.reason === "input_changed";
+  if (model.armed && implementing && !inputChanged) expect(crashed).toBe(true);
   if (crashed) model.armed = false;
   settle(host, model, index, driveOutcomes(model, run, crashed));
   check(host, model);
