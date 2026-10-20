@@ -236,12 +236,13 @@ const has = (workspace: string, name: string): boolean => existsSync(join(worksp
 function scriptGates(workspace: string): GateSuggestion[] {
   const text = read(workspace, "package.json");
   if (text === null) return [];
-  let scripts: Record<string, unknown>;
+  let manifest: { scripts?: Record<string, unknown>; prettier?: unknown };
   try {
-    scripts = (JSON.parse(text) as { scripts?: Record<string, unknown> }).scripts ?? {};
+    manifest = JSON.parse(text) as typeof manifest;
   } catch {
     return [];
   }
+  const scripts = manifest.scripts ?? {};
   const runner =
     has(workspace, "bun.lock") || has(workspace, "bun.lockb")
       ? "bun"
@@ -259,22 +260,87 @@ function scriptGates(workspace: string): GateSuggestion[] {
   const wanted: [string, string[], number, boolean][] = [
     ["typecheck", ["typecheck", "type-check", "check-types"], 120000, true],
     ["lint", ["lint"], 120000, true],
+    // Formatting drift passed unverified when only `lint` was offered (#1685).
+    [
+      "format",
+      ["format:check", "fmt:check", "check-format", "format-check", "prettier:check"],
+      120000,
+      true,
+    ],
     ["tests", ["test"], 600000, true],
     ["build", ["build"], 600000, false],
   ];
-  return wanted.flatMap(([id, names, timeoutMs, required]) => {
+  const fixer = script(["format", "fmt", "prettier"]);
+  const out = wanted.flatMap(([id, names, timeoutMs, required]): GateSuggestion[] => {
     const name = script(names);
-    return name
-      ? [
-          {
-            check: gate(id, runner, ["run", name], timeoutMs, required),
-            source: `package.json script "${name}"`,
-            reason: `${runner} run ${name}`,
-            preselected: id !== "build",
-          },
-        ]
-      : [];
+    if (!name) return [];
+    const check = gate(id, runner, ["run", name], timeoutMs, required);
+    return [
+      {
+        check:
+          id === "format" && fixer
+            ? { ...check, fix: { executable: runner, args: ["run", fixer] } }
+            : check,
+        source: `package.json script "${name}"`,
+        reason:
+          id === "format" && fixer
+            ? `${runner} run ${name} (fixer: ${runner} run ${fixer})`
+            : `${runner} run ${name}`,
+        preselected: id !== "build",
+      },
+    ];
   });
+  if (out.some((s) => s.check.id === "format")) return out;
+  // A formatter configured without a check script is offered, not preselected: the project may
+  // run it only in an editor, and its whole tree may not be formatted yet.
+  const formatter = jsFormatter(workspace, manifest.prettier !== undefined);
+  if (formatter) {
+    // `yarn <bin>` runs a package binary in Yarn 1 and in Yarn 2+.
+    const [executable, ...prefix] =
+      runner === "bun"
+        ? ["bunx"]
+        : runner === "npm"
+          ? ["npx"]
+          : runner === "pnpm"
+            ? ["pnpm", "exec"]
+            : ["yarn"];
+    out.push({
+      check: {
+        ...gate("format", executable, [...prefix, ...formatter.check], 120000),
+        fix: { executable, args: [...prefix, ...formatter.fix] },
+      },
+      source: formatter.source,
+      reason: `${[executable, ...prefix, ...formatter.check].join(" ")} (fixer: ${[executable, ...prefix, ...formatter.fix].join(" ")})`,
+      preselected: false,
+    });
+  }
+  return out;
+}
+
+const PRETTIER_CONFIG =
+  /^(?:\.prettierrc(?:\.(?:json5?|ya?ml|toml|[cm]?[jt]s))?|prettier\.config\.[cm]?[jt]s)$/;
+
+/** The JavaScript formatter a project configures, as a check and its fixer. */
+function jsFormatter(
+  workspace: string,
+  prettierKey: boolean,
+): { check: string[]; fix: string[]; source: string } | null {
+  for (const name of ["biome.json", "biome.jsonc"])
+    if (has(workspace, name))
+      return {
+        check: ["biome", "format", "."],
+        fix: ["biome", "format", "--write", "."],
+        source: name,
+      };
+  for (const name of ["dprint.json", "dprint.jsonc", ".dprint.json", ".dprint.jsonc"])
+    if (has(workspace, name))
+      return { check: ["dprint", "check"], fix: ["dprint", "fmt"], source: name };
+  const config = prettierKey
+    ? "package.json prettier"
+    : readdirSync(workspace).find((name) => PRETTIER_CONFIG.test(name));
+  return config
+    ? { check: ["prettier", "--check", "."], fix: ["prettier", "--write", "."], source: config }
+    : null;
 }
 
 function pythonGates(workspace: string): GateSuggestion[] {
@@ -356,6 +422,59 @@ function pythonGates(workspace: string): GateSuggestion[] {
       reason: `${prefix}ruff format --check . (fixer: ${prefix}ruff format)`,
       preselected: formatSource !== null,
     });
+  // Black and the type checkers had no gate although the edit profile runs them (#1685).
+  const setupCfg = read(workspace, "setup.cfg") ?? "";
+  const declared = (name: string) =>
+    new RegExp(`^\\s*${name}(?![\\w.-])`, "im").test(requirements) ||
+    new RegExp(`["']${name}[<>=~!\\s\\[;"']`).test(pyproject);
+  const blackSource = /\[tool\.black\]/.test(pyproject)
+    ? "pyproject.toml [tool.black]"
+    : declared("black")
+      ? "declared black dependency"
+      : null;
+  if (blackSource && !formatSource) {
+    const black = inEnvironment("black", ["--check", "."]);
+    out.push({
+      check: {
+        ...gate("black", black.executable, black.args, 120000),
+        fix: inEnvironment("black", ["."]),
+      },
+      source: blackSource,
+      reason: `${prefix}black --check . (fixer: ${prefix}black .)`,
+      preselected: true,
+    });
+  }
+  const mypySource = has(workspace, "mypy.ini")
+    ? "mypy.ini"
+    : has(workspace, ".mypy.ini")
+      ? ".mypy.ini"
+      : /\[tool\.mypy\]/.test(pyproject)
+        ? "pyproject.toml [tool.mypy]"
+        : /^\[mypy\]/m.test(setupCfg)
+          ? "setup.cfg [mypy]"
+          : null;
+  const pyrightSource = has(workspace, "pyrightconfig.json")
+    ? "pyrightconfig.json"
+    : /\[tool\.pyright\]/.test(pyproject)
+      ? "pyproject.toml [tool.pyright]"
+      : null;
+  if (pyrightSource) {
+    const pyright = inEnvironment("pyright", []);
+    out.push({
+      check: gate("pyright", pyright.executable, pyright.args, 300000),
+      source: pyrightSource,
+      reason: `${prefix}pyright`,
+      preselected: true,
+    });
+  } else if (mypySource) {
+    const mypy = inEnvironment("mypy", ["."]);
+    out.push({
+      check: gate("mypy", mypy.executable, mypy.args, 300000),
+      source: mypySource,
+      reason: `${prefix}mypy .`,
+      preselected: true,
+    });
+  }
   return out;
 }
 

@@ -673,6 +673,49 @@ describe("gate matrix: python environments", () => {
     });
 });
 
+describe("gate matrix: format and type-check gates (#1685)", () => {
+  const gates = (files: Record<string, string>) =>
+    detectGates(project(files)).map((s) => [s.check.id, [s.check.executable, ...s.check.args].join(" "), s.check.fix ? [s.check.fix.executable, ...s.check.fix.args].join(" ") : null, s.preselected]);
+  const pkg = (extra: Record<string, unknown>) => JSON.stringify({ name: "p", ...extra });
+
+  for (const name of ["format:check", "fmt:check", "check-format", "format-check", "prettier:check"])
+    cell("bun", `a "${name}" script is a preselected format gate`, () => {
+      const scripts = { [name]: "prettier --check .", format: "prettier --write ." };
+      expect(gates({ "package.json": pkg({ scripts }), "bun.lock": "" })).toContainEqual(["format", `bun run ${name}`, "bun run format", true]);
+    });
+
+  cell("npm", "a formatter config without a check script is offered, not preselected", () => {
+    expect(gates({ "package.json": pkg({ prettier: {} }), "package-lock.json": "{}" })).toContainEqual(["format", "npx prettier --check .", "npx prettier --write .", false]);
+    expect(gates({ "package.json": pkg({}), "pnpm-lock.yaml": "", ".prettierrc.yaml": "" })).toContainEqual(["format", "pnpm exec prettier --check .", "pnpm exec prettier --write .", false]);
+    expect(gates({ "package.json": pkg({}), "bun.lock": "", "biome.json": "{}" })).toContainEqual(["format", "bunx biome format .", "bunx biome format --write .", false]);
+    expect(gates({ "package.json": pkg({}), "yarn.lock": "", "dprint.json": "{}" })).toContainEqual(["format", "yarn dprint check", "yarn dprint fmt", false]);
+    const scripted = gates({ "package.json": pkg({ scripts: { "format:check": "biome format ." } }), "bun.lock": "", "biome.json": "{}" });
+    expect(scripted.filter(([id]) => id === "format")).toEqual([["format", "bun run format:check", null, true]]);
+    expect(gates({ "package.json": pkg({ scripts: { lint: "eslint ." } }), "bun.lock": "" }).map(([id]) => id)).toEqual(["lint"]);
+  });
+
+  const python = (pyproject: string, extra: Record<string, string> = {}) => gates({ "pyproject.toml": `[project]\nname = "p"\n${pyproject}`, ...extra });
+
+  cell("python", "black gets a preselected format gate unless ruff formats", () => {
+    expect(python("[tool.black]\nline-length = 100\n")).toContainEqual(["black", "black --check .", "black .", true]);
+    expect(python("", { "requirements-dev.txt": "black==24.1.0\n" })).toContainEqual(["black", "black --check .", "black .", true]);
+    expect(python("", { "requirements.txt": "black-extras\n" }).map(([id]) => id)).not.toContain("black");
+    expect(python("[tool.black]\n[tool.ruff]\n[tool.ruff.format]\n").map(([id]) => id)).not.toContain("black");
+    expect(python("[tool.black]\n", { "uv.lock": "" })).toContainEqual(["black", "uv run black --check .", "uv run black .", true]);
+  });
+
+  cell("python", "mypy and pyright configs get a preselected whole-unit type-check gate", () => {
+    for (const [extra, pyproject] of [[{ "mypy.ini": "[mypy]\n" }, ""], [{}, "[tool.mypy]\nstrict = true\n"], [{ "setup.cfg": "[mypy]\n" }, ""]] as const)
+      expect(python(pyproject, extra)).toContainEqual(["mypy", "mypy .", null, true]);
+    expect(python("", { "pyrightconfig.json": "{}" })).toContainEqual(["pyright", "pyright", null, true]);
+    expect(python("[tool.pyright]\n[tool.mypy]\n").filter(([id]) => id === "mypy" || id === "pyright").map(([id]) => id)).toEqual(["pyright"]);
+    expect(python("[tool.mypy]\n", { "poetry.lock": "" })).toContainEqual(["mypy", "poetry run mypy .", null, true]);
+    const typecheck = detectGates(project({ "pyproject.toml": "[tool.mypy]\n" })).find((s) => s.check.id === "mypy")!.check;
+    expect(isWholeUnitCheck(typecheck)).toBe(true);
+    expect(python("").map(([id]) => id)).toEqual([]);
+  });
+});
+
 for (const stack of STACKS) {
   const fixture = FIXTURES[stack];
   describe(`gate matrix: ${stack}`, () => {
