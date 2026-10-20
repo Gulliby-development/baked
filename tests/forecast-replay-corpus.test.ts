@@ -122,6 +122,14 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     expect(stopped!.forecastUsd!).toBeGreaterThan(stopped!.ceilingUsd!);
   }, 120000);
 
+  test("the rewound forecast is the one the runner recorded: R52 srcwhere's advisory at vlq", () => {
+    // The runner's advisory (cost.forecast_advisory) said $46.80 at 2 of 12. Planned features are
+    // routed with the runner's model routing from the trace; on the default routing every stage ran
+    // on the initiative's model and the replay said $49.99.
+    const [replay] = replayInitiativeStarts(join(ROOT, "R52", "srcwhere.sqlite.gz"));
+    expect(replay?.starts.find((b) => b.featureId === "vlq")).toMatchObject({ accepted: 2, forecastUsd: 46.8, replayed: "pass" });
+  }, 120000);
+
   test("the rewind sees only what existed at each start, its history stores included", () => {
     const [replay] = replayInitiativeStarts(selwhy);
     const starts = replay!.starts;

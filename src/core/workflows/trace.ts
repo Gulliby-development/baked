@@ -3,7 +3,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { DEFAULT_CONFIG } from "../../config/index.js";
+import type { AppConfig } from "../../types/index.js";
 import { builtinProfiles } from "../agents/profiles/builtin.js";
+import { ModelRoutingSchema } from "../llm/model-routing.js";
 import {
   type CallReasoning,
   type CallTiming,
@@ -841,6 +843,36 @@ export function replayInitiativeStarts(
   return ids.map((id) => replayStarts(path, id, gate, options.priceSamples, historyTrace));
 }
 
+/**
+ * The runner's model routing as the trace's latest routing record before `t` shows it: each
+ * profile's route names the configured class, role or profile it came from. Features without a
+ * run are routed with it, as the runner routed them; without it every stage would run on the
+ * initiative's model and be priced there.
+ */
+function routingAt(db: Database, t: number): Pick<AppConfig, "modelRouting"> {
+  const row = db
+    .query(
+      "SELECT inline_content AS content FROM artifacts WHERE kind='routing' AND created_at<? ORDER BY created_at DESC LIMIT 1",
+    )
+    .get(t) as { content: string | null } | null;
+  if (!row?.content) return {};
+  const record = JSON.parse(row.content) as {
+    profiles?: Record<string, { model?: string; effort?: string; source?: string }>;
+  };
+  const routing: Record<string, Record<string, { model: string; effort?: string }>> = {};
+  for (const route of Object.values(record.profiles ?? {})) {
+    const [, kind, name] =
+      /^modelRouting\.(classes|roles|profiles)\.(.+)$/.exec(route.source ?? "") ?? [];
+    if (!kind || !name || !route.model) continue;
+    routing[kind] = {
+      ...routing[kind],
+      [name]: { model: route.model, ...(route.effort ? { effort: route.effort } : {}) },
+    };
+  }
+  const parsed = ModelRoutingSchema.safeParse(routing);
+  return parsed.success && Object.keys(routing).length ? { modelRouting: parsed.data } : {};
+}
+
 /** Tables other than `runs` whose rows belong to a run. */
 function runTables(db: Database): string[] {
   return (db.query("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[])
@@ -985,7 +1017,12 @@ function replayStarts(
         ).map((r) => r.id);
         if (later.length) hdb.transaction(() => removeRuns(hdb, runTables(hdb), later))();
       }
-      const service = new NativeWorkflowService(workspace, DEFAULT_CONFIG, NO_AGENTS, true);
+      const service = new NativeWorkflowService(
+        workspace,
+        { ...DEFAULT_CONFIG, ...routingAt(db, t) },
+        NO_AGENTS,
+        true,
+      );
       try {
         const initiatives = new InitiativeService(service);
         if (priceSamples) initiatives.priceSamples = priceSamples;
