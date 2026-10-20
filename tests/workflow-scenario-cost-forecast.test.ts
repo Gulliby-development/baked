@@ -382,10 +382,14 @@ describe("scenario: fecsmith front, the forecast prices the tokens left at the t
     expect(forecast.projectedUsd).toBeLessThan(forecast.spentUsd + forecast.remainingTokens * blended);
   });
 
-  test("before a task attempt is priced, the blended price stands in", async () => {
+  test("before a task attempt is priced, the sized task model at the task mix stands in (#1740)", async () => {
     const { store, runId } = await midRun({ perTask: [] });
     const { spentUsd } = store.costUsage(runId);
-    expect(remainingCostRate(store, runId)).toBeCloseTo(costRate(spentUsd, store.run(runId).token_usage, null), 12);
+    const price = findPricing(MODEL)!.pricing;
+    const taskMix = (0.15 * price.input + 0.8 * price.cacheRead + 0.05 * price.output) / 1e6;
+    expect(remainingCostRate(store, runId)).toBeCloseTo(taskMix, 12);
+    // Not the blended planning price, which planning's uncached calls set (#1505 used it).
+    expect(remainingCostRate(store, runId)).not.toBeCloseTo(costRate(spentUsd, store.run(runId).token_usage, null), 9);
   });
 
   test("a dearer later task raises the task price, so the forecast follows it", async () => {
