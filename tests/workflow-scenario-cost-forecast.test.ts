@@ -13,6 +13,7 @@ import type { RunPolicy, Task } from "../src/core/workflows/schemas.js";
 import type { AttemptUsageRecord } from "../src/core/workflows/step-budget.js";
 import { newId, type WorkflowStore } from "../src/core/workflows/store.js";
 import { readWorkflowView } from "../src/core/workflows/view.js";
+import type { TaskKind } from "../src/core/workflows/sizing.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
 // Scenario of bench round 28, cfgtrace b4427c85 (#1246). Sizing priced the plan's test tasks at
@@ -203,6 +204,29 @@ describe("scenario: cfgtrace b4427c85, a forecast past the dollar cap stops the 
     expect(forecastProgress(store, runId)).toHaveLength(0);
     expect(runReport(store, runId)).not.toContain("Cost forecast");
   });
+});
+
+describe("scenario: forecasts calibrate only the open task's own kind (#1631)", () => {
+  const kinds: TaskKind[] = ["code", "test", "docs", "mixed", "manifest"];
+  for (const kind of kinds) {
+    test(`${kind}: use the priced midpoint until this kind finishes, then its own measured ratio`, async () => {
+      const { store, runId, policy, stage } = await midRun({ perTask: [850_000, 850_000, 850_000] });
+      const artifact = store.latestArtifact(runId, "sizing/plan-0.json")!;
+      const sizing = JSON.parse(store.readArtifact(runId, artifact.id)) as { tasks: { kind: TaskKind }[] };
+      // Also exercise docs overruns influencing code, rather than only code influencing tests.
+      sizing.tasks.forEach((t, i) => { t.kind = i < 3 ? (kind === "code" ? "docs" : "code") : kind; });
+      store.artifact(runId, "sizing", "sizing/plan-1.json", canonical(sizing));
+      const before = costForecast(store, runId, policy)!;
+      expect(before.ratio).toBeCloseTo(3.4, 6);
+      expect(before.remainingTokens - verificationTokens()).toBe(20 * 250_000);
+      // A zero-token completion is a measured ratio of zero, not an unmeasured kind.
+      stage("T004", 0);
+      expect(costForecast(store, runId, policy)!.remainingTokens).toBe(verificationTokens());
+      stage("T005", 250_000);
+      // The two own-kind tasks used 250k over their combined 500k estimate, ratio 0.5.
+      expect(costForecast(store, runId, policy)!.remainingTokens - verificationTokens()).toBe(18 * 125_000);
+    });
+  }
 });
 
 // Bench round 42, fecsmith front (#1503): under `--budget-usd 30` with a base policy cap of $8,

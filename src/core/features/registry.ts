@@ -887,7 +887,7 @@ export const FEATURES: readonly Feature[] = [
     id: "run-cost-cap",
     group: "Workflow runs",
     title:
-      "Cost cap of a run: calls and reservations use stage prices, bounded growth adds tolerance headroom",
+      "Cost cap of a run: stage-priced calls and reservations, bounded growth with tolerance headroom, forecasts calibrated by task kind, per project, doctor and estimate",
     tui: ["/workflow: new run, Cost cap field", "/timeouts: Workflow Cost Cap"],
     cli: [
       "baked workflow run: --max-cost-usd",
@@ -979,7 +979,8 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "criteria-case-check",
     group: "Workflow runs",
-    title: "Task-end test case check: separate table inputs and equivalent escape spellings",
+    title:
+      "Task-end test case check: classify input values, accept formatted spellings and reject assertion-message decoys",
     tui: ["/workflow: task activity and diagnostic artifacts"],
     cli: ["baked workflow artifacts"],
     api: ["/v1/workflow/runs/:id/artifacts"],
