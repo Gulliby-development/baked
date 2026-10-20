@@ -9,7 +9,7 @@ BAKED runs on Bun. Install dependencies with `bun install`, then start the termi
 - `src/core/agents/bake.ts` assembles the agent, prompts, tools, approvals, and execution modes.
 - `src/core/tools/` provides file operations, shell execution, Git, and code analysis.
 - `src/core/context/` and `src/core/intelligence/` maintain context, repository graphs, and standalone language servers.
-- `src/core/llm/providers/` contains Claude, OpenAI API, Codex, GitHub Copilot, and GitHub Models connections.
+- `src/core/llm/providers/` contains Claude, OpenAI API, Codex, GitHub Copilot, and GitHub Models connections. `tests/provider-fault-matrix.test.ts` runs each adapter against a misbehaving transport (`tests/helpers/faulty-provider.ts`: a fake `fetch` speaking the provider's wire protocol, or a fake CLI runner) for every fault profile: a first byte as slow as the slowest healthy one of bench round 50, a hang, a 429 with `retry-after`, a 5xx overload, a stream cut mid-answer, a malformed tool call and an empty answer, plus `SQLITE_BUSY` on store reads. Each row asserts the class the runtime gives the failure. A new adapter is added to `FAULT_PROVIDERS` in the same pull request.
 - `src/headless/` provides command-line automation and interactive console chat.
 - `src/core/api/` serves the workflow commands as a local HTTP API with an event stream (`baked serve`); it reuses the `baked workflow` command path. See the [runtime guide](docs/workflows/runtime.md#local-api-baked-serve); the desktop contract is [docs/desktop/api.md](docs/desktop/api.md).
 - `src/core/sessions/` and `src/core/memory/` manage persisted sessions and memory.
