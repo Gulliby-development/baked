@@ -791,6 +791,13 @@ export class WorkflowStore {
         "UPDATE critic_outcomes SET acceptance=?,updated_at=? WHERE run_id=? AND acceptance IS NULL",
         [acceptance, Date.now(), id],
       );
+    // A run that ended keeps no open step or task (#1745, #1746): no later drive will close them.
+    if (status === "failed" || status === "cancelled") {
+      this.endOpenSteps(id, null, "running", "interrupted");
+      this.endOpenSteps(id, null, "waiting", "interrupted");
+      for (const task of this.tasks(id))
+        if (task.status === "running") this.taskStatus(id, task.id, status);
+    } else if (status === "completed") this.endOpenSteps(id, null, "waiting", "completed");
   }
   /** Logs a critic score of a task attempt; the same attempt scored again replaces its row. */
   recordCriticScore(
@@ -1357,6 +1364,27 @@ export class WorkflowStore {
       id,
     ]);
     this.emit(runId, { type: "stage.finished", payload: { stepId: id, status, artifactId } });
+  }
+  /**
+   * Ends the steps of a run still in `from` (#1745, #1746): every descendant of `root`, or every
+   * step of the run when `root` is null, takes `status`. A child step whose function threw, or a
+   * stage step left `waiting` after its request was decided, has no other place that closes it.
+   */
+  endOpenSteps(runId: string, root: string | null, from: StageState, status: StageState): void {
+    const steps = this.steps(runId);
+    const under = new Set(root ? [root] : []);
+    if (root)
+      for (let grew = true; grew; ) {
+        grew = false;
+        for (const step of steps)
+          if (step.parent_step_id && under.has(step.parent_step_id) && !under.has(step.id)) {
+            under.add(step.id);
+            grew = true;
+          }
+      }
+    for (const step of steps)
+      if (step.status === from && step.id !== root && (!root || under.has(step.id)))
+        this.finishStep(runId, step.id, status);
   }
   steps(runId: string): StepRow[] {
     return this.db

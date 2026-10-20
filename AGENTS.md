@@ -42,6 +42,7 @@ BAKED is a TypeScript coding agent with an OpenTUI/React terminal UI and a headl
 - Follow strict TypeScript and the existing Biome configuration. Avoid `any`, unused variables, and unrelated formatting changes.
 - Prefer small changes to existing modules. Keep agent logic independent of the terminal UI.
 - Preserve access controls, approval callbacks, secret handling, and coordination when changing tools.
+- A workflow step opened in `src/core/workflows/` goes under its stage step (`beginStep(runId, id, stepId)`), so the drive's catch, recovery and the run's end close it with the stage; a top-level step outside a stage closes itself on every exit path (try/catch or finally). No step stays `running` or `waiting` after its work ended (#1745, #1746).
 - A pull request that adds an accounting quantity (a token, cost, reservation or forecast figure of a run) or a scheduler command adds its invariant to `tests/workflow-accounting-invariants.test.ts` or its command to the model in `tests/workflow-scheduler-model.test.ts` in the same pull request.
 - A new provider adapter joins the provider fault matrix (`FAULT_PROVIDERS` in `tests/helpers/faulty-provider.ts`, run by `tests/provider-fault-matrix.test.ts`) in the same pull request, and a new timer, retry or limit on model calls adds the fault profile that exercises it, with the class it expects: an answer, an outage, a retry, a model mistake or a host fault.
 - Keep comments focused on non-obvious intent. Keep documentation technical: setup, behavior, architecture, troubleshooting, and development.
