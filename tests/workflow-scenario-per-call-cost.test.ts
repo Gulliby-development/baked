@@ -4,6 +4,7 @@ import { canExtendRun } from "../src/core/workflows/extendable.js";
 import { findPricing } from "../src/core/llm/pricing.js";
 import { growCostCapToForecast, remainingCostRate } from "../src/core/workflows/budget.js";
 import { costCeilingUsd } from "../src/core/workflows/cost-tolerance.js";
+import { DEFAULT_MIX } from "../src/core/workflows/stage-price.js";
 import { readWorkflowView } from "../src/core/workflows/view.js";
 import { CALL_COST_MODELS, NEXT_CALL, perCallCostScenario } from "./helpers/per-call-cost-scenario.js";
 
@@ -53,9 +54,12 @@ describe("scenario: cached calls fit after expensive planning (#1630, R49)", () 
     test(`${model}: planning and review keep their own prices, including after rerouting`, async () => {
       const { fixture, store, runId, policy, rate, spend } = await perCallCostScenario(model);
       cleanups.push(fixture.dispose);
-      const blended = store.costUsage(runId).spentUsd / store.run(runId).token_usage;
       const review = store.reserve(runId, store.beginStep(runId, "review"), model, 1000, policy);
-      expect(store.costUsage(runId).reservedUsd).toBeCloseTo(1000 * blended, 10);
+      // A stage without samples is priced on its own model at its default mix, not at the run's
+      // blended price, which the cached task calls pulled down (#1740).
+      const price = findPricing(model)!.pricing;
+      const reviewMix = DEFAULT_MIX.input * price.input + DEFAULT_MIX.cacheRead * price.cacheRead + DEFAULT_MIX.output * price.output;
+      expect(store.costUsage(runId).reservedUsd).toBeCloseTo(1000 * reviewMix / 1e6, 10);
       store.transaction(() => store.finishAttempt(runId, review, "completed", 0));
       store.setPolicy(runId, { ...policy, maxCostUsd: null });
       spend("review", 100_000);

@@ -13,6 +13,12 @@ import { caseEvidence } from "./criteria-evidence.js";
  * `--path src/cli` and `--path SRC` no-match cases; a model reviewer was the first to read them,
  * and each correction cost 0.2M to 0.5M tokens. The host now names such a case to the task that
  * writes the tests, inside its attempt.
+ *
+ * Ownership rules: a criterion the plan gives to most tasks is about the whole repository (#1366);
+ * a case shared by several test tasks belongs to one of them (#1597); and a case another task owns
+ * is never demanded of this one: text of a document another task writes, a test name a sibling
+ * task's description names, or anything a task limited to a few changed lines does not name
+ * (#1771, `ownedElsewhere`).
  */
 
 /**
@@ -157,7 +163,8 @@ export function criterionCases(
         add(criterion.id, member, true);
     }
   }
-  const owned = partitionCases(cases, task, tasks);
+  const elsewhere = ownedElsewhere(spec, task, tasks);
+  const owned = partitionCases(cases, task, tasks).filter((c) => !elsewhere(c));
   const applicable = owned.filter((c) => {
     const carriers = tasks.filter(
       (t) =>
@@ -336,6 +343,75 @@ const NUMBER_WORDS = [
 /** "all six formats", "each of the 4 modes": the count picks the set out. */
 const ALL_OF =
   /\b(?:all|each of the|every one of the)\s+(\d+|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+([a-z][\w-]*?)s?\b/gi;
+
+/**
+ * A project document a criterion can describe: a README, changelog or usage guide, or a page under
+ * `docs/`. Input files a test reads (`content/post.md`, `input.txt`) are not documents here.
+ */
+const DOCUMENT =
+  /(?<![\w./-])((?:[\w.-]+\/)*(?:README|CHANGELOG|CONTRIBUTING|USAGE|HISTORY)(?:\.[A-Za-z]{1,8})?|(?:[\w.-]+\/)*docs?\/(?:[\w.-]+\/)*[\w.-]+\.(?:md|mdx|markdown|rst|adoc|txt))(?![\w/-])/gi;
+/**
+ * A description that limits the edit: "change exactly three lines", "edit only 2 existing lines",
+ * "touch nothing else". An edit verb is required, so "prints only one line" is not a limit.
+ */
+const RESTRICTED_EDIT = new RegExp(
+  String.raw`\b(?:chang|edit|modif|updat|touch|replac|rewrit)\w*\s+(?:(?:exactly|only|at most)\s+(?:\d+|one|${NUMBER_WORDS.join("|")})\s+(?:[a-z]+\s+)?lines?\b|nothing else\b)`,
+  "i",
+);
+
+/** Whether a written path is the document a criterion names; a bare `README` is any README. */
+const sameFile = (written: string, named: string): boolean => {
+  const a = written.replaceAll("\\", "/").toLowerCase();
+  const b = named.replaceAll("\\", "/").replace(/^\.\//, "").toLowerCase();
+  const stem = b.includes(".")
+    ? undefined
+    : new RegExp(`(?:^|/)${escapeRegex(b)}(?:\\.[a-z]{1,8})?$`);
+  return a === b || a.endsWith(`/${b}`) || (stem?.test(a) ?? false);
+};
+
+/**
+ * The cases another planned task owns (#1771), which this task's walk must not demand. Bench round
+ * 52, grundykit T006 ("change exactly three lines and nothing else" in two test files) was refused
+ * for fragments of a README paragraph and for test names that sibling tasks write; it added them,
+ * the review flagged the extra lines, and a corrective reverted them (258k tokens). A case is owned
+ * elsewhere when its criterion's Given or When describes a document this task does not write and
+ * another task does; when it is an identifier another test-writing task's description names and
+ * this one's does not; or when this task's description limits the edit and does not name it.
+ */
+function ownedElsewhere(
+  spec: SpecText,
+  task: CaseTask,
+  tasks: readonly CaseTask[],
+): (c: CriterionCase) => boolean {
+  const own = task.description ?? "";
+  const others = tasks.filter((t) => t !== task && (!task.id || t.id !== task.id));
+  const writes = (t: CaseTask, path: string) =>
+    (t.writes ?? []).some((w) => w.action !== "delete" && sameFile(w.path, path));
+  const documented = new Set(
+    spec.criteria
+      .filter((criterion) =>
+        [...`${criterion.given}\n${criterion.when}`.matchAll(DOCUMENT)].some((match) => {
+          const path = match[1] ?? "";
+          return !writes(task, path) && others.some((t) => writes(t, path));
+        }),
+      )
+      .map((criterion) => criterion.id),
+  );
+  const restricted = RESTRICTED_EDIT.test(own);
+  const named = (c: CriterionCase, text: string) =>
+    !missingCases([{ ...c, word: true }], [text]).length;
+  return (c) =>
+    documented.has(c.criterionId) ||
+    (restricted && !named(c, own)) ||
+    (identifierLike(c.literal) &&
+      !named(c, own) &&
+      others.some(
+        (t) =>
+          t.writes &&
+          writtenTestPaths({ writes: t.writes }).length &&
+          named(c, t.description ?? ""),
+      ));
+}
 
 interface ClosedSet {
   members: string[];

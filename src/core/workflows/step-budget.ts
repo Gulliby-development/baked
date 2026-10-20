@@ -548,7 +548,10 @@ export class AttemptStepController {
     // One steering message per attempt; the stop follows only when the steered pattern goes on.
     if (watch && !this.watchDone && this.finalizedBy === null && this.options.submitTools.length) {
       if (!this.steered) {
-        const finding = watchSteps(input.steps, { mustEdit: watch.mustEdit });
+        const finding = watchSteps(input.steps, {
+          mustEdit: watch.mustEdit,
+          spend: { used: this.capped(input.steps), cap: this.tokenCap(input.steps) },
+        });
         if (finding) {
           this.steered = { at: input.steps.length, finding };
           steer = finding;

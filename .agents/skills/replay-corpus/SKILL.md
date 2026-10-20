@@ -27,6 +27,7 @@ BAKED's host decisions are replayed on recorded bench rounds before a change mer
 |---|---|---|
 | Run cost-forecast stop (`assertForecastFits`) | `replayRun`: rewinds the run to each priced attempt | `newStops` |
 | Cap growth to the forecast | `replayRun` | `newGrowth` |
+| A model call's cost-cap check (`costCapDecision`, from `reserve` and `expandReservation`) | `replayRun`: at each recorded attempt, rewound to its start, checks its largest reservation on its stage and model. Every recorded attempt passed, so a replayed refusal is new | `newCostStops` |
 | A model call's first-response deadline (`providerFirstByteMs`) | `replayFirstByte`: reads each call's `calls` timing in `attempts/*/usage.json`. Older traces fall back to the attempt length of a one-step buffered CLI attempt | `newFirstByteStops` |
 | An initiative feature's start on its budget share (`shareShortfall`) | `replayShareGate`: reads each `feature.share_gate` initiative event, which records the gate's inputs (remaining budget, dollar cost view, the waiting features' shares and estimates) and its verdict. Keyed by initiative: `"RNN/app.sqlite.gz#INITIATIVE_ID"`. Traces before #1707 record none | `newShareStops` |
 
