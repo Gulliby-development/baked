@@ -5,7 +5,7 @@ import type { LanguageModelV4, LanguageModelV4StreamPart } from "@ai-sdk/provide
 import { UnsupportedFunctionalityError } from "@ai-sdk/provider";
 import { generateText, type LanguageModel } from "ai";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
-import { PROVIDER_FIRST_BYTE_MS, ProviderUnreachableError, probeProvider, providerBackoffMs, providerResponded, withProviderHealth } from "../src/core/llm/provider-health.js";
+import { PROVIDER_FIRST_BYTE_MS, ProviderUnreachableError, probeProvider, providerBackoffMs, providerFirstByteMs, providerResponded, withProviderHealth } from "../src/core/llm/provider-health.js";
 import { anthropic } from "../src/core/llm/providers/anthropic.js";
 import { createClaudeCodeLanguageModel } from "../src/core/llm/providers/claude-code/index.js";
 import { copilot } from "../src/core/llm/providers/copilot.js";
@@ -16,6 +16,86 @@ import { createCodexLanguageModel } from "../src/core/llm/providers/codex/runner
 
 const cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
+
+test.each([
+  ["openai", "spec", "max", 60_000],
+  ["anthropic", "plan", "max", 60_000],
+  ["copilot", "review", "high", 60_000],
+  ["github-models", "plan", "max", 60_000],
+  ["codex", "implementation", "low", 300_000],
+  ["claude-code", "review", "high", 450_000],
+  ["codex", "review", "xhigh", 600_000],
+  ["claude-code", "implementation", "max", 600_000],
+  ["codex", "spec", "default", 600_000],
+  ["claude-code", "plan", "low", 600_000],
+] as const)("%s %s at %s effort has a %d ms first-response deadline", (provider, stage, effort, ms) => {
+  expect(providerFirstByteMs(provider, { stage, effort })).toBe(ms);
+});
+
+test.each(["codex-exec", "codex-native-fallback", "claude-code"])("%s allows slow first output but still aborts a silent adapter", async (adapter) => {
+  const clock = awakeClock();
+  let sent: AbortSignal | undefined;
+  const codex = createCodexLanguageModel("gpt-6-astra", { run: async (call) => { sent = call.abortSignal; return new Promise(() => {}); } });
+  const claude = createClaudeCodeLanguageModel("opus", { run: async (call) => { sent = call.abortSignal; return new Promise(() => {}); } });
+  const sessions = new CodexAppServerSessions();
+  const open = spyOn(sessions, "openStep").mockResolvedValue(null);
+  try {
+    const model = adapter === "claude-code" ? claude : adapter === "codex-exec" ? codex : createCodexNativeLanguageModel("gpt-6-astra", sessions, codex);
+    const pending = generateText({ model: withProviderHealth(model, "fixture/model"), prompt: "Hi", maxRetries: 0 }).catch((error: unknown) => error);
+    await Bun.sleep(1);
+    clock.advance(61_000);
+    expect(sent?.aborted).toBe(false);
+    clock.advance(240_000);
+    const error = await pending;
+    expect(error).toBeInstanceOf(ProviderUnreachableError);
+    expect((error as Error).message).toContain("300 seconds");
+    expect(sent?.aborted).toBe(true);
+  } finally { open.mockRestore(); clock.restore(); }
+});
+
+test.each(["codex", "claude-code"])("%s health probe uses the buffered adapter deadline too", async (provider) => {
+  const clock = awakeClock();
+  const codex = createCodexLanguageModel("gpt-6-astra", { run: async () => {
+    await new Promise<void>((resolve) => setTimeout(resolve, 90_000));
+    return { text: '{"text":"OK","toolCalls":[],"finishReason":"stop"}', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } };
+  } });
+  const claude = createClaudeCodeLanguageModel("opus", { run: async () => {
+    await new Promise<void>((resolve) => setTimeout(resolve, 90_000));
+    return { text: "OK", structured: { text: "OK", toolCalls: [], finishReason: "stop" }, usage: { inputTokens: { total: 1 }, outputTokens: { total: 1 } } };
+  } });
+  try {
+    const pending = probeProvider(provider === "codex" ? codex : claude, `${provider}/model`, new AbortController().signal);
+    await Bun.sleep(1);
+    clock.advance(91_000);
+    expect(await pending).toMatchObject({ text: "OK" });
+  } finally { clock.restore(); }
+});
+
+test.each([
+  ["codex", "review", "max"],
+  ["claude-code", "review", "xhigh"],
+  ["codex", "plan", "low"],
+  ["claude-code", "spec", "default"],
+] as const)("%s %s at %s effort still aborts after ten silent minutes", async (provider, stage, effort) => {
+  const clock = awakeClock();
+  let sent: AbortSignal | undefined;
+  const codex = createCodexLanguageModel("gpt-6-astra", { run: async (call) => { sent = call.abortSignal; return new Promise(() => {}); } });
+  const claude = createClaudeCodeLanguageModel("opus", { run: async (call) => { sent = call.abortSignal; return new Promise(() => {}); } });
+  try {
+    const pending = generateText({
+      model: withProviderHealth(provider === "codex" ? codex : claude, `${provider}/model`, { stage }),
+      prompt: "Hi", maxRetries: 0, providerOptions: { [provider]: { reasoningEffort: effort } },
+    }).catch((error: unknown) => error);
+    await Bun.sleep(1);
+    clock.advance(301_000);
+    expect(sent?.aborted).toBe(false);
+    clock.advance(300_000);
+    const error = await pending;
+    expect(error).toBeInstanceOf(ProviderUnreachableError);
+    expect((error as Error).message).toContain("600 seconds");
+    expect(sent?.aborted).toBe(true);
+  } finally { clock.restore(); }
+});
 
 const finish: LanguageModelV4StreamPart = { type: "finish", finishReason: { unified: "stop", raw: "stop" }, usage: {
   inputTokens: { total: 2, noCache: 2, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 3, text: 1, reasoning: 2 },

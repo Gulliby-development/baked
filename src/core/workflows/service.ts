@@ -88,7 +88,7 @@ import {
 } from "./project-memory.js";
 import { recoveryAdvice } from "./remedies.js";
 import { canRepairRun } from "./repairable.js";
-import { abortableDelay, accountRefusal, isTransient } from "./retry.js";
+import { abortableDelay, accountRefusal, isTransient, providerCircuitOpen } from "./retry.js";
 import {
   REFUSED_EDIT_PREFIX,
   runWrittenHash,
@@ -581,6 +581,8 @@ export class NativeWorkflowService implements WorkflowService {
   async drive(runId: string, signal: AbortSignal): Promise<RunSnapshot> {
     for (;;) {
       const current = this.store.run(runId);
+      if (current.status === "blocked" && providerCircuitOpen(this.store, runId))
+        return this.store.snapshot(runId);
       if (current.status === "waiting" && current.reason === "provider") {
         if (await this.resumeReachableProvider(runId, signal)) continue;
         return this.store.snapshot(runId);
@@ -1189,6 +1191,13 @@ export class NativeWorkflowService implements WorkflowService {
         );
       // Resuming is the operator's decision to try again: a task whose implementation did not
       // complete (no snapshot) goes back to pending and continues on the edits already in place.
+      if (providerCircuitOpen(this.store, runId))
+        this.store.artifact(
+          runId,
+          "recovery",
+          "provider/circuit.json",
+          canonical({ open: false, commandId: command.commandId }),
+        );
       for (const task of this.store.tasks(runId))
         if (task.status === "blocked" && task.snapshot_id === null)
           this.store.taskStatus(runId, task.id, "pending");

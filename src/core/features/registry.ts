@@ -1078,12 +1078,11 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "run-provider-health",
     group: "Workflow runs",
-    title:
-      "Unreachable providers wait on health probes without spending active time or recovery resumes",
-    tui: ["/workflow: provider wait and next health probe"],
+    title: "Adapter-aware provider deadlines and durable zero-token retry limits",
+    tui: ["/workflow: provider wait, next health probe and no_progress retry decision"],
     cli: ["baked workflow status: providerWait", "baked workflow resume"],
-    api: ["/v1/workflow/runs/:id: waiting/provider and providerWait"],
-    desktop: ["project/runs: provider wait and next health probe"],
+    api: ["/v1/workflow/runs/:id: waiting/provider, providerWait and no_progress diagnostics"],
+    desktop: ["project/runs: provider wait, next health probe and retry decision"],
   },
   {
     id: "run-execution-time",

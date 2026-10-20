@@ -1,5 +1,46 @@
 import { ProviderUnreachableError } from "../llm/provider-health.js";
+import { canonical, hashJson } from "../specs/hash.js";
 import { WorkflowFault } from "./errors.js";
+import type { WorkflowStore } from "./store.js";
+
+export const PROVIDER_ZERO_TOKEN_LIMIT = 3;
+
+export function providerCircuitOpen(store: WorkflowStore, runId: string): boolean {
+  const circuit = store.latestArtifact(runId, "provider/circuit.json");
+  return circuit
+    ? (JSON.parse(store.readArtifact(runId, circuit.id)) as { open: boolean }).open
+    : false;
+}
+
+/** Persist a stage's consecutive empty outages across health probes and driver restarts. */
+export function recordProviderOutcome(
+  store: WorkflowStore,
+  runId: string,
+  attemptId: string,
+  profileId: string,
+  taskId: string | undefined,
+  error?: unknown,
+): number {
+  const attempt = store.attempts(runId).find((a) => a.id === attemptId);
+  if (!attempt) return 0;
+  const scope = {
+    stageId: store.rootStage(runId, attempt.step_id),
+    profileId,
+    taskId: taskId ?? null,
+    modelId: attempt.model_id,
+    inputHash: attempt.input_hash,
+  };
+  const path = `provider/failures-${hashJson(scope)}.json`;
+  const saved = store.latestArtifact(runId, path);
+  const previous = saved
+    ? (JSON.parse(store.readArtifact(runId, saved.id)) as { failures: number }).failures
+    : 0;
+  const failures =
+    error instanceof ProviderUnreachableError && attempt.used_tokens === 0 ? previous + 1 : 0;
+  if (failures || previous)
+    store.artifact(runId, "recovery", path, canonical({ ...scope, attemptId, failures }));
+  return failures;
+}
 
 interface ProviderError {
   name?: string;

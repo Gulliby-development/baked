@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { LanguageModelV3, LanguageModelV3GenerateResult } from "@ai-sdk/provider";
 import { MockLanguageModelV3 } from "./helpers/workflow-model.js";
+import { providerResponded } from "../src/core/llm/provider-health.js";
 import { getProvider } from "../src/core/llm/providers/index.js";
 import { NativeAgentExecutor } from "../src/core/workflows/agent-executor.js";
 import { WorkspaceLeases } from "../src/core/workflows/leases.js";
@@ -16,6 +17,7 @@ import {
 } from "../src/core/workflows/stall.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
+import { awakeClock } from "./helpers/awake-clock.js";
 
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
@@ -106,4 +108,58 @@ describe("adaptive silence limit", () => {
     // Half of stepStallMs, the floor of a lowered limit, plus the watchdog's check interval.
     expect(Date.now() - started).toBeLessThan(stepStallMs);
   }, 30000);
+
+  test.each(["codex", "claude-code"])("%s uses adaptive silence after reporting activity", async (adapterId) => {
+    let started!: () => void;
+    const activity = new Promise<void>((resolve) => { started = resolve; });
+    const model = new MockLanguageModelV3({
+      provider: adapterId,
+      doGenerate: async (options) => {
+        providerResponded(options.abortSignal);
+        started();
+        return await new Promise<never>((_, reject) =>
+          options.abortSignal?.addEventListener("abort", () => reject(options.abortSignal?.reason)),
+        );
+      },
+    });
+    const provider = getProvider(adapterId);
+    if (!provider) throw new Error(`${adapterId} provider missing`);
+    const original = provider.createModel;
+    provider.createModel = () => model as LanguageModelV3;
+    cleanups.push(() => { provider.createModel = original; });
+    const fixture = workflowFixture({ policy: fixturePolicy });
+    cleanups.push(fixture.dispose);
+    const { store } = fixture.service;
+    const run = await fixture.start();
+    cleanups.push(() => forgetProgress(run.runId));
+    for (let i = 0; i < SILENCE_SAMPLES; i++) recordModelSilence(run.runId, 1000);
+    store.transaction(() => store.transition(run.runId, "running"));
+    const profiles = ProfileSchema.array().parse(JSON.parse(store.run(run.runId).profiles_json));
+    const researcher = profiles.find((p) => p.output === "research");
+    if (!researcher) throw new Error("research profile missing");
+    const profile: AgentProfile = { ...researcher, model: `${adapterId}/fixture-model` };
+    const stepId = store.beginStep(run.runId, "fixture");
+    const attemptId = store.reserve(run.runId, stepId, profile.model, 2000, fixturePolicy);
+    const executor = new NativeAgentExecutor(store, new WorkspaceLeases(store), {
+      ...fixture.config,
+      repoMap: false,
+      workflows: { ...fixture.config.workflows, stall: { stepStallMs: 120_000 } },
+    } as typeof fixture.config);
+    cleanups.push(() => executor.dispose());
+    const settled: boolean[] = [];
+    const clock = awakeClock();
+    try {
+      const pending = executor.execute({
+        runId: run.runId, attemptId, profile, prompt: "Research the fixture",
+        signal: new AbortController().signal, maxSteps: 20,
+        providerPending: () => (responded) => { settled.push(responded); },
+      }).catch((error: unknown) => error);
+      await activity;
+      expect(settled).toEqual([true]);
+      clock.advance(61_000);
+      const error = await pending;
+      expect(isStall(error)).toBe(true);
+      expect(String((error as Error).message)).toContain("from the run's own model calls");
+    } finally { clock.restore(); }
+  }, 30_000);
 });

@@ -11,6 +11,20 @@ import { executionTimeout } from "../workflows/execution-clock.js";
 export const PROVIDER_FIRST_BYTE_MS = 60_000;
 export const PROVIDER_BACKOFF_MAX_MS = 5 * 60_000;
 
+/** CLI transports can buffer all reasoning until a turn finishes, including native fallback. */
+export function providerFirstByteMs(
+  provider: string,
+  context: { stage?: string; effort?: string } = {},
+): number {
+  if (provider !== "codex" && provider !== "claude-code") return PROVIDER_FIRST_BYTE_MS;
+  if (
+    ["spec", "plan", "task-graph"].includes(context.stage ?? "") ||
+    ["xhigh", "max"].includes(context.effort ?? "")
+  )
+    return 10 * 60_000;
+  return context.effort === "high" ? 7.5 * 60_000 : 5 * 60_000;
+}
+
 export class ProviderUnreachableError extends Error {
   readonly code = "provider_unreachable";
   constructor(
@@ -44,6 +58,8 @@ export interface ProviderWatch {
   pending?: () => (responded: boolean) => void;
   progress?: () => void;
   firstByteMs?: number;
+  /** Output kind of the workflow profile, also used by continuations and format correction. */
+  stage?: string;
 }
 
 /**
@@ -69,9 +85,22 @@ export function withProviderHealth(
         signal.throwIfAborted();
         const settle = watch.pending?.();
         let responded = false;
+        const effort = params.providerOptions?.[adapted.provider]?.reasoningEffort;
+        const firstByteMs =
+          watch.firstByteMs ??
+          providerFirstByteMs(adapted.provider, {
+            stage: watch.stage,
+            effort: typeof effort === "string" ? effort : undefined,
+          });
         const cancel = executionTimeout(
-          () => controller.abort(new ProviderUnreachableError(modelId)),
-          watch.firstByteMs ?? PROVIDER_FIRST_BYTE_MS,
+          () =>
+            controller.abort(
+              new ProviderUnreachableError(
+                modelId,
+                `No model response within ${Math.round(firstByteMs / 1000)} seconds`,
+              ),
+            ),
+          firstByteMs,
         );
         const response = () => {
           if (signal.aborted) return;
@@ -218,6 +247,8 @@ export function providerBackoffMs(probe: number, base = 1_000): number {
 
 /** A fresh conversation with no tools or workflow context. The entire probe is bounded too. */
 export async function probeProvider(model: LanguageModel, modelId: string, signal: AbortSignal) {
+  if (typeof model === "string") throw new Error("Provider health requires a resolved model");
+  const firstByteMs = providerFirstByteMs(model.provider);
   const controller = new AbortController();
   let responded = false;
   let healthy!: (result: { usage: Partial<LanguageModelUsage> }) => void;
@@ -228,10 +259,11 @@ export async function probeProvider(model: LanguageModel, modelId: string, signa
     // A model that has started reasoning is reachable even if its answer outlasts the probe.
     if (responded) healthy({ usage: {} });
     else controller.abort(new ProviderUnreachableError(modelId, "Provider health probe timed out"));
-  }, PROVIDER_FIRST_BYTE_MS);
+  }, firstByteMs);
   try {
     const request = generateText({
       model: withProviderHealth(model, modelId, {
+        firstByteMs,
         progress: () => {
           responded = true;
         },
