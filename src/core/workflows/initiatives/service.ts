@@ -374,12 +374,30 @@ function forecastOverCeiling(cost: CostView): boolean {
 }
 
 /**
+ * What the share gate reads of an initiative view. A feature start records it in the
+ * `feature.share_gate` event, so bench traces replay the gate on what the round saw (#1707).
+ */
+export interface ShareGateView {
+  initiativeId: string;
+  budget: Pick<InitiativeView["budget"], "remaining" | "cost">;
+  features: Pick<FeatureView, "id" | "state" | "share" | "need">[];
+}
+
+/** The `feature.share_gate` event: the gate's inputs and what it decided for one feature. */
+export interface ShareGateRecord {
+  featureId: string;
+  verdict: "pass" | "park";
+  view: ShareGateView;
+  feature: Pick<FeatureView, "id" | "share" | "need" | "shareUsd">;
+}
+
+/**
  * Why a ready feature may not start, or null. Its low estimate must fit after reserving the
  * other waiting features' lows; a weighted share alone can be smaller even when the pool covers
  * them all (#1605). Exhausted token, call, time and dollar budgets still stop a start (#1311).
  */
 export function shareShortfall(
-  view: Pick<InitiativeView, "initiativeId" | "budget" | "features">,
+  view: ShareGateView,
   feature: Pick<FeatureView, "id" | "share" | "need" | "shareUsd">,
 ): RecoveryAdvice | null {
   const cost = view.budget.cost;
@@ -1054,8 +1072,16 @@ export class InitiativeService {
               });
             });
             return this.view(id);
-          default:
+          default: {
+            const parked = view.features.find((f) => f.id === next.featureId);
+            if (
+              next.kind === "blocked" &&
+              parked?.state === "ready" &&
+              shareShortfall(view, parked)
+            )
+              this.noteShareGate(view, parked, "park");
             return this.view(id);
+          }
         }
       }
       return this.view(id);
@@ -1089,13 +1115,12 @@ export class InitiativeService {
           view.features.filter((f) => f.state === "ready"),
           view.parallelRuns > 1,
         )[0];
-        if (
-          !ready ||
-          runnable(view).length >= view.parallelRuns ||
-          shareShortfall(view, ready) ||
-          this.forecastOver(row, view)
-        )
+        if (!ready || runnable(view).length >= view.parallelRuns) break;
+        if (shareShortfall(view, ready)) {
+          this.noteShareGate(view, ready, "park");
           break;
+        }
+        if (this.forecastOver(row, view)) break;
         if (await this.startFeature(id, ready.id)) started = true;
         view = this.view(id);
       }
@@ -1335,6 +1360,47 @@ export class InitiativeService {
 
   /** Starts a feature's run; false when its upstream results conflict and it waits for a person. */
   /**
+   * Records the share gate's inputs and verdict for a feature (#1707): every start, and a park
+   * once until the feature's verdict changes, so a drive that retries a parked feature does not
+   * repeat it.
+   */
+  private noteShareGate(
+    view: InitiativeView,
+    feature: FeatureView,
+    verdict: "pass" | "park",
+  ): void {
+    const id = view.initiativeId;
+    if (verdict === "park") {
+      const last = this.store
+        .eventsOfType(id, "feature.share_gate")
+        .filter((p) => (p as ShareGateRecord | null)?.featureId === feature.id)
+        .at(-1) as ShareGateRecord | undefined;
+      if (last?.verdict === "park") return;
+    }
+    const record: ShareGateRecord = {
+      featureId: feature.id,
+      verdict,
+      view: {
+        initiativeId: id,
+        budget: { remaining: view.budget.remaining, cost: view.budget.cost },
+        features: view.features.map((f) => ({
+          id: f.id,
+          state: f.state,
+          share: f.share,
+          need: f.need,
+        })),
+      },
+      feature: {
+        id: feature.id,
+        share: feature.share,
+        need: feature.need,
+        shareUsd: feature.shareUsd,
+      },
+    };
+    this.store.emit(id, "feature.share_gate", record);
+  }
+
+  /**
    * Records once for each count of measured features that a feature starts while the forecast
    * is above the ceiling but not yet binding (#1659), so `initiative events` and
    * `/v1/initiatives/ID/events` show the warning a stop used to give.
@@ -1417,6 +1483,7 @@ export class InitiativeService {
     const waiting = current.features.find((f) => f.id === featureId);
     const sized = waiting?.share;
     if (!sized) throw stopFault("budget-share", "No budget share is available");
+    if (waiting) this.noteShareGate(current, waiting, "pass");
     this.noteAdvisoryForecast(id, featureId, current.budget.cost);
     this.noteForecastWouldStop(row, featureId, current);
     const share = { ...sized, ...guardGrowth(current, featureId, settings.basePolicy) };
@@ -2830,7 +2897,7 @@ function costPolicy(
  * started on what was left (#1311). Null when no feature has an estimate.
  */
 export function growthLimit(
-  view: Pick<InitiativeView, "budget" | "features">,
+  view: Pick<ShareGateView, "budget" | "features">,
   featureId: string,
 ): number | null {
   const waiting = view.features.filter((f) => f.share !== null);
