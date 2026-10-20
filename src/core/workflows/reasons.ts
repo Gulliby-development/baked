@@ -6,7 +6,8 @@ const REASONS: Record<string, string> = {
   user_pause: "paused by you",
   owner_lost: "the process that ran it stopped",
   step_stalled: "an agent call made no progress and was stopped",
-  input_changed: "instructions or configuration changed since approval",
+  input_changed:
+    "instructions or configuration changed since approval; the diagnostic names the file: accept the change, restore the file, or revise the run",
   workspace_busy: "another run or edit holds the workspace",
   budget_exhausted: "the token, call or time budget is used up",
   attempt_cap:
