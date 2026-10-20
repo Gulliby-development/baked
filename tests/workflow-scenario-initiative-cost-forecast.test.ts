@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { costLine } from "../apps/desktop/src/renderer/screens/insights/initiative-model.js";
 import { costText } from "../src/core/workflows/initiatives/forms.js";
@@ -39,17 +39,17 @@ const plan: InitiativePlan = {
 
 class ScriptedExecutor extends FixtureExecutor {
   store: WorkflowStore | null = null;
-  constructor(root: string, private cached: boolean, private staged = false) { super(root); }
+  constructor(root: string, private cached: boolean, private staged = false, private split = plan, private scale = 1) { super(root); }
   override async execute(request: ExecutionRequest) {
     const [documents, attempt] = request.prompt.split("\n").slice(-2);
     const data = { ...JSON.parse(documents ?? "{}"), ...JSON.parse(attempt ?? "{}") } as {
-      spec: Spec | null; extra: { featureId: string };
+      spec: Spec | null; extra: { featureId: string; hostFiles?: { files: { path: string; content: string }[] } };
     };
     const spec: Spec = data.spec ?? { ...fixtureSpec, featureId: data.extra.featureId };
     const path = `${spec.featureId?.split("_").at(-1) ?? "f1"}.txt`;
     let output: unknown;
     switch (request.profile.output) {
-      case "initiativePlan": output = plan; break;
+      case "initiativePlan": output = this.split; break;
       case "spec": output = spec; break;
       case "plan": {
         const markdown = `# Plan\n## Context\nCreate ${path}.\n## Decisions\nDEC-001: FR-001 needs ready.\n## Components\n${path}\n## Data\nText\n## Verification\nCheck ready\n## Risks\nNone for fixture`;
@@ -57,6 +57,14 @@ class ScriptedExecutor extends FixtureExecutor {
           schemaVersion: 1, featureId: spec.featureId, revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown),
           tasks: [{ id: "T001", title: `Create ${path}`, description: "Write ready", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: [{ path, action: existsSync(join(request.root, path)) ? "modify" : "create" }], readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior" }],
         } };
+        if (data.extra.hostFiles) {
+          const graph = (output as { taskGraph: { tasks: { id: string; dependsOn: string[]; writes: unknown[] }[] } }).taskGraph;
+          const own = graph.tasks[0]!;
+          graph.tasks = [
+            { ...own, id: "T001", title: "Write the host skeleton", writes: data.extra.hostFiles.files.map((f) => ({ ...f, action: "create" })) },
+            { ...own, id: "T002", dependsOn: ["T001"] },
+          ];
+        }
         break;
       }
       case "implementation":
@@ -69,8 +77,8 @@ class ScriptedExecutor extends FixtureExecutor {
     // pays the output price once; cached feature calls cost less per token than that split.
     const decompose = request.profile.output === "initiativePlan";
     const dear = this.staged && request.profile.output === "research";
-    const inputTokens = decompose || dear ? 0 : this.staged ? 36_000 : this.cached ? 120_000 : 18_000;
-    const outputTokens = decompose || dear ? 36_000 : this.staged ? 0 : this.cached ? 1_000 : 18_000;
+    const inputTokens = (decompose || dear ? 0 : this.staged ? 36_000 : this.cached ? 120_000 : 18_000) * this.scale;
+    const outputTokens = (decompose || dear ? 36_000 : this.staged ? 0 : this.cached ? 1_000 : 18_000) * this.scale;
     const cacheReadTokens = this.staged && !dear ? 32_000 : !decompose && this.cached ? 100_000 : 0;
     const totalTokens = inputTokens + outputTokens;
     this.store?.artifact(request.runId, "usage", `attempts/${request.attemptId}/usage.json`, canonical({
@@ -82,8 +90,13 @@ class ScriptedExecutor extends FixtureExecutor {
   }
 }
 
-async function scenario(cached = false, decompose = false, staged = false, lean = staged) {
-  const fixture = workflowFixture({ executor: (root) => new ScriptedExecutor(root, cached, staged) });
+async function scenario(cached = false, decompose = false, staged = false, lean = staged, skeleton = false) {
+  const hostFiles = Array.from({ length: 24 }, (_, i) => ({ path: `stub${i}.txt`, content: "// filled by later features\n" }));
+  const base: InitiativePlan = skeleton ? { ...plan, features: plan.features.map((f, i) => ({
+    ...f, size: i ? "large" : "small",
+    ...(!i ? { skeleton: hostFiles, boundary: { ...f.boundary, paths: [...f.boundary.paths, ...hostFiles.map((file) => file.path)] } } : {}),
+  })) } : plan;
+  const fixture = workflowFixture({ executor: (root) => new ScriptedExecutor(root, cached, staged, base, skeleton ? 0.65 : 1) });
   cleanups.push(fixture.dispose);
   fixture.executor.store = fixture.service.store;
   if (staged) {
@@ -96,9 +109,9 @@ async function scenario(cached = false, decompose = false, staged = false, lean 
       transitions: workflow.transitions.filter((t) => t.from !== "research"),
     }));
   }
-  const split = lean ? { ...plan, features: plan.features.map((f, i) => ({
+  const split = lean ? { ...base, features: base.features.map((f, i) => ({
     ...f, workflow: i < 2 ? "sdd" : "lean",
-  })) } : plan;
+  })) } : base;
   const initiatives = new InitiativeService(fixture.service);
   const signal = new AbortController().signal;
   const policy = { ...fixturePolicy, clarification: "assume" as const,
@@ -108,7 +121,7 @@ async function scenario(cached = false, decompose = false, staged = false, lean 
   if (staged) expect(listDefinitions(fixture.root, policy).find((d) => d.id === "lean")?.problems).toEqual([]);
   let view = await initiatives.start({ commandId: newId(), initiativeId: "values", prompt: "Create twelve values", ownerLabel: "test", model: MODEL,
     ...(!decompose ? { plan: split } : {}), policy, keepFeatures: true,
-    ...(!staged ? { featureAutoApproval: { maxTasks: 5, maxFiles: 5 } } : {}),
+    ...(!staged && !skeleton ? { featureAutoApproval: { maxTasks: 5, maxFiles: 5 } } : {}),
     budget: { maxTotalTokens: 50_000_000, maxAgentCalls: 1000, maxActiveMs: 21_600_000 },
     costBudget: { maxCostUsd: cached ? 10 : 30, costTolerance: "auto" },
   });
@@ -123,7 +136,7 @@ async function scenario(cached = false, decompose = false, staged = false, lean 
     });
     try {
       let result = await initiatives.drive("values", controller.signal);
-      while (staged && !controller.signal.aborted) {
+      while ((staged || skeleton) && !controller.signal.aborted) {
         const feature = result.features.find((f) => f.state === "needs_decision");
         if (!feature?.runId) break;
         await fixture.approve(feature.runId);
@@ -134,11 +147,31 @@ async function scenario(cached = false, decompose = false, staged = false, lean 
     finally { unwatch(); }
   };
   await driveOne();
-  view = await driveOne();
+  view = skeleton ? initiatives.view("values") : await driveOne();
   return { fixture, initiatives, view, driveOne, identity, signal };
 }
 
 describe("scenario: initiative forecast follows accepted features' measured spend (#1607)", () => {
+  test("R50: one accepted skeleton keeps planned remaining costs and the next feature starts (#1631)", async () => {
+    const { fixture, initiatives, view, driveOne, identity } = await scenario(false, false, false, false, true);
+    expect(view.features.filter((f) => f.state === "accepted")).toHaveLength(1);
+    expect(view.features[0]!.skeleton).toHaveLength(24);
+    for (const file of view.features[0]!.skeleton!) expect(readFileSync(join(fixture.root, file.path), "utf8")).toBe(file.content);
+    expect(view.budget.cost.ceilingUsd).toBe(37.5);
+    expect(view.budget.cost.forecastUsd).toBeLessThan(37.5);
+    expect(view.next).toMatchObject({ kind: "start", featureId: "f2" });
+    const estimate = initiatives.estimate("values")!;
+    expect(estimate.progress.ratio).toBeNull();
+    expect(estimate.progress.bySize).toEqual({});
+    expect(estimate.features.slice(1).every((f) => f.basis !== "calibrated")).toBe(true);
+    const plannedUsd = estimate.features.slice(1).reduce((sum, f) => sum + (f.costUsd!.low + f.costUsd!.high) / 2, 0);
+    expect(view.budget.cost.forecastUsd).toBeCloseTo(view.budget.cost.spentUsd + plannedUsd, 2);
+    expect(view.features[1]!.needUsd).toEqual(estimate.features[1]!.costUsd);
+    await initiatives.pause("values", identity());
+    expect((await initiatives.resume("values", identity())).next.kind).toBe("start");
+    expect((await driveOne()).features[1]!.state).toBe("accepted");
+  }, 60000);
+
   test("R48: switching the remaining model reprices its stages without repricing spent dollars", async () => {
     const { fixture, initiatives, view, identity } = await scenario();
     const cheap = "anthropic/claude-haiku-4-5";

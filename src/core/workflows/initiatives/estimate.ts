@@ -147,9 +147,8 @@ export interface InitiativeEstimate {
   features: FeatureEstimate[];
   /**
    * The re-forecast once features are accepted (#1312): tokens used so far, how many features are
-   * accepted, and the ratio of their measured tokens to their forecast, which scales the rest.
-   * `bySize` holds the same ratio per feature size with an accepted feature; a feature of that size
-   * is scaled by it instead (#1338).
+   * accepted, and the blended measured-to-planned ratio that scales the rest. Null until three
+   * non-skeleton features are accepted. `bySize` applies the same sampling rule per size (#1338).
    */
   progress: {
     spent: number;
@@ -298,6 +297,15 @@ export const MIN_CRITERIA_SAMPLES = 2;
 
 /** Maximum measured-to-forecast ratio that scales the features still to run. */
 const MAX_RATIO = 5;
+/** Accepted non-skeleton features needed before measured usage scales the remaining split. */
+export const MIN_CALIBRATION_FEATURES = 3;
+
+/** Blend a third of the measured ratio at three samples, two thirds at four, and all at five. */
+function calibrationRatio(measured: number, forecast: number, count: number): number | null {
+  if (count < MIN_CALIBRATION_FEATURES || forecast <= 0 || measured <= 0) return null;
+  const weight = Math.min(1, (count - MIN_CALIBRATION_FEATURES + 1) / MIN_CALIBRATION_FEATURES);
+  return 1 + weight * (Math.min(MAX_RATIO, measured / forecast) - 1);
+}
 
 /**
  * The features as they stand: an accepted one at its measured tokens, the rest at their forecast
@@ -320,22 +328,22 @@ function reforecast(
   const used = (f: FeatureEstimate): InitiativeProgress["features"][string] =>
     progress.features[f.featureId] ?? { spent: 0, accepted: false };
   const accepted = prior.filter((f) => used(f).accepted);
+  // Host-written skeletons have a different cost from delivering a feature, regardless of size.
+  const representative = accepted.filter((f) => !f.skeleton);
   const ratioOf = (features: FeatureEstimate[]): number | null => {
     const forecast = features.reduce((total, f) => total + middle(f.tokens), 0);
     const measured = features.reduce((total, f) => total + used(f).spent, 0);
     // Cheap accepted features must calibrate the remaining work below 25% of the prior too.
     // A lower bound inflated the dollar forecast despite a spend rate that fit the cap (#1607).
-    return features.length && forecast > 0 && measured > 0
-      ? Math.min(MAX_RATIO, measured / forecast)
-      : null;
+    return calibrationRatio(measured, forecast, features.length);
   };
-  const ratio = ratioOf(accepted);
-  // An accepted feature of the same size says more about a feature than all of them together: in
+  const ratio = ratioOf(representative);
+  // Accepted features of the same size say more about a feature than all of them together: in
   // bench round 34 the accepted large feature used 3.2 times its forecast and the medium one about
   // its forecast, and the other large feature then used 3.3 times its own (#1338).
   const bySize: Partial<Record<FeatureSize, number>> = {};
   for (const size of ["small", "medium", "large"] as const) {
-    const own = ratioOf(accepted.filter((f) => f.size === size));
+    const own = ratioOf(representative.filter((f) => f.size === size));
     if (own !== null) bySize[size] = own;
   }
   // A feature's work grows with the criteria its spec sets: bench round 32's notesift features
@@ -464,14 +472,14 @@ export function estimateInitiative(input: {
       : ["No finished initiative feature runs yet, so feature sizes scale a typical run's tasks."]),
     ...(ratio !== null
       ? [
-          `Re-forecast after ${accepted} of ${features.length} features: the accepted ones used ${ratio.toFixed(1)} times their forecast, so the features still to run are scaled by it.`,
+          `Re-forecast after ${accepted} of ${features.length} features: non-skeleton samples blend with the planned estimate to scale the features still to run by ${ratio.toFixed(1)}.`,
         ]
       : []),
     ...(Object.keys(bySize).length > 1 ||
     Object.values(bySize).some((r) => ratio !== null && Math.abs(r - ratio) >= 0.05)
       ? (Object.entries(bySize) as [FeatureSize, number][]).map(
           ([size, r]) =>
-            `Accepted ${size} features used ${r.toFixed(1)} times their forecast; ${size} features still to run are scaled by that instead.`,
+            `Accepted ${size} non-skeleton features blend with their planned estimates to scale ${size} features still to run by ${r.toFixed(1)} instead.`,
         )
       : []),
     ...(perCriterion && features.some((f) => f.basis !== "measured" && f.criteria)
