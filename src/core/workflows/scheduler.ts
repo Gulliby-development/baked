@@ -239,7 +239,7 @@ import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
 import { costToleranceOf, currentCostCap, inCostWrapUp } from "./cost-tolerance.js";
 import { coverageFinding } from "./coverage.js";
 import { type CriticCalibration, calibrateCritic, criticExamples } from "./critic-calibration.js";
-import { crossPlatformNote } from "./cross-platform.js";
+import { crossPlatformNote, forbidsCi } from "./cross-platform.js";
 import { git, gitWorktreePaths } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
 import {
@@ -263,6 +263,12 @@ import {
 import { outputTail } from "./gates.js";
 import { HOST_ADDITIONS, HOST_EDITS_PATH, type HostEdit, recordGraphEdits } from "./host-edits.js";
 import { isStoreError, recordHostError } from "./host-error.js";
+import {
+  CROSS_PLATFORM_CRITERION,
+  HOST_REQUIRED_CRITERIA,
+  hostRequiredIds,
+  objectsToHostRequired,
+} from "./host-required-criteria.js";
 import { criticalPathProblems } from "./initiatives/critical-path.js";
 import {
   type InitiativePlan,
@@ -1660,6 +1666,23 @@ export class WorkflowScheduler {
                 if (finding.blocking && asksUnsupportedMethod(finding.description)) {
                   finding.blocking = false;
                   finding.description = `Asks for a verification method the spec schema does not have (only ${VERIFICATION_METHODS.join(", ")}; automated covers the reviewer reading a file); kept as a note: ${finding.description}`;
+                }
+              }
+              // A criterion the host's own rules make the spec author add is not scope the request
+              // lacks: md-site (bench round 52) ran specify three times and plan and analyze four
+              // times over the required 1280 px criterion (#1765).
+              const request = state.requestText || state.prompt;
+              const required = HOST_REQUIRED_CRITERIA.filter(
+                (c) =>
+                  c !== CROSS_PLATFORM_CRITERION ||
+                  (crossPlatformNote(request, runRoot(this.store.workspace, state)) !== null &&
+                    !forbidsCi(request)),
+              );
+              const requiredIds = hostRequiredIds(spec, required);
+              for (const finding of analysis.findings) {
+                if (objectsToHostRequired(finding, requiredIds, required)) {
+                  finding.blocking = false;
+                  finding.description = `Objects to a criterion the host's own rules require (${[...requiredIds].join(", ")}); kept as a note: ${finding.description}`;
                 }
               }
               // Findings about check outcomes stay in the record as notes; checks run later.
@@ -13812,14 +13835,57 @@ export function correctionFocus(
       symbol?: string | null;
       claim?: string;
       suggestedFix?: string;
+      repeatOf?: string | null;
     };
     add(files, body.file);
     add(symbols, body.symbol);
     for (const path of state.repairScope?.[finding.id] ?? []) add(files, path);
+    // A repeat of a corrected finding is fixed where that correction changed the code (#1764).
+    if (body.repeatOf)
+      for (const path of correctedFiles(store, runId, state, body.repeatOf)) add(files, path);
     for (const path of pathsInOutput(`${body.claim ?? ""}\n${body.suggestedFix ?? ""}`, [task]))
       add(files, path);
   }
   return { files: files.filter((path) => task.writes.some((w) => w.path === path)), symbols };
+}
+/**
+ * The files the corrective tasks of a finding changed, from their applied file effects. md-site
+ * T075 (bench round 52) corrected F-003, a repeat of F-002 that T074 had fixed in one function,
+ * with all ten project files to write and none to focus on: 2.46M tokens for a 710-byte diff
+ * (#1764).
+ */
+export function correctedFiles(
+  store: WorkflowStore,
+  runId: string,
+  state: RuntimeState,
+  findingId: string,
+): string[] {
+  const tasks = new Set(
+    (state.graph?.tasks ?? [])
+      .filter((t) => t.origin !== "planned" && t.findingIds.includes(findingId))
+      .map((t) => `task-${t.id}`),
+  );
+  if (!tasks.size) return [];
+  const steps = new Set(
+    store
+      .steps(runId)
+      .filter((step) => tasks.has(step.stage_id))
+      .map((step) => step.id),
+  );
+  const attempts = new Set(
+    store
+      .attempts(runId)
+      .filter((attempt) => steps.has(attempt.step_id))
+      .map((attempt) => attempt.id),
+  );
+  const files: string[] = [];
+  for (const effect of store.effects(runId)) {
+    if (effect.kind !== "file_patch" || !attempts.has(effect.attempt_id)) continue;
+    if (effect.status !== "applied" && effect.status !== "reconciled") continue;
+    const path = (JSON.parse(effect.intent_json) as { path?: string }).path;
+    if (path && !files.includes(path)) files.push(path);
+  }
+  return files;
 }
 /** The last name of a symbol a reviewer reported: `Parser.parseInline()` is `parseInline`. */
 const symbolKey = (symbol: string | null | undefined): string =>

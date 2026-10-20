@@ -71,13 +71,19 @@ if (command === "export" && args.length === 2) {
         console.log(
           `  ${run.featureId} ${run.runId}: final ${usd(run.finalUsd)}, ${run.boundaries.length} attempts, ` +
             `new stops ${run.newStops}, new growth ${run.newGrowth}, stops removed ${run.removedStops}, ` +
-            `first-response stops ${run.newFirstByteStops} of ${run.firstByte.length} calls` +
+            `first-response stops ${run.newFirstByteStops} of ${run.firstByte.length} calls, ` +
+            `cost-cap refusals ${run.newCostStops} of ${run.costCap.length} attempts` +
             (ratios ? `, forecast/final ${ratios}` : ""),
         );
         for (const b of run.boundaries.filter((b) => b.recorded !== b.replayed))
           console.log(
             `    ${new Date(b.at).toISOString()} ${b.attemptId}: recorded ${b.recorded}, now ${b.replayed} ` +
               `(forecast ${usd(b.projectedUsd)}, ceiling ${usd(b.ceilingUsd)}, spent ${usd(b.spentUsd)})`,
+          );
+        for (const b of run.costCap.filter((b) => b.replayed === "stop"))
+          console.log(
+            `    ${b.attemptId} (${b.stage} ${b.model}, ${b.tokens} tokens): now refused ` +
+              `(call ${usd(b.requestedUsd)}, spent ${usd(b.spentUsd)}, reserved ${usd(b.reservedUsd)}, ceiling ${usd(b.ceilingUsd)})`,
           );
         for (const b of run.firstByte.filter((b) => b.recorded !== b.replayed))
           console.log(
