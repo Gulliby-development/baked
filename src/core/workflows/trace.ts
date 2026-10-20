@@ -2,10 +2,17 @@ import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { builtinProfiles } from "../agents/profiles/builtin.js";
+import {
+  type CallReasoning,
+  type CallTiming,
+  providerFirstByteMs,
+} from "../llm/provider-health.js";
 import { canonical, hashBytes } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { assertForecastFits, costForecast } from "./cost-forecast.js";
 import { WorkflowFault } from "./errors.js";
+import { recordingOf } from "./model-recording.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { WorkflowStore } from "./store.js";
 
@@ -129,6 +136,90 @@ export interface TraceExport {
   runs: number;
   initiatives: number;
   bytes: number;
+}
+
+/** One run of `exportRecordings`: what a replay of it needs besides the calls. */
+export interface RecordingEntry {
+  runId: string;
+  featureId: string;
+  workflowId: string;
+  status: string;
+  reason: string;
+  /** The Git commit of the run's first workspace snapshot: the tree a replay starts from. */
+  gitHead: string | null;
+  calls: number;
+  /** The recording's file name in the output folder. */
+  file: string;
+}
+
+/**
+ * Writes the model calls each run of `workspace` recorded (`--record-model-calls`) to
+ * `outDir/RUN_ID.json.gz`, in the format `workflow run --replay` reads once unzipped, and a
+ * `manifest.json` of the runs (#1715). Bench apps are public MIT repositories, so prompts and
+ * model output may be kept; nothing else of `.baked/` is. The database is read without changes.
+ */
+export function exportRecordings(
+  workspace: string,
+  outDir: string,
+  options: { runIds?: string[] } = {},
+): RecordingEntry[] {
+  const source = workspacePath(workspace, ".baked/workflows.sqlite");
+  if (!existsSync(source)) throw new Error(`No workflow database in ${workspace}`);
+  const db = new Database(source, { readonly: true });
+  try {
+    const runs = db
+      .query("SELECT id, feature_id, status, reason, definition_json FROM runs ORDER BY created_at")
+      .all() as {
+      id: string;
+      feature_id: string;
+      status: string;
+      reason: string;
+      definition_json: string;
+    }[];
+    const keep = options.runIds ? new Set(options.runIds) : null;
+    const entries: RecordingEntry[] = [];
+    mkdirSync(outDir, { recursive: true });
+    for (const run of runs) {
+      if (keep && !keep.has(run.id)) continue;
+      const texts = (
+        db
+          .query(
+            "SELECT inline_content, blob_path FROM artifacts WHERE run_id=? AND logical_path LIKE 'recordings/%' ORDER BY created_at",
+          )
+          .all(run.id) as { inline_content: string | null; blob_path: string | null }[]
+      ).map(
+        (row) =>
+          row.inline_content ??
+          readFileSync(
+            workspacePath(workspace, (row.blob_path ?? "").replaceAll("\\", "/")),
+            "utf8",
+          ),
+      );
+      if (!texts.length) continue;
+      const recording = recordingOf(run.id, texts);
+      const file = `${run.id}.json.gz`;
+      writeFileSync(join(outDir, file), Bun.gzipSync(Buffer.from(JSON.stringify(recording))));
+      const head = db
+        .query(
+          "SELECT git_head FROM workspace_snapshots WHERE run_id=? ORDER BY created_at LIMIT 1",
+        )
+        .get(run.id) as { git_head: string | null } | null;
+      entries.push({
+        runId: run.id,
+        featureId: run.feature_id,
+        workflowId: (JSON.parse(run.definition_json) as { id?: string }).id ?? "",
+        status: run.status,
+        reason: run.reason,
+        gitHead: head?.git_head ?? null,
+        calls: recording.calls.length,
+        file,
+      });
+    }
+    writeFileSync(join(outDir, "manifest.json"), `${JSON.stringify(entries, null, 2)}\n`);
+    return entries;
+  } finally {
+    db.close();
+  }
 }
 
 /**
@@ -300,6 +391,111 @@ export interface RunReplay {
   removedStops: number;
   /** The forecast over what the run finally cost, at the first forecast past 25%, 50% and 75% of it. */
   ratios: { at: number; ratio: number }[];
+  /** Each recorded model call against the current first-response deadline. */
+  firstByte: FirstByteBoundary[];
+  /** Calls the current deadline would end as an outage that got their answer in the recording. */
+  newFirstByteStops: number;
+}
+
+/** The first-response deadline of a call; `providerFirstByteMs` unless a test passes another. */
+export type FirstByteLimit = (provider: string, context: CallReasoning) => number;
+
+export interface FirstByteBoundary {
+  attemptId: string;
+  /** The call's index in its attempt. */
+  call: number;
+  provider: string;
+  stage: string | null;
+  effort: string | null;
+  /** When the first response came, or null when none did. */
+  firstByteMs: number | null;
+  durationMs: number;
+  /**
+   * Taken from the attempt's length: a trace from before call timings were kept (#1715), where a
+   * buffering CLI attempt of one step is one call whose answer arrived at its end.
+   */
+  estimated: boolean;
+  limitMs: number;
+  recorded: "pass" | "stop";
+  replayed: "pass" | "stop";
+}
+
+const BUFFERED_CLI = new Set(["codex", "claude-code"]);
+const PROFILE_OUTPUT = new Map(builtinProfiles.map((p) => [p.id, p.output]));
+
+/**
+ * Every recorded model call of a run against the first-response deadline `limit` gives it now. A
+ * call that answered after the deadline would now end as an outage, as the 60 s limit of #1613
+ * ended the plan and specify calls of buffering CLI adapters in R50 (#1639).
+ */
+export function replayFirstByte(
+  store: WorkflowStore,
+  runId: string,
+  limit: FirstByteLimit = providerFirstByteMs,
+): FirstByteBoundary[] {
+  const attempts = store.connection
+    .query(
+      "SELECT id, model_id, status, started_at, ended_at FROM attempts WHERE run_id=? AND model_id IS NOT NULL ORDER BY started_at, rowid",
+    )
+    .all(runId) as {
+    id: string;
+    model_id: string;
+    status: string;
+    started_at: number;
+    ended_at: number | null;
+  }[];
+  const boundaries: FirstByteBoundary[] = [];
+  for (const attempt of attempts) {
+    const saved = store.latestArtifact(runId, `attempts/${attempt.id}/usage.json`);
+    const usage = saved
+      ? (JSON.parse(store.readArtifact(runId, saved.id)) as {
+          profileId?: string;
+          effort?: string;
+          steps?: unknown[];
+          calls?: CallTiming[];
+        })
+      : {};
+    const provider = attempt.model_id.split("/")[0] ?? attempt.model_id;
+    let calls = usage.calls ?? [];
+    const estimated =
+      !usage.calls &&
+      BUFFERED_CLI.has(provider) &&
+      attempt.status === "completed" &&
+      attempt.ended_at !== null &&
+      usage.steps?.length === 1;
+    if (estimated && attempt.ended_at !== null) {
+      const durationMs = attempt.ended_at - attempt.started_at;
+      const stage = PROFILE_OUTPUT.get(usage.profileId ?? "");
+      calls = [
+        {
+          provider,
+          ...(stage ? { stage } : {}),
+          ...(usage.effort ? { effort: usage.effort } : {}),
+          firstByteMs: durationMs,
+          durationMs,
+        },
+      ];
+    }
+    for (const [index, call] of calls.entries()) {
+      const limitMs = limit(call.provider, call);
+      const replayed =
+        call.firstByteMs !== null ? call.firstByteMs > limitMs : call.durationMs >= limitMs;
+      boundaries.push({
+        attemptId: attempt.id,
+        call: index,
+        provider: call.provider,
+        stage: call.stage ?? null,
+        effort: call.effort ?? null,
+        firstByteMs: call.firstByteMs,
+        durationMs: call.durationMs,
+        estimated,
+        limitMs,
+        recorded: call.firstByteMs === null ? "stop" : "pass",
+        replayed: replayed ? "stop" : "pass",
+      });
+    }
+  }
+  return boundaries;
 }
 
 export interface TraceReplay {
@@ -354,7 +550,10 @@ const decisionOf = (
  * rewound to the moment the attempt started (later attempts, artifacts and events removed, task
  * and step states and the policy as they were then) and `assertForecastFits` decides again.
  */
-function replayRun(store: WorkflowStore, runId: string): RunReplay | null {
+function replayRun(
+  store: WorkflowStore,
+  runId: string,
+): Omit<RunReplay, "firstByte" | "newFirstByteStops"> | null {
   const db = store.connection;
   const run = store.run(runId);
   const final = PolicySchema.parse(JSON.parse(run.policy_json));
@@ -523,16 +722,39 @@ function replayRun(store: WorkflowStore, runId: string): RunReplay | null {
 }
 
 /** Replays the forecast gate of every run in the trace at `path` with a dollar cap. */
-export function replayTrace(path: string): TraceReplay {
+export function replayTrace(
+  path: string,
+  options: { firstByteLimit?: FirstByteLimit } = {},
+): TraceReplay {
   const { store, dispose } = openTrace(path);
   try {
     const runIds = (
       store.connection.query("SELECT id FROM runs ORDER BY created_at").all() as { id: string }[]
     ).map((r) => r.id);
+    // Call timings are read before the forecast replay rewinds each run's attempts.
+    const timings = new Map(
+      runIds.map((runId) => [runId, replayFirstByte(store, runId, options.firstByteLimit)]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
-      const replay = replayRun(store, runId);
-      if (replay) runs.push(replay);
+      const firstByte = timings.get(runId) ?? [];
+      const replay = replayRun(store, runId) ?? {
+        runId,
+        featureId: store.run(runId).feature_id,
+        finalUsd: null,
+        boundaries: [],
+        newStops: 0,
+        newGrowth: 0,
+        removedStops: 0,
+        ratios: [],
+      };
+      if (!replay.boundaries.length && !firstByte.length) continue;
+      runs.push({
+        ...replay,
+        firstByte,
+        newFirstByteStops: firstByte.filter((b) => b.replayed === "stop" && b.recorded === "pass")
+          .length,
+      });
     }
     return { trace: path, runs };
   } finally {

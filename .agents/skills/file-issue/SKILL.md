@@ -43,6 +43,7 @@ A bug is bound to a language when the failing code branches on a language, a fil
 
 Take the list of languages from the code on current `main`, not from memory, because it grows:
 
+- `src/core/intelligence/language-records.ts` (`SUPPORTED_LANGUAGES`): the programming languages BAKED supports, and the `LanguageRecord` tables keyed by them.
 - `src/core/intelligence/types.ts` (`EXT_TO_LANGUAGE`): every language BAKED detects by extension.
 - `src/core/intelligence/language-traits.ts` (`LANGUAGE_TRAITS`): code, source, test-file and manifest rules per language.
 - `src/core/workflows/gates.ts` (`detectGates` and the `*Gates` helpers): the toolchains whose checks BAKED proposes and whose output it parses.
@@ -62,6 +63,8 @@ Then file:
 - When one shared fix covers every language that reproduces (one table, one helper), keep them in this issue: each language's place goes under **Where** and gets its own case under **Tests**.
 - When a language needs its own fix (its own parser, toolchain, manifest or convention), file a separate Bug issue for it with this skill, titled with the language, and link it from this issue and back. Do not leave a reproducing language only as a note.
 - A **different defect** gets its own issue too, as in step 2.
+
+When the failing code reads a per-language table that is not yet a `LanguageRecord`, the fix converts it, as the [AGENTS.md rule on per-language records](../../../AGENTS.md#working-conventions) asks: one row for every supported language, the record registered in `tests/language-parity.test.ts`, and a golden in each language's fixture. Say so under **Suggested fix**.
 
 Record the result in the issue's **Sweep** section under a `Languages:` line that names every language and its group. A bug that is not bound to a language says `Languages: not language-bound` with the reason in a few words.
 

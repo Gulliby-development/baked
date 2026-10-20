@@ -2,16 +2,17 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { findPricing } from "../src/core/llm/pricing.js";
 import { ROUTING_ARTIFACT, type RoutingRecord } from "../src/core/llm/model-routing.js";
 import { canonical } from "../src/core/specs/hash.js";
-import { budgetLimitText, canExtend } from "../src/components/workflow/format.js";
+import { budgetLimitText, canExtend, eventText } from "../src/components/workflow/format.js";
 import { costRate, growBudgetOnProgress, remainingCostRate } from "../src/core/workflows/budget.js";
 import { featurePolicy, type InitiativeSettings } from "../src/core/workflows/initiatives/service.js";
 import { assertForecastFits, costForecast, forecastProgress, kindRatio } from "../src/core/workflows/cost-forecast.js";
 import { runReport } from "../src/core/workflows/run-report.js";
 import { verificationTokens } from "../src/core/workflows/sizing.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
-import type { RunPolicy, Task } from "../src/core/workflows/schemas.js";
+import type { RunPolicy, Task, WorkflowEvent } from "../src/core/workflows/schemas.js";
 import type { AttemptUsageRecord } from "../src/core/workflows/step-budget.js";
 import { newId, type WorkflowStore } from "../src/core/workflows/store.js";
+import { wouldStopSummary } from "../src/core/workflows/stop-reasons.js";
 import { readWorkflowView } from "../src/core/workflows/view.js";
 import type { TaskKind } from "../src/core/workflows/sizing.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
@@ -397,3 +398,42 @@ describe("scenario: fecsmith front, the forecast prices the tokens left at the t
   });
 });
 
+
+describe("the forecast stop in shadow and advisory mode (#1714)", () => {
+  for (const mode of ["shadow", "advisory"] as const)
+    test(`${mode}: the run goes on and records the stop once per cap`, async () => {
+      const { store, runId, policy, service } = await midRun({ perTask: OVER, policy: { stopModes: { "cost-forecast": mode } } });
+      expect(() => assertForecastFits(store, runId, policy)).not.toThrow();
+      expect(() => assertForecastFits(store, runId, policy)).not.toThrow();
+      const records = store.eventsOfType(runId, "decision.would_stop");
+      expect(records).toHaveLength(1);
+      const payload = records[0]?.type === "decision.would_stop" ? records[0].payload : null;
+      expect(payload).toMatchObject({ reason: "cost-forecast", mode, key: `cap-${CAP}` });
+      expect(payload?.summary).toContain("The run is forecast to cost about");
+      expect(payload?.inputs).toMatchObject({ capUsd: CAP, measuredTasks: 7 });
+      expect(store.artifacts(runId).filter((a) => a.kind === "cost-forecast")).toHaveLength(0);
+      expect(wouldStopSummary(store, runId)).toMatchObject([{ reason: "cost-forecast", mode, count: 1 }]);
+      expect(readWorkflowView(service, runId).wouldStop).toEqual(wouldStopSummary(store, runId));
+      // The TUI feed shows an advisory would-stop and leaves a shadow one to status.
+      const line = eventText(records[0] as WorkflowEvent, []);
+      if (mode === "advisory") expect(line).toStartWith("Would stop (advisory): The run is forecast");
+      else expect(line).toBeNull();
+      // A raised cap the forecast still passes is a new would-stop.
+      const raised = { ...policy, maxCostUsd: CAP * 1.5 };
+      store.setPolicy(runId, raised);
+      assertForecastFits(store, runId, raised);
+      expect(wouldStopSummary(store, runId)[0]?.count).toBe(2);
+    });
+
+  test("an initiative feature's advisory forecast (costForecast: advise) records it too", async () => {
+    const { store, runId, policy } = await midRun({ perTask: OVER, policy: { costForecast: "advise" } });
+    expect(() => assertForecastFits(store, runId, policy)).not.toThrow();
+    expect(wouldStopSummary(store, runId)).toMatchObject([{ reason: "cost-forecast", mode: "advisory", count: 1 }]);
+  });
+
+  test("an explicit enforce wins over costForecast: advise", async () => {
+    const { store, runId, policy } = await midRun({ perTask: OVER, policy: { costForecast: "advise", stopModes: { "cost-forecast": "enforce" } } });
+    expect(() => assertForecastFits(store, runId, policy)).toThrow("The run is forecast to cost about");
+    expect(store.eventsOfType(runId, "decision.would_stop")).toHaveLength(0);
+  });
+});

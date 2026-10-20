@@ -1,13 +1,13 @@
 import { canonical, hashJson } from "../specs/hash.js";
 import { growCostCapToForecast } from "./budget.js";
 import { costCeilingUsd, costToleranceOf, currentCostCap } from "./cost-tolerance.js";
-import { WorkflowFault } from "./errors.js";
 import { DEFAULT_STAGE_RANGES } from "./estimate.js";
 import { forecastStageCost, runForecastStages } from "./forecast-price.js";
 import { hostGrowth } from "./host-growth.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { type SizingReport, verificationTokens } from "./sizing.js";
 import { runPrices } from "./stage-price.js";
+import { recordWouldStop, stopFault, stopMode } from "./stop-reasons.js";
 import type { WorkflowStore } from "./store.js";
 
 /**
@@ -218,18 +218,26 @@ export function assertForecastFits(store: WorkflowStore, runId: string, policy: 
   if (askedForecast(store, runId, forecast.capUsd) !== null) return;
   const tolerance = costToleranceOf(store, runId, policy);
   if (growCostCapToForecast(store, runId, policy, forecast.projectedUsd, tolerance)) return;
-  // An advisory forecast spends on: the dollar checks on spent and reserved money still hold.
-  if (policy.costForecast === "advise") return;
   const bound = policy.sizing?.maxRunCostUsd;
   const spare =
     bound !== undefined && bound > forecast.capUsd
       ? ` The initiative can spare up to ${usd(bound)} for this run, which does not cover it.`
       : "";
+  const message = `${FORECAST_STOP} ${usd(forecast.projectedUsd)}, above its ${forecast.ceilingUsd > forecast.capUsd ? `${usd(forecast.ceilingUsd)} ceiling (the ${usd(forecast.capUsd)} cap and its tolerance)` : `${usd(forecast.capUsd)} cap`}: ${usd(forecast.spentUsd)} spent, ${forecast.measuredTasks} finished tasks used ${forecast.ratio.toFixed(1)} times their price, ${forecast.openTasks} tasks and the final review still to run. Extend the run with a cap of at least ${usd(Math.ceil(forecast.projectedUsd))} to finish it, resume it to spend on to the current cap, or cancel it.${spare}`;
+  // A shadow or advisory forecast spends on and records the stop it would have made, once per
+  // cap: the dollar checks on spent and reserved money still hold (#1659, #1714).
+  const mode = stopMode(policy, "cost-forecast");
+  if (mode !== "enforce") {
+    recordWouldStop(store, runId, {
+      reason: "cost-forecast",
+      mode,
+      key: `cap-${forecast.capUsd}`,
+      summary: message,
+      inputs: { ...forecast },
+    });
+    return;
+  }
   const n = store.artifacts(runId).filter((a) => a.kind === "cost-forecast").length;
   store.artifact(runId, "cost-forecast", `forecasts/cost-${n + 1}.json`, canonical(forecast));
-  throw new WorkflowFault(
-    "BUDGET_EXHAUSTED",
-    `${FORECAST_STOP} ${usd(forecast.projectedUsd)}, above its ${forecast.ceilingUsd > forecast.capUsd ? `${usd(forecast.ceilingUsd)} ceiling (the ${usd(forecast.capUsd)} cap and its tolerance)` : `${usd(forecast.capUsd)} cap`}: ${usd(forecast.spentUsd)} spent, ${forecast.measuredTasks} finished tasks used ${forecast.ratio.toFixed(1)} times their price, ${forecast.openTasks} tasks and the final review still to run. Extend the run with a cap of at least ${usd(Math.ceil(forecast.projectedUsd))} to finish it, resume it to spend on to the current cap, or cancel it.${spare}`,
-    { reason: "cost-forecast", ...forecast },
-  );
+  throw stopFault("cost-forecast", message, { ...forecast });
 }

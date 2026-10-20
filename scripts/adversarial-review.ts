@@ -2,17 +2,23 @@
  * Adversarial sweep review of a pull request that fixes a Bug issue (#1722). A model of another
  * family than the fixer's gets the diff, the issue and the `## Sweep` section, with the sweep
  * checklist of the file-issue skill, and names the sibling places, languages or paths the sweep
- * missed. The review is advisory: CI posts it as one comment and never fails on it.
+ * missed. The review is advisory and runs on the machine of whoever calls it, through the Claude
+ * Code or Codex CLI and the subscription it is logged in with; there is no CI job and no API key.
  *
  * Usage:
- *   bun scripts/adversarial-review.ts --pr N [--post] [--out DIR]
- *   bun scripts/adversarial-review.ts --last N --out DIR
- * Environment: GITHUB_REPOSITORY, GITHUB_TOKEN; ANTHROPIC_API_KEY with
- * ADVERSARIAL_REVIEW_ANTHROPIC_MODEL, or OPENAI_API_KEY with ADVERSARIAL_REVIEW_OPENAI_MODEL.
- * Without a key and model for the reviewing family the script writes the prompt and stops.
+ *   bun run review:adversarial --pr N [--post] [--out DIR] [--reviewer claude|codex]
+ *   bun run review:adversarial --since YYYY-MM-DD [--post] [--out DIR]
+ *   bun run review:adversarial --last N --out DIR
+ * Environment: GITHUB_TOKEN (or a logged-in `gh`), GITHUB_REPOSITORY (default the BAKED repo).
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { claudeCodeCommand } from "../src/core/llm/providers/claude-code/cli";
+import { codexCommand } from "../src/core/llm/providers/codex/client";
+import { codexRunEnv } from "../src/core/llm/providers/codex/home";
+import { resolveCli } from "../src/core/platform/cli-path";
 import { closedIssueNumbers, sweepSection } from "./check-sweep-section";
 
 const SKILL = join(import.meta.dir, "../.agents/skills/file-issue/SKILL.md");
@@ -21,6 +27,8 @@ const INSTRUCTIONS = join(import.meta.dir, "../.agents/skills/file-issue/adversa
 export const COMMENT_MARKER = "<!-- adversarial-sweep-review -->";
 /** Diffs longer than this are cut; the reviewer is told so. */
 const MAX_DIFF = 120_000;
+/** One review may take a while on a large diff; a hung CLI must not hold the loop. */
+const REVIEW_TIMEOUT_MS = 15 * 60_000;
 
 export type Family = "anthropic" | "openai";
 
@@ -78,53 +86,77 @@ export function reviewerFamily(commitMessages: string[], available: Family[]): F
   return other[0] ?? null;
 }
 
-function availableFamilies(env: Record<string, string | undefined>): Family[] {
+/** The families whose CLI is installed here: Claude Code for anthropic, Codex for openai. */
+function installedFamilies(): Family[] {
   const families: Family[] = [];
-  if (env.OPENAI_API_KEY && env.ADVERSARIAL_REVIEW_OPENAI_MODEL) families.push("openai");
-  if (env.ANTHROPIC_API_KEY && env.ADVERSARIAL_REVIEW_ANTHROPIC_MODEL) families.push("anthropic");
+  if (process.env.BAKED_CODEX_PATH?.trim() || resolveCli("codex").found) families.push("openai");
+  if (process.env.BAKED_CLAUDE_CODE_PATH?.trim() || resolveCli("claude").found) families.push("anthropic");
   return families;
 }
 
-async function complete(family: Family, prompt: string, env: Record<string, string | undefined>) {
-  if (family === "anthropic") {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": env.ANTHROPIC_API_KEY ?? "",
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: env.ADVERSARIAL_REVIEW_ANTHROPIC_MODEL,
-        max_tokens: 4000,
-        messages: [{ role: "user", content: prompt }],
-      }),
-    });
-    if (!response.ok) throw new Error(`Anthropic API: HTTP ${response.status}`);
-    const data = (await response.json()) as { content?: { type: string; text?: string }[] };
-    return (data.content ?? []).map((c) => c.text ?? "").join("");
-  }
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${env.OPENAI_API_KEY ?? ""}` },
-    body: JSON.stringify({
-      model: env.ADVERSARIAL_REVIEW_OPENAI_MODEL,
-      messages: [{ role: "user", content: prompt }],
-    }),
-  });
-  if (!response.ok) throw new Error(`OpenAI API: HTTP ${response.status}`);
-  const data = (await response.json()) as { choices?: { message?: { content?: string } }[] };
-  return data.choices?.[0]?.message?.content ?? "";
+/** The CLI call that runs one review: no tools, read-only, in an empty folder so no project or user instructions reach it. */
+export function reviewCommand(family: Family, dir: string): string[] {
+  return family === "anthropic"
+    ? [claudeCodeCommand(), "-p", "--tools", "", "--output-format", "text"]
+    : [
+        codexCommand(),
+        "exec",
+        "--ephemeral",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "read-only",
+        "--color",
+        "never",
+        "--output-last-message",
+        join(dir, "review.md"),
+        "-",
+      ];
 }
 
-/** The comment body: the review under a heading that says it is advisory. */
-export function commentBody(review: string, family: Family): string {
+function complete(family: Family, prompt: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "baked-adversarial-review-"));
+  try {
+    const [command = "", ...args] = reviewCommand(family, dir);
+    const result = spawnSync(command, args, {
+      cwd: dir,
+      input: prompt,
+      encoding: "utf8",
+      timeout: REVIEW_TIMEOUT_MS,
+      maxBuffer: 64 * 1024 * 1024,
+      windowsHide: true,
+      env: family === "openai" ? codexRunEnv() : process.env,
+    });
+    if (result.error) throw result.error;
+    if (result.status !== 0) {
+      const tail = `${result.stderr ?? ""}`.trim().split("\n").slice(-5).join("\n");
+      throw new Error(`${family === "anthropic" ? "claude" : "codex"} exited with ${result.status}: ${tail}`);
+    }
+    return family === "anthropic" ? result.stdout : readFileSync(join(dir, "review.md"), "utf8");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** The comment body: the review under a heading that says it is advisory, marked with the commit it read. */
+export function commentBody(review: string, family: Family, sha: string): string {
   return [
-    COMMENT_MARKER,
+    `${COMMENT_MARKER}\n<!-- sha: ${sha} -->`,
     "### Adversarial sweep review (advisory)",
-    `A ${family === "anthropic" ? "Claude" : "OpenAI"} model, of another family than the fixer's, read the diff, the issue and the Sweep section with the [file-issue checklist](../blob/main/.agents/skills/file-issue/SKILL.md) and looked for missed places. It does not block the merge; a real finding goes into this pull request or a new issue.`,
+    `${family === "anthropic" ? "Claude Code" : "Codex"}, of another model family than the fixer's, read the diff at ${sha.slice(0, 7)}, the issue and the Sweep section with the [file-issue checklist](../blob/main/.agents/skills/file-issue/SKILL.md) and looked for missed places. It does not block the merge; a real finding goes into this pull request or a new issue.`,
     review.trim(),
   ].join("\n\n");
+}
+
+/** The commit an earlier review comment read, or null when the comment has none. */
+export function reviewedSha(body: string): string | null {
+  return /<!-- sha: ([0-9a-f]{7,40}) -->/.exec(body)?.[1] ?? null;
+}
+
+function githubToken(): string {
+  const env = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+  if (env) return env;
+  const gh = spawnSync("gh", ["auth", "token"], { encoding: "utf8", windowsHide: true });
+  return gh.status === 0 ? gh.stdout.trim() : "";
 }
 
 async function github<T>(path: string, token: string, init: RequestInit = {}, accept = "application/vnd.github+json") {
@@ -140,7 +172,10 @@ interface Pull {
   number: number;
   title: string;
   body: string | null;
+  state: string;
+  updated_at: string;
   merged_at?: string | null;
+  head: { sha: string };
 }
 
 /** The Bug issues a pull request closes, with their text; empty when it closes none. */
@@ -162,57 +197,82 @@ async function bugIssues(repository: string, body: string, token: string) {
   return issues;
 }
 
-async function reviewInput(repository: string, pull: Pull, token: string) {
+async function reviewComment(repository: string, prNumber: number, token: string) {
+  const comments = await github<{ id: number; body?: string }[]>(
+    `/repos/${repository}/issues/${prNumber}/comments?per_page=100`,
+    token,
+  );
+  return comments.find((c) => c.body?.startsWith(COMMENT_MARKER)) ?? null;
+}
+
+interface Options {
+  post: boolean;
+  out?: string;
+  reviewer?: Family;
+  /** Skip a pull request whose review comment already read its head commit. */
+  skipReviewed?: boolean;
+}
+
+async function reviewPull(repository: string, pull: Pull, token: string, options: Options) {
   const body = pull.body ?? "";
   const issues = await bugIssues(repository, body, token);
-  if (!issues.length) return null;
+  if (!issues.length) {
+    console.log(`#${pull.number}: closes no Bug issue; no review.`);
+    return;
+  }
+  const existing = options.post || options.skipReviewed ? await reviewComment(repository, pull.number, token) : null;
+  if (options.skipReviewed && existing?.body && reviewedSha(existing.body) === pull.head.sha) {
+    console.log(`#${pull.number}: already reviewed at ${pull.head.sha.slice(0, 7)}.`);
+    return;
+  }
   const diff = await github<string>(`/repos/${repository}/pulls/${pull.number}`, token, {}, "application/vnd.github.diff");
   const commits = await github<{ commit: { message: string } }[]>(
     `/repos/${repository}/pulls/${pull.number}/commits?per_page=100`,
     token,
   );
   const input: ReviewInput = { issues, prNumber: pull.number, prTitle: pull.title, prBody: body, diff };
-  return { input, messages: commits.map((c) => c.commit.message) };
-}
-
-async function postComment(repository: string, prNumber: number, body: string, token: string) {
-  const comments = await github<{ id: number; body?: string }[]>(
-    `/repos/${repository}/issues/${prNumber}/comments?per_page=100`,
-    token,
-  );
-  const existing = comments.find((c) => c.body?.startsWith(COMMENT_MARKER));
-  const init = { method: existing ? "PATCH" : "POST", body: JSON.stringify({ body }) };
-  await github(
-    existing
-      ? `/repos/${repository}/issues/comments/${existing.id}`
-      : `/repos/${repository}/issues/${prNumber}/comments`,
-    token,
-    init,
-  );
-}
-
-async function reviewPull(repository: string, pull: Pull, options: { post: boolean; out?: string }) {
-  const env = process.env;
-  const token = env.GITHUB_TOKEN ?? "";
-  const found = await reviewInput(repository, pull, token);
-  if (!found) {
-    console.log(`#${pull.number}: closes no Bug issue; no review.`);
-    return;
-  }
-  const prompt = reviewPrompt(found.input, readFileSync(SKILL, "utf8"), readFileSync(INSTRUCTIONS, "utf8"));
+  const prompt = reviewPrompt(input, readFileSync(SKILL, "utf8"), readFileSync(INSTRUCTIONS, "utf8"));
   if (options.out) {
     mkdirSync(options.out, { recursive: true });
     writeFileSync(join(options.out, `pr-${pull.number}.prompt.md`), prompt);
   }
-  const family = reviewerFamily(found.messages, availableFamilies(env));
+  const family =
+    options.reviewer ??
+    reviewerFamily(
+      commits.map((c) => c.commit.message),
+      installedFamilies(),
+    );
   if (!family) {
-    console.log(`#${pull.number}: no API key and model for a reviewer of another family; prompt only.`);
+    console.log(
+      `#${pull.number}: no Claude Code or Codex CLI of another family than the fixer's is installed; ${options.out ? "prompt only" : "no review"}.`,
+    );
     return;
   }
-  const review = await complete(family, prompt, env);
+  const review = complete(family, prompt);
   if (options.out) writeFileSync(join(options.out, `pr-${pull.number}.review.md`), review);
-  if (options.post) await postComment(repository, pull.number, commentBody(review, family), token);
-  console.log(`#${pull.number}: reviewed by the ${family} family${options.post ? " and posted" : ""}.`);
+  if (options.post) {
+    const comment = JSON.stringify({ body: commentBody(review, family, pull.head.sha) });
+    await github(
+      existing
+        ? `/repos/${repository}/issues/comments/${existing.id}`
+        : `/repos/${repository}/issues/${pull.number}/comments`,
+      token,
+      { method: existing ? "PATCH" : "POST", body: comment },
+    );
+  }
+  console.log(`#${pull.number}: reviewed by ${family === "anthropic" ? "Claude Code" : "Codex"}${options.post ? " and posted" : ""}.`);
+}
+
+/** Pull requests to `main`, most recently updated first. */
+async function* recentPulls(repository: string, token: string, state: "closed" | "all") {
+  for (let page = 1; page <= 10; page++) {
+    const pulls = await github<Pull[]>(
+      `/repos/${repository}/pulls?state=${state}&base=main&sort=updated&direction=desc&per_page=50&page=${page}`,
+      token,
+    );
+    if (!pulls.length) return;
+    yield* pulls;
+  }
 }
 
 if (import.meta.main) {
@@ -222,36 +282,47 @@ if (import.meta.main) {
     return index >= 0 ? args[index + 1] : undefined;
   };
   const repository = process.env.GITHUB_REPOSITORY ?? "Gulliby-development/baked";
-  const token = process.env.GITHUB_TOKEN ?? "";
+  const token = githubToken();
   const out = value("--out");
   const pr = value("--pr");
+  const since = value("--since");
   const last = value("--last");
+  const reviewerArg = value("--reviewer");
+  const reviewer: Family | undefined =
+    reviewerArg === "claude" ? "anthropic" : reviewerArg === "codex" ? "openai" : undefined;
+  const options: Options = { post: args.includes("--post"), ...(out ? { out } : {}), ...(reviewer ? { reviewer } : {}) };
   try {
     if (pr) {
       const pull = await github<Pull>(`/repos/${repository}/pulls/${Number(pr)}`, token);
-      await reviewPull(repository, pull, { post: args.includes("--post"), ...(out ? { out } : {}) });
+      await reviewPull(repository, pull, token, options);
+    } else if (since) {
+      // The bench loop's pass: open and merged fix pull requests updated since the date, each
+      // reviewed once per head commit.
+      const from = Date.parse(since);
+      for await (const pull of recentPulls(repository, token, "all")) {
+        if (Date.parse(pull.updated_at) < from) break;
+        if (pull.state === "closed" && !pull.merged_at) continue;
+        await reviewPull(repository, pull, token, { ...options, skipReviewed: true }).catch((error) =>
+          console.warn(`#${pull.number}: review skipped: ${error instanceof Error ? error.message : String(error)}`),
+        );
+      }
     } else if (last && out) {
       // The offline evaluation: the last N merged pull requests that closed a Bug issue.
       let left = Number(last);
-      for (let page = 1; left > 0 && page <= 10; page++) {
-        const pulls = await github<Pull[]>(
-          `/repos/${repository}/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=50&page=${page}`,
-          token,
-        );
-        if (!pulls.length) break;
-        for (const pull of pulls) {
-          if (left <= 0 || !pull.merged_at) continue;
-          if (!(await bugIssues(repository, pull.body ?? "", token)).length) continue;
-          await reviewPull(repository, pull, { post: false, out });
-          left--;
-        }
+      for await (const pull of recentPulls(repository, token, "closed")) {
+        if (left <= 0) break;
+        if (!pull.merged_at || !(await bugIssues(repository, pull.body ?? "", token)).length) continue;
+        await reviewPull(repository, pull, token, { ...options, post: false });
+        left--;
       }
     } else {
-      console.error("Usage: bun scripts/adversarial-review.ts --pr N [--post] [--out DIR] | --last N --out DIR");
+      console.error(
+        "Usage: bun run review:adversarial --pr N [--post] [--out DIR] [--reviewer claude|codex] | --since YYYY-MM-DD [--post] | --last N --out DIR",
+      );
       process.exit(2);
     }
   } catch (error) {
-    // Advisory: a failed review is reported and never fails the job.
+    // Advisory: a failed review is reported and never fails the caller.
     console.warn(`Adversarial review skipped: ${error instanceof Error ? error.message : String(error)}`);
   }
 }

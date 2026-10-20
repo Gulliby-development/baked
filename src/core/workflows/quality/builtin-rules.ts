@@ -2,6 +2,8 @@
  * The built-in rules of the anti-slop pack (#639), kept free of Node imports so the desktop can
  * list them. `rules.ts` runs them.
  */
+import { type LanguageRecord, none, rowOf } from "../../intelligence/language-records.js";
+
 export type RuleSeverity = "error" | "warning";
 
 export interface QualityRule {
@@ -14,8 +16,11 @@ export interface QualityRule {
   inTests: boolean;
   message: string;
   fix: string;
-  /** The lines (0-based, from `index`) of a match starting at `index`, or null. */
-  match(lines: readonly string[], index: number): number[] | null;
+  /**
+   * The lines (0-based, from `index`) of a match starting at `index`, or null. `language` is the
+   * file's language, for a rule that reads a per-language record.
+   */
+  match(lines: readonly string[], index: number, language: string): number[] | null;
   /**
    * A whitespace rule: it reads only files that existed at baseline, on lines whose exact text
    * (spaces included) is new there, since the other rules compare lines without their
@@ -129,21 +134,31 @@ function pythonPlaceholder(lines: readonly string[], index: number): number[] | 
  */
 const NOT_IMPLEMENTED = String.raw`(?:(?:not\s+(?:yet\s+)?implemented|unimplemented)\b|todo\s*(?:["'\x60]|[:!.-]))`;
 
-/**
- * The placeholder statement of each language (#1679): an exception or panic whose message says
- * the code is missing (JavaScript and TypeScript `Error`, Java, Kotlin, C# and PHP exceptions, Go's
- * `panic`, Lua's `error`), Rust's `todo!`/`unimplemented!`, and .NET's `NotImplementedException`
- * with or without a message.
- */
-const PLACEHOLDER = new RegExp(
-  [
-    String.raw`throw\s+new\s+\\?[\w.\\]*(?:Error|Exception)\(\s*["'\x60]${NOT_IMPLEMENTED}`,
-    String.raw`\btodo!\(|\bunimplemented!\(`,
-    String.raw`(?<![\w.:])(?:panic|error)\(\s*["'\x60]${NOT_IMPLEMENTED}`,
-    String.raw`throw\s+new\s+(?:System\.)?NotImplementedException\(`,
-  ].join("|"),
+/** A line whose statement matches: the line, or null. */
+const statement =
+  (pattern: RegExp): Placeholder =>
+  (lines, index) =>
+    pattern.test(lines[index] ?? "") ? [index] : null;
+
+/** The first matcher that finds a placeholder at the line. */
+const anyOf =
+  (...matchers: Placeholder[]): Placeholder =>
+  (lines, index) => {
+    for (const matcher of matchers) {
+      const found = matcher(lines, index);
+      if (found) return found;
+    }
+    return null;
+  };
+
+/** An exception thrown with `new` whose message says the code is missing (JS, Java, C#, PHP). */
+const THROW_NEW = new RegExp(
+  String.raw`throw\s+new\s+\\?[\w.\\]*(?:Error|Exception)\(\s*["'\x60]${NOT_IMPLEMENTED}`,
   "i",
 );
+/** A call of a failing function with that message: Go's `panic`, Lua's `error`, Zig's `@panic`. */
+const failing = (names: string) =>
+  new RegExp(String.raw`(?<![\w.:])(?:${names})\(\s*["'\x60]${NOT_IMPLEMENTED}`, "i");
 
 /** Kotlin's built-in `TODO()`, by case: a `todo(...)` call is ordinary code of a todo app. */
 const KOTLIN_TODO = /(?<![\w.$])TODO\(/;
@@ -160,10 +175,8 @@ const JAVA_UNSUPPORTED_STATEMENT = new RegExp(String.raw`${JAVA_UNSUPPORTED.sour
 const JAVA_MUTATOR =
   /[\w>\]?]\s+(?:remove|removeAll|removeIf|retainAll|add|addAll|addFirst|addLast|set|put|putAll|putIfAbsent|clear|replaceAll|sort|push|pop|offer|poll|compute|computeIfAbsent|computeIfPresent|merge)\s*\([^;]*$/;
 
-function placeholderLine(lines: readonly string[], index: number): number[] | null {
-  const line = lines[index] ?? "";
-  if (PLACEHOLDER.test(line) || KOTLIN_TODO.test(line)) return [index];
-  if (!JAVA_UNSUPPORTED.test(line)) return null;
+function javaUnsupported(lines: readonly string[], index: number): number[] | null {
+  if (!JAVA_UNSUPPORTED.test(lines[index] ?? "")) return null;
   // The method header within the three code lines above (or on this line) names a mutator.
   let seen = 0;
   for (let i = index; i >= 0 && seen <= 3; i--) {
@@ -173,6 +186,75 @@ function placeholderLine(lines: readonly string[], index: number): number[] | nu
     seen++;
   }
   return [index];
+}
+
+type Placeholder = (lines: readonly string[], index: number) => number[] | null;
+
+const JS_PLACEHOLDER = statement(THROW_NEW);
+
+/**
+ * The placeholder statement of each supported language (#1679, #1717): the language's own way to
+ * say the code is missing, with the exemptions where the same statement is a contract.
+ */
+export const PLACEHOLDERS: LanguageRecord<Placeholder> = {
+  typescript: JS_PLACEHOLDER,
+  javascript: JS_PLACEHOLDER,
+  vue: JS_PLACEHOLDER,
+  svelte: JS_PLACEHOLDER,
+  python: pythonPlaceholder,
+  go: statement(failing("panic")),
+  rust: statement(/\btodo!\(|\bunimplemented!\(/),
+  java: anyOf(statement(THROW_NEW), javaUnsupported),
+  kotlin: anyOf(
+    statement(KOTLIN_TODO),
+    statement(
+      new RegExp(String.raw`throw\s+[\w.]*(?:Error|Exception)\(\s*["'\x60]${NOT_IMPLEMENTED}`, "i"),
+    ),
+  ),
+  // `???` as a whole body or right-hand side, and `NotImplementedError` with a message.
+  scala: anyOf(statement(/(?:^|=)\s*\?\?\?\s*$/), statement(THROW_NEW)),
+  csharp: anyOf(
+    statement(THROW_NEW),
+    statement(/throw\s+new\s+(?:System\.)?NotImplementedException\(/),
+  ),
+  php: statement(THROW_NEW),
+  lua: statement(failing("error")),
+  zig: statement(failing("@panic|panic")),
+  swift: statement(failing("fatalError|preconditionFailure")),
+  dart: anyOf(
+    statement(/throw\s+(?:new\s+)?UnimplementedError\(/),
+    statement(failing("throw\\s+(?:new\\s+)?UnsupportedError")),
+  ),
+  elixir: statement(
+    new RegExp(String.raw`\braise\s+(?:[\w.]+\s*,\s*)?["']${NOT_IMPLEMENTED}`, "i"),
+  ),
+  ocaml: statement(
+    new RegExp(
+      String.raw`\bfailwith\s*\(?\s*"${NOT_IMPLEMENTED}|\bFailure\s*\(?\s*"${NOT_IMPLEMENTED}`,
+      "i",
+    ),
+  ),
+  rescript: statement(failing("failwith|Js\\.Exn\\.raiseError")),
+  solidity: statement(failing("revert")),
+  cpp: anyOf(
+    statement(THROW_NEW),
+    statement(new RegExp(String.raw`throw\s+std::\w+\(\s*"${NOT_IMPLEMENTED}`, "i")),
+    statement(new RegExp(String.raw`assert\(\s*(?:0|false)\s*&&\s*"${NOT_IMPLEMENTED}`, "i")),
+  ),
+  c: statement(new RegExp(String.raw`assert\(\s*(?:0|false)\s*&&\s*"${NOT_IMPLEMENTED}`, "i")),
+  ruby: none(
+    "`raise NotImplementedError` is also Ruby's abstract-method idiom, with no marker that tells the two apart",
+  ),
+  objc: none("Objective-C has no placeholder statement of its own: stubs raise any NSException"),
+  bash: none("a shell function has no placeholder statement; `exit 1` is ordinary error handling"),
+};
+
+function placeholderLine(
+  lines: readonly string[],
+  index: number,
+  language: string,
+): number[] | null {
+  return rowOf(PLACEHOLDERS, language)?.(lines, index) ?? null;
 }
 
 const DEFAULT_VALUE = /^return(?:\s+(?:null|undefined|\[\]|\{\}|""|''|``|false|0|-1|None))?\s*;?$/;
@@ -431,7 +513,7 @@ export const BUILTIN_RULES: readonly QualityRule[] = [
     inTests: false,
     message: "The body is a placeholder, not an implementation",
     fix: "Implement the behavior, or leave the function out until a task implements it.",
-    match: (lines, index) => pythonPlaceholder(lines, index) ?? placeholderLine(lines, index),
+    match: placeholderLine,
   },
   {
     id: "whitespace-only-line",

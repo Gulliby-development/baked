@@ -667,3 +667,27 @@ describe("approval reviewer in a run", () => {
     expect(JSON.parse(approval.body_json).autoApproval.reviewError).toContain("reviewer unavailable");
   });
 });
+
+describe("approval-scope in shadow mode (#1714)", () => {
+  const shadow = (mode: "shadow" | "advisory"): RunPolicy => ({ ...limited, stopModes: { "approval-scope": mode } });
+  const three = graph([modify("src/a.ts")], [modify("src/b.ts")], [modify("src/c.ts")]);
+
+  test("a task count over the limit approves and reports what enforce would have declined", () => {
+    expect(evaluateAutoApproval(limited, manifest, spec, three, []).approval).toBeNull();
+    const result = evaluateAutoApproval(shadow("shadow"), manifest, spec, three, []);
+    expect(result.approval?.mode).toBe("limits");
+    expect(result.wouldStop).toEqual({ mode: "shadow", problems: ["3 tasks exceed 2"] });
+    expect(evaluateAutoApproval(shadow("advisory"), manifest, spec, three, []).wouldStop?.mode).toBe("advisory");
+  });
+
+  test("paths and deletions still decline in shadow mode", () => {
+    const outside = evaluateAutoApproval(shadow("shadow"), manifest, spec, graph([modify("docs/a.md")]), []);
+    expect(outside.approval).toBeNull();
+    expect(outside.reasons).toEqual(["Limits: docs/a.md is outside the allowed paths"]);
+    expect(outside.wouldStop).toBeUndefined();
+    const both = evaluateAutoApproval(shadow("shadow"), manifest, spec, graph([modify("src/a.ts")], [modify("src/b.ts")], [{ path: "src/c.ts", action: "delete" }]), []);
+    expect(both.approval).toBeNull();
+    expect(both.reasons).toEqual(["Limits: src/c.ts would be deleted"]);
+    expect(both.wouldStop?.problems).toEqual(["3 tasks exceed 2"]);
+  });
+});

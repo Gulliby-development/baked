@@ -1,0 +1,24 @@
+{
+  "id": "dotnet-string-calc",
+  "language": "csharp",
+  "toolchain": "dotnet",
+  "requires": [
+    "dotnet"
+  ],
+  "allowedPaths": [
+    "StringCalc/**",
+    "StringCalc.Tests/**",
+    "README.md"
+  ],
+  "checks": [
+    {
+      "id": "dotnet-test",
+      "executable": "dotnet",
+      "args": [
+        "test",
+        "StringCalc.Tests",
+        "--nologo"
+      ]
+    }
+  ]
+}

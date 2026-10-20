@@ -1,0 +1,25 @@
+{
+  "files": {
+    "lib/sum.rb": "def sum(a, b)\n  a + b\nend\n",
+    "spec/sum_spec.rb": "require 'sum'\n",
+    "lib/sum_test.rb": "require 'sum'\n",
+    "Gemfile": "source 'https://rubygems.org'\ngem 'rake'\n"
+  },
+  "expected": {
+    "tests": [
+      "spec/sum_spec.rb",
+      "lib/sum_test.rb"
+    ],
+    "manifests": [
+      "Gemfile"
+    ],
+    "dependencies": [
+      "Gemfile: rubygems rake"
+    ],
+    "placeholders": null,
+    "gates": null,
+    "testRunners": null,
+    "mutation": null,
+    "properties": null
+  }
+}

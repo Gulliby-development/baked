@@ -1,0 +1,25 @@
+{
+  "files": {
+    "src/main/scala/Sum.scala": "object Sum {\n  def sum(a: Int, b: Int): Int = ???\n}\n",
+    "src/main/scala/SumSuite.scala": "class SumSuite\n",
+    "build.sbt": "name := \"fixture\"\n"
+  },
+  "expected": {
+    "tests": [
+      "src/main/scala/SumSuite.scala"
+    ],
+    "manifests": [
+      "build.sbt"
+    ],
+    "dependencies": null,
+    "placeholders": [
+      "src/main/scala/Sum.scala:2"
+    ],
+    "gates": [
+      "sbt-test"
+    ],
+    "testRunners": null,
+    "mutation": null,
+    "properties": null
+  }
+}

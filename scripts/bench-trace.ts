@@ -4,17 +4,20 @@
  *
  *   bun scripts/bench-trace.ts export <workspace> <out.sqlite.gz> [--run RUN_ID ...]
  *   bun scripts/bench-trace.ts replay <trace.sqlite.gz> ... [--json]
+ *   bun scripts/bench-trace.ts recordings <workspace> <out-dir> [--run RUN_ID ...]
  *
  * `export` writes the anonymised trace of a workspace's workflow database (see
  * src/core/workflows/trace.ts); the bench loop stores one per app per round under
  * tests/fixtures/bench-traces/RNN/. `replay` runs the forecast gate of the current code at every
  * recorded attempt and prints the stops and cap growth that differ from the recorded run.
+ * `recordings` writes the model calls of runs started with `--record-model-calls` (#1715).
  */
-import { exportTrace, replayTrace } from "../src/core/workflows/trace.js";
+import { exportRecordings, exportTrace, replayTrace } from "../src/core/workflows/trace.js";
 
 const usage =
   "Usage: bun scripts/bench-trace.ts export <workspace> <out.sqlite.gz> [--run RUN_ID ...]\n" +
-  "       bun scripts/bench-trace.ts replay <trace.sqlite.gz> ... [--json]";
+  "       bun scripts/bench-trace.ts replay <trace.sqlite.gz> ... [--json]\n" +
+  "       bun scripts/bench-trace.ts recordings <workspace> <out-dir> [--run RUN_ID ...]";
 
 const [command, ...rest] = process.argv.slice(2);
 const flags = rest.filter((a) => a.startsWith("--"));
@@ -34,6 +37,12 @@ if (command === "export" && args.length === 2) {
   console.log(
     `${result.path}: ${result.runs} runs, ${result.initiatives} initiatives, ${(result.bytes / 1024).toFixed(0)} KiB`,
   );
+} else if (command === "recordings" && args.length === 2) {
+  const [workspace = "", outDir = ""] = args;
+  const entries = exportRecordings(workspace, outDir, runIds.length ? { runIds } : {});
+  for (const entry of entries)
+    console.log(`${entry.file}: ${entry.featureId}, ${entry.calls} calls, ${entry.status}`);
+  if (!entries.length) console.log("No run recorded its model calls (--record-model-calls)");
 } else if (command === "replay" && args.length > 0) {
   const replays = args.map((path) => replayTrace(path));
   if (flags.includes("--json")) console.log(JSON.stringify(replays, null, 2));
@@ -44,13 +53,20 @@ if (command === "export" && args.length === 2) {
         const ratios = run.ratios.map((r) => `${r.at * 100}%: ${r.ratio.toFixed(2)}x`).join(", ");
         console.log(
           `  ${run.featureId} ${run.runId}: final ${usd(run.finalUsd)}, ${run.boundaries.length} attempts, ` +
-            `new stops ${run.newStops}, new growth ${run.newGrowth}, stops removed ${run.removedStops}` +
+            `new stops ${run.newStops}, new growth ${run.newGrowth}, stops removed ${run.removedStops}, ` +
+            `first-response stops ${run.newFirstByteStops} of ${run.firstByte.length} calls` +
             (ratios ? `, forecast/final ${ratios}` : ""),
         );
         for (const b of run.boundaries.filter((b) => b.recorded !== b.replayed))
           console.log(
             `    ${new Date(b.at).toISOString()} ${b.attemptId}: recorded ${b.recorded}, now ${b.replayed} ` +
               `(forecast ${usd(b.projectedUsd)}, ceiling ${usd(b.ceilingUsd)}, spent ${usd(b.spentUsd)})`,
+          );
+        for (const b of run.firstByte.filter((b) => b.recorded !== b.replayed))
+          console.log(
+            `    ${b.attemptId} call ${b.call} (${b.provider} ${b.stage ?? "?"} ${b.effort ?? "default"}): ` +
+              `recorded ${b.recorded}, now ${b.replayed} (first response ${b.firstByteMs === null ? "none" : `${Math.round(b.firstByteMs / 1000)} s`}` +
+              `${b.estimated ? " estimated" : ""}, deadline ${Math.round(b.limitMs / 1000)} s)`,
           );
       }
     }

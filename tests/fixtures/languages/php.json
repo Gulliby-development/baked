@@ -1,0 +1,23 @@
+{
+  "files": {
+    "src/Sum.php": "<?php\nfunction sum($a, $b) {\n  throw new \\RuntimeException(\"not implemented\");\n}\n",
+    "src/SumTest.php": "<?php\n",
+    "composer.json": "{}\n"
+  },
+  "expected": {
+    "tests": [
+      "src/SumTest.php"
+    ],
+    "manifests": [
+      "composer.json"
+    ],
+    "dependencies": null,
+    "placeholders": [
+      "src/Sum.php:3"
+    ],
+    "gates": null,
+    "testRunners": null,
+    "mutation": null,
+    "properties": null
+  }
+}

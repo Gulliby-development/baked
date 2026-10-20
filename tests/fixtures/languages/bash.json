@@ -1,0 +1,25 @@
+{
+  "files": {
+    "bin/sum.sh": "sum() {\n  echo $(($1 + $2))\n}\n",
+    "bin/sum_test.sh": "source bin/sum.sh\n"
+  },
+  "outputs": {
+    "tests": "ok 1 - adds\nnot ok 2 - sum is commutative\n1..2\n",
+    "testsGrown": "ok 1 - adds\nok 2 - subtracts\nnot ok 3 - sum is commutative\n1..3\n"
+  },
+  "expected": {
+    "tests": [
+      "bin/sum_test.sh"
+    ],
+    "manifests": null,
+    "dependencies": null,
+    "placeholders": null,
+    "gates": null,
+    "testRunners": [
+      "tap 2",
+      "signature stable"
+    ],
+    "mutation": null,
+    "properties": null
+  }
+}

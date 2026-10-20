@@ -1,0 +1,29 @@
+{
+  "files": {
+    "src/Sum.svelte": "<script lang=\"ts\">\nfunction sum(a: number, b: number): number {\n  throw new Error(\"not implemented\");\n}\n</script>\n",
+    "package.json": "{\"name\": \"fixture\", \"scripts\": {\"test\": \"vitest run\"}, \"dependencies\": {\"svelte\": \"^5.0.0\"}}"
+  },
+  "outputs": {
+    "tests": " FAIL  src/sum.test.js > sum\n Test Files  1 failed (1)\n      Tests  1 failed | 2 passed (3)\n",
+    "testsGrown": " FAIL  src/sum.test.js > sum\n Test Files  1 failed (1)\n      Tests  1 failed | 3 passed (4)\n"
+  },
+  "expected": {
+    "tests": null,
+    "manifests": null,
+    "dependencies": [
+      "package.json: npm svelte"
+    ],
+    "placeholders": [
+      "src/Sum.svelte:3"
+    ],
+    "gates": [
+      "tests"
+    ],
+    "testRunners": [
+      "vitest 3",
+      "signature stable"
+    ],
+    "mutation": null,
+    "properties": null
+  }
+}

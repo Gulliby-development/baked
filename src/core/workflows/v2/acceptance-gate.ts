@@ -28,6 +28,7 @@ import {
   type RunPolicy,
   type WorkflowEvent,
 } from "../schemas.js";
+import { stopFault } from "../stop-reasons.js";
 import type { RequestRow, WorkflowStore } from "../store.js";
 import type { HostTool, RuntimeState } from "../types.js";
 import { runRoot } from "../worktree.js";
@@ -599,10 +600,7 @@ export class WalkSession {
         `Unknown expectations ${unknown.join(", ")}; the scenario has ${known.join(", ")}`,
       );
     if (this.recorded.length >= MAX_STEPS)
-      throw new WorkflowFault(
-        "BUDGET_EXHAUSTED",
-        `A walk-through records at most ${MAX_STEPS} steps`,
-      );
+      throw stopFault("walkthrough-steps", `A walk-through records at most ${MAX_STEPS} steps`);
     const stepId = `S${this.recorded.length + 1}`;
     const terminal = clean(this.app?.frame(FRAME_LINES) ?? "");
     const step: WalkStep = {

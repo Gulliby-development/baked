@@ -1,0 +1,23 @@
+{
+  "files": {
+    "src/sum.cpp": "int sum(int a, int b) {\n  throw std::logic_error(\"not implemented\");\n}\n",
+    "src/sum_test.cpp": "int main() { return 0; }\n",
+    "CMakeLists.txt": "project(fixture CXX)\n"
+  },
+  "expected": {
+    "tests": [
+      "src/sum_test.cpp"
+    ],
+    "manifests": [
+      "CMakeLists.txt"
+    ],
+    "dependencies": null,
+    "placeholders": [
+      "src/sum.cpp:2"
+    ],
+    "gates": null,
+    "testRunners": null,
+    "mutation": null,
+    "properties": null
+  }
+}

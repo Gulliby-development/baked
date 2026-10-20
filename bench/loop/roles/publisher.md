@@ -66,6 +66,10 @@ Never force-push or rewrite the history of a public repository. The update path 
 - Nothing about the PC, the owner's accounts, run logs, tokens, `.baked/` or BAKED internals goes into a public repository.
 - Don't publish packages to npm, PyPI or any registry.
 
+## Traces
+
+The round's usage traces (phase 10) follow the [replay-corpus skill](../../../.agents/skills/replay-corpus/SKILL.md): export every app from current main, replay, run the corpus test, and check that `git status` stages the `.sqlite.gz` files before the pull request. In the same pull request, every run that stopped (a forecast, budget, provider or gate stop, or an intervention in `interventions.jsonl`) adds its model-call recording: `bun scripts/bench-trace.ts recordings <workspace> tests/fixtures/bench-recordings/RNN/<app> --run RUN_ID` for each such run (#1715).
+
 ## Done
 
 In auto mode, Steps A to C return `ok` with the public URLs, CI results and logo outcome, and any `ci-failed` apps. In `approve-per-round` mode Step A returns `awaiting-approval` first.

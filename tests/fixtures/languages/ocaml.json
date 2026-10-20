@@ -1,0 +1,20 @@
+{
+  "files": {
+    "src/sum.ml": "let sum a b =\n  failwith \"not implemented\"\n",
+    "dune-project": "(lang dune 3.0)\n"
+  },
+  "expected": {
+    "tests": null,
+    "manifests": [
+      "dune-project"
+    ],
+    "dependencies": null,
+    "placeholders": [
+      "src/sum.ml:2"
+    ],
+    "gates": null,
+    "testRunners": null,
+    "mutation": null,
+    "properties": null
+  }
+}

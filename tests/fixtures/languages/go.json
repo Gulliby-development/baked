@@ -1,0 +1,42 @@
+{
+  "files": {
+    "sum.go": "package sum\n\nfunc Sum(a, b int) int {\n\tpanic(\"not implemented\")\n}\n",
+    "sum_test.go": "package sum\n",
+    "go.mod": "module example.com/fixture\n\ngo 1.22\n\nrequire github.com/google/uuid v1.6.0\n",
+    "sum_prop_test.go": "package sum\n\nfunc TestProps(t *testing.T) { rapid.Check(t, func(t *rapid.T) {}) }\n"
+  },
+  "outputs": {
+    "tests": "=== RUN   TestAdds\n--- PASS: TestAdds (0.00s)\n=== RUN   TestSum\n    sum_test.go:9: got 3, want 4\n--- FAIL: TestSum (0.00s)\nFAIL\nFAIL\texample.com/fixture\t0.012s\n",
+    "testsGrown": "=== RUN   TestAdds\n--- PASS: TestAdds (0.00s)\n=== RUN   TestSubtracts\n--- PASS: TestSubtracts (0.00s)\n=== RUN   TestSum\n    sum_test.go:9: got 3, want 4\n--- FAIL: TestSum (0.00s)\nFAIL\nFAIL\texample.com/fixture\t0.015s\n"
+  },
+  "expected": {
+    "tests": [
+      "sum_test.go",
+      "sum_prop_test.go"
+    ],
+    "manifests": [
+      "go.mod"
+    ],
+    "dependencies": [
+      "go.mod: go github.com/google/uuid"
+    ],
+    "placeholders": [
+      "sum.go:4"
+    ],
+    "gates": [
+      "gofmt",
+      "go-vet",
+      "go-test"
+    ],
+    "testRunners": [
+      "go 2",
+      "signature stable"
+    ],
+    "mutation": [
+      "go-mutesting: sum.go"
+    ],
+    "properties": [
+      "sum_prop_test.go: library"
+    ]
+  }
+}

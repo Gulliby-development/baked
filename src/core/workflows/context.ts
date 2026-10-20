@@ -11,6 +11,7 @@ import { PROJECT_MEMORY_ARTIFACT } from "./project-memory.js";
 import { type RecoveryAdvice, recoveryAdvice } from "./remedies.js";
 import type { AgentProfile } from "./schemas.js";
 import { specDigest } from "./spec-digest.js";
+import { stopFault } from "./stop-reasons.js";
 import type { WorkflowStore } from "./store.js";
 import type { RuntimeState } from "./types.js";
 
@@ -256,10 +257,10 @@ export function buildWorkflowContext(
       ["attempt input", Buffer.byteLength(canonical(attempt))],
     ];
     const [largest, bytes] = parts.reduce((a, b) => (b[1] > a[1] ? b : a));
-    throw new WorkflowFault(
-      "BUDGET_EXHAUSTED",
+    throw stopFault(
+      "context_window",
       `Required workflow context exceeds the ${contextWindow}-token window of ${profile.model}${compact ? " even shortened" : ""}; its largest part is the ${largest} (${bytes} bytes). Split the feature or select a larger-context model`,
-      { reason: "context_window", ...(compact ? { compacted: true } : {}) },
+      compact ? { compacted: true } : {},
     );
   }
   return text;

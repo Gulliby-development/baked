@@ -21,7 +21,7 @@ import { hasToolHooks } from "../hooks/index.js";
 import { formatSyntaxErrors, syntaxCheckable, syntaxErrors } from "../intelligence/syntax-check.js";
 import { knownModelContextWindow } from "../llm/models.js";
 import { resolveModel } from "../llm/provider.js";
-import { withProviderHealth } from "../llm/provider-health.js";
+import { type CallTiming, withProviderHealth } from "../llm/provider-health.js";
 import {
   buildProviderOptions,
   type CacheTTL,
@@ -127,6 +127,7 @@ import {
   type ToolBackendCount,
   toolCallName,
 } from "./step-budget.js";
+import { stopFault } from "./stop-reasons.js";
 import type { EffectRow, WorkflowStore } from "./store.js";
 import { failureOwnerNote } from "./task-graph.js";
 import { pureWorkflowTools, WorkflowToolPolicy } from "./tool-policy.js";
@@ -273,6 +274,8 @@ interface AttemptWatch {
   deadlines: number;
   /** When the model call of the current step started, until it asks for a tool or ends. */
   calledAt: number | null;
+  /** Each model call's timing, kept in the attempt's usage record for trace replay (#1715). */
+  calls: CallTiming[];
   abort(error: Error): void;
 }
 
@@ -337,6 +340,7 @@ export class NativeAgentExecutor implements AgentExecutor {
       bufferedProviders: 0,
       deadlines: 0,
       calledAt: null,
+      calls: [],
       abort: (error) => stall.abort(error),
     };
     const interval = setInterval(
@@ -417,10 +421,9 @@ export class NativeAgentExecutor implements AgentExecutor {
         Math.ceil(Buffer.byteLength(request.prompt) / 3) + request.profile.maxOutputTokens >
           window * 0.8
       )
-        throw new WorkflowFault(
-          "BUDGET_EXHAUSTED",
+        throw stopFault(
+          "context_window",
           `Workflow context exceeds the ${window}-token window of ${request.profile.model}`,
-          { reason: "context_window" },
         );
       const writer =
         request.profile.role === "implementer" || request.profile.role === "acceptance-writer";
@@ -1242,6 +1245,7 @@ export class NativeAgentExecutor implements AgentExecutor {
               ...(backends.size ? { toolBackends: [...backends.values()] } : {}),
               ...(effort ? { effort } : {}),
               ...(webSearch ? { webSearch } : {}),
+              ...(watch.calls.length ? { calls: watch.calls } : {}),
             }),
           ),
         );
@@ -1556,11 +1560,10 @@ export class NativeAgentExecutor implements AgentExecutor {
           step.toolCalls.some((call) => EDIT_TOOLS.has(toolCallName(call))),
         )
       )
-        throw new WorkflowFault(
-          "BUDGET_EXHAUSTED",
+        throw stopFault(
+          "budget_exhausted",
           `Task ${request.task.id} was stopped by the run budget before its first edit`,
           {
-            reason: "budget_exhausted",
             usedTokens: usage.totalTokens,
             remainingTokens: this.store.remainingTokens(request.runId, policy, request.attemptId),
             maxTotalTokens: policy.maxTotalTokens,
@@ -1711,6 +1714,7 @@ export class NativeAgentExecutor implements AgentExecutor {
       const resolved = resolveModel(request.profile.model);
       return withProviderHealth(resolved, request.profile.model, {
         stage: request.profile.output,
+        timing: (call) => watch.calls.push(call),
         // A call that may reason silently (a CLI adapter, or high effort on a provider whose
         // reasoning does not stream) is not a stall while it waits (#1652).
         pending: (buffered) => {
@@ -1826,10 +1830,10 @@ export const attemptCapFault = (
       : totals.totalTokens >= totals.allTokensCap
         ? "all-token cap"
         : "run-budget ceiling";
-  return new WorkflowFault(
-    "BUDGET_EXHAUSTED",
+  return stopFault(
+    "attempt_cap",
     `Profile ${profileId} reached the ${capKind} without submitting a result: uncached tokens ${tokens}/${cap}, total tokens ${totals.totalTokens}/${totals.allTokensCap}${totals.ceilingTokens !== undefined ? `, run-budget ceiling ${totals.ceilingTokens}` : ""}`,
-    { reason: "attempt_cap", capKind, tokens, cap, ...totals },
+    { capKind, tokens, cap, ...totals },
   );
 };
 

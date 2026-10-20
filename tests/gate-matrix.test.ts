@@ -49,7 +49,7 @@ import {
   isWholeUnitCheck,
   styleClaimShown,
 } from "../src/core/workflows/check-policy.js";
-import { detectGates, executeGate } from "../src/core/workflows/gates.js";
+import { buildWrapper, detectGates, executeGate } from "../src/core/workflows/gates.js";
 import { type LayoutResult, layoutVerdict } from "../src/core/workflows/layout-check.js";
 import { addedDependencies, checkDependencies } from "../src/core/workflows/quality/dependencies.js";
 import {
@@ -586,6 +586,96 @@ function cell(stack: Stack, name: string, body: () => void | Promise<void>, time
   else test(name, body, timeout);
 }
 
+// #1749: a Gradle project got no toolchain gate, a Maven project with a wrapper got `mvn` even
+// where only the wrapper builds, and an sbt project got nothing.
+describe("gate matrix: JVM build tools (#1749)", () => {
+  const ids = (files: Record<string, string>) =>
+    detectGates(project(files)).map((s) => [s.check.id, s.check.executable, s.check.args.join(" "), s.source]);
+  const wrapped = (name: "mvnw" | "gradlew") =>
+    process.platform === "win32" ? ["cmd", `/d /c ${name === "mvnw" ? "mvnw.cmd" : "gradlew.bat"} `] : [`./${name}`, ""];
+  for (const build of ["build.gradle.kts", "build.gradle", "settings.gradle.kts"])
+    cell("maven", `gradle-check from ${build}`, () => {
+      expect(ids({ [build]: "plugins { java }\n" })).toEqual([["gradle-check", "gradle", "--console=plain -q check", build]]);
+      const [exe, prefix] = wrapped("gradlew");
+      const script = process.platform === "win32" ? "gradlew.bat" : "gradlew";
+      expect(ids({ [build]: "plugins { java }\n", [script]: "#!/bin/sh\n" })).toEqual([["gradle-check", exe, `${prefix}--console=plain -q check`, build]]);
+    });
+  cell("maven", "maven-verify runs the project's wrapper", () => {
+    const [exe, prefix] = wrapped("mvnw");
+    const script = process.platform === "win32" ? "mvnw.cmd" : "mvnw";
+    expect(ids({ "pom.xml": "<project/>", [script]: "#!/bin/sh\n" })).toEqual([["maven-verify", exe, `${prefix}-B -q verify`, "pom.xml"]]);
+    expect(ids({ "pom.xml": "<project/>" })).toEqual([["maven-verify", "mvn", "-B -q verify", "pom.xml"]]);
+  });
+  cell("maven", "a Maven build with Gradle files gets the Maven gate once", () => {
+    expect(ids({ "pom.xml": "<project/>", "build.gradle": "" }).map(([id]) => id)).toEqual(["maven-verify"]);
+  });
+  cell("maven", "sbt-test from build.sbt", () => {
+    expect(ids({ "build.sbt": 'name := "fixture"\n' })).toEqual([["sbt-test", "sbt", "-batch test", "build.sbt"]]);
+  });
+  cell("maven", "a Windows wrapper runs through cmd, which the check routing unwraps", () => {
+    const root = project({ "gradlew.bat": "@echo off\n", "mvnw.cmd": "@echo off\n" });
+    const gradle = buildWrapper(root, "gradlew", "gradle", "win32");
+    expect(gradle).toEqual({ executable: "cmd", args: ["/d", "/c", "gradlew.bat"], source: "gradlew.bat" });
+    expect(launchedCommand(gradle.executable, [...gradle.args, "check"]).program).toBe("gradlew");
+    expect(launchedCommand("cmd", ["/d", "/c", "mvnw.cmd", "verify"]).program).toBe("mvnw");
+    expect(buildWrapper(project({}), "gradlew", "gradle", "win32").executable).toBe("gradle");
+  });
+});
+/**
+ * Manifests and tool configs of each stack a request may name (#1710), with the content a
+ * host-written task writes and whether the approval takes the write without a person.
+ */
+const PROPS = "<Project>\n  <PropertyGroup>\n    <Version>0.1.0</Version>\n    <Authors>dieodds</Authors>\n  </PropertyGroup>\n</Project>\n";
+const NAMED_CONFIGS: Record<Stack, { path: string; content: string; exempt: boolean }[]> = {
+  bun: [
+    { path: "package.json", content: '{"name":"fixture"}', exempt: true },
+    { path: "bunfig.toml", content: "[test]\npreload = ['./setup.ts']\n", exempt: false },
+    { path: "tsconfig.json", content: "{}", exempt: false },
+    { path: "bun.lock", content: "{}", exempt: false },
+  ],
+  npm: [
+    { path: "package.json", content: '{"name":"fixture"}', exempt: true },
+    { path: "package-lock.json", content: "{}", exempt: false },
+    { path: "biome.json", content: "{}", exempt: false },
+  ],
+  python: [
+    { path: "pyproject.toml", content: '[project]\nname = "fixture"\n', exempt: true },
+    { path: "setup.py", content: "from setuptools import setup\nsetup()\n", exempt: false },
+    { path: "tox.ini", content: "[testenv]\ncommands = pytest\n", exempt: false },
+  ],
+  go: [
+    { path: "go.mod", content: "module example.com/fixture\n", exempt: true },
+    { path: "go.work", content: "go 1.22\nuse .\n", exempt: true },
+    { path: "go.sum", content: "", exempt: false },
+  ],
+  rust: [
+    { path: "Cargo.toml", content: '[package]\nname = "fixture"\n', exempt: true },
+    { path: "rust-toolchain.toml", content: '[toolchain]\nchannel = "stable"\ncomponents = ["clippy"]\n', exempt: true },
+    { path: "rust-toolchain.toml", content: '[toolchain]\npath = "/opt/rust"\n', exempt: false },
+    { path: ".cargo/config.toml", content: '[build]\nrustflags = ["-Dwarnings"]\n', exempt: false },
+    { path: "Cargo.lock", content: "version = 3\n", exempt: false },
+  ],
+  maven: [
+    { path: "pom.xml", content: "<project/>", exempt: true },
+    { path: ".mvn/maven.config", content: "-B -ntp -Dstyle.color=never\n", exempt: true },
+    { path: ".mvn/maven.config", content: "-s /tmp/settings.xml\n", exempt: false },
+    { path: "gradle.properties", content: "org.gradle.jvmargs=-Xmx2g\n", exempt: true },
+    { path: "gradle.properties", content: "org.gradle.jvmargs=-javaagent:agent.jar\n", exempt: false },
+  ],
+  dotnet: [
+    { path: "Directory.Build.props", content: PROPS, exempt: true },
+    { path: "Directory.Build.props", content: '<Project>\n  <Target Name="Stamp" BeforeTargets="Build">\n    <Exec Command="curl example.com" />\n  </Target>\n</Project>\n', exempt: false },
+    { path: "Directory.Build.props", content: '<Project>\n  <ItemGroup>\n    <PackageReference Include="Newtonsoft.Json" />\n  </ItemGroup>\n</Project>\n', exempt: false },
+    { path: "Directory.Build.props", content: "<Project>\n  <PropertyGroup>\n    <PostBuildEvent>rm -rf /</PostBuildEvent>\n  </PropertyGroup>\n</Project>\n", exempt: false },
+    { path: "Directory.Build.targets", content: PROPS, exempt: true },
+    { path: "Directory.Packages.props", content: '<Project>\n  <PropertyGroup>\n    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>\n  </PropertyGroup>\n  <ItemGroup>\n    <PackageVersion Include="xunit" Version="2.9.0" />\n  </ItemGroup>\n</Project>\n', exempt: true },
+    { path: "global.json", content: '{"sdk":{"version":"10.0.100","rollForward":"latestFeature"}}', exempt: true },
+    { path: "global.json", content: '{"msbuild-sdks":{"My.Sdk":"1.0.0"}}', exempt: false },
+    { path: "NuGet.config", content: '<configuration>\n  <packageSources>\n    <add key="mine" value="https://example.com/v3/index.json" />\n  </packageSources>\n</configuration>\n', exempt: false },
+    { path: "Dieodds.slnx", content: '<Solution>\n  <Project Path="src/App/App.csproj" />\n</Solution>\n', exempt: true },
+  ],
+};
+
 describe("gate matrix: shared criterion rows (#1597)", () => {
   for (const [stack, path] of [
     ["bun", "tests/cli.test.ts"], ["python", "tests/test_cli.py"], ["rust", "tests/cli.rs"],
@@ -839,6 +929,43 @@ for (const stack of STACKS) {
       expect(planScopeAdvice(policy, graph, undefined, false, "", 2)).toEqual([]);
       expect(evaluateAutoApproval(policy, {} as Parameters<typeof evaluateAutoApproval>[1], fixtureSpec, graph, [], [], { hostSplitTasks: 2 }).approval?.mode).toBe("limits");
       expect(planScopeAdvice(policy, graph).join(" ")).toContain("10 tasks exceed 8");
+    });
+
+    // R51 dieodds-update (#1710): the brief named a new Directory.Build.props with its content, the
+    // planner was told the write was fine, and the approval declined it as outside the allowed paths.
+    cell(stack, "request-named-config-agreement (#1710)", () => {
+      const policy = {
+        ...defaultWorkflowPolicy,
+        autoApproval: {
+          renewal: false, requestedManifestEdits: true,
+          limits: { maxTasks: 8, maxFiles: 20, allowedPaths: ["src/**", "tests/**"], allowDelete: false, allowNewDependencies: false, maxTotalTokens: defaultWorkflowPolicy.maxTotalTokens },
+        },
+      };
+      for (const { path, content, exempt } of NAMED_CONFIGS[stack]) {
+        for (const action of ["create", "modify"] as const) {
+          const graph: TaskGraph = {
+            schemaVersion: 1, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64),
+            tasks: [{
+              id: "T001", title: "Write the config", description: "Write the file the brief gives",
+              requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer",
+              writes: [{ path, action, content }], readHints: [], checkIds: [],
+              origin: "planned", findingIds: [], rationale: "The brief names it",
+            }],
+          };
+          const request = `Write ${path} with the content the brief gives.`;
+          const exists = () => action === "modify";
+          const advice = planScopeAdvice(policy, graph, exists, false, request).join(" ");
+          const result = evaluateAutoApproval(policy, {} as Parameters<typeof evaluateAutoApproval>[1], fixtureSpec, graph, [], [], { exists, manifestRequest: request });
+          const label = `${action} ${path}: ${content.slice(0, 40)}`;
+          expect([label, result.approval?.mode ?? null]).toEqual([label, exempt ? "limits" : null]);
+          expect([label, advice === ""]).toEqual([label, exempt]);
+          if (exempt) continue;
+          const reason = result.reasons.find((r) => r.includes(`${path} needs a person: `));
+          expect([label, reason !== undefined]).toEqual([label, true]);
+          expect(advice).toContain(reason?.replace(/^Limits: /, "") ?? "");
+          expect(result.reasons.join("\n")).not.toContain("outside the allowed paths");
+        }
+      }
     });
 
     cell(stack, "sizing-slices-count-once (#1711)", () => {
