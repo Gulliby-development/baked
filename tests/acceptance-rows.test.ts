@@ -5,8 +5,9 @@ import { dirname, join } from "node:path";
 import { StartBody } from "../src/core/api/schemas.js";
 import { builtinProfiles } from "../src/core/agents/profiles/builtin.js";
 import { sddWorkflow } from "../src/core/workflows/builtin/sdd.js";
-import { literalRows, rowAuditProblems, rowFiles, rowPlanProblems, rowsArtifact } from "../src/core/workflows/acceptance-rows.js";
-import type { Analysis, Spec, Task, TaskGraph } from "../src/core/workflows/schemas.js";
+import { hostRowPaths, literalRows, ROWS_NOTE, rowAuditProblems, rowDataPaths, rowFiles, rowPlanProblems, rowsArtifact } from "../src/core/workflows/acceptance-rows.js";
+import { hasInlineRows, INLINE_HARNESS, type InlineRowTest, inlineRowFile, withInlineRows } from "../src/core/workflows/acceptance-rows-inline.js";
+import { type Analysis, type Spec, type Task, type TaskGraph, TaskSchema } from "../src/core/workflows/schemas.js";
 import { prepareStart } from "../src/core/workflows/start.js";
 import { sizePlan } from "../src/core/workflows/sizing.js";
 import { WorkflowToolPolicy } from "../src/core/workflows/tool-policy.js";
@@ -273,4 +274,86 @@ describe("acceptance rows in every supported language (#1660)", () => {
     harness("\treturn input, nil");
     expect(run().exitCode).not.toBe(0);
   }, 120000);
+});
+
+describe("inline acceptance rows (#1763)", () => {
+  const enabled = { ...fixturePolicy, rowsAsData: "on" as const };
+  const s = spec("Input | Expected\n12 | 24\n-3 | -6");
+  const inline: Record<string, NonNullable<Task["rowTest"]>> = {
+    bun: { mode: "inline", framework: "bun", test: "tests/text.test.ts" },
+    pytest: { mode: "inline", framework: "pytest", test: "tests/test_text.py" },
+    go: { mode: "inline", framework: "go", package: "calc", test: "calc/calc_test.go" },
+    junit: { mode: "inline", framework: "junit", package: "com.ex.calc", test: "src/test/java/com/ex/calc/CalcTest.java" },
+    rust: { mode: "inline", framework: "rust", test: "tests/calc.rs" },
+    xunit: { mode: "inline", framework: "xunit", package: "Calc.Tests", test: "Calc.Tests/CalcTest.cs" },
+  };
+  // The brief's one test file, already there: the plan names it and nothing else.
+  const withInline = (rowTest: NonNullable<Task["rowTest"]>, action: "create" | "modify" = "modify"): Task => ({
+    ...task, rowTest, writes: [{ path: rowTest.test, action }],
+  });
+
+  test("a plan that names only the test file the brief allows is accepted in every framework", () => {
+    for (const rowTest of Object.values(inline)) {
+      expect(rowPlanProblems(s, { ...graph, tasks: [withInline(rowTest)] }, enabled)).toEqual([]);
+      expect(rowPlanProblems(s, { ...graph, tasks: [withInline(rowTest, "create")] }, enabled)).toEqual([]);
+    }
+  });
+
+  test("refuses a test file the task does not write, another writer, a wrong name or package, and two Go files in one package", () => {
+    const refused = (tasks: Task[]) => rowPlanProblems(s, { ...graph, tasks }, enabled);
+    expect(refused([{ ...withInline(inline.pytest!), writes: [{ path: "src/text.py", action: "modify" }] }]).join()).toContain("in the task's writes");
+    expect(refused([{ ...withInline(inline.pytest!), writes: [{ path: "tests/test_text.py", action: "modify", content: "x" }] }])).toHaveLength(1);
+    expect(refused([withInline(inline.pytest!), { ...task, id: "T002", rows: undefined, rowTest: undefined, writes: [{ path: "tests/test_text.py", action: "modify" }] }]).join()).toContain("no other task writes");
+    for (const rowTest of [
+      { ...inline.bun!, test: "tests/text.ts" },
+      { ...inline.pytest!, test: "tests/text.py" },
+      { ...inline.go!, package: undefined },
+      { ...inline.junit!, package: "com.ex.other" },
+      { ...inline.rust!, test: "src/calc.rs" },
+      { ...inline.xunit!, package: undefined },
+    ] as NonNullable<Task["rowTest"]>[]) expect(refused([withInline(rowTest)])).toHaveLength(1);
+    const second = { ...withInline({ ...inline.go!, test: "calc/more_test.go" } as NonNullable<Task["rowTest"]>), id: "T002" };
+    expect(refused([withInline(inline.go!), second]).join()).toContain("one Go test file per package");
+    // An inline rowTest takes no harness or data path.
+    expect(TaskSchema.safeParse({ ...withInline(inline.bun!), rowTest: { ...inline.bun!, data: "tests/rows.json" } }).success).toBe(false);
+  });
+
+  test("the host's block is appended, replaced in place, put back when dropped, and never doubled", () => {
+    const rows = literalRows(s, ["AC-001"]);
+    const file = inlineRowFile(inline.pytest as InlineRowTest, rows);
+    const own = "def acceptance_actual(input):\n    return input * 2\n";
+    const once = withInlineRows(own, file);
+    expect(once.startsWith(own)).toBe(true);
+    expect(once).toContain("AC-001:2");
+    expect(withInlineRows(once, file)).toBe(once);
+    expect(withInlineRows(`${once}\ndef test_more():\n    pass\n`, file)).toBe(`${once}\ndef test_more():\n    pass\n`);
+    const changed = inlineRowFile(inline.pytest as InlineRowTest, rows.slice(0, 1));
+    expect(withInlineRows(once, changed)).toBe(withInlineRows(own, changed));
+    expect(hasInlineRows(once.replace("== row", "!= row"), file)).toBe(false);
+    // Go: the imports follow the package clause, even in a file the host starts.
+    const go = inlineRowFile(inline.go as InlineRowTest, rows);
+    const started = withInlineRows(null, go);
+    expect(started.startsWith("package calc\n\n// BEGIN acceptance rows imports")).toBe(true);
+    const edited = withInlineRows('package calc\n\nimport "testing"\n\nfunc TestOwn(t *testing.T) {}\n', go);
+    expect(edited.indexOf("acceptancetesting \"testing\"")).toBeLessThan(edited.indexOf('import "testing"'));
+    expect(withInlineRows(edited, go)).toBe(edited);
+  });
+
+  test("a corrective that carries the rows task's rows and test gets the same block", () => {
+    const t = withInline(inline.bun!);
+    const artifact = rowsArtifact(s, { ...graph, tasks: [t] }, analysis([]));
+    expect(rowFiles({ ...t, id: "T009", origin: "repair" }, artifact)).toEqual(rowFiles(t, artifact));
+    expect(() => rowFiles({ ...t, rows: ["AC-002"] }, artifact)).toThrow("earlier plan");
+  });
+
+  test("sizing and file tools leave the inline test file to the agent", () => {
+    expect(hostRowPaths(withInline(inline.bun!))).toEqual([]);
+    expect(rowDataPaths(withInline(inline.bun!))).toEqual([]);
+    expect(hostRowPaths(task)).toEqual(["tests/rows.test.ts", "tests/rows.json"]);
+  });
+
+  test("the planner and the implementer are told the inline harness of every framework", () => {
+    for (const name of Object.values(INLINE_HARNESS)) expect(ROWS_NOTE).toContain(name);
+    expect(ROWS_NOTE).toContain('mode: "inline"');
+  });
 });

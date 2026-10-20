@@ -129,6 +129,7 @@ import {
   ROWS_NOTE,
   type RowsArtifact,
   rowAuditProblems,
+  rowDataPaths,
   rowFileProblems,
   rowFiles,
   rowPlanProblems,
@@ -136,6 +137,7 @@ import {
   rowsAsDataOn,
   SPEC_ROWS_NOTE,
 } from "./acceptance-rows.js";
+import { INLINE_HARNESS, type InlineRowFile, withInlineRows } from "./acceptance-rows-inline.js";
 import {
   affectedTestCheck,
   affectedTestsFor,
@@ -4305,7 +4307,9 @@ export class WorkflowScheduler {
         acceptanceRows: {
           artifact: ROWS_ARTIFACT,
           files: generatedRows.map((file) => file.path),
-          note: "The host writes the audited row data and parameterized tests. Write only the actual(input) harness and any ordinary tests this task owns. Review and corrections must preserve the host-written files.",
+          note: generatedRows.some((file) => file.inline)
+            ? `The host wrote the audited rows and their parameterized test into a marked acceptance rows block of ${generatedRows.map((file) => file.path).join(", ")}. Define ${INLINE_HARNESS[task.rowTest?.framework ?? "bun"]}(input) in that file, outside the block, and write any ordinary tests this task owns there too. Keep the block as it is; the host restores it if an edit drops it.`
+            : "The host writes the audited row data and parameterized tests. Write only the actual(input) harness and any ordinary tests this task owns. Review and corrections must preserve the host-written files.",
         },
       };
     }
@@ -4472,6 +4476,11 @@ export class WorkflowScheduler {
       }
       for (const file of generatedRows) {
         const root = placement.root ?? runRoot(this.store.workspace, state);
+        // The host's block of an inline test file is kept in place around the agent's edits.
+        if (file.inline) {
+          this.writeInlineRows(runId, attempt, root, file);
+          continue;
+        }
         const absolute = workspacePath(root, file.path);
         if (fileHash(absolute) === hashBytes(file.content)) continue;
         // Generated files are create-only. A later edit is never silently replaced on resume.
@@ -4526,10 +4535,11 @@ export class WorkflowScheduler {
         ...(host ? { hostTools: host } : {}),
         ...(effort ? { effort } : {}),
       });
-      const rowProblems = await rowFileProblems(
-        placement.root ?? runRoot(this.store.workspace, state),
-        generatedRows,
-      );
+      const rowRoot = placement.root ?? runRoot(this.store.workspace, state);
+      // An edit that dropped or changed an inline block gets it back before the checks (#1763).
+      for (const file of generatedRows)
+        if (file.inline) this.writeInlineRows(runId, attempt, rowRoot, file);
+      const rowProblems = await rowFileProblems(rowRoot, generatedRows);
       if (rowProblems.length) throw new WorkflowFault("OUTPUT_INVALID", rowProblems.join("\n"));
       const parsed = outputSchemas[profile.output]?.safeParse(result.output);
       if (!parsed?.success)
@@ -9380,6 +9390,31 @@ ${note}`;
     });
   }
   /**
+   * Puts the host's block of an inline rows test file in place, journaled like any host write:
+   * before the attempt so the agent sees it, and after so an edit that dropped it is undone.
+   */
+  private writeInlineRows(runId: string, attempt: string, root: string, file: InlineRowFile): void {
+    const absolute = workspacePath(root, file.path);
+    let existing: string | null = null;
+    try {
+      existing = readFileSync(absolute, "utf8");
+    } catch {
+      existing = null;
+    }
+    const content = withInlineRows(existing, file);
+    if (content === existing) return;
+    const before = this.store.transaction(() => capturePreImage(this.store, runId, absolute));
+    this.journal.publish(
+      runId,
+      attempt,
+      file.path,
+      Buffer.from(content),
+      before,
+      "file_patch",
+      root,
+    );
+  }
+  /**
    * The criteria a conflict report names, with the audit's verdicts and the literals the task's
    * test files changed when they copied them (#1709).
    */
@@ -9391,10 +9426,7 @@ ${note}`;
     root: string,
   ): ContestedRow[] {
     if (!state.spec) return [];
-    const paths = [
-      ...writtenTestPaths(task),
-      ...(task.rows?.length && task.rowTest ? [task.rowTest.data] : []),
-    ];
+    const paths = [...writtenTestPaths(task), ...rowDataPaths(task)];
     const tests = paths.flatMap((path) => {
       for (const base of [root, runRoot(this.store.workspace, state)]) {
         try {

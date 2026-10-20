@@ -2,6 +2,13 @@ import { readFile } from "node:fs/promises";
 import { posix } from "node:path";
 import { hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
+import {
+  hasInlineRows,
+  INLINE_HARNESS,
+  type InlineRowFile,
+  type InlineRowTest,
+  inlineRowFile,
+} from "./acceptance-rows-inline.js";
 import type { AcceptanceRow } from "./acceptance-rows-model.js";
 import { WorkflowFault } from "./errors.js";
 import type { Analysis, RunPolicy, Spec, TaskGraph } from "./schemas.js";
@@ -103,7 +110,7 @@ export function literalRows(spec: Pick<Spec, "criteria">, ids: readonly string[]
 }
 
 export const ROWS_NOTE =
-  'Acceptance rows as data is enabled. For pure call-and-compare tests with JSON Input | Expected tables (an optional Scenario column is a label), set rows to the criterion IDs and rowTest to {framework, harness: "relative harness path", test: "relative test path", data: "relative JSON path"}, adding package where the framework needs one. Declare all three paths in writes, with test and data created by this task. Write only the harness; the host writes the JSON rows and the parameterized test, preserving row IDs, and compares the harness result with each expected value as JSON. Frameworks and harness contracts: "bun": a .ts or .js harness exporting actual(input), which may be async, and a .test.ts test. "pytest": a .py harness defining actual(input) and a test_*.py test. "go": a .go harness defining func Actual(input any) (any, error) in the same directory as a _test.go test, with package set to the Go package name. "junit" (JUnit 5): a .java harness class, named after its file, with static Object actual(Object input) in the same package as a *Test.java test, both under the directories of package (the Java package); input is built from Map<String, Object>, List<Object>, Long, Double, String, Boolean and null. "rust": a test tests/<name>.rs and a harness .rs file (best under tests/support/) defining pub fn actual(input: serde_json::Value) -> serde_json::Value; the project needs serde_json, at least in [dev-dependencies]. "xunit": a .cs harness static class, named after its file, with public static object? Actual(System.Text.Json.Nodes.JsonNode? input) and a .cs test in a project that references xunit, with package set to the C# namespace of both. Keep stateful, process, file and non-JSON cases in ordinary agent-written tests. Do not mark a criterion unless its whole table fits one harness.';
+  'Acceptance rows as data is enabled. For pure call-and-compare tests with JSON Input | Expected tables (an optional Scenario column is a label), set rows to the criterion IDs and rowTest to {framework, harness: "relative harness path", test: "relative test path", data: "relative JSON path"}, adding package where the framework needs one. Declare all three paths in writes, with test and data created by this task. Write only the harness; the host writes the JSON rows and the parameterized test, preserving row IDs, and compares the harness result with each expected value as JSON. Frameworks and harness contracts: "bun": a .ts or .js harness exporting actual(input), which may be async, and a .test.ts test. "pytest": a .py harness defining actual(input) and a test_*.py test. "go": a .go harness defining func Actual(input any) (any, error) in the same directory as a _test.go test, with package set to the Go package name. "junit" (JUnit 5): a .java harness class, named after its file, with static Object actual(Object input) in the same package as a *Test.java test, both under the directories of package (the Java package); input is built from Map<String, Object>, List<Object>, Long, Double, String, Boolean and null. "rust": a test tests/<name>.rs and a harness .rs file (best under tests/support/) defining pub fn actual(input: serde_json::Value) -> serde_json::Value; the project needs serde_json, at least in [dev-dependencies]. "xunit": a .cs harness static class, named after its file, with public static object? Actual(System.Text.Json.Nodes.JsonNode? input) and a .cs test in a project that references xunit, with package set to the C# namespace of both. Inline mode, for a brief or boundary that fixes the test files (no new harness, test or data file, no new dependency): set rowTest to {mode: "inline", framework, test: "a test file this task writes"}, adding package for go (the Go package), junit (the Java package of the file\'s directory) and xunit (the C# namespace of the file\'s class). Do not add other paths for it. The host appends the rows and their parameterized test to the end of that file between BEGIN and END acceptance rows comments (Go: also an import block after the package clause), and restores the block if an edit drops it. In that file define the harness the block calls, next to the task\'s ordinary tests: "bun": function acceptanceActual(input), which may be async; "pytest": def acceptance_actual(input); "go": func acceptanceActual(input any) (any, error), one per package directory; "junit": static Object acceptanceActual(Object input) in the class named after the file; "rust": fn acceptance_actual(input: &AcceptanceJson) -> AcceptanceJson, where the host block defines AcceptanceJson (Null, Bool, Number(f64), String, Array, Object; as_f64, as_i64, as_str, as_array, get, and From for numbers, strings, bools, Vec and Option); "xunit": a static (public or internal) object? AcceptanceActual(System.Text.Json.Nodes.JsonNode? input) in the class named after the file. Prefer inline whenever the files of the file mode would be extra files the request does not allow. Keep stateful, process, file and non-JSON cases in ordinary agent-written tests. Do not mark a criterion unless its whole table fits one harness.';
 
 /** Told to the spec author, so the tables the planner may select are ones the host can read (#1660). */
 export const SPEC_ROWS_NOTE =
@@ -114,8 +121,53 @@ const baseName = (path: string, suffix: RegExp): string => posix.basename(path).
 const packageDir = (path: string, pkg: string): boolean =>
   `/${posix.dirname(path)}`.endsWith(`/${pkg.replaceAll(".", "/")}`);
 
+type RowTest = NonNullable<Task["rowTest"]>;
+type FileRowTest = Exclude<RowTest, { mode: "inline" }>;
+export const inlineRows = (rowTest: RowTest): rowTest is InlineRowTest =>
+  "mode" in rowTest && rowTest.mode === "inline";
+/** The files only the host writes for a rows task: the file mode's test and data; inline, none. */
+export const hostRowPaths = (task: Pick<Task, "rows" | "rowTest">): string[] =>
+  task.rows?.length && task.rowTest && !inlineRows(task.rowTest)
+    ? [task.rowTest.test, task.rowTest.data]
+    : [];
+/** The data file that holds a rows task's cases apart from its test; inline rows have none. */
+export const rowDataPaths = (task: Pick<Task, "rows" | "rowTest">): string[] =>
+  task.rows?.length && task.rowTest && !inlineRows(task.rowTest) ? [task.rowTest.data] : [];
+
+/** The test file name each framework runs, and the package a typed language needs. */
+function testFileProblem(rowTest: RowTest): string | null {
+  const { framework, test } = rowTest;
+  const pkg = rowTest.package;
+  switch (framework) {
+    case "bun":
+      return /\.(?:test|spec)\.[jt]sx?$/.test(test) ? null : "need a .test.ts test";
+    case "pytest":
+      return /(?:^|\/)(?:test_[^/]+|[^/]+_test)\.py$/.test(test)
+        ? null
+        : "need a test_*.py or *_test.py test";
+    case "go":
+      if (!test.endsWith("_test.go")) return "need a _test.go test";
+      return pkg && IDENTIFIER.test(pkg) ? null : "need package set to the Go package name";
+    case "junit":
+      if (!/(?:Test|Tests|TestCase)\.java$|(?:^|\/)Test[^/]*\.java$/.test(test))
+        return "need a *Test.java test";
+      if (!IDENTIFIER.test(baseName(test, /\.java$/)))
+        return "need a Java class name as the test file name";
+      return pkg && packageDir(test, pkg)
+        ? null
+        : "need package set to the Java package whose directory holds the test";
+    case "rust":
+      return /(?:^|\/)tests\/[^/]+\.rs$/.test(test) ? null : "need a tests/<name>.rs test";
+    case "xunit":
+      if (!test.endsWith(".cs")) return "need a .cs test";
+      if (!IDENTIFIER.test(baseName(test, /\.cs$/)))
+        return "need a C# class name as the test file name";
+      return pkg ? null : "need package set to the C# namespace of the test class";
+  }
+}
+
 /** The file layout each framework's host-written test can load its harness from. */
-function layoutProblem(rowTest: NonNullable<TaskGraph["tasks"][number]["rowTest"]>): string | null {
+function layoutProblem(rowTest: FileRowTest): string | null {
   const { framework, harness, test, data } = rowTest;
   const pkg = rowTest.package;
   if (!data.endsWith(".json")) return "need a .json data file";
@@ -157,6 +209,30 @@ function layoutProblem(rowTest: NonNullable<TaskGraph["tasks"][number]["rowTest"
   }
 }
 
+/** What an inline rows task needs: a test file it writes that no other task writes (#1763). */
+function inlinePlanProblems(task: Task, rowTest: InlineRowTest, graph: TaskGraph): string | null {
+  const layout = testFileProblem(rowTest);
+  if (layout) return layout;
+  const write = task.writes.find((w) => w.path === rowTest.test);
+  if (!write || write.action === "delete" || write.content !== undefined)
+    return "inline need the test file in the task's writes, without content";
+  if (graph.tasks.some((o) => o.id !== task.id && o.writes.some((w) => w.path === rowTest.test)))
+    return "inline need a test file no other task writes";
+  if (
+    rowTest.framework === "go" &&
+    graph.tasks.some(
+      (other) =>
+        other.id !== task.id &&
+        other.rowTest &&
+        inlineRows(other.rowTest) &&
+        other.rowTest.framework === "go" &&
+        posix.dirname(other.rowTest.test) === posix.dirname(rowTest.test),
+    )
+  )
+    return `inline need one Go test file per package directory, since each defines ${INLINE_HARNESS.go}`;
+  return null;
+}
+
 export function rowPlanProblems(spec: Spec, graph: TaskGraph, policy: RunPolicy): string[] {
   return graph.tasks.flatMap((task) => {
     if (!task.rows && !task.rowTest) return [];
@@ -164,6 +240,21 @@ export function rowPlanProblems(spec: Spec, graph: TaskGraph, policy: RunPolicy)
     if (!rowsAsDataOn(policy)) return fail('require rowsAsData: "on"');
     if (!task.rows?.length || !task.rowTest) return fail("require both rows and rowTest");
     if (task.sizingSlice) return fail("cannot share a sizing slice; use a separate harness task");
+    const owned = () =>
+      new Set(task.rows).size === task.rows?.length &&
+      !task.rows.some((id) => !task.criterionIds.includes(id));
+    const complete = () => {
+      const rows = literalRows(spec, task.rows ?? []);
+      return !task.rows?.some((id) => !rows.some((row) => row.criterionId === id));
+    };
+    const table =
+      "need a complete Input | Expected table (an optional Scenario column) of JSON cells for every criterion";
+    if (inlineRows(task.rowTest)) {
+      const problem = inlinePlanProblems(task, task.rowTest, graph);
+      if (problem) return fail(problem);
+      if (!owned()) return fail("must name distinct criteria owned by this task");
+      return complete() ? [] : fail(table);
+    }
     const { harness, test, data, framework } = task.rowTest;
     if (new Set([harness, test, data]).size !== 3) return fail("need three distinct paths");
     const layout = layoutProblem(task.rowTest);
@@ -173,7 +264,9 @@ export function rowPlanProblems(spec: Spec, graph: TaskGraph, policy: RunPolicy)
       graph.tasks.some(
         (other) =>
           other.id !== task.id &&
-          other.rowTest?.framework === "go" &&
+          other.rowTest &&
+          !inlineRows(other.rowTest) &&
+          other.rowTest.framework === "go" &&
           posix.dirname(other.rowTest.harness) === posix.dirname(harness),
       )
     )
@@ -260,8 +353,7 @@ const importPath = (from: string, to: string): string => {
   return path.startsWith(".") ? path : `./${path}`;
 };
 
-type RowTest = NonNullable<Task["rowTest"]>;
-type Template = (input: RowTest & { rows: AcceptanceRow[] }) => string;
+type Template = (input: FileRowTest & { rows: AcceptanceRow[] }) => string;
 
 const header = (comment: string, harness: string): string =>
   `${comment} Host-written acceptance rows. Review the harness in ${harness}.\n`;
@@ -321,28 +413,32 @@ const TEMPLATES: Record<RowTest["framework"], Template> = {
     `${header("//", harness)}using System.Collections.Generic;\nusing System.Text.Json;\nusing System.Text.Json.Nodes;\nusing Xunit;\n\nnamespace ${pkg}\n{\n    public class ${posix.basename(test, ".cs")}\n    {\n        private const string Rows = ${csharpString(JSON.stringify(rows.map(({ id, input, expected }) => ({ id, input, expected }))))};\n\n        public static IEnumerable<object[]> Data()\n        {\n            foreach (var row in JsonNode.Parse(Rows)!.AsArray())\n                yield return new object[]\n                {\n                    (string)row!["id"]!,\n                    row["input"]?.ToJsonString() ?? "null",\n                    row["expected"]?.ToJsonString() ?? "null",\n                };\n        }\n\n        [Theory]\n        [MemberData(nameof(Data))]\n        public void AcceptanceRow(string id, string input, string expected)\n        {\n            var actual = JsonSerializer.SerializeToNode(${posix.basename(harness, ".cs")}.Actual(JsonNode.Parse(input)));\n            Assert.True(\n                JsonNode.DeepEquals(actual, JsonNode.Parse(expected)),\n                $"{id}: got {actual?.ToJsonString() ?? "null"}, want {expected}");\n        }\n    }\n}\n`,
 };
 
+/** A file the host writes for a rows task: a whole file, or the blocks of an inline test file. */
+export type RowFile = { path: string; content: string; inline?: undefined } | InlineRowFile;
+
 /** No input or expected value is evaluated as source code; literals are escaped data. */
-export function rowFiles(task: Task, artifact: RowsArtifact): { path: string; content: string }[] {
+export function rowFiles(task: Task, artifact: RowsArtifact): RowFile[] {
   if (!task.rows?.length || !task.rowTest) return [];
+  // A corrective of a rows task carries its rows and test under its own ID.
   if (
     !artifact.tasks.some(
       (selected) =>
-        selected.id === task.id &&
         hashJson({ rows: selected.rows, rowTest: selected.rowTest }) ===
-          hashJson({ rows: task.rows, rowTest: task.rowTest }),
+        hashJson({ rows: task.rows, rowTest: task.rowTest }),
     )
   )
     throw new WorkflowFault(
       "INPUT_CHANGED",
       `Acceptance rows for ${task.id} belong to an earlier plan; analyze again`,
     );
-  const { framework, data, test } = task.rowTest;
   const rows = artifact.rows.filter((row) => task.rows?.includes(row.criterionId));
   if (task.rows.some((id) => !rows.some((row) => row.criterionId === id)))
     throw new WorkflowFault(
       "ARTIFACT_MISSING",
       `Acceptance rows for ${task.id} are incomplete; analyze again`,
     );
+  if (inlineRows(task.rowTest)) return [inlineRowFile(task.rowTest, rows)];
+  const { framework, data, test } = task.rowTest;
   const content = TEMPLATES[framework]({ ...task.rowTest, rows });
   return [
     { path: data, content: `${JSON.stringify(rows, null, 2)}\n` },
@@ -355,13 +451,20 @@ export async function rowFileProblems(
   files: ReturnType<typeof rowFiles>,
 ): Promise<string[]> {
   const problems = await Promise.all(
-    files.map(async (file) =>
-      (await readFile(workspacePath(root, file.path), "utf8").catch(() => null)) === file.content
+    files.map(async (file) => {
+      const text = await readFile(workspacePath(root, file.path), "utf8").catch(() => null);
+      if (file.inline)
+        return hasInlineRows(text, file)
+          ? []
+          : [
+              `Host-written acceptance rows block in ${file.path} is missing or changed; restore it and edit only the harness and your own tests.`,
+            ];
+      return text === file.content
         ? []
         : [
             `Host-written acceptance file ${file.path} is missing or changed; restore it and edit only the harness.`,
-          ],
-    ),
+          ];
+    }),
   );
   return problems.flat();
 }

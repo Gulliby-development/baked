@@ -548,8 +548,9 @@ export function NewRunScreen({ project }: SectionProps) {
                 Host-written acceptance rows
               </label>
               <span className={HINT}>
-                Write audited JSON rows as Bun or pytest tests. The agent writes the harness.
-                Requires an analyze stage; otherwise ignored with a run warning.
+                Write audited JSON rows as tests, in their own files or in a test file the task
+                already writes. The agent writes the harness. Requires an analyze stage; otherwise
+                ignored with a run warning.
               </span>
             </fieldset>
             <fieldset className={FIELDSET}>

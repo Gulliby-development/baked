@@ -99,6 +99,12 @@ export const SpecSchema = z
 /** The longest content a host-written task write may carry. */
 export const HOST_CONTENT_MAX_CHARS = 4000;
 
+/** The test frameworks acceptance rows as data writes tests for. */
+const RowFramework = z.enum(["bun", "pytest", "go", "junit", "rust", "xunit"]);
+const RowPackage = z
+  .string()
+  .max(200)
+  .regex(/^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/);
 export const TaskSchema = z
   .object({
     id: TaskId,
@@ -133,19 +139,31 @@ export const TaskSchema = z
     /** Opt-in literal criteria expanded by the host; the agent writes only rowTest.harness. */
     rows: z.array(CriterionId).min(1).max(200).optional(),
     rowTest: z
-      .object({
-        framework: z.enum(["bun", "pytest", "go", "junit", "rust", "xunit"]),
-        /** The Go package, Java package or C# namespace of the harness and the host's test. */
-        package: z
-          .string()
-          .max(200)
-          .regex(/^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/)
-          .optional(),
-        harness: RelativePath,
-        test: RelativePath,
-        data: RelativePath,
-      })
-      .strict()
+      .union([
+        z
+          .object({
+            framework: RowFramework,
+            /** The Go package, Java package or C# namespace of the harness and the host's test. */
+            package: RowPackage.optional(),
+            harness: RelativePath,
+            test: RelativePath,
+            data: RelativePath,
+          })
+          .strict(),
+        /**
+         * The host writes the rows and their test into a marked block of a test file the task
+         * already writes, which defines the harness: no new file and no dependency, for briefs
+         * that fix the test files (#1763).
+         */
+        z
+          .object({
+            mode: z.literal("inline"),
+            framework: RowFramework,
+            package: RowPackage.optional(),
+            test: RelativePath,
+          })
+          .strict(),
+      ])
       .optional(),
     readHints: z.array(RelativePath),
     /**

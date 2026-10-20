@@ -35,12 +35,14 @@ export interface Task {
   checkIds: string[];
   origin: string;
   rows?: string[];
+  /** The file mode names a harness and data file; the inline mode writes into `test` (#1763). */
   rowTest?: {
+    mode?: "inline";
     framework: "bun" | "pytest" | "go" | "junit" | "rust" | "xunit";
     package?: string;
-    harness: string;
+    harness?: string;
     test: string;
-    data: string;
+    data?: string;
   };
 }
 /** Whether the host writes the task's files with no agent (`hostWritten` in task-graph.ts). */
