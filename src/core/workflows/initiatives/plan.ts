@@ -6,7 +6,7 @@
 import { z } from "zod";
 import { matchGlob } from "../../platform/index.js";
 import { hashJson } from "../../specs/hash.js";
-import { canHold, deliverableKind } from "../../verification/deliverable-paths.js";
+import { canHold, deliverableKind, normalizePath } from "../../verification/deliverable-paths.js";
 import { isCodePath } from "../check-policy.js";
 import { WorkflowFault } from "../errors.js";
 import { HOST_CONTENT_MAX_CHARS, SafeId } from "../schemas.js";
@@ -380,6 +380,61 @@ export function sequenceSharedPaths(
           : [later, earlier];
       dependent.dependsOn.push(upstream.id);
       added.push({ featureId: dependent.id, dependsOn: upstream.id, paths });
+    }
+  }
+  return added.length ? { plan: { ...plan, features }, added } : { plan, added };
+}
+
+/** README, changelog and example files besides the Markdown and `docs/` paths of `deliverableKind`. */
+const DESCRIBING =
+  /(?:^|\/)(?:examples?|samples?)\/|(?:^|\/)(?:readme|changelog|changes|history)(?:\.\w+)?$/i;
+
+/** Whether a boundary path holds documentation or examples: files that describe code, not code. */
+export function describesCode(path: string): boolean {
+  return deliverableKind(path) === "docs" || DESCRIBING.test(normalizePath(path));
+}
+
+/** A feature whose every boundary path is documentation or examples (#1751). */
+export function isDocumentationFeature(feature: Pick<InitiativeFeature, "boundary">): boolean {
+  return feature.boundary.paths.length > 0 && feature.boundary.paths.every(describesCode);
+}
+
+/**
+ * The plan with every documentation feature (README, `docs/`, examples, changelog) after the
+ * features whose code it describes: it depends on the last feature of every chain of code
+ * features, unless a dependency path already joins them. A decomposer that gave the docs feature no dependencies
+ * started it first, and it documented code that did not exist yet (bench round 52, srcwhere,
+ * #1751). Docs and code share no path, so `sequenceSharedPaths` never orders them. Features in
+ * `fixed` (those with a run) keep their dependencies.
+ */
+export function sequenceDocumentation(
+  plan: InitiativePlan,
+  fixed: ReadonlySet<string> = new Set(),
+): { plan: InitiativePlan; added: { featureId: string; dependsOn: string }[] } {
+  const features = plan.features.map((f) => ({ ...f, dependsOn: [...f.dependsOn] }));
+  const byId = new Map(features.map((f) => [f.id, f] as const));
+  const reaches = (from: string, to: string): boolean => {
+    const seen = new Set<string>();
+    const stack = [from];
+    while (stack.length) {
+      const id = stack.pop() ?? "";
+      if (id === to) return true;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      stack.push(...(byId.get(id)?.dependsOn ?? []));
+    }
+    return false;
+  };
+  const added: { featureId: string; dependsOn: string }[] = [];
+  const code = features.filter((f) => !isDocumentationFeature(f));
+  // The last features of each chain: a docs feature that waits for them waits for all the code.
+  const ends = code.filter((c) => !code.some((other) => other !== c && reaches(other.id, c.id)));
+  for (const docs of features) {
+    if (fixed.has(docs.id) || !isDocumentationFeature(docs)) continue;
+    for (const upstream of ends) {
+      if (reaches(docs.id, upstream.id) || reaches(upstream.id, docs.id)) continue;
+      docs.dependsOn.push(upstream.id);
+      added.push({ featureId: docs.id, dependsOn: upstream.id });
     }
   }
   return added.length ? { plan: { ...plan, features }, added } : { plan, added };
