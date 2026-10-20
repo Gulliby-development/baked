@@ -61,6 +61,7 @@ improvements
 
 # Benchmark artifacts
 bench/results-*.json
+bench-suite-results/
 benchmarks/results-*.json
 
 # Local agent settings

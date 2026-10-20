@@ -1,0 +1,37 @@
+{
+  "id": "go-ini",
+  "language": "go",
+  "toolchain": "go",
+  "requires": [
+    "go"
+  ],
+  "allowedPaths": [
+    "*.go",
+    "README.md"
+  ],
+  "checks": [
+    {
+      "id": "go-vet",
+      "executable": "go",
+      "args": [
+        "vet",
+        "./..."
+      ],
+      "fix": {
+        "executable": "go",
+        "args": [
+          "fmt",
+          "./..."
+        ]
+      }
+    },
+    {
+      "id": "go-test",
+      "executable": "go",
+      "args": [
+        "test",
+        "./..."
+      ]
+    }
+  ]
+}

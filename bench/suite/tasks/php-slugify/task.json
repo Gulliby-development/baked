@@ -1,0 +1,22 @@
+{
+  "id": "php-slugify",
+  "language": "php",
+  "toolchain": "php",
+  "requires": [
+    "php"
+  ],
+  "allowedPaths": [
+    "src/**",
+    "tests/**",
+    "README.md"
+  ],
+  "checks": [
+    {
+      "id": "php-tests",
+      "executable": "php",
+      "args": [
+        "tests/run.php"
+      ]
+    }
+  ]
+}
