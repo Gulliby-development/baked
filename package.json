@@ -70,6 +70,7 @@
     "@types/react": "19.3.0",
     "babel-plugin-react-compiler": "1.0.0",
     "bun-types": "1.4.3",
+    "fast-check": "4.10.2",
     "typescript": "7.0.2"
   },
   "dependencies": {

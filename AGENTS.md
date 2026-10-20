@@ -39,6 +39,7 @@ BAKED is a TypeScript coding agent with an OpenTUI/React terminal UI and a headl
 - Follow strict TypeScript and the existing Biome configuration. Avoid `any`, unused variables, and unrelated formatting changes.
 - Prefer small changes to existing modules. Keep agent logic independent of the terminal UI.
 - Preserve access controls, approval callbacks, secret handling, and coordination when changing tools.
+- A pull request that adds an accounting quantity (a token, cost, reservation or forecast figure of a run) or a scheduler command adds its invariant to `tests/workflow-accounting-invariants.test.ts` or its command to the model in `tests/workflow-scheduler-model.test.ts` in the same pull request.
 - Keep comments focused on non-obvious intent. Keep documentation technical: setup, behavior, architecture, troubleshooting, and development.
 - Preserve user changes already present in the working directory.
 - Provider names in runtime code (Claude, OpenAI, Codex, GitHub Copilot, GitHub Models) describe supported integrations. Do not rename them when editing these instructions or other contributor documentation.
