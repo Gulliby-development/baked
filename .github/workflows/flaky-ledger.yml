@@ -1,0 +1,43 @@
+name: Flaky test ledger
+
+# Reads the flaky-ledger-* artifacts of the last 14 days of OS tests runs and files a Bug issue
+# for each test with two or more likely flaky failures, or adds its new failures to the issue it
+# has (#1724). It runs after the nightly OS tests run.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: List what would be filed without writing issues
+        type: boolean
+        default: false
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+concurrency:
+  group: flaky-ledger
+  cancel-in-progress: false
+
+jobs:
+  issues:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.4.3"
+
+      - name: File or extend flaky test issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry-run && '--dry-run' || '' }}
+        run: bun scripts/flaky-issues.ts --days 14 --threshold 2 $DRY_RUN
