@@ -50,6 +50,31 @@ export function providerFirstByteMs(provider: string, context: CallReasoning = {
   return context.effort === "high" ? 7.5 * 60_000 : 5 * 60_000;
 }
 
+/** The shortest adaptive first-response deadline of a silent call (#1766). */
+export const ADAPTIVE_FIRST_BYTE_FLOOR_MS = 3 * 60_000;
+/** Healthy first responses of a call shape needed before its deadline adapts. */
+export const ADAPTIVE_FIRST_BYTE_SAMPLES = 3;
+const ADAPTIVE_FIRST_BYTE_FACTOR = 2;
+
+/**
+ * The first-response deadline of a call shape whose healthy first responses took `healthy`
+ * milliseconds: twice their 95th percentile, between `ADAPTIVE_FIRST_BYTE_FLOOR_MS` and
+ * `ceilingMs` (`providerFirstByteMs`). Until `ADAPTIVE_FIRST_BYTE_SAMPLES` calls answered it is the
+ * ceiling. A flat 10 minutes for the slowest honest planning call hid a hung specify call on an
+ * initiative's critical path for all of it, while the round's other specify calls answered in
+ * 66 to 166 s (bench round 52, #1766).
+ */
+export function adaptiveFirstByteMs(ceilingMs: number, healthy: readonly number[]): number {
+  if (ceilingMs <= ADAPTIVE_FIRST_BYTE_FLOOR_MS || healthy.length < ADAPTIVE_FIRST_BYTE_SAMPLES)
+    return ceilingMs;
+  const sorted = [...healthy].sort((a, b) => a - b);
+  const p95 = sorted[Math.max(0, Math.ceil(0.95 * sorted.length) - 1)] ?? 0;
+  return Math.min(
+    ceilingMs,
+    Math.max(ADAPTIVE_FIRST_BYTE_FLOOR_MS, Math.ceil(ADAPTIVE_FIRST_BYTE_FACTOR * p95)),
+  );
+}
+
 /**
  * The effort and reasoning summary a call sends. The options are keyed by the provider family
  * (`openai`), while the adapter names itself `openai.responses` or `openai.chat`.
@@ -77,6 +102,8 @@ export interface CallTiming extends CallReasoning {
   provider: string;
   firstByteMs: number | null;
   durationMs: number;
+  /** The first-response deadline the call had, when it was not the provider's fixed one (#1766). */
+  limitMs?: number;
   /** The HTTP status of a call the provider refused, and its `retry-after` header (#1729). */
   status?: number;
   retryAfter?: string;
@@ -119,6 +146,11 @@ export interface ProviderWatch {
   pending?: (silent: boolean) => (responded: boolean) => void;
   progress?: () => void;
   firstByteMs?: number;
+  /**
+   * The deadline of a call whose fixed one (`providerFirstByteMs`) is `ceilingMs`, from what the
+   * same call shape took before (`adaptiveFirstByteMs`, #1766). Unused when `firstByteMs` is set.
+   */
+  firstByteLimit?: (ceilingMs: number, call: CallReasoning & { provider: string }) => number;
   /** Output kind of the workflow profile, also used by continuations and format correction. */
   stage?: string;
   /** Called once per call when it ends, with its timing. */
@@ -152,7 +184,11 @@ export function withProviderHealth(
         const startedAt = executionClock.now();
         let firstByteAt: number | null = null;
         let refusal: { statusCode?: unknown; responseHeaders?: Record<string, string> } | undefined;
-        const firstByteMs = watch.firstByteMs ?? providerFirstByteMs(adapted.provider, reasoning);
+        const ceilingMs = providerFirstByteMs(adapted.provider, reasoning);
+        const firstByteMs =
+          watch.firstByteMs ??
+          watch.firstByteLimit?.(ceilingMs, { provider: adapted.provider, ...reasoning }) ??
+          ceilingMs;
         const cancel = executionTimeout(
           () =>
             controller.abort(
@@ -295,6 +331,7 @@ export function withProviderHealth(
             ...reasoning,
             firstByteMs: firstByteAt === null ? null : Math.ceil(firstByteAt - startedAt),
             durationMs: Math.ceil(executionClock.now() - startedAt),
+            ...(firstByteMs !== ceilingMs ? { limitMs: firstByteMs } : {}),
             ...(typeof refusal?.statusCode === "number" ? { status: refusal.statusCode } : {}),
             ...(refusal?.responseHeaders?.["retry-after"]
               ? { retryAfter: refusal.responseHeaders["retry-after"] }
