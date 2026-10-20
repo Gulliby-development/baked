@@ -399,7 +399,7 @@ export interface PreRunEstimate {
 }
 
 const AGENT_TYPES = new Set(["agent", "reflection", "review"]);
-/** Runs of the planned model needed before the estimate reads only them (#936). */
+/** Runs of the workflow on the planned model needed before the estimate reads only those (#936). */
 export const MODEL_HISTORY_MIN = 3;
 
 /** The model most of the planned stages run on, or null when none names one. */
@@ -433,9 +433,13 @@ export function estimatePreRun(input: {
   // Providers spend very differently on the same work (bench R14: a claude-code run spent 3.06M
   // where codex runs of the same briefs spent under 1.4M), so once enough runs of the planned
   // model exist the estimate reads only those (#936).
+  // Counted on runs of the workflow: an initiative's decompose runs of the same model made R52
+  // srcwhere's feature stages read two one-task feature runs, which put a fifth of a feature's
+  // tokens on its tasks where srcwhere spent four fifths, and priced the rest at planning rates (#1767).
   const model = plannedModel(input.stages);
   const ofModel = model ? input.history.filter((r) => r.model === model) : [];
-  const keyed = ofModel.length >= MODEL_HISTORY_MIN;
+  const keyed =
+    ofModel.filter((r) => r.workflowId === input.workflowId).length >= MODEL_HISTORY_MIN;
   const history = keyed ? ofModel : input.history;
   const same = history.filter((r) => r.workflowId === input.workflowId);
   const pools: [EstimateBasis, PastRun[]][] = [
@@ -561,7 +565,7 @@ export function estimatePreRun(input: {
     notes.push(`History of ${model} only (${ofModel.length} runs).`);
   else if (model && input.history.length && basis !== "defaults")
     notes.push(
-      `Fewer than ${MODEL_HISTORY_MIN} earlier runs of ${model}; the history mixes models, which can spend very differently.`,
+      `Fewer than ${MODEL_HISTORY_MIN} earlier runs of ${input.workflowId} on ${model}; the history mixes models, which can spend very differently.`,
     );
   if (costUsd) {
     notes.push(

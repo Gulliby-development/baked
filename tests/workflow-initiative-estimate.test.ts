@@ -690,3 +690,42 @@ describe("scenario: a placeholder two features list counts in full once (#1464, 
     expect(estimate.perPathSamples).toEqual({ features: 2, shared: 0 });
   });
 });
+
+describe("a feature's paths place it among finished features of its size (#1767)", () => {
+  const sample = (runId: string, size: FeatureToEstimate["size"], paths: number, tokens: number): FeatureRunSample => ({
+    runId, workflowId: "sdd", size, paths, tokens, taskCount: paths, source: "shared",
+  });
+  // Medium features of rounds 45 to 52 cost about 0.27M plus 0.38M per path.
+  const medium = [2, 3, 3, 4, 5, 6, 7].map((p, i) => sample(`m${i}`, "medium", p, 270_000 + 380_000 * p + (i % 2 ? 60_000 : -60_000)));
+
+  test("a two-path module is priced below a six-path one, around the fit", () => {
+    const estimate = estimateInitiative({
+      features: [{ ...feature("small-module", "medium"), paths: 2 }, { ...feature("wide-module", "medium"), paths: 6 }],
+      history: [], samples: medium, maxTotalTokens: 100_000_000,
+    });
+    const [two, six] = estimate.features;
+    expect(two?.pathFit?.perPath).toBeGreaterThan(300_000);
+    expect(two!.expectedTokens).toBeGreaterThan(900_000);
+    expect(two!.expectedTokens).toBeLessThan(1_150_000);
+    expect(six!.expectedTokens).toBeGreaterThan(2 * two!.expectedTokens);
+    expect(two!.tokens.low).toBeLessThan(two!.expectedTokens);
+    expect(two!.tokens.high).toBeGreaterThan(two!.expectedTokens);
+    expect(estimate.notes.some((n) => n.startsWith("A medium feature still to run is placed among finished medium features by its paths"))).toBe(true);
+    // Without the fit both took the size's middle half: 1.7M to 2.6M.
+    const unplaced = estimateInitiative({ features: [{ ...feature("small-module", "medium"), paths: 2 }], history: [], samples: medium.map(({ paths: _, ...s }) => s), maxTotalTokens: 100_000_000 });
+    expect(unplaced.features[0]?.pathFit).toBeUndefined();
+    expect(unplaced.features[0]!.expectedTokens).toBeGreaterThan(1.5 * two!.expectedTokens);
+  });
+
+  test("sizes whose tokens do not follow their paths, and too few samples, keep the middle half", () => {
+    // Large features of those rounds: tokens hardly follow paths.
+    const large = [[2, 3_000_000], [3, 5_800_000], [4, 2_500_000], [6, 2_100_000], [7, 4_600_000]].map(([p, t], i) => sample(`l${i}`, "large", p!, t!));
+    const flat = estimateInitiative({ features: [{ ...feature("cli", "large"), paths: 2 }], history: [], samples: large, maxTotalTokens: 100_000_000 });
+    expect(flat.features[0]?.pathFit).toBeUndefined();
+    const few = estimateInitiative({ features: [{ ...feature("cli", "medium"), paths: 2 }], history: [], samples: medium.slice(0, 3), maxTotalTokens: 100_000_000 });
+    expect(few.features[0]?.pathFit).toBeUndefined();
+    // A feature that names no paths is not placed.
+    const none = estimateInitiative({ features: [feature("docs", "medium")], history: [], samples: medium, maxTotalTokens: 100_000_000 });
+    expect(none.features[0]?.pathFit).toBeUndefined();
+  });
+});
