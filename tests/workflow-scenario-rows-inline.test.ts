@@ -3,13 +3,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
+import { buildCheckEnv } from "../src/core/verification/check-runner.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { literalRows } from "../src/core/workflows/acceptance-rows.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import type { RunPolicy, Spec, Task } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
-import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
+import type { AgentExecutor, Check, ExecutionRequest } from "../src/core/workflows/types.js";
 import { runRoot } from "../src/core/workflows/worktree.js";
 
 // #1763: a level-5 brief names the test files a feature may write, so the file mode's harness,
@@ -23,9 +24,12 @@ afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 // os.homedir() still names the real home (as in the gate matrix's toolchain tier).
 process.env.RUSTUP_HOME ??= join(homedir(), ".rustup");
 process.env.CARGO_HOME ??= join(homedir(), ".cargo");
+// Probed with the environment a check gets, so a toolchain the checks cannot run (rustup with no
+// default toolchain on a Windows runner) skips its row instead of failing its baseline.
 const has = (command: string[]) => {
   if (Bun.which(command[0] ?? "") === null) return false;
-  return Bun.spawnSync(command, { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
+  const env = buildCheckEnv({ envNames: [] } as unknown as Check);
+  return Bun.spawnSync(command, { env, cwd: tmpdir(), stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 };
 const cases = Array.from({ length: 12 }, (_, i) => [i - 3, (i - 3) * 2] as const);
 const spec: Spec = {
