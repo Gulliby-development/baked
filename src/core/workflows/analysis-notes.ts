@@ -345,10 +345,11 @@ const ADDS =
  */
 /**
  * Wording of a finding that sets the spec against what the request itself states ("the request
- * allows it", "the brief's explicit ban"): the request settles it.
+ * allows it", "the brief's explicit ban", "the accepted request expressly forbids", #1762): the
+ * request settles it.
  */
 const SETTLES =
-  /\b(?:request|brief)(?:'s)?\s+(?:explicitly\s+|clearly\s+)?(?:allows?|permits?|states?|says|specifies|requires?|asks?|names?|bans?|forbids?|excludes?|includes?|defines?|accepts?|treats?)\b|\b(?:request|brief)'s\s+(?:explicit|stated)\b/i;
+  /\b(?:request|brief)(?:'s)?\s+(?:explicitly\s+|expressly\s+|clearly\s+)?(?:allows?|permits?|states?|says|specifies|requires?|asks?|names?|bans?|forbids?|excludes?|includes?|defines?|accepts?|treats?)\b|\b(?:request|brief)'s\s+(?:explicit|stated)\b/i;
 
 /**
  * An `inconsistency` finding whose one side is the request (cfgtrace 832775c7, bench round 15: a

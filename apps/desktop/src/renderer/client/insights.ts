@@ -112,6 +112,8 @@ export interface InitiativeCost {
   measuredFeatures?: number;
   /** Whether a forecast above the ceiling stops the next feature. */
   forecastBinding?: boolean;
+  /** The forecast stop's mode; outside `enforce` a binding forecast only records or advises. */
+  forecastMode?: "shadow" | "advisory" | "enforce";
   /** Why a forecast above the ceiling does not stop the initiative yet; null otherwise. */
   forecastNotice?: string | null;
 }

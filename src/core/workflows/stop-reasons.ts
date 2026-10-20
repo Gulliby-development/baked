@@ -43,6 +43,11 @@ export const STOP_REASONS = {
     modes: STOP_MODES,
     defaultMode: "enforce",
   },
+  "initiative-forecast": {
+    label: "An initiative's cost or token forecast passes its budget",
+    modes: STOP_MODES,
+    defaultMode: "enforce",
+  },
   cost: {
     label: "Spent and reserved dollars reach the cost cap",
     modes: ENFORCED,

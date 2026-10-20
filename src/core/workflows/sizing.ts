@@ -187,6 +187,17 @@ export function samplesFrom(
     const samples: SizingSample[] = [];
     for (const { id } of runs) {
       let spec: SpecText | null = null;
+      let checks: CaseContext["checks"] = [];
+      try {
+        const policy = db
+          .query<{ policy_json: string }, [string]>("SELECT policy_json FROM runs WHERE id=?")
+          .get(id);
+        if (policy)
+          checks =
+            (JSON.parse(policy.policy_json) as Partial<Pick<RunPolicy, "checks">>).checks ?? [];
+      } catch {
+        // A run without a readable policy prices every quoted literal, as before #1762.
+      }
       try {
         const artifact = db
           .query<{ inline_content: string | null; blob_path: string | null }, [string]>(
@@ -271,6 +282,7 @@ export function samplesFrom(
                     spec,
                     { ...task, criterionIds: task.criterionIds },
                     {
+                      checks,
                       tasks: planned.map((t) => ({ ...t, criterionIds: t.criterionIds ?? [] })),
                       includeBroad: true,
                     },
@@ -742,6 +754,7 @@ export function sizePlan(input: {
       const cases =
         input.spec && kind === "test"
           ? pricedCaseCount(input.spec, task, {
+              checks: input.policy.checks,
               tasks: input.graph.tasks,
               includeBroad: true,
             })
@@ -1030,6 +1043,7 @@ export function splitTestTasks(
   report: SizingReport,
   spec?: SpecText | null,
   edits?: HostEdit[],
+  checks: CaseContext["checks"] = [],
 ): TaskGraph | null {
   const oversized = new Set(
     report.tasks.filter((task) => task.oversized && task.kind === "test").map((t) => t.taskId),
@@ -1058,6 +1072,7 @@ export function splitTestTasks(
               spec,
               { ...task, criterionIds: ids },
               {
+                checks,
                 tasks: graph.tasks,
                 includeBroad: true,
               },

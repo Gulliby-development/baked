@@ -20,7 +20,7 @@ const tasks: Task[] = rows.map((row, index) => ({
 }));
 const graph = (tasks: Task[]): TaskGraph => ({ schemaVersion: 1, featureId: "fixture", revision: 1,
   specHash: "a".repeat(64), planHash: "b".repeat(64), tasks });
-const literals = (task: Task, plan = tasks) => criterionCases(spec, task, { tasks: plan, includeBroad: true }).map((c) => c.literal);
+const literals = (task: Task, plan = tasks) => criterionCases(spec, task, { checks: [], tasks: plan, includeBroad: true }).map((c) => c.literal);
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
@@ -29,13 +29,13 @@ describe("shared criterion ownership (#1597)", () => {
     const plan = [tasks[0]!, ...["src/cli.ts", "README.md"].map((path, i) => ({
       ...tasks[i + 1]!, writes: [{ path, action: "create" as const }],
     }))];
-    expect(criterionCases(spec, plan[0]!, { tasks: plan })).toEqual([]);
-    expect(criterionCases(spec, plan[0]!).map((c) => c.literal)).toEqual(rows);
+    expect(criterionCases(spec, plan[0]!, { checks: [], tasks: plan })).toEqual([]);
+    expect(criterionCases(spec, plan[0]!, { checks: [] }).map((c) => c.literal)).toEqual(rows);
   });
 
   test("single carriers and callers without a plan retain every case", () => {
     expect(literals(tasks[0]!, [tasks[0]!])).toEqual(rows);
-    expect(criterionCases(spec, tasks[0]!).map((c) => c.literal)).toEqual(rows);
+    expect(criterionCases(spec, tasks[0]!, { checks: [] }).map((c) => c.literal)).toEqual(rows);
     expect(literals({ ...tasks[0]!, id: "T099", origin: "corrective" })).toEqual(rows);
   });
 
