@@ -18,10 +18,14 @@ const cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
 
 test.each([
-  ["openai", "spec", "max", 60_000],
+  // Providers whose reasoning does not stream get the long deadline when they may think (#1652).
+  ["openai.responses", "spec", "max", 600_000],
+  ["openai.chat", "review", "high", 450_000],
+  ["openai.chat", "implementation", "low", 60_000],
+  ["openai.responses", "implementation", "default", 60_000],
+  // Anthropic's thinking streams, so a silent minute is an outage there.
   ["anthropic", "plan", "max", 60_000],
-  ["copilot", "review", "high", 60_000],
-  ["github-models", "plan", "max", 60_000],
+  ["anthropic.messages", "spec", "xhigh", 60_000],
   ["codex", "implementation", "low", 300_000],
   ["claude-code", "review", "high", 450_000],
   ["codex", "review", "xhigh", 600_000],
@@ -95,6 +99,74 @@ test.each([
     expect((error as Error).message).toContain("600 seconds");
     expect(sent?.aborted).toBe(true);
   } finally { clock.restore(); }
+});
+
+// R50 url-shortener (#1652): an OpenAI Responses model at xhigh on the plan stage streams nothing
+// while it reasons, since the reasoning summary is off by default. At the flat 60 s deadline 77
+// attempts in a row failed with 0 tokens as "provider unreachable" while the provider was healthy.
+describe("silent reasoning on providers other than the CLI adapters (#1652)", () => {
+  /** A model of `provider` whose first stream part arrives after `ms`. */
+  function slowFirstPart(provider: string, ms: number): LanguageModelV4 {
+    return {
+      specificationVersion: "v4", provider, modelId: "model", supportedUrls: {},
+      doGenerate: async () => { throw new Error("must observe the provider stream"); },
+      doStream: async (options) => ({
+        stream: new ReadableStream<LanguageModelV4StreamPart>({
+          start(controller) {
+            const timer = setTimeout(() => {
+              controller.enqueue({ type: "text-start", id: "a" });
+              controller.enqueue({ type: "text-delta", id: "a", delta: "OK" });
+              controller.enqueue({ type: "text-end", id: "a" });
+              controller.enqueue(finish);
+              controller.close();
+            }, ms);
+            options.abortSignal?.addEventListener("abort", () => { clearTimeout(timer); controller.error(options.abortSignal?.reason); });
+          },
+        }),
+      }),
+    };
+  }
+
+  test.each([
+    ["openai.responses", "openai"],
+    ["openai.chat", "github-models"],
+    ["openai.chat", "copilot"],
+    ["xai.responses", "xai"],
+  ] as const)("%s (%s) at xhigh on the plan stage answers after 90 silent seconds", async (provider, family) => {
+    const clock = awakeClock();
+    const silent: boolean[] = [];
+    try {
+      const pending = generateText({
+        model: withProviderHealth(slowFirstPart(provider, 90_000), `${family}/model`, { stage: "plan", pending: (quiet) => { silent.push(quiet); return () => {}; } }),
+        prompt: "Hi", maxRetries: 0, providerOptions: { [family]: { reasoningEffort: "xhigh" } },
+      });
+      await Bun.sleep(1);
+      clock.advance(91_000);
+      expect((await pending).text).toBe("OK");
+      // The attempt's silence watchdog counts the call as a buffered provider too.
+      expect(silent).toEqual([true]);
+    } finally { clock.restore(); }
+  });
+
+  test.each([
+    ["low effort on the implementation stage", "implementation", { reasoningEffort: "low" }],
+    ["a streamed reasoning summary", "plan", { reasoningEffort: "xhigh", reasoningSummary: "auto" }],
+  ] as const)("a silent openai.responses call with %s still stops at 60 s", async (_, stage, options) => {
+    const clock = awakeClock();
+    const silent: boolean[] = [];
+    try {
+      const pending = generateText({
+        model: withProviderHealth(slowFirstPart("openai.responses", 90_000), "openai/model", { stage, pending: (quiet) => { silent.push(quiet); return () => {}; } }),
+        prompt: "Hi", maxRetries: 0, providerOptions: { openai: options },
+      }).catch((error: unknown) => error);
+      await Bun.sleep(1);
+      clock.advance(61_000);
+      const error = await pending;
+      expect(error).toBeInstanceOf(ProviderUnreachableError);
+      expect((error as Error).message).toContain("60 seconds");
+      expect(silent).toEqual([false]);
+    } finally { clock.restore(); }
+  });
 });
 
 const finish: LanguageModelV4StreamPart = { type: "finish", finishReason: { unified: "stop", raw: "stop" }, usage: {
