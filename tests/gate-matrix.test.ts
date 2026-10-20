@@ -90,9 +90,13 @@ test("#1643 initiative ceiling gate uses central stage prices from shared histor
       expect(view.budget.cost).toMatchObject({ capUsd: 30, tolerance: 0.25, ceilingUsd: 37.5, spentUsd: 0.72 });
       expect(view.next).toMatchObject({ kind: "start", featureId: "f2" });
       expect(shareShortfall(view, view.features[1]!)).toBeNull();
-      const over = { ...view, budget: { ...view.budget, cost: { ...view.budget.cost, forecastUsd: 37.51 } } };
+      // One accepted skeleton measures nothing: a forecast over the ceiling advises (#1659).
+      expect(view.budget.cost).toMatchObject({ measuredFeatures: 0, forecastBinding: false });
+      const advisory = { ...view, budget: { ...view.budget, cost: { ...view.budget.cost, forecastUsd: 37.51 } } };
+      expect(shareShortfall(advisory, view.features[1]!)).toBeNull();
+      const over = { ...view, budget: { ...view.budget, cost: { ...view.budget.cost, forecastUsd: 37.51, forecastBinding: true } } };
       expect(shareShortfall(over, view.features[1]!)?.message).toContain("above its $37.50 ceiling");
-      const at = { ...view, budget: { ...view.budget, cost: { ...view.budget.cost, forecastUsd: 37.5 } } };
+      const at = { ...view, budget: { ...view.budget, cost: { ...view.budget.cost, forecastUsd: 37.5, forecastBinding: true } } };
       expect(shareShortfall(at, view.features[1]!)).toBeNull();
       const estimate = initiatives.estimate("values", 0);
       expect(view.budget.cost.forecastUsd).toBeCloseTo(0.72 + estimate.features.slice(1)
@@ -1879,7 +1883,7 @@ describe("initiative dollar forecast gate (#1607)", () => {
       const view = {
         initiativeId: "values",
         budget: { remaining: { tokens: 20_000_000, calls: 1000, activeMs: 21_600_000 },
-          cost: { capUsd: 30, ceilingUsd: 30 * (1 + tolerance), spentUsd: 5 * spent * 9e-6, forecastUsd },
+          cost: { capUsd: 30, ceilingUsd: 30 * (1 + tolerance), spentUsd: 5 * spent * 9e-6, forecastUsd, measuredFeatures: 5, forecastBinding: true },
         },
         features: estimate.features.map((f, i) => ({ id: f.featureId, size: f.size, state: i < 5 ? "accepted" : "ready",
           share: i < 5 ? null : { tokens: 1_000_000, calls: 100, activeMs: 1_000_000 }, shareUsd: i < 5 ? null : 2.5, need: f.tokens,

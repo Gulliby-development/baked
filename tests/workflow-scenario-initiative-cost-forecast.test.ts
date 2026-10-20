@@ -246,7 +246,7 @@ describe("scenario: initiative forecast follows accepted features' measured spen
     } } };
     expect(shareShortfall(gate, view.features[2]!)).toBeNull();
     expect(shareShortfall({ ...gate, budget: { ...gate.budget, cost: {
-      ...gate.budget.cost, forecastUsd: blended,
+      ...gate.budget.cost, forecastUsd: blended, forecastBinding: true,
     } } }, view.features[2]!)).not.toBeNull();
     expect(view.next).toMatchObject({ kind: "start", featureId: "f3" });
     await initiatives.pause("values", identity());

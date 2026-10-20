@@ -290,6 +290,22 @@ describe("scenario: an initiative feature's dollar cap under a dollar budget (#1
     expect(() => assertForecastFits(store, runId, policy)).toThrow(`The initiative can spare up to $${SHORT.toFixed(2)} for this run`);
     expect(policy.maxCostUsd).toBe(SHARE);
   });
+
+  // #1659: until the initiative's forecast is binding, a feature run's own forecast advises. Its
+  // cap and the initiative's spare dollars bound what it spends.
+  test("an advisory feature run spends on where the spare dollars cannot cover its forecast", async () => {
+    const advisory = policyOf(SHORT);
+    expect(advisory.costForecast).toBe("advise");
+    expect(featurePolicy(settings, share, front, false, 17_000_000, SHARE, SHORT, true).costForecast).toBeUndefined();
+    const { store, runId, policy } = await midRun({
+      perTask: OVER,
+      policy: { maxCostUsd: advisory.maxCostUsd, costTolerance: advisory.costTolerance, costForecast: "advise", ...(advisory.sizing ? { sizing: advisory.sizing } : {}) },
+    });
+    expect(costForecast(store, runId, policy)!.projectedUsd).toBeGreaterThan(SHORT);
+    expect(() => assertForecastFits(store, runId, policy)).not.toThrow();
+    expect(store.artifacts(runId).filter((a) => a.kind === "cost-forecast")).toHaveLength(0);
+    expect(forecastProgress(store, runId)).toHaveLength(1);
+  });
 });
 
 // fecsmith front, bench round 42 (#1505): planning paid $1.91 per million tokens, the task attempts

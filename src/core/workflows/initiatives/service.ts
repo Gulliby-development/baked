@@ -95,6 +95,7 @@ import {
   type BudgetLimitsValue,
   CostBudgetSchema,
   type CostToleranceValue,
+  FORECAST_BINDING_FEATURES,
   type InitiativeEvent,
   type InitiativeRow,
   type InitiativeRunRow,
@@ -199,6 +200,16 @@ export interface CostView {
    * without a cap, before a feature is accepted, or while nothing is priced.
    */
   forecastUsd: number | null;
+  /** Accepted features that are not a host-written skeleton: the forecast's measured samples. */
+  measuredFeatures: number;
+  /**
+   * Whether a forecast above the ceiling stops the next feature: with `forecastStop` on, or once
+   * `FORECAST_BINDING_FEATURES` features are measured. Before that the forecast is an
+   * extrapolation, and the caps on spent and reserved dollars bound the money (#1659).
+   */
+  forecastBinding: boolean;
+  /** Why a forecast above the ceiling does not stop the initiative yet; null otherwise. */
+  forecastNotice: string | null;
 }
 
 export interface FeatureView {
@@ -355,7 +366,7 @@ export function shareShortfall(
       cost.ceilingUsd > cost.capUsd
         ? `${usd(cost.ceilingUsd)} ceiling (the ${usd(cost.capUsd)} cap and its tolerance)`
         : `${usd(cost.capUsd)} cap`;
-    if (cost.forecastUsd !== null && cost.forecastUsd > cost.ceilingUsd) {
+    if (cost.forecastUsd !== null && cost.forecastUsd > cost.ceilingUsd && cost.forecastBinding) {
       const accepted = view.features.filter((f) => f.state === "accepted").length;
       return recoveryAdvice(
         `The initiative's cost forecast is ${usd(cost.forecastUsd)}, above its ${ceiling}: ${usd(cost.spentUsd)} spent with ${accepted} of ${view.features.length} features accepted. Raise the dollar budget to at least ${usd(Math.ceil(cost.forecastUsd))} with baked workflow initiative extend --budget-usd N to start ${feature.id}, or pause the initiative.`,
@@ -1284,6 +1295,30 @@ export class InitiativeService {
   }
 
   /** Starts a feature's run; false when its upstream results conflict and it waits for a person. */
+  /**
+   * Records once for each count of measured features that a feature starts while the forecast
+   * is above the ceiling but not yet binding (#1659), so `initiative events` and
+   * `/v1/initiatives/ID/events` show the warning a stop used to give.
+   */
+  private noteAdvisoryForecast(id: string, featureId: string, cost: CostView): void {
+    if (cost.forecastNotice === null) return;
+    const noted = this.store
+      .eventsOfType(id, "cost.forecast_advisory")
+      .some(
+        (p) =>
+          (p as { measuredFeatures?: number } | null)?.measuredFeatures === cost.measuredFeatures,
+      );
+    if (noted) return;
+    this.store.emit(id, "cost.forecast_advisory", {
+      featureId,
+      forecastUsd: cost.forecastUsd,
+      ceilingUsd: cost.ceilingUsd,
+      spentUsd: cost.spentUsd,
+      measuredFeatures: cost.measuredFeatures,
+      message: cost.forecastNotice,
+    });
+  }
+
   private async startFeature(id: string, featureId: string): Promise<boolean> {
     const row = this.store.get(id);
     const plan = this.approvedPlan(row);
@@ -1295,6 +1330,7 @@ export class InitiativeService {
     const waiting = current.features.find((f) => f.id === featureId);
     const sized = waiting?.share;
     if (!sized) throw new WorkflowFault("BUDGET_EXHAUSTED", "No budget share is available");
+    this.noteAdvisoryForecast(id, featureId, current.budget.cost);
     const share = { ...sized, ...guardGrowth(current, featureId, settings.basePolicy) };
     const previous = this.store.links(id).filter((l) => l.feature_id === featureId).length;
     const runFeature = runFeatureId(id, featureId);
@@ -1323,6 +1359,7 @@ export class InitiativeService {
       growthLimit(current, featureId),
       waiting?.shareUsd ?? null,
       costGrowthLimit(current, featureId),
+      current.budget.cost.forecastBinding,
     );
     const declined = featureApprovalDeclined(settings, feature, false, policy);
     // A derived command ID makes a start after a crash return the same run instead of a second one.
@@ -1434,6 +1471,7 @@ export class InitiativeService {
       growthLimit(current, featureId),
       rebased?.shareUsd ?? null,
       costGrowthLimit(current, featureId),
+      current.budget.cost.forecastBinding,
     );
     const declined = featureApprovalDeclined(settings, feature, true, policy);
     const snapshot = await this.workflows.rebase(
@@ -1761,14 +1799,27 @@ export class InitiativeService {
       used.tokens > 0;
     const left = forecastable ? this.remainingFeatureCost(row, settings, estimate, accepted) : null;
     const round = (n: number): number => Math.round(n * 100) / 100;
+    const ceilingUsd = capUsd === null ? null : round(capUsd * (1 + tolerance));
+    const forecastUsd = left === null ? null : round(spentUsd + left);
+    const measuredFeatures = estimate
+      ? estimate.features.filter((f) => accepted.has(f.featureId) && !f.skeleton).length
+      : accepted.size;
+    const forecastBinding =
+      settings.forecastStop === true || measuredFeatures >= FORECAST_BINDING_FEATURES;
     return {
       capUsd,
       tolerance,
-      ceilingUsd: capUsd === null ? null : round(capUsd * (1 + tolerance)),
+      ceilingUsd,
       spentUsd: round(spentUsd),
       reservedUsd: round(Math.max(0, committedUsd - spentUsd)),
       remainingUsd: capUsd === null ? null : cents(Math.max(0, capUsd - committedUsd)),
-      forecastUsd: left === null ? null : round(spentUsd + left),
+      forecastUsd,
+      measuredFeatures,
+      forecastBinding,
+      forecastNotice:
+        forecastUsd !== null && ceilingUsd !== null && forecastUsd > ceilingUsd && !forecastBinding
+          ? `The cost forecast of ${usd(forecastUsd)} is above the ${usd(ceilingUsd)} ceiling. It is advisory until ${FORECAST_BINDING_FEATURES} features are measured (${measuredFeatures} so far): features keep starting while their spent and reserved dollars fit the budget.`
+          : null,
     };
   }
 
@@ -2547,6 +2598,7 @@ export function featurePolicy(
   growTo: number | null = null,
   shareUsd: number | null = null,
   growUsd: number | null = null,
+  forecastBinding = false,
 ): RunPolicy {
   const tokens = "tokens" in share ? share.tokens : share.maxTotalTokens;
   const calls = "calls" in share ? share.calls : share.maxAgentCalls;
@@ -2565,7 +2617,7 @@ export function featurePolicy(
           maxTotalTokens,
         })
       : null;
-  const cost = costPolicy(settings, shareUsd);
+  const cost = costPolicy(settings, shareUsd, forecastBinding);
   const grown = growTo !== null ? grownSizing(base, maxTotalTokens, growTo) : base.sizing;
   // The dollar cap grows for tokens, forecasts or calls, up to what the initiative can spare. The
   // base policy's own cap does not bound it: the initiative's dollar budget does (#1503).
@@ -2643,12 +2695,18 @@ export function boundaryLimits(
 function costPolicy(
   settings: InitiativeSettings,
   shareUsd: number | null,
-): Pick<RunPolicy, "maxCostUsd" | "costTolerance"> | Record<string, never> {
+  forecastBinding: boolean,
+): Pick<RunPolicy, "maxCostUsd" | "costTolerance" | "costForecast"> | Record<string, never> {
   const budget = settings.costBudget;
   if (!budget || shareUsd === null) return {};
   return {
     maxCostUsd: Math.max(MIN_SHARE_USD, cents(shareUsd)),
     costTolerance: budget.costTolerance,
+    // The feature's cap and the initiative's spare dollars bound its money; until the
+    // initiative's forecast is binding, the run's own forecast only advises (#1659).
+    ...(forecastBinding || settings.basePolicy.costForecast === "off"
+      ? {}
+      : { costForecast: "advise" as const }),
   };
 }
 

@@ -108,6 +108,12 @@ export interface InitiativeCost {
   remainingUsd: number | null;
   /** The projected total once a feature is accepted; null before that or without a cap. */
   forecastUsd: number | null;
+  /** Accepted features that are not a host-written skeleton. */
+  measuredFeatures?: number;
+  /** Whether a forecast above the ceiling stops the next feature. */
+  forecastBinding?: boolean;
+  /** Why a forecast above the ceiling does not stop the initiative yet; null otherwise. */
+  forecastNotice?: string | null;
 }
 
 export type FeatureSize = "small" | "medium" | "large";

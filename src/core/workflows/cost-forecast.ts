@@ -186,6 +186,8 @@ export function assertForecastFits(store: WorkflowStore, runId: string, policy: 
   if (askedForecast(store, runId, forecast.capUsd) !== null) return;
   const tolerance = costToleranceOf(store, runId, policy);
   if (growCostCapToForecast(store, runId, policy, forecast.projectedUsd, tolerance)) return;
+  // An advisory forecast spends on: the dollar checks on spent and reserved money still hold.
+  if (policy.costForecast === "advise") return;
   const bound = policy.sizing?.maxRunCostUsd;
   const spare =
     bound !== undefined && bound > forecast.capUsd
