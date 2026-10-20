@@ -11,6 +11,7 @@ import {
   propertyTestKind,
   propertyTestsNote,
 } from "../src/core/workflows/quality/properties.js";
+import { PROPERTY_LIBRARY_PACKAGES } from "../src/core/workflows/quality/dependencies.js";
 import { runReport } from "../src/core/workflows/run-report.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { FixtureExecutor, fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
@@ -152,6 +153,8 @@ describe("property tests without a library (#796)", () => {
     const workspace = { "Cargo.toml": '[workspace]\nmembers = ["crates/*", "cli"]\n', "crates/core/Cargo.toml": '[dev-dependencies]\nproptest = "1"\n', "cli/Cargo.toml": "[dependencies]\n" };
     expect(libraries(workspace, { "": ["Cargo.toml", "crates", "cli"], crates: ["crates/core"] }).Rust).toBe(true);
     expect(libraries({ ...workspace, "crates/core/Cargo.toml": "[dependencies]\n" }, { "": ["Cargo.toml", "crates", "cli"], crates: ["crates/core"] }).Rust).toBe(false);
+    // A property criterion requests these libraries as a dependency too.
+    expect(PROPERTY_LIBRARY_PACKAGES).toEqual(expect.arrayContaining(["io.kotest:kotest-property", "CsCheck"]));
   });
 
   test("Python is started only for a project with Python in it", () => {

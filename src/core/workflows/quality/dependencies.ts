@@ -158,11 +158,13 @@ export const PROPERTY_LIBRARY_PACKAGES = [
   "proptest",
   "quickcheck",
   "net.jqwik:jqwik",
+  "io.kotest:kotest-property",
   "pgregory.net/rapid",
   "github.com/leanovate/gopter",
   "FsCheck",
   "FsCheck.Xunit",
   "FsCheck.NUnit",
+  "CsCheck",
 ];
 
 /** Whether `text` names a package, as a whole word or path segment, ignoring case. */
