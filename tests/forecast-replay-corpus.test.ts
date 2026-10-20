@@ -4,15 +4,17 @@ import { join, relative } from "node:path";
 import { replayTrace } from "../src/core/workflows/trace.js";
 
 // #1649, #1715: every recorded bench-round trace replays through the current host decisions: the
-// forecast and cap code, and the first-response deadline of each model call. A stop or cap growth
-// the recorded run did not make fails the suite, unless accepted.json lists it for that run with
-// the reason: the pull request that changes the decision says so in its diff.
+// forecast and cap code, the first-response deadline of each model call, and the initiative share
+// gate (#1707). A stop, cap growth or park the recorded run did not make fails the suite, unless
+// accepted.json lists it for that run or initiative with the reason: the pull request that changes
+// the decision says so in its diff.
 const ROOT = join(import.meta.dir, "fixtures", "bench-traces");
 
 interface Accepted {
   newStops?: number;
   newGrowth?: number;
   newFirstByteStops?: number;
+  newShareStops?: number;
   reason: string;
 }
 
@@ -56,6 +58,13 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newStops: allowed?.newStops ?? 0,
           newGrowth: allowed?.newGrowth ?? 0,
           newFirstByteStops: allowed?.newFirstByteStops ?? 0,
+        });
+      }
+      for (const initiative of replay.initiatives) {
+        const allowed = accepted[`${name}#${initiative.initiativeId}`];
+        expect({ initiative: initiative.initiativeId, newShareStops: initiative.newShareStops }).toEqual({
+          initiative: initiative.initiativeId,
+          newShareStops: allowed?.newShareStops ?? 0,
         });
       }
     }, 120000);
