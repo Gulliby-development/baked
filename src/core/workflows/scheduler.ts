@@ -239,7 +239,7 @@ import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
 import { costToleranceOf, currentCostCap, inCostWrapUp } from "./cost-tolerance.js";
 import { coverageFinding } from "./coverage.js";
 import { type CriticCalibration, calibrateCritic, criticExamples } from "./critic-calibration.js";
-import { crossPlatformNote } from "./cross-platform.js";
+import { crossPlatformNote, forbidsCi } from "./cross-platform.js";
 import { git, gitWorktreePaths } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
 import {
@@ -263,6 +263,12 @@ import {
 import { outputTail } from "./gates.js";
 import { HOST_ADDITIONS, HOST_EDITS_PATH, type HostEdit, recordGraphEdits } from "./host-edits.js";
 import { isStoreError, recordHostError } from "./host-error.js";
+import {
+  CROSS_PLATFORM_CRITERION,
+  HOST_REQUIRED_CRITERIA,
+  hostRequiredIds,
+  objectsToHostRequired,
+} from "./host-required-criteria.js";
 import { criticalPathProblems } from "./initiatives/critical-path.js";
 import {
   type InitiativePlan,
@@ -1660,6 +1666,23 @@ export class WorkflowScheduler {
                 if (finding.blocking && asksUnsupportedMethod(finding.description)) {
                   finding.blocking = false;
                   finding.description = `Asks for a verification method the spec schema does not have (only ${VERIFICATION_METHODS.join(", ")}; automated covers the reviewer reading a file); kept as a note: ${finding.description}`;
+                }
+              }
+              // A criterion the host's own rules make the spec author add is not scope the request
+              // lacks: md-site (bench round 52) ran specify three times and plan and analyze four
+              // times over the required 1280 px criterion (#1765).
+              const request = state.requestText || state.prompt;
+              const required = HOST_REQUIRED_CRITERIA.filter(
+                (c) =>
+                  c !== CROSS_PLATFORM_CRITERION ||
+                  (crossPlatformNote(request, runRoot(this.store.workspace, state)) !== null &&
+                    !forbidsCi(request)),
+              );
+              const requiredIds = hostRequiredIds(spec, required);
+              for (const finding of analysis.findings) {
+                if (objectsToHostRequired(finding, requiredIds, required)) {
+                  finding.blocking = false;
+                  finding.description = `Objects to a criterion the host's own rules require (${[...requiredIds].join(", ")}); kept as a note: ${finding.description}`;
                 }
               }
               // Findings about check outcomes stay in the record as notes; checks run later.
