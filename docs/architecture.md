@@ -46,6 +46,8 @@ Tools live in `src/core/tools/` and are registered in `src/core/tools/index.ts`.
 
 `src/core/workflows/`, `src/core/specs/` and `src/core/verification/` implement durable spec-driven runs: a state machine over stages, approvals bound to digests, budgets, leases, recovery and evidence-based verification. Durable events in SQLite are authoritative; the terminal UI, the CLI and the API only render them and send commands through `WorkflowService`. See [workflows](workflows/README.md).
 
+Worker and desktop server supervision accept a `SupervisorClock` from `src/core/workflows/supervisor-clock.ts`. The default uses real wall time, monotonic time and unreferenced intervals. The takeover tests inject a manual clock and advance only the supervisor's polls after observing the expired lease or the scripted tool's stall marker. Worker close events, child process exits, SQLite recovery and workflow completion still use real I/O. Startup and healthy replacement work cannot consume a test's shortened grace period.
+
 ## Desktop app
 
 `apps/desktop` is an Electron app with its own package. Its main process runs one `baked serve` per open project and proxies the renderer's requests to it. See [desktop app](desktop/app.md) and the [API contract](desktop/api.md).

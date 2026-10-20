@@ -16,6 +16,7 @@ import {
   StallDetector,
   type StallDetectorOptions,
 } from "../workflows/supervisor.js";
+import { type SupervisorClock, systemSupervisorClock } from "../workflows/supervisor-clock.js";
 import type { Check } from "../workflows/types.js";
 import type { RunSummary, StartRunInput, WorkflowInfo, WorkflowView } from "../workflows/view.js";
 import type { IntelligenceClient } from "./intelligence-client.js";
@@ -57,7 +58,7 @@ export interface WorkflowClientOptions {
    * Watches the worker for a stopped thread; off when left out. The grace period defaults to
    * `workflows.stall.supervisorGraceMs`. The host recreates the client when `onStalled` fires.
    */
-  supervisor?: Partial<StallDetectorOptions>;
+  supervisor?: Partial<StallDetectorOptions> & { clock?: SupervisorClock };
 }
 
 export class WorkflowClient extends WorkerClient {
@@ -119,7 +120,7 @@ export class WorkflowClient extends WorkerClient {
       // At least four polls in the grace period, so a short one is still noticed in time.
       const pollMs =
         options.supervisor.pollMs ?? Math.min(DEFAULT_SUPERVISOR.pollMs, Math.max(50, graceMs / 4));
-      this.watch(workspace, { graceMs, pollMs });
+      this.watch(workspace, { graceMs, pollMs }, options.supervisor.clock);
     }
     this.on("drive", (value) => {
       const event = value as { id: string; runId: string };
@@ -145,15 +146,27 @@ export class WorkflowClient extends WorkerClient {
    * worker's leases that stay expired for the grace period stop the worker; the next worker takes
    * its runs over (`stalledOwner`).
    */
-  private watch(workspace: string, options: StallDetectorOptions): void {
+  private watch(
+    workspace: string,
+    options: StallDetectorOptions,
+    clock: SupervisorClock = systemSupervisorClock,
+  ): void {
     if (!(options.graceMs > 0)) return;
     const detector = new StallDetector(options);
     let store: WorkflowStore | null = null;
-    const timer = setInterval(() => {
+    const stop = clock.every(options.pollMs, () => {
       if (!this.owner || this.closed) return;
       try {
         store ??= new WorkflowStore(workspace, true);
-        if (!detector.check(store.leases(), { pid: process.pid, owner: this.owner }).length) return;
+        if (
+          !detector.check(
+            store.leases(),
+            { pid: process.pid, owner: this.owner },
+            clock.wallNow(),
+            clock.now(),
+          ).length
+        )
+          return;
       } catch {
         // A busy or missing database is checked again on the next poll.
         return;
@@ -161,10 +174,9 @@ export class WorkflowClient extends WorkerClient {
       this.stalled = this.owner;
       this.stopWatch?.();
       this.worker.terminate();
-    }, options.pollMs);
-    timer.unref?.();
+    });
     this.stopWatch = () => {
-      clearInterval(timer);
+      stop();
       store?.close();
       store = null;
       this.stopWatch = null;

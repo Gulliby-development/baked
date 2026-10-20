@@ -1,5 +1,7 @@
 // A real workflow API child for #1541. Only its first process hangs inside a guarded tool call.
 import { startApiServer } from "../../src/core/api/server.js";
+import { renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { RunPolicy } from "../../src/core/workflows/schemas.js";
 import { ScriptedWorkflowExecutor } from "../../src/core/workflows/scripted-executor.js";
 import { NativeWorkflowService } from "../../src/core/workflows/service.js";
@@ -22,6 +24,9 @@ class StalledExecutor extends ScriptedWorkflowExecutor {
         service.store, service.leases, request.runId, request.attemptId,
         request.profile, policy, request.task, root, stallSettings(config),
       ).execute("multi_edit", { path: "value.txt" }, async () => {
+        const marker = join(root, ".baked", "scripted-stalled.json");
+        writeFileSync(`${marker}.tmp`, JSON.stringify({ runId: request.runId, pid: process.pid }));
+        renameSync(`${marker}.tmp`, marker);
         for (;;) {}
       });
     }
