@@ -6,6 +6,7 @@ import { canonical, hashBytes } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { assertForecastFits, costForecast } from "./cost-forecast.js";
 import { WorkflowFault } from "./errors.js";
+import { recordingOf } from "./model-recording.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { WorkflowStore } from "./store.js";
 
@@ -129,6 +130,82 @@ export interface TraceExport {
   runs: number;
   initiatives: number;
   bytes: number;
+}
+
+/** One run of `exportRecordings`: what a replay of it needs besides the calls. */
+export interface RecordingEntry {
+  runId: string;
+  featureId: string;
+  status: string;
+  reason: string;
+  /** The Git commit of the run's first workspace snapshot: the tree a replay starts from. */
+  gitHead: string | null;
+  calls: number;
+  /** The recording's file name in the output folder. */
+  file: string;
+}
+
+/**
+ * Writes the model calls each run of `workspace` recorded (`--record-model-calls`) to
+ * `outDir/RUN_ID.json.gz`, in the format `workflow run --replay` reads once unzipped, and a
+ * `manifest.json` of the runs (#1715). Bench apps are public MIT repositories, so prompts and
+ * model output may be kept; nothing else of `.baked/` is. The database is read without changes.
+ */
+export function exportRecordings(
+  workspace: string,
+  outDir: string,
+  options: { runIds?: string[] } = {},
+): RecordingEntry[] {
+  const source = workspacePath(workspace, ".baked/workflows.sqlite");
+  if (!existsSync(source)) throw new Error(`No workflow database in ${workspace}`);
+  const db = new Database(source, { readonly: true });
+  try {
+    const runs = db
+      .query("SELECT id, feature_id, status, reason FROM runs ORDER BY created_at")
+      .all() as { id: string; feature_id: string; status: string; reason: string }[];
+    const keep = options.runIds ? new Set(options.runIds) : null;
+    const entries: RecordingEntry[] = [];
+    mkdirSync(outDir, { recursive: true });
+    for (const run of runs) {
+      if (keep && !keep.has(run.id)) continue;
+      const texts = (
+        db
+          .query(
+            "SELECT inline_content, blob_path FROM artifacts WHERE run_id=? AND logical_path LIKE 'recordings/%' ORDER BY created_at",
+          )
+          .all(run.id) as { inline_content: string | null; blob_path: string | null }[]
+      ).map(
+        (row) =>
+          row.inline_content ??
+          readFileSync(
+            workspacePath(workspace, (row.blob_path ?? "").replaceAll("\\", "/")),
+            "utf8",
+          ),
+      );
+      if (!texts.length) continue;
+      const recording = recordingOf(run.id, texts);
+      const file = `${run.id}.json.gz`;
+      writeFileSync(join(outDir, file), Bun.gzipSync(Buffer.from(JSON.stringify(recording))));
+      const head = db
+        .query(
+          "SELECT git_head FROM workspace_snapshots WHERE run_id=? ORDER BY created_at LIMIT 1",
+        )
+        .get(run.id) as { git_head: string | null } | null;
+      entries.push({
+        runId: run.id,
+        featureId: run.feature_id,
+        status: run.status,
+        reason: run.reason,
+        gitHead: head?.git_head ?? null,
+        calls: recording.calls.length,
+        file,
+      });
+    }
+    writeFileSync(join(outDir, "manifest.json"), `${JSON.stringify(entries, null, 2)}\n`);
+    return entries;
+  } finally {
+    db.close();
+  }
 }
 
 /**
