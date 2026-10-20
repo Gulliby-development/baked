@@ -29,7 +29,12 @@ export function isManifestPath(path: string): boolean {
     /\.(csproj|fsproj|vbproj)$/.test(name) ||
     name === "pom.xml" ||
     /^(?:build|settings)\.gradle(?:\.kts)?$/.test(name) ||
-    name === "Gemfile"
+    name === "Gemfile" ||
+    name === "Pipfile" ||
+    name === "setup.cfg" ||
+    name === "Directory.Build.props" ||
+    name === "Directory.Packages.props" ||
+    name === "libs.versions.toml"
   );
 }
 
@@ -93,21 +98,56 @@ function tomlTables(text: string): { header: string; line: number; body: string 
   return out;
 }
 
+/**
+ * The string items of each `key = [...]` array of a TOML file, with the table it is in. The array
+ * is read token by token, so a `]` inside a string (`"requests[socks]"`) does not end it: a lazy
+ * bracket match stopped there and lost every later dependency (#1682).
+ */
+function tomlStringArrays(
+  text: string,
+): { table: string; key: string; items: { value: string; index: number }[] }[] {
+  const out: { table: string; key: string; items: { value: string; index: number }[] }[] = [];
+  for (const match of text.matchAll(/^\s*([\w.-]+|"[^"]+")\s*=\s*\[/gm)) {
+    const items: { value: string; index: number }[] = [];
+    let depth = 0;
+    for (let i = (match.index ?? 0) + match[0].length - 1; i < text.length; i++) {
+      const char = text[i];
+      if (char === '"' || char === "'") {
+        const end = text.indexOf(char, i + 1);
+        if (end === -1) break;
+        if (depth === 1) items.push({ value: text.slice(i + 1, end), index: i });
+        i = end;
+      } else if (char === "#") {
+        const end = text.indexOf("\n", i);
+        i = end === -1 ? text.length : end;
+      } else if (char === "[" || char === "{") depth++;
+      else if (char === "]" || char === "}") {
+        depth--;
+        if (depth === 0) break;
+      }
+    }
+    const table = tomlTables(text.slice(0, match.index ?? 0)).at(-1)?.header ?? "";
+    out.push({ table, key: (match[1] ?? "").replace(/^"|"$/g, ""), items });
+  }
+  return out;
+}
+
+/** The arrays of PEP 508 requirements a pyproject.toml declares. */
+const PYPROJECT_ARRAYS = (table: string, key: string): boolean =>
+  (table === "project" && key === "dependencies") ||
+  table === "project.optional-dependencies" ||
+  // PEP 735 groups, where `uv add --dev` writes, and uv's older dev list.
+  table === "dependency-groups" ||
+  (table === "tool.uv" && (key === "dev-dependencies" || key === "constraint-dependencies")) ||
+  (table === "build-system" && key === "requires");
+
 function pyprojectToml(path: string, text: string): Dependency[] {
   const out: Dependency[] = [];
-  // PEP 621: dependencies = ["requests>=2", ...] and optional-dependencies tables.
-  for (const match of text.matchAll(/^\s*(?:dependencies|[\w-]+)\s*=\s*\[([\s\S]*?)\]/gm)) {
-    const table = tomlTables(text.slice(0, match.index ?? 0)).at(-1)?.header ?? "";
-    if (table !== "project" && table !== "project.optional-dependencies") continue;
-    for (const item of (match[1] ?? "").matchAll(/["']([^"']+)["']/g)) {
-      const name = pypiName(item[1] ?? "");
-      if (name)
-        out.push({
-          ecosystem: "pypi",
-          name,
-          file: path,
-          line: lineOf(text, (match.index ?? 0) + (item.index ?? 0)),
-        });
+  for (const array of tomlStringArrays(text)) {
+    if (!PYPROJECT_ARRAYS(array.table, array.key)) continue;
+    for (const item of array.items) {
+      const name = pypiName(item.value);
+      if (name) out.push({ ecosystem: "pypi", name, file: path, line: lineOf(text, item.index) });
     }
   }
   // Poetry: keys of [tool.poetry.dependencies] and its groups.
@@ -129,6 +169,16 @@ function pyprojectToml(path: string, text: string): Dependency[] {
 function cargoToml(path: string, text: string): Dependency[] {
   const out: Dependency[] = [];
   for (const table of tomlTables(text)) {
+    // `[dependencies.tokio]` with `version = "1"` in its body: the table form of one dependency.
+    const single = /(?:^|\.)(?:dev-|build-)?dependencies\.([A-Za-z0-9_-]+)$/.exec(
+      table.header,
+    )?.[1];
+    if (single) {
+      if (/^\s*(?:path|git)\s*=/m.test(table.body)) continue;
+      const renamed = /^\s*package\s*=\s*"([^"]+)"/m.exec(table.body)?.[1];
+      out.push({ ecosystem: "crates", name: renamed ?? single, file: path, line: table.line });
+      continue;
+    }
     if (!/(?:^|\.)(?:dev-|build-)?dependencies$/.test(table.header)) continue;
     table.body.split("\n").forEach((line, i) => {
       const match = /^\s*([A-Za-z0-9_-]+)\s*=\s*(.*)$/.exec(line);
@@ -246,6 +296,80 @@ function gemfile(path: string, text: string): Dependency[] {
   return out;
 }
 
+/** Pipfile: the keys of `[packages]` and `[dev-packages]`. */
+function pipfile(path: string, text: string): Dependency[] {
+  const out: Dependency[] = [];
+  for (const table of tomlTables(text))
+    if (table.header === "packages" || table.header === "dev-packages")
+      table.body.split("\n").forEach((line, i) => {
+        const match = /^\s*"?([A-Za-z0-9][\w.-]*)"?\s*=\s*(.*)$/.exec(line);
+        if (!match || /\b(?:path|git|file)\s*=/.test(match[2] ?? "")) return;
+        const name = pypiName(match[1] ?? "");
+        if (name) out.push({ ecosystem: "pypi", name, file: path, line: table.line + i + 1 });
+      });
+  return out;
+}
+
+/** setup.cfg: `install_requires` of `[options]` and every list of `[options.extras_require]`. */
+function setupCfg(path: string, text: string): Dependency[] {
+  const out: Dependency[] = [];
+  let section = "";
+  let inList = false;
+  text.split("\n").forEach((raw, i) => {
+    const header = /^\s*\[([^\]]+)\]\s*$/.exec(raw)?.[1];
+    if (header) {
+      section = header.trim();
+      inList = false;
+      return;
+    }
+    const assignment = /^([\w.-]+)\s*=\s*(.*)$/.exec(raw);
+    let value: string | null = null;
+    if (assignment) {
+      inList =
+        (section === "options" &&
+          ["install_requires", "setup_requires", "tests_require"].includes(assignment[1] ?? "")) ||
+        section === "options.extras_require";
+      value = inList ? (assignment[2] ?? "") : null;
+    } else if (inList && /^\s+\S/.test(raw)) value = raw;
+    else if (raw.trim()) inList = false;
+    const requirement = value?.replace(/#.*$/, "").trim();
+    const name = requirement ? pypiName(requirement) : null;
+    if (name) out.push({ ecosystem: "pypi", name, file: path, line: i + 1 });
+  });
+  return out;
+}
+
+/** Central .NET package versions: `<PackageVersion Include="...">` (Directory.Packages.props). */
+function packageVersions(path: string, text: string): Dependency[] {
+  return [...text.matchAll(/<PackageVersion\s+[^>]*Include\s*=\s*"([^"]+)"/g)].map((m) => ({
+    ecosystem: "nuget" as const,
+    name: m[1] ?? "",
+    file: path,
+    line: lineOf(text, m.index ?? 0),
+  }));
+}
+
+/** A Gradle version catalog: the coordinates of each entry of `[libraries]`. */
+function versionCatalog(path: string, text: string): Dependency[] {
+  const out: Dependency[] = [];
+  const libraries = tomlTables(text).find((table) => table.header === "libraries");
+  libraries?.body.split("\n").forEach((line, i) => {
+    const value = /^\s*[\w.-]+\s*=\s*(.*)$/.exec(line)?.[1] ?? "";
+    const coordinate =
+      /^"([\w.-]+):([\w.-]+)(?::[^"]*)?"/.exec(value) ??
+      /\bmodule\s*=\s*"([\w.-]+):([\w.-]+)"/.exec(value) ??
+      /\bgroup\s*=\s*"([\w.-]+)"\s*,\s*name\s*=\s*"([\w.-]+)"/.exec(value);
+    if (coordinate)
+      out.push({
+        ecosystem: "maven",
+        name: `${coordinate[1]}:${coordinate[2]}`,
+        file: path,
+        line: libraries.line + i + 1,
+      });
+  });
+  return out;
+}
+
 /** The registry dependencies a manifest declares. */
 export function manifestDependencies(path: string, text: string): Dependency[] {
   const name = base(path);
@@ -258,6 +382,12 @@ export function manifestDependencies(path: string, text: string): Dependency[] {
   if (name === "pom.xml") return pomXml(path, text);
   if (/^(?:build|settings)\.gradle(?:\.kts)?$/.test(name)) return gradle(path, text);
   if (name === "Gemfile") return gemfile(path, text);
+  if (name === "Pipfile") return pipfile(path, text);
+  if (name === "setup.cfg") return setupCfg(path, text);
+  if (name === "Directory.Build.props") return csproj(path, text);
+  if (name === "Directory.Packages.props")
+    return [...csproj(path, text), ...packageVersions(path, text)];
+  if (name === "libs.versions.toml") return versionCatalog(path, text);
   return [];
 }
 

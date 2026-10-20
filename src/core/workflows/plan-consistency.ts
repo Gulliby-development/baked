@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { isTestFile as isLanguageTestFile } from "../intelligence/language-traits.js";
 import { workspacePath } from "../specs/validate.js";
 import { type HostEdit, plannerGraph } from "./host-edits.js";
@@ -15,6 +15,7 @@ export const PLAN_CONSISTENCY_CHECKS = [
   "every task reference exists or is created by an earlier task",
   "a task that writes a module index (lib.rs, main.rs, mod.rs, __init__.py, index.ts) runs after the tasks that create the module files beside it",
   "a task with checks that creates a Rust module file also writes the lib.rs, main.rs, mod.rs or parent module file (src/parser.rs for src/parser/lexer.rs) that declares it, so its checks compile it",
+  "a task with checks that creates code in a new .NET project, Maven module or Cargo crate also writes the project file and its registration (the solution, the parent pom.xml <modules>, the workspace Cargo.toml members), or runs after the task that does, so its checks build it",
   "code created after a task creates the entry point (main, cli, app, server, program) is wired in by a task that writes the entry point and runs after it",
   "a documentation task that runs the program to capture its output runs after the tasks that write the program's entry points",
   "each task has its own description, and no task's description tells it to create a file another task writes",
@@ -244,6 +245,152 @@ export function undeclaredRustModules(workspace: string, graph: TaskGraph): stri
       if (!indexes.length || task.writes.some((w) => indexes.includes(w.path))) continue;
       problems.push(
         `${task.id} creates the Rust module ${file} but does not write ${indexes.join(" or ")}, which declares it, so ${task.id}'s checks (${task.checkIds.join(", ")}) never compile it and its errors surface only after the task that adds the mod line. Add ${indexes[0]} to ${task.id}'s writes and declare the module there; the host orders tasks that write the same index.`,
+      );
+    }
+  }
+  return problems;
+}
+
+/**
+ * How a compiled toolchain decides which projects it builds: a code file is built only in the
+ * project whose file is nearest above it, and a new project only once the registry above it (the
+ * solution, the parent pom's `<modules>`, the workspace `members`) lists it (#1684).
+ */
+const PROJECT_TOOLCHAINS: Array<{
+  kind: string;
+  code: RegExp;
+  project: RegExp;
+  registry: RegExp;
+  /** Whether the registry's text already lists the project directory `dir` (relative to the registry). */
+  lists: (text: string, dir: string) => boolean;
+}> = [
+  {
+    kind: ".NET project",
+    code: /\.(?:cs|fs|vb)$/,
+    project: /\.(?:cs|fs|vb)proj$/,
+    registry: /\.slnx?$/,
+    lists: (text, dir) => text.replace(/\\/g, "/").toLowerCase().includes(`${dir.toLowerCase()}/`),
+  },
+  {
+    kind: "Maven module",
+    code: /\.(?:java|kt)$/,
+    project: /(?:^|\/)pom\.xml$/,
+    registry: /(?:^|\/)pom\.xml$/,
+    lists: (text, dir) =>
+      [...text.matchAll(/<module>\s*([^<]+?)\s*<\/module>/g)].some(
+        (m) => m[1]?.replace(/^\.\//, "").replace(/\/$/, "") === dir,
+      ),
+  },
+  {
+    kind: "Cargo crate",
+    code: /\.rs$/,
+    project: /(?:^|\/)Cargo\.toml$/,
+    registry: /(?:^|\/)Cargo\.toml$/,
+    lists: (text, dir) => {
+      const members = /\bmembers\s*=\s*\[([^\]]*)\]/.exec(text)?.[1] ?? "";
+      return [...members.matchAll(/["']([^"']+)["']/g)].some((m) => {
+        const pattern = (m[1] ?? "").replace(/^\.\//, "").replace(/\/$/, "");
+        const glob = new RegExp(
+          `^${pattern
+            .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+            .replace(/\*/g, "[^/]*")
+            .replace(/\?/g, "[^/]")}$`,
+        );
+        return glob.test(dir);
+      });
+    },
+  },
+];
+
+/**
+ * Code files whose project a later task creates or registers. A task's checks build only the
+ * projects the workspace already knows, so `dotnet build`, `mvn verify` or `cargo test` stay
+ * green while the new project's code is never compiled, and its errors surface in the task that
+ * adds the project (the #1299 pattern one level up).
+ */
+export function unregisteredProjects(workspace: string, graph: TaskGraph): string[] {
+  const writers = new Map<string, string[]>();
+  for (const t of graph.tasks)
+    for (const w of t.writes)
+      if (w.action !== "delete") writers.set(w.path, [...(writers.get(w.path) ?? []), t.id]);
+  const created = new Set(
+    graph.tasks.flatMap((t) => t.writes.filter((w) => w.action === "create").map((w) => w.path)),
+  );
+  const listing = new Map<string, string[]>();
+  const filesIn = (dir: string): string[] => {
+    let names = listing.get(dir);
+    if (!names) {
+      try {
+        names = readdirSync(workspacePath(workspace, dir || "."));
+      } catch {
+        names = [];
+      }
+      listing.set(dir, names);
+    }
+    const prefix = dir ? `${dir}/` : "";
+    const planned = [...writers.keys()].filter((path) => dirOf(path) === dir);
+    return [...new Set([...names.map((name) => `${prefix}${name}`), ...planned])];
+  };
+  const nearest = (start: string, pattern: RegExp): string | undefined => {
+    for (let dir = start; ; dir = dirOf(dir)) {
+      const found = filesIn(dir).find((path) => pattern.test(path));
+      if (found || !dir) return found;
+    }
+  };
+  const read = (path: string): string => {
+    try {
+      return readFileSync(workspacePath(workspace, path), "utf8");
+    } catch {
+      return "";
+    }
+  };
+  const problems: string[] = [];
+  const seen = new Set<string>();
+  for (const task of graph.tasks) {
+    if (!task.checkIds.length) continue;
+    const own = new Set([task.id, ...ancestorsOf(graph, task.id)]);
+    const writtenBy = (path: string, ids: (id: string) => boolean): string[] =>
+      (writers.get(path) ?? []).filter(ids);
+    for (const write of task.writes) {
+      if (write.action !== "create") continue;
+      const toolchain = PROJECT_TOOLCHAINS.find((t) => t.code.test(write.path));
+      const project = toolchain && nearest(dirOf(write.path), toolchain.project);
+      if (!toolchain || !project) continue;
+      const key = `${task.id}\0${project}`;
+      if (seen.has(key) || !created.has(project) || existsSync(workspacePath(workspace, project)))
+        continue;
+      seen.add(key);
+      const missing: string[] = [];
+      if (!writtenBy(project, (id) => own.has(id)).length) missing.push(project);
+      else {
+        const projectDir = dirOf(project);
+        const parent = projectDir ? dirOf(projectDir) : undefined;
+        const registries =
+          parent === undefined
+            ? []
+            : toolchain.registry === toolchain.project
+              ? [nearest(parent, toolchain.registry)].filter((p): p is string => !!p)
+              : [
+                  ...new Set(
+                    Array.from({ length: projectDir.split("/").length }, (_, i) =>
+                      projectDir.split("/").slice(0, i).join("/"),
+                    ).flatMap((dir) => filesIn(dir).filter((p) => toolchain.registry.test(p))),
+                  ),
+                ];
+        for (const registry of registries) {
+          const rel = dirOf(registry) ? projectDir.slice(dirOf(registry).length + 1) : projectDir;
+          if (
+            writtenBy(registry, (id) => !own.has(id)).length &&
+            !writtenBy(registry, (id) => own.has(id)).length &&
+            !toolchain.lists(read(registry), rel)
+          )
+            missing.push(registry);
+        }
+      }
+      if (!missing.length) continue;
+      const by = [...new Set(missing.flatMap((path) => writtenBy(path, (id) => !own.has(id))))];
+      problems.push(
+        `${task.id} creates ${write.path} in the ${toolchain.kind} ${dirOf(project) || "."}, but ${missing.join(" and ")} ${missing.length > 1 ? "are" : "is"} written by ${by.join(", ")}, not by ${task.id} or a task before it, so ${task.id}'s checks (${task.checkIds.join(", ")}) never build that code and its errors surface only after the project is added. Add ${missing.join(" and ")} to ${task.id}'s writes (or to a task it depends on) and register the project there; the host orders tasks that write the same file.`,
       );
     }
   }
@@ -496,6 +643,7 @@ export function planConsistencyProblems(
       }
   problems.push(...unwiredEntryPoints(graph));
   problems.push(...undeclaredRustModules(workspace, graph));
+  problems.push(...unregisteredProjects(workspace, graph));
   problems.push(...copiedTaskTexts(graph, edits));
   return problems;
 }

@@ -72,7 +72,7 @@ import {
 import { staticCorrection } from "../src/core/workflows/scheduler.js";
 import { ASSERTION_FAILURES } from "./helpers/assertion-failures.js";
 import { failureOwner } from "../src/core/workflows/task-graph.js";
-import type { Check, RunPolicy, RuntimeState, TaskGraph } from "../src/core/workflows/schemas.js";
+import { type Check, type RunPolicy, type RuntimeState, type TaskGraph, uncontractedBuildCriteria } from "../src/core/workflows/schemas.js";
 import type { TaskRow, WorkflowStore } from "../src/core/workflows/store.js";
 import { scanTestIntegrity, testChanges } from "../src/core/workflows/test-integrity.js";
 import type { Task } from "../src/core/workflows/types.js";
@@ -90,9 +90,13 @@ test("#1643 initiative ceiling gate uses central stage prices from shared histor
       expect(view.budget.cost).toMatchObject({ capUsd: 30, tolerance: 0.25, ceilingUsd: 37.5, spentUsd: 0.72 });
       expect(view.next).toMatchObject({ kind: "start", featureId: "f2" });
       expect(shareShortfall(view, view.features[1]!)).toBeNull();
-      const over = { ...view, budget: { ...view.budget, cost: { ...view.budget.cost, forecastUsd: 37.51 } } };
+      // One accepted skeleton measures nothing: a forecast over the ceiling advises (#1659).
+      expect(view.budget.cost).toMatchObject({ measuredFeatures: 0, forecastBinding: false });
+      const advisory = { ...view, budget: { ...view.budget, cost: { ...view.budget.cost, forecastUsd: 37.51 } } };
+      expect(shareShortfall(advisory, view.features[1]!)).toBeNull();
+      const over = { ...view, budget: { ...view.budget, cost: { ...view.budget.cost, forecastUsd: 37.51, forecastBinding: true } } };
       expect(shareShortfall(over, view.features[1]!)?.message).toContain("above its $37.50 ceiling");
-      const at = { ...view, budget: { ...view.budget, cost: { ...view.budget.cost, forecastUsd: 37.5 } } };
+      const at = { ...view, budget: { ...view.budget, cost: { ...view.budget.cost, forecastUsd: 37.5, forecastBinding: true } } };
       expect(shareShortfall(at, view.features[1]!)).toBeNull();
       const estimate = initiatives.estimate("values", 0);
       expect(view.budget.cost.forecastUsd).toBeCloseTo(0.72 + estimate.features.slice(1)
@@ -616,7 +620,8 @@ describe("gate matrix: criteria scenario labels (#1565)", () => {
     const task = { criterionIds: ["AC-001"], writes: [{ path: sample.path, action: "create" as const }] };
     const cases = criterionCases({ criteria: [{ id: "AC-001", requirementIds: ["FR-001"], given: 'the "repeated flag" and `success` scenarios', when: "tests run", then: "| Input | expected |\n| --- | --- |\n| repeated flag | last value |\n| success | zero status |\n| --path src/cli | selected |\n| Join([3,0,-2]) | joined |", method: "automated" }] }, task);
     expect(writtenTestPaths(task)).toEqual([sample.path]);
-    expect(cases.map((c) => c.literal)).toEqual(["--path src/cli", "Join([3,0,-2])"]);
+    // An expression cell asks for its literal arguments (#1663).
+    expect(cases.map((c) => c.literal)).toEqual(["--path src/cli", "[3,0,-2]"]);
     expect(missingCases(cases, [sample.text])).toEqual([]);
     expect(missingCases(cases, [sample.text.replace("src/cli", "SRC")]).map((c) => c.literal)).toEqual(["--path src/cli"]);
   });
@@ -642,6 +647,31 @@ function shell(root: string, on: string[]): ToolShell {
     now: () => 0,
   };
 }
+
+// A Python project whose lockfile names its environment (#1655): the gates run in it, and its
+// test task still gets a tests-written check. The bare interpreter outside an activated uv
+// environment has no pytest, and `uv run pytest` built no per-task check.
+const PYTHON_ENVIRONMENTS: [string, string, string][] = [
+  ["uv.lock", "uv", "run"],
+  ["poetry.lock", "poetry", "run"],
+  ["Pipfile.lock", "pipenv", "run"],
+];
+describe("gate matrix: python environments", () => {
+  for (const [lockfile, runner, verb] of PYTHON_ENVIRONMENTS)
+    cell("python", `${lockfile}: gates and the written-tests check run in the environment`, () => {
+      const fixture = FIXTURES.python;
+      const path = fixture.property.path;
+      const root = project({ ...fixture.files, [lockfile]: "", [path]: fixture.property.seeded });
+      const checks = detectGates(root).filter((s) => s.preselected).map((s) => s.check);
+      expect(checks.map((c) => [c.id, c.executable, ...c.args.slice(0, 2)])).toEqual([
+        ["pytest", runner, verb, "pytest"],
+        ["ruff", runner, verb, "ruff"],
+      ]);
+      expect(checks.find((c) => c.id === "ruff")?.fix).toEqual({ executable: runner, args: [verb, "ruff", "check", "--fix"] });
+      const written = writtenTestsCheck(root, checks, [{ path, action: "create" }]);
+      expect(written && [written.executable, ...written.args]).toEqual([runner, verb, "pytest", "-q", `./${path}`]);
+    });
+});
 
 for (const stack of STACKS) {
   const fixture = FIXTURES[stack];
@@ -1235,6 +1265,36 @@ for (const stack of STACKS) {
       expect(scan(renamed)).toEqual([]);
       expect(scan(renamed, { protects })).toEqual([]);
       expect(testChanges({ path: sample.path, before, after: renamed })).toEqual({ added: [], renamed: { [name("intervalWorkload")]: name("serializedLocation") } });
+    });
+  });
+}
+
+/** The build command a process test of the stack runs before it starts the program (#1661). */
+const PROCESS_BUILD: Record<Stack, string> = {
+  bun: "bun run build",
+  npm: "npm run build",
+  python: "python -m build",
+  go: "go build -o BIN ../..",
+  rust: "cargo build",
+  maven: "mvn package",
+  dotnet: "dotnet build",
+};
+
+for (const stack of STACKS) {
+  const checks = () => detectGates(project(FIXTURES[stack].files)).filter((s) => s.preselected).map((s) => s.check);
+  const criterion = (given: string, when: string, then: string) => ({
+    ...fixtureSpec,
+    criteria: [{ ...fixtureSpec.criteria[0]!, id: "AC-009", given, when, then }],
+  });
+  describe(`gate matrix: ${stack} build criteria`, () => {
+    cell(stack, "build criteria: a process test that builds the program is proven by the stack's checks", () => {
+      const spec = criterion("the sole process test", `it runs \`${PROCESS_BUILD[stack]}\` and then the built program`, "the program prints the tree");
+      expect(uncontractedBuildCriteria(spec, checks())).toEqual([]);
+    });
+    cell(stack, "build criteria: a production build is proven only where a check compiles the project", () => {
+      const spec = criterion("the release", "it is prepared", "the production build succeeds");
+      const compiled = stack === "go" || stack === "rust" || stack === "maven" || stack === "dotnet";
+      expect(uncontractedBuildCriteria(spec, checks())).toEqual(compiled ? [] : ["AC-009"]);
     });
   });
 }
@@ -1923,7 +1983,7 @@ describe("initiative dollar forecast gate (#1607)", () => {
       const view = {
         initiativeId: "values",
         budget: { remaining: { tokens: 20_000_000, calls: 1000, activeMs: 21_600_000 },
-          cost: { capUsd: 30, ceilingUsd: 30 * (1 + tolerance), spentUsd: 5 * spent * 9e-6, forecastUsd },
+          cost: { capUsd: 30, ceilingUsd: 30 * (1 + tolerance), spentUsd: 5 * spent * 9e-6, forecastUsd, measuredFeatures: 5, forecastBinding: true },
         },
         features: estimate.features.map((f, i) => ({ id: f.featureId, size: f.size, state: i < 5 ? "accepted" : "ready",
           share: i < 5 ? null : { tokens: 1_000_000, calls: 100, activeMs: 1_000_000 }, shareUsd: i < 5 ? null : 2.5, need: f.tokens,

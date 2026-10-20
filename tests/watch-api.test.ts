@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelMessage } from "ai";
@@ -12,6 +12,7 @@ import {
   type WatchStatus,
 } from "../src/core/chat/sessions.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
+import { removeTempDir } from "./helpers/temp-dir.js";
 
 type Part = Record<string, unknown> & { type: string };
 type Script = (turn: { request: TurnAgentRequest }) => AsyncGenerator<Part>;
@@ -75,7 +76,7 @@ async function setup() {
   cleanups.push(async () => {
     await server.stop();
     await fixture.dispose();
-    rmSync(home, { recursive: true, force: true });
+    await removeTempDir(home);
   });
   const call = (path: string, init: RequestInit = {}) =>
     fetch(`${server.url}${path}`, {

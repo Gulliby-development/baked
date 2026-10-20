@@ -14,9 +14,27 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
+/**
+ * Removes a test folder once Windows releases it: a stopped fake server's process can hold its
+ * working directory for a moment after it exits, and the removal failed with EBUSY in 4 of 10
+ * Windows runs (#1656).
+ */
+async function removeDir(dir: string): Promise<void> {
+  for (let delay = 50, waited = 0; ; waited += delay, delay = Math.min(delay * 2, 500)) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? "";
+      if (!["EBUSY", "EPERM", "ENOTEMPTY"].includes(code) || waited > 15_000) throw error;
+      await Bun.sleep(delay);
+    }
+  }
+}
+
 function folder(name: string): string {
   const dir = mkdtempSync(join(tmpdir(), "baked-desktop-"));
-  cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+  cleanups.push(() => removeDir(dir));
   const path = join(dir, name);
   mkdirSync(path);
   return path;

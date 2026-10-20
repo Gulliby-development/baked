@@ -1235,7 +1235,7 @@ export function splitNote(
   const approval =
     maxTasks === undefined
       ? ""
-      : ` Automatic approval allows at most ${maxTasks} planned tasks before host sizing splits. Prefer fewer, larger slices when they fit the sizing capacity. Extra slices requested by sizing do not count against that task limit; file, path and other approval limits still apply.`;
+      : ` Automatic approval allows at most ${maxTasks} planned tasks before host sizing splits, not counting tasks the host writes from their content. Prefer fewer, larger slices when they fit the sizing capacity. Extra slices requested by sizing do not count against that task limit; file, path and other approval limits still apply.`;
   return `Sizing: the plan is too large for its attempts. ${report.reasons.join(". ")}. Re-plan with smaller tasks: tests in tasks of their own, keep a file with five or fewer literal cases whole, split a test task only above the observed case capacity (or the fallback allowance without capacity) into sequential criterion slices with create then modify writes and a dependency on the preceding slice, at most ${maxCodeFilesPerTask} code files per task, disjoint writes and no dependency between tasks where possible, so they run in parallel. Files whose whole content the request fixes (module stubs, a registration file) go in one task whose writes carry their content, which the host writes for nothing.${approval}`;
 }
 

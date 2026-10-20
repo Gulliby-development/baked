@@ -10,6 +10,7 @@ import { buildSafeEnv } from "../spawn.js";
 import { executeCheckCommand } from "../verification/check-runner.js";
 import { assertWorkspaceMutationAllowed } from "../workflows/leases.js";
 import { ProcessScope } from "../workflows/process-scope.js";
+import { pythonEnvironment } from "../workflows/toolchain.js";
 import { FORMAT_TIMEOUT_MS, singleFileFormat } from "./auto-format.js";
 import { runBoundedShell } from "./bounded-process.js";
 import { ruffSource as ruffConfigSource } from "./python-tooling.js";
@@ -197,14 +198,7 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
 
   // Python
   if ((await has("pyproject.toml")) || (await has("setup.py")) || (await has("requirements.txt"))) {
-    const pm = (await has("uv.lock"))
-      ? "uv run"
-      : (await has("poetry.lock"))
-        ? "poetry run"
-        : (await has("Pipfile.lock"))
-          ? "pipenv run"
-          : "";
-    const prefix = pm ? `${pm} ` : "";
+    const prefix = pythonPrefix(cwd);
     const ruff = await usesRuff(cwd, has);
     profile.test = `${prefix}pytest`;
     profile.build = null;
@@ -530,6 +524,12 @@ async function detectJsTypecheck(cwd: string): Promise<string | null> {
   return pm === "pnpm" ? "pnpm tsc --noEmit" : "npx tsc --noEmit";
 }
 
+/** `uv run `, `poetry run `, ... for a Python project whose lockfile names its environment, or "". */
+function pythonPrefix(cwd: string): string {
+  const environment = pythonEnvironment((file) => existsSync(join(cwd, file)));
+  return environment ? `${environment.join(" ")} ` : "";
+}
+
 /**
  * Detect the native lint + typecheck commands from config files, bypassing package.json scripts.
  * Used by pre-commit checks to run the actual tool, not arbitrary user scripts.
@@ -579,13 +579,7 @@ export async function detectNativeChecks(cwd: string): Promise<string | null> {
 
   // Python
   if ((await has("pyproject.toml")) || (await has("setup.py")) || (await has("requirements.txt"))) {
-    const pm = (await has("uv.lock"))
-      ? "uv run "
-      : (await has("poetry.lock"))
-        ? "poetry run "
-        : (await has("Pipfile.lock"))
-          ? "pipenv run "
-          : "";
+    const pm = pythonPrefix(cwd);
     const lint = (await usesRuff(cwd, has)) ? `${pm}ruff check` : `${pm}flake8`;
     const tc = (await has("pyrightconfig.json")) ? `${pm}pyright` : `${pm}mypy .`;
     return `${lint} && ${tc}`;

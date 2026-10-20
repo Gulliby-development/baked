@@ -43,7 +43,13 @@ jobs:
       - name: Test
         env:
           BAKED_REQUIRE_SANDBOX: bwrap
-        run: bun run test
+        run: bun run test --reporter=junit --reporter-outfile=junit.xml
+
+      # Tests above half of their time limit, as annotations (#1656); the Windows shards in
+      # `OS tests` report the same with their longer limit.
+      - name: Slow tests
+        if: always() && hashFiles('junit.xml') != ''
+        run: bun scripts/slow-tests.ts junit.xml 30000
 
       - name: Build
         run: bun run build

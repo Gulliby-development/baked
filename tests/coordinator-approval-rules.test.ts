@@ -26,6 +26,7 @@ import {
 import { getCwd, setCwd } from "../src/core/cwd.js";
 import { runSessionCli } from "../src/headless/session.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
+import { removeTempDir } from "./helpers/temp-dir.js";
 
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -183,7 +184,7 @@ describe("the coordinator answers by rules (scripted scenario)", () => {
     });
     cleanups.push(async () => {
       await chat.shutdown();
-      rmSync(root, { recursive: true, force: true });
+      await removeTempDir(root);
     });
     const coordinator = (await chat.coordinator(true)) as ChatSession;
     const session = await chat.create({ title: "Research WAL" });
@@ -362,7 +363,7 @@ describe("rules as text commands (terminal app and CLI)", () => {
     });
     cleanups.push(async () => {
       await chat.shutdown();
-      rmSync(root, { recursive: true, force: true });
+      await removeTempDir(root);
     });
     return { root, chat };
   }

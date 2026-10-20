@@ -18,6 +18,7 @@ import { dotnetFiles } from "./language.js";
 import { ProcessScope } from "./process-scope.js";
 import { redactSecrets } from "./redaction.js";
 import { CheckSchema, SafeId } from "./schemas.js";
+import { pythonEnvironment } from "./toolchain.js";
 import type { Check } from "./types.js";
 
 /** Gates are the project's `workflows.policy.checks`; this module is the only editor of that list. */
@@ -296,11 +297,21 @@ function pythonGates(workspace: string): GateSuggestion[] {
             : /^\s*pytest\b/im.test(requirements) || /["']pytest[<>=~!\s"']/.test(pyproject)
               ? "declared pytest dependency"
               : null;
+  // A project whose lockfile names its environment (uv, poetry, pipenv, pdm) runs its tools in
+  // it: the bare interpreter outside an activated environment has no pytest (#1655).
+  const environment = pythonEnvironment((file) => has(workspace, file));
+  const inEnvironment = (program: string, args: string[]) =>
+    environment
+      ? { executable: environment[0], args: [environment[1], program, ...args] }
+      : { executable: program, args };
+  const pytest = environment
+    ? inEnvironment("pytest", ["-q"])
+    : { executable: pythonExecutable(), args: ["-m", "pytest", "-q"] };
   if (pytestSource)
     out.push({
-      check: gate("pytest", pythonExecutable(), ["-m", "pytest", "-q"], 600000),
-      source: pytestSource,
-      reason: "python -m pytest -q",
+      check: gate("pytest", pytest.executable, pytest.args, 600000),
+      source: environment ? `${pytestSource}, ${environment.join(" ")}` : pytestSource,
+      reason: environment ? `${environment.join(" ")} pytest -q` : "python -m pytest -q",
       preselected: true,
     });
   const ruffSource = pythonRuffSource({
@@ -309,14 +320,16 @@ function pythonGates(workspace: string): GateSuggestion[] {
     pyproject,
     requirements,
   });
+  const ruff = (args: string[]) => inEnvironment("ruff", args);
+  const prefix = environment ? `${environment.join(" ")} ` : "";
   if (ruffSource)
     out.push({
       check: {
-        ...gate("ruff", "ruff", ["check", "."], 120000),
-        fix: { executable: "ruff", args: ["check", "--fix"] },
+        ...gate("ruff", ruff(["check", "."]).executable, ruff(["check", "."]).args, 120000),
+        fix: ruff(["check", "--fix"]),
       },
       source: ruffSource,
-      reason: "ruff check .",
+      reason: `${prefix}ruff check .`,
       preselected: true,
     });
   // `ruff check` reports no formatting, so formatting drift passed unverified (#1480). A project
@@ -331,11 +344,16 @@ function pythonGates(workspace: string): GateSuggestion[] {
   if (ruffSource)
     out.push({
       check: {
-        ...gate("ruff-format", "ruff", ["format", "--check", "."], 120000),
-        fix: { executable: "ruff", args: ["format"] },
+        ...gate(
+          "ruff-format",
+          ruff(["format", "--check", "."]).executable,
+          ruff(["format", "--check", "."]).args,
+          120000,
+        ),
+        fix: ruff(["format"]),
       },
       source: formatSource ?? ruffSource,
-      reason: "ruff format --check . (fixer: ruff format)",
+      reason: `${prefix}ruff format --check . (fixer: ${prefix}ruff format)`,
       preselected: formatSource !== null,
     });
   return out;

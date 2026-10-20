@@ -15,7 +15,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { isStaticCheck } from "./check-policy.js";
-import { launchedCommand } from "./launcher.js";
+import { toolchainCommand } from "./toolchain.js";
 import type { Check } from "./types.js";
 
 /** At most this many tests go to an attempt; the nearest ones (fewest import hops) first. */
@@ -53,7 +53,8 @@ const JS_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".c
 export function isTestFile(path: string): boolean {
   const name = posix.basename(path);
   if (GO_FILE.test(name)) return name.endsWith("_test.go");
-  if (PY_FILE.test(name)) return /^test_.*\.py$|_test\.py$/.test(name);
+  // Django keeps an app's tests in `tests.py` (#1683); pytest runs a file it is given by path.
+  if (PY_FILE.test(name)) return /^test_.*\.py$|_test\.py$|^tests\.py$/.test(name);
   if (!JS_FILE.test(name)) return false;
   return /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(name) || /(^|\/)(__tests__)\//.test(path);
 }
@@ -74,7 +75,13 @@ export function isCompiledTestFile(path: string): boolean {
   if (CS_FILE.test(name))
     return (
       !parts.some((part) => part === "obj" || part === "bin") &&
-      (/Tests?\.cs$/.test(name) || parts.slice(0, -1).some((part) => /(?:^|\.)tests?$/i.test(part)))
+      (/Tests?\.cs$/.test(name) ||
+        // `App.Tests/`, `App.UnitTests/`, `App.IntegrationTests/` (#1683).
+        parts
+          .slice(0, -1)
+          .some((part) =>
+            /(?:^|\.)(?:unit|integration|functional|acceptance|e2e)?tests?$/i.test(part),
+          ))
     );
   if (RS_FILE.test(name)) return parts.at(-2) === "tests";
   return JVM_FILE.test(name) && /(?:^|\/)src\/test\//.test(normal);
@@ -305,6 +312,9 @@ export function affectedTests(root: string, sources: string[]): AffectedTest[] {
     .slice(0, MAX_AFFECTED_TESTS);
 }
 
+/** The options of `python -m unittest` that take no value. */
+const UNITTEST_FLAG = /^-(?:[vqfbck]|-(?:verbose|quiet|failfast|buffer|catch|locals))$/;
+
 /** Keeps a test runner's own flags and drops the paths or patterns a check named. */
 const flagsOnly = (args: string[]): string[] =>
   args.filter(
@@ -319,12 +329,16 @@ const flagsOnly = (args: string[]): string[] =>
  * `node --test`, `pytest`, `go test`). Package scripts (`npm test`, `bun run test`) are not
  * used: what they pass on is up to the script.
  */
-export function affectedTestCheck(checks: readonly Check[], tests: string[]): Check | null {
-  if (tests.length === 0) return null;
-  const files = tests.map((t) => `./${t}`);
+export function affectedTestCheck(checks: readonly Check[], all: string[]): Check | null {
+  if (all.length === 0) return null;
   for (const check of checks) {
-    if (isStaticCheck(check) || check.cwd !== ".") continue;
-    const { program: name, args, launch } = launchedCommand(check.executable, check.args);
+    if (isStaticCheck(check)) continue;
+    // A check in a subdirectory (`cwd: "api"`) runs the tests under it, by paths relative to it.
+    const base = check.cwd === "." ? "" : `${check.cwd.replace(/\/+$/, "")}/`;
+    const tests = all.filter((t) => t.startsWith(base)).map((t) => t.slice(base.length));
+    if (!tests.length) continue;
+    const files = tests.map((t) => `./${t}`);
+    const { program: name, args, launch } = toolchainCommand(check.executable, check.args);
     const js = files.filter((f) => JS_FILE.test(f));
     const py = files.filter((f) => PY_FILE.test(f));
     let prefix: string[] | null = null;
@@ -348,6 +362,10 @@ export function affectedTestCheck(checks: readonly Check[], tests: string[]): Ch
       targets = py;
     } else if (/^python[\d.]*$/.test(name) && args[0] === "-m" && args[1] === "pytest") {
       prefix = ["-m", "pytest", ...flagsOnly(args.slice(2))];
+      targets = py;
+    } else if (/^python[\d.]*$/.test(name) && args[0] === "-m" && args[1] === "unittest") {
+      // Discovery options (`discover -s tests -p ...`) take values and do not apply to named files.
+      prefix = ["-m", "unittest", ...args.slice(2).filter((arg) => UNITTEST_FLAG.test(arg))];
       targets = py;
     } else if (name === "go" && args[0] === "test") {
       prefix = ["test", ...flagsOnly(args.slice(1))];
@@ -396,6 +414,11 @@ function compiledTestArgs(name: string, args: string[], tests: string[]): string
     const classes = tests.filter((t) => CS_FILE.test(t)).map(className);
     if (!classes.length || args.includes("--filter")) return null;
     return [...args, "--filter", classes.map((c) => `FullyQualifiedName~${c}.`).join("|")];
+  }
+  if (name === "cargo" && args[0] === "nextest" && args[1] === "run") {
+    const files = tests.filter((t) => RS_FILE.test(t)).map(className);
+    if (!files.length) return null;
+    return ["nextest", "run", ...flagsOnly(args.slice(2)), ...files.flatMap((f) => ["--test", f])];
   }
   if (name === "cargo" && args[0] === "test") {
     const files = tests.filter((t) => RS_FILE.test(t)).map(className);

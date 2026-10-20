@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { checkDependencies } from "../src/core/workflows/quality/dependencies.js";
+import { addedDependencies, checkDependencies } from "../src/core/workflows/quality/dependencies.js";
 import { importedPackages, isManifestPath, manifestDependencies, packageOfSpecifier } from "../src/core/workflows/quality/manifests.js";
 import { packageFacts, type RegistryFetch, typosquatOf } from "../src/core/workflows/quality/registry.js";
 import { runScanner } from "../src/core/workflows/quality/rules.js";
@@ -74,7 +74,8 @@ gem "remote", :git => "https://example.com/gem.git"
       { ecosystem: "rubygems", name: "rack", file: "app/Gemfile", line: 3 },
       { ecosystem: "rubygems", name: "rake", file: "app/Gemfile", line: 5 },
     ]);
-    for (const path of ["Gemfile.lock", "bunfig.toml", "Directory.Build.props", "Directory.Packages.props", "App.sln", "App.slnx"])
+    // Directory.*.props are read since #1682; requested manifest edits still leave them to a person.
+    for (const path of ["Gemfile.lock", "bunfig.toml", "App.sln", "App.slnx"])
       expect(isManifestPath(path)).toBe(false);
   });
 
@@ -348,5 +349,52 @@ describe("new dependencies in a run on an existing project", () => {
     } finally {
       await fixture.dispose();
     }
+  });
+});
+
+// #1682: a PEP 508 extra ended the lazy array match and hid every later dependency, and uv
+// groups, Cargo table entries, Pipfile, setup.cfg, Directory.*.props and version catalogs were
+// not read, so a made-up package added there passed the dependency check.
+describe("manifest forms (#1682)", () => {
+  const names = (path: string, text: string) => manifestDependencies(path, text).map((d) => `${d.ecosystem}:${d.name}@${d.line}`);
+
+  test("pyproject: extras, PEP 735 groups, uv dev-dependencies and build requires", () => {
+    const text = [
+      "[build-system]",
+      'requires = ["hatchling"]',
+      "[project]",
+      'dependencies = ["requests[socks]>=2", "fakepkg-xyz",',
+      '  "uvicorn[standard]", # a comment ] with a bracket',
+      '  "after-comment"]',
+      "[dependency-groups]",
+      'dev = ["pytest", {include-group = "lint"}, "fake-dev"]',
+      "[tool.uv]",
+      'dev-dependencies = ["fake-uv"]',
+    ].join("\n");
+    expect(names("pyproject.toml", text)).toEqual([
+      "pypi:hatchling@2", "pypi:requests@4", "pypi:fakepkg-xyz@4", "pypi:uvicorn@5", "pypi:after-comment@6",
+      "pypi:pytest@8", "pypi:fake-dev@8", "pypi:fake-uv@10",
+    ]);
+  });
+
+  test("Cargo: the table form of one dependency, local ones skipped and renames followed", () => {
+    const text = '[dependencies.tokio]\nversion = "1"\n\n[dependencies.local]\npath = "../local"\n\n[target.\'cfg(unix)\'.dev-dependencies.fake]\npackage = "real-name"\nversion = "2"\n';
+    expect(names("Cargo.toml", text)).toEqual(["crates:tokio@1", "crates:real-name@7"]);
+  });
+
+  test("Pipfile, setup.cfg, Directory.*.props and a Gradle version catalog are manifests", () => {
+    for (const path of ["Pipfile", "setup.cfg", "Directory.Build.props", "Directory.Packages.props", "gradle/libs.versions.toml"]) expect(isManifestPath(path)).toBe(true);
+    expect(names("Pipfile", '[packages]\nrequests = "*"\nlocal = {path = "."}\n[dev-packages]\n"fake-pipenv" = "*"\n')).toEqual(["pypi:requests@2", "pypi:fake-pipenv@5"]);
+    expect(names("setup.cfg", "[metadata]\nname = x\n[options]\ninstall_requires =\n    requests>=2\n    fake-cfg\nzip_safe = False\n[options.extras_require]\ntest = pytest\n")).toEqual(["pypi:requests@5", "pypi:fake-cfg@6", "pypi:pytest@9"]);
+    expect(names("Directory.Packages.props", '<Project><ItemGroup><PackageVersion Include="Fake.Central" Version="1.0" /></ItemGroup></Project>')).toEqual(["nuget:Fake.Central@1"]);
+    expect(names("Directory.Build.props", '<Project><ItemGroup><PackageReference Include="Fake.Build" Version="1.0" /></ItemGroup></Project>')).toEqual(["nuget:Fake.Build@1"]);
+    expect(names("gradle/libs.versions.toml", '[versions]\nk = "1"\n[libraries]\na = "com.x:a:1.0"\nb = { module = "com.x:b", version.ref = "k" }\nc = { group = "com.x", name = "c", version = "2" }\n')).toEqual(["maven:com.x:a@4", "maven:com.x:b@5", "maven:com.x:c@6"]);
+  });
+
+  test("a fake package added after an extra or in a uv group is reported as added", () => {
+    const before = '[project]\ndependencies = ["uvicorn[standard]"]\n';
+    const after = '[project]\ndependencies = ["uvicorn[standard]", "fakepkg-xyz"]\n[dependency-groups]\ndev = ["fake-dev"]\n';
+    const { declared } = addedDependencies([{ path: "pyproject.toml", before, content: after }] as never);
+    expect(declared.map((d) => d.name)).toEqual(["fakepkg-xyz", "fake-dev"]);
   });
 });

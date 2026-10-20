@@ -24,6 +24,18 @@ describe("sweep section check", () => {
     expect(sweepProblem("Closes #1", [])).toBeNull();
     expect(sweepProblem("Closes #1", [{ number: 1, isBug: true }])).toContain("no \"## Sweep\" section");
     expect(sweepProblem("Closes #1\n## Sweep\n", [{ number: 1, isBug: true }])).toContain("is empty");
-    expect(sweepProblem("Closes #1\n## Sweep\nAll three call sites fixed.", [{ number: 1, isBug: true }])).toBeNull();
+    expect(
+      sweepProblem("Closes #1\n## Sweep\nAll three call sites fixed.\nLanguages: not language-bound (git refs).", [
+        { number: 1, isBug: true },
+      ]),
+    ).toBeNull();
+  });
+
+  test("requires a Languages line in the section", () => {
+    const bug = [{ number: 1, isBug: true }];
+    expect(sweepProblem("Closes #1\n## Sweep\nAll three call sites fixed.", bug)).toContain('no "Languages:" line');
+    expect(sweepProblem("Closes #1\n## Sweep\n- a.ts fixed\n- **Languages:** python, go, rust", bug)).toBeNull();
+    expect(sweepProblem("Closes #1\n## Sweep\n- a.ts fixed\n* Languages: go (#12 for rust)", bug)).toBeNull();
+    expect(sweepProblem("Closes #1\n## Sweep\nfixed\n## Notes\nLanguages: go", bug)).toContain('no "Languages:" line');
   });
 });
