@@ -162,7 +162,8 @@ describe("the quoted cases of a task's criteria", () => {
     ].join("\n");
     const spec = { criteria: [{ ...criterion("AC-001", table), given: 'input scenarios include "repeated flag", `success`, and \u201crank/unrank\u201d', when: "tests run" }] };
     expect(criterionCases(spec, { criterionIds: ["AC-001"] }).map((c) => c.literal)).toEqual([
-      "--max-part=5 and --max-part 5", "Join([3,0,-2])",
+      // An expression cell asks for its literal arguments (#1663).
+      "--max-part=5 and --max-part 5", "[3,0,-2]",
     ]);
     // Plain English remains a case when the criterion explicitly names output text.
     expect(criterionCases({ criteria: [{ ...spec.criteria[0]!, then: 'it prints "no matching files" and returns "success"' }] }, { criterionIds: ["AC-001"] }).map((c) => c.literal)).toEqual(["no matching files", "success"]);

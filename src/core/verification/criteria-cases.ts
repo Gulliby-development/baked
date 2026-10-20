@@ -113,7 +113,13 @@ export function criterionCases(
   const cases: CriterionCase[] = [];
   const seen = new Set<string>();
   const sets = closedSets(spec);
+  let bound = new Set<string>();
   const add = (criterionId: string, literal: string, word?: true, source = "", expected = "") => {
+    const parts = boundFree(literal, bound);
+    if (parts) {
+      for (const part of parts) add(criterionId, part, word, source, expected);
+      return;
+    }
     const values = caseValues(literal, source, expected, task);
     if (!values.includes(literal)) {
       for (const value of values) add(criterionId, value, word);
@@ -129,6 +135,7 @@ export function criterionCases(
     tasks.length >= 3 && tasks.filter((t) => t.criterionIds.includes(id)).length * 2 > tasks.length;
   for (const criterion of spec.criteria) {
     if (!task.criterionIds.includes(criterion.id) || criterion.method !== "automated") continue;
+    bound = boundLabels(`${criterion.given}\n${criterion.when}`);
     for (const [field, text] of [criterion.given, criterion.when, criterion.then].entries()) {
       const table = tableInputs(text);
       for (const match of table.prose.matchAll(QUOTED)) {
@@ -178,6 +185,65 @@ export function criterionCases(
         (other) => normalizeLiteral(other.literal) === normalizeLiteral(c.literal),
       ) === i,
   );
+}
+
+/** A label: `E4`, `DOC1`, `row_2`, or an all-capitals name such as `DOC`. */
+const LABEL = String.raw`(?:[A-Za-z][A-Za-z_]*\d+|[A-Z]{2,}\d*)`;
+/** A run of labels: "E1 through E9", "E1..E9", "E1-E9", "E1 to E9". */
+const LABEL_RANGE = /\b([A-Za-z][A-Za-z_]*)(\d+)\s*(?:through|thru|to|\.\.|-|\u2013)\s*\1(\d+)\b/g;
+/** A label the text defines: "DOC1 is the document", "DOC1 = <ul>...", "a document called DOC1". */
+const LABEL_DEFINED = new RegExp(
+  String.raw`\b(${LABEL})\s*(?:is|are|=|:=|denotes|refers to|stands for)\b|\b(?:called|named|labell?ed)\s+[\x60"']?(${LABEL})\b`,
+  "g",
+);
+
+/**
+ * The labels a criterion's Given or When binds to values the test builds (#1663): the elements
+ * "E1 through E9" of a document, "DOC1 is the document". A test reaches them by index or by a
+ * variable of its own, so they are not literals it must spell. R50 selwhy refused 8 of 24 test
+ * tasks, 61 items, for such labels.
+ */
+function boundLabels(text: string): Set<string> {
+  const labels = new Set<string>();
+  for (const match of text.matchAll(LABEL_RANGE)) {
+    const from = Number(match[2]);
+    const to = Number(match[3]);
+    if (to < from || to - from > 100) continue;
+    for (let n = from; n <= to; n++) labels.add(`${match[1]}${n}`);
+  }
+  for (const match of text.matchAll(LABEL_DEFINED)) labels.add(match[1] ?? match[2] ?? "");
+  labels.delete("");
+  return labels;
+}
+
+/** A call expression: `Position("nth-child", E4)`, `Select(Parse("b, a"), doc)`. */
+const EXPRESSION = /^[A-Za-z_][\w.:]*!?\s*\([\s\S]*\)$/;
+const ARG_NUMBER = /(?<![\w.])-?\d+(?:\.\d+)?(?![\w.])/g;
+/** A list literal of numbers and strings only. */
+const ARG_LIST =
+  /\[\s*(?:-?\d+(?:\.\d+)?|"[^"\n]*"|'[^'\n]*')(?:\s*,\s*(?:-?\d+(?:\.\d+)?|"[^"\n]*"|'[^'\n]*'))*\s*\]/g;
+
+/**
+ * The literals a test must hold for a case that is an expression or names bound labels, or null
+ * when the case stands as written (#1663). An expression asks for its literal arguments, the
+ * quoted strings and numbers, not its spelling; a bound label is left out.
+ */
+function boundFree(literal: string, bound: ReadonlySet<string>): string[] | null {
+  const text = literal.trim();
+  if (EXPRESSION.test(text)) {
+    // A list of values is one argument: `Join([3,0,-2])` asks for `[3,0,-2]`.
+    const lists = [...text.matchAll(ARG_LIST)].map((m) => m[0]);
+    const rest = text.replace(ARG_LIST, " ");
+    const strings = [...rest.matchAll(QUOTED)].map((m) => (m[1] ?? m[2] ?? m[3] ?? "").trim());
+    const numbers = [...rest.replace(QUOTED, " ").matchAll(ARG_NUMBER)].map((m) => m[0]);
+    return [...lists, ...strings, ...numbers].filter((value) => literalCase(value, true, true));
+  }
+  if (!bound.size) return null;
+  const words = text.split(/(\s+)/);
+  const kept = words.filter((word) => !bound.has(word.replace(/^[\x60"'(]+|[\x60"'),.;:]+$/g, "")));
+  if (kept.length === words.length) return null;
+  const rest = kept.join("").replace(/\s+/g, " ").trim();
+  return rest.replace(/[^\p{L}\p{N}_]/gu, "").length >= 2 ? [rest] : [];
 }
 
 /** Each shared case belongs to one test task. Unclaimed rows go to the last carrier (#1597). */
