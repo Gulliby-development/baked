@@ -11,6 +11,7 @@ import {
   type Spec,
   type TaskGraph,
 } from "./schemas.js";
+import { stopMode } from "./stop-reasons.js";
 import type { ArtifactRow, RequestRow } from "./store.js";
 import { hostWritten } from "./task-graph.js";
 import { isAcceptanceRequest } from "./v2/acceptance.js";
@@ -37,6 +38,11 @@ export interface AutoApprovalResult {
   reviewable?: boolean;
   /** The policy bounds hash a `model-review` approval records, set with `reviewable`. */
   limitsHash?: string;
+  /**
+   * Task and file limits the package passed while `approval-scope` is in shadow or advisory
+   * mode: they did not decline the approval, and the caller records them (#1714).
+   */
+  wouldStop?: { mode: "shadow" | "advisory"; problems: string[] };
 }
 /**
  * A policy the operator set with an explicit workflow command (`extend`, or `revise` of a staged
@@ -180,11 +186,18 @@ export function evaluateAutoApproval(
     reasons.push(...renewal.map((reason) => `Renewal: ${reason}`));
   }
   let reviewable = false;
+  let wouldStop: AutoApprovalResult["wouldStop"];
   if (config.limits) {
     const limits = config.limits;
     // A manifest edit the request names is in scope even when the allowed paths leave the
     // manifest out, as every update scaffold does (#1547).
-    const scope = scopeProblems(limits, graph, context.hostSplitTasks ?? 0, requested);
+    const counted = scopeProblems(limits, graph, context.hostSplitTasks ?? 0, requested);
+    // Over the task or file count is a size judgment and can run in shadow; paths and deletes
+    // guard what the run may touch and always decline.
+    const mode = stopMode(policy, "approval-scope");
+    const shadowed = mode === "enforce" ? [] : counted.filter((p) => p.count).map((p) => p.text);
+    if (shadowed.length && mode !== "enforce") wouldStop = { mode, problems: shadowed };
+    const scope = counted.filter((p) => !shadowed.includes(p.text));
     const problems = scope.map((p) => p.text);
     // Growth the host made itself, up to the policy's own sizing ceiling, is not a budget a person
     // has to approve; only the budget the run started with counts against the limit (#1309).
@@ -198,7 +211,11 @@ export function evaluateAutoApproval(
         `the token budget ${policy.maxTotalTokens} exceeds the sizing ceiling ${ceiling}`,
       );
     if (!common.length && !problems.length)
-      return { approval: { mode: "limits", limitsHash }, reasons: [] };
+      return {
+        approval: { mode: "limits", limitsHash },
+        reasons: [],
+        ...(wouldStop ? { wouldStop } : {}),
+      };
     reasons.push(...problems.map((reason) => `Limits: ${reason}`));
     reviewable =
       config.modelReview === true &&
@@ -211,6 +228,7 @@ export function evaluateAutoApproval(
     approval: null,
     reasons: [...new Set(reasons)],
     ...(reviewable ? { reviewable, limitsHash } : {}),
+    ...(wouldStop ? { wouldStop } : {}),
   };
 }
 
@@ -240,18 +258,23 @@ function scopeProblems(
   graph: TaskGraph,
   hostSplitTasks = 0,
   required: (write: Write) => boolean = () => false,
-): { text: string; reviewable: boolean }[] {
+): { text: string; reviewable: boolean; count?: true }[] {
   const writes = graph.tasks.flatMap((task) => task.writes);
-  const problems: { text: string; reviewable: boolean }[] = [];
+  const problems: { text: string; reviewable: boolean; count?: true }[] = [];
   const { agent: planned, host } = agentTaskCount(graph, hostSplitTasks);
   if (planned > limits.maxTasks)
     problems.push({
       text: `${planned} tasks exceed ${limits.maxTasks}${host ? ` (${host} host-written not counted)` : ""}`,
       reviewable: true,
+      count: true,
     });
   const files = new Set(writes.map((write) => write.path.toLowerCase()));
   if (files.size > limits.maxFiles)
-    problems.push({ text: `${files.size} files exceed ${limits.maxFiles}`, reviewable: true });
+    problems.push({
+      text: `${files.size} files exceed ${limits.maxFiles}`,
+      reviewable: true,
+      count: true,
+    });
   const globs = limits.allowedPaths.map((pattern) => new Bun.Glob(pattern.toLowerCase()));
   for (const write of writes) {
     if (required(write)) continue;

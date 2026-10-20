@@ -53,6 +53,7 @@ import {
 import type { NativeWorkflowService, PlannedReroute } from "../service.js";
 import { terminalStates } from "../state-machine.js";
 import { stopDetail, stopRecovery } from "../stop-detail.js";
+import { stopFault } from "../stop-reasons.js";
 import { newId, WorkflowStore } from "../store.js";
 import type { IssueSource } from "../types.js";
 import { HOST_AUTO_APPROVAL_CEILING, HostAutoApprovalSchema } from "../v2/definition.js";
@@ -1346,7 +1347,7 @@ export class InitiativeService {
     const current = this.view(id);
     const waiting = current.features.find((f) => f.id === featureId);
     const sized = waiting?.share;
-    if (!sized) throw new WorkflowFault("BUDGET_EXHAUSTED", "No budget share is available");
+    if (!sized) throw stopFault("budget-share", "No budget share is available");
     this.noteAdvisoryForecast(id, featureId, current.budget.cost);
     const share = { ...sized, ...guardGrowth(current, featureId, settings.basePolicy) };
     const previous = this.store.links(id).filter((l) => l.feature_id === featureId).length;

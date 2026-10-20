@@ -3,6 +3,7 @@ import { z } from "zod";
 import { RouteEffort } from "../llm/model-routing.js";
 import { DEFAULT_MAX_CANDIDATES, MAX_CANDIDATES } from "./candidates.js";
 import { LibraryDocsSchema } from "./library-docs.js";
+import { StopModesSchema, StopReasonIdSchema } from "./stop-reasons.js";
 
 export const SafeId = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/);
 export const Hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -498,6 +499,13 @@ export const PolicySchema = z
      * Absent means `ask`, so stored policies keep their hash.
      */
     costForecast: z.enum(["ask", "advise", "off"]).optional(),
+    /**
+     * The mode of each registered stop reason (stop-reasons.ts): `shadow` and `advisory` record a
+     * `decision.would_stop` event instead of stopping the run or declining the approval (#1714).
+     * Hard limits on money, tokens, time and storage take only `enforce`. Absent keeps every
+     * reason's default, so stored policies keep their hash.
+     */
+    stopModes: StopModesSchema.optional(),
     /**
      * With a dollar cap, how far past it the run may go to finish its work (see
      * cost-tolerance.ts): a share of the cap (0 to 0.5), or `auto`, which takes 10% to 30% by the
@@ -1257,6 +1265,7 @@ export const EventType = z.enum([
   "attempt.started",
   "attempt.finished",
   "attempt.advisory",
+  "decision.would_stop",
   "task.state_changed",
   "artifact.committed",
   "check.finished",
@@ -1374,6 +1383,22 @@ export const EventSchema = z.discriminatedUnion("type", [
             })
             .strict()
             .optional(),
+        })
+        .strict(),
+    })
+    .strict(),
+  // A stop reason in shadow or advisory mode would have stopped the run or declined an approval.
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("decision.would_stop"),
+      payload: z
+        .object({
+          reason: StopReasonIdSchema,
+          mode: z.enum(["shadow", "advisory"]),
+          key: z.string().max(200),
+          summary: z.string().max(1000),
+          inputs: z.record(z.string(), z.unknown()),
         })
         .strict(),
     })

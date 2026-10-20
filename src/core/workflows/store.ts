@@ -43,6 +43,7 @@ import {
 import { costStageOf, type RunPrices, runPrices } from "./stage-price.js";
 import { DEFAULT_STALL_SETTINGS, touchProgress } from "./stall.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
+import { stopFault } from "./stop-reasons.js";
 import { hostWritten } from "./task-graph.js";
 import { type RuntimeState, RuntimeStateSchema, type Snapshot, type Task } from "./types.js";
 import { attemptCost, attemptSpend } from "./usage.js";
@@ -907,6 +908,25 @@ export class WorkflowStore {
         }),
       );
   }
+  /** Every event of one type of a run, oldest first. */
+  eventsOfType(id: string, type: WorkflowEvent["type"]): WorkflowEvent[] {
+    return this.db
+      .query<{ id: string; seq: number; at: number; payload_json: string }, [string, string]>(
+        "SELECT id,seq,at,payload_json FROM events WHERE run_id=? AND type=? ORDER BY seq",
+      )
+      .all(id, type)
+      .map((r) =>
+        EventSchema.parse({
+          schemaVersion: 1,
+          eventId: r.id,
+          runId: id,
+          seq: r.seq,
+          at: new Date(r.at).toISOString(),
+          type,
+          payload: JSON.parse(r.payload_json),
+        }),
+      );
+  }
   /**
    * The task generation each attempt of a task step started in, by attempt ID (#936): reruns of a
    * task after a repair invalidated it are told apart from its first implementation.
@@ -1026,8 +1046,7 @@ export class WorkflowStore {
   }
   artifact(id: string, kind: string, path: string, content: string): ArtifactRow {
     const bytes = Buffer.byteLength(content);
-    if (bytes > 10 * 1024 * 1024)
-      throw new WorkflowFault("BUDGET_EXHAUSTED", "Artifact exceeds 10 MiB cap");
+    if (bytes > 10 * 1024 * 1024) throw stopFault("evidence-size", "Artifact exceeds 10 MiB cap");
     const total =
       this.db
         .query<{ bytes: number }, [string]>(
@@ -1035,7 +1054,7 @@ export class WorkflowStore {
         )
         .get(id)?.bytes ?? 0;
     if (total + bytes > 100 * 1024 * 1024)
-      throw new WorkflowFault("BUDGET_EXHAUSTED", "Run evidence exceeds 100 MiB cap");
+      throw stopFault("evidence-size", "Run evidence exceeds 100 MiB cap");
     const hash = hashBytes(content);
     let blob: string | null = null;
     if (bytes > 256 * 1024) {
@@ -1423,7 +1442,7 @@ export class WorkflowStore {
         row.active_ms >= policy.maxActiveMs ||
         (projected > policy.maxTotalTokens && !growBudgetOnProgress(this, runId, policy, projected))
       )
-        throw new WorkflowFault("BUDGET_EXHAUSTED", "Run agent/token/time budget exhausted");
+        throw stopFault("run-budget", "Run agent/token/time budget exhausted");
       if (modelId) this.assertCostFits(runId, stepId, policy, modelId, tokens);
       this.assertBelowCheckpoint(runId, policy, row.token_usage + reserved + tokens);
       const id = newId();
@@ -1613,11 +1632,10 @@ export class WorkflowStore {
     if (cap === null) return;
     const maxCostUsd = currentCostCap(this, runId, policy);
     if (findPricing(model) === null)
-      throw new WorkflowFault(
-        "BUDGET_EXHAUSTED",
-        `No price is known for ${model}, so the run's cost cap cannot hold`,
-        { reason: "cost", model, maxCostUsd },
-      );
+      throw stopFault("cost", `No price is known for ${model}, so the run's cost cap cannot hold`, {
+        model,
+        maxCostUsd,
+      });
     const prices = runPrices(this, runId);
     const { spentUsd, reservedUsd } = this.costUsage(runId, attemptId, prices);
     const requestedUsd =
@@ -1640,13 +1658,12 @@ export class WorkflowStore {
         "call-growth",
       )
     )
-      throw new WorkflowFault(
-        "BUDGET_EXHAUSTED",
+      throw stopFault(
+        "cost",
         cap > (maxCostUsd ?? cap)
           ? "The next model call would pass the run's cost ceiling (its cap and tolerance)"
           : "The next model call would pass the run's cost cap",
         {
-          reason: "cost",
           spentUsd,
           reservedUsd,
           requestedUsd,
@@ -1700,16 +1717,12 @@ export class WorkflowStore {
         projected > policy.maxTotalTokens &&
         !growBudgetOnProgress(this, runId, policy, projected)
       )
-        throw new WorkflowFault(
-          "BUDGET_EXHAUSTED",
-          "Next model step exceeds remaining token budget",
-          {
-            usedTokens: run.token_usage,
-            reservedTokens: reserved,
-            requestedTokens: tokens,
-            maxTotalTokens: policy.maxTotalTokens,
-          },
-        );
+        throw stopFault("run-budget", "Next model step exceeds remaining token budget", {
+          usedTokens: run.token_usage,
+          reservedTokens: reserved,
+          requestedTokens: tokens,
+          maxTotalTokens: policy.maxTotalTokens,
+        });
       const attempt = this.attempts(runId).find((a) => a.id === attemptId);
       if (attempt?.model_id)
         this.assertCostFits(runId, attempt.step_id, policy, attempt.model_id, tokens, attemptId);

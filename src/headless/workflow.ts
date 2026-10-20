@@ -54,6 +54,7 @@ import {
 } from "../core/workflows/schemas.js";
 import { NativeWorkflowService } from "../core/workflows/service.js";
 import { stopDetail, stopRecovery } from "../core/workflows/stop-detail.js";
+import { wouldStopSummary } from "../core/workflows/stop-reasons.js";
 import { newId } from "../core/workflows/store.js";
 import { runUsage } from "../core/workflows/usage.js";
 import { runUsageMarkdown } from "../core/workflows/usage-markdown.js";
@@ -405,6 +406,7 @@ export async function executeWorkflowCommand(
         preflight: readCheckPreflight(service.store, runId),
         acceptance: walkThroughs(service.store, runId),
         forkStages: service.forkStages(runId),
+        wouldStop: wouldStopSummary(service.store, runId),
         recovery:
           snapshot.status === "blocked" || snapshot.status === "failed"
             ? stopRecovery(service.store, runId)
