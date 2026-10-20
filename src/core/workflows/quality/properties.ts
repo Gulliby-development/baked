@@ -7,6 +7,8 @@
  * is put into the failed check's finding, so the correction starts from a reproduction.
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { type LanguageRecord, none, rowOf } from "../../intelligence/language-records.js";
+import { detectLanguageFromPath } from "../../intelligence/types.js";
 import { readablePath } from "../../specs/validate.js";
 import { isTestCodePath } from "./duplication.js";
 
@@ -61,10 +63,9 @@ export const propertyTestsOf = (
 ): PropertyTestsMode =>
   bansPropertyTests(request) ? "off" : (policy.propertyTests ?? presetPropertyTests(preset));
 
-/** The property library of each language, as the instructions name it and the host finds it. */
-const LIBRARIES: readonly {
+interface PropertyLibrary {
+  /** The language as the instructions and the library probe name it. */
   language: string;
-  files: RegExp;
   library: string;
   uses: RegExp;
   /** A test that imports the library only behind a fallback, so it runs without it. */
@@ -76,71 +77,107 @@ const LIBRARIES: readonly {
    * mask of a byte, every host of a /24), for a request that forbids random input (#1064).
    */
   exhaustive: RegExp;
-}[] = [
-  {
-    language: "JS/TS",
-    files: /\.[cm]?[jt]sx?$/,
-    library: "fast-check",
-    uses: /\bfrom\s+["']fast-check["']|require\(\s*["']fast-check["']\s*\)|\bfc\.(?:assert|property|asyncProperty)\(/,
-    shim: /\btry\s*\{[^}]*(?:require|import)\(\s*["']fast-check["']/,
-    seeded: /\b(?:seed|mulberry32|xorshift\w*|splitmix\w*|lcg|prng)\b[\s\S]*\bfor\s*\(/i,
-    exhaustive:
-      /\bfor\s*\(\s*(?:let|var)\s+\w+\s*=\s*-?\d+\s*;\s*\w+\s*<=?\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)/,
-  },
-  {
-    language: "Python",
-    files: /\.py$/,
-    library: "Hypothesis",
-    uses: /@given\(|\bfrom\s+hypothesis\b|\bimport\s+hypothesis\b/,
-    shim: /\btry:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+(?:from\s+hypothesis\b|import\s+hypothesis\b)[\s\S]*?\nexcept\b[^\n]*(?:ImportError|ModuleNotFoundError|Exception)/,
-    seeded:
-      /\brandom\.(?:Random\(|seed\()[\s\S]*\bfor\s+\w+\s+in\b|\bfor\s+\w+\s+in\b[\s\S]*\brandom\.(?:Random\(|seed\()/,
-    exhaustive:
-      /\bfor\s+\w+\s+in\s+range\(\s*(?:-?\d+\s*,\s*)?(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)|\bitertools\.product\(/,
-  },
-  {
-    language: "Rust",
-    files: /\.rs$/,
-    library: "proptest",
-    uses: /\bproptest!|\bquickcheck!|#\[quickcheck\]|\bproptest::/,
-    shim: /$^/,
-    seeded:
-      /\b(?:seed_from_u64|from_seed|wrapping_mul)\b[\s\S]*\bfor\s+\w+\s+in\b|\bfor\s+\w+\s+in\b[\s\S]*\b(?:seed_from_u64|from_seed|wrapping_mul)\b/,
-    exhaustive:
-      /\bfor\s+\w+\s+in\s+(?:\(?-?\d+(?:[iu]\d+)?\s*\.\.=?\s*(?:\d{3,}|\d+\s*<<\s*\d+|[iu]\d+::MAX)|[iu]\d+::MIN\s*\.\.=?\s*[iu]\d+::MAX)/,
-  },
-  {
-    language: "Java/Kotlin",
-    files: /\.(?:java|kt)$/,
-    library: "jqwik or Kotest property",
-    // Kotest's `checkAll`/`forAll` come from `io.kotest.property` (#1686).
-    uses: /@Property\b|\bnet\.jqwik\b|\bio\.kotest\.property\b/,
-    shim: /$^/,
-    seeded: /\bRandom\(\s*\d+L?\s*\)[\s\S]*\b(?:for|repeat)\s*\(/,
-    exhaustive:
-      /\bfor\s*\(\s*(?:int|long|var|val)\s+\w+\s*=\s*-?\d+L?\s*;\s*\w+\s*<=?\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)|\bfor\s*\(\s*\w+\s+in\s+-?\d+\s*(?:\.\.|until)\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)|\b(?:Int|Long)Stream\.range(?:Closed)?\(\s*-?\d+L?\s*,\s*(?:\d{3,}|\d+\s*<<\s*\d+)|\(\s*-?\d+\s*(?:\.\.|until)\s*(?:\d{3,}|\d+\s*<<\s*\d+)\s*\)\s*\.(?:forEach|map|all|none|filter)\b/,
-  },
-  {
-    language: "Go",
-    files: /\.go$/,
-    library: "testing/quick",
-    uses: /\brapid\.Check\(|\bgopter\b|\bquick\.Check\(/,
-    shim: /$^/,
-    seeded: /\brand\.New\(\s*rand\.NewSource\(|\brand\.NewPCG\(/,
-    exhaustive:
-      /\bfor\s+\w+\s*:=\s*-?\d+\s*;\s*\w+\s*<=?\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+|math\.Max\w+)|\bfor\s+\w+\s*:=\s*range\s+(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)/,
-  },
-  {
-    language: "C#/F#",
-    files: /\.(?:cs|fs)$/,
-    library: "FsCheck or CsCheck",
-    uses: /\bFsCheck\b|\[Property\b|Prop\.ForAll|\bCsCheck\b|\bGen\.\w+(?:\.\w+|\[[^\]]*\]|\([^)]*\))*\.Sample\(/,
-    shim: /$^/,
-    seeded: /\bRandom\(\s*\d+\s*\)[\s\S]*\b(?:for|foreach)\s*\(/,
-    exhaustive:
-      /\bfor\s*\(\s*(?:int|long|var)\s+\w+\s*=\s*-?\d+\s*;\s*\w+\s*<=?\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)|\bfor\s+\w+\s+in\s+-?\d+\s*\.\.\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)|\bEnumerable\.Range\(\s*-?\d+\s*,\s*(?:\d{3,}|\d+\s*<<\s*\d+)/,
-  },
-];
+}
+
+const JS: PropertyLibrary = {
+  language: "JS/TS",
+  library: "fast-check",
+  uses: /\bfrom\s+["']fast-check["']|require\(\s*["']fast-check["']\s*\)|\bfc\.(?:assert|property|asyncProperty)\(/,
+  shim: /\btry\s*\{[^}]*(?:require|import)\(\s*["']fast-check["']/,
+  seeded: /\b(?:seed|mulberry32|xorshift\w*|splitmix\w*|lcg|prng)\b[\s\S]*\bfor\s*\(/i,
+  exhaustive:
+    /\bfor\s*\(\s*(?:let|var)\s+\w+\s*=\s*-?\d+\s*;\s*\w+\s*<=?\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)/,
+};
+const PYTHON: PropertyLibrary = {
+  language: "Python",
+  library: "Hypothesis",
+  uses: /@given\(|\bfrom\s+hypothesis\b|\bimport\s+hypothesis\b/,
+  shim: /\btry:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+(?:from\s+hypothesis\b|import\s+hypothesis\b)[\s\S]*?\nexcept\b[^\n]*(?:ImportError|ModuleNotFoundError|Exception)/,
+  seeded:
+    /\brandom\.(?:Random\(|seed\()[\s\S]*\bfor\s+\w+\s+in\b|\bfor\s+\w+\s+in\b[\s\S]*\brandom\.(?:Random\(|seed\()/,
+  exhaustive:
+    /\bfor\s+\w+\s+in\s+range\(\s*(?:-?\d+\s*,\s*)?(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)|\bitertools\.product\(/,
+};
+const RUST: PropertyLibrary = {
+  language: "Rust",
+  library: "proptest",
+  uses: /\bproptest!|\bquickcheck!|#\[quickcheck\]|\bproptest::/,
+  shim: /$^/,
+  seeded:
+    /\b(?:seed_from_u64|from_seed|wrapping_mul)\b[\s\S]*\bfor\s+\w+\s+in\b|\bfor\s+\w+\s+in\b[\s\S]*\b(?:seed_from_u64|from_seed|wrapping_mul)\b/,
+  exhaustive:
+    /\bfor\s+\w+\s+in\s+(?:\(?-?\d+(?:[iu]\d+)?\s*\.\.=?\s*(?:\d{3,}|\d+\s*<<\s*\d+|[iu]\d+::MAX)|[iu]\d+::MIN\s*\.\.=?\s*[iu]\d+::MAX)/,
+};
+const JVM: PropertyLibrary = {
+  language: "Java/Kotlin",
+  library: "jqwik or Kotest property",
+  // Kotest's `checkAll`/`forAll` come from `io.kotest.property` (#1686).
+  uses: /@Property\b|\bnet\.jqwik\b|\bio\.kotest\.property\b/,
+  shim: /$^/,
+  seeded: /\bRandom\(\s*\d+L?\s*\)[\s\S]*\b(?:for|repeat)\s*\(/,
+  exhaustive:
+    /\bfor\s*\(\s*(?:int|long|var|val)\s+\w+\s*=\s*-?\d+L?\s*;\s*\w+\s*<=?\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)|\bfor\s*\(\s*\w+\s+in\s+-?\d+\s*(?:\.\.|until)\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)|\b(?:Int|Long)Stream\.range(?:Closed)?\(\s*-?\d+L?\s*,\s*(?:\d{3,}|\d+\s*<<\s*\d+)|\(\s*-?\d+\s*(?:\.\.|until)\s*(?:\d{3,}|\d+\s*<<\s*\d+)\s*\)\s*\.(?:forEach|map|all|none|filter)\b/,
+};
+const GO: PropertyLibrary = {
+  language: "Go",
+  library: "testing/quick",
+  uses: /\brapid\.Check\(|\bgopter\b|\bquick\.Check\(/,
+  shim: /$^/,
+  seeded: /\brand\.New\(\s*rand\.NewSource\(|\brand\.NewPCG\(/,
+  exhaustive:
+    /\bfor\s+\w+\s*:=\s*-?\d+\s*;\s*\w+\s*<=?\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+|math\.Max\w+)|\bfor\s+\w+\s*:=\s*range\s+(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)/,
+};
+const DOTNET: PropertyLibrary = {
+  language: "C#/F#",
+  library: "FsCheck or CsCheck",
+  uses: /\bFsCheck\b|\[Property\b|Prop\.ForAll|\bCsCheck\b|\bGen\.\w+(?:\.\w+|\[[^\]]*\]|\([^)]*\))*\.Sample\(/,
+  shim: /$^/,
+  seeded: /\bRandom\(\s*\d+\s*\)[\s\S]*\b(?:for|foreach)\s*\(/,
+  exhaustive:
+    /\bfor\s*\(\s*(?:int|long|var)\s+\w+\s*=\s*-?\d+\s*;\s*\w+\s*<=?\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)|\bfor\s+\w+\s+in\s+-?\d+\s*\.\.\s*(?:\d{3,}|\d+\s*<<\s*\d+|2\s*\*\*\s*\d+)|\bEnumerable\.Range\(\s*-?\d+\s*,\s*(?:\d{3,}|\d+\s*<<\s*\d+)/,
+};
+
+/** The libraries in the order the instructions list them. */
+const LIBRARIES: readonly PropertyLibrary[] = [JS, PYTHON, RUST, JVM, GO, DOTNET];
+
+/**
+ * The property library of each supported language, as the instructions name it and the host
+ * finds it (#1717, #1733). A language without one has a `none` row: its tests are not judged as
+ * property tests.
+ */
+export const PROPERTY_LIBRARIES: LanguageRecord<PropertyLibrary> = {
+  typescript: JS,
+  javascript: JS,
+  vue: none("Vue components are tested from .ts or .js files, which the JavaScript row reads"),
+  svelte: none(
+    "Svelte components are tested from .ts or .js files, which the JavaScript row reads",
+  ),
+  rescript: none("ReScript has no property library this check knows"),
+  python: PYTHON,
+  rust: RUST,
+  java: JVM,
+  kotlin: JVM,
+  go: GO,
+  csharp: DOTNET,
+  scala: none("ScalaCheck is not recognized yet"),
+  c: none("C has no common property library"),
+  cpp: none("RapidCheck is not recognized yet"),
+  ruby: none("Rantly and PropCheck are not recognized yet"),
+  php: none("Eris is not recognized yet (#1491)"),
+  swift: none("SwiftCheck is not recognized yet"),
+  lua: none("lua-quickcheck is not recognized yet"),
+  elixir: none("StreamData is not recognized yet"),
+  dart: none("glados is not recognized yet"),
+  zig: none("Zig has no common property library"),
+  bash: none("shell tests have no property library"),
+  ocaml: none("QCheck is not recognized yet"),
+  objc: none("Objective-C has no common property library"),
+  solidity: none("Foundry fuzz tests are not recognized yet"),
+};
+
+/** The library row of a path; F# is not a supported language and shares the .NET row. */
+const libraryOf = (path: string): PropertyLibrary | null =>
+  /\.fsx?$/i.test(path) ? DOTNET : rowOf(PROPERTY_LIBRARIES, detectLanguageFromPath(path));
 
 export type PropertyTestKind = "library" | "seeded" | "exhaustive" | "shim" | null;
 
@@ -150,7 +187,7 @@ export type PropertyTestKind = "library" | "seeded" | "exhaustive" | "shim" | nu
  * a fallback that fakes it (never counted), or none.
  */
 export function propertyTestKind(path: string, content: string): PropertyTestKind {
-  const lib = LIBRARIES.find((l) => l.files.test(path));
+  const lib = libraryOf(path);
   if (!lib) return null;
   if (lib.shim.test(content)) return "shim";
   if (lib.uses.test(content)) return "library";
@@ -164,8 +201,7 @@ export function hasPropertyTest(path: string, content: string): boolean {
 }
 
 /** The language of a path, as the libraries name it. */
-export const propertyLanguage = (path: string): string | null =>
-  LIBRARIES.find((l) => l.files.test(path))?.language ?? null;
+export const propertyLanguage = (path: string): string | null => libraryOf(path)?.language ?? null;
 
 /** Artifact with the property libraries the project has, found once per run. */
 export const QUALITY_PROPERTY_LIBRARIES = "quality/property-libraries.json";

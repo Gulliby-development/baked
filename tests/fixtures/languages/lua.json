@@ -4,6 +4,10 @@
     "src/sum_spec.lua": "local sum = require('sum')\n",
     "fixture-0.1-1.rockspec": "package = 'fixture'\n"
   },
+  "outputs": {
+    "tests": "ok 1 - adds\nnot ok 2 - sum is commutative\n1..2\n",
+    "testsGrown": "ok 1 - adds\nok 2 - subtracts\nnot ok 3 - sum is commutative\n1..3\n"
+  },
   "expected": {
     "tests": [
       "src/sum_spec.lua"
@@ -14,6 +18,13 @@
     "dependencies": null,
     "placeholders": [
       "src/sum.lua:2"
-    ]
+    ],
+    "gates": null,
+    "testRunners": [
+      "tap 2",
+      "signature stable"
+    ],
+    "mutation": null,
+    "properties": null
   }
 }

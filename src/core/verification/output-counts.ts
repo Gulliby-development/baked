@@ -1,3 +1,4 @@
+import { type LanguageRecord, none } from "../intelligence/language-records.js";
 import { isTestFile } from "../intelligence/language-traits.js";
 import type { Check } from "../workflows/types.js";
 
@@ -79,53 +80,114 @@ export function junitCount(output: string): number | null {
   return cases || null;
 }
 
-/** The number of tests a runner ran, by its summary line. */
-export function testCount(output: string): OutputCount | null {
+/** A test runner whose summary line `testCount` reads. */
+export type TestRunner =
+  | "bun"
+  | "jest"
+  | "vitest"
+  | "pytest"
+  | "cargo"
+  | "dotnet"
+  | "maven"
+  | "go"
+  | "junit"
+  | "tap";
+
+/**
+ * The summary parsers, in the order `testCount` tries them: a more specific summary first, the
+ * report formats any runner can print (JUnit XML, TAP) last.
+ */
+const TEST_COUNTERS: readonly { tool: TestRunner; count: (output: string) => number | null }[] = [
   // bun test: "Ran 42 tests across 3 files."
-  const bun = output.match(/^Ran (\d+) tests? across \d+ files?/m);
-  if (bun) return { tool: "bun", count: Number(bun[1]) };
+  { tool: "bun", count: (o) => num(o.match(/^Ran (\d+) tests? across \d+ files?/m)) },
   // jest: "Tests:       1 failed, 12 passed, 13 total"
-  const jest = output.match(/^Tests:\s+.*?\b(\d+) total\b/m);
-  if (jest) return { tool: "jest", count: Number(jest[1]) };
+  { tool: "jest", count: (o) => num(o.match(/^Tests:\s+.*?\b(\d+) total\b/m)) },
   // vitest: "      Tests  12 passed (12)" / "Tests  1 failed | 11 passed (12)"
-  const vitest = output.match(/^\s*Tests\s+.*\((\d+)\)\s*$/m);
-  if (vitest) return { tool: "vitest", count: Number(vitest[1]) };
-  // pytest: "===== 3 passed, 1 skipped in 0.12s ====="
-  const pytest = output.match(/^=+ (.*\d+ (?:passed|failed).*) in [\d.]+s\b.*=+\s*$/m);
-  if (pytest) {
-    const total = sum(
-      pytest[1] ?? "",
-      /(\d+) (?:passed|failed|skipped|xfailed|xpassed|errors?)\b/g,
-    );
-    if (total !== null) return { tool: "pytest", count: total };
-  }
-  // cargo test: "test result: ok. 4 passed; 0 failed; 1 ignored; ..." per test binary
-  if (/^test result: /m.test(output)) {
-    const passed = sum(output, /^test result: \w+\. (\d+) passed;/gm) ?? 0;
-    const failed = sum(output, /; (\d+) failed;/g) ?? 0;
-    const ignored = sum(output, /; (\d+) ignored;/g) ?? 0;
-    return { tool: "cargo", count: passed + failed + ignored };
-  }
-  // dotnet test: "Passed!  - Failed: 0, Passed: 12, Skipped: 0, Total: 12" / "Total tests: 12"
-  const dotnet = sum(output, /\bTotal(?: tests)?: (\d+)\b/g);
-  if (dotnet !== null) return { tool: "dotnet", count: dotnet };
-  // Maven surefire: "Tests run: 12, Failures: 0, Errors: 0, Skipped: 0" (the summary, no time).
-  const maven = output.match(
-    /^\[\w+\] Tests run: (\d+), Failures: \d+, Errors: \d+, Skipped: \d+\s*$/m,
-  );
-  if (maven) return { tool: "maven", count: Number(maven[1]) };
+  { tool: "vitest", count: (o) => num(o.match(/^\s*Tests\s+.*\((\d+)\)\s*$/m)) },
+  {
+    tool: "pytest",
+    // pytest: "===== 3 passed, 1 skipped in 0.12s ====="
+    count: (o) => {
+      const pytest = o.match(/^=+ (.*\d+ (?:passed|failed).*) in [\d.]+s\b.*=+\s*$/m);
+      return pytest
+        ? sum(pytest[1] ?? "", /(\d+) (?:passed|failed|skipped|xfailed|xpassed|errors?)\b/g)
+        : null;
+    },
+  },
+  {
+    tool: "cargo",
+    // cargo test: "test result: ok. 4 passed; 0 failed; 1 ignored; ..." per test binary
+    count: (o) => {
+      if (!/^test result: /m.test(o)) return null;
+      const passed = sum(o, /^test result: \w+\. (\d+) passed;/gm) ?? 0;
+      const failed = sum(o, /; (\d+) failed;/g) ?? 0;
+      const ignored = sum(o, /; (\d+) ignored;/g) ?? 0;
+      return passed + failed + ignored;
+    },
+  },
+  // dotnet test: "Passed!  - Failed:     0, Passed:    12, Skipped:     0, Total:    12" (the
+  // counts are padded) / "Total tests: 12"
+  { tool: "dotnet", count: (o) => sum(o, /\bTotal(?: tests)?:\s*(\d+)\b/g) },
+  {
+    tool: "maven",
+    // Maven surefire: "Tests run: 12, Failures: 0, Errors: 0, Skipped: 0" (the summary, no time).
+    count: (o) =>
+      num(o.match(/^\[\w+\] Tests run: (\d+), Failures: \d+, Errors: \d+, Skipped: \d+\s*$/m)),
+  },
   // go test -v: one "=== RUN   TestName" per top-level test; without -v there is no count.
-  const go = lines(output, /^=== RUN\s+[^/\s]+\s*$/);
-  if (go) return { tool: "go", count: go };
+  { tool: "go", count: (o) => lines(o, /^=== RUN\s+[^/\s]+\s*$/) || null },
   // A language without a parser of its own (#1488): a JUnit XML report printed to the output
   // (`--reporter=junit`), then TAP (busted, bats, prove, node:test, pgTAP).
-  const junit = junitCount(output);
-  if (junit !== null) return { tool: "junit", count: junit };
-  const prove = output.match(/^Files=\d+, Tests=(\d+),/m);
-  if (prove) return { tool: "tap", count: Number(prove[1]) };
-  // A TAP plan `1..N` per top-level stream; an indented plan belongs to a subtest.
-  const tap = sum(output, /^1\.\.(\d+)(?:[ \t]+#.*)?\r?$/gm);
-  if (tap !== null) return { tool: "tap", count: tap };
+  { tool: "junit", count: junitCount },
+  {
+    tool: "tap",
+    count: (o) =>
+      // A TAP plan `1..N` per top-level stream; an indented plan belongs to a subtest.
+      num(o.match(/^Files=\d+, Tests=(\d+),/m)) ?? sum(o, /^1\.\.(\d+)(?:[ \t]+#.*)?\r?$/gm),
+  },
+];
+
+const num = (match: RegExpMatchArray | null): number | null => (match ? Number(match[1]) : null);
+
+/**
+ * The test runners of each supported language whose summary `testCount` reads (#1717, #1733), so
+ * the baseline comparison and the failure signature cover the language. A language whose runner
+ * prints no summary these parsers read has a `none` row naming the runner.
+ */
+export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
+  typescript: ["bun", "jest", "vitest", "tap"],
+  javascript: ["bun", "jest", "vitest", "tap"],
+  vue: ["vitest", "jest"],
+  svelte: ["vitest", "jest"],
+  rescript: ["vitest", "jest"],
+  python: ["pytest"],
+  rust: ["cargo"],
+  go: ["go"],
+  csharp: ["dotnet"],
+  java: ["maven", "junit"],
+  kotlin: ["maven", "junit"],
+  scala: none('sbt\'s "Tests: succeeded N" summary is not read'),
+  c: none("C has no common test runner summary; ctest output is not read"),
+  cpp: none("ctest and GoogleTest summaries are not read"),
+  ruby: none("RSpec and Minitest summaries are not read"),
+  php: none("PHPUnit summaries are not read yet (#1491)"),
+  swift: none("XCTest and swift-testing summaries are not read"),
+  lua: ["tap"],
+  elixir: none('ExUnit\'s "N tests, M failures" summary is not read'),
+  dart: none("dart test's summary is not read"),
+  zig: none("zig build test prints no count"),
+  bash: ["tap"],
+  ocaml: none("dune test output has no common summary"),
+  objc: none("xcodebuild test summaries are not read"),
+  solidity: none("forge test summaries are not read"),
+};
+
+/** The number of tests a runner ran, by its summary line. */
+export function testCount(output: string): OutputCount | null {
+  for (const { tool, count } of TEST_COUNTERS) {
+    const found = count(output);
+    if (found !== null) return { tool, count: found };
+  }
   return null;
 }
 
@@ -198,6 +260,13 @@ const GROWING_COUNTS: [RegExp, string][] = [
   [/\bRan \d+ tests? across \d+ files?\b/g, "Ran <n> tests across <n> files"],
   [/\brunning \d+ tests?\b/g, "running <n> tests"],
   [/^(\s*Tests?(?: Files)?\b.*?)\s*\(\d+\)$/gm, "$1"],
+  // `go test -v` lists every test it runs and every one that passes (#1733).
+  [/^=== (?:RUN|PAUSE|CONT|NAME)\s.*(?:\n|$)/gm, ""],
+  [/^\s*--- PASS: .*(?:\n|$)/gm, ""],
+  // TAP numbers every test and prints a line per passing one (busted, bats, prove, node:test).
+  [/^(\s*)ok \d+\b.*(?:\n|$)/gm, ""],
+  [/^(\s*)not ok \d+\b/gm, "$1not ok"],
+  [/^(?<indent>\s*)1\.\.\d+/gm, "$<indent>1..<n>"],
 ];
 
 /**

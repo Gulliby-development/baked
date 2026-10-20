@@ -2,20 +2,41 @@
   "files": {
     "src/App/Sum.cs": "class Sum {\n  int Add(int a, int b) {\n    throw new NotImplementedException();\n  }\n}\n",
     "src/App.Tests/Checks.cs": "class Checks {}\n",
-    "src/App/App.csproj": "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <PackageReference Include=\"Newtonsoft.Json\" Version=\"13.0.3\" />\n  </ItemGroup>\n</Project>\n"
+    "src/App/App.csproj": "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <PackageReference Include=\"Newtonsoft.Json\" Version=\"13.0.3\" />\n  </ItemGroup>\n</Project>\n",
+    "tests/App.Tests/Props.cs": "using FsCheck;\nclass Props {}\n",
+    "App.sln": "Microsoft Visual Studio Solution File, Format Version 12.00\n"
+  },
+  "outputs": {
+    "tests": "  Failed SumTests.Commutes [8 ms]\nFailed!  - Failed:     1, Passed:     2, Skipped:     0, Total:     3, Duration: 12 ms\n",
+    "testsGrown": "  Failed SumTests.Commutes [9 ms]\nFailed!  - Failed:     1, Passed:     3, Skipped:     0, Total:     4, Duration: 15 ms\n"
   },
   "expected": {
     "tests": [
-      "src/App.Tests/Checks.cs"
+      "src/App.Tests/Checks.cs",
+      "tests/App.Tests/Props.cs"
     ],
     "manifests": [
-      "src/App/App.csproj"
+      "src/App/App.csproj",
+      "App.sln"
     ],
     "dependencies": [
       "src/App/App.csproj: nuget Newtonsoft.Json"
     ],
     "placeholders": [
       "src/App/Sum.cs:3"
+    ],
+    "gates": [
+      "dotnet-build",
+      "dotnet-format",
+      "dotnet-test"
+    ],
+    "testRunners": [
+      "dotnet 3",
+      "signature stable"
+    ],
+    "mutation": null,
+    "properties": [
+      "tests/App.Tests/Props.cs: library"
     ]
   }
 }

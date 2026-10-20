@@ -3,7 +3,13 @@
     "src/sum.ts": "export function sum(a: number, b: number): number {\n  throw new Error(\"not implemented\");\n}\n",
     "src/sum.test.ts": "import { sum } from './sum';\n",
     "tsconfig.json": "{}\n",
-    "package.json": "{\"name\": \"fixture\", \"dependencies\": {\"zod\": \"^3.0.0\"}}"
+    "package.json": "{\"name\": \"fixture\", \"scripts\": {\"test\": \"bun test\", \"lint\": \"biome check .\"}, \"dependencies\": {\"zod\": \"^3.0.0\"}}",
+    "bun.lock": "{}",
+    "src/sum.prop.test.ts": "import fc from 'fast-check';\nfc.assert(fc.property(fc.integer(), (a) => a + 0 === a));\n"
+  },
+  "outputs": {
+    "tests": "src/a.test.ts:\n(fail) sum is commutative [1.00ms]\n\n 2 pass\n 1 fail\nRan 3 tests across 1 file. [12.00ms]\n",
+    "testsGrown": "src/a.test.ts:\n(fail) sum is commutative [1.20ms]\n\n 3 pass\n 1 fail\nRan 4 tests across 1 file. [15.00ms]\n"
   },
   "expected": {
     "tests": null,
@@ -16,6 +22,20 @@
     ],
     "placeholders": [
       "src/sum.ts:2"
+    ],
+    "gates": [
+      "lint",
+      "tests"
+    ],
+    "testRunners": [
+      "bun 3",
+      "signature stable"
+    ],
+    "mutation": [
+      "stryker: src/sum.ts"
+    ],
+    "properties": [
+      "src/sum.prop.test.ts: library"
     ]
   }
 }

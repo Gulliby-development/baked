@@ -2,11 +2,17 @@
   "files": {
     "src/main/kotlin/Sum.kt": "fun sum(a: Int, b: Int): Int {\n    TODO()\n}\n",
     "src/main/kotlin/SumSpec.kt": "class SumSpec\n",
-    "build.gradle.kts": "dependencies {\n    implementation(\"com.squareup.okio:okio:3.9.0\")\n}\n"
+    "build.gradle.kts": "dependencies {\n    implementation(\"com.squareup.okio:okio:3.9.0\")\n}\n",
+    "src/test/kotlin/SumPropTest.kt": "import io.kotest.property.checkAll\n"
+  },
+  "outputs": {
+    "tests": "[ERROR] Tests run: 3, Failures: 1, Errors: 0, Skipped: 0\n",
+    "testsGrown": "[ERROR] Tests run: 4, Failures: 1, Errors: 0, Skipped: 0\n"
   },
   "expected": {
     "tests": [
-      "src/main/kotlin/SumSpec.kt"
+      "src/main/kotlin/SumSpec.kt",
+      "src/test/kotlin/SumPropTest.kt"
     ],
     "manifests": null,
     "dependencies": [
@@ -14,6 +20,17 @@
     ],
     "placeholders": [
       "src/main/kotlin/Sum.kt:2"
+    ],
+    "gates": null,
+    "testRunners": [
+      "maven 3",
+      "signature stable"
+    ],
+    "mutation": [
+      "pit: src/main/kotlin/Sum.kt"
+    ],
+    "properties": [
+      "src/test/kotlin/SumPropTest.kt: library"
     ]
   }
 }
