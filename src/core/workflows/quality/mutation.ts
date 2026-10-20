@@ -7,7 +7,7 @@
  * (`mutation-tools.ts`) runs instead and its report maps to the same result. A gate that runs out
  * of its time budget is inconclusive for the mutants it did not run, never a failure.
  */
-import { launchedCommand } from "../launcher.js";
+import { toolchainCommand } from "../toolchain.js";
 import { isNonCodeLine, maskNonCode } from "./code-mask.js";
 import { isTestCodePath } from "./duplication.js";
 import { addedLines, type ChangedFile } from "./rules.js";
@@ -242,7 +242,7 @@ export function applyMutant(content: string, mutant: Mutant): string {
 
 /** Whether a check runs the project's tests rather than a linter, formatter or type checker. */
 export function isTestCheck(check: { id: string; executable: string; args: string[] }): boolean {
-  const launched = launchedCommand(check.executable, check.args);
+  const launched = toolchainCommand(check.executable, check.args);
   const build = buildToolRunsTests(launched.program, launched.args);
   if (build !== null) return build;
   const text = [check.id, check.executable, ...check.args].join(" ").toLowerCase();

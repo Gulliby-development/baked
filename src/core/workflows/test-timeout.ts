@@ -1,13 +1,14 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { launchedCommand } from "./launcher.js";
 import { maskNonCode } from "./quality/code-mask.js";
+import { toolchainCommand } from "./toolchain.js";
 
 /** One default for suite, task, mutation and acceptance tests (#1548). */
 export const DEFAULT_PER_TEST_TIMEOUT_MS = 30_000;
 
 const TIMEOUT_FLAG = /^--(?:timeout|testTimeout|test-timeout)(?:=|$)/;
-type Runner = "bun" | "jest" | "vitest";
+type Runner = "bun" | "jest" | "vitest" | "pytest";
 type Command = { executable: string; args: string[] };
 
 function read(path: string): string {
@@ -36,9 +37,12 @@ function runnerOf(
   depth = 0,
 ): { runner: Runner; args: string[] } | null {
   if (depth > 5) return null;
-  const { program, args } = launchedCommand(command.executable, command.args);
+  const { program, args } = toolchainCommand(command.executable, command.args);
   if (args.some((arg) => TIMEOUT_FLAG.test(arg))) return null;
   if (program === "bun" && args[0] === "test") return { runner: "bun", args };
+  if (program === "pytest" || program === "py.test") return { runner: "pytest", args };
+  if (/^python[\d.]*$/.test(program) && args[0] === "-m" && args[1] === "pytest")
+    return { runner: "pytest", args };
   if (program === "jest" || program === "vitest") return { runner: program, args };
   if ((program === "npx" || program === "bunx") && /^(jest|vitest)$/.test(args[0] ?? ""))
     return { runner: args[0] as Runner, args };
@@ -61,8 +65,49 @@ function runnerOf(
   );
 }
 
+const PYTEST_SECTION = /^\[(?:pytest|tool:pytest|tool\.pytest\.ini_options)\]\s*$/;
+
+/** The lines of the pytest sections of a configuration file. */
+function pytestSection(text: string): string[] {
+  const lines: string[] = [];
+  let inside = false;
+  for (const line of text.split(/\r?\n/)) {
+    if (/^\s*\[/.test(line)) inside = PYTEST_SECTION.test(line.trim());
+    else if (inside) lines.push(line);
+  }
+  return lines;
+}
+
+const PYTEST_CONFIGS = ["pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini"];
+
+/**
+ * Whether pytest cannot take a per-test limit here: pytest has none of its own, and `--timeout`
+ * is an error without the pytest-timeout plugin, so the flag goes only to a project that declares
+ * it and does not set `timeout` in its pytest configuration (#1655).
+ */
+function pytestConfigured(cwd: string): boolean {
+  const declared = [
+    ...PYTEST_CONFIGS,
+    "Pipfile",
+    ...readdirSafe(cwd).filter((name) => /^requirements.*\.txt$/i.test(name)),
+  ].some((name) => /\bpytest[-_]timeout\b/i.test(read(resolve(cwd, name))));
+  if (!declared) return true;
+  return PYTEST_CONFIGS.some((name) =>
+    pytestSection(read(resolve(cwd, name))).some((line) => /^\s*timeout\s*=/.test(line)),
+  );
+}
+
+function readdirSafe(cwd: string): string[] {
+  try {
+    return readdirSync(cwd);
+  } catch {
+    return [];
+  }
+}
+
 /** Read configuration without loading project code into the host. */
 function configured(runner: Runner, cwd: string, args: string[]): boolean {
+  if (runner === "pytest") return pytestConfigured(cwd);
   if (runner === "bun") {
     try {
       const config = Bun.TOML.parse(read(resolve(cwd, "bunfig.toml"))) as {
@@ -102,11 +147,13 @@ export function withPerTestTimeout(command: Command, cwd: string): string[] {
   const resolved = runnerOf(command, cwd);
   if (!resolved || configured(resolved.runner, cwd, resolved.args)) return command.args;
   const { runner } = resolved;
-  const launched = launchedCommand(command.executable, command.args);
+  const launched = toolchainCommand(command.executable, command.args);
   const flags =
     runner === "bun"
       ? ["--timeout", String(DEFAULT_PER_TEST_TIMEOUT_MS)]
-      : [`--testTimeout=${DEFAULT_PER_TEST_TIMEOUT_MS}`];
+      : runner === "pytest"
+        ? [`--timeout=${String(DEFAULT_PER_TEST_TIMEOUT_MS / 1000)}`]
+        : [`--testTimeout=${DEFAULT_PER_TEST_TIMEOUT_MS}`];
   const args = [...launched.args];
   if (launched.program === "npm" && !args.includes("--")) args.push("--");
   // A direct runner's `--` ends option parsing; package managers consume their separator.

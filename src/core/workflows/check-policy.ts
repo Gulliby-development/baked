@@ -1,8 +1,8 @@
 import { isCodeFile } from "../intelligence/language-traits.js";
 import { workspacePath } from "../specs/validate.js";
 import { WorkflowFault } from "./errors.js";
-import { launchedCommand } from "./launcher.js";
 import type { RunPolicy, TaskGraph } from "./schemas.js";
+import { toolchainCommand } from "./toolchain.js";
 import type { Check, Task } from "./types.js";
 
 export function validateChecks(workspace: string, policy: RunPolicy, graph?: TaskGraph): void {
@@ -143,7 +143,7 @@ export function fixerTiers(check: {
  * the whole crate per README, LICENSE and test file).
  */
 export function isWholeUnitFixer(fix: { executable: string; args: string[] }): boolean {
-  const { program, args } = launchedCommand(fix.executable, fix.args);
+  const { program, args } = toolchainCommand(fix.executable, fix.args);
   return program === "cargo" && args.includes("fmt") && !args.includes("--");
 }
 
@@ -152,7 +152,7 @@ export function wholeUnitFixerCommand(
   fix: { executable: string; args: string[] },
   paths: readonly string[],
 ): { executable: string; args: string[] } {
-  const { args, launch } = launchedCommand(fix.executable, fix.args);
+  const { args, launch } = toolchainCommand(fix.executable, fix.args);
   return (
     launch([...args, "--", ...paths]) ?? {
       executable: fix.executable,
@@ -165,7 +165,7 @@ export function fixerCommand(
   fix: { executable: string; args: string[] },
   path: string,
 ): { executable: string; args: string[] } {
-  const { program: name, args, launch } = launchedCommand(fix.executable, fix.args);
+  const { program: name, args, launch } = toolchainCommand(fix.executable, fix.args);
   const [first] = args;
   const command =
     name === "cargo" && args.includes("fmt") && !args.includes("--")
