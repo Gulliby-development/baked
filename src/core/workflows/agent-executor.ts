@@ -127,6 +127,7 @@ import {
   type ToolBackendCount,
   toolCallName,
 } from "./step-budget.js";
+import { stopFault } from "./stop-reasons.js";
 import type { EffectRow, WorkflowStore } from "./store.js";
 import { failureOwnerNote } from "./task-graph.js";
 import { pureWorkflowTools, WorkflowToolPolicy } from "./tool-policy.js";
@@ -420,10 +421,9 @@ export class NativeAgentExecutor implements AgentExecutor {
         Math.ceil(Buffer.byteLength(request.prompt) / 3) + request.profile.maxOutputTokens >
           window * 0.8
       )
-        throw new WorkflowFault(
-          "BUDGET_EXHAUSTED",
+        throw stopFault(
+          "context_window",
           `Workflow context exceeds the ${window}-token window of ${request.profile.model}`,
-          { reason: "context_window" },
         );
       const writer =
         request.profile.role === "implementer" || request.profile.role === "acceptance-writer";
@@ -1560,11 +1560,10 @@ export class NativeAgentExecutor implements AgentExecutor {
           step.toolCalls.some((call) => EDIT_TOOLS.has(toolCallName(call))),
         )
       )
-        throw new WorkflowFault(
-          "BUDGET_EXHAUSTED",
+        throw stopFault(
+          "budget_exhausted",
           `Task ${request.task.id} was stopped by the run budget before its first edit`,
           {
-            reason: "budget_exhausted",
             usedTokens: usage.totalTokens,
             remainingTokens: this.store.remainingTokens(request.runId, policy, request.attemptId),
             maxTotalTokens: policy.maxTotalTokens,
@@ -1831,10 +1830,10 @@ export const attemptCapFault = (
       : totals.totalTokens >= totals.allTokensCap
         ? "all-token cap"
         : "run-budget ceiling";
-  return new WorkflowFault(
-    "BUDGET_EXHAUSTED",
+  return stopFault(
+    "attempt_cap",
     `Profile ${profileId} reached the ${capKind} without submitting a result: uncached tokens ${tokens}/${cap}, total tokens ${totals.totalTokens}/${totals.allTokensCap}${totals.ceilingTokens !== undefined ? `, run-budget ceiling ${totals.ceilingTokens}` : ""}`,
-    { reason: "attempt_cap", capKind, tokens, cap, ...totals },
+    { capKind, tokens, cap, ...totals },
   );
 };
 

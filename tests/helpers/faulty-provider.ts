@@ -1,4 +1,6 @@
 import { spyOn } from "bun:test";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 import type { LanguageModel } from "ai";
 import { DEFAULT_CONFIG } from "../../src/config/index.js";
 import { anthropic } from "../../src/core/llm/providers/anthropic.js";
@@ -7,6 +9,7 @@ import { createCodexLanguageModel } from "../../src/core/llm/providers/codex/run
 import { copilot } from "../../src/core/llm/providers/copilot.js";
 import { githubModels } from "../../src/core/llm/providers/github-models.js";
 import { openai } from "../../src/core/llm/providers/openai.js";
+import { corpusCallProfile } from "../../src/core/workflows/trace.js";
 
 /**
  * Fault injection for provider adapters (#1719), in the manner of Toxiproxy: the real adapter of
@@ -25,10 +28,37 @@ export const FAULT_PROVIDERS = [
 export type FaultProvider = (typeof FAULT_PROVIDERS)[number];
 
 /**
- * The slowest healthy first byte of bench round 50 (#1639): a plan stage at maximum effort
- * answered after 502 seconds of silence. Limits are tested against this, not a guess.
+ * The slowest healthy first byte of bench round 50 (#1639): a multi-step plan attempt at maximum
+ * effort answered after 502 seconds of silence. Traces before round 52 keep no per-call timing
+ * for multi-step attempts, so the corpus cannot show it yet; it stays a floor under the corpus.
  */
 export const R50_P99_FIRST_BYTE_MS = 502_000;
+
+/** The recorded rounds' calls (#1729): the fault profiles take their latencies from these. */
+const TRACES = join(import.meta.dir, "..", "fixtures", "bench-traces");
+export const CORPUS = corpusCallProfile(
+  readdirSync(TRACES)
+    .filter((round) => /^R\d+$/.test(round))
+    .flatMap((round) =>
+      readdirSync(join(TRACES, round))
+        .filter((file) => file.endsWith(".sqlite.gz"))
+        .map((file) => join(TRACES, round, file)),
+    ),
+);
+
+/** The slowest healthy first byte the matrix waits for: the corpus's highest p99, or the R50 floor. */
+export const SLOWEST_HEALTHY_FIRST_BYTE_MS = Math.max(
+  R50_P99_FIRST_BYTE_MS,
+  ...CORPUS.firstByte.map((shape) => shape.p99Ms),
+);
+
+const RECORDED_WAITS_S = Object.values(CORPUS.retryAfterMs)
+  .flat()
+  .map((ms) => Math.ceil(ms / 1000));
+/** The longest rate-limit `retry-after` (an hour at most) of the recorded rounds; 7 s before any. */
+export const RECORDED_RETRY_AFTER_S = Math.max(7, ...RECORDED_WAITS_S.filter((s) => s <= 3600));
+/** Recorded `retry-after` waits over an hour: a usage limit, not a rate limit. */
+export const RECORDED_LIMIT_WAITS_S = [...new Set(RECORDED_WAITS_S.filter((s) => s > 3600))];
 
 export type Fault =
   /** Answers "OK" after `afterMs` of silence; a provider whose reasoning streams sends it meanwhile. */

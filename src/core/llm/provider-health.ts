@@ -77,6 +77,9 @@ export interface CallTiming extends CallReasoning {
   provider: string;
   firstByteMs: number | null;
   durationMs: number;
+  /** The HTTP status of a call the provider refused, and its `retry-after` header (#1729). */
+  status?: number;
+  retryAfter?: string;
 }
 
 export class ProviderUnreachableError extends Error {
@@ -148,6 +151,7 @@ export function withProviderHealth(
         let responded = false;
         const startedAt = executionClock.now();
         let firstByteAt: number | null = null;
+        let refusal: { statusCode?: unknown; responseHeaders?: Record<string, string> } | undefined;
         const firstByteMs = watch.firstByteMs ?? providerFirstByteMs(adapted.provider, reasoning);
         const cancel = executionTimeout(
           () =>
@@ -271,6 +275,7 @@ export function withProviderHealth(
           completed = true;
           return result;
         } catch (error) {
+          refusal = error as typeof refusal;
           if (controller.signal.aborted) throw controller.signal.reason;
           if (!responded && !params.abortSignal?.aborted && connectionError(error))
             throw new ProviderUnreachableError(
@@ -290,6 +295,10 @@ export function withProviderHealth(
             ...reasoning,
             firstByteMs: firstByteAt === null ? null : Math.ceil(firstByteAt - startedAt),
             durationMs: Math.ceil(executionClock.now() - startedAt),
+            ...(typeof refusal?.statusCode === "number" ? { status: refusal.statusCode } : {}),
+            ...(refusal?.responseHeaders?.["retry-after"]
+              ? { retryAfter: refusal.responseHeaders["retry-after"] }
+              : {}),
           });
           if (abort) signal.removeEventListener("abort", abort);
           responses.delete(signal);
