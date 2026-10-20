@@ -16,6 +16,7 @@ import {
   mergeSmallSiblings,
   planSizeProblem,
   planStructureProblems,
+  sequenceDocumentation,
   sequenceSharedPaths,
   topologicalOrder,
   validateInitiativePlan,
@@ -292,6 +293,30 @@ describe("initiative plan", () => {
     expect(split.features[2]?.dependsOn).toEqual(["core"]);
     // Two different globs are not compared.
     expect(sequenceSharedPaths(plan([feature("a", [], ["src/*.rs"]), feature("b", [], ["src/**"]), feature("c")])).added).toEqual([]);
+  });
+
+  test("a documentation feature depends on the code it describes (#1751)", () => {
+    // Bench round 52, srcwhere: the decomposer gave docs no dependencies, so it ran first and
+    // documented code that did not exist yet.
+    const code = (id: string, dependsOn: string[] = []) => feature(id, dependsOn, [`src/${id}.ts`, `src/${id}/index.ts`, `tests/${id}.test.ts`]);
+    const split = plan([code("base"), code("search", ["base"]), code("report", ["base"]), feature("docs", [], ["README.md", "docs/usage.md", "CHANGELOG.md"])]);
+    const { plan: sequenced, added } = sequenceDocumentation(split);
+    // It waits for the last feature of each chain, so for all the code, without redundant edges.
+    expect(sequenced.features.find((f) => f.id === "docs")?.dependsOn).toEqual(["search", "report"]);
+    expect(added).toEqual([{ featureId: "docs", dependsOn: "search" }, { featureId: "docs", dependsOn: "report" }]);
+    expect(planStructureProblems(sequenced)).toEqual([]);
+    expect(split.features[3]?.dependsOn).toEqual([]);
+    // Every describing kind: a docs/ glob, examples, a bare README, reStructuredText or AsciiDoc.
+    for (const paths of [["docs/**"], ["examples/basic.rs", "examples/cli.rs"], ["README"], ["docs/index.rst", "guide.adoc"], ["samples/demo.py"]])
+      expect(sequenceDocumentation(plan([code("core"), feature("guide", [], paths)])).added).toEqual([{ featureId: "guide", dependsOn: "core" }]);
+    // Not a documentation feature: code or a test beside the docs, a license, CI config.
+    for (const paths of [["README.md", "src/cli.ts"], ["LICENSE"], [".github/workflows/ci.yml"], ["docs/**", "tests/docs.test.ts"]])
+      expect(sequenceDocumentation(plan([code("core"), feature("other", [], paths)])).added).toEqual([]);
+    // Already after the code, a feature with a run, code that builds on the docs, docs only.
+    expect(sequenceDocumentation(plan([code("core"), feature("docs", ["core"], ["docs/**"])])).added).toEqual([]);
+    expect(sequenceDocumentation(split, new Set(["docs"])).added).toEqual([]);
+    expect(sequenceDocumentation(plan([feature("spec", [], ["docs/api.md"]), code("core", ["spec"])])).added).toEqual([]);
+    expect(sequenceDocumentation(plan([feature("a", [], ["docs/a.md"]), feature("b", [], ["docs/b.md"])])).added).toEqual([]);
   });
 
   test("validates the DAG: unique IDs, known dependencies, no cycles", () => {
@@ -866,11 +891,12 @@ describe("initiative runtime", () => {
     await t.start();
     const view = await t.drive();
     expect(view.status).toBe("awaiting_approval");
+    // The docs leaf also waits for cli, the code it documents (#1751), so it is listed last.
     expect(view.features.map((f) => [f.id, f.workflowId])).toEqual([
       ["core", "sdd"],
       ["engine", "sdd"],
-      ["docs", "quick"],
       ["cli", "sdd"],
+      ["docs", "quick"],
     ]);
     expect(t.initiatives.store.eventsOfType("values", "split.lightened")).toEqual([
       { planRevision: 1, lightened: [{ featureId: "docs", from: "sdd", to: "quick" }] },
@@ -1533,6 +1559,18 @@ describe("initiative runtime", () => {
     expect(t.executor.seen.b).toEqual(["a.txt", "shared.txt"]);
     const cRun = t.featureOf(view, "c").runId ?? "";
     expect(git(t.root, "show", `baked/wf/${cRun}:shared.txt`)).toBe("ready v1 (write 2)");
+  }, 30000);
+
+  test("a proposed split runs its documentation feature after the code (#1751)", async () => {
+    const split = plan([feature("base", [], ["base.txt"]), feature("search", ["base"], ["search.txt"]), feature("docs", [], ["README.md", "docs/usage.md"])]);
+    const t = setup(split);
+    await t.start({ plan: split, policy, featureAutoApproval: { maxTasks: 5, maxFiles: 5 } });
+    const view = await t.approveSplit();
+    expect(t.featureOf(view, "docs").dependsOn).toEqual(["search"]);
+    expect(t.initiatives.events("values").find((e) => e.type === "split.sequenced")?.payload).toMatchObject({
+      added: [],
+      documented: [{ featureId: "docs", dependsOn: "search" }],
+    });
   }, 30000);
 
   test("conflicting upstream results block the dependent feature with the repair instead of failing every drive (#1336)", async () => {
