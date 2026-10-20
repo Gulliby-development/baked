@@ -559,6 +559,46 @@ function mergeFeatures(
   return features;
 }
 
+/**
+ * The split with each feature that is only skeleton folded into one of its dependents: a feature
+ * whose boundary paths are all files of its own skeleton has nothing for an agent to do, yet its run
+ * paid research, specification, planning, analysis and review (bench round 50, selwhy: 24 stubs,
+ * 298k tokens and 280 s at the head of the critical path, #1662). Its skeleton moves to the
+ * dependent every other dependent already waits for, so the fold adds no wait to any chain; the
+ * other dependents then depend on that feature. A skeleton feature without such a dependent, or one
+ * a fold would take below `MIN_FEATURES`, stays as it is.
+ */
+export function foldSkeletonFeatures(plan: InitiativePlan): {
+  plan: InitiativePlan;
+  merged: { featureId: string; from: string[] }[];
+} {
+  let current = plan;
+  const merged: { featureId: string; from: string[] }[] = [];
+  for (const skeleton of plan.features) {
+    const files = new Set((skeleton.skeleton ?? []).map((f) => f.path));
+    if (!files.size || !skeleton.boundary.paths.every((path) => files.has(path))) continue;
+    if (current.features.length <= MIN_FEATURES) break;
+    const dependents = current.features.filter((f) => f.dependsOn.includes(skeleton.id));
+    const reaches = (from: string, target: string, seen = new Set<string>()): boolean => {
+      if (from === target) return true;
+      if (seen.has(from)) return false;
+      seen.add(from);
+      const feature = current.features.find((f) => f.id === from);
+      return (feature?.dependsOn ?? []).some((d) => reaches(d, target, seen));
+    };
+    const host = dependents.find((candidate) =>
+      dependents.every((other) => reaches(other.id, candidate.id)),
+    );
+    if (!host) continue;
+    current = {
+      ...current,
+      features: mergeFeatures(current, [skeleton.id, host.id], host.id, host.title),
+    };
+    merged.push({ featureId: host.id, from: [skeleton.id, host.id] });
+  }
+  return { plan: current, merged };
+}
+
 /** A feature with fewer boundary paths than this is merged into its small siblings (#1352). */
 export const MIN_FEATURE_PATHS = 3;
 /** Small siblings are merged into features of at most this many paths. */
