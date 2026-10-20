@@ -91,6 +91,9 @@ jobs:
           # macOS ships sandbox-exec and Windows runs BAKED's restricted-token launcher, so the OS
           # sandbox integration tests must run on both.
           BAKED_REQUIRE_SANDBOX: ${{ matrix.os == 'macos-latest' && 'seatbelt' || 'restricted-token' }}
+          # A test above 80 percent of its time limit fails the nightly run against main; in the merge
+          # queue it is only an annotation, so it does not eject a pull request before it times out.
+          SLOW_TESTS_FAIL: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '1' || '0' }}
         run: bun scripts/test-shard.ts ${{ matrix.shard }} ${{ matrix.shards }}
 
   # The required checks: one per platform, green only when every shard of it passed.

@@ -3,7 +3,7 @@
  * without hanging and follows launched work until it finishes (#890).
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BriefStore } from "../src/core/chat/coordinator.js";
@@ -17,6 +17,7 @@ import {
   promptLine,
   talkToCoordinator,
 } from "../src/headless/coordinator-chat.js";
+import { removeTempDir } from "./helpers/temp-dir.js";
 
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -28,7 +29,7 @@ function service(host: ScriptedChatHost) {
   const chat = new ChatService({ workspace: root, config: { defaultModel: "openai/gpt-test" } as never, host, homeDir: root });
   cleanups.push(async () => {
     await chat.shutdown();
-    rmSync(root, { recursive: true, force: true });
+    await removeTempDir(root);
   });
   return { root, chat };
 }

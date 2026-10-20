@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelMessage } from "ai";
@@ -18,6 +18,7 @@ import { assembleCompacted, splitForCompaction } from "../src/core/compaction/ma
 import { SessionManager } from "../src/core/sessions/manager.js";
 import { renderChatExport } from "../src/core/sessions/export.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
+import { removeTempDir } from "./helpers/temp-dir.js";
 
 type Part = Record<string, unknown> & { type: string };
 type Script = (turn: {
@@ -99,7 +100,7 @@ async function setup() {
   cleanups.push(async () => {
     await server.stop();
     await fixture.dispose();
-    rmSync(home, { recursive: true, force: true });
+    await removeTempDir(home);
   });
   const call = (path: string, init: RequestInit = {}) =>
     fetch(`${server.url}${path}`, {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startApiServer } from "../src/core/api/server.js";
@@ -10,6 +10,7 @@ import {
 } from "../src/core/chat/scripted-host.js";
 import type { SessionDetail } from "../src/core/chat/sessions.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
+import { removeTempDir } from "./helpers/temp-dir.js";
 
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -78,7 +79,7 @@ describe("scripted chat host (BAKED_TEST_SCRIPT)", () => {
     cleanups.push(async () => {
       await server.stop();
       await fixture.dispose();
-      rmSync(dir, { recursive: true, force: true });
+      await removeTempDir(dir);
     });
     const call = (path: string, body?: unknown) =>
       fetch(`${server.url}${path}`, {
