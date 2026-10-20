@@ -1,0 +1,23 @@
+{
+  "files": {
+    "src/Sum.res": "let sum = (a, b) => failwith(\"not implemented\")\n",
+    "src/Sum_test.res": "open Sum\n",
+    "rescript.json": "{}\n",
+    "package.json": "{\"name\": \"fixture\", \"dependencies\": {\"rescript\": \"^11.0.0\"}}"
+  },
+  "expected": {
+    "tests": [
+      "src/Sum_test.res"
+    ],
+    "manifests": [
+      "rescript.json",
+      "package.json"
+    ],
+    "dependencies": [
+      "package.json: npm rescript"
+    ],
+    "placeholders": [
+      "src/Sum.res:1"
+    ]
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "id": "py-ruff-fix-dot",
+  "language": "python",
+  "toolchain": "pytest",
+  "requires": [
+    "python3",
+    "pytest",
+    "ruff"
+  ],
+  "allowedPaths": [
+    "src/**",
+    "tests/**",
+    "README.md",
+    "pyproject.toml"
+  ],
+  "checks": [
+    {
+      "id": "pytest",
+      "executable": "pytest",
+      "args": [
+        "-q"
+      ]
+    },
+    {
+      "id": "ruff",
+      "executable": "ruff",
+      "args": [
+        "check",
+        "."
+      ],
+      "fix": {
+        "executable": "ruff",
+        "args": [
+          "check",
+          "--fix",
+          "."
+        ]
+      }
+    }
+  ],
+  "origin": "#1593"
+}

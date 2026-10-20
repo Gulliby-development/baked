@@ -1,0 +1,23 @@
+{
+  "id": "node-npm-semver",
+  "language": "javascript",
+  "toolchain": "npm",
+  "requires": [
+    "node",
+    "npm"
+  ],
+  "allowedPaths": [
+    "src/**",
+    "test/**",
+    "README.md"
+  ],
+  "checks": [
+    {
+      "id": "npm-test",
+      "executable": "npm",
+      "args": [
+        "test"
+      ]
+    }
+  ]
+}

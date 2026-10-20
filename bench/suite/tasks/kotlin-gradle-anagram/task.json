@@ -1,0 +1,24 @@
+{
+  "id": "kotlin-gradle-anagram",
+  "language": "kotlin",
+  "toolchain": "gradle",
+  "requires": [
+    "java",
+    "gradle"
+  ],
+  "allowedPaths": [
+    "src/**",
+    "README.md"
+  ],
+  "checks": [
+    {
+      "id": "gradle-test",
+      "executable": "gradle",
+      "args": [
+        "test",
+        "--quiet",
+        "--console=plain"
+      ]
+    }
+  ]
+}

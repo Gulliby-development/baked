@@ -4,6 +4,12 @@
  * declares nothing, so a broken file is reported by the project's own checks, not here.
  */
 import { builtinModules } from "node:module";
+import {
+  type LanguageRecord,
+  none,
+  rowOf,
+  SUPPORTED_LANGUAGES,
+} from "../../intelligence/language-records.js";
 
 export type Ecosystem = "npm" | "pypi" | "crates" | "go" | "nuget" | "maven" | "rubygems";
 
@@ -16,27 +22,6 @@ export interface Dependency {
 }
 
 const base = (path: string) => path.slice(path.lastIndexOf("/") + 1);
-
-/** Whether a path is a manifest this module reads. */
-export function isManifestPath(path: string): boolean {
-  const name = base(path);
-  return (
-    name === "package.json" ||
-    name === "pyproject.toml" ||
-    /^requirements[\w.-]*\.txt$/.test(name) ||
-    name === "Cargo.toml" ||
-    name === "go.mod" ||
-    /\.(csproj|fsproj|vbproj)$/.test(name) ||
-    name === "pom.xml" ||
-    /^(?:build|settings)\.gradle(?:\.kts)?$/.test(name) ||
-    name === "Gemfile" ||
-    name === "Pipfile" ||
-    name === "setup.cfg" ||
-    name === "Directory.Build.props" ||
-    name === "Directory.Packages.props" ||
-    name === "libs.versions.toml"
-  );
-}
 
 const lineOf = (text: string, index: number) => text.slice(0, index).split("\n").length;
 
@@ -371,24 +356,82 @@ function versionCatalog(path: string, text: string): Dependency[] {
 }
 
 /** The registry dependencies a manifest declares. */
-export function manifestDependencies(path: string, text: string): Dependency[] {
+/** A dependency manifest by file name, and how to read the dependencies it declares. */
+interface ManifestReader {
+  name: RegExp;
+  read: (path: string, text: string) => Dependency[];
+}
+
+const NPM: readonly ManifestReader[] = [{ name: /^package\.json$/, read: packageJson }];
+const MAVEN_GRADLE: readonly ManifestReader[] = [
+  { name: /^pom\.xml$/, read: pomXml },
+  { name: /^(?:build|settings)\.gradle(?:\.kts)?$/, read: gradle },
+  { name: /^libs\.versions\.toml$/, read: versionCatalog },
+];
+
+/**
+ * The dependency manifests of each supported language (#1682, #1717): every form a package
+ * manager of the language writes, so a dependency declared in any of them reaches the
+ * dependency check.
+ */
+export const DEPENDENCY_MANIFESTS: LanguageRecord<readonly ManifestReader[]> = {
+  typescript: NPM,
+  javascript: NPM,
+  vue: NPM,
+  svelte: NPM,
+  rescript: NPM,
+  python: [
+    { name: /^pyproject\.toml$/, read: pyprojectToml },
+    { name: /^requirements[\w.-]*\.txt$/, read: requirementsTxt },
+    { name: /^Pipfile$/, read: pipfile },
+    { name: /^setup\.cfg$/, read: setupCfg },
+  ],
+  rust: [{ name: /^Cargo\.toml$/, read: cargoToml }],
+  go: [{ name: /^go\.mod$/, read: goMod }],
+  csharp: [
+    { name: /\.(?:csproj|fsproj|vbproj)$/, read: csproj },
+    { name: /^Directory\.Build\.props$/, read: csproj },
+    {
+      name: /^Directory\.Packages\.props$/,
+      read: (path, text) => [...csproj(path, text), ...packageVersions(path, text)],
+    },
+  ],
+  java: MAVEN_GRADLE,
+  kotlin: MAVEN_GRADLE,
+  scala: none(
+    "sbt builds are Scala code; a Scala project on Maven or Gradle is read by the Java row",
+  ),
+  ruby: [{ name: /^Gemfile$/, read: gemfile }],
+  php: none("Packagist has no registry check yet (#1491)"),
+  swift: none("Swift Package Manager manifests are Swift code, not read"),
+  lua: none("LuaRocks has no registry check yet (#1495)"),
+  elixir: none("Hex has no registry check yet"),
+  dart: none("pub.dev has no registry check yet"),
+  zig: none("Zig packages are URLs with hashes, not registry names"),
+  c: none("C has no package registry"),
+  cpp: none("Conan and vcpkg have no registry check yet"),
+  bash: none("shell scripts have no package manifest"),
+  ocaml: none("opam has no registry check yet"),
+  objc: none("CocoaPods has no registry check yet"),
+  solidity: none("Solidity libraries come from npm or git submodules, read by the npm row"),
+};
+
+const READERS: readonly ManifestReader[] = [
+  ...new Set(
+    SUPPORTED_LANGUAGES.flatMap((language) => rowOf(DEPENDENCY_MANIFESTS, language) ?? []),
+  ),
+];
+
+const readerOf = (path: string): ManifestReader | undefined => {
   const name = base(path);
-  if (name === "package.json") return packageJson(path, text);
-  if (name === "pyproject.toml") return pyprojectToml(path, text);
-  if (/^requirements[\w.-]*\.txt$/.test(name)) return requirementsTxt(path, text);
-  if (name === "Cargo.toml") return cargoToml(path, text);
-  if (name === "go.mod") return goMod(path, text);
-  if (/\.(csproj|fsproj|vbproj)$/.test(name)) return csproj(path, text);
-  if (name === "pom.xml") return pomXml(path, text);
-  if (/^(?:build|settings)\.gradle(?:\.kts)?$/.test(name)) return gradle(path, text);
-  if (name === "Gemfile") return gemfile(path, text);
-  if (name === "Pipfile") return pipfile(path, text);
-  if (name === "setup.cfg") return setupCfg(path, text);
-  if (name === "Directory.Build.props") return csproj(path, text);
-  if (name === "Directory.Packages.props")
-    return [...csproj(path, text), ...packageVersions(path, text)];
-  if (name === "libs.versions.toml") return versionCatalog(path, text);
-  return [];
+  return READERS.find((reader) => reader.name.test(name));
+};
+
+/** Whether a path is a manifest this module reads. */
+export const isManifestPath = (path: string): boolean => readerOf(path) !== undefined;
+
+export function manifestDependencies(path: string, text: string): Dependency[] {
+  return readerOf(path)?.read(path, text) ?? [];
 }
 
 const BUILTIN = new Set(builtinModules.map((m) => m.replace(/^node:/, "")));
