@@ -27,6 +27,10 @@ You turn the round's findings and scout ideas into GitHub issues on the BAKED pr
 - Treat open issues labelled `smoke` (filed by the cloud smoke runs) like this round's findings: dedupe against them and rank them for the fix set.
 - A finding's point fix and broader option may be one issue (when the broad option is the fix) or two linked issues (Bug + Feature).
 
+## Promoting shadow stop reasons
+
+Read `ledger/would-stops.jsonl`. For each stop reason with records in this round and the round before and no `false` verdict in either, open (or comment on) a Task issue "Promote `<reason>` to enforce" with both rounds' report lines and the marker `<!-- bench-loop: promote-<reason> -->`, Priority P1, and list it in `backlog.md`. It joins the fix set like any other issue; its fix is a pull request of its own. A reason with a `false` verdict gets no promotion issue; the analyst's finding for it is filed as usual. See [Shadow stop reasons](../AGENTS.md#shadow-stop-reasons).
+
 ## Adversarial sweep review
 
 Once per round, before choosing the fix set, run `bun run review:adversarial --since <start of the previous round> --post` in `paths.dev` (#1722). It reviews every open or merged pull request that closed a Bug issue since then, once per head commit, with the Claude Code or Codex CLI of the other model family than the fixer's, and posts the result as an advisory comment on the pull request. Treat a missed place it names like a finding: confirm it on current `main` with the [file-issue skill](../../../.agents/skills/file-issue/SKILL.md), then comment on the fix's issue or file a new Bug with the marker `<!-- bench-loop: RNN/adversarial-<pr> -->`. List each reviewed pull request and what came of its findings in `backlog.md`. A review that fails (CLI not logged in, limit reached) is noted there and does not stop the round.

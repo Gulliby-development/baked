@@ -77,6 +77,7 @@ baked-loop/
   ledger/
     ideas.jsonl          # every idea ever proposed, accepted or rejected (dedupe)
     findings.jsonl       # every finding, with its kind, origin, fault origin, escaped layer, models seen on, confirmation and issue number
+    would-stops.jsonl    # every would-stop record of a stop reason in shadow or advisory mode, with its verdict
     loop-changes.jsonl   # every change the retro made or proposed to the loop itself, with its expected effect and verdict
     published.jsonl      # every public repo the loop created or updated
     metrics.csv          # one row per run, all rounds
@@ -395,11 +396,20 @@ No other messages. Progress goes into `state.json` and the round folder.
 ## Phase 10: report
 
 1. Fill `rounds/RNN/report.md` from `templates/round-report.md`, BAKED-side metrics and the check of last round's fixes before the app tables: tables per group (control, new, update, experiment), comparisons with the previous round and with the first loop round, findings and issues, fixes merged with their expected effect, a Published table (repo links, CI results, logo outcome), budget use, open blockers.
-2. Append one row per run to `ledger/metrics.csv`.
+2. Append one row per run to `ledger/metrics.csv`. Fill the report's would-stops table from `ledger/would-stops.jsonl` (see [Shadow stop reasons](#shadow-stop-reasons)).
    Export the usage trace of every app of the round, so the next forecast, sizing or cap change replays on it before it merges (#1649): from the fixer's checkout, `bun scripts/bench-trace.ts export C:\Project\baked-bench\RNN\<app> tests/fixtures/bench-traces/RNN/<app>.sqlite.gz` for each app folder (updates and controls included), then `bun scripts/bench-trace.ts replay tests/fixtures/bench-traces/RNN/*.sqlite.gz` and `bun test tests/forecast-replay-corpus.test.ts`. Open a pull request `feature/bench-traces-rNN` with the traces. A replay difference on the round's own traces is a finding: the current main decides differently from the runner the round used, which is expected only for fixes merged during the round, and those go into `tests/fixtures/bench-traces/accepted.json` with the fix's issue as the reason. The trace drops prompts, model output, file contents and prose; check it is under 2 MB per app and mention any larger one in the report. The [replay-corpus skill](../../.agents/skills/replay-corpus/SKILL.md) covers the export, `accepted.json`, re-exports after an export change, and how the analyst reads a replay difference.
 3. Send the round result message.
 4. If `state.round` is a multiple of `retro.everyRounds`, set `state.phase = "retro"` and run phase 11; its one-line summary and any owner-tier proposals go into the round message (sent after the retro in that case).
 5. Set `state.round += 1`, `state.phase = "prepare"`.
+
+## Shadow stop reasons
+
+BAKED ships new or changed stop logic in `shadow` mode (`src/core/workflows/stop-reasons.ts` and [Stop reasons and shadow mode](../../docs/workflows/runtime.md#stop-reasons-and-shadow-mode)). A reason in shadow records a `decision.would_stop` event instead of stopping, so the loop measures it before it can stop a round. The loop is where those measurements come from.
+
+- **Policy.** Phase 0 sets `stopModes` in the round's policy (`workflows.policy` in the runner's config) to `shadow` for every reason whose last PR asks for shadow measurement and is not yet promoted. Every other reason keeps its default. The round report names the modes it ran with.
+- **Verdicts.** The analyst marks every record `justified`, `false` or `unknown` (step 7 of `roles/analyst.md`) in `ledger/would-stops.jsonl`.
+- **Promotion.** A reason with records in two rounds in a row and no `false` verdict in either is ready for `enforce`. The backlog role opens a Task issue "Promote `<reason>` to enforce" citing both rounds' report lines. The fix that promotes it is a pull request of its own, as AGENTS.md requires. A `false` verdict resets the count and is filed as a finding against the reason.
+- **Advisory** records show to the person in the TUI and desktop app; they count like shadow records here.
 
 ## Improving the loop itself
 
