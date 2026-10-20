@@ -99,6 +99,9 @@ export function runUsage(
 ): RunUsageReport {
   const stages = new Map(store.steps(runId).map((step) => [step.id, step.stage_id]));
   const generations = store.attemptTaskGenerations(runId);
+  const usageRows = new Map(
+    store.latestArtifacts(runId, "attempts/%/usage.json").map((row) => [row.logical_path, row]),
+  );
   const attempts = store
     .attempts(runId)
     .filter(
@@ -111,10 +114,8 @@ export function runUsage(
             : attempt.model_id === modelFilter)),
     )
     .map((attempt): AttemptUsageRow => {
-      const row = store.latestArtifact(runId, `attempts/${attempt.id}/usage.json`);
-      const usage = row
-        ? (JSON.parse(store.readArtifact(runId, row.id)) as AttemptUsageRecord)
-        : undefined;
+      const row = usageRows.get(`attempts/${attempt.id}/usage.json`);
+      const usage = row ? store.readArtifactJson<AttemptUsageRecord>(runId, row) : undefined;
       const sum = (pick: (step: AttemptUsageRecord["steps"][number]) => number | null) =>
         usage ? usage.steps.reduce((total, step) => total + (pick(step) ?? 0), 0) : null;
       return {
@@ -443,7 +444,7 @@ export function attemptSpend(
 ): AttemptSpend | null {
   const row = store.latestArtifact(runId, `attempts/${attemptId}/usage.json`);
   if (!row) return null;
-  const usage = JSON.parse(store.readArtifact(runId, row.id)) as AttemptUsageRecord;
+  const usage = store.readArtifactJson<AttemptUsageRecord>(runId, row);
   const sum = (pick: (step: AttemptUsageRecord["steps"][number]) => number | null | undefined) =>
     usage.steps.reduce((total, step) => total + (pick(step) ?? 0), 0);
   return {

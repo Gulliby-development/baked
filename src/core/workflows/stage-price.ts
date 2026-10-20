@@ -5,16 +5,24 @@ import { type AttemptUsageRow, runUsage } from "./usage.js";
 
 export const DEFAULT_MIX: TokenMix = { input: 0.6, cacheRead: 0.3, output: 0.1 };
 
+type StepTree = Map<string, { stage_id: string; parent_step_id: string | null }>;
+
+/** The run's steps by ID, for `costStageOf` calls that share one read. */
+export function stepTree(store: WorkflowStore, runId: string): StepTree {
+  return new Map(store.steps(runId).map((step) => [step.id, step]));
+}
+
 /** Child calls use their owning stage; planned and corrective tasks share one price history. */
-export function costStageOf(store: WorkflowStore, runId: string, stepId: string): string {
-  const steps = new Map(store.steps(runId).map((step) => [step.id, step]));
+export function costStageOf(
+  store: WorkflowStore,
+  runId: string,
+  stepId: string,
+  steps: StepTree = stepTree(store, runId),
+): string {
   return owningStage(steps, stepId);
 }
 
-function owningStage(
-  steps: Map<string, { stage_id: string; parent_step_id: string | null }>,
-  stepId: string,
-): string {
+function owningStage(steps: StepTree, stepId: string): string {
   let step = steps.get(stepId);
   while (step?.parent_step_id && steps.has(step.parent_step_id))
     step = steps.get(step.parent_step_id);
@@ -22,15 +30,62 @@ function owningStage(
   return stage.startsWith("task-") ? "implement" : stage;
 }
 
-/** Child review and task calls inherit the workflow stage that owns them. */
-export function forecastSamples(store: WorkflowStore, runIds: string[]): AttemptUsageRow[] {
+/** What pricing calls of one run share: its price samples and its steps. */
+export interface RunPrices {
+  samples: AttemptUsageRow[];
+  steps: StepTree;
+}
+
+export function runPrices(store: WorkflowStore, runId: string): RunPrices {
+  const steps = stepTree(store, runId);
+  return { samples: forecastSamples(store, [runId], steps), steps };
+}
+
+/** Runs whose price samples a store keeps; the least recently read is dropped past this. */
+const CACHED_RUNS = 256;
+/** Each store's price samples per run, with the `priceStamp` they were read at. */
+const samplesCache = new WeakMap<
+  WorkflowStore,
+  Map<string, { stamp: string; rows: AttemptUsageRow[] }>
+>();
+
+/**
+ * Child review and task calls inherit the workflow stage that owns them. A run's samples are read
+ * again only when its `priceStamp` changed, since every capped model call prices them (#1647).
+ * The rows are shared: callers must not change them.
+ */
+export function forecastSamples(
+  store: WorkflowStore,
+  runIds: string[],
+  known?: StepTree,
+): AttemptUsageRow[] {
+  let runs = samplesCache.get(store);
+  if (!runs) {
+    runs = new Map();
+    samplesCache.set(store, runs);
+  }
+  const cache = runs;
   return runIds.flatMap((runId) => {
-    const steps = new Map(store.steps(runId).map((s) => [s.id, s]));
+    const stamp = store.priceStamp(runId);
+    const cached = cache.get(runId);
+    if (cached?.stamp === stamp) {
+      cache.delete(runId);
+      cache.set(runId, cached);
+      return cached.rows;
+    }
+    const steps = known && runIds.length === 1 ? known : stepTree(store, runId);
     const stages = new Map(store.attempts(runId).map((a) => [a.id, owningStage(steps, a.step_id)]));
-    return runUsage(store, runId).attempts.map((a) => ({
+    const rows = runUsage(store, runId).attempts.map((a) => ({
       ...a,
       stage: stages.get(a.attemptId) ?? a.stage,
     }));
+    cache.delete(runId);
+    if (cache.size >= CACHED_RUNS) {
+      const oldest = cache.keys().next().value;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+    cache.set(runId, { stamp, rows });
+    return rows;
   });
 }
 
