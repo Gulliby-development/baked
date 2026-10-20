@@ -3110,9 +3110,7 @@ export class WorkflowScheduler {
     const usage = attempt
       ? this.store.latestArtifact(runId, `attempts/${attempt.id}/usage.json`)
       : undefined;
-    return usage
-      ? (JSON.parse(this.store.readArtifact(runId, usage.id)) as AttemptUsageRecord)
-      : undefined;
+    return usage ? this.store.readArtifactJson<AttemptUsageRecord>(runId, usage) : undefined;
   }
   /**
    * Why a task that ended without a complete implementation gets one more attempt in a fresh

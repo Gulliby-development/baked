@@ -3,10 +3,11 @@ import { growCostCapToForecast } from "./budget.js";
 import { costCeilingUsd, costToleranceOf, currentCostCap } from "./cost-tolerance.js";
 import { WorkflowFault } from "./errors.js";
 import { DEFAULT_STAGE_RANGES } from "./estimate.js";
-import { forecastSamples, forecastStageCost, runForecastStages } from "./forecast-price.js";
+import { forecastStageCost, runForecastStages } from "./forecast-price.js";
 import { hostGrowth } from "./host-growth.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { type SizingReport, verificationTokens } from "./sizing.js";
+import { runPrices } from "./stage-price.js";
 import type { WorkflowStore } from "./store.js";
 
 /** Finished priced tasks a forecast needs before it measures how far the plan's price is off. */
@@ -104,8 +105,9 @@ export function costForecast(
     })),
   );
   const remainingTokens = Math.round(costs.reduce((sum, s) => sum + s.tokens, 0));
-  const { spentUsd, reservedUsd } = store.costUsage(runId);
-  const remainingUsd = forecastStageCost(forecastSamples(store, [runId]), costs);
+  const prices = runPrices(store, runId);
+  const { spentUsd, reservedUsd } = store.costUsage(runId, undefined, prices);
+  const remainingUsd = forecastStageCost(prices.samples, costs);
   if (remainingUsd === null) return null;
   return {
     capUsd: cap,
