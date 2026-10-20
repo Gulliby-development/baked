@@ -208,14 +208,22 @@ describe("gate execution after host suspend (#1610)", () => {
 });
 
 describe("host-written acceptance rows in the case-walk and mutation gates (#1596)", () => {
-  test.each(["bun", "pytest"] as const)("%s retains every case in its JSON data and keeps generated tests out of mutation proposals", async (framework) => {
+  // #1660: every framework, including the Java and C# tests that hold the rows as literals.
+  const layouts = {
+    bun: { harness: "tests/harness.ts", test: "tests/rows.test.ts" },
+    pytest: { harness: "tests/harness.py", test: "tests/test_rows.py" },
+    go: { harness: "tests/harness.go", test: "tests/rows_test.go", package: "tests" },
+    junit: { harness: "tests/Harness.java", test: "tests/RowsTest.java", package: "tests" },
+    rust: { harness: "tests/harness.rs", test: "tests/rows.rs" },
+    xunit: { harness: "tests/Harness.cs", test: "tests/RowsTest.cs", package: "Tests" },
+  } as const;
+  test.each(Object.keys(layouts) as (keyof typeof layouts)[])("%s retains every case in its JSON data and keeps generated tests out of mutation proposals", async (framework) => {
     const root = mkdtempSync(join(tmpdir(), "baked-row-gate-"));
     try {
-      const spec = { ...fixtureSpec, criteria: [{ ...fixtureSpec.criteria[0]!, given: "a number", when: "it is doubled", then: "Input | Expected\n12 | 24\n34 | 68" }] };
-      const harness = framework === "bun" ? "tests/harness.ts" : "tests/harness.py";
-      const file = framework === "bun" ? "tests/rows.test.ts" : "tests/test_rows.py";
+      const spec = { ...fixtureSpec, criteria: [{ ...fixtureSpec.criteria[0]!, given: "a number", when: "it is doubled", then: "Input | Scenario | Expected\n12 | small | 24\n34 | large | 68" }] };
+      const { harness, test: file } = layouts[framework];
       const task: Task = { id: "T001", title: "Rows", description: "Write actual(input)", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", origin: "planned", findingIds: [], rationale: "Test", readHints: [], checkIds: [],
-        rows: ["AC-001"], rowTest: { framework, harness, test: file, data: "tests/rows.json" },
+        rows: ["AC-001"], rowTest: { ...layouts[framework], framework, data: "tests/rows.json" },
         writes: [harness, file, "tests/rows.json"].map((path) => ({ path, action: "create" })) };
       const graph = { schemaVersion: 1 as const, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [task] };
       const artifact = rowsArtifact(spec, graph, { schemaVersion: 1, inputHash: "a".repeat(64), verdict: "pass", findings: [] });
@@ -225,8 +233,12 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
       const check = caseCheck(spec, task);
       expect(check).toBeDefined();
       expect(await check?.(root)).toEqual([]);
-      writeFileSync(join(root, "tests/rows.json"), JSON.stringify(artifact.rows.slice(0, 1)));
-      expect((await check?.(root))?.join()).toContain("34");
+      // Java and C# tests hold the rows themselves, and the host refuses any change to that file.
+      if (framework === "junit" || framework === "xunit") expect(files[1]?.content).toMatch(/\b34L?\b.*\b68L?\b/);
+      else {
+        writeFileSync(join(root, "tests/rows.json"), JSON.stringify(artifact.rows.slice(0, 1)));
+        expect((await check?.(root))?.join()).toContain("34");
+      }
       const changes = files.map((generated) => ({ path: generated.path, before: "", content: generated.content }));
       expect(proposalFiles(changes)).toEqual([]);
       expect(generateMutants(changes)).toEqual([]);

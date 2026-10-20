@@ -182,3 +182,95 @@ describe("rows setting across run entry points", () => {
     }
   });
 });
+
+describe("acceptance rows in every supported language (#1660)", () => {
+  const enabled = { ...fixturePolicy, rowsAsData: "on" as const };
+  const labelled = spec('Input | Scenario | Expected\n--- | --- | ---\n`[2, 3]` | two "small" numbers | `6`\n`"a\\u2028b\\u0001"` | odd text | `"a\\u2028b\\u0001"`\n`[null]` | null element | `{"k":[1.5,null]}`');
+  const withTest = (rowTest: NonNullable<Task["rowTest"]>): Task => ({
+    ...task, rowTest, writes: [rowTest.harness, rowTest.test, rowTest.data].map((path) => ({ path, action: "create" as const })),
+  });
+  const layouts: Record<string, NonNullable<Task["rowTest"]>> = {
+    go: { framework: "go", package: "calc", harness: "calc/harness.go", test: "calc/rows_test.go", data: "calc/testdata/rows.json" },
+    junit: { framework: "junit", package: "com.ex.calc", harness: "src/main/java/com/ex/calc/Harness.java", test: "src/test/java/com/ex/calc/RowsTest.java", data: "src/test/resources/rows.json" },
+    rust: { framework: "rust", harness: "tests/support/harness.rs", test: "tests/rows.rs", data: "tests/data/rows.json" },
+    xunit: { framework: "xunit", package: "Calc.Tests", harness: "Calc.Tests/Harness.cs", test: "Calc.Tests/RowsTest.cs", data: "Calc.Tests/rows.json" },
+  };
+
+  test("a Scenario column is a label the reader skips, and an audit may leave it out", () => {
+    const rows = literalRows(labelled, ["AC-001"]);
+    expect(rows.map((row) => [row.id, row.label, row.input, row.expected])).toEqual([
+      ["AC-001:1", 'two "small" numbers', [2, 3], 6],
+      ["AC-001:2", "odd text", "a b\u0001", "a b\u0001"],
+      ["AC-001:3", "null element", [null], { k: [1.5, null] }],
+    ]);
+    expect(literalRows(spec("Expected | Input\n2 | 1"), ["AC-001"]).map((row) => row.input)).toEqual([1]);
+    for (const table of ["Input | Notes | Expected\n1 | a | 2", "Input | Scenario | Expected\n1 | a | 2\n3 | 4"])
+      expect(literalRows(spec(table), ["AC-001"])).toEqual([]);
+    const s = spec("Input | Scenario | Expected\n12 | doubles | 24\n-3 | negative | -6");
+    expect(rowAuditProblems(s, graph, analysis(["12 | 24", "-3 | negative | -6"]))).toEqual([]);
+    expect(rowAuditProblems(s, graph, analysis(["12 | 24", "-3 | -7"]))).toHaveLength(1);
+  });
+
+  test("each framework accepts its layout and refuses a test its harness cannot reach", () => {
+    const s = spec("Input | Expected\n12 | 24");
+    for (const rowTest of Object.values(layouts))
+      expect(rowPlanProblems(s, { ...graph, tasks: [withTest(rowTest)] }, enabled)).toEqual([]);
+    for (const rowTest of [
+      { ...layouts.go!, package: undefined },
+      { ...layouts.go!, harness: "other/harness.go" },
+      { ...layouts.go!, harness: "calc/harness_test.go" },
+      { ...layouts.junit!, package: "com.ex.other" },
+      { ...layouts.junit!, test: "src/test/java/com/ex/calc/RowsCheck.java" },
+      { ...layouts.rust!, test: "src/rows.rs" },
+      { ...layouts.xunit!, package: undefined },
+      { ...layouts.xunit!, harness: "Calc.Tests/my-harness.cs" },
+    ]) expect(rowPlanProblems(s, { ...graph, tasks: [withTest(rowTest)] }, enabled)).toHaveLength(1);
+    const second = withTest({ ...layouts.go!, test: "calc/more_test.go", data: "calc/testdata/more.json" });
+    expect(rowPlanProblems(s, { ...graph, tasks: [withTest(layouts.go!), { ...second, id: "T002" }] }, enabled).join()).toContain("one Go harness per package");
+  });
+
+  test("Java and C# hold the rows as escaped literals, and Rust includes the data file", () => {
+    const files = (name: string) => {
+      const t = withTest(layouts[name]!);
+      return rowFiles(t, rowsArtifact(labelled, { ...graph, tasks: [t] }, analysis([])));
+    };
+    const java = files("junit")[1]!.content;
+    expect(java).toContain("package com.ex.calc;");
+    expect(java).toContain("class RowsTest {");
+    expect(java).toContain('row("AC-001:1", list(2L, 3L), 6L)');
+    // \u is unescaped before Java lexes a literal, so control characters are octal escapes.
+    expect(java).toContain('"a b\\001"');
+    expect(java).toContain('row("AC-001:3", list((Object) null), map("k", list(1.5d, (Object) null)))');
+    expect(java).toContain("Harness.actual(input)");
+    const csharp = files("xunit")[1]!.content;
+    expect(csharp).toContain("namespace Calc.Tests");
+    expect(csharp).toContain("public class RowsTest");
+    expect(csharp).toContain("Harness.Actual(JsonNode.Parse(input))");
+    expect(csharp).not.toContain(" ");
+    expect(csharp).toContain("a\\u2028b");
+    const rust = files("rust")[1]!.content;
+    expect(rust).toContain('#[path = "support/harness.rs"]');
+    expect(rust).toContain('include_str!("data/rows.json")');
+  });
+
+  // Bun.spawnSync throws when the executable is missing (macOS runners have no Go).
+  const go = Bun.which("go") !== null && Bun.which("gofmt") !== null;
+  test.skipIf(!go)("Go runs every row through Actual, and a wrong harness fails", () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-row-go-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const t = withTest(layouts.go!);
+    for (const file of rowFiles(t, rowsArtifact(labelled, { ...graph, tasks: [t] }, analysis([])))) {
+      mkdirSync(dirname(join(root, file.path)), { recursive: true });
+      writeFileSync(join(root, file.path), file.content);
+    }
+    writeFileSync(join(root, "go.mod"), "module example.com/fixture\n\ngo 1.21\n");
+    const harness = (body: string) => writeFileSync(join(root, "calc/harness.go"), `package calc\n\nfunc Actual(input any) (any, error) {\n${body}\n}\n`);
+    harness('\tif xs, ok := input.([]any); ok && len(xs) == 2 {\n\t\treturn xs[0].(float64) * xs[1].(float64), nil\n\t}\n\tif xs, ok := input.([]any); ok && len(xs) == 1 {\n\t\treturn map[string][]any{"k": {1.5, nil}}, nil\n\t}\n\treturn input, nil');
+    const run = () => Bun.spawnSync(["go", "test", "./..."], { cwd: root, stdout: "pipe", stderr: "pipe" });
+    const passing = run();
+    expect(passing.exitCode, passing.stdout.toString() + passing.stderr.toString()).toBe(0);
+    expect(Bun.spawnSync(["gofmt", "-l", "."], { cwd: root }).stdout.toString()).toBe("");
+    harness("\treturn input, nil");
+    expect(run().exitCode).not.toBe(0);
+  }, 120000);
+});
