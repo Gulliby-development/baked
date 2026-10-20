@@ -20,7 +20,7 @@ afterEach(async () => {
 type Criterion = Spec["criteria"][number];
 const criterion = (given: string, then: string, when = "the tests run"): Criterion =>
   ({ ...fixtureSpec.criteria[0], id: "AC-003", given, when, then }) as Criterion;
-const cases = (c: Criterion) => criterionCases({ criteria: [c] }, { criterionIds: ["AC-003"] }).map((x) => x.literal);
+const cases = (c: Criterion) => criterionCases({ criteria: [c] }, { criterionIds: ["AC-003"] }, { checks: [] }).map((x) => x.literal);
 
 const MATCHING = [
   "Input | Kind | Expected",
@@ -51,7 +51,7 @@ describe("labels a Given binds and expression cells (#1663)", () => {
   });
 
   test("a case found only in an assertion message is still missing", () => {
-    const [nth] = criterionCases({ criteria: [criterion("elements E1 through E9", MATCHING)] }, { criterionIds: ["AC-003"] });
+    const [nth] = criterionCases({ criteria: [criterion("elements E1 through E9", MATCHING)] }, { criterionIds: ["AC-003"] }, { checks: [] });
     const decoy = caseEvidence("matching_test.go", 'if Position(kind, elems[3]) != 2 {\n\tt.Errorf("nth-child")\n}\n');
     const real = caseEvidence("matching_test.go", 'if Position("nth-child", elems[3]) != 2 {\n\tt.Errorf("want 2")\n}\n');
     expect(nth?.literal).toBe("nth-child");

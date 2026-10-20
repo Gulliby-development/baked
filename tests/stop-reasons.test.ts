@@ -30,10 +30,11 @@ describe("stop reasons", () => {
     expect(fault.details).toEqual({ reason: "cost", spentUsd: 1 });
   });
 
-  test("hard limits take only enforce; the forecast and the approval scope take every mode", () => {
+  test("hard limits take only enforce; the forecasts and the approval scope take every mode", () => {
     for (const [id, reason] of Object.entries(STOP_REASONS)) {
       expect(reason.modes).toContain(reason.defaultMode);
-      if (id !== "cost-forecast" && id !== "approval-scope") expect(reason.modes).toEqual(["enforce"]);
+      if (!["cost-forecast", "approval-scope", "initiative-forecast"].includes(id))
+        expect(reason.modes).toEqual(["enforce"]);
     }
     expect(STOP_REASONS["cost-forecast"].modes).toEqual(STOP_MODES);
     const parse = (stopModes: unknown) => PolicySchema.safeParse({ ...defaultWorkflowPolicy, stopModes }).success;

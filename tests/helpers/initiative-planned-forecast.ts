@@ -4,7 +4,7 @@ import { findPricing } from "../../src/core/llm/pricing.js";
 import { canonical, hashBytes, hashJson } from "../../src/core/specs/hash.js";
 import type { InitiativePlan } from "../../src/core/workflows/initiatives/plan.js";
 import { InitiativeService } from "../../src/core/workflows/initiatives/service.js";
-import type { Spec } from "../../src/core/workflows/schemas.js";
+import type { RunPolicy, Spec } from "../../src/core/workflows/schemas.js";
 import { newId, type WorkflowStore } from "../../src/core/workflows/store.js";
 import type { ExecutionRequest } from "../../src/core/workflows/types.js";
 import { FixtureExecutor, fixturePolicy, fixtureSpec, workflowFixture } from "./workflow-fixture.js";
@@ -81,7 +81,10 @@ export async function historyFixture(featureUsd: number) {
   } catch (error) { await fixture.dispose(); throw error; }
 }
 
-export async function plannedForecastScenario(count: number, firstUsd: number, histories: string[]) {
+export async function plannedForecastScenario(
+  count: number, firstUsd: number, histories: string[],
+  options: { forecastStop?: boolean; stopModes?: RunPolicy["stopModes"] } = {},
+) {
   const fixture = workflowFixture({ executor: (root) => new ScriptedExecutor(root, firstUsd, true) });
   fixture.executor.store = fixture.service.store;
   const initiatives = new InitiativeService(fixture.service);
@@ -97,7 +100,9 @@ export async function plannedForecastScenario(count: number, firstUsd: number, h
   try {
     let view = await initiatives.start({ commandId: newId(), initiativeId: "values", prompt: "Write values", ownerLabel: "test", model: MODEL,
       plan, keepFeatures: true, featureAutoApproval: { maxTasks: 5, maxFiles: 5 },
-      policy: { ...fixturePolicy, clarification: "assume", checks: [{ ...fixturePolicy.checks[0]!, args: ["-e", "0"] }], sizing: { maxRunTokens: 50_000_000, historyStores: histories } },
+      ...(options.forecastStop ? { forecastStop: true } : {}),
+      policy: { ...fixturePolicy, clarification: "assume", checks: [{ ...fixturePolicy.checks[0]!, args: ["-e", "0"] }], sizing: { maxRunTokens: 50_000_000, historyStores: histories },
+        ...(options.stopModes ? { stopModes: options.stopModes } : {}) },
       budget: { maxTotalTokens: 100_000_000, maxAgentCalls: 1000, maxActiveMs: 21_600_000 },
       costBudget: { maxCostUsd: 30, costTolerance: 0.25 },
     });
