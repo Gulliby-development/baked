@@ -85,7 +85,8 @@ export function providerResponded(signal?: AbortSignal): void {
   if (signal) responses.get(signal)?.();
 }
 
-function connectionError(error: unknown): boolean {
+/** A dropped or refused connection, also when it is the cause of an SDK error (`APICallError`). */
+export function connectionError(error: unknown): boolean {
   const info = error as { name?: string; message?: string; code?: string; cause?: unknown } | null;
   return (
     info?.name === "TimeoutError" ||

@@ -79,10 +79,11 @@ Follow the rules in `AGENTS.md`: the type, labels, the board and the `Priority: 
 - **Sweep:** what you searched, the same-defect places, the linked related issues, the places checked and not affected, and the `Languages:` line from step 3.
 - **Suggested fix:** prefer one shared helper or rule that all the places use over separate patches at each site.
 - **Tests:** a test that fails without the fix. For P0 and P1 bench findings this is a scripted scenario test. Add one case per affected toolchain, language or path from the sweep.
+- **Maintainability:** when the suggested fix adds a shared helper, table or registry that later code must use or extend, name the rule that keeps it complete: a line in `AGENTS.md`, or a skill under `.agents/skills/` linked from it when the rule is large (see "Keep extension points maintainable" in `AGENTS.md`). Otherwise write `None`.
 
 ## 6. When you fix an issue filed this way
 
-Fix every place listed under **Where**. Before opening the pull request, run the sweep searches again on the branch. A new place gets fixed in the same pull request, or gets its own issue linked from the pull request.
+Fix every place listed under **Where**. If the issue names a rule under **Maintainability**, add that rule to `AGENTS.md` (or the linked skill) in the same pull request. Before opening the pull request, run the sweep searches again on the branch. A new place gets fixed in the same pull request, or gets its own issue linked from the pull request.
 
 Report it in a `## Sweep` section of the pull request description:
 
