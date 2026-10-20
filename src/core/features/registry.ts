@@ -1546,7 +1546,7 @@ export const FEATURES: readonly Feature[] = [
     id: "initiative-dollar-budget",
     group: "Initiatives",
     title:
-      "A shared dollar cap with priced low reserves, call growth independent of tokens, and remaining-stage forecasts",
+      "A shared dollar cap with priced low reserves and central remaining-stage forecasts using shared history",
     tui: [
       "/workflow: initiatives, $N in the start form's budget and B, dollars on the budget line",
     ],
