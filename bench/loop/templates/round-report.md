@@ -17,6 +17,12 @@ Stop reasons by count:
 | Stop reason | Count | Runs |
 |---|---|---|
 
+## Would-stops (stop reasons in shadow or advisory mode)
+| Reason | Mode | Records | Justified | False | Unknown | Clean rounds in a row | Promote? |
+|---|---|---|---|---|---|---|---|
+
+<one line per `false` record: app, run, what the stop would have done, what happened instead, finding id>
+
 ## Did last round's fixes work?
 | Issue | Expected metric movement | Measured | Verdict |
 |---|---|---|---|

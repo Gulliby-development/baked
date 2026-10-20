@@ -86,6 +86,13 @@ if (command === "export" && args.length === 2) {
               `${b.estimated ? " estimated" : ""}, deadline ${Math.round(b.limitMs / 1000)} s)`,
           );
       }
+      for (const initiative of replay.initiatives) {
+        console.log(
+          `  initiative ${initiative.initiativeId}: ${initiative.shareGate.length} share-gate decisions, new parks ${initiative.newShareStops}`,
+        );
+        for (const b of initiative.shareGate.filter((b) => b.recorded !== b.replayed))
+          console.log(`    ${b.featureId}: recorded ${b.recorded}, now ${b.replayed}`);
+      }
     }
 } else {
   console.error(usage);

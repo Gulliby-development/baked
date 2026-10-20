@@ -28,10 +28,11 @@ BAKED's host decisions are replayed on recorded bench rounds before a change mer
 | Run cost-forecast stop (`assertForecastFits`) | `replayRun`: rewinds the run to each priced attempt | `newStops` |
 | Cap growth to the forecast | `replayRun` | `newGrowth` |
 | A model call's first-response deadline (`providerFirstByteMs`) | `replayFirstByte`: reads each call's `calls` timing in `attempts/*/usage.json`. Older traces fall back to the attempt length of a one-step buffered CLI attempt | `newFirstByteStops` |
+| An initiative feature's start on its budget share (`shareShortfall`) | `replayShareGate`: reads each `feature.share_gate` initiative event, which records the gate's inputs (remaining budget, dollar cost view, the waiting features' shares and estimates) and its verdict. Keyed by initiative: `"RNN/app.sqlite.gz#INITIATIVE_ID"`. Traces before #1707 record none | `newShareStops` |
 
 The provider fault matrix (`tests/provider-fault-matrix.test.ts`) reads the same traces through `corpusCallProfile`: each recorded call shape's p99 first byte and the recorded `retry-after` waits become its fault profiles (#1729). A new field a profile needs goes into the `calls` timing, so the next round's traces carry it.
 
-Not replayed yet, and tracked in issues: the initiative share gate and plan auto-approval (#1707), and decisions that need the model's answers, such as gates, the case walk and the integrity guard (#1715 step 2, through `--record-model-calls` recordings).
+Not replayed yet, and tracked in issues: plan auto-approval (#1707), and decisions that need the model's answers, such as gates, the case walk and the integrity guard (#1715 step 2, through `--record-model-calls` recordings).
 
 ## When you add or change a host decision
 

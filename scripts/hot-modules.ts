@@ -273,6 +273,20 @@ export async function mutateModule(
   }));
   const originals = new Map(module.paths.map((path) => [path, readFileSync(join(root, path))]));
   const mutants = generateMutants(files, options.max);
+  // Each mutant's deadline comes from a green run: with `--bail` a killed mutant stops early, so
+  // timing the killed ones would time out a full run of a surviving mutant.
+  const runTests = (timeoutMs?: number) =>
+    spawnSync("bun", ["test", "--bail", "--timeout", "30000", ...tests], {
+      cwd: root,
+      encoding: "utf8",
+      ...(timeoutMs === undefined ? {} : { timeout: timeoutMs }),
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  const started = Date.now();
+  const green = tests.length ? runTests() : undefined;
+  if (green && green.status !== 0)
+    throw new Error(`The tests of hot module ${module.id} fail without mutants:\n${green.stdout}${green.stderr}`);
+  const greenMs = Date.now() - started;
   const result = await runMutants("advisory", tests.length ? mutants : [], files, tests, {
     plant: async (path, content) => writeFileSync(join(root, path), content),
     restore: async (path) => {
@@ -280,17 +294,12 @@ export async function mutateModule(
       if (original) writeFileSync(join(root, path), original);
     },
     test: async (timeLeftMs) => {
-      const run = spawnSync("bun", ["test", "--bail", "--timeout", "30000", ...tests], {
-        cwd: root,
-        encoding: "utf8",
-        timeout: timeLeftMs,
-        maxBuffer: 64 * 1024 * 1024,
-      });
+      const run = runTests(timeLeftMs);
       if (run.error && (run.error as NodeJS.ErrnoException).code === "ETIMEDOUT") return { status: "timeout" };
       return run.status === 0 ? { status: "passed" } : { status: "failed", check: "module tests" };
     },
     now: () => Date.now(),
-  }, { budgetMs: options.budgetMs });
+  }, { budgetMs: options.budgetMs, greenMs });
   const since = new Date(Date.now() - options.recentDays * 86_400_000).toISOString();
   const recentFixes = fixMerges(root, "HEAD", since)
     .filter((fix) => touchedModules([module], fix.files).length)
