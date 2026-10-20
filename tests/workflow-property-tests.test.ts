@@ -121,6 +121,39 @@ describe("property tests without a library (#796)", () => {
     expect(propertyTestsNote("implementation", { "JS/TS": true }) ?? "").toContain("fast-check (JS/TS)");
   });
 
+  // #1686: idiomatic JVM and .NET forms and Cargo table declarations were not seen.
+  test("Kotest, IntStream, Kotlin ranges, Enumerable.Range and CsCheck are property tests", () => {
+    const cases: [string, string, string][] = [
+      ["src/test/kotlin/MaskSpec.kt", 'import io.kotest.property.checkAll\nclass MaskSpec : StringSpec({ "masks" { checkAll<Int> { m -> valid(m) shouldBe true } } })', "library"],
+      ["src/test/kotlin/MaskTest.kt", "@Test fun everyByte() { (0..255).forEach { m -> assertTrue(valid(m)) } }", "exhaustive"],
+      ["src/test/kotlin/MaskTest.kt", "@Test fun everyByte() { (0 until 256).forEach { assertTrue(valid(it)) } }", "exhaustive"],
+      ["src/test/java/MaskTest.java", "@Test void everyByte() { IntStream.rangeClosed(0, 255).forEach(m -> assertTrue(valid(m))); }", "exhaustive"],
+      ["tests/MaskTests.cs", "[Fact] public void EveryByte() { foreach (var m in Enumerable.Range(0, 256)) Assert.True(Valid(m)); }", "exhaustive"],
+      ["tests/MaskTests.cs", "using CsCheck;\n[Fact] public void Masks() => Gen.Int[0, 255].Sample(m => Valid(m));", "library"],
+      ["tests/MaskTests.cs", "[Fact] public void Masks() => Gen.Int.Sample(m => Valid(m));", "library"],
+      // Too small a domain is no property test.
+      ["src/test/java/MaskTest.java", "IntStream.range(0, 10).forEach(m -> assertTrue(valid(m)));", "none"],
+      ["tests/MaskTests.cs", "foreach (var m in Enumerable.Range(0, 10)) Assert.True(Valid(m));", "none"],
+    ];
+    for (const [path, content, kind] of cases) expect([path, content, propertyTestKind(path, content) ?? "none"]).toEqual([path, content, kind]);
+  });
+
+  test("kotest-property, CsCheck and Cargo dependency tables of member crates are libraries", () => {
+    const libraries = (files: Record<string, string>, dirs: Record<string, string[]> = {}) =>
+      propertyLibraries({
+        read: (path) => files[path] ?? null,
+        exists: (path) => path in files,
+        list: (dir) => dirs[dir] ?? (dir === "" ? Object.keys(files).filter((f) => !f.includes("/")) : []),
+        pythonImports: () => false,
+      });
+    expect(libraries({ "build.gradle.kts": 'testImplementation("io.kotest:kotest-property:5.9.1")' })["Java/Kotlin"]).toBe(true);
+    expect(libraries({ "App.csproj": '<PackageReference Include="CsCheck" Version="4.0.0" />' })["C#/F#"]).toBe(true);
+    expect(libraries({ "Cargo.toml": '[dev-dependencies.proptest]\nversion = "1"\n' }).Rust).toBe(true);
+    const workspace = { "Cargo.toml": '[workspace]\nmembers = ["crates/*", "cli"]\n', "crates/core/Cargo.toml": '[dev-dependencies]\nproptest = "1"\n', "cli/Cargo.toml": "[dependencies]\n" };
+    expect(libraries(workspace, { "": ["Cargo.toml", "crates", "cli"], crates: ["crates/core"] }).Rust).toBe(true);
+    expect(libraries({ ...workspace, "crates/core/Cargo.toml": "[dependencies]\n" }, { "": ["Cargo.toml", "crates", "cli"], crates: ["crates/core"] }).Rust).toBe(false);
+  });
+
   test("Python is started only for a project with Python in it", () => {
     const asked: string[] = [];
     const probe = (entries: string[]) =>
