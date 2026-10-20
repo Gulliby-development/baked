@@ -430,6 +430,11 @@ export function eventText(event: WorkflowEvent, stages: StageView[]): string | n
       return event.payload.modelId ? `Agent call on ${event.payload.modelId}` : null;
     case "attempt.finished":
       return event.payload.status === "completed" ? null : `Agent call ${event.payload.status}`;
+    // A shadow would-stop is for the round report and status counts, not the person's feed.
+    case "decision.would_stop":
+      return event.payload.mode === "advisory"
+        ? `Would stop (advisory): ${event.payload.summary}`
+        : null;
     case "attempt.advisory":
       return `Progress watcher ${event.payload.action === "stopped" ? "stopped the agent call" : "warned the agent"}: ${event.payload.detail}`;
     case "task.state_changed":

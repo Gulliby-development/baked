@@ -462,6 +462,7 @@ import {
   WorkflowSchema,
 } from "./schemas.js";
 import { specSizeNote, specSizeProblems } from "./spec-size.js";
+import { recordWouldStop, stopFault } from "./stop-reasons.js";
 import {
   repairUncoveredCriteria,
   UNCOVERED_SUBMISSIONS,
@@ -972,7 +973,7 @@ export class WorkflowScheduler {
     const activeBefore = this.store.run(runId).active_ms;
     const arm = () =>
       executionTimeout(
-        () => controller.abort(new WorkflowFault("BUDGET_EXHAUSTED", "Active deadline exhausted")),
+        () => controller.abort(stopFault("deadline", "Active deadline exhausted")),
         Math.max(1, policy.maxActiveMs - activeBefore - (budgetClock.now() - started)),
         budgetClock,
       );
@@ -1964,6 +1965,17 @@ export class WorkflowScheduler {
                             existsSync(join(runRoot(this.store.workspace, state), path)),
                         },
                       );
+                if ("wouldStop" in auto && auto.wouldStop)
+                  recordWouldStop(this.store, runId, {
+                    reason: "approval-scope",
+                    mode: auto.wouldStop.mode,
+                    key: `plan-${digest}`,
+                    summary: `Auto-approval would need a person: ${auto.wouldStop.problems.join("; ")}`,
+                    inputs: {
+                      problems: auto.wouldStop.problems,
+                      limits: policy.autoApproval?.limits,
+                    },
+                  });
                 // A package that leaves the limits only by its size or paths may go to the
                 // approval reviewer (`autoApproval.modelReview`). It fails closed: any error or
                 // an answer other than a low-risk approve leaves the request with a person.
@@ -4841,10 +4853,9 @@ export class WorkflowScheduler {
               compact: true,
             },
           );
-        throw new WorkflowFault(
-          "BUDGET_EXHAUSTED",
+        throw stopFault(
+          "context_window",
           `The model input exceeded the limit of ${profile.model}: ${error instanceof Error ? error.message : String(error)}`,
-          { reason: "context_window" },
         );
       }
       if (placement.primaryError !== undefined && !signal.aborted) {
