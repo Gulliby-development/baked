@@ -2105,13 +2105,14 @@ const CSS_PROPERTY =
   /\b(max-width|min-width|max-height|min-height|margin|padding|overflow-wrap|overflow-x|white-space|word-break|word-wrap|box-sizing|flex-wrap|grid-template-columns)\b|\b(width|height|display|overflow)\s*:/gi;
 const CSS_LENGTH = /\b\d+(?:\.\d+)?(?:rem|em|vw|vh|ch)\b/i;
 
+/** Whether a text states that a page fits a viewport width without horizontal scrolling. */
+export const isLayoutCriterion = (text: string): boolean =>
+  LAYOUT_VIEWPORT.test(text) && LAYOUT_OVERFLOW.test(text);
+
 /** Criteria that a page fits a viewport width without horizontal scrolling. */
 export function layoutCriteria(spec: Pick<Spec, "criteria">): string[] {
   return spec.criteria
-    .filter((c) => {
-      const text = `${c.given}\n${c.when}\n${c.then}`;
-      return LAYOUT_VIEWPORT.test(text) && LAYOUT_OVERFLOW.test(text);
-    })
+    .filter((c) => isLayoutCriterion(`${c.given}\n${c.when}\n${c.then}`))
     .map((c) => c.id);
 }
 

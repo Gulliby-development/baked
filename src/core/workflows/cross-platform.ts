@@ -1,5 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { CROSS_PLATFORM_CRITERION } from "./host-required-criteria.js";
 
 /** CI configuration files whose presence means the project already checks on a CI service. */
 const CI_FILES = [".gitlab-ci.yml", "azure-pipelines.yml", ".circleci/config.yml", ".travis.yml"];
@@ -44,5 +45,5 @@ export function crossPlatformNote(request: string, root: string): string | null 
   // One host proves only what it can run: platform-neutral code and tests that pass here (#1015).
   if (forbidsCi(request))
     return "The request names other operating systems but wants no CI: write criteria this host can check (the code uses platform-neutral path, line-ending and process APIs; the tests pass here), never an automated criterion that claims behavior on Windows, macOS or Linux, and add no CI workflow or platform matrix.";
-  return `${asked ? "The request names CI or other operating systems" : "The project already runs CI"}: add a criterion that the product's tests pass on Windows, macOS and Linux, so delivered tests do not assume one operating system.`;
+  return `${asked ? "The request names CI or other operating systems" : "The project already runs CI"}: add a criterion that ${CROSS_PLATFORM_CRITERION.outcome}, so delivered tests do not assume one operating system.`;
 }
