@@ -53,7 +53,8 @@ const JS_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".c
 export function isTestFile(path: string): boolean {
   const name = posix.basename(path);
   if (GO_FILE.test(name)) return name.endsWith("_test.go");
-  if (PY_FILE.test(name)) return /^test_.*\.py$|_test\.py$/.test(name);
+  // Django keeps an app's tests in `tests.py` (#1683); pytest runs a file it is given by path.
+  if (PY_FILE.test(name)) return /^test_.*\.py$|_test\.py$|^tests\.py$/.test(name);
   if (!JS_FILE.test(name)) return false;
   return /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(name) || /(^|\/)(__tests__)\//.test(path);
 }
@@ -74,7 +75,13 @@ export function isCompiledTestFile(path: string): boolean {
   if (CS_FILE.test(name))
     return (
       !parts.some((part) => part === "obj" || part === "bin") &&
-      (/Tests?\.cs$/.test(name) || parts.slice(0, -1).some((part) => /(?:^|\.)tests?$/i.test(part)))
+      (/Tests?\.cs$/.test(name) ||
+        // `App.Tests/`, `App.UnitTests/`, `App.IntegrationTests/` (#1683).
+        parts
+          .slice(0, -1)
+          .some((part) =>
+            /(?:^|\.)(?:unit|integration|functional|acceptance|e2e)?tests?$/i.test(part),
+          ))
     );
   if (RS_FILE.test(name)) return parts.at(-2) === "tests";
   return JVM_FILE.test(name) && /(?:^|\/)src\/test\//.test(normal);
