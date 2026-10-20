@@ -72,7 +72,7 @@ import {
 import { staticCorrection } from "../src/core/workflows/scheduler.js";
 import { ASSERTION_FAILURES } from "./helpers/assertion-failures.js";
 import { failureOwner } from "../src/core/workflows/task-graph.js";
-import type { Check, RunPolicy, RuntimeState, TaskGraph } from "../src/core/workflows/schemas.js";
+import { type Check, type RunPolicy, type RuntimeState, type TaskGraph, uncontractedBuildCriteria } from "../src/core/workflows/schemas.js";
 import type { TaskRow, WorkflowStore } from "../src/core/workflows/store.js";
 import { scanTestIntegrity, testChanges } from "../src/core/workflows/test-integrity.js";
 import type { Task } from "../src/core/workflows/types.js";
@@ -1235,6 +1235,36 @@ for (const stack of STACKS) {
       expect(scan(renamed)).toEqual([]);
       expect(scan(renamed, { protects })).toEqual([]);
       expect(testChanges({ path: sample.path, before, after: renamed })).toEqual({ added: [], renamed: { [name("intervalWorkload")]: name("serializedLocation") } });
+    });
+  });
+}
+
+/** The build command a process test of the stack runs before it starts the program (#1661). */
+const PROCESS_BUILD: Record<Stack, string> = {
+  bun: "bun run build",
+  npm: "npm run build",
+  python: "python -m build",
+  go: "go build -o BIN ../..",
+  rust: "cargo build",
+  maven: "mvn package",
+  dotnet: "dotnet build",
+};
+
+for (const stack of STACKS) {
+  const checks = () => detectGates(project(FIXTURES[stack].files)).filter((s) => s.preselected).map((s) => s.check);
+  const criterion = (given: string, when: string, then: string) => ({
+    ...fixtureSpec,
+    criteria: [{ ...fixtureSpec.criteria[0]!, id: "AC-009", given, when, then }],
+  });
+  describe(`gate matrix: ${stack} build criteria`, () => {
+    cell(stack, "build criteria: a process test that builds the program is proven by the stack's checks", () => {
+      const spec = criterion("the sole process test", `it runs \`${PROCESS_BUILD[stack]}\` and then the built program`, "the program prints the tree");
+      expect(uncontractedBuildCriteria(spec, checks())).toEqual([]);
+    });
+    cell(stack, "build criteria: a production build is proven only where a check compiles the project", () => {
+      const spec = criterion("the release", "it is prepared", "the production build succeeds");
+      const compiled = stack === "go" || stack === "rust" || stack === "maven" || stack === "dotnet";
+      expect(uncontractedBuildCriteria(spec, checks())).toEqual(compiled ? [] : ["AC-009"]);
     });
   });
 }
