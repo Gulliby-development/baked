@@ -2,5 +2,5 @@
 # Hidden acceptance check: runs in the finished workspace; exit 0 means the task passed.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-cp "$HERE/hidden/hidden.test.ts" ./hidden-check.test.ts
+cp "$HERE/hidden/check.ts" ./hidden-check.test.ts
 bun test ./hidden-check.test.ts
