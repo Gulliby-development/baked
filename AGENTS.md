@@ -44,6 +44,7 @@ BAKED is a TypeScript coding agent with an OpenTUI/React terminal UI and a headl
 - A new provider adapter joins the provider fault matrix (`FAULT_PROVIDERS` in `tests/helpers/faulty-provider.ts`, run by `tests/provider-fault-matrix.test.ts`) in the same pull request, and a new timer, retry or limit on model calls adds the fault profile that exercises it, with the class it expects: an answer, an outage, a retry, a model mistake or a host fault.
 - Keep comments focused on non-obvious intent. Keep documentation technical: setup, behavior, architecture, troubleshooting, and development.
 - Preserve user changes already present in the working directory.
+- Code that branches on a language, file extension, manifest or toolchain takes its data from an exhaustive per-language record (`LanguageRecord` in `src/core/intelligence/language-records.ts`): a row for every supported language, or `none(reason)` where the language has no such thing. Register each record in `tests/language-parity.test.ts`, with a golden in every language's fixture under `tests/fixtures/languages/`. Adding a language to `SUPPORTED_LANGUAGES` means filling every record and adding its fixture; the compiler and the parity test list what is missing.
 - Provider names in runtime code (Claude, OpenAI, Codex, GitHub Copilot, GitHub Models) describe supported integrations. Do not rename them when editing these instructions or other contributor documentation.
 
 ## Language

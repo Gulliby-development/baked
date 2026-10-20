@@ -1,0 +1,21 @@
+{
+  "files": {
+    "src/main/java/Sum.java": "class Sum {\n  int sum(int a, int b) {\n    throw new IllegalStateException(\"not implemented\");\n  }\n}\n",
+    "src/test/java/SumTest.java": "class SumTest {}\n",
+    "pom.xml": "<project>\n  <dependencies>\n    <dependency>\n      <groupId>com.google.guava</groupId>\n      <artifactId>guava</artifactId>\n      <version>33.0.0-jre</version>\n    </dependency>\n  </dependencies>\n</project>\n"
+  },
+  "expected": {
+    "tests": [
+      "src/test/java/SumTest.java"
+    ],
+    "manifests": [
+      "pom.xml"
+    ],
+    "dependencies": [
+      "pom.xml: maven com.google.guava:guava"
+    ],
+    "placeholders": [
+      "src/main/java/Sum.java:3"
+    ]
+  }
+}

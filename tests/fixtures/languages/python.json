@@ -1,0 +1,21 @@
+{
+  "files": {
+    "app/sum.py": "def sum(a, b):\n    raise NotImplementedError\n",
+    "app/tests.py": "from app.sum import sum\n",
+    "pyproject.toml": "[project]\nname = \"fixture\"\ndependencies = [\"requests>=2\"]\n"
+  },
+  "expected": {
+    "tests": [
+      "app/tests.py"
+    ],
+    "manifests": [
+      "pyproject.toml"
+    ],
+    "dependencies": [
+      "pyproject.toml: pypi requests"
+    ],
+    "placeholders": [
+      "app/sum.py:2"
+    ]
+  }
+}

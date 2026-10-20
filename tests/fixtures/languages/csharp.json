@@ -1,0 +1,21 @@
+{
+  "files": {
+    "src/App/Sum.cs": "class Sum {\n  int Add(int a, int b) {\n    throw new NotImplementedException();\n  }\n}\n",
+    "src/App.Tests/Checks.cs": "class Checks {}\n",
+    "src/App/App.csproj": "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <PackageReference Include=\"Newtonsoft.Json\" Version=\"13.0.3\" />\n  </ItemGroup>\n</Project>\n"
+  },
+  "expected": {
+    "tests": [
+      "src/App.Tests/Checks.cs"
+    ],
+    "manifests": [
+      "src/App/App.csproj"
+    ],
+    "dependencies": [
+      "src/App/App.csproj: nuget Newtonsoft.Json"
+    ],
+    "placeholders": [
+      "src/App/Sum.cs:3"
+    ]
+  }
+}
