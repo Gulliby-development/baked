@@ -227,6 +227,20 @@ export function recordedAttempts(paths: readonly string[], key: string): string[
   return attempts;
 }
 
+/**
+ * The calls of each key by attempt and call number, the keys in the order they were first
+ * recorded. Storage order is the time an artifact was written, which two calls can share or, with
+ * a clock step, invert: a macOS merge-queue run listed a replay's second call first (#1656).
+ */
+function inCallOrder(calls: RecordedCall[]): RecordedCall[] {
+  const keys = [...new Set(calls.map((call) => call.key))];
+  return keys.flatMap((key) =>
+    calls
+      .filter((call) => call.key === key)
+      .sort((a, b) => a.attempt - b.attempt || a.call - b.call),
+  );
+}
+
 /** The model calls a run recorded, in the order it stored them (`workflow recording`). */
 export function runRecording(store: WorkflowStore, runId: string): Recording {
   const calls = store
@@ -240,7 +254,7 @@ export function runRecording(store: WorkflowStore, runId: string): Recording {
       "NOT_FOUND",
       `Run ${runId} recorded no model calls; start a run with --record-model-calls to record one`,
     );
-  return { schemaVersion: 1, runId, calls };
+  return { schemaVersion: 1, runId, calls: inCallOrder(calls) };
 }
 
 /** A start policy that records the run's model calls, or replays them from a recording file. */
