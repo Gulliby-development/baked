@@ -616,7 +616,8 @@ describe("gate matrix: criteria scenario labels (#1565)", () => {
     const task = { criterionIds: ["AC-001"], writes: [{ path: sample.path, action: "create" as const }] };
     const cases = criterionCases({ criteria: [{ id: "AC-001", requirementIds: ["FR-001"], given: 'the "repeated flag" and `success` scenarios', when: "tests run", then: "| Input | expected |\n| --- | --- |\n| repeated flag | last value |\n| success | zero status |\n| --path src/cli | selected |\n| Join([3,0,-2]) | joined |", method: "automated" }] }, task);
     expect(writtenTestPaths(task)).toEqual([sample.path]);
-    expect(cases.map((c) => c.literal)).toEqual(["--path src/cli", "Join([3,0,-2])"]);
+    // An expression cell asks for its literal arguments (#1663).
+    expect(cases.map((c) => c.literal)).toEqual(["--path src/cli", "[3,0,-2]"]);
     expect(missingCases(cases, [sample.text])).toEqual([]);
     expect(missingCases(cases, [sample.text.replace("src/cli", "SRC")]).map((c) => c.literal)).toEqual(["--path src/cli"]);
   });
