@@ -1,0 +1,21 @@
+{
+  "files": {
+    "sum.go": "package sum\n\nfunc Sum(a, b int) int {\n\tpanic(\"not implemented\")\n}\n",
+    "sum_test.go": "package sum\n",
+    "go.mod": "module example.com/fixture\n\ngo 1.22\n\nrequire github.com/google/uuid v1.6.0\n"
+  },
+  "expected": {
+    "tests": [
+      "sum_test.go"
+    ],
+    "manifests": [
+      "go.mod"
+    ],
+    "dependencies": [
+      "go.mod: go github.com/google/uuid"
+    ],
+    "placeholders": [
+      "sum.go:4"
+    ]
+  }
+}

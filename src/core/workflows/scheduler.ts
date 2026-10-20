@@ -65,7 +65,10 @@ import {
   reviewLimitAccepts,
   STYLE_UNSHOWN,
 } from "../verification/convergence-stop.js";
-import { caseCheck as criteriaCaseCheck } from "../verification/criteria-cases.js";
+import {
+  caseCheck as criteriaCaseCheck,
+  writtenTestPaths,
+} from "../verification/criteria-cases.js";
 import { canHold } from "../verification/deliverable-paths.js";
 import { type DocExampleResult, isDocFile, runDocExamples } from "../verification/doc-examples.js";
 import {
@@ -231,6 +234,7 @@ import {
   recordDeclaredLimits,
   settledConflicts,
 } from "./conflict-decisions.js";
+import { auditVerified, type ContestedRow, contestedRows, verbatimRow } from "./conflict-rows.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
 import { costToleranceOf, currentCostCap, inCostWrapUp } from "./cost-tolerance.js";
 import { coverageFinding } from "./coverage.js";
@@ -418,6 +422,7 @@ import {
 } from "./rollback.js";
 import {
   type AgentProfile,
+  type Analysis,
   AnalysisSchema,
   type ApprovalReview,
   ApprovalReviewSchema,
@@ -3736,6 +3741,29 @@ export class WorkflowScheduler {
     };
   }
   /** Existing-test parts do not repeat cases assigned to new test files of the same split. */
+  /**
+   * The task without the criteria a person's answer to its spec conflict overruled (#1709): the
+   * answer, not the overruled row, is what its tests follow, so the walk stops demanding the row's
+   * literals. An answer that names some of the contested criteria overrules only those.
+   */
+  private answeredCaseTask(runId: string, task: Task): Task {
+    const overruled = new Set(
+      conflictDecisions(this.store, runId)
+        .filter((d) => d.taskId === task.id && d.criterionIds?.length)
+        .flatMap((d) => {
+          const contested = d.criterionIds ?? [];
+          const named = contested.filter((id) =>
+            new RegExp(`(?<![\\w-])${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`).test(
+              d.answer,
+            ),
+          );
+          return named.length ? named : contested;
+        }),
+    );
+    return overruled.size
+      ? { ...task, criterionIds: task.criterionIds.filter((id) => !overruled.has(id)) }
+      : task;
+  }
   private caseTask(state: RuntimeState, task: Task): Task {
     const graph = state.rootGraph ?? state.graph;
     if (!graph || task.origin !== "planned" || !task.writes.every((w) => w.action !== "create"))
@@ -4380,7 +4408,7 @@ export class WorkflowScheduler {
         : undefined;
     const literalCaseCheck =
       task && profile.output === "implementation"
-        ? criteriaCaseCheck(state.spec, this.caseTask(state, task), {
+        ? criteriaCaseCheck(state.spec, this.answeredCaseTask(runId, this.caseTask(state, task)), {
             checks: policy.checks,
             tasks: (state.rootGraph ?? state.graph)?.tasks ?? [],
           })
@@ -5945,7 +5973,7 @@ ${note}`;
         ),
       );
       if (result.outcome === "spec_conflict" && result.taskId === task.id) {
-        this.specConflict(runId, state, policy, child, task, result);
+        this.specConflict(runId, state, policy, child, task, result, root);
         return;
       }
       if (result.outcome === "implemented")
@@ -6803,7 +6831,15 @@ ${note}`;
     const { entry } = outcome;
     let failure: unknown = null;
     if (outcome.kind === "conflict")
-      this.specConflict(runId, state, policy, entry.child, entry.task, outcome.result);
+      this.specConflict(
+        runId,
+        state,
+        policy,
+        entry.child,
+        entry.task,
+        outcome.result,
+        join(this.store.workspace, entry.path),
+      );
     else if (outcome.kind === "done") {
       if (!fatal) await this.integrateTask(runId, state, policy, profiles, outcome, signal);
       delete state.taskCarry[entry.task.id];
@@ -9050,10 +9086,18 @@ ${note}`;
     child: string,
     task: Task,
     result: Implementation,
+    root: string,
   ): void {
-    const account = { taskId: task.id, summary: result.summary, unresolved: result.unresolved };
     const report = [result.summary, ...result.unresolved].join(" ");
+    const rows = this.contestedRows(runId, state, task, report, root);
+    const account = {
+      taskId: task.id,
+      summary: result.summary,
+      unresolved: result.unresolved,
+      ...(rows.length ? { criterionIds: rows.map((r) => r.criterion.id) } : {}),
+    };
     const assumedPath = `assumptions/conflicts/${task.id}.json`;
+    if (this.settleContestedRows(runId, state, child, task, rows, account, report)) return;
     // A fully confident spec finding that explicitly names test removals outranks our guard,
     // even under clarification ask. Bind only the host findings, preserving the spec finding.
     if (!this.store.latestArtifact(runId, assumedPath)) {
@@ -9317,12 +9361,120 @@ ${note}`;
       questions: [
         {
           id: `SPEC-CONFLICT-${task.id}`,
-          question: `Task ${task.id} (${task.title}) reports that the spec and the tests cannot both hold: ${result.summary}${result.unresolved.length ? ` ${result.unresolved.join(" ")}` : ""} Which one is right? The task runs again with your answer; it may not weaken the tests to fit.${last ? ` It already ran under your earlier answer and reported the conflict again; earlier answer: ${last.answer.slice(0, 800)}` : ""}`,
+          question: `Task ${task.id} (${task.title}) reports that the spec and the tests cannot both hold: ${result.summary}${result.unresolved.length ? ` ${result.unresolved.join(" ")}` : ""}${rows.length ? ` The spec states: ${rows.map(verbatimRow).join(" ")}` : ""} Which one is right? The task runs again with your answer; it may not weaken the tests to fit.${last ? ` It already ran under your earlier answer and reported the conflict again; earlier answer: ${last.answer.slice(0, 800)}` : ""}`,
           blocking: true,
         },
       ],
       specConflict: account,
     });
+  }
+  /**
+   * The criteria a conflict report names, with the audit's verdicts and the literals the task's
+   * test files changed when they copied them (#1709).
+   */
+  private contestedRows(
+    runId: string,
+    state: RuntimeState,
+    task: Task,
+    report: string,
+    root: string,
+  ): ContestedRow[] {
+    if (!state.spec) return [];
+    const paths = [
+      ...writtenTestPaths(task),
+      ...(task.rows?.length && task.rowTest ? [task.rowTest.data] : []),
+    ];
+    const tests = paths.flatMap((path) => {
+      for (const base of [root, runRoot(this.store.workspace, state)]) {
+        try {
+          return [readFileSync(workspacePath(base, path), "utf8")];
+        } catch {}
+      }
+      return [];
+    });
+    const analysis = this.store
+      .artifacts(runId)
+      .filter((a) => a.kind === "analysis")
+      .at(-1);
+    let derivations: Analysis["derivations"];
+    if (analysis)
+      try {
+        derivations = (JSON.parse(this.store.readArtifact(runId, analysis.id)) as Analysis)
+          .derivations;
+      } catch {}
+    return contestedRows(state.spec, report, tests, derivations);
+  }
+  /**
+   * A conflict about a criterion row that is not one (#1709): the task's test changed the row's
+   * literal when it copied it, so the task goes back with the row as written; or the derivation
+   * audit recomputed every row of the contested criteria from the requirements and agreed, so
+   * the rows win. Each settles once per task; a second report of the same conflict is asked, with
+   * the rows quoted verbatim.
+   */
+  private settleContestedRows(
+    runId: string,
+    state: RuntimeState,
+    child: string,
+    task: Task,
+    rows: ContestedRow[],
+    account: Record<string, unknown>,
+    report: string,
+  ): boolean {
+    const misquoted = rows.flatMap((r) => r.misquoted.map((m) => ({ ...m, id: r.criterion.id })));
+    const verified = rows.length > 0 && rows.every(auditVerified);
+    const misquotePath = `assumptions/conflicts/${task.id}-misquoted.json`;
+    const verifiedPath = `assumptions/conflicts/${task.id}-audited.json`;
+    const rowsText = rows.map(verbatimRow).join(" ");
+    if (misquoted.length && !this.store.latestArtifact(runId, misquotePath)) {
+      const settled = `The test of ${task.id} does not use the criterion rows as written: ${misquoted.map((m) => `${m.id} states ${JSON.stringify(m.literal)}, the test has ${JSON.stringify(m.quoted)}`).join("; ")}`;
+      this.store.transaction(() => {
+        this.store.artifact(
+          runId,
+          "diagnostic",
+          `tasks/conflicts/${task.id}.json`,
+          canonical(account),
+        );
+        this.store.artifact(
+          runId,
+          "assumption",
+          misquotePath,
+          canonical({ ...account, assumed: settled, misquoted }),
+        );
+        this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
+        this.store.finishStep(runId, child, "failed");
+      });
+      state.prompt += `\nSettled spec conflict (${misquotePath}): task ${task.id} reported that the spec contradicts the code: ${report.slice(0, 1200)} ${settled}. Copy each row's input and expected value into the test exactly as the criterion states them (${rowsText.slice(0, 2000)}), run the checks again, and report spec_conflict only if the code still disagrees with the row as written.${verified ? " The derivation audit recomputed these rows from the requirements and they match: the rows are right." : ""}`;
+      return true;
+    }
+    if (verified && !misquoted.length && !this.store.latestArtifact(runId, verifiedPath)) {
+      const ids = rows.map((r) => r.criterion.id).join(", ");
+      const settled = `The audit-verified rows of ${ids} win: the derivation audit recomputed each of them from the requirements and they match`;
+      this.store.transaction(() => {
+        this.store.artifact(
+          runId,
+          "diagnostic",
+          `tasks/conflicts/${task.id}.json`,
+          canonical(account),
+        );
+        this.store.artifact(
+          runId,
+          "assumption",
+          verifiedPath,
+          canonical({ ...account, assumed: settled }),
+        );
+        recordConflictDecision(this.store, runId, {
+          requestId: `audited-${task.id}`,
+          taskId: task.id,
+          findingIds: task.findingIds,
+          answer: `Settled by the derivation audit (${verifiedPath}): ${settled}.`,
+        });
+        this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
+        this.store.finishStep(runId, child, "failed");
+      });
+      state.prompt += `\nSettled spec conflict (${verifiedPath}): task ${task.id} reported that the spec contradicts the code or its tests: ${report.slice(0, 1200)} ${settled}: ${rowsText.slice(0, 2000)} Keep each row's input and expected value exactly as written in the tests, make the code give them, and report implemented or already_satisfied, not spec_conflict.`;
+      return true;
+    }
+    return false;
   }
   /**
    * The findings of a corrective task whose repros still reproduced in its latest repro check

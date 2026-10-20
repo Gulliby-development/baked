@@ -1,0 +1,19 @@
+{
+  "files": {
+    "lib/sum.ex": "defmodule Sum do\n  def sum(a, b) do\n    raise \"not implemented\"\n  end\nend\n",
+    "lib/sum_test.exs": "ExUnit.start()\n",
+    "mix.exs": "defmodule Fixture.MixProject do\nend\n"
+  },
+  "expected": {
+    "tests": [
+      "lib/sum_test.exs"
+    ],
+    "manifests": [
+      "mix.exs"
+    ],
+    "dependencies": null,
+    "placeholders": [
+      "lib/sum.ex:3"
+    ]
+  }
+}

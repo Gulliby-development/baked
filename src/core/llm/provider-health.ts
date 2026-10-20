@@ -6,7 +6,7 @@ import type {
 } from "@ai-sdk/provider";
 import { UnsupportedFunctionalityError } from "@ai-sdk/provider";
 import { generateText, type LanguageModel, type LanguageModelUsage, wrapLanguageModel } from "ai";
-import { executionTimeout } from "../workflows/execution-clock.js";
+import { executionClock, executionTimeout } from "../workflows/execution-clock.js";
 
 export const PROVIDER_FIRST_BYTE_MS = 60_000;
 export const PROVIDER_BACKOFF_MAX_MS = 5 * 60_000;
@@ -68,6 +68,17 @@ export function callReasoning(
   return { ...(effort !== undefined ? { effort } : {}), streamsReasoning };
 }
 
+/**
+ * One model call's timing and what its first-response deadline depends on, so a recorded run can
+ * be replayed against a changed deadline (#1715). Times are execution time in milliseconds;
+ * `firstByteMs` is null when no response came.
+ */
+export interface CallTiming extends CallReasoning {
+  provider: string;
+  firstByteMs: number | null;
+  durationMs: number;
+}
+
 export class ProviderUnreachableError extends Error {
   readonly code = "provider_unreachable";
   constructor(
@@ -85,7 +96,8 @@ export function providerResponded(signal?: AbortSignal): void {
   if (signal) responses.get(signal)?.();
 }
 
-function connectionError(error: unknown): boolean {
+/** A dropped or refused connection, also when it is the cause of an SDK error (`APICallError`). */
+export function connectionError(error: unknown): boolean {
   const info = error as { name?: string; message?: string; code?: string; cause?: unknown } | null;
   return (
     info?.name === "TimeoutError" ||
@@ -106,6 +118,8 @@ export interface ProviderWatch {
   firstByteMs?: number;
   /** Output kind of the workflow profile, also used by continuations and format correction. */
   stage?: string;
+  /** Called once per call when it ends, with its timing. */
+  timing?: (call: CallTiming) => void;
 }
 
 /**
@@ -132,6 +146,8 @@ export function withProviderHealth(
         const reasoning = { stage: watch.stage, ...callReasoning(params.providerOptions) };
         const settle = watch.pending?.(silentReasoning(adapted.provider, reasoning));
         let responded = false;
+        const startedAt = executionClock.now();
+        let firstByteAt: number | null = null;
         const firstByteMs = watch.firstByteMs ?? providerFirstByteMs(adapted.provider, reasoning);
         const cancel = executionTimeout(
           () =>
@@ -147,6 +163,7 @@ export function withProviderHealth(
           if (signal.aborted) return;
           if (!responded) {
             responded = true;
+            firstByteAt = executionClock.now();
             cancel();
             settle?.(true);
           }
@@ -268,6 +285,12 @@ export function withProviderHealth(
           throw error;
         } finally {
           cancel();
+          watch.timing?.({
+            provider: adapted.provider,
+            ...reasoning,
+            firstByteMs: firstByteAt === null ? null : Math.ceil(firstByteAt - startedAt),
+            durationMs: Math.ceil(executionClock.now() - startedAt),
+          });
           if (abort) signal.removeEventListener("abort", abort);
           responses.delete(signal);
           if (!responded) settle?.(false);

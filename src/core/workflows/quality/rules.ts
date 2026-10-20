@@ -10,6 +10,7 @@
 import { spawnSync } from "node:child_process";
 import { extname } from "node:path";
 import { blankStringLiterals } from "../../intelligence/comments.js";
+import { detectLanguageFromPath } from "../../intelligence/types.js";
 import { workspacePath } from "../../specs/validate.js";
 import { executionTimeout } from "../execution-clock.js";
 import { BUILTIN_RULES, type RuleSeverity } from "./builtin-rules.js";
@@ -155,6 +156,7 @@ export function checkBuiltinRules(files: ChangedFile[], settings: RuleSettings):
   for (const file of files) {
     const ext = extname(file.path).toLowerCase();
     const test = isTestCodePath(file.path);
+    const language = detectLanguageFromPath(file.path);
     const lines = file.content.split("\n");
     const code = blankStringLiterals(file.path, file.content).split("\n");
     const added = addedLines(file.before, file.content);
@@ -167,7 +169,7 @@ export function checkBuiltinRules(files: ChangedFile[], settings: RuleSettings):
       if (!changed.size) continue;
       for (let i = 0; i < lines.length; i++) {
         if (rule.whitespace && !changed.has(i)) continue;
-        const span = rule.match(rule.code ? code : lines, i);
+        const span = rule.match(rule.code ? code : lines, i, language);
         if (!span?.some((line) => changed.has(line))) continue;
         const severity = severityOf(settings, rule.id, rule.severity);
         out.push({

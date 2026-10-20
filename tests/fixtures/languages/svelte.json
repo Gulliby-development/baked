@@ -1,0 +1,16 @@
+{
+  "files": {
+    "src/Sum.svelte": "<script lang=\"ts\">\nfunction sum(a: number, b: number): number {\n  throw new Error(\"not implemented\");\n}\n</script>\n",
+    "package.json": "{\"name\": \"fixture\", \"dependencies\": {\"svelte\": \"^5.0.0\"}}"
+  },
+  "expected": {
+    "tests": null,
+    "manifests": null,
+    "dependencies": [
+      "package.json: npm svelte"
+    ],
+    "placeholders": [
+      "src/Sum.svelte:3"
+    ]
+  }
+}
