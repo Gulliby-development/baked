@@ -12,6 +12,7 @@ import { ProcessScope } from "../src/core/workflows/process-scope.js";
 import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
 import { growthLimit, type InitiativeView, rebaseView, shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.js";
+import { historyFixture, plannedForecastScenario } from "./helpers/initiative-planned-forecast.js";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { directoryFixers, directoryFixerScenario } from "./helpers/directory-fixer-scenario.js";
 import { spawnSync } from "node:child_process";
@@ -80,6 +81,25 @@ import {
   ensureRunWorktree,
   runContentCommit,
 } from "../src/core/workflows/worktree.js";
+
+test("#1643 initiative ceiling gate uses central stage prices from shared history", async () => {
+  const history = await historyFixture(27.3 / 11);
+  try {
+    const { fixture, initiatives, view } = await plannedForecastScenario(12, 0.72, [history.root]);
+    try {
+      expect(view.budget.cost).toMatchObject({ capUsd: 30, tolerance: 0.25, ceilingUsd: 37.5, spentUsd: 0.72 });
+      expect(view.next).toMatchObject({ kind: "start", featureId: "f2" });
+      expect(shareShortfall(view, view.features[1]!)).toBeNull();
+      const over = { ...view, budget: { ...view.budget, cost: { ...view.budget.cost, forecastUsd: 37.51 } } };
+      expect(shareShortfall(over, view.features[1]!)?.message).toContain("above its $37.50 ceiling");
+      const at = { ...view, budget: { ...view.budget, cost: { ...view.budget.cost, forecastUsd: 37.5 } } };
+      expect(shareShortfall(at, view.features[1]!)).toBeNull();
+      const estimate = initiatives.estimate("values", 0);
+      expect(view.budget.cost.forecastUsd).toBeCloseTo(0.72 + estimate.features.slice(1)
+        .reduce((sum, f) => sum + (f.costUsd!.low + f.costUsd!.high) / 2, 0), 2);
+    } finally { await fixture.dispose(); }
+  } finally { await history.dispose(); }
+}, 60000);
 
 /**
  * The gate matrix (#854): every supported stack against every quality gate's decision, without a

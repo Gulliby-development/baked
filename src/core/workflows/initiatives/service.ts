@@ -70,6 +70,7 @@ import {
   SIZE_STAGE_FACTOR,
   SIZE_TASK_FACTOR,
 } from "./estimate.js";
+import { initiativePriceSamples } from "./forecast.js";
 import {
   applySplitEdit,
   boundaryPathCounts,
@@ -2174,9 +2175,11 @@ export class InitiativeService {
   ): void {
     const settings = this.store.settings(row);
     if (!settings.costBudget) return;
-    const samples = forecastSamples(
+    const samples = initiativePriceSamples(
       this.workflows.store,
       this.store.links(row.id).map((l) => l.run_id),
+      history,
+      historyStorePaths(this.workflows.workspace, settings.basePolicy),
     );
     const planned = new Map<string, PlannedStage[]>();
     for (const feature of estimate.features) {
@@ -2220,11 +2223,13 @@ export class InitiativeService {
   ): number | null {
     const store = this.workflows.store;
     const links = this.store.links(row.id);
-    const samples = forecastSamples(
+    const history = estimateHistory(store, this.workflows.workspace, settings.basePolicy);
+    const samples = initiativePriceSamples(
       store,
       links.map((l) => l.run_id),
+      history,
+      historyStorePaths(this.workflows.workspace, settings.basePolicy),
     );
-    const history = estimateHistory(store, this.workflows.workspace, settings.basePolicy);
     const planned = new Map<string, PlannedStage[]>();
     let usd = 0;
     for (const feature of estimate.features) {
