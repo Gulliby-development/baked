@@ -2183,7 +2183,7 @@ describe("initiative dollar forecast gate (#1607)", () => {
       const view = {
         initiativeId: "values",
         budget: { remaining: { tokens: 20_000_000, calls: 1000, activeMs: 21_600_000 },
-          cost: { capUsd: 30, ceilingUsd: 30 * (1 + tolerance), spentUsd: 5 * spent * 9e-6, forecastUsd, measuredFeatures: 5, forecastBinding: true },
+          cost: { capUsd: 30, ceilingUsd: 30 * (1 + tolerance), spentUsd: 5 * spent * 9e-6, forecastUsd, measuredFeatures: 5, forecastBinding: true, forecastMode: "enforce" },
         },
         features: estimate.features.map((f, i) => ({ id: f.featureId, size: f.size, state: i < 5 ? "accepted" : "ready",
           share: i < 5 ? null : { tokens: 1_000_000, calls: 100, activeMs: 1_000_000 }, shareUsd: i < 5 ? null : 2.5, need: f.tokens,
@@ -2193,6 +2193,9 @@ describe("initiative dollar forecast gate (#1607)", () => {
       const shortfall = shareShortfall(view, view.features[5]!);
       if (spent === 252_000) expect(shortfall).toBeNull();
       else expect(shortfall?.message).toContain("The initiative's cost forecast is");
+      // In shadow or advisory mode the same binding forecast only records a would-stop (#1714).
+      for (const forecastMode of ["shadow", "advisory"] as const)
+        expect(shareShortfall({ ...view, budget: { ...view.budget, cost: { ...view.budget.cost, forecastMode } } }, view.features[5]!)).toBeNull();
     });
 });
 
