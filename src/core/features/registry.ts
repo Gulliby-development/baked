@@ -1543,6 +1543,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/initiatives: Split the critical path; Critical path in the split approval"],
   },
   {
+    id: "initiative-light-contracts",
+    group: "Initiatives",
+    title: "Small features that others depend on run the light workflow with a host-made contract",
+    tui: ["/workflow: initiative start, Contracts light"],
+    cli: ["baked workflow initiative start: --light-contracts"],
+    api: ["/v1/initiatives: lightContracts"],
+    desktop: ["project/initiatives: Light runs for small contracts"],
+  },
+  {
     id: "initiative-dollar-budget",
     group: "Initiatives",
     title:

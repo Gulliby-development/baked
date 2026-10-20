@@ -528,6 +528,12 @@ export const PolicySchema = z
      */
     criticalPath: z.enum(["off", "split"]).optional(),
     /**
+     * `on` lets a small initiative feature that other features depend on run the light workflow:
+     * its host-made spec states the feature's contract and is recorded as the run's spec.json, so
+     * dependents pin it (#1664). Absent means `off`, so stored policies keep their hash.
+     */
+    lightContracts: z.enum(["off", "on"]).optional(),
+    /**
      * The duplication and dead-code ratchet (quality/duplication.ts). Absent means `warn`: copies
      * and unused declarations the run adds are reported, never blocking, so stored policies keep
      * their hash. `ratchet` makes them blocking findings; `off` skips the measurement.
@@ -1722,6 +1728,12 @@ export interface StartRequest {
    * plan must write them in one host-written task with exactly this content (#1461).
    */
   hostFiles?: { path: string; content: string }[];
+  /**
+   * The contract this run provides to the initiative features that depend on it. A definition
+   * without a spec stage states it in its host-made spec and records that spec as the run's
+   * spec.json, the artifact a dependent pins (#1664).
+   */
+  contract?: string;
   /** Approved boundaries used to route review findings to their owning initiative feature. */
   initiativeBounds?: {
     featureId: string;

@@ -41,6 +41,7 @@ export function NewInitiativeDialog({
   const [forecastStop, setForecastStop] = useState(false);
   const [keepFeatures, setKeepFeatures] = useState(false);
   const [splitCriticalPath, setSplitCriticalPath] = useState(false);
+  const [lightContracts, setLightContracts] = useState(false);
   const [askGit, setAskGit] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
   const definitions = useLoad(projectKey, "definitions", start.definitions);
@@ -57,6 +58,7 @@ export function NewInitiativeDialog({
     forecastStop,
     keepFeatures,
     splitCriticalPath,
+    lightContracts,
   });
   return (
     <FormDialog
@@ -263,6 +265,21 @@ export function NewInitiativeDialog({
           {splitCriticalPath
             ? "A feature that holds more than a third of the longest chain of dependencies is split into parts that run side by side, unless the decomposer says why it stays whole. Each extra feature pays its own fixed stages."
             : "Features keep the boundaries the decomposer gave them, however long their chain."}
+        </span>
+      </div>
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-2.5">
+          <Switch
+            id={`${ids}-contracts`}
+            checked={lightContracts}
+            onCheckedChange={setLightContracts}
+          />
+          <Label htmlFor={`${ids}-contracts`}>Light runs for small contracts</Label>
+        </div>
+        <span className={HINT}>
+          {lightContracts
+            ? "A feature of one or two files that others depend on runs quick too. Its run records a spec of the feature's contract, which the features after it build on."
+            : "A feature others depend on writes a full spec, however small it is."}
         </span>
       </div>
     </FormDialog>

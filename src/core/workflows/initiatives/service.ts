@@ -108,9 +108,11 @@ import {
   type FeatureWorkflow,
   featureWorkflow,
   featureWorkflowChoices,
+  LIGHT_LEAF_WORKFLOW,
   lightenSmallLeaves,
   planWorkflowProblems,
   restoreContractWorkflows,
+  withLightContract,
 } from "./workflows.js";
 
 export interface InitiativeStartRequest {
@@ -142,6 +144,8 @@ export interface InitiativeStartRequest {
   keepFeatures?: boolean;
   /** Ask the decomposer to split a feature that dominates the critical path (#1522). */
   splitCriticalPath?: boolean;
+  /** Let a small feature that others depend on run the light workflow with a host-made contract (#1664). */
+  lightContracts?: boolean;
 }
 
 /** What an initiative reroute did to one of its open runs (`initiative.rerouted` event). */
@@ -600,6 +604,7 @@ export class InitiativeService {
       forecastStop: request.forecastStop ?? false,
       keepFeatures: request.keepFeatures ?? false,
       splitCriticalPath: request.splitCriticalPath ?? false,
+      lightContracts: request.lightContracts ?? false,
     };
     this.checkWorkflow(settings);
     // Feature runs in worktrees need Git; refuse now rather than after the decomposer ran.
@@ -1148,7 +1153,10 @@ export class InitiativeService {
       if (!known.has(workflowId))
         known.set(
           workflowId,
-          featureWorkflow(this.workflows.workspace, settings.basePolicy, workflowId),
+          withLightContract(
+            featureWorkflow(this.workflows.workspace, settings.basePolicy, workflowId),
+            lightContracts(settings),
+          ),
         );
       return known.get(workflowId) ?? null;
     };
@@ -1161,6 +1169,7 @@ export class InitiativeService {
   private workflowChoices(settings: InitiativeSettings): FeatureWorkflow[] {
     return featureWorkflowChoices(this.workflows.workspace, settings.basePolicy, {
       tiered: settings.featureAutoApproval !== null,
+      lightContracts: lightContracts(settings),
     });
   }
 
@@ -1265,7 +1274,9 @@ export class InitiativeService {
       plan = this.fitWorkflows(proposed, settings, true);
       // A small feature nothing depends on runs the light workflow: nobody pins its spec.
       if (!settings.keepFeatures) {
-        const light = lightenSmallLeaves(plan, this.workflowChoices(settings));
+        const light = lightenSmallLeaves(plan, this.workflowChoices(settings), new Set(), {
+          withDependents: lightContracts(settings),
+        });
         plan = light.plan;
         lightened = light.lightened;
         unavailable = light.unavailable;
@@ -1397,6 +1408,7 @@ export class InitiativeService {
       ...(settings.featureAutoApproval ? { boundaryAutoApproval: true } : {}),
       ...(settings.featureIssues[featureId] ? { issue: settings.featureIssues[featureId] } : {}),
       ...(feature.skeleton?.length ? { hostFiles: feature.skeleton } : {}),
+      ...(lightContract(settings, plan, feature) ? { contract: feature.contract } : {}),
       ...(baseCommit ? { baseCommit } : {}),
     });
     this.store.transaction(() => {
@@ -2804,6 +2816,22 @@ function grownSizing(base: RunPolicy, share: number, growTo: number): RunPolicy[
 /** The smallest sizing ceiling a policy accepts. */
 const MIN_GROWTH_TOKENS = 10_000;
 
+const lightContracts = (settings: InitiativeSettings): boolean =>
+  settings.lightContracts || settings.basePolicy.lightContracts === "on";
+
+/** A feature on the light workflow that others depend on: its run records their contract (#1664). */
+function lightContract(
+  settings: InitiativeSettings,
+  plan: InitiativePlan,
+  feature: InitiativeFeature,
+): boolean {
+  return (
+    lightContracts(settings) &&
+    featureWorkflowId(settings, feature) === LIGHT_LEAF_WORKFLOW &&
+    plan.features.some((f) => f.dependsOn.includes(feature.id))
+  );
+}
+
 /** The request a feature run starts from: its place in the initiative and the contracts around it. */
 export function featurePrompt(
   row: InitiativeRow,
@@ -2843,7 +2871,9 @@ export function featurePrompt(
   for (const { feature: dependency, contract } of upstream) {
     const definition = plan.features.find((f) => f.id === dependency.id);
     lines.push(
-      `Upstream feature ${dependency.id} provides: ${definition?.contract ?? ""} Its accepted specification is specs/${contract.featureId}/spec.json (contract hash ${contract.contractHash}).`,
+      definition?.workflow === LIGHT_LEAF_WORKFLOW
+        ? `Upstream feature ${dependency.id} provides: ${definition.contract} It ran the light workflow, so this contract is its whole accepted specification (contract hash ${contract.contractHash}); read its code for the details.`
+        : `Upstream feature ${dependency.id} provides: ${definition?.contract ?? ""} Its accepted specification is specs/${contract.featureId}/spec.json (contract hash ${contract.contractHash}).`,
     );
   }
   if (others.length)
