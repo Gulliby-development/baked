@@ -21,7 +21,9 @@
     "placeholders": [
       "src/main/kotlin/Sum.kt:2"
     ],
-    "gates": null,
+    "gates": [
+      "gradle-check"
+    ],
     "testRunners": [
       "maven 3",
       "signature stable"
