@@ -9,8 +9,23 @@ import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { type SizingReport, verificationTokens } from "./sizing.js";
 import type { WorkflowStore } from "./store.js";
 
-/** Finished priced tasks a forecast needs before it measures how far the plan's price is off. */
+/**
+ * Finished priced tasks a forecast needs before it measures how far the plan's price is off, and
+ * finished tasks of one kind before that kind's own ratio prices its open tasks (#1648).
+ */
 const MIN_MEASURED_TASKS = 3;
+
+/**
+ * How far a kind's open tasks follow its finished ones: not at all below `MIN_MEASURED_TASKS`,
+ * then blended from the plan's price (1) toward the measured ratio until twice that many have
+ * finished, as the initiative estimate calibrates (`calibrationRatio`). One test task carrying a
+ * shared fixture at 3x does not price every other test task at 3x (#1648, #1595).
+ */
+export function kindRatio(measured: number, count: number): number {
+  if (count < MIN_MEASURED_TASKS) return 1;
+  const weight = Math.min(1, (count - MIN_MEASURED_TASKS + 1) / MIN_MEASURED_TASKS);
+  return 1 + weight * (measured - 1);
+}
 
 /**
  * Where a run with a dollar cap is heading (#1246): what it spent, plus the planned tasks still
@@ -27,7 +42,10 @@ export interface CostForecast {
   ratio: number;
   measuredTasks: number;
   openTasks: number;
-  /** Tokens still expected: open tasks at their own kind's ratio (1 until measured), and verification. */
+  /**
+   * Tokens still expected: open tasks at their own kind's ratio (`kindRatio`) less what their
+   * attempts already used or hold in flight, and verification.
+   */
   remainingTokens: number;
 }
 
@@ -59,14 +77,22 @@ export function costForecast(
   if (!sized.length) return null;
   const status = new Map(store.tasks(runId).map((t) => [t.id, t.status]));
   // Tokens each task's attempts used, over every generation: a rerun after an invalidation is
-  // part of what the task cost.
+  // part of what the task cost. `committed` adds what an attempt in flight holds beyond its use,
+  // the reservation `costUsage` already counts in dollars.
   const stageOf = new Map(store.steps(runId).map((step) => [step.id, step.stage_id]));
   const used = new Map<string, number>();
+  const committed = new Map<string, number>();
   for (const attempt of store.attempts(runId)) {
     const stage = stageOf.get(attempt.step_id) ?? "";
     if (!stage.startsWith("task-")) continue;
     const taskId = stage.slice(5);
-    used.set(taskId, (used.get(taskId) ?? 0) + (attempt.used_tokens ?? 0));
+    const tokens = attempt.used_tokens ?? 0;
+    const held =
+      !attempt.usage_complete && attempt.model_id !== null
+        ? Math.max(tokens, attempt.reserved_tokens)
+        : tokens;
+    used.set(taskId, (used.get(taskId) ?? 0) + tokens);
+    committed.set(taskId, (committed.get(taskId) ?? 0) + held);
   }
   const mid = (t: (typeof sized)[number]) => (t.estimate.low + t.estimate.high) / 2;
   const measured = sized.filter((t) => FINISHED.has(status.get(t.taskId) ?? "") && mid(t) > 0);
@@ -81,8 +107,10 @@ export function costForecast(
   };
   const ratio = ratioOf(measured);
   const byKind = new Map<string, number>();
-  for (const kind of new Set(measured.map((t) => t.kind)))
-    byKind.set(kind, ratioOf(measured.filter((t) => t.kind === kind)));
+  for (const kind of new Set(measured.map((t) => t.kind))) {
+    const finished = measured.filter((t) => t.kind === kind);
+    byKind.set(kind, kindRatio(ratioOf(finished), finished.length));
+  }
   const stages = runForecastStages(store, runId, policy);
   const tasks = stages.find((s) => s.type === "tasks");
   if (!tasks) return null;
@@ -91,7 +119,9 @@ export function costForecast(
     models: tasks.models,
     // A priced kind without a finished task keeps its own estimate. Another kind's overrun
     // does not measure it, and must not inflate the forecast or the initiative's held cap.
-    tokens: mid(t) * (byKind.get(t.kind) ?? 1),
+    // What the task's earlier attempts spent and its attempt in flight holds are already in
+    // `spentUsd` and `reservedUsd`: a continuation after a token cap needs only the rest (#1648).
+    tokens: Math.max(0, mid(t) * (byKind.get(t.kind) ?? 1) - (committed.get(t.taskId) ?? 0)),
   }));
   const later = stages.slice(stages.indexOf(tasks) + 1).filter((s) => s.models.length);
   const weights = later.map((s) => DEFAULT_STAGE_RANGES[s.id]?.high ?? 60_000);
