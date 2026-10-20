@@ -311,6 +311,7 @@ interface RevisionRecord {
   createdAt: number;
   kind: string;
   previous: Record<string, unknown>;
+  next: Record<string, unknown>;
 }
 
 /** Opens a trace in a scratch workspace; `dispose` removes it. */
@@ -368,8 +369,14 @@ function replayRun(store: WorkflowStore, runId: string): RunReplay | null {
       const body = JSON.parse(a.content ?? "{}") as {
         kind?: string;
         previous?: Record<string, unknown>;
+        next?: Record<string, unknown>;
       };
-      return { createdAt: a.created_at, kind: body.kind ?? "", previous: body.previous ?? {} };
+      return {
+        createdAt: a.created_at,
+        kind: body.kind ?? "",
+        previous: body.previous ?? {},
+        next: body.next ?? {},
+      };
     })
     .sort((a, b) => b.createdAt - a.createdAt);
   const priced = db
@@ -382,11 +389,16 @@ function replayRun(store: WorkflowStore, runId: string): RunReplay | null {
     final.maxCostUsd !== null || revisions.some((r) => typeof r.previous.maxCostUsd === "number");
   if (!capped) return null;
   const finalUsd = store.costUsage(runId).spentUsd;
+  // The policy the run started with, then each revision's own limits forward. Undoing `previous`
+  // backwards from the final policy went wrong where a revision was written from a stale copy and
+  // its `previous` undid an earlier growth (#1704).
+  let initial: Record<string, unknown> = { ...final };
+  for (const revision of revisions) initial = { ...initial, ...revision.previous };
   const policyAt = (t: number): RunPolicy => {
-    let policy: Record<string, unknown> = { ...final };
-    for (const revision of revisions) {
-      if (revision.createdAt <= t) break;
-      policy = { ...policy, ...revision.previous };
+    let policy = initial;
+    for (const revision of [...revisions].reverse()) {
+      if (revision.createdAt > t) break;
+      policy = { ...policy, ...revision.next };
     }
     return PolicySchema.parse(policy);
   };

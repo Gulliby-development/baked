@@ -271,6 +271,20 @@ export function grownCostCap(
 }
 
 /**
+ * Raises the caller's copy of the run policy to the limits stored for the run. The executor and
+ * parallel attempts grow the stored limits on their own copies, so a revision written from an
+ * older copy undid their growth: R50 selwhy markup's sizing refresh put a $3.01 cap back to
+ * $2.32 two minutes after a forecast growth (#1434, #1704).
+ */
+export function adoptStoredLimits(store: WorkflowStore, runId: string, policy: RunPolicy): void {
+  const stored = PolicySchema.parse(JSON.parse(store.run(runId).policy_json));
+  if (stored.maxTotalTokens > policy.maxTotalTokens) policy.maxTotalTokens = stored.maxTotalTokens;
+  if (stored.maxActiveMs > policy.maxActiveMs) policy.maxActiveMs = stored.maxActiveMs;
+  if (stored.maxCostUsd !== null && stored.maxCostUsd > (policy.maxCostUsd ?? Infinity))
+    policy.maxCostUsd = stored.maxCostUsd;
+}
+
+/**
  * Records a budget growth the host made on its own as a policy revision (`approvedBy: "sizing"`,
  * never an operator decision), stores the policy and updates the object the caller drives with.
  */
@@ -278,7 +292,7 @@ function recordGrowth(
   store: WorkflowStore,
   runId: string,
   policy: RunPolicy,
-  maxTotalTokens: number,
+  target: number,
   kind:
     | "auto-growth"
     | "planning-floor"
@@ -289,6 +303,8 @@ function recordGrowth(
   detail: Record<string, unknown>,
   costTo?: number,
 ): void {
+  adoptStoredLimits(store, runId, policy);
+  const maxTotalTokens = Math.max(target, policy.maxTotalTokens);
   const before = hashJson(policy);
   const maxCostUsd = costTo ?? grownCostCap(policy, maxTotalTokens);
   const after = PolicySchema.parse({ ...policy, maxTotalTokens, maxCostUsd });
@@ -345,10 +361,7 @@ export function growCostCapToForecast(
   kind: "forecast-growth" | "call-growth" = "forecast-growth",
 ): boolean {
   // A parallel attempt may already have grown the policy. Keep that revision when growing again.
-  const stored = PolicySchema.parse(JSON.parse(store.run(runId).policy_json));
-  if (stored.maxTotalTokens > policy.maxTotalTokens) policy.maxTotalTokens = stored.maxTotalTokens;
-  if (stored.maxCostUsd !== null && stored.maxCostUsd > (policy.maxCostUsd ?? Infinity))
-    policy.maxCostUsd = stored.maxCostUsd;
+  adoptStoredLimits(store, runId, policy);
   const bound = policy.sizing?.maxRunCostUsd;
   if (policy.maxCostUsd === null || bound === undefined) return false;
   if (projectedUsd <= policy.maxCostUsd * (1 + tolerance)) return true;
@@ -382,10 +395,7 @@ export function growBudgetOnProgress(
   const ceiling = policy.sizing?.maxRunTokens ?? null;
   if (ceiling === null) return false;
   // Another worker of this run may have grown the stored budget already.
-  const stored = PolicySchema.parse(JSON.parse(store.run(runId).policy_json));
-  if (stored.maxTotalTokens > policy.maxTotalTokens) policy.maxTotalTokens = stored.maxTotalTokens;
-  if (stored.maxCostUsd !== null && stored.maxCostUsd > (policy.maxCostUsd ?? Infinity))
-    policy.maxCostUsd = stored.maxCostUsd;
+  adoptStoredLimits(store, runId, policy);
   if (projected <= policy.maxTotalTokens) return true;
   if (policy.maxTotalTokens >= ceiling) return extendUnderAssume(store, runId, policy, projected);
   const finished = store
