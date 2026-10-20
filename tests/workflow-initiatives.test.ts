@@ -43,6 +43,7 @@ import {
 } from "../src/headless/workflow-initiative.js";
 import { workflowHelp } from "../src/headless/workflow-parse.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
+import { acceptedContract } from "../src/core/workflows/dependencies.js";
 import { mergedBase } from "../src/core/workflows/worktree.js";
 import { PLACEHOLDER_SHARE } from "../src/core/workflows/initiatives/estimate.js";
 import {
@@ -1019,6 +1020,45 @@ describe("initiative runtime", () => {
     expect(t.workflows.store.state(cli).spec?.dependencies).toEqual([
       { featureId: "values_tree", contractHash: hashJson(spec) },
     ]);
+  }, 60000);
+
+  test("with lightContracts a light leaf nothing depends on records its contract, so status reads every feature (#1750)", async () => {
+    // Bench round 52, srcwhere: the docs feature (3 paths, dependsOn []) ran quick and finished with
+    // a host-made spec but no spec.json, and status threw ARTIFACT_MISSING for the whole initiative.
+    const srcwhere = plan([
+      { ...feature("core", [], ["core.txt", "core/b.txt", "core/c.txt"]), workflow: "sdd" },
+      { ...feature("tree", ["core"], ["tree.txt"]), workflow: "sdd" },
+      { ...feature("cli", ["tree"], ["cli.txt", "cli/b.txt", "cli/c.txt"]), workflow: "sdd", size: "medium" as const },
+      { ...feature("docs", [], ["docs.txt", "README.md"]), workflow: "sdd" },
+    ]);
+    const t = setup(srcwhere);
+    await t.start({ lightContracts: true });
+    let view = await t.drive();
+    expect(view.features.map((f) => [f.id, f.workflowId])).toEqual([
+      ["core", "sdd"],
+      ["tree", "quick"],
+      ["cli", "sdd"],
+      ["docs", "quick"],
+    ]);
+    await t.approveSplit();
+    for (let i = 0; i < 12 && view.status !== "completed"; i++) {
+      view = await t.drive();
+      const waiting = view.pendingDecisions.find((d) => d.scope === "feature" && d.kind === "approval");
+      if (waiting?.featureId) await t.approveFeature(waiting.featureId);
+    }
+    expect(view.status).toBe("completed");
+    expect(t.featureOf(view, "docs").state).toBe("accepted");
+    const docs = t.featureOf(view, "docs").runId ?? "";
+    expect(t.workflows.store.latestArtifact(docs, "spec.json")).toBeTruthy();
+    // A run recorded before the fix has no spec.json; status treats it as a light result, not a
+    // missing contract.
+    (t.workflows.store as unknown as { db: { run(sql: string, ...args: string[]): void } }).db.run(
+      "DELETE FROM artifacts WHERE run_id=? AND logical_path='spec.json'",
+      docs,
+    );
+    expect(acceptedContract(t.workflows.store, "values_docs")).toBeNull();
+    view = t.initiatives.view("values");
+    expect(t.featureOf(view, "docs").state).toBe("accepted");
   }, 60000);
 
   test("lightContracts counts quick as a contract workflow and moves small features with dependents (#1664)", () => {
