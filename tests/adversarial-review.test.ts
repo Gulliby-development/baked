@@ -4,6 +4,8 @@ import { join } from "node:path";
 import {
   COMMENT_MARKER,
   commentBody,
+  reviewCommand,
+  reviewedSha,
   reviewerFamily,
   reviewPrompt,
   sweepChecklist,
@@ -52,15 +54,29 @@ describe("adversarial sweep review (#1722)", () => {
     expect(reviewerFamily(["Fix\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>"], both)).toBe("openai");
     expect(reviewerFamily(["Fix from the Codex runner"], both)).toBe("anthropic");
     expect(reviewerFamily(["Fix"], both)).toBe("openai");
-    // Only the fixer's own family has a key: no review rather than a same-family one.
+    // Only the fixer's own family's CLI is installed: no review rather than a same-family one.
     expect(reviewerFamily(["Claude-Session: https://claude.ai/code/x"], ["anthropic"])).toBeNull();
     expect(reviewerFamily(["Fix"], [])).toBeNull();
   });
 
-  test("the comment is marked, so a new push updates it", () => {
-    const body = commentBody("## Missed places\nNone found.", "openai");
+  test("the comment is marked with the commit it read, so a new push updates it and a pass skips it", () => {
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    const body = commentBody("## Missed places\nNone found.", "openai", sha);
     expect(body.startsWith(COMMENT_MARKER)).toBe(true);
     expect(body).toContain("(advisory)");
+    expect(body).toContain("Codex");
     expect(body).toContain("None found.");
+    expect(reviewedSha(body)).toBe(sha);
+    expect(reviewedSha(`${COMMENT_MARKER}\nold comment`)).toBeNull();
+  });
+
+  test("the review runs through the subscription CLIs with no tools and no write access", () => {
+    const claude = reviewCommand("anthropic", "/tmp/r");
+    expect(claude.slice(1)).toEqual(["-p", "--tools", "", "--output-format", "text"]);
+    const codex = reviewCommand("openai", "/tmp/r");
+    expect(codex.slice(1, 2)).toEqual(["exec"]);
+    expect(codex.join(" ")).toContain("--sandbox read-only");
+    expect(codex.at(-1)).toBe("-");
+    expect(codex[codex.indexOf("--output-last-message") + 1]).toContain("review.md");
   });
 });
