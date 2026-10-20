@@ -8,7 +8,7 @@ import {
   type CallTiming,
   providerFirstByteMs,
 } from "../llm/provider-health.js";
-import { canonical, hashBytes } from "../specs/hash.js";
+import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { assertForecastFits, costForecast } from "./cost-forecast.js";
 import { WorkflowFault } from "./errors.js";
@@ -37,6 +37,8 @@ const KEPT_ARTIFACTS = new Set([
   "plan",
   "spec",
   "tasks",
+  // The run state (`internal/state.json`): an initiative's feature views read it (#1707).
+  "state",
 ]);
 
 /** Tables that hold evidence, effects or prose the replay never reads. */
@@ -94,28 +96,80 @@ const PROSE = new Set([
   "when",
 ]);
 
-const blank = (value: unknown): unknown =>
+/**
+ * Run-state fields that hold content under keys other artifacts use for settings: the plan and
+ * research text, the report, instructions, the initiative plan, and files a run froze or carried.
+ */
+const STATE_CONTENT = new Set([
+  "plan",
+  "research",
+  "report",
+  "instructionText",
+  "initiativePlan",
+  "frozenFiles",
+  "taskCarry",
+]);
+
+/**
+ * Stand-ins for prose: each distinct string of an export becomes `KEY-N`, so a schema that
+ * rejects an empty title or a duplicate task description still parses a trace, and two equal
+ * strings stay equal, without keeping any text (#1707). The empty string stays empty.
+ */
+export class StandIns {
+  private readonly seen = new Map<string, string>();
+  of(key: string, text: string): string {
+    if (text === "") return "";
+    let standIn = this.seen.get(text);
+    if (standIn === undefined) {
+      standIn = `${key}-${this.seen.size + 1}`;
+      this.seen.set(text, standIn);
+    }
+    return standIn;
+  }
+}
+
+const replaced = (key: string, value: unknown, standIns: StandIns): unknown =>
   typeof value === "string"
-    ? ""
+    ? standIns.of(key, value)
     : Array.isArray(value)
-      ? value.map(blank)
+      ? value.map((v) => replaced(key, v, standIns))
       : value && typeof value === "object"
-        ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, blank(v)]))
+        ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, replaced(key, v, standIns)]))
         : value;
 
-/** `value` with every string under a prose key emptied, keeping arrays and their lengths. */
-export function scrubTrace(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(scrubTrace);
+/**
+ * `value` with every string under a prose key (and under `content`, the keys a run state keeps
+ * content in) replaced by its stand-in, keeping arrays, their lengths and record keys. Any other
+ * string with whitespace in it is prose too: enums, IDs, hashes, model IDs and paths have none,
+ * and a spec's `problem` or `inScope` would otherwise need its key listed here (#1707).
+ */
+export function scrubTrace(
+  value: unknown,
+  standIns: StandIns = new StandIns(),
+  content: ReadonlySet<string> = PROSE,
+  key = "text",
+): unknown {
+  if (typeof value === "string") return /\s/.test(value) ? standIns.of(key, value) : value;
+  if (Array.isArray(value)) return value.map((v) => scrubTrace(v, standIns, content, key));
   if (!value || typeof value !== "object") return value;
   return Object.fromEntries(
-    Object.entries(value).map(([key, v]) => [key, PROSE.has(key) ? blank(v) : scrubTrace(v)]),
+    Object.entries(value).map(([k, v]) => [
+      k,
+      PROSE.has(k) || content.has(k)
+        ? replaced(k, v, standIns)
+        : scrubTrace(v, standIns, content, k),
+    ]),
   );
 }
 
-const scrubJson = (text: string | null): string | null => {
+const scrubJson = (
+  text: string | null,
+  standIns: StandIns,
+  content: ReadonlySet<string> = PROSE,
+): string | null => {
   if (text === null) return null;
   try {
-    return canonical(scrubTrace(JSON.parse(text)));
+    return canonical(scrubTrace(JSON.parse(text), standIns, content));
   } catch {
     return "";
   }
@@ -130,6 +184,11 @@ const tables = (db: Database): Set<string> =>
 
 const columns = (db: Database, table: string): string[] =>
   (db.query(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
+
+const textColumns = (db: Database, table: string): string[] =>
+  (db.query(`PRAGMA table_info(${table})`).all() as { name: string; type: string }[])
+    .filter((c) => c.type.toUpperCase() === "TEXT")
+    .map((c) => c.name);
 
 export interface TraceExport {
   path: string;
@@ -250,6 +309,7 @@ export function exportTrace(
         .all() as { name: string }[])
         db.exec(`DROP TRIGGER "${name}"`);
       const present = tables(db);
+      const standIns = new StandIns();
       db.transaction(() => {
         for (const table of DROPPED_TABLES) if (present.has(table)) db.exec(`DELETE FROM ${table}`);
         if (options.runIds) {
@@ -275,21 +335,47 @@ export function exportTrace(
           inline_content: string | null;
           blob_path: string | null;
         }[];
-        for (const a of artifacts) {
-          let text: string | null = null;
-          if (KEPT_ARTIFACTS.has(a.kind)) {
-            try {
-              text =
-                a.inline_content ??
-                readFileSync(
-                  workspacePath(workspace, (a.blob_path ?? "").replaceAll("\\", "/")),
-                  "utf8",
-                );
-            } catch {
-              text = null;
-            }
+        const readText = (a: (typeof artifacts)[number]): string | null => {
+          if (!KEPT_ARTIFACTS.has(a.kind)) return null;
+          try {
+            return (
+              a.inline_content ??
+              readFileSync(
+                workspacePath(workspace, (a.blob_path ?? "").replaceAll("\\", "/")),
+                "utf8",
+              )
+            );
+          } catch {
+            return null;
           }
-          const content = text === null ? null : scrubJson(text);
+        };
+        // A contract hash is the hash of a run's spec, and stand-ins change the spec: map each
+        // original hash to the scrubbed spec's, upstream first, so pinned dependencies and the
+        // initiative's records still match the contract they name (#1707).
+        const contracts = new Map<string, string>();
+        const remap = (text: string): string => {
+          let mapped = text;
+          for (const [from, to] of contracts) mapped = mapped.replaceAll(from, to);
+          return mapped;
+        };
+        for (const a of artifacts.filter((row) => row.kind === "state")) {
+          const text = readText(a);
+          const spec = text === null ? null : (JSON.parse(text) as { spec?: unknown }).spec;
+          if (!spec || text === null) continue;
+          const scrubbed = scrubJson(text, standIns, STATE_CONTENT);
+          if (!scrubbed) continue;
+          contracts.set(
+            hashJson(spec),
+            hashJson((JSON.parse(remap(scrubbed)) as { spec: unknown }).spec),
+          );
+        }
+        for (const a of artifacts) {
+          const text = readText(a);
+          const scrubbed =
+            text === null
+              ? null
+              : scrubJson(text, standIns, a.kind === "state" ? STATE_CONTENT : PROSE);
+          const content = scrubbed === null ? null : remap(scrubbed);
           if (content === null) {
             db.run(
               "UPDATE steps SET output_artifact_id=NULL WHERE run_id=? AND output_artifact_id=?",
@@ -315,14 +401,34 @@ export function exportTrace(
               r: number;
               v: string | null;
             }[];
-            for (const row of rows)
+            for (const row of rows) {
+              const scrubbed = scrubJson(row.v, standIns);
               db.run(`UPDATE ${table} SET ${column}=? WHERE rowid=?`, [
-                scrubJson(row.v) ?? null,
+                scrubbed === null ? null : remap(scrubbed),
                 row.r,
               ]);
+            }
           }
+        // Contract hashes in plain columns (an initiative's pinned contracts, say).
+        for (const table of [...present].filter((t) => t !== "artifacts"))
+          for (const column of textColumns(db, table).filter((c) => !c.endsWith("_json")))
+            for (const [from, to] of contracts)
+              db.run(
+                `UPDATE ${table} SET ${column}=replace(${column}, ?, ?) WHERE ${column} LIKE ?`,
+                [from, to, `%${from}%`],
+              );
         if (present.has("findings")) db.exec("UPDATE findings SET body_json='{}'");
-        if (present.has("initiatives")) db.exec("UPDATE initiatives SET title='', prompt=''");
+        if (present.has("initiatives"))
+          for (const row of db.query("SELECT rowid AS r, title, prompt FROM initiatives").all() as {
+            r: number;
+            title: string;
+            prompt: string;
+          }[])
+            db.run("UPDATE initiatives SET title=?, prompt=? WHERE rowid=?", [
+              standIns.of("title", row.title),
+              standIns.of("prompt", row.prompt),
+              row.r,
+            ]);
         if (present.has("features")) {
           const rows = db.query("SELECT id, directory FROM features").all() as {
             id: string;

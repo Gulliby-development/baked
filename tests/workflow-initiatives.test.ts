@@ -33,6 +33,7 @@ import {
 } from "../src/core/workflows/initiatives/service.js";
 import type { RunPolicy, Spec } from "../src/core/workflows/schemas.js";
 import { RoutingRecordSchema } from "../src/core/llm/model-routing.js";
+import { exportTrace } from "../src/core/workflows/trace.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId, type WorkflowStore } from "../src/core/workflows/store.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
@@ -1776,6 +1777,38 @@ describe("initiative CLI", () => {
     expect(listed.map((i) => [i.initiativeId, i.status])).toEqual([["values", "paused"]]);
     const events = (await run(["events", "values"])) as { type: string }[];
     expect(events.map((e) => e.type)).toContain("plan.revised");
+  });
+});
+
+describe("scenario: an initiative's trace replays its feature views (#1707)", () => {
+  test("a completed initiative's trace reads back with the same features, states and shares", async () => {
+    const t = setup();
+    await t.start({ plan: threeFeatures });
+    await t.approveSplit();
+    let view = t.initiatives.view("values");
+    for (let i = 0; i < 12 && view.status !== "completed"; i++) {
+      view = await t.drive();
+      const waiting = view.pendingDecisions.find((d) => d.scope === "feature" && d.kind === "approval");
+      if (waiting?.featureId) await t.approveFeature(waiting.featureId);
+    }
+    expect(view.status).toBe("completed");
+    const out = join(t.root, "trace.sqlite.gz");
+    exportTrace(t.root, out);
+    const traced = mkdtempSync(join(tmpdir(), "baked-initiative-trace-"));
+    mkdirSync(join(traced, ".baked"));
+    writeFileSync(join(traced, ".baked", "workflows.sqlite"), Bun.gunzipSync(readFileSync(out)));
+    const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: false, defaultWorkflow: "sdd", policy } };
+    const workflows = new NativeWorkflowService(traced, config, t.executor);
+    cleanups.push(() => {
+      workflows.close();
+      rmSync(traced, { recursive: true, force: true });
+    });
+    const replayed = new InitiativeService(workflows).view("values");
+    const shape = (v: InitiativeView) => v.features.map((f) => [f.id, f.state, f.runId, f.share?.tokens ?? null]);
+    expect(replayed.status).toBe("completed");
+    expect(shape(replayed)).toEqual(shape(view));
+    // The prompt and titles are stand-ins, not the text.
+    expect(replayed.title).not.toContain("value files");
   });
 });
 
