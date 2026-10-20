@@ -1,0 +1,19 @@
+{
+  "files": {
+    "lib/sum.dart": "int sum(int a, int b) {\n  throw UnimplementedError();\n}\n",
+    "lib/sum_test.dart": "void main() {}\n",
+    "pubspec.yaml": "name: fixture\n"
+  },
+  "expected": {
+    "tests": [
+      "lib/sum_test.dart"
+    ],
+    "manifests": [
+      "pubspec.yaml"
+    ],
+    "dependencies": null,
+    "placeholders": [
+      "lib/sum.dart:2"
+    ]
+  }
+}

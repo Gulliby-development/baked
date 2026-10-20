@@ -1,0 +1,21 @@
+{
+  "files": {
+    "src/sum.ts": "export function sum(a: number, b: number): number {\n  throw new Error(\"not implemented\");\n}\n",
+    "src/sum.test.ts": "import { sum } from './sum';\n",
+    "tsconfig.json": "{}\n",
+    "package.json": "{\"name\": \"fixture\", \"dependencies\": {\"zod\": \"^3.0.0\"}}"
+  },
+  "expected": {
+    "tests": null,
+    "manifests": [
+      "tsconfig.json",
+      "package.json"
+    ],
+    "dependencies": [
+      "package.json: npm zod"
+    ],
+    "placeholders": [
+      "src/sum.ts:2"
+    ]
+  }
+}
