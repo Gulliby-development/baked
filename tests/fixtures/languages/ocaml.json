@@ -11,6 +11,10 @@
     "dependencies": null,
     "placeholders": [
       "src/sum.ml:2"
-    ]
+    ],
+    "gates": null,
+    "testRunners": null,
+    "mutation": null,
+    "properties": null
   }
 }

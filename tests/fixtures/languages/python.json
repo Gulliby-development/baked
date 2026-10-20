@@ -2,11 +2,17 @@
   "files": {
     "app/sum.py": "def sum(a, b):\n    raise NotImplementedError\n",
     "app/tests.py": "from app.sum import sum\n",
-    "pyproject.toml": "[project]\nname = \"fixture\"\ndependencies = [\"requests>=2\"]\n"
+    "pyproject.toml": "[project]\nname = \"fixture\"\ndependencies = [\"requests>=2\"]\n\n[tool.ruff]\n\n[tool.pytest.ini_options]\n",
+    "tests/test_props.py": "from hypothesis import given\n"
+  },
+  "outputs": {
+    "tests": "FAILED tests/test_sum.py::test_sum - assert 3 == 4\n========= 1 failed, 2 passed in 0.12s =========\n",
+    "testsGrown": "FAILED tests/test_sum.py::test_sum - assert 3 == 4\n========= 1 failed, 3 passed in 0.15s =========\n"
   },
   "expected": {
     "tests": [
-      "app/tests.py"
+      "app/tests.py",
+      "tests/test_props.py"
     ],
     "manifests": [
       "pyproject.toml"
@@ -16,6 +22,21 @@
     ],
     "placeholders": [
       "app/sum.py:2"
+    ],
+    "gates": [
+      "pytest",
+      "ruff",
+      "ruff-format"
+    ],
+    "testRunners": [
+      "pytest 3",
+      "signature stable"
+    ],
+    "mutation": [
+      "mutmut: app/sum.py"
+    ],
+    "properties": [
+      "tests/test_props.py: library"
     ]
   }
 }
