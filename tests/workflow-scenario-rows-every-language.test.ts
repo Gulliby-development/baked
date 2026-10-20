@@ -17,7 +17,8 @@ import { runRoot } from "../src/core/workflows/worktree.js";
 // the table shape. A Go spec with a labelled 12-row table must now become a host-written test.
 const cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
-const go = Bun.spawnSync(["go", "version"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
+// Bun.spawnSync throws when the executable is missing (macOS runners have no Go).
+const go = Bun.which("go") !== null && Bun.which("gofmt") !== null;
 const cases = Array.from({ length: 12 }, (_, i) => [i - 3, (i - 3) * 2] as const);
 const spec: Spec = {
   schemaVersion: 1, featureId: "fixture", revision: 1, title: "Double", problem: "No doubler",

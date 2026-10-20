@@ -253,7 +253,8 @@ describe("acceptance rows in every supported language (#1660)", () => {
     expect(rust).toContain('include_str!("data/rows.json")');
   });
 
-  const go = Bun.spawnSync(["go", "version"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
+  // Bun.spawnSync throws when the executable is missing (macOS runners have no Go).
+  const go = Bun.which("go") !== null && Bun.which("gofmt") !== null;
   test.skipIf(!go)("Go runs every row through Actual, and a wrong harness fails", () => {
     const root = mkdtempSync(join(tmpdir(), "baked-row-go-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));
