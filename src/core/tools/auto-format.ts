@@ -3,8 +3,8 @@
  * Avoids re-detecting the project profile on every edit.
  */
 
-import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, extname, join } from "node:path";
 import { IS_WIN } from "../platform/index.js";
 import { realPath } from "../projects/paths.js";
 import { runBoundedShell } from "./bounded-process.js";
@@ -47,6 +47,71 @@ export function resetFormatCache(): void {
   formatCommands.clear();
 }
 
+/**
+ * The Rust edition of the crate a file belongs to: `package.edition` of the nearest Cargo.toml,
+ * or `workspace.package.edition` of the workspace above it for `edition.workspace = true`; null
+ * when no Cargo.toml names one. Bare rustfmt parses as Rust 2015 unless told otherwise (`cargo
+ * fmt` passes the edition), so an `async fn` failed to parse and no file of a 2018+ crate was
+ * formatted after an edit (#1681).
+ */
+export function cargoEdition(filePath: string): string | null {
+  let inherited = false;
+  for (let dir = dirname(realPath(filePath)); ; ) {
+    const manifest = cargoManifest(join(dir, "Cargo.toml"));
+    if (manifest) {
+      const edition = manifest.package?.edition;
+      if (!inherited && typeof edition === "string") return edition;
+      if (!inherited && typeof edition === "object" && edition?.workspace === true)
+        inherited = true;
+      const shared = manifest.workspace?.package?.edition;
+      if (inherited && typeof shared === "string") return shared;
+      if (!inherited && manifest.package) return null;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+interface CargoManifest {
+  package?: { edition?: string | { workspace?: boolean } };
+  workspace?: { package?: { edition?: string } };
+}
+
+function cargoManifest(path: string): CargoManifest | null {
+  try {
+    return existsSync(path) ? (Bun.TOML.parse(readFileSync(path, "utf8")) as CargoManifest) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * rustfmt for one file: the crate's edition, the project's rustfmt configuration, and
+ * `skip_children` so formatting `lib.rs` does not rewrite every module it declares (#1681).
+ */
+export function rustfmtCommand(filePath: string): string {
+  let config = "";
+  for (let dir = dirname(realPath(filePath)); ; ) {
+    const found = [".rustfmt.toml", "rustfmt.toml"].map((name) => join(dir, name)).find(existsSync);
+    if (found) {
+      config = ` --config-path ${shellQuote(found)}`;
+      break;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  const edition = cargoEdition(filePath);
+  return `rustfmt${edition ? ` --edition ${edition}` : ""}${config} --config skip_children=true`;
+}
+
+/** The command that formats only `filePath` with a profile's single-file formatter. */
+export function singleFileFormat(command: string, filePath: string): string {
+  const formatter = command === "rustfmt" ? rustfmtCommand(filePath) : command;
+  return `${formatter} ${shellQuote(realPath(filePath))}`;
+}
+
 /** Read the pre-image through the formatter without writing it over the edited file. */
 export function formatProbeCommand(command: string, filePath: string): string | null {
   const file = shellQuote(realPath(filePath));
@@ -59,23 +124,11 @@ export function formatProbeCommand(command: string, filePath: string): string | 
   if (/^(?:bunx|npx) prettier --write$/.test(command))
     return `${command.replace(" --write", "")} --stdin-filepath ${file}`;
   if (command === "gofmt -w") return "gofmt";
-  if (command === "rustfmt") {
-    let dir = dirname(realPath(filePath));
-    let config = "";
-    for (;;) {
-      const found = [".rustfmt.toml", "rustfmt.toml"]
-        .map((name) => join(dir, name))
-        .find(existsSync);
-      if (found) {
-        config = ` --config-path ${shellQuote(found)}`;
-        break;
-      }
-      const parent = dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
-    }
-    return `rustfmt --emit stdout${config} --config skip_children=true`;
-  }
+  if (command === "rustfmt")
+    return rustfmtCommand(filePath).replace(/^rustfmt/, "rustfmt --emit stdout");
+  // dprint reads the file text from stdin and takes the path for its configuration and plugin.
+  if (/^(?:bunx |npx )?dprint fmt$/.test(command)) return `${command} --stdin ${file}`;
+  if (command === "deno fmt") return `deno fmt --ext ${extname(filePath).slice(1) || "ts"} -`;
   // Unknown formatters cannot establish a clean baseline safely. Explicit format requests
   // and workflow check fixers still run them normally.
   return null;
@@ -122,8 +175,7 @@ export async function autoFormatAfterEdit(
   if (!cmd) return false;
 
   // A real path, as in `formatFile`: the formatter sees its working directory as a real path.
-  const singleFile = cmd === "rustfmt" ? `${cmd} --config skip_children=true` : cmd;
-  const command = `${singleFile} ${shellQuote(realPath(filePath))}`;
+  const command = singleFileFormat(cmd, filePath);
   try {
     // A deadline that kills the whole tree: the formatter's own children must not hold the edit.
     const result = await runBoundedShell(command, {
