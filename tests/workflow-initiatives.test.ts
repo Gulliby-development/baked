@@ -30,7 +30,10 @@ import {
   type InitiativeView,
   initiativeCostTolerance,
   runFeatureId,
+  type ShareGateRecord,
+  shareShortfall,
 } from "../src/core/workflows/initiatives/service.js";
+import { exportTrace, replayTrace } from "../src/core/workflows/trace.js";
 import type { RunPolicy, Spec } from "../src/core/workflows/schemas.js";
 import { RoutingRecordSchema } from "../src/core/llm/model-routing.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
@@ -1331,6 +1334,38 @@ describe("initiative runtime", () => {
     view = await t.initiatives.extendBudget("values", t.id(), { maxTotalTokens: 300000, maxAgentCalls: 90 });
     expect(view.next.kind).toBe("start");
     await expect(t.initiatives.extendBudget("values", t.id(), { maxAgentCalls: 1 })).rejects.toThrow("only be raised");
+  });
+
+  test("the share gate records its inputs, and a trace replays it (#1707)", async () => {
+    const t = setup();
+    await t.start({ plan: threeFeatures, budget: { maxTotalTokens: 2000, maxAgentCalls: 2, maxActiveMs: 900000 } });
+    await t.approveSplit();
+    await t.drive();
+    await t.drive();
+    await t.initiatives.extendBudget("values", t.id(), { maxTotalTokens: 300000, maxAgentCalls: 90 });
+    const view = await t.drive();
+    const started = view.features.filter((f) => f.runId !== null).map((f) => f.id);
+    expect(started.length).toBeGreaterThan(0);
+    const records = (
+      t.workflows.store.connection
+        .query("SELECT payload_json FROM initiative_events WHERE type='feature.share_gate' ORDER BY seq")
+        .all() as { payload_json: string }[]
+    ).map((row) => JSON.parse(row.payload_json) as ShareGateRecord);
+    // A drive that finds the same feature parked again does not record it twice.
+    expect(records.filter((r) => r.verdict === "park").map((r) => r.featureId)).toEqual(["core"]);
+    expect(records.filter((r) => r.verdict === "pass").map((r) => r.featureId)).toEqual(started);
+    for (const record of records)
+      expect(Boolean(shareShortfall(record.view, record.feature))).toBe(record.verdict === "park");
+
+    const out = join(t.root, "trace.sqlite.gz");
+    exportTrace(t.root, out);
+    const [replayed] = replayTrace(out).initiatives;
+    expect(replayed?.shareGate.map((b) => [b.featureId, b.recorded, b.replayed])).toEqual(
+      records.map((r) => [r.featureId, r.verdict, r.verdict]),
+    );
+    expect(replayed?.newShareStops).toBe(0);
+    // A gate that parks every feature shows up as new parks of the recorded starts.
+    expect(replayTrace(out, { shareGate: () => true }).initiatives[0]?.newShareStops).toBe(started.length);
   });
 
   test("tiered approval auto-approves a feature spec that stays within its boundary only", async () => {

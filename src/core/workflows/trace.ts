@@ -12,6 +12,7 @@ import { canonical, hashBytes } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { assertForecastFits, costForecast } from "./cost-forecast.js";
 import { WorkflowFault } from "./errors.js";
+import { type ShareGateRecord, shareShortfall } from "./initiatives/service.js";
 import { recordingOf } from "./model-recording.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { WorkflowStore } from "./store.js";
@@ -498,9 +499,60 @@ export function replayFirstByte(
   return boundaries;
 }
 
+/** One recorded share-gate decision of an initiative's feature, and the current gate's (#1707). */
+export interface ShareGateBoundary {
+  featureId: string;
+  recorded: "pass" | "park";
+  replayed: "pass" | "park";
+}
+
+export interface InitiativeReplay {
+  initiativeId: string;
+  shareGate: ShareGateBoundary[];
+  /** Features the recording started that the current gate parks. */
+  newShareStops: number;
+}
+
+export type ShareGate = (
+  view: ShareGateRecord["view"],
+  feature: ShareGateRecord["feature"],
+) => unknown;
+
+/**
+ * Every recorded share-gate decision of the trace's initiatives (`feature.share_gate` events)
+ * against `gate`, the current `shareShortfall` by default. Traces before #1707 record none.
+ */
+export function replayShareGate(
+  store: WorkflowStore,
+  gate: ShareGate = shareShortfall,
+): InitiativeReplay[] {
+  const rows = store.connection
+    .query(
+      "SELECT initiative_id, payload_json FROM initiative_events WHERE type='feature.share_gate' ORDER BY initiative_id, seq",
+    )
+    .all() as { initiative_id: string; payload_json: string }[];
+  const byInitiative = new Map<string, ShareGateBoundary[]>();
+  for (const row of rows) {
+    const record = JSON.parse(row.payload_json) as ShareGateRecord;
+    const boundaries = byInitiative.get(row.initiative_id) ?? [];
+    boundaries.push({
+      featureId: record.featureId,
+      recorded: record.verdict,
+      replayed: gate(record.view, record.feature) ? "park" : "pass",
+    });
+    byInitiative.set(row.initiative_id, boundaries);
+  }
+  return [...byInitiative].map(([initiativeId, shareGate]) => ({
+    initiativeId,
+    shareGate,
+    newShareStops: shareGate.filter((b) => b.recorded === "pass" && b.replayed === "park").length,
+  }));
+}
+
 export interface TraceReplay {
   trace: string;
   runs: RunReplay[];
+  initiatives: InitiativeReplay[];
 }
 
 interface RevisionRecord {
@@ -724,7 +776,7 @@ function replayRun(
 /** Replays the forecast gate of every run in the trace at `path` with a dollar cap. */
 export function replayTrace(
   path: string,
-  options: { firstByteLimit?: FirstByteLimit } = {},
+  options: { firstByteLimit?: FirstByteLimit; shareGate?: ShareGate } = {},
 ): TraceReplay {
   const { store, dispose } = openTrace(path);
   try {
@@ -756,7 +808,7 @@ export function replayTrace(
           .length,
       });
     }
-    return { trace: path, runs };
+    return { trace: path, runs, initiatives: replayShareGate(store, options.shareGate) };
   } finally {
     dispose();
   }
