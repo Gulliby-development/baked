@@ -4,6 +4,17 @@ import type { WorkflowStore } from "./store.js";
 import { type AttemptUsageRow, runUsage } from "./usage.js";
 
 export const DEFAULT_MIX: TokenMix = { input: 0.6, cacheRead: 0.3, output: 0.1 };
+/**
+ * A task attempt's mix before any task ran. Implementation is an agent loop that replays its
+ * cached context every step: codex task attempts read 70 to 80 percent of their tokens from the
+ * cache (bench round 38), a Claude Sonnet implementer 91 percent (round 51). The default mix
+ * priced the first Sonnet tasks of a run at three times what they paid (#1712).
+ */
+export const TASK_MIX: TokenMix = { input: 0.15, cacheRead: 0.8, output: 0.05 };
+
+/** The mix a stage without samples is priced at. */
+export const stageMix = (stage: string): TokenMix =>
+  stage === "implement" ? TASK_MIX : DEFAULT_MIX;
 
 type StepTree = Map<string, { stage_id: string; parent_step_id: string | null }>;
 
@@ -92,7 +103,9 @@ export function forecastSamples(
 /**
  * Price a future stage on its model. Matching paid samples preserve cache discounts and writes.
  * A new model uses the same stage's measured token mix at its own prices. Without stage samples,
- * use the default mix rather than another stage's price. No estimate margin belongs in this rate.
+ * use the stage's default mix (`stageMix`) rather than another stage's price: single-step planning
+ * calls never read the cache, so their mix priced a task loop as uncached input (#1712). No
+ * estimate margin belongs in this rate.
  */
 export function forecastRate(
   samples: AttemptUsageRow[],
@@ -129,10 +142,9 @@ export function forecastRate(
       (input + output) /
       1e6
     );
+  const mix = stageMix(stage);
   return (
-    (DEFAULT_MIX.input * pricing.input +
-      DEFAULT_MIX.cacheRead * pricing.cacheRead +
-      DEFAULT_MIX.output * pricing.output) /
+    (mix.input * pricing.input + mix.cacheRead * pricing.cacheRead + mix.output * pricing.output) /
     1e6
   );
 }

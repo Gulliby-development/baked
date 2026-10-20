@@ -527,6 +527,8 @@ export function normalizeLiteral(source: string): string {
 }
 
 const escapeRegex = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** A backslash before a character no escape layer decodes: `\1`, `\!`, `\0`. */
+const RAW_ESCAPE = /\\[^ntr"'`\\ux]/;
 const SEPARATOR = String.raw`[\s"'\x60,()[\]]+`;
 /** Keep flags, paths, identifiers and signed numbers; discard grouping syntax and conjunctions. */
 const SIGNIFICANT_TOKEN =
@@ -557,6 +559,11 @@ export function testsHold(text: string, literal: string): boolean {
     );
   return (
     held(exact) ||
+    // A literal with an escape no decoding layer knows (`\1`, `\!`, `\0` in
+    // `s/(a)/&\1\n\t\!\0/`) is raw escape text, as a C#, Java, Go or JavaScript string spells it
+    // with every backslash doubled: decoding `\n` on the literal's side only would miss it (#1709).
+    (RAW_ESCAPE.test(literal) &&
+      text.replace(/\\/g, "").includes(literal.replace(/\\/g, "").trim())) ||
     // Formatters change whitespace and quote style inside lists and expressions.
     (/[[\](]/.test(normalized) && testsHoldCompact(unescaped, normalized)) ||
     (significant.length > 0 && significant.every((token) => held(escapeRegex(token))))

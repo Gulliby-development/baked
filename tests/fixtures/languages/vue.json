@@ -1,0 +1,16 @@
+{
+  "files": {
+    "src/Sum.vue": "<script setup lang=\"ts\">\nfunction sum(a: number, b: number): number {\n  throw new Error(\"not implemented\");\n}\n</script>\n",
+    "package.json": "{\"name\": \"fixture\", \"dependencies\": {\"vue\": \"^3.4.0\"}}"
+  },
+  "expected": {
+    "tests": null,
+    "manifests": null,
+    "dependencies": [
+      "package.json: npm vue"
+    ],
+    "placeholders": [
+      "src/Sum.vue:3"
+    ]
+  }
+}

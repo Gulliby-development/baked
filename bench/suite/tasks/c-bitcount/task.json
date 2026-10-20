@@ -1,0 +1,23 @@
+{
+  "id": "c-bitcount",
+  "language": "c",
+  "toolchain": "make",
+  "requires": [
+    "cc",
+    "make"
+  ],
+  "allowedPaths": [
+    "src/**",
+    "tests/**",
+    "README.md"
+  ],
+  "checks": [
+    {
+      "id": "make-test",
+      "executable": "make",
+      "args": [
+        "test"
+      ]
+    }
+  ]
+}
