@@ -6,6 +6,7 @@ import { defaultWorkflowPolicy } from "./defaults.js";
 import { WorkflowFault } from "./errors.js";
 import { type AgentProfile, extendToOf, PolicySchema, type RunPolicy } from "./schemas.js";
 import { forecastRate, forecastSamples, type RunPrices, runPrices } from "./stage-price.js";
+import { stopFault } from "./stop-reasons.js";
 import type { RunRow, WorkflowStore } from "./store.js";
 import type { AttemptUsageRow } from "./usage.js";
 export function reserveTokens(prompt: string, profile: AgentProfile, policy: RunPolicy): number {
@@ -625,15 +626,14 @@ export function assertAttemptFits(
   // With a dollar cap the cap is the limit that stops the run when it cannot pay for the attempt.
   const affordable = affordableTokens(store, runId, policy);
   if (affordable !== null && committed + attemptTokens > affordable)
-    throw new WorkflowFault("BUDGET_EXHAUSTED", "The next attempt would pass the run's cost cap", {
-      reason: "cost",
+    throw stopFault("cost", "The next attempt would pass the run's cost cap", {
       ...store.costUsage(runId, attemptId),
       attemptTokens,
       maxCostUsd: policy.maxCostUsd,
       ceilingUsd: costCeilingUsd(store, runId, policy),
     });
-  throw new WorkflowFault(
-    "BUDGET_EXHAUSTED",
+  throw stopFault(
+    "run-budget",
     `The next attempt needs more tokens than the run budget has left (${String(left)} of ${String(policy.maxTotalTokens)}; the policy's sizing ceiling is ${String(policy.sizing.maxRunTokens)})`,
     {
       remainingTokens: left,

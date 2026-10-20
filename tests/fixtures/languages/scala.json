@@ -14,6 +14,12 @@
     "dependencies": null,
     "placeholders": [
       "src/main/scala/Sum.scala:2"
-    ]
+    ],
+    "gates": [
+      "sbt-test"
+    ],
+    "testRunners": null,
+    "mutation": null,
+    "properties": null
   }
 }

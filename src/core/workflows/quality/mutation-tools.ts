@@ -7,6 +7,9 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
+import { type LanguageRecord, none, rowOf } from "../../intelligence/language-records.js";
+import { isManifestFile } from "../../intelligence/language-traits.js";
+import { detectLanguageFromPath } from "../../intelligence/types.js";
 import { readablePath } from "../../specs/validate.js";
 import { isTestCodePath } from "./duplication.js";
 import type { MutantOutcome, MutationEngine } from "./mutation.js";
@@ -62,8 +65,6 @@ export type ToolRun =
 
 interface Adapter {
   tool: MutationTool;
-  /** The code files the tool mutates. */
-  language: RegExp;
   /**
    * Files and directories under the root the tool may create; each one that did not exist
    * before the run is removed after it, so the run's working copy keeps only its own changes.
@@ -392,7 +393,6 @@ const javaClass = (path: string) =>
 const ADAPTERS: readonly Adapter[] = [
   {
     tool: "stryker",
-    language: /\.(?:[cm]?[jt]sx?)$/,
     outputs: [STRYKER_REPORT, "reports/mutation", "reports"],
     detect: (shell) => {
       if (!shell.exists(STRYKER_BIN)) return null;
@@ -427,7 +427,6 @@ const ADAPTERS: readonly Adapter[] = [
   },
   {
     tool: "mutmut",
-    language: /\.py$/,
     outputs: ["mutants"],
     detect: (shell) => {
       const local = shell.platform === "win32" ? ".venv/Scripts/mutmut.exe" : ".venv/bin/mutmut";
@@ -480,7 +479,6 @@ const ADAPTERS: readonly Adapter[] = [
   },
   {
     tool: "cargo-mutants",
-    language: /\.rs$/,
     outputs: [],
     detect: (shell) => {
       const cargo = shell.which("cargo");
@@ -512,7 +510,6 @@ const ADAPTERS: readonly Adapter[] = [
   },
   {
     tool: "pit",
-    language: /\.(?:java|kt)$/,
     outputs: ["target/pit-reports", "build/reports/pitest"],
     detect: (shell) => {
       const wrapper = (name: string) =>
@@ -564,7 +561,6 @@ const ADAPTERS: readonly Adapter[] = [
   },
   {
     tool: "go-mutesting",
-    language: /\.go$/,
     outputs: ["report.json"],
     detect: (shell) => {
       const found = shell.exists("go.mod") ? shell.which("go-mutesting") : null;
@@ -585,9 +581,48 @@ const ADAPTERS: readonly Adapter[] = [
   },
 ];
 
-/** The changed non-test code files a tool would mutate, by tool. */
+/**
+ * The ecosystem mutation tool of each supported language (#1717, #1733); a language without one
+ * gets the built-in engine.
+ */
+export const MUTATION_TOOLS: LanguageRecord<MutationTool> = {
+  typescript: "stryker",
+  javascript: "stryker",
+  vue: none(
+    "Stryker mutates Vue single-file components only with a plugin this gate does not set up",
+  ),
+  svelte: none("Stryker does not mutate Svelte components"),
+  rescript: none("Stryker mutates the compiled JavaScript, not ReScript sources"),
+  python: "mutmut",
+  rust: "cargo-mutants",
+  java: "pit",
+  kotlin: "pit",
+  go: "go-mutesting",
+  scala: none("no Scala mutation tool is integrated (Stryker4s)"),
+  csharp: none("Stryker.NET is not integrated yet"),
+  c: none("no C mutation tool is integrated"),
+  cpp: none("no C++ mutation tool is integrated (Mull)"),
+  ruby: none("no Ruby mutation tool is integrated (mutant)"),
+  php: none("Infection is not integrated yet (#1491)"),
+  swift: none("no Swift mutation tool is integrated (Muter)"),
+  lua: none("no Lua mutation tool is integrated"),
+  elixir: none("no Elixir mutation tool is integrated"),
+  dart: none("no Dart mutation tool is integrated"),
+  zig: none("no Zig mutation tool exists"),
+  bash: none("no shell mutation tool exists"),
+  ocaml: none("no OCaml mutation tool is integrated"),
+  objc: none("no Objective-C mutation tool is integrated"),
+  solidity: none("no Solidity mutation tool is integrated (Gambit)"),
+};
+
+/** The changed non-test code files a tool would mutate, by tool; build scripts are not mutated. */
 const toolFiles = (adapter: Adapter, files: ChangedFile[]) =>
-  files.filter((f) => adapter.language.test(f.path) && !isTestCodePath(f.path));
+  files.filter(
+    (f) =>
+      rowOf(MUTATION_TOOLS, detectLanguageFromPath(f.path)) === adapter.tool &&
+      !isTestCodePath(f.path) &&
+      !isManifestFile(f.path),
+  );
 
 /**
  * The installed tool for the language most of the changed code is in, or null: the built-in

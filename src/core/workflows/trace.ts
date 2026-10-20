@@ -8,10 +8,12 @@ import {
   type CallTiming,
   providerFirstByteMs,
 } from "../llm/provider-health.js";
-import { canonical, hashBytes } from "../specs/hash.js";
+import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { assertForecastFits, costForecast } from "./cost-forecast.js";
 import { WorkflowFault } from "./errors.js";
+import { type ShareGateRecord, shareShortfall } from "./initiatives/service.js";
+import { recordingOf } from "./model-recording.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { WorkflowStore } from "./store.js";
 
@@ -36,6 +38,8 @@ const KEPT_ARTIFACTS = new Set([
   "plan",
   "spec",
   "tasks",
+  // The run state (`internal/state.json`): an initiative's feature views read it (#1707).
+  "state",
 ]);
 
 /** Tables that hold evidence, effects or prose the replay never reads. */
@@ -93,28 +97,80 @@ const PROSE = new Set([
   "when",
 ]);
 
-const blank = (value: unknown): unknown =>
+/**
+ * Run-state fields that hold content under keys other artifacts use for settings: the plan and
+ * research text, the report, instructions, the initiative plan, and files a run froze or carried.
+ */
+const STATE_CONTENT = new Set([
+  "plan",
+  "research",
+  "report",
+  "instructionText",
+  "initiativePlan",
+  "frozenFiles",
+  "taskCarry",
+]);
+
+/**
+ * Stand-ins for prose: each distinct string of an export becomes `KEY-N`, so a schema that
+ * rejects an empty title or a duplicate task description still parses a trace, and two equal
+ * strings stay equal, without keeping any text (#1707). The empty string stays empty.
+ */
+export class StandIns {
+  private readonly seen = new Map<string, string>();
+  of(key: string, text: string): string {
+    if (text === "") return "";
+    let standIn = this.seen.get(text);
+    if (standIn === undefined) {
+      standIn = `${key}-${this.seen.size + 1}`;
+      this.seen.set(text, standIn);
+    }
+    return standIn;
+  }
+}
+
+const replaced = (key: string, value: unknown, standIns: StandIns): unknown =>
   typeof value === "string"
-    ? ""
+    ? standIns.of(key, value)
     : Array.isArray(value)
-      ? value.map(blank)
+      ? value.map((v) => replaced(key, v, standIns))
       : value && typeof value === "object"
-        ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, blank(v)]))
+        ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, replaced(key, v, standIns)]))
         : value;
 
-/** `value` with every string under a prose key emptied, keeping arrays and their lengths. */
-export function scrubTrace(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(scrubTrace);
+/**
+ * `value` with every string under a prose key (and under `content`, the keys a run state keeps
+ * content in) replaced by its stand-in, keeping arrays, their lengths and record keys. Any other
+ * string with whitespace in it is prose too: enums, IDs, hashes, model IDs and paths have none,
+ * and a spec's `problem` or `inScope` would otherwise need its key listed here (#1707).
+ */
+export function scrubTrace(
+  value: unknown,
+  standIns: StandIns = new StandIns(),
+  content: ReadonlySet<string> = PROSE,
+  key = "text",
+): unknown {
+  if (typeof value === "string") return /\s/.test(value) ? standIns.of(key, value) : value;
+  if (Array.isArray(value)) return value.map((v) => scrubTrace(v, standIns, content, key));
   if (!value || typeof value !== "object") return value;
   return Object.fromEntries(
-    Object.entries(value).map(([key, v]) => [key, PROSE.has(key) ? blank(v) : scrubTrace(v)]),
+    Object.entries(value).map(([k, v]) => [
+      k,
+      PROSE.has(k) || content.has(k)
+        ? replaced(k, v, standIns)
+        : scrubTrace(v, standIns, content, k),
+    ]),
   );
 }
 
-const scrubJson = (text: string | null): string | null => {
+const scrubJson = (
+  text: string | null,
+  standIns: StandIns,
+  content: ReadonlySet<string> = PROSE,
+): string | null => {
   if (text === null) return null;
   try {
-    return canonical(scrubTrace(JSON.parse(text)));
+    return canonical(scrubTrace(JSON.parse(text), standIns, content));
   } catch {
     return "";
   }
@@ -130,11 +186,100 @@ const tables = (db: Database): Set<string> =>
 const columns = (db: Database, table: string): string[] =>
   (db.query(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
 
+const textColumns = (db: Database, table: string): string[] =>
+  (db.query(`PRAGMA table_info(${table})`).all() as { name: string; type: string }[])
+    .filter((c) => c.type.toUpperCase() === "TEXT")
+    .map((c) => c.name);
+
 export interface TraceExport {
   path: string;
   runs: number;
   initiatives: number;
   bytes: number;
+}
+
+/** One run of `exportRecordings`: what a replay of it needs besides the calls. */
+export interface RecordingEntry {
+  runId: string;
+  featureId: string;
+  workflowId: string;
+  status: string;
+  reason: string;
+  /** The Git commit of the run's first workspace snapshot: the tree a replay starts from. */
+  gitHead: string | null;
+  calls: number;
+  /** The recording's file name in the output folder. */
+  file: string;
+}
+
+/**
+ * Writes the model calls each run of `workspace` recorded (`--record-model-calls`) to
+ * `outDir/RUN_ID.json.gz`, in the format `workflow run --replay` reads once unzipped, and a
+ * `manifest.json` of the runs (#1715). Bench apps are public MIT repositories, so prompts and
+ * model output may be kept; nothing else of `.baked/` is. The database is read without changes.
+ */
+export function exportRecordings(
+  workspace: string,
+  outDir: string,
+  options: { runIds?: string[] } = {},
+): RecordingEntry[] {
+  const source = workspacePath(workspace, ".baked/workflows.sqlite");
+  if (!existsSync(source)) throw new Error(`No workflow database in ${workspace}`);
+  const db = new Database(source, { readonly: true });
+  try {
+    const runs = db
+      .query("SELECT id, feature_id, status, reason, definition_json FROM runs ORDER BY created_at")
+      .all() as {
+      id: string;
+      feature_id: string;
+      status: string;
+      reason: string;
+      definition_json: string;
+    }[];
+    const keep = options.runIds ? new Set(options.runIds) : null;
+    const entries: RecordingEntry[] = [];
+    mkdirSync(outDir, { recursive: true });
+    for (const run of runs) {
+      if (keep && !keep.has(run.id)) continue;
+      const texts = (
+        db
+          .query(
+            "SELECT inline_content, blob_path FROM artifacts WHERE run_id=? AND logical_path LIKE 'recordings/%' ORDER BY created_at",
+          )
+          .all(run.id) as { inline_content: string | null; blob_path: string | null }[]
+      ).map(
+        (row) =>
+          row.inline_content ??
+          readFileSync(
+            workspacePath(workspace, (row.blob_path ?? "").replaceAll("\\", "/")),
+            "utf8",
+          ),
+      );
+      if (!texts.length) continue;
+      const recording = recordingOf(run.id, texts);
+      const file = `${run.id}.json.gz`;
+      writeFileSync(join(outDir, file), Bun.gzipSync(Buffer.from(JSON.stringify(recording))));
+      const head = db
+        .query(
+          "SELECT git_head FROM workspace_snapshots WHERE run_id=? ORDER BY created_at LIMIT 1",
+        )
+        .get(run.id) as { git_head: string | null } | null;
+      entries.push({
+        runId: run.id,
+        featureId: run.feature_id,
+        workflowId: (JSON.parse(run.definition_json) as { id?: string }).id ?? "",
+        status: run.status,
+        reason: run.reason,
+        gitHead: head?.git_head ?? null,
+        calls: recording.calls.length,
+        file,
+      });
+    }
+    writeFileSync(join(outDir, "manifest.json"), `${JSON.stringify(entries, null, 2)}\n`);
+    return entries;
+  } finally {
+    db.close();
+  }
 }
 
 /**
@@ -165,6 +310,7 @@ export function exportTrace(
         .all() as { name: string }[])
         db.exec(`DROP TRIGGER "${name}"`);
       const present = tables(db);
+      const standIns = new StandIns();
       db.transaction(() => {
         for (const table of DROPPED_TABLES) if (present.has(table)) db.exec(`DELETE FROM ${table}`);
         if (options.runIds) {
@@ -190,21 +336,47 @@ export function exportTrace(
           inline_content: string | null;
           blob_path: string | null;
         }[];
-        for (const a of artifacts) {
-          let text: string | null = null;
-          if (KEPT_ARTIFACTS.has(a.kind)) {
-            try {
-              text =
-                a.inline_content ??
-                readFileSync(
-                  workspacePath(workspace, (a.blob_path ?? "").replaceAll("\\", "/")),
-                  "utf8",
-                );
-            } catch {
-              text = null;
-            }
+        const readText = (a: (typeof artifacts)[number]): string | null => {
+          if (!KEPT_ARTIFACTS.has(a.kind)) return null;
+          try {
+            return (
+              a.inline_content ??
+              readFileSync(
+                workspacePath(workspace, (a.blob_path ?? "").replaceAll("\\", "/")),
+                "utf8",
+              )
+            );
+          } catch {
+            return null;
           }
-          const content = text === null ? null : scrubJson(text);
+        };
+        // A contract hash is the hash of a run's spec, and stand-ins change the spec: map each
+        // original hash to the scrubbed spec's, upstream first, so pinned dependencies and the
+        // initiative's records still match the contract they name (#1707).
+        const contracts = new Map<string, string>();
+        const remap = (text: string): string => {
+          let mapped = text;
+          for (const [from, to] of contracts) mapped = mapped.replaceAll(from, to);
+          return mapped;
+        };
+        for (const a of artifacts.filter((row) => row.kind === "state")) {
+          const text = readText(a);
+          const spec = text === null ? null : (JSON.parse(text) as { spec?: unknown }).spec;
+          if (!spec || text === null) continue;
+          const scrubbed = scrubJson(text, standIns, STATE_CONTENT);
+          if (!scrubbed) continue;
+          contracts.set(
+            hashJson(spec),
+            hashJson((JSON.parse(remap(scrubbed)) as { spec: unknown }).spec),
+          );
+        }
+        for (const a of artifacts) {
+          const text = readText(a);
+          const scrubbed =
+            text === null
+              ? null
+              : scrubJson(text, standIns, a.kind === "state" ? STATE_CONTENT : PROSE);
+          const content = scrubbed === null ? null : remap(scrubbed);
           if (content === null) {
             db.run(
               "UPDATE steps SET output_artifact_id=NULL WHERE run_id=? AND output_artifact_id=?",
@@ -230,14 +402,34 @@ export function exportTrace(
               r: number;
               v: string | null;
             }[];
-            for (const row of rows)
+            for (const row of rows) {
+              const scrubbed = scrubJson(row.v, standIns);
               db.run(`UPDATE ${table} SET ${column}=? WHERE rowid=?`, [
-                scrubJson(row.v) ?? null,
+                scrubbed === null ? null : remap(scrubbed),
                 row.r,
               ]);
+            }
           }
+        // Contract hashes in plain columns (an initiative's pinned contracts, say).
+        for (const table of [...present].filter((t) => t !== "artifacts"))
+          for (const column of textColumns(db, table).filter((c) => !c.endsWith("_json")))
+            for (const [from, to] of contracts)
+              db.run(
+                `UPDATE ${table} SET ${column}=replace(${column}, ?, ?) WHERE ${column} LIKE ?`,
+                [from, to, `%${from}%`],
+              );
         if (present.has("findings")) db.exec("UPDATE findings SET body_json='{}'");
-        if (present.has("initiatives")) db.exec("UPDATE initiatives SET title='', prompt=''");
+        if (present.has("initiatives"))
+          for (const row of db.query("SELECT rowid AS r, title, prompt FROM initiatives").all() as {
+            r: number;
+            title: string;
+            prompt: string;
+          }[])
+            db.run("UPDATE initiatives SET title=?, prompt=? WHERE rowid=?", [
+              standIns.of("title", row.title),
+              standIns.of("prompt", row.prompt),
+              row.r,
+            ]);
         if (present.has("features")) {
           const rows = db.query("SELECT id, directory FROM features").all() as {
             id: string;
@@ -348,6 +540,37 @@ export function replayFirstByte(
   runId: string,
   limit: FirstByteLimit = providerFirstByteMs,
 ): FirstByteBoundary[] {
+  // A refused call (a 429, say) answered before any deadline; it is the retry ladder's, not this.
+  const answered = recordedCalls(store, runId).filter(({ call }) => call.status === undefined);
+  return answered.map(({ attemptId, call, index, estimated }) => {
+    const limitMs = limit(call.provider, call);
+    const replayed =
+      call.firstByteMs !== null ? call.firstByteMs > limitMs : call.durationMs >= limitMs;
+    return {
+      attemptId,
+      call: index,
+      provider: call.provider,
+      stage: call.stage ?? null,
+      effort: call.effort ?? null,
+      firstByteMs: call.firstByteMs,
+      durationMs: call.durationMs,
+      estimated,
+      limitMs,
+      recorded: call.firstByteMs === null ? "stop" : "pass",
+      replayed: replayed ? "stop" : "pass",
+    };
+  });
+}
+
+/**
+ * Each model call of a run's attempts, from the `calls` of their `usage.json`. Traces recorded
+ * before calls were kept stand in a completed, one-step buffered CLI attempt as one call whose
+ * first response is the attempt's length (`estimated`).
+ */
+function recordedCalls(
+  store: WorkflowStore,
+  runId: string,
+): { attemptId: string; call: CallTiming; index: number; estimated: boolean }[] {
   const attempts = store.connection
     .query(
       "SELECT id, model_id, status, started_at, ended_at FROM attempts WHERE run_id=? AND model_id IS NOT NULL ORDER BY started_at, rowid",
@@ -359,8 +582,7 @@ export function replayFirstByte(
     started_at: number;
     ended_at: number | null;
   }[];
-  const boundaries: FirstByteBoundary[] = [];
-  for (const attempt of attempts) {
+  return attempts.flatMap((attempt) => {
     const saved = store.latestArtifact(runId, `attempts/${attempt.id}/usage.json`);
     const usage = saved
       ? (JSON.parse(store.readArtifact(runId, saved.id)) as {
@@ -391,31 +613,159 @@ export function replayFirstByte(
         },
       ];
     }
-    for (const [index, call] of calls.entries()) {
-      const limitMs = limit(call.provider, call);
-      const replayed =
-        call.firstByteMs !== null ? call.firstByteMs > limitMs : call.durationMs >= limitMs;
-      boundaries.push({
-        attemptId: attempt.id,
-        call: index,
-        provider: call.provider,
-        stage: call.stage ?? null,
-        effort: call.effort ?? null,
-        firstByteMs: call.firstByteMs,
-        durationMs: call.durationMs,
-        estimated,
-        limitMs,
-        recorded: call.firstByteMs === null ? "stop" : "pass",
-        replayed: replayed ? "stop" : "pass",
-      });
+    return calls.map((call, index) => ({ attemptId: attempt.id, call, index, estimated }));
+  });
+}
+
+/** Healthy first responses of one call shape across the corpus (#1729). */
+export interface FirstByteProfile {
+  provider: string;
+  stage: string | null;
+  effort: string | null;
+  calls: number;
+  p50Ms: number;
+  p99Ms: number;
+  maxMs: number;
+  /** True when every sample is an attempt's length rather than a recorded call (older traces). */
+  estimated: boolean;
+}
+
+/** What the recorded rounds say about providers' latencies and refusals, for fault profiles. */
+export interface CallProfile {
+  firstByte: FirstByteProfile[];
+  /** The `retry-after` waits providers sent with refusals, in milliseconds, by provider. */
+  retryAfterMs: Record<string, number[]>;
+}
+
+const percentile = (sorted: number[], p: number): number =>
+  sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(p * sorted.length) - 1))] ?? 0;
+
+/** The `retry-after` header in milliseconds: seconds, or an HTTP date relative to `at`. */
+function retryAfterOf(value: string, at: number): number | null {
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const date = Date.parse(value);
+  return Number.isNaN(date) ? null : Math.max(0, date - at);
+}
+
+/**
+ * The latencies and refusal waits of every recorded call in the traces at `paths`, grouped by
+ * provider, stage and effort: the parameters the provider fault matrix tests limits against, so
+ * a round with slower healthy calls moves them without a hand-written number (#1729).
+ */
+export function corpusCallProfile(paths: string[]): CallProfile {
+  const groups = new Map<string, { sample: FirstByteProfile; values: number[] }>();
+  const retryAfterMs: Record<string, number[]> = {};
+  for (const path of paths) {
+    const { store, dispose } = openTrace(path);
+    try {
+      for (const { id } of store.connection.query("SELECT id FROM runs").all() as {
+        id: string;
+      }[])
+        for (const { call, estimated } of recordedCalls(store, id)) {
+          if (call.retryAfter) {
+            const wait = retryAfterOf(call.retryAfter, Date.now());
+            if (wait !== null)
+              retryAfterMs[call.provider] = [...(retryAfterMs[call.provider] ?? []), wait];
+          }
+          if (call.firstByteMs === null || call.status !== undefined) continue;
+          const key = `${call.provider}|${call.stage ?? ""}|${call.effort ?? ""}`;
+          const group = groups.get(key) ?? {
+            sample: {
+              provider: call.provider,
+              stage: call.stage ?? null,
+              effort: call.effort ?? null,
+              calls: 0,
+              p50Ms: 0,
+              p99Ms: 0,
+              maxMs: 0,
+              estimated: true,
+            },
+            values: [],
+          };
+          group.values.push(call.firstByteMs);
+          group.sample.estimated &&= estimated;
+          groups.set(key, group);
+        }
+    } finally {
+      dispose();
     }
   }
-  return boundaries;
+  const firstByte = [...groups.values()]
+    .map(({ sample, values }) => {
+      const sorted = values.sort((a, b) => a - b);
+      return {
+        ...sample,
+        calls: sorted.length,
+        p50Ms: percentile(sorted, 0.5),
+        p99Ms: percentile(sorted, 0.99),
+        maxMs: sorted.at(-1) ?? 0,
+      };
+    })
+    .sort(
+      (a, b) =>
+        a.provider.localeCompare(b.provider) ||
+        (a.stage ?? "").localeCompare(b.stage ?? "") ||
+        (a.effort ?? "").localeCompare(b.effort ?? ""),
+    );
+  for (const waits of Object.values(retryAfterMs)) waits.sort((a, b) => a - b);
+  return { firstByte, retryAfterMs };
+}
+
+/** One recorded share-gate decision of an initiative's feature, and the current gate's (#1707). */
+export interface ShareGateBoundary {
+  featureId: string;
+  recorded: "pass" | "park";
+  replayed: "pass" | "park";
+}
+
+export interface InitiativeReplay {
+  initiativeId: string;
+  shareGate: ShareGateBoundary[];
+  /** Features the recording started that the current gate parks. */
+  newShareStops: number;
+}
+
+export type ShareGate = (
+  view: ShareGateRecord["view"],
+  feature: ShareGateRecord["feature"],
+) => unknown;
+
+/**
+ * Every recorded share-gate decision of the trace's initiatives (`feature.share_gate` events)
+ * against `gate`, the current `shareShortfall` by default. Traces before #1707 record none.
+ */
+export function replayShareGate(
+  store: WorkflowStore,
+  gate: ShareGate = shareShortfall,
+): InitiativeReplay[] {
+  const rows = store.connection
+    .query(
+      "SELECT initiative_id, payload_json FROM initiative_events WHERE type='feature.share_gate' ORDER BY initiative_id, seq",
+    )
+    .all() as { initiative_id: string; payload_json: string }[];
+  const byInitiative = new Map<string, ShareGateBoundary[]>();
+  for (const row of rows) {
+    const record = JSON.parse(row.payload_json) as ShareGateRecord;
+    const boundaries = byInitiative.get(row.initiative_id) ?? [];
+    boundaries.push({
+      featureId: record.featureId,
+      recorded: record.verdict,
+      replayed: gate(record.view, record.feature) ? "park" : "pass",
+    });
+    byInitiative.set(row.initiative_id, boundaries);
+  }
+  return [...byInitiative].map(([initiativeId, shareGate]) => ({
+    initiativeId,
+    shareGate,
+    newShareStops: shareGate.filter((b) => b.recorded === "pass" && b.replayed === "park").length,
+  }));
 }
 
 export interface TraceReplay {
   trace: string;
   runs: RunReplay[];
+  initiatives: InitiativeReplay[];
 }
 
 interface RevisionRecord {
@@ -639,7 +989,7 @@ function replayRun(
 /** Replays the forecast gate of every run in the trace at `path` with a dollar cap. */
 export function replayTrace(
   path: string,
-  options: { firstByteLimit?: FirstByteLimit } = {},
+  options: { firstByteLimit?: FirstByteLimit; shareGate?: ShareGate } = {},
 ): TraceReplay {
   const { store, dispose } = openTrace(path);
   try {
@@ -671,7 +1021,7 @@ export function replayTrace(
           .length,
       });
     }
-    return { trace: path, runs };
+    return { trace: path, runs, initiatives: replayShareGate(store, options.shareGate) };
   } finally {
     dispose();
   }

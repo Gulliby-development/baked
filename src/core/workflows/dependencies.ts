@@ -2,6 +2,7 @@ import { hashJson } from "../specs/hash.js";
 import { WorkflowFault } from "./errors.js";
 import type { WorkflowStore } from "./store.js";
 import type { RuntimeState } from "./types.js";
+import { HOST_SPEC_OUTCOME } from "./v2/runtime.js";
 
 /** The accepted contract of a feature: the spec of its newest approved run. */
 export interface AcceptedContract {
@@ -25,6 +26,8 @@ export function acceptedContract(store: WorkflowStore, featureId: string): Accep
       const upstream = store.state(run.runId);
       if (!upstream.approvalRoot || !upstream.spec) continue;
       const artifact = store.latestArtifact(run.runId, "spec.json");
+      // A host-made spec no run recorded is the request restated, not a contract (#1750).
+      if (!artifact && upstream.spec.outcome === HOST_SPEC_OUTCOME) continue;
       if (!artifact)
         throw new WorkflowFault("ARTIFACT_MISSING", "Upstream accepted spec artifact missing");
       store.readArtifact(run.runId, artifact.id);
@@ -39,6 +42,17 @@ export function acceptedContract(store: WorkflowStore, featureId: string): Accep
     cursor = page.cursor;
   } while (cursor);
   return null;
+}
+
+/**
+ * Whether a run's spec is a contract others can pin: a spec stage wrote it, or the run recorded
+ * its host-made spec as spec.json. A light run started without a contract only restates its
+ * request (#1750).
+ */
+export function providesContract(store: WorkflowStore, runId: string): boolean {
+  const spec = store.state(runId).spec;
+  if (!spec) return false;
+  return spec.outcome !== HOST_SPEC_OUTCOME || store.latestArtifact(runId, "spec.json") !== null;
 }
 
 export function dependencyContracts(store: WorkflowStore, state: RuntimeState) {

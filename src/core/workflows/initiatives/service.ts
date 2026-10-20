@@ -17,7 +17,7 @@ import { matchGlob } from "../../platform/index.js";
 import { hashJson } from "../../specs/hash.js";
 import { type BudgetLimits, budgetUsage, limitsOf } from "../budget.js";
 import { autoCostTolerance } from "../cost-tolerance.js";
-import { type AcceptedContract, acceptedContract } from "../dependencies.js";
+import { type AcceptedContract, acceptedContract, providesContract } from "../dependencies.js";
 import { WorkflowFault } from "../errors.js";
 import {
   estimateHistory,
@@ -53,6 +53,7 @@ import {
 import type { NativeWorkflowService, PlannedReroute } from "../service.js";
 import { terminalStates } from "../state-machine.js";
 import { stopDetail, stopRecovery } from "../stop-detail.js";
+import { stopFault } from "../stop-reasons.js";
 import { newId, WorkflowStore } from "../store.js";
 import type { IssueSource } from "../types.js";
 import { HOST_AUTO_APPROVAL_CEILING, HostAutoApprovalSchema } from "../v2/definition.js";
@@ -86,6 +87,7 @@ import {
   planSizeProblem,
   type SplitEdit,
   SplitEditSchema,
+  sequenceDocumentation,
   sequenceSharedPaths,
   sizeWeight,
   testOwnershipProblems,
@@ -357,12 +359,30 @@ function shareTooSmall(share: UsageView | null): boolean {
 }
 
 /**
+ * What the share gate reads of an initiative view. A feature start records it in the
+ * `feature.share_gate` event, so bench traces replay the gate on what the round saw (#1707).
+ */
+export interface ShareGateView {
+  initiativeId: string;
+  budget: Pick<InitiativeView["budget"], "remaining" | "cost">;
+  features: Pick<FeatureView, "id" | "state" | "share" | "need">[];
+}
+
+/** The `feature.share_gate` event: the gate's inputs and what it decided for one feature. */
+export interface ShareGateRecord {
+  featureId: string;
+  verdict: "pass" | "park";
+  view: ShareGateView;
+  feature: Pick<FeatureView, "id" | "share" | "need" | "shareUsd">;
+}
+
+/**
  * Why a ready feature may not start, or null. Its low estimate must fit after reserving the
  * other waiting features' lows; a weighted share alone can be smaller even when the pool covers
  * them all (#1605). Exhausted token, call, time and dollar budgets still stop a start (#1311).
  */
 export function shareShortfall(
-  view: Pick<InitiativeView, "initiativeId" | "budget" | "features">,
+  view: ShareGateView,
   feature: Pick<FeatureView, "id" | "share" | "need" | "shareUsd">,
 ): RecoveryAdvice | null {
   const cost = view.budget.cost;
@@ -1032,8 +1052,16 @@ export class InitiativeService {
               });
             });
             return this.view(id);
-          default:
+          default: {
+            const parked = view.features.find((f) => f.id === next.featureId);
+            if (
+              next.kind === "blocked" &&
+              parked?.state === "ready" &&
+              shareShortfall(view, parked)
+            )
+              this.noteShareGate(view, parked, "park");
             return this.view(id);
+          }
         }
       }
       return this.view(id);
@@ -1067,13 +1095,12 @@ export class InitiativeService {
           view.features.filter((f) => f.state === "ready"),
           view.parallelRuns > 1,
         )[0];
-        if (
-          !ready ||
-          runnable(view).length >= view.parallelRuns ||
-          shareShortfall(view, ready) ||
-          this.forecastOver(row, view)
-        )
+        if (!ready || runnable(view).length >= view.parallelRuns) break;
+        if (shareShortfall(view, ready)) {
+          this.noteShareGate(view, ready, "park");
           break;
+        }
+        if (this.forecastOver(row, view)) break;
         if (await this.startFeature(id, ready.id)) started = true;
         view = this.view(id);
       }
@@ -1313,6 +1340,47 @@ export class InitiativeService {
 
   /** Starts a feature's run; false when its upstream results conflict and it waits for a person. */
   /**
+   * Records the share gate's inputs and verdict for a feature (#1707): every start, and a park
+   * once until the feature's verdict changes, so a drive that retries a parked feature does not
+   * repeat it.
+   */
+  private noteShareGate(
+    view: InitiativeView,
+    feature: FeatureView,
+    verdict: "pass" | "park",
+  ): void {
+    const id = view.initiativeId;
+    if (verdict === "park") {
+      const last = this.store
+        .eventsOfType(id, "feature.share_gate")
+        .filter((p) => (p as ShareGateRecord | null)?.featureId === feature.id)
+        .at(-1) as ShareGateRecord | undefined;
+      if (last?.verdict === "park") return;
+    }
+    const record: ShareGateRecord = {
+      featureId: feature.id,
+      verdict,
+      view: {
+        initiativeId: id,
+        budget: { remaining: view.budget.remaining, cost: view.budget.cost },
+        features: view.features.map((f) => ({
+          id: f.id,
+          state: f.state,
+          share: f.share,
+          need: f.need,
+        })),
+      },
+      feature: {
+        id: feature.id,
+        share: feature.share,
+        need: feature.need,
+        shareUsd: feature.shareUsd,
+      },
+    };
+    this.store.emit(id, "feature.share_gate", record);
+  }
+
+  /**
    * Records once for each count of measured features that a feature starts while the forecast
    * is above the ceiling but not yet binding (#1659), so `initiative events` and
    * `/v1/initiatives/ID/events` show the warning a stop used to give.
@@ -1346,7 +1414,8 @@ export class InitiativeService {
     const current = this.view(id);
     const waiting = current.features.find((f) => f.id === featureId);
     const sized = waiting?.share;
-    if (!sized) throw new WorkflowFault("BUDGET_EXHAUSTED", "No budget share is available");
+    if (!sized) throw stopFault("budget-share", "No budget share is available");
+    if (waiting) this.noteShareGate(current, waiting, "pass");
     this.noteAdvisoryForecast(id, featureId, current.budget.cost);
     const share = { ...sized, ...guardGrowth(current, featureId, settings.basePolicy) };
     const previous = this.store.links(id).filter((l) => l.feature_id === featureId).length;
@@ -1408,7 +1477,7 @@ export class InitiativeService {
       ...(settings.featureAutoApproval ? { boundaryAutoApproval: true } : {}),
       ...(settings.featureIssues[featureId] ? { issue: settings.featureIssues[featureId] } : {}),
       ...(feature.skeleton?.length ? { hostFiles: feature.skeleton } : {}),
-      ...(lightContract(settings, plan, feature) ? { contract: feature.contract } : {}),
+      ...(lightContract(settings, feature) ? { contract: feature.contract } : {}),
       ...(baseCommit ? { baseCommit } : {}),
     });
     this.store.transaction(() => {
@@ -2118,8 +2187,10 @@ export class InitiativeService {
             `${u.id}'s contract changed since this run was planned; the plan must be re-approved`,
         );
       // A workflow without a spec gives no contract; nothing depends on such a feature, so its
-      // verified result is its acceptance.
-      const specless = facts(workflowId)?.contract === false;
+      // verified result is its acceptance. So does a light run that recorded no contract (#1750).
+      const specless =
+        facts(workflowId)?.contract === false ||
+        !providesContract(this.workflows.store, link.run_id);
       if (run.status === "completed") {
         const accepted = specless ? null : acceptedContract(this.workflows.store, runFeature);
         if (waiting.length) {
@@ -2463,7 +2534,9 @@ export class InitiativeService {
         .filter((f) => !choices.find((c) => c.id === featureWorkflowId(settings, f))?.contract)
         .map((f) => f.id),
     );
-    const sequenced = sequenceSharedPaths(proposed, withRuns, noContract);
+    // Documentation follows the code it describes (#1751).
+    const documented = sequenceDocumentation(proposed, withRuns);
+    const sequenced = sequenceSharedPaths(documented.plan, withRuns, noContract);
     // A light feature that still gained a dependent writes a spec after all (#1406).
     const repaired = restoreContractWorkflows(sequenced.plan, choices, settings.workflowId);
     const plan = repaired.plan;
@@ -2473,10 +2546,11 @@ export class InitiativeService {
     for (const request of this.store.requests(id).filter((r) => r.status === "pending"))
       this.store.decide(id, request.id, "superseded", { planRevision: revision });
     this.store.addRevision(id, plan, budget, digest, source, edit);
-    if (sequenced.added.length || repaired.restored.length)
+    if (sequenced.added.length || documented.added.length || repaired.restored.length)
       this.store.emit(id, "split.sequenced", {
         planRevision: revision,
         added: sequenced.added,
+        ...(documented.added.length ? { documented: documented.added } : {}),
         ...(repaired.restored.length ? { restored: repaired.restored } : {}),
       });
     this.store.request(id, revision, digest);
@@ -2735,7 +2809,7 @@ function costPolicy(
  * started on what was left (#1311). Null when no feature has an estimate.
  */
 export function growthLimit(
-  view: Pick<InitiativeView, "budget" | "features">,
+  view: Pick<ShareGateView, "budget" | "features">,
   featureId: string,
 ): number | null {
   const waiting = view.features.filter((f) => f.share !== null);
@@ -2819,17 +2893,14 @@ const MIN_GROWTH_TOKENS = 10_000;
 const lightContracts = (settings: InitiativeSettings): boolean =>
   settings.lightContracts || settings.basePolicy.lightContracts === "on";
 
-/** A feature on the light workflow that others depend on: its run records their contract (#1664). */
-function lightContract(
-  settings: InitiativeSettings,
-  plan: InitiativePlan,
-  feature: InitiativeFeature,
-): boolean {
-  return (
-    lightContracts(settings) &&
-    featureWorkflowId(settings, feature) === LIGHT_LEAF_WORKFLOW &&
-    plan.features.some((f) => f.dependsOn.includes(feature.id))
-  );
+/**
+ * A feature on the light workflow while `lightContracts` is on: its run records its host-made spec
+ * as the contract (#1664). Every such feature records one, dependents or not, because the setting
+ * counts the light workflow as one that provides a contract, so status reads one for each, and a
+ * replan or an extension can give it a dependent after it ran (#1750).
+ */
+function lightContract(settings: InitiativeSettings, feature: InitiativeFeature): boolean {
+  return lightContracts(settings) && featureWorkflowId(settings, feature) === LIGHT_LEAF_WORKFLOW;
 }
 
 /** The request a feature run starts from: its place in the initiative and the contracts around it. */

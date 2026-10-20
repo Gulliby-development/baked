@@ -790,6 +790,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs: shared attempt recovery"],
   },
   {
+    id: "workflow-stop-modes",
+    group: "Workflow runs",
+    title: "Stop reasons with shadow, advisory and enforce modes; would-stop records per reason",
+    tui: ["/workflow: advisory would-stops in the activity feed"],
+    cli: ["baked workflow status: wouldStop", "baked workflow run: --events"],
+    api: ["/v1/workflow/runs/:id: wouldStop", "/v1/workflow/runs/:id/events: decision.would_stop"],
+    desktop: ["project/runs: Would stop fact and activity"],
+  },
+  {
     id: "workflow-fixer-journal",
     group: "Workflow runs",
     title: "Journal every task file changed by an automatic fixer, including directory-wide fixers",
@@ -948,7 +957,11 @@ export const FEATURES: readonly Feature[] = [
     group: "Workflow runs",
     title: "Record a run's model calls and replay them without the provider",
     tui: notNeeded("a debugging aid for BAKED itself"),
-    cli: ["baked workflow run: --record-model-calls, --replay", "baked workflow recording"],
+    cli: [
+      "baked workflow run: --record-model-calls, --replay",
+      "baked workflow initiative start: --record-model-calls",
+      "baked workflow recording",
+    ],
     api: notNeeded("a debugging aid for BAKED itself"),
     desktop: notNeeded("a debugging aid for BAKED itself"),
   },

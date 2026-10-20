@@ -142,6 +142,14 @@ export interface EventPayloads {
     action: "steered" | "stopped";
     detail: string;
   };
+  /** A stop reason in shadow or advisory mode would have stopped the run (#1714). */
+  "decision.would_stop": {
+    reason: string;
+    mode: "shadow" | "advisory";
+    key: string;
+    summary: string;
+    inputs: Record<string, unknown>;
+  };
   "task.state_changed": {
     taskId: string;
     from: string;

@@ -9,6 +9,7 @@ import {
   CostToleranceSchema,
   type CostToleranceValue,
 } from "../core/workflows/initiatives/store.js";
+import { withModelCalls } from "../core/workflows/model-recording.js";
 import { PolicySchema } from "../core/workflows/schemas.js";
 import type { NativeWorkflowService } from "../core/workflows/service.js";
 import { newId } from "../core/workflows/store.js";
@@ -65,6 +66,7 @@ const commandFlags: Record<InitiativeCommand, string[]> = {
     "keep-features",
     "split-critical-path",
     "light-contracts",
+    "record-model-calls",
     "command-id",
   ],
   show: [],
@@ -96,6 +98,7 @@ const booleanFlags = new Set([
   "keep-features",
   "split-critical-path",
   "light-contracts",
+  "record-model-calls",
 ]);
 const integerFlags = new Set([
   "expected-revision",
@@ -234,14 +237,18 @@ export async function executeInitiativeCommand(
         ...(args.flags.plan
           ? { plan: InitiativePlanSchema.parse(JSON.parse(readFlagFile("plan"))) }
           : {}),
-        policy: PolicySchema.parse({
-          ...PolicySchema.parse(
-            args.flags.policy
-              ? JSON.parse(readFlagFile("policy"))
-              : (workflows.config.workflows?.policy ?? defaultWorkflowPolicy),
-          ),
-          ...(args.flags.worktree ? { executionMode: "worktree" } : {}),
-        }),
+        // The decompose run and every feature run start from this policy, so they all record.
+        policy: withModelCalls(
+          PolicySchema.parse({
+            ...PolicySchema.parse(
+              args.flags.policy
+                ? JSON.parse(readFlagFile("policy"))
+                : (workflows.config.workflows?.policy ?? defaultWorkflowPolicy),
+            ),
+            ...(args.flags.worktree ? { executionMode: "worktree" } : {}),
+          }),
+          { record: args.flags["record-model-calls"] === true },
+        ),
         workflowId: stringFlag(
           args,
           "workflow",
@@ -432,7 +439,7 @@ start ID (--prompt TEXT | --prompt-file FILE) [--plan FILE] [--workflow sdd] [--
     [--budget-tokens N --budget-calls N --budget-time-ms N] [--budget-usd N [--cost-tolerance auto|off|0.2]]
     [--tiered-approval [--max-tasks 5] [--max-files 10]]
     [--confirm-auto-approval HASH] [--model ID] [--worktree] [--forecast-stop] [--keep-features]
-    [--split-critical-path] [--light-contracts]
+    [--split-critical-path] [--light-contracts] [--record-model-calls]
   Split a large request into 3..12 features. Without --plan the decomposer proposes the split;
   a split above 12 features is refused with a request to split the work into stages. Each
   feature runs its own workflow (--workflow is the default for a feature that names none) and
@@ -445,6 +452,8 @@ start ID (--prompt TEXT | --prompt-file FILE) [--plan FILE] [--workflow sdd] [--
   a third of the longest dependency chain into parts that run side by side, or say why it cannot.
   --light-contracts runs a small feature that other features depend on (one or two paths) on the
   light workflow too; its run records a spec of the feature's contract for its dependents to pin.
+  --record-model-calls records each model call of the decompose run and every feature run, as
+  workflow run --record-model-calls does; read each with workflow recording RUN_ID.
 show ID | list | events ID [--after SEQ] [--limit 200]
 estimate ID
   Estimate the split: a level from 1 to 5 by planned tasks and a token range per feature and in

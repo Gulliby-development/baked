@@ -248,6 +248,16 @@ export function OverviewView({ data, trace }: { data: RunData; trace: RunTrace }
           <dt className={FACT_TERM}>Models</dt>
           <dd className={FACT_VALUE}>{[...trace.models].join(", ") || "–"}</dd>
         </div>
+        {trace.wouldStop.size > 0 && (
+          <div className={FACT}>
+            <dt className={FACT_TERM}>Would stop</dt>
+            <dd className={FACT_VALUE}>
+              {[...trace.wouldStop.entries()]
+                .map(([reason, { count }]) => `${reason.replaceAll(/[-_]/g, " ")} ${count}`)
+                .join(", ")}
+            </dd>
+          </div>
+        )}
       </dl>
     </div>
   );

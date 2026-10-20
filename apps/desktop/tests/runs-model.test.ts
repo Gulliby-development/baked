@@ -325,3 +325,22 @@ describe("approval reviewer verdict", () => {
     expect(approvalReviewText({ reviewError: "timeout" })).toContain("could not decide (timeout)");
   });
 });
+
+describe("would-stop records (#1714)", () => {
+  test("count by reason; only an advisory one is an activity line", () => {
+    const inputs = {};
+    const trace = replay([
+      ev("decision.would_stop", { reason: "cost-forecast", mode: "advisory", key: "cap-8", summary: "The run is forecast to cost about $12.00", inputs }),
+      ev("decision.would_stop", { reason: "cost-forecast", mode: "advisory", key: "cap-12", summary: "The run is forecast to cost about $15.00", inputs }),
+      ev("decision.would_stop", { reason: "approval-scope", mode: "shadow", key: "plan-a", summary: "Auto-approval would need a person: 9 tasks exceed 8", inputs }),
+    ]);
+    expect([...trace.wouldStop.entries()]).toEqual([
+      ["cost-forecast", { mode: "advisory", count: 2, summary: "The run is forecast to cost about $15.00" }],
+      ["approval-scope", { mode: "shadow", count: 1, summary: "Auto-approval would need a person: 9 tasks exceed 8" }],
+    ]);
+    expect(trace.activity.map((a) => a.text)).toEqual([
+      "Would stop (advisory): The run is forecast to cost about $12.00",
+      "Would stop (advisory): The run is forecast to cost about $15.00",
+    ]);
+  });
+});

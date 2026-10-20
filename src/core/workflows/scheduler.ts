@@ -462,6 +462,7 @@ import {
   WorkflowSchema,
 } from "./schemas.js";
 import { specSizeNote, specSizeProblems } from "./spec-size.js";
+import { recordWouldStop, stopFault } from "./stop-reasons.js";
 import {
   repairUncoveredCriteria,
   UNCOVERED_SUBMISSIONS,
@@ -972,7 +973,7 @@ export class WorkflowScheduler {
     const activeBefore = this.store.run(runId).active_ms;
     const arm = () =>
       executionTimeout(
-        () => controller.abort(new WorkflowFault("BUDGET_EXHAUSTED", "Active deadline exhausted")),
+        () => controller.abort(stopFault("deadline", "Active deadline exhausted")),
         Math.max(1, policy.maxActiveMs - activeBefore - (budgetClock.now() - started)),
         budgetClock,
       );
@@ -1028,7 +1029,12 @@ export class WorkflowScheduler {
       if (!recoverRun(this.store, this.journal, runId)) return;
       if (executionModeOf(policy) === "worktree") await ensureRunWorktree(this.store, runId);
       this.restoreMutatedFiles(runId);
-      this.store.transaction(() => this.store.transition(runId, "running"));
+      this.store.transaction(() => {
+        // A drive runs only once the run's requests are decided: a stage that ended waiting for
+        // one is done (#1746).
+        this.store.endOpenSteps(runId, null, "waiting", "completed");
+        this.store.transition(runId, "running");
+      });
       await this.seedFork(runId, policy, signal);
       await withinWorkflow(this.leases.owner, async () => {
         while (this.store.run(runId).status === "running") {
@@ -1959,6 +1965,17 @@ export class WorkflowScheduler {
                             existsSync(join(runRoot(this.store.workspace, state), path)),
                         },
                       );
+                if ("wouldStop" in auto && auto.wouldStop)
+                  recordWouldStop(this.store, runId, {
+                    reason: "approval-scope",
+                    mode: auto.wouldStop.mode,
+                    key: `plan-${digest}`,
+                    summary: `Auto-approval would need a person: ${auto.wouldStop.problems.join("; ")}`,
+                    inputs: {
+                      problems: auto.wouldStop.problems,
+                      limits: policy.autoApproval?.limits,
+                    },
+                  });
                 // A package that leaves the limits only by its size or paths may go to the
                 // approval reviewer (`autoApproval.modelReview`). It fails closed: any error or
                 // an answer other than a low-risk approve leaves the request with a person.
@@ -2724,7 +2741,12 @@ export class WorkflowScheduler {
       const fault =
         signal.aborted && signal.reason instanceof WorkflowFault ? signal.reason : error;
       this.store.transaction(() => {
-        if (stepId) this.store.finishStep(runId, stepId, signal.aborted ? "interrupted" : "failed");
+        if (stepId) {
+          // Task, review and transition steps opened under the stage end with it (#1745).
+          const ended = signal.aborted ? "interrupted" : "failed";
+          this.store.endOpenSteps(runId, stepId, "running", ended);
+          this.store.finishStep(runId, stepId, ended);
+        }
         const status = this.store.run(runId).status;
         if (["paused", "cancelled", "waiting"].includes(status)) return;
         if (fault instanceof WorkflowFault && fault.code === "CHECKPOINT_REACHED") {
@@ -4831,10 +4853,9 @@ export class WorkflowScheduler {
               compact: true,
             },
           );
-        throw new WorkflowFault(
-          "BUDGET_EXHAUSTED",
+        throw stopFault(
+          "context_window",
           `The model input exceeded the limit of ${profile.model}: ${error instanceof Error ? error.message : String(error)}`,
-          { reason: "context_window" },
         );
       }
       if (placement.primaryError !== undefined && !signal.aborted) {
@@ -13043,236 +13064,247 @@ ${note}`;
       b.gate !== undefined && gateToRequired(b.binding, b.gate);
     const ordered = [...bindings.filter(required), ...bindings.filter((b) => !required(b))];
     let stepId: string | null = null;
-    for (const { binding, gate } of ordered) {
-      if (!gate) continue;
-      signal.throwIfAborted();
-      const mode = gateToRequired(binding, gate) ? "required" : "advisory";
-      if (gate.type === "command") {
-        stepId ??= this.store.transaction(() =>
-          this.store.beginStep(runId, `transition-${transition.id}`),
-        );
-        await this.snapshot(runId, state, policy, signal);
-        const result = await this.runCommandGate(
-          runId,
-          stepId,
-          gateToCheck(gate, binding),
-          gate,
-          policy,
-          signal,
-        );
-        const { reason, ...recorded } = result;
-        this.recordGate(runId, state, gate.id, transition.id, { ...recorded, mode });
-        if (mode === "required" && result.status !== "passed") {
-          this.store.transaction(() => {
-            this.store.finishStep(runId, stepId ?? "", "failed");
-            this.store.saveState(runId, state);
-          });
-          throw new WorkflowFault(
-            "OUTPUT_INVALID",
-            `Gate ${gate.id} on ${transition.id} ${result.status}${reason ? `: ${reason}` : ""}`,
-            { reason: "verification_failed" },
+    try {
+      for (const { binding, gate } of ordered) {
+        if (!gate) continue;
+        signal.throwIfAborted();
+        const mode = gateToRequired(binding, gate) ? "required" : "advisory";
+        if (gate.type === "command") {
+          stepId ??= this.store.transaction(() =>
+            this.store.beginStep(runId, `transition-${transition.id}`),
           );
-        }
-      } else if (gate.type === "human") {
-        if (!state.snapshotId) await this.snapshot(runId, state, policy, signal);
-        const criterionId = `gate-${gate.id}`;
-        const answered = state.manualCriteria[criterionId];
-        if (answered?.snapshotId === state.snapshotId) {
+          await this.snapshot(runId, state, policy, signal);
+          const result = await this.runCommandGate(
+            runId,
+            stepId,
+            gateToCheck(gate, binding),
+            gate,
+            policy,
+            signal,
+          );
+          const { reason, ...recorded } = result;
+          this.recordGate(runId, state, gate.id, transition.id, { ...recorded, mode });
+          if (mode === "required" && result.status !== "passed") {
+            this.store.transaction(() => {
+              this.store.finishStep(runId, stepId ?? "", "failed");
+              this.store.saveState(runId, state);
+            });
+            throw new WorkflowFault(
+              "OUTPUT_INVALID",
+              `Gate ${gate.id} on ${transition.id} ${result.status}${reason ? `: ${reason}` : ""}`,
+              { reason: "verification_failed" },
+            );
+          }
+        } else if (gate.type === "human") {
+          if (!state.snapshotId) await this.snapshot(runId, state, policy, signal);
+          const criterionId = `gate-${gate.id}`;
+          const answered = state.manualCriteria[criterionId];
+          if (answered?.snapshotId === state.snapshotId) {
+            this.recordGate(runId, state, gate.id, transition.id, {
+              status: "passed",
+              mode,
+              evidenceId: answered.evidenceId,
+              attempts: 1,
+              flaky: false,
+            });
+            continue;
+          }
+          if (mode === "advisory") {
+            this.recordGate(runId, state, gate.id, transition.id, {
+              status: "skipped",
+              mode,
+              evidenceId: null,
+              attempts: 0,
+              flaky: false,
+            });
+            continue;
+          }
+          if (stepId)
+            this.store.transaction(() => this.store.finishStep(runId, stepId ?? "", "completed"));
+          this.wait("manual_evidence", state, {
+            criterionId,
+            snapshotId: state.snapshotId,
+            gateId: gate.id,
+            transitionId: transition.id,
+            question: gate.human.prompt,
+            answer: gate.human.answer,
+          });
+          this.store.transaction(() => this.flushWaits(runId, state));
+          return;
+        } else if (gate.type === "ai-acceptance") {
+          // Advisory by construction: the walk-through's verdict is recorded and shown, and only a
+          // promoted command gate can ever block a transition.
+          stepId ??= this.store.transaction(() =>
+            this.store.beginStep(runId, `transition-${transition.id}`),
+          );
+          if (!state.snapshotId) await this.snapshot(runId, state, policy, signal);
+          const step = stepId;
+          const profiles = ProfileSchema.array().parse(
+            JSON.parse(this.store.run(runId).profiles_json),
+          );
+          const result = await runAcceptanceGate(
+            {
+              store: this.store,
+              runId,
+              state,
+              policy,
+              transitionId: transition.id,
+              signal,
+              ...(this.browserDriver ? { browser: this.browserDriver } : {}),
+              profile: (id) => profiles.find((p) => p.id === id),
+              callAgent: (profile, extra, validate, tools, attemptSignal) =>
+                this.call(
+                  runId,
+                  step,
+                  state,
+                  policy,
+                  profile,
+                  extra,
+                  attemptSignal,
+                  undefined,
+                  0,
+                  validate,
+                  undefined,
+                  tools,
+                ),
+            },
+            gate,
+          );
           this.recordGate(runId, state, gate.id, transition.id, {
-            status: "passed",
-            mode,
-            evidenceId: answered.evidenceId,
-            attempts: 1,
+            status: result.status,
+            mode: "advisory",
+            evidenceId: result.evidenceId,
+            attempts: result.status === "skipped" ? 0 : 1,
             flaky: false,
           });
-          continue;
+          this.store.transaction(() => this.store.saveState(runId, state));
         }
-        if (mode === "advisory") {
-          this.recordGate(runId, state, gate.id, transition.id, {
-            status: "skipped",
-            mode,
-            evidenceId: null,
-            attempts: 0,
-            flaky: false,
-          });
-          continue;
-        }
-        if (stepId)
-          this.store.transaction(() => this.store.finishStep(runId, stepId ?? "", "completed"));
-        this.wait("manual_evidence", state, {
-          criterionId,
-          snapshotId: state.snapshotId,
-          gateId: gate.id,
-          transitionId: transition.id,
-          question: gate.human.prompt,
-          answer: gate.human.answer,
-        });
-        this.store.transaction(() => this.flushWaits(runId, state));
-        return;
-      } else if (gate.type === "ai-acceptance") {
-        // Advisory by construction: the walk-through's verdict is recorded and shown, and only a
-        // promoted command gate can ever block a transition.
-        stepId ??= this.store.transaction(() =>
-          this.store.beginStep(runId, `transition-${transition.id}`),
-        );
-        if (!state.snapshotId) await this.snapshot(runId, state, policy, signal);
-        const step = stepId;
-        const profiles = ProfileSchema.array().parse(
-          JSON.parse(this.store.run(runId).profiles_json),
-        );
-        const result = await runAcceptanceGate(
-          {
-            store: this.store,
+      }
+      const target = v2.definition.stages.find((s) => s.id === transition.to);
+      this.store.transaction(() => {
+        if (stepId) this.store.finishStep(runId, stepId, "completed");
+        const ids = new Set(position.findings);
+        const findings = this.store
+          .findings(runId)
+          .filter((f) => ids.has(f.id) && !["refuted", "resolved"].includes(f.status))
+          .map((f) => ({ ...JSON.parse(f.body_json), id: f.id }) as Review["findings"][number]);
+        if (findings.length && target?.type === "tasks") this.amendSpec(runId, state, findings);
+        if (findings.length && target?.type === "tasks")
+          appendCorrections(
+            this.store,
             runId,
             state,
             policy,
-            transitionId: transition.id,
-            signal,
-            ...(this.browserDriver ? { browser: this.browserDriver } : {}),
-            profile: (id) => profiles.find((p) => p.id === id),
-            callAgent: (profile, extra, validate, tools, attemptSignal) =>
-              this.call(
-                runId,
-                step,
-                state,
-                policy,
-                profile,
-                extra,
-                attemptSignal,
-                undefined,
-                0,
-                validate,
-                undefined,
-                tools,
-              ),
-          },
-          gate,
-        );
-        this.recordGate(runId, state, gate.id, transition.id, {
-          status: result.status,
-          mode: "advisory",
-          evidenceId: result.evidenceId,
-          attempts: result.status === "skipped" ? 0 : 1,
-          flaky: false,
-        });
-        this.store.transaction(() => this.store.saveState(runId, state));
-      }
-    }
-    const target = v2.definition.stages.find((s) => s.id === transition.to);
-    this.store.transaction(() => {
-      if (stepId) this.store.finishStep(runId, stepId, "completed");
-      const ids = new Set(position.findings);
-      const findings = this.store
-        .findings(runId)
-        .filter((f) => ids.has(f.id) && !["refuted", "resolved"].includes(f.status))
-        .map((f) => ({ ...JSON.parse(f.body_json), id: f.id }) as Review["findings"][number]);
-      if (findings.length && target?.type === "tasks") this.amendSpec(runId, state, findings);
-      if (findings.length && target?.type === "tasks")
-        appendCorrections(
-          this.store,
-          runId,
-          state,
-          policy,
-          findings,
-          position.repairKind ?? "repair",
-          // A review's corrections count review rounds, not the checks stage's repair rounds.
-          stageKind(v2.stage) === "review" ? "review" : "round",
-        );
-      else if (findings.length) {
-        // A loop to a stage that does not write hands the findings to that stage as input; a
-        // later review raises them again if they still hold.
-        // A failed check hands over the end of its output: the stage has no tool to read evidence.
-        state.prompt += `\nFindings of the ${v2.stage.id} stage to address:\n${canonical(
-          findings.map((f) => {
-            const output = this.commandOutput(runId, f.evidenceIds);
-            return {
-              claim: f.claim,
-              impact: f.impact,
-              fix: f.suggestedFix,
-              ...(output ? { output } : {}),
-            };
-          }),
-        )}`;
-        for (const finding of findings) this.store.findingStatus(runId, finding.id, "resolved");
-      }
-      if (transition.loop) {
-        const count = (position.loops[transition.id] ?? 0) + 1;
-        // "One more round" at a convergence decision allows the loop one more pass as well, and
-        // so do grants for checks or review rounds, including a regression after a correction (#1272).
-        const bound =
-          transition.loop.maxIterations +
-          (state.extraLoopIterations[transition.id] ?? 0) +
-          (position.repairKind === "convergence"
-            ? state.extraConvergenceRounds
-            : stageKind(v2.stage) === "checks"
-              ? (state.extraRepairRounds ?? 0)
-              : stageKind(v2.stage) === "review"
-                ? state.extraReviewRounds
-                : 0);
-        if (count > bound)
-          throw new WorkflowFault(
-            "RECOVERY_REQUIRED",
-            recoveryAdvice(
-              `no_progress: loop ${transition.id} reached its bound of ${transition.loop.maxIterations}. Grant one more repair with workflow repair, revise, or fork the run.`,
-              `no_progress: loop ${transition.id} reached its bound of ${transition.loop.maxIterations}`,
-              { action: "repair", runId },
-              { action: "revise", runId, setting: "maxIterations" },
-              { action: "fork", runId },
-            ),
-            {
-              reason: "no_progress",
-              repairBlock: {
-                limit: "maxIterations",
-                scope: "transition",
-                transitionId: transition.id,
-                required: count - bound,
-              },
-            },
+            findings,
+            position.repairKind ?? "repair",
+            // A review's corrections count review rounds, not the checks stage's repair rounds.
+            stageKind(v2.stage) === "review" ? "review" : "round",
           );
-        position.loops[transition.id] = count;
-        // Returning before the approval needs a new one: the plan it covered will change.
-        if (target && (target.type === "agent" || target.type === "approval")) {
-          state.approvalRoot = null;
-          state.analysisPassed = false;
-          this.store.setApproval(runId, null);
+        else if (findings.length) {
+          // A loop to a stage that does not write hands the findings to that stage as input; a
+          // later review raises them again if they still hold.
+          // A failed check hands over the end of its output: the stage has no tool to read evidence.
+          state.prompt += `\nFindings of the ${v2.stage.id} stage to address:\n${canonical(
+            findings.map((f) => {
+              const output = this.commandOutput(runId, f.evidenceIds);
+              return {
+                claim: f.claim,
+                impact: f.impact,
+                fix: f.suggestedFix,
+                ...(output ? { output } : {}),
+              };
+            }),
+          )}`;
+          for (const finding of findings) this.store.findingStatus(runId, finding.id, "resolved");
         }
-      }
-      if (target) {
-        if (position.total + 1 > v2.definition.limits.maxStageVisits + state.extraStageVisits)
-          throw new WorkflowFault(
-            "RECOVERY_REQUIRED",
-            recoveryAdvice(
-              `no_progress: the run reached ${v2.definition.limits.maxStageVisits} stage visits. Grant one more repair with workflow repair, revise, or fork the run.`,
-              `no_progress: the run reached ${v2.definition.limits.maxStageVisits} stage visits`,
-              { action: "repair", runId },
-              { action: "revise", runId, setting: "maxStageVisits" },
-              { action: "fork", runId },
-            ),
-            {
-              reason: "no_progress",
-              repairBlock: { limit: "maxStageVisits", scope: "run", required: 1 },
-            },
-          );
-        position.total++;
-        position.visits[target.id] = (position.visits[target.id] ?? 0) + 1;
-      }
-      const contract = contractText(carried);
-      this.store.emit(runId, {
-        type: "transition.taken",
-        payload: {
-          transitionId: transition.id,
-          from: v2.stage.id,
-          to: transition.to,
-          outcome: position.outcome ?? "passed",
-          contractHash: contract === null ? null : hashBytes(contract),
-        },
+        if (transition.loop) {
+          const count = (position.loops[transition.id] ?? 0) + 1;
+          // "One more round" at a convergence decision allows the loop one more pass as well, and
+          // so do grants for checks or review rounds, including a regression after a correction (#1272).
+          const bound =
+            transition.loop.maxIterations +
+            (state.extraLoopIterations[transition.id] ?? 0) +
+            (position.repairKind === "convergence"
+              ? state.extraConvergenceRounds
+              : stageKind(v2.stage) === "checks"
+                ? (state.extraRepairRounds ?? 0)
+                : stageKind(v2.stage) === "review"
+                  ? state.extraReviewRounds
+                  : 0);
+          if (count > bound)
+            throw new WorkflowFault(
+              "RECOVERY_REQUIRED",
+              recoveryAdvice(
+                `no_progress: loop ${transition.id} reached its bound of ${transition.loop.maxIterations}. Grant one more repair with workflow repair, revise, or fork the run.`,
+                `no_progress: loop ${transition.id} reached its bound of ${transition.loop.maxIterations}`,
+                { action: "repair", runId },
+                { action: "revise", runId, setting: "maxIterations" },
+                { action: "fork", runId },
+              ),
+              {
+                reason: "no_progress",
+                repairBlock: {
+                  limit: "maxIterations",
+                  scope: "transition",
+                  transitionId: transition.id,
+                  required: count - bound,
+                },
+              },
+            );
+          position.loops[transition.id] = count;
+          // Returning before the approval needs a new one: the plan it covered will change.
+          if (target && (target.type === "agent" || target.type === "approval")) {
+            state.approvalRoot = null;
+            state.analysisPassed = false;
+            this.store.setApproval(runId, null);
+          }
+        }
+        if (target) {
+          if (position.total + 1 > v2.definition.limits.maxStageVisits + state.extraStageVisits)
+            throw new WorkflowFault(
+              "RECOVERY_REQUIRED",
+              recoveryAdvice(
+                `no_progress: the run reached ${v2.definition.limits.maxStageVisits} stage visits. Grant one more repair with workflow repair, revise, or fork the run.`,
+                `no_progress: the run reached ${v2.definition.limits.maxStageVisits} stage visits`,
+                { action: "repair", runId },
+                { action: "revise", runId, setting: "maxStageVisits" },
+                { action: "fork", runId },
+              ),
+              {
+                reason: "no_progress",
+                repairBlock: { limit: "maxStageVisits", scope: "run", required: 1 },
+              },
+            );
+          position.total++;
+          position.visits[target.id] = (position.visits[target.id] ?? 0) + 1;
+        }
+        const contract = contractText(carried);
+        this.store.emit(runId, {
+          type: "transition.taken",
+          payload: {
+            transitionId: transition.id,
+            from: v2.stage.id,
+            to: transition.to,
+            outcome: position.outcome ?? "passed",
+            contractHash: contract === null ? null : hashBytes(contract),
+          },
+        });
+        position.stageId = transition.to;
+        position.outcome = null;
+        position.findings = [];
+        position.repairKind = null;
+        this.store.saveState(runId, state);
       });
-      position.stageId = transition.to;
-      position.outcome = null;
-      position.findings = [];
-      position.repairKind = null;
-      this.store.saveState(runId, state);
-    });
+    } catch (error) {
+      // A gate that threw (snapshot, command runner, walk-through) does not leave the transition
+      // step running (#1745).
+      const open = stepId;
+      if (open && this.store.steps(runId).some((s) => s.id === open && s.status === "running"))
+        this.store.transaction(() =>
+          this.store.finishStep(runId, open, signal.aborted ? "interrupted" : "failed"),
+        );
+      throw error;
+    }
   }
   /** The last lines of the command output behind a finding's evidence, or null when it has none. */
   private commandOutput(runId: string, evidenceIds: readonly string[]): string | null {

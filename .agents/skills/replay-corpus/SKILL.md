@@ -12,12 +12,14 @@ BAKED's host decisions are replayed on recorded bench rounds before a change mer
 - **Traces:** `tests/fixtures/bench-traces/RNN/<app>.sqlite.gz`. Each is an anonymised copy of a bench app's `.baked/workflows.sqlite`, written by `bun scripts/bench-trace.ts export <workspace> <out>`. The export (`exportTrace` in `src/core/workflows/trace.ts`) does the following:
   - keeps only the artifact kinds in `KEPT_ARTIFACTS`;
   - drops the tables in `DROPPED_TABLES`;
-  - blanks every string under a key in `PROSE`.
+  - replaces every string under a key in `PROSE`, and every other string that contains whitespace, with a stand-in `KEY-N` (`StandIns`). The same text gets the same stand-in across the whole trace, so equality checks between artifacts and columns still hold;
+  - keeps the run's `state` artifact with the content in `STATE_CONTENT` (spec, plan, research, reports) stood in, and rewrites every contract hash to the hash of the scrubbed spec, so a replay that reopens the run through `openTrace` sees the same features, runs and shares the round saw.
 
-  Policies and workflow definitions stay whole, because they hold settings and enums, not prose. `.gitignore` ignores `*.sqlite*` everywhere except under this folder.
+  Policies and workflow definitions stay whole, because they hold settings and enums, not prose. Traces exported before #1707 have no `state` artifact; re-export them with the current code before a hook needs the run state. `.gitignore` ignores `*.sqlite*` everywhere except under this folder.
 - **Replay:** `replayTrace` in `trace.ts`. It runs each hook over every run of a trace and reports where the current code decides differently from the recording.
 - **Gate:** `tests/forecast-replay-corpus.test.ts` is part of `bun run test`, so it runs in the required `check` job. A decision the recording did not make fails the suite. The only exception is a run listed in `tests/fixtures/bench-traces/accepted.json` as `"RNN/app.sqlite.gz#RUN_ID": { "<counter>": n, "reason": "..." }`.
 - **CLI:** `bun scripts/bench-trace.ts replay <trace>... [--json]` prints each run's differing decisions.
+- **Recordings:** `tests/fixtures/bench-recordings/RNN/<app>/RUN_ID.json.gz` and its `manifest.json`, written by `bun scripts/bench-trace.ts recordings <workspace> <out-dir> --run RUN_ID`. Every bench run and initiative records its model calls (`--record-model-calls`); a recording holds the prompts and the model's answers, so only the runs that stopped are kept, and only from public bench apps. They are the input of the replay to the first divergent request (#1715 step 2), which compares the decisions that need the model's answers.
 
 ## Hooks today
 
@@ -26,8 +28,11 @@ BAKED's host decisions are replayed on recorded bench rounds before a change mer
 | Run cost-forecast stop (`assertForecastFits`) | `replayRun`: rewinds the run to each priced attempt | `newStops` |
 | Cap growth to the forecast | `replayRun` | `newGrowth` |
 | A model call's first-response deadline (`providerFirstByteMs`) | `replayFirstByte`: reads each call's `calls` timing in `attempts/*/usage.json`. Older traces fall back to the attempt length of a one-step buffered CLI attempt | `newFirstByteStops` |
+| An initiative feature's start on its budget share (`shareShortfall`) | `replayShareGate`: reads each `feature.share_gate` initiative event, which records the gate's inputs (remaining budget, dollar cost view, the waiting features' shares and estimates) and its verdict. Keyed by initiative: `"RNN/app.sqlite.gz#INITIATIVE_ID"`. Traces before #1707 record none | `newShareStops` |
 
-Not replayed yet, and tracked in issues: the initiative share gate and plan auto-approval (#1707), and decisions that need the model's answers, such as gates, the case walk and the integrity guard (#1715 step 2, through `--record-model-calls` recordings).
+The provider fault matrix (`tests/provider-fault-matrix.test.ts`) reads the same traces through `corpusCallProfile`: each recorded call shape's p99 first byte and the recorded `retry-after` waits become its fault profiles (#1729). A new field a profile needs goes into the `calls` timing, so the next round's traces carry it.
+
+Not replayed yet, and tracked in issues: plan auto-approval (#1707), and decisions that need the model's answers, such as gates, the case walk and the integrity guard (#1715 step 2, through `--record-model-calls` recordings).
 
 ## When you add or change a host decision
 
@@ -49,6 +54,6 @@ When your change means to decide differently on a recorded run, add that run to 
 
 ## Bench loop
 
-- **Publisher (phase 10):** after each round, export every app (updates and controls included) from a checkout of current main and run the replay and the corpus test. Open a `feature/bench-traces-rNN` pull request with the traces. A trace above 2 MB is mentioned in the round report. Run `git status` before committing to confirm the `.sqlite.gz` files are staged.
+- **Publisher (phase 10):** after each round, export every app (updates and controls included) from a checkout of current main and run the replay and the corpus test. Open a `feature/bench-traces-rNN` pull request with the traces. Add the recording of every run that stopped (a forecast, budget, provider or gate stop, or an intervention) to the same pull request. A trace above 2 MB is mentioned in the round report. Run `git status` before committing to confirm the `.sqlite.gz` files are staged.
 - **Analyst:** a replay difference on the round's own traces is a finding, because main decides differently from the round's runner. It is expected only for fixes merged during the round; those go into `accepted.json` with the fix's issue as the reason. Each new stop the round shows makes that run part of the corpus automatically, once its trace merges.
 - Traces leave the runner only through this export. Nothing else from `.baked/` goes into the repository.

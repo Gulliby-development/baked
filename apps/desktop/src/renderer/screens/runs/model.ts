@@ -132,6 +132,8 @@ export interface RunTrace {
   requests: Map<string, { kind: string; status: string }>;
   models: Set<string>;
   activity: ActivityLine[];
+  /** Stop reasons in shadow or advisory mode that would have stopped the run, by reason. */
+  wouldStop: Map<string, { mode: "shadow" | "advisory"; count: number; summary: string }>;
   /** Step ID to stage ID, and attempt ID to stage ID, for events that name only the step. */
   steps: Map<string, string>;
   attempts: Map<string, string>;
@@ -181,6 +183,7 @@ export function emptyTrace(): RunTrace {
     requests: new Map(),
     models: new Set(),
     activity: [],
+    wouldStop: new Map(),
     steps: new Map(),
     attempts: new Map(),
   };
@@ -352,6 +355,13 @@ export function replay(events: readonly WorkflowEvent[], trace = emptyTrace()): 
             `${known ? stageLabel(known.kind.replaceAll("_", " ")) : "Request"} ${event.payload.status}${event.payload.actor === "auto-approval" ? " automatically" : ""}`,
             event.payload.status === "accepted" ? "ok" : "warn",
           );
+        break;
+      }
+      case "decision.would_stop": {
+        const { reason, mode, summary } = event.payload;
+        const count = (trace.wouldStop.get(reason)?.count ?? 0) + 1;
+        trace.wouldStop.set(reason, { mode, count, summary });
+        if (mode === "advisory") line(`Would stop (advisory): ${summary}`, "warn");
         break;
       }
       case "tool.finished":

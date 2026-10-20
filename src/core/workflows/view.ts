@@ -33,6 +33,7 @@ import {
 } from "./schemas.js";
 import type { NativeWorkflowService } from "./service.js";
 import { stopRecovery } from "./stop-detail.js";
+import { wouldStopSummary } from "./stop-reasons.js";
 import type { RunRow, StepRow, WorkflowStore } from "./store.js";
 import { loadGateLibrary } from "./v2/library.js";
 import { type RunGate, runGates, type WorkflowLine, workflowLine } from "./v2/line.js";
@@ -568,6 +569,7 @@ export function readWorkflowView(service: NativeWorkflowService, runId: string) 
       gates: gatesOf(service.workspace, store, row),
       preflight: readCheckPreflight(store, runId),
       forkStages: service.forkStages(runId),
+      wouldStop: wouldStopSummary(store, runId),
     };
   });
 }

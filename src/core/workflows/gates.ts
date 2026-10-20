@@ -1,6 +1,12 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadProjectConfig, saveProjectConfig } from "../../config/index.js";
+import {
+  type LanguageRecord,
+  none,
+  rowOf,
+  SUPPORTED_LANGUAGES,
+} from "../intelligence/language-records.js";
 import { gateSandbox } from "../security/sandbox.js";
 import { workspacePath } from "../specs/validate.js";
 import { ruffSource as pythonRuffSource } from "../tools/python-tooling.js";
@@ -571,17 +577,75 @@ function cargoGates(workspace: string): GateSuggestion[] {
   ];
 }
 
+/**
+ * The command that runs a project's build wrapper (`mvnw`, `gradlew`) when the project has one,
+ * else the build tool on the PATH: the wrapper pins the version the project builds with, and a
+ * machine with Java but without the tool still builds (#1749). On Windows the `.cmd`/`.bat`
+ * wrapper runs through `cmd /d /c`, which the check routing unwraps (#1507).
+ */
+export function buildWrapper(
+  workspace: string,
+  name: "mvnw" | "gradlew",
+  tool: string,
+  platform: NodeJS.Platform = process.platform,
+): { executable: string; args: string[]; source: string | null } {
+  if (platform === "win32") {
+    const script = name === "mvnw" ? "mvnw.cmd" : "gradlew.bat";
+    return has(workspace, script)
+      ? { executable: "cmd", args: ["/d", "/c", script], source: script }
+      : { executable: tool, args: [], source: null };
+  }
+  return has(workspace, name)
+    ? { executable: `./${name}`, args: [], source: name }
+    : { executable: tool, args: [], source: null };
+}
+
 function mavenGates(workspace: string): GateSuggestion[] {
-  return has(workspace, "pom.xml")
-    ? [
-        {
-          check: gate("maven-verify", "mvn", ["-B", "-q", "verify"], 1200000),
-          source: "pom.xml",
-          reason: "mvn -B -q verify",
-          preselected: true,
-        },
-      ]
-    : [];
+  if (!has(workspace, "pom.xml")) return [];
+  const mvn = buildWrapper(workspace, "mvnw", "mvn");
+  const args = [...mvn.args, "-B", "-q", "verify"];
+  return [
+    {
+      check: gate("maven-verify", mvn.executable, args, 1200000),
+      source: "pom.xml",
+      reason: formatCommandLine(mvn.executable, args),
+      preselected: true,
+    },
+  ];
+}
+
+const GRADLE_BUILD = ["build.gradle.kts", "build.gradle", "settings.gradle.kts", "settings.gradle"];
+
+/**
+ * Gradle's `check` task runs the tests and every verification task the build applies (ktlint,
+ * detekt, Checkstyle, Spotless check), so it is the one preselected gate (#1749).
+ */
+function gradleGates(workspace: string): GateSuggestion[] {
+  const source = GRADLE_BUILD.find((name) => has(workspace, name));
+  if (!source || has(workspace, "pom.xml")) return [];
+  const gradle = buildWrapper(workspace, "gradlew", "gradle");
+  const args = [...gradle.args, "--console=plain", "-q", "check"];
+  return [
+    {
+      check: gate("gradle-check", gradle.executable, args, 1200000),
+      source,
+      reason: formatCommandLine(gradle.executable, args),
+      preselected: true,
+    },
+  ];
+}
+
+/** sbt runs a Scala build's tests with `sbt test`; `-batch` keeps it from waiting for input. */
+function sbtGates(workspace: string): GateSuggestion[] {
+  if (!has(workspace, "build.sbt")) return [];
+  return [
+    {
+      check: gate("sbt-test", "sbt", ["-batch", "test"], 1200000),
+      source: "build.sbt",
+      reason: "sbt -batch test",
+      preselected: true,
+    },
+  ];
 }
 
 /**
@@ -740,17 +804,59 @@ function runnerGates(workspace: string): GateSuggestion[] {
   return out;
 }
 
+/** The toolchain detectors, in the order their gates are suggested. */
+const TOOLCHAIN_GATES = {
+  npm: scriptGates,
+  python: pythonGates,
+  go: goGates,
+  dotnet: dotnetGates,
+  cargo: cargoGates,
+  maven: mavenGates,
+  gradle: gradleGates,
+  sbt: sbtGates,
+} as const;
+export type GateToolchain = keyof typeof TOOLCHAIN_GATES;
+
+/**
+ * The toolchains whose gates each supported language gets (#1717, #1733), the usual one first. A language without a
+ * detector has a `none` row: its gates come from a Makefile, justfile, Taskfile or CI run step
+ * (`runnerGates`).
+ */
+export const GATE_TOOLCHAINS: LanguageRecord<readonly GateToolchain[]> = {
+  typescript: ["npm"],
+  javascript: ["npm"],
+  vue: ["npm"],
+  svelte: ["npm"],
+  rescript: ["npm"],
+  python: ["python"],
+  go: ["go"],
+  rust: ["cargo"],
+  csharp: ["dotnet"],
+  java: ["maven", "gradle"],
+  kotlin: ["gradle", "maven"],
+  scala: ["sbt", "gradle", "maven"],
+  c: none("C builds through Make or CMake, read by the runner detector"),
+  cpp: none("C++ builds through Make or CMake, read by the runner detector"),
+  ruby: none("Rake and Bundler have no gate detector yet (#1753)"),
+  php: none("Composer has no gate detector yet (#1491)"),
+  swift: none("SwiftPM has no gate detector yet (#1753)"),
+  lua: none("LuaRocks has no gate detector yet (#1495)"),
+  elixir: none("Mix has no gate detector yet (#1753)"),
+  dart: none("dart and flutter have no gate detector yet (#1753)"),
+  zig: none("zig build has no gate detector yet (#1753)"),
+  bash: none("shell scripts have no toolchain"),
+  ocaml: none("dune has no gate detector yet (#1753)"),
+  objc: none("Xcode projects have no gate detector"),
+  solidity: none("Foundry has no gate detector; a Hardhat project is an npm package"),
+};
+
 export function detectGates(workspace: string, configured: Check[] = []): GateSuggestion[] {
   const known = new Set(configured.map((c) => formatCommandLine(c.executable, c.args)));
   const ids = new Set(configured.map((c) => c.id));
-  const toolchain = [
-    ...scriptGates(workspace),
-    ...pythonGates(workspace),
-    ...goGates(workspace),
-    ...dotnetGates(workspace),
-    ...cargoGates(workspace),
-    ...mavenGates(workspace),
-  ];
+  const used = new Set(SUPPORTED_LANGUAGES.flatMap((l) => rowOf(GATE_TOOLCHAINS, l) ?? []));
+  const toolchain = (Object.keys(TOOLCHAIN_GATES) as GateToolchain[])
+    .filter((key) => used.has(key))
+    .flatMap((key) => TOOLCHAIN_GATES[key](workspace));
   return (toolchain.length ? toolchain : runnerGates(workspace)).filter(
     (s) => !ids.has(s.check.id) && !known.has(formatCommandLine(s.check.executable, s.check.args)),
   );

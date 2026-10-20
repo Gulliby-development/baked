@@ -193,6 +193,13 @@ function check(host: Host, model: Model) {
       expect(attempt.usage_complete).toBe(attempt.used_tokens === null ? 0 : 1);
     }
     for (const numbers of ordinals.values()) expect(numbers.sort((a, b) => a - b)).toEqual(numbers.map((_, i) => i + 1));
+    // No step stays open once its work ended: none runs while no driver is active, and a run that
+    // ended keeps no step waiting for a decision nor a task running (#1745, #1746).
+    for (const step of steps.values()) expect(`${step.stage_id}:${step.status}`).not.toBe(`${step.stage_id}:running`);
+    if (["completed", "failed", "cancelled"].includes(row.status)) {
+      for (const step of steps.values()) expect(`${step.stage_id}:${step.status}`).not.toBe(`${step.stage_id}:waiting`);
+      for (const task of store.tasks(id)) expect(`${task.id}:${task.status}`).not.toBe(`${task.id}:running`);
+    }
     // The run's accounting is the sum of its attempts, and it only grows.
     expect(row.token_usage).toBe(attempts.reduce((sum, a) => sum + (a.used_tokens ?? 0), 0));
     expect(row.agent_calls).toBe(attempts.filter((a) => a.model_id !== null).length);
