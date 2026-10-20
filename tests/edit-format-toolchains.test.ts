@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { canAutoFormat, cargoEdition, formatProbeCommand, resetFormatCache, singleFileFormat } from "../src/core/tools/auto-format.js";
 import { detectProfile, formatFile } from "../src/core/tools/project.js";
@@ -25,7 +26,10 @@ function project(files: Record<string, string>): string {
   return root;
 }
 
-const hasRustfmt = Bun.which("rustfmt") !== null;
+// The test preload points HOME at an empty profile, where the rustup proxy finds no toolchain;
+// os.homedir() still names the real home (as in the gate matrix's toolchain tier).
+process.env.RUSTUP_HOME ??= join(homedir(), ".rustup");
+const hasRustfmt = spawnSync("rustfmt", ["--version"], { stdio: "ignore", timeout: 60_000 }).status === 0;
 const CRATE = '[package]\nname = "c"\nversion = "0.1.0"\nedition = "2021"\n';
 
 describe("edit-time formatting per toolchain (#1681)", () => {
