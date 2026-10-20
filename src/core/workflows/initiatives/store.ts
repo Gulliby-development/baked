@@ -9,6 +9,13 @@ import { HOST_AUTO_APPROVAL_CEILING } from "../v2/definition.js";
 import { FeatureKey, InitiativeId, type InitiativePlan, InitiativePlanSchema } from "./plan.js";
 
 /** The workflow schema version that adds initiatives (migration 004). */
+/**
+ * Accepted non-skeleton features before the initiative's dollar forecast stops a feature start
+ * (#1659). In bench rounds 48 to 50 every forecast stop came after one or two accepted features,
+ * at 1.3 to 3.1 times what the initiative then cost.
+ */
+export const FORECAST_BINDING_FEATURES = 5;
+
 export const INITIATIVES_SCHEMA_VERSION = 4;
 
 export const InitiativeStatus = z.enum([

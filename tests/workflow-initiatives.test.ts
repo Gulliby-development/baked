@@ -619,7 +619,7 @@ describe("scenario: an initiative dollar budget (#1317)", () => {
     t.executor.usageStore = t.workflows.store;
     await startPriced(t, 3, { costBudget: { maxCostUsd: 3, costTolerance: 0.1 } });
     const view = await t.approveSplit();
-    expect(view.budget.cost).toEqual({ capUsd: 3, tolerance: 0.1, ceilingUsd: 3.3, spentUsd: 0, reservedUsd: 0, remainingUsd: 3, forecastUsd: null });
+    expect(view.budget.cost).toEqual({ capUsd: 3, tolerance: 0.1, ceilingUsd: 3.3, spentUsd: 0, reservedUsd: 0, remainingUsd: 3, forecastUsd: null, measuredFeatures: 0, forecastBinding: false, forecastNotice: null });
     // Without estimates, dollars follow the size weights: core 2, api 2, docs 1 of 5.
     expect(view.features.map((f) => [f.id, f.size, f.shareUsd])).toEqual([["core", "medium", 1.2], ["api", "medium", 1.2], ["docs", "small", 0.6]]);
     const driven = await t.drive();
@@ -629,10 +629,33 @@ describe("scenario: an initiative dollar budget (#1317)", () => {
     expect(driven.budget.cost.spentUsd).toBe(Math.round(driven.features.reduce((sum, f) => sum + f.spentUsd, 0) * 100) / 100);
   }, 30000);
 
-  test("once a feature is accepted, a forecast above the cap stops the next feature until the cap is raised", async () => {
+  // Bench rounds 48 to 50 (#1659): every forecast stop came after one or two accepted features
+  // and was 1.3 to 3.1 times what the initiative then cost.
+  test("a forecast above the cap after one accepted feature advises and the next feature starts", async () => {
     const t = setup(threeFeatures, 20_000);
     t.executor.usageStore = t.workflows.store;
     await startPriced(t, 3);
+    await t.approveSplit();
+    const view = await t.drive();
+    expect(t.featureOf(view, "core").state).toBe("accepted");
+    const notes = t.initiatives.events("values").filter((e) => e.type === "cost.forecast_advisory");
+    expect(notes).toHaveLength(1);
+    const note = notes[0]!.payload as { featureId: string; forecastUsd: number; ceilingUsd: number; measuredFeatures: number; message: string };
+    expect(note.forecastUsd).toBeGreaterThan(note.ceilingUsd);
+    expect(note.ceilingUsd).toBe(3);
+    expect(note.measuredFeatures).toBeGreaterThan(0);
+    expect(note.message).toContain("advisory until 5 features are measured");
+    // The feature started after the warning, and its own run forecast only advises too.
+    const next = t.featureOf(view, note.featureId);
+    expect(next.runId).not.toBeNull();
+    expect(JSON.parse(t.workflows.store.run(next.runId ?? "").policy_json).costForecast).toBe("advise");
+    expect(view.next.message).not.toContain("cost forecast");
+  }, 30000);
+
+  test("with forecastStop on, a forecast above the cap stops the next feature until the cap is raised", async () => {
+    const t = setup(threeFeatures, 20_000);
+    t.executor.usageStore = t.workflows.store;
+    await startPriced(t, 3, { forecastStop: true });
     await t.approveSplit();
     let view = await t.drive();
     expect(t.featureOf(view, "core").state).toBe("accepted");

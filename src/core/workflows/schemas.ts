@@ -487,9 +487,11 @@ export const PolicySchema = z
     /**
      * With a dollar cap, `ask` stops the run for a decision once the forecast of its total, from
      * what its finished tasks cost against their price, passes the cap; `off` spends to the cap.
+     * `advise` records the forecast and grows a cap that may grow, but never stops the run on it:
+     * an initiative's feature runs use it until the initiative's forecast is measured (#1659).
      * Absent means `ask`, so stored policies keep their hash.
      */
-    costForecast: z.enum(["ask", "off"]).optional(),
+    costForecast: z.enum(["ask", "advise", "off"]).optional(),
     /**
      * With a dollar cap, how far past it the run may go to finish its work (see
      * cost-tolerance.ts): a share of the cap (0 to 0.5), or `auto`, which takes 10% to 30% by the

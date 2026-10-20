@@ -5,7 +5,7 @@ import { canonical } from "../src/core/specs/hash.js";
 import { budgetLimitText, canExtend } from "../src/components/workflow/format.js";
 import { costRate, growBudgetOnProgress, remainingCostRate } from "../src/core/workflows/budget.js";
 import { featurePolicy, type InitiativeSettings } from "../src/core/workflows/initiatives/service.js";
-import { assertForecastFits, costForecast, forecastProgress } from "../src/core/workflows/cost-forecast.js";
+import { assertForecastFits, costForecast, forecastProgress, kindRatio } from "../src/core/workflows/cost-forecast.js";
 import { runReport } from "../src/core/workflows/run-report.js";
 import { verificationTokens } from "../src/core/workflows/sizing.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
@@ -206,10 +206,10 @@ describe("scenario: cfgtrace b4427c85, a forecast past the dollar cap stops the 
   });
 });
 
-describe("scenario: forecasts calibrate only the open task's own kind (#1631)", () => {
+describe("scenario: forecasts calibrate only the open task's own kind (#1631, #1648)", () => {
   const kinds: TaskKind[] = ["code", "test", "docs", "mixed", "manifest"];
   for (const kind of kinds) {
-    test(`${kind}: use the priced midpoint until this kind finishes, then its own measured ratio`, async () => {
+    test(`${kind}: use the priced midpoint until three tasks of this kind finish, then blend toward their ratio`, async () => {
       const { store, runId, policy, stage } = await midRun({ perTask: [850_000, 850_000, 850_000] });
       const artifact = store.latestArtifact(runId, "sizing/plan-0.json")!;
       const sizing = JSON.parse(store.readArtifact(runId, artifact.id)) as { tasks: { kind: TaskKind }[] };
@@ -219,12 +219,16 @@ describe("scenario: forecasts calibrate only the open task's own kind (#1631)", 
       const before = costForecast(store, runId, policy)!;
       expect(before.ratio).toBeCloseTo(3.4, 6);
       expect(before.remainingTokens - verificationTokens()).toBe(20 * 250_000);
-      // A zero-token completion is a measured ratio of zero, not an unmeasured kind.
+      // One or two finished tasks do not measure their kind (#1648): a zero-token completion
+      // leaves the others at their price.
       stage("T004", 0);
-      expect(costForecast(store, runId, policy)!.remainingTokens).toBe(verificationTokens());
+      expect(costForecast(store, runId, policy)!.remainingTokens - verificationTokens()).toBe(19 * 250_000);
       stage("T005", 250_000);
-      // The two own-kind tasks used 250k over their combined 500k estimate, ratio 0.5.
-      expect(costForecast(store, runId, policy)!.remainingTokens - verificationTokens()).toBe(18 * 125_000);
+      expect(costForecast(store, runId, policy)!.remainingTokens - verificationTokens()).toBe(18 * 250_000);
+      // Three own-kind tasks used 500k of 750k, ratio 2/3, blended a third of the way from 1.
+      stage("T006", 250_000);
+      expect(kindRatio(2 / 3, 3)).toBeCloseTo(8 / 9, 9);
+      expect(costForecast(store, runId, policy)!.remainingTokens - verificationTokens()).toBe(Math.round((17 * 250_000 * 8) / 9));
     });
   }
 });
@@ -289,6 +293,22 @@ describe("scenario: an initiative feature's dollar cap under a dollar budget (#1
     });
     expect(() => assertForecastFits(store, runId, policy)).toThrow(`The initiative can spare up to $${SHORT.toFixed(2)} for this run`);
     expect(policy.maxCostUsd).toBe(SHARE);
+  });
+
+  // #1659: until the initiative's forecast is binding, a feature run's own forecast advises. Its
+  // cap and the initiative's spare dollars bound what it spends.
+  test("an advisory feature run spends on where the spare dollars cannot cover its forecast", async () => {
+    const advisory = policyOf(SHORT);
+    expect(advisory.costForecast).toBe("advise");
+    expect(featurePolicy(settings, share, front, false, 17_000_000, SHARE, SHORT, true).costForecast).toBeUndefined();
+    const { store, runId, policy } = await midRun({
+      perTask: OVER,
+      policy: { maxCostUsd: advisory.maxCostUsd, costTolerance: advisory.costTolerance, costForecast: "advise", ...(advisory.sizing ? { sizing: advisory.sizing } : {}) },
+    });
+    expect(costForecast(store, runId, policy)!.projectedUsd).toBeGreaterThan(SHORT);
+    expect(() => assertForecastFits(store, runId, policy)).not.toThrow();
+    expect(store.artifacts(runId).filter((a) => a.kind === "cost-forecast")).toHaveLength(0);
+    expect(forecastProgress(store, runId)).toHaveLength(1);
   });
 });
 

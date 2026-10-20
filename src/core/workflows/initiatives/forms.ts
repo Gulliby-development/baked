@@ -179,7 +179,11 @@ export function costText(cost: CostView | undefined): string | null {
   return [
     `${usd(cost.spentUsd)} of ${usd(cost.capUsd)}${ceiling}`,
     `${usd(cost.remainingUsd ?? 0)} left`,
-    ...(cost.forecastUsd !== null ? [`forecast ${usd(cost.forecastUsd)}`] : []),
+    ...(cost.forecastUsd !== null
+      ? [
+          `forecast ${usd(cost.forecastUsd)}${cost.forecastNotice ? ` (advisory: ${cost.measuredFeatures} measured features)` : ""}`,
+        ]
+      : []),
   ].join(" · ");
 }
 
