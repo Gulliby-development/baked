@@ -6,6 +6,7 @@ import { tuiRecoveryText } from "../src/components/workflow/remedies.js";
 import { startApiServer } from "../src/core/api/server.js";
 import { canonical, hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { assertAttemptFits, grownCostCap } from "../src/core/workflows/budget.js";
+import { costForecast } from "../src/core/workflows/cost-forecast.js";
 import type { InitiativePlan } from "../src/core/workflows/initiatives/plan.js";
 import { costGrowthLimit, featurePolicy, InitiativeService, type InitiativeView, rebaseView } from "../src/core/workflows/initiatives/service.js";
 import type { RunPolicy, Spec, Task } from "../src/core/workflows/schemas.js";
@@ -32,6 +33,9 @@ const plan: InitiativePlan = {
 class ScriptedExecutor extends FixtureExecutor {
   store!: WorkflowStore;
   implemented: string[] = [];
+  failLint = false;
+  beforeCorrection: { cap: number; tokens: number } | null = null;
+  correction: { task: Task; forecast: ReturnType<typeof costForecast>; priced: boolean } | null = null;
   override async execute(request: ExecutionRequest) {
     const [documents, attempt] = request.prompt.split("\n").slice(-2);
     const data = { ...JSON.parse(documents ?? "{}"), ...JSON.parse(attempt ?? "{}") } as { spec: Spec | null; extra: { featureId: string } };
@@ -43,14 +47,24 @@ class ScriptedExecutor extends FixtureExecutor {
       case "plan": {
         const markdown = `# Plan\n## Context\nCreate ${id}.txt.\n## Decisions\nDEC-001: FR-001 needs ready.\n## Components\nValues\n## Data\nText\n## Verification\nCheck values\n## Risks\nNone for fixture`;
         const task = (taskId: string, writes: Task["writes"], dependsOn: string[]): Task => ({ id: taskId, title: taskId, description: "Write value", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn, profileId: "implementer", writes, readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior" });
-        const host = id === "base" ? [task("T001", skeleton.map((s) => ({ ...s, action: "create" })), [])] : [];
+        const host = id === "base" && !this.failLint ? [task("T001", skeleton.map((s) => ({ ...s, action: "create" })), [])] : [];
         const value = task("T002", [{ path: `${id}.txt`, action: existsSync(join(request.root, `${id}.txt`)) ? "modify" : "create" }], host.map((t) => t.id));
         output = { schemaVersion: 1, markdown, taskGraph: { schemaVersion: 1, featureId: spec.featureId, revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown), tasks: [...host, value] } };
         break;
       }
       case "implementation":
         this.implemented.push(request.task!.id);
-        for (const write of request.task!.writes) writeFileSync(join(request.root, write.path), "ready");
+        if (this.failLint && request.task!.origin !== "planned") {
+          const policy = JSON.parse(this.store.run(request.runId).policy_json) as RunPolicy;
+          const sizing = this.store.artifacts(request.runId).filter((a) => a.kind === "sizing" && a.logical_path.startsWith("sizing/plan-")).at(-1);
+          const priced = sizing ? JSON.parse(this.store.readArtifact(request.runId, sizing.id)).tasks : [];
+          this.correction = { task: request.task!, forecast: costForecast(this.store, request.runId, policy), priced: priced.some((t: { taskId: string }) => t.taskId === request.task!.id) };
+        }
+        for (const write of request.task!.writes) writeFileSync(join(request.root, write.path), this.failLint && request.task!.origin === "planned" ? "invalid" : "ready");
+        if (this.failLint && request.task!.origin === "planned") {
+          const policy = JSON.parse(this.store.run(request.runId).policy_json) as RunPolicy;
+          this.beforeCorrection = { cap: policy.maxCostUsd!, tokens: policy.maxTotalTokens };
+        }
         output = { schemaVersion: 1, taskId: request.task!.id, outcome: "implemented", summary: "Wrote value", evidenceIds: [], unresolved: [] };
         break;
       default: output = (await super.execute(request)).output;
@@ -65,14 +79,20 @@ class ScriptedExecutor extends FixtureExecutor {
   }
 }
 
-async function scenario(dollars = 10) {
+async function scenario(dollars = 10, failLint = false) {
   const fixture = workflowFixture({ executor: (root) => new ScriptedExecutor(root) });
+  fixture.executor.failLint = failLint;
   fixture.executor.store = fixture.service.store;
   fixture.config.defaultModel = MODEL;
   cleanups.push(fixture.dispose);
   const initiatives = new InitiativeService(fixture.service);
   const policy: RunPolicy = { ...fixturePolicy, clarification: "assume", maxTotalTokens: 10_000_000, maxAgentCalls: 1000, costForecast: "off", sizing: { maxRunTokens: 50_000_000, maxRunCostUsd: 100 }, checks: [{ ...fixturePolicy.checks[0]!, args: ["-e", "0"] }] };
-  const view = await initiatives.start({ commandId: newId(), initiativeId: "skeleton", prompt: "Create the skeleton and three values", plan, policy, model: MODEL, ownerLabel: "test", keepFeatures: true, featureAutoApproval: { maxFiles: 30, maxTasks: 5 }, budget: { maxTotalTokens: 50_000_000, maxAgentCalls: 1000, maxActiveMs: 21_600_000 }, costBudget: { maxCostUsd: dollars, costTolerance: "off" } });
+  if (failLint) {
+    policy.costForecast = "ask";
+    policy.checks.push({ ...fixturePolicy.checks[0]!, id: "linting-type", args: ["-e", "if (await Bun.file('base.txt').text() !== 'ready') { console.log('base.txt:1:1: error TS2322: Value must be ready'); process.exit(1) }"] });
+  }
+  const scenarioPlan = failLint ? { ...plan, features: plan.features.map((f) => ({ ...f, skeleton: undefined, boundary: { ...f.boundary, paths: [`${f.id}.txt`] } })) } : plan;
+  const view = await initiatives.start({ commandId: newId(), initiativeId: "skeleton", prompt: "Create three values", plan: scenarioPlan, policy, model: MODEL, ownerLabel: "test", keepFeatures: true, featureAutoApproval: { maxFiles: 30, maxTasks: 5 }, budget: { maxTotalTokens: 50_000_000, maxAgentCalls: 1000, maxActiveMs: 21_600_000 }, costBudget: { maxCostUsd: dollars, costTolerance: "off" } });
   const identity = () => ({ commandId: newId(), expectedRevision: initiatives.view("skeleton").revision });
   const driveOne = async () => {
     const controller = new AbortController();
@@ -82,7 +102,36 @@ async function scenario(dollars = 10) {
   return { fixture, initiatives, view, identity, driveOne };
 }
 
-describe("scenario: skeleton feature dollars grow independently of tokens (#1625)", () => {
+describe("scenario: feature dollars grow independently of tokens (#1625)", () => {
+  test("R49 linting-type correctives finish past the cap without a priced corrective or cost forecast", async () => {
+    const { fixture, initiatives, view, identity, driveOne } = await scenario(10, true);
+    const request = view.pendingDecisions.find((d) => d.scope === "initiative")!;
+    const approved = await initiatives.approve("skeleton", identity(), { requestId: request.requestId, digest: request.digest });
+    const bound = costGrowthLimit(approved, "base")!;
+    const done = await driveOne();
+    const base = done.features[0]!;
+    expect(base.blockers).toEqual([]);
+    expect(base.state).toBe("accepted");
+    const { beforeCorrection, correction } = fixture.executor;
+    expect(beforeCorrection).not.toBeNull();
+    expect(correction).not.toBeNull();
+    expect(correction!.task.origin).not.toBe("planned");
+    expect(fixture.executor.implemented).toEqual(["T002", correction!.task.id]);
+    expect(correction!.task.findingIds.length).toBeGreaterThan(0);
+    expect(correction!.priced).toBe(false);
+    expect(correction!.forecast).toBeNull();
+    expect(base.spentUsd).toBeGreaterThan(beforeCorrection!.cap);
+    const store = fixture.service.store;
+    const policy = JSON.parse(store.run(base.runId!).policy_json) as RunPolicy;
+    expect(policy.maxCostUsd!).toBeGreaterThan(beforeCorrection!.cap);
+    expect(policy.maxCostUsd!).toBeLessThanOrEqual(bound);
+    expect(policy.maxTotalTokens).toBe(beforeCorrection!.tokens);
+    expect(done.budget.cost.remainingUsd!).toBeGreaterThan(0);
+    const revisions = store.artifacts(base.runId!).filter((a) => a.logical_path.startsWith("policy-revisions/auto-")).map((a) => JSON.parse(store.readArtifact(base.runId!, a.id)));
+    expect(revisions.some((r) => r.kind === "call-growth" && r.previous.maxCostUsd >= beforeCorrection!.cap && r.next.maxCostUsd > beforeCorrection!.cap)).toBe(true);
+    expect(readFileSync(join(fixture.root, "base.txt"), "utf8")).toBe("ready");
+  }, 60000);
+
   test("the host writes 25 stubs and the feature completes past its weighted cap with tokens unchanged", async () => {
     const { fixture, initiatives, view, identity, driveOne } = await scenario();
     const request = view.pendingDecisions.find((d) => d.scope === "initiative")!;
@@ -169,16 +218,17 @@ describe("scenario: skeleton feature dollars grow independently of tokens (#1625
     expect(grownCostCap({ ...policy, maxCostUsd: 0.07 }, policy.maxTotalTokens)).toBe(0.07);
   });
 
-  test("an attempt at its token ceiling can use approved dollar growth before the affordability check", async () => {
+  test("an unpriced corrective at its token ceiling can use approved dollar growth before the affordability check", async () => {
     const fixture = workflowFixture(); cleanups.push(fixture.dispose);
     const { runId } = await fixture.start();
     const store = fixture.service.store;
     store.transaction(() => store.transition(runId, "running"));
-    const policy: RunPolicy = { ...fixturePolicy, clarification: "assume", maxTotalTokens: 100_000, maxCostUsd: 0.3, sizing: { maxRunTokens: 100_000, maxRunCostUsd: 1 } };
+    const policy: RunPolicy = { ...fixturePolicy, clarification: "assume", maxTotalTokens: 100_000, maxCostUsd: 0.3, sizing: { maxRunTokens: 100_000, extendToTokens: 100_000, maxRunCostUsd: 1 } };
     store.setPolicy(runId, policy);
     const task: Task = { id: "T001", title: "Value", description: "Write value", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: [{ path: "value.txt", action: "create" }], readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior" };
+    const corrective: Task = { ...task, id: "T002", origin: "repair", findingIds: ["F001"], writes: [{ path: "value.txt", action: "modify" }] };
     store.transaction(() => {
-      store.syncTasks(runId, { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [task] });
+      store.syncTasks(runId, { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [task, corrective] });
       store.taskStatus(runId, task.id, "implemented");
     });
     const step = store.beginStep(runId, "task-T001");
@@ -187,7 +237,10 @@ describe("scenario: skeleton feature dollars grow independently of tokens (#1625
       store.artifact(runId, "usage", `attempts/${attempt}/usage.json`, canonical({ schemaVersion: 1, profileId: "implementer", taskId: task.id, maxSteps: 10, maxTokens: 100_000, stopReason: "submitted", finalizedBy: null, totalTokens: 80_000, steps: [{ step: 1, inputTokens: 80_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, toolCalls: 0, compactedBytes: 0 }] }));
       store.finishAttempt(runId, attempt, "completed", 80_000);
     });
-    expect(() => assertAttemptFits(store, runId, "next", policy, 50_000)).not.toThrow();
+    const correctionStep = store.beginStep(runId, `task-${corrective.id}`);
+    const correctionAttempt = store.reserve(runId, correctionStep, MODEL, 1000, policy);
+    expect(costForecast(store, runId, policy)).toBeNull();
+    expect(() => assertAttemptFits(store, runId, correctionAttempt, policy, 50_000)).not.toThrow();
     expect(policy.maxTotalTokens).toBeGreaterThanOrEqual(130_000);
     expect(policy.maxCostUsd!).toBeGreaterThan(0.3);
     expect(policy.maxCostUsd!).toBeLessThanOrEqual(1);

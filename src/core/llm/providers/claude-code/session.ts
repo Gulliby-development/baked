@@ -19,6 +19,7 @@ export interface ClaudeCodeCall {
   effort?: string;
   parts: ClaudeCodePromptParts;
   abortSignal?: AbortSignal;
+  onResponse?: () => void;
 }
 
 export interface ClaudeCodeTurnResult {
@@ -156,6 +157,7 @@ interface SessionState {
   lastUsed: number;
   idleTimer: ReturnType<typeof setTimeout> | null;
   pending: {
+    onResponse?: () => void;
     resolve: (result: ClaudeCodeTurnResult) => void;
     reject: (error: Error) => void;
     /** An interrupt was sent for a native tool call; the next result event ends that turn. */
@@ -244,6 +246,7 @@ function abortError(signal: AbortSignal): Error {
 
 /** Optional flags that strip what a model adapter never uses, when the CLI has them. */
 const OPTIONAL_FLAGS = [
+  "--include-partial-messages",
   "--safe-mode",
   "--strict-mcp-config",
   "--disable-slash-commands",
@@ -488,6 +491,13 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
       return;
     }
     const live = session.pending;
+    const stream = event as { event?: { type?: string; delta?: { type?: string } } };
+    if (
+      event.type === "assistant" ||
+      (event.type === "stream_event" &&
+        ["content_block_start", "content_block_delta"].includes(stream.event?.type ?? ""))
+    )
+      live.onResponse?.();
     if (event.type !== "result") {
       if (!live.interrupting && (event.type === "assistant" || event.type === "user")) {
         const nativeTool = nativeToolInEvent(event);
@@ -593,6 +603,7 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
         call.abortSignal?.removeEventListener("abort", onAbort);
       };
       session.pending = {
+        onResponse: call.onResponse,
         resolve: (result) => {
           finish();
           resolve(result);

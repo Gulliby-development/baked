@@ -1,5 +1,6 @@
 import { rowFiles, rowsArtifact } from "../src/core/workflows/acceptance-rows.js";
 import { decoySamples, residualSamples, residualSpec } from "./helpers/criteria-residual-fixtures.js";
+import { evaluateAutoApproval, planScopeAdvice } from "../src/core/workflows/auto-approval.js";
 import { proseAfterRefusalScenario, refusalKinds } from "./helpers/prose-after-refusal-scenario.js";
 import { runScanner } from "../src/core/workflows/quality/rules.js";
 import { suspendClock } from "./helpers/suspend-clock.js";
@@ -69,7 +70,7 @@ import {
 import { staticCorrection } from "../src/core/workflows/scheduler.js";
 import { ASSERTION_FAILURES } from "./helpers/assertion-failures.js";
 import { failureOwner } from "../src/core/workflows/task-graph.js";
-import type { Check, RunPolicy, RuntimeState } from "../src/core/workflows/schemas.js";
+import type { Check, RunPolicy, RuntimeState, TaskGraph } from "../src/core/workflows/schemas.js";
 import type { TaskRow, WorkflowStore } from "../src/core/workflows/store.js";
 import { scanTestIntegrity, testChanges } from "../src/core/workflows/test-integrity.js";
 import type { Task } from "../src/core/workflows/types.js";
@@ -715,6 +716,25 @@ for (const stack of STACKS) {
       }
     });
 
+    cell(stack, "sizing-replan-approval-task-count (#1627)", () => {
+      const graph: TaskGraph = {
+        schemaVersion: 1, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64),
+        tasks: Array.from({ length: 10 }, (_, i) => ({
+          id: `T${String(i + 1).padStart(3, "0")}`, title: "Test slice", description: "Write cases",
+          requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer",
+          writes: [{ path: fixture.property.path, action: "modify" }], readHints: [], checkIds: [],
+          origin: "planned", findingIds: [], rationale: "Required behavior",
+        })),
+      };
+      const policy = {
+        ...defaultWorkflowPolicy,
+        autoApproval: { renewal: false, limits: { maxTasks: 8, maxFiles: 20, allowedPaths: ["**"], allowDelete: false, allowNewDependencies: false, maxTotalTokens: defaultWorkflowPolicy.maxTotalTokens } },
+      };
+      expect(planScopeAdvice(policy, graph, undefined, false, "", 2)).toEqual([]);
+      expect(evaluateAutoApproval(policy, {} as Parameters<typeof evaluateAutoApproval>[1], fixtureSpec, graph, [], [], { hostSplitTasks: 2 }).approval?.mode).toBe("limits");
+      expect(planScopeAdvice(policy, graph).join(" ")).toContain("10 tasks exceed 8");
+    });
+
     cell(stack, "sequential-test-slices-written-tests", () => {
       const path = fixture.property.path;
       const root = project({ ...fixture.files, [path]: fixture.property.seeded });
@@ -1159,11 +1179,21 @@ for (const stack of STACKS) {
   const before = sample.file(["intervalWorkload", "scalarCases"]);
   const swapped = sample.file(["literalCases", "scalarCases"], 3);
   const renamed = sample.file(["serializedLocation", "scalarCases"]);
-  const scan = (after: string, options: Parameters<typeof scanTestIntegrity>[1] = {}) =>
+  const scan = (after: string | null, options: Parameters<typeof scanTestIntegrity>[1] = {}) =>
     scanTestIntegrity([{ path: sample.path, before, after }], options);
   const name = (base: string) => (stack === "python" ? `test_${base}` : stack === "go" ? `Test${base}` : base);
   const protects = new Map([[sample.path, new Map([[name("intervalWorkload"), "T011 for finding F1"]])]]);
   describe(`gate matrix: ${stack} test identity`, () => {
+    cell(stack, "test identity: explicit spec removal overrides sibling protection only for named tests", () => {
+      const marker = { bun: 'test("scalarCases"', npm: 'it("scalarCases"', python: "def test_scalarCases", go: "func TestscalarCases", rust: "#[test]\nfn scalarCases", maven: '    @Test\n    @DisplayName', dotnet: "    [Theory]" }[stack];
+      const after = before.slice(before.indexOf(marker));
+      const finding = { basis: "spec", file: sample.path, claim: "The spec assigns this test to another module", suggestedFix: `Remove ${name("intervalWorkload")}` };
+      expect(scan(after, { protects, removalFindings: [finding] })).toEqual([]);
+      expect(scan(after, { protects, removalFindings: [{ ...finding, basis: "inferred" }] }).map((f) => f.rule)).toContain("test-removed");
+      expect(scan("", { protects, removalFindings: [finding] }).map((f) => f.rule)).toContain("test-count");
+      expect(scan(null, { protects, removalFindings: [finding] }).map((f) => f.rule)).toContain("test-deleted");
+      expect(scan(null, { protects, removalFindings: [{ ...finding, suggestedFix: `Remove all tests from ${sample.path}` }] })).toEqual([]);
+    });
     cell(stack, "test identity: a test swapped for another under a new name is flagged", () => {
       const found = scan(swapped);
       expect(found.map((f) => f.rule)).toEqual(["test-removed"]);

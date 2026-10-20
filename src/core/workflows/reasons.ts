@@ -14,10 +14,11 @@ const REASONS: Record<string, string> = {
   step_cap:
     "an agent used its attempt's steps without a result being accepted; the run budget is not used up, and resuming continues the task with the edits already made",
   checkpoint: "the run reached a token checkpoint and waits for you to continue",
-  no_progress: "repairs stopped making progress",
+  no_progress: "the run stopped making progress",
   verification_failed: "checks or reviews did not pass",
   check_unavailable:
     "a required check cannot be started (its executable is missing or not runnable)",
+  provider: "waiting for the model provider to answer a health probe",
   provider_unavailable: "the model provider is unavailable",
   provider_account:
     "the model provider refused the account or its CLI is missing: add credits or wait for a usage limit to reset, fix the API key, install the CLI or switch the run to another model",

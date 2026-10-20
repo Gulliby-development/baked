@@ -3,6 +3,8 @@ import { join } from "node:path";
 import type { AppConfig } from "../../types/index.js";
 import { SharedRootContext } from "../context/shared-root.js";
 import { ROUTING_ARTIFACT, type RoutingRecord, RoutingRecordSchema } from "../llm/model-routing.js";
+import { resolveModel } from "../llm/provider.js";
+import { probeProvider, providerBackoffMs } from "../llm/provider-health.js";
 import { displayPath } from "../projects/paths.js";
 import { activeProject } from "../projects/resolve.js";
 import {
@@ -86,7 +88,7 @@ import {
 } from "./project-memory.js";
 import { recoveryAdvice } from "./remedies.js";
 import { canRepairRun } from "./repairable.js";
-import { abortableDelay } from "./retry.js";
+import { abortableDelay, accountRefusal, isTransient, providerCircuitOpen } from "./retry.js";
 import {
   REFUSED_EDIT_PREFIX,
   runWrittenHash,
@@ -380,6 +382,7 @@ export class NativeWorkflowService implements WorkflowService {
       taskSteps: {},
       sizingReplans: 0,
       hostSplitTasks: 0,
+      sizingPlannedTasks: null,
       deferredChecks: {},
       waitingFor: {},
       affectedTests: {},
@@ -568,15 +571,130 @@ export class NativeWorkflowService implements WorkflowService {
   }
   /** Waits before the automatic resumes of a run blocked with `owner_lost`; one entry per resume. */
   ownerLostBackoffMs: number[] = [30_000, 60_000, 120_000];
+  providerProbe = async (modelId: string, signal: AbortSignal): Promise<unknown> =>
+    (await probeProvider(resolveModel(modelId, this.config), modelId, signal)).usage;
+  providerDelay = abortableDelay;
+  private providerWaits = new Map<
+    string,
+    { controller: AbortController; promise: Promise<boolean> }
+  >();
   async drive(runId: string, signal: AbortSignal): Promise<RunSnapshot> {
     for (;;) {
+      const current = this.store.run(runId);
+      if (current.status === "blocked" && providerCircuitOpen(this.store, runId))
+        return this.store.snapshot(runId);
+      if (current.status === "waiting" && current.reason === "provider") {
+        if (await this.resumeReachableProvider(runId, signal)) continue;
+        return this.store.snapshot(runId);
+      }
       const snapshot = await this.driveOnce(runId, signal);
+      if (snapshot.status === "waiting" && snapshot.reason === "provider") continue;
       if (process.env.BAKED_TRACE_RUN_BLOCKS === "1") this.traceBlock(runId);
       if (await this.resumeOwnerLost(runId, signal)) continue;
       if (await this.resumeStalled(runId, signal)) continue;
       if (await this.resumeUnfinished(runId, signal)) continue;
       if (await this.resumeProviderOutage(runId, signal)) continue;
       return snapshot;
+    }
+  }
+  /** Durable provider waits survive a driver restart and never spend stall/provider resumes. */
+  private async resumeReachableProvider(runId: string, outer: AbortSignal): Promise<boolean> {
+    if (this.providerWaits.has(runId))
+      throw new WorkflowFault("WORKSPACE_BUSY", "Provider health wait already executing");
+    const controller = new AbortController();
+    const signal = AbortSignal.any([outer, controller.signal]);
+    const waiting = () => {
+      const run = this.store.run(runId);
+      return run.status === "waiting" && run.reason === "provider";
+    };
+    const poll = setInterval(() => {
+      try {
+        if (!waiting()) controller.abort();
+      } catch (error) {
+        controller.abort(error);
+      }
+    }, 100);
+    const recover = async () => {
+      while (!signal.aborted && waiting()) {
+        const saved = this.store.snapshot(runId).providerWait;
+        if (!saved) return false;
+        try {
+          await this.providerDelay(Math.max(0, Date.parse(saved.retryAt) - Date.now()), signal);
+          signal.throwIfAborted();
+          if (!waiting()) return false;
+          const usage = await this.providerProbe(saved.modelId, signal);
+          signal.throwIfAborted();
+          if (!waiting()) return false;
+          this.store.artifact(
+            runId,
+            "recovery",
+            "provider/healthy.json",
+            canonical({
+              modelId: saved.modelId,
+              at: new Date().toISOString(),
+              usage,
+            }),
+          );
+          try {
+            await this.resume(runId, {
+              commandId: newId(),
+              expectedRevision: this.store.run(runId).revision,
+            });
+          } catch (error) {
+            const reason =
+              error instanceof WorkflowFault && error.code === "INPUT_CHANGED"
+                ? "input_changed"
+                : "host_state";
+            this.store.transition(runId, "blocked", reason);
+            this.store.artifact(
+              runId,
+              "diagnostic",
+              `errors/${newId()}.txt`,
+              error instanceof Error ? error.message : String(error),
+            );
+            return false;
+          }
+          return true;
+        } catch (error) {
+          if (signal.aborted || !waiting()) return false;
+          if (!isTransient(error)) {
+            this.store.transition(
+              runId,
+              "blocked",
+              accountRefusal(error) ? "provider_account" : "provider_unavailable",
+            );
+            this.store.artifact(
+              runId,
+              "diagnostic",
+              `errors/${newId()}.txt`,
+              error instanceof Error ? error.message : String(error),
+            );
+            return false;
+          }
+          const probe = saved.probe + 1;
+          const delay = providerBackoffMs(probe - 1);
+          this.store.artifact(
+            runId,
+            "recovery",
+            "provider/wait.json",
+            canonical({
+              modelId: saved.modelId,
+              probe,
+              retryAt: new Date(Date.now() + delay).toISOString(),
+            }),
+          );
+        }
+      }
+      return false;
+    };
+    const promise = recover();
+    this.providerWaits.set(runId, { controller, promise });
+    try {
+      return await promise;
+    } finally {
+      clearInterval(poll);
+      this.providerWaits.delete(runId);
+      if (signal.aborted && waiting()) this.store.transition(runId, "paused", "user_pause");
     }
   }
   /**
@@ -932,8 +1050,11 @@ export class NativeWorkflowService implements WorkflowService {
       if (!this.active.has(runId)) releaseDeadOwnerLeases(this.store, runId);
     });
     const active = this.active.get(runId);
+    const providerWait = this.providerWaits.get(runId);
+    providerWait?.controller.abort();
     active?.controller.abort();
     if (active) await active.promise;
+    if (providerWait) await providerWait.promise;
     return result;
   }
   async resume(
@@ -1070,6 +1191,13 @@ export class NativeWorkflowService implements WorkflowService {
         );
       // Resuming is the operator's decision to try again: a task whose implementation did not
       // complete (no snapshot) goes back to pending and continues on the edits already in place.
+      if (providerCircuitOpen(this.store, runId))
+        this.store.artifact(
+          runId,
+          "recovery",
+          "provider/circuit.json",
+          canonical({ open: false, commandId: command.commandId }),
+        );
       for (const task of this.store.tasks(runId))
         if (task.status === "blocked" && task.snapshot_id === null)
           this.store.taskStatus(runId, task.id, "pending");
@@ -2426,14 +2554,17 @@ export class NativeWorkflowService implements WorkflowService {
     return replayEvents(this.store, runId, afterSeq, signal);
   }
   async shutdown(): Promise<void> {
+    for (const wait of this.providerWaits.values())
+      wait.controller.abort(new Error("Application shutdown"));
     for (const active of this.active.values())
       active.controller.abort(new Error("Application shutdown"));
     await Promise.allSettled([...this.active.values()].map((active) => active.promise));
+    await Promise.allSettled([...this.providerWaits.values()].map((wait) => wait.promise));
   }
   close(): void {
     if (this.active.size && process.env.BAKED_TRACE_RUN_BLOCKS === "1")
       for (const runId of this.active.keys()) this.traceBlock(runId, "run-active-at-close");
-    if (this.active.size)
+    if (this.active.size || this.providerWaits.size)
       throw new WorkflowFault(
         "WORKSPACE_BUSY",
         "Stop active runs before closing the workflow service",
