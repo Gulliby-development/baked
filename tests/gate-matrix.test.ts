@@ -1805,23 +1805,50 @@ describe("initiative dollar forecast gate (#1607)", () => {
           stages: [{ id: "specify", type: "agent", models: [] }, { id: "implement", type: "tasks", models: [] }],
         })),
         history: [], samples: [], maxTotalTokens: 20_000_000,
-        progress: { features: { f1: { spent, accepted: true }, f2: { spent, accepted: true } }, overhead: 0 },
+        progress: { features: Object.fromEntries(Array.from({ length: 5 }, (_, i) => [`f${i + 1}`, { spent, accepted: true }])), overhead: 0 },
       });
       const forecastUsd = Math.round(estimate.features.reduce((sum, f) => sum + f.expectedTokens * 9e-6, 0) * 100) / 100;
       const view = {
         initiativeId: "values",
         budget: { remaining: { tokens: 20_000_000, calls: 1000, activeMs: 21_600_000 },
-          cost: { capUsd: 30, ceilingUsd: 30 * (1 + tolerance), spentUsd: 2 * spent * 9e-6, forecastUsd },
+          cost: { capUsd: 30, ceilingUsd: 30 * (1 + tolerance), spentUsd: 5 * spent * 9e-6, forecastUsd },
         },
-        features: estimate.features.map((f, i) => ({ id: f.featureId, size: f.size, state: i < 2 ? "accepted" : "ready",
-          share: i < 2 ? null : { tokens: 1_000_000, calls: 100, activeMs: 1_000_000 }, shareUsd: i < 2 ? null : 2.5, need: f.tokens,
+        features: estimate.features.map((f, i) => ({ id: f.featureId, size: f.size, state: i < 5 ? "accepted" : "ready",
+          share: i < 5 ? null : { tokens: 1_000_000, calls: 100, activeMs: 1_000_000 }, shareUsd: i < 5 ? null : 2.5, need: f.tokens,
         })),
       } as unknown as InitiativeView;
       expect(forecastUsd).toBe(Math.round(12 * spent * 9e-6 * 100) / 100);
-      const shortfall = shareShortfall(view, view.features[2]!);
+      const shortfall = shareShortfall(view, view.features[5]!);
       if (spent === 252_000) expect(shortfall).toBeNull();
       else expect(shortfall?.message).toContain("The initiative's cost forecast is");
     });
+});
+
+test("#1631 one accepted skeleton keeps the initiative's planned forecast below its ceiling", () => {
+  const estimate = estimateInitiative({
+    features: Array.from({ length: 12 }, (_, i) => ({
+      id: `f${i + 1}`, title: `f${i + 1}`, size: "medium" as const, workflowId: "sdd",
+      ...(i === 0 ? { skeleton: 24 } : {}),
+      stages: [{ id: "specify", type: "agent", models: [] }, { id: "implement", type: "tasks", models: [] }],
+    })),
+    history: Array.from({ length: 2 }, (_, i) => ({ runId: `prior${i}`, workflowId: "sdd", status: "completed", tokens: 200_000, calls: 2, activeMs: 1000,
+      taskCount: 1, taskTokens: 100_000, stageTokens: { specify: 100_000, implement: 100_000 } })),
+    samples: [], maxTotalTokens: 20_000_000,
+    progress: { features: { f1: { spent: 400_000, accepted: true } }, overhead: 0 },
+  });
+  const forecastUsd = Math.round(estimate.features.reduce((sum, f) => sum + f.expectedTokens * 9e-6, 0) * 100) / 100;
+  const view = {
+    initiativeId: "skeleton",
+    budget: { remaining: { tokens: 20_000_000, calls: 1000, activeMs: 21_600_000 },
+      cost: { capUsd: 30, ceilingUsd: 37.5, spentUsd: 3.6, forecastUsd } },
+    features: estimate.features.map((f, i) => ({ id: f.featureId, size: f.size, state: i ? "ready" : "accepted",
+      share: i ? { tokens: 1_000_000, calls: 100, activeMs: 1_000_000 } : null,
+      shareUsd: i ? 2.4 : null, need: f.tokens,
+    })),
+  } as unknown as InitiativeView;
+  expect(estimate.progress.ratio).toBeNull();
+  expect(forecastUsd).toBe(23.4);
+  expect(shareShortfall(view, view.features[1]!)).toBeNull();
 });
 
 describe("repair-limit decisions (#1577)", () => {

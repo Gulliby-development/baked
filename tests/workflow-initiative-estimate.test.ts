@@ -104,7 +104,7 @@ describe("initiative estimate", () => {
     expect(estimate.basis).toBe("defaults");
   });
 
-  test("accepted features count at what they used and scale the forecast of the rest (#1312)", () => {
+  test("one accepted feature counts at what it used while the rest keep their plan (#1631)", () => {
     const features = [feature("a", "medium"), feature("b", "medium"), feature("c", "medium")];
     const plain = estimateInitiative({ features, history: [], samples: [], maxTotalTokens: 30_000_000 });
     const forecast = plain.features[0]?.tokens ?? { low: 0, high: 0 };
@@ -122,26 +122,67 @@ describe("initiative estimate", () => {
     const [a, b, c] = estimate.features;
     expect(a?.basis).toBe("measured");
     expect(a?.tokens).toEqual({ low: twice, high: twice });
-    // Feature a used twice its forecast's middle, so b and c are forecast at twice theirs.
-    expect(estimate.progress).toEqual({ spent: 500_000 + twice + 10, accepted: 1, ratio: 2, bySize: { medium: 2 } });
-    expect(b?.basis).toBe("calibrated");
-    expect(c?.tokens).toEqual({ low: forecast.low * 2, high: forecast.high * 2 });
-    expect(estimate.tokens.high).toBe(500_000 + twice + 4 * forecast.high);
+    expect(estimate.progress).toEqual({ spent: 500_000 + twice + 10, accepted: 1, ratio: null, bySize: {} });
+    expect(b?.basis).toBe("defaults");
+    expect(c?.tokens).toEqual(forecast);
+    expect(estimate.tokens.high).toBe(500_000 + twice + 2 * forecast.high);
     // The margin covers only what is still to run.
-    expect(estimate.withMargin).toBe(Math.round(500_000 + twice + 4 * forecast.high * 1.25));
-    expect(estimate.notes.join(" ")).toContain("Re-forecast after 1 of 3 features");
+    expect(estimate.withMargin).toBe(Math.round(500_000 + twice + 2 * forecast.high * 1.25));
     expect(estimate.label).toContain("used with 1 of 3 features accepted");
   });
 
+  test.each([0, 1, 2, 3, 4, 5, 6])("%i accepted features blend measured usage only after three samples", (count) => {
+    const features = Array.from({ length: 7 }, (_, i) => feature(`f${i}`, "medium"));
+    const input = { features, history: [], samples: [], maxTotalTokens: 30_000_000 };
+    const prior = estimateInitiative(input).features[0]!;
+    const midpoint = prior.expectedTokens;
+    const estimate = estimateInitiative({ ...input, progress: {
+      features: Object.fromEntries(features.slice(0, count).map((f) => [f.id, { spent: midpoint * 2, accepted: true }])), overhead: 0,
+    } });
+    const ratio = count < 3 ? null : 1 + Math.min(1, (count - 2) / 3);
+    expect(estimate.progress.ratio).toBe(ratio);
+    expect(estimate.progress.bySize.medium).toBe(ratio ?? undefined);
+    expect(estimate.features[6]!.expectedTokens).toBeCloseTo(midpoint * (ratio ?? 1), 0);
+  });
+
+  test("accepted skeleton features never supply calibration samples, even beside five real features", () => {
+    const features = [
+      ...Array.from({ length: 5 }, (_, i) => feature(`f${i}`, "medium")),
+      ...Array.from({ length: 4 }, (_, i) => ({ ...feature(`host${i}`, "medium"), skeleton: 24 })),
+      feature("next", "medium"),
+    ];
+    const input = { features, history: [], samples: [], maxTotalTokens: 30_000_000 };
+    const midpoint = estimateInitiative(input).features[0]!.expectedTokens;
+    const estimate = estimateInitiative({ ...input, progress: {
+      features: Object.fromEntries(features.slice(0, -1).map((f) => [f.id, { spent: midpoint * ("skeleton" in f ? 50 : 2), accepted: true }])), overhead: 0,
+    } });
+    expect(estimate.progress.ratio).toBe(2);
+    expect(estimate.progress.bySize.medium).toBe(2);
+    expect(estimate.features.at(-1)!.expectedTokens).toBe(midpoint * 2);
+    const onlySkeletons = estimateInitiative({ ...input, progress: {
+      features: Object.fromEntries(features.filter((f) => "skeleton" in f).map((f) => [f.id, { spent: midpoint * 50, accepted: true }])), overhead: 0,
+    } });
+    expect(onlySkeletons.progress.ratio).toBeNull();
+    expect(onlySkeletons.progress.bySize).toEqual({});
+    expect(onlySkeletons.features.at(-1)!.expectedTokens).toBe(midpoint);
+    const twoReal = estimateInitiative({ ...input, progress: {
+      features: Object.fromEntries(features.filter((f, i) => i < 2 || "skeleton" in f).map((f) => [f.id, { spent: midpoint * 2, accepted: true }])), overhead: 0,
+    } });
+    expect(twoReal.progress.accepted).toBe(6);
+    expect(twoReal.progress.ratio).toBeNull();
+    expect(twoReal.progress.bySize).toEqual({});
+  });
+
   test("a running feature is never forecast below what it used, and the ratio is bounded", () => {
-    const features = [feature("a", "small"), feature("b", "small")];
+    const features = ["a", "b", "c", "d", "e", "f"].map((id) => feature(id, "small"));
     const estimate = estimateInitiative({
       features,
       history: [],
       samples: [],
       maxTotalTokens: 30_000_000,
       progress: {
-        features: { a: { spent: 1_000_000_000, accepted: true }, b: { spent: 900_000_000, accepted: false } },
+        features: { a: { spent: 1_000_000_000, accepted: true }, b: { spent: 900_000_000, accepted: false },
+          ...Object.fromEntries(["c", "d", "e", "f"].map((id) => [id, { spent: 1_000_000_000, accepted: true }])) },
         overhead: 0,
       },
     });
@@ -151,29 +192,30 @@ describe("initiative estimate", () => {
   });
 
   test.each(["small", "medium", "large"] as const)("%s features calibrate below 25 percent without raising the dollar point forecast (#1607)", (size) => {
-    const features = ["a", "b", "c"].map((id) => ({ ...feature(id, size), paths: 1 }));
+    const features = ["a", "b", "d", "e", "f", "c"].map((id) => ({ ...feature(id, size), paths: 1 }));
     const estimate = estimateInitiative({
       features, history: [], samples: [], maxTotalTokens: 30_000_000,
-      progress: { features: { a: { spent: 40_000, accepted: true }, b: { spent: 40_000, accepted: true } }, overhead: 0 },
+      progress: { features: Object.fromEntries(["a", "b", "d", "e", "f"].map((id) => [id, { spent: 40_000, accepted: true }])), overhead: 0 },
     });
     expect(estimate.progress.ratio).toBeLessThan(0.25);
     expect(estimate.progress.bySize[size]).toBe(estimate.progress.ratio!);
-    expect(estimate.features.map((f) => f.expectedTokens)).toEqual([40_000, 40_000, 40_000]);
-    const next = estimate.features[2]!;
+    expect(estimate.features.map((f) => f.expectedTokens)).toEqual(Array(6).fill(40_000));
+    const next = estimate.features[5]!;
     // The path floor raises the low end, so the resulting range's midpoint is no longer the
     // calibrated point forecast. Keep that uncertainty for token reserves, not dollar stops.
     expect(next.tokens.low).toBe(40_000);
     expect((next.tokens.low + next.tokens.high) / 2).toBeGreaterThan(next.expectedTokens);
-    expect(estimate.withMargin).toBe(80_000 + Math.round(next.tokens.high * 1.25));
+    expect(estimate.withMargin).toBe(200_000 + Math.round(next.tokens.high * 1.25));
   });
 
   test.each(["criteria", "plan", "spent"] as const)("the dollar point forecast still respects the feature's %s floor (#1607)", (floor) => {
     const estimate = estimateInitiative({
-      features: ["a", "b", "c"].map((id) => ({ ...feature(id, "medium"), paths: 1 })),
+      features: ["a", "b", "c", "d", "e", "f"].map((id) => ({ ...feature(id, "medium"), paths: 1 })),
       history: [], samples: [], maxTotalTokens: 30_000_000,
       progress: { features: {
         a: { spent: 40_000, accepted: true, criteria: 1 },
         b: { spent: 40_000, accepted: true, criteria: 1 },
+        ...Object.fromEntries(["d", "e", "f"].map((id) => [id, { spent: 40_000, accepted: true, criteria: 1 }])),
         c: { spent: floor === "spent" ? 400_000 : 10_000, accepted: false,
           ...(floor === "criteria" ? { criteria: 10 } : {}),
           ...(floor === "plan" ? { planned: { low: 300_000, high: 500_000 } } : {}),
@@ -254,12 +296,16 @@ describe("scenario: large features against small ones in an initiative estimate 
     expect(byId.bundles?.tokens.high).toBeGreaterThanOrEqual(3 * (byId.sketch?.tokens.high ?? 0));
   });
 
-  test("an accepted large feature re-forecasts the other large one by its own overrun", () => {
-    const plain = estimateInitiative({ features, history, samples: [], maxTotalTokens: 30_000_000 });
+  test("five accepted large features re-forecast the other large one by their own overrun", () => {
+    const extended = [...features.filter((f) => f.id !== "sketch"),
+      ...Array.from({ length: 4 }, (_, i) => feature(`large${i}`, "large")),
+      ...Array.from({ length: 4 }, (_, i) => feature(`medium${i}`, "medium")),
+    ];
+    const plain = estimateInitiative({ features: extended, history, samples: [], maxTotalTokens: 30_000_000 });
     const forecast = (id: string) => plain.features.find((f) => f.featureId === id)?.tokens ?? { low: 0, high: 0 };
     const mid = (id: string) => (forecast(id).low + forecast(id).high) / 2;
     const estimate = estimateInitiative({
-      features,
+      features: extended,
       history,
       samples: [],
       maxTotalTokens: 30_000_000,
@@ -267,6 +313,8 @@ describe("scenario: large features against small ones in an initiative estimate 
         features: {
           core: { spent: Math.round(mid("core")), accepted: true },
           bundles: { spent: Math.round(mid("bundles") * 3.2), accepted: true },
+          ...Object.fromEntries(Array.from({ length: 4 }, (_, i) => [`large${i}`, { spent: Math.round(mid(`large${i}`) * 3.2), accepted: true }])),
+          ...Object.fromEntries(Array.from({ length: 4 }, (_, i) => [`medium${i}`, { spent: Math.round(mid(`medium${i}`)), accepted: true }])),
         },
         overhead: 0,
       },
@@ -282,7 +330,20 @@ describe("scenario: large features against small ones in an initiative estimate 
     const overall = estimate.progress.ratio ?? 0;
     expect(overall).toBeLessThan(3);
     expect(docs?.tokens.high).toBe(Math.round(forecast("docs").high * overall));
-    expect(estimate.notes.join(" ")).toContain("Accepted large features used 3.2 times their forecast");
+    expect(estimate.notes.join(" ")).toContain("Accepted large non-skeleton features blend with their planned estimates");
+  });
+
+  test("one accepted feature of a size cannot override the blended overall ratio", () => {
+    const input = { features, history, samples: [], maxTotalTokens: 30_000_000 };
+    const plain = estimateInitiative(input);
+    const progress = Object.fromEntries(plain.features.slice(0, 4).map((f) => [f.featureId, {
+      spent: f.expectedTokens * (f.size === "large" ? 4 : 1), accepted: true,
+    }]));
+    const estimate = estimateInitiative({ ...input, progress: { features: progress, overhead: 0 } });
+    expect(estimate.progress.bySize).toEqual({});
+    expect(estimate.progress.ratio).toBeGreaterThan(1);
+    const next = estimate.features.find((f) => f.featureId === "commands")!;
+    expect(next.expectedTokens).toBeCloseTo(plain.features.find((f) => f.featureId === "commands")!.expectedTokens * estimate.progress.ratio!, 0);
   });
 });
 

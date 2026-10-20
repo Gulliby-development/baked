@@ -377,8 +377,8 @@ describe("initiative feature workflows", () => {
 
   test("the estimate re-forecasts as features are accepted (#1312)", async () => {
     // Bench round 32, notesift: the split's forecast said "fits" at 10.6M to 19.0M and the
-    // initiative used 32.7M. Accepted features now count at what they used, and their ratio to
-    // the forecast scales the features still to run.
+    // initiative used 32.7M. Accepted features count at what they used; fewer than three
+    // non-skeleton acceptances leave the remaining features on their planned estimates.
     const t = setup();
     let view = await t.start({ plan: threeFeatures });
     const before = t.initiatives.estimate("values");
@@ -407,11 +407,11 @@ describe("initiative feature workflows", () => {
     const coreRun = t.featureOf(view, "core").runId ?? "";
     expect(core?.criteria).toBe(t.workflows.store.state(coreRun).spec?.criteria.length);
     expect(middle?.progress.accepted).toBe(1);
-    expect(middle?.progress.ratio).not.toBeNull();
-    // The api feature has the same workflow and size as core: scaled by the ratio, its forecast
-    // is the one core turned out to cost.
+    expect(middle?.progress.ratio).toBeNull();
+    expect(middle?.progress.bySize).toEqual({});
+    // Stage history still prices api's workflow using core, without applying a calibration ratio.
     const api = middle?.features.find((f) => f.featureId === "api");
-    expect(api?.basis).toBe("calibrated");
+    expect(api?.basis).toBe("workflow-history");
     expect((api?.tokens.low ?? 0) + (api?.tokens.high ?? 0)).toBeCloseTo(2 * spent("core"), -2);
     for (let i = 0; i < 12 && view.status !== "completed"; i++) {
       view = await t.drive();

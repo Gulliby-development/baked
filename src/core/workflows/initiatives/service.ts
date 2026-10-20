@@ -1584,8 +1584,8 @@ export class InitiativeService {
       settings.basePolicy,
       maxAgeMs,
     );
-    // This initiative's own runs are its progress, not samples: an accepted feature counts with
-    // what it used, and the rest are scaled by how far the accepted ones were from their forecast.
+    // This initiative's own runs are its progress, not feature samples. Stage history still
+    // prices the planned workflows; only enough non-skeleton acceptances calibrate their totals.
     const links = this.store.links(row.id);
     const own = new Set(links.map((l) => l.run_id));
     const spent: InitiativeProgress["features"] = {};
