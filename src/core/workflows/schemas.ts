@@ -133,7 +133,13 @@ export const TaskSchema = z
     rows: z.array(CriterionId).min(1).max(200).optional(),
     rowTest: z
       .object({
-        framework: z.enum(["bun", "pytest"]),
+        framework: z.enum(["bun", "pytest", "go", "junit", "rust", "xunit"]),
+        /** The Go package, Java package or C# namespace of the harness and the host's test. */
+        package: z
+          .string()
+          .max(200)
+          .regex(/^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/)
+          .optional(),
         harness: RelativePath,
         test: RelativePath,
         data: RelativePath,

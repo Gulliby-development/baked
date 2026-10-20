@@ -131,6 +131,7 @@ import {
   rowPlanProblems,
   rowsArtifact,
   rowsAsDataOn,
+  SPEC_ROWS_NOTE,
 } from "./acceptance-rows.js";
 import {
   affectedTestCheck,
@@ -1190,6 +1191,7 @@ export class WorkflowScheduler {
                     {
                       featureId: run.feature_id,
                       workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
+                      ...(rowsAsDataOn(policy) ? { acceptanceRows: { note: SPEC_ROWS_NOTE } } : {}),
                     },
                     signal,
                     undefined,

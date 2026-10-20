@@ -13,6 +13,7 @@ import {
   commandKey,
   testCount,
 } from "../verification/output-counts.js";
+import { ROWS_ARTIFACT, type RowsArtifact } from "./acceptance-rows.js";
 import { settledConflicts } from "./conflict-decisions.js";
 import { type CostForecast, forecastProgress } from "./cost-forecast.js";
 import { type DependencyResult, QUALITY_DEPENDENCIES } from "./quality/dependencies.js";
@@ -405,6 +406,10 @@ function collect(store: WorkflowStore, runId: string) {
       settled: settledConflicts(store, runId),
       outcomes: store.criticOutcomes(runId),
       usage: stagesInRunOrder(store, runUsage(store, runId)),
+      acceptanceRows: (() => {
+        const artifact = latestArtifacts.get(ROWS_ARTIFACT);
+        return artifact ? parse<RowsArtifact | null>(readQuietly(artifact.id), null) : null;
+      })(),
       forecasts: forecastProgress(store, runId),
       forecastStopped: store.artifacts(runId).some((a) => a.kind === "cost-forecast"),
       artifacts: [...latestArtifacts.values()].filter((a) => !internalArtifact(a.logical_path)),
@@ -431,6 +436,21 @@ function forecastLine(forecasts: CostForecast[], stopped: boolean): string | nul
       ? `the $${last.ceilingUsd.toFixed(2)} ceiling ($${last.capUsd.toFixed(2)} cap and its tolerance)`
       : `the $${last.capUsd.toFixed(2)} cap`;
   return `Cost forecast: ${forecasts.length > 1 ? `${at(first)}, then ${at(last)}` : at(last)}, against ${ceiling}; ${stopped ? "it stopped the run for a decision" : "it did not stop the run"}.`;
+}
+/**
+ * What rows as data did (#1660): the rows the host wrote and the tokens of the harness tasks, so a
+ * round measures the setting without reading the database; null when the run did not enable it.
+ */
+function rowsLine(facts: Facts): string | null {
+  const artifact = facts.acceptanceRows;
+  if (!artifact && facts.policy.rowsAsData !== "on") return null;
+  if (!artifact?.rows.length)
+    return "Acceptance rows as data: no criterion had a host-readable JSON table, so every test was agent-written.";
+  const tasks = new Set(artifact.tasks.map((task) => task.id));
+  const tokens = facts.usage.attempts
+    .filter((attempt) => attempt.taskId && tasks.has(attempt.taskId))
+    .reduce((sum, attempt) => sum + (attempt.usedTokens ?? 0), 0);
+  return `Acceptance rows as data: the host wrote ${count(artifact.rows.length)} rows and their tests for ${count(tasks.size)} harness ${tasks.size === 1 ? "task" : "tasks"}, whose attempts used ${count(tokens)} tokens.`;
 }
 /** A stored `tasks/TASK/critique.json`: a critique, or the error of a critic that failed. */
 interface CritiqueRecord {
@@ -1155,6 +1175,8 @@ function render(facts: Facts, cap: number): string {
       ),
       "",
     );
+  const rows = rowsLine(facts);
+  if (rows) out.push(rows, "");
   const forecast = forecastLine(facts.forecasts, facts.forecastStopped);
   if (forecast) out.push(forecast, "");
   const backends = toolBackendLine(usage.toolBackends ?? []);
