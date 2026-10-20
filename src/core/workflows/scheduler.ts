@@ -250,6 +250,7 @@ import {
 } from "./fork-stage.js";
 import { outputTail } from "./gates.js";
 import { HOST_ADDITIONS, HOST_EDITS_PATH, type HostEdit, recordGraphEdits } from "./host-edits.js";
+import { isStoreError, recordHostError } from "./host-error.js";
 import { criticalPathProblems } from "./initiatives/critical-path.js";
 import {
   type InitiativePlan,
@@ -765,12 +766,6 @@ export function outOfScopeFailure(
   if (task.origin === "planned" || checked.status !== "failed" || !checked.output) return [];
   const named = failingFilesInOutput(checked.output, tasks);
   return named.some((path) => task.writes.some((w) => w.path === path)) ? [] : named;
-}
-/** A SQLite failure is a host fault, never a model's invalid output. */
-function isStoreError(error: unknown): boolean {
-  if (!(error instanceof Error) || error instanceof WorkflowFault) return false;
-  const code = (error as { code?: unknown }).code;
-  return error.name === "SQLiteError" || (typeof code === "string" && code.startsWith("SQLITE_"));
 }
 /** The start of the restart reason for an edit of the task's own file that did not apply. */
 const EDIT_RETRY = "an edit of its own file did not apply";
@@ -2757,7 +2752,10 @@ export class WorkflowScheduler {
                       ? "storage_failure"
                       : code === "STALE_DECISION" || code === "ARTIFACT_MISSING"
                         ? "host_state"
-                        : "invalid_output";
+                        : // An exception of BAKED's own code is no model's output (#1653).
+                          fault instanceof WorkflowFault
+                          ? "invalid_output"
+                          : "host_error";
         const diagnostic = this.store.artifact(
           runId,
           "diagnostic",
@@ -2769,6 +2767,7 @@ export class WorkflowScheduler {
               ? fault.message
               : String(fault),
         );
+        if (reason === "host_error") recordHostError(this.store, runId, diagnostic.id, fault);
         if (fault instanceof WorkflowFault && fault.details.recovery)
           this.store.artifact(
             runId,
