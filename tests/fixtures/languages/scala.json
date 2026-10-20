@@ -15,7 +15,9 @@
     "placeholders": [
       "src/main/scala/Sum.scala:2"
     ],
-    "gates": null,
+    "gates": [
+      "sbt-test"
+    ],
     "testRunners": null,
     "mutation": null,
     "properties": null

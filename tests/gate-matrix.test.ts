@@ -49,7 +49,7 @@ import {
   isWholeUnitCheck,
   styleClaimShown,
 } from "../src/core/workflows/check-policy.js";
-import { detectGates, executeGate } from "../src/core/workflows/gates.js";
+import { buildWrapper, detectGates, executeGate } from "../src/core/workflows/gates.js";
 import { type LayoutResult, layoutVerdict } from "../src/core/workflows/layout-check.js";
 import { addedDependencies, checkDependencies } from "../src/core/workflows/quality/dependencies.js";
 import {
@@ -585,6 +585,42 @@ function cell(stack: Stack, name: string, body: () => void | Promise<void>, time
   if (issue) test.skip(`${name} (known: ${issue})`, body);
   else test(name, body, timeout);
 }
+
+// #1749: a Gradle project got no toolchain gate, a Maven project with a wrapper got `mvn` even
+// where only the wrapper builds, and an sbt project got nothing.
+describe("gate matrix: JVM build tools (#1749)", () => {
+  const ids = (files: Record<string, string>) =>
+    detectGates(project(files)).map((s) => [s.check.id, s.check.executable, s.check.args.join(" "), s.source]);
+  const wrapped = (name: "mvnw" | "gradlew") =>
+    process.platform === "win32" ? ["cmd", `/d /c ${name === "mvnw" ? "mvnw.cmd" : "gradlew.bat"} `] : [`./${name}`, ""];
+  for (const build of ["build.gradle.kts", "build.gradle", "settings.gradle.kts"])
+    cell("maven", `gradle-check from ${build}`, () => {
+      expect(ids({ [build]: "plugins { java }\n" })).toEqual([["gradle-check", "gradle", "--console=plain -q check", build]]);
+      const [exe, prefix] = wrapped("gradlew");
+      const script = process.platform === "win32" ? "gradlew.bat" : "gradlew";
+      expect(ids({ [build]: "plugins { java }\n", [script]: "#!/bin/sh\n" })).toEqual([["gradle-check", exe, `${prefix}--console=plain -q check`, build]]);
+    });
+  cell("maven", "maven-verify runs the project's wrapper", () => {
+    const [exe, prefix] = wrapped("mvnw");
+    const script = process.platform === "win32" ? "mvnw.cmd" : "mvnw";
+    expect(ids({ "pom.xml": "<project/>", [script]: "#!/bin/sh\n" })).toEqual([["maven-verify", exe, `${prefix}-B -q verify`, "pom.xml"]]);
+    expect(ids({ "pom.xml": "<project/>" })).toEqual([["maven-verify", "mvn", "-B -q verify", "pom.xml"]]);
+  });
+  cell("maven", "a Maven build with Gradle files gets the Maven gate once", () => {
+    expect(ids({ "pom.xml": "<project/>", "build.gradle": "" }).map(([id]) => id)).toEqual(["maven-verify"]);
+  });
+  cell("maven", "sbt-test from build.sbt", () => {
+    expect(ids({ "build.sbt": 'name := "fixture"\n' })).toEqual([["sbt-test", "sbt", "-batch test", "build.sbt"]]);
+  });
+  cell("maven", "a Windows wrapper runs through cmd, which the check routing unwraps", () => {
+    const root = project({ "gradlew.bat": "@echo off\n", "mvnw.cmd": "@echo off\n" });
+    const gradle = buildWrapper(root, "gradlew", "gradle", "win32");
+    expect(gradle).toEqual({ executable: "cmd", args: ["/d", "/c", "gradlew.bat"], source: "gradlew.bat" });
+    expect(launchedCommand(gradle.executable, [...gradle.args, "check"]).program).toBe("gradlew");
+    expect(launchedCommand("cmd", ["/d", "/c", "mvnw.cmd", "verify"]).program).toBe("mvnw");
+    expect(buildWrapper(project({}), "gradlew", "gradle", "win32").executable).toBe("gradle");
+  });
+});
 
 describe("gate matrix: shared criterion rows (#1597)", () => {
   for (const [stack, path] of [
