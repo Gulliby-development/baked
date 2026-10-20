@@ -204,7 +204,7 @@ A spec author writes some criteria with literal rows, an input and the output it
 
 `rowsAsData: "on"` in `workflows.policy` or a policy file enables host-written acceptance data and parameterized tests. The default is off. A run can override the policy with `baked workflow run --rows-as-data on|off` or `baked workflow quick --rows-as-data on|off`. The TUI new-run form has a Rows field after Start run; Tab from Start run reaches it, and left/right toggles it. The desktop New run settings have a Host-written acceptance rows checkbox. `POST /v1/workflow/runs` accepts `rowsAsData: "on"` or `"off"`. Explicit off overrides an enabled policy; absent and off add nothing to the frozen policy.
 
-This setting requires an analyze stage. Workflows without one, including the default `quick` preset, refuse an enabled start before making changes. Use `sdd`, a custom workflow that analyzes its plan, or `--rows-as-data off`.
+This setting requires an analyze stage. Workflows without one, including the default `quick` preset, ignore an enabled setting and start with ordinary agent-written tests. The frozen run policy leaves `rowsAsData` out. A persisted run warning explains the ignored setting in the TUI run overview, desktop run screen and API run view; the CLI also prints it to stderr before driving the run. This applies to both policy defaults and run overrides. Use `sdd` or a custom workflow that analyzes its plan to enable host-written rows.
 
 The planner can mark a pure call-and-compare test task with `rows: ["AC-001"]` and this contract:
 

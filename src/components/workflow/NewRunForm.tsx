@@ -446,6 +446,9 @@ export function NewRunForm({
             }
             keyHint="left/right"
           />
+          <text fg={t.textFaint} wrapMode="word">
+            Requires an analyze stage; otherwise ignored with a run warning.
+          </text>
         </FocusTarget>
       </Section>
       {shownError ? <text fg={t.error}>{`✗ ${shownError}`}</text> : null}
