@@ -36,7 +36,7 @@ export function derivationAuditExtra(spec: Spec): {
   return {
     criteria,
     requirements: spec.requirements.filter((r) => ids.has(r.id)),
-    note: "Derivation audit: these criteria state literal rows (an input and the output it must give). Recompute every row from the requirements alone, without looking at the row's own expected value, and record one entry per row in `derivations`: the row as written, the value the requirements give, whether they match, and the derivation step by step. A row that the request itself states is authoritative: when the requirements give something else, it is the requirement that is wrong, so record matches false and say so in the derivation. The host raises every row with matches false as a blocking finding, so do not report those rows again in `findings`.",
+    note: "Derivation audit: these criteria state literal rows (an input and the output it must give). Recompute every row from the requirements alone, without looking at the row's own expected value, and record one entry per row in `derivations`: the row as written, the value the requirements give, whether they match, and the derivation step by step. A row whose expected value is a position, column, offset, length or count is counted, not estimated: write out the index of each character of its input up to the value in the derivation. A row that the request itself states is authoritative: when the requirements give something else, it is the requirement that is wrong, so record matches false and say so in the derivation. The host raises every row with matches false as a blocking finding, so do not report those rows again in `findings`.",
   };
 }
 
