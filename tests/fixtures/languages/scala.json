@@ -8,6 +8,9 @@
     "tests": [
       "src/main/scala/SumSuite.scala"
     ],
+    "testMarkers": [
+      "src/main/scala/SumSuite.scala: source"
+    ],
     "manifests": [
       "build.sbt"
     ],

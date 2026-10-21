@@ -15,6 +15,10 @@
       "src/App.Tests/Checks.cs",
       "tests/App.Tests/Props.cs"
     ],
+    "testMarkers": [
+      "src/App.Tests/Checks.cs: test",
+      "tests/App.Tests/Props.cs: test"
+    ],
     "manifests": [
       "src/App/App.csproj",
       "App.sln"

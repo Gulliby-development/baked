@@ -1,5 +1,5 @@
 import { blankStringLiterals } from "../intelligence/comments.js";
-import { isTestFile } from "../intelligence/language-traits.js";
+import { isTestFile, isTestFileAt } from "../intelligence/language-traits.js";
 import { testConventions } from "../intelligence/test-frameworks.js";
 import type { RunPolicy } from "./schemas.js";
 import type { Task } from "./types.js";
@@ -51,11 +51,13 @@ export const isTestPath = (path: string): boolean => isTestFile(path);
 
 /**
  * A test file that existed before the run: a test path no task of the approved graph creates.
- * Implementer tasks may change one only when the plan lists the write with a reason.
+ * Implementer tasks may change one only when the plan lists the write with a reason. The file's
+ * content under `root` decides a name its language shares with domain code: a `PermTest.cs` stub
+ * without a test attribute is source its implementer edits (#1848).
  */
-export function preexistingTest(path: string, tasks: readonly Task[]): boolean {
+export function preexistingTest(path: string, tasks: readonly Task[], root: string): boolean {
   return (
-    isTestPath(path) &&
+    isTestFileAt(root, path) &&
     !tasks.some((task) => task.writes.some((w) => w.path === path && w.action === "create"))
   );
 }
@@ -740,11 +742,14 @@ export function integrityFix(finding: IntegrityFinding): string {
 export function testWriteProblems(
   graph: { tasks: readonly Task[] },
   policy: Pick<RunPolicy, "testIntegrity">,
+  root: string,
 ): string[] {
   if (testIntegrityOf(policy) !== "block") return [];
   return graph.tasks.flatMap((task) =>
     task.writes
-      .filter((w) => w.action !== "create" && !w.reason && preexistingTest(w.path, graph.tasks))
+      .filter(
+        (w) => w.action !== "create" && !w.reason && preexistingTest(w.path, graph.tasks, root),
+      )
       .map(
         (w) =>
           `Task ${task.id} would ${w.action} the existing test ${w.path} without a reason. Existing tests are read-only for implementers: remove the write, or add "reason" to it saying why the test must change (for example a behavior the request removes).`,

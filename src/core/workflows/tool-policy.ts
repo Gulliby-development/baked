@@ -136,7 +136,7 @@ export class WorkflowToolPolicy {
       if (
         write.action !== "create" &&
         testIntegrityOf(this.policy) === "block" &&
-        preexistingTest(path, tasks)
+        preexistingTest(path, tasks, this.root)
       )
         throw new WorkflowFault(
           "CAPABILITY_DENIED",

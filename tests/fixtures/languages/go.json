@@ -15,6 +15,7 @@
       "sum_test.go",
       "sum_prop_test.go"
     ],
+    "testMarkers": null,
     "manifests": [
       "go.mod"
     ],

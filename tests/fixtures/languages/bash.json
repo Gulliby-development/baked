@@ -11,6 +11,9 @@
     "tests": [
       "bin/sum_test.sh"
     ],
+    "testMarkers": [
+      "bin/sum_test.sh: source"
+    ],
     "manifests": null,
     "dependencies": null,
     "placeholders": null,

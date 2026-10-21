@@ -13,6 +13,9 @@
     "tests": [
       "src/Sum_test.res"
     ],
+    "testMarkers": [
+      "src/Sum_test.res: source"
+    ],
     "manifests": [
       "rescript.json",
       "package.json"
