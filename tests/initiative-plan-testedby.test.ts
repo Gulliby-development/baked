@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type InitiativeFeature, type InitiativePlan, testOwnershipProblems } from "../src/core/workflows/initiatives/plan.js";
+import { type InitiativeFeature, type InitiativePlan, mergeSmallSiblings, testOwnershipProblems } from "../src/core/workflows/initiatives/plan.js";
 
 // Bench round 58, wheeltags (Python, #1873). Asked to shorten a critical path in which front was
 // 39 percent, the decomposer moved the unit tests of base, names and targets into two features of
@@ -68,14 +68,18 @@ describe("testedBy names a later feature whose code the tests need (#1873)", () 
 
   // Test layouts of the supported languages: a root feature without its own tests, and an owner
   // of tests only, are refused whatever the language's test path looks like.
-  const layouts: [string, string[], string[]][] = [
-    ["Go", ["internal/hdr/text.go", "internal/hdr/options.go"], ["internal/hdr/text_test.go", "internal/hdr/options_test.go"]],
-    ["Rust", ["src/text.rs", "src/options.rs"], ["tests/text.rs", "tests/options.rs"]],
-    ["Java", ["src/main/java/tags/Text.java", "src/main/java/tags/Options.java"], ["src/test/java/tags/TextTest.java", "src/test/java/tags/OptionsTest.java"]],
-    ["C#", ["src/Tags/Text.cs", "src/Tags/Options.cs"], ["tests/Tags.Tests/TextTests.cs", "tests/Tags.Tests/OptionsTests.cs"]],
-    ["TypeScript", ["src/text.ts", "src/options.ts"], ["tests/text.test.ts", "tests/options.test.ts"]],
+  // The third entry is a test-support file a check-only feature also holds: it is not code, so the
+  // feature still writes nothing its tests need.
+  const layouts: [string, string[], string[], string][] = [
+    ["Go", ["internal/hdr/text.go", "internal/hdr/options.go"], ["internal/hdr/text_test.go", "internal/hdr/options_test.go"], "internal/hdr/testdata/in.txt"],
+    ["Rust", ["src/text.rs", "src/options.rs"], ["tests/text.rs", "tests/options.rs"], "tests/common/mod.rs"],
+    ["Java", ["src/main/java/tags/Text.java", "src/main/java/tags/Options.java"], ["src/test/java/tags/TextTest.java", "src/test/java/tags/OptionsTest.java"], "src/test/resources/tags.txt"],
+    ["C#", ["src/Tags/Text.cs", "src/Tags/Options.cs"], ["tests/Tags.Tests/TextTests.cs", "tests/Tags.Tests/OptionsTests.cs"], "tests/Tags.Tests/Tags.Tests.csproj"],
+    ["TypeScript", ["src/text.ts", "src/options.ts"], ["tests/text.test.ts", "tests/options.test.ts"], "tests/fixtures/tags.json"],
+    ["JavaScript", ["src/text.js", "src/options.js"], ["test/text.test.js", "test/options.test.js"], "test/fixtures/tags.json"],
+    ["Python", src("text", "options"), ["tests/test_text.py", "tests/test_options.py"], "tests/conftest.py"],
   ];
-  for (const [language, code, tests] of layouts)
+  for (const [language, code, tests, support] of layouts)
     test(`${language}: tests moved out of a root feature or into a feature of tests only are refused`, () => {
       const split = plan([
         feature("base", code, [], { testedBy: "checks" }),
@@ -88,8 +92,25 @@ describe("testedBy names a later feature whose code the tests need (#1873)", () 
       const mid = plan([
         feature("core", [code[0] ?? "", tests[0] ?? ""]),
         feature("base", [code[1] ?? ""], ["core"], { testedBy: "checks" }),
-        feature("checks", [tests[1] ?? ""], ["base"]),
+        feature("checks", [tests[1] ?? "", support], ["base"]),
       ]);
       expect(testOwnershipProblems(mid)[0]).toContain("a feature of tests only");
     });
+
+  test("a feature of tests only merged with a small docs sibling is still no test owner", () => {
+    // Ownership is checked after the host merges small siblings; checks and docs both follow front.
+    const split = plan([
+      feature("base", [...src("text"), "tests/test_text.py"]),
+      feature("names", src("names", "parse", "markers"), ["base"], { testedBy: "checks" }),
+      feature("front", [...src("cli", "commands"), "tests/test_cli.py"], ["names"]),
+      feature("checks", ["tests/test_names.py"], ["front"]),
+      feature("docs", ["README.md"], ["front"]),
+    ]);
+    const merged = mergeSmallSiblings(split);
+    expect(merged.merged).toHaveLength(1);
+    const problems = testOwnershipProblems(merged.plan);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("names has source paths but no writable test path, and testedBy names");
+    expect(problems[0]).toContain("a feature of tests only");
+  });
 });

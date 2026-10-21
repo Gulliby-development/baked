@@ -173,9 +173,9 @@ export function testOwnershipProblems(plan: InitiativePlan): string[] {
       );
       continue;
     }
-    if (owner && testsOnly(owner)) {
+    if (owner && !writesCode(owner)) {
       problems.push(
-        `${feature.id} has source paths but no writable test path, and testedBy names ${owner.id}, a feature of tests only. Add ${feature.id}'s tests to its own boundary: a feature of tests only runs after the code it tests and makes the critical path longer, not shorter.`,
+        `${feature.id} has source paths but no writable test path, and testedBy names ${owner.id}, a feature of tests only, which writes no code the tests need. Add ${feature.id}'s tests to its own boundary: a feature of tests only runs after the code it tests and makes the critical path longer, not shorter.`,
       );
       continue;
     }
@@ -192,10 +192,18 @@ export function testOwnershipProblems(plan: InitiativePlan): string[] {
   return problems;
 }
 
-/** Every boundary path of the feature is a test file or a glob of test files (#1873). */
-function testsOnly(feature: Pick<InitiativeFeature, "boundary">): boolean {
-  return feature.boundary.paths.every(
-    (path) => deliverableKind(path) === "test" || (GLOB.test(path) && canHold([path], "test")),
+/**
+ * The feature writes code a test could need: a source path, or a glob that may hold one. Tests,
+ * test-support files (a test `.csproj`, `conftest.py`, Go `testdata`), docs and host-written
+ * skeleton stubs are not code, so a check-only feature stays one after the host merges it with a
+ * small docs sibling (#1873).
+ */
+function writesCode(feature: Pick<InitiativeFeature, "boundary" | "skeleton">): boolean {
+  return feature.boundary.paths.some(
+    (path) =>
+      !deliverableKind(path) &&
+      (isCodePath(path) || GLOB.test(path)) &&
+      !feature.skeleton?.some((file) => file.path === path),
   );
 }
 
