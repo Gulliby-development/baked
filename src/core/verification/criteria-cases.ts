@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { rowDataPaths } from "../workflows/acceptance-rows.js";
+import { stripComments } from "../workflows/quality/code-mask.js";
 import { isTestCodePath } from "../workflows/quality/duplication.js";
 import { propertyTestKind } from "../workflows/quality/properties.js";
 import type { Spec } from "../workflows/schemas.js";
@@ -703,6 +704,74 @@ export function normalizeLiteral(source: string): string {
   );
 }
 
+/**
+ * A decoded criterion literal decoded once more when it still holds `\n`, `\t` or `\r` and no
+ * other escape: R57 front T003 quoted an output block as `STEP  ACTION\\n0`, the host message's
+ * own escaping of a line break (#1846). The test may hold either spelling.
+ */
+function decodedTwice(once: string): string {
+  return /\\[ntr]/.test(once) && !RAW_ESCAPE.test(once.replace(/\\[ntr]/g, ""))
+    ? normalizeLiteral(once)
+    : once;
+}
+
+/**
+ * Adjacent string literals and the elements of a list of strings, joined as the program sees
+ * them: `"a\n" + "b"` becomes `a` and `b` on two lines, `["x", "y"]` two lines `x` and `y`.
+ */
+function joinedStrings(unescaped: string): string {
+  return unescaped
+    .replace(/(["'`])[ \t]*,[ \t]*\r?\n?[ \t]*(?:[@$]|[rbfu]{1,2})?\1/gi, "\n")
+    .replace(
+      /(["'`])[ \t]*(?:\+|\.|\.\.)?[ \t]*\r?\n?[ \t]*(?:\+|\.|\.\.)?[ \t]*(?:[@$]|[rbfu]{1,2})?\1/gi,
+      "",
+    );
+}
+
+/**
+ * Whether a test holds a multi-line literal (#1846), or null for a single line: every line, in
+ * order and next to each other, in the test's text or in its strings joined. R57 foundation T013
+ * left out the middle line of `f 0644 a\n# c\nf 0600 a` and the walk accepted it, since each
+ * token occurred somewhere in the file.
+ */
+function linesHeld(unescaped: string, literal: string): boolean | null {
+  const lines = literal
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const placeholder = new RegExp(PLACEHOLDER.source);
+  if (lines.length < 2 || lines.some((line) => placeholder.test(line))) return null;
+  const pattern = new RegExp(
+    lines
+      .map((line) => line.split(/\s+/).map(escapeRegex).join("[ \\t]+"))
+      .join("[ \\t]*\\r?\\n[ \\t]*"),
+  );
+  return pattern.test(unescaped) || pattern.test(joinedStrings(unescaped));
+}
+
+/** A row in tuple notation: `(6,d,1777,0777,"/tmp")`, three cells or more. */
+const TUPLE = /^\(([^()]*,[^()]*,[^()]*)\)$/;
+
+/**
+ * Whether a test holds a row in the criterion's tuple notation (#1846), or null for another
+ * literal: its cells in order within one statement or table line of the test (`InlineData(6,
+ * "d", 1777, ...)`, `(6, 'd', 1777, ...)`, `"6  d  1777  0777  /tmp"`). R57 modeplan wrote the
+ * rows as a table and the tuple only in a comment.
+ */
+function rowHeld(unescaped: string, literal: string): boolean | null {
+  const body = TUPLE.exec(literal)?.[1];
+  if (body === undefined) return null;
+  const cells = [...body.matchAll(/"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|([^,]+)/g)]
+    .map((m) => (m[1] ?? m[2] ?? m[3] ?? "").trim())
+    .filter(Boolean);
+  if (cells.length < 3) return null;
+  const cell = (value: string) => `(?<![\\p{L}\\p{N}_])${escapeRegex(value)}(?![\\p{L}\\p{N}_])`;
+  // Within one statement: no blank line and no `;` between two cells, at most a few lines apart.
+  const between = String.raw`(?:(?!\n[ \t]*\n)[^;]){0,240}?`;
+  const pattern = new RegExp(cells.map(cell).join(between), "u");
+  return pattern.test(unescaped) || pattern.test(joinedStrings(unescaped));
+}
+
 const escapeRegex = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /** A backslash before a character no escape layer decodes: `\1`, `\!`, `\0`. */
 const RAW_ESCAPE = /\\[^ntr"'`\\ux]/;
@@ -716,11 +785,24 @@ const SIGNIFICANT_TOKEN =
  * Placeholders stand for test-specific values; case and token boundaries still matter.
  */
 export function testsHold(text: string, literal: string): boolean {
+  const once = normalizeLiteral(literal);
+  const twice = decodedTwice(once);
+  return holds(text, literal, once) || (twice !== once && holds(text, literal, twice));
+}
+
+function holds(text: string, literal: string, decoded: string): boolean {
   const unescaped = normalizeLiteral(text);
-  const normalized = metavariables(normalizeLiteral(literal));
+  const normalized = metavariables(decoded);
   if (referenceHeld(text, unescaped, normalized.trim())) return true;
   const structured = structuredHeld(text, literal.trim(), normalized.trim());
   if (structured !== null) return structured;
+  // A row in the criterion's tuple notation, a multi-line text: held as a whole, not by tokens
+  // spread over the file (#1846).
+  const row = rowHeld(unescaped, normalized.trim());
+  if (row !== null) return row;
+  // A literal with an escape no decoding layer knows is raw escape text, matched below (#1709).
+  const lines = RAW_ESCAPE.test(literal) ? null : linesHeld(unescaped, normalized);
+  if (lines !== null) return lines;
   if (!normalized.replace(PLACEHOLDER, "")) return false;
   const tokens = normalized.replace(PLACEHOLDER, " ").match(SIGNIFICANT_TOKEN) ?? [];
   const significant = tokens.filter((token) => token !== "and" && token !== "or");
@@ -808,9 +890,12 @@ function referenceHeld(text: string, unescaped: string, literal: string): boolea
 /**
  * The scalar leaves of a JSON value that holds a string or an object: `{"op":"params","segs":
  * [{"Lit":"a"}]}` gives `params` and `a`, `[2,"","no such route"]` gives `2` and `no such route`.
- * Null for anything else, a list of numbers among them, which keeps its own spelling.
+ * Null for anything else, a list of numbers among them, which keeps its own spelling. An object
+ * with no non-empty string leaf is held by its keys and an empty string instead (#1846, R57
+ * foundation `{"flags":[],"values":{"--umask":""},"args":[]}`): there the keys are the content.
  */
-function jsonLeaves(literal: string): (string | number)[] | null {
+const EMPTY_STRING = Symbol("empty string");
+function jsonLeaves(literal: string): (string | number | typeof EMPTY_STRING)[] | null {
   if (!/^[[{"]/.test(literal)) return null;
   let value: unknown;
   try {
@@ -819,20 +904,29 @@ function jsonLeaves(literal: string): (string | number)[] | null {
     return null;
   }
   const leaves: (string | number)[] = [];
+  const keys: string[] = [];
   let structured = false;
+  let empty = false;
   const walk = (node: unknown) => {
     if (typeof node === "string") {
       structured = true;
       if (node.trim()) leaves.push(node);
+      else empty = true;
     } else if (typeof node === "number") leaves.push(node);
     else if (Array.isArray(node)) for (const item of node) walk(item);
     else if (node && typeof node === "object") {
       structured = true;
-      for (const item of Object.values(node)) walk(item);
+      for (const [key, item] of Object.entries(node)) {
+        if (key.trim()) keys.push(key);
+        walk(item);
+      }
     }
   };
   walk(value);
-  return structured && leaves.length ? leaves : null;
+  if (!structured) return null;
+  if (leaves.some((leaf) => typeof leaf === "string")) return leaves;
+  const named = [...keys, ...leaves];
+  return named.length ? (empty ? [...named, EMPTY_STRING] : named) : null;
 }
 
 /** An HTTP request line: `GET /links/test_1/stats`. */
@@ -853,12 +947,14 @@ function structuredHeld(text: string, literal: string, normalized: string): bool
   const leaves = jsonLeaves(literal);
   if (leaves)
     return leaves.every((leaf) =>
-      typeof leaf === "number"
-        ? new RegExp(`(?<![\\w.])${escapeRegex(String(leaf))}(?![\\w.])`).test(text)
-        : // A name leaf may follow a type (`Ty.Int`, `Ty::Int`) or take the language's case (`Params`).
-          (/^[A-Za-z_]\w*$/.test(leaf) &&
-            new RegExp(`(?<![\\w$])${escapeRegex(leaf)}(?![\\w$])`, "i").test(text)) ||
-          testsHold(text, leaf),
+      leaf === EMPTY_STRING
+        ? /""|''|\bString\.Empty\b|\bstring\.Empty\b|\bString::new\(\)|\bstr\(\)/.test(text)
+        : typeof leaf === "number"
+          ? new RegExp(`(?<![\\w.])${escapeRegex(String(leaf))}(?![\\w.])`).test(text)
+          : // A name leaf may follow a type (`Ty.Int`, `Ty::Int`) or take the language's case (`Params`).
+            (/^[A-Za-z_]\w*$/.test(leaf) &&
+              new RegExp(`(?<![\\w$])${escapeRegex(leaf)}(?![\\w$])`, "i").test(text)) ||
+            testsHold(text, leaf),
     );
   const request = REQUEST_LINE.exec(normalized);
   if (request)
@@ -1033,6 +1129,7 @@ export function caseCheck(
         const text = await readFile(join(root, path), "utf8").catch(() => "");
         return {
           text,
+          code: stripComments(path, text),
           evidence: caseEvidence(path, text),
           // A fallback that fakes the library draws nothing.
           property: ![null, "shim"].includes(propertyTestKind(path, text)),
@@ -1057,7 +1154,12 @@ export function caseCheck(
           files.map((file) => file.text),
         ).length
           ? `${c.criterionId} names ${JSON.stringify(c.literal)}, and no test file this task writes (${paths.join(", ")}) contains it.`
-          : `${c.criterionId} names ${JSON.stringify(c.literal)}, found only in an assertion message in ${paths.join(", ")}. Use it as a test input or expected value; the message alone is a decoy.`,
+          : missingCases(
+                [c],
+                files.map((file) => file.code),
+              ).length
+            ? `${c.criterionId} names ${JSON.stringify(c.literal)}, found only in a comment in ${paths.join(", ")}. A comment tests nothing: use it as a test input or expected value.`
+            : `${c.criterionId} names ${JSON.stringify(c.literal)}, found only in an assertion message in ${paths.join(", ")}. Use it as a test input or expected value; the message alone is a decoy.`,
       );
   };
 }

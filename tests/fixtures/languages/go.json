@@ -3,7 +3,7 @@
     "sum.go": "package sum\n\nfunc Sum(a, b int) int {\n\tpanic(\"not implemented\")\n}\n",
     "sum_test.go": "package sum\n\nvar _ = Sum(1, 2)\n",
     "go.mod": "module example.com/fixture\n\ngo 1.22\n\nrequire github.com/google/uuid v1.6.0\n",
-    "sum_prop_test.go": "//go:build props\n\npackage sum\n\nfunc TestProps(t *testing.T) { rapid.Check(t, func(t *rapid.T) {}) }\n",
+    "sum_prop_test.go": "//go:build props\n\npackage sum\n\nfunc TestProps(t *testing.T) { rapid.Check(t, func(t *rapid.T) {}) }\n// AC-001 example: (1, 2, 3)\n",
     "cmd/sum/main.go": "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(1 + 2)\n}\n"
   },
   "outputs": {
@@ -48,6 +48,12 @@
     ],
     "callGraph": [
       "Sum called at sum_test.go:3"
+    ],
+    "codeMask": [
+      "sum.go:4",
+      "sum_prop_test.go:1 comment",
+      "sum_prop_test.go:6 comment",
+      "cmd/sum/main.go:3"
     ]
   }
 }
