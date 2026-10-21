@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type LanguageRecord, none, rowOf } from "../intelligence/language-records.js";
 import { detectLanguageFromPath } from "../intelligence/types.js";
@@ -16,8 +16,28 @@ import type { Check } from "./types.js";
  * its baseline fails), so nothing held a new file to the formatter: structpad-update (R55) and
  * logslice-update (R56) shipped a new test file `ruff format` would rewrite although the request
  * asked for it formatted. The files a task creates are wholly the run's, so the scoped check is
- * required; a file it edits keeps the formatting of the lines it did not touch (#1582).
+ * required; a file it edits keeps the formatting of the lines the run did not touch (#1582), so
+ * only its changed lines are checked and fixed, by a formatter that formats a range of lines
+ * (zonevet-update, R57: a test appended to an already unformatted file).
  */
+
+/** A 1-based, inclusive range of lines. */
+export type LineRange = readonly [start: number, end: number];
+
+/** Formatting only some lines of one file. */
+export interface RangeFormatter {
+  /** Whether one run takes several ranges (black); otherwise one check per range. */
+  multiple: boolean;
+  /** The check-mode arguments on `file`, limited to `ranges` of its current `text`. */
+  check: (
+    args: readonly string[],
+    file: string,
+    ranges: readonly LineRange[],
+    text: string,
+  ) => string[];
+  /** The write-mode arguments the fixer appends the file to. */
+  fix: (args: readonly string[], ranges: readonly LineRange[], text: string) => string[];
+}
 
 /** A formatter a whole-tree gate runs, and the same formatter on named files. */
 export interface FileFormatter {
@@ -27,38 +47,83 @@ export interface FileFormatter {
   check: (args: readonly string[], files: readonly string[]) => string[];
   /** The write-mode arguments the fixer appends one file to (`fixerCommand`). */
   fix: (args: readonly string[]) => string[];
+  /** The same formatter on lines of a file, where it can format a range. */
+  range?: RangeFormatter;
 }
+
+// `ruff format --range=A-B` ends at the start of line B, so a range through line B ends at B+1; one
+// that reaches the last line runs to the end of the file. One range per run.
+const ruffRange = (text: string, [start, end]: LineRange): string =>
+  end + 1 > text.split("\n").length ? `--range=${start}` : `--range=${start}-${end + 1}`;
+// Prettier takes character offsets: from the start of the first line to the end of the last.
+const offsets = (text: string, [start, end]: LineRange): [number, number] => {
+  const lines = text.split("\n");
+  const from = lines.slice(0, start - 1).reduce((sum, line) => sum + line.length + 1, 0);
+  const to = lines.slice(0, end).reduce((sum, line) => sum + line.length + 1, 0);
+  return [from, Math.min(to, text.length)];
+};
 
 const ruffFormat: FileFormatter = {
   runs: (program, args) => program === "ruff" && args[0] === "format",
   check: (_, files) => ["format", "--check", ...files],
   fix: () => ["format"],
+  range: {
+    multiple: false,
+    check: (_, file, [range], text) => [
+      "format",
+      "--check",
+      ruffRange(text, range ?? [1, 1]),
+      file,
+    ],
+    fix: (_, [range], text) => ["format", ruffRange(text, range ?? [1, 1])],
+  },
 };
+const lineRanges = (ranges: readonly LineRange[]): string[] =>
+  ranges.map(([start, end]) => `--line-ranges=${start}-${end}`);
 const black: FileFormatter = {
   runs: (program) => program === "black",
   check: (_, files) => ["--check", ...files],
   fix: () => [],
+  range: {
+    multiple: true,
+    check: (_, file, ranges) => ["--check", ...lineRanges(ranges), file],
+    fix: (_, ranges) => lineRanges(ranges),
+  },
 };
+// No range: `biome format` has no line or offset range, so an edited file is not checked.
 const biome: FileFormatter = {
   runs: (program, args) => program === "biome" && args[0] === "format",
   check: (_, files) => ["format", ...files],
   fix: () => ["format", "--write"],
 };
+const prettierRange = (text: string, range: LineRange): string[] => {
+  const [from, to] = offsets(text, range);
+  return [`--range-start=${from}`, `--range-end=${to}`];
+};
 const prettier: FileFormatter = {
   runs: (program) => program === "prettier",
   check: (_, files) => ["--check", ...files],
   fix: () => ["--write"],
+  range: {
+    multiple: false,
+    check: (_, file, [range], text) => ["--check", ...prettierRange(text, range ?? [1, 1]), file],
+    fix: (_, [range], text) => ["--write", ...prettierRange(text, range ?? [1, 1])],
+  },
 };
+// No range: `dprint` formats whole files only.
 const dprint: FileFormatter = {
   runs: (program, args) => program === "dprint" && args[0] === "check",
   check: (_, files) => ["check", ...files],
   fix: () => ["fmt"],
 };
+// No range: gofmt formats whole files; Go files are gofmt-clean by convention, so the whole-tree
+// gate is preselected nearly always and this check rarely applies.
 const gofmt: FileFormatter = {
   runs: (program, args) => program === "gofmt" && args.includes("-l"),
   check: (_, files) => ["-l", ...files],
   fix: () => ["-w"],
 };
+// No range: `dotnet format --include` selects files, not lines.
 // `dotnet format` keeps the solution or project the gate names and selects files with --include.
 const dotnetFormat: FileFormatter = {
   runs: (program, args) => program === "dotnet" && args[0] === "format",
@@ -147,33 +212,119 @@ const formats = (check: Check, formatters: readonly FileFormatter[]): boolean =>
 /** How long a format-written check may run. */
 export const FORMAT_WRITTEN_TIMEOUT_MS = 120_000;
 
+/** At most this many range checks per edited file; the rest of its changes go unchecked. */
+export const MAX_RANGE_CHECKS = 8;
+/** Line diffs larger than this many cells count their whole changed middle as one range. */
+const MAX_DIFF_CELLS = 4_000_000;
+
 /**
- * The format-written checks for the code files `writes` creates: per language, the first formatter
+ * The 1-based ranges of lines in `after` that are not lines of `before` (added or changed), by the
+ * longest common subsequence of the lines between the common head and tail. Deleted lines leave no
+ * range.
+ */
+export function changedLineRanges(before: string, after: string): LineRange[] {
+  const a = before.split("\n");
+  const b = after.split("\n");
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) head++;
+  let tail = 0;
+  while (
+    tail < a.length - head &&
+    tail < b.length - head &&
+    a[a.length - 1 - tail] === b[b.length - 1 - tail]
+  )
+    tail++;
+  const old = a.slice(head, a.length - tail);
+  const next = b.slice(head, b.length - tail);
+  if (!next.length) return [];
+  const added: boolean[] = new Array(next.length).fill(true);
+  if (old.length && old.length * next.length <= MAX_DIFF_CELLS) {
+    const width = next.length + 1;
+    const lcs = new Uint32Array((old.length + 1) * width);
+    for (let i = old.length - 1; i >= 0; i--)
+      for (let j = next.length - 1; j >= 0; j--)
+        lcs[i * width + j] =
+          old[i] === next[j]
+            ? (lcs[(i + 1) * width + j + 1] ?? 0) + 1
+            : Math.max(lcs[(i + 1) * width + j] ?? 0, lcs[i * width + j + 1] ?? 0);
+    for (let i = 0, j = 0; i < old.length && j < next.length; )
+      if (old[i] === next[j]) {
+        added[j] = false;
+        i++;
+        j++;
+      } else if ((lcs[(i + 1) * width + j] ?? 0) >= (lcs[i * width + j + 1] ?? 0)) i++;
+      else j++;
+  }
+  const ranges: [number, number][] = [];
+  added.forEach((isAdded, index) => {
+    if (!isAdded) return;
+    const line = head + index + 1;
+    const last = ranges.at(-1);
+    if (last && last[1] === line - 1) last[1] = line;
+    else ranges.push([line, line]);
+  });
+  // The empty string after a final newline is no line of its own.
+  return ranges
+    .map(
+      ([start, end]): LineRange => [
+        start,
+        Math.min(end, Math.max(b.length - (after.endsWith("\n") ? 1 : 0), 1)),
+      ],
+    )
+    .filter(([start, end]) => start <= end);
+}
+
+/** A file a task wrote that the format-written checks hold: wholly, or only on `ranges`. */
+interface Written {
+  path: string;
+  /** The lines the run changed in a file it edits, with the file's text; absent for a new file. */
+  edited?: { ranges: LineRange[]; text: string };
+}
+
+/**
+ * The format-written checks for the code files `writes` holds: per language, the first formatter
  * whose whole-tree gate the project offers but the run's checks leave out, on the language's
- * files only, required, with the formatter's write mode as the fixer. None for a language the
- * checks already format (a `format` script counts for the npm languages), and none whose program
- * does not resolve: a required check that cannot start faults the run.
+ * files only, required, with the formatter's write mode as the fixer, limited to those files
+ * (`fixPaths`). A file the task creates, or one the run created (`base` gives null), is checked
+ * whole. A file it edits is checked on the lines the run changed against `base` (its content before
+ * the run's first write), by a formatter that formats a range; with no such formatter, or no base,
+ * it is not checked. None for a language the checks already format (a `format` script counts for
+ * the npm languages), and none whose program does not resolve: a required check that cannot start
+ * faults the run.
  */
 export function formatWrittenChecks(
   root: string,
   checks: readonly Check[],
   writes: readonly { path: string; action: string }[],
   which?: (command: string, options: { PATH: string; cwd: string }) => string | null,
+  base?: (path: string) => string | null | undefined,
 ): Check[] {
-  const files = new Map<string, string[]>();
+  const files = new Map<string, Written[]>();
   for (const write of writes) {
-    // An edited file keeps its old formatting: a whole-file run reformats lines the request left
-    // alone, which a brownfield review rejects (R47 cochange-update, #1582).
-    if (write.action !== "create" || !isCodePath(write.path)) continue;
-    if (!existsSync(join(root, write.path))) continue;
+    if (write.action === "delete" || !isCodePath(write.path)) continue;
+    const absolute = join(root, write.path);
+    if (!existsSync(absolute)) continue;
     const language = detectLanguageFromPath(write.path);
     if (!rowOf(FILE_FORMATTERS, language)) continue;
-    files.set(language, [...(files.get(language) ?? []), write.path]);
+    let written: Written = { path: write.path };
+    if (write.action !== "create") {
+      // An edited file keeps the formatting of the lines the run did not change: a whole-file
+      // run reformats lines the request left alone, which a brownfield review rejects (#1582).
+      const before = base?.(write.path);
+      if (before === undefined) continue;
+      if (before !== null) {
+        const text = readFileSync(absolute, "utf8");
+        const ranges = changedLineRanges(before, text);
+        if (!ranges.length) continue;
+        written = { path: write.path, edited: { ranges, text } };
+      }
+    }
+    files.set(language, [...(files.get(language) ?? []), written]);
   }
   if (!files.size) return [];
   const offered = detectGates(root, [...checks]).filter((s) => s.check.fix);
   const out: Check[] = [];
-  for (const [language, paths] of files) {
+  for (const [language, written] of files) {
     const formatters = rowOf(FILE_FORMATTERS, language) ?? [];
     const npm = formatters.some((f) => NPM_FORMATTERS.includes(f));
     if (checks.some((c) => formats(c, formatters) || (npm && c.id === "format"))) continue;
@@ -182,21 +333,60 @@ export function formatWrittenChecks(
       const formatter = formatters.find((f) => f.runs(command.program, command.args));
       if (!formatter || !gate.check.fix) continue;
       const fixer = formatterCommand(gate.check.fix);
-      const check = command.command(formatter.check(command.args, paths));
       // The fixer runs the checked program, not the gate's (`go fmt ./...` for `gofmt -l .`).
-      const fix =
-        fixer.program === command.program
-          ? fixer.command(formatter.fix(fixer.args))
-          : command.command(formatter.fix(command.args));
-      if (!check || !fix) continue;
-      const scoped: Check = {
-        ...gate.check,
-        id: `${gate.check.id}-written`,
-        ...check,
-        fix,
-        required: true,
-        timeoutMs: Math.min(gate.check.timeoutMs, FORMAT_WRITTEN_TIMEOUT_MS),
+      const fixWith = (args: string[]) =>
+        fixer.program === command.program ? fixer.command(args) : command.command(args);
+      const fixArgs = fixer.program === command.program ? fixer.args : command.args;
+      const scoped = (
+        id: string,
+        args: string[],
+        fixArgs: string[],
+        paths: string[],
+      ): Check | null => {
+        const check = command.command(args);
+        const fix = fixWith(fixArgs);
+        if (!check || !fix) return null;
+        return {
+          ...gate.check,
+          id,
+          ...check,
+          fix,
+          fixPaths: paths,
+          required: true,
+          timeoutMs: Math.min(gate.check.timeoutMs, FORMAT_WRITTEN_TIMEOUT_MS),
+        };
       };
+      const found: Check[] = [];
+      const whole = written.filter((w) => !w.edited).map((w) => w.path);
+      if (whole.length) {
+        const check = scoped(
+          `${gate.check.id}-written`,
+          formatter.check(command.args, whole),
+          formatter.fix(fixArgs),
+          whole,
+        );
+        if (check) found.push(check);
+      }
+      const range = formatter.range;
+      let lines = 0;
+      if (range)
+        for (const { path, edited } of written) {
+          if (!edited) continue;
+          const groups = range.multiple
+            ? [edited.ranges]
+            : edited.ranges.slice(0, MAX_RANGE_CHECKS).map((r) => [r]);
+          for (const ranges of groups) {
+            lines++;
+            const check = scoped(
+              `${gate.check.id}-lines${lines > 1 ? `-${lines}` : ""}`,
+              range.check(command.args, path, ranges, edited.text),
+              range.fix(fixArgs, ranges, edited.text),
+              [path],
+            );
+            if (check) found.push(check);
+          }
+        }
+      if (!found.length) continue;
       // A JavaScript formatter must be installed: `npx prettier` downloads one otherwise.
       if (
         command.packaged &&
@@ -204,8 +394,8 @@ export function formatWrittenChecks(
         !(which ?? Bun.which)(command.program, { PATH: process.env.PATH ?? "", cwd: root })
       )
         continue;
-      if (unresolvedChecks([scoped], root, which).length) continue;
-      out.push(scoped);
+      if (unresolvedChecks(found, root, which).length) continue;
+      out.push(...found);
       break;
     }
   }

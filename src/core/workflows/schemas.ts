@@ -222,6 +222,12 @@ export const CheckSchema = z
      * A second fixer tier run after `fix` on the same files, for fixes the tool marks unsafe
      * (`biome check --write --unsafe`), limited to what the project allows. Used only with `fix`.
      */
+    /**
+     * The only files the fixer may run on, when the check holds some of a task's files and not
+     * others: the format-written checks fix the files and lines they check, never an edited file
+     * whole (#1837, #1582). Absent means every file of the task.
+     */
+    fixPaths: z.array(RelativePath).optional(),
     fixUnsafe: z
       .object({ executable: z.string().min(1).max(512), args: z.array(z.string().max(2048)) })
       .strict()

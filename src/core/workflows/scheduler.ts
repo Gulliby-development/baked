@@ -452,6 +452,7 @@ import {
   createdByRunLineage,
   REFUSED_EDIT_PREFIX,
   readKept,
+  runBaseContent,
   runWrittenHash,
   UNFINISHED_BLOCK_PREFIX,
   uncommittedEdits,
@@ -8644,9 +8645,11 @@ ${note}`;
   ): Check[] {
     const own = taskChecks(policy, task);
     const written = this.writtenTestsCheck(runId, state, policy, task, root, own, changed);
-    // The project's formatter on the code files the task wrote, when the run's checks hold no
-    // formatter for them (a repository not formatter-clean, #1837).
-    const formatted = formatWrittenChecks(root, policy.checks, task.writes);
+    // The project's formatter on the code files the task wrote, and on the lines the run changed in
+    // the files it edits, when the run's checks hold no formatter for them (#1837).
+    const formatted = formatWrittenChecks(root, policy.checks, task.writes, undefined, (path) =>
+      runBaseContent(this.store, runId, path),
+    );
     const gated = [...own, ...(written ? [written] : []), ...formatted];
     const record = this.affectedRecord(state, task);
     if (record?.baseline !== "passed" || !record.checkId) return gated;
@@ -11379,15 +11382,19 @@ ${note}`;
               changed = true;
             }
           };
+          // A check that holds only some files fixes only those (#1837).
+          const own = check.fixPaths
+            ? paths.filter((path) => check.fixPaths?.includes(path))
+            : paths;
           for (const fix of fixerTiers(check)) {
             // A whole-unit formatter (`cargo fmt`) rewrites the whole crate whatever file it is
             // given: one run for all the code files instead of one per file (#1269, #842).
             if (isWholeUnitFixer(fix)) {
-              const code = paths.filter(isCodePath);
+              const code = own.filter(isCodePath);
               if (code.length) await run(wholeUnitFixerCommand(fix, code), code);
               continue;
             }
-            for (const path of paths) await run(fixerCommand(fix, path), [path]);
+            for (const path of own) await run(fixerCommand(fix, path), [path]);
           }
         }
       } finally {
