@@ -4795,21 +4795,34 @@ export class WorkflowScheduler {
             error,
           ),
         );
-      const emptyFailures = signal.aborted
-        ? 0
+      const outcome = signal.aborted
+        ? null
         : recordProviderOutcome(this.store, runId, attempt, profile.id, task?.id, error);
-      if (emptyFailures >= PROVIDER_ZERO_TOKEN_LIMIT) {
+      const counted = Math.max(outcome?.failures ?? 0, outcome?.stalls ?? 0);
+      if (outcome && counted >= PROVIDER_ZERO_TOKEN_LIMIT) {
         this.store.artifact(
           runId,
           "recovery",
           "provider/circuit.json",
-          canonical({ open: true, attemptId: attempt, failures: emptyFailures }),
+          canonical({
+            open: true,
+            attemptId: attempt,
+            failures: outcome.failures,
+            ...(outcome.stalls ? { stalls: outcome.stalls } : {}),
+          }),
         );
+        const waited = outcome.waitedSeconds === null ? "" : ` within ${outcome.waitedSeconds} s`;
+        // An answered call followed by silence is a stalled follow-up, and says so (#1875).
+        const what = outcome.stalls
+          ? `${profile.model} answered ${outcome.answered} call(s) of ${profile.id}, then gave no response${waited} on call ${outcome.answered + 1}, in ${outcome.stalls} consecutive attempts`
+          : `${profile.model} returned no tokens in ${outcome.failures} consecutive unreachable attempts for ${profile.id}`;
         throw new WorkflowFault(
           "OUTPUT_INVALID",
           recoveryAdvice(
-            `${profile.model} returned no tokens in ${emptyFailures} consecutive unreachable attempts for ${profile.id}. Automatic retries stopped. Check the provider and reasoning effort, then resume or reroute the run.`,
-            "Repeated zero-token provider failures need your decision before another attempt.",
+            `${what}. Automatic retries stopped. Check the provider and reasoning effort, then resume or reroute the run.`,
+            outcome.stalls
+              ? "Repeated stalled provider calls need your decision before another attempt."
+              : "Repeated zero-token provider failures need your decision before another attempt.",
             { action: "resume", runId },
             { action: "reroute", runId },
           ),

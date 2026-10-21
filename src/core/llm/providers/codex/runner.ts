@@ -16,7 +16,7 @@ import type {
 } from "@ai-sdk/provider";
 import { getCwd } from "../../../cwd.js";
 import { trackProcess } from "../../../process-tracker.js";
-import { providerResponded } from "../../provider-health.js";
+import { providerCallDetail, providerResponded } from "../../provider-health.js";
 import { cliReasoningEffort } from "../cli-effort.js";
 import {
   imageExtension,
@@ -584,6 +584,7 @@ export function createCodexLanguageModel(
     modelId,
     supportedUrls: {},
     async doGenerate(options) {
+      providerCallDetail(options.abortSignal, { transport: "exec" });
       const warnings = warningsFor(options);
       const parts = buildCodexPromptParts(options);
       const result = await runner.run({
