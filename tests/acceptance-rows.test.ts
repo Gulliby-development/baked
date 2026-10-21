@@ -61,7 +61,7 @@ describe("acceptance rows", () => {
 
   test("rejects disabled, partial, overlapping and existing-file declarations", () => {
     const s = spec("Input | Expected\n12 | 24");
-    expect(rowPlanProblems(s, graph, fixturePolicy).join()).toContain('rowsAsData: "on"');
+    expect(rowPlanProblems(s, graph, fixturePolicy).join()).toContain("remove rows and rowTest");
     const enabled = { ...fixturePolicy, rowsAsData: "on" as const };
     expect(rowPlanProblems(s, graph, enabled)).toEqual([]);
     for (const broken of [
