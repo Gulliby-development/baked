@@ -242,38 +242,37 @@ export function buildCodexSchema(options: LanguageModelV2CallOptions): JSONSchem
   const allowedNames =
     toolChoice?.type === "tool" ? [toolChoice.toolName] : tools.map((tool) => tool.name);
 
-  const toolCallItems: JSONSchema7 = tools.length
-    ? {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          toolName: { type: "string", enum: allowedNames },
-          inputJson: { type: "string" },
-        },
-        required: ["toolName", "inputJson"],
-      }
-    : {
-        type: "object",
-        additionalProperties: false,
-        properties: {},
-      };
+  const toolCallItems = strictObject(
+    tools.length
+      ? { toolName: { type: "string", enum: allowedNames }, inputJson: { type: "string" } }
+      : {},
+  );
 
+  return strictObject({
+    finishReason: { type: "string", enum: finishReasons },
+    reasoning: { type: "string" },
+    text: { type: "string" },
+    toolCalls: {
+      type: "array",
+      minItems:
+        tools.length && (toolChoice?.type === "required" || toolChoice?.type === "tool") ? 1 : 0,
+      ...(tools.length ? {} : { maxItems: 0 }),
+      items: toolCallItems,
+    },
+  });
+}
+
+/**
+ * An object as OpenAI's strict structured output takes it: no other properties, and every
+ * property required, `required: []` included when it has none (#1889). `codex exec` sends its
+ * `--output-schema` in strict mode, which refuses an object without `required` with a 400.
+ */
+function strictObject(properties: Record<string, JSONSchema7>): JSONSchema7 {
   return {
     type: "object",
     additionalProperties: false,
-    properties: {
-      finishReason: { type: "string", enum: finishReasons },
-      reasoning: { type: "string" },
-      text: { type: "string" },
-      toolCalls: {
-        type: "array",
-        minItems:
-          tools.length && (toolChoice?.type === "required" || toolChoice?.type === "tool") ? 1 : 0,
-        maxItems: tools.length ? undefined : 0,
-        items: toolCallItems,
-      },
-    },
-    required: ["finishReason", "reasoning", "text", "toolCalls"],
+    properties,
+    required: Object.keys(properties),
   };
 }
 

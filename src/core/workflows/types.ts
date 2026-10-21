@@ -4,6 +4,7 @@ import { HostEditSchema } from "./host-edits-schema.js";
 import { PresetChoiceSchema } from "./preset-router.js";
 import {
   type AgentProfile,
+  DerivationSchema,
   Hash,
   InputManifestSchema,
   ReviewSchema,
@@ -319,6 +320,19 @@ export const RuntimeStateSchema = z
     lateDefectRounds: z.number().int().nonnegative().default(0),
     /** Times analyze sent derivation audit findings back to the spec author; once (#1465). */
     derivationReturns: z.number().int().nonnegative().default(0),
+    /**
+     * Audited criteria whose rows an analysis pass reproduced, keyed by their text and their
+     * requirements' text, carried into later passes with `derivationAuditCarry: "on"` (#1851).
+     */
+    auditCarried: z
+      .array(
+        z.object({
+          criterionId: z.string(),
+          key: Hash,
+          derivations: z.array(DerivationSchema),
+        }),
+      )
+      .default([]),
     /**
      * Blocking findings of earlier analysis passes, shown to the next pass so it reports every
      * remaining one at once instead of one new finding per return (#1113).
