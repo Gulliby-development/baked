@@ -1,4 +1,3 @@
-import { rmSync } from "node:fs";
 import type { SandboxRequest } from "../security/sandbox.js";
 import type { ProcessScope } from "../workflows/process-scope.js";
 import { normalizeLiteral, quotedSpans } from "./criteria-cases.js";
@@ -10,7 +9,7 @@ import {
   missingInput,
 } from "./doc-examples.js";
 import { entryPointCommand } from "./entry-points.js";
-import { REPRO_TIMEOUT_MS, reproEnv } from "./repro.js";
+import { REPRO_TIMEOUT_MS, removeScratch, reproEnv } from "./repro.js";
 
 /**
  * The command a criterion quotes as its input, when `literal` is an expected output it states
@@ -85,6 +84,6 @@ export async function probeCase(
     if (output.split("\n").some((line) => wanted.has(line.trim()))) return null;
     return { printed: output.trim().slice(0, 500), exitCode: result.exitCode };
   } finally {
-    rmSync(copy, { recursive: true, force: true });
+    removeScratch(copy);
   }
 }
