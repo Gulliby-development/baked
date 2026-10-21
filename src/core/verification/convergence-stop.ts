@@ -3,6 +3,7 @@ import { hashJson } from "../specs/hash.js";
 import type { Review, RunPolicy } from "../workflows/schemas.js";
 import type { WorkflowStore } from "../workflows/store.js";
 import type { Limitation, RuntimeState } from "../workflows/types.js";
+import { decidedChecks } from "./host-passed.js";
 
 type Finding = Review["findings"][number];
 
@@ -292,7 +293,7 @@ export function requiredChecksPass(
 ): boolean {
   const ids = policy.checks.filter((c) => c.required).map((c) => c.id);
   if (!ids.length || !state.snapshotId) return false;
-  const results = store.checks(runId);
+  const results = decidedChecks(store, runId, store.checks(runId));
   return ids.every((id) => {
     const last = results
       .filter((c) => c.check_id === id && c.snapshot_id === state.snapshotId)
