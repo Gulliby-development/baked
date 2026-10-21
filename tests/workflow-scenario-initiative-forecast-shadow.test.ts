@@ -13,7 +13,9 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-const wouldStops = (events: InitiativeEvent[]) => events.filter((e) => e.type === "decision.would_stop");
+// The dollar-share reason (#1890) records its own would-stops on these short shares.
+const wouldStops = (events: InitiativeEvent[]) =>
+  events.filter((e) => e.type === "decision.would_stop" && (e.payload as { reason?: string }).reason === "initiative-forecast");
 
 async function scenario(mode?: "shadow" | "advisory") {
   // The eleven features after the skeleton forecast about $44.69 against the $37.50 ceiling.

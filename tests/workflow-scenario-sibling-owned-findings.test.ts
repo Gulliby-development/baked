@@ -200,7 +200,11 @@ describe("scenario: sibling-owned review findings do not deadlock an initiative 
       expect(request.profile.output).toBe("initiativePlan");
       expect(request.validate?.(split).join("\n")).toContain("testedBy");
       sentBack = true;
-      const repaired = { ...split, features: split.features.map((feature) => feature.id === "adapters" ? { ...feature, testedBy: "entry" } : feature) };
+      // adapters builds on no other feature and entry holds tests only, so naming entry as its
+      // test owner is refused too; its tests go in its own boundary (#1873).
+      const handedOff = { ...split, features: split.features.map((feature) => feature.id === "adapters" ? { ...feature, testedBy: "entry" } : feature) };
+      expect(request.validate?.(handedOff).join("\n")).toContain("add its tests to its own boundary");
+      const repaired = { ...split, features: split.features.map((feature) => feature.id === "adapters" ? { ...feature, boundary: { ...feature.boundary, paths: [...feature.boundary.paths, "tests/test_adapters.py"] } } : feature) };
       expect(request.validate?.(repaired)).toEqual([]);
       expect(planStructureProblems(repaired)).toEqual([]);
       return { output: repaired, inputTokens: 20, outputTokens: 30 };
@@ -213,7 +217,8 @@ describe("scenario: sibling-owned review findings do not deadlock an initiative 
     expect(sentBack).toBe(true);
     expect(view.status).toBe("awaiting_approval");
     const proposed = initiatives.store.plan(initiatives.store.revision("split", initiatives.store.get("split").plan_revision!));
-    expect(proposed.features[0]?.testedBy).toBe("entry");
+    expect(proposed.features[0]?.boundary.paths).toContain("tests/test_adapters.py");
+    expect(proposed.features[0]?.testedBy).toBeUndefined();
   }, 60000);
 
   test("#1594 spec submission returns criteria whose evidence only a sibling can deliver", async () => {

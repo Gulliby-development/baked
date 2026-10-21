@@ -25,6 +25,12 @@ import {
 } from "../llm/model-routing.js";
 import { modelVendor } from "../llm/model-vendor.js";
 import { knownModelContextWindow } from "../llm/models.js";
+import {
+  POLICY_REFUSAL_KIND,
+  POLICY_REFUSALS_DIR,
+  policyRefusal,
+  policyRefusalDecision,
+} from "../llm/policy-refusal.js";
 import { ProviderUnreachableError } from "../llm/provider-health.js";
 import { runSandbox } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
@@ -36,6 +42,7 @@ import {
   assertAcceptanceV2,
   v1ReviewDimensions,
 } from "../verification/acceptance.js";
+import { caseCommand, probeCase } from "../verification/case-source-probe.js";
 import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
 import {
   appendCorrections,
@@ -69,6 +76,7 @@ import {
   STYLE_UNSHOWN,
 } from "../verification/convergence-stop.js";
 import {
+  type CriterionCase,
   caseCheck as criteriaCaseCheck,
   type RepairFinding,
   repairCaseTask,
@@ -216,6 +224,7 @@ import {
   selectCandidate,
 } from "./candidates.js";
 import {
+  cwdPath,
   fixerCommand,
   fixerTiers,
   isCodePath,
@@ -268,13 +277,18 @@ import { crossPlatformAnalysisNote, crossPlatformNote } from "./cross-platform.j
 import { git, gitWorktreePaths } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
 import {
+  auditCarry,
+  auditedCriteria,
+  carriedDerivations,
   checkedDerivations,
   DERIVATION_RETURN_NOTE,
+  derivationAuditCarryOn,
   derivationAuditExtra,
   derivationAuditOn,
   derivationFindings,
   derivationProblems,
   isDerivationFinding,
+  withCarried,
 } from "./derivation-audit.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
@@ -917,6 +931,8 @@ const DIFF_REVIEW = "diffReview";
 const REVIEW_ATTEMPT_STEPS = 16;
 /** Errors of the task-end check one submission gets back; the checks stage reports the rest. */
 const TASK_END_ERRORS = 20;
+/** Commands the case walk runs per attempt before it refuses a test task (#1836). */
+const CASE_PROBES = 4;
 
 export class WorkflowScheduler {
   dispose(): void {
@@ -1623,10 +1639,17 @@ export class WorkflowScheduler {
                 advance = false;
                 break;
               }
-              const audit =
-                derivationAuditOn(policy) || rowsAsDataOn(policy)
-                  ? derivationAuditExtra(spec)
-                  : null;
+              const audited =
+                (derivationAuditOn(policy) || rowsAsDataOn(policy)) &&
+                auditedCriteria(spec).length > 0;
+              // Criteria an earlier pass reproduced and that have not changed keep its rows (#1851).
+              const carried =
+                audited && derivationAuditCarryOn(policy)
+                  ? carriedDerivations(spec, state.auditCarried)
+                  : [];
+              const audit = audited
+                ? derivationAuditExtra(spec, new Set(carried.map((d) => d.criterionId)))
+                : null;
               const analysis = AnalysisSchema.parse(
                 await this.call(
                   runId,
@@ -1653,18 +1676,19 @@ export class WorkflowScheduler {
                   0,
                   (output) => {
                     const parsed = AnalysisSchema.safeParse(output);
-                    return parsed.success
-                      ? [
-                          ...deferredBlockingProblems(
-                            parsed.data.findings,
-                            (_, index) => parsed.data.findings[index]?.description ?? "",
-                          ),
-                          ...(audit ? derivationProblems(spec, parsed.data) : []),
-                          ...(rowsAsDataOn(policy)
-                            ? rowAuditProblems(spec, graph, parsed.data, false)
-                            : []),
-                        ]
-                      : [];
+                    if (!parsed.success) return [];
+                    const merged = {
+                      ...parsed.data,
+                      derivations: withCarried(parsed.data.derivations, carried),
+                    };
+                    return [
+                      ...deferredBlockingProblems(
+                        parsed.data.findings,
+                        (_, index) => parsed.data.findings[index]?.description ?? "",
+                      ),
+                      ...(audited ? derivationProblems(spec, merged) : []),
+                      ...(rowsAsDataOn(policy) ? rowAuditProblems(spec, graph, merged, false) : []),
+                    ];
                   },
                 ),
               );
@@ -1672,12 +1696,16 @@ export class WorkflowScheduler {
               // is not checked (#347: one transposed character blocked d0f55591).
               analysis.inputHash = hashJson(state.manifest);
               // A row that rests on the request rests on text the request holds (#1823).
-              if (audit)
+              // Carried rows are checked again: the request text is the run's, not the pass's.
+              if (audited) {
                 analysis.derivations = checkedDerivations(
-                  analysis.derivations,
+                  withCarried(analysis.derivations, carried),
                   statedRequest(state, this.store.requests(runId)),
                   spec,
                 );
+                if (derivationAuditCarryOn(policy))
+                  state.auditCarried = auditCarry(spec, analysis.derivations);
+              }
               // The host adds a finding the model missed: a program was described and none is planned.
               // A feature of an initiative has its boundary approved with the split, not the request.
               const uncovered =
@@ -1756,7 +1784,7 @@ export class WorkflowScheduler {
               // Findings about check outcomes stay in the record as notes; checks run later.
               let findings = demoteDeferred(analysis.findings, (f) => f.description);
               // The host raises the rows the audit could not reproduce; the model does not (#1465).
-              if (audit)
+              if (audited)
                 findings = [
                   ...findings.filter((f) => !isDerivationFinding(f)),
                   ...derivationFindings(spec, analysis),
@@ -3952,6 +3980,105 @@ export class WorkflowScheduler {
     return { ...task, criterionIds: task.criterionIds.filter((id) => !covered.has(id)) };
   }
   /**
+   * The case walk's probe of a test task's expected outputs against the source (#1836): a case the
+   * task's tests lack, whose criterion quotes a command and states the literal as its output, is
+   * run through the project's entry point first. When the program prints something else and an
+   * implemented task wrote the source, the refusal says so: the task keeps the criterion's value,
+   * names the file and reports implemented, and `routeReportedDefect` hands the failing check to
+   * that task. hdrlens negotiate T004 (bench round 56) could not satisfy a refusal for an error
+   * text T002's code printed with a prefix, looped, and the review's corrective cost 1.0M tokens.
+   */
+  private caseSourceProbe(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task | undefined,
+    signal: AbortSignal,
+  ): (found: CriterionCase, root: string) => Promise<string | null> {
+    let probes = 0;
+    return async (found, root) => {
+      const graph = state.rootGraph ?? state.graph;
+      const criterion = state.spec?.criteria.find((c) => c.id === found.criterionId);
+      if (!task || !graph || !criterion) return null;
+      const command = caseCommand(criterion, found.literal);
+      if (!command) return null;
+      const done = new Set(
+        this.store
+          .tasks(runId)
+          .filter((r) => ["implemented", "verified"].includes(r.status))
+          .map((r) => r.id),
+      );
+      // The source of the criterion: code an implemented task of the criterion wrote, outside
+      // this task's writes and the tests.
+      const sources = graph.tasks.filter(
+        (t) => t.id !== task.id && done.has(t.id) && t.criterionIds.includes(criterion.id),
+      );
+      const files = [
+        ...new Set(
+          sources.flatMap((t) =>
+            t.writes
+              .filter(
+                (w) =>
+                  w.action !== "delete" &&
+                  isCodePath(w.path) &&
+                  !isTestPath(w.path) &&
+                  !task.writes.some((own) => own.path === w.path),
+              )
+              .map((w) => w.path),
+          ),
+        ),
+      ];
+      if (!files.length || probes >= CASE_PROBES) return null;
+      probes++;
+      const owners = sources
+        .filter((t) => t.writes.some((w) => files.includes(w.path)))
+        .map((t) => t.id);
+      const workspace = await sourceManifest(root, generatedPaths(policy), signal);
+      const contradicted = await probeCase(this.processes, command.argv, found.literal, {
+        root,
+        files: Object.keys(workspace),
+        executables: reproExecutables(policy.checks),
+        signal,
+        sandbox: (dir) => runSandbox(policy, dir),
+      });
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "diagnostic",
+          `tasks/${task.id}/case-probe-${newId()}.json`,
+          canonical({
+            taskId: task.id,
+            criterionId: criterion.id,
+            literal: found.literal,
+            command: command.command,
+            contradicted,
+            ...(contradicted ? { files, owners } : {}),
+          }),
+        ),
+      );
+      if (!contradicted) return null;
+      return `${criterion.id} names ${JSON.stringify(found.literal)} as the output of \`${command.command}\`, but the program prints ${JSON.stringify(contradicted.printed)}: the code ${owners.join(", ")} wrote (${files.join(", ")}) disagrees with the criterion. Write the test with ${JSON.stringify(found.literal)} as the criterion states, even though it fails now; do not assert what the program prints. Name ${files.join(", ")} and the difference in your summary and report implemented: the host hands the failing check to ${owners.join(", ")}.`;
+    };
+  }
+  /**
+   * The source files the case walk's probe found disagreeing with a criterion this test task
+   * covers (#1836): the correction of its failing test check may edit them.
+   */
+  private contradictedSources(runId: string, task: Task): string[] {
+    const prefix = `tasks/${task.id}/case-probe-`;
+    return [
+      ...new Set(
+        this.store
+          .artifacts(runId)
+          .filter((a) => a.logical_path.startsWith(prefix))
+          .flatMap((a) => {
+            const body = JSON.parse(this.store.readArtifact(runId, a.id)) as { files?: string[] };
+            return body.files ?? [];
+          }),
+      ),
+    ];
+  }
+  /**
    * The task-end whole-unit check of a task that writes code (#673): the run's feature-scope type
    * checks, run once in the task's directory, keeping the errors in the task's own files that
    * neither the baseline nor a pending sibling task explains. Advisory: the checks stage still
@@ -4642,6 +4769,9 @@ export class WorkflowScheduler {
             {
               checks: policy.checks,
               tasks: (state.rootGraph ?? state.graph)?.tasks ?? [],
+              ...(policy.caseSourceProbe === "on"
+                ? { probe: this.caseSourceProbe(runId, state, policy, task, signal) }
+                : {}),
             },
           )
         : undefined;
@@ -4853,6 +4983,59 @@ export class WorkflowScheduler {
         this.store
           .effects(runId)
           .some((effect) => effect.attempt_id === attempt && effect.kind === "file_patch");
+      // A usage-policy refusal is neither an outage nor a lost worker (#1895). The step runs once
+      // more as it was, on the files it has already changed; a second refusal of the same task or
+      // stage on the same model blocks the run for a reroute.
+      const refusedBy = signal.aborted ? null : policyRefusal(error, profile.model);
+      if (refusedBy) {
+        const message = error instanceof Error ? error.message : String(error);
+        const prior = this.policyRefusals(runId, task?.id ?? profile.id, profile.model);
+        const decision = policyRefusalDecision(prior);
+        this.store.artifact(
+          runId,
+          POLICY_REFUSAL_KIND,
+          `${POLICY_REFUSALS_DIR}${attempt}.json`,
+          canonical({
+            attemptId: attempt,
+            stepId,
+            ...(task ? { taskId: task.id } : {}),
+            profile: profile.id,
+            model: profile.model,
+            provider: refusedBy,
+            usedTokens:
+              this.store.attempts(runId).find((a) => a.id === attempt)?.used_tokens ?? null,
+            message: message.slice(0, 2000),
+            decision,
+          }),
+        );
+        if (decision === "retry") {
+          const { attemptId: _refused, ...same } = placement;
+          return this.call(
+            runId,
+            stepId,
+            state,
+            policy,
+            stageProfile,
+            extra,
+            signal,
+            task,
+            0,
+            validate,
+            limits,
+            hostTools,
+            same,
+          );
+        }
+        throw new WorkflowFault(
+          "OUTPUT_INVALID",
+          recoveryAdvice(
+            `${profile.model} refused the request of ${profile.id} under its usage policy ${prior + 1} times. Move the run to another model with baked workflow reroute ${runId} --model ID --expected-revision N, then resume. ${message}`,
+            `${profile.model} refused the request of ${profile.id} under its usage policy ${prior + 1} times. ${message}`,
+            { action: "reroute", runId },
+          ),
+          { reason: "provider_policy" },
+        );
+      }
       const refusal = accountRefusal(error);
       // Another model on the same provider shares the refused account; one elsewhere does not.
       const provider = (model: string) => model.split("/")[0];
@@ -7686,6 +7869,7 @@ ${note}`;
         error instanceof WorkflowFault &&
         (["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code) ||
           error.details.reason === "provider_account" ||
+          error.details.reason === "provider_policy" ||
           error.details.reason === "provider" ||
           error.details.providerCircuit === true ||
           error.details.reason === "check_unavailable")
@@ -7790,6 +7974,22 @@ ${note}`;
           e.before_hash !== e.after_hash,
       )
       .map((e) => (JSON.parse(e.intent_json) as { path: string }).path);
+  }
+  /** The usage-policy refusals recorded so far for a task or stage profile on one model. */
+  private policyRefusals(runId: string, key: string, model: string): number {
+    let count = 0;
+    for (const artifact of this.store.artifacts(runId)) {
+      if (!artifact.logical_path.startsWith(POLICY_REFUSALS_DIR)) continue;
+      try {
+        const record = JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+          taskId?: string;
+          profile?: string;
+          model?: string;
+        };
+        if ((record.taskId ?? record.profile) === key && record.model === model) count++;
+      } catch {}
+    }
+    return count;
   }
   /** The edits a lost worker left in its worktree, which a restart of its task carries over. */
   private async lostWorkerEdits(
@@ -8051,8 +8251,13 @@ ${note}`;
     );
     if (!changed) return results;
     await this.snapshot(runId, state, policy, signal);
+    // A format-written check of a fixed file is built again from the file as it is now: a fixer
+    // that changes a block's line count moves the blocks after it (#1837).
+    const refixed = new Set(failed.flatMap(({ check }) => check.fixPaths ?? []));
+    const scopedTo = (check: Check) => check.fixPaths?.some((path) => refixed.has(path)) ?? false;
     const rerun: WorkerCheck[] = [];
-    for (const result of results)
+    for (const result of results) {
+      if (scopedTo(result.check)) continue;
       rerun.push(
         failed.includes(result)
           ? {
@@ -8061,6 +8266,13 @@ ${note}`;
             }
           : result,
       );
+    }
+    if (refixed.size)
+      for (const check of this.gatedChecks(runId, state, policy, task, root).filter(scopedTo))
+        rerun.push({
+          check,
+          checked: await this.runTaskCheck(runId, child, check, policy, signal, root),
+        });
     return rerun;
   }
   private async recheck(
@@ -10492,7 +10704,10 @@ ${note}`;
               ),
             ),
           ],
-          owner?.kind === "finished" ? owner.files : [],
+          [
+            ...(owner?.kind === "finished" ? owner.files : []),
+            ...this.contradictedSources(runId, task),
+          ],
         )
       : [];
     const scope = [
@@ -11459,10 +11674,18 @@ ${note}`;
             // given: one run for all the code files instead of one per file (#1269, #842).
             if (isWholeUnitFixer(fix)) {
               const code = own.filter(isCodePath);
-              if (code.length) await run(wholeUnitFixerCommand(fix, code), code);
+              if (code.length)
+                await run(
+                  wholeUnitFixerCommand(
+                    fix,
+                    code.map((path) => cwdPath(check, path)),
+                  ),
+                  code,
+                );
               continue;
             }
-            for (const path of own) await run(fixerCommand(fix, path), [path]);
+            // The fixer runs in the check's cwd, so it names the file from there.
+            for (const path of own) await run(fixerCommand(fix, cwdPath(check, path)), [path]);
           }
         }
       } finally {

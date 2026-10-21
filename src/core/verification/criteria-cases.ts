@@ -21,7 +21,8 @@ import { caseEvidence } from "./criteria-evidence.js";
  * a case shared by several test tasks belongs to one of them (#1597); and a case another task owns
  * is never demanded of this one: text of a document another task writes, a test name a sibling
  * task's description names, or anything a task limited to a few changed lines does not name
- * (#1771, `ownedElsewhere`).
+ * (#1771, `ownedElsewhere`); nor is a case a test file another task writes already tests (#1886,
+ * `siblingTestPaths`).
  */
 
 /**
@@ -43,7 +44,7 @@ const QUOTED = /"((?:\\[^\n]|[^"\\\n])+)"|`([^`\n]+)`|\u201c([^\u201d\n]+)\u201d
 const PLACEHOLDER = /<[^<>\s][^<>]*>|\{[^{}]+\}|\.\.\.|\u2026/g;
 
 /** One quoted span of a criterion text: its literal, whether it is a code span, and where. */
-interface QuotedSpan {
+export interface QuotedSpan {
   literal: string;
   /** The span with its quotes. */
   raw: string;
@@ -60,7 +61,7 @@ const DOUBLE_QUOTED = /"((?:\\[^\n]|[^"\\\n])+)"|\u201c([^\u201d\n]+)\u201d/g;
  * trust, so none are guessed there: R53 jsonsplice paired the closing backtick of one span with the
  * opening one of the next and demanded the prose between.
  */
-function quotedSpans(text: string): QuotedSpan[] {
+export function quotedSpans(text: string): QuotedSpan[] {
   const spans: QuotedSpan[] = [];
   let masked = "";
   let offset = 0;
@@ -167,6 +168,11 @@ export interface CaseContext {
   tasks?: readonly CaseTask[];
   /** Pricing has always counted broad criteria; only the task-end walk exempts them. */
   includeBroad?: boolean;
+  /**
+   * The refusal line for a case the source contradicts, or null: with `caseSourceProbe: "on"` the
+   * host runs the criterion's command before it refuses the task for its expected output (#1836).
+   */
+  probe?: (found: CriterionCase, root: string) => Promise<string | null>;
 }
 
 /**
@@ -1122,46 +1128,89 @@ export function caseCheck(
   const paths = [...writtenTestPaths(task), ...rowDataPaths(task)];
   const cases = spec ? criterionCases(spec, task, context) : [];
   if (!paths.length || !cases.length) return undefined;
+  const siblings = siblingTestPaths(task, context.tasks ?? [], paths);
   return async (root) => {
     const programs = await programNames(root);
-    const files = await Promise.all(
-      paths.map(async (path) => {
-        const text = await readFile(join(root, path), "utf8").catch(() => "");
-        return {
-          text,
-          code: stripComments(path, text),
-          evidence: caseEvidence(path, text),
-          // A fallback that fakes the library draws nothing.
-          property: ![null, "shim"].includes(propertyTestKind(path, text)),
-        };
-      }),
-    );
-    return missingCases(
-      cases,
-      files.map((file) => file.evidence),
-    )
-      .filter(
+    const read = (list: readonly string[]) =>
+      Promise.all(
+        list.map(async (path) => {
+          const text = await readFile(join(root, path), "utf8").catch(() => "");
+          return {
+            text,
+            code: stripComments(path, text),
+            evidence: caseEvidence(path, text),
+            // A fallback that fakes the library draws nothing.
+            property: ![null, "shim"].includes(propertyTestKind(path, text)),
+          };
+        }),
+      );
+    type Read = Awaited<ReturnType<typeof read>>;
+    const unheld = (list: CriterionCase[], files: Read) =>
+      missingCases(
+        list,
+        files.map((file) => file.evidence),
+      ).filter(
         (c) =>
           !files.some(
             (file) =>
               ((file.property || c.generated) && propertyHeld(file.evidence, c.literal)) ||
               programHeld(file.evidence, c.literal, programs),
           ),
-      )
-      .map((c) =>
-        missingCases(
-          [c],
-          files.map((file) => file.text),
-        ).length
-          ? `${c.criterionId} names ${JSON.stringify(c.literal)}, and no test file this task writes (${paths.join(", ")}) contains it.`
-          : missingCases(
-                [c],
-                files.map((file) => file.code),
-              ).length
-            ? `${c.criterionId} names ${JSON.stringify(c.literal)}, found only in a comment in ${paths.join(", ")}. A comment tests nothing: use it as a test input or expected value.`
-            : `${c.criterionId} names ${JSON.stringify(c.literal)}, found only in an assertion message in ${paths.join(", ")}. Use it as a test input or expected value; the message alone is a decoy.`,
       );
+    const files = await read(paths);
+    let missing = unheld(cases, files);
+    // A case a sibling's test file already tests is not demanded again (#1886).
+    if (missing.length && siblings.length) {
+      const others = await read(siblings);
+      const open = new Set(unheld(missing, others));
+      missing = missing.filter((c) => open.has(c));
+    }
+    return Promise.all(
+      missing.map(
+        async (c) =>
+          (await context.probe?.(c, root)) ??
+          (missingCases(
+            [c],
+            files.map((file) => file.text),
+          ).length
+            ? `${c.criterionId} names ${JSON.stringify(c.literal)}, and no test file this task writes (${paths.join(", ")}) contains it.`
+            : missingCases(
+                  [c],
+                  files.map((file) => file.code),
+                ).length
+              ? `${c.criterionId} names ${JSON.stringify(c.literal)}, found only in a comment in ${paths.join(", ")}. A comment tests nothing: use it as a test input or expected value.`
+              : `${c.criterionId} names ${JSON.stringify(c.literal)}, found only in an assertion message in ${paths.join(", ")}. Use it as a test input or expected value; the message alone is a decoy.`),
+      ),
+    );
   };
+}
+
+/**
+ * The test files the plan's other tasks write, and their host-written row data (#1886). A case one
+ * of them already tests, by the
+ * same evidence as the task's own files (comments and assertion messages do not count), is held:
+ * R57 expenses-py T009 was refused for six CLI argument strings that T007's `tests/test_cli.py`
+ * tested (about 435k tokens after the refusal), md-site T009 for four URL schemes the sibling
+ * property test drew, url-shortener T004 for a code its sibling test spelled. The file must exist
+ * in the attempt's workspace; one a sibling has not written yet holds nothing.
+ */
+function siblingTestPaths(
+  task: CaseTask,
+  tasks: readonly CaseTask[],
+  own: readonly string[],
+): string[] {
+  const mine = new Set(own);
+  const paths = new Set<string>();
+  for (const other of tasks) {
+    if (other === task || (task.id !== undefined && other.id === task.id)) continue;
+    // The host-written row data of a rows task holds its cases, as the task's own does.
+    for (const path of [
+      ...(other.writes ? writtenTestPaths({ writes: other.writes }) : []),
+      ...rowDataPaths(other),
+    ])
+      if (!mine.has(path)) paths.add(path);
+  }
+  return [...paths];
 }
 
 /** What a review finding says it is about, as a corrective's case walk reads it. */

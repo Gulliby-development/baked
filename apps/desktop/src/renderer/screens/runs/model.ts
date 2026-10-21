@@ -627,6 +627,7 @@ export function budgetPanelNeeded(
     run.status === "blocked" &&
     (canExtendRun(run) ||
       run.reason === "provider_account" ||
+      run.reason === "provider_policy" ||
       run.reason === "provider_unavailable")
   );
 }

@@ -1,3 +1,4 @@
+import { posix } from "node:path";
 import { isCodeFile } from "../intelligence/language-traits.js";
 import { workspacePath } from "../specs/validate.js";
 import { WorkflowFault } from "./errors.js";
@@ -166,6 +167,14 @@ export function isWholeUnitFixer(fix: { executable: string; args: string[] }): b
 }
 
 /** The command that applies a whole-unit fixer to several files in one run. */
+/**
+ * A workspace path as a command run in the check's `cwd` names it: a check in a subproject
+ * (`cwd: "packages/web"`) gets `src/a.ts` for `packages/web/src/a.ts`, and `../x` for a path
+ * outside it. Fixers and scoped checks take workspace paths; the command runs in the check's cwd.
+ */
+export const cwdPath = (check: Pick<Check, "cwd">, path: string): string =>
+  !check.cwd || check.cwd === "." ? path : posix.relative(posix.normalize(check.cwd), path);
+
 export function wholeUnitFixerCommand(
   fix: { executable: string; args: string[] },
   paths: readonly string[],

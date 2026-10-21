@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, posix } from "node:path";
 import { type LanguageRecord, none, rowOf } from "../intelligence/language-records.js";
 import { detectLanguageFromPath } from "../intelligence/types.js";
-import { isCodePath } from "./check-policy.js";
+import { cwdPath, isCodePath } from "./check-policy.js";
 import { unresolvedChecks } from "./check-preflight.js";
 import { detectGates } from "./gates.js";
 import { programName } from "./launcher.js";
@@ -383,11 +383,15 @@ export function formatWrittenChecks(
         };
       };
       const found: Check[] = [];
-      const whole = written.filter((w) => !w.edited).map((w) => w.path);
+      // The check runs in the gate's cwd: it holds only the files under it, named from there
+      // (`fixPaths` stay workspace paths, as the host matches them).
+      const local = (path: string) => cwdPath(gate.check, path);
+      const own = written.filter((w) => !local(w.path).startsWith("../"));
+      const whole = own.filter((w) => !w.edited).map((w) => w.path);
       if (whole.length) {
         const check = scoped(
           `${gate.check.id}-written`,
-          formatter.check(command.args, whole),
+          formatter.check(command.args, whole.map(local)),
           formatter.fix(fixArgs),
           whole,
         );
@@ -396,15 +400,17 @@ export function formatWrittenChecks(
       const range = formatter.range;
       let lines = 0;
       if (range)
-        for (const { path, edited } of written) {
+        for (const { path, edited } of own) {
           if (!edited) continue;
-          // Every changed block is checked: one run per block where a run takes one range.
-          const groups = range.multiple ? [edited.ranges] : edited.ranges.map((r) => [r]);
+          // Every changed block is checked: one run per block where a run takes one range. The
+          // last block comes first, so a fixer that changes a block's line count never moves a
+          // block whose fixer runs after it.
+          const groups = range.multiple ? [edited.ranges] : edited.ranges.map((r) => [r]).reverse();
           for (const ranges of groups) {
             lines++;
             const check = scoped(
               `${gate.check.id}-lines${lines > 1 ? `-${lines}` : ""}`,
-              range.check(command.args, path, ranges, edited.text),
+              range.check(command.args, local(path), ranges, edited.text),
               range.fix(fixArgs, ranges, edited.text),
               [path],
             );
@@ -415,7 +421,7 @@ export function formatWrittenChecks(
       // A JavaScript formatter must be installed: `npx prettier` downloads one otherwise.
       if (
         command.packaged &&
-        !existsSync(join(root, "node_modules", ".bin", command.program)) &&
+        !existsSync(join(root, gate.check.cwd, "node_modules", ".bin", command.program)) &&
         !(which ?? Bun.which)(command.program, { PATH: process.env.PATH ?? "", cwd: root })
       )
         continue;

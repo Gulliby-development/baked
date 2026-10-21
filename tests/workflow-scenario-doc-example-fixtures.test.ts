@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { extractExamples, extractFixtures, missingInput, runDocExamples } from "../src/core/verification/doc-examples.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { ProcessScope } from "../src/core/workflows/process-scope.js";
+import { reproEnv } from "../src/core/verification/repro.js";
 
 // Bench round 57 (#1849). hdrlens-update's README showed its two inputs as blocks ("save the
 // following response fields as `resp.txt`:") and then ran `hdrlens check resp.txt`; the host ran
@@ -234,6 +235,12 @@ func main() {
     const files = { "go.mod": "module example.com/hdrlens\n\ngo 1.21\n", "main.go": main };
     const root = project(files);
     const readme = HDRLENS.split("Save these request fields")[0] as string;
+    // A cold `go run` compiles the standard library first, which on a loaded Windows runner took
+    // longer than the 30 s an example may run, so the example was not run. The test is about the
+    // fixture, not the compiler: warm the build cache the example's `go run` reads.
+    const built = mkdtempSync(join(tmpdir(), "baked-go-warm-"));
+    spawnSync("go", ["build", "-o", join(built, "hdrlens"), "."], { cwd: root, env: reproEnv(root) });
+    rmSync(built, { recursive: true, force: true });
     const results = await runDocExamples(new ProcessScope(), [{ path: "README.md", text: readme }], {
       root,
       files: Object.keys(files),
