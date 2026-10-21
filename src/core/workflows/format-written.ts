@@ -260,6 +260,8 @@ export const helpListsFlag: FlagProbe = (command, cwd, flag) => {
     try {
       const proc = Bun.spawnSync([command.executable, ...command.args], {
         cwd,
+        // The current PATH: without `env` the program resolves from the PATH the process began with.
+        env: process.env,
         stdout: "pipe",
         stderr: "pipe",
         timeout: PROBE_TIMEOUT_MS,
