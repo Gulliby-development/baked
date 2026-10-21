@@ -15,6 +15,7 @@ import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.j
 import { historyFixture, plannedForecastScenario } from "./helpers/initiative-planned-forecast.js";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { directoryFixers, directoryFixerScenario } from "./helpers/directory-fixer-scenario.js";
+import { baselineCreatedFilesScenario, FIRST_RUN_OUTPUTS } from "./helpers/baseline-created-files-scenario.js";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -250,6 +251,16 @@ describe("gate matrix: directory-wide fixer effects (#1593)", () => {
   for (const fixer of directoryFixers)
     test(`${fixer.name}: sibling edits are journaled before editing and resuming`, async () => {
       await directoryFixerScenario(fixer);
+    }, 60000);
+});
+// #1815: the baseline checks before approval create what a first build writes; the run must reach
+// approval with those files in its base, not stop `input_changed`.
+describe("gate matrix: files a first check run creates (#1815)", () => {
+  for (const [language, outputs] of Object.entries(FIRST_RUN_OUTPUTS))
+    test(`${language}: ${outputs.join(", ")}`, async () => {
+      const result = await baselineCreatedFilesScenario(outputs);
+      expect(result.approval).toEqual({ status: "waiting", reason: "approval" });
+      expect(result.baseline?.createdByChecks).toEqual([...outputs].sort());
     }, 60000);
 });
 const STACKS: Stack[] = ["bun", "npm", "python", "go", "rust", "maven", "dotnet"];
@@ -2063,6 +2074,19 @@ const available = (needs: string[][]) =>
   });
 
 describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
+  test.skipIf(!available([["cargo", "--version"]]))("a cargo init crate reaches approval with the detected cargo gates (#1815)", async () => {
+    const files = {
+      "Cargo.toml": '[package]\nname = "hexview"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\n',
+      "src/main.rs": 'fn main() {\n    println!("Hello, world!");\n}\n',
+      ".gitignore": "/target\n",
+    };
+    const checks = detectGates(project(files)).filter((s) => s.preselected).map((s) => s.check);
+    expect(checks.map((c) => c.executable)).toContain("cargo");
+    const result = await baselineCreatedFilesScenario([], { files, checks });
+    expect(result.approval).toEqual({ status: "waiting", reason: "approval" });
+    expect(result.baseline?.createdByChecks).toContain("Cargo.lock");
+    expect(result.final.status).toBe("completed");
+  }, 300000);
   test("pytest executes host rows and fails a wrong harness (#1596)", () => {
     const root = project({});
     const spec = { ...fixtureSpec, criteria: [{ ...fixtureSpec.criteria[0]!, given: "a JSON value", when: "it is returned", then: 'Input | Expected\n{"ok":true,"value":null} | {"ok":true,"value":null}\n[12,24] | [12,24]' }] };
