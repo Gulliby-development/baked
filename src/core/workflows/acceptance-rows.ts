@@ -239,8 +239,14 @@ function inlinePlanProblems(task: Task, rowTest: InlineRowTest, graph: TaskGraph
  * plan rejected for them came back unchanged until the run blocked. They carry no work the run
  * would do, so the host drops them as a recorded edit.
  */
-export function withoutRowsWhenOff(graph: TaskGraph, policy: RunPolicy): TaskGraph {
-  if (rowsAsDataOn(policy) || !graph.tasks.some((t) => t.rows || t.rowTest)) return graph;
+export function withoutRowsWhenOff(
+  graph: TaskGraph,
+  policy: RunPolicy,
+  spec?: Pick<Spec, "criteria">,
+): TaskGraph {
+  // A spec without a table the host reads is the same case: the planner was told nothing (#1833).
+  const offered = rowsAsDataOn(policy) && (!spec || rowsEligible(spec).length > 0);
+  if (offered || !graph.tasks.some((t) => t.rows || t.rowTest)) return graph;
   return {
     ...graph,
     tasks: graph.tasks.map((task) =>
@@ -249,7 +255,31 @@ export function withoutRowsWhenOff(graph: TaskGraph, policy: RunPolicy): TaskGra
   };
 }
 
+/**
+ * The criteria whose spec text has a complete Input | Expected table of JSON cells, the only ones a
+ * task may name in rows. The planner gets this list (#1833): R56 hdrlens rejected 4 plans in 3 of 9
+ * features for rows on prose criteria, each rejection one more planner step (25k to 40k tokens).
+ */
+export function rowsEligible(spec: Pick<Spec, "criteria">): string[] {
+  return spec.criteria.filter((c) => literalRows(spec, [c.id]).length > 0).map((c) => c.id);
+}
+
+/** What the planner is told about rows: the note and the criteria it may name, or null for none. */
+export function plannerRows(
+  spec: Pick<Spec, "criteria">,
+  policy: RunPolicy,
+): { note: string; eligible: string[] } | null {
+  if (!rowsAsDataOn(policy)) return null;
+  const eligible = rowsEligible(spec);
+  if (!eligible.length) return null;
+  return {
+    note: `${ROWS_NOTE} Only the criteria in eligible (${eligible.join(", ")}) have a table the host reads; name no other criterion in rows.`,
+    eligible,
+  };
+}
+
 export function rowPlanProblems(spec: Spec, graph: TaskGraph, policy: RunPolicy): string[] {
+  const eligible = rowsEligible(spec);
   return graph.tasks.flatMap((task) => {
     if (!task.rows && !task.rowTest) return [];
     const fail = (why: string) => [`Task ${task.id}: acceptance rows ${why}.`];
@@ -264,8 +294,7 @@ export function rowPlanProblems(spec: Spec, graph: TaskGraph, policy: RunPolicy)
       const rows = literalRows(spec, task.rows ?? []);
       return !task.rows?.some((id) => !rows.some((row) => row.criterionId === id));
     };
-    const table =
-      "need a complete Input | Expected table (an optional Scenario column) of JSON cells for every criterion";
+    const table = `need a complete Input | Expected table (an optional Scenario column) of JSON cells for every criterion; ${eligible.length ? `only ${eligible.join(", ")} ${eligible.length === 1 ? "has" : "have"} one, so name only those in rows or remove rows and rowTest` : "no criterion of the spec has one, so remove rows and rowTest"}`;
     if (inlineRows(task.rowTest)) {
       const problem = inlinePlanProblems(task, task.rowTest, graph);
       if (problem) return fail(problem);
@@ -313,10 +342,7 @@ export function rowPlanProblems(spec: Spec, graph: TaskGraph, policy: RunPolicy)
     )
       return fail("test and data files cannot have another writer");
     const rows = literalRows(spec, task.rows);
-    if (task.rows.some((id) => !rows.some((row) => row.criterionId === id)))
-      return fail(
-        "need a complete Input | Expected table (an optional Scenario column) of JSON cells for every criterion",
-      );
+    if (task.rows.some((id) => !rows.some((row) => row.criterionId === id))) return fail(table);
     return [];
   });
 }

@@ -130,8 +130,8 @@ import { addReviewNotes, noteReason } from "../verification/review-notes.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
 import { baselineDebt, baselineKeys, taskErrors } from "../verification/task-end-check.js";
 import {
+  plannerRows,
   ROWS_ARTIFACT,
-  ROWS_NOTE,
   type RowsArtifact,
   rowAuditProblems,
   rowDataPaths,
@@ -694,7 +694,7 @@ function planGraph(
     graph = recordGraphEdits(graph, transform(graph), kind, edits);
   };
   apply("approval-remarks", withoutApprovalRemarks);
-  apply("acceptance-rows-off", (input) => withoutRowsWhenOff(input, policy));
+  apply("acceptance-rows-off", (input) => withoutRowsWhenOff(input, policy, spec));
   apply("implementation-profile", (input) =>
     withImplementationProfiles(input, profiles, stageProfile),
   );
@@ -1412,7 +1412,9 @@ export class WorkflowScheduler {
                             },
                           }
                         : {}),
-                      ...(rowsAsDataOn(policy) ? { acceptanceRows: { note: ROWS_NOTE } } : {}),
+                      ...(plannerRows(spec, policy)
+                        ? { acceptanceRows: plannerRows(spec, policy) }
+                        : {}),
                       ...(testsFirstOf(policy) !== "off"
                         ? {
                             testsFirst: testsFirstNote(
