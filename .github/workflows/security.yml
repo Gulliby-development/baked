@@ -34,19 +34,18 @@ jobs:
       contents: read
     env:
       GOTOOLCHAIN: auto
-      GOBIN: ${{ runner.temp }}/bin
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
       - name: Install gitleaks
-        run: go install github.com/zricethezav/gitleaks/v8@v8.30.1
+        run: GOBIN="$RUNNER_TEMP/bin" go install github.com/zricethezav/gitleaks/v8@v8.30.1
       - name: Scan the new commits
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
-        run: '"$GOBIN/gitleaks" git --config .gitleaks.toml --redact --no-banner --exit-code 1 --log-opts="$BASE..$HEAD" .'
+        run: '"$RUNNER_TEMP/bin/gitleaks" git --config .gitleaks.toml --redact --no-banner --exit-code 1 --log-opts="$BASE..$HEAD" .'
 
   osv-scanner:
     runs-on: ubuntu-latest
@@ -54,14 +53,13 @@ jobs:
       contents: read
     env:
       GOTOOLCHAIN: auto
-      GOBIN: ${{ runner.temp }}/bin
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install osv-scanner
-        run: go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.6.0
+        run: GOBIN="$RUNNER_TEMP/bin" go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.6.0
       # Exit 1 means known vulnerabilities; 127 (an error, such as the OSV API out of reach) and
       # 128 (no packages read) fail too, so a scan that did not run is never green.
       - name: Scan the lockfiles
-        run: '"$GOBIN/osv-scanner" scan source --lockfile bun.lock --lockfile apps/desktop/bun.lock'
+        run: '"$RUNNER_TEMP/bin/osv-scanner" scan source --lockfile bun.lock --lockfile apps/desktop/bun.lock'
