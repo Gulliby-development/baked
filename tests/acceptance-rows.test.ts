@@ -59,6 +59,21 @@ describe("acceptance rows", () => {
     expect(rowAuditProblems(spec('Input | Expected\n"a  b" | 2'), graph, analysis(['"a b" | 2']))).toHaveLength(1);
   });
 
+  // R59 tags-command (#1892): the analyzer keyed a row whose expected cell is a long output by its
+  // input and scenario only, and 7 of 32 correct derivations were refused (83k tokens, 270 s).
+  test("an audit entry may name its row by id or by its leading cells when they pick one row", () => {
+    const long = JSON.stringify("RANK  TAG\n0     cp34-cp34-win32\n1     py3-none-win32\n");
+    const s = spec(`Input | Scenario | Expected\n["cp34:win32"] | full list | [${long},0]\n["cp35:win32"] | full list | [${long},0]`);
+    expect(rowAuditProblems(s, graph, analysis(['["cp34:win32"] | full list', '["cp35:win32"] | full list']))).toEqual([]);
+    expect(rowAuditProblems(s, graph, analysis(['["cp34:win32"]', "AC-001:2"]))).toEqual([]);
+    // Leading cells that two rows share name neither; a duplicate entry and a failed one still fail.
+    const shared = spec("Input | Scenario | Expected\n1 | same | 2\n1 | same | 3");
+    expect(rowAuditProblems(shared, graph, analysis(["1 | same", "1 | same"]))).toHaveLength(2);
+    expect(rowAuditProblems(s, graph, analysis(['["cp34:win32"]', '["cp34:win32"] | full list', "AC-001:2"]))).toHaveLength(1);
+    expect(rowAuditProblems(s, graph, analysis(['["cp34:win32"]', "AC-001:2"], false))).toHaveLength(2);
+    expect(rowAuditProblems(s, graph, analysis(['["cp34:win32"]', "AC-001:9"]))).toHaveLength(1);
+  });
+
   test("rejects disabled, partial, overlapping and existing-file declarations", () => {
     const s = spec("Input | Expected\n12 | 24");
     expect(rowPlanProblems(s, graph, fixturePolicy).join()).toContain("remove rows and rowTest");

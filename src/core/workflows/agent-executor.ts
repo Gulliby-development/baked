@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { ModelMessage, ProviderOptions } from "@ai-sdk/provider-utils";
 import {
   generateText,
@@ -13,7 +14,7 @@ import {
 } from "ai";
 import { z } from "zod";
 import type { AppConfig } from "../../types/index.js";
-import { cleanStepMessages } from "../agents/stream-options.js";
+import { AbnormalFinishError, cleanStepMessages } from "../agents/stream-options.js";
 import { ContextManager } from "../context/manager.js";
 import { SharedRootContext } from "../context/shared-root.js";
 import { recordModelCall } from "../diagnostics/model-events.js";
@@ -34,6 +35,7 @@ import {
   withAutomaticCache,
   withRouteEffort,
 } from "../llm/provider-options.js";
+import { dataDir } from "../platform/index.js";
 import { runSandbox } from "../security/sandbox.js";
 import { canonical } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
@@ -58,6 +60,7 @@ import { type ReplayResult, replayProblems } from "./acceptance-rows-replay.js";
 import { affectedTestsFor, taskCaseText, writtenTestsCheck } from "./affected-tests.js";
 import { assertAttemptFits, growBudgetOnProgress } from "./budget.js";
 import {
+  cwdPath,
   fixerCommand,
   fixerTiers,
   isWholeUnitFixer,
@@ -1035,10 +1038,18 @@ export class NativeAgentExecutor implements AgentExecutor {
                 for (const fix of tiers) {
                   if (isWholeUnitFixer(fix)) {
                     if (!codePaths.length) continue;
-                    await runFixer(wholeUnitFixerCommand(fix, codePaths), codePaths);
+                    await runFixer(
+                      wholeUnitFixerCommand(
+                        fix,
+                        codePaths.map((path) => cwdPath(check, path)),
+                      ),
+                      codePaths,
+                    );
                     continue;
                   }
-                  for (const path of paths) await runFixer(fixerCommand(fix, path), [path]);
+                  // The fixer runs in the check's cwd, so it names the file from there.
+                  for (const path of paths)
+                    await runFixer(fixerCommand(fix, cwdPath(check, path)), [path]);
                 }
               } finally {
                 // Also when a run throws: a whole-crate formatter may already have rewritten
@@ -1130,6 +1141,27 @@ export class NativeAgentExecutor implements AgentExecutor {
         return lastRefusal;
       };
       let rejected = 0;
+      let invalidSubmissions = 0;
+      // A submission the result schema refuses never reaches submit_result's execute; it is kept
+      // as evidence that the call was refused, as a rejected one is, on every path that offers
+      // submit_result (#1871).
+      const keepInvalidSubmissions = (
+        content: readonly { type: string; toolName?: string; error?: unknown; input?: unknown }[],
+      ) => {
+        for (const part of content)
+          if (part.type === "tool-error" && part.toolName === "submit_result") {
+            invalidSubmissions++;
+            const error = part.error instanceof Error ? part.error.message : String(part.error);
+            this.store.transaction(() =>
+              this.store.artifact(
+                request.runId,
+                "diagnostic",
+                `attempts/${request.attemptId}/invalid-${String(invalidSubmissions)}.json`,
+                canonical({ error: error.slice(0, 20_000), submitted: part.input ?? null }),
+              ),
+            );
+          }
+      };
       let taskEndChecked = false;
       let editsNoted = false;
       let syntaxRefusals = 0;
@@ -1471,6 +1503,7 @@ export class NativeAgentExecutor implements AgentExecutor {
               touchProgress(request.runId);
               finished.push(step);
               recordStep(step.usage);
+              keepInvalidSubmissions(step.content);
               this.store.recordAttemptUsage(
                 request.runId,
                 request.attemptId,
@@ -1574,6 +1607,20 @@ export class NativeAgentExecutor implements AgentExecutor {
           throw error;
         }
       }
+      // A response the provider withheld under its usage policy is a refusal, not a prose ending
+      // to correct (#1895): the scheduler retries it once and then stops for a reroute.
+      if (
+        submitted === undefined &&
+        !request.signal.aborted &&
+        result.steps.at(-1)?.finishReason === "content-filter"
+      ) {
+        try {
+          writeUsage(budget.record(finished, false, meta, "error"));
+        } catch {
+          // The refusal matters more than a usage record that could not be stored.
+        }
+        throw new AbnormalFinishError("content-filter");
+      }
       // The loop ended on a step without a tool call. Its context is intact, so the model is asked
       // once more to submit in the same conversation, with only the submit tool active, instead of
       // a context-free reformat that has neither the task id nor the evidence handles (R7: keeplint
@@ -1613,6 +1660,7 @@ export class NativeAgentExecutor implements AgentExecutor {
             onStepEnd: (step) => {
               finished.push(step);
               recordStep(step.usage);
+              keepInvalidSubmissions(step.content);
               this.store.recordAttemptUsage(
                 request.runId,
                 request.attemptId,
@@ -1759,6 +1807,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                 abortSignal: modelCalls.signal,
                 providerOptions: provider.providerOptions,
                 headers: provider.headers,
+                onStepEnd: (step) => keepInvalidSubmissions(step.content),
                 // Counted per model call so a response that skips the tool is still charged.
                 onLanguageModelCallEnd: ({ usage, content }) => {
                   correctionTokens += stepTokens(usage, request.profile.maxOutputTokens);
@@ -1836,7 +1885,7 @@ export class NativeAgentExecutor implements AgentExecutor {
   /** The recorded calls of the workspace's latest attempts, newest last (#1766). */
   private firstByteHistory(): FirstByteHistory {
     if (this.firstBytes) return this.firstBytes;
-    const history = new FirstByteHistory();
+    const history = new FirstByteHistory(join(dataDir(), "first-byte-history.json"));
     const rows = this.store.connection
       .query(
         `SELECT a.run_id, a.id, t.model_id FROM artifacts a
@@ -1872,16 +1921,17 @@ export class NativeAgentExecutor implements AgentExecutor {
     const model = () => {
       const resolved = resolveModel(request.profile.model);
       const history = this.firstByteHistory();
+      const shared = policy.sharedFirstByteHistory === "on";
       return withProviderHealth(resolved, request.profile.model, {
         stage: request.profile.output,
         firstByteLimit: (ceilingMs, call) =>
           adaptiveFirstByteMs(
             ceilingMs,
-            history.healthy(request.profile.model, call.stage, call.effort),
+            history.healthy(request.profile.model, call.stage, call.effort, shared),
           ),
         timing: (call) => {
           watch.calls.push(call);
-          history.record(request.profile.model, call);
+          history.record(request.profile.model, call, shared);
         },
         // A call that may reason silently (a CLI adapter, or high effort on a provider whose
         // reasoning does not stream) is not a stall while it waits (#1652).

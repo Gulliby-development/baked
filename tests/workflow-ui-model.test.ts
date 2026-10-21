@@ -105,6 +105,10 @@ describe("workflow panel formatting", () => {
     expect(runActions(blocked).some((a) => a.action === "reroute")).toBe(false);
     expect(runActions(snapshot({ status: "running" }), null, "codex/gpt-6-luna").some((a) => a.action === "reroute")).toBe(false);
     expect(headline(blocked, stages, false).next).toContain("M to continue");
+    // A usage-policy refusal names its cause and the switch (#1895).
+    const refused = headline(snapshot({ status: "blocked", reason: "provider_policy" }), stages, false);
+    expect(refused.now).toContain("refused the request under its usage policy");
+    expect(refused.next).toContain("M to continue");
   });
   test("headline explains state and next step", () => {
     expect(headline(snapshot(), stages, true).now).toBe("Working on Plan.");

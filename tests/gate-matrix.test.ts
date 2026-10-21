@@ -1089,7 +1089,7 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
   // An edited file: only the lines the run changed against its content before the run (#1837, R57
   // zonevet), by a formatter that formats a range; none where the formatter cannot.
   const edited = (files: Record<string, string>, path: string, before: string) =>
-    formatWrittenChecks(project(files), [], [{ path, action: "modify" }], (c) => `/usr/bin/${c}`, (p) => (p === path ? before : undefined)).map((c) => [
+    formatWrittenChecks(project(files), [], [{ path, action: "modify" }], (c) => `/usr/bin/${c}`, (p) => (p === path ? before : undefined), () => true).map((c) => [
       c.id,
       [c.executable, ...c.args].join(" "),
       c.fix ? [c.fix.executable, ...c.fix.args].join(" ") : null,
@@ -1098,8 +1098,9 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
   cell("python", "ruff, edited file: one --range check per changed block, fixer ruff format --range", () => {
     const files = { "pyproject.toml": "[project]\nname = 'p'\n[tool.ruff]\n", "t/test_a.py": "x=1\nY\nz=2\nW\n" };
     expect(edited(files, "t/test_a.py", "x=1\nz=2\n")).toEqual([
-      ["ruff-format-lines", "ruff format --check --range=2-3 t/test_a.py", "ruff format --range=2-3", ["t/test_a.py"]],
-      ["ruff-format-lines-2", "ruff format --check --range=4-5 t/test_a.py", "ruff format --range=4-5", ["t/test_a.py"]],
+      // The last block first: fixing it never moves the blocks above it.
+      ["ruff-format-lines", "ruff format --check --range=4-5 t/test_a.py", "ruff format --range=4-5", ["t/test_a.py"]],
+      ["ruff-format-lines-2", "ruff format --check --range=2-3 t/test_a.py", "ruff format --range=2-3", ["t/test_a.py"]],
     ]);
   });
   cell("python", "ruff, edited file: every changed block gets its check, the ninth too", () => {
@@ -1108,7 +1109,7 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
     const files = { "pyproject.toml": "[project]\nname = 'p'\n[tool.ruff]\n", "t/test_a.py": after };
     const checks = edited(files, "t/test_a.py", before);
     expect(checks).toHaveLength(9);
-    expect(checks.at(-1)).toEqual(["ruff-format-lines-9", "ruff format --check --range=18-19 t/test_a.py", "ruff format --range=18-19", ["t/test_a.py"]]);
+    expect(checks[0]).toEqual(["ruff-format-lines", "ruff format --check --range=18-19 t/test_a.py", "ruff format --range=18-19", ["t/test_a.py"]]);
   });
   cell("python", "black, edited file: one check with every --line-ranges", () => {
     const files = { "pyproject.toml": "[project]\nname = 'p'\n[tool.black]\n", "p/a.py": "x=1\nY\nz=2\nW\n" };
@@ -1121,6 +1122,20 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
     expect(edited(files, "src/a.js", "old\n")).toEqual([
       ["format-lines", "npx prettier --check --range-start=4 --range-end=11 src/a.js", "npx prettier --write --range-start=4 --range-end=11", ["src/a.js"]],
     ]);
+  });
+  // A formatter release without the range flag would fail every range check and its fixer (#1907).
+  cell("python", "ruff and black without their range flag: an edited file is not checked, a new file still is", () => {
+    const asked: string[] = [];
+    const without = (files: Record<string, string>, path: string, before: string) =>
+      formatWrittenChecks(project(files), [], [{ path, action: "modify" }, { path: "t/test_new.py", action: "create" }], (c) => `/usr/bin/${c}`, (p) => (p === path ? before : undefined), (command, _, flag) => {
+        asked.push(`${[command.executable, ...command.args].join(" ")} ${flag}`);
+        return false;
+      }).map((c) => c.id);
+    const ruff = { "pyproject.toml": "[project]\nname = 'p'\n[tool.ruff]\n", "t/test_a.py": "x=1\nY\n", "t/test_new.py": "x=1\n" };
+    expect(without(ruff, "t/test_a.py", "x=1\n")).toEqual(["ruff-format-written"]);
+    const black = { "pyproject.toml": "[project]\nname = 'p'\n[tool.black]\n", "t/test_a.py": "x=1\nY\n", "t/test_new.py": "x=1\n" };
+    expect(without(black, "t/test_a.py", "x=1\n")).toEqual(["black-written"]);
+    expect(asked).toEqual(["ruff format --help --range", "black --help --line-ranges"]);
   });
   cell("bun", "biome, dprint, gofmt and dotnet format take no range: an edited file is not checked", () => {
     expect(edited({ "package.json": pkg, "bun.lock": "", "biome.json": "{}", "src/a.ts": "a\nb\n" }, "src/a.ts", "a\n")).toEqual([]);

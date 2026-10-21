@@ -216,7 +216,7 @@ export function criticalPathProblems(plan: InitiativePlan, request: string): str
 function criticalFeatureProblems(plan: InitiativePlan, request: string): string[] {
   return criticalPathFeatures(plan, request).map(
     ({ feature, share, path }) =>
-      `${feature.id} is ${Math.round(share * 100)}% of the critical path (${path.join(" -> ")}) by size and files, and features on that path run one after another. If its files form groups that do not depend on each other, split it into features with its dependsOn, each with at least ${MIN_FEATURE_PATHS} files, so they run side by side, and make the features that depend on it depend on every part. Otherwise set its serial to why its parts must stay in one feature.`,
+      `${feature.id} is ${Math.round(share * 100)}% of the critical path (${path.join(" -> ")}) by size and files, and features on that path run one after another. If its files form groups that do not depend on each other, split it into features with its dependsOn, each with at least ${MIN_FEATURE_PATHS} files, so they run side by side, and make the features that depend on it depend on every part. Otherwise set its serial to why its parts must stay in one feature. Moving other features' tests into features after it does not shorten the path: those features run after it.`,
   );
 }
 

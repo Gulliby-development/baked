@@ -208,6 +208,20 @@ export interface OutsideChange {
   after: string | null;
   frozen?: true;
 }
+/**
+ * A request the provider answered with a refusal of the request itself (HTTP 400 or 422, an
+ * `invalid_request_error`), not an account problem, an outage or a rate limit (#1889).
+ */
+function rejectedRequest(error: unknown): boolean {
+  if (accountRefusal(error) || isTransient(error)) return false;
+  const info = error as { statusCode?: number; message?: string } | null;
+  return (
+    info?.statusCode === 400 ||
+    info?.statusCode === 422 ||
+    /invalid_request_error|invalid_json_schema|\binvalid schema for\b/i.test(info?.message ?? "")
+  );
+}
+
 export class NativeWorkflowService implements WorkflowService {
   readonly store: WorkflowStore;
   readonly leases: WorkspaceLeases;
@@ -412,6 +426,7 @@ export class NativeWorkflowService implements WorkflowService {
       analysisReplans: 0,
       lateDefectRounds: 0,
       derivationReturns: 0,
+      auditCarried: [],
       analysisRaised: [],
       answeredFindings: [],
       revisedRejections: [],
@@ -651,7 +666,16 @@ export class NativeWorkflowService implements WorkflowService {
           await this.providerDelay(Math.max(0, Date.parse(saved.retryAt) - Date.now()), signal);
           signal.throwIfAborted();
           if (!waiting()) return false;
-          const usage = await this.providerProbe(saved.modelId, signal);
+          let usage: unknown;
+          let rejected: string | undefined;
+          try {
+            usage = await this.providerProbe(saved.modelId, signal);
+          } catch (error) {
+            // The provider answered and refused the probe's own request: a defect of the probe,
+            // not of the provider, so the run resumes and its stage call decides (#1889).
+            if (signal.aborted || !rejectedRequest(error)) throw error;
+            rejected = (error instanceof Error ? error.message : String(error)).slice(0, 500);
+          }
           signal.throwIfAborted();
           if (!waiting()) return false;
           this.store.artifact(
@@ -661,7 +685,7 @@ export class NativeWorkflowService implements WorkflowService {
             canonical({
               modelId: saved.modelId,
               at: new Date().toISOString(),
-              usage,
+              ...(rejected === undefined ? { usage } : { probeRejected: rejected }),
             }),
           );
           try {
