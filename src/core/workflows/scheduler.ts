@@ -214,6 +214,7 @@ import {
   selectCandidate,
 } from "./candidates.js";
 import {
+  cwdPath,
   fixerCommand,
   fixerTiers,
   isCodePath,
@@ -8037,8 +8038,13 @@ ${note}`;
     );
     if (!changed) return results;
     await this.snapshot(runId, state, policy, signal);
+    // A format-written check of a fixed file is built again from the file as it is now: a fixer
+    // that changes a block's line count moves the blocks after it (#1837).
+    const refixed = new Set(failed.flatMap(({ check }) => check.fixPaths ?? []));
+    const scopedTo = (check: Check) => check.fixPaths?.some((path) => refixed.has(path)) ?? false;
     const rerun: WorkerCheck[] = [];
-    for (const result of results)
+    for (const result of results) {
+      if (scopedTo(result.check)) continue;
       rerun.push(
         failed.includes(result)
           ? {
@@ -8047,6 +8053,13 @@ ${note}`;
             }
           : result,
       );
+    }
+    if (refixed.size)
+      for (const check of this.gatedChecks(runId, state, policy, task, root).filter(scopedTo))
+        rerun.push({
+          check,
+          checked: await this.runTaskCheck(runId, child, check, policy, signal, root),
+        });
     return rerun;
   }
   private async recheck(
@@ -11445,10 +11458,18 @@ ${note}`;
             // given: one run for all the code files instead of one per file (#1269, #842).
             if (isWholeUnitFixer(fix)) {
               const code = own.filter(isCodePath);
-              if (code.length) await run(wholeUnitFixerCommand(fix, code), code);
+              if (code.length)
+                await run(
+                  wholeUnitFixerCommand(
+                    fix,
+                    code.map((path) => cwdPath(check, path)),
+                  ),
+                  code,
+                );
               continue;
             }
-            for (const path of own) await run(fixerCommand(fix, path), [path]);
+            // The fixer runs in the check's cwd, so it names the file from there.
+            for (const path of own) await run(fixerCommand(fix, cwdPath(check, path)), [path]);
           }
         }
       } finally {
