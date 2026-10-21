@@ -1,3 +1,4 @@
+import { hashJson } from "../specs/hash.js";
 import type { Analysis, RunPolicy, Spec } from "./schemas.js";
 
 /**
@@ -24,19 +25,90 @@ export function derivationAuditOn(policy: Pick<RunPolicy, "derivationAudit">): b
   return policy.derivationAudit === "on";
 }
 
-/** What the analyzer is told to do, with the criteria in full (a digested spec may omit them). */
-export function derivationAuditExtra(spec: Spec): {
+export function derivationAuditCarryOn(
+  policy: Pick<RunPolicy, "derivationAudit" | "derivationAuditCarry">,
+): boolean {
+  return policy.derivationAuditCarry === "on";
+}
+
+type Derivation = NonNullable<Analysis["derivations"]>[number];
+
+/** Audited rows carried from an earlier pass: the criterion, its key and its derivations. */
+export interface CarriedAudit {
+  criterionId: string;
+  key: string;
+  derivations: Derivation[];
+}
+
+/** A criterion's audit key: its own text and the text of the requirements it derives from. */
+export function auditKey(
+  spec: Pick<Spec, "requirements">,
+  criterion: Spec["criteria"][number],
+): string {
+  return hashJson({
+    criterion,
+    requirements: criterion.requirementIds.map(
+      (id) => spec.requirements.find((r) => r.id === id) ?? id,
+    ),
+  });
+}
+
+/**
+ * The derivations an earlier pass made for criteria that have not changed since (#1851): same
+ * criterion text, same requirement text, every row reproduced. R57 modeplan foundation's second
+ * analysis pass audited all 121 rows again (318k tokens) to answer one coverage finding.
+ */
+export function carriedDerivations(spec: Spec, carried: readonly CarriedAudit[]): Derivation[] {
+  return auditedCriteria(spec).flatMap((criterion) => {
+    const entry = carried.find((c) => c.criterionId === criterion.id);
+    return entry && entry.key === auditKey(spec, criterion) ? entry.derivations : [];
+  });
+}
+
+/** The audited criteria of this pass whose rows all matched, for the next pass to carry. */
+export function auditCarry(spec: Spec, derivations: Analysis["derivations"]): CarriedAudit[] {
+  return auditedCriteria(spec).flatMap((criterion) => {
+    const rows = (derivations ?? []).filter((d) => d.criterionId === criterion.id);
+    return rows.length && rows.every((d) => d.matches)
+      ? [{ criterionId: criterion.id, key: auditKey(spec, criterion), derivations: rows }]
+      : [];
+  });
+}
+
+/** This pass's derivations with the carried ones: a carried criterion keeps its earlier rows. */
+export function withCarried(
+  derivations: Analysis["derivations"],
+  carried: readonly Derivation[],
+): Analysis["derivations"] {
+  if (!carried.length) return derivations;
+  const ids = new Set(carried.map((d) => d.criterionId));
+  return [...carried, ...(derivations ?? []).filter((d) => !ids.has(d.criterionId))];
+}
+
+/**
+ * What the analyzer is told to do, with the criteria in full (a digested spec may omit them).
+ * Criteria in `carried` were audited by an earlier pass and are left out; none left means none.
+ */
+export function derivationAuditExtra(
+  spec: Spec,
+  carried: ReadonlySet<string> = new Set(),
+): {
   criteria: Spec["criteria"];
   requirements: Spec["requirements"];
   note: string;
 } | null {
-  const criteria = auditedCriteria(spec);
+  const criteria = auditedCriteria(spec).filter((c) => !carried.has(c.id));
   if (!criteria.length) return null;
   const ids = new Set(criteria.flatMap((c) => c.requirementIds));
+  const skipped = carried.size
+    ? ` The rows of ${[...carried].sort().join(", ")} were reproduced by an earlier pass and have not changed since; the host keeps those derivations, so leave them out of derivations.`
+    : "";
   return {
     criteria,
     requirements: spec.requirements.filter((r) => ids.has(r.id)),
-    note: "Derivation audit: these criteria state literal rows (an input and the output it must give). Recompute every row from the requirements alone, without looking at the row's own expected value, and record one entry per row in `derivations`: the row as written, the value the requirements give, whether they match, and the derivation step by step. A row whose expected value is a position, column, offset, length or count is counted, not estimated: write out the index of each character of its input up to the value in the derivation. A row that the request itself states is authoritative: when the requirements give something else, it is the requirement that is wrong, so record matches false and say so in the derivation. A derivation that rests on the request (the request states, gives or lists the row or its rule) copies the request's exact words in `quote`; the host checks the quote against the request, and a row whose quote the request does not contain is raised as a mismatch. A row the request does not list is derived from the rule as the request words it, and a reading of that rule the request leaves open is a finding of kind ambiguity, not a citation. The host raises every row with matches false as a blocking finding, so do not report those rows again in `findings`.",
+    note:
+      "Derivation audit: these criteria state literal rows (an input and the output it must give). Recompute every row from the requirements alone, without looking at the row's own expected value, and record one entry per row in `derivations`: the row as written, the value the requirements give, whether they match, and the derivation step by step. A row whose expected value is a position, column, offset, length or count is counted, not estimated: write out the index of each character of its input up to the value in the derivation. A row that the request itself states is authoritative: when the requirements give something else, it is the requirement that is wrong, so record matches false and say so in the derivation. A derivation that rests on the request (the request states, gives or lists the row or its rule) copies the request's exact words in `quote`; the host checks the quote against the request, and a row whose quote the request does not contain is raised as a mismatch. A row the request does not list is derived from the rule as the request words it, and a reading of that rule the request leaves open is a finding of kind ambiguity, not a citation. The host raises every row with matches false as a blocking finding, so do not report those rows again in `findings`." +
+      skipped,
   };
 }
 
