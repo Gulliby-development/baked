@@ -5,7 +5,8 @@
     "tsconfig.json": "{}\n",
     "package.json": "{\"name\": \"fixture\", \"scripts\": {\"test\": \"bun test\", \"lint\": \"biome check .\"}, \"dependencies\": {\"zod\": \"^3.0.0\"}, \"bin\": {\"sum\": \"src/sum.ts\"}}",
     "bun.lock": "{}",
-    "src/sum.prop.test.ts": "import fc from 'fast-check';\nfc.assert(fc.property(fc.integer(), (a) => a + 0 === a));\n"
+    "src/sum.prop.test.ts": "import fc from 'fast-check';\nfc.assert(fc.property(fc.integer(), (a) => a + 0 === a));\n",
+    ".prettierrc": "{}\n"
   },
   "outputs": {
     "tests": "src/a.test.ts:\n(fail) sum is commutative [1.00ms]\n\n 2 pass\n 1 fail\nRan 3 tests across 1 file. [12.00ms]\n",
@@ -25,7 +26,8 @@
     ],
     "gates": [
       "lint",
-      "tests"
+      "tests",
+      "format"
     ],
     "testRunners": [
       "bun 3",
@@ -40,6 +42,9 @@
     "entryPoints": [
       "sum: bun src/sum.ts"
     ],
-    "testGates": null
+    "testGates": null,
+    "formatters": [
+      "format-written: bunx prettier --check src/sum.ts src/sum.test.ts src/sum.prop.test.ts"
+    ]
   }
 }

@@ -33,6 +33,7 @@
     "mutation": null,
     "properties": null,
     "entryPoints": null,
-    "testGates": null
+    "testGates": null,
+    "formatters": null
   }
 }

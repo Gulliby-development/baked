@@ -41,6 +41,9 @@
     "entryPoints": [
       "sum: python -c import sys; from app.sum import main; sys.argv[0] = \"sum\"; sys.exit(main())"
     ],
-    "testGates": null
+    "testGates": null,
+    "formatters": [
+      "ruff-format-written: ruff format --check app/sum.py app/tests.py tests/test_props.py"
+    ]
   }
 }

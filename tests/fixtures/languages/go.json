@@ -44,6 +44,9 @@
     ],
     "testGates": [
       "go -tags props"
+    ],
+    "formatters": [
+      "gofmt-written: gofmt -l sum.go sum_test.go sum_prop_test.go cmd/sum/main.go"
     ]
   }
 }

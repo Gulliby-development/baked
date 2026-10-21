@@ -37,6 +37,7 @@
     "entryPoints": [
       "sum: java -cp build/classes/kotlin/main SumKt"
     ],
-    "testGates": null
+    "testGates": null,
+    "formatters": null
   }
 }

@@ -286,6 +286,7 @@ import {
   type ForkSeed,
   seedBytes,
 } from "./fork-stage.js";
+import { formatWrittenChecks } from "./format-written.js";
 import { outputTail } from "./gates.js";
 import { HOST_ADDITIONS, HOST_EDITS_PATH, type HostEdit, recordGraphEdits } from "./host-edits.js";
 import { isStoreError, recordHostError } from "./host-error.js";
@@ -8643,7 +8644,10 @@ ${note}`;
   ): Check[] {
     const own = taskChecks(policy, task);
     const written = this.writtenTestsCheck(runId, state, policy, task, root, own, changed);
-    const gated = written ? [...own, written] : own;
+    // The project's formatter on the code files the task wrote, when the run's checks hold no
+    // formatter for them (a repository not formatter-clean, #1837).
+    const formatted = formatWrittenChecks(root, policy.checks, task.writes);
+    const gated = [...own, ...(written ? [written] : []), ...formatted];
     const record = this.affectedRecord(state, task);
     if (record?.baseline !== "passed" || !record.checkId) return gated;
     const suite = record.checkId.replace(/-affected$/, "");
