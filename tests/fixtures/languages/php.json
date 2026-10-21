@@ -1,7 +1,7 @@
 {
   "files": {
     "src/Sum.php": "<?php\nfunction sum($a, $b) {\n  throw new \\RuntimeException(\"not implemented\");\n}\n",
-    "src/SumTest.php": "<?php\nsum(1, 2);\n",
+    "src/SumTest.php": "<?php\nsum(1, 2);\n// AC-001 example: (1, 2, 3)\n",
     "composer.json": "{}\n"
   },
   "expected": {
@@ -26,6 +26,10 @@
     "testGates": null,
     "callGraph": [
       "sum called at src/SumTest.php:2"
+    ],
+    "codeMask": [
+      "src/Sum.php:3",
+      "src/SumTest.php:3 comment"
     ]
   }
 }

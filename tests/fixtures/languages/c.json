@@ -1,7 +1,7 @@
 {
   "files": {
     "src/sum.c": "int sum(int a, int b) {\n  assert(0 && \"not implemented\");\n}\n",
-    "src/sum_test.c": "int main(void) { return sum(1, 2) - 3; }\n",
+    "src/sum_test.c": "int main(void) { return sum(1, 2) - 3; }\n// AC-001 example: (1, 2, 3)\n",
     "CMakeLists.txt": "project(fixture C)\n"
   },
   "expected": {
@@ -24,6 +24,10 @@
     "testGates": null,
     "callGraph": [
       "sum called at src/sum_test.c:1"
+    ],
+    "codeMask": [
+      "src/sum.c:2",
+      "src/sum_test.c:2 comment"
     ]
   }
 }

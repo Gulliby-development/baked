@@ -1,7 +1,7 @@
 {
   "files": {
     "bin/sum.sh": "sum() {\n  echo $(($1 + $2))\n}\n",
-    "bin/sum_test.sh": "source bin/sum.sh\nsum 1 2\n"
+    "bin/sum_test.sh": "source bin/sum.sh\nsum 1 2\n# AC-001 example: (1, 2, 3)\n"
   },
   "outputs": {
     "tests": "ok 1 - adds\nnot ok 2 - sum is commutative\n1..2\n",
@@ -29,6 +29,9 @@
     "callGraph": [
       "sum called at bin/sum_test.sh:2",
       "bin/sum.sh imported by bin/sum_test.sh"
+    ],
+    "codeMask": [
+      "bin/sum_test.sh:3 comment"
     ]
   }
 }

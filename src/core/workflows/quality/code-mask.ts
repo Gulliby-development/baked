@@ -1,4 +1,6 @@
 import { extname } from "node:path";
+import { type LanguageRecord, rowOf } from "../../intelligence/language-records.js";
+import { detectLanguageFromPath } from "../../intelligence/types.js";
 
 /** A string literal or comment the scanner is inside. */
 interface Region {
@@ -133,8 +135,57 @@ const SYNTAX: Record<string, Rule[]> = {
   ],
   ruby: [lineComment("#"), quoted('"', { multiline: true }), quoted("'", { multiline: true })],
   lua: [luaLong(true), lineComment("--"), luaLong(false), ...C_STRINGS],
+  // Elixir and shell: `#` comments, double- and single-quoted strings (#1846).
+  hash: [
+    lineComment("#"),
+    TRIPLE,
+    quoted('"', { multiline: true }),
+    quoted("'", { multiline: true }),
+  ],
+  ocaml: [blockComment("(*", "*)"), quoted('"', { multiline: true })],
+  // Zig, Solidity and ReScript: C comments and strings, ReScript's backtick templates.
+  clike: [...C_COMMENTS, ...C_STRINGS, quoted("`", { multiline: true })],
+  // Vue and Svelte components: HTML comments around a JavaScript or TypeScript script block.
+  markup: [
+    blockComment("<!--", "-->"),
+    ...C_COMMENTS,
+    ...C_STRINGS,
+    quoted("`", { multiline: true, interpolation: true }),
+  ],
   // An unknown language: the single-line rules the generator used before it knew languages.
   other: [lineComment("//"), lineComment("#"), ...C_STRINGS, quoted("`")],
+};
+
+/**
+ * The comment and string syntax of every supported language (#1846): the case walk drops comments
+ * by it, so a criterion's literal pasted into a comment is no evidence in any language.
+ */
+export const MASK_SYNTAX: LanguageRecord<keyof typeof SYNTAX> = {
+  typescript: "javascript",
+  javascript: "javascript",
+  vue: "markup",
+  svelte: "markup",
+  python: "python",
+  go: "go",
+  rust: "rust",
+  java: "jvm",
+  kotlin: "jvm",
+  scala: "jvm",
+  swift: "jvm",
+  csharp: "csharp",
+  c: "c",
+  cpp: "c",
+  objc: "c",
+  ruby: "ruby",
+  php: "php",
+  lua: "lua",
+  elixir: "hash",
+  bash: "hash",
+  dart: "dart",
+  zig: "clike",
+  solidity: "clike",
+  rescript: "clike",
+  ocaml: "ocaml",
 };
 
 const LANGUAGE: Record<string, keyof typeof SYNTAX> = {
@@ -182,9 +233,28 @@ const LANGUAGE: Record<string, keyof typeof SYNTAX> = {
  * blocks, raw and verbatim strings, block comments. String delimiters stay visible.
  */
 export function maskNonCode(path: string, text: string): string {
-  const rules = SYNTAX[LANGUAGE[extname(path).toLowerCase()] ?? "other"] ?? [];
+  return scan(path, text, true);
+}
+
+/** The file with only its comments replaced by spaces, newlines and positions kept (#1846). */
+export function stripComments(path: string, text: string): string {
+  return scan(path, text, false);
+}
+
+function syntaxOf(path: string): Rule[] {
+  const key =
+    rowOf(MASK_SYNTAX, detectLanguageFromPath(path)) ??
+    LANGUAGE[extname(path).toLowerCase()] ??
+    "other";
+  return SYNTAX[key] ?? [];
+}
+
+function scan(path: string, text: string, strings: boolean): string {
+  const rules = syntaxOf(path);
   const out = text.split("");
-  const blank = (from: number, to: number) => {
+  // In comment-only mode a string's text stays; a comment is blanked either way.
+  const blank = (from: number, to: number, comment = region?.comment === true) => {
+    if (!strings && !comment) return;
     for (let k = from; k < to && k < out.length; k++) if (out[k] !== "\n") out[k] = " ";
   };
   // Template literals whose `${…}` code is being scanned, with the brace depth to return at.
@@ -215,7 +285,7 @@ export function maskNonCode(path: string, text: string): string {
         i++;
         continue;
       }
-      if (opened.comment) blank(i, i + opened.open);
+      if (opened.comment) blank(i, i + opened.open, true);
       region = opened;
       i += opened.open;
       continue;
