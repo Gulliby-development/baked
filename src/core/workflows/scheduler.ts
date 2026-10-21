@@ -98,9 +98,11 @@ import {
   requiresSecurityReview,
 } from "../verification/findings.js";
 import {
+  clearBoundaryProperties,
   deferredOwners,
   noteSiblingFindings,
   ownerOfFinding,
+  ownsNoTests,
   specBoundaryProblems,
 } from "../verification/initiative-ownership.js";
 import {
@@ -1273,6 +1275,18 @@ export class WorkflowScheduler {
                     validateSpec,
                   )),
               );
+              const unflagged = clearBoundaryProperties(state.spec, state.initiativeBounds);
+              if (unflagged.cleared.length) {
+                state.spec = unflagged.spec;
+                this.store.transaction(() =>
+                  this.store.artifact(
+                    runId,
+                    "diagnostic",
+                    "spec-repairs/boundary-property.json",
+                    canonical({ cleared: unflagged.cleared }),
+                  ),
+                );
+              }
               const repair = repairHostBoundCriteria(state.spec);
               if (repair.repaired.length) {
                 const added = repair.spec.criteria
@@ -11815,6 +11829,8 @@ ${note}`;
   private propertyMode(runId: string, state: RuntimeState, policy: RunPolicy): PropertyTestsMode {
     const preset = presetOf(parseRunDefinition(this.store.run(runId).definition_json));
     const request = state.requestText || state.prompt;
+    // A feature whose tests belong to another initiative feature cannot hold a property test (#1891).
+    if (ownsNoTests(state.initiativeBounds)) return "off";
     if (policy.propertyTests || presetPropertyTests(preset) === "off" || bansPropertyTests(request))
       return propertyTestsOf(policy, preset, request);
     return propertyTestsOf(policy, preset, request, {
