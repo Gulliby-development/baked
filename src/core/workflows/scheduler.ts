@@ -1948,8 +1948,6 @@ export class WorkflowScheduler {
                 break;
               }
               if (!state.approvalRoot) {
-                const snapshot = await this.snapshot(runId, state, policy, signal);
-                const repository = await gitBaseline(runRoot(this.store.workspace, state));
                 const writes = state.graph.tasks.flatMap((t) => t.writes);
                 // Uncommitted user changes never enter the worktree; approving tasks that write
                 // such files needs the user's explicit choice to leave them out.
@@ -1959,18 +1957,8 @@ export class WorkflowScheduler {
                       writes.map((w) => w.path),
                     )
                   : [];
-                this.store.transaction(() =>
-                  this.store.artifact(
-                    runId,
-                    "baseline",
-                    `baselines/${snapshot.id}.json`,
-                    canonical({ snapshotId: snapshot.id, repository }),
-                  ),
-                );
-                state.manifest.baselineSnapshotId = snapshot.id;
-                await this.measureQualityBaseline(runId, state, policy, signal);
                 // Before approval, so the person sees a required check that already fails (#934).
-                await this.recordCheckBaseline(runId, state, policy, signal);
+                await this.takeBaseline(runId, state, policy, signal);
                 const baselineFailures = this.baselineFailingChecks(runId, policy);
                 const digest = approvalDigest(state);
                 // A v2 approval stage marked human never approves on its own.
@@ -4282,6 +4270,41 @@ export class WorkflowScheduler {
     if (!profile) throw new WorkflowFault("INVALID_REFERENCE", "Stage profile is missing");
     return profile;
   }
+  /**
+   * The run's baseline: the workspace snapshot, the quality measurements and the check baseline.
+   * The snapshot is taken again after the checks ran, so a file a check creates on its first run
+   * (`Cargo.lock` of a fresh crate, `__pycache__/`, `obj/`) is part of the base and not an outside
+   * change at the next workspace check (#1815: hexview stopped `input_changed` before approval).
+   * The baseline artifact lists those files as `createdByChecks`.
+   */
+  private async takeBaseline(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    signal: AbortSignal,
+  ): Promise<void> {
+    await this.snapshot(runId, state, policy, signal);
+    await this.measureQualityBaseline(runId, state, policy, signal);
+    await this.recordCheckBaseline(runId, state, policy, signal);
+    const before = state.expectedFiles ?? {};
+    // Snapshots are stored by content, so an unchanged workspace keeps the first one's id.
+    const snapshot = await this.snapshot(runId, state, policy, signal);
+    const createdByChecks = changedPaths(before, state.expectedFiles ?? {});
+    const repository = await gitBaseline(runRoot(this.store.workspace, state));
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "baseline",
+        `baselines/${snapshot.id}.json`,
+        canonical({
+          snapshotId: snapshot.id,
+          repository,
+          ...(createdByChecks.length ? { createdByChecks } : {}),
+        }),
+      ),
+    );
+    state.manifest.baselineSnapshotId = snapshot.id;
+  }
   private async snapshot(
     runId: string,
     state: RuntimeState,
@@ -5494,20 +5517,8 @@ ${note}`;
           writeFileSync(absolute, before);
         }
       }
-      const baseline = await this.snapshot(runId, state, policy, signal);
-      const repository = await gitBaseline(root);
-      this.store.transaction(() =>
-        this.store.artifact(
-          runId,
-          "baseline",
-          `baselines/${baseline.id}.json`,
-          canonical({ snapshotId: baseline.id, repository }),
-        ),
-      );
-      state.manifest.baselineSnapshotId = baseline.id;
+      await this.takeBaseline(runId, state, policy, signal);
       this.store.transaction(() => this.store.saveState(runId, state));
-      await this.measureQualityBaseline(runId, state, policy, signal);
-      await this.recordCheckBaseline(runId, state, policy, signal);
     }
     const stepId = this.store.transaction(() => this.store.beginStep(runId, "fork-seed"));
     const attempt = this.store.reserve(runId, stepId, null, 0, policy);
