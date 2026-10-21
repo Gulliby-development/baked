@@ -18,7 +18,7 @@
     "placeholders": [
       "src/sum.zig:2"
     ],
-    "gates": null,
+    "gates": ["zig-fmt", "zig-build-test"],
     "testRunners": null,
     "mutation": null,
     "properties": null,

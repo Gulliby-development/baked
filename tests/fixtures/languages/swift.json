@@ -18,7 +18,7 @@
     "placeholders": [
       "Sources/Sum.swift:2"
     ],
-    "gates": null,
+    "gates": ["swift-build", "swift-test"],
     "testRunners": null,
     "mutation": null,
     "properties": null,
