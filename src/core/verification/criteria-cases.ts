@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { rowDataPaths } from "../workflows/acceptance-rows.js";
 import { isTestCodePath } from "../workflows/quality/duplication.js";
+import { propertyTestKind } from "../workflows/quality/properties.js";
 import type { Spec } from "../workflows/schemas.js";
 import { toolchainCommand } from "../workflows/toolchain.js";
 import type { Check, Task } from "../workflows/types.js";
@@ -30,6 +31,8 @@ export interface CriterionCase {
   literal: string;
   /** A set member is a whole word: `f16` is not found inside `bf16`. */
   word?: true;
+  /** The criterion is a property: a test draws its values from a strategy (#1807). */
+  generated?: true;
 }
 
 /** Quoted spans: "...", `...` and the typographic double quotes. */
@@ -223,7 +226,13 @@ export function criterionCases(
     const key = `${criterionId}:${normalizeLiteral(literal)}`;
     if (seen.has(key) || isCheckCommand(literal, context.checks)) return;
     seen.add(key);
-    cases.push({ criterionId, literal, ...(word ? { word } : {}) });
+    const generated = spec.criteria.find((c) => c.id === criterionId)?.property !== undefined;
+    cases.push({
+      criterionId,
+      literal,
+      ...(word ? { word } : {}),
+      ...(generated ? { generated: true as const } : {}),
+    });
   };
   const tasks = context.tasks ?? [];
   const broad = (id: string): boolean =>
@@ -697,7 +706,8 @@ const SIGNIFICANT_TOKEN =
  */
 export function testsHold(text: string, literal: string): boolean {
   const unescaped = normalizeLiteral(text);
-  const normalized = normalizeLiteral(literal);
+  const normalized = metavariables(normalizeLiteral(literal));
+  if (referenceHeld(text, unescaped, normalized.trim())) return true;
   if (!normalized.replace(PLACEHOLDER, "")) return false;
   const tokens = normalized.replace(PLACEHOLDER, " ").match(SIGNIFICANT_TOKEN) ?? [];
   const significant = tokens.filter((token) => token !== "and" && token !== "or");
@@ -728,6 +738,76 @@ export function testsHold(text: string, literal: string): boolean {
   );
 }
 
+/**
+ * The upper-case metavariables of a usage line or message: `--baseline FILE <dir>`, `wrote 1
+ * finding to FILE`. A test passes a temporary path where the criterion says FILE, so they are
+ * placeholders like `<dir>` (#1807): an upper-case word after a flag or a preposition, unless
+ * the literal is nothing else.
+ */
+const METAVARIABLE =
+  /(?<=(?:(?:^|\s)--?[A-Za-z][\w-]*|\b(?:to|from|into|in|at|of|for|with))\s+)(?:FILES?|DIR|DIRECTORY|PATH|NAME|URL|NUM|COUNT|VALUE|KEY|PORT|HOST|PATTERN|ARGS?)(?![\w>}-])/g;
+function metavariables(literal: string): string {
+  const marked = literal.replace(METAVARIABLE, (word) => `<${word}>`);
+  return marked.replace(PLACEHOLDER, "").replace(/[^\p{L}\p{N}_]/gu, "") ? marked : literal;
+}
+
+/**
+ * A qualified test or member name: a `Class.method` (camelCase, PascalCase or snake_case member,
+ * so `README.md` and `config.yaml` stay paths), a Rust `module::test`, a Go `TestX/subtest`.
+ */
+function qualifiedName(literal: string): string[] | null {
+  const ident = String.raw`[A-Za-z_$][\w$]*`;
+  if (new RegExp(`^${ident}(?:::${ident})+$`).test(literal)) return literal.split("::");
+  if (/^Test[A-Z_]\w*(?:\/[\w-]+)+$/.test(literal)) return literal.split("/");
+  if (!new RegExp(`^[A-Z][\\w$]*(?:\\.${ident})+$`).test(literal)) return null;
+  const parts = literal.split(".");
+  const member = parts.at(-1) ?? "";
+  return /[a-z][A-Z]|_|^[A-Z][a-z]/.test(member) && member.length >= 3 ? parts : null;
+}
+/** A regex a test writes as its own literal, anchored or with a class or escape: `^[a-z]{7}$`. */
+const PATTERN_LITERAL = /^\^.*\$$|^\^.*[[\\]|[[\\].*\$$/;
+/** A base URL a test extends with a path: `https://sho.rt/`. */
+const URL_BASE = /^[a-z][a-z\d+.-]*:\/\/[^\s/]+(?:\/[^\s]*)?\/$/i;
+
+/**
+ * A literal that names something a test spells in parts or extends (#1807): a qualified test name
+ * is held by its last two segments as words (R54 propdrift `PropdriftTest.validates...`: a JUnit
+ * class and its method, likewise a C# `Class.Method`, a Rust `module::test`, a Go `TestX/sub`); a
+ * regex by its body, which a test writes inside `/.../` or a raw string; a base URL by any URL it
+ * begins.
+ */
+function referenceHeld(text: string, unescaped: string, literal: string): boolean {
+  const qualified = qualifiedName(literal);
+  if (qualified) {
+    const segments = qualified.slice(-2);
+    return segments.every((segment) =>
+      new RegExp(`(?<![\\w$])${escapeRegex(segment)}(?![\\w$])`).test(unescaped),
+    );
+  }
+  if (PATTERN_LITERAL.test(literal)) {
+    const body = literal.replace(/^\^/, "").replace(/\$$/, "");
+    return body.length >= 3 && (text.includes(body) || unescaped.includes(body));
+  }
+  if (URL_BASE.test(literal)) return unescaped.includes(literal);
+  return false;
+}
+
+/**
+ * Whether a property test holds a case whose values its strategies draw (#1807, R54 expenses-py:
+ * `2024-01-02`, `--from 2024-01-02`, `--category fOoD`): every flag of the literal is in the file,
+ * and every other word is, in any letter case; dates and numbers are generated.
+ */
+function propertyHeld(text: string, literal: string): boolean {
+  const tokens = normalizeLiteral(literal).match(SIGNIFICANT_TOKEN) ?? [];
+  const words = tokens.filter((t) => !/^-?\p{N}/u.test(t) && t !== "and" && t !== "or");
+  return words.every((t) =>
+    new RegExp(
+      `(?<![\\p{L}\\p{N}_-])${escapeRegex(t)}(?![\\p{L}\\p{N}_-])`,
+      t.startsWith("-") ? "u" : "iu",
+    ).test(text),
+  );
+}
+
 /** Spaced hex bytes, as a criterion describes binary input: `7B FF 0A`. */
 const HEX_BYTES = /^[\da-f]{2}(?:[\s,]+[\da-f]{2})+$/i;
 const BYTE_ESCAPES: Record<string, string> = {
@@ -740,8 +820,8 @@ const BYTE_ESCAPES: Record<string, string> = {
 /**
  * Whether a test holds spaced hex bytes the way its toolchain spells them (#1790): `0x7b, 0xff`
  * in TypeScript, Go, Rust, C#, Java and Kotlin (also with `(byte)` casts and `.toByte()`),
- * `\x7b\xff\n` in a Python or Rust byte string, decimal values in a list, or one hex string such
- * as `"7bff0a"`.
+ * `\x7b\xff\n` (or `{\xff\n`) in a Python or Rust byte string, decimal values in a list, or one
+ * hex string such as `"7bff0a"`.
  */
 function bytesHeld(text: string, literal: string): boolean {
   const bytes = literal
@@ -752,9 +832,14 @@ function bytesHeld(text: string, literal: string): boolean {
     `(?:0x0*${b}\\b|\\\\x${b}|${Number.parseInt(b, 16)}\\b${BYTE_ESCAPES[b] ? `|${BYTE_ESCAPES[b]}` : ""})`;
   const between = String.raw`(?:[\s,]|\(\s*(?:byte|u8)\s*\)|\.to(?:U)?Byte\(\))*`;
   const listed = new RegExp(`(?<![\\w.])${bytes.map(one).join(between)}`, "i");
+  // A byte string may mix printable characters with escapes (`b"{\xff\n"` for 7B FF 0A).
+  const decoded = bytes.map((b) => String.fromCharCode(Number.parseInt(b, 16))).join("");
+  const compact = bytes.join("");
   return (
     listed.test(text) ||
-    (bytes.length >= 3 && new RegExp(bytes.join(""), "i").test(text.replace(/[\s_]/g, "")))
+    normalizeLiteral(text).includes(decoded) ||
+    (bytes.length >= 3 && new RegExp(compact, "i").test(text.replace(/[\s_]/g, ""))) ||
+    new RegExp(`["']${compact}["']`, "i").test(text)
   );
 }
 
@@ -796,20 +881,32 @@ export function caseCheck(
     const files = await Promise.all(
       paths.map(async (path) => {
         const text = await readFile(join(root, path), "utf8").catch(() => "");
-        return { text, evidence: caseEvidence(path, text) };
+        return {
+          text,
+          evidence: caseEvidence(path, text),
+          // A fallback that fakes the library draws nothing.
+          property: ![null, "shim"].includes(propertyTestKind(path, text)),
+        };
       }),
     );
     return missingCases(
       cases,
       files.map((file) => file.evidence),
-    ).map((c) =>
-      missingCases(
-        [c],
-        files.map((file) => file.text),
-      ).length
-        ? `${c.criterionId} names ${JSON.stringify(c.literal)}, and no test file this task writes (${paths.join(", ")}) contains it.`
-        : `${c.criterionId} names ${JSON.stringify(c.literal)}, found only in an assertion message in ${paths.join(", ")}. Use it as a test input or expected value; the message alone is a decoy.`,
-    );
+    )
+      .filter(
+        (c) =>
+          !files.some(
+            (file) => (file.property || c.generated) && propertyHeld(file.evidence, c.literal),
+          ),
+      )
+      .map((c) =>
+        missingCases(
+          [c],
+          files.map((file) => file.text),
+        ).length
+          ? `${c.criterionId} names ${JSON.stringify(c.literal)}, and no test file this task writes (${paths.join(", ")}) contains it.`
+          : `${c.criterionId} names ${JSON.stringify(c.literal)}, found only in an assertion message in ${paths.join(", ")}. Use it as a test input or expected value; the message alone is a decoy.`,
+      );
   };
 }
 
@@ -822,7 +919,8 @@ export interface RepairFinding {
 
 /**
  * The criteria whose cases a corrective owes: the ones its findings name, by criterion, by
- * requirement or by the planned tasks that write the files they name (#1790). A repair of a whole
+ * requirement or, for a finding that names neither, by the planned tasks that write the file it
+ * names (#1790). A repair of a whole
  * feature carries every criterion, and R53 jsonsplice T010, correcting one offset bug, was refused
  * for the rows of a parser slice it never touched. A corrective whose findings name none of its
  * criteria keeps them all.
@@ -842,7 +940,8 @@ export function repairCaseTask<T extends Pick<Task, "criterionIds">>(
     for (const criterion of spec?.criteria ?? [])
       if (criterion.requirementIds.some((id) => requirements.includes(id))) named.add(criterion.id);
     const file = typeof finding.file === "string" ? finding.file.replaceAll("\\", "/") : undefined;
-    if (file)
+    // The file is a fallback: a shared file's writers carry criteria the finding is not about.
+    if (file && !list(finding.criterionIds).length && !requirements.length)
       for (const planned of tasks)
         if (planned.origin === "planned" && planned.writes.some((w) => w.path === file))
           for (const id of planned.criterionIds) named.add(id);
