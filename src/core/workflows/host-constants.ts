@@ -1,10 +1,12 @@
 /**
- * Fields of a submitted result that only the host knows, filled before the result is validated.
+ * Fields of a submitted result that only the host knows, filled before the result is validated,
+ * and ids in a shape other than the host's renamed to it (`host-ids.ts`).
  * A model that writes a wrong schema version or invents a hash has done nothing wrong worth a
  * rejection: the schema version is a constant, and the plan's hashes are replaced with the
  * accepted spec's and plan's when the task graph is stored.
  */
 import { z } from "zod";
+import { normalizeSpecIds, normalizeTaskIds } from "./host-ids.js";
 
 /** Stands in for a plan hash the model left out or got wrong; the scheduler binds the real one. */
 const PENDING_HASH = "0".repeat(64);
@@ -32,8 +34,13 @@ export function fillHostConstants(output: string, version: unknown, value: unkno
     (typeof filled.inputHash !== "string" || !HASH.test(filled.inputHash))
   )
     filled.inputHash = PENDING_HASH;
+  // Ids are labels the host names: one written as R1 or T1 is renamed, not refused (#1871).
+  if (output === "spec") return normalizeSpecIds(filled);
   if (output === "plan" && isRecord(filled.taskGraph)) {
-    const graph: Record<string, unknown> = { ...filled.taskGraph, schemaVersion: 1 };
+    const graph: Record<string, unknown> = {
+      ...normalizeTaskIds(filled.taskGraph),
+      schemaVersion: 1,
+    };
     for (const key of ["specHash", "planHash"])
       if (typeof graph[key] !== "string" || !HASH.test(graph[key] as string))
         graph[key] = PENDING_HASH;

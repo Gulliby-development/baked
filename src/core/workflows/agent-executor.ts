@@ -1077,6 +1077,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         return lastRefusal;
       };
       let rejected = 0;
+      let invalidSubmissions = 0;
       let taskEndChecked = false;
       let editsNoted = false;
       let syntaxRefusals = 0;
@@ -1415,6 +1416,22 @@ export class NativeAgentExecutor implements AgentExecutor {
               touchProgress(request.runId);
               finished.push(step);
               recordStep(step.usage);
+              // A submission the result schema refuses never reaches submit_result's execute; it
+              // is kept as evidence that the call was refused, as a rejected one is (#1871).
+              for (const part of step.content)
+                if (part.type === "tool-error" && part.toolName === "submit_result") {
+                  invalidSubmissions++;
+                  const error =
+                    part.error instanceof Error ? part.error.message : String(part.error);
+                  this.store.transaction(() =>
+                    this.store.artifact(
+                      request.runId,
+                      "diagnostic",
+                      `attempts/${request.attemptId}/invalid-${String(invalidSubmissions)}.json`,
+                      canonical({ error: error.slice(0, 20_000), submitted: part.input ?? null }),
+                    ),
+                  );
+                }
               this.store.recordAttemptUsage(
                 request.runId,
                 request.attemptId,
