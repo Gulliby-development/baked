@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
@@ -80,6 +81,8 @@ describe.skipIf(IS_WIN)("a format-written check holds the files a task writes (#
     expect(check).toMatchObject({ id: "ruff-format-written", executable: "ruff", args: ["format", "--check", "tests/test_new.py"], fix: { executable: "ruff", args: ["format"] }, required: true });
     // A run whose checks already format Python gets none.
     expect(formatWrittenChecks(root, [{ ...check!, id: "ruff-format", args: ["format", "--check", "."] }], writes)).toEqual([]);
+    // A ruff format check the run keeps on one clean old file does not hold the new one.
+    expect(formatWrittenChecks(root, [{ ...check!, id: "ruff-format", args: ["format", "--check", "logslice/old.py"] }], writes)).toMatchObject([{ id: "ruff-format-written", args: ["format", "--check", "tests/test_new.py"] }]);
     // An edited file keeps its old formatting (#1582).
     expect(formatWrittenChecks(root, [], [{ path: "logslice/old.py", action: "modify" }])).toEqual([]);
     // Nor a formatter that is not installed.
@@ -168,6 +171,22 @@ describe("the lines a task changes in a file it edits", () => {
     // Without its content before the run an edited file is not checked; one the run created is checked whole.
     expect(formatWrittenChecks(root, [], [writes[0]!], undefined, () => undefined)).toEqual([]);
     expect(formatWrittenChecks(root, [], [writes[0]!], undefined, () => null)).toMatchObject([{ id: "ruff-format-written", args: ["format", "--check", "tests/test_docs.py"] }]);
+  });
+
+  test.skipIf(IS_WIN)("ruff: the ninth changed block is checked and fixed by its own range", () => {
+    const before = Array.from({ length: 9 }, (_, i) => `a${i} = ${i}\n`).join("");
+    // Nine blocks: the first eight formatted, only the ninth not.
+    const after = Array.from({ length: 9 }, (_, i) => `a${i} = ${i}\n${i === 8 ? "x=1" : "y = 1"}\n`).join("");
+    const root = project({ ...PROJECT, "tests/test_many.py": after });
+    const checks = formatWrittenChecks(root, [], [{ path: "tests/test_many.py", action: "modify" }], undefined, () => before);
+    expect(checks).toHaveLength(9);
+    const run = (c: { executable: string; args: string[] }, ...extra: string[]) =>
+      spawnSync(c.executable, [...c.args, ...extra], { cwd: root }).status;
+    expect(checks.map((c) => run(c))).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    const ninth = checks[8]!;
+    expect(run(ninth.fix!, "tests/test_many.py")).toBe(0);
+    expect(run(ninth)).toBe(0);
+    expect(readFileSync(join(root, "tests/test_many.py"), "utf8")).toBe(after.replace("x=1", "x = 1"));
   });
 
   test.skipIf(IS_WIN)("zonevet: the appended test is formatted, the old unformatted line is left alone, and the run completes", async () => {

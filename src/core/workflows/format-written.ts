@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import { type LanguageRecord, none, rowOf } from "../intelligence/language-records.js";
 import { detectLanguageFromPath } from "../intelligence/types.js";
 import { isCodePath } from "./check-policy.js";
@@ -203,17 +203,38 @@ function formatterCommand(check: Pick<Check, "executable" | "args">): {
   };
 }
 
-/** Whether a check runs one of a language's formatters, whole-tree or scoped. */
-const formats = (check: Check, formatters: readonly FileFormatter[]): boolean => {
+/** The formatter subcommands before a gate's paths (`ruff format`, `dprint check`, `go fmt`). */
+const SUBCOMMANDS = new Set(["format", "check", "fmt"]);
+/** Arguments that narrow a formatter to some files or lines of its paths. */
+const NARROWING = /^--(include|exclude|range|line-ranges)/;
+/** A project or solution file `dotnet format` takes: it formats the files under its directory. */
+const PROJECT_FILE = /\.(sln|slnx|csproj|fsproj|vbproj)$/;
+
+/**
+ * Whether a check runs one of a language's formatters on `path`: the formatter, unnarrowed, on
+ * the path or a directory above it, from its `cwd` (no path runs on the whole of `cwd`). A path
+ * operand that cannot be told from a flag's value counts as one, so a coverage it cannot establish
+ * leaves the path to the format-written check: `ruff format --check legacy/clean.py` does not hold
+ * a new `tests/test_new.py`.
+ */
+const formatsPath = (check: Check, formatters: readonly FileFormatter[], path: string): boolean => {
   const { program, args } = formatterCommand(check);
-  return formatters.some((f) => f.runs(program, args));
+  if (!formatters.some((f) => f.runs(program, args))) return false;
+  if (args.some((arg) => NARROWING.test(arg))) return false;
+  const words = args.filter((arg) => !arg.startsWith("-"));
+  const operands = SUBCOMMANDS.has(words[0] ?? "") ? words.slice(1) : words;
+  const under = (dir: string) => dir === "." || path === dir || path.startsWith(`${dir}/`);
+  if (!operands.length) return under(posix.normalize(check.cwd ?? "."));
+  return operands.some((operand) => {
+    const target = operand.replace(/\\/g, "/").replace(/\/\.\.\.$/, "");
+    const dir = PROJECT_FILE.test(target) ? posix.dirname(target) : target;
+    return under(posix.normalize(posix.join(check.cwd ?? ".", dir)).replace(/\/$/, ""));
+  });
 };
 
 /** How long a format-written check may run. */
 export const FORMAT_WRITTEN_TIMEOUT_MS = 120_000;
 
-/** At most this many range checks per edited file; the rest of its changes go unchecked. */
-export const MAX_RANGE_CHECKS = 8;
 /** Line diffs larger than this many cells count their whole changed middle as one range. */
 const MAX_DIFF_CELLS = 4_000_000;
 
@@ -288,8 +309,9 @@ interface Written {
  * (`fixPaths`). A file the task creates, or one the run created (`base` gives null), is checked
  * whole. A file it edits is checked on the lines the run changed against `base` (its content before
  * the run's first write), by a formatter that formats a range; with no such formatter, or no base,
- * it is not checked. None for a language the checks already format (a `format` script counts for
- * the npm languages), and none whose program does not resolve: a required check that cannot start
+ * it is not checked. None for a file the checks already format (a check of the language's formatter
+ * on it or a directory above it; a `format` script counts for the npm languages), and none whose
+ * program does not resolve: a required check that cannot start
  * faults the run.
  */
 export function formatWrittenChecks(
@@ -322,12 +344,16 @@ export function formatWrittenChecks(
     files.set(language, [...(files.get(language) ?? []), written]);
   }
   if (!files.size) return [];
-  const offered = detectGates(root, [...checks]).filter((s) => s.check.fix);
+  // Every gate the project offers, the run's own included: one on other files leaves these to us.
+  const offered = detectGates(root).filter((s) => s.check.fix);
   const out: Check[] = [];
-  for (const [language, written] of files) {
+  for (const [language, all] of files) {
     const formatters = rowOf(FILE_FORMATTERS, language) ?? [];
     const npm = formatters.some((f) => NPM_FORMATTERS.includes(f));
-    if (checks.some((c) => formats(c, formatters) || (npm && c.id === "format"))) continue;
+    if (npm && checks.some((c) => c.id === "format")) continue;
+    // A formatter check the run holds on other files leaves these to this check.
+    const written = all.filter((w) => !checks.some((c) => formatsPath(c, formatters, w.path)));
+    if (!written.length) continue;
     for (const gate of offered) {
       const command = formatterCommand(gate.check);
       const formatter = formatters.find((f) => f.runs(command.program, command.args));
@@ -372,9 +398,8 @@ export function formatWrittenChecks(
       if (range)
         for (const { path, edited } of written) {
           if (!edited) continue;
-          const groups = range.multiple
-            ? [edited.ranges]
-            : edited.ranges.slice(0, MAX_RANGE_CHECKS).map((r) => [r]);
+          // Every changed block is checked: one run per block where a run takes one range.
+          const groups = range.multiple ? [edited.ranges] : edited.ranges.map((r) => [r]);
           for (const ranges of groups) {
             lines++;
             const check = scoped(

@@ -969,6 +969,27 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
     const whole = detectGates(project(files)).find((s) => s.check.id === "ruff-format")!.check;
     expect(scoped(files, ["tests/test_new.py"], [whole])).toEqual([]);
   });
+  cell("python", "a formatter check on other files holds no written file outside them", () => {
+    const files = { "pyproject.toml": "[project]\nname = 'p'\n[tool.ruff]\n", "legacy/clean.py": "x = 1\n", "tests/test_new.py": "x=1\n", "tests/test_b.py": "x=1\n" };
+    const whole = detectGates(project(files)).find((s) => s.check.id === "ruff-format")!.check;
+    const written = [["ruff-format-written", "ruff format --check tests/test_new.py", "ruff format", true]];
+    // One file, another directory, a cwd elsewhere, or a narrowed run: the new file still gets its check.
+    expect(scoped(files, ["tests/test_new.py"], [{ ...whole, args: ["format", "--check", "legacy/clean.py"] }])).toEqual(written);
+    expect(scoped(files, ["tests/test_new.py"], [{ ...whole, args: ["format", "--check", "legacy"] }])).toEqual(written);
+    expect(scoped(files, ["tests/test_new.py"], [{ ...whole, cwd: "legacy" }])).toEqual(written);
+    expect(scoped(files, ["tests/test_new.py"], [{ ...whole, args: [...whole.args, "--exclude", "tests"] }])).toEqual(written);
+    // The file itself, its directory or the cwd above it: held already, nothing to add for it.
+    expect(scoped(files, ["tests/test_new.py"], [{ ...whole, args: ["format", "--check", "tests/test_new.py"] }])).toEqual([]);
+    expect(scoped(files, ["tests/test_new.py"], [{ ...whole, args: ["format", "--check", "./tests/"] }])).toEqual([]);
+    expect(scoped(files, ["tests/test_new.py"], [{ ...whole, cwd: "tests", args: ["format", "--check", "."] }])).toEqual([]);
+    // Only the written files the check leaves out.
+    expect(scoped(files, ["tests/test_new.py", "tests/test_b.py"], [{ ...whole, args: ["format", "--check", "tests/test_b.py"] }])).toEqual(written);
+  });
+  cell("go", "gofmt on ./... holds every written Go file", () => {
+    const files = { "go.mod": "module p\n\ngo 1.22\n", "a/b.go": "package a\n" };
+    const gate = { id: "gofmt", executable: "gofmt", args: ["-l", "./..."], cwd: ".", timeoutMs: 120000, required: true, scope: "feature" as const, envNames: [], writes: [] };
+    expect(scoped(files, ["a/b.go"], [gate])).toEqual([]);
+  });
   cell("python", "black: black --check on the written files, fixer black", () => {
     const files = { "pyproject.toml": "[project]\nname = 'p'\n[tool.black]\n", "p/new.py": "x=1\n" };
     expect(scoped(files, ["p/new.py"])).toEqual([["black-written", "black --check p/new.py", "black", true]]);
@@ -1005,6 +1026,14 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
       ["ruff-format-lines", "ruff format --check --range=2-3 t/test_a.py", "ruff format --range=2-3", ["t/test_a.py"]],
       ["ruff-format-lines-2", "ruff format --check --range=4-5 t/test_a.py", "ruff format --range=4-5", ["t/test_a.py"]],
     ]);
+  });
+  cell("python", "ruff, edited file: every changed block gets its check, the ninth too", () => {
+    const before = Array.from({ length: 9 }, (_, i) => `a${i}\n`).join("");
+    const after = Array.from({ length: 9 }, (_, i) => `a${i}\nx=${i}\n`).join("");
+    const files = { "pyproject.toml": "[project]\nname = 'p'\n[tool.ruff]\n", "t/test_a.py": after };
+    const checks = edited(files, "t/test_a.py", before);
+    expect(checks).toHaveLength(9);
+    expect(checks.at(-1)).toEqual(["ruff-format-lines-9", "ruff format --check --range=18-19 t/test_a.py", "ruff format --range=18-19", ["t/test_a.py"]]);
   });
   cell("python", "black, edited file: one check with every --line-ranges", () => {
     const files = { "pyproject.toml": "[project]\nname = 'p'\n[tool.black]\n", "p/a.py": "x=1\nY\nz=2\nW\n" };
