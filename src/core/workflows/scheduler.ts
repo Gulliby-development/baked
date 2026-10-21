@@ -4174,7 +4174,7 @@ export class WorkflowScheduler {
     runId: string,
     policy: RunPolicy,
   ): { planCost: ReturnType<typeof planCostOf>; budgetWarning?: string } {
-    const planCost = planCostOf(this.store, runId);
+    const planCost = planCostOf(this.store, runId, policy);
     const dollars = planCostWarning(
       planCost,
       currentCostCap(this.store, runId, policy),

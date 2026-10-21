@@ -19,9 +19,10 @@ import { WorkflowFault } from "./errors.js";
 import type { initiativePriceSamples } from "./initiatives/forecast.js";
 import { InitiativeService, type ShareGateRecord, shareShortfall } from "./initiatives/service.js";
 import { recordingOf } from "./model-recording.js";
+import { type PlanCostRate, planCostOf } from "./plan-cost.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { NativeWorkflowService } from "./service.js";
-import { costStageOf } from "./stage-price.js";
+import { costStageOf, runPrices } from "./stage-price.js";
 import { WorkflowStore } from "./store.js";
 
 /**
@@ -1081,6 +1082,97 @@ function replayStarts(
     dispose();
     for (const history of histories.values()) history.dispose();
   }
+}
+
+/** A plan approval of a trace, priced again by the current code at the moment it was asked. */
+export interface PlanPriceReplay {
+  runId: string;
+  model: string;
+  /** The planned tasks' dollars the approval showed. */
+  recorded: { low: number; high: number };
+  /** The same plan priced by the current code; null when it has no price. */
+  replayed: { low: number; high: number } | null;
+  rate: PlanCostRate | null;
+  /** What the run's task attempts after the approval cost. */
+  actualUsd: number;
+}
+
+/**
+ * Replays the price of every accepted plan approval of a trace (#1792): a fresh copy is rewound to
+ * the moment the plan was approved (runs made later removed, runs still going then not counted as
+ * finished, the run itself rewound like a run replay) and `planCostOf` prices its tasks again,
+ * with `historyStores` as its policy's history (other traces, opened by the caller); null prices
+ * them without a policy, from the run's own attempts alone, as before #1792. The approval is
+ * compared with what the run's tasks then cost.
+ */
+export function replayPlanPrices(
+  path: string,
+  historyStores: string[] | null = [],
+): PlanPriceReplay[] {
+  const read = openTrace(path);
+  let approvals: (Omit<PlanPriceReplay, "replayed" | "rate"> & { at: number })[];
+  try {
+    const db = read.store.connection;
+    const rows = db
+      .query(
+        "SELECT run_id, decided_at, body_json FROM requests WHERE kind='approval' AND status='accepted' AND decided_at IS NOT NULL ORDER BY decided_at",
+      )
+      .all() as { run_id: string; decided_at: number; body_json: string }[];
+    approvals = rows.flatMap((row) => {
+      const shown = (
+        JSON.parse(row.body_json) as {
+          planCost?: { implementation?: { model: string; usd: { low: number; high: number } } };
+        }
+      ).planCost?.implementation;
+      if (!shown) return [];
+      const started = new Map(read.store.attempts(row.run_id).map((a) => [a.id, a.started_at]));
+      const actualUsd = runPrices(read.store, row.run_id)
+        .samples.filter(
+          (a) => a.stage === "implement" && (started.get(a.attemptId) ?? 0) > row.decided_at,
+        )
+        .reduce((sum, a) => sum + (a.costUsd ?? 0), 0);
+      return [
+        {
+          runId: row.run_id,
+          at: row.decided_at,
+          model: shown.model,
+          recorded: shown.usd,
+          actualUsd,
+        },
+      ];
+    });
+  } finally {
+    read.dispose();
+  }
+  return approvals.map(({ at, ...approval }) => {
+    const { store, dispose } = openTrace(path);
+    try {
+      const db = store.connection;
+      db.transaction(() => {
+        const later = db
+          .query("SELECT id FROM runs WHERE created_at>? AND id<>?")
+          .all(at, approval.runId) as { id: string }[];
+        removeRuns(
+          db,
+          runTables(db),
+          later.map((r) => r.id),
+        );
+        db.run("UPDATE runs SET status='running' WHERE updated_at>? AND id<>?", [
+          at,
+          approval.runId,
+        ]);
+        runRewinder(store, approval.runId)(at);
+      })();
+      const cost = planCostOf(
+        store,
+        approval.runId,
+        historyStores ? { sizing: { historyStores } } : undefined,
+      ).implementation;
+      return { ...approval, replayed: cost?.usd ?? null, rate: cost?.rate ?? null };
+    } finally {
+      dispose();
+    }
+  });
 }
 
 export interface TraceReplay {
