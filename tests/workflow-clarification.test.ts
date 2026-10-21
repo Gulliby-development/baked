@@ -139,6 +139,15 @@ describe("plan-only analysis findings", () => {
     expect(planOnlyFindings([finding("coverage", refs)])).toHaveLength(1);
     expect(planOnlyFindings([finding("coverage", ["T002", "AC-003"])])).toHaveLength(1);
   });
+  test("a coverage gap that names a requirement or the spec itself goes to the spec author (#1893)", () => {
+    // Bench round 59, jsonshape 2f1c8ef1: F-001 went to the planner twice before specify ran.
+    const r59 = ["spec.json:FR-006", "spec.json:AC-007", "plan.md:Verification"];
+    expect(planOnlyFindings([finding("coverage", r59)])).toEqual([]);
+    expect(planOnlyFindings([finding("coverage", ["NFR-002", "tasks.json"])])).toEqual([]);
+    expect(planOnlyFindings([finding("coverage", ["spec.json", "plan.md:Tasks"])])).toEqual([]);
+    expect(planOnlyFindings([finding("coverage", ["plan.md:Tasks", "T003"])])).toHaveLength(1);
+    expect(planOnlyFindings([finding("inconsistency", ["plan.md", "T002"])])).toHaveLength(1);
+  });
   test("a spec reference, another kind or no blocking finding keeps the person in the loop", () => {
     expect(planOnlyFindings([finding("coverage", ["tasks.json"]), finding("coverage", ["AC-002"])])).toEqual([]);
     expect(planOnlyFindings([finding("inconsistency", ["plan.md", "spec.json:FR-002"])])).toEqual([]);
