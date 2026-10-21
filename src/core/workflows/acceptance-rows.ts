@@ -233,11 +233,28 @@ function inlinePlanProblems(task: Task, rowTest: InlineRowTest, graph: TaskGraph
   return null;
 }
 
+/**
+ * The planned tasks without rows and rowTest when the policy has rows as data off (#1816). The
+ * planner is never told about the fields then, but they are in the task schema it fills, and a
+ * plan rejected for them came back unchanged until the run blocked. They carry no work the run
+ * would do, so the host drops them as a recorded edit.
+ */
+export function withoutRowsWhenOff(graph: TaskGraph, policy: RunPolicy): TaskGraph {
+  if (rowsAsDataOn(policy) || !graph.tasks.some((t) => t.rows || t.rowTest)) return graph;
+  return {
+    ...graph,
+    tasks: graph.tasks.map((task) =>
+      task.rows || task.rowTest ? { ...task, rows: undefined, rowTest: undefined } : task,
+    ),
+  };
+}
+
 export function rowPlanProblems(spec: Spec, graph: TaskGraph, policy: RunPolicy): string[] {
   return graph.tasks.flatMap((task) => {
     if (!task.rows && !task.rowTest) return [];
     const fail = (why: string) => [`Task ${task.id}: acceptance rows ${why}.`];
-    if (!rowsAsDataOn(policy)) return fail('require rowsAsData: "on"');
+    if (!rowsAsDataOn(policy))
+      return [`Task ${task.id}: remove rows and rowTest; acceptance rows are off for this run.`];
     if (!task.rows?.length || !task.rowTest) return fail("require both rows and rowTest");
     if (task.sizingSlice) return fail("cannot share a sizing slice; use a separate harness task");
     const owned = () =>

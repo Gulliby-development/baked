@@ -141,6 +141,7 @@ import {
   rowsArtifact,
   rowsAsDataOn,
   SPEC_ROWS_NOTE,
+  withoutRowsWhenOff,
 } from "./acceptance-rows.js";
 import { INLINE_HARNESS, type InlineRowFile, withInlineRows } from "./acceptance-rows-inline.js";
 import {
@@ -687,6 +688,7 @@ function planGraph(
     graph = recordGraphEdits(graph, transform(graph), kind, edits);
   };
   apply("approval-remarks", withoutApprovalRemarks);
+  apply("acceptance-rows-off", (input) => withoutRowsWhenOff(input, policy));
   apply("implementation-profile", (input) =>
     withImplementationProfiles(input, profiles, stageProfile),
   );
