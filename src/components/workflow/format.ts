@@ -440,6 +440,8 @@ export function eventText(event: WorkflowEvent, stages: StageView[]): string | n
       return event.payload.mode === "advisory"
         ? `Would stop (advisory): ${event.payload.summary}`
         : null;
+    case "attempt.recovery":
+      return `Stalled agent call, recovery: ${event.payload.detail}`;
     case "attempt.advisory":
       return `Progress watcher ${event.payload.action === "stopped" ? "stopped the agent call" : "warned the agent"}: ${event.payload.detail}`;
     case "task.state_changed":

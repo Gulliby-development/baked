@@ -23,6 +23,7 @@ interface Accepted {
   newFirstByteStops?: number;
   newCostStops?: number;
   newTestSplits?: number;
+  newRecoveries?: number;
   newPolicyStops?: number;
   newShareStops?: number;
   newStartStops?: number;
@@ -70,6 +71,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newFirstByteStops: run.newFirstByteStops,
           newCostStops: run.newCostStops,
           newTestSplits: run.newTestSplits,
+          newRecoveries: run.newRecoveries,
           newPolicyStops: run.newPolicyStops,
         }).toEqual({
           run: run.runId,
@@ -78,6 +80,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newFirstByteStops: allowed?.newFirstByteStops ?? 0,
           newCostStops: allowed?.newCostStops ?? 0,
           newTestSplits: allowed?.newTestSplits ?? 0,
+          newRecoveries: allowed?.newRecoveries ?? 0,
           newPolicyStops: allowed?.newPolicyStops ?? 0,
         });
       }
@@ -349,6 +352,18 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
     const path = join(ROOT, "R52/url-shortener.sqlite.gz");
     expect(replayTrace(path, { testSplit: () => true }).runs.reduce((n, r) => n + r.newTestSplits, 0)).toBeGreaterThan(0);
     expect(replayTrace(path).runs.reduce((n, r) => n + r.newTestSplits, 0)).toBe(0);
+  }, 120000);
+
+  test("R56 hdrlens: the stalled analyze call that waited for the provider now climbs the recovery ladder (#1877)", () => {
+    const path = join(ROOT, "R56/hdrlens.sqlite.gz");
+    // Before #1877 a stall had no ladder: the replay with no rung matches the recording.
+    const before = replayTrace(path, { stallRule: () => null }).runs.flatMap((r) => r.stallLadder);
+    expect(before.length).toBeGreaterThan(0);
+    expect(before.every((b) => b.recorded === "none" && b.replayed === "none")).toBe(true);
+    const now = replayTrace(path).runs.flatMap((r) => r.stallLadder);
+    expect(now.map((b) => [b.stage, b.model, b.replayed])).toEqual([
+      ["analyze", "codex/gpt-6.1-sol", "fresh-session"],
+    ]);
   }, 120000);
 });
 

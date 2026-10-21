@@ -267,6 +267,14 @@ export function replay(events: readonly WorkflowEvent[], trace = emptyTrace()): 
             "err",
           );
         break;
+      case "attempt.recovery": {
+        const stageId = attempts.get(event.payload.attemptId);
+        line(
+          `${stageLabel(stageId ?? "An")} call stalled, recovery: ${event.payload.detail}`,
+          "warn",
+        );
+        break;
+      }
       case "attempt.advisory": {
         const stageId = attempts.get(event.payload.attemptId);
         const attempt = stageId ? `the ${stageLabel(stageId)} attempt` : "an attempt";

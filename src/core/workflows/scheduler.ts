@@ -519,6 +519,16 @@ import {
   WorkflowSchema,
 } from "./schemas.js";
 import { specSizeNote, specSizeProblems } from "./spec-size.js";
+import {
+  isStall,
+  ladderPath,
+  ladderSummary,
+  nextRung,
+  type RecoveryPlacement,
+  readLadder,
+  rungText,
+  writeLadder,
+} from "./stall-ladder.js";
 import { recordWouldStop, stopFault } from "./stop-reasons.js";
 import {
   repairUncoveredCriteria,
@@ -4606,6 +4616,8 @@ export class WorkflowScheduler {
        * they run at: one step below the previous call's, or its own when none is lower.
        */
       outputLimit?: { effort?: RouteEffort; tries: number };
+      /** The recovery ladder's rung after a stalled call (#1877). */
+      recovery?: RecoveryPlacement;
     } = {},
   ): Promise<unknown> {
     let extra = inputExtra;
@@ -4650,8 +4662,27 @@ export class WorkflowScheduler {
         },
       };
     const route = this.route(runId, stepId, stageProfile);
-    const effort = placement.outputLimit ? placement.outputLimit.effort : route.effort;
-    const fallbackIndex = placement.fallbackIndex ?? 0;
+    const ladderAt = ladderPath({
+      stageId: this.store.rootStage(runId, stepId),
+      profileId: stageProfile.id,
+      taskId: task?.id ?? null,
+      inputHash: this.store.run(runId).input_hash,
+      models: route.models,
+    });
+    // A driver that restarted mid-ladder continues at the rung it was about to run, as does a
+    // retry below that does not carry the rung; a person's resume after the ladder ran out starts
+    // a new one.
+    let continued: RecoveryPlacement | undefined;
+    if (!placement.recovery && placement.fallbackIndex === undefined) {
+      const ladder = readLadder(this.store, runId, ladderAt);
+      if (ladder.exhausted) writeLadder(this.store, runId, ladderAt, { steps: [] });
+      else continued = ladder.next;
+    }
+    const recovery = placement.recovery ?? continued;
+    const effort = placement.outputLimit
+      ? placement.outputLimit.effort
+      : (recovery?.effort ?? route.effort);
+    const fallbackIndex = placement.fallbackIndex ?? continued?.fallbackIndex ?? 0;
     const largerWindow = placement.largerWindow === true;
     const profile = this.routed(runId, stepId, stageProfile, fallbackIndex, largerWindow);
     // Under `context: auto` a step whose context does not fit tries the model's largest window
@@ -4792,6 +4823,7 @@ export class WorkflowScheduler {
             ...(digested && state.spec ? { [READ_CRITERION]: readCriterionTool(state.spec) } : {}),
           }
         : undefined;
+    const started = Date.now();
     try {
       if (task && profile.output === "implementation") {
         // Save what this attempt receives, before it can fail or the findings change (#1566).
@@ -4883,6 +4915,8 @@ export class WorkflowScheduler {
           : {}),
         ...(host ? { hostTools: host } : {}),
         ...(effort ? { effort } : {}),
+        ...(recovery?.freshSession ? { freshSession: true } : {}),
+        ...(recovery?.transport ? { transport: recovery.transport } : {}),
       });
       const rowRoot = placement.root ?? runRoot(this.store.workspace, state);
       // An edit that dropped or changed an inline block gets it back before the checks (#1763).
@@ -4917,6 +4951,8 @@ export class WorkflowScheduler {
           canonical(output),
         );
         recordProviderOutcome(this.store, runId, attempt, profile.id, task?.id);
+        if (this.store.latestArtifact(runId, ladderAt))
+          writeLadder(this.store, runId, ladderAt, { steps: [] });
       });
       if (
         this.store.run(runId).input_hash !== inputHash ||
@@ -4942,6 +4978,96 @@ export class WorkflowScheduler {
       const outcome = signal.aborted
         ? null
         : recordProviderOutcome(this.store, runId, attempt, profile.id, task?.id, error);
+      // A stalled call that changed nothing climbs the recovery ladder at once (#1877): a fresh
+      // session, the other transport, a lower effort, the next model of the route, then a person.
+      // A route with no rung to try keeps the provider wait and its health probes.
+      if (
+        isStall(error) &&
+        !signal.aborted &&
+        !this.store.effects(runId).some((effect) => effect.attempt_id === attempt)
+      ) {
+        const ladder = readLadder(this.store, runId, ladderAt);
+        const steps = [
+          ...ladder.steps,
+          {
+            rung: recovery?.rung ?? ("first" as const),
+            attemptId: attempt,
+            modelId: profile.model,
+            seconds: Math.round((Date.now() - started) / 1000),
+            error: error instanceof Error ? error.message : String(error),
+          },
+        ];
+        const next = nextRung(recovery, {
+          model: profile.model,
+          models: route.models,
+          fallbackIndex,
+          effort,
+        });
+        if (next) {
+          const nextModel = route.models[next.fallbackIndex] ?? profile.model;
+          this.store.transaction(() => {
+            writeLadder(this.store, runId, ladderAt, { steps, next });
+            this.store.emit(runId, {
+              type: "attempt.recovery",
+              payload: {
+                attemptId: attempt,
+                rung: next.rung,
+                modelId: nextModel,
+                ...(next.transport ? { transport: next.transport } : {}),
+                ...(next.effort ? { effort: next.effort } : {}),
+                detail:
+                  `${error instanceof Error ? error.message : String(error)}; trying ${rungText(next.rung)} on ${nextModel}`.slice(
+                    0,
+                    500,
+                  ),
+              },
+            });
+          });
+          return this.call(
+            runId,
+            stepId,
+            state,
+            policy,
+            stageProfile,
+            extra,
+            signal,
+            task,
+            0,
+            validate,
+            limits,
+            hostTools,
+            {
+              ...(placement.root ? { root: placement.root } : {}),
+              ...(next.fallbackIndex ? { fallbackIndex: next.fallbackIndex } : {}),
+              ...(placement.primaryError !== undefined
+                ? { primaryError: placement.primaryError }
+                : {}),
+              recovery: next,
+            },
+          );
+        }
+        if (recovery) {
+          this.store.transaction(() => {
+            writeLadder(this.store, runId, ladderAt, { steps, exhausted: true });
+            this.store.artifact(
+              runId,
+              "recovery",
+              "provider/circuit.json",
+              canonical({ open: true, attemptId: attempt, ladder: steps.length }),
+            );
+          });
+          throw new WorkflowFault(
+            "OUTPUT_INVALID",
+            recoveryAdvice(
+              `${profile.id} got no model response on every rung of the recovery ladder: ${ladderSummary(steps)}. Automatic retries stopped. Check the provider, then resume (a new ladder starts) or reroute the run to another model.`,
+              `A stalled model call failed on ${steps.length} recovery rungs and needs your decision.`,
+              { action: "resume", runId },
+              { action: "reroute", runId },
+            ),
+            { reason: "no_progress", providerCircuit: true, ladder: steps },
+          );
+        }
+      }
       const counted = Math.max(outcome?.failures ?? 0, outcome?.stalls ?? 0);
       if (outcome && counted >= PROVIDER_ZERO_TOKEN_LIMIT) {
         this.store.artifact(

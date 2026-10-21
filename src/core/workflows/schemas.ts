@@ -1351,6 +1351,7 @@ export const EventType = z.enum([
   "attempt.started",
   "attempt.finished",
   "attempt.advisory",
+  "attempt.recovery",
   "decision.would_stop",
   "task.state_changed",
   "artifact.committed",
@@ -1485,6 +1486,23 @@ export const EventSchema = z.discriminatedUnion("type", [
           key: z.string().max(200),
           summary: z.string().max(1000),
           inputs: z.record(z.string(), z.unknown()),
+        })
+        .strict(),
+    })
+    .strict(),
+  // A stalled call climbs the recovery ladder: the next attempt runs on this rung (#1877).
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("attempt.recovery"),
+      payload: z
+        .object({
+          attemptId: SafeId,
+          rung: z.enum(["fresh-session", "other-transport", "lower-effort", "next-model"]),
+          modelId: z.string(),
+          transport: z.literal("exec").optional(),
+          effort: z.string().optional(),
+          detail: z.string().max(500),
         })
         .strict(),
     })

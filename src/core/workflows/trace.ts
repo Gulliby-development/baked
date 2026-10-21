@@ -5,7 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { DEFAULT_CONFIG } from "../../config/index.js";
 import type { AppConfig } from "../../types/index.js";
 import { builtinProfiles } from "../agents/profiles/builtin.js";
-import { ModelRoutingSchema } from "../llm/model-routing.js";
+import { ModelRoutingSchema, type RouteEffort } from "../llm/model-routing.js";
 import {
   POLICY_REFUSAL_KIND,
   POLICY_REFUSALS_DIR,
@@ -30,6 +30,7 @@ import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { NativeWorkflowService } from "./service.js";
 import { exceedsTestCapacity, type SizingReport } from "./sizing.js";
 import { costStageOf, runPrices } from "./stage-price.js";
+import { type LadderRung, nextRung, type RecoveryPlacement } from "./stall-ladder.js";
 import { type ArtifactRow, WorkflowStore } from "./store.js";
 import { RuntimeStateSchema } from "./types.js";
 
@@ -541,6 +542,10 @@ export interface RunReplay {
   testSplits: TestSplitBoundary[];
   /** Test tasks the current rule splits that the recorded sizing kept whole. */
   newTestSplits: number;
+  /** Each recorded stalled attempt against the current recovery ladder (#1877). */
+  stallLadder: StallLadderBoundary[];
+  /** Stalled attempts after which the current ladder takes another rung than the recording. */
+  newRecoveries: number;
   /** Each attempt a provider refused under its usage policy, against the current rule (#1895). */
   policyRefusals: PolicyRefusalBoundary[];
   /** Refusals the current rule stops the run on that the recording ran again. */
@@ -682,6 +687,100 @@ export function replayFirstByte(
       replayed: replayed ? "stop" : "pass",
     };
   });
+}
+
+/** The recovery ladder's choice after a stalled call; `nextRung` unless a test passes another. */
+export type StallRule = typeof nextRung;
+
+/** A recorded stalled attempt against the current recovery ladder (#1877). */
+export interface StallLadderBoundary {
+  attemptId: string;
+  stage: string | null;
+  model: string;
+  /** The rung the run took after this attempt (`attempt.recovery`), or none. */
+  recorded: LadderRung | "none";
+  replayed: LadderRung | "none";
+}
+
+/**
+ * Walks the recovery ladder again over each stage's recorded attempts: an attempt whose last model
+ * call got no first response is a stall, one that completed ends the ladder. The route comes from
+ * the run's routing record, the effort from the attempt's usage. Effects are not in a trace, so an
+ * attempt that edited files before it stalled counts as one that did not.
+ */
+export function replayStallLadder(
+  store: WorkflowStore,
+  runId: string,
+  rule: StallRule = nextRung,
+): StallLadderBoundary[] {
+  const attempts = store.connection
+    .query(
+      "SELECT id, step_id, model_id, status FROM attempts WHERE run_id=? AND model_id IS NOT NULL ORDER BY started_at, rowid",
+    )
+    .all(runId) as { id: string; step_id: string; model_id: string; status: string }[];
+  const taken = new Map(
+    store
+      .events(runId, 0, 1_000_000)
+      .flatMap((event) =>
+        event.type === "attempt.recovery"
+          ? [[event.payload.attemptId, event.payload.rung] as const]
+          : [],
+      ),
+  );
+  const saved = store.latestArtifact(runId, "routing.json");
+  const routing = saved
+    ? (JSON.parse(store.readArtifact(runId, saved.id)) as {
+        stages?: Record<string, { model: string; effort?: string; fallback?: string[] }>;
+        profiles?: Record<string, { model: string; effort?: string; fallback?: string[] }>;
+      })
+    : {};
+  const ladders = new Map<string, RecoveryPlacement | undefined>();
+  const boundaries: StallLadderBoundary[] = [];
+  for (const attempt of attempts) {
+    const stage = store.rootStage(runId, attempt.step_id);
+    const usageArtifact = store.latestArtifact(runId, `attempts/${attempt.id}/usage.json`);
+    const usage = usageArtifact
+      ? (JSON.parse(store.readArtifact(runId, usageArtifact.id)) as {
+          profileId?: string;
+          effort?: string;
+          calls?: CallTiming[];
+        })
+      : {};
+    const key = `${stage}:${usage.profileId ?? ""}`;
+    if (attempt.status === "completed") {
+      ladders.delete(key);
+      continue;
+    }
+    const last = usage.calls?.at(-1);
+    if (
+      attempt.status !== "failed" ||
+      !last ||
+      last.firstByteMs !== null ||
+      last.status !== undefined
+    )
+      continue;
+    const entry =
+      (stage ? routing.stages?.[stage] : undefined) ??
+      (usage.profileId ? routing.profiles?.[usage.profileId] : undefined);
+    const models = entry ? [entry.model, ...(entry.fallback ?? [])] : [attempt.model_id];
+    const effort = (usage.effort ?? entry?.effort) as RouteEffort | undefined;
+    const current = ladders.get(key);
+    const next = rule(current, {
+      model: attempt.model_id,
+      models,
+      fallbackIndex: Math.max(0, models.indexOf(attempt.model_id)),
+      effort,
+    });
+    ladders.set(key, next ?? undefined);
+    boundaries.push({
+      attemptId: attempt.id,
+      stage,
+      model: attempt.model_id,
+      recorded: taken.get(attempt.id) ?? "none",
+      replayed: next?.rung ?? "none",
+    });
+  }
+  return boundaries;
 }
 
 /**
@@ -1553,6 +1652,8 @@ function replayRun(
   | "newFirstByteStops"
   | "testSplits"
   | "newTestSplits"
+  | "stallLadder"
+  | "newRecoveries"
   | "policyRefusals"
   | "newPolicyStops"
 > | null {
@@ -1716,6 +1817,7 @@ export function replayTrace(
     shareGate?: ShareGate;
     callRate?: CallRate;
     testSplit?: TestSplitRule;
+    stallRule?: StallRule;
     priceSamples?: PriceSamples;
     historyTrace?: HistoryTrace;
     policyRefusal?: PolicyRefusalRule;
@@ -1739,6 +1841,9 @@ export function replayTrace(
     const splits = new Map(
       runIds.map((runId) => [runId, replayTestSplits(store, runId, options.testSplit)]),
     );
+    const stalls = new Map(
+      runIds.map((runId) => [runId, replayStallLadder(store, runId, options.stallRule)]),
+    );
     const refusals = new Map(
       runIds.map((runId) => [runId, replayPolicyRefusals(store, runId, options.policyRefusal)]),
     );
@@ -1758,11 +1863,13 @@ export function replayTrace(
         newCostStops: 0,
       };
       const testSplits = splits.get(runId) ?? [];
+      const stallLadder = stalls.get(runId) ?? [];
       const policyRefusals = refusals.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
         !testSplits.length &&
+        !stallLadder.length &&
         !policyRefusals.length
       )
         continue;
@@ -1774,6 +1881,8 @@ export function replayTrace(
         testSplits,
         newTestSplits: testSplits.filter((b) => b.replayed === "split" && b.recorded === "whole")
           .length,
+        stallLadder,
+        newRecoveries: stallLadder.filter((b) => b.replayed !== b.recorded).length,
         policyRefusals,
         newPolicyStops: policyRefusals.filter(
           (b) => b.replayed === "stop" && b.recorded === "retry",

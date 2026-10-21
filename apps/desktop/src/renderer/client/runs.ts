@@ -142,6 +142,15 @@ export interface EventPayloads {
     action: "steered" | "stopped";
     detail: string;
   };
+  /** A stalled call climbs the recovery ladder; the next attempt runs on this rung (#1877). */
+  "attempt.recovery": {
+    attemptId: string;
+    rung: "fresh-session" | "other-transport" | "lower-effort" | "next-model";
+    modelId: string;
+    transport?: "exec";
+    effort?: string;
+    detail: string;
+  };
   /** A stop reason in shadow or advisory mode would have stopped the run (#1714). */
   "decision.would_stop": {
     reason: string;
