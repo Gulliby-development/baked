@@ -37,10 +37,71 @@ const QUOTED = /"((?:\\[^\n]|[^"\\\n])+)"|`([^`\n]+)`|\u201c([^\u201d\n]+)\u201d
 /** A placeholder the test fills with a concrete value: `<file>`, `{name}`, `...`. */
 const PLACEHOLDER = /<[^<>\s][^<>]*>|\{[^{}]+\}|\.\.\.|\u2026/g;
 
-/** Prose labels are for the reviewer, not strings a test must repeat (#1565). */
+/** One quoted span of a criterion text: its literal, whether it is a code span, and where. */
+interface QuotedSpan {
+  literal: string;
+  /** The span with its quotes. */
+  raw: string;
+  code: boolean;
+  index: number;
+}
+
+const DOUBLE_QUOTED = /"((?:\\[^\n]|[^"\\\n])+)"|\u201c([^\u201d\n]+)\u201d/g;
+
+/**
+ * The quoted spans of a text, code spans first (#1790). A double quote inside a code span
+ * (`` `{"a":1}` ``) is code, never the start of a quoted span, and a line whose backticks do not
+ * pair (an odd count, or a span that starts or ends in a space) has no code spans the host can
+ * trust, so none are guessed there: R53 jsonsplice paired the closing backtick of one span with the
+ * opening one of the next and demanded the prose between.
+ */
+function quotedSpans(text: string): QuotedSpan[] {
+  const spans: QuotedSpan[] = [];
+  let masked = "";
+  let offset = 0;
+  for (const line of text.split("\n")) {
+    const code = [...line.matchAll(/`([^`]+)`/g)];
+    // An odd count, or a span that starts or ends in a space (` at character 3`), means the
+    // backticks pair across a span: the line's code spans are not guessed.
+    const paired =
+      (line.match(/`/g) ?? []).length % 2 === 0 &&
+      code.every((m) => (m[1] ?? "") === (m[1] ?? "").trim());
+    let kept = line;
+    if (paired)
+      for (const m of code) {
+        const at = m.index ?? 0;
+        spans.push({ literal: (m[1] ?? "").trim(), raw: m[0], code: true, index: offset + at });
+        kept = kept.slice(0, at) + " ".repeat(m[0].length) + kept.slice(at + m[0].length);
+      }
+    masked += `${kept}\n`;
+    offset += line.length + 1;
+  }
+  for (const match of masked.matchAll(DOUBLE_QUOTED)) {
+    const literal = (match[1] ?? match[2] ?? "").trim();
+    // A span across a backtick crossed a code span the host could not pair.
+    if (!literal.includes("`"))
+      spans.push({ literal, raw: match[0], code: false, index: match.index ?? 0 });
+  }
+  return spans.sort((a, b) => a.index - b.index);
+}
+
+/** A requirement or criterion id: `FR-005`, `AC-011`, `NFR-001`. */
+const SPEC_ID = /^(?:AC|FR|NFR|SC)-\d{1,6}$/;
+/**
+ * A name expression of the code under test: `[src, itemIndex]`, `root.items[itemIndex].value`.
+ * It has a bracket, names only identifiers and holds no digit or quote, so no test spells it.
+ */
+const NAME_EXPRESSION =
+  /^(?=[^\d"'`]*$)(?=.*\[)(?:\[\s*[A-Za-z_$][\w$]*(?:\s*,\s*[A-Za-z_$][\w$]*)*\s*\]|[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\s*[A-Za-z_$][\w$.]*\s*\])*)$/;
+
+/**
+ * Prose labels are for the reviewer, not strings a test must repeat (#1565), and neither are a
+ * spec id or a name expression of the code under test (#1790).
+ */
 function literalCase(literal: string, code = false, value = false): boolean {
   const concrete = literal.replace(PLACEHOLDER, "");
   if (concrete.replace(/[^\p{L}\p{N}_]/gu, "").length < 2) return false;
+  if (SPEC_ID.test(concrete.trim()) || NAME_EXPRESSION.test(concrete.trim())) return false;
   return (
     value ||
     /\d|(?:^|\s)--?[A-Za-z]|[=<>:+*%{}[\]]/.test(concrete) ||
@@ -172,17 +233,10 @@ export function criterionCases(
     bound = boundLabels(`${criterion.given}\n${criterion.when}`);
     for (const [field, text] of [criterion.given, criterion.when, criterion.then].entries()) {
       const table = tableInputs(text);
-      for (const match of table.prose.matchAll(QUOTED)) {
-        const literal = (match[1] ?? match[2] ?? match[3] ?? "").trim();
-        if (
-          !literalCase(
-            literal,
-            match[2] !== undefined,
-            VALUE_CONTEXT.test(table.prose.slice(0, match.index)),
-          )
-        )
-          continue;
-        add(criterion.id, literal, undefined, table.prose.slice(0, match.index), criterion.then);
+      for (const span of quotedSpans(table.prose)) {
+        const before = table.prose.slice(0, span.index);
+        if (!literalCase(span.literal, span.code, VALUE_CONTEXT.test(before))) continue;
+        add(criterion.id, span.literal, undefined, before, criterion.then);
       }
       for (const input of table.inputs)
         add(criterion.id, input.literal, undefined, input.source, input.expected);
@@ -548,14 +602,13 @@ function tableInputs(text: string): {
       push(raw);
       return;
     }
-    const spans = [...raw.matchAll(QUOTED)];
+    const spans = quotedSpans(raw);
     if (spans.length) {
       for (const span of spans) {
         // A role annotation (`...` as `url`) names the parameter, not another input.
         if (/\bas\s*$/i.test(raw.slice(0, span.index))) continue;
-        const literal = (span[1] ?? span[2] ?? span[3] ?? "").trim();
-        if (literalCase(literal, span[2] !== undefined, spans.length > 1 || raw !== span[0]))
-          push(literal, raw.slice(0, span.index));
+        if (literalCase(span.literal, span.code, spans.length > 1 || raw !== span.raw))
+          push(span.literal, raw.slice(0, span.index));
       }
     } else if (literalCase(raw)) push(raw);
   });
@@ -663,6 +716,7 @@ export function testsHold(text: string, literal: string): boolean {
     );
   return (
     held(exact) ||
+    (HEX_BYTES.test(normalized.trim()) && bytesHeld(text, normalized)) ||
     // A literal with an escape no decoding layer knows (`\1`, `\!`, `\0` in
     // `s/(a)/&\1\n\t\!\0/`) is raw escape text, as a C#, Java, Go or JavaScript string spells it
     // with every backslash doubled: decoding `\n` on the literal's side only would miss it (#1709).
@@ -671,6 +725,36 @@ export function testsHold(text: string, literal: string): boolean {
     // Formatters change whitespace and quote style inside lists and expressions.
     (/[[\](]/.test(normalized) && testsHoldCompact(unescaped, normalized)) ||
     (significant.length > 0 && significant.every((token) => held(escapeRegex(token))))
+  );
+}
+
+/** Spaced hex bytes, as a criterion describes binary input: `7B FF 0A`. */
+const HEX_BYTES = /^[\da-f]{2}(?:[\s,]+[\da-f]{2})+$/i;
+const BYTE_ESCAPES: Record<string, string> = {
+  "09": "\\\\t",
+  "0a": "\\\\n",
+  "0d": "\\\\r",
+  "00": "\\\\0",
+};
+
+/**
+ * Whether a test holds spaced hex bytes the way its toolchain spells them (#1790): `0x7b, 0xff`
+ * in TypeScript, Go, Rust, C#, Java and Kotlin (also with `(byte)` casts and `.toByte()`),
+ * `\x7b\xff\n` in a Python or Rust byte string, decimal values in a list, or one hex string such
+ * as `"7bff0a"`.
+ */
+function bytesHeld(text: string, literal: string): boolean {
+  const bytes = literal
+    .trim()
+    .split(/[\s,]+/)
+    .map((b) => b.toLowerCase());
+  const one = (b: string) =>
+    `(?:0x0*${b}\\b|\\\\x${b}|${Number.parseInt(b, 16)}\\b${BYTE_ESCAPES[b] ? `|${BYTE_ESCAPES[b]}` : ""})`;
+  const between = String.raw`(?:[\s,]|\(\s*(?:byte|u8)\s*\)|\.to(?:U)?Byte\(\))*`;
+  const listed = new RegExp(`(?<![\\w.])${bytes.map(one).join(between)}`, "i");
+  return (
+    listed.test(text) ||
+    (bytes.length >= 3 && new RegExp(bytes.join(""), "i").test(text.replace(/[\s_]/g, "")))
   );
 }
 
@@ -727,4 +811,42 @@ export function caseCheck(
         : `${c.criterionId} names ${JSON.stringify(c.literal)}, found only in an assertion message in ${paths.join(", ")}. Use it as a test input or expected value; the message alone is a decoy.`,
     );
   };
+}
+
+/** What a review finding says it is about, as a corrective's case walk reads it. */
+export interface RepairFinding {
+  criterionIds?: unknown;
+  requirementIds?: unknown;
+  file?: unknown;
+}
+
+/**
+ * The criteria whose cases a corrective owes: the ones its findings name, by criterion, by
+ * requirement or by the planned tasks that write the files they name (#1790). A repair of a whole
+ * feature carries every criterion, and R53 jsonsplice T010, correcting one offset bug, was refused
+ * for the rows of a parser slice it never touched. A corrective whose findings name none of its
+ * criteria keeps them all.
+ */
+export function repairCaseTask<T extends Pick<Task, "criterionIds">>(
+  task: T,
+  findings: readonly RepairFinding[],
+  spec: SpecText | null | undefined,
+  tasks: readonly Pick<Task, "origin" | "writes" | "criterionIds">[],
+): T {
+  const list = (value: unknown) =>
+    Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+  const named = new Set<string>();
+  for (const finding of findings) {
+    for (const id of list(finding.criterionIds)) named.add(id);
+    const requirements = list(finding.requirementIds);
+    for (const criterion of spec?.criteria ?? [])
+      if (criterion.requirementIds.some((id) => requirements.includes(id))) named.add(criterion.id);
+    const file = typeof finding.file === "string" ? finding.file.replaceAll("\\", "/") : undefined;
+    if (file)
+      for (const planned of tasks)
+        if (planned.origin === "planned" && planned.writes.some((w) => w.path === file))
+          for (const id of planned.criterionIds) named.add(id);
+  }
+  const owned = task.criterionIds.filter((id) => named.has(id));
+  return owned.length ? { ...task, criterionIds: owned } : task;
 }
