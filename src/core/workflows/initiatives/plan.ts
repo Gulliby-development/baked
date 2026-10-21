@@ -551,6 +551,41 @@ function largestOf(features: InitiativeFeature[]): Pick<InitiativeFeature, "work
   return { ...(largest.workflow ? { workflow: largest.workflow } : {}), size };
 }
 
+/** A feature whose boundary paths are all files of its own skeleton: the host writes its whole work. */
+export function skeletonOnly(feature: Pick<InitiativeFeature, "boundary" | "skeleton">): boolean {
+  const files = new Set((feature.skeleton ?? []).map((f) => f.path));
+  return files.size > 0 && feature.boundary.paths.every((path) => files.has(path));
+}
+
+/**
+ * The scope and contract a skeleton-only part brings into a merge with parts that fill some of its
+ * stubs. Its own words were written for a run that fills none ("Create all 25 internal stubs; do
+ * not implement them"), and next to the part that implements three of those stubs they gave hdrlens
+ * base two orders that cannot both hold: four specify, plan and analyze rounds, 503k tokens and 15.1
+ * minutes at the head of the critical path (bench round 56, #1829). They are restated from the
+ * files instead: the stubs the merge's other parts list are this feature's to implement, the rest
+ * stay as written for the features that fill them.
+ */
+function skeletonTexts(
+  part: InitiativeFeature,
+  fillers: InitiativeFeature[],
+): { scope: string; contract: string } {
+  const listed = new Set(fillers.flatMap((f) => f.boundary.paths));
+  const stubs = (part.skeleton ?? []).map((f) => f.path);
+  const own = stubs.filter((path) => listed.has(path));
+  const files = `${stubs.length} stub file${stubs.length === 1 ? "" : "s"}`;
+  return {
+    scope: [
+      `The host writes the ${files} the split fixes before any task.`,
+      ...(own.length ? [`This feature implements ${own.join(", ")}.`] : []),
+      ...(own.length < stubs.length
+        ? ["The other stubs stay as written for the features that fill them."]
+        : []),
+    ].join(" "),
+    contract: `The ${files} of the skeleton exist with the content the split fixes.`,
+  };
+}
+
 /**
  * The features of `plan` with `featureIds` combined into one, placed where the first of them was:
  * its boundary, contract and dependencies are the parts' together, and dependents of a part
@@ -584,14 +619,20 @@ function mergeFeatures(
       "INVALID_DEFINITION",
       "Merged source features need one test owner or writable test paths",
     );
+  const fillers = merged.filter((f) => !skeletonOnly(f));
+  const texts = merged.map((f) =>
+    fillers.length && skeletonOnly(f)
+      ? skeletonTexts(f, fillers)
+      : { scope: f.boundary.scope, contract: f.contract },
+  );
   const combined: InitiativeFeature = {
     id,
     title: title ?? merged.map((f) => f.title).join(" + "),
     boundary: {
-      scope: merged.map((f) => f.boundary.scope).join("\n"),
+      scope: texts.map((t) => t.scope).join("\n"),
       paths,
     },
-    contract: merged.map((f) => f.contract).join("\n"),
+    contract: texts.map((t) => t.contract).join("\n"),
     dependsOn: unique(merged.flatMap((f) => f.dependsOn)).filter((d) => !ids.has(d)),
     mandatory: merged.some((f) => f.mandatory),
     ...(testOwners[0] && !canHold(paths, "test") ? { testedBy: testOwners[0] } : {}),
@@ -630,8 +671,7 @@ export function foldSkeletonFeatures(plan: InitiativePlan): {
   let current = plan;
   const merged: { featureId: string; from: string[] }[] = [];
   for (const skeleton of plan.features) {
-    const files = new Set((skeleton.skeleton ?? []).map((f) => f.path));
-    if (!files.size || !skeleton.boundary.paths.every((path) => files.has(path))) continue;
+    if (!skeletonOnly(skeleton)) continue;
     if (current.features.length <= MIN_FEATURES) break;
     const dependents = current.features.filter((f) => f.dependsOn.includes(skeleton.id));
     const reaches = (from: string, target: string, seen = new Set<string>()): boolean => {
