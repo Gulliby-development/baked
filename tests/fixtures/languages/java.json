@@ -38,6 +38,7 @@
     ],
     "entryPoints": [
       "fixture: java -cp target/classes Sum"
-    ]
+    ],
+    "testGates": null
   }
 }

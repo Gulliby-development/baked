@@ -1,4 +1,5 @@
 import { describesProgram } from "./coverage.js";
+import { HOST_REQUIRED_CRITERIA } from "./host-required-criteria.js";
 import type { Spec } from "./schemas.js";
 
 /**
@@ -34,6 +35,16 @@ export function quotesRequest(quote: string, request: string): boolean {
   return passage.length > 0 && normalize(request).includes(passage);
 }
 
+/**
+ * Whether a deliverable quotes the request or the host's own words for a criterion its rules
+ * require ("add a criterion that the product's tests pass on Windows, macOS and Linux"): the
+ * author lists what the host asked for as a deliverable, and rejecting that quote cost
+ * tonemath-update (bench round 56) a specify retry (#1831).
+ */
+export const quotesDeliverable = (quote: string, request: string): boolean =>
+  quotesRequest(quote, request) ||
+  HOST_REQUIRED_CRITERIA.some((c) => quotesRequest(quote, `add a criterion that ${c.outcome}`));
+
 /** The coverage table of a spec's deliverables, checked against the request. */
 export function requestCoverage(spec: Spec, request: string): DeliverableCoverage[] {
   const requirements = new Set(spec.requirements.map((r) => r.id));
@@ -48,7 +59,7 @@ export function requestCoverage(spec: Spec, request: string): DeliverableCoverag
         .map((c) => c.id),
       outOfScope: d.outOfScope ?? null,
       mapped:
-        quotesRequest(d.quote, request) &&
+        quotesDeliverable(d.quote, request) &&
         (requirementIds.length > 0 ? d.outOfScope === undefined : excluded),
     };
   });
@@ -76,7 +87,7 @@ export function deliverableProblems(spec: Spec, request: string): string[] {
   const requirements = new Set(spec.requirements.map((r) => r.id));
   const problems: string[] = [];
   for (const d of spec.deliverables) {
-    if (!quotesRequest(d.quote, request))
+    if (!quotesDeliverable(d.quote, request))
       problems.push(
         `deliverable "${d.quote}" is not a passage of the request: copy the request's own words for it.`,
       );

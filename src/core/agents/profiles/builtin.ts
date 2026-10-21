@@ -51,7 +51,7 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "spec-reviewer",
-    version: "1.14.0",
+    version: "1.15.0",
     description: "Check document consistency",
     role: "planner",
     model: "$review",
