@@ -9,12 +9,14 @@
  * blocks too (#802).
  */
 
+import { namesField } from "./manifest-fields.js";
 import {
   type Dependency,
   type Ecosystem,
   importedPackages,
   isManifestPath,
   manifestDependencies,
+  manifestFieldChanges,
 } from "./manifests.js";
 import { type PackageFacts, packageFacts, type RegistryFetch, typosquatOf } from "./registry.js";
 import type { ChangedFile } from "./rules.js";
@@ -25,6 +27,38 @@ export const QUALITY_DEPENDENCIES = "quality/dependencies.json";
 /** Whether a finding's claim is one the dependency check made. */
 export const dependencyClaim = (claim: unknown): boolean =>
   typeof claim === "string" && /^Dependency \S+: /.test(claim);
+
+/** Artifact of the latest manifest field check of a run (#1793). */
+export const QUALITY_MANIFEST_FIELDS = "quality/manifest-fields.json";
+/** Whether a finding's claim is one the manifest field check made. */
+export const manifestFieldClaim = (claim: unknown): boolean =>
+  typeof claim === "string" && /^Manifest \S+ changes .+ the request does not name$/.test(claim);
+
+export interface ManifestFieldChange {
+  file: string;
+  field: string;
+}
+
+/**
+ * The executable manifest fields a run changed that neither the request nor the spec names, in
+ * the manifests the approval took as asked for because the request names them (#1793): that
+ * approval saw a path, so a `postinstall` script added beside the `engines` field the brief asked
+ * for reached the code with no person. A new manifest, and one with no earlier content, has
+ * nothing to compare and is the dependency check's alone.
+ */
+export function unrequestedManifestFields(
+  changed: readonly ChangedFile[],
+  named: readonly string[],
+  requested: string,
+): ManifestFieldChange[] {
+  return changed.flatMap((file) =>
+    named.includes(file.path) && typeof file.before === "string"
+      ? manifestFieldChanges(file.path, file.before, file.content)
+          .filter((field) => !namesField(requested, field))
+          .map((field) => ({ file: file.path, field }))
+      : [],
+  );
+}
 
 /** A package younger than this many days is suspicious (slopsquatting registers names fast). */
 const MIN_AGE_DAYS = 14;

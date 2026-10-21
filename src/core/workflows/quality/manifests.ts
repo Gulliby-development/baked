@@ -10,6 +10,22 @@ import {
   rowOf,
   SUPPORTED_LANGUAGES,
 } from "../../intelligence/language-records.js";
+import {
+  cargoFields,
+  changedFields,
+  type FieldMap,
+  gemfileFields,
+  goModFields,
+  gradleFields,
+  msbuildFields,
+  packageJsonFields,
+  pipfileFields,
+  pomFields,
+  pyprojectFields,
+  requirementsFields,
+  setupCfgFields,
+  versionCatalogFields,
+} from "./manifest-fields.js";
 
 export type Ecosystem = "npm" | "pypi" | "crates" | "go" | "nuget" | "maven" | "rubygems";
 
@@ -360,13 +376,20 @@ function versionCatalog(path: string, text: string): Dependency[] {
 interface ManifestReader {
   name: RegExp;
   read: (path: string, text: string) => Dependency[];
+  /**
+   * The fields of the manifest that run code or choose where code comes from, which the manifest
+   * field gate holds to what the request names (#1793). A new manifest states them here.
+   */
+  fields: (text: string) => FieldMap;
 }
 
-const NPM: readonly ManifestReader[] = [{ name: /^package\.json$/, read: packageJson }];
+const NPM: readonly ManifestReader[] = [
+  { name: /^package\.json$/, read: packageJson, fields: packageJsonFields },
+];
 const MAVEN_GRADLE: readonly ManifestReader[] = [
-  { name: /^pom\.xml$/, read: pomXml },
-  { name: /^(?:build|settings)\.gradle(?:\.kts)?$/, read: gradle },
-  { name: /^libs\.versions\.toml$/, read: versionCatalog },
+  { name: /^pom\.xml$/, read: pomXml, fields: pomFields },
+  { name: /^(?:build|settings)\.gradle(?:\.kts)?$/, read: gradle, fields: gradleFields },
+  { name: /^libs\.versions\.toml$/, read: versionCatalog, fields: versionCatalogFields },
 ];
 
 /**
@@ -381,19 +404,20 @@ export const DEPENDENCY_MANIFESTS: LanguageRecord<readonly ManifestReader[]> = {
   svelte: NPM,
   rescript: NPM,
   python: [
-    { name: /^pyproject\.toml$/, read: pyprojectToml },
-    { name: /^requirements[\w.-]*\.txt$/, read: requirementsTxt },
-    { name: /^Pipfile$/, read: pipfile },
-    { name: /^setup\.cfg$/, read: setupCfg },
+    { name: /^pyproject\.toml$/, read: pyprojectToml, fields: pyprojectFields },
+    { name: /^requirements[\w.-]*\.txt$/, read: requirementsTxt, fields: requirementsFields },
+    { name: /^Pipfile$/, read: pipfile, fields: pipfileFields },
+    { name: /^setup\.cfg$/, read: setupCfg, fields: setupCfgFields },
   ],
-  rust: [{ name: /^Cargo\.toml$/, read: cargoToml }],
-  go: [{ name: /^go\.mod$/, read: goMod }],
+  rust: [{ name: /^Cargo\.toml$/, read: cargoToml, fields: cargoFields }],
+  go: [{ name: /^go\.mod$/, read: goMod, fields: goModFields }],
   csharp: [
-    { name: /\.(?:csproj|fsproj|vbproj)$/, read: csproj },
-    { name: /^Directory\.Build\.props$/, read: csproj },
+    { name: /\.(?:csproj|fsproj|vbproj)$/, read: csproj, fields: msbuildFields },
+    { name: /^Directory\.Build\.props$/, read: csproj, fields: msbuildFields },
     {
       name: /^Directory\.Packages\.props$/,
       read: (path, text) => [...csproj(path, text), ...packageVersions(path, text)],
+      fields: msbuildFields,
     },
   ],
   java: MAVEN_GRADLE,
@@ -401,7 +425,7 @@ export const DEPENDENCY_MANIFESTS: LanguageRecord<readonly ManifestReader[]> = {
   scala: none(
     "sbt builds are Scala code; a Scala project on Maven or Gradle is read by the Java row",
   ),
-  ruby: [{ name: /^Gemfile$/, read: gemfile }],
+  ruby: [{ name: /^Gemfile$/, read: gemfile, fields: gemfileFields }],
   php: none("Packagist has no registry check yet (#1491)"),
   swift: none("Swift Package Manager manifests are Swift code, not read"),
   lua: none("LuaRocks has no registry check yet (#1495)"),
@@ -432,6 +456,12 @@ export const isManifestPath = (path: string): boolean => readerOf(path) !== unde
 
 export function manifestDependencies(path: string, text: string): Dependency[] {
   return readerOf(path)?.read(path, text) ?? [];
+}
+
+/** The executable fields of a manifest that differ between two versions of it (#1793). */
+export function manifestFieldChanges(path: string, before: string, after: string): string[] {
+  const reader = readerOf(path);
+  return reader ? changedFields(reader.fields, before, after) : [];
 }
 
 const BUILTIN = new Set(builtinModules.map((m) => m.replace(/^node:/, "")));

@@ -12,6 +12,8 @@ import { ProcessScope } from "../src/core/workflows/process-scope.js";
 import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
 import { growthLimit, type InitiativeView, rebaseView, shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.js";
+import { manifestFieldChanges } from "../src/core/workflows/quality/manifests.js";
+import { unrequestedManifestFields } from "../src/core/workflows/quality/dependencies.js";
 import { historyFixture, plannedForecastScenario } from "./helpers/initiative-planned-forecast.js";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { directoryFixers, directoryFixerScenario } from "./helpers/directory-fixer-scenario.js";
@@ -773,6 +775,50 @@ describe("gate matrix: python environments", () => {
       const written = writtenTestsCheck(root, checks, [{ path, action: "create" }]);
       expect(written && [written.executable, ...written.args]).toEqual([runner, verb, "pytest", "-q", `./${path}`]);
     });
+});
+
+// #1793: a manifest edit the request names was approved by its path; the manifest field check
+// holds every executable field of it to what the request names. Each stack's manifest changes one
+// executable field (caught) and one plain field (free).
+describe("gate matrix: manifest executable fields (#1793)", () => {
+  const changes = (path: string, before: string, after: string) => manifestFieldChanges(path, before, after);
+  cell("bun", "package.json: scripts, bin and trustedDependencies, not engines", () => {
+    const base = { name: "p", scripts: { test: "bun test" } };
+    const json = (extra: object) => JSON.stringify({ ...base, ...extra });
+    expect(changes("package.json", json({}), json({ engines: { bun: ">=1.4.0" } }))).toEqual([]);
+    expect(changes("package.json", json({}), json({ scripts: { ...base.scripts, postinstall: "node x.js" }, bin: { p: "cli.js" }, trustedDependencies: ["esbuild"] }))).toEqual(["scripts.postinstall", "bin", "trustedDependencies"]);
+    expect(unrequestedManifestFields([{ path: "package.json", before: json({}), content: json({ scripts: { ...base.scripts, postinstall: "x" }, engines: {} }) }], ["package.json"], "Add the engines field to package.json")).toEqual([{ file: "package.json", field: "scripts.postinstall" }]);
+    expect(unrequestedManifestFields([{ path: "package.json", before: json({}), content: json({ scripts: { ...base.scripts, postinstall: "x" } }) }], ["package.json"], "Add a postinstall script to package.json")).toEqual([]);
+  });
+  cell("python", "pyproject.toml build backend and requirements index options, not the description", () => {
+    const pyproject = (backend: string, description: string) => `[build-system]\nrequires = ["hatchling"]\nbuild-backend = "${backend}"\n\n[project]\nname = "p"\ndescription = "${description}"\n`;
+    expect(changes("pyproject.toml", pyproject("hatchling.build", "a"), pyproject("hatchling.build", "b"))).toEqual([]);
+    expect(changes("pyproject.toml", pyproject("hatchling.build", "a"), pyproject("evil.build", "a"))).toEqual(["build-system"]);
+    expect(changes("requirements.txt", "requests==2.32.0\n", "--index-url https://example.test/simple\nrequests==2.32.0\n")).toEqual(["--index-url"]);
+  });
+  cell("rust", "Cargo.toml build script, not the version", () => {
+    const cargo = (extra: string) => `[package]\nname = "p"\nversion = "0.1.0"\n${extra}`;
+    expect(changes("Cargo.toml", cargo(""), cargo("").replace("0.1.0", "0.2.0"))).toEqual([]);
+    expect(changes("Cargo.toml", cargo(""), cargo('build = "build.rs"\n'))).toEqual(["package.build"]);
+  });
+  cell("go", "go.mod replace, not the go version", () => {
+    expect(changes("go.mod", "module m\n\ngo 1.22\n", "module m\n\ngo 1.23\n")).toEqual([]);
+    expect(changes("go.mod", "module m\n\ngo 1.22\n", "module m\n\ngo 1.22\n\nreplace example.com/x => ../x\n")).toEqual(["replace example.com/x"]);
+  });
+  cell("dotnet", "csproj Exec target, not the target framework", () => {
+    const csproj = (extra: string, framework = "net10.0") => `<Project Sdk="Microsoft.NET.Sdk">\n  <PropertyGroup><TargetFramework>${framework}</TargetFramework></PropertyGroup>${extra}\n</Project>\n`;
+    expect(changes("App.csproj", csproj(""), csproj("", "net9.0"))).toEqual([]);
+    expect(changes("App.csproj", csproj(""), csproj('<Target Name="X" BeforeTargets="Build"><Exec Command="curl x" /></Target>'))).toEqual(["Target"]);
+  });
+  cell("maven", "pom.xml plugins and Gradle code, not the version or dependencies", () => {
+    const pom = (extra: string, version = "1.0") => `<project><version>${version}</version>${extra}</project>`;
+    expect(changes("pom.xml", pom(""), pom("", "1.1"))).toEqual([]);
+    expect(changes("pom.xml", pom(""), pom("<build><plugins><plugin><artifactId>exec-maven-plugin</artifactId></plugin></plugins></build>"))).toEqual(["plugins"]);
+    const gradle = (extra: string) => `plugins {\n  id("java")\n}\n\ndependencies {\n  implementation("a:b:1")${extra}\n}\n`;
+    expect(changes("build.gradle.kts", gradle(""), gradle('\n  implementation("c:d:2")'))).toEqual([]);
+    expect(changes("settings.gradle", "", 'rootProject.name = "fixture"\n')).toEqual([]);
+    expect(changes("build.gradle.kts", gradle(""), `${gradle("")}tasks.register<Exec>("x") { commandLine("curl") }\n`)).toEqual(["tasks.register"]);
+  });
 });
 
 describe("gate matrix: format and type-check gates (#1685)", () => {

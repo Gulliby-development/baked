@@ -180,6 +180,7 @@ import {
   plannerApprovalLimits,
   planScopeAdvice,
   policyDecisions,
+  requestExemptPaths,
   withoutApprovalRemarks,
 } from "./auto-approval.js";
 import {
@@ -321,8 +322,11 @@ import { type LearnedRule, rulesFor } from "./project-memory.js";
 import {
   checkDependencies,
   dependencyClaim,
+  manifestFieldClaim,
   PROPERTY_LIBRARY_PACKAGES,
   QUALITY_DEPENDENCIES,
+  QUALITY_MANIFEST_FIELDS,
+  unrequestedManifestFields,
 } from "./quality/dependencies.js";
 import {
   compareWithBaseline,
@@ -12058,27 +12062,80 @@ ${note}`;
       return this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
     });
     const blocking = result.dependencies.filter((d) => d.blocking);
+    const fields = this.manifestFieldFindings(runId, state, policy, changed, requested);
     if (!blocking.length) {
       this.resolveClaims(runId, dependencyClaim);
+      return fields;
+    }
+    return [
+      ...fields,
+      ...blocking.map((d) =>
+        this.qualityFinding(state, {
+          kind: "security",
+          file: d.file,
+          symbol: d.name,
+          evidenceId,
+          claim: `Dependency ${d.name}: ${d.detail} (${d.file}:${d.line})`,
+          impact:
+            d.verdict === "unrequested"
+              ? "The run adds a dependency nobody asked for to an existing project; the policy forbids new dependencies."
+              : "Installing a package that does not exist or imitates a popular one can run an attacker's code.",
+          suggestedFix:
+            d.verdict === "unrequested"
+              ? `Remove ${d.name} from ${d.file} and the code that uses it; implement the behavior with the dependencies the project already has.`
+              : d.verdict === "missing"
+                ? `Remove ${d.name}, or use the package that really provides it; do not invent package names.`
+                : `Replace ${d.name} with the package it imitates, or remove it.`,
+        }),
+      ),
+    ];
+  }
+  /**
+   * The manifest field check (#1793): in a manifest the plan's automatic approval took as asked
+   * for because the request names it, every executable field the run changed (scripts, build
+   * backend, build script, replace, MSBuild target, Maven plugin, Gradle code) must be named by the
+   * request or the spec. A person who approved the plan saw it; a scaffold has no manifest yet.
+   */
+  private manifestFieldFindings(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    changed: ChangedFile[],
+    requested: string | undefined,
+  ): Review["findings"] {
+    const automatic = this.store
+      .requests(runId)
+      .some((r) => r.kind === "approval" && r.status === "accepted" && r.actor === "auto-approval");
+    const named =
+      automatic && requested !== undefined && state.graph
+        ? requestExemptPaths(policy, state.graph, state.requestText || state.prompt)
+        : [];
+    const unrequested = named.length
+      ? unrequestedManifestFields(changed, named, requested ?? "")
+      : [];
+    if (!unrequested.length) {
+      this.resolveClaims(runId, manifestFieldClaim);
       return [];
     }
-    return blocking.map((d) =>
+    const evidenceId = this.store.transaction(() => {
+      const artifact = this.store.artifact(
+        runId,
+        "quality",
+        QUALITY_MANIFEST_FIELDS,
+        canonical({ named, unrequested }),
+      );
+      return this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
+    });
+    return unrequested.map((change) =>
       this.qualityFinding(state, {
         kind: "security",
-        file: d.file,
-        symbol: d.name,
+        file: change.file,
+        symbol: change.field,
         evidenceId,
-        claim: `Dependency ${d.name}: ${d.detail} (${d.file}:${d.line})`,
+        claim: `Manifest ${change.file} changes ${change.field}, which the request does not name`,
         impact:
-          d.verdict === "unrequested"
-            ? "The run adds a dependency nobody asked for to an existing project; the policy forbids new dependencies."
-            : "Installing a package that does not exist or imitates a popular one can run an attacker's code.",
-        suggestedFix:
-          d.verdict === "unrequested"
-            ? `Remove ${d.name} from ${d.file} and the code that uses it; implement the behavior with the dependencies the project already has.`
-            : d.verdict === "missing"
-              ? `Remove ${d.name}, or use the package that really provides it; do not invent package names.`
-              : `Replace ${d.name} with the package it imitates, or remove it.`,
+          "The approval took this manifest edit as asked for by its path alone; a field that runs code or chooses where code comes from changed without a person seeing it.",
+        suggestedFix: `Restore ${change.field} in ${change.file} to what it was before the run, and change only the fields the request names.`,
       }),
     );
   }
