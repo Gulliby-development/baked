@@ -5919,6 +5919,41 @@ ${note}`;
       if (!checking) this.store.taskStatus(runId, task.id, "running");
       return this.store.beginStep(runId, `task-${task.id}`, stepId);
     });
+    await this.closingStep(runId, child, signal, () =>
+      this.runTaskStep(runId, child, firstRun, state, policy, profiles, signal, task, checking),
+    );
+  }
+  /**
+   * Runs a task step's work and ends the step as failed when the work throws, so a blocked task
+   * that a corrective repairs does not leave its step running (#1805). An aborted drive leaves it
+   * to recovery, which ends it as interrupted.
+   */
+  private async closingStep(
+    runId: string,
+    step: string,
+    signal: AbortSignal,
+    work: () => Promise<void>,
+  ): Promise<void> {
+    try {
+      await work();
+    } catch (error) {
+      if (!signal.aborted)
+        this.store.transaction(() => this.store.endRunningStep(runId, step, "failed"));
+      throw error;
+    }
+  }
+  /** The work of `implementTask` in its task step `child`. */
+  private async runTaskStep(
+    runId: string,
+    child: string,
+    firstRun: boolean,
+    state: RuntimeState,
+    policy: RunPolicy,
+    profiles: AgentProfile[],
+    signal: AbortSignal,
+    task: Task,
+    checking: boolean,
+  ): Promise<void> {
     let integrity: Review["findings"] = [];
     let reported: { summary: string; unresolved: string[] } | undefined;
     let unresolvedAccount: { summary: string; unresolved: string[] } | undefined;
@@ -6971,7 +7006,10 @@ ${note}`;
         signal,
       );
     else if (outcome.kind === "done") {
-      if (!fatal) await this.integrateTask(runId, state, policy, profiles, outcome, signal);
+      if (!fatal)
+        await this.closingStep(runId, entry.child, signal, () =>
+          this.integrateTask(runId, state, policy, profiles, outcome, signal),
+        );
       delete state.taskCarry[entry.task.id];
     } else if (outcome.kind === "interrupted") {
       const restart = !fatal && this.restartLostTask(runId, state, outcome);
@@ -10875,7 +10913,11 @@ ${note}`;
       });
       for (const finding of recorded) state.repairPredecessors[finding.id] = task.id;
       this.repair(runId, state, policy, recorded, "repair", "task");
-      this.store.transaction(() => this.store.saveState(runId, state));
+      // The task's own step ends here; its corrective runs in a step of its own (#1805).
+      this.store.transaction(() => {
+        this.store.endRunningStep(runId, child, "failed");
+        this.store.saveState(runId, state);
+      });
     } else {
       this.store.transaction(() => {
         const graph = state.graph;
