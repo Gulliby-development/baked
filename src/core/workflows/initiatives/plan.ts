@@ -134,7 +134,14 @@ export function planStructureProblems(plan: InitiativePlan): string[] {
   return [...problems, ...skeletonProblems(plan)];
 }
 
-/** Reject a source-only split unless it names a test owner that runs after the source. */
+/**
+ * Reject a source-only split unless it names a test owner that runs after the source and whose
+ * tests need that later code. A feature that builds on no feature's code has tests that need
+ * nothing later, and a feature of tests only cannot own another feature's tests: bench round 58,
+ * wheeltags, answered the critical-path rule by moving the tests of base, names and targets into
+ * two check-only features after front, so the base run shipped no test and blocked on an empty
+ * test check after 622k tokens, and the path grew a feature longer (#1873).
+ */
 export function testOwnershipProblems(plan: InitiativePlan): string[] {
   const problems: string[] = [];
   const reaches = (id: string, target: string, seen = new Set<string>()): boolean => {
@@ -156,6 +163,22 @@ export function testOwnershipProblems(plan: InitiativePlan): string[] {
     );
     if (!source || canHold(feature.boundary.paths, "test")) continue;
     const owner = plan.features.find((candidate) => candidate.id === feature.testedBy);
+    const builtOn = feature.dependsOn.filter((id) => {
+      const upstream = plan.features.find((candidate) => candidate.id === id);
+      return upstream !== undefined && !skeletonOnly(upstream);
+    });
+    if (owner && !builtOn.length) {
+      problems.push(
+        `${feature.id} has source paths but no writable test path, and it builds on no other feature's code, so its tests need nothing a later feature writes: add its tests to its own boundary instead of testedBy ${owner.id}.`,
+      );
+      continue;
+    }
+    if (owner && testsOnly(owner)) {
+      problems.push(
+        `${feature.id} has source paths but no writable test path, and testedBy names ${owner.id}, a feature of tests only. Add ${feature.id}'s tests to its own boundary: a feature of tests only runs after the code it tests and makes the critical path longer, not shorter.`,
+      );
+      continue;
+    }
     if (
       !owner ||
       owner.id === feature.id ||
@@ -167,6 +190,13 @@ export function testOwnershipProblems(plan: InitiativePlan): string[] {
       );
   }
   return problems;
+}
+
+/** Every boundary path of the feature is a test file or a glob of test files (#1873). */
+function testsOnly(feature: Pick<InitiativeFeature, "boundary">): boolean {
+  return feature.boundary.paths.every(
+    (path) => deliverableKind(path) === "test" || (GLOB.test(path) && canHold([path], "test")),
+  );
 }
 
 /**
