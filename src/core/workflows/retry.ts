@@ -12,7 +12,22 @@ export function providerCircuitOpen(store: WorkflowStore, runId: string): boolea
     : false;
 }
 
-/** Persist a stage's consecutive empty outages across health probes and driver restarts. */
+/**
+ * A stage's consecutive provider failures, persisted across health probes and driver restarts.
+ * `failures` counts attempts that got no response from any model call; `stalls` counts attempts
+ * whose model answered a call and then gave no response on a later one, which is a stalled
+ * follow-up, not an outage (#1875).
+ */
+export interface ProviderOutcome {
+  failures: number;
+  stalls: number;
+  /** The model calls of the attempt that answered. */
+  answered: number;
+  /** How long the call that got no response waited, in seconds. */
+  waitedSeconds: number | null;
+}
+
+/** Persist a stage's consecutive empty outages and stalls across health probes and restarts. */
 export function recordProviderOutcome(
   store: WorkflowStore,
   runId: string,
@@ -20,9 +35,10 @@ export function recordProviderOutcome(
   profileId: string,
   taskId: string | undefined,
   error?: unknown,
-): number {
+): ProviderOutcome {
+  const none = { failures: 0, stalls: 0, answered: 0, waitedSeconds: null };
   const attempt = store.attempts(runId).find((a) => a.id === attemptId);
-  if (!attempt) return 0;
+  if (!attempt) return none;
   const scope = {
     stageId: store.rootStage(runId, attempt.step_id),
     profileId,
@@ -33,13 +49,76 @@ export function recordProviderOutcome(
   const path = `provider/failures-${hashJson(scope)}.json`;
   const saved = store.latestArtifact(runId, path);
   const previous = saved
-    ? (JSON.parse(store.readArtifact(runId, saved.id)) as { failures: number }).failures
-    : 0;
-  const failures =
-    error instanceof ProviderUnreachableError && attempt.used_tokens === 0 ? previous + 1 : 0;
-  if (failures || previous)
-    store.artifact(runId, "recovery", path, canonical({ ...scope, attemptId, failures }));
-  return failures;
+    ? (JSON.parse(store.readArtifact(runId, saved.id)) as { failures: number; stalls?: number })
+    : { failures: 0, stalls: 0 };
+  const calls = attemptCalls(store, runId, attemptId);
+  // Codex reports a step's usage only once its tool call is answered (#820), so an attempt whose
+  // first call answered and whose follow-up stalled has no recorded tokens: its calls say it.
+  const answered = calls.filter((call) => call.firstByteMs !== null).length;
+  const unreachable = error instanceof ProviderUnreachableError && attempt.used_tokens === 0;
+  const failures = unreachable && answered === 0 ? previous.failures + 1 : 0;
+  const stalls = unreachable && answered > 0 ? (previous.stalls ?? 0) + 1 : 0;
+  const silent = calls.findLast((call) => call.firstByteMs === null);
+  if (failures || stalls || previous.failures || previous.stalls)
+    store.artifact(
+      runId,
+      "recovery",
+      path,
+      canonical({ ...scope, attemptId, failures, ...(stalls ? { stalls, answered } : {}) }),
+    );
+  return {
+    failures,
+    stalls,
+    answered,
+    waitedSeconds: silent ? Math.round((silent.limitMs ?? silent.durationMs) / 1000) : null,
+  };
+}
+
+/** The model calls of an attempt as its usage record keeps them (`calls`, #1715). */
+function attemptCalls(
+  store: WorkflowStore,
+  runId: string,
+  attemptId: string,
+): { firstByteMs: number | null; durationMs: number; limitMs?: number }[] {
+  const usage = store.latestArtifact(runId, `attempts/${attemptId}/usage.json`);
+  if (!usage) return [];
+  try {
+    const record = JSON.parse(store.readArtifact(runId, usage.id)) as { calls?: unknown };
+    return Array.isArray(record.calls) ? record.calls : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * A resume of a run the circuit stopped is a person's decision to try again: it closes the
+ * circuit and starts every counter of the run from zero, so the next attempt is not the one that opens the circuit again. In
+ * bench round 58 each resume of wheeltags' specify got exactly one attempt (#1875).
+ */
+export function closeProviderCircuit(store: WorkflowStore, runId: string, commandId: string) {
+  // The host's own resume after a provider wait keeps counting: only the circuit's stop asks a
+  // person, and only their resume starts over.
+  if (!providerCircuitOpen(store, runId)) return;
+  store.artifact(runId, "recovery", "provider/circuit.json", canonical({ open: false, commandId }));
+  const latest = new Map<string, string>();
+  for (const artifact of store.artifacts(runId))
+    if (/^provider\/failures-[0-9a-f]+\.json$/.test(artifact.logical_path))
+      latest.set(artifact.logical_path, artifact.id);
+  for (const [path, id] of latest) {
+    const saved = JSON.parse(store.readArtifact(runId, id)) as {
+      failures: number;
+      stalls?: number;
+    };
+    if (!saved.failures && !saved.stalls) continue;
+    const {
+      stalls: _stalls,
+      answered: _answered,
+      ...scope
+    } = saved as typeof saved & {
+      answered?: number;
+    };
+    store.artifact(runId, "recovery", path, canonical({ ...scope, failures: 0, commandId }));
+  }
 }
 
 interface ProviderError {
