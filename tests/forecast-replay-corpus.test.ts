@@ -5,7 +5,7 @@ import { callCostRate, costRate } from "../src/core/workflows/budget.js";
 import { shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { forecastSamples } from "../src/core/workflows/stage-price.js";
 import { CAPACITY_PROBE } from "../src/core/workflows/sizing.js";
-import { type CallRate, openTrace, replayInitiativeStarts, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
+import { type CallRate, openTrace, type PlanPriceReplay, replayInitiativeStarts, replayPlanPrices, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
 
 // #1649, #1715: every recorded bench-round trace replays through the current host decisions: the
 // forecast and cap code, the per-call cost cap (#1740), the first-response deadline of each model
@@ -161,6 +161,43 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     expect(none.starts.find((b) => b.featureId === "selector-core")?.forecastUsd).not.toBe(
       starts.find((b) => b.featureId === "selector-core")?.forecastUsd,
     );
+  }, 120000);
+});
+
+describe("plan approvals price their tasks at what earlier runs' tasks paid (#1792)", () => {
+  test("R52's approvals, with R51 as history, bracket what their tasks cost where the typical mix priced them above it", () => {
+    const history = traces(join(ROOT, "R51")).map(openTrace);
+    const stores = history.map((h) => join(h.workspace, ".baked", "workflows.sqlite"));
+    const replay = (with_: string[]) => traces(join(ROOT, "R52")).flatMap((path) => replayPlanPrices(path, with_));
+    let current: PlanPriceReplay[];
+    let typical: PlanPriceReplay[];
+    try {
+      current = replay(stores);
+      // Before #1792 a plan was priced from the run's own attempts alone: at the typical task mix.
+      typical = replay(null);
+    } finally {
+      for (const h of history) h.dispose();
+    }
+    const priced = (rows: PlanPriceReplay[]) => rows.filter((r) => r.replayed && r.actualUsd > 0);
+    const below = (rows: PlanPriceReplay[]) => priced(rows).filter((r) => r.actualUsd < r.replayed!.low).length;
+    const above = (rows: PlanPriceReplay[]) => priced(rows).filter((r) => r.actualUsd > r.replayed!.high).length;
+    const error = (rows: PlanPriceReplay[]) =>
+      priced(rows).reduce((sum, r) => sum + Math.abs(Math.log((2 * r.actualUsd) / (r.replayed!.low + r.replayed!.high))), 0) /
+      priced(rows).length;
+    expect(priced(current).length).toBe(18);
+    expect(current.every((r) => r.rate === "history")).toBe(true);
+    expect(typical.every((r) => r.rate === "default")).toBe(true);
+    // The typical mix priced 14 of the 18 above what their tasks cost and none below; earlier
+    // runs' prices put 5 above and 3 below, and halve the error of the range's middle.
+    expect(below(typical)).toBeGreaterThanOrEqual(12);
+    expect(above(typical)).toBe(0);
+    expect(below(current)).toBeLessThanOrEqual(6);
+    expect(above(current)).toBeLessThanOrEqual(6);
+    expect(error(current)).toBeLessThan(error(typical) * 0.6);
+    // R52 url-shortener: the approval showed $6.14 to $11.92, the tasks cost $2.81.
+    const url = current.find((r) => r.recorded.low > 6 && r.recorded.low < 6.2);
+    expect(url!.replayed!.low).toBeLessThan(url!.actualUsd);
+    expect(url!.replayed!.high).toBeGreaterThan(url!.actualUsd);
   }, 120000);
 });
 

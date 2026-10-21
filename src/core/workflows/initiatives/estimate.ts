@@ -247,23 +247,26 @@ function taskCounts(history: PastRun[], workflowId: string): TokenRange {
  * they all name the same number, or when their tokens follow their paths less closely than
  * `MIN_PATH_FIT_CORRELATION`.
  */
-function pathFitOf(pool: FeatureRunSample[]): (PathFit & { residuals: number[] }) | null {
+function pathFitOf(
+  pool: FeatureRunSample[],
+  value: (s: FeatureRunSample) => number = (s) => s.tokens,
+): (PathFit & { residuals: number[] }) | null {
   const named = pool.filter((s) => pathWeight(s) > 0);
   if (named.length < MIN_PATH_FIT_SAMPLES) return null;
   const xs = named.map(pathWeight);
   const mx = xs.reduce((a, b) => a + b, 0) / xs.length;
-  const my = named.reduce((a, s) => a + s.tokens, 0) / named.length;
+  const my = named.reduce((a, s) => a + value(s), 0) / named.length;
   const sxx = xs.reduce((a, x) => a + (x - mx) ** 2, 0);
   if (sxx === 0) return null;
-  const sxy = named.reduce((a, s, i) => a + ((xs[i] ?? 0) - mx) * (s.tokens - my), 0);
-  const syy = named.reduce((a, s) => a + (s.tokens - my) ** 2, 0);
+  const sxy = named.reduce((a, s, i) => a + ((xs[i] ?? 0) - mx) * (value(s) - my), 0);
+  const syy = named.reduce((a, s) => a + (value(s) - my) ** 2, 0);
   if (syy === 0 || sxy / Math.sqrt(sxx * syy) < MIN_PATH_FIT_CORRELATION) return null;
   const perPath = sxy / sxx;
   const base = my - perPath * mx;
   return {
     base,
     perPath,
-    residuals: named.map((s, i) => s.tokens - (base + perPath * (xs[i] ?? 0))),
+    residuals: named.map((s, i) => value(s) - (base + perPath * (xs[i] ?? 0))),
   };
 }
 
@@ -291,23 +294,29 @@ function estimateFeature(
   const measured = rangeOf(pool.map((s) => s.tokens));
   // A feature that names paths sits where its paths put it among them, with their spread around
   // the fit; never below the cheapest of them.
-  const fit = pathWeight(feature) > 0 && measured ? pathFitOf(pool) : null;
-  const cheapest = Math.min(...pool.map((s) => s.tokens));
-  const placed =
-    fit &&
-    rangeOf(
-      fit.residuals.map((r) =>
-        Math.max(cheapest, fit.base + fit.perPath * pathWeight(feature) + r),
-      ),
-    );
+  const placeBy = (value: (s: FeatureRunSample) => number) => {
+    const f = pathWeight(feature) > 0 ? pathFitOf(pool, value) : null;
+    const cheapest = Math.min(...pool.map(value));
+    const range =
+      f &&
+      rangeOf(
+        f.residuals.map((r) => Math.max(cheapest, f.base + f.perPath * pathWeight(feature) + r)),
+      );
+    return range ? { fit: f, range } : null;
+  };
+  const byTokens = measured ? placeBy((s) => s.tokens) : null;
+  const fit = byTokens?.fit;
+  const placed = byTokens?.range;
   if (measured) {
     const tokens = placed ?? measured;
     return {
       ...head,
       tokens,
       expectedTokens: middle(tokens),
+      // Its tasks follow its paths the same way, so a two-path module does not plan six-path counts.
       tasks: hasTasks
-        ? (rangeOf(pool.map((s) => s.taskCount)) ?? { low: 0, high: 0 })
+        ? (placeBy((s) => s.taskCount)?.range ??
+          rangeOf(pool.map((s) => s.taskCount)) ?? { low: 0, high: 0 })
         : { low: 0, high: 0 },
       basis: "initiative-history",
       samples: pool.length,

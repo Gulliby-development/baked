@@ -1,4 +1,6 @@
-import type { TokenRange } from "./estimate.js";
+import { estimateHistory, historyStorePaths, type TokenRange } from "./estimate.js";
+import { initiativePriceSamples } from "./initiatives/forecast.js";
+import type { RunPolicy } from "./schemas.js";
 import { type SizingReport, taskTotal } from "./sizing.js";
 import { forecastRate, runPrices } from "./stage-price.js";
 import type { WorkflowStore } from "./store.js";
@@ -24,8 +26,9 @@ export interface PlanCost {
   /**
    * The planned tasks priced from sizing's token range; null without sizing or a price. `rate`
    * says what priced a token: `run`, the dollars per token this run's attempts on the model paid
-   * so far on tasks; `mix`, the model's prices at the mix of uncached input, cache reads and output
-   * this run's task attempts measured; `default`, the prices at a task loop's typical mix. Absent
+   * so far on tasks; `history`, what finished task attempts on the model paid in this project's
+   * earlier runs and `sizing.historyStores` (#1792); `mix`, the model's prices at the mix of
+   * uncached input, cache reads and output this run's task attempts measured; `default`, the prices at a task loop's typical mix. Absent
    * on approvals recorded before #1386, which used the estimate's default mix. `otherModels`: the
    * sizing took some task kinds' token rates from other models' tasks, since the sized model had
    * too few of its own, so the range may be far off (#1712).
@@ -38,33 +41,72 @@ export interface PlanCost {
   } | null;
 }
 
-export type PlanCostRate = "run" | "mix" | "default";
+export type PlanCostRate = "run" | "history" | "mix" | "default";
 
 /**
  * What a token of the planned tasks costs on `model`, priced like the cost forecast prices the
- * task stage (`forecastRate`): what this run's task attempts on the model paid (`run`), else the
- * model's prices at the mix this run's task attempts of any model measured (`mix`), else at a task
- * loop's typical mix (`default`, `TASK_MIX`). Bench round 38 (stoptable) priced codex plans at the
- * estimate's default mix, about twice what the tasks paid (#1386). Round 51 (commitbump) took the
- * mix of one-step Opus planning calls, which never read the cache, and priced Sonnet tasks that
- * read 91 percent of their input from it at $16 for a run that cost $2.72 (#1712): planning
- * attempts never price the tasks.
+ * task stage (`forecastRate`): what this run's task attempts on the model paid (`run`), else what
+ * finished task attempts on the model paid in the history (`history`), else the model's prices at
+ * the mix this run's task attempts of any model measured (`mix`), else at a task loop's typical
+ * mix (`default`, `TASK_MIX`). Bench round 38 (stoptable) priced codex plans at the estimate's
+ * default mix, about twice what the tasks paid (#1386). Round 51 (commitbump) took the mix of
+ * one-step Opus planning calls, which never read the cache, and priced Sonnet tasks that read 91
+ * percent of their input from it at $16 for a run that cost $2.72 (#1712): planning attempts never
+ * price the tasks. A plan waits for approval before its first task runs, so only the history has
+ * paid for tasks: codex task attempts of rounds 45 to 52 paid $0.81 per million tokens, 85 percent
+ * of them cache reads and 2 percent output, where the typical mix said $1.33, and replayed with
+ * the round before as history 65 of 109 approvals priced the tasks above what they cost, against
+ * 36 at the history's rate (#1792).
  */
 function rateOf(
   samples: AttemptUsageRow[],
+  history: AttemptUsageRow[],
   model: string,
 ): { usd: number; rate: PlanCostRate } | null {
+  const paid = (rows: AttemptUsageRow[]) =>
+    rows.some(
+      (a) =>
+        a.stage === IMPLEMENT &&
+        a.status !== "running" &&
+        a.model === model &&
+        a.costUsd !== null &&
+        (a.usedTokens ?? 0) > 0,
+    );
+  if (!paid(samples) && paid(history)) {
+    const usd = forecastRate(
+      history.filter((a) => a.stage === IMPLEMENT && a.model === model),
+      IMPLEMENT,
+      model,
+    );
+    if (usd !== null) return { usd, rate: "history" };
+  }
   const usd = forecastRate(samples, IMPLEMENT, model);
   if (usd === null) return null;
   const tasks = samples.filter((a) => a.stage === IMPLEMENT && a.status !== "running");
-  const rate: PlanCostRate = tasks.some(
-    (a) => a.model === model && a.costUsd !== null && (a.usedTokens ?? 0) > 0,
-  )
+  const rate: PlanCostRate = paid(samples)
     ? "run"
     : tasks.some((a) => a.costUsd !== null && a.inputTokens !== null && a.outputTokens !== null)
       ? "mix"
       : "default";
   return { usd, rate };
+}
+
+/**
+ * Finished attempts of this project's earlier runs and of the stores `sizing.historyStores` names,
+ * the same history plan sizing reads its token rates from; empty without a policy.
+ */
+function historySamples(
+  store: WorkflowStore,
+  runId: string,
+  policy: Pick<RunPolicy, "sizing"> | undefined,
+): AttemptUsageRow[] {
+  if (!policy) return [];
+  return initiativePriceSamples(
+    store,
+    [],
+    estimateHistory(store, store.workspace, policy).filter((r) => r.runId !== runId),
+    historyStorePaths(store.workspace, policy),
+  );
 }
 
 /**
@@ -110,8 +152,15 @@ export function plannedRunTokens(store: WorkflowStore, runId: string): TokenRang
   };
 }
 
-/** The run's spend so far by model, and the latest plan sizing priced in dollars. */
-export function planCostOf(store: WorkflowStore, runId: string): PlanCost {
+/**
+ * The run's spend so far by model, and the latest plan sizing priced in dollars. With the run's
+ * policy, the tasks are priced from the history before this run has paid for one.
+ */
+export function planCostOf(
+  store: WorkflowStore,
+  runId: string,
+  policy?: Pick<RunPolicy, "sizing">,
+): PlanCost {
   const byModel = new Map<string, { usd: number; stages: Set<string> }>();
   let complete = true;
   const usage = runUsage(store, runId);
@@ -130,7 +179,9 @@ export function planCostOf(store: WorkflowStore, runId: string): PlanCost {
     .map(([model, entry]) => ({ model, usd: entry.usd, stages: [...entry.stages] }))
     .sort((a, b) => b.usd - a.usd || a.model.localeCompare(b.model));
   const report = latestSizing(store, runId);
-  const priced = report?.model ? rateOf(runPrices(store, runId).samples, report.model) : null;
+  const priced = report?.model
+    ? rateOf(runPrices(store, runId).samples, historySamples(store, runId, policy), report.model)
+    : null;
   return {
     planning: { usd: models.reduce((sum, m) => sum + m.usd, 0), complete, models },
     implementation:
@@ -150,6 +201,7 @@ export function planCostOf(store: WorkflowStore, runId: string): PlanCost {
 
 const RATE_TEXT: Record<PlanCostRate, string> = {
   run: " at this run's dollars per token so far",
+  history: " at what earlier runs' tasks on it paid per token",
   mix: " at this run's mix of cached and uncached tokens",
   default: "",
 };
