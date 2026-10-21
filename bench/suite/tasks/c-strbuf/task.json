@@ -9,7 +9,8 @@
   "allowedPaths": [
     "src/**",
     "tests/**",
-    "README.md"
+    "README.md",
+    "Makefile"
   ],
   "checks": [
     {

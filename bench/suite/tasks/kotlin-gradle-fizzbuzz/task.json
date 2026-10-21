@@ -8,7 +8,9 @@
   ],
   "allowedPaths": [
     "src/**",
-    "README.md"
+    "README.md",
+    "build.gradle.kts",
+    "settings.gradle.kts"
   ],
   "checks": [
     {
