@@ -60,6 +60,7 @@ import { type ReplayResult, replayProblems } from "./acceptance-rows-replay.js";
 import { affectedTestsFor, taskCaseText, writtenTestsCheck } from "./affected-tests.js";
 import { assertAttemptFits, growBudgetOnProgress } from "./budget.js";
 import {
+  cwdPath,
   fixerCommand,
   fixerTiers,
   isWholeUnitFixer,
@@ -1037,10 +1038,18 @@ export class NativeAgentExecutor implements AgentExecutor {
                 for (const fix of tiers) {
                   if (isWholeUnitFixer(fix)) {
                     if (!codePaths.length) continue;
-                    await runFixer(wholeUnitFixerCommand(fix, codePaths), codePaths);
+                    await runFixer(
+                      wholeUnitFixerCommand(
+                        fix,
+                        codePaths.map((path) => cwdPath(check, path)),
+                      ),
+                      codePaths,
+                    );
                     continue;
                   }
-                  for (const path of paths) await runFixer(fixerCommand(fix, path), [path]);
+                  // The fixer runs in the check's cwd, so it names the file from there.
+                  for (const path of paths)
+                    await runFixer(fixerCommand(fix, cwdPath(check, path)), [path]);
                 }
               } finally {
                 // Also when a run throws: a whole-crate formatter may already have rewritten
