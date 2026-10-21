@@ -268,13 +268,18 @@ import { crossPlatformAnalysisNote, crossPlatformNote } from "./cross-platform.j
 import { git, gitWorktreePaths } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
 import {
+  auditCarry,
+  auditedCriteria,
+  carriedDerivations,
   checkedDerivations,
   DERIVATION_RETURN_NOTE,
+  derivationAuditCarryOn,
   derivationAuditExtra,
   derivationAuditOn,
   derivationFindings,
   derivationProblems,
   isDerivationFinding,
+  withCarried,
 } from "./derivation-audit.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
@@ -1613,10 +1618,17 @@ export class WorkflowScheduler {
                 advance = false;
                 break;
               }
-              const audit =
-                derivationAuditOn(policy) || rowsAsDataOn(policy)
-                  ? derivationAuditExtra(spec)
-                  : null;
+              const audited =
+                (derivationAuditOn(policy) || rowsAsDataOn(policy)) &&
+                auditedCriteria(spec).length > 0;
+              // Criteria an earlier pass reproduced and that have not changed keep its rows (#1851).
+              const carried =
+                audited && derivationAuditCarryOn(policy)
+                  ? carriedDerivations(spec, state.auditCarried)
+                  : [];
+              const audit = audited
+                ? derivationAuditExtra(spec, new Set(carried.map((d) => d.criterionId)))
+                : null;
               const analysis = AnalysisSchema.parse(
                 await this.call(
                   runId,
@@ -1643,18 +1655,19 @@ export class WorkflowScheduler {
                   0,
                   (output) => {
                     const parsed = AnalysisSchema.safeParse(output);
-                    return parsed.success
-                      ? [
-                          ...deferredBlockingProblems(
-                            parsed.data.findings,
-                            (_, index) => parsed.data.findings[index]?.description ?? "",
-                          ),
-                          ...(audit ? derivationProblems(spec, parsed.data) : []),
-                          ...(rowsAsDataOn(policy)
-                            ? rowAuditProblems(spec, graph, parsed.data, false)
-                            : []),
-                        ]
-                      : [];
+                    if (!parsed.success) return [];
+                    const merged = {
+                      ...parsed.data,
+                      derivations: withCarried(parsed.data.derivations, carried),
+                    };
+                    return [
+                      ...deferredBlockingProblems(
+                        parsed.data.findings,
+                        (_, index) => parsed.data.findings[index]?.description ?? "",
+                      ),
+                      ...(audited ? derivationProblems(spec, merged) : []),
+                      ...(rowsAsDataOn(policy) ? rowAuditProblems(spec, graph, merged, false) : []),
+                    ];
                   },
                 ),
               );
@@ -1662,12 +1675,16 @@ export class WorkflowScheduler {
               // is not checked (#347: one transposed character blocked d0f55591).
               analysis.inputHash = hashJson(state.manifest);
               // A row that rests on the request rests on text the request holds (#1823).
-              if (audit)
+              // Carried rows are checked again: the request text is the run's, not the pass's.
+              if (audited) {
                 analysis.derivations = checkedDerivations(
-                  analysis.derivations,
+                  withCarried(analysis.derivations, carried),
                   statedRequest(state, this.store.requests(runId)),
                   spec,
                 );
+                if (derivationAuditCarryOn(policy))
+                  state.auditCarried = auditCarry(spec, analysis.derivations);
+              }
               // The host adds a finding the model missed: a program was described and none is planned.
               // A feature of an initiative has its boundary approved with the split, not the request.
               const uncovered =
@@ -1746,7 +1763,7 @@ export class WorkflowScheduler {
               // Findings about check outcomes stay in the record as notes; checks run later.
               let findings = demoteDeferred(analysis.findings, (f) => f.description);
               // The host raises the rows the audit could not reproduce; the model does not (#1465).
-              if (audit)
+              if (audited)
                 findings = [
                   ...findings.filter((f) => !isDerivationFinding(f)),
                   ...derivationFindings(spec, analysis),

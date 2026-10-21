@@ -412,6 +412,7 @@ export class NativeWorkflowService implements WorkflowService {
       analysisReplans: 0,
       lateDefectRounds: 0,
       derivationReturns: 0,
+      auditCarried: [],
       analysisRaised: [],
       answeredFindings: [],
       revisedRejections: [],
