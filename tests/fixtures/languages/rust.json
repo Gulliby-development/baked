@@ -1,7 +1,7 @@
 {
   "files": {
     "src/lib.rs": "pub fn sum(a: i32, b: i32) -> i32 {\n    todo!()\n}\n",
-    "src/tests.rs": "use super::*;\n",
+    "src/tests.rs": "use super::*;\n\n#[test]\nfn adds() {\n    assert_eq!(sum(1, 2), 3);\n}\n",
     "Cargo.toml": "[package]\nname = \"fixture\"\n\n[[bin]]\nname = \"sum\"\npath = \"src/main.rs\"\n\n[dependencies]\nserde = \"1\"\n\n[features]\nprops = []\n",
     "tests/props.rs": "#![cfg(feature = \"props\")]\nproptest! {\n    #[test]\n    fn adds(a in 0i32..100) { assert_eq!(a + 0, a); }\n}\n"
   },
@@ -43,6 +43,9 @@
     ],
     "testGates": [
       "cargo --features props"
+    ],
+    "callGraph": [
+      "sum called at src/tests.rs:5"
     ]
   }
 }

@@ -29,6 +29,8 @@ import { PROPERTY_LIBRARIES, propertyTestKind } from "../src/core/workflows/qual
 import { checkBuiltinRules } from "../src/core/workflows/quality/rules.js";
 import { INLINE_HARNESS, inlineRowFile } from "../src/core/workflows/acceptance-rows-inline.js";
 import { TEST_GATES, testGateFlags } from "../src/core/workflows/test-gates.js";
+import { TreeSitterBackend } from "../src/core/intelligence/backends/tree-sitter.js";
+import { CALL_SYNTAX, callContext, functionsIn } from "../src/core/intelligence/call-context.js";
 import { TaskSchema } from "../src/core/workflows/schemas.js";
 
 // Language parity (#1717): every language-bound record has a row for every supported language,
@@ -68,7 +70,7 @@ const RECORDS: Record<
   string,
   {
     record: LanguageRecord<unknown>;
-    run: (language: SupportedLanguage, fixture: Fixture) => string[];
+    run: (language: SupportedLanguage, fixture: Fixture) => string[] | Promise<string[]>;
     /** Outputs a row with data must never give, whatever its golden says. */
     never?: string[];
   }
@@ -130,6 +132,22 @@ const RECORDS: Record<
         ([program, flags]) => `${program} ${flags.join(" ")}`,
       ),
   },
+  // The review's call-graph context (#1845): the callers and importers of the first function of the
+  // language's source files that tree-sitter finds.
+  callGraph: {
+    record: CALL_SYNTAX,
+    run: async (language, { files }) => {
+      const all = Object.entries(files).map(([path, text]) => ({ path, text }));
+      const spans = await functionsIn(treeSitter(), ofLanguage(language, files).map(([path, text]) => ({ path, text })));
+      const fn = spans.find((s) => !isTestFile(s.file));
+      if (!fn) return [];
+      const [context] = callContext([fn], spans, all);
+      return [
+        ...(context?.callers ?? []).map((p) => `${fn.name} called at ${p.file}:${p.line}`),
+        ...(context?.importers ?? []).map((path) => `${fn.file} imported by ${path}`),
+      ];
+    },
+  },
   mutation: {
     record: MUTATION_TOOLS,
     // Every tool counts as installed, so the record alone decides which one the files get.
@@ -161,6 +179,10 @@ const RECORDS: Record<
   },
 };
 
+let backend: TreeSitterBackend | null = null;
+const treeSitter = () => (backend ??= new TreeSitterBackend());
+afterAll(() => backend?.dispose());
+
 const dir = join(import.meta.dir, "fixtures", "languages");
 const fixture = (language: string): Fixture =>
   JSON.parse(readFileSync(join(dir, `${language}.json`), "utf8")) as Fixture;
@@ -176,10 +198,10 @@ test("every supported language has a fixture project, and every fixture a suppor
 for (const language of SUPPORTED_LANGUAGES)
   describe(`language parity: ${language}`, () => {
     for (const [name, { record, run, never = [] }] of Object.entries(RECORDS))
-      test(name, () => {
+      test(name, async () => {
         const data = fixture(language);
         const golden = data.expected?.[name];
-        const actual = run(language, data);
+        const actual = await run(language, data);
         const row = record[language];
         // A missing golden prints what the record gives, ready to paste into the fixture.
         expect({ [name]: golden === undefined ? "missing" : golden }).toEqual({

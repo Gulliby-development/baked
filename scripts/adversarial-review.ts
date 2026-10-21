@@ -2,7 +2,9 @@
  * Adversarial sweep review of a pull request that fixes a Bug issue (#1722). A model of another
  * family than the fixer's gets the diff, the issue and the `## Sweep` section, with the sweep
  * checklist of the file-issue skill, and names the sibling places, languages or paths the sweep
- * missed. The review is advisory and runs on the machine of whoever calls it, through the Claude
+ * missed. Each finding then goes to a fresh run of the same CLI that tries to disprove it (#1845);
+ * the instructions, the checklist and AGENTS.md come from the pull request's base commit, so a
+ * pull request cannot weaken its own review. The review is advisory and runs on the machine of whoever calls it, through the Claude
  * Code or Codex CLI and the subscription it is logged in with; there is no CI job and no API key.
  *
  * Usage:
@@ -19,10 +21,30 @@ import { claudeCodeCommand } from "../src/core/llm/providers/claude-code/cli";
 import { codexCommand } from "../src/core/llm/providers/codex/client";
 import { codexRunEnv } from "../src/core/llm/providers/codex/home";
 import { resolveCli } from "../src/core/platform/cli-path";
+import { TreeSitterBackend } from "../src/core/intelligence/backends/tree-sitter";
+import {
+  CALL_SYNTAX,
+  callContext,
+  changedFunctions,
+  changedLines,
+  functionsIn,
+  renderCallContext,
+} from "../src/core/intelligence/call-context";
+import { rowOf } from "../src/core/intelligence/language-records";
+import { detectLanguageFromPath } from "../src/core/intelligence/types";
 import { closedIssueNumbers, sweepSection } from "./check-sweep-section";
 
-const SKILL = join(import.meta.dir, "../.agents/skills/file-issue/SKILL.md");
-const INSTRUCTIONS = join(import.meta.dir, "../.agents/skills/file-issue/adversarial-review.md");
+/**
+ * The files the review is judged by, read from the pull request's base commit (#1845). A new
+ * input of the review joins this list, so a pull request cannot edit it to pass its own review.
+ */
+export const REVIEW_INPUTS = {
+  skill: ".agents/skills/file-issue/SKILL.md",
+  instructions: ".agents/skills/file-issue/adversarial-review.md",
+  verifier: ".agents/skills/file-issue/adversarial-verify.md",
+  agents: "AGENTS.md",
+} as const;
+export type ReviewRules = Record<keyof typeof REVIEW_INPUTS, string>;
 /** Marks the comment the review posts, so a new push updates it instead of adding another. */
 export const COMMENT_MARKER = "<!-- adversarial-sweep-review -->";
 /** Diffs longer than this are cut; the reviewer is told so. */
@@ -50,25 +72,419 @@ export interface ReviewInput {
   prTitle: string;
   prBody: string;
   diff: string;
+  /** The findings of the review this one replaces, with what people answered (#1845). */
+  earlier?: Earlier[];
+  /** The callers, callees, importers and similar functions of the changed functions (#1845). */
+  callGraph?: string;
 }
 
-/** The whole prompt: instructions, the skill's checklist, then the issue, the sweep and the diff. */
-export function reviewPrompt(input: ReviewInput, skill: string, instructions: string): string {
+/** The repository paths a unified diff changes, by its `diff --git a/x b/y` headers. */
+export function changedPaths(diff: string): string[] {
+  return [...diff.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)].map((m) => m[2] ?? m[1] ?? "");
+}
+
+/** The review inputs a pull request edits, which its review still reads from the base commit. */
+export function configurationChanges(diff: string): string[] {
+  const inputs = new Set<string>(Object.values(REVIEW_INPUTS));
+  return changedPaths(diff).filter((path) => inputs.has(path));
+}
+
+/** The part of a unified diff that changes `path`, or "" when it does not. */
+export function fileDiff(diff: string, path: string): string {
+  return (
+    diff
+      .split(/^(?=diff --git )/m)
+      .find((part) => changedPaths(part)[0] === path)
+      ?.trimEnd() ?? ""
+  );
+}
+
+/** The whole prompt: instructions, the skill's checklist and AGENTS.md, then the issue, the sweep and the diff. */
+export function reviewPrompt(input: ReviewInput, rules: ReviewRules): string {
   const diff =
     input.diff.length > MAX_DIFF
       ? `${input.diff.slice(0, MAX_DIFF)}\n\n[The diff is cut at ${MAX_DIFF} characters of ${input.diff.length}.]`
       : input.diff;
+  const changed = configurationChanges(input.diff);
   return [
-    instructions.trim(),
+    rules.instructions.trim(),
     "# Sweep checklist (from .agents/skills/file-issue/SKILL.md)",
-    sweepChecklist(skill),
+    sweepChecklist(rules.skill),
+    "# Repository rules (AGENTS.md)",
+    rules.agents.trim(),
+    ...(changed.length
+      ? [
+          `# Configuration changes in this PR\n\nThe pull request edits ${changed.map((p) => `\`${p}\``).join(", ")}. The review reads them from the base commit; judge the pull request by the version above.`,
+        ]
+      : []),
+    ...(input.earlier?.length ? [earlierSection(input.earlier)] : []),
     ...input.issues.map((i) => `# Issue #${i.number}: ${i.title}\n\n${i.body.trim()}`),
     `# Pull request #${input.prNumber}: ${input.prTitle}`,
     "## Its Sweep section",
     sweepSection(input.prBody) || "(The description has no Sweep section.)",
     "## Its diff",
     `\`\`\`diff\n${diff}\n\`\`\``,
+    ...(input.callGraph
+      ? [
+          "## Call-graph context of the changed functions",
+          "Read from the pull request's head with tree-sitter: who calls each changed function, what it calls, which files import its file, and the functions most like it by name or body. Start the sibling sweep from these places.",
+          input.callGraph,
+        ]
+      : []),
   ].join("\n\n");
+}
+
+export type Severity = "P0" | "P1" | "P2";
+export interface Finding {
+  severity: Severity;
+  file: string;
+  lines: string;
+  title: string;
+  why: string;
+  rule: string;
+  fix: string;
+}
+export interface Review {
+  findings: Finding[];
+  /** What became of each earlier finding, by its ID. */
+  earlier: { id: string; status: EarlierStatus; note: string }[];
+  languages: string;
+  scenario: string;
+  confidence: string;
+}
+
+/** The last fenced `json` block of a model's answer, parsed, or null. */
+function lastJson(text: string): unknown {
+  const blocks = [...text.matchAll(/```json\s*\n([\s\S]*?)```/g)];
+  const raw = blocks.at(-1)?.[1] ?? text.trim();
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+const str = (value: unknown) => (typeof value === "string" ? value.trim() : "");
+
+/** The reviewer's answer as findings, or null when it is not the JSON the instructions ask for. */
+export function parseReview(text: string): Review | null {
+  const data = lastJson(text) as Partial<Record<keyof Review, unknown>> | null;
+  if (!data || typeof data !== "object" || !Array.isArray(data.findings)) return null;
+  const findings = data.findings.flatMap((item): Finding[] => {
+    const f = (item ?? {}) as Record<string, unknown>;
+    const severity = (["P0", "P1", "P2"] as const).find((s) => s === str(f.severity)) ?? "P2";
+    const finding = { severity, file: str(f.file), lines: str(f.lines), title: str(f.title), why: str(f.why), rule: str(f.rule), fix: str(f.fix) };
+    return finding.file && finding.title ? [finding] : [];
+  });
+  const earlier = (Array.isArray(data.earlier) ? data.earlier : []).flatMap((item) => {
+    const e = (item ?? {}) as Record<string, unknown>;
+    const status = EARLIER_STATUSES.find((s) => s === str(e.status));
+    return status && str(e.id) ? [{ id: str(e.id), status, note: str(e.note) }] : [];
+  });
+  return { findings, earlier, languages: str(data.languages), scenario: str(data.scenario), confidence: str(data.confidence) };
+}
+
+export interface Verdict {
+  verdict: "keep" | "downgrade" | "drop";
+  confidence: number;
+  reason: string;
+}
+
+/** The prompt of the run that tries to disprove one finding: only it, its rule and its file's diff. */
+export function verifierPrompt(finding: Finding, diff: string, instructions: string): string {
+  const own = fileDiff(diff, finding.file);
+  return [
+    instructions.trim(),
+    "# The finding",
+    `\`\`\`json\n${JSON.stringify(finding, null, 2)}\n\`\`\``,
+    `# The rule it cites\n\n${finding.rule || "(none named)"}`,
+    `# The diff of ${finding.file}`,
+    own ? `\`\`\`diff\n${own.slice(0, MAX_DIFF)}\n\`\`\`` : "(The pull request does not change this file.)",
+  ].join("\n\n");
+}
+
+/** The verifier's answer, or null when it is not the JSON its instructions ask for. */
+export function parseVerdict(text: string): Verdict | null {
+  const data = lastJson(text) as Record<string, unknown> | null;
+  const verdict = (["keep", "downgrade", "drop"] as const).find((v) => v === str(data?.verdict));
+  if (!verdict) return null;
+  const confidence = Math.min(5, Math.max(1, Math.round(Number(data?.confidence) || 1)));
+  return { verdict, confidence, reason: str(data?.reason) };
+}
+
+/** A finding after its verifier run: `verdict` is null when the run failed or answered nothing usable. */
+export interface Checked {
+  /** The finding's ID in the comment (`A1`), kept across re-reviews of the pull request. */
+  id?: string;
+  finding: Finding;
+  verdict: Verdict | null;
+  error?: string;
+}
+
+/** One model call: the prompt in, the answer out; throws when the CLI fails. */
+export type Complete = (prompt: string) => string;
+
+/** Each finding through its own verifier run. A failed run keeps the finding, marked unverified. */
+export function verifyFindings(review: Review, diff: string, instructions: string, run: Complete): Checked[] {
+  return review.findings.map((finding) => {
+    try {
+      const verdict = parseVerdict(run(verifierPrompt(finding, diff, instructions)));
+      if (!verdict) return { finding, verdict: null, error: "the verifier gave no verdict" };
+      const severity: Severity = verdict.verdict === "downgrade" ? (finding.severity === "P0" ? "P1" : "P2") : finding.severity;
+      return { finding: { ...finding, severity }, verdict };
+    } catch (error) {
+      return { finding, verdict: null, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+}
+
+const RANK: Record<Severity, number> = { P0: 0, P1: 1, P2: 2 };
+
+function renderFinding({ id, finding: f, verdict, error }: Checked): string {
+  const place = `\`${f.file}${f.lines ? `:${f.lines}` : ""}\``;
+  const status = verdict
+    ? `Verifier: ${verdict.verdict}${verdict.verdict === "downgrade" ? "d" : ""}, confidence ${verdict.confidence}/5. ${verdict.reason}`
+    : `Unverified: ${error ?? "no verifier run"}.`;
+  return [
+    `- ${id ? `**${id}** ` : ""}**${f.severity}** ${place}: ${f.title}${f.rule ? ` (${f.rule})` : ""}`,
+    `  ${f.why}`,
+    `  _${status.trim()}_`,
+    "  <details><summary>Prompt for AI agents</summary>",
+    "",
+    "  ```text",
+    `  In ${f.file}${f.lines ? `, lines ${f.lines}` : ""}: ${f.title}. ${f.why} Fix: ${f.fix}`.replace(/\s*\n\s*/g, " "),
+    "  ```",
+    "  </details>",
+  ].join("\n");
+}
+
+/**
+ * The review as Markdown: the kept findings by severity, each with a prompt an agent can act on;
+ * the findings the verifier dropped in a collapsed section with its reason, never left out.
+ */
+export function renderReview(review: Review, checked: Checked[], changed: string[], since?: SinceLast): string {
+  const kept = checked
+    .filter((c) => c.verdict?.verdict !== "drop")
+    .sort((a, b) => RANK[a.finding.severity] - RANK[b.finding.severity]);
+  const dropped = checked.filter((c) => c.verdict?.verdict === "drop");
+  return [
+    ...(since ? sinceSection(since) : []),
+    "## Missed places",
+    kept.length ? kept.map(renderFinding).join("\n") : "None found.",
+    ...(dropped.length
+      ? [
+          `<details><summary>Dropped by the verifier (${dropped.length})</summary>\n\n${dropped
+            .map(({ finding: f, verdict }) => `- ~~**${f.severity}** \`${f.file}${f.lines ? `:${f.lines}` : ""}\`: ${f.title}~~ (confidence ${verdict?.confidence}/5) ${verdict?.reason ?? ""}`)
+            .join("\n")}\n\n</details>`,
+        ]
+      : []),
+    "## Languages",
+    review.languages || "Complete.",
+    "## Scenario that should fail",
+    review.scenario || "None.",
+    "## Confidence",
+    review.confidence || "Not given.",
+    ...(changed.length
+      ? [
+          "## Configuration changes in this PR",
+          `${changed.map((p) => `\`${p}\``).join(", ")}: the review read ${changed.length === 1 ? "it" : "them"} from the base commit.`,
+        ]
+      : []),
+  ].join("\n\n");
+}
+
+/**
+ * The whole review of one pull request: the reviewer's run, then a verifier run per finding of the
+ * same CLI. An answer that is not the JSON the instructions ask for is posted as written, unverified.
+ */
+export function runReview(input: ReviewInput, rules: ReviewRules, run: Complete): { prompt: string; review: string } {
+  const prompt = reviewPrompt(input, rules);
+  const answer = run(prompt);
+  const parsed = parseReview(answer);
+  const changed = configurationChanges(input.diff);
+  const earlier = input.earlier ?? [];
+  if (!parsed) {
+    // Keep the earlier findings' memory for the next review, since this one named none we can read.
+    const stored = earlier.map(({ id, finding }) => ({ id, finding, verdict: null }));
+    return {
+      prompt,
+      review: `${answer.trim()}\n\n_The reviewer did not answer in the expected format; its findings are not verified._\n\n${storedFindings(stored)}`,
+    };
+  }
+  // A finding people turned down or answered is not raised again, whatever the reviewer says.
+  const settled = new Map(earlier.filter(isSettled).map((e) => [findingKey(e.finding), e]));
+  const raised = parsed.findings.filter((f) => !settled.has(findingKey(f)));
+  const review = { ...parsed, findings: raised };
+  const checked = withIds(verifyFindings(review, input.diff, rules.verifier, run), earlier);
+  const since = earlier.length ? sinceLast(earlier, parsed, checked, new Set(parsed.findings.filter((f) => settled.has(findingKey(f))).map((f) => settled.get(findingKey(f))?.id ?? ""))) : undefined;
+  // The next review remembers this one's findings and the earlier ones not fixed since.
+  const kept = checked.filter((c) => c.verdict?.verdict !== "drop");
+  const keptIds = new Set(kept.map((c) => c.id));
+  const fixed = new Set(since?.rows.filter((r) => r.status === "fixed").map((r) => r.id));
+  const carried = earlier.filter((e) => !keptIds.has(e.id) && !fixed.has(e.id)).map(({ id, finding }) => ({ id, finding, verdict: null }));
+  return { prompt, review: `${renderReview(review, checked, changed, since)}\n\n${storedFindings([...kept, ...carried])}` };
+}
+
+// Per-PR memory (#1845): the comment keeps its findings in a hidden block, people answer a finding
+// by its ID in a pull request comment ("👎 A2 the Maven path already does this"), and the next
+// review reports what became of each one and does not raise a turned-down one again.
+
+export const EARLIER_STATUSES = ["fixed", "still present", "dismissed"] as const;
+export type EarlierStatus = (typeof EARLIER_STATUSES)[number];
+
+/** An earlier finding with its ID and what people said about it. */
+export interface Earlier {
+  id: string;
+  finding: Finding;
+  vote: "up" | "down" | null;
+  replies: string[];
+}
+
+/** People turned it down or answered it: the reviewer does not raise it again. */
+const isSettled = (e: Earlier) => e.vote === "down" || e.replies.length > 0;
+
+/** The same place and claim across reviews: the file and the title, case and spacing aside. */
+export function findingKey(f: Pick<Finding, "file" | "title">): string {
+  return `${f.file.trim()}\u0000${f.title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()}`;
+}
+
+const STORED = /<!-- findings: ([A-Za-z0-9+/=]+) -->/;
+
+/** The hidden block that carries a comment's findings to the next review. */
+function storedFindings(checked: Checked[]): string {
+  const data = checked.map(({ id, finding }) => ({ id, ...finding }));
+  return `<!-- findings: ${Buffer.from(JSON.stringify(data), "utf8").toString("base64")} -->`;
+}
+
+/** The findings an earlier review comment stored, by ID; empty for a comment from before #1845. */
+export function earlierFindings(body: string): { id: string; finding: Finding }[] {
+  const raw = STORED.exec(body)?.[1];
+  if (!raw) return [];
+  try {
+    const data = JSON.parse(Buffer.from(raw, "base64").toString("utf8")) as unknown;
+    return (Array.isArray(data) ? data : []).flatMap((item) => {
+      const { id, ...rest } = (item ?? {}) as Record<string, unknown>;
+      const finding = parseReview(`\`\`\`json\n${JSON.stringify({ findings: [rest] })}\n\`\`\``)?.findings[0];
+      return typeof id === "string" && finding ? [{ id, finding }] : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+const DOWN = /👎|:-1:|(?:^|\s)-1(?=\s|$)|:thumbsdown:/u;
+const UP = /👍|:\+1:|(?:^|\s)\+1(?=\s|$)|:thumbsup:/u;
+
+/**
+ * What people said about each earlier finding, from the pull request's other comments: a line that
+ * names a finding's ID votes with 👍 or 👎 (or +1, -1) and answers with the rest of its text.
+ * The review's own comment and quoted lines do not count.
+ */
+export function feedback(found: { id: string; finding: Finding }[], comments: { body?: string; user?: string }[]): Earlier[] {
+  return found.map(({ id, finding }) => {
+    const token = new RegExp(`(?:^|[^A-Za-z0-9])${id}(?![0-9])`);
+    let vote: Earlier["vote"] = null;
+    const replies: string[] = [];
+    for (const comment of comments) {
+      if (!comment.body || comment.body.startsWith(COMMENT_MARKER)) continue;
+      for (const line of comment.body.split("\n")) {
+        if (line.trimStart().startsWith(">") || !token.test(line)) continue;
+        if (DOWN.test(line)) vote = "down";
+        else if (UP.test(line) && vote !== "down") vote = "up";
+        const text = line
+          .replace(token, " ")
+          .replace(DOWN, " ")
+          .replace(UP, " ")
+          .replace(/^[\s:,.-]+|[\s:,.-]+$/g, "")
+          .trim();
+        if (text) replies.push(comment.user ? `@${comment.user}: ${text}` : text);
+      }
+    }
+    return { id, finding, vote, replies };
+  });
+}
+
+/** The earlier findings as the reviewer reads them, with the votes and replies. */
+function earlierSection(earlier: Earlier[]): string {
+  return [
+    "# Earlier findings on this pull request",
+    "The previous review of this pull request named these findings. Report each one in `earlier`: fixed when the diff now fixes it, still present when it does not, dismissed when people turned it down or answered it and the answer holds. Do not raise a finding marked turned down or answered again in `findings`.",
+    ...earlier.map((e) => {
+      const said = [
+        e.vote === "down" ? "turned down (👎)" : e.vote === "up" ? "confirmed (👍)" : "",
+        ...e.replies.map((r) => `answered: ${JSON.stringify(r)}`),
+      ].filter(Boolean);
+      return `- ${e.id} [${e.finding.severity}] \`${e.finding.file}${e.finding.lines ? `:${e.finding.lines}` : ""}\`: ${e.finding.title}. ${e.finding.why}${said.length ? ` People: ${said.join("; ")}.` : ""}`;
+    }),
+  ].join("\n");
+}
+
+/** IDs for this review's findings: an earlier finding's own ID when it is raised again, the next free one otherwise. */
+function withIds(checked: Checked[], earlier: Earlier[]): Checked[] {
+  const byKey = new Map(earlier.map((e) => [findingKey(e.finding), e.id]));
+  let next = Math.max(0, ...earlier.map((e) => Number(e.id.slice(1)) || 0));
+  return checked.map((c) => ({ ...c, id: byKey.get(findingKey(c.finding)) ?? `A${++next}` }));
+}
+
+export interface SinceLast {
+  rows: { id: string; title: string; status: EarlierStatus | "not reported"; note: string }[];
+}
+
+function sinceLast(earlier: Earlier[], review: Review, checked: Checked[], reraised: Set<string>): SinceLast {
+  const reported = new Map(review.earlier.map((e) => [e.id, e]));
+  const present = new Set(checked.filter((c) => c.verdict?.verdict !== "drop").map((c) => c.id));
+  return {
+    rows: earlier.map((e) => {
+      const said = reported.get(e.id);
+      // People's answer settles it, whatever the reviewer reported.
+      if (isSettled(e))
+        return { id: e.id, title: e.finding.title, status: "dismissed" as const, note: [e.vote === "down" ? "👎" : "", ...e.replies].filter(Boolean).join("; ") + (reraised.has(e.id) ? " (raised again; not repeated)" : "") };
+      if (present.has(e.id)) return { id: e.id, title: e.finding.title, status: "still present" as const, note: said?.note ?? "" };
+      return { id: e.id, title: e.finding.title, status: said?.status ?? "not reported", note: said?.note ?? "" };
+    }),
+  };
+}
+
+function sinceSection(since: SinceLast): string[] {
+  return [
+    "## Since last review",
+    since.rows.map((r) => `- **${r.id}** ${r.title}: ${r.status}${r.note ? `. ${r.note}` : ""}`).join("\n"),
+  ];
+}
+
+/** The call-graph context is cut at this length; the reviewer is told so. */
+const MAX_CALL_GRAPH = 40_000;
+/** Files larger than this are generated or minified: not read for the call graph. */
+const MAX_SOURCE_BYTES = 512 * 1024;
+
+/**
+ * The call-graph context of a diff over the repository's files at the pull request's head
+ * (#1845): the changed functions, with their callers, callees, importers and similar functions.
+ */
+export async function callGraphContext(
+  diff: string,
+  files: readonly { path: string; text: string }[],
+  backend: TreeSitterBackend,
+): Promise<string> {
+  const sources = files.filter((f) => rowOf(CALL_SYNTAX, detectLanguageFromPath(f.path)) && f.text.length <= MAX_SOURCE_BYTES);
+  const spans = await functionsIn(backend, sources);
+  const changed = changedFunctions(spans, changedLines(diff)).slice(0, 40);
+  if (!changed.length) return "";
+  const text = renderCallContext(callContext(changed, spans, sources));
+  return text.length > MAX_CALL_GRAPH ? `${text.slice(0, MAX_CALL_GRAPH)}\n\n[The context is cut at ${MAX_CALL_GRAPH} characters.]` : text;
+}
+
+/** The repository's files at a commit, through a temporary worktree of this checkout; null when git cannot fetch it. */
+function filesAt(prNumber: number, sha: string): { path: string; text: string }[] | null {
+  const git = (...args: string[]) => spawnSync("git", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, windowsHide: true });
+  if (git("cat-file", "-e", `${sha}^{commit}`).status !== 0) git("fetch", "--quiet", "origin", `pull/${prNumber}/head`);
+  const list = git("ls-tree", "-r", "-z", "--name-only", sha);
+  if (list.status !== 0) return null;
+  const paths = list.stdout.split("\0").filter((path) => path && rowOf(CALL_SYNTAX, detectLanguageFromPath(path)));
+  return paths.slice(0, 5000).flatMap((path) => {
+    const show = git("show", `${sha}:${path}`);
+    return show.status === 0 && show.stdout.length <= MAX_SOURCE_BYTES ? [{ path, text: show.stdout }] : [];
+  });
 }
 
 /**
@@ -113,7 +529,7 @@ export function reviewCommand(family: Family, dir: string): string[] {
       ];
 }
 
-function complete(family: Family, prompt: string): string {
+export function complete(family: Family, prompt: string): string {
   const dir = mkdtempSync(join(tmpdir(), "baked-adversarial-review-"));
   try {
     const [command = "", ...args] = reviewCommand(family, dir);
@@ -142,7 +558,7 @@ export function commentBody(review: string, family: Family, sha: string): string
   return [
     `${COMMENT_MARKER}\n<!-- sha: ${sha} -->`,
     "### Adversarial sweep review (advisory)",
-    `${family === "anthropic" ? "Claude Code" : "Codex"}, of another model family than the fixer's, read the diff at ${sha.slice(0, 7)}, the issue and the Sweep section with the [file-issue checklist](../blob/main/.agents/skills/file-issue/SKILL.md) and looked for missed places. It does not block the merge; a real finding goes into this pull request or a new issue.`,
+    `${family === "anthropic" ? "Claude Code" : "Codex"}, of another model family than the fixer's, read the diff at ${sha.slice(0, 7)}, the issue and the Sweep section with the [file-issue checklist](../blob/main/.agents/skills/file-issue/SKILL.md) and looked for missed places; a fresh run of it then tried to disprove each finding. It does not block the merge; a real finding goes into this pull request or a new issue.`,
     review.trim(),
   ].join("\n\n");
 }
@@ -165,7 +581,7 @@ async function github<T>(path: string, token: string, init: RequestInit = {}, ac
     headers: { Accept: accept, ...(token ? { Authorization: `Bearer ${token}` } : {}), ...init.headers },
   });
   if (!response.ok) throw new Error(`GitHub ${path}: HTTP ${response.status}`);
-  return (accept.endsWith("diff") ? await response.text() : await response.json()) as T;
+  return (accept.endsWith("json") ? await response.json() : await response.text()) as T;
 }
 
 interface Pull {
@@ -176,6 +592,27 @@ interface Pull {
   updated_at: string;
   merged_at?: string | null;
   head: { sha: string };
+  base: { sha: string };
+}
+
+/**
+ * The review inputs as of the base commit (#1845): a pull request that edits its own review's
+ * instructions is still reviewed by the version it branched from. A file the base does not have
+ * yet (an input added by the pull request that introduces it) comes from this checkout.
+ */
+async function baseRules(repository: string, sha: string, token: string): Promise<ReviewRules> {
+  const entries = await Promise.all(
+    Object.entries(REVIEW_INPUTS).map(async ([key, path]) => {
+      const text = await github<string>(
+        `/repos/${repository}/contents/${path}?ref=${sha}`,
+        token,
+        {},
+        "application/vnd.github.raw",
+      ).catch(() => readFileSync(join(import.meta.dir, "..", path), "utf8"));
+      return [key, text] as const;
+    }),
+  );
+  return Object.fromEntries(entries) as ReviewRules;
 }
 
 /** The Bug issues a pull request closes, with their text; empty when it closes none. */
@@ -197,12 +634,16 @@ async function bugIssues(repository: string, body: string, token: string) {
   return issues;
 }
 
-async function reviewComment(repository: string, prNumber: number, token: string) {
-  const comments = await github<{ id: number; body?: string }[]>(
+/** The pull request's comments, with the review's own one among them when it exists. */
+async function prComments(repository: string, prNumber: number, token: string) {
+  const comments = await github<{ id: number; body?: string; user?: { login?: string } }[]>(
     `/repos/${repository}/issues/${prNumber}/comments?per_page=100`,
     token,
   );
-  return comments.find((c) => c.body?.startsWith(COMMENT_MARKER)) ?? null;
+  return {
+    existing: comments.find((c) => c.body?.startsWith(COMMENT_MARKER)) ?? null,
+    comments: comments.map((c) => ({ body: c.body, user: c.user?.login })),
+  };
 }
 
 interface Options {
@@ -220,7 +661,7 @@ async function reviewPull(repository: string, pull: Pull, token: string, options
     console.log(`#${pull.number}: closes no Bug issue; no review.`);
     return;
   }
-  const existing = options.post || options.skipReviewed ? await reviewComment(repository, pull.number, token) : null;
+  const { existing, comments } = await prComments(repository, pull.number, token);
   if (options.skipReviewed && existing?.body && reviewedSha(existing.body) === pull.head.sha) {
     console.log(`#${pull.number}: already reviewed at ${pull.head.sha.slice(0, 7)}.`);
     return;
@@ -230,11 +671,27 @@ async function reviewPull(repository: string, pull: Pull, token: string, options
     `/repos/${repository}/pulls/${pull.number}/commits?per_page=100`,
     token,
   );
-  const input: ReviewInput = { issues, prNumber: pull.number, prTitle: pull.title, prBody: body, diff };
-  const prompt = reviewPrompt(input, readFileSync(SKILL, "utf8"), readFileSync(INSTRUCTIONS, "utf8"));
+  const earlier = existing?.body ? feedback(earlierFindings(existing.body), comments) : [];
+  // Advisory: without a checkout that can fetch the head, the review runs without the call graph.
+  let callGraph = "";
+  try {
+    const files = filesAt(pull.number, pull.head.sha);
+    if (files) {
+      const backend = new TreeSitterBackend();
+      try {
+        callGraph = await callGraphContext(diff, files, backend);
+      } finally {
+        backend.dispose();
+      }
+    }
+  } catch (error) {
+    console.warn(`#${pull.number}: no call-graph context: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const input: ReviewInput = { issues, prNumber: pull.number, prTitle: pull.title, prBody: body, diff, earlier, callGraph };
+  const rules = await baseRules(repository, pull.base.sha, token);
   if (options.out) {
     mkdirSync(options.out, { recursive: true });
-    writeFileSync(join(options.out, `pr-${pull.number}.prompt.md`), prompt);
+    writeFileSync(join(options.out, `pr-${pull.number}.prompt.md`), reviewPrompt(input, rules));
   }
   const family =
     options.reviewer ??
@@ -248,7 +705,7 @@ async function reviewPull(repository: string, pull: Pull, token: string, options
     );
     return;
   }
-  const review = complete(family, prompt);
+  const { review } = runReview(input, rules, (prompt) => complete(family, prompt));
   if (options.out) writeFileSync(join(options.out, `pr-${pull.number}.review.md`), review);
   if (options.post) {
     const comment = JSON.stringify({ body: commentBody(review, family, pull.head.sha) });

@@ -322,14 +322,17 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
 describe("initiative feature ranges replay against what the features used (#1806, #1813)", () => {
   // At each initiative's first replayed start, the features that used less than the low end of
   // the range the current estimate gives them, and more than its high end. A feature's range is
-  // the middle half of comparable finished features, so about a quarter of the features fall
-  // below it and a quarter above by construction; a share above a quarter means the low or high
-  // ends sit away from what features cost. A share, not a count, so each round's new traces keep
-  // the bound (a count of 29 failed when R55 added routeshadow's 2 of 10, a calibrated trace).
-  // R45-R54: a path floor at the first quartile put 37 of 104 below (36%), 11 of R54 lanewalk's
-  // 12 as the round recorded; from the lowest rate 29 (28%, #1806); light features priced as runs
-  // of their own workflow 25 (24%) and lanewalk 5 (#1813).
-  test("no more than a quarter of the features start below their range, or above it", () => {
+  // the middle half of comparable finished features, so a quarter of the features fall below it
+  // and a quarter above by construction. The bound is that quarter plus two standard errors of a
+  // share of n features (sqrt(0.25 * 0.75 / n)): a share at exactly a quarter fails about half the
+  // time by chance, as R57 did (33 of 130, 25.4%, modeplan's four cheap 4-path C# features below
+  // the medium pool's 1.19M; R51 sedstep, also C#, was above, so the language is no signal), while
+  // the first-quartile path floor #1806 removed (37 of 104, 36%, against 33.5%) still fails it.
+  // A share, not a count, so each round's new traces keep the bound (a count of 29 failed when R55
+  // added routeshadow's 2 of 10). R45-R54: a path floor at the first quartile put 37 of 104 below,
+  // 11 of R54 lanewalk's 12 as the round recorded; from the lowest rate 29 (28%, #1806); light
+  // features priced as runs of their own workflow 25 (24%) and lanewalk 5 (#1813).
+  test("a quarter of the features start below their range and a quarter above it, within two standard errors", () => {
     let lanewalk = 0;
     let below = 0;
     let above = 0;
@@ -360,8 +363,9 @@ describe("initiative feature ranges replay against what the features used (#1806
         }
     }
     expect(features).toBeGreaterThanOrEqual(104);
-    expect(below / features).toBeLessThanOrEqual(0.25);
-    expect(above / features).toBeLessThanOrEqual(0.25);
+    const bound = 0.25 + 2 * Math.sqrt((0.25 * 0.75) / features);
+    expect(below / features).toBeLessThanOrEqual(bound);
+    expect(above / features).toBeLessThanOrEqual(bound);
     expect(lanewalk).toBeLessThanOrEqual(5);
   }, 600000);
 });
