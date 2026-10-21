@@ -266,6 +266,10 @@ describe("plan approval cost (#1019)", () => {
     };
     expect(planCostText(partial)).toBe("Planning so far about $0.00 (partial: a model has no price)");
     expect(desktopPlanCostText(partial)).toBe(planCostText(partial));
+    // Before its first task a plan is priced at what earlier runs' tasks on the model paid (#1792).
+    const history: PlanCost = { ...cost, implementation: { ...cost.implementation!, rate: "history" } };
+    expect(planCostText(history)).toBe(`${text} at what earlier runs' tasks on it paid per token`);
+    expect(desktopPlanCostText(history)).toBe(planCostText(history));
   });
 
   test("a sized plan forecasts the whole run, not its tasks alone (#1418)", () => {
