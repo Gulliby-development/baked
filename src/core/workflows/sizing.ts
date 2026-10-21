@@ -678,17 +678,35 @@ export function priceTask(
   };
 }
 
-/** A known case capacity governs splitting, regardless of historical token outliers. */
-function exceedsTestCapacity(
+/**
+ * How many times the observed case capacity a test task may cover and stay whole while its price
+ * fits one attempt (#1789). The capacity is the largest case count a finished task handled, and
+ * splitting at it keeps every later task at or under it, so it never grew: bench round 53 cut
+ * url-shortener's 8 planned tasks into 20 at a capacity of 4 and spent 5.78M tokens against
+ * 3.42M. In the bench-trace corpus a whole test task of 9-16 cases cost a median 349k tokens and a
+ * chain of slices of the same size 572k, with the same share of attempts that reached a cap.
+ */
+export const CAPACITY_PROBE = 4;
+
+/**
+ * Whether a test task of `cases` literal cases priced at `estimate` is split. With an observed
+ * case capacity, a task above it splits when it covers more than `CAPACITY_PROBE` times it or its
+ * expected price is above one attempt's cap; a whole task that finishes raises the capacity for
+ * later runs. Without one, only the price decides.
+ */
+export function exceedsTestCapacity(
   cases: number,
   limit: TestTaskLimit | null,
   estimate: TokenRange,
   cap: number,
   keepSmall = true,
 ): boolean {
-  return (limit?.cases ?? 0) > 0
-    ? (!keepSmall || cases > 5) && cases > (limit?.cases ?? 0)
-    : (cases === 0 || cases > 5) && expectedPrice(estimate) > cap;
+  const capacity = limit?.cases ?? 0;
+  if (capacity > 0) {
+    if ((keepSmall && cases <= 5) || cases <= capacity) return false;
+    return cases > CAPACITY_PROBE * capacity || expectedPrice(estimate) > cap;
+  }
+  return (cases === 0 || cases > 5) && expectedPrice(estimate) > cap;
 }
 
 /**
@@ -795,8 +813,10 @@ export function sizePlan(input: {
     decision = "split-tasks";
     for (const task of oversized)
       reasons.push(
-        task.kind === "test" && (limit?.cases ?? 0) > 0
-          ? `${task.taskId} covers ${task.cases} cases, above the observed capacity of ${limit?.cases}`
+        task.kind === "test" &&
+          (limit?.cases ?? 0) > 0 &&
+          (task.cases ?? 0) > CAPACITY_PROBE * (limit?.cases ?? 0)
+          ? `${task.taskId} covers ${task.cases} cases, above ${CAPACITY_PROBE} times the observed capacity of ${limit?.cases}`
           : `${task.taskId} writes ${task.files} files and needs about ${Math.round(task.kind === "test" ? expectedPrice(task.estimate) : task.estimate.high)} tokens, above one attempt's ${maxAttemptTokens}`,
       );
   }
@@ -952,7 +972,7 @@ export function plannerSizing(
   const k = (kind: FileKind) => `${Math.round(highest(rates, kind) / 1000)}k`;
   return {
     maxCodeFilesPerTask,
-    note: `Give every task that writes code the policy's typecheck check, so its errors show in that task. Put tests in tasks of their own. A code file costs about ${k("code")} tokens, a documentation file about ${k("docs")}, a project manifest or solution file about ${k("manifest")}. ${tests.all && tests.hasCases ? `Finished test tasks cost a median ${Math.round(tests.all.perTask.low / 1000)}k and 90th percentile ${Math.round(tests.all.perTask.high / 1000)}k tokens per task; case counts select broad buckets, not a per-case historical rate.` : `Without history, allow ${DEFAULT_PER_CASE.low}-${DEFAULT_PER_CASE.high} tokens per literal case, at least the file allowance.`} Keep each code task to at most ${maxCodeFilesPerTask} files. A task whose writes all carry their content is written by the host and costs nothing, whatever its file count. Give independent tasks disjoint writes and no dependency between them; a test task depends on the code tasks whose criteria it covers. ${limit?.cases ? `Split test tasks proactively only above ${limit.cases} cases, the largest finished task handled, regardless of token price.` : "Keep a file with five or fewer literal cases in one task. Without observed case capacity, split a larger test file only when its default expected price exceeds the cap."} Split into sequential slices of whole criteria: create it first, then modify it, each slice depending on the previous. Preserve earlier slices and test only the assigned criteria. If one criterion alone exceeds the capacity, write and check its cases in batches inside the same attempt.`,
+    note: `Give every task that writes code the policy's typecheck check, so its errors show in that task. Put tests in tasks of their own. A code file costs about ${k("code")} tokens, a documentation file about ${k("docs")}, a project manifest or solution file about ${k("manifest")}. ${tests.all && tests.hasCases ? `Finished test tasks cost a median ${Math.round(tests.all.perTask.low / 1000)}k and 90th percentile ${Math.round(tests.all.perTask.high / 1000)}k tokens per task; case counts select broad buckets, not a per-case historical rate.` : `Without history, allow ${DEFAULT_PER_CASE.low}-${DEFAULT_PER_CASE.high} tokens per literal case, at least the file allowance.`} Keep each code task to at most ${maxCodeFilesPerTask} files. A task whose writes all carry their content is written by the host and costs nothing, whatever its file count. Give independent tasks disjoint writes and no dependency between them; a test task depends on the code tasks whose criteria it covers. ${limit?.cases ? `Keep a test task whole up to ${CAPACITY_PROBE * limit.cases} literal cases (${CAPACITY_PROBE} times ${limit.cases}, the largest finished task handled): slices of one file cost more in total than the whole file. Split it only above that.` : "Keep a file with five or fewer literal cases in one task. Without observed case capacity, split a larger test file only when its default expected price exceeds the cap."} Split into sequential slices of whole criteria: create it first, then modify it, each slice depending on the previous. Preserve earlier slices and test only the assigned criteria. If one criterion alone exceeds the capacity, write and check its cases in batches inside the same attempt.`,
   };
 }
 

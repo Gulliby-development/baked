@@ -22,6 +22,7 @@ import { recordingOf } from "./model-recording.js";
 import { type PlanCostRate, planCostOf } from "./plan-cost.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { NativeWorkflowService } from "./service.js";
+import { exceedsTestCapacity, type SizingReport } from "./sizing.js";
 import { costStageOf, runPrices } from "./stage-price.js";
 import { WorkflowStore } from "./store.js";
 
@@ -514,6 +515,10 @@ export interface RunReplay {
   firstByte: FirstByteBoundary[];
   /** Calls the current deadline would end as an outage that got their answer in the recording. */
   newFirstByteStops: number;
+  /** Each planned test task of the run's sizing reports against the current split rule (#1789). */
+  testSplits: TestSplitBoundary[];
+  /** Test tasks the current rule splits that the recorded sizing kept whole. */
+  newTestSplits: number;
 }
 
 /**
@@ -1084,6 +1089,59 @@ function replayStarts(
   }
 }
 
+/** Whether sizing splits a test task; `exceedsTestCapacity` unless a test passes another. */
+export type TestSplitRule = typeof exceedsTestCapacity;
+
+/** A planned test task of a recorded sizing report against the split rule (#1789). */
+export interface TestSplitBoundary {
+  /** The report's logical path, `sizing/plan-N.json`. */
+  report: string;
+  taskId: string;
+  cases: number;
+  recorded: "whole" | "split";
+  replayed: "whole" | "split";
+}
+
+/**
+ * Every planned test task of the run's sizing reports, split or kept whole again by `decide` on
+ * the inputs the report recorded: its literal cases, its price, the observed case capacity and one
+ * attempt's cap. Slices of a split file are not split again, so they are left out, as are tasks of
+ * reports that did not record case counts. Round 53 split
+ * url-shortener's test files at a capacity of 4 cases and spent 5.78M tokens against 3.42M (#1789).
+ */
+export function replayTestSplits(
+  store: WorkflowStore,
+  runId: string,
+  decide: TestSplitRule = exceedsTestCapacity,
+): TestSplitBoundary[] {
+  const reports = store.connection
+    .query(
+      "SELECT id, logical_path AS path FROM artifacts WHERE run_id=? AND logical_path LIKE 'sizing/plan-%' ORDER BY created_at, id",
+    )
+    .all(runId) as { id: string; path: string }[];
+  return reports.flatMap(({ id, path }) => {
+    const report = JSON.parse(store.readArtifact(runId, id)) as Partial<SizingReport>;
+    if (!report.tasks || typeof report.maxAttemptTokens !== "number") return [];
+    const cap = report.maxAttemptTokens;
+    return (
+      report.tasks
+        // Reports from before literal case counts (#1562) did not record a task's cases.
+        .filter(
+          (task) => task.kind === "test" && task.cases !== undefined && (task.sliceCount ?? 1) <= 1,
+        )
+        .map((task) => ({
+          report: path,
+          taskId: task.taskId,
+          cases: task.cases ?? 0,
+          recorded: task.oversized ? ("split" as const) : ("whole" as const),
+          replayed: decide(task.cases ?? 0, report.testTaskLimit ?? null, task.estimate, cap)
+            ? ("split" as const)
+            : ("whole" as const),
+        }))
+    );
+  });
+}
+
 /** A plan approval of a trace, priced again by the current code at the moment it was asked. */
 export interface PlanPriceReplay {
   runId: string;
@@ -1312,7 +1370,7 @@ function replayRun(
   store: WorkflowStore,
   runId: string,
   callRate: CallRate = callCostRate,
-): Omit<RunReplay, "firstByte" | "newFirstByteStops"> | null {
+): Omit<RunReplay, "firstByte" | "newFirstByteStops" | "testSplits" | "newTestSplits"> | null {
   const db = store.connection;
   const run = store.run(runId);
   const final = PolicySchema.parse(JSON.parse(run.policy_json));
@@ -1472,6 +1530,7 @@ export function replayTrace(
     firstByteLimit?: FirstByteLimit;
     shareGate?: ShareGate;
     callRate?: CallRate;
+    testSplit?: TestSplitRule;
     priceSamples?: PriceSamples;
     historyTrace?: HistoryTrace;
   } = {},
@@ -1491,6 +1550,9 @@ export function replayTrace(
     const timings = new Map(
       runIds.map((runId) => [runId, replayFirstByte(store, runId, options.firstByteLimit)]),
     );
+    const splits = new Map(
+      runIds.map((runId) => [runId, replayTestSplits(store, runId, options.testSplit)]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -1506,11 +1568,15 @@ export function replayTrace(
         costCap: [],
         newCostStops: 0,
       };
-      if (!replay.boundaries.length && !firstByte.length) continue;
+      const testSplits = splits.get(runId) ?? [];
+      if (!replay.boundaries.length && !firstByte.length && !testSplits.length) continue;
       runs.push({
         ...replay,
         firstByte,
         newFirstByteStops: firstByte.filter((b) => b.replayed === "stop" && b.recorded === "pass")
+          .length,
+        testSplits,
+        newTestSplits: testSplits.filter((b) => b.replayed === "split" && b.recorded === "whole")
           .length,
       });
     }
