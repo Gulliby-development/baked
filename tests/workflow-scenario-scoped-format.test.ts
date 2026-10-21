@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { cwdPath } from "../src/core/workflows/check-policy.js";
-import { changedLineRanges, formatWrittenChecks } from "../src/core/workflows/format-written.js";
+import { changedLineRanges, formatWrittenChecks, helpListsFlag } from "../src/core/workflows/format-written.js";
 import { capturePreImage } from "../src/core/workflows/rollback.js";
 import { fileHash } from "../src/core/workflows/effects.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
@@ -39,6 +39,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --check) check=1; shift;;
     --range=*) range="\${1#--range=}"; shift;;
+    --help) echo "  --range <RANGE>  Format only a range of the file"; exit 0;;
     *) break;;
   esac
 done
@@ -313,6 +314,17 @@ describe.skipIf(IS_WIN)("a fixer of a check in a subproject names the file from 
     expect(cwdPath({ cwd: "py" }, "py/tests/a.py")).toBe("tests/a.py");
     expect(cwdPath({ cwd: "./py/" }, "py/a.py")).toBe("a.py");
     expect(cwdPath({ cwd: "py" }, "web/a.ts")).toBe("../web/a.ts");
+  });
+});
+
+// A formatter release without the range flag rejects every range check and its fixer (#1907): the
+// host reads the flag from the formatter's own help before it builds one.
+describe("the range flag is probed in the formatter's help", () => {
+  test.skipIf(IS_WIN)("the fake ruff lists --range, not black's --line-ranges; a missing program lists none", () => {
+    const help = { executable: join(bin, "ruff"), args: ["format", "--help"] };
+    expect(helpListsFlag(help, tmpdir(), "--range")).toBe(true);
+    expect(helpListsFlag(help, tmpdir(), "--line-ranges")).toBe(false);
+    expect(helpListsFlag({ executable: join(bin, "no-such-formatter"), args: ["--help"] }, tmpdir(), "--range")).toBe(false);
   });
 });
 

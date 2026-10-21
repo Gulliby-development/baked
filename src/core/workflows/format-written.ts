@@ -37,6 +37,11 @@ export interface RangeFormatter {
   ) => string[];
   /** The write-mode arguments the fixer appends the file to. */
   fix: (args: readonly string[], ranges: readonly LineRange[], text: string) => string[];
+  /**
+   * The range flag and the help arguments that list it, where older releases lack the flag: a
+   * range check a formatter rejects fails every attempt, and so does its fixer (#1907).
+   */
+  probe?: { flag: string; help: string[] };
 }
 
 /** A formatter a whole-tree gate runs, and the same formatter on named files. */
@@ -76,6 +81,8 @@ const ruffFormat: FileFormatter = {
       file,
     ],
     fix: (_, [range], text) => ["format", ruffRange(text, range ?? [1, 1])],
+    // `ruff format --range` since ruff 0.2.1.
+    probe: { flag: "--range", help: ["format", "--help"] },
   },
 };
 const lineRanges = (ranges: readonly LineRange[]): string[] =>
@@ -88,6 +95,8 @@ const black: FileFormatter = {
     multiple: true,
     check: (_, file, ranges) => ["--check", ...lineRanges(ranges), file],
     fix: (_, ranges) => lineRanges(ranges),
+    // `--line-ranges` since black 23.11.
+    probe: { flag: "--line-ranges", help: ["--help"] },
   },
 };
 // No range: `biome format` has no line or offset range, so an edited file is not checked.
@@ -108,6 +117,7 @@ const prettier: FileFormatter = {
     multiple: false,
     check: (_, file, [range], text) => ["--check", ...prettierRange(text, range ?? [1, 1]), file],
     fix: (_, [range], text) => ["--write", ...prettierRange(text, range ?? [1, 1])],
+    // No probe: `--range-start` and `--range-end` exist since prettier 1.4.
   },
 };
 // No range: `dprint` formats whole files only.
@@ -232,6 +242,37 @@ const formatsPath = (check: Check, formatters: readonly FileFormatter[], path: s
   });
 };
 
+/** Whether a formatter accepts a flag: its help, run once per command and directory. */
+export type FlagProbe = (
+  command: { executable: string; args: string[] },
+  cwd: string,
+  flag: string,
+) => boolean;
+
+const PROBE_TIMEOUT_MS = 15_000;
+const probed = new Map<string, boolean>();
+
+/** The default probe: the flag appears in the output of the formatter's help. */
+export const helpListsFlag: FlagProbe = (command, cwd, flag) => {
+  const key = JSON.stringify([cwd, command.executable, command.args, flag]);
+  let known = probed.get(key);
+  if (known === undefined) {
+    try {
+      const proc = Bun.spawnSync([command.executable, ...command.args], {
+        cwd,
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: PROBE_TIMEOUT_MS,
+      });
+      known = `${proc.stdout.toString()}${proc.stderr.toString()}`.includes(flag);
+    } catch {
+      known = false;
+    }
+    probed.set(key, known);
+  }
+  return known;
+};
+
 /** How long a format-written check may run. */
 export const FORMAT_WRITTEN_TIMEOUT_MS = 120_000;
 
@@ -320,6 +361,7 @@ export function formatWrittenChecks(
   writes: readonly { path: string; action: string }[],
   which?: (command: string, options: { PATH: string; cwd: string }) => string | null,
   base?: (path: string) => string | null | undefined,
+  accepts: FlagProbe = helpListsFlag,
 ): Check[] {
   const files = new Map<string, Written[]>();
   for (const write of writes) {
@@ -398,8 +440,15 @@ export function formatWrittenChecks(
         if (check) found.push(check);
       }
       const range = formatter.range;
+      // A formatter release without the range flag checks no edited file, as one with no range.
+      const help = range?.probe && command.command(range.probe.help);
+      const ranged =
+        range &&
+        own.some((w) => w.edited) &&
+        (!range.probe ||
+          (help && accepts(help, join(root, gate.check.cwd ?? "."), range.probe.flag)));
       let lines = 0;
-      if (range)
+      if (range && ranged)
         for (const { path, edited } of own) {
           if (!edited) continue;
           // Every changed block is checked: one run per block where a run takes one range. The
