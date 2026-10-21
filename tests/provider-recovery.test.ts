@@ -12,7 +12,7 @@ test("empty-provider counters survive a reopened store and isolate stages, profi
       const step = store.beginStep(run.runId, stage);
       const attempt = store.reserve(run.runId, step, model, 1, fixture.policy);
       store.finishAttempt(run.runId, attempt, error === undefined ? "completed" : "failed", tokens, false, error);
-      return recordProviderOutcome(store, run.runId, attempt, profile, task, error);
+      return recordProviderOutcome(store, run.runId, attempt, profile, task, error).failures;
     };
     expect(fail(fixture.service.store)).toBe(1);
     expect(fail(fixture.service.store)).toBe(2);
@@ -33,7 +33,7 @@ test("empty-provider counters survive a reopened store and isolate stages, profi
       const step = reopened.beginStep(run.runId, "specify");
       const attempt = reopened.reserve(run.runId, step, "fixture/model", 1, fixture.policy);
       reopened.finishAttempt(run.runId, attempt, "completed", 0);
-      expect(recordProviderOutcome(reopened, run.runId, attempt, "specifier", undefined)).toBe(0);
+      expect(recordProviderOutcome(reopened, run.runId, attempt, "specifier", undefined).failures).toBe(0);
       expect(fail(reopened)).toBe(1);
     } finally { reopened.close(); }
   } finally { await fixture.dispose(); }

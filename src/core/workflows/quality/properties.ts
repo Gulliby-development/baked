@@ -56,12 +56,73 @@ export function bansPropertyTests(request: string): boolean {
     /\b(?:only\s+deterministic\s+tests?|deterministic\s+tests?\s+only)\b/i.test(request)
   );
 }
+/** Whether the request asks for property-based or generated tests itself; a ban wins over it. */
+export function asksPropertyTests(request: string): boolean {
+  return (
+    !bansPropertyTests(request) &&
+    /\b(?:property[- ]based|property tests?|generative tests?|generated (?:inputs?|tests?)|fuzz(?:ing|ed)? tests?|hypothesis|fast-check|quickcheck|proptest|jqwik|fscheck|cscheck|seeded (?:generator|loop|prng))\b/i.test(
+      request,
+    )
+  );
+}
+
+/** What the repository's own tests held before the run wrote any (#1872). */
+export interface PropertyRepository {
+  /** Test files of the workspace when the run looked. */
+  testFiles: number;
+  /** Those holding a property test the host recognizes (library, seeded or exhaustive). */
+  propertyTests: string[];
+}
+
+/** The test files among `paths` and the property tests among them; `read` gives a file's text or null. */
+export function propertyRepository(
+  paths: readonly string[],
+  read: (path: string) => string | null,
+): PropertyRepository {
+  const tests = paths.filter(isTestCodePath);
+  const propertyTests = tests.filter((path) => {
+    const kind = propertyTestKind(path, read(path) ?? "");
+    return kind === "library" || kind === "seeded" || kind === "exhaustive";
+  });
+  return { testFiles: tests.length, propertyTests };
+}
+
+/**
+ * Whether an existing repository declines the preset's property tests: it has tests, none of them
+ * a property test, no property library of its own (Go's standard `testing/quick` is everywhere,
+ * so it does not count), and the request does not ask for them. Its own tests are the convention:
+ * jsonsplice-update (bench round 58) got two seeded 100-value loops in a repository with none,
+ * from criteria the spec author marked on fixed Input | Expected tables (#1872).
+ */
+export function repositoryDeclinesPropertyTests(
+  repository: PropertyRepository | null | undefined,
+  libraries: Record<string, boolean> | undefined,
+  request: string,
+): boolean {
+  if (!repository || repository.testFiles === 0 || repository.propertyTests.length) return false;
+  const library = Object.entries(libraries ?? {}).some(
+    ([language, has]) => has && language !== GO.language,
+  );
+  return !library && !asksPropertyTests(request);
+}
+
+/**
+ * The property-test mode of a run: a request that bans them turns it off; a mode the policy sets
+ * is kept; otherwise the preset's, except that an existing repository whose tests have no
+ * property test keeps to its convention (`repositoryDeclinesPropertyTests`).
+ */
 export const propertyTestsOf = (
   policy: { propertyTests?: PropertyTestsMode | undefined },
   preset: string,
   request = "",
+  repository?: { repository: PropertyRepository | null; libraries?: Record<string, boolean> },
 ): PropertyTestsMode =>
-  bansPropertyTests(request) ? "off" : (policy.propertyTests ?? presetPropertyTests(preset));
+  bansPropertyTests(request)
+    ? "off"
+    : (policy.propertyTests ??
+      (repositoryDeclinesPropertyTests(repository?.repository, repository?.libraries, request)
+        ? "off"
+        : presetPropertyTests(preset)));
 
 interface PropertyLibrary {
   /** The language as the instructions and the library probe name it. */
@@ -205,6 +266,8 @@ export const propertyLanguage = (path: string): string | null => libraryOf(path)
 
 /** Artifact with the property libraries the project has, found once per run. */
 export const QUALITY_PROPERTY_LIBRARIES = "quality/property-libraries.json";
+/** Artifact with the workspace's test files and property tests, found once per run (#1872). */
+export const QUALITY_PROPERTY_REPOSITORY = "quality/property-repository.json";
 
 /** What the host can see of the project when it looks for property libraries. */
 export interface LibraryProbe {
@@ -315,7 +378,7 @@ export function propertyTestsNote(
     : "";
   const how = `${use}${free}`.trim();
   if (output === "spec")
-    return `Property-based tests are on. Mark each criterion whose behavior should hold for every input of a domain with "property": one of ${PROPERTY_DOMAINS.join(", ")}. Typical cases: numeric conversions and arithmetic, string handling, parsers, encode/decode or serialize/parse round trips, and invariants such as sorting keeping every element. Leave property out for criteria about one fixed example, the UI, or external services. A marked criterion never needs a new dependency: without a property library its test uses a seeded generator or enumerates a bounded domain.`;
+    return `Property-based tests are on. Mark each criterion whose behavior should hold for every input of a domain with "property": one of ${PROPERTY_DOMAINS.join(", ")}. Typical cases: numeric conversions and arithmetic, string handling, parsers, encode/decode or serialize/parse round trips, and invariants such as sorting keeping every element. Leave property out for criteria about one fixed example or a fixed table of inputs and expected outputs, the UI, or external services. A marked criterion never needs a new dependency: without a property library its test uses a seeded generator or enumerates a bounded domain.`;
   if (output === "plan")
     return `Property-based tests are on. Each criterion with "property" needs a test task that covers it and writes a property-based test file. ${how} The host checks after the checks that each such criterion has a property test.`;
   if (output === "implementation")
