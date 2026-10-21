@@ -1,6 +1,8 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { CROSS_PLATFORM_CRITERION } from "./host-required-criteria.js";
+
+/** What the host-required cross-platform criterion states (host-required-criteria.ts reads it). */
+export const CROSS_PLATFORM_OUTCOME = "the product's tests pass on Windows, macOS and Linux";
 
 /** CI configuration files whose presence means the project already checks on a CI service. */
 const CI_FILES = [".gitlab-ci.yml", "azure-pipelines.yml", ".circleci/config.yml", ".travis.yml"];
@@ -45,5 +47,33 @@ export function crossPlatformNote(request: string, root: string): string | null 
   // One host proves only what it can run: platform-neutral code and tests that pass here (#1015).
   if (forbidsCi(request))
     return "The request names other operating systems but wants no CI: write criteria this host can check (the code uses platform-neutral path, line-ending and process APIs; the tests pass here), never an automated criterion that claims behavior on Windows, macOS or Linux, and add no CI workflow or platform matrix.";
-  return `${asked ? "The request names CI or other operating systems" : "The project already runs CI"}: add a criterion that ${CROSS_PLATFORM_CRITERION.outcome}, so delivered tests do not assume one operating system.`;
+  return `${asked ? "The request names CI or other operating systems" : "The project already runs CI"}: add a criterion that ${CROSS_PLATFORM_OUTCOME}, so delivered tests do not assume one operating system.`;
+}
+
+/**
+ * Whether the host requires the cross-platform criterion: the request names CI or other operating
+ * systems, or the project runs CI, and the request does not turn CI down. The one predicate the
+ * specify note, the analysis note and the scheduler's host-required filter all read: the analysis
+ * table once said only "the request names other operating systems", so hdrlens (bench round 56,
+ * "No CI workflow is wanted") looped specify, plan and analyze in 3 of 8 features over the
+ * criterion the specify note told the author never to write (#1831).
+ */
+export const crossPlatformCriterionRequired = (request: string, root: string): boolean =>
+  crossPlatformNote(request, root) !== null && !forbidsCi(request);
+
+/** Whether the request names other operating systems or CI but turns CI down. */
+export const platformsWithoutCi = (request: string, root: string): boolean =>
+  crossPlatformNote(request, root) !== null && forbidsCi(request);
+
+/**
+ * What the spec reviewer is told about other operating systems: the same decision as the
+ * author's note, worded for the reviewer, so analysis never asks for what the host does not
+ * require nor objects to what it does (#1765, #1831).
+ */
+export function crossPlatformAnalysisNote(request: string, root: string): string | null {
+  if (crossPlatformCriterionRequired(request, root))
+    return `The host requires a criterion that ${CROSS_PLATFORM_OUTCOME} (${PLATFORMS.test(request) || CI.test(request) ? "the request names CI or other operating systems" : "the project already runs CI"}): it and the requirement it serves are never a scope finding.`;
+  if (platformsWithoutCi(request, root))
+    return "The request names other operating systems but wants no CI, so the host requires no criterion about Windows, macOS or Linux: platform-neutral code and tests that pass on this host settle the request's platform sentence. A missing criterion about other operating systems, a CI workflow or a platform matrix is never a finding.";
+  return null;
 }

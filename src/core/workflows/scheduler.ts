@@ -262,7 +262,7 @@ import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
 import { costToleranceOf, currentCostCap, inCostWrapUp } from "./cost-tolerance.js";
 import { coverageFinding } from "./coverage.js";
 import { type CriticCalibration, calibrateCritic, criticExamples } from "./critic-calibration.js";
-import { crossPlatformNote, forbidsCi } from "./cross-platform.js";
+import { crossPlatformAnalysisNote, crossPlatformNote } from "./cross-platform.js";
 import { git, gitWorktreePaths } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
 import {
@@ -288,7 +288,7 @@ import { outputTail } from "./gates.js";
 import { HOST_ADDITIONS, HOST_EDITS_PATH, type HostEdit, recordGraphEdits } from "./host-edits.js";
 import { isStoreError, recordHostError } from "./host-error.js";
 import {
-  CROSS_PLATFORM_CRITERION,
+  asksUnrequiredPlatforms,
   HOST_REQUIRED_CRITERIA,
   hostRequiredIds,
   objectsToHostRequired,
@@ -1707,17 +1707,19 @@ export class WorkflowScheduler {
               // lacks: md-site (bench round 52) ran specify three times and plan and analyze four
               // times over the required 1280 px criterion (#1765).
               const request = state.requestText || state.prompt;
-              const required = HOST_REQUIRED_CRITERIA.filter(
-                (c) =>
-                  c !== CROSS_PLATFORM_CRITERION ||
-                  (crossPlatformNote(request, runRoot(this.store.workspace, state)) !== null &&
-                    !forbidsCi(request)),
-              );
+              const root = runRoot(this.store.workspace, state);
+              const required = HOST_REQUIRED_CRITERIA.filter((c) => c.required(request, root));
               const requiredIds = hostRequiredIds(spec, required);
               for (const finding of analysis.findings) {
                 if (objectsToHostRequired(finding, requiredIds, required)) {
                   finding.blocking = false;
                   finding.description = `Objects to a criterion the host's own rules require (${[...requiredIds].join(", ")}); kept as a note: ${finding.description}`;
+                } else if (asksUnrequiredPlatforms(finding, request, root)) {
+                  // The inverse: the request turns CI down, so one host proves only platform-neutral
+                  // code and passing tests here; hdrlens (bench round 56) looped 3 of 8 features over
+                  // this finding, 1.02M tokens (#1831).
+                  finding.blocking = false;
+                  finding.description = `Asks for a criterion about other operating systems, which the host does not require when the request wants no CI; kept as a note: ${finding.description}`;
                 }
               }
               // Findings about check outcomes stay in the record as notes; checks run later.
@@ -5127,10 +5129,16 @@ export class WorkflowScheduler {
       ) === "auto"
         ? propertyTestsNote(profile.output, this.propertyLibraries(runId, state))
         : null;
+    // The author and the reviewer read the same decision, each worded for its stage (#1831).
     const crossPlatform =
       profile.output === "spec"
         ? crossPlatformNote(state.requestText || state.prompt, runRoot(this.store.workspace, state))
-        : null;
+        : profile.output === "analysis"
+          ? crossPlatformAnalysisNote(
+              state.requestText || state.prompt,
+              runRoot(this.store.workspace, state),
+            )
+          : null;
     const specSize =
       profile.output === "spec" ? specSizeNote(state.requestText || state.prompt) : null;
     // Under assume the authors settle questions with defaults in their first submission instead of
