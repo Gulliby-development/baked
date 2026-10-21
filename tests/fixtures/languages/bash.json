@@ -32,6 +32,7 @@
     ],
     "codeMask": [
       "bin/sum_test.sh:3 comment"
-    ]
+    ],
+    "formatters": null
   }
 }

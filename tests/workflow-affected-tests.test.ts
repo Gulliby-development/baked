@@ -404,6 +404,8 @@ describe("the affected-test regression gate", () => {
       transaction: (fn: () => unknown) => fn(),
       taskStatus: () => undefined,
       latestArtifact: () => undefined,
+      // No journaled edits: the format-written checks find no base for an edited file (#1837).
+      effects: () => [],
       tasks: () => [lib, testsTask].map((t) => ({ id: t.id, status: "verified", generation: 0 })),
     } as unknown as WorkflowStore;
     scheduler.runTaskCheck = async (_run, _child, ranCheck) => {

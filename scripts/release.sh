@@ -89,7 +89,8 @@ fi
 if [[ "$FLAG" != "--skip-checks" ]]; then
   bun run lint
   bun run typecheck
-  bun test
+  # The project script carries the suite's 30 s timeout; plain `bun test` keeps 5 s and fails slow tests.
+  bun run test
 fi
 
 git switch -c "$RELEASE_BRANCH"
