@@ -2,6 +2,7 @@
 import { z } from "zod";
 import { RouteEffort } from "../llm/model-routing.js";
 import { DEFAULT_MAX_CANDIDATES, MAX_CANDIDATES } from "./candidates.js";
+import { HOST_ID_FORMATS } from "./host-ids.js";
 import { LibraryDocsSchema } from "./library-docs.js";
 import { StopModesSchema, StopReasonIdSchema } from "./stop-reasons.js";
 
@@ -21,9 +22,10 @@ export const RelativePath = z
     "Expected a canonical relative POSIX path",
   );
 const Text = z.string().min(1).max(16000);
-const RequirementId = z.string().regex(/^(FR|NFR|SC)-[0-9]{3,6}$/);
-const CriterionId = z.string().regex(/^AC-[0-9]{3,6}$/);
-const TaskId = z.string().regex(/^T[0-9]{3,6}$/);
+// Built from the one table the instructions and the id normaliser read (#1871).
+const RequirementId = z.string().regex(HOST_ID_FORMATS.requirement.pattern);
+const CriterionId = z.string().regex(HOST_ID_FORMATS.criterion.pattern);
+const TaskId = z.string().regex(HOST_ID_FORMATS.task.pattern);
 const Semver = z.string().regex(/^\d+\.\d+\.\d+$/);
 const UniqueStrings = z.array(z.string().min(1)).refine((xs) => new Set(xs).size === xs.length);
 
@@ -577,6 +579,12 @@ export const PolicySchema = z
      * their hash.
      */
     derivationAudit: z.enum(["off", "on"]).optional(),
+    /**
+     * `on` has a later analysis pass audit only the criteria whose text or requirements changed
+     * since a pass that reproduced all their rows, and carry the earlier derivations for the rest
+     * (derivation-audit.ts, #1851). Absent means `off`, so stored policies keep their hash.
+     */
+    derivationAuditCarry: z.enum(["off", "on"]).optional(),
     /** Host-written audited acceptance rows and parameterized tests; absent means off (#1596). */
     rowsAsData: z.enum(["off", "on"]).optional(),
     /**
@@ -1178,6 +1186,19 @@ export const CorrectionSchema = z
     round: z.number().int().positive(),
   })
   .strict();
+/** One literal row of a criterion recomputed from the requirements (derivation-audit.ts). */
+export const DerivationSchema = z
+  .object({
+    criterionId: CriterionId,
+    row: Text,
+    recomputed: Text,
+    matches: z.boolean(),
+    derivation: Text,
+    /** The request's own words a row rests on, checked by the host (#1823). */
+    quote: Text.optional(),
+  })
+  .strict();
+
 export const AnalysisSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -1201,22 +1222,7 @@ export const AnalysisSchema = z
      * criterion recomputed from the requirements. Optional, so analyses stored before it keep
      * their hashes.
      */
-    derivations: z
-      .array(
-        z
-          .object({
-            criterionId: CriterionId,
-            row: Text,
-            recomputed: Text,
-            matches: z.boolean(),
-            derivation: Text,
-            /** The request's own words a row rests on, checked by the host (#1823). */
-            quote: Text.optional(),
-          })
-          .strict(),
-      )
-      .max(200)
-      .optional(),
+    derivations: z.array(DerivationSchema).max(200).optional(),
   })
   .strict();
 export type Analysis = z.infer<typeof AnalysisSchema>;

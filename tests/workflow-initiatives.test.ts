@@ -853,7 +853,8 @@ describe("initiative runtime", () => {
     // needed by language, each paid a run's research, spec, plan, analysis and review.
     const kinds = ["alldiff", "sum", "count", "table", "element", "require"];
     const narrowfit = plan([
-      { ...feature("core", [], ["internal/core/a.go", "internal/core/b.go", "internal/core/c.go"]), testedBy: "language" },
+      // core builds on no other feature, so it keeps its own tests (#1873).
+      feature("core", [], ["internal/core/a.go", "internal/core/b.go", "internal/core/c_test.go"]),
       ...kinds.map((k) => ({ ...feature(k, ["core"], [`internal/constraint/${k}.go`]), testedBy: "language" })),
       feature("language", ["core", ...kinds], ["internal/lang/a.go", "internal/lang/b.go", "internal/lang/c_test.go"]),
     ]);

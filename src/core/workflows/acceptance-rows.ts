@@ -37,6 +37,34 @@ const normalized = (text: string): string => JSON.stringify(cellsOf(text).map(js
 const auditedRow = (written: string, row: AcceptanceRow): boolean =>
   normalized(written) === normalized(row.source) ||
   normalized(written) === JSON.stringify([row.input, row.expected]);
+/** An entry that names the row by its id or copies its leading cells (input and label) only. */
+const rowKey = (written: string, row: AcceptanceRow): boolean => {
+  if (written.trim() === row.id) return true;
+  const echoed = cellsOf(written).map(jsonOrText);
+  const cells = cellsOf(row.source).map(jsonOrText);
+  return (
+    echoed.length > 0 &&
+    echoed.length < cells.length &&
+    JSON.stringify(echoed) === JSON.stringify(cells.slice(0, echoed.length))
+  );
+};
+
+/**
+ * The row an audit entry is for: the one it copies whole, else the one it names by id or by
+ * leading cells, when exactly one row of its criterion has them (#1892). R59 tags-command echoed
+ * `["cp34:win32"] | full list` for a row whose expected cell is a long multi-line output, and the
+ * analysis was refused for 7 of 32 rows it had derived correctly (83k tokens, 270 s).
+ */
+function auditedRowOf(
+  derivation: NonNullable<Analysis["derivations"]>[number],
+  rows: readonly AcceptanceRow[],
+): AcceptanceRow | undefined {
+  const own = rows.filter((row) => row.criterionId === derivation.criterionId);
+  const whole = own.filter((row) => auditedRow(derivation.row, row));
+  if (whole.length) return whole.length === 1 ? whole[0] : undefined;
+  const keyed = own.filter((row) => rowKey(derivation.row, row));
+  return keyed.length === 1 ? keyed[0] : undefined;
+}
 const finiteJson = (value: unknown): boolean => {
   if (typeof value === "number")
     return Number.isFinite(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER;
@@ -355,10 +383,9 @@ export function rowAuditProblems(
   requireSuccess = true,
 ): string[] {
   const rows = literalRows(spec, [...new Set(graph.tasks.flatMap((t) => t.rows ?? []))]);
+  const owners = (analysis.derivations ?? []).map((d) => ({ d, row: auditedRowOf(d, rows) }));
   return rows.flatMap((row) => {
-    const audited = (analysis.derivations ?? []).filter(
-      (d) => d.criterionId === row.criterionId && auditedRow(d.row, row),
-    );
+    const audited = owners.filter((o) => o.row === row).map((o) => o.d);
     return audited.length === 1 && (!requireSuccess || audited[0]?.matches)
       ? []
       : [

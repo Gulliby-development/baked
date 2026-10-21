@@ -3,7 +3,6 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -13,7 +12,7 @@ import { dirname, join } from "node:path";
 import type { SandboxRequest } from "../security/sandbox.js";
 import type { ProcessScope } from "../workflows/process-scope.js";
 import { entryPointCommand } from "./entry-points.js";
-import { REPRO_TIMEOUT_MS, reproEnv } from "./repro.js";
+import { REPRO_TIMEOUT_MS, removeScratch, reproEnv } from "./repro.js";
 
 /** Examples the host runs per review stage; each runs for up to REPRO_TIMEOUT_MS. */
 export const DOC_EXAMPLE_LIMIT = 8;
@@ -567,7 +566,7 @@ export async function runDocExamples(
         });
       }
     } finally {
-      if (copy) rmSync(copy, { recursive: true, force: true });
+      if (copy) removeScratch(copy);
     }
   }
   return results;
