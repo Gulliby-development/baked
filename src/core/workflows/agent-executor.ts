@@ -14,7 +14,7 @@ import {
 } from "ai";
 import { z } from "zod";
 import type { AppConfig } from "../../types/index.js";
-import { cleanStepMessages } from "../agents/stream-options.js";
+import { AbnormalFinishError, cleanStepMessages } from "../agents/stream-options.js";
 import { ContextManager } from "../context/manager.js";
 import { SharedRootContext } from "../context/shared-root.js";
 import { recordModelCall } from "../diagnostics/model-events.js";
@@ -1606,6 +1606,20 @@ export class NativeAgentExecutor implements AgentExecutor {
           }
           throw error;
         }
+      }
+      // A response the provider withheld under its usage policy is a refusal, not a prose ending
+      // to correct (#1895): the scheduler retries it once and then stops for a reroute.
+      if (
+        submitted === undefined &&
+        !request.signal.aborted &&
+        result.steps.at(-1)?.finishReason === "content-filter"
+      ) {
+        try {
+          writeUsage(budget.record(finished, false, meta, "error"));
+        } catch {
+          // The refusal matters more than a usage record that could not be stored.
+        }
+        throw new AbnormalFinishError("content-filter");
       }
       // The loop ended on a step without a tool call. Its context is intact, so the model is asked
       // once more to submit in the same conversation, with only the submit tool active, instead of
