@@ -30,6 +30,7 @@
     "codeMask": [
       "src/Sum.php:3",
       "src/SumTest.php:3 comment"
-    ]
+    ],
+    "formatters": null
   }
 }

@@ -50,6 +50,7 @@
     "codeMask": [
       "src/main/java/Sum.java:3",
       "src/test/java/SumPropertyTest.java:6 comment"
-    ]
+    ],
+    "formatters": null
   }
 }

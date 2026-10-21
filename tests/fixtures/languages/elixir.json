@@ -30,6 +30,7 @@
     "codeMask": [
       "lib/sum.ex:3",
       "lib/sum_test.exs:3 comment"
-    ]
+    ],
+    "formatters": null
   }
 }

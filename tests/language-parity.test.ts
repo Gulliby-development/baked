@@ -23,7 +23,8 @@ import {
   testCount,
 } from "../src/core/verification/output-counts.js";
 import { ENTRY_POINTS, projectEntryPoints } from "../src/core/verification/entry-points.js";
-import { detectGates, GATE_TOOLCHAINS } from "../src/core/workflows/gates.js";
+import { FILE_FORMATTERS, formatWrittenChecks } from "../src/core/workflows/format-written.js";
+import { detectGates, formatCommandLine, GATE_TOOLCHAINS } from "../src/core/workflows/gates.js";
 import { PLACEHOLDERS } from "../src/core/workflows/quality/builtin-rules.js";
 import { DEPENDENCY_MANIFESTS, manifestDependencies } from "../src/core/workflows/quality/manifests.js";
 import { detectMutationTool, MUTATION_TOOLS } from "../src/core/workflows/quality/mutation-tools.js";
@@ -118,6 +119,17 @@ const RECORDS: Record<
   gates: {
     record: GATE_TOOLCHAINS,
     run: (_, { files }) => detectGates(workspace(files)).map((s) => s.check.id),
+  },
+  // The format-written check the language's code files get when the project offers a formatter (#1837).
+  formatters: {
+    record: FILE_FORMATTERS,
+    run: (language, { files }) =>
+      formatWrittenChecks(
+        workspace(files),
+        [],
+        ofLanguage(language, files).map(([path]) => ({ path, action: "create" })),
+        (command) => `/usr/bin/${command}`,
+      ).map((c) => `${c.id}: ${formatCommandLine(c.executable, c.args)}`),
   },
   entryPoints: {
     record: ENTRY_POINTS,
