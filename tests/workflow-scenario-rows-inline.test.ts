@@ -39,6 +39,35 @@ const spec: Spec = {
   criteria: [{ id: "AC-001", requirementIds: ["FR-001"], given: "a JSON number", when: "double is called",
     then: `Input | Scenario | Expected\n--- | --- | ---\n${cases.map(([input, expected]) => `\`${input}\` | ${input < 0 ? "negative" : "non-negative"} number | \`${expected}\``).join("\n")}`, method: "automated" }],
 };
+const POM = `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.ex</groupId>
+  <artifactId>calc</artifactId>
+  <version>0.1.0</version>
+  <properties>
+    <maven.compiler.release>17</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>5.10.2</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.2.5</version>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+`;
 const markdown = "# Plan\n## Context\nDouble.\n## Decisions\nDEC-001: FR-001 doubles numbers.\n## Components\nThe one test file\n## Data\nJSON numbers\n## Verification\nTests\n## Risks\nNone";
 
 interface Toolchain {
@@ -78,11 +107,12 @@ const TOOLCHAINS: Toolchain[] = [
     existing: "#[test]\nfn existing() {}\n",
     wrong: ["fixture::double(input.as_f64().unwrap()).into()", "input.clone()"],
     ...(has(["cargo", "--version"]) ? { run: ["cargo", "test", "--offline", "--quiet"] } : {}), marker: "fn acceptance_rows()" },
-  { framework: "junit", package: "com.ex.calc", test: "src/test/java/com/ex/calc/CalcTest.java", project: {},
+  { framework: "junit", package: "com.ex.calc", test: "src/test/java/com/ex/calc/CalcTest.java", project: { ".gitignore": "target/\n", "pom.xml": POM },
     agent: "package com.ex.calc;\n\nclass CalcTest {\n  static Object acceptanceActual(Object input) {\n    return ((Long) input) * 2;\n  }\n}\n",
     existing: "package com.ex.calc;\n\nclass CalcTest {}\n",
     wrong: ["return ((Long) input) * 2;", "return input;"],
-    marker: "class CalcTestAcceptanceRowsTest {" },
+    // The block is a @Nested class of CalcTest, so the file keeps one top-level type (#1804).
+    ...(has(["mvn", "--version"]) && has(["java", "-version"]) ? { run: ["mvn", "-q", "-B", "test"] } : {}), marker: "class AcceptanceRows {" },
   { framework: "xunit", package: "Calc.Tests", test: "Calc.Tests/CalcTest.cs", project: {},
     agent: "namespace Calc.Tests;\n\npublic class CalcTest\n{\n    public static object? AcceptanceActual(System.Text.Json.Nodes.JsonNode? input) => (int)input! * 2;\n}\n",
     existing: "namespace Calc.Tests;\n\npublic class CalcTest\n{\n}\n",
@@ -170,6 +200,11 @@ describe("scenario: inline acceptance rows in a brief that fixes the test files 
     // The agent's file with the host's block put back: no other file, all 12 rows.
     expect(written.startsWith(toolchain.agent.split("\n")[0] ?? "")).toBe(true);
     expect(written).toContain(toolchain.marker);
+    // Java and C#: the block is inside the file's own class, the only top-level type (#1804).
+    if (toolchain.framework === "junit" || toolchain.framework === "xunit") {
+      expect(written.match(/^(?:public )?class \w+/gm)).toHaveLength(1);
+      expect(written.trimEnd()).toEndWith("// END acceptance rows\n}");
+    }
     for (const row of literalRows(spec, ["AC-001"])) expect(written).toContain(row.id);
     expect(literalRows(spec, ["AC-001"])).toHaveLength(12);
     if (!toolchain.run) return;

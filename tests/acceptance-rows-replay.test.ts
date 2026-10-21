@@ -68,9 +68,9 @@ describe("which task replays which rows (#1617)", () => {
     { framework: "go", package: "paths", test: "paths/paths_test.go", run: check("go", ["test", "./..."]), file: "paths/baked_replay_t001_test.go", args: ["test", "./paths"] },
     { framework: "rust", test: "tests/paths.rs", run: check("cargo", ["test", "--quiet"]), file: "tests/baked_replay_t001.rs", args: ["test", "--quiet", "--test", "baked_replay_t001"] },
     { framework: "junit", package: "com.ex.paths", test: "src/test/java/com/ex/paths/PathsTest.java", run: check("mvn", ["-q", "test"]), file: "src/test/java/com/ex/paths/BakedReplayT001Test.java",
-      args: ["-q", "test", "-Dtest=com.ex.paths.BakedReplayT001Test,com.ex.paths.BakedReplayT001TestAcceptanceRowsTest", "-Dsurefire.failIfNoSpecifiedTests=false"] },
+      args: ["-q", "test", "-Dtest=com.ex.paths.BakedReplayT001Test,com.ex.paths.BakedReplayT001Test$AcceptanceRows", "-Dsurefire.failIfNoSpecifiedTests=false"] },
     { framework: "xunit", package: "Paths.Tests", test: "Paths.Tests/PathsTests.cs", run: check("dotnet", ["test"]), file: "Paths.Tests/BakedReplayT001Tests.cs",
-      args: ["test", "--filter", "FullyQualifiedName~BakedReplayT001Tests.|FullyQualifiedName~BakedReplayT001TestsAcceptanceRows."] },
+      args: ["test", "--filter", "FullyQualifiedName~BakedReplayT001Tests.|FullyQualifiedName~BakedReplayT001Tests+AcceptanceRows."] },
   ] as const;
   test.each(FRAMEWORKS.map((f) => [f.framework, f]))("%s: the replay file runs on its own with the project's test command", (_name, f) => {
     const later = rowTask(f.framework, f.test, "package" in f ? f.package : undefined);
