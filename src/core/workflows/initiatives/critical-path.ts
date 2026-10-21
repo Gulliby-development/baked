@@ -6,6 +6,7 @@ import {
   MIN_FEATURE_PATHS,
   namedFiles,
   sizeWeight,
+  skeletonOnly,
 } from "./plan.js";
 
 /**
@@ -20,12 +21,29 @@ import {
 /** A feature holding more than this share of the path's work is asked about. */
 export const CRITICAL_SHARE = 0.35;
 
-/** The work of a feature, in the units of its size weight: its size or half its files. */
+/**
+ * The files of a feature an agent writes: its boundary files without its own skeleton, which the
+ * host writes at no cost. Counted as work, hdrlens's 25 stubs made its skeleton feature 48% of the
+ * path and the decomposer was sent back for a feature the host folds anyway (bench round 56, #1829).
+ */
+function workFiles(
+  feature: Pick<InitiativeFeature, "boundary" | "skeleton">,
+  named: readonly string[],
+): string[] {
+  const own = new Set((feature.skeleton ?? []).map((f) => f.path));
+  return (boundaryFiles(feature, named) ?? []).filter((path) => !own.has(path));
+}
+
+/**
+ * The work of a feature, in the units of its size weight: its size or half its files, and none for
+ * a feature that is only skeleton.
+ */
 export function featureWork(
-  feature: Pick<InitiativeFeature, "boundary" | "size">,
+  feature: Pick<InitiativeFeature, "boundary" | "size" | "skeleton">,
   named: readonly string[],
 ): number {
-  return Math.max(sizeWeight(feature), (boundaryFiles(feature, named)?.length ?? 0) / 2);
+  if (skeletonOnly(feature)) return 0;
+  return Math.max(sizeWeight(feature), workFiles(feature, named).length / 2);
 }
 
 /** The longest chain of dependencies by work, first feature first. */
@@ -73,7 +91,7 @@ export function criticalPathFeatures(
     const feature = plan.features.find((f) => f.id === id);
     if (!feature || feature.serial) return [];
     const share = featureWork(feature, named) / path.work;
-    const files = boundaryFiles(feature, named)?.length ?? 0;
+    const files = workFiles(feature, named).length;
     return share > CRITICAL_SHARE && files >= 2 * MIN_FEATURE_PATHS
       ? [{ feature, share, path: path.features }]
       : [];
