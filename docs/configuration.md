@@ -18,8 +18,6 @@ The chat settings that the terminal pickers edit (provider options, chat router 
 
 `workflows.policy.rowsAsData` accepts `"off"` or `"on"` and defaults to off. On enables audited JSON acceptance rows and host-written tests (Bun, pytest, Go, JUnit, Rust, xUnit), as their own files or as a block in a test file the task already writes, when the workflow has an analyze stage. Without one, the run ignores the setting with a persisted warning and uses ordinary agent-written tests. The run-start controls can override it for one run. See [acceptance rows as data](workflows/runtime.md#acceptance-rows-as-data) for the task contract and framework limits.
 
-`workflows.policy.restoreFile` accepts `"off"` or `"on"` and defaults to off. On gives workflow implementers the `restore_file` tool, which puts a file the task's edits left not parsing back to its last version that parsed, and names such a file in the progress watcher's steering. See [progress watcher](workflows/runtime.md#progress-watcher).
-
 ```json
 {
   "defaultModel": "anthropic/claude-sonnet-4-5",
@@ -35,6 +33,8 @@ The chat settings that the terminal pickers edit (provider options, chat router 
   "instructionFiles": ["baked", "claude", "codex"]
 }
 ```
+
+`workflows.policy.restoreFile` accepts `"off"` or `"on"` and defaults to off. On gives workflow implementers the `restore_file` tool, which puts a file the task's edits left not parsing back to its last version that parsed, and names such a file in the progress watcher's steering. See [progress watcher](workflows/runtime.md#progress-watcher).
 
 ## Common settings
 
