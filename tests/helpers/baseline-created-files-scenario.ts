@@ -31,7 +31,8 @@ export async function baselineCreatedFilesScenario(
   project: { files: Record<string, string>; checks: Check[] } | null = null,
   later: string[] = [],
 ) {
-  const write = `const fs = require("node:fs"); const path = require("node:path"); const make = (ps) => { for (const p of ps) if (!fs.existsSync(p)) { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, "first run"); } }; make(${JSON.stringify(outputs)}); if (fs.existsSync("value.txt")) make(${JSON.stringify(later)});`;
+  // `mkdirSync(".", { recursive: true })` throws on Windows, so a root file makes no directory.
+  const write = `const fs = require("node:fs"); const path = require("node:path"); const make = (ps) => { for (const p of ps) if (!fs.existsSync(p)) { if (path.dirname(p) !== ".") fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, "first run"); } }; make(${JSON.stringify(outputs)}); if (fs.existsSync("value.txt")) make(${JSON.stringify(later)});`;
   const build: Check = { id: "build", executable: "bun", args: ["-e", write], cwd: ".", timeoutMs: 10000, required: true, scope: "feature", envNames: [], writes: [] };
   const policy = { ...fixturePolicy, checks: [...fixturePolicy.checks, ...(project ? project.checks : [build])] };
   const f = workflowFixture({ policy });
