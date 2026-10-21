@@ -85,7 +85,7 @@ bun run release:dry     # next version and the commits since the last tag
 bun run release:minor   # or release:patch / release:major
 ```
 
-`scripts/release.sh` runs the checks, commits the version bump of `package.json` and `apps/desktop/package.json` as "Release X.Y.Z" on a `feature/release-x-y-z` branch and pushes it; with the GitHub CLI installed it also opens the pull request and adds it to the merge queue. Once that pull request is merged, pull `main` and tag the merged commit:
+`scripts/release.sh` runs the checks (`bun run lint`, `bun run typecheck` and `bun run test`, the suite with its 30 s timeout), commits the version bump of `package.json` and `apps/desktop/package.json` as "Release X.Y.Z" on a `feature/release-x-y-z` branch and pushes it; with the GitHub CLI installed it also opens the pull request and adds it to the merge queue. Once that pull request is merged, pull `main` and tag the merged commit:
 
 ```sh
 git switch main && git pull

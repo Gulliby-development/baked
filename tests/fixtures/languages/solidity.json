@@ -30,6 +30,7 @@
     "codeMask": [
       "src/Sum.sol:3",
       "test/Sum.t.sol:4 comment"
-    ]
+    ],
+    "formatters": null
   }
 }

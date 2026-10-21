@@ -57,6 +57,7 @@ import {
   styleClaimShown,
 } from "../src/core/workflows/check-policy.js";
 import { buildWrapper, detectGates, executeGate } from "../src/core/workflows/gates.js";
+import { formatWrittenChecks } from "../src/core/workflows/format-written.js";
 import { type LayoutResult, layoutVerdict } from "../src/core/workflows/layout-check.js";
 import { addedDependencies, checkDependencies } from "../src/core/workflows/quality/dependencies.js";
 import {
@@ -1020,6 +1021,120 @@ describe("gate matrix: format and type-check gates (#1685)", () => {
     const typecheck = detectGates(project({ "pyproject.toml": "[tool.mypy]\n" })).find((s) => s.check.id === "mypy")!.check;
     expect(isWholeUnitCheck(typecheck)).toBe(true);
     expect(python("").map(([id]) => id)).toEqual([]);
+  });
+});
+
+// #1837: a repository not formatter-clean leaves its whole-tree format gate out of the run's checks;
+// the files a task writes still get the project's formatter, scoped to them, with its fixer.
+describe("gate matrix: format-written check on a dirty repository (#1837)", () => {
+  const scoped = (files: Record<string, string>, written: string[], checks: Check[] = []) =>
+    formatWrittenChecks(project(files), checks, written.map((path) => ({ path, action: "create" })), (c) => `/usr/bin/${c}`).map((c) => [
+      c.id,
+      [c.executable, ...c.args].join(" "),
+      c.fix ? [c.fix.executable, ...c.fix.args].join(" ") : null,
+      c.required,
+    ]);
+  const pkg = JSON.stringify({ name: "p" });
+
+  cell("python", "ruff as the linter: ruff format on the written files only, fixer ruff format", () => {
+    const files = { "pyproject.toml": "[project]\nname = 'p'\n[tool.ruff]\n", "p/old.py": "x=1\n", "tests/test_new.py": "x=1\n" };
+    expect(scoped(files, ["tests/test_new.py"])).toEqual([["ruff-format-written", "ruff format --check tests/test_new.py", "ruff format", true]]);
+    expect(scoped({ ...files, "uv.lock": "" }, ["tests/test_new.py"])).toEqual([["ruff-format-written", "uv run ruff format --check tests/test_new.py", "uv run ruff format", true]]);
+    // The run already formats Python: nothing to add.
+    const whole = detectGates(project(files)).find((s) => s.check.id === "ruff-format")!.check;
+    expect(scoped(files, ["tests/test_new.py"], [whole])).toEqual([]);
+  });
+  cell("python", "a formatter check on other files holds no written file outside them", () => {
+    const files = { "pyproject.toml": "[project]\nname = 'p'\n[tool.ruff]\n", "legacy/clean.py": "x = 1\n", "tests/test_new.py": "x=1\n", "tests/test_b.py": "x=1\n" };
+    const whole = detectGates(project(files)).find((s) => s.check.id === "ruff-format")!.check;
+    const written = [["ruff-format-written", "ruff format --check tests/test_new.py", "ruff format", true]];
+    // One file, another directory, a cwd elsewhere, or a narrowed run: the new file still gets its check.
+    expect(scoped(files, ["tests/test_new.py"], [{ ...whole, args: ["format", "--check", "legacy/clean.py"] }])).toEqual(written);
+    expect(scoped(files, ["tests/test_new.py"], [{ ...whole, args: ["format", "--check", "legacy"] }])).toEqual(written);
+    expect(scoped(files, ["tests/test_new.py"], [{ ...whole, cwd: "legacy" }])).toEqual(written);
+    expect(scoped(files, ["tests/test_new.py"], [{ ...whole, args: [...whole.args, "--exclude", "tests"] }])).toEqual(written);
+    // The file itself, its directory or the cwd above it: held already, nothing to add for it.
+    expect(scoped(files, ["tests/test_new.py"], [{ ...whole, args: ["format", "--check", "tests/test_new.py"] }])).toEqual([]);
+    expect(scoped(files, ["tests/test_new.py"], [{ ...whole, args: ["format", "--check", "./tests/"] }])).toEqual([]);
+    expect(scoped(files, ["tests/test_new.py"], [{ ...whole, cwd: "tests", args: ["format", "--check", "."] }])).toEqual([]);
+    // Only the written files the check leaves out.
+    expect(scoped(files, ["tests/test_new.py", "tests/test_b.py"], [{ ...whole, args: ["format", "--check", "tests/test_b.py"] }])).toEqual(written);
+  });
+  cell("go", "gofmt on ./... holds every written Go file", () => {
+    const files = { "go.mod": "module p\n\ngo 1.22\n", "a/b.go": "package a\n" };
+    const gate = { id: "gofmt", executable: "gofmt", args: ["-l", "./..."], cwd: ".", timeoutMs: 120000, required: true, scope: "feature" as const, envNames: [], writes: [] };
+    expect(scoped(files, ["a/b.go"], [gate])).toEqual([]);
+  });
+  cell("python", "black: black --check on the written files, fixer black", () => {
+    const files = { "pyproject.toml": "[project]\nname = 'p'\n[tool.black]\n", "p/new.py": "x=1\n" };
+    expect(scoped(files, ["p/new.py"])).toEqual([["black-written", "black --check p/new.py", "black", true]]);
+  });
+  cell("bun", "biome: biome format on the written files through bunx, fixer biome format --write", () => {
+    const files = { "package.json": pkg, "bun.lock": "", "biome.json": "{}", "src/a.ts": "x\n", "README.md": "# p\n" };
+    expect(scoped(files, ["src/a.ts", "README.md"])).toEqual([["format-written", "bunx biome format src/a.ts", "bunx biome format --write", true]]);
+    // A format script in the run's checks formats the npm languages already.
+    expect(scoped(files, ["src/a.ts"], [{ id: "format", executable: "bun", args: ["run", "format:check"], cwd: ".", timeoutMs: 120000, required: true, scope: "feature", envNames: [], writes: [] }])).toEqual([]);
+  });
+  cell("npm", "prettier: prettier --check on the written files through npx", () => {
+    const files = { "package.json": pkg, "package-lock.json": "{}", ".prettierrc": "{}", "src/a.js": "x\n" };
+    expect(scoped(files, ["src/a.js"])).toEqual([["format-written", "npx prettier --check src/a.js", "npx prettier --write", true]]);
+    // Not installed in node_modules nor on the PATH: npx would download it, so no check.
+    expect(formatWrittenChecks(project(files), [], [{ path: "src/a.js", action: "create" }], () => null)).toEqual([]);
+  });
+  cell("go", "gofmt left out: gofmt -l on the written files, fixer gofmt -w", () => {
+    const files = { "go.mod": "module p\n\ngo 1.22\n", "a.go": "package p\n" };
+    expect(scoped(files, ["a.go"])).toEqual([["gofmt-written", "gofmt -l a.go", "gofmt -w", true]]);
+  });
+
+  // An edited file: only the lines the run changed against its content before the run (#1837, R57
+  // zonevet), by a formatter that formats a range; none where the formatter cannot.
+  const edited = (files: Record<string, string>, path: string, before: string) =>
+    formatWrittenChecks(project(files), [], [{ path, action: "modify" }], (c) => `/usr/bin/${c}`, (p) => (p === path ? before : undefined)).map((c) => [
+      c.id,
+      [c.executable, ...c.args].join(" "),
+      c.fix ? [c.fix.executable, ...c.fix.args].join(" ") : null,
+      c.fixPaths,
+    ]);
+  cell("python", "ruff, edited file: one --range check per changed block, fixer ruff format --range", () => {
+    const files = { "pyproject.toml": "[project]\nname = 'p'\n[tool.ruff]\n", "t/test_a.py": "x=1\nY\nz=2\nW\n" };
+    expect(edited(files, "t/test_a.py", "x=1\nz=2\n")).toEqual([
+      ["ruff-format-lines", "ruff format --check --range=2-3 t/test_a.py", "ruff format --range=2-3", ["t/test_a.py"]],
+      ["ruff-format-lines-2", "ruff format --check --range=4-5 t/test_a.py", "ruff format --range=4-5", ["t/test_a.py"]],
+    ]);
+  });
+  cell("python", "ruff, edited file: every changed block gets its check, the ninth too", () => {
+    const before = Array.from({ length: 9 }, (_, i) => `a${i}\n`).join("");
+    const after = Array.from({ length: 9 }, (_, i) => `a${i}\nx=${i}\n`).join("");
+    const files = { "pyproject.toml": "[project]\nname = 'p'\n[tool.ruff]\n", "t/test_a.py": after };
+    const checks = edited(files, "t/test_a.py", before);
+    expect(checks).toHaveLength(9);
+    expect(checks.at(-1)).toEqual(["ruff-format-lines-9", "ruff format --check --range=18-19 t/test_a.py", "ruff format --range=18-19", ["t/test_a.py"]]);
+  });
+  cell("python", "black, edited file: one check with every --line-ranges", () => {
+    const files = { "pyproject.toml": "[project]\nname = 'p'\n[tool.black]\n", "p/a.py": "x=1\nY\nz=2\nW\n" };
+    expect(edited(files, "p/a.py", "x=1\nz=2\n")).toEqual([
+      ["black-lines", "black --check --line-ranges=2-2 --line-ranges=4-4 p/a.py", "black --line-ranges=2-2 --line-ranges=4-4", ["p/a.py"]],
+    ]);
+  });
+  cell("npm", "prettier, edited file: --range-start and --range-end over the changed lines", () => {
+    const files = { "package.json": pkg, "package-lock.json": "{}", ".prettierrc": "{}", "src/a.js": "old\nnew( )\n" };
+    expect(edited(files, "src/a.js", "old\n")).toEqual([
+      ["format-lines", "npx prettier --check --range-start=4 --range-end=11 src/a.js", "npx prettier --write --range-start=4 --range-end=11", ["src/a.js"]],
+    ]);
+  });
+  cell("bun", "biome, dprint, gofmt and dotnet format take no range: an edited file is not checked", () => {
+    expect(edited({ "package.json": pkg, "bun.lock": "", "biome.json": "{}", "src/a.ts": "a\nb\n" }, "src/a.ts", "a\n")).toEqual([]);
+    expect(edited({ "go.mod": "module p\n\ngo 1.22\n", "a.go": "package p\nvar x=1\n" }, "a.go", "package p\n")).toEqual([]);
+  });
+  cell("dotnet", "dotnet format left out: --include the written files, fixer dotnet format", () => {
+    const files = { "App.csproj": "<Project Sdk=\"Microsoft.NET.Sdk\" />", "A.cs": "class A {}\n" };
+    expect(scoped(files, ["A.cs"])).toEqual([["dotnet-format-written", "dotnet format --verify-no-changes --include A.cs", "dotnet format", true]]);
+  });
+  cell("rust", "cargo fmt follows mod declarations: no file-scoped check (#842)", () => {
+    expect(scoped({ "Cargo.toml": "[package]\nname = 'p'\n", "src/lib.rs": "" }, ["src/lib.rs"])).toEqual([]);
+  });
+  cell("maven", "no Maven formatter gate is detected: no check", () => {
+    expect(scoped({ "pom.xml": "<project/>", "src/main/java/A.java": "class A {}\n" }, ["src/main/java/A.java"])).toEqual([]);
   });
 });
 
@@ -2321,6 +2436,57 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
         const fix = fixerCommand(format.fix, path);
         expect(spawnSync(fix.executable, fix.args, { cwd: root }).status).toBe(0);
         expect((await executeGate(root, format, new AbortController().signal)).status).toBe("passed");
+      },
+      300_000,
+    );
+
+  // #1837: the old file stays unformatted, the scoped check fails only on the task's new file, and
+  // its fixer repairs that file alone.
+  (process.env.CI || available([["ruff", "--version"]]) ? cell : (s: Stack, name: string) => test.skip(`${name} (no toolchain)`, () => {}))(
+    "python",
+    "python: ruff-format-written fails on the new file, not the old one, and its fixer repairs it",
+    async () => {
+      const root = project({
+        "pyproject.toml": "[project]\nname = 'fixture'\nversion = '0.1.0'\n\n[tool.ruff]\nline-length = 100\n",
+        "fixture/old.py": "def old( a,b ):\n    return {'a':a}\n",
+        "tests/test_new.py": "def test_new( ):\n    assert {'a':1}=={'a':1}\n",
+      });
+      const [check] = formatWrittenChecks(root, [], [{ path: "tests/test_new.py", action: "create" }]);
+      if (!check?.fix) throw new Error("no ruff-format-written check");
+      const before = await executeGate(root, check, new AbortController().signal);
+      expect(before.status).toBe("failed");
+      expect(before.outputTail).toContain("test_new.py");
+      expect(before.outputTail).not.toContain("old.py");
+      const fix = fixerCommand(check.fix, "tests/test_new.py");
+      expect(spawnSync(fix.executable, fix.args, { cwd: root }).status).toBe(0);
+      expect((await executeGate(root, check, new AbortController().signal)).status).toBe("passed");
+      expect(readFileSync(join(root, "fixture/old.py"), "utf8")).toBe("def old( a,b ):\n    return {'a':a}\n");
+    },
+    300_000,
+  );
+
+  // #1837, R57 zonevet: a test appended to a file that was not formatted before the run. The range
+  // check fails on the appended lines only, its fixer formats them, and the old lines stay as they were.
+  for (const [tool, gate] of [["ruff", "[tool.ruff]\nline-length = 100\n"], ["black", "[tool.black]\n"]] as const)
+    ((tool === "ruff" && process.env.CI) || available([[tool, "--version"]]) ? cell : (s: Stack, name: string) => test.skip(`${name} (no toolchain)`, () => {}))(
+      "python",
+      `python: ${tool} range check holds only the lines a task appended to an unformatted file`,
+      async () => {
+        const old = "import os\nx  =  {'a':1}\n\n\ndef test_old( ):\n    assert os.sep\n";
+        const appended = `${old}\n\ndef test_new( ):\n    assert {'a':1}=={'a':1}\n`;
+        const root = project({
+          "pyproject.toml": `[project]\nname = 'fixture'\nversion = '0.1.0'\n\n${gate}`,
+          "tests/test_docs.py": appended,
+        });
+        const [check] = formatWrittenChecks(root, [], [{ path: "tests/test_docs.py", action: "modify" }], undefined, () => old);
+        if (!check?.fix) throw new Error(`no ${tool} range check`);
+        expect((await executeGate(root, check, new AbortController().signal)).status).toBe("failed");
+        const fix = fixerCommand(check.fix, "tests/test_docs.py");
+        expect(spawnSync(fix.executable, fix.args, { cwd: root }).status).toBe(0);
+        expect((await executeGate(root, check, new AbortController().signal)).status).toBe("passed");
+        const after = readFileSync(join(root, "tests/test_docs.py"), "utf8");
+        expect(after.startsWith(old)).toBe(true);
+        expect(after).toContain("def test_new():\n    assert {\"a\": 1} == {\"a\": 1}\n");
       },
       300_000,
     );

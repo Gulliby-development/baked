@@ -24,6 +24,7 @@
     "properties": null,
     "entryPoints": null,
     "testGates": null,
+    "formatters": null,
     "callGraph": [
       "sum called at src/sum_test.zig:3"
     ],

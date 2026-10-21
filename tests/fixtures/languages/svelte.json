@@ -35,6 +35,7 @@
       "src/Sum.svelte:1",
       "src/Sum.svelte:3",
       "src/Sum.svelte:7 comment"
-    ]
+    ],
+    "formatters": null
   }
 }

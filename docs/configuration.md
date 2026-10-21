@@ -36,6 +36,8 @@ The chat settings that the terminal pickers edit (provider options, chat router 
 }
 ```
 
+`workflows.policy.restoreFile` accepts `"off"` or `"on"` and defaults to off. On gives workflow implementers the `restore_file` tool, which puts a file the task's edits left not parsing back to its last version that parsed, and names such a file in the progress watcher's steering. See [progress watcher](workflows/runtime.md#progress-watcher).
+
 ## Common settings
 
 | Field | Default | Does |
