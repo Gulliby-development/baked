@@ -8,6 +8,9 @@
     "tests": [
       "Sources/SumTests.swift"
     ],
+    "testMarkers": [
+      "Sources/SumTests.swift: test"
+    ],
     "manifests": [
       "Package.swift"
     ],

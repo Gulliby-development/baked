@@ -9,6 +9,7 @@
   },
   "expected": {
     "tests": null,
+    "testMarkers": null,
     "manifests": null,
     "dependencies": [
       "package.json: npm vue"
