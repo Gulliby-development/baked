@@ -1,7 +1,7 @@
 {
   "files": {
     "lib/sum.dart": "int sum(int a, int b) {\n  throw UnimplementedError();\n}\n",
-    "lib/sum_test.dart": "void main() {\n  sum(1, 2);\n}\n",
+    "lib/sum_test.dart": "void main() {\n  sum(1, 2);\n}\n// AC-001 example: (1, 2, 3)\n",
     "pubspec.yaml": "name: fixture\n"
   },
   "expected": {
@@ -26,6 +26,9 @@
     "testGates": null,
     "callGraph": [
       "sum called at lib/sum_test.dart:2"
+    ],
+    "codeMask": [
+      "lib/sum_test.dart:4 comment"
     ],
     "formatters": null
   }

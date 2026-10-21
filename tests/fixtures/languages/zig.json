@@ -1,7 +1,7 @@
 {
   "files": {
     "src/sum.zig": "pub fn sum(a: i32, b: i32) i32 {\n    @panic(\"not implemented\");\n}\n",
-    "src/sum_test.zig": "const std = @import(\"std\");\ntest \"sum\" {\n    _ = sum(1, 2);\n}\n",
+    "src/sum_test.zig": "const std = @import(\"std\");\ntest \"sum\" {\n    _ = sum(1, 2);\n}\n// AC-001 example: (1, 2, 3)\n",
     "build.zig": "const std = @import(\"std\");\n"
   },
   "expected": {
@@ -27,6 +27,13 @@
     "formatters": null,
     "callGraph": [
       "sum called at src/sum_test.zig:3"
+    ],
+    "codeMask": [
+      "src/sum.zig:2",
+      "src/sum_test.zig:1",
+      "src/sum_test.zig:2",
+      "src/sum_test.zig:5 comment",
+      "build.zig:1"
     ]
   }
 }

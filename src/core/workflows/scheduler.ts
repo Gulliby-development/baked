@@ -130,8 +130,8 @@ import { addReviewNotes, noteReason } from "../verification/review-notes.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
 import { baselineDebt, baselineKeys, taskErrors } from "../verification/task-end-check.js";
 import {
+  plannerRows,
   ROWS_ARTIFACT,
-  ROWS_NOTE,
   type RowsArtifact,
   rowAuditProblems,
   rowDataPaths,
@@ -696,7 +696,7 @@ function planGraph(
     graph = recordGraphEdits(graph, transform(graph), kind, edits);
   };
   apply("approval-remarks", withoutApprovalRemarks);
-  apply("acceptance-rows-off", (input) => withoutRowsWhenOff(input, policy));
+  apply("acceptance-rows-off", (input) => withoutRowsWhenOff(input, policy, spec));
   apply("implementation-profile", (input) =>
     withImplementationProfiles(input, profiles, stageProfile),
   );
@@ -1414,7 +1414,9 @@ export class WorkflowScheduler {
                             },
                           }
                         : {}),
-                      ...(rowsAsDataOn(policy) ? { acceptanceRows: { note: ROWS_NOTE } } : {}),
+                      ...(plannerRows(spec, policy)
+                        ? { acceptanceRows: plannerRows(spec, policy) }
+                        : {}),
                       ...(testsFirstOf(policy) !== "off"
                         ? {
                             testsFirst: testsFirstNote(
@@ -3665,6 +3667,37 @@ export class WorkflowScheduler {
       ),
     );
     return debt;
+  }
+  /**
+   * Why a failed test check verified nothing that this run owns: the runner collected no test
+   * (pytest exit 5, `bun test` "0 test files matching") and the run's plan writes no test file, so no
+   * repair could make it pass. Bench round 58 (wheeltags): the decomposer gave the base feature's
+   * tests to an acceptance feature (`testedBy`), the scaffold had none, and the required tests
+   * check failed five times until the run stopped `no_progress` and the initiative stalled
+   * (#1864). The reason is kept as a `checks/no-tests/` diagnostic; null when the check must fail.
+   */
+  private noOwnedTests(
+    runId: string,
+    state: RuntimeState,
+    check: Check,
+    output: string,
+    evidenceId: string,
+  ): string | null {
+    if (!isTestCheck(check) || !noTestsCollected(output)) return null;
+    const writes = ((state.rootGraph ?? state.graph)?.tasks ?? []).flatMap((t) => t.writes);
+    if (writes.some((w) => w.action !== "delete" && isTestPath(w.path))) return null;
+    const bounds = state.initiativeBounds;
+    const owner = bounds?.features.find((f) => f.id === bounds.featureId)?.testedBy;
+    const reason = `${check.id} collected no test and this run's plan writes none${owner ? `; feature ${owner} owns this feature's tests` : ""}, so the check is not counted as failed`;
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `checks/no-tests/${check.id}-${newId()}.json`,
+        canonical({ checkId: check.id, evidenceId, reason }),
+      ),
+    );
+    return reason;
   }
   /**
    * Whether the review findings left after the last review round only reverse earlier fixes
@@ -10723,9 +10756,8 @@ ${note}`;
     const plannedTests = graph.tasks.flatMap((t) =>
       t.writes.filter((w) => w.action !== "delete" && isTestPath(w.path)).map((w) => w.path),
     );
-    const testsPending =
-      plannedTests.length > 0 &&
-      !plannedTests.some((path) => existsSync(workspacePath(root, path)));
+    // A plan that writes no test at all (its tests belong to another feature, #1864) is the same.
+    const testsPending = !plannedTests.some((path) => existsSync(workspacePath(root, path)));
     // Findings not yet resolved, in correction (`confirmed`) or waiting for it: a failure they name is not
     // charged to this report again (#1146).
     const open = this.store
@@ -11177,7 +11209,8 @@ ${note}`;
       if (
         result.status === "failed" &&
         check.required &&
-        this.staticDebt(runId, state, policy, check, result.output, result.evidenceId)
+        (this.staticDebt(runId, state, policy, check, result.output, result.evidenceId) ||
+          this.noOwnedTests(runId, state, check, result.output, result.evidenceId))
       ) {
         passedIds.push(check.id);
         continue;
@@ -13442,7 +13475,14 @@ ${note}`;
     const passedIds: string[] = [];
     let inconclusive: string | undefined;
     for (const { gate, check } of ordered) {
-      const result = await this.runCommandGate(runId, stepId, check, gate, policy, signal);
+      const run = await this.runCommandGate(runId, stepId, check, gate, policy, signal);
+      const result =
+        run.status === "failed" &&
+        check.required &&
+        !run.reason &&
+        this.noOwnedTests(runId, state, check, run.output ?? "", run.evidenceId)
+          ? { ...run, status: "passed" as const }
+          : run;
       this.recordGate(runId, state, gate.id, null, {
         status: result.status,
         mode: check.required ? "required" : "advisory",

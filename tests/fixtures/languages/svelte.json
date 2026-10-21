@@ -1,6 +1,6 @@
 {
   "files": {
-    "src/Sum.svelte": "<script lang=\"ts\">\nfunction sum(a: number, b: number): number {\n  throw new Error(\"not implemented\");\n}\n</script>\n<p>{sum(1, 2)}</p>\n",
+    "src/Sum.svelte": "<script lang=\"ts\">\nfunction sum(a: number, b: number): number {\n  throw new Error(\"not implemented\");\n}\n</script>\n<p>{sum(1, 2)}</p>\n<!-- AC-001 example: (1, 2, 3) -->\n",
     "package.json": "{\"name\": \"fixture\", \"scripts\": {\"test\": \"vitest run\"}, \"dependencies\": {\"svelte\": \"^5.0.0\"}}"
   },
   "outputs": {
@@ -30,6 +30,11 @@
     "testGates": null,
     "callGraph": [
       "sum called at src/Sum.svelte:6"
+    ],
+    "codeMask": [
+      "src/Sum.svelte:1",
+      "src/Sum.svelte:3",
+      "src/Sum.svelte:7 comment"
     ],
     "formatters": null
   }

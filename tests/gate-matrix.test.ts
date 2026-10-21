@@ -36,6 +36,7 @@ import { criterionCases, missingCases, writtenTestPaths } from "../src/core/veri
 import { reproExecutables } from "../src/core/verification/repro.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
+import { noTestsCollected } from "../src/core/verification/convergence.js";
 import { exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
 import { baselineRegression, diagnosticCount, failureSignature, testCount, testsRan } from "../src/core/verification/output-counts.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
@@ -2574,4 +2575,27 @@ test("#1594 review and mutation gates route pathless deliverables without hiding
   expect(ownerOfFinding(base, { ...bounds, features: [{ ...bounds.features[0]!, paths: ["src/**"] }, bounds.features[1]!] })).toBeUndefined();
   expect(ownerOfFinding(base, { ...bounds, features: [{ ...bounds.features[0]!, paths: ["src/*/adapter.py"] }, bounds.features[1]!] })).toBeUndefined();
   expect(ownerOfFinding(base, { ...bounds, features: [{ ...bounds.features[0]!, testedBy: undefined }, bounds.features[1]!, { id: "other", scope: "Other tests", paths: ["test/**"] }] })).toBeUndefined();
+});
+
+// #1864: a required test check that collected no test, in a run whose plan writes none, is no
+// failure. Each stack's "no test" output is recognized; a real failure and a skipped-only run are not.
+describe("gate matrix: no tests collected (#1864)", () => {
+  const NO_TESTS: [string, string][] = [
+    ["Python (pytest, exit 5)", "collected 0 items\n\n============ no tests ran in 0.01s ============"],
+    ["Python (pytest testpaths missing)", "PytestConfigWarning: No files were found in testpaths; consider removing or adjusting your testpaths configuration."],
+    ["TypeScript/JavaScript (bun test, exit 1)", "error: 0 test files matching **{.test,.spec,_test_,_spec_}.{js,ts,jsx,tsx}"],
+    ["TypeScript/JavaScript (jest)", "No tests found, exiting with code 1"],
+    ["TypeScript/JavaScript (vitest)", "No test files found, exiting with code 1"],
+    ["Go (exit 0)", "?   \texample.com/pkg\t[no test files]"],
+    ["Swift (swift test)", "error: no tests found; create a target in the 'Tests' directory"],
+    ["Dart (dart test)", "No tests ran."],
+    ["Kotlin/Java (Gradle 9)", "There are test sources present and no filters are applied, but the test task did not discover any tests to execute."],
+  ];
+  for (const [stack, output] of NO_TESTS)
+    test(`${stack}: no test collected`, () => expect(noTestsCollected(output)).toBe(true));
+  test("a failing test and a passing run are not 'no tests'", () => {
+    expect(noTestsCollected("FAILED tests/test_tags.py::test_wheel - AssertionError\n1 failed in 0.02s")).toBe(false);
+    expect(noTestsCollected(" 3 pass\n 0 fail\nRan 3 tests across 1 file.")).toBe(false);
+    expect(noTestsCollected("test result: ok. 0 passed; 0 failed; 0 ignored")).toBe(false);
+  });
 });
