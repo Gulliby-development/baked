@@ -292,7 +292,22 @@ function estimateFeature(
   const sized = samples.filter((s) => s.size === feature.size);
   const sameWorkflow = sized.filter((s) => s.workflowId === feature.workflowId);
   const pool = sameWorkflow.length >= 2 ? sameWorkflow : sized;
-  const measured = rangeOf(pool.map((s) => s.tokens));
+  const run = estimatePreRun({
+    history,
+    workflowId: feature.workflowId,
+    stages: feature.stages,
+    maxTotalTokens: 0,
+    price: () => null,
+  });
+  // Features of other workflows price a feature only while its own workflow has no runs: a quick
+  // leaf skips the research, spec, analysis and reviews of an sdd feature, and the small sdd
+  // features priced R54 lanewalk's three light leaves at 0.80M-1.00M where they used 0.33M-0.47M,
+  // and R55's two at 1.01M-1.38M where they used 0.39M and 0.76M (#1813).
+  const ownRuns =
+    sameWorkflow.length < 2 &&
+    sized.length > sameWorkflow.length &&
+    run.basis === "workflow-history";
+  const measured = ownRuns ? null : rangeOf(pool.map((s) => s.tokens));
   // A feature that names paths sits where its paths put it among them, with their spread around
   // the fit; never below the cheapest of them.
   const placeBy = (value: (s: FeatureRunSample) => number) => {
@@ -330,13 +345,6 @@ function estimateFeature(
   // planned task count, the stages around them less steeply.
   const factor = SIZE_TASK_FACTOR[feature.size];
   const stageFactor = SIZE_STAGE_FACTOR[feature.size];
-  const run = estimatePreRun({
-    history,
-    workflowId: feature.workflowId,
-    stages: feature.stages,
-    maxTotalTokens: 0,
-    price: () => null,
-  });
   const tokens = sum(
     run.stages.map((s) => scaled(s.tokens, s.type === "tasks" ? factor : stageFactor)),
   );

@@ -141,6 +141,7 @@ import {
   rowsArtifact,
   rowsAsDataOn,
   SPEC_ROWS_NOTE,
+  withoutRowsWhenOff,
 } from "./acceptance-rows.js";
 import { INLINE_HARNESS, type InlineRowFile, withInlineRows } from "./acceptance-rows-inline.js";
 import {
@@ -192,6 +193,7 @@ import {
   plannerApprovalLimits,
   planScopeAdvice,
   policyDecisions,
+  requestExemptPaths,
   withoutApprovalRemarks,
 } from "./auto-approval.js";
 import {
@@ -334,8 +336,11 @@ import { type LearnedRule, rulesFor } from "./project-memory.js";
 import {
   checkDependencies,
   dependencyClaim,
+  manifestFieldClaim,
   PROPERTY_LIBRARY_PACKAGES,
   QUALITY_DEPENDENCIES,
+  QUALITY_MANIFEST_FIELDS,
+  unrequestedManifestFields,
 } from "./quality/dependencies.js";
 import {
   compareWithBaseline,
@@ -687,6 +692,7 @@ function planGraph(
     graph = recordGraphEdits(graph, transform(graph), kind, edits);
   };
   apply("approval-remarks", withoutApprovalRemarks);
+  apply("acceptance-rows-off", (input) => withoutRowsWhenOff(input, policy));
   apply("implementation-profile", (input) =>
     withImplementationProfiles(input, profiles, stageProfile),
   );
@@ -1942,8 +1948,6 @@ export class WorkflowScheduler {
                 break;
               }
               if (!state.approvalRoot) {
-                const snapshot = await this.snapshot(runId, state, policy, signal);
-                const repository = await gitBaseline(runRoot(this.store.workspace, state));
                 const writes = state.graph.tasks.flatMap((t) => t.writes);
                 // Uncommitted user changes never enter the worktree; approving tasks that write
                 // such files needs the user's explicit choice to leave them out.
@@ -1953,18 +1957,8 @@ export class WorkflowScheduler {
                       writes.map((w) => w.path),
                     )
                   : [];
-                this.store.transaction(() =>
-                  this.store.artifact(
-                    runId,
-                    "baseline",
-                    `baselines/${snapshot.id}.json`,
-                    canonical({ snapshotId: snapshot.id, repository }),
-                  ),
-                );
-                state.manifest.baselineSnapshotId = snapshot.id;
-                await this.measureQualityBaseline(runId, state, policy, signal);
                 // Before approval, so the person sees a required check that already fails (#934).
-                await this.recordCheckBaseline(runId, state, policy, signal);
+                await this.takeBaseline(runId, state, policy, signal);
                 const baselineFailures = this.baselineFailingChecks(runId, policy);
                 const digest = approvalDigest(state);
                 // A v2 approval stage marked human never approves on its own.
@@ -4276,6 +4270,41 @@ export class WorkflowScheduler {
     if (!profile) throw new WorkflowFault("INVALID_REFERENCE", "Stage profile is missing");
     return profile;
   }
+  /**
+   * The run's baseline: the workspace snapshot, the quality measurements and the check baseline.
+   * The snapshot is taken again after the checks ran, so a file a check creates on its first run
+   * (`Cargo.lock` of a fresh crate, `__pycache__/`, `obj/`) is part of the base and not an outside
+   * change at the next workspace check (#1815: hexview stopped `input_changed` before approval).
+   * The baseline artifact lists those files as `createdByChecks`.
+   */
+  private async takeBaseline(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    signal: AbortSignal,
+  ): Promise<void> {
+    await this.snapshot(runId, state, policy, signal);
+    await this.measureQualityBaseline(runId, state, policy, signal);
+    await this.recordCheckBaseline(runId, state, policy, signal);
+    const before = state.expectedFiles ?? {};
+    // Snapshots are stored by content, so an unchanged workspace keeps the first one's id.
+    const snapshot = await this.snapshot(runId, state, policy, signal);
+    const createdByChecks = changedPaths(before, state.expectedFiles ?? {});
+    const repository = await gitBaseline(runRoot(this.store.workspace, state));
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "baseline",
+        `baselines/${snapshot.id}.json`,
+        canonical({
+          snapshotId: snapshot.id,
+          repository,
+          ...(createdByChecks.length ? { createdByChecks } : {}),
+        }),
+      ),
+    );
+    state.manifest.baselineSnapshotId = snapshot.id;
+  }
   private async snapshot(
     runId: string,
     state: RuntimeState,
@@ -5488,20 +5517,8 @@ ${note}`;
           writeFileSync(absolute, before);
         }
       }
-      const baseline = await this.snapshot(runId, state, policy, signal);
-      const repository = await gitBaseline(root);
-      this.store.transaction(() =>
-        this.store.artifact(
-          runId,
-          "baseline",
-          `baselines/${baseline.id}.json`,
-          canonical({ snapshotId: baseline.id, repository }),
-        ),
-      );
-      state.manifest.baselineSnapshotId = baseline.id;
+      await this.takeBaseline(runId, state, policy, signal);
       this.store.transaction(() => this.store.saveState(runId, state));
-      await this.measureQualityBaseline(runId, state, policy, signal);
-      await this.recordCheckBaseline(runId, state, policy, signal);
     }
     const stepId = this.store.transaction(() => this.store.beginStep(runId, "fork-seed"));
     const attempt = this.store.reserve(runId, stepId, null, 0, policy);
@@ -12420,27 +12437,80 @@ ${note}`;
       return this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
     });
     const blocking = result.dependencies.filter((d) => d.blocking);
+    const fields = this.manifestFieldFindings(runId, state, policy, changed, requested);
     if (!blocking.length) {
       this.resolveClaims(runId, dependencyClaim);
+      return fields;
+    }
+    return [
+      ...fields,
+      ...blocking.map((d) =>
+        this.qualityFinding(state, {
+          kind: "security",
+          file: d.file,
+          symbol: d.name,
+          evidenceId,
+          claim: `Dependency ${d.name}: ${d.detail} (${d.file}:${d.line})`,
+          impact:
+            d.verdict === "unrequested"
+              ? "The run adds a dependency nobody asked for to an existing project; the policy forbids new dependencies."
+              : "Installing a package that does not exist or imitates a popular one can run an attacker's code.",
+          suggestedFix:
+            d.verdict === "unrequested"
+              ? `Remove ${d.name} from ${d.file} and the code that uses it; implement the behavior with the dependencies the project already has.`
+              : d.verdict === "missing"
+                ? `Remove ${d.name}, or use the package that really provides it; do not invent package names.`
+                : `Replace ${d.name} with the package it imitates, or remove it.`,
+        }),
+      ),
+    ];
+  }
+  /**
+   * The manifest field check (#1793): in a manifest the plan's automatic approval took as asked
+   * for because the request names it, every executable field the run changed (scripts, build
+   * backend, build script, replace, MSBuild target, Maven plugin, Gradle code) must be named by the
+   * request or the spec. A person who approved the plan saw it; a scaffold has no manifest yet.
+   */
+  private manifestFieldFindings(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    changed: ChangedFile[],
+    requested: string | undefined,
+  ): Review["findings"] {
+    const automatic = this.store
+      .requests(runId)
+      .some((r) => r.kind === "approval" && r.status === "accepted" && r.actor === "auto-approval");
+    const named =
+      automatic && requested !== undefined && state.graph
+        ? requestExemptPaths(policy, state.graph, state.requestText || state.prompt)
+        : [];
+    const unrequested = named.length
+      ? unrequestedManifestFields(changed, named, requested ?? "")
+      : [];
+    if (!unrequested.length) {
+      this.resolveClaims(runId, manifestFieldClaim);
       return [];
     }
-    return blocking.map((d) =>
+    const evidenceId = this.store.transaction(() => {
+      const artifact = this.store.artifact(
+        runId,
+        "quality",
+        QUALITY_MANIFEST_FIELDS,
+        canonical({ named, unrequested }),
+      );
+      return this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
+    });
+    return unrequested.map((change) =>
       this.qualityFinding(state, {
         kind: "security",
-        file: d.file,
-        symbol: d.name,
+        file: change.file,
+        symbol: change.field,
         evidenceId,
-        claim: `Dependency ${d.name}: ${d.detail} (${d.file}:${d.line})`,
+        claim: `Manifest ${change.file} changes ${change.field}, which the request does not name`,
         impact:
-          d.verdict === "unrequested"
-            ? "The run adds a dependency nobody asked for to an existing project; the policy forbids new dependencies."
-            : "Installing a package that does not exist or imitates a popular one can run an attacker's code.",
-        suggestedFix:
-          d.verdict === "unrequested"
-            ? `Remove ${d.name} from ${d.file} and the code that uses it; implement the behavior with the dependencies the project already has.`
-            : d.verdict === "missing"
-              ? `Remove ${d.name}, or use the package that really provides it; do not invent package names.`
-              : `Replace ${d.name} with the package it imitates, or remove it.`,
+          "The approval took this manifest edit as asked for by its path alone; a field that runs code or chooses where code comes from changed without a person seeing it.",
+        suggestedFix: `Restore ${change.field} in ${change.file} to what it was before the run, and change only the fields the request names.`,
       }),
     );
   }

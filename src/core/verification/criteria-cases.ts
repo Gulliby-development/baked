@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { rowDataPaths } from "../workflows/acceptance-rows.js";
 import { isTestCodePath } from "../workflows/quality/duplication.js";
@@ -97,18 +98,28 @@ const SPEC_ID = /^(?:AC|FR|NFR|SC)-\d{1,6}$/;
 const NAME_EXPRESSION =
   /^(?=[^\d"'`]*$)(?=.*\[)(?:\[\s*[A-Za-z_$][\w$]*(?:\s*,\s*[A-Za-z_$][\w$]*)*\s*\]|[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\s*[A-Za-z_$][\w$.]*\s*\])*)$/;
 
+/** A pointer or reference type a criterion names: `*base.Error`, `&Config` (#1820). */
+const TYPE_REFERENCE = /^[*&]\s*[A-Za-z_]\w*(?:(?:\.|::)[A-Za-z_]\w*)*$/;
+/** The shape of a token in prose, made of metavariables: `PARTxCOUNT`, `ROWS:COLS` (#1820). */
+const SHAPE_WORDS = /^[A-Z]{2,}(?:[x\u00d7:,/-][A-Z]{2,})+$/;
+
 /**
  * Prose labels are for the reviewer, not strings a test must repeat (#1565), and neither are a
- * spec id or a name expression of the code under test (#1790).
+ * spec id or a name expression of the code under test (#1790), nor a type, a field or a function
+ * prefix the criterion names to describe the test (#1820, R55 youngkit-update: `*base.Error`,
+ * `Msg`, "8 `Test` functions", the token shape `PARTxCOUNT`). A single capitalised word is a case
+ * only where the criterion quotes it as a value ("prints `Usage`").
  */
 function literalCase(literal: string, code = false, value = false): boolean {
   const concrete = literal.replace(PLACEHOLDER, "");
   if (concrete.replace(/[^\p{L}\p{N}_]/gu, "").length < 2) return false;
-  if (SPEC_ID.test(concrete.trim()) || NAME_EXPRESSION.test(concrete.trim())) return false;
+  const trimmed = concrete.trim();
+  if (SPEC_ID.test(trimmed) || NAME_EXPRESSION.test(trimmed)) return false;
+  if (TYPE_REFERENCE.test(trimmed) || SHAPE_WORDS.test(trimmed)) return false;
   return (
     value ||
     /\d|(?:^|\s)--?[A-Za-z]|[=<>:+*%{}[\]]/.test(concrete) ||
-    (code && (identifierLike(concrete) || /^[A-Z][a-z]\w*$/.test(concrete)))
+    (code && identifierLike(concrete))
   );
 }
 
@@ -708,6 +719,8 @@ export function testsHold(text: string, literal: string): boolean {
   const unescaped = normalizeLiteral(text);
   const normalized = metavariables(normalizeLiteral(literal));
   if (referenceHeld(text, unescaped, normalized.trim())) return true;
+  const structured = structuredHeld(text, literal.trim(), normalized.trim());
+  if (structured !== null) return structured;
   if (!normalized.replace(PLACEHOLDER, "")) return false;
   const tokens = normalized.replace(PLACEHOLDER, " ").match(SIGNIFICANT_TOKEN) ?? [];
   const significant = tokens.filter((token) => token !== "and" && token !== "or");
@@ -790,6 +803,142 @@ function referenceHeld(text: string, unescaped: string, literal: string): boolea
   }
   if (URL_BASE.test(literal)) return unescaped.includes(literal);
   return false;
+}
+
+/**
+ * The scalar leaves of a JSON value that holds a string or an object: `{"op":"params","segs":
+ * [{"Lit":"a"}]}` gives `params` and `a`, `[2,"","no such route"]` gives `2` and `no such route`.
+ * Null for anything else, a list of numbers among them, which keeps its own spelling.
+ */
+function jsonLeaves(literal: string): (string | number)[] | null {
+  if (!/^[[{"]/.test(literal)) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(literal);
+  } catch {
+    return null;
+  }
+  const leaves: (string | number)[] = [];
+  let structured = false;
+  const walk = (node: unknown) => {
+    if (typeof node === "string") {
+      structured = true;
+      if (node.trim()) leaves.push(node);
+    } else if (typeof node === "number") leaves.push(node);
+    else if (Array.isArray(node)) for (const item of node) walk(item);
+    else if (node && typeof node === "object") {
+      structured = true;
+      for (const item of Object.values(node)) walk(item);
+    }
+  };
+  walk(value);
+  return structured && leaves.length ? leaves : null;
+}
+
+/** An HTTP request line: `GET /links/test_1/stats`. */
+const REQUEST_LINE = /^(GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS)\s+(\/\S*)$/;
+/** An HTTP header line: `Location: https://example.com/a`, `Content-Type: text/plain`. */
+const HEADER_LINE =
+  /^((?:[A-Z][a-z]*-)+[A-Z][A-Za-z]*|Location|Allow|Vary|ETag|Host|Accept|Authorization|Cookie|Server|Link|Expires|Age|Refresh):\s*(\S.*)$/;
+
+/**
+ * A case a test holds in its own structure (#1820), or null when the literal is none of these. A
+ * JSON value is held by its scalar leaves, since a test builds it with constructors (R55
+ * routeshadow, Rust: `{"op":"subset","x":{"Lit":"a"},...}` as `subset(&Seg::Lit("a".into()), ...)`;
+ * its keys and punctuation are the spec's notation). A request line is held by its path and, for
+ * any method but GET, the method; a header line by its value and its name in any letter case
+ * (`res.headers.get("location")`).
+ */
+function structuredHeld(text: string, literal: string, normalized: string): boolean | null {
+  const leaves = jsonLeaves(literal);
+  if (leaves)
+    return leaves.every((leaf) =>
+      typeof leaf === "number"
+        ? new RegExp(`(?<![\\w.])${escapeRegex(String(leaf))}(?![\\w.])`).test(text)
+        : // A name leaf may follow a type (`Ty.Int`, `Ty::Int`) or take the language's case (`Params`).
+          (/^[A-Za-z_]\w*$/.test(leaf) &&
+            new RegExp(`(?<![\\w$])${escapeRegex(leaf)}(?![\\w$])`, "i").test(text)) ||
+          testsHold(text, leaf),
+    );
+  const request = REQUEST_LINE.exec(normalized);
+  if (request)
+    return (
+      // The test joins the path to a base URL: `new Request("http://localhost/test_1")`.
+      new RegExp(`${escapeRegex(request[2] ?? "")}(?![\\w./-])`).test(normalizeLiteral(text)) &&
+      (request[1] === "GET" || new RegExp(`\\b${request[1]}\\b`, "i").test(text))
+    );
+  const header = HEADER_LINE.exec(normalized);
+  if (header)
+    return (
+      new RegExp(escapeRegex(header[1] ?? ""), "i").test(text) && testsHold(text, header[2] ?? "")
+    );
+  return null;
+}
+
+/**
+ * Whether a test holds a command line by its arguments (#1820, R55 youngkit-update: `youngkit rank
+ * 4,3x2,1` where the Go test calls `run([]string{"rank", "4,3x2,1"})`): the first word is the
+ * project's own program, which a test of the entry function never names.
+ */
+function programHeld(text: string, literal: string, programs: ReadonlySet<string>): boolean {
+  const [first, ...rest] = normalizeLiteral(literal).trim().split(/\s+/);
+  return Boolean(first && programs.has(first) && rest.length && testsHold(text, rest.join(" ")));
+}
+
+/**
+ * The names a project's own program goes by, from its manifests: the Cargo package and its bins,
+ * the Go module's last path segment, the npm package and its bins, the Python project and its
+ * scripts, the Maven artifact, the Gradle root project, the .NET project files.
+ */
+export async function programNames(root: string): Promise<Set<string>> {
+  const read = (path: string) => readFile(join(root, path), "utf8").catch(() => "");
+  const names = new Set<string>();
+  const add = (name: string | undefined) => {
+    const base = name?.trim().split("/").at(-1);
+    if (base && /^[\w.-]+$/.test(base)) names.add(base);
+  };
+  const [cargo, gomod, npm, pyproject, pom, gradle, gradleKts] = await Promise.all([
+    read("Cargo.toml"),
+    read("go.mod"),
+    read("package.json"),
+    read("pyproject.toml"),
+    read("pom.xml"),
+    read("settings.gradle"),
+    read("settings.gradle.kts"),
+  ]);
+  for (const m of cargo.matchAll(/^\s*name\s*=\s*"([^"]+)"/gm)) add(m[1]);
+  add(/^module\s+(\S+)/m.exec(gomod)?.[1]);
+  try {
+    const manifest = JSON.parse(npm || "{}") as {
+      name?: string;
+      bin?: string | Record<string, string>;
+    };
+    add(manifest.name);
+    if (manifest.bin && typeof manifest.bin === "object")
+      for (const key of Object.keys(manifest.bin)) add(key);
+  } catch {}
+  add(/^\s*name\s*=\s*"([^"]+)"/m.exec(pyproject)?.[1]);
+  const scripts = /^\[project\.scripts\]([\s\S]*?)(?=^\[|$(?![\s\S]))/m.exec(pyproject)?.[1] ?? "";
+  for (const m of scripts.matchAll(/^\s*"?([\w.-]+)"?\s*=/gm)) add(m[1]);
+  add(
+    /<artifactId>\s*([^<\s]+)\s*<\/artifactId>/.exec(
+      pom.replace(/<parent>[\s\S]*?<\/parent>/, ""),
+    )?.[1],
+  );
+  add(/rootProject\.name\s*=\s*["']([^"']+)["']/.exec(gradle + gradleKts)?.[1]);
+  for (const dir of ["", "src/"]) {
+    const entries = await readdir(join(root, dir), { withFileTypes: true }).catch(() => []);
+    for (const entry of entries)
+      if (entry.isFile() && entry.name.endsWith(".csproj"))
+        add(entry.name.slice(0, -".csproj".length));
+      else if (
+        dir === "src/" &&
+        entry.isDirectory() &&
+        existsSync(join(root, dir, entry.name, `${entry.name}.csproj`))
+      )
+        add(entry.name);
+  }
+  return names;
 }
 
 /**
@@ -878,6 +1027,7 @@ export function caseCheck(
   const cases = spec ? criterionCases(spec, task, context) : [];
   if (!paths.length || !cases.length) return undefined;
   return async (root) => {
+    const programs = await programNames(root);
     const files = await Promise.all(
       paths.map(async (path) => {
         const text = await readFile(join(root, path), "utf8").catch(() => "");
@@ -896,7 +1046,9 @@ export function caseCheck(
       .filter(
         (c) =>
           !files.some(
-            (file) => (file.property || c.generated) && propertyHeld(file.evidence, c.literal),
+            (file) =>
+              ((file.property || c.generated) && propertyHeld(file.evidence, c.literal)) ||
+              programHeld(file.evidence, c.literal, programs),
           ),
       )
       .map((c) =>
