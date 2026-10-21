@@ -544,6 +544,13 @@ export const PolicySchema = z
      */
     costTolerance: z.union([z.enum(["auto", "off"]), z.number().min(0).max(0.5)]).optional(),
     /**
+     * `on` gives implementers `restore_file`, which puts a file the task's edits left unparsable
+     * back to its last version that parsed, and has the progress watcher's steering name the
+     * file's syntax errors and the tool (#1835). Absent means `off`, so stored policies keep their
+     * hash.
+     */
+    restoreFile: z.enum(["off", "on"]).optional(),
+    /**
      * `on` starts a correction whose findings are all low, or all point at one file, with a quick
      * fix: one attempt with a small step and token cap on the files the findings name. When it
      * does not finish the fix, the correction continues with the usual budget and all its files.
