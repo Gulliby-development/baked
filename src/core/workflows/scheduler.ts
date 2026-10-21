@@ -241,6 +241,7 @@ import {
   type ContestedRow,
   contestedRows,
   quotedCheckCommands,
+  reauditExtra,
   verbatimRow,
 } from "./conflict-rows.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
@@ -6044,7 +6045,7 @@ ${note}`;
         ),
       );
       if (result.outcome === "spec_conflict" && result.taskId === task.id) {
-        this.specConflict(runId, state, policy, child, task, result, root);
+        await this.specConflict(runId, state, policy, profiles, child, task, result, root, signal);
         return;
       }
       if (result.outcome === "implemented")
@@ -6902,14 +6903,16 @@ ${note}`;
     const { entry } = outcome;
     let failure: unknown = null;
     if (outcome.kind === "conflict")
-      this.specConflict(
+      await this.specConflict(
         runId,
         state,
         policy,
+        profiles,
         entry.child,
         entry.task,
         outcome.result,
         join(this.store.workspace, entry.path),
+        signal,
       );
     else if (outcome.kind === "done") {
       if (!fatal) await this.integrateTask(runId, state, policy, profiles, outcome, signal);
@@ -9151,15 +9154,17 @@ ${note}`;
    * three times about tests that contradicted the spec). A documentation task whose report sets
    * the rule for examples against the request's worked example copies that example (#992).
    */
-  private specConflict(
+  private async specConflict(
     runId: string,
     state: RuntimeState,
     policy: RunPolicy,
+    profiles: AgentProfile[],
     child: string,
     task: Task,
     result: Implementation,
     root: string,
-  ): void {
+    signal: AbortSignal,
+  ): Promise<void> {
     const report = [result.summary, ...result.unresolved].join(" ");
     const rows = this.contestedRows(runId, state, task, report, root, policy.checks);
     const account = {
@@ -9169,7 +9174,21 @@ ${note}`;
       ...(rows.length ? { criterionIds: rows.map((r) => r.criterion.id) } : {}),
     };
     const assumedPath = `assumptions/conflicts/${task.id}.json`;
-    if (this.settleContestedRows(runId, state, child, task, rows, account, report)) return;
+    if (
+      await this.settleContestedRows(
+        runId,
+        state,
+        policy,
+        profiles,
+        child,
+        task,
+        rows,
+        account,
+        report,
+        signal,
+      )
+    )
+      return;
     if (this.settleCheckCommands(runId, state, child, task, policy, account, report)) return;
     // A fully confident spec finding that explicitly names test removals outranks our guard,
     // even under clarification ask. Bind only the host findings, preserving the spec finding.
@@ -9321,6 +9340,9 @@ ${note}`;
           requestId: `assumed-${task.id}`,
           taskId: task.id,
           findingIds: task.findingIds,
+          // The overruled criteria leave the case walk, as a person's answer for the
+          // requirements does (#1788).
+          ...(byRequirement ? { criterionIds: amended.criterionIds } : {}),
           answer: `Assumed under clarification assume (${assumedPath}): ${assumed}.`,
         });
       }
@@ -9507,19 +9529,23 @@ ${note}`;
    * the rows win. Each settles once per task; a second report of the same conflict is asked, with
    * the rows quoted verbatim.
    */
-  private settleContestedRows(
+  private async settleContestedRows(
     runId: string,
     state: RuntimeState,
+    policy: RunPolicy,
+    profiles: AgentProfile[],
     child: string,
     task: Task,
     rows: ContestedRow[],
     account: Record<string, unknown>,
     report: string,
-  ): boolean {
+    signal: AbortSignal,
+  ): Promise<boolean> {
     const misquoted = rows.flatMap((r) => r.misquoted.map((m) => ({ ...m, id: r.criterion.id })));
     const verified = rows.length > 0 && rows.every(auditVerified);
     const misquotePath = `assumptions/conflicts/${task.id}-misquoted.json`;
     const verifiedPath = `assumptions/conflicts/${task.id}-audited.json`;
+    const reauditedPath = `assumptions/conflicts/${task.id}-reaudited.json`;
     const rowsText = rows.map(verbatimRow).join(" ");
     if (misquoted.length && !this.store.latestArtifact(runId, misquotePath)) {
       const settled = `The test of ${task.id} does not use the criterion rows as written: ${misquoted.map((m) => `${m.id} states ${JSON.stringify(m.literal)}, the test has ${JSON.stringify(m.quoted)}`).join("; ")}`;
@@ -9539,12 +9565,38 @@ ${note}`;
         this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
         this.store.finishStep(runId, child, "failed");
       });
-      state.prompt += `\nSettled spec conflict (${misquotePath}): task ${task.id} reported that the spec contradicts the code: ${report.slice(0, 1200)} ${settled}. Copy each row's input and expected value into the test exactly as the criterion states them (${rowsText.slice(0, 2000)}), run the checks again, and report spec_conflict only if the code still disagrees with the row as written.${verified ? " The derivation audit recomputed these rows from the requirements and they match: the rows are right." : ""}`;
+      state.prompt += `\nSettled spec conflict (${misquotePath}): task ${task.id} reported that the spec contradicts the code: ${report.slice(0, 1200)} ${settled}. Copy each row's input and expected value into the test exactly as the criterion states them (${rowsText.slice(0, 2000)}), run the checks again, and report spec_conflict only if the code still disagrees with the row as written.${verified ? " The derivation audit recomputed these rows from the requirements and they match (the analyzer's recomputation, not a run of the code)." : ""}`;
       return true;
     }
-    if (verified && !misquoted.length && !this.store.latestArtifact(runId, verifiedPath)) {
+    if (
+      verified &&
+      !misquoted.length &&
+      !this.store.latestArtifact(runId, verifiedPath) &&
+      !this.store.latestArtifact(runId, reauditedPath)
+    ) {
+      // The audit is the analyzer's own arithmetic, and the implementer ran the code: a second,
+      // targeted audit against the report decides before the rows are trusted (#1788).
+      const second = await this.reaudit(
+        runId,
+        state,
+        policy,
+        profiles,
+        child,
+        task,
+        rows,
+        report,
+        signal,
+      );
+      if (second === null) return false;
+      const disputed = rows.filter((r) =>
+        second.some((d) => d.criterionId === r.criterion.id && !d.matches),
+      );
+      if (disputed.length) {
+        this.settleForRequirements(runId, state, child, task, disputed, second, account, report);
+        return true;
+      }
       const ids = rows.map((r) => r.criterion.id).join(", ");
-      const settled = `The audit-verified rows of ${ids} win: the derivation audit recomputed each of them from the requirements and they match`;
+      const settled = `The audit-verified rows of ${ids} win: the derivation audit and a second audit against this report each recomputed them from the requirements and they match`;
       this.store.transaction(() => {
         this.store.artifact(
           runId,
@@ -9571,6 +9623,132 @@ ${note}`;
       return true;
     }
     return false;
+  }
+  /**
+   * One targeted re-audit of the rows a conflict contests (#1788), with the implementer's report
+   * and an index table of each input. Its derivations of those criteria, or null when it could
+   * not run.
+   */
+  private async reaudit(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    profiles: AgentProfile[],
+    parent: string,
+    task: Task,
+    rows: ContestedRow[],
+    report: string,
+    signal: AbortSignal,
+  ): Promise<NonNullable<Analysis["derivations"]> | null> {
+    const profile = profiles.find((p) => p.output === "analysis");
+    if (!profile || !state.spec) return null;
+    const extra = reauditExtra(state.spec, rows, report, policy.checks);
+    const audited = { ...state.spec, criteria: extra.criteria };
+    const step = this.store.transaction(() =>
+      this.store.beginStep(runId, `reaudit-${task.id}`, parent),
+    );
+    try {
+      const analysis = AnalysisSchema.parse(
+        await this.call(
+          runId,
+          step,
+          state,
+          policy,
+          profile,
+          { derivationAudit: extra },
+          signal,
+          undefined,
+          0,
+          (output) => {
+            const parsed = AnalysisSchema.safeParse(output);
+            return parsed.success ? derivationProblems(audited, parsed.data) : [];
+          },
+        ),
+      );
+      const derivations = (analysis.derivations ?? []).filter((d) =>
+        rows.some((r) => r.criterion.id === d.criterionId),
+      );
+      this.store.transaction(() => {
+        this.store.artifact(
+          runId,
+          "diagnostic",
+          `tasks/conflicts/${task.id}-reaudit.json`,
+          canonical({ taskId: task.id, derivations }),
+        );
+        this.store.finishStep(runId, step, "completed");
+      });
+      return derivations;
+    } catch (error) {
+      if (signal.aborted) throw error;
+      if (
+        error instanceof WorkflowFault &&
+        ["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code)
+      )
+        throw error;
+      this.store.transaction(() => this.store.finishStep(runId, step, "failed"));
+      return null;
+    }
+  }
+  /**
+   * The re-audit disagrees with the audited rows: the requirements win over them, as for a report
+   * that names both (#1459), and the case walk stops demanding the overruled literals (#1788).
+   */
+  private settleForRequirements(
+    runId: string,
+    state: RuntimeState,
+    child: string,
+    task: Task,
+    disputed: ContestedRow[],
+    derivations: NonNullable<Analysis["derivations"]>,
+    account: Record<string, unknown>,
+    report: string,
+  ): void {
+    const criterionIds = disputed.map((r) => r.criterion.id);
+    const requirementIds = [...new Set(disputed.flatMap((r) => r.criterion.requirementIds))];
+    const path = `assumptions/conflicts/${task.id}-reaudited.json`;
+    const amendmentPath = `amendments/conflict-${task.id}.json`;
+    const recomputed = derivations
+      .filter((d) => criterionIds.includes(d.criterionId) && !d.matches)
+      .map(
+        (d) =>
+          `${d.criterionId} row ${JSON.stringify(d.row)}: the requirements give ${JSON.stringify(d.recomputed)} (${d.derivation})`,
+      )
+      .join("; ");
+    const settled = `The requirements ${requirementIds.join(", ")} win over the criteria ${criterionIds.join(", ")}: a second audit of the contested rows against the report recomputed ${recomputed.slice(0, 1500)}`;
+    const amendment: SpecAmendment = {
+      findingId: `conflict-${task.id}`,
+      criterionIds,
+      requirementIds,
+      paths: [],
+      claim: `${report.slice(0, 1000)} Re-audit: ${recomputed.slice(0, 1000)}`,
+      suggestedFix: `Read ${criterionIds.join(", ")} as ${requirementIds.join(", ")} state.`,
+      authority: "requirement",
+    };
+    this.store.transaction(() => {
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `tasks/conflicts/${task.id}.json`,
+        canonical(account),
+      );
+      this.store.artifact(
+        runId,
+        "assumption",
+        path,
+        canonical({ ...account, assumed: settled, derivations }),
+      );
+      this.store.artifact(runId, "assumption", amendmentPath, canonical(amendment));
+      recordConflictDecision(this.store, runId, {
+        requestId: `reaudited-${task.id}`,
+        taskId: task.id,
+        findingIds: task.findingIds,
+        criterionIds,
+        answer: `Settled by a second audit (${path}): ${settled}.`,
+      });
+      this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
+      this.store.finishStep(runId, child, "failed");
+    });
+    state.prompt += `\n${amendmentNote(amendmentPath, amendment)}\nSettled spec conflict (${path}): task ${task.id} reported that the spec contradicts the code: ${report.slice(0, 1200)} ${settled}. Implement what ${requirementIds.join(", ")} state, and where a test this run wrote follows the contradicting row, change only that expected value to what the requirements give; weaken no other test. Report implemented or already_satisfied, not spec_conflict.`;
   }
   /**
    * A conflict about commands of the run's checks only: the host runs them, so they are not test

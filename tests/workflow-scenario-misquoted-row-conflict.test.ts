@@ -158,7 +158,7 @@ describe("scenario: sedstep 78dabd21 T006, a spec conflict about a row the test 
   test("an audit-verified row decides a conflict the test copied faithfully, with no question", async () => {
     const result = await conflict({ clarification: "ask", matches: true, first: csTest(INPUT, ERROR16), then: csTest(INPUT, ERROR16) });
     expect(result.asked).toEqual([]);
-    expect(result.read("assumptions/conflicts/T001-audited.json")?.assumed).toBe("The audit-verified rows of AC-005 win: the derivation audit recomputed each of them from the requirements and they match");
+    expect(result.read("assumptions/conflicts/T001-audited.json")?.assumed).toBe("The audit-verified rows of AC-005 win: the derivation audit and a second audit against this report each recomputed them from the requirements and they match");
     expect(result.prompts.at(-1)).toContain("Keep each row's input and expected value exactly as written");
     expect(result.status).toBe("completed");
   }, 90_000);
