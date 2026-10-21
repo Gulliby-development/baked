@@ -30,6 +30,7 @@ import {
   historyStorePaths,
   type PastRun,
   type PlannedStage,
+  type PreRunEstimate,
   rangeText,
   type TokenRange,
   tokenText,
@@ -80,6 +81,7 @@ import { initiativePriceSamples } from "./forecast.js";
 import {
   applySplitEdit,
   boundaryPathCounts,
+  type FeatureSize,
   featureDigest,
   foldSkeletonFeatures,
   type InitiativeFeature,
@@ -231,6 +233,12 @@ export interface CostView {
   forecastMode: StopMode;
   /** Why a forecast above the ceiling does not stop the initiative yet; null otherwise. */
   forecastNotice: string | null;
+  /**
+   * The mode of the `initiative-dollar-share` stop reason (#1890): in `enforce` a feature whose
+   * spare dollars are below its priced low estimate does not start; otherwise it starts and a
+   * `decision.would_stop` event records it. Absent on share-gate events recorded before #1890.
+   */
+  shareMode?: StopMode;
 }
 
 export interface FeatureView {
@@ -397,7 +405,9 @@ function forecastOverCeiling(cost: CostView): boolean {
 export interface ShareGateView {
   initiativeId: string;
   budget: Pick<InitiativeView["budget"], "remaining" | "cost">;
-  features: Pick<FeatureView, "id" | "state" | "share" | "need">[];
+  /** `shareUsd` and `needUsd` are recorded from #1890 on; older events have neither. */
+  features: (Pick<FeatureView, "id" | "state" | "share" | "need"> &
+    Partial<Pick<FeatureView, "shareUsd" | "needUsd">>)[];
 }
 
 /** The `feature.share_gate` event: the gate's inputs and what it decided for one feature. */
@@ -405,7 +415,8 @@ export interface ShareGateRecord {
   featureId: string;
   verdict: "pass" | "park";
   view: ShareGateView;
-  feature: Pick<FeatureView, "id" | "share" | "need" | "shareUsd">;
+  feature: Pick<FeatureView, "id" | "share" | "need" | "shareUsd"> &
+    Partial<Pick<FeatureView, "needUsd">>;
 }
 
 /**
@@ -415,7 +426,8 @@ export interface ShareGateRecord {
  */
 export function shareShortfall(
   view: ShareGateView,
-  feature: Pick<FeatureView, "id" | "share" | "need" | "shareUsd">,
+  feature: Pick<FeatureView, "id" | "share" | "need" | "shareUsd"> &
+    Partial<Pick<FeatureView, "needUsd">>,
 ): RecoveryAdvice | null {
   const cost = view.budget.cost;
   if (cost.capUsd !== null && cost.ceilingUsd !== null) {
@@ -442,6 +454,13 @@ export function shareShortfall(
         `The shared dollar budget is exhausted: ${feature.id} would start with ${usd(feature.shareUsd ?? 0)} of the ${ceiling}, ${usd(cost.spentUsd)} spent.`,
         { action: "extend", initiativeId: view.initiativeId },
       );
+    const short = dollarShortfall(view, feature);
+    if (short && cost.shareMode === "enforce")
+      return recoveryAdvice(
+        `${short} Raise it with baked workflow initiative extend --budget-usd N.`,
+        short,
+        { action: "extend", initiativeId: view.initiativeId },
+      );
   }
   const share = feature.share;
   if (shareTooSmall(share))
@@ -458,6 +477,30 @@ export function shareShortfall(
       { action: "extend", initiativeId: view.initiativeId },
     );
   return null;
+}
+
+/**
+ * Why the dollars a starting feature may grow into (`costGrowthLimit`) do not cover its priced
+ * low estimate, as the token gate asks of tokens; null when they do or it is unpriced. Bench
+ * round 59 (wheeltags) started pick-command with $2.87 to grow into and it stopped one corrective
+ * short with 46% of its token share used; priced at the initiative's own stage mix, the two
+ * features after it were short (#1890). The `initiative-dollar-share` stop reason decides whether
+ * it parks the feature.
+ */
+export function dollarShortfall(
+  view: ShareGateView,
+  feature: Pick<FeatureView, "id"> & Partial<Pick<FeatureView, "needUsd">>,
+): string | null {
+  const cost = view.budget.cost;
+  const spare = costGrowthLimit(view, feature.id);
+  const needUsd = feature.needUsd;
+  if (!needUsd || spare === null || cost.ceilingUsd === null || spare >= needUsd.low) return null;
+  const ceiling =
+    cost.capUsd !== null && cost.ceilingUsd > cost.capUsd
+      ? `${usd(cost.ceilingUsd)} ceiling`
+      : `${usd(cost.capUsd ?? cost.ceilingUsd)} cap`;
+  const raise = Math.ceil((needUsd.low - spare) * 100) / 100;
+  return `The shared dollar budget is short: ${feature.id} has ${usd(spare)} to grow into after reserving the other waiting features' low estimates, below its estimate of ${usd(needUsd.low)}-${usd(needUsd.high)} (${usd(cost.spentUsd)} of the ${ceiling} spent); the dollar budget needs at least ${usd(raise)} more.`;
 }
 
 /**
@@ -542,6 +585,27 @@ export function rebaseView(
   );
   const byId = new Map(waiting.map((f, index) => [f.id, { ...f, ...shares[index] }]));
   return { ...view, features: view.features.map((f) => byId.get(f.id) ?? f) };
+}
+
+/**
+ * How a feature's tokens split across its planned stages: the history's stage ranges scaled by
+ * size, or, with `mix`, the tokens the initiative's accepted features took on each stage (#1890).
+ * A planned stage the accepted features never ran keeps no weight then.
+ */
+function stageWeights(
+  stages: PreRunEstimate["stages"],
+  size: FeatureSize,
+  mix?: ReadonlyMap<string, number>,
+): { id: string; models: string[]; tokens: number }[] {
+  const measured = mix && stages.some((s) => (mix.get(s.stageId) ?? 0) > 0) ? mix : undefined;
+  return stages.map((s) => ({
+    id: s.stageId,
+    models: s.models,
+    tokens: measured
+      ? (measured.get(s.stageId) ?? 0)
+      : ((s.tokens.low + s.tokens.high) / 2) *
+        (s.type === "tasks" ? SIZE_TASK_FACTOR[size] : SIZE_STAGE_FACTOR[size]),
+  }));
 }
 
 const usd = (n: number): string => `$${n.toFixed(2)}`;
@@ -1483,6 +1547,8 @@ export class InitiativeService {
           state: f.state,
           share: f.share,
           need: f.need,
+          shareUsd: f.shareUsd,
+          needUsd: f.needUsd ?? null,
         })),
       },
       feature: {
@@ -1490,6 +1556,7 @@ export class InitiativeService {
         share: feature.share,
         need: feature.need,
         shareUsd: feature.shareUsd,
+        needUsd: feature.needUsd ?? null,
       },
     };
     this.store.emit(id, "feature.share_gate", record);
@@ -1567,6 +1634,39 @@ export class InitiativeService {
     }
   }
 
+  /**
+   * A feature that starts although its spare dollars are below its priced low estimate, because
+   * `initiative-dollar-share` is not enforced: a `decision.would_stop` event, once per feature.
+   */
+  private noteShareWouldStop(id: string, view: InitiativeView, feature: FeatureView): void {
+    const mode = view.budget.cost.shareMode;
+    if (!mode || mode === "enforce") return;
+    const summary = dollarShortfall(view, feature);
+    if (!summary) return;
+    const key = `share-${feature.id}`;
+    const seen = this.store
+      .eventsOfType(id, "decision.would_stop")
+      .some(
+        (p) =>
+          (p as { reason?: string } | null)?.reason === "initiative-dollar-share" &&
+          (p as { key?: string }).key === key,
+      );
+    if (seen) return;
+    this.store.emit(id, "decision.would_stop", {
+      reason: "initiative-dollar-share",
+      mode,
+      featureId: feature.id,
+      key,
+      summary: `${summary} ${feature.id} would not start.`,
+      inputs: {
+        spareUsd: costGrowthLimit(view, feature.id),
+        needUsd: feature.needUsd ?? null,
+        remainingUsd: view.budget.cost.remainingUsd,
+        measuredFeatures: view.budget.cost.measuredFeatures,
+      },
+    });
+  }
+
   private async startFeature(id: string, featureId: string): Promise<boolean> {
     const row = this.store.get(id);
     const plan = this.approvedPlan(row);
@@ -1580,6 +1680,7 @@ export class InitiativeService {
     const sized = waiting?.share;
     if (!sized) throw stopFault("budget-share", "No budget share is available");
     if (waiting) this.noteShareGate(current, waiting, "pass");
+    if (waiting) this.noteShareWouldStop(id, current, waiting);
     this.noteAdvisoryForecast(id, featureId, current.budget.cost);
     this.noteForecastWouldStop(row, featureId, current);
     const share = { ...sized, ...guardGrowth(current, featureId, settings.basePolicy) };
@@ -1965,7 +2066,7 @@ export class InitiativeService {
         overhead: row.decompose_run_id ? this.usage(row.decompose_run_id).tokens : 0,
       },
     });
-    this.priceFeatureNeeds(row, estimate, history);
+    this.priceFeatureNeeds(row, estimate, history, accepted);
     return estimate;
   }
 
@@ -2114,6 +2215,7 @@ export class InitiativeService {
     const forecastBinding =
       settings.forecastStop === true || measuredFeatures >= FORECAST_BINDING_FEATURES;
     const forecastMode = stopMode(settings.basePolicy, "initiative-forecast");
+    const shareMode = stopMode(settings.basePolicy, "initiative-dollar-share");
     const over = forecastUsd !== null && ceilingUsd !== null && forecastUsd > ceilingUsd;
     return {
       capUsd,
@@ -2126,6 +2228,7 @@ export class InitiativeService {
       measuredFeatures,
       forecastBinding,
       forecastMode,
+      shareMode,
       forecastNotice:
         over && !forecastBinding
           ? `The cost forecast of ${usd(forecastUsd)} is above the ${usd(ceilingUsd)} ceiling. It is advisory until ${FORECAST_BINDING_FEATURES} features are measured (${measuredFeatures} so far): features keep starting while their spent and reserved dollars fit the budget.`
@@ -2561,14 +2664,25 @@ export class InitiativeService {
     return plannedStages({ loaded, policy, routing: routing.record, gates: [...gates.values()] });
   }
 
-  /** Dollar ranges use routed model prices, never the dollars allocated per token. */
+  /**
+   * Dollar ranges use routed model prices, never the dollars allocated per token. Each stage is
+   * priced at its own rate and weighted by the tokens it takes: once a feature on the same workflow
+   * is accepted, by the stage mix its runs measured, else by the history's. Bench round 59
+   * (wheeltags) priced its features at $0.97 per million tokens at the split, from the history's
+   * long cache-heavy task loops. Its accepted features paid $1.95, with short task loops and
+   * uncached planning calls; their own stage rates at the history's weights then said $2.67, so
+   * the waiting features reserved too much and pick-command started with $2.87 to grow into, one
+   * corrective short. Their own mix says $1.97, and pick-command $4.51 (#1890).
+   */
   private priceFeatureNeeds(
     row: InitiativeRow,
     estimate: InitiativeEstimate,
     history: PastRun[],
+    accepted: ReadonlySet<string>,
   ): void {
     const settings = this.store.settings(row);
     if (!settings.costBudget) return;
+    const mixes = this.measuredStageMix(row, estimate, accepted);
     const samples = this.priceSamples(
       this.workflows.store,
       this.store.links(row.id).map((l) => l.run_id),
@@ -2588,13 +2702,7 @@ export class InitiativeService {
         maxTotalTokens: 0,
         price: () => null,
       });
-      const weights = priced.stages.map((s) => ({
-        id: s.stageId,
-        models: s.models,
-        tokens:
-          ((s.tokens.low + s.tokens.high) / 2) *
-          (s.type === "tasks" ? SIZE_TASK_FACTOR[feature.size] : SIZE_STAGE_FACTOR[feature.size]),
-      }));
+      const weights = stageWeights(priced.stages, feature.size, mixes.get(feature.workflowId));
       const total = weights.reduce((sum, s) => sum + s.tokens, 0);
       const rate =
         total > 0
@@ -2606,6 +2714,35 @@ export class InitiativeService {
       feature.costUsd =
         rate === null ? null : { low: feature.tokens.low * rate, high: feature.tokens.high * rate };
     }
+  }
+
+  /**
+   * The tokens each stage took in the accepted features' runs, by workflow: their finished
+   * attempts, superseded runs included. Skeleton features are left out, since the host wrote their
+   * tasks. A workflow without such a feature has no entry.
+   */
+  private measuredStageMix(
+    row: InitiativeRow,
+    estimate: InitiativeEstimate,
+    accepted: ReadonlySet<string>,
+  ): Map<string, Map<string, number>> {
+    const measured = new Map(
+      estimate.features
+        .filter((f) => accepted.has(f.featureId) && !f.skeleton)
+        .map((f) => [f.featureId, f.workflowId]),
+    );
+    const mixes = new Map<string, Map<string, number>>();
+    for (const link of this.store.links(row.id)) {
+      const workflowId = measured.get(link.feature_id);
+      if (workflowId === undefined) continue;
+      const mix = mixes.get(workflowId) ?? new Map<string, number>();
+      for (const a of forecastSamples(this.workflows.store, [link.run_id])) {
+        if (a.status === "running" || !a.usedTokens) continue;
+        mix.set(a.stage, (mix.get(a.stage) ?? 0) + a.usedTokens);
+      }
+      mixes.set(workflowId, mix);
+    }
+    return mixes;
   }
 
   /** Price unaccepted features' remaining point tokens with their remaining workflow stages. */
@@ -2625,6 +2762,8 @@ export class InitiativeService {
       historyStorePaths(this.workflows.workspace, settings.basePolicy),
     );
     const planned = new Map<string, PlannedStage[]>();
+    // The stage mix the accepted features measured, as the waiting features' dollars use (#1890).
+    const mixes = this.measuredStageMix(row, estimate, accepted);
     let usd = 0;
     for (const feature of estimate.features) {
       if (accepted.has(feature.featureId)) continue;
@@ -2649,13 +2788,7 @@ export class InitiativeService {
         maxTotalTokens: 0,
         price: () => null,
       });
-      const weights = priced.stages.map((s) => ({
-        id: s.stageId,
-        models: s.models,
-        tokens:
-          ((s.tokens.low + s.tokens.high) / 2) *
-          (s.type === "tasks" ? SIZE_TASK_FACTOR[feature.size] : SIZE_STAGE_FACTOR[feature.size]),
-      }));
+      const weights = stageWeights(priced.stages, feature.size, mixes.get(feature.workflowId));
       const total = weights.reduce((sum, s) => sum + s.tokens, 0);
       const own = runId ? forecastSamples(store, [runId]) : [];
       const latest = new Map(
@@ -3087,7 +3220,10 @@ export function growthLimit(
  * cap with 62% of its grown tokens unused and $14 of the initiative unspent (#1353). Null without a
  * dollar budget.
  */
-export function costGrowthLimit(view: InitiativeView, featureId: string): number | null {
+export function costGrowthLimit(
+  view: Pick<ShareGateView, "budget" | "features">,
+  featureId: string,
+): number | null {
   const remaining = view.budget.cost?.remainingUsd;
   if (remaining === null || remaining === undefined) return null;
   const reserve = view.features
