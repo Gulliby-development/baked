@@ -1,7 +1,7 @@
 {
   "files": {
     "bin/sum.sh": "sum() {\n  echo $(($1 + $2))\n}\n",
-    "bin/sum_test.sh": "source bin/sum.sh\n"
+    "bin/sum_test.sh": "source bin/sum.sh\nsum 1 2\n"
   },
   "outputs": {
     "tests": "ok 1 - adds\nnot ok 2 - sum is commutative\n1..2\n",
@@ -22,6 +22,10 @@
     "mutation": null,
     "properties": null,
     "entryPoints": null,
-    "testGates": null
+    "testGates": null,
+    "callGraph": [
+      "sum called at bin/sum_test.sh:2",
+      "bin/sum.sh imported by bin/sum_test.sh"
+    ]
   }
 }

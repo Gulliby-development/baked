@@ -1,7 +1,7 @@
 {
   "files": {
     "lib/sum.rb": "def sum(a, b)\n  a + b\nend\n",
-    "spec/sum_spec.rb": "require 'sum'\n",
+    "spec/sum_spec.rb": "require 'sum'\nsum(1, 2)\n",
     "lib/sum_test.rb": "require 'sum'\n",
     "Gemfile": "source 'https://rubygems.org'\ngem 'rake'\n"
   },
@@ -22,6 +22,11 @@
     "mutation": null,
     "properties": null,
     "entryPoints": null,
-    "testGates": null
+    "testGates": null,
+    "callGraph": [
+      "sum called at spec/sum_spec.rb:2",
+      "lib/sum.rb imported by spec/sum_spec.rb",
+      "lib/sum.rb imported by lib/sum_test.rb"
+    ]
   }
 }

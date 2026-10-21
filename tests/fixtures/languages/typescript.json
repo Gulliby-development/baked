@@ -1,7 +1,7 @@
 {
   "files": {
     "src/sum.ts": "export function sum(a: number, b: number): number {\n  throw new Error(\"not implemented\");\n}\n",
-    "src/sum.test.ts": "import { sum } from './sum';\n",
+    "src/sum.test.ts": "import { sum } from './sum';\nsum(1, 2);\n",
     "tsconfig.json": "{}\n",
     "package.json": "{\"name\": \"fixture\", \"scripts\": {\"test\": \"bun test\", \"lint\": \"biome check .\"}, \"dependencies\": {\"zod\": \"^3.0.0\"}, \"bin\": {\"sum\": \"src/sum.ts\"}}",
     "bun.lock": "{}",
@@ -40,6 +40,10 @@
     "entryPoints": [
       "sum: bun src/sum.ts"
     ],
-    "testGates": null
+    "testGates": null,
+    "callGraph": [
+      "sum called at src/sum.test.ts:2",
+      "src/sum.ts imported by src/sum.test.ts"
+    ]
   }
 }
