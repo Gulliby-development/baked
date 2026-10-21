@@ -15,7 +15,7 @@
       "tests/props.rs"
     ],
     "testMarkers": [
-      "src/tests.rs: source",
+      "src/tests.rs: test",
       "tests/props.rs: test"
     ],
     "manifests": [
