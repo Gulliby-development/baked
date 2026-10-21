@@ -38,6 +38,8 @@ import {
 import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
 import {
   appendCorrections,
+  checkClaims,
+  checkOfClaim,
   failedCheckFindings,
   failingFilesInOutput,
   failureSignature as failingLines,
@@ -4027,13 +4029,16 @@ export class WorkflowScheduler {
         );
     };
   }
-  /** What a passing required check fell behind the baseline by, as a failure reason; else null. */
+  /**
+   * What a passing required check fell behind the baseline by, as a failure reason, with its
+   * severity and whether only diagnostics rose (the finding then says the check passed); else null.
+   */
   private checkRegression(
     runId: string,
     state: RuntimeState,
     check: Check,
     output: string,
-  ): string | null {
+  ): { message: string; severity: "high" | "low"; diagnosticsOnly: boolean } | null {
     const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
     if (!artifact) return null;
     const baseline = (
@@ -4048,7 +4053,12 @@ export class WorkflowScheduler {
     const regressions = baseline.flatMap(
       (count) => baselineRegression(count, output, deletesTests) ?? [],
     );
-    return regressions.length ? regressions.join("; ") : null;
+    if (!regressions.length) return null;
+    return {
+      message: regressions.map((r) => r.message).join("; "),
+      severity: regressions.some((r) => r.severity === "high") ? "high" : "low",
+      diagnosticsOnly: regressions.every((r) => r.kind === "diagnostics"),
+    };
   }
   /** Whether the workspace the run started from held no source files (empty or a scaffold). */
   private baselineScaffold(runId: string, state: RuntimeState): boolean {
@@ -8216,7 +8226,7 @@ ${note}`;
       this.store
         .findings(runId)
         .filter((f) => task.findingIds.includes(f.id))
-        .map((f) => /^Required check (\S+) failed$/.exec(JSON.parse(f.body_json).claim)?.[1])
+        .map((f) => checkOfClaim(JSON.parse(f.body_json).claim))
         .filter((id): id is string => Boolean(id)),
     );
     const regression = this.affectedRecord(state, task)?.checkId;
@@ -8324,9 +8334,7 @@ ${note}`;
     const findings = this.store.findings(runId).filter((f) => task.findingIds.includes(f.id));
     const named = findings.map((f) => {
       const claim = (JSON.parse(f.body_json) as { claim?: unknown }).claim;
-      return typeof claim === "string"
-        ? (/^Required check (\S+) failed$/.exec(claim)?.[1] ?? taskCheckOfClaim(claim))
-        : null;
+      return typeof claim === "string" ? (checkOfClaim(claim) ?? taskCheckOfClaim(claim)) : null;
     });
     if (findings.length !== task.findingIds.length || named.some((id) => !id)) return false;
     // Only files that changed since the failures can have fixed them; a correction that starts
@@ -10469,9 +10477,7 @@ ${note}`;
         .flatMap((row) => {
           const claim = (JSON.parse(row.body_json) as { claim?: unknown }).claim;
           const check =
-            typeof claim === "string"
-              ? (/^Required check (\S+) failed$/.exec(claim)?.[1] ?? taskCheckOfClaim(claim))
-              : null;
+            typeof claim === "string" ? (checkOfClaim(claim) ?? taskCheckOfClaim(claim)) : null;
           return check ? [check] : [];
         }),
     );
@@ -10708,7 +10714,7 @@ ${note}`;
    */
   private resolveCoveredFindings(runId: string, passedIds: string[]): void {
     if (!passedIds.length) return;
-    const claims = new Set(passedIds.map((id) => `Required check ${id} failed`));
+    const claims = new Set(passedIds.flatMap(checkClaims));
     this.store.transaction(() => {
       for (const finding of this.store.findings(runId))
         if (
@@ -10775,9 +10781,10 @@ ${note}`;
             (state.rootGraph ?? state.graph)?.tasks ?? [],
             task,
             regression
-              ? `The check passed but ${regression} (evidence ${result.evidenceId}).`
+              ? `The check passed but ${regression.message} (evidence ${result.evidenceId}).`
               : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
             newId,
+            regression?.diagnosticsOnly ? { severity: regression.severity } : undefined,
           ),
         );
       }
@@ -12999,9 +13006,12 @@ ${note}`;
           result.reason
             ? `${result.reason}: restore the approved test or promote a new one (evidence ${result.evidenceId}).`
             : regression
-              ? `The check passed but ${regression} (evidence ${result.evidenceId}).`
+              ? `The check passed but ${regression.message} (evidence ${result.evidenceId}).`
               : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
           newId,
+          !result.reason && regression?.diagnosticsOnly
+            ? { severity: regression.severity }
+            : undefined,
         ),
       );
     }
@@ -13021,7 +13031,7 @@ ${note}`;
     if (!failures.length) {
       // Without a review stage nothing else closes the findings of an earlier failed run of
       // these gates; the passing gates close them.
-      const closed = new Set(ordered.map(({ check }) => `Required check ${check.id} failed`));
+      const closed = new Set(ordered.flatMap(({ check }) => checkClaims(check.id)));
       this.store.transaction(() => {
         for (const finding of this.store.findings(runId))
           if (
@@ -14282,7 +14292,7 @@ export function staticCorrection(
     findings.every((f) => {
       const claim = (JSON.parse(f.body_json) as { claim?: unknown }).claim;
       if (typeof claim !== "string" || claim.includes(" broke existing tests: ")) return false;
-      const id = /^Required check (\S+) failed$/.exec(claim)?.[1] ?? taskCheckOfClaim(claim);
+      const id = checkOfClaim(claim) ?? taskCheckOfClaim(claim);
       const check = policy.checks.find((c) => c.id === id);
       return Boolean(check && isStaticCheck(check) && !isTestCheck(check));
     })

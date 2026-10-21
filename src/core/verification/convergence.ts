@@ -377,6 +377,27 @@ export function failingOf(impact: string): string | null {
   return match?.[1]?.trim() || null;
 }
 
+/** The claim of a finding for a required check that failed. */
+export const checkFailedClaim = (checkId: string): string => `Required check ${checkId} failed`;
+
+/**
+ * The claim of a finding for a required check that passed with more diagnostics than the code
+ * the run started from: it did not fail, and saying so started a correction for a passing lint
+ * check (#1791).
+ */
+export const checkRatchetClaim = (checkId: string): string =>
+  `Required check ${checkId} passed with more diagnostics`;
+
+/** The claims a passing run of a check closes. */
+export const checkClaims = (checkId: string): string[] => [
+  checkFailedClaim(checkId),
+  checkRatchetClaim(checkId),
+];
+
+/** The check a check finding's claim names, failed or ratcheted; else null. */
+export const checkOfClaim = (claim: string): string | null =>
+  /^Required check (\S+) (?:failed|passed with more diagnostics)$/.exec(claim)?.[1] ?? null;
+
 /**
  * Findings for a failed run-level check. Run 6931efd6: ruff flagged three test files of three
  * tasks, but the one finding (no file) went to the first task with the check, whose correction
@@ -391,6 +412,7 @@ export function failedCheckFindings(
   fallback: Pick<Review["findings"][number], "requirementIds" | "criterionIds">,
   suggestedFix: string,
   newId: () => string,
+  ratchet?: { severity: Review["findings"][number]["severity"] },
 ): Review["findings"] {
   const finding = (
     file: string | null,
@@ -398,13 +420,13 @@ export function failedCheckFindings(
   ): Review["findings"][number] => ({
     id: newId(),
     kind: "correctness",
-    severity: "high",
+    severity: ratchet?.severity ?? "high",
     requirementIds: ids.requirementIds,
     criterionIds: ids.criterionIds,
     file,
     symbol: null,
     evidenceIds: [evidenceId],
-    claim: `Required check ${check.id} failed`,
+    claim: ratchet ? checkRatchetClaim(check.id) : checkFailedClaim(check.id),
     impact: `${signature ? `Implementation cannot be accepted. Failing: ${signature}` : "Implementation cannot be accepted"}${counterexample ? `. Property counterexample: ${counterexample}` : ""}`,
     suggestedFix,
   });
@@ -509,7 +531,7 @@ const SEVERITY_ORDER = ["critical", "high", "medium", "low"];
 
 /** A finding of a failed check run: it names the check and cites that run's evidence. */
 const checkRunFinding = (finding: Pick<Review["findings"][number], "claim" | "evidenceIds">) =>
-  /^Required check \S+ failed$/.test(finding.claim) && finding.evidenceIds.length > 0;
+  checkOfClaim(finding.claim) !== null && finding.evidenceIds.length > 0;
 
 /**
  * How many corrections lead to a task: 0 for a planned task, 1 for the correction of a planned
