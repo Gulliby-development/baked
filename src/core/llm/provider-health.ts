@@ -107,6 +107,10 @@ export interface CallTiming extends CallReasoning {
   /** The HTTP status of a call the provider refused, and its `retry-after` header (#1729). */
   status?: number;
   retryAfter?: string;
+  /** How an adapter with more than one transport served the call (`providerCallDetail`, #1876). */
+  transport?: string;
+  /** The call answered a tool call the model's open turn waited on, instead of starting a turn. */
+  resumed?: boolean;
 }
 
 export class ProviderUnreachableError extends Error {
@@ -124,6 +128,13 @@ export class ProviderUnreachableError extends Error {
 const responses = new WeakMap<AbortSignal, () => void>();
 export function providerResponded(signal?: AbortSignal): void {
   if (signal) responses.get(signal)?.();
+}
+
+/** What an adapter says about how it serves a call, kept with the call's timing (#1876). */
+export type CallDetail = Pick<CallTiming, "transport" | "resumed">;
+const details = new WeakMap<AbortSignal, (detail: CallDetail) => void>();
+export function providerCallDetail(signal: AbortSignal | undefined, detail: CallDetail): void {
+  if (signal) details.get(signal)?.(detail);
 }
 
 /** A dropped or refused connection, also when it is the cause of an SDK error (`APICallError`). */
@@ -210,6 +221,10 @@ export function withProviderHealth(
           watch.progress?.();
         };
         responses.set(signal, response);
+        let detail: CallDetail = {};
+        details.set(signal, (reported) => {
+          detail = { ...detail, ...reported };
+        });
         let reader: ReadableStreamDefaultReader<LanguageModelV4StreamPart> | undefined;
         let abort: (() => void) | undefined;
         let completed = false;
@@ -336,9 +351,11 @@ export function withProviderHealth(
             ...(refusal?.responseHeaders?.["retry-after"]
               ? { retryAfter: refusal.responseHeaders["retry-after"] }
               : {}),
+            ...detail,
           });
           if (abort) signal.removeEventListener("abort", abort);
           responses.delete(signal);
+          details.delete(signal);
           if (!responded) settle?.(false);
           if (completed) reader?.releaseLock();
           else {

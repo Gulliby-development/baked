@@ -38,6 +38,7 @@
       "lib/sum_test.rb:2 comment",
       "Gemfile:1",
       "Gemfile:2"
-    ]
+    ],
+    "formatters": null
   }
 }

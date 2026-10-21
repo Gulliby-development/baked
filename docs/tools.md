@@ -65,6 +65,7 @@ In the chat, `baked_setup` is loaded on demand like other non-core tools (`reque
 | `rename_file` | Renames or moves a file and updates its importers |
 | `refactor` | Extract function or variable, organize imports, format |
 | `undo_edit` | Reverts the last edits of a file |
+| `restore_file` | Workflow implementers with `restoreFile: "on"` only: puts a file the task's edits left not parsing back to the newest version from the task's own edits that parsed, journaled like an edit ([progress watcher](workflows/runtime.md#progress-watcher)) |
 
 Line endings are kept per file. `read` adds a `line endings: CRLF` header (or a mixed-file note with the line counts) for files that are not plain LF, and shows lines without the carriage return. `edit_file` and `multi_edit` match `oldString` against the file with either ending, write the result back with the file's dominant ending (CRLF or LF) and normalize the minority lines of a mixed file to it, so a CRLF checkout never ends up half LF. A new file takes the `end_of_line` of the nearest `.editorconfig`, else the dominant ending of a few sibling files, else the text as given.
 

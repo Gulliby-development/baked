@@ -31,6 +31,7 @@
     ],
     "codeMask": [
       "src/main/scala/SumSuite.scala:4 comment"
-    ]
+    ],
+    "formatters": null
   }
 }

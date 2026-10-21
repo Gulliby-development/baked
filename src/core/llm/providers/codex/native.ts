@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   LanguageModelV2,
   LanguageModelV2CallOptions,
@@ -10,6 +10,7 @@ import type {
   SharedV2ProviderMetadata,
 } from "@ai-sdk/provider";
 import { getCwd } from "../../../cwd.js";
+import { providerCallDetail } from "../../provider-health.js";
 import { cliReasoningEffort } from "../cli-effort.js";
 import { imageUrl, promptImages } from "../prompt-images.js";
 import { type CodexAppServerConnection, startCodexAppServerSession } from "./client.js";
@@ -23,6 +24,7 @@ import {
   renderToolResult,
   type ToolResultPromptPart,
 } from "./runner.js";
+import { tracedConnection } from "./trace.js";
 
 type PromptMessage = LanguageModelV2Prompt[number];
 
@@ -107,6 +109,21 @@ function messageKey(message: PromptMessage): string {
       ),
     });
   return JSON.stringify(message, (key, value) => (key === "providerOptions" ? undefined : value));
+}
+
+/** What fixes a stage's calls apart from the model: its base instructions and tool list. */
+function requestShape(request: CodexNativeRequest): string {
+  return createHash("sha256")
+    .update(request.instructions)
+    .update("\0")
+    .update(JSON.stringify(request.dynamicTools))
+    .digest("hex");
+}
+
+/** The caller's first-response deadline ended the call (`withProviderHealth`), not a cancel. */
+function firstByteStall(signal: AbortSignal | undefined): boolean {
+  const reason = signal?.reason as { name?: unknown } | undefined;
+  return reason?.name === "ProviderUnreachableError";
 }
 
 function messageText(message: PromptMessage): string {
@@ -367,13 +384,27 @@ export class CodexAppServerSessions {
    * the requests their model still makes are handled here instead of being lost (#863).
    */
   private retired = new Map<string, NativeThread>();
+  /**
+   * Request shapes (base instructions and tools, so one stage's profile on any model) whose call
+   * got no first byte on app-server: their later calls in this process run on `codex exec`, while
+   * other stages keep their threads. In bench round 58 the call answering a refused submission
+   * of wheeltags' specify got no byte in 8 of 8 attempts on app-server, on astra and sol, and
+   * the same stage completed in one 126 s call on exec (#1876).
+   */
+  private stalled = new Set<string>();
   /** Usage dropped threads reported after BAKED left them; the next step to finish carries it. */
   private late: TokenTotals = { ...ZERO_TOTALS };
   private lateReports = 0;
 
   constructor(
-    private readonly connect: () => Promise<CodexAppServerConnection> = () =>
-      startCodexAppServerSession({ experimentalApi: true, isolated: true }),
+    private readonly connect: () => Promise<CodexAppServerConnection> = async () => {
+      const connection = await startCodexAppServerSession({
+        experimentalApi: true,
+        isolated: true,
+      });
+      const trace = process.env.BAKED_CODEX_TRACE;
+      return trace ? tracedConnection(connection, trace) : connection;
+    },
   ) {}
 
   /** Opens a streaming step, or returns null when app-server cannot serve it. */
@@ -383,6 +414,8 @@ export class CodexAppServerSessions {
   ): Promise<ReadableStream<LanguageModelV2StreamPart> | null> {
     if (this.unavailable) return null;
     abortSignal?.throwIfAborted();
+    const shape = requestShape(request);
+    if (this.stalled.has(shape)) return null;
 
     let connection: CodexAppServerConnection;
     try {
@@ -405,6 +438,7 @@ export class CodexAppServerSessions {
     const { thread } = plan;
     thread.lastUsed = Date.now();
     const startedPlan = plan;
+    providerCallDetail(abortSignal, { transport: "app-server", resumed: plan.kind === "resume" });
     let stepSink: StepSink | null = null;
     return new ReadableStream<LanguageModelV2StreamPart>({
       start: (controller) => {
@@ -432,7 +466,10 @@ export class CodexAppServerSessions {
             // step's tool call: the caller is done and nothing will answer it.
             if (thread.state === "suspended" && thread.suspendedBy === sink)
               this.dropThread(connection, thread);
-            else this.abort(connection, thread, sink, abortSignal);
+            else {
+              if (thread.sink === sink && firstByteStall(abortSignal)) this.stalled.add(shape);
+              this.abort(connection, thread, sink, abortSignal);
+            }
           },
           { once: true },
         );

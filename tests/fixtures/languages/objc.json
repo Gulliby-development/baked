@@ -27,6 +27,7 @@
       "Sources/Sum.m:1 comment",
       "Sources/SumTests.m:1 comment",
       "Sources/SumTests.m:5 comment"
-    ]
+    ],
+    "formatters": null
   }
 }

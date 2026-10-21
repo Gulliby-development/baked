@@ -44,6 +44,7 @@
     "codeMask": [
       "src/Sum.res:1",
       "src/Sum_test.res:3 comment"
-    ]
+    ],
+    "formatters": null
   }
 }

@@ -25,6 +25,7 @@
     "codeMask": [
       "src/sum.ml:2",
       "src/sum.ml:5 comment"
-    ]
+    ],
+    "formatters": null
   }
 }

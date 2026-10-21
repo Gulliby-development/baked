@@ -199,6 +199,16 @@ function walkedFiles(root: string): string[] {
 }
 
 /**
+ * The workspace's files, sorted: git's view (tracked and untracked, not ignored) in a repository,
+ * a walk that skips dependency and build folders otherwise; a file deleted on disk is left out.
+ */
+export function workspaceFiles(root: string): string[] {
+  return (gitFiles(root) ?? walkedFiles(root))
+    .filter((path) => existsSync(join(root, path)))
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/**
  * The file list of the workspace a review reads (#1506). A criterion that counts or lists files
  * ("exactly 26 production files") could only end inconclusive: the reviewer has no tool that
  * lists files, and fecsmith release (bench round 42) asked it twice for 761k tokens and accepted
@@ -207,9 +217,7 @@ function walkedFiles(root: string): string[] {
  * is not listed.
  */
 export function workspaceInventory(root: string): WorkspaceInventory {
-  const all = (gitFiles(root) ?? walkedFiles(root))
-    .filter((path) => existsSync(join(root, path)))
-    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const all = workspaceFiles(root);
   const tests = all.filter(isTestCodePath).length;
   const truncated = all.length > INVENTORY_LIMIT;
   return {

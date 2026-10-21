@@ -31,6 +31,7 @@ export const EDIT_TOOLS = new Set([
   "write_file",
   "write_test",
   "apply_fix",
+  "restore_file",
 ]);
 const CHECK_TOOLS = new Set(["request_check", "run_probe", "run_repro", "replay_rows"]);
 /** The same read since the last edit, this many times. */
@@ -119,8 +120,28 @@ export function watchSteps(
   return null;
 }
 
+/** A file the attempt's edits left unparsable, with its `path:line:column: message` lines. */
+export interface BrokenFile {
+  path: string;
+  errors: readonly string[];
+}
+
+/**
+ * What the steering says about files the attempt's edits left unparsable, when `restore_file` is
+ * on (#1835). negotiate T004 and md-site T005 (bench round 56) reread the broken lines of a test
+ * file until the watcher stopped them, then reported that they had no edit tool, and the restart
+ * began from the same broken file.
+ */
+function brokenNote(broken: readonly BrokenFile[]): string {
+  const files = broken
+    .slice(0, 3)
+    .map(({ path, errors }) => `${path} (${errors.slice(0, 3).join("; ")})`)
+    .join(", ");
+  return ` Your edits left ${files} not parsing; rereading the file will not show more than these lines. Fix them with one edit_file whose newString writes each quote and backslash once as the language needs, or call restore_file with the path to put back its last version that parsed, then make the change again.`;
+}
+
 /** The steering message for a first signal. */
-export function steeringNotice(finding: WatchFinding): string {
+export function steeringNotice(finding: WatchFinding, broken: readonly BrokenFile[] = []): string {
   const advice: Record<WatchSignal, string> = {
     "repeated-reads":
       "What you read is already in your context; do not read it again. Apply the change now, or call submit_result with what is unresolved.",
@@ -133,7 +154,8 @@ export function steeringNotice(finding: WatchFinding): string {
     "unchecked-spend":
       "Do not read more. Run request_check (or run_repro on the finding's repro) on your edits now, then call submit_result; when a check still fails, submit with the failure as unresolved so the next attempt continues from your edits.",
   };
-  return `Progress watcher: ${finding.detail}. ${advice[finding.signal]} If the same pattern continues, the host ends this attempt early.`;
+  const note = broken.length && finding.signal !== "unchecked-spend" ? brokenNote(broken) : "";
+  return `Progress watcher: ${finding.detail}. ${advice[finding.signal]}${note} If the same pattern continues, the host ends this attempt early.`;
 }
 
 /**

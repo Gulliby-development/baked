@@ -54,5 +54,9 @@
   "R56/hdrlens.sqlite.gz#e33af6d1-8f43-4b2f-913f-9a24839b71ba": {
     "newRecoveries": 1,
     "reason": "#1877: the analyze attempt that stalled on codex/gpt-6.1-sol now takes the recovery ladder's fresh-session rung at once instead of the provider wait."
+  },
+  "R58/wheeltags.sqlite.gz#90cffa36-5ea7-4024-94c9-a9946fd431d1": {
+    "newRecoveries": 7,
+    "reason": "#1877: the base specify that stalled 10 times on Codex native (the run this issue is about) now climbs the recovery ladder after each stall: fresh session, codex exec, lower effort; the recording waited for the provider and resumed instead."
   }
 }
