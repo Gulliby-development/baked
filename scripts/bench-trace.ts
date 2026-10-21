@@ -72,7 +72,8 @@ if (command === "export" && args.length === 2) {
           `  ${run.featureId} ${run.runId}: final ${usd(run.finalUsd)}, ${run.boundaries.length} attempts, ` +
             `new stops ${run.newStops}, new growth ${run.newGrowth}, stops removed ${run.removedStops}, ` +
             `first-response stops ${run.newFirstByteStops} of ${run.firstByte.length} calls, ` +
-            `cost-cap refusals ${run.newCostStops} of ${run.costCap.length} attempts` +
+            `cost-cap refusals ${run.newCostStops} of ${run.costCap.length} attempts, ` +
+            `new test splits ${run.newTestSplits} of ${run.testSplits.length} test tasks` +
             (ratios ? `, forecast/final ${ratios}` : ""),
         );
         for (const b of run.boundaries.filter((b) => b.recorded !== b.replayed))
@@ -85,6 +86,8 @@ if (command === "export" && args.length === 2) {
             `    ${b.attemptId} (${b.stage} ${b.model}, ${b.tokens} tokens): now refused ` +
               `(call ${usd(b.requestedUsd)}, spent ${usd(b.spentUsd)}, reserved ${usd(b.reservedUsd)}, ceiling ${usd(b.ceilingUsd)})`,
           );
+        for (const b of run.testSplits.filter((b) => b.recorded !== b.replayed))
+          console.log(`    ${b.report} ${b.taskId} (${b.cases} cases): recorded ${b.recorded}, now ${b.replayed}`);
         for (const b of run.firstByte.filter((b) => b.recorded !== b.replayed))
           console.log(
             `    ${b.attemptId} call ${b.call} (${b.provider} ${b.stage ?? "?"} ${b.effort ?? "default"}): ` +

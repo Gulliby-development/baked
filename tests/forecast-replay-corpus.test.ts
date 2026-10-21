@@ -4,11 +4,12 @@ import { join, relative } from "node:path";
 import { callCostRate, costRate } from "../src/core/workflows/budget.js";
 import { shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { forecastSamples } from "../src/core/workflows/stage-price.js";
-import { type CallRate, openTrace, replayInitiativeStarts, replayTrace } from "../src/core/workflows/trace.js";
+import { CAPACITY_PROBE } from "../src/core/workflows/sizing.js";
+import { type CallRate, openTrace, replayInitiativeStarts, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
 
 // #1649, #1715: every recorded bench-round trace replays through the current host decisions: the
 // forecast and cap code, the per-call cost cap (#1740), the first-response deadline of each model
-// call, and the initiative share gate (#1707), asked both on its recorded inputs and with each start
+// call, the test task split of each sizing report (#1789), and the initiative share gate (#1707), asked both on its recorded inputs and with each start
 // rewound and recomputed. A stop, cap growth or park the recorded run did not make fails the suite, unless
 // accepted.json lists it for that run or initiative with the reason: the pull request that changes
 // the decision says so in its diff.
@@ -19,6 +20,7 @@ interface Accepted {
   newGrowth?: number;
   newFirstByteStops?: number;
   newCostStops?: number;
+  newTestSplits?: number;
   newShareStops?: number;
   newStartStops?: number;
   reason: string;
@@ -60,12 +62,14 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newGrowth: growth.length,
           newFirstByteStops: run.newFirstByteStops,
           newCostStops: run.newCostStops,
+          newTestSplits: run.newTestSplits,
         }).toEqual({
           run: run.runId,
           newStops: allowed?.newStops ?? 0,
           newGrowth: allowed?.newGrowth ?? 0,
           newFirstByteStops: allowed?.newFirstByteStops ?? 0,
           newCostStops: allowed?.newCostStops ?? 0,
+          newTestSplits: allowed?.newTestSplits ?? 0,
         });
       }
       for (const initiative of replay.initiatives) {
@@ -207,5 +211,33 @@ describe("the per-call cost cap replays on recorded reservations (#1740)", () =>
       replayTrace(path, rate ? { callRate: rate } : {}).runs.reduce((n, run) => n + run.newCostStops, 0);
     expect(stops(() => 1)).toBeGreaterThan(0);
     expect(stops()).toBe(0);
+  }, 120000);
+});
+
+describe("test task splits replay on recorded sizing reports (#1789)", () => {
+  // The rule before #1789: with an observed case capacity, every test file above it and above five
+  // cases split, whatever its price.
+  const atCapacity: TestSplitRule = (cases, limit, estimate, cap) =>
+    (limit?.cases ?? 0) > 0 ? cases > 5 && cases > (limit?.cases ?? 0) : (cases === 0 || cases > 5) && (estimate.low + estimate.high) / 2 > cap;
+  const traces = ["R49/url-shortener.sqlite.gz", "R51/md-site.sqlite.gz", "R52/url-shortener.sqlite.gz"];
+
+  test("the old rule reproduces the recorded splits at a capacity of 4; the current one keeps those files whole", () => {
+    for (const name of traces) {
+      const path = join(ROOT, name);
+      const old = replayTrace(path, { testSplit: atCapacity }).runs.flatMap((r) => r.testSplits);
+      expect(old.length).toBeGreaterThan(0);
+      expect(old.every((b) => b.replayed === b.recorded)).toBe(true);
+      const current = replayTrace(path).runs.flatMap((r) => r.testSplits);
+      const kept = current.filter((b) => b.recorded === "split" && b.replayed === "whole");
+      expect(kept.length).toBeGreaterThan(0);
+      expect(kept.every((b) => b.cases > 4 && b.cases <= CAPACITY_PROBE * 4)).toBe(true);
+      expect(current.filter((b) => b.recorded === "whole" && b.replayed === "split")).toEqual([]);
+    }
+  }, 120000);
+
+  test("a rule that splits every test task is caught as new splits", () => {
+    const path = join(ROOT, "R52/url-shortener.sqlite.gz");
+    expect(replayTrace(path, { testSplit: () => true }).runs.reduce((n, r) => n + r.newTestSplits, 0)).toBeGreaterThan(0);
+    expect(replayTrace(path).runs.reduce((n, r) => n + r.newTestSplits, 0)).toBe(0);
   }, 120000);
 });
