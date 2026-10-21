@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { callCostRate, costRate } from "../src/core/workflows/budget.js";
-import { shareShortfall } from "../src/core/workflows/initiatives/service.js";
+import { costGrowthLimit, dollarShortfall, shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { forecastSamples } from "../src/core/workflows/stage-price.js";
 import { planApprovalDecision } from "../src/core/workflows/auto-approval.js";
 import { CAPACITY_PROBE } from "../src/core/workflows/sizing.js";
@@ -187,6 +187,36 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     const ratios = replay!.starts.filter((b) => b.forecastUsd !== null).map((b) => b.forecastUsd! / replay!.finalUsd!);
     expect(Math.max(...ratios)).toBeLessThan(1.6);
     expect(replay?.newStartStops).toBe(0);
+  }, 120000);
+
+  test("#1890: R59 wheeltags prices its waiting features at its own stage mix, and pick-command could grow past where it stopped", () => {
+    // R59's accepted features paid $1.95 per million tokens. Their stage rates at the history's
+    // stage weights say $2.67 at pick-command's start, so the waiting features reserved too much:
+    // pick-command started with $2.87 to grow into (this replay of main says $1.33) and stopped at
+    // its $3.16 ceiling one corrective short. dead-command and expand-command then started on
+    // what was left.
+    const seen = new Map<string, { view: Parameters<typeof shareShortfall>[0]; feature: Parameters<typeof shareShortfall>[1] }>();
+    const [replay] = replayInitiativeStarts(join(ROOT, "R59", "wheeltags.sqlite.gz"), {
+      gate: (view, feature) => {
+        seen.set(feature.id, { view, feature });
+        return shareShortfall(view, feature);
+      },
+    });
+    expect(replay?.newStartStops).toBe(0);
+    const pick = seen.get("pick-command")!;
+    const rate = pick.feature.needUsd!.low / pick.feature.need!.low;
+    expect(rate * 1e6).toBeGreaterThan(1.8);
+    expect(rate * 1e6).toBeLessThan(2.1);
+    expect(costGrowthLimit(pick.view, "pick-command")!).toBeGreaterThan(3.16);
+    expect(dollarShortfall(pick.view, pick.feature)).toBeNull();
+    // The two later starts are short at that price: in shadow, the default, they start and record
+    // a would-stop; enforced, they wait for an extend.
+    for (const id of ["dead-command", "expand-command"]) {
+      const start = seen.get(id)!;
+      expect(start.view.budget.cost.shareMode).toBe("shadow");
+      expect(dollarShortfall(start.view, start.feature)).toStartWith(`The shared dollar budget is short: ${id} has $`);
+      expect(replay?.starts.find((b) => b.featureId === id)?.replayed).toBe("pass");
+    }
   }, 120000);
 
   test("the rewind sees only what existed at each start, its history stores included", () => {
