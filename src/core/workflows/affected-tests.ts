@@ -14,6 +14,7 @@
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
+import { INLINE_ROWS_BEGIN, INLINE_ROWS_CLASS } from "./acceptance-rows-inline.js";
 import { isStaticCheck } from "./check-policy.js";
 import { toolchainCommand } from "./toolchain.js";
 import type { Check } from "./types.js";
@@ -329,7 +330,11 @@ const flagsOnly = (args: string[]): string[] =>
  * `node --test`, `pytest`, `go test`). Package scripts (`npm test`, `bun run test`) are not
  * used: what they pass on is up to the script.
  */
-export function affectedTestCheck(checks: readonly Check[], all: string[]): Check | null {
+export function affectedTestCheck(
+  checks: readonly Check[],
+  all: string[],
+  rows: ReadonlySet<string> = new Set(),
+): Check | null {
   if (all.length === 0) return null;
   for (const check of checks) {
     if (isStaticCheck(check)) continue;
@@ -376,7 +381,12 @@ export function affectedTestCheck(checks: readonly Check[], all: string[]): Chec
       ];
     }
     if (!prefix) {
-      const compiled = compiledTestArgs(name, args, tests.filter(isCompiledTestFile));
+      const compiled = compiledTestArgs(
+        name,
+        args,
+        tests.filter(isCompiledTestFile),
+        new Set(tests.filter((t) => rows.has(`${base}${t}`))),
+      );
       const command = compiled && launch(compiled);
       if (!command) continue;
       return {
@@ -409,9 +419,23 @@ export function affectedTestCheck(checks: readonly Check[], all: string[]): Chec
  * task check for its test tasks: a wrong expectation surfaced at the feature gate and took five
  * correctives (1.76M tokens).
  */
-function compiledTestArgs(name: string, args: string[], tests: string[]): string[] | null {
+/**
+ * `rows`: the files that hold an inline acceptance rows block, whose class (#1763) a filter by
+ * the file's class would leave out (#1617).
+ */
+function compiledTestArgs(
+  name: string,
+  args: string[],
+  tests: string[],
+  rows: ReadonlySet<string> = new Set(),
+): string[] | null {
   if (name === "dotnet" && args[0] === "test") {
-    const classes = tests.filter((t) => CS_FILE.test(t)).map(className);
+    const classes = tests
+      .filter((t) => CS_FILE.test(t))
+      .flatMap((t) => [
+        className(t),
+        ...(rows.has(t) ? [INLINE_ROWS_CLASS.xunit(className(t))] : []),
+      ]);
     if (!classes.length || args.includes("--filter")) return null;
     return [...args, "--filter", classes.map((c) => `FullyQualifiedName~${c}.`).join("|")];
   }
@@ -432,7 +456,9 @@ function compiledTestArgs(name: string, args: string[], tests: string[]): string
       ...(end === -1 ? [] : args.slice(end)),
     ];
   }
-  const classes = tests.filter((t) => JVM_FILE.test(t)).map(jvmClass);
+  const classes = tests
+    .filter((t) => JVM_FILE.test(t))
+    .flatMap((t) => [jvmClass(t), ...(rows.has(t) ? [INLINE_ROWS_CLASS.junit(jvmClass(t))] : [])]);
   if (!classes.length) return null;
   if (
     (name === "mvn" || name === "mvnw") &&
@@ -475,6 +501,20 @@ export function affectedTestsFor(
   };
 }
 
+/** The JUnit and xUnit test files that hold an inline acceptance rows block. */
+function inlineRowFiles(root: string, files: readonly string[]): Set<string> {
+  return new Set(
+    files.filter((path) => {
+      if (!/\.(?:java|cs)$/.test(path)) return false;
+      try {
+        return INLINE_ROWS_BEGIN.test(readFileSync(join(root, path), "utf8"));
+      } catch {
+        return false;
+      }
+    }),
+  );
+}
+
 /** How long the test files a task wrote may run on their own after it (#1271). */
 export const WRITTEN_TESTS_TIMEOUT_MS = 60_000;
 
@@ -492,7 +532,7 @@ export function writtenTestsCheck(
     .filter((w) => w.action !== "delete" && isWrittenTestFile(w.path))
     .map((w) => w.path)
     .filter((path) => existsSync(join(root, path)));
-  const gate = affectedTestCheck(checks, files);
+  const gate = affectedTestCheck(checks, files, inlineRowFiles(root, files));
   if (!gate) return null;
   const minCases = requiredCases(text);
   const timeoutMs = Math.min(gate.timeoutMs, WRITTEN_TESTS_TIMEOUT_MS);

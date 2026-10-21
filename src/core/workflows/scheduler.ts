@@ -1,6 +1,7 @@
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmdirSync,
@@ -11,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { codeWithoutComments } from "../intelligence/comments.js";
 import { largerContextModel } from "../llm/context-sizes.js";
 import {
@@ -38,6 +39,8 @@ import {
 import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
 import {
   appendCorrections,
+  checkClaims,
+  checkOfClaim,
   failedCheckFindings,
   failingFilesInOutput,
   failureSignature as failingLines,
@@ -67,6 +70,8 @@ import {
 } from "../verification/convergence-stop.js";
 import {
   caseCheck as criteriaCaseCheck,
+  type RepairFinding,
+  repairCaseTask,
   writtenTestPaths,
 } from "../verification/criteria-cases.js";
 import { canHold } from "../verification/deliverable-paths.js";
@@ -138,6 +143,13 @@ import {
   SPEC_ROWS_NOTE,
 } from "./acceptance-rows.js";
 import { INLINE_HARNESS, type InlineRowFile, withInlineRows } from "./acceptance-rows-inline.js";
+import {
+  type ReplayResult,
+  type RowReplay,
+  replayNote,
+  replayResult,
+  rowReplay,
+} from "./acceptance-rows-replay.js";
 import {
   affectedTestCheck,
   affectedTestsFor,
@@ -242,6 +254,7 @@ import {
   type ContestedRow,
   contestedRows,
   quotedCheckCommands,
+  reauditExtra,
   verbatimRow,
 } from "./conflict-rows.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
@@ -3829,6 +3842,20 @@ export class WorkflowScheduler {
       ? { ...task, criterionIds: task.criterionIds.filter((id) => !overruled.has(id)) }
       : task;
   }
+  /** A corrective owes only the cases of the criteria its findings name (#1790). */
+  private repairCaseTask(runId: string, state: RuntimeState, task: Task): Task {
+    if (task.origin === "planned" || !task.findingIds.length) return task;
+    const findings = this.store
+      .findings(runId)
+      .filter((f) => task.findingIds.includes(f.id))
+      .map((f) => JSON.parse(f.body_json) as RepairFinding);
+    return repairCaseTask(
+      task,
+      findings,
+      state.spec,
+      (state.rootGraph ?? state.graph)?.tasks ?? [],
+    );
+  }
   private caseTask(state: RuntimeState, task: Task): Task {
     const graph = state.rootGraph ?? state.graph;
     if (!graph || task.origin !== "planned" || !task.writes.every((w) => w.action !== "create"))
@@ -4031,13 +4058,16 @@ export class WorkflowScheduler {
         );
     };
   }
-  /** What a passing required check fell behind the baseline by, as a failure reason; else null. */
+  /**
+   * What a passing required check fell behind the baseline by, as a failure reason, with its
+   * severity and whether only diagnostics rose (the finding then says the check passed); else null.
+   */
   private checkRegression(
     runId: string,
     state: RuntimeState,
     check: Check,
     output: string,
-  ): string | null {
+  ): { message: string; severity: "high" | "low"; diagnosticsOnly: boolean } | null {
     const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
     if (!artifact) return null;
     const baseline = (
@@ -4052,7 +4082,12 @@ export class WorkflowScheduler {
     const regressions = baseline.flatMap(
       (count) => baselineRegression(count, output, deletesTests) ?? [],
     );
-    return regressions.length ? regressions.join("; ") : null;
+    if (!regressions.length) return null;
+    return {
+      message: regressions.map((r) => r.message).join("; "),
+      severity: regressions.some((r) => r.severity === "high") ? "high" : "low",
+      diagnosticsOnly: regressions.every((r) => r.kind === "diagnostics"),
+    };
   }
   /** Whether the workspace the run started from held no source files (empty or a scaffold). */
   private baselineScaffold(runId: string, state: RuntimeState): boolean {
@@ -4178,7 +4213,7 @@ export class WorkflowScheduler {
     runId: string,
     policy: RunPolicy,
   ): { planCost: ReturnType<typeof planCostOf>; budgetWarning?: string } {
-    const planCost = planCostOf(this.store, runId);
+    const planCost = planCostOf(this.store, runId, policy);
     const dollars = planCostWarning(
       planCost,
       currentCostCap(this.store, runId, policy),
@@ -4364,6 +4399,20 @@ export class WorkflowScheduler {
         },
       };
     }
+    const replay =
+      task && !generatedRows.length && stageProfile.output === "implementation"
+        ? this.rowReplayFor(runId, state, policy, task)
+        : undefined;
+    if (replay)
+      extra = {
+        ...(extra as Record<string, unknown>),
+        rowReplay: {
+          criteria: replay.replay.criteria,
+          rows: replay.replay.rows.length,
+          file: replay.replay.file.path,
+          note: replayNote(replay.replay),
+        },
+      };
     const route = this.route(runId, stepId, stageProfile);
     const effort = placement.outputLimit ? placement.outputLimit.effort : route.effort;
     const fallbackIndex = placement.fallbackIndex ?? 0;
@@ -4475,10 +4524,17 @@ export class WorkflowScheduler {
         : undefined;
     const literalCaseCheck =
       task && profile.output === "implementation"
-        ? criteriaCaseCheck(state.spec, this.answeredCaseTask(runId, this.caseTask(state, task)), {
-            checks: policy.checks,
-            tasks: (state.rootGraph ?? state.graph)?.tasks ?? [],
-          })
+        ? criteriaCaseCheck(
+            state.spec,
+            this.answeredCaseTask(
+              runId,
+              this.repairCaseTask(runId, state, this.caseTask(state, task)),
+            ),
+            {
+              checks: policy.checks,
+              tasks: (state.rootGraph ?? state.graph)?.tasks ?? [],
+            },
+          )
         : undefined;
     const caseCheck = generatedRows.length
       ? async (root: string) => [
@@ -4573,6 +4629,7 @@ export class WorkflowScheduler {
         ...(taskEndCheck ? { taskEndCheck } : {}),
         ...(reproCheck ? { reproCheck } : {}),
         ...(caseCheck ? { caseCheck } : {}),
+        ...(replay ? { rowReplay: replay } : {}),
         ...(task && task.origin !== "planned"
           ? { writtenTests: this.writtenTestWrites(runId, state, task) }
           : {}),
@@ -5866,6 +5923,41 @@ ${note}`;
       if (!checking) this.store.taskStatus(runId, task.id, "running");
       return this.store.beginStep(runId, `task-${task.id}`, stepId);
     });
+    await this.closingStep(runId, child, signal, () =>
+      this.runTaskStep(runId, child, firstRun, state, policy, profiles, signal, task, checking),
+    );
+  }
+  /**
+   * Runs a task step's work and ends the step as failed when the work throws, so a blocked task
+   * that a corrective repairs does not leave its step running (#1805). An aborted drive leaves it
+   * to recovery, which ends it as interrupted.
+   */
+  private async closingStep(
+    runId: string,
+    step: string,
+    signal: AbortSignal,
+    work: () => Promise<void>,
+  ): Promise<void> {
+    try {
+      await work();
+    } catch (error) {
+      if (!signal.aborted)
+        this.store.transaction(() => this.store.endRunningStep(runId, step, "failed"));
+      throw error;
+    }
+  }
+  /** The work of `implementTask` in its task step `child`. */
+  private async runTaskStep(
+    runId: string,
+    child: string,
+    firstRun: boolean,
+    state: RuntimeState,
+    policy: RunPolicy,
+    profiles: AgentProfile[],
+    signal: AbortSignal,
+    task: Task,
+    checking: boolean,
+  ): Promise<void> {
     let integrity: Review["findings"] = [];
     let reported: { summary: string; unresolved: string[] } | undefined;
     let unresolvedAccount: { summary: string; unresolved: string[] } | undefined;
@@ -6048,7 +6140,7 @@ ${note}`;
         ),
       );
       if (result.outcome === "spec_conflict" && result.taskId === task.id) {
-        this.specConflict(runId, state, policy, child, task, result, root);
+        await this.specConflict(runId, state, policy, profiles, child, task, result, root, signal);
         return;
       }
       if (result.outcome === "implemented")
@@ -6906,17 +6998,22 @@ ${note}`;
     const { entry } = outcome;
     let failure: unknown = null;
     if (outcome.kind === "conflict")
-      this.specConflict(
+      await this.specConflict(
         runId,
         state,
         policy,
+        profiles,
         entry.child,
         entry.task,
         outcome.result,
         join(this.store.workspace, entry.path),
+        signal,
       );
     else if (outcome.kind === "done") {
-      if (!fatal) await this.integrateTask(runId, state, policy, profiles, outcome, signal);
+      if (!fatal)
+        await this.closingStep(runId, entry.child, signal, () =>
+          this.integrateTask(runId, state, policy, profiles, outcome, signal),
+        );
       delete state.taskCarry[entry.task.id];
     } else if (outcome.kind === "interrupted") {
       const restart = !fatal && this.restartLostTask(runId, state, outcome);
@@ -8220,7 +8317,7 @@ ${note}`;
       this.store
         .findings(runId)
         .filter((f) => task.findingIds.includes(f.id))
-        .map((f) => /^Required check (\S+) failed$/.exec(JSON.parse(f.body_json).claim)?.[1])
+        .map((f) => checkOfClaim(JSON.parse(f.body_json).claim))
         .filter((id): id is string => Boolean(id)),
     );
     const regression = this.affectedRecord(state, task)?.checkId;
@@ -8328,9 +8425,7 @@ ${note}`;
     const findings = this.store.findings(runId).filter((f) => task.findingIds.includes(f.id));
     const named = findings.map((f) => {
       const claim = (JSON.parse(f.body_json) as { claim?: unknown }).claim;
-      return typeof claim === "string"
-        ? (/^Required check (\S+) failed$/.exec(claim)?.[1] ?? taskCheckOfClaim(claim))
-        : null;
+      return typeof claim === "string" ? (checkOfClaim(claim) ?? taskCheckOfClaim(claim)) : null;
     });
     if (findings.length !== task.findingIds.length || named.some((id) => !id)) return false;
     // Only files that changed since the failures can have fixed them; a correction that starts
@@ -9155,15 +9250,17 @@ ${note}`;
    * three times about tests that contradicted the spec). A documentation task whose report sets
    * the rule for examples against the request's worked example copies that example (#992).
    */
-  private specConflict(
+  private async specConflict(
     runId: string,
     state: RuntimeState,
     policy: RunPolicy,
+    profiles: AgentProfile[],
     child: string,
     task: Task,
     result: Implementation,
     root: string,
-  ): void {
+    signal: AbortSignal,
+  ): Promise<void> {
     const report = [result.summary, ...result.unresolved].join(" ");
     const rows = this.contestedRows(runId, state, task, report, root, policy.checks);
     const account = {
@@ -9173,7 +9270,21 @@ ${note}`;
       ...(rows.length ? { criterionIds: rows.map((r) => r.criterion.id) } : {}),
     };
     const assumedPath = `assumptions/conflicts/${task.id}.json`;
-    if (this.settleContestedRows(runId, state, child, task, rows, account, report)) return;
+    if (
+      await this.settleContestedRows(
+        runId,
+        state,
+        policy,
+        profiles,
+        child,
+        task,
+        rows,
+        account,
+        report,
+        signal,
+      )
+    )
+      return;
     if (this.settleCheckCommands(runId, state, child, task, policy, account, report)) return;
     // A fully confident spec finding that explicitly names test removals outranks our guard,
     // even under clarification ask. Bind only the host findings, preserving the spec finding.
@@ -9325,6 +9436,9 @@ ${note}`;
           requestId: `assumed-${task.id}`,
           taskId: task.id,
           findingIds: task.findingIds,
+          // The overruled criteria leave the case walk, as a person's answer for the
+          // requirements does (#1788).
+          ...(byRequirement ? { criterionIds: amended.criterionIds } : {}),
           answer: `Assumed under clarification assume (${assumedPath}): ${assumed}.`,
         });
       }
@@ -9446,6 +9560,95 @@ ${note}`;
     });
   }
   /**
+   * The audited rows a source task replays on its code before it is accepted (#1617), with the
+   * run that writes the agent's harness file, runs it with the project's test command for that
+   * file and removes it. Undefined without audited rows of its criteria, or when no test check of
+   * the project runs such a file.
+   */
+  private rowReplayFor(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ):
+    | {
+        replay: RowReplay;
+        run: (root: string, harness: string, signal: AbortSignal) => Promise<ReplayResult>;
+      }
+    | undefined {
+    if (!rowsAsDataOn(policy) || !state.spec) return undefined;
+    const artifact = this.store.latestArtifact(runId, ROWS_ARTIFACT);
+    if (!artifact) return undefined;
+    const rows = JSON.parse(this.store.readArtifact(runId, artifact.id)) as RowsArtifact;
+    if (rows.specHash !== hashJson(state.spec)) return undefined;
+    const replay = rowReplay(state.rootGraph ?? state.graph, rows, task);
+    if (!replay) return undefined;
+    const path = replay.file.path;
+    if (!plannedWrittenTests(policy.checks, [{ path, action: "create" }])) return undefined;
+    return {
+      replay,
+      run: async (root, harness, signal) => {
+        const absolute = workspacePath(root, path);
+        if (existsSync(absolute))
+          return {
+            status: "error",
+            failed: [],
+            output: `${path} already exists in the workspace, so the replay has no file of its own.`,
+          };
+        const created: string[] = [];
+        for (let dir = dirname(absolute); !existsSync(dir); dir = dirname(dir))
+          created.unshift(dir);
+        let result: ReplayResult;
+        try {
+          for (const dir of created) mkdirSync(dir);
+          writeFileSync(absolute, withInlineRows(harness, replay.file));
+          const check = writtenTestsCheck(root, policy.checks, [{ path, action: "create" }]);
+          const measured = check
+            ? await this.checks.measure(
+                { ...check, id: "row-replay" },
+                signal,
+                root,
+                runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
+              )
+            : {
+                status: "inconclusive" as const,
+                output: `No test check of this project runs ${path}.`,
+              };
+          result = replayResult(measured.status, measured.output, replay.rows);
+        } finally {
+          rmSync(absolute, { force: true });
+          // Python leaves the file's bytecode next to it; nothing else of it is in the tree.
+          const cache = join(dirname(absolute), "__pycache__");
+          const stem = basename(absolute).replace(/\.py$/, ".");
+          if (absolute.endsWith(".py") && existsSync(cache))
+            for (const name of readdirSync(cache))
+              if (name.startsWith(stem)) rmSync(join(cache, name), { force: true });
+          for (const dir of created.reverse())
+            try {
+              rmdirSync(dir);
+            } catch {}
+        }
+        this.store.transaction(() =>
+          this.store.artifact(
+            runId,
+            "diagnostic",
+            `tasks/${task.id}/row-replay-${newId()}.json`,
+            canonical({
+              taskId: task.id,
+              rowTaskId: replay.rowTaskId,
+              criteria: replay.criteria,
+              rows: replay.rows.length,
+              status: result.status,
+              failed: result.failed,
+              harnessHash: hashBytes(Buffer.from(harness)),
+            }),
+          ),
+        );
+        return result;
+      },
+    };
+  }
+  /**
    * Puts the host's block of an inline rows test file in place, journaled like any host write:
    * before the attempt so the agent sees it, and after so an edit that dropped it is undone.
    */
@@ -9511,19 +9714,23 @@ ${note}`;
    * the rows win. Each settles once per task; a second report of the same conflict is asked, with
    * the rows quoted verbatim.
    */
-  private settleContestedRows(
+  private async settleContestedRows(
     runId: string,
     state: RuntimeState,
+    policy: RunPolicy,
+    profiles: AgentProfile[],
     child: string,
     task: Task,
     rows: ContestedRow[],
     account: Record<string, unknown>,
     report: string,
-  ): boolean {
+    signal: AbortSignal,
+  ): Promise<boolean> {
     const misquoted = rows.flatMap((r) => r.misquoted.map((m) => ({ ...m, id: r.criterion.id })));
     const verified = rows.length > 0 && rows.every(auditVerified);
     const misquotePath = `assumptions/conflicts/${task.id}-misquoted.json`;
     const verifiedPath = `assumptions/conflicts/${task.id}-audited.json`;
+    const reauditedPath = `assumptions/conflicts/${task.id}-reaudited.json`;
     const rowsText = rows.map(verbatimRow).join(" ");
     if (misquoted.length && !this.store.latestArtifact(runId, misquotePath)) {
       const settled = `The test of ${task.id} does not use the criterion rows as written: ${misquoted.map((m) => `${m.id} states ${JSON.stringify(m.literal)}, the test has ${JSON.stringify(m.quoted)}`).join("; ")}`;
@@ -9543,12 +9750,38 @@ ${note}`;
         this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
         this.store.finishStep(runId, child, "failed");
       });
-      state.prompt += `\nSettled spec conflict (${misquotePath}): task ${task.id} reported that the spec contradicts the code: ${report.slice(0, 1200)} ${settled}. Copy each row's input and expected value into the test exactly as the criterion states them (${rowsText.slice(0, 2000)}), run the checks again, and report spec_conflict only if the code still disagrees with the row as written.${verified ? " The derivation audit recomputed these rows from the requirements and they match: the rows are right." : ""}`;
+      state.prompt += `\nSettled spec conflict (${misquotePath}): task ${task.id} reported that the spec contradicts the code: ${report.slice(0, 1200)} ${settled}. Copy each row's input and expected value into the test exactly as the criterion states them (${rowsText.slice(0, 2000)}), run the checks again, and report spec_conflict only if the code still disagrees with the row as written.${verified ? " The derivation audit recomputed these rows from the requirements and they match (the analyzer's recomputation, not a run of the code)." : ""}`;
       return true;
     }
-    if (verified && !misquoted.length && !this.store.latestArtifact(runId, verifiedPath)) {
+    if (
+      verified &&
+      !misquoted.length &&
+      !this.store.latestArtifact(runId, verifiedPath) &&
+      !this.store.latestArtifact(runId, reauditedPath)
+    ) {
+      // The audit is the analyzer's own arithmetic, and the implementer ran the code: a second,
+      // targeted audit against the report decides before the rows are trusted (#1788).
+      const second = await this.reaudit(
+        runId,
+        state,
+        policy,
+        profiles,
+        child,
+        task,
+        rows,
+        report,
+        signal,
+      );
+      if (second === null) return false;
+      const disputed = rows.filter((r) =>
+        second.some((d) => d.criterionId === r.criterion.id && !d.matches),
+      );
+      if (disputed.length) {
+        this.settleForRequirements(runId, state, child, task, disputed, second, account, report);
+        return true;
+      }
       const ids = rows.map((r) => r.criterion.id).join(", ");
-      const settled = `The audit-verified rows of ${ids} win: the derivation audit recomputed each of them from the requirements and they match`;
+      const settled = `The audit-verified rows of ${ids} win: the derivation audit and a second audit against this report each recomputed them from the requirements and they match`;
       this.store.transaction(() => {
         this.store.artifact(
           runId,
@@ -9575,6 +9808,132 @@ ${note}`;
       return true;
     }
     return false;
+  }
+  /**
+   * One targeted re-audit of the rows a conflict contests (#1788), with the implementer's report
+   * and an index table of each input. Its derivations of those criteria, or null when it could
+   * not run.
+   */
+  private async reaudit(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    profiles: AgentProfile[],
+    parent: string,
+    task: Task,
+    rows: ContestedRow[],
+    report: string,
+    signal: AbortSignal,
+  ): Promise<NonNullable<Analysis["derivations"]> | null> {
+    const profile = profiles.find((p) => p.output === "analysis");
+    if (!profile || !state.spec) return null;
+    const extra = reauditExtra(state.spec, rows, report, policy.checks);
+    const audited = { ...state.spec, criteria: extra.criteria };
+    const step = this.store.transaction(() =>
+      this.store.beginStep(runId, `reaudit-${task.id}`, parent),
+    );
+    try {
+      const analysis = AnalysisSchema.parse(
+        await this.call(
+          runId,
+          step,
+          state,
+          policy,
+          profile,
+          { derivationAudit: extra },
+          signal,
+          undefined,
+          0,
+          (output) => {
+            const parsed = AnalysisSchema.safeParse(output);
+            return parsed.success ? derivationProblems(audited, parsed.data) : [];
+          },
+        ),
+      );
+      const derivations = (analysis.derivations ?? []).filter((d) =>
+        rows.some((r) => r.criterion.id === d.criterionId),
+      );
+      this.store.transaction(() => {
+        this.store.artifact(
+          runId,
+          "diagnostic",
+          `tasks/conflicts/${task.id}-reaudit.json`,
+          canonical({ taskId: task.id, derivations }),
+        );
+        this.store.finishStep(runId, step, "completed");
+      });
+      return derivations;
+    } catch (error) {
+      if (signal.aborted) throw error;
+      if (
+        error instanceof WorkflowFault &&
+        ["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code)
+      )
+        throw error;
+      this.store.transaction(() => this.store.finishStep(runId, step, "failed"));
+      return null;
+    }
+  }
+  /**
+   * The re-audit disagrees with the audited rows: the requirements win over them, as for a report
+   * that names both (#1459), and the case walk stops demanding the overruled literals (#1788).
+   */
+  private settleForRequirements(
+    runId: string,
+    state: RuntimeState,
+    child: string,
+    task: Task,
+    disputed: ContestedRow[],
+    derivations: NonNullable<Analysis["derivations"]>,
+    account: Record<string, unknown>,
+    report: string,
+  ): void {
+    const criterionIds = disputed.map((r) => r.criterion.id);
+    const requirementIds = [...new Set(disputed.flatMap((r) => r.criterion.requirementIds))];
+    const path = `assumptions/conflicts/${task.id}-reaudited.json`;
+    const amendmentPath = `amendments/conflict-${task.id}.json`;
+    const recomputed = derivations
+      .filter((d) => criterionIds.includes(d.criterionId) && !d.matches)
+      .map(
+        (d) =>
+          `${d.criterionId} row ${JSON.stringify(d.row)}: the requirements give ${JSON.stringify(d.recomputed)} (${d.derivation})`,
+      )
+      .join("; ");
+    const settled = `The requirements ${requirementIds.join(", ")} win over the criteria ${criterionIds.join(", ")}: a second audit of the contested rows against the report recomputed ${recomputed.slice(0, 1500)}`;
+    const amendment: SpecAmendment = {
+      findingId: `conflict-${task.id}`,
+      criterionIds,
+      requirementIds,
+      paths: [],
+      claim: `${report.slice(0, 1000)} Re-audit: ${recomputed.slice(0, 1000)}`,
+      suggestedFix: `Read ${criterionIds.join(", ")} as ${requirementIds.join(", ")} state.`,
+      authority: "requirement",
+    };
+    this.store.transaction(() => {
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `tasks/conflicts/${task.id}.json`,
+        canonical(account),
+      );
+      this.store.artifact(
+        runId,
+        "assumption",
+        path,
+        canonical({ ...account, assumed: settled, derivations }),
+      );
+      this.store.artifact(runId, "assumption", amendmentPath, canonical(amendment));
+      recordConflictDecision(this.store, runId, {
+        requestId: `reaudited-${task.id}`,
+        taskId: task.id,
+        findingIds: task.findingIds,
+        criterionIds,
+        answer: `Settled by a second audit (${path}): ${settled}.`,
+      });
+      this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
+      this.store.finishStep(runId, child, "failed");
+    });
+    state.prompt += `\n${amendmentNote(amendmentPath, amendment)}\nSettled spec conflict (${path}): task ${task.id} reported that the spec contradicts the code: ${report.slice(0, 1200)} ${settled}. Implement what ${requirementIds.join(", ")} state, and where a test this run wrote follows the contradicting row, change only that expected value to what the requirements give; weaken no other test. Report implemented or already_satisfied, not spec_conflict.`;
   }
   /**
    * A conflict about commands of the run's checks only: the host runs them, so they are not test
@@ -10473,9 +10832,7 @@ ${note}`;
         .flatMap((row) => {
           const claim = (JSON.parse(row.body_json) as { claim?: unknown }).claim;
           const check =
-            typeof claim === "string"
-              ? (/^Required check (\S+) failed$/.exec(claim)?.[1] ?? taskCheckOfClaim(claim))
-              : null;
+            typeof claim === "string" ? (checkOfClaim(claim) ?? taskCheckOfClaim(claim)) : null;
           return check ? [check] : [];
         }),
     );
@@ -10560,7 +10917,11 @@ ${note}`;
       });
       for (const finding of recorded) state.repairPredecessors[finding.id] = task.id;
       this.repair(runId, state, policy, recorded, "repair", "task");
-      this.store.transaction(() => this.store.saveState(runId, state));
+      // The task's own step ends here; its corrective runs in a step of its own (#1805).
+      this.store.transaction(() => {
+        this.store.endRunningStep(runId, child, "failed");
+        this.store.saveState(runId, state);
+      });
     } else {
       this.store.transaction(() => {
         const graph = state.graph;
@@ -10712,7 +11073,7 @@ ${note}`;
    */
   private resolveCoveredFindings(runId: string, passedIds: string[]): void {
     if (!passedIds.length) return;
-    const claims = new Set(passedIds.map((id) => `Required check ${id} failed`));
+    const claims = new Set(passedIds.flatMap(checkClaims));
     this.store.transaction(() => {
       for (const finding of this.store.findings(runId))
         if (
@@ -10779,9 +11140,10 @@ ${note}`;
             (state.rootGraph ?? state.graph)?.tasks ?? [],
             task,
             regression
-              ? `The check passed but ${regression} (evidence ${result.evidenceId}).`
+              ? `The check passed but ${regression.message} (evidence ${result.evidenceId}).`
               : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
             newId,
+            regression?.diagnosticsOnly ? { severity: regression.severity } : undefined,
           ),
         );
       }
@@ -13056,9 +13418,12 @@ ${note}`;
           result.reason
             ? `${result.reason}: restore the approved test or promote a new one (evidence ${result.evidenceId}).`
             : regression
-              ? `The check passed but ${regression} (evidence ${result.evidenceId}).`
+              ? `The check passed but ${regression.message} (evidence ${result.evidenceId}).`
               : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
           newId,
+          !result.reason && regression?.diagnosticsOnly
+            ? { severity: regression.severity }
+            : undefined,
         ),
       );
     }
@@ -13078,7 +13443,7 @@ ${note}`;
     if (!failures.length) {
       // Without a review stage nothing else closes the findings of an earlier failed run of
       // these gates; the passing gates close them.
-      const closed = new Set(ordered.map(({ check }) => `Required check ${check.id} failed`));
+      const closed = new Set(ordered.flatMap(({ check }) => checkClaims(check.id)));
       this.store.transaction(() => {
         for (const finding of this.store.findings(runId))
           if (
@@ -14339,7 +14704,7 @@ export function staticCorrection(
     findings.every((f) => {
       const claim = (JSON.parse(f.body_json) as { claim?: unknown }).claim;
       if (typeof claim !== "string" || claim.includes(" broke existing tests: ")) return false;
-      const id = /^Required check (\S+) failed$/.exec(claim)?.[1] ?? taskCheckOfClaim(claim);
+      const id = checkOfClaim(claim) ?? taskCheckOfClaim(claim);
       const check = policy.checks.find((c) => c.id === id);
       return Boolean(check && isStaticCheck(check) && !isTestCheck(check));
     })

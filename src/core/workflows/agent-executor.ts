@@ -54,6 +54,7 @@ import {
   writesDocumentation,
 } from "../verification/repro.js";
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
+import { type ReplayResult, replayProblems } from "./acceptance-rows-replay.js";
 import { affectedTestsFor, taskCaseText, writtenTestsCheck } from "./affected-tests.js";
 import { assertAttemptFits, growBudgetOnProgress } from "./budget.js";
 import {
@@ -165,6 +166,8 @@ const MAX_SYNTAX_REFUSALS = 2;
 const MAX_REPRO_REFUSALS = 2;
 /** Submissions refused because the test files leave out a case the criteria quote (#1250). */
 const MAX_CASE_REFUSALS = 2;
+/** Submissions refused because a source task's code fails the audited rows (#1617). */
+const MAX_REPLAY_REFUSALS = 2;
 /** Refusals of one path by the file-hash check after which an attempt stops (#954). */
 const MAX_HASH_REFUSALS = 3;
 
@@ -919,6 +922,46 @@ export class NativeAgentExecutor implements AgentExecutor {
             }),
         });
       }
+      // A source task replays the audited rows of its criteria on its own code (#1617), the way
+      // the host replays them before it accepts submit_result.
+      const rowReplay = request.rowReplay;
+      let replayHarness: string | null = null;
+      let lastReplay: { result: ReplayResult; edits: number } | null = null;
+      const attemptEdits = () =>
+        this.store
+          .effects(request.runId)
+          .filter((e) => e.attempt_id === request.attemptId && e.kind === "file_patch").length;
+      const replay = async (harness: string): Promise<ReplayResult> => {
+        if (!rowReplay) throw new WorkflowFault("CAPABILITY_DENIED", "No rows to replay");
+        replayHarness = harness;
+        const edits = attemptEdits();
+        const result = await rowReplay.run(root, harness, request.signal);
+        lastReplay = { result, edits };
+        return result;
+      };
+      if (!request.hostTools && rowReplay && request.profile.role === "implementer") {
+        let runs = 0;
+        available.replay_rows = tool({
+          description: `Replay the audited rows of ${rowReplay.replay.criteria.join(", ")} on the code as it is now: harness is the whole source of ${rowReplay.replay.file.path}, which defines the function the rows block calls. The host appends the block, runs the file with the project's test command, removes it, and returns the rows that fail with their output. At most ${PROBE_TRIES} runs.`,
+          inputSchema: z
+            .object({
+              harness: z
+                .string()
+                .min(1)
+                .max(64 * 1024),
+            })
+            .strict(),
+          execute: async ({ harness }: { harness: string }) =>
+            guard.host("replay_rows", async () => {
+              if (++runs > PROBE_TRIES)
+                return {
+                  status: "refused",
+                  reason: `Only ${PROBE_TRIES} row replays are allowed per attempt`,
+                };
+              return replay(harness);
+            }),
+        });
+      }
       const fixable = policy.checks.filter((c) => c.fix);
       if (
         !request.hostTools &&
@@ -1041,6 +1084,8 @@ export class NativeAgentExecutor implements AgentExecutor {
       let caseRefusals = 0;
       let lastCaseRefusal = "";
       let reproRefusals = 0;
+      let replayRefusals = 0;
+      let lastReplayRefusal = "";
       const submitResult = tool({
         description:
           "Submit the final typed result. Evidence IDs must come from the host context or tools.",
@@ -1139,6 +1184,31 @@ export class NativeAgentExecutor implements AgentExecutor {
               return refuse(
                 missing,
                 "The criteria this task covers quote these cases, and the test files it writes do not contain them. Add a test for each one that checks the exact expected output and exit code, then call submit_result again with the complete result. If a case is already tested in another spelling, submit again unchanged: the same list is not refused twice.",
+              );
+            }
+          }
+          // A source defect an audited row names goes back to this task, not to a test task
+          // that cannot edit the source and a corrective after it (#1617).
+          if (
+            !errors.length &&
+            rowReplay &&
+            replayRefusals < MAX_REPLAY_REFUSALS &&
+            outcome === "implemented"
+          ) {
+            const result =
+              replayHarness === null
+                ? null
+                : lastReplay && lastReplay.edits === attemptEdits()
+                  ? lastReplay.result
+                  : await replay(replayHarness);
+            const problems = replayProblems(rowReplay.replay, result);
+            const key = problems.join("\n");
+            if (problems.length && key !== lastReplayRefusal) {
+              replayRefusals++;
+              lastReplayRefusal = key;
+              return refuse(
+                problems,
+                "The host replays the audited rows of the criteria this task implements on its code before it accepts the task. Fix the code this task writes so each listed row gives its expected value (the rows are audited spec values: do not change them), confirm with replay_rows, then call submit_result again with the complete result. If the rows call code a later task writes, or the replay cannot run in this project yet, submit again unchanged: the same list is not refused twice.",
               );
             }
           }

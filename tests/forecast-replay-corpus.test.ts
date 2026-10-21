@@ -4,11 +4,12 @@ import { join, relative } from "node:path";
 import { callCostRate, costRate } from "../src/core/workflows/budget.js";
 import { shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { forecastSamples } from "../src/core/workflows/stage-price.js";
-import { type CallRate, openTrace, replayInitiativeStarts, replayTrace } from "../src/core/workflows/trace.js";
+import { CAPACITY_PROBE } from "../src/core/workflows/sizing.js";
+import { type CallRate, openTrace, type PlanPriceReplay, replayInitiativeStarts, replayPlanPrices, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
 
 // #1649, #1715: every recorded bench-round trace replays through the current host decisions: the
 // forecast and cap code, the per-call cost cap (#1740), the first-response deadline of each model
-// call, and the initiative share gate (#1707), asked both on its recorded inputs and with each start
+// call, the test task split of each sizing report (#1789), and the initiative share gate (#1707), asked both on its recorded inputs and with each start
 // rewound and recomputed. A stop, cap growth or park the recorded run did not make fails the suite, unless
 // accepted.json lists it for that run or initiative with the reason: the pull request that changes
 // the decision says so in its diff.
@@ -19,6 +20,7 @@ interface Accepted {
   newGrowth?: number;
   newFirstByteStops?: number;
   newCostStops?: number;
+  newTestSplits?: number;
   newShareStops?: number;
   newStartStops?: number;
   reason: string;
@@ -60,12 +62,14 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newGrowth: growth.length,
           newFirstByteStops: run.newFirstByteStops,
           newCostStops: run.newCostStops,
+          newTestSplits: run.newTestSplits,
         }).toEqual({
           run: run.runId,
           newStops: allowed?.newStops ?? 0,
           newGrowth: allowed?.newGrowth ?? 0,
           newFirstByteStops: allowed?.newFirstByteStops ?? 0,
           newCostStops: allowed?.newCostStops ?? 0,
+          newTestSplits: allowed?.newTestSplits ?? 0,
         });
       }
       for (const initiative of replay.initiatives) {
@@ -160,6 +164,43 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
   }, 120000);
 });
 
+describe("plan approvals price their tasks at what earlier runs' tasks paid (#1792)", () => {
+  test("R52's approvals, with R51 as history, bracket what their tasks cost where the typical mix priced them above it", () => {
+    const history = traces(join(ROOT, "R51")).map(openTrace);
+    const stores = history.map((h) => join(h.workspace, ".baked", "workflows.sqlite"));
+    const replay = (with_: string[]) => traces(join(ROOT, "R52")).flatMap((path) => replayPlanPrices(path, with_));
+    let current: PlanPriceReplay[];
+    let typical: PlanPriceReplay[];
+    try {
+      current = replay(stores);
+      // Before #1792 a plan was priced from the run's own attempts alone: at the typical task mix.
+      typical = replay(null);
+    } finally {
+      for (const h of history) h.dispose();
+    }
+    const priced = (rows: PlanPriceReplay[]) => rows.filter((r) => r.replayed && r.actualUsd > 0);
+    const below = (rows: PlanPriceReplay[]) => priced(rows).filter((r) => r.actualUsd < r.replayed!.low).length;
+    const above = (rows: PlanPriceReplay[]) => priced(rows).filter((r) => r.actualUsd > r.replayed!.high).length;
+    const error = (rows: PlanPriceReplay[]) =>
+      priced(rows).reduce((sum, r) => sum + Math.abs(Math.log((2 * r.actualUsd) / (r.replayed!.low + r.replayed!.high))), 0) /
+      priced(rows).length;
+    expect(priced(current).length).toBe(18);
+    expect(current.every((r) => r.rate === "history")).toBe(true);
+    expect(typical.every((r) => r.rate === "default")).toBe(true);
+    // The typical mix priced 14 of the 18 above what their tasks cost and none below; earlier
+    // runs' prices put 5 above and 3 below, and halve the error of the range's middle.
+    expect(below(typical)).toBeGreaterThanOrEqual(12);
+    expect(above(typical)).toBe(0);
+    expect(below(current)).toBeLessThanOrEqual(6);
+    expect(above(current)).toBeLessThanOrEqual(6);
+    expect(error(current)).toBeLessThan(error(typical) * 0.6);
+    // R52 url-shortener: the approval showed $6.14 to $11.92, the tasks cost $2.81.
+    const url = current.find((r) => r.recorded.low > 6 && r.recorded.low < 6.2);
+    expect(url!.replayed!.low).toBeLessThan(url!.actualUsd);
+    expect(url!.replayed!.high).toBeGreaterThan(url!.actualUsd);
+  }, 120000);
+});
+
 describe("the per-call cost cap replays on recorded reservations (#1740)", () => {
   // The rate before #1740: a stage without finished attempts took the run's blended price so far.
   const blended: CallRate = (store, runId, stage, model, samples = []) => {
@@ -208,4 +249,74 @@ describe("the per-call cost cap replays on recorded reservations (#1740)", () =>
     expect(stops(() => 1)).toBeGreaterThan(0);
     expect(stops()).toBe(0);
   }, 120000);
+});
+
+describe("test task splits replay on recorded sizing reports (#1789)", () => {
+  // The rule before #1789: with an observed case capacity, every test file above it and above five
+  // cases split, whatever its price.
+  const atCapacity: TestSplitRule = (cases, limit, estimate, cap) =>
+    (limit?.cases ?? 0) > 0 ? cases > 5 && cases > (limit?.cases ?? 0) : (cases === 0 || cases > 5) && (estimate.low + estimate.high) / 2 > cap;
+  const traces = ["R49/url-shortener.sqlite.gz", "R51/md-site.sqlite.gz", "R52/url-shortener.sqlite.gz"];
+
+  test("the old rule reproduces the recorded splits at a capacity of 4; the current one keeps those files whole", () => {
+    for (const name of traces) {
+      const path = join(ROOT, name);
+      const old = replayTrace(path, { testSplit: atCapacity }).runs.flatMap((r) => r.testSplits);
+      expect(old.length).toBeGreaterThan(0);
+      expect(old.every((b) => b.replayed === b.recorded)).toBe(true);
+      const current = replayTrace(path).runs.flatMap((r) => r.testSplits);
+      const kept = current.filter((b) => b.recorded === "split" && b.replayed === "whole");
+      expect(kept.length).toBeGreaterThan(0);
+      expect(kept.every((b) => b.cases > 4 && b.cases <= CAPACITY_PROBE * 4)).toBe(true);
+      expect(current.filter((b) => b.recorded === "whole" && b.replayed === "split")).toEqual([]);
+    }
+  }, 120000);
+
+  test("a rule that splits every test task is caught as new splits", () => {
+    const path = join(ROOT, "R52/url-shortener.sqlite.gz");
+    expect(replayTrace(path, { testSplit: () => true }).runs.reduce((n, r) => n + r.newTestSplits, 0)).toBeGreaterThan(0);
+    expect(replayTrace(path).runs.reduce((n, r) => n + r.newTestSplits, 0)).toBe(0);
+  }, 120000);
+});
+
+describe("initiative feature ranges replay against what the features used (#1806)", () => {
+  // At each initiative's first replayed start, how many features used less than the low end of
+  // the range the current estimate gives them, and more than its high end. The path floor's low
+  // end at the first quartile of the earlier features' rates put 37 of 104 below their range,
+  // 11 of R54 lanewalk's 12 among them as the round recorded; from the lowest rate, 29 and 7.
+  test("no more features start below their range than the lowest-rate floor allows", () => {
+    let lanewalk = 0;
+    let below = 0;
+    let above = 0;
+    let features = 0;
+    for (const path of readdirSync(ROOT, { recursive: true, encoding: "utf8" })
+      .filter((p) => p.endsWith(".sqlite.gz"))
+      .map((p) => join(ROOT, p))) {
+      const replays = replayInitiativeStarts(path);
+      if (!replays.length) continue;
+      const { store, dispose } = openTrace(path);
+      const used = new Map<string, number>();
+      try {
+        for (const row of store.connection
+          .query("SELECT l.feature_id AS feature, r.token_usage AS tokens FROM initiative_runs l JOIN runs r ON r.id=l.run_id")
+          .all() as { feature: string; tokens: number }[])
+          used.set(row.feature, (used.get(row.feature) ?? 0) + row.tokens);
+      } finally {
+        dispose();
+      }
+      for (const replay of replays)
+        for (const f of replay.starts[0]?.estimate ?? []) {
+          const tokens = used.get(f.featureId);
+          if (tokens === undefined) continue;
+          features++;
+          if (tokens < f.low) below++;
+          if (tokens < f.low && path.endsWith("lanewalk.sqlite.gz")) lanewalk++;
+          if (tokens > f.high) above++;
+        }
+    }
+    expect(features).toBeGreaterThanOrEqual(104);
+    expect(below).toBeLessThanOrEqual(29);
+    expect(lanewalk).toBeLessThanOrEqual(7);
+    expect(above).toBeLessThanOrEqual(25);
+  }, 600000);
 });

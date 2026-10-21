@@ -182,12 +182,13 @@ export interface InitiativeEstimate {
   /**
    * Tokens per acceptance criterion, measured on finished feature runs and this initiative's
    * accepted features; a feature whose spec is written is forecast at no less than its criteria
-   * times this rate. Null with fewer than `MIN_CRITERIA_SAMPLES` measured features.
+   * times this rate: from the lowest measured rate up to the upper end of their range (the third
+   * quartile from four rates on). Null with fewer than `MIN_CRITERIA_SAMPLES` measured features.
    */
   perCriterion: TokenRange | null;
   /**
-   * Tokens per boundary path, measured like `perCriterion`: the low end of the measured rates up to
-   * their median. A feature still to run, whose spec is not written yet, is forecast at no less than
+   * Tokens per boundary path, measured like `perCriterion`: the lowest measured rate up to their
+   * median. A feature still to run, whose spec is not written yet, is forecast at no less than
    * its paths times this rate (#1354). Null with fewer than `MIN_CRITERIA_SAMPLES`. Finished
    * features of the stores in `sizing.historyStores` count too, so the rate applies at the split,
    * before any feature of this initiative ran (#1376).
@@ -247,23 +248,26 @@ function taskCounts(history: PastRun[], workflowId: string): TokenRange {
  * they all name the same number, or when their tokens follow their paths less closely than
  * `MIN_PATH_FIT_CORRELATION`.
  */
-function pathFitOf(pool: FeatureRunSample[]): (PathFit & { residuals: number[] }) | null {
+function pathFitOf(
+  pool: FeatureRunSample[],
+  value: (s: FeatureRunSample) => number = (s) => s.tokens,
+): (PathFit & { residuals: number[] }) | null {
   const named = pool.filter((s) => pathWeight(s) > 0);
   if (named.length < MIN_PATH_FIT_SAMPLES) return null;
   const xs = named.map(pathWeight);
   const mx = xs.reduce((a, b) => a + b, 0) / xs.length;
-  const my = named.reduce((a, s) => a + s.tokens, 0) / named.length;
+  const my = named.reduce((a, s) => a + value(s), 0) / named.length;
   const sxx = xs.reduce((a, x) => a + (x - mx) ** 2, 0);
   if (sxx === 0) return null;
-  const sxy = named.reduce((a, s, i) => a + ((xs[i] ?? 0) - mx) * (s.tokens - my), 0);
-  const syy = named.reduce((a, s) => a + (s.tokens - my) ** 2, 0);
+  const sxy = named.reduce((a, s, i) => a + ((xs[i] ?? 0) - mx) * (value(s) - my), 0);
+  const syy = named.reduce((a, s) => a + (value(s) - my) ** 2, 0);
   if (syy === 0 || sxy / Math.sqrt(sxx * syy) < MIN_PATH_FIT_CORRELATION) return null;
   const perPath = sxy / sxx;
   const base = my - perPath * mx;
   return {
     base,
     perPath,
-    residuals: named.map((s, i) => s.tokens - (base + perPath * (xs[i] ?? 0))),
+    residuals: named.map((s, i) => value(s) - (base + perPath * (xs[i] ?? 0))),
   };
 }
 
@@ -291,23 +295,29 @@ function estimateFeature(
   const measured = rangeOf(pool.map((s) => s.tokens));
   // A feature that names paths sits where its paths put it among them, with their spread around
   // the fit; never below the cheapest of them.
-  const fit = pathWeight(feature) > 0 && measured ? pathFitOf(pool) : null;
-  const cheapest = Math.min(...pool.map((s) => s.tokens));
-  const placed =
-    fit &&
-    rangeOf(
-      fit.residuals.map((r) =>
-        Math.max(cheapest, fit.base + fit.perPath * pathWeight(feature) + r),
-      ),
-    );
+  const placeBy = (value: (s: FeatureRunSample) => number) => {
+    const f = pathWeight(feature) > 0 ? pathFitOf(pool, value) : null;
+    const cheapest = Math.min(...pool.map(value));
+    const range =
+      f &&
+      rangeOf(
+        f.residuals.map((r) => Math.max(cheapest, f.base + f.perPath * pathWeight(feature) + r)),
+      );
+    return range ? { fit: f, range } : null;
+  };
+  const byTokens = measured ? placeBy((s) => s.tokens) : null;
+  const fit = byTokens?.fit;
+  const placed = byTokens?.range;
   if (measured) {
     const tokens = placed ?? measured;
     return {
       ...head,
       tokens,
       expectedTokens: middle(tokens),
+      // Its tasks follow its paths the same way, so a two-path module does not plan six-path counts.
       tasks: hasTasks
-        ? (rangeOf(pool.map((s) => s.taskCount)) ?? { low: 0, high: 0 })
+        ? (placeBy((s) => s.taskCount)?.range ??
+          rangeOf(pool.map((s) => s.taskCount)) ?? { low: 0, high: 0 })
         : { low: 0, high: 0 },
       basis: "initiative-history",
       samples: pool.length,
@@ -420,7 +430,12 @@ function reforecast(
       .filter((u) => (u.criteria ?? 0) > 0 && u.spent > 0)
       .map((u) => u.spent / (u.criteria ?? 1)),
   ];
-  const perCriterion = rates.length >= MIN_CRITERIA_SAMPLES ? rangeOf(rates) : null;
+  // From the lowest rate, like the path floor below (#1806), up to the upper end of their range.
+  const criteriaRange = rates.length >= MIN_CRITERIA_SAMPLES ? rangeOf(rates) : null;
+  const perCriterion = criteriaRange && {
+    low: Math.round(Math.min(...rates)),
+    high: criteriaRange.high,
+  };
   // The boundary's paths tell features of one size apart before any of them runs: in bench round
   // 35 the four large narrowfit features named 4 to 11 paths and used 1.8M to 7.9M tokens, at 0.36M
   // to 0.92M per path, while the size gave them one range (#1354). A placeholder counts at its
@@ -432,11 +447,16 @@ function reforecast(
       .filter((f) => pathWeight(f) > 0 && used(f).spent > 0)
       .map((f) => used(f).spent / pathWeight(f)),
   ];
-  // Up to the median, not the highest rate: a file dense in rules costs several times a plain one
-  // (bench round 36, seqmill: 0.29M to 1.28M per path), and the highest rate scaled every feature
-  // still to run up to 1.9 times what it used.
-  const pathRange = pathRates.length >= MIN_CRITERIA_SAMPLES ? rangeOf(pathRates) : null;
-  const perPath = pathRange && { low: pathRange.low, high: Math.round(median(pathRates)) };
+  // From the lowest rate, not the first quartile: a floor no measured feature stayed under. The
+  // quartile applied from four samples on, and once other projects' features counted (#1376) it
+  // put the low end of 11 of 12 R54 lanewalk features (Java, 165k-308k per path) above their cost,
+  // at 365k per path over 91 features (#1806). Up to the median, not the highest rate: a file dense
+  // in rules costs several times a plain one (bench round 36, seqmill: 0.29M to 1.28M per path),
+  // and the highest rate scaled every feature still to run up to 1.9 times what it used.
+  const perPath =
+    pathRates.length >= MIN_CRITERIA_SAMPLES
+      ? { low: Math.round(Math.min(...pathRates)), high: Math.round(median(pathRates)) }
+      : null;
   const features = prior.map((f): FeatureEstimate => {
     const { spent, accepted: done, criteria, planned } = used(f);
     const known = { ...(criteria ? { criteria } : {}), ...(planned ? { planned } : {}) };

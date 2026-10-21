@@ -10,5 +10,21 @@
   "R49/shexpand.sqlite.gz#41395500-8efa-4f81-869a-e05f779c2f7a": {
     "newGrowth": 2,
     "reason": "#1648 (PR #1665): an open kind is priced from its own estimate until three tasks of it finish. The replay matches the recording on main just before #1665 (730420d2) and grows from e43b2fe2 on."
+  },
+  "R47/expenses-py.sqlite.gz#6a3b5596-47ae-4b71-915f-4824d6841d52": {
+    "newTestSplits": 2,
+    "reason": "#1595 (44965382): test files split by observed case capacity from then on; this round was sized before it and kept them whole. The rule before #1789 splits 3 of them, the current rule only those above four times the capacity or one attempt's cap."
+  },
+  "R47/md-site.sqlite.gz#4cf988f6-3b6a-4119-82b6-a754a2c41d2c": {
+    "newTestSplits": 3,
+    "reason": "#1595 (44965382): test files split by observed case capacity from then on; this round was sized before it and kept them whole. The rule before #1789 splits 4 of them, the current rule only those above four times the capacity or one attempt's cap."
+  },
+  "R48/expenses-py.sqlite.gz#a6bfa43e-976e-49e7-ba32-edf7c16e3c84": {
+    "newTestSplits": 3,
+    "reason": "#1595 (44965382): test files split by observed case capacity from then on; this round was sized before it and kept them whole. The rule before #1789 splits 3 of them, the current rule only those above four times the capacity or one attempt's cap."
+  },
+  "R48/md-site.sqlite.gz#a42d1cf8-1ceb-45b1-8a60-8a650147539e": {
+    "newTestSplits": 1,
+    "reason": "#1595 (44965382): test files split by observed case capacity from then on; this round was sized before it and kept them whole. The rule before #1789 splits 4 of them, the current rule only those above four times the capacity or one attempt's cap."
   }
 }

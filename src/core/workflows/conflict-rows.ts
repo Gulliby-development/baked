@@ -120,11 +120,68 @@ export function contestedRows(
 export const auditVerified = (row: ContestedRow): boolean =>
   row.audit.length > 0 && row.audit.every((d) => d.matches);
 
+/**
+ * Each character of an input literal with its index, so a count of positions is read off the
+ * table instead of done in the head (jsonsplice paths T006, bench round 53: an audit counted a
+ * comment's column as 10 where FR-005 gives 11, twice, #1788). UTF-16 indexes, with UTF-8 byte
+ * offsets as well when the literal is not ASCII. Empty past 200 characters.
+ */
+export function indexTable(literal: string): string {
+  if (!literal.length || literal.length > 200) return "";
+  const units = [...literal].reduce<{ at: number; byte: number; parts: string[]; bytes: string[] }>(
+    (acc, ch) => {
+      acc.parts.push(`${acc.at}:${JSON.stringify(ch)}`);
+      acc.bytes.push(`${acc.byte}:${JSON.stringify(ch)}`);
+      acc.at += ch.length;
+      acc.byte += new TextEncoder().encode(ch).length;
+      return acc;
+    },
+    { at: 0, byte: 0, parts: [], bytes: [] },
+  );
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: ASCII is the range 0-127.
+  const ascii = /^[\x00-\x7f]*$/.test(literal);
+  return `UTF-16 index ${units.parts.join(" ")}${ascii ? "" : `; UTF-8 byte offset ${units.bytes.join(" ")}`}`;
+}
+
+/**
+ * What a second, targeted audit of contested rows gets (#1788): the criteria and their
+ * requirements, the implementer's report with its own derivation, and an index table of each
+ * quoted input, so the two derivations can be compared cell by cell.
+ */
+export function reauditExtra(
+  spec: Pick<Spec, "criteria" | "requirements">,
+  rows: ContestedRow[],
+  report: string,
+  checks: CaseContext["checks"],
+): {
+  criteria: Spec["criteria"];
+  requirements: Spec["requirements"];
+  report: string;
+  inputs: { criterionId: string; literal: string; index: string }[];
+  note: string;
+} {
+  const criteria = rows.map((r) => r.criterion);
+  const ids = new Set(criteria.flatMap((c) => c.requirementIds));
+  const inputs = rows.flatMap((r) =>
+    criterionCases(spec, { criterionIds: [r.criterion.id] }, { checks }).flatMap((c) => {
+      const index = indexTable(c.literal);
+      return index ? [{ criterionId: r.criterion.id, literal: c.literal, index }] : [];
+    }),
+  );
+  return {
+    criteria,
+    requirements: spec.requirements.filter((r) => ids.has(r.id)),
+    report: report.slice(0, 3000),
+    inputs,
+    note: "Derivation re-audit: the derivation audit recomputed these rows and found that they match the requirements, but the implementer ran the code and reports a different value with its own derivation (report). Recompute every row of these criteria again from the requirements alone, one entry per row in `derivations`, as in the derivation audit. For a position, column, offset, length or count, read it off the index table of the input (inputs) and cite the indexes you used in the derivation; do not count in your head. Decide each row on the requirements, not on which side said it first. Raise no findings.",
+  };
+}
+
 /** The criterion as the spec states it, and what the audit found, for a question to a person. */
 export function verbatimRow(row: ContestedRow): string {
   const { criterion } = row;
   const audit = row.audit.length
-    ? ` Derivation audit: ${row.audit
+    ? ` Derivation audit (the analyzer's own recomputation, not a run of the code): ${row.audit
         .map(
           (d) =>
             `row ${JSON.stringify(d.row)} ${d.matches ? "matches" : `does not match; the requirements give ${JSON.stringify(d.recomputed)}`}`,

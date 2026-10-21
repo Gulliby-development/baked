@@ -23,20 +23,20 @@ const signal = () => new AbortController().signal;
 
 describe("check output counts", () => {
   test("reads the diagnostics of common linters and type checkers", () => {
-    expect(diagnosticCount("Checked 12 files in 3ms. No fixes applied.")).toEqual({ tool: "biome", count: 0 });
+    expect(diagnosticCount("Checked 12 files in 3ms. No fixes applied.")).toEqual({ tool: "biome", count: 0, errors: 0 });
     expect(
       diagnosticCount("Checked 12 files in 3ms. No fixes applied.\nFound 2 warnings.\nFound 3 infos."),
-    ).toEqual({ tool: "biome", count: 5 });
-    expect(diagnosticCount("✖ 5 problems (2 errors, 3 warnings)")).toEqual({ tool: "eslint", count: 5 });
-    expect(diagnosticCount("All checks passed!")).toEqual({ tool: "ruff", count: 0 });
-    expect(diagnosticCount("src/a.py:1:1: F401 unused\nFound 1 error.")).toEqual({ tool: "ruff", count: 1 });
-    expect(diagnosticCount("Found 2 errors in 1 file.")).toEqual({ tool: "tsc", count: 2 });
+    ).toEqual({ tool: "biome", count: 2, errors: 0 });
+    expect(diagnosticCount("✖ 5 problems (2 errors, 3 warnings)")).toEqual({ tool: "eslint", count: 5, errors: 2 });
+    expect(diagnosticCount("All checks passed!")).toEqual({ tool: "ruff", count: 0, errors: 0 });
+    expect(diagnosticCount("src/a.py:1:1: F401 unused\nFound 1 error.")).toEqual({ tool: "ruff", count: 1, errors: 1 });
+    expect(diagnosticCount("Found 2 errors in 1 file.")).toEqual({ tool: "tsc", count: 2, errors: 2 });
     expect(
       diagnosticCount(
         '    Checking app v0.1.0\nwarning: `app` (bin "app") generated 3 warnings\n    Finished `dev` profile [unoptimized] target(s) in 0.5s',
       ),
-    ).toEqual({ tool: "cargo", count: 3 });
-    expect(diagnosticCount("Build succeeded.\n    2 Warning(s)\n    0 Error(s)")).toEqual({ tool: "dotnet", count: 2 });
+    ).toEqual({ tool: "cargo", count: 3, errors: 0 });
+    expect(diagnosticCount("Build succeeded.\n    2 Warning(s)\n    0 Error(s)")).toEqual({ tool: "dotnet", count: 2, errors: 0 });
     expect(diagnosticCount("")).toBeNull();
     expect(diagnosticCount("ok")).toBeNull();
   });
@@ -68,16 +68,21 @@ describe("check output counts", () => {
     // A range in prose is no plan.
     expect(testCount("use slices 1..2 of the input")).toBeNull();
     const tap = { kind: "tests" as const, tool: "tap", count: 10 };
-    expect(baselineRegression(tap, "ok 1\n1..8")).toContain("fell from 10 to 8");
+    expect(baselineRegression(tap, "ok 1\n1..8")?.message).toContain("fell from 10 to 8");
   });
 
   test("a regression needs the same tool on both sides and ignores fewer tests when tests are deleted", () => {
-    const lint = { kind: "diagnostics" as const, tool: "biome", count: 1 };
-    expect(baselineRegression(lint, "Checked 1 file in 1ms.\nFound 2 infos.")).toContain("rose from 1 to 2");
+    const lint = { kind: "diagnostics" as const, tool: "biome", count: 1, errors: 0 };
+    expect(baselineRegression(lint, "Checked 1 file in 1ms.\nFound 2 warnings.")).toMatchObject({ message: expect.stringContaining("warnings rose from 1 to 2"), severity: "low" });
+    expect(baselineRegression(lint, "Checked 1 file in 1ms.\nFound 1 error.\nFound 1 warning.")?.severity).toBe("high");
+    // Infos are hints, not diagnostics the ratchet holds (#1791).
+    expect(baselineRegression(lint, "Checked 1 file in 1ms.\nFound 1 warning.\nFound 6 infos.")).toBeNull();
+    // A baseline stored before errors were split is held as errors.
+    expect(baselineRegression({ kind: "diagnostics", tool: "biome", count: 0 }, "Checked 1 file in 1ms.\nFound 1 warning.")?.severity).toBe("high");
     expect(baselineRegression(lint, "Checked 1 file in 1ms.")).toBeNull();
     expect(baselineRegression(lint, "✖ 9 problems (9 errors, 0 warnings)")).toBeNull();
     const tests = { kind: "tests" as const, tool: "bun", count: 10 };
-    expect(baselineRegression(tests, "Ran 8 tests across 1 file.")).toContain("fell from 10 to 8");
+    expect(baselineRegression(tests, "Ran 8 tests across 1 file.")).toMatchObject({ message: expect.stringContaining("fell from 10 to 8"), severity: "high" });
     expect(baselineRegression(tests, "Ran 8 tests across 1 file.", true)).toBeNull();
     expect(baselineRegression(tests, "Ran 12 tests across 1 file.")).toBeNull();
     // A failing suite's count is not a baseline: some tests never ran.
@@ -85,13 +90,14 @@ describe("check output counts", () => {
   });
 });
 
-// The lint check exits 0 and reports one info per line of value.txt, as Biome does for infos.
-const lint = {
+// The lint check exits 0 and reports one diagnostic per line of value.txt at the given level, as
+// Biome does for warnings and infos.
+const lintAt = (level: "warnings" | "infos") => ({
   id: "lint",
   executable: "bun",
   args: [
     "-e",
-    "const f = Bun.file('value.txt'); const n = (await f.exists()) ? (await f.text()).split('\\n').filter(Boolean).length : 0; console.log('Checked 2 files in 1ms. No fixes applied.'); if (n) console.log(`Found ${n} infos.`)",
+    `const f = Bun.file('value.txt'); const n = (await f.exists()) ? (await f.text()).split('\\n').filter(Boolean).length : 0; console.log('Checked 2 files in 1ms. No fixes applied.'); if (n) console.log(\`Found \${n} ${level}.\`)`,
   ],
   cwd: ".",
   timeoutMs: 10000,
@@ -99,7 +105,8 @@ const lint = {
   scope: "feature" as const,
   envNames: [],
   writes: [],
-};
+});
+const lint = lintAt("warnings");
 const policy: RunPolicy = { ...fixturePolicy, checks: [...fixturePolicy.checks, lint] };
 
 async function driveToChecks(fixture: ReturnType<typeof workflowFixture>) {
@@ -124,14 +131,33 @@ describe("baseline comparison in update runs", () => {
     const run = await driveToChecks(fixture);
 
     expect(baseline(fixture, run.runId)?.counts).toEqual({
-      [commandKey(lint)]: [{ kind: "diagnostics", tool: "biome", count: 0 }],
+      [commandKey(lint)]: [{ kind: "diagnostics", tool: "biome", count: 0, errors: 0 }],
     });
     const findings = fixture.service.store
       .findings(run.runId)
-      .map((f) => JSON.parse(f.body_json) as { claim: string });
-    const lintFinding = findings.find((f) => f.claim === "Required check lint failed");
-    expect(JSON.stringify(lintFinding)).toContain("diagnostics rose from 0 to 1");
+      .map((f) => JSON.parse(f.body_json) as { claim: string; severity: string });
+    // The check passed: the finding says so, and new warnings alone are a low finding (#1791).
+    const lintFinding = findings.find((f) => f.claim === "Required check lint passed with more diagnostics");
+    expect(JSON.stringify(lintFinding)).toContain("warnings rose from 0 to 1");
+    expect(lintFinding?.severity).toBe("low");
+    expect(findings.some((f) => f.claim === "Required check lint failed")).toBe(false);
     expect(findings.some((f) => f.claim === "Required check check failed")).toBe(false);
+  });
+
+  test("a check that passes with new infos only opens no finding and no correction (#1791)", async () => {
+    const infos = lintAt("infos");
+    const fixture = workflowFixture({ policy: { ...fixturePolicy, checks: [...fixturePolicy.checks, infos] } });
+    cleanups.push(fixture.dispose);
+    mkdirSync(join(fixture.root, "src"));
+    writeFileSync(join(fixture.root, "src", "a.ts"), "export const a = 1;\n");
+    const run = await driveToChecks(fixture);
+
+    expect(baseline(fixture, run.runId)?.counts).toEqual({
+      [commandKey(infos)]: [{ kind: "diagnostics", tool: "biome", count: 0, errors: 0 }],
+    });
+    const claims = fixture.service.store.findings(run.runId).map((f) => (JSON.parse(f.body_json) as { claim: string }).claim);
+    expect(claims.filter((c) => c.startsWith("Required check lint"))).toEqual([]);
+    expect(fixture.service.store.run(run.runId).status).toBe("completed");
   });
 
   test("a scaffold run measures no baseline counts and passes on exit codes", async () => {
