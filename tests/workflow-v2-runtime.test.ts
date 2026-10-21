@@ -635,6 +635,24 @@ describe("workflow v2 scheduler", () => {
     expect(service.store.tasks(run.runId).map((t) => t.id)).toEqual(["T001", "T002"]);
   }, 30000);
 
+  // Bench round 58, wheeltags 9ed8820c (#1864): pytest exits 5 on a tree with no test, and the
+  // plan of a feature whose tests belong to another feature writes none, so no repair can help.
+  test("a test check that collects no test passes with a diagnostic when the plan writes no test", async () => {
+    const pytestEmpty = { ...valueCheck, id: "tests", args: ["-e", "console.log('collected 0 items\\n\\n=== no tests ran in 0.01s ==='); process.exit(5)"] };
+    const empty: RunPolicy = { ...policy, checks: [valueCheck, pytestEmpty] };
+    const { start, complete, service, define } = setup({}, empty);
+    const preset = builtinPresets.get("quick-fix");
+    if (!preset) throw new Error("quick-fix preset missing");
+    define({ ...instantiatePreset(preset, empty), id: "custom-fix", preset: "custom" });
+    const run = await start("custom-fix");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    const diagnostic = service.store.artifacts(run.runId).find((a) => a.logical_path.startsWith("checks/no-tests/"));
+    expect(service.store.readArtifact(run.runId, diagnostic?.id ?? "")).toContain("tests collected no test and this run's plan writes none");
+    expect(service.store.tasks(run.runId).map((t) => t.id)).toEqual(["T001"]);
+  }, 30000);
+
   // #853: the repair of a failed task check read the definition with the schema-1 parser, so a
   // run of any preset blocked with a schema error instead of correcting the task. #866: without a
   // review stage (quick fix) the passing corrective task closes the host's finding itself.

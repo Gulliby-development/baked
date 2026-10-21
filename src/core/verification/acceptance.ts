@@ -139,11 +139,16 @@ function acceptance(
       throw new WorkflowFault("OUTPUT_INVALID", `Task ${task.id} is not implemented`);
   }
   // A static check that failed only on debt from before the run under `staticBaseline:
-  // "relative"` (#1222) counts as passed; the checks stage recorded which run that was.
+  // "relative"` (#1222), and a test check that collected no test in a run whose plan writes none
+  // (#1864), counts as passed; the checks stage recorded which run that was.
   const debt = new Set(
     store
       .artifacts(runId)
-      .filter((a) => a.logical_path.startsWith("checks/baseline-debt/"))
+      .filter(
+        (a) =>
+          a.logical_path.startsWith("checks/baseline-debt/") ||
+          a.logical_path.startsWith("checks/no-tests/"),
+      )
       .map(
         (a) => (JSON.parse(store.readArtifact(runId, a.id)) as { evidenceId: string }).evidenceId,
       ),
