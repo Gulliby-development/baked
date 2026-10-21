@@ -328,11 +328,13 @@ export function failureSignature(output: string): string {
  * Whether a test check's output says the runner collected no test at all: pytest's exit 5
  * ("no tests ran", "collected 0 items", or only "No files were found in testpaths" when the
  * configured `testpaths` directory does not exist yet), or "No tests found" / "No test files found"
- * of the JavaScript runners and Go's "no test files". A plan that writes the tests last has this
+ * of the JavaScript runners, Go's "no test files", SwiftPM's "no tests found", Mix's "did not
+ * match any directory/file: test" or "no tests to run" and Flutter's "Test directory "test" not
+ * found" (#1753). A plan that writes the tests last has this
  * state until its test tasks run, and it is no defect of the code (#1031, #1208).
  */
 export function noTestsCollected(output: string): boolean {
-  return /\bno tests ran\b|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b/i.test(
+  return /\bno tests ran\b|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b|\bno tests to run\b|\bdid not match any directory\/file\b|\btest directory "?test"? not found\b/i.test(
     output,
   );
 }

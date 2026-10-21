@@ -13,7 +13,7 @@
     "placeholders": [
       "src/sum.ml:2"
     ],
-    "gates": null,
+    "gates": ["dune-build", "dune-test"],
     "testRunners": null,
     "mutation": null,
     "properties": null,

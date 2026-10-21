@@ -37,6 +37,7 @@ import { reproExecutables } from "../src/core/verification/repro.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
+import { noTestsCollected } from "../src/core/verification/convergence.js";
 import { baselineRegression, diagnosticCount, failureSignature, testCount, testsRan } from "../src/core/verification/output-counts.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
@@ -663,6 +664,80 @@ describe("gate matrix: JVM build tools (#1749)", () => {
     expect(buildWrapper(project({}), "gradlew", "gradle", "win32").executable).toBe("gradle");
   });
 });
+// #1753: a plain SwiftPM, Mix, Dart, Zig, dune or Bundler project has no Makefile, justfile or CI
+// run step, so the runner fallback found nothing and no test gate was suggested.
+describe("gate matrix: SwiftPM, Mix, Dart, Zig, dune and Bundler (#1753)", () => {
+  const ids = (files: Record<string, string>) =>
+    detectGates(project(files)).map((s) => [s.check.id, s.check.executable, s.check.args.join(" "), s.source]);
+  const checks = (files: Record<string, string>) => detectGates(project(files)).map((s) => s.check);
+  test("each manifest gets its toolchain's build, format and test gates", () => {
+    expect(ids({ "Package.swift": "// swift-tools-version:5.9\n" })).toEqual([
+      ["swift-build", "swift", "build", "Package.swift"],
+      ["swift-test", "swift", "test", "Package.swift"],
+    ]);
+    expect(ids({ "mix.exs": "defmodule Fixture.MixProject do\nend\n", ".formatter.exs": "[inputs: [\"lib/**/*.ex\"]]\n" })).toEqual([
+      ["mix-format", "mix", "format --check-formatted", ".formatter.exs"],
+      ["mix-compile", "mix", "compile --warnings-as-errors", "mix.exs"],
+      ["mix-test", "mix", "test", "mix.exs"],
+    ]);
+    // mix format stops with an error without a .formatter.exs naming its inputs.
+    expect(ids({ "mix.exs": "" }).map(([id]) => id)).toEqual(["mix-compile", "mix-test"]);
+    expect(ids({ "pubspec.yaml": "name: fixture\n" })).toEqual([
+      ["dart-format", "dart", "format --output=none --set-exit-if-changed .", "pubspec.yaml"],
+      ["dart-analyze", "dart", "analyze", "pubspec.yaml"],
+      ["dart-test", "dart", "test", "pubspec.yaml"],
+    ]);
+    expect(ids({ "pubspec.yaml": "name: app\ndependencies:\n  flutter:\n    sdk: flutter\n" }).map(([id, exe]) => `${id} ${exe}`)).toEqual([
+      "dart-format dart",
+      "flutter-analyze flutter",
+      "flutter-test flutter",
+    ]);
+    expect(ids({ "build.zig": "" })).toEqual([
+      ["zig-fmt", "zig", "fmt --check .", "build.zig"],
+      ["zig-build-test", "zig", "build test", "build.zig"],
+    ]);
+    expect(ids({ "dune-project": "(lang dune 3.0)\n" })).toEqual([
+      ["dune-build", "dune", "build", "dune-project"],
+      ["dune-test", "dune", "test", "dune-project"],
+    ]);
+  });
+
+  test("a Bundler project runs RSpec when it uses it, else Rake's test task, else nothing", () => {
+    expect(ids({ Gemfile: "gem 'rspec', '~> 3'\n" })).toEqual([["rspec", "bundle", "exec rspec", "Gemfile"]]);
+    expect(ids({ Gemfile: "gem 'rake'\n", "spec/sum_spec.rb": "" })).toEqual([["rspec", "bundle", "exec rspec", "spec/"]]);
+    expect(ids({ Gemfile: "gem 'minitest'\n", Rakefile: "task default: :test\n" })).toEqual([["rake-test", "bundle", "exec rake test", "Rakefile"]]);
+    expect(ids({ Gemfile: "gem 'rake'\n" })).toEqual([["rake-test", "bundle", "exec rake test", "Gemfile"]]);
+    // A Jekyll site's Gemfile has no tests to run; its Makefile target is still found.
+    expect(ids({ Gemfile: "gem 'jekyll'\n" })).toEqual([]);
+    expect(ids({ Gemfile: "gem 'jekyll'\n", Makefile: "test:\n\tbundle exec htmlproofer _site\n" })).toEqual([["tests", "make", "test", 'Makefile target "test"']]);
+  });
+
+  test("the formatters run per task with their fixer on the task's file; the analyzers wait for integration", () => {
+    const all = [
+      ...checks({ "mix.exs": "", ".formatter.exs": "[]\n" }),
+      ...checks({ "pubspec.yaml": "name: fixture\n" }),
+      ...checks({ "build.zig": "" }),
+    ];
+    const byId = (id: string) => all.find((c) => c.id === id) as Check;
+    expect(fixerCommand(byId("mix-format").fix!, "lib/sum.ex")).toEqual({ executable: "mix", args: ["format", "lib/sum.ex"] });
+    expect(fixerCommand(byId("dart-format").fix!, "lib/sum.dart")).toEqual({ executable: "dart", args: ["format", "lib/sum.dart"] });
+    expect(fixerCommand(byId("zig-fmt").fix!, "src/sum.zig")).toEqual({ executable: "zig", args: ["fmt", "src/sum.zig"] });
+    const covering = (path: string) =>
+      coveringChecks({ checks: all.map((c) => ({ ...c, scope: "feature" as const })) } as RunPolicy, { writes: [{ path, action: "create" }] }).map((c) => c.id);
+    expect(covering("lib/sum.dart")).toEqual(["mix-format", "dart-format", "zig-fmt"]);
+    expect(isStaticCheck(byId("dart-analyze")) && isWholeUnitCheck(byId("dart-analyze"))).toBe(true);
+    expect(["mix-compile", "mix-test", "dart-test", "zig-build-test"].some((id) => isStaticCheck(byId(id)))).toBe(false);
+  });
+
+  test("an empty test run of these runners reads as no tests collected, not as a failing suite", () => {
+    expect(noTestsCollected("error: no tests found; create a target in the 'Tests' directory")).toBe(true);
+    expect(noTestsCollected("Paths given to `mix test` did not match any directory/file: test")).toBe(true);
+    expect(noTestsCollected("There are no tests to run")).toBe(true);
+    expect(noTestsCollected('Test directory "test" not found.')).toBe(true);
+    expect(noTestsCollected("1 test, 1 failure")).toBe(false);
+  });
+});
+
 /**
  * Manifests and tool configs of each stack a request may name (#1710), with the content a
  * host-written task writes and whether the approval takes the write without a person.
