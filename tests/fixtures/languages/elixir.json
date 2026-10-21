@@ -18,7 +18,7 @@
     "placeholders": [
       "lib/sum.ex:3"
     ],
-    "gates": null,
+    "gates": ["mix-compile", "mix-test"],
     "testRunners": null,
     "mutation": null,
     "properties": null,
