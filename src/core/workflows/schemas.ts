@@ -551,6 +551,13 @@ export const PolicySchema = z
      */
     specDigest: z.enum(["auto", "off"]).optional(),
     /**
+     * `on` completes the adaptive first-response deadline of a call shape the workspace has fewer
+     * than three answers for from the answers of every workspace on this machine
+     * (`first-byte-history.json` in the BAKED data directory), and adds this run's answers to it
+     * (#1880). Absent means `off`, so stored policies keep their hash.
+     */
+    sharedFirstByteHistory: z.enum(["off", "on"]).optional(),
+    /**
      * `on` has analyze recompute every literal input and expected row of an automated criterion
      * from the requirements (derivation-audit.ts, #1465); a row they do not give is a blocking
      * finding that goes back to the spec author once. Absent means `off`, so stored policies keep
