@@ -389,7 +389,8 @@ describe("scenario: features estimated from their boundary paths and their plan 
     expect(language?.paths).toBe(11);
     expect(estimate.perPath).not.toBeNull();
     const perPath = estimate.perPath ?? { low: 0, high: 0 };
-    expect(perPath.low).toBeGreaterThanOrEqual(400_000);
+    // The lowest measured rate, solver's 1.82M over 5 paths, not the first quartile (#1806).
+    expect(perPath.low).toBe(Math.round(1_816_678 / 5));
     expect(language?.tokens.low).toBeGreaterThanOrEqual(11 * perPath.low);
     expect(language?.tokens.high).toBeGreaterThanOrEqual(11 * perPath.high);
     expect(language?.tokens.high).toBeGreaterThanOrEqual(5_000_000);
@@ -730,5 +731,75 @@ describe("a feature's paths place it among finished features of its size (#1767)
     // A feature that names no paths is not placed.
     const none = estimateInitiative({ features: [feature("docs", "medium")], history: [], samples: medium, maxTotalTokens: 100_000_000 });
     expect(none.features[0]?.pathFit).toBeUndefined();
+  });
+});
+
+// Bench round 54 (lanewalk, Java 21 Maven, 12 features): the path floor came from 91 finished
+// features of earlier projects, 165k to 1.9M per path, and its low end was their first quartile,
+// 365k. Lanewalk's features used 165k to 308k per path, so the floor put 11 of 12 low ends above
+// what the features used (base 1.75M against 3.29M, 9 paths) and the split asked for a 37.5M
+// budget for a 13.64M initiative (#1806). The floor's low end is the lowest measured rate.
+describe("scenario: the path floor starts at the lowest measured rate (#1806, R54)", () => {
+  const shared = (runId: string, perPath: number): FeatureRunSample => ({
+    runId,
+    workflowId: "sdd",
+    size: "medium",
+    tokens: perPath * 4,
+    taskCount: 6,
+    paths: 4,
+    source: "shared",
+  });
+  // The corpus's spread of rates over earlier projects (R45-R53, every supported toolchain).
+  const rates = [165_000, 241_000, 271_000, 365_000, 486_000, 600_000, 900_000, 1_900_000];
+  const samples = rates.map((rate, i) => shared(`s${i}`, rate));
+  const withPaths = (id: string, size: FeatureToEstimate["size"], paths: number) => ({ ...feature(id, size), paths });
+  // Lanewalk's features named by their boundary paths, with what each used.
+  const lanewalk: [string, number, number][] = [
+    ["base", 9, 1_750_000],
+    ["history", 9, 2_380_000],
+    ["ranges-bases", 4, 800_000],
+    ["query-commands", 4, 1_230_000],
+  ];
+  const estimate = () =>
+    estimateInitiative({
+      features: lanewalk.map(([id, paths]) => withPaths(id, "medium", paths)),
+      history: [],
+      samples,
+      maxTotalTokens: 30_000_000,
+    });
+
+  test("no feature's floor starts above paths times the cheapest rate any finished feature used", () => {
+    const result = estimate();
+    expect(result.perPathSamples).toEqual({ features: 8, shared: 8 });
+    expect(result.perPath?.low).toBe(165_000);
+    for (const [id, paths, used] of lanewalk) {
+      const f = result.features.find((x) => x.featureId === id);
+      // The size's middle half (four-path features, 1.05M up) still sets the low end of a small boundary.
+      expect(f?.tokens.low).toBe(Math.max(paths * 165_000, 1_054_000));
+      // The nine-path features, which the floor raised, now start below what they used.
+      if (paths === 9) expect(f?.tokens.low).toBeLessThanOrEqual(used);
+    }
+  });
+
+  test("the floor's high end stays at the median rate, so a many-path feature is still raised (#1376)", () => {
+    const result = estimate();
+    const median = (365_000 + 486_000) / 2;
+    expect(result.perPath?.high).toBe(Math.round(median));
+    const base = result.features.find((x) => x.featureId === "base");
+    expect(base?.floor).toBe("paths");
+    expect(base?.tokens.high).toBe(9 * Math.round(median));
+  });
+
+  test("the criteria floor starts at the lowest measured rate too", () => {
+    const withCriteria = samples.map((s, i) => ({ ...s, criteria: 10, tokens: [1_200_000, 1_500_000, 2_000_000, 2_600_000, 3_100_000][i % 5] ?? 0 }));
+    const result = estimateInitiative({
+      features: [withPaths("base", "medium", 9)],
+      history: [],
+      samples: withCriteria,
+      maxTotalTokens: 30_000_000,
+      progress: { features: { base: { spent: 0, accepted: false, criteria: 10 } }, overhead: 0 },
+    });
+    expect(result.perCriterion?.low).toBe(120_000);
+    expect(result.features[0]?.tokens.low).toBeLessThanOrEqual(10 * 270_000);
   });
 });

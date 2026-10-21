@@ -772,6 +772,8 @@ export interface InitiativeStartBoundary {
   forecastUsd: number | null;
   ceilingUsd: number | null;
   replayed: "pass" | "park";
+  /** Each feature's token range in the estimate the current code makes at this start (#1806). */
+  estimate: { featureId: string; low: number; high: number }[];
 }
 
 export interface InitiativeReplay {
@@ -1062,6 +1064,11 @@ function replayStarts(
         const view = initiatives.view(initiativeId);
         const feature = view.features.find((f) => f.id === link.feature_id);
         const cost = view.budget.cost;
+        const estimate = (initiatives.estimate(initiativeId)?.features ?? []).map((f) => ({
+          featureId: f.featureId,
+          low: f.tokens.low,
+          high: f.tokens.high,
+        }));
         starts.unshift({
           featureId: link.feature_id,
           at: t,
@@ -1071,6 +1078,7 @@ function replayStarts(
           forecastUsd: cost.forecastUsd,
           ceilingUsd: cost.ceilingUsd,
           replayed: feature && gate(view, feature) ? "park" : "pass",
+          estimate,
         });
       } finally {
         service.close();

@@ -278,3 +278,45 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
     expect(replayTrace(path).runs.reduce((n, r) => n + r.newTestSplits, 0)).toBe(0);
   }, 120000);
 });
+
+describe("initiative feature ranges replay against what the features used (#1806)", () => {
+  // At each initiative's first replayed start, how many features used less than the low end of
+  // the range the current estimate gives them, and more than its high end. The path floor's low
+  // end at the first quartile of the earlier features' rates put 37 of 104 below their range,
+  // 11 of R54 lanewalk's 12 among them as the round recorded; from the lowest rate, 29 and 7.
+  test("no more features start below their range than the lowest-rate floor allows", () => {
+    let lanewalk = 0;
+    let below = 0;
+    let above = 0;
+    let features = 0;
+    for (const path of readdirSync(ROOT, { recursive: true, encoding: "utf8" })
+      .filter((p) => p.endsWith(".sqlite.gz"))
+      .map((p) => join(ROOT, p))) {
+      const replays = replayInitiativeStarts(path);
+      if (!replays.length) continue;
+      const { store, dispose } = openTrace(path);
+      const used = new Map<string, number>();
+      try {
+        for (const row of store.connection
+          .query("SELECT l.feature_id AS feature, r.token_usage AS tokens FROM initiative_runs l JOIN runs r ON r.id=l.run_id")
+          .all() as { feature: string; tokens: number }[])
+          used.set(row.feature, (used.get(row.feature) ?? 0) + row.tokens);
+      } finally {
+        dispose();
+      }
+      for (const replay of replays)
+        for (const f of replay.starts[0]?.estimate ?? []) {
+          const tokens = used.get(f.featureId);
+          if (tokens === undefined) continue;
+          features++;
+          if (tokens < f.low) below++;
+          if (tokens < f.low && path.endsWith("lanewalk.sqlite.gz")) lanewalk++;
+          if (tokens > f.high) above++;
+        }
+    }
+    expect(features).toBeGreaterThanOrEqual(104);
+    expect(below).toBeLessThanOrEqual(29);
+    expect(lanewalk).toBeLessThanOrEqual(7);
+    expect(above).toBeLessThanOrEqual(25);
+  }, 600000);
+});
