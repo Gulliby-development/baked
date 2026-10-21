@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { TreeSitterBackend } from "../src/core/intelligence/backends/tree-sitter";
 import {
   COMMENT_MARKER,
+  callGraphContext,
   type Complete,
   commentBody,
   complete,
@@ -270,5 +272,30 @@ describe("adversarial review: memory across re-reviews of a pull request (#1845)
     expect(quoted).toMatchObject({ vote: null, replies: [] });
     const [other] = feedback(found, [{ body: "A11 👎 a different finding", user: "x" }]);
     expect(other).toMatchObject({ vote: null, replies: [] });
+  });
+});
+
+describe("adversarial review: call-graph context of the changed functions (#1845)", () => {
+  test("the reviewer gets the callers, callees, importers and similar functions of what the diff changes", async () => {
+    const files = [
+      { path: "src/parse.ts", text: "export function parseCargo(out: string) {\n  return count(out.split(\"\\n\"));\n}\nexport function count(lines: string[]) {\n  return lines.length;\n}\n" },
+      { path: "src/gradle.ts", text: "export function parseGradle(out: string) {\n  return count(out.split(\"\\n\"));\n}\n" },
+      { path: "src/gates.ts", text: 'import { parseCargo } from "./parse";\nexport function gate(out: string) {\n  return parseCargo(out);\n}\n' },
+    ];
+    const diff = "diff --git a/src/parse.ts b/src/parse.ts\n--- a/src/parse.ts\n+++ b/src/parse.ts\n@@ -1,3 +1,3 @@\n export function parseCargo(out: string) {\n-  return count(out.split(\"\\r\"));\n+  return count(out.split(\"\\n\"));\n }\n";
+    const backend = new TreeSitterBackend();
+    try {
+      const context = await callGraphContext(diff, files, backend);
+      expect(context).toContain("## `parseCargo` in `src/parse.ts` (lines 1-3)");
+      expect(context).toContain("- Callers: `src/gates.ts:3` in `gate`");
+      expect(context).toContain("- Callees: `count`");
+      expect(context).toContain("- Importers of its file: `src/gates.ts`");
+      expect(context).toContain("`parseGradle` in `src/gradle.ts:1`");
+      expect(context).not.toContain("## `count`");
+      const prompt = reviewPrompt({ ...INPUT, callGraph: context }, rules);
+      expect(prompt).toContain("## Call-graph context of the changed functions");
+    } finally {
+      backend.dispose();
+    }
   });
 });

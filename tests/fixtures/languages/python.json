@@ -1,7 +1,7 @@
 {
   "files": {
     "app/sum.py": "def sum(a, b):\n    raise NotImplementedError\n",
-    "app/tests.py": "from app.sum import sum\n",
+    "app/tests.py": "from app.sum import sum\nsum(1, 2)\n",
     "pyproject.toml": "[project]\nname = \"fixture\"\ndependencies = [\"requests>=2\"]\n\n[project.scripts]\nsum = \"app.sum:main\"\n\n[tool.ruff]\n\n[tool.pytest.ini_options]\n",
     "tests/test_props.py": "from hypothesis import given\n"
   },
@@ -41,6 +41,10 @@
     "entryPoints": [
       "sum: python -c import sys; from app.sum import main; sys.argv[0] = \"sum\"; sys.exit(main())"
     ],
-    "testGates": null
+    "testGates": null,
+    "callGraph": [
+      "sum called at app/tests.py:2",
+      "app/sum.py imported by app/tests.py"
+    ]
   }
 }

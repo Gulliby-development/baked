@@ -21,6 +21,17 @@ import { claudeCodeCommand } from "../src/core/llm/providers/claude-code/cli";
 import { codexCommand } from "../src/core/llm/providers/codex/client";
 import { codexRunEnv } from "../src/core/llm/providers/codex/home";
 import { resolveCli } from "../src/core/platform/cli-path";
+import { TreeSitterBackend } from "../src/core/intelligence/backends/tree-sitter";
+import {
+  CALL_SYNTAX,
+  callContext,
+  changedFunctions,
+  changedLines,
+  functionsIn,
+  renderCallContext,
+} from "../src/core/intelligence/call-context";
+import { rowOf } from "../src/core/intelligence/language-records";
+import { detectLanguageFromPath } from "../src/core/intelligence/types";
 import { closedIssueNumbers, sweepSection } from "./check-sweep-section";
 
 /**
@@ -63,6 +74,8 @@ export interface ReviewInput {
   diff: string;
   /** The findings of the review this one replaces, with what people answered (#1845). */
   earlier?: Earlier[];
+  /** The callers, callees, importers and similar functions of the changed functions (#1845). */
+  callGraph?: string;
 }
 
 /** The repository paths a unified diff changes, by its `diff --git a/x b/y` headers. */
@@ -111,6 +124,13 @@ export function reviewPrompt(input: ReviewInput, rules: ReviewRules): string {
     sweepSection(input.prBody) || "(The description has no Sweep section.)",
     "## Its diff",
     `\`\`\`diff\n${diff}\n\`\`\``,
+    ...(input.callGraph
+      ? [
+          "## Call-graph context of the changed functions",
+          "Read from the pull request's head with tree-sitter: who calls each changed function, what it calls, which files import its file, and the functions most like it by name or body. Start the sibling sweep from these places.",
+          input.callGraph,
+        ]
+      : []),
   ].join("\n\n");
 }
 
@@ -432,6 +452,41 @@ function sinceSection(since: SinceLast): string[] {
   ];
 }
 
+/** The call-graph context is cut at this length; the reviewer is told so. */
+const MAX_CALL_GRAPH = 40_000;
+/** Files larger than this are generated or minified: not read for the call graph. */
+const MAX_SOURCE_BYTES = 512 * 1024;
+
+/**
+ * The call-graph context of a diff over the repository's files at the pull request's head
+ * (#1845): the changed functions, with their callers, callees, importers and similar functions.
+ */
+export async function callGraphContext(
+  diff: string,
+  files: readonly { path: string; text: string }[],
+  backend: TreeSitterBackend,
+): Promise<string> {
+  const sources = files.filter((f) => rowOf(CALL_SYNTAX, detectLanguageFromPath(f.path)) && f.text.length <= MAX_SOURCE_BYTES);
+  const spans = await functionsIn(backend, sources);
+  const changed = changedFunctions(spans, changedLines(diff)).slice(0, 40);
+  if (!changed.length) return "";
+  const text = renderCallContext(callContext(changed, spans, sources));
+  return text.length > MAX_CALL_GRAPH ? `${text.slice(0, MAX_CALL_GRAPH)}\n\n[The context is cut at ${MAX_CALL_GRAPH} characters.]` : text;
+}
+
+/** The repository's files at a commit, through a temporary worktree of this checkout; null when git cannot fetch it. */
+function filesAt(prNumber: number, sha: string): { path: string; text: string }[] | null {
+  const git = (...args: string[]) => spawnSync("git", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, windowsHide: true });
+  if (git("cat-file", "-e", `${sha}^{commit}`).status !== 0) git("fetch", "--quiet", "origin", `pull/${prNumber}/head`);
+  const list = git("ls-tree", "-r", "-z", "--name-only", sha);
+  if (list.status !== 0) return null;
+  const paths = list.stdout.split("\0").filter((path) => path && rowOf(CALL_SYNTAX, detectLanguageFromPath(path)));
+  return paths.slice(0, 5000).flatMap((path) => {
+    const show = git("show", `${sha}:${path}`);
+    return show.status === 0 && show.stdout.length <= MAX_SOURCE_BYTES ? [{ path, text: show.stdout }] : [];
+  });
+}
+
 /**
  * The family that reviews: the other one than the fixer's, read from the commits' co-author
  * trailers and messages. When the fixer is unknown, the first family with a key reviews.
@@ -617,7 +672,22 @@ async function reviewPull(repository: string, pull: Pull, token: string, options
     token,
   );
   const earlier = existing?.body ? feedback(earlierFindings(existing.body), comments) : [];
-  const input: ReviewInput = { issues, prNumber: pull.number, prTitle: pull.title, prBody: body, diff, earlier };
+  // Advisory: without a checkout that can fetch the head, the review runs without the call graph.
+  let callGraph = "";
+  try {
+    const files = filesAt(pull.number, pull.head.sha);
+    if (files) {
+      const backend = new TreeSitterBackend();
+      try {
+        callGraph = await callGraphContext(diff, files, backend);
+      } finally {
+        backend.dispose();
+      }
+    }
+  } catch (error) {
+    console.warn(`#${pull.number}: no call-graph context: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const input: ReviewInput = { issues, prNumber: pull.number, prTitle: pull.title, prBody: body, diff, earlier, callGraph };
   const rules = await baseRules(repository, pull.base.sha, token);
   if (options.out) {
     mkdirSync(options.out, { recursive: true });
