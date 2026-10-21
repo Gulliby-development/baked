@@ -15,7 +15,13 @@
  * calls by provider, stage and effort: what the provider fault matrix tests limits against (#1729).
  * `recordings` writes the model calls of runs started with `--record-model-calls` (#1715).
  */
-import { corpusCallProfile, exportRecordings, exportTrace, replayTrace } from "../src/core/workflows/trace.js";
+import {
+  corpusCallProfile,
+  exportRecordings,
+  exportTrace,
+  replayPlanApprovals,
+  replayTrace,
+} from "../src/core/workflows/trace.js";
 
 const usage =
   "Usage: bun scripts/bench-trace.ts export <workspace> <out.sqlite.gz> [--run RUN_ID ...]\n" +
@@ -92,6 +98,11 @@ if (command === "export" && args.length === 2) {
               `${b.estimated ? " estimated" : ""}, deadline ${Math.round(b.limitMs / 1000)} s)`,
           );
       }
+      for (const approval of replayPlanApprovals(replay.trace).filter((a) => a.recorded !== a.replayed))
+        console.log(
+          `  plan approval of ${approval.runId}: recorded ${approval.recorded}, now ${approval.replayed}` +
+            (approval.reasons.length ? ` (${approval.reasons.join("; ")})` : ""),
+        );
       for (const initiative of replay.initiatives) {
         console.log(
           `  initiative ${initiative.initiativeId}: ${initiative.shareGate.length} share-gate decisions, new parks ${initiative.newShareStops}`,

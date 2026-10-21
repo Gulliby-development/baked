@@ -13,6 +13,7 @@ import {
 } from "../llm/provider-health.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
+import { planApprovalDecision, requestedPathTokens } from "./auto-approval.js";
 import { callCostRate } from "./budget.js";
 import { assertForecastFits, costForecast } from "./cost-forecast.js";
 import { WorkflowFault } from "./errors.js";
@@ -22,7 +23,8 @@ import { recordingOf } from "./model-recording.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { NativeWorkflowService } from "./service.js";
 import { costStageOf } from "./stage-price.js";
-import { WorkflowStore } from "./store.js";
+import { type ArtifactRow, WorkflowStore } from "./store.js";
+import { RuntimeStateSchema } from "./types.js";
 
 /**
  * Usage traces of recorded runs, and their replay through the current pricing and gating code
@@ -163,12 +165,25 @@ export function scrubTrace(
   return Object.fromEntries(
     Object.entries(value).map(([k, v]) => [
       k,
-      PROSE.has(k) || content.has(k)
-        ? replaced(k, v, standIns)
-        : scrubTrace(v, standIns, content, k),
+      REQUEST_KEYS.has(k) && typeof v === "string"
+        ? requestStandIn(k, v, standIns)
+        : PROSE.has(k) || content.has(k)
+          ? replaced(k, v, standIns)
+          : scrubTrace(v, standIns, content, k),
     ]),
   );
 }
+
+/** A run state's request texts, whose named files the auto-approval replay reads (#1707). */
+const REQUEST_KEYS = new Set(["requestText", "prompt"]);
+
+/**
+ * A request's stand-in, followed by the file names and paths it names to change, one per line
+ * (`requestedPathTokens`): enough for a replay to decide a request-named manifest edit as the run
+ * did, and no prose.
+ */
+const requestStandIn = (key: string, text: string, standIns: StandIns): string =>
+  [standIns.of(key, text), ...requestedPathTokens(text)].filter(Boolean).join("\n");
 
 const scrubJson = (
   text: string | null,
@@ -1080,6 +1095,91 @@ function replayStarts(
   } finally {
     dispose();
     for (const history of histories.values()) history.dispose();
+  }
+}
+
+/** A plan approval's host decision: approved on its own, or with a person. */
+export type ApprovalDecision = "auto" | "person";
+
+/** A plan approval of a trace, decided again by the current code on the state it was asked with. */
+export interface PlanApprovalReplay {
+  runId: string;
+  recorded: ApprovalDecision;
+  replayed: ApprovalDecision;
+  /** Why the replay needs a person; empty when it approves. */
+  reasons: string[];
+}
+
+/**
+ * Replays the host's auto-approval decision at every plan approval of a trace (#1707): the run
+ * state the scheduler held when it asked (`internal/state.json` then), the run's earlier requests
+ * and its artifacts until then go to `planApprovalDecision` (or `decide`, to replay an older rule).
+ * The trace keeps no request prose and no files: deliverable coverage is not replayed, the
+ * manifest edits a request names are read from the paths the export kept of it (traces exported
+ * before #1707's export change kept none), and a path exists when the plan modifies it rather than
+ * creates it. A package the approval reviewer approved counts as approved when the replay leaves it
+ * reviewable. Approvals of runs without auto approval are skipped.
+ */
+export function replayPlanApprovals(
+  path: string,
+  decide: typeof planApprovalDecision = planApprovalDecision,
+): PlanApprovalReplay[] {
+  const { store, dispose } = openTrace(path);
+  try {
+    const db = store.connection;
+    const asked = db
+      .query(
+        "SELECT r.run_id, r.id, r.body_json, e.at FROM requests r JOIN events e ON e.run_id=r.run_id AND e.type='request.created' AND json_extract(e.payload_json,'$.requestId')=r.id WHERE r.kind='approval' ORDER BY e.at",
+      )
+      .all() as { run_id: string; id: string; body_json: string; at: number }[];
+    return asked.flatMap((request) => {
+      const body = JSON.parse(request.body_json) as {
+        policy?: unknown;
+        autoApproval?: { mode?: string };
+      };
+      const policy = PolicySchema.safeParse(body.policy);
+      if (!policy.success || !policy.data.autoApproval) return [];
+      const made = new Set(
+        (
+          db
+            .query("SELECT id FROM artifacts WHERE run_id=? AND created_at<=?")
+            .all(request.run_id, request.at) as { id: string }[]
+        ).map((a) => a.id),
+      );
+      const artifacts = store.artifacts(request.run_id).filter((a) => made.has(a.id));
+      const read = (artifact: ArtifactRow) => store.readArtifact(request.run_id, artifact.id);
+      const latest = artifacts.filter((a) => a.logical_path === "internal/state.json").at(-1);
+      const state = latest ? RuntimeStateSchema.safeParse(JSON.parse(read(latest))) : null;
+      if (!state?.success || !state.data.spec || !state.data.graph) return [];
+      const { spec, graph } = state.data;
+      const earlier = new Set(
+        asked.filter((r) => r.run_id === request.run_id && r.at < request.at).map((r) => r.id),
+      );
+      const result = decide(
+        policy.data,
+        { ...state.data, spec, graph },
+        store.requests(request.run_id).filter((r) => earlier.has(r.id)),
+        artifacts,
+        read,
+        {
+          scaffold: false,
+          coverage: false,
+          exists: (file) =>
+            graph.tasks.some((t) => t.writes.some((w) => w.path === file && w.action !== "create")),
+        },
+      );
+      const reviewed = body.autoApproval?.mode === "model-review";
+      return [
+        {
+          runId: request.run_id,
+          recorded: body.autoApproval?.mode ? "auto" : "person",
+          replayed: result.approval || (reviewed && result.reviewable) ? "auto" : "person",
+          reasons: result.approval ? [] : result.reasons,
+        },
+      ];
+    });
+  } finally {
+    dispose();
   }
 }
 

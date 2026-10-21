@@ -15,6 +15,7 @@ import { SLICE_PART, SPLIT_PART } from "./sizing.js";
 import { stopMode } from "./stop-reasons.js";
 import type { ArtifactRow, RequestRow } from "./store.js";
 import { hostWritten } from "./task-graph.js";
+import type { RuntimeState } from "./types.js";
 import { isAcceptanceRequest } from "./v2/acceptance.js";
 
 /** The built-in profile that decides packages `autoApproval.modelReview` sends to it. */
@@ -573,6 +574,33 @@ const LEAVE_ALONE =
   /\b(?:do not|don't|never|must not|should not|without (?:changing|editing|modifying|touching|updating))\b|\b(?:keep|leave)\b.*\b(?:as[ -]is|unchanged|untouched|intact|alone)\b/;
 const PATH_CHAR = "[\\w./-]";
 
+/** The request's sentences as `requestNamesManifest` reads them, with the leave-alone ones out. */
+const changeSentences = (request: string): string[] =>
+  request
+    .toLowerCase()
+    .replaceAll("\\", "/")
+    .replaceAll("\u2019", "'")
+    .split(/(?<=[.!?;])\s+|\n+/)
+    .filter((sentence) => !LEAVE_ALONE.test(sentence));
+
+/**
+ * The file names and paths a request names in sentences that do not tell the run to leave them
+ * alone, one per line of the result: all `requestNamesManifest` reads of a request. A bench trace
+ * keeps them in place of the request's prose, so the replay decides request-named manifest edits
+ * as the run did (#1707).
+ */
+export function requestedPathTokens(request: string): string[] {
+  return [
+    ...new Set(
+      changeSentences(request).flatMap((sentence) =>
+        (sentence.match(/[\w./-]+/g) ?? [])
+          .map((token) => token.replace(/\.+$/, ""))
+          .filter((token) => /\w\.\w/.test(token) || manifestFile.test(token)),
+      ),
+    ),
+  ];
+}
+
 /**
  * Whether the request names a manifest as one to change (#1428). Unlike `requiredByRequest`,
  * which only shapes the planner's advice, this decides an approval: the manifest's path must
@@ -590,12 +618,7 @@ function requestNamesManifest(write: Write, request: string): boolean {
         `(?:^|[^\\w./-])(?:\\./)?${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?!${PATH_CHAR}*\\w)`,
       ),
   );
-  return request
-    .toLowerCase()
-    .replaceAll("\\", "/")
-    .replaceAll("\u2019", "'")
-    .split(/(?<=[.!?;])\s+|\n+/)
-    .some((sentence) => !LEAVE_ALONE.test(sentence) && whole.some((re) => re.test(sentence)));
+  return changeSentences(request).some((sentence) => whole.some((re) => re.test(sentence)));
 }
 
 /**
@@ -826,6 +849,46 @@ export function hostBudgetGrowth(
       grown += Math.max(0, after - before);
   }
   return grown;
+}
+
+/**
+ * The plan approval's host decision from the run state the scheduler holds at the approval: the
+ * request texts, the planner-added sizing tasks and the host's budget growth and policy decisions
+ * in the run's artifacts. `workspace` says what the run's tree holds. The bench-trace replay asks
+ * it again with the state a recorded run kept (#1707), whose request has no text left to cover
+ * (`coverage: false`).
+ */
+export function planApprovalDecision(
+  policy: RunPolicy,
+  state: Pick<
+    RuntimeState,
+    "manifest" | "hostSplitTasks" | "hostDependencies" | "requestText" | "prompt"
+  > & {
+    spec: Spec;
+    graph: TaskGraph;
+  },
+  requests: RequestRow[],
+  artifacts: ArtifactRow[],
+  read: (artifact: ArtifactRow) => string,
+  workspace: { scaffold: boolean; exists: (path: string) => boolean; coverage?: boolean },
+): AutoApprovalResult {
+  return evaluateAutoApproval(
+    policy,
+    state.manifest,
+    state.spec,
+    state.graph,
+    requests,
+    policyDecisions(artifacts, read),
+    {
+      request: state.hostDependencies || workspace.coverage === false ? "" : state.requestText,
+      manifestRequest: state.requestText || state.prompt,
+      hostSplitTasks: state.hostSplitTasks,
+      scaffold: workspace.scaffold,
+      hostGrowthTokens: hostBudgetGrowth(artifacts, read),
+      policyRevisions: { artifacts, read },
+      exists: workspace.exists,
+    },
+  );
 }
 
 /** What an approval request's `autoApproval` says about the approval reviewer, in one line. */
