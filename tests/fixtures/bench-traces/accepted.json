@@ -46,5 +46,13 @@
   "R56/tonemath-update.sqlite.gz#c87b91ee-324a-4f63-bf03-84996bf90b79": {
     "newApprovalDeclines": 1,
     "reason": "#1707: the trace was exported before the export kept the file names a request names, so the Cargo.toml edit its request named (requestedManifestEdits) replays as an unnamed manifest edit. A trace exported from #1707 on keeps them."
+  },
+  "R57/modeplan.sqlite.gz#61044391-0af4-4308-a28d-cc172b824dea": {
+    "newApprovalDeclines": 1,
+    "reason": "#1707: the trace was exported before the export kept the file names a request names, so the Modeplan.csproj edit its request named (requestedManifestEdits) replays as an unnamed manifest edit. A trace exported from #1707 on keeps them."
+  },
+  "R57/zonevet-update.sqlite.gz#de1d71df-f7c5-4a77-8569-a525388efaa5": {
+    "newApprovalDeclines": 1,
+    "reason": "#1707: the trace was exported before the export kept the file names a request names, so the pyproject.toml edit its request named (requestedManifestEdits) replays as an unnamed manifest edit. A trace exported from #1707 on keeps them."
   }
 }
