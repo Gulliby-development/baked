@@ -62,4 +62,4 @@ jobs:
       # Exit 1 means known vulnerabilities; 127 (an error, such as the OSV API out of reach) and
       # 128 (no packages read) fail too, so a scan that did not run is never green.
       - name: Scan the lockfiles
-        run: '"$RUNNER_TEMP/bin/osv-scanner" scan source --lockfile bun.lock --lockfile apps/desktop/bun.lock'
+        run: '"$RUNNER_TEMP/bin/osv-scanner" scan source --config .github/security/osv-scanner.toml --lockfile bun.lock --lockfile apps/desktop/bun.lock'
