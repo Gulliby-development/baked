@@ -6,6 +6,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -35,6 +36,15 @@ export interface DocExample {
   argv: string[] | null;
   /** The output the document shows for the command. */
   documented: string;
+}
+
+/** A file the document shows as a block and tells its reader to save (#1849). */
+export interface DocFixture {
+  /** Relative path the reader saves it under. */
+  path: string;
+  /** 1-based line of the block's first content line. */
+  line: number;
+  content: string;
 }
 
 export interface DocExampleResult {
@@ -244,6 +254,56 @@ function introducesFile(prose: string): boolean {
   );
 }
 
+/** A relative path a fixture may be written to: plain segments, no `..`, no root. */
+const FIXTURE_PATH = /^(?!.*(?:^|\/)\.\.(?:\/|$))[\w.-]+(?:\/[\w.-]+)*\.\w{1,8}$/;
+
+/**
+ * The name a block introduced as a file is saved under: a code span or bare file name in the last
+ * line of the prose before it (`save the following response fields as `resp.txt`:`), or a first
+ * line that names it (`# resp.txt`). hdrlens-update (bench round 57) showed two inputs that way and
+ * the host ran `hdrlens check resp.txt` without them, reporting both examples as mismatches.
+ */
+function fixtureName(block: Fence): string | null {
+  if (!introducesFile(block.prose)) return null;
+  const last = block.prose.trim().split("\n").at(-1) ?? "";
+  const spans = [...last.matchAll(/`([^`\s]+)`/g)].map((m) => m[1] as string);
+  const bare = [...last.matchAll(/(?:^|\s)([\w./-]+\.[a-z]{1,8})(?=[\s:,]|$)/gi)].map(
+    (m) => m[1] as string,
+  );
+  const header = /^\s*(?:#|\/\/)\s*([\w./-]+\.\w{1,8})\s*$/.exec(block.lines[0] ?? "")?.[1];
+  return (
+    [...spans, ...bare, ...(header ? [header] : [])].find((name) => FIXTURE_PATH.test(name)) ?? null
+  );
+}
+
+/** The files a document tells its reader to save from its blocks, in document order (#1849). */
+export function extractFixtures(text: string): DocFixture[] {
+  return fences(text).flatMap((block) => {
+    if (block.lines.some((l) => /^\s*\$ /.test(l))) return [];
+    const path = fixtureName(block);
+    return path ? [{ path, line: block.start, content: `${block.lines.join("\n")}\n` }] : [];
+  });
+}
+
+/**
+ * An example introduced in a sentence: an inline command, then its output block (`For example,
+ * `modeplan apply 0644 u+x,go-r` shows each step of the change:`). modeplan's README (bench round
+ * 57) printed all seven examples this way and the host extracted none (#1849).
+ */
+function proseCommand(prose: string): string | null {
+  const last = prose.trim().split("\n").at(-1) ?? "";
+  if (!/:\s*$/.test(last)) return null;
+  if (
+    !/\b(?:prints?|outputs?|shows?|returns?|writes?|gives?|reports?|displays?|answers?)\b/i.test(
+      last,
+    )
+  )
+    return null;
+  const spans = [...last.matchAll(/`([^`]+)`/g)].map((m) => (m[1] as string).trim());
+  const commands = spans.filter((span) => /^[a-z][\w.-]*\s+\S/.test(span));
+  return commands.length === 1 ? (commands[0] as string) : null;
+}
+
 /** A block that opens with a source comment (`// wire structs`) is a file, never a program's output. */
 const isSourceText = (lines: readonly string[]): boolean =>
   /^\s*(?:\/\/|\/\*)/.test(lines.find((l) => l.trim()) ?? "");
@@ -278,6 +338,17 @@ export function extractExamples(file: string, text: string): DocExample[] {
         });
         i = end;
       }
+      continue;
+    }
+    const inline = OUTPUT_LANGS.has(block.lang) ? proseCommand(block.prose) : null;
+    if (inline && !isSourceText(block.lines)) {
+      examples.push({
+        file,
+        line: block.start - 1,
+        command: inline,
+        argv: commandArgv(inline),
+        documented: block.lines.join("\n"),
+      });
       continue;
     }
     const output = blocks[b + 1];
@@ -346,6 +417,26 @@ function copyWorkspace(root: string, files: readonly string[]): string | null {
   return copy;
 }
 
+/** Writes a fixture into the copy unless the workspace already has a file there. */
+function writeFixture(copy: string, fixture: DocFixture): void {
+  const target = join(copy, ...fixture.path.split("/"));
+  if (existsSync(target)) return;
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, fixture.content);
+}
+
+/**
+ * An argument that names a file the copy lacks and the program's output names, or null: the
+ * example reads an input its reader must supply, so its output says nothing about the program.
+ */
+export function missingInput(args: readonly string[], copy: string, output: string): string | null {
+  for (const arg of args) {
+    if (arg.startsWith("-") || !/\.\w{1,8}$/.test(arg) || !FIXTURE_PATH.test(arg)) continue;
+    if (!existsSync(join(copy, ...arg.split("/"))) && output.includes(arg)) return arg;
+  }
+  return null;
+}
+
 /** Links a directory of the workspace into its copy, when it exists and the copy has none. */
 function linkInto(root: string, copy: string, name: string): void {
   if (existsSync(join(root, name)) && !existsSync(join(copy, name)))
@@ -379,6 +470,7 @@ export async function runDocExamples(
   for (const doc of docs) {
     const examples = extractExamples(doc.path, doc.text);
     if (!examples.length) continue;
+    const fixtures = extractFixtures(doc.text);
     // Each document starts from the workspace as the change left it, as its reader would.
     let copy: string | null | undefined;
     try {
@@ -423,6 +515,9 @@ export async function runDocExamples(
           continue;
         }
         for (const dir of entry?.entry.link ?? []) linkInto(options.root, copy, dir);
+        // The files the document tells its reader to save before this example (#1849).
+        for (const fixture of fixtures)
+          if (fixture.line < example.line) writeFixture(copy, fixture);
         const unbuilt = missingBuildOutput([program, ...args], copy);
         if (unbuilt) {
           skip(
@@ -456,6 +551,13 @@ export async function runDocExamples(
           continue;
         }
         const difference = firstDifference(example.documented, result.output);
+        const absent = difference ? missingInput(args, copy, result.output) : null;
+        if (absent) {
+          skip(
+            `input file ${absent} is not in the repository or the document's own blocks, so the program could not read it`,
+          );
+          continue;
+        }
         results.push({
           ...base,
           status: difference ? "mismatch" : "match",
