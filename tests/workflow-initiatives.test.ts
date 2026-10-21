@@ -49,7 +49,7 @@ import {
 import { workflowHelp } from "../src/headless/workflow-parse.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
 import { acceptedContract } from "../src/core/workflows/dependencies.js";
-import { mergedBase } from "../src/core/workflows/worktree.js";
+import { mergedBase, provisionalBase } from "../src/core/workflows/worktree.js";
 import { PLACEHOLDER_SHARE } from "../src/core/workflows/initiatives/estimate.js";
 import { criticalPathText } from "../src/core/workflows/initiatives/view-model.js";
 import {
@@ -1642,6 +1642,153 @@ describe("initiative runtime", () => {
       const view = await t.drive();
       expect(view.status).toBe("completed");
       expect(t.executor.maxActive).toBe(3);
+    }, 120_000);
+  });
+
+  // Bench round 56, hdrlens (Go, #1834): an initiative started a feature only once every feature it
+  // depends on had finished, so 60.8 of the 92.3 minutes of the critical path were planning stages
+  // (base 12.9, message 6.8, cookies 14.9, front 23.0) while the feature ahead of each implemented.
+  // A replay of the measured durations finds 84 minutes on 3 slots instead of 105.
+  describe("plan ahead (#1834)", () => {
+    /** base's implementation holds until message is planned and waits for base (or `holdMs` passes). */
+    class AheadExecutor extends InitiativeExecutor {
+      initiatives: InitiativeService | null = null;
+      events: string[] = [];
+      holdMs = 20_000;
+      /** message as the initiative showed it while base implemented, and the attention list then. */
+      during: { state: string; blockers: string[]; plannedAhead?: string[]; attention: number } | null = null;
+      override async execute(request: ExecutionRequest) {
+        const name = request.task?.writes[0]?.path.replace(/\.txt$/, "");
+        if (request.profile.output !== "implementation" || !name) {
+          const result = await super.execute(request);
+          const graph = (result.output as { taskGraph?: { featureId: string } }).taskGraph;
+          if (request.profile.output === "plan" && graph) this.events.push(`plan:${graph.featureId.split("_").at(-1)}`);
+          return result;
+        }
+        if (name === "base") {
+          const deadline = Date.now() + this.holdMs;
+          const message = () => this.initiatives?.view("values").features.find((f) => f.id === "message");
+          while (message()?.state !== "waiting" && Date.now() < deadline) await Bun.sleep(20);
+          const seen = message();
+          if (seen?.runId)
+            this.during = { state: seen.state, blockers: seen.blockers, ...(seen.plannedAhead ? { plannedAhead: seen.plannedAhead } : {}), attention: this.workflows?.store.attention().length ?? -1 };
+        }
+        this.events.push(`start:${name}`);
+        try {
+          return await super.execute(request);
+        } finally {
+          this.events.push(`end:${name}`);
+        }
+      }
+      workflows: NativeWorkflowService | null = null;
+    }
+    // A serial chain, as hdrlens' base, message and front.
+    const chain = plan([feature("base"), feature("message", ["base"]), feature("front", ["message"])]);
+
+    async function run(planAhead: boolean, holdMs = 20_000) {
+      const t = setup(chain, 100, (root) => new AheadExecutor(root, chain));
+      repository(t.root);
+      t.executor.initiatives = t.initiatives;
+      t.executor.workflows = t.workflows;
+      t.executor.holdMs = holdMs;
+      Object.assign(t.workflows.config.workflows ?? {}, { planAhead });
+      await t.start({ plan: chain, policy: { ...policy, executionMode: "worktree" }, featureAutoApproval: { maxTasks: 5, maxFiles: 5 }, budget: { maxTotalTokens: 6_000_000, maxAgentCalls: 2000, maxActiveMs: 6_000_000 } });
+      expect((await t.approveSplit()).parallelRuns).toBe(2);
+      const view = await t.drive();
+      expect(view.status).toBe("completed");
+      return { t, view };
+    }
+
+    test("on, message is planned while base implements, and its tasks start on base's result", async () => {
+      const { t, view } = await run(true);
+      const events = t.executor.events;
+      expect(events.indexOf("plan:message")).toBeLessThan(events.indexOf("end:base"));
+      // Its tasks never start before base's result is accepted.
+      expect(events.indexOf("start:message")).toBeGreaterThan(events.indexOf("end:base"));
+      // While base implemented, message waited for it, planned and approved, asking no one.
+      expect(t.executor.during).toEqual({ state: "waiting", blockers: ["planned ahead; its tasks start once base is accepted"], plannedAhead: ["base"], attention: 0 });
+      // It implemented in a worktree moved onto base's result, and took its baseline there.
+      expect(t.executor.seen.message).toEqual(["base.txt"]);
+      // front planned ahead on message's approved spec in turn, and built on both results.
+      expect(events.indexOf("start:front")).toBeGreaterThan(events.indexOf("end:message"));
+      expect(t.executor.seen.front).toEqual(["base.txt", "message.txt"]);
+      const runId = t.featureOf(view, "message").runId ?? "";
+      const state = t.workflows.store.state(runId);
+      expect(state.planAhead).toEqual({ released: true, baselined: true });
+      expect(git(t.root, "show", `${state.worktree?.baseHead}:base.txt`)).toStartWith("ready");
+      const release = t.workflows.store.latestArtifact(runId, "plan-ahead/release.json");
+      const moved = JSON.parse(t.workflows.store.readArtifact(runId, release?.id ?? "").toString()) as { from: string; to: string };
+      expect(moved.to).toBe(state.worktree?.baseHead ?? "");
+      // The provisional base was HEAD: base had no result yet.
+      expect(git(t.root, "ls-tree", "--name-only", moved.from)).not.toContain("base.txt");
+      expect(t.workflows.store.requests(runId).filter((r) => r.kind === "manual_evidence").map((r) => [r.status, r.actor])).toEqual([["accepted", "host-release"]]);
+    }, 120_000);
+
+    test("a contract that changes under a planned-ahead feature sends it back to planning", async () => {
+      const t = setup(chain, 100, (root) => new AheadExecutor(root, chain));
+      repository(t.root);
+      t.executor.initiatives = t.initiatives;
+      t.executor.workflows = t.workflows;
+      Object.assign(t.workflows.config.workflows ?? {}, { planAhead: true });
+      await t.start({ plan: chain, policy: { ...policy, executionMode: "worktree" }, featureAutoApproval: { maxTasks: 5, maxFiles: 5 }, budget: { maxTotalTokens: 6_000_000, maxAgentCalls: 2000, maxActiveMs: 6_000_000 } });
+      await t.approveSplit();
+      // base's implementation is refused once message has planned ahead on base's first contract.
+      t.executor.refused.add("fixture/model");
+      let view = await t.drive();
+      expect(t.featureOf(view, "base").state).toBe("blocked");
+      const planned = t.featureOf(view, "message");
+      expect(planned.state).toBe("waiting");
+      expect(t.workflows.store.state(planned.runId ?? "").planAhead).toEqual({ released: false, baselined: false });
+      const firstPin = planned.pinned[0]?.contractHash;
+      // base is re-planned with another contract.
+      t.executor.refused.clear();
+      t.executor.contracts.base = "v2";
+      await t.initiatives.pause("values", t.id());
+      await t.initiatives.replan("values", t.id(), "base");
+      view = await t.initiatives.resume("values", t.id());
+      for (let i = 0; i < 12 && view.status !== "completed"; i++) {
+        for (const f of view.features.filter((f) => f.pendingRequests.some((r) => r.kind === "approval"))) await t.approveFeature(f.id);
+        view = await t.drive();
+      }
+      expect(view.status).toBe("completed");
+      const message = t.featureOf(view, "message");
+      // The planned-ahead run never ran a task; its rebase was planned on base's new contract.
+      expect(message.runId).not.toBe(planned.runId);
+      expect(message.pinned[0]?.contractHash).toBe(t.featureOf(view, "base").contractHash ?? "");
+      expect(message.pinned[0]?.contractHash).not.toBe(firstPin);
+      expect(t.executor.writes["message.txt"]).toBe(1);
+      expect(t.initiatives.events("values").some((e) => e.type === "feature.invalidated" && (e.payload as { runId: string }).runId === planned.runId)).toBe(true);
+      expect(readFileSync(join(t.root, ".baked", "worktrees", message.runId ?? "", "main", "base.txt"), "utf8")).toStartWith("ready v2");
+    }, 120_000);
+
+    test("the provisional base adds the unfinished features' stubs only where the base has no file", async () => {
+      const root = mkdtempSync(join(tmpdir(), "baked-provisional-"));
+      cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+      repository(root);
+      const head = git(root, "rev-parse", "HEAD");
+      const stubs = [{ path: "internal/hdr/message.go", content: "package hdr\n" }, { path: "README.md", content: "replaced?\n" }];
+      const commit = await provisionalBase(root, head, stubs, 1_700_000_000);
+      expect(git(root, "show", `${commit}:internal/hdr/message.go`)).toBe("package hdr");
+      expect(git(root, "show", `${commit}:README.md`)).toBe("# Values");
+      // The same inputs give the same commit; nothing to add gives the base itself.
+      expect(await provisionalBase(root, head, stubs, 1_700_000_000)).toBe(commit);
+      expect(await provisionalBase(root, head, [{ path: "README.md", content: "x" }], 1_700_000_000)).toBe(head);
+      expect(git(root, "status", "--porcelain")).toBe("");
+    });
+
+    test("a run that did not plan ahead is never released", async () => {
+      const t = setup(threeFeatures);
+      repository(t.root);
+      const run = await t.workflows.start({ commandId: newId(), featureId: "lone", workflowId: "sdd", prompt: "Build it.", ownerLabel: "test", policy: { ...policy, executionMode: "worktree" } });
+      const head = git(t.root, "rev-parse", "HEAD");
+      await expect(t.workflows.releaseBase(run.runId, { commandId: newId(), expectedRevision: run.revision }, { baseCommit: head })).rejects.toThrow("is not a planned-ahead run");
+    });
+
+    test("off, message is planned only after base is accepted", async () => {
+      const { t } = await run(false, 1500);
+      const events = t.executor.events;
+      expect(events.indexOf("plan:message")).toBeGreaterThan(events.indexOf("end:base"));
+      expect(t.executor.during).toBeNull();
     }, 120_000);
   });
 

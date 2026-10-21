@@ -2140,11 +2140,15 @@ export class WorkflowScheduler {
               break;
             }
             case "task-graph": {
+              // A planned-ahead run's tasks wait until the initiative moves its worktree from the
+              // provisional base to its upstream results, finished or not yet (#1834).
+              const held = state.planAhead !== null && !state.planAhead.released;
               const unavailable = dependencyContracts(this.store, state).filter(
                 (dependency) =>
-                  !dependency.completed &&
-                  state.manualCriteria[`dependency-${dependency.featureId}`]?.snapshotId !==
-                    state.snapshotId,
+                  held ||
+                  (!dependency.completed &&
+                    state.manualCriteria[`dependency-${dependency.featureId}`]?.snapshotId !==
+                      state.snapshotId),
               );
               if (unavailable.length) {
                 for (const dependency of unavailable)
@@ -2152,11 +2156,23 @@ export class WorkflowScheduler {
                     criterionId: `dependency-${dependency.featureId}`,
                     snapshotId: state.snapshotId,
                     dependency,
-                    question:
-                      "Provide evidence that this dependency is ready for downstream execution.",
+                    ...(held
+                      ? {
+                          hostRelease: true,
+                          question:
+                            "Planned ahead: the tasks start once this dependency is accepted; the initiative releases the run then.",
+                        }
+                      : {
+                          question:
+                            "Provide evidence that this dependency is ready for downstream execution.",
+                        }),
                   });
                 advance = false;
                 break;
+              }
+              if (state.planAhead && !state.planAhead.baselined) {
+                await this.takeBaseline(runId, state, policy, signal);
+                state.planAhead = { ...state.planAhead, baselined: true };
               }
               await this.recordCheckBaseline(runId, state, policy, signal);
               if (state.pendingTaskRepair.length) {

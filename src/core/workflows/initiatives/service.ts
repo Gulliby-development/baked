@@ -17,7 +17,12 @@ import { matchGlob } from "../../platform/index.js";
 import { hashJson } from "../../specs/hash.js";
 import { type BudgetLimits, budgetUsage, limitsOf } from "../budget.js";
 import { autoCostTolerance } from "../cost-tolerance.js";
-import { type AcceptedContract, acceptedContract, providesContract } from "../dependencies.js";
+import {
+  type AcceptedContract,
+  acceptedContract,
+  isHostRelease,
+  providesContract,
+} from "../dependencies.js";
 import { WorkflowFault } from "../errors.js";
 import {
   estimateHistory,
@@ -60,7 +65,7 @@ import { HOST_AUTO_APPROVAL_CEILING, HostAutoApprovalSchema } from "../v2/defini
 import { loadDefinition } from "../v2/definitions.js";
 import { loadGateLibrary } from "../v2/library.js";
 import { autoApprovalPolicy } from "../v2/runtime.js";
-import { mergedBase, worktreeBase } from "../worktree.js";
+import { mergedBase, provisionalBase, worktreeBase } from "../worktree.js";
 import { criticalPathSummary, planWidth, remainingPath } from "./critical-path.js";
 import { DECOMPOSE_WORKFLOW_ID } from "./decompose.js";
 import {
@@ -159,6 +164,9 @@ export interface RerouteResult {
   from?: string;
   reason?: string;
 }
+
+/** How often a drive with plan ahead looks for a feature that became ready to plan (#1834). */
+const PLAN_AHEAD_POLL_MS = 1000;
 
 export type FeatureState =
   | "proposed"
@@ -277,6 +285,11 @@ export interface FeatureView {
   mergedFrom?: string[];
   /** Why the decomposer kept a feature of the critical path whole (#1522). */
   serial?: string;
+  /**
+   * Under `workflows.planAhead` (#1834): the unfinished features whose approved specs this
+   * feature plans against, before its run starts and until its run is released onto their results.
+   */
+  plannedAhead?: string[];
 }
 
 export interface NextAction {
@@ -1136,6 +1149,7 @@ export class InitiativeService {
         const runId = feature.runId ?? "";
         if (live.size >= view.parallelRuns) break;
         if (before.has(runId)) continue;
+        if (await this.releasePlanned(id, feature.id, runId)) started = true;
         before.set(runId, this.workflows.store.run(runId).revision);
         live.set(
           runId,
@@ -1147,8 +1161,18 @@ export class InitiativeService {
       }
     };
     await fill();
+    // Under plan ahead a feature becomes ready when its upstream's spec is approved, in the middle
+    // of that upstream's drive, so a free slot is looked at again while runs execute (#1834).
+    const row = this.store.get(id);
+    const settings = this.store.settings(row);
+    const poll = this.planAhead(settings, this.approvedPlan(row), this.workflowFacts(settings));
     while (live.size) {
-      const done = await Promise.race(live.values());
+      const tick = poll ? Bun.sleep(PLAN_AHEAD_POLL_MS).then(() => null) : null;
+      const done = await Promise.race(tick ? [...live.values(), tick] : live.values());
+      if (done === null) {
+        if (!failure && !signal.aborted) await fill();
+        continue;
+      }
       live.delete(done.runId);
       if ("error" in done && !failure) failure = { error: done.error };
       if (!failure && !signal.aborted) await fill();
@@ -1193,6 +1217,41 @@ export class InitiativeService {
     return this.workflows.config.workflows?.parallelRunsFromPlan && plan?.features.length
       ? Math.max(1, Math.min(cap, planWidth(plan)))
       : cap;
+  }
+
+  /** Plan ahead (#1834) is on and every feature runs in a worktree, more than one at once. */
+  private planAhead(
+    settings: InitiativeSettings,
+    plan: InitiativePlan | null,
+    facts: WorkflowFacts,
+  ): boolean {
+    return (
+      this.workflows.config.workflows?.planAhead === true &&
+      this.parallelRuns(settings, plan, facts) > 1
+    );
+  }
+
+  /**
+   * Whether a feature may start planning before the features it depends on are finished: it
+   * writes a spec (a light feature has no planning to overlap), and every unfinished upstream
+   * feature has an open run whose spec is approved, the contract the feature pins (#1834).
+   */
+  private canPlanAhead(
+    settings: InitiativeSettings,
+    feature: InitiativeFeature,
+    upstream: FeatureView[],
+    facts: WorkflowFacts,
+  ): boolean {
+    if (facts(featureWorkflowId(settings, feature))?.contract === false) return false;
+    if (lightContract(settings, feature)) return false;
+    return upstream
+      .filter((u) => u.state !== "accepted")
+      .every(
+        (u) =>
+          u.runId !== null &&
+          ["in_progress", "paused", "needs_decision", "waiting", "blocked"].includes(u.state) &&
+          acceptedContract(this.workflows.store, u.runFeatureId)?.runId === u.runId,
+      );
   }
 
   /** A feature run's execution mode, as `start` resolves it: the definition, then the policy. */
@@ -1256,13 +1315,15 @@ export class InitiativeService {
     id: string,
     feature: InitiativeFeature,
     settings: InitiativeSettings,
+    unfinished: readonly string[] = [],
   ): Promise<string | undefined> {
     if (
       this.executionMode(settings, featureWorkflowId(settings, feature)) !== "worktree" ||
       !feature.dependsOn.length
     )
       return undefined;
-    const commits = feature.dependsOn.map((upstream) => {
+    const finished = feature.dependsOn.filter((upstream) => !unfinished.includes(upstream));
+    const commits = finished.map((upstream) => {
       const link = this.store.current(id, upstream);
       const commit = link ? this.workflows.store.state(link.run_id).worktree?.commit : null;
       if (!commit)
@@ -1293,7 +1354,29 @@ export class InitiativeService {
         { reason: "upstream_conflict", conflicts: merged.conflicts },
       );
     }
-    return merged.commit;
+    if (!unfinished.length) return merged.commit;
+    // Planning ahead (#1834), the feature sees the stubs the unfinished features it builds on
+    // (directly or through others) write, so it plans to modify them as it would on their results.
+    const plan = this.approvedPlan(this.store.get(id));
+    const accepted = new Set(finished);
+    const pending = new Set<string>();
+    const visit = (upstream: string): void => {
+      if (pending.has(upstream) || accepted.has(upstream)) return;
+      pending.add(upstream);
+      for (const next of plan?.features.find((f) => f.id === upstream)?.dependsOn ?? []) {
+        const link = this.store.current(id, next);
+        if (!link || this.workflows.store.state(link.run_id).worktree?.commit == null) visit(next);
+      }
+    };
+    for (const upstream of unfinished) visit(upstream);
+    return provisionalBase(
+      this.workflows.workspace,
+      merged.commit,
+      [...pending].flatMap(
+        (upstream) => plan?.features.find((f) => f.id === upstream)?.skeleton ?? [],
+      ),
+      Math.floor(this.store.get(id).created_at / 1000),
+    );
   }
 
   private async driveRun(runId: string, signal: AbortSignal): Promise<RunSnapshot> {
@@ -1489,9 +1572,10 @@ export class InitiativeService {
     const feature = plan?.features.find((f) => f.id === featureId);
     if (!plan || !feature) throw new WorkflowFault("NOT_FOUND", `Unknown feature ${featureId}`);
     const settings = this.store.settings(row);
-    const upstream = this.upstreamContracts(id, feature);
     const current = this.view(id);
     const waiting = current.features.find((f) => f.id === featureId);
+    const unfinished = waiting?.plannedAhead ?? [];
+    const upstream = this.upstreamContracts(id, feature, unfinished);
     const sized = waiting?.share;
     if (!sized) throw stopFault("budget-share", "No budget share is available");
     if (waiting) this.noteShareGate(current, waiting, "pass");
@@ -1502,7 +1586,7 @@ export class InitiativeService {
     const runFeature = runFeatureId(id, featureId);
     let baseCommit: string | undefined;
     try {
-      baseCommit = await this.featureBase(id, feature, settings);
+      baseCommit = await this.featureBase(id, feature, settings, unfinished);
     } catch (error) {
       if (!(error instanceof WorkflowFault) || error.details.reason !== "upstream_conflict")
         throw error;
@@ -1559,6 +1643,7 @@ export class InitiativeService {
       ...(feature.skeleton?.length ? { hostFiles: feature.skeleton } : {}),
       ...(lightContract(settings, feature) ? { contract: feature.contract } : {}),
       ...(baseCommit ? { baseCommit } : {}),
+      ...(baseCommit && unfinished.length ? { planAhead: true } : {}),
     });
     this.store.transaction(() => {
       if (this.store.links(id).some((l) => l.run_id === snapshot.runId)) return;
@@ -1587,7 +1672,14 @@ export class InitiativeService {
     if (!plan || !feature || !link)
       throw new WorkflowFault("NOT_FOUND", `Feature ${featureId} has no run to rebase`);
     const settings = this.store.settings(row);
-    const upstream = this.upstreamContracts(id, feature);
+    // Under plan ahead the rebased run plans against upstream features still unfinished (#1834).
+    const unfinished = this.planAhead(settings, plan, this.workflowFacts(settings))
+      ? feature.dependsOn.filter((upstream) => {
+          const contract = acceptedContract(this.workflows.store, runFeatureId(id, upstream));
+          return contract !== null && !contract.completed;
+        })
+      : [];
+    const upstream = this.upstreamContracts(id, feature, unfinished);
     const old = this.workflows.store.run(link.run_id);
     if (!terminalStates.includes(old.status))
       await this.workflows.cancel(link.run_id, {
@@ -1628,7 +1720,7 @@ export class InitiativeService {
       featureId: u.contract.featureId,
       contractHash: u.contract.contractHash,
     }));
-    const baseCommit = await this.featureBase(id, feature, settings);
+    const baseCommit = await this.featureBase(id, feature, settings, unfinished);
     const open = this.workflows.store.run(link.run_id);
     const policy = featurePolicy(
       settings,
@@ -1652,6 +1744,7 @@ export class InitiativeService {
         policy,
         ...(baseCommit ? { baseCommit } : {}),
         ...(declined ? { autoApprovalDeclined: declined } : {}),
+        ...(baseCommit && unfinished.length ? { planAhead: true } : {}),
       },
     );
     this.store.transaction(() => {
@@ -1670,6 +1763,38 @@ export class InitiativeService {
         "rebase",
       );
     });
+  }
+
+  /**
+   * A planned-ahead feature run (#1834) whose upstream features are all accepted moves onto
+   * their results, the base it would have started from, and its tasks start. False when the run
+   * waits for nothing of the kind.
+   */
+  private async releasePlanned(id: string, featureId: string, runId: string): Promise<boolean> {
+    const state = this.workflows.store.state(runId);
+    const run = this.workflows.store.run(runId);
+    if (
+      run.status !== "waiting" ||
+      !state.planAhead ||
+      state.planAhead.released ||
+      !this.workflows.store.requests(runId).some((r) => r.status === "pending" && isHostRelease(r))
+    )
+      return false;
+    const row = this.store.get(id);
+    const feature = this.approvedPlan(row)?.features.find((f) => f.id === featureId);
+    if (!feature) return false;
+    const baseCommit = await this.featureBase(id, feature, this.store.settings(row));
+    if (!baseCommit) return false;
+    await this.workflows.releaseBase(
+      runId,
+      {
+        commandId: `p-${hashJson({ runId, baseCommit }).slice(0, 48)}`,
+        expectedRevision: run.revision,
+      },
+      { baseCommit },
+    );
+    this.store.emit(id, "feature.released", { featureId, runId, baseCommit });
+    return true;
   }
 
   /** Superseded runs that are still open are cancelled, so they hold no publication or lease. */
@@ -2212,6 +2337,7 @@ export class InitiativeService {
       if (event.planRevision === row.approved_plan_revision)
         conflicts.set(event.featureId, event.message);
     }
+    const planAhead = this.planAhead(settings, plan, facts);
     const mergedFrom = new Map<string, string[]>();
     for (const payload of this.store.eventsOfType(row.id, "split.merged"))
       for (const entry of (payload as { merged: { featureId: string; from: string[] }[] }).merged)
@@ -2257,10 +2383,14 @@ export class InitiativeService {
         .map((u) => `waits for ${u.id}'s contract (${u.id} is ${describe(u)})`);
       const link = this.store.current(row.id, feature.id);
       if (!link) {
-        view.state = waiting.length ? "waiting" : "ready";
-        view.blockers = waiting;
+        const ahead =
+          waiting.length > 0 && planAhead && this.canPlanAhead(settings, feature, upstream, facts);
+        view.state = waiting.length && !ahead ? "waiting" : "ready";
+        view.blockers = ahead ? [] : waiting;
+        if (ahead)
+          view.plannedAhead = upstream.filter((u) => u.state !== "accepted").map((u) => u.id);
         const conflict = conflicts.get(feature.id);
-        if (!waiting.length && conflict) {
+        if (view.state === "ready" && conflict) {
           view.state = "blocked";
           view.blockers = [conflict];
         }
@@ -2272,7 +2402,19 @@ export class InitiativeService {
       view.runStatus = run.status;
       view.runReason = run.reason;
       view.pinned = state.hostDependencies ?? [];
-      view.pendingRequests = this.runRequests(link.run_id, "feature", feature.id);
+      // A planned-ahead run waits at its tasks on requests the initiative decides (#1834).
+      const ahead = state.planAhead !== null && !state.planAhead.released;
+      const held = new Set(
+        this.workflows.store
+          .requests(link.run_id)
+          .filter((r) => r.status === "pending" && isHostRelease(r))
+          .map((r) => r.id),
+      );
+      view.pendingRequests = this.runRequests(link.run_id, "feature", feature.id).filter(
+        (r) => !held.has(r.requestId),
+      );
+      if (ahead)
+        view.plannedAhead = upstream.filter((u) => u.state !== "accepted").map((u) => u.id);
       const changed = upstream
         .filter((u) => u.state === "accepted")
         .filter(
@@ -2330,7 +2472,19 @@ export class InitiativeService {
         view.blockers = view.pendingRequests.map(
           (r) => `run ${r.runId} waits for a ${r.kind} decision (request ${r.requestId})`,
         );
-      } else if (waiting.length) {
+      } else if (held.size) {
+        // Planned and approved; the drive releases it onto its upstream results once they are all
+        // accepted, and its tasks start then.
+        view.state = waiting.length ? "waiting" : "in_progress";
+        view.blockers = waiting.length
+          ? [
+              `planned ahead; its tasks start once ${upstream
+                .filter((u) => u.state !== "accepted")
+                .map((u) => u.id)
+                .join(", ")} ${waiting.length > 1 ? "are" : "is"} accepted`,
+            ]
+          : [];
+      } else if (waiting.length && !ahead) {
         view.state = "waiting";
         view.blockers = waiting;
       } else if (run.status === "blocked") {
@@ -2581,13 +2735,18 @@ export class InitiativeService {
       : this.store.plan(this.store.revision(row.id, row.approved_plan_revision));
   }
 
+  /**
+   * The contracts a feature run pins: each upstream feature's accepted contract, or, for the
+   * `unfinished` upstream features of a feature that plans ahead (#1834), their approved spec.
+   */
   private upstreamContracts(
     id: string,
     feature: InitiativeFeature,
+    unfinished: readonly string[] = [],
   ): { feature: { id: string }; contract: AcceptedContract }[] {
     return feature.dependsOn.map((dependency) => {
       const contract = acceptedContract(this.workflows.store, runFeatureId(id, dependency));
-      if (!contract?.completed)
+      if (!contract || (!contract.completed && !unfinished.includes(dependency)))
         throw new WorkflowFault("INVALID_REFERENCE", `No accepted contract of ${dependency} yet`);
       return { feature: { id: dependency }, contract };
     });

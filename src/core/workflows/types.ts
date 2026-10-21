@@ -539,6 +539,17 @@ export const RuntimeStateSchema = z
      * `autoApproval.declined` (#1467).
      */
     autoApprovalDeclined: z.string().nullable().default(null),
+    /**
+     * An initiative feature run started under `workflows.planAhead` before every feature it
+     * depends on was finished (#1834): its worktree starts from a provisional base and its tasks
+     * wait until the initiative moves it to their results (`released`); the run then takes its
+     * baseline again before its first task (`baselined`). Null for every other run.
+     */
+    planAhead: z
+      .object({ released: z.boolean(), baselined: z.boolean() })
+      .strict()
+      .nullable()
+      .default(null),
   })
   .strict();
 export type RuntimeState = z.infer<typeof RuntimeStateSchema>;
