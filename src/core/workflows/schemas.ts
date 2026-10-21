@@ -1177,6 +1177,8 @@ export const AnalysisSchema = z
             recomputed: Text,
             matches: z.boolean(),
             derivation: Text,
+            /** The request's own words a row rests on, checked by the host (#1823). */
+            quote: Text.optional(),
           })
           .strict(),
       )
