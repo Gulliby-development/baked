@@ -32,7 +32,7 @@ export const EDIT_TOOLS = new Set([
   "write_test",
   "apply_fix",
 ]);
-const CHECK_TOOLS = new Set(["request_check", "run_probe", "run_repro"]);
+const CHECK_TOOLS = new Set(["request_check", "run_probe", "run_repro", "replay_rows"]);
 /** The same read since the last edit, this many times. */
 export const REPEATED_READS = 3;
 /** Steps with tool calls and no edit, for an attempt that must edit. */

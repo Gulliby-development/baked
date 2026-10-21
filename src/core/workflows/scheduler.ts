@@ -1,6 +1,7 @@
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmdirSync,
@@ -11,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { codeWithoutComments } from "../intelligence/comments.js";
 import { largerContextModel } from "../llm/context-sizes.js";
 import {
@@ -138,6 +139,13 @@ import {
   SPEC_ROWS_NOTE,
 } from "./acceptance-rows.js";
 import { INLINE_HARNESS, type InlineRowFile, withInlineRows } from "./acceptance-rows-inline.js";
+import {
+  type ReplayResult,
+  type RowReplay,
+  replayNote,
+  replayResult,
+  rowReplay,
+} from "./acceptance-rows-replay.js";
 import {
   affectedTestCheck,
   affectedTestsFor,
@@ -4360,6 +4368,20 @@ export class WorkflowScheduler {
         },
       };
     }
+    const replay =
+      task && !generatedRows.length && stageProfile.output === "implementation"
+        ? this.rowReplayFor(runId, state, policy, task)
+        : undefined;
+    if (replay)
+      extra = {
+        ...(extra as Record<string, unknown>),
+        rowReplay: {
+          criteria: replay.replay.criteria,
+          rows: replay.replay.rows.length,
+          file: replay.replay.file.path,
+          note: replayNote(replay.replay),
+        },
+      };
     const route = this.route(runId, stepId, stageProfile);
     const effort = placement.outputLimit ? placement.outputLimit.effort : route.effort;
     const fallbackIndex = placement.fallbackIndex ?? 0;
@@ -4569,6 +4591,7 @@ export class WorkflowScheduler {
         ...(taskEndCheck ? { taskEndCheck } : {}),
         ...(reproCheck ? { reproCheck } : {}),
         ...(caseCheck ? { caseCheck } : {}),
+        ...(replay ? { rowReplay: replay } : {}),
         ...(task && task.origin !== "planned"
           ? { writtenTests: this.writtenTestWrites(runId, state, task) }
           : {}),
@@ -9440,6 +9463,95 @@ ${note}`;
       ],
       specConflict: account,
     });
+  }
+  /**
+   * The audited rows a source task replays on its code before it is accepted (#1617), with the
+   * run that writes the agent's harness file, runs it with the project's test command for that
+   * file and removes it. Undefined without audited rows of its criteria, or when no test check of
+   * the project runs such a file.
+   */
+  private rowReplayFor(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ):
+    | {
+        replay: RowReplay;
+        run: (root: string, harness: string, signal: AbortSignal) => Promise<ReplayResult>;
+      }
+    | undefined {
+    if (!rowsAsDataOn(policy) || !state.spec) return undefined;
+    const artifact = this.store.latestArtifact(runId, ROWS_ARTIFACT);
+    if (!artifact) return undefined;
+    const rows = JSON.parse(this.store.readArtifact(runId, artifact.id)) as RowsArtifact;
+    if (rows.specHash !== hashJson(state.spec)) return undefined;
+    const replay = rowReplay(state.rootGraph ?? state.graph, rows, task);
+    if (!replay) return undefined;
+    const path = replay.file.path;
+    if (!plannedWrittenTests(policy.checks, [{ path, action: "create" }])) return undefined;
+    return {
+      replay,
+      run: async (root, harness, signal) => {
+        const absolute = workspacePath(root, path);
+        if (existsSync(absolute))
+          return {
+            status: "error",
+            failed: [],
+            output: `${path} already exists in the workspace, so the replay has no file of its own.`,
+          };
+        const created: string[] = [];
+        for (let dir = dirname(absolute); !existsSync(dir); dir = dirname(dir))
+          created.unshift(dir);
+        let result: ReplayResult;
+        try {
+          for (const dir of created) mkdirSync(dir);
+          writeFileSync(absolute, withInlineRows(harness, replay.file));
+          const check = writtenTestsCheck(root, policy.checks, [{ path, action: "create" }]);
+          const measured = check
+            ? await this.checks.measure(
+                { ...check, id: "row-replay" },
+                signal,
+                root,
+                runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
+              )
+            : {
+                status: "inconclusive" as const,
+                output: `No test check of this project runs ${path}.`,
+              };
+          result = replayResult(measured.status, measured.output, replay.rows);
+        } finally {
+          rmSync(absolute, { force: true });
+          // Python leaves the file's bytecode next to it; nothing else of it is in the tree.
+          const cache = join(dirname(absolute), "__pycache__");
+          const stem = basename(absolute).replace(/\.py$/, ".");
+          if (absolute.endsWith(".py") && existsSync(cache))
+            for (const name of readdirSync(cache))
+              if (name.startsWith(stem)) rmSync(join(cache, name), { force: true });
+          for (const dir of created.reverse())
+            try {
+              rmdirSync(dir);
+            } catch {}
+        }
+        this.store.transaction(() =>
+          this.store.artifact(
+            runId,
+            "diagnostic",
+            `tasks/${task.id}/row-replay-${newId()}.json`,
+            canonical({
+              taskId: task.id,
+              rowTaskId: replay.rowTaskId,
+              criteria: replay.criteria,
+              rows: replay.rows.length,
+              status: result.status,
+              failed: result.failed,
+              harnessHash: hashBytes(Buffer.from(harness)),
+            }),
+          ),
+        );
+        return result;
+      },
+    };
   }
   /**
    * Puts the host's block of an inline rows test file in place, journaled like any host write:
