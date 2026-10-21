@@ -14,6 +14,7 @@ import {
 } from "../src/core/llm/provider-health.js";
 import { isStoreError } from "../src/core/workflows/host-error.js";
 import { accountRefusal, isRateLimit, isTransient, retryDelay } from "../src/core/workflows/retry.js";
+import { isStall } from "../src/core/workflows/stall-ladder.js";
 import { WorkflowStore } from "../src/core/workflows/store.js";
 import { awakeClock } from "./helpers/awake-clock.js";
 import {
@@ -106,6 +107,8 @@ describe.each(FAULT_PROVIDERS.map((provider) => [provider]))("provider fault mat
     expect((error as Error).message).toContain(`${deadline} seconds`);
     expect(calls).toBe(1);
     expect(isTransient(error)).toBe(true);
+    // A stall, not a refused connection: a workflow stage climbs the recovery ladder (#1877).
+    expect(isStall(error)).toBe(true);
   });
 
   test("a call that never answers after three 50 s answers of its shape is an outage at the adaptive deadline (#1766)", async () => {
@@ -155,6 +158,8 @@ describe.each(FAULT_PROVIDERS.map((provider) => [provider]))("provider fault mat
     expect(error).toBeDefined();
     expect(isTransient(error)).toBe(true);
     expect(retryDelay(error, 0)).not.toBeNull();
+    // A cut answer got its first byte: the in-call retries take it, not the recovery ladder.
+    expect(isStall(error)).toBe(false);
   });
 
   test("a tool call with arguments that are not JSON returns to the model as a tool error", async () => {

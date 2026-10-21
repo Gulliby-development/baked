@@ -1100,6 +1100,19 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs: provider wait, next health probe and retry decision"],
   },
   {
+    id: "run-stall-ladder",
+    group: "Workflow runs",
+    title:
+      "Recovery ladder for a stalled model call: fresh session, other transport, lower effort, next model",
+    tui: ["/workflow: activity feed of the run view (attempt.recovery)"],
+    cli: [
+      "baked workflow run: --events stream",
+      "baked workflow resume: --events stream and a new ladder",
+    ],
+    api: ["/v1/workflow/runs/:id/events: attempt.recovery"],
+    desktop: ["project/runs: activity feed"],
+  },
+  {
     id: "run-execution-time",
     group: "Workflow runs",
     title: "Run and initiative active budgets and execution deadlines exclude host suspend gaps",

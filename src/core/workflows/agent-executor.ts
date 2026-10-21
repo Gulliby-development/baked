@@ -423,6 +423,8 @@ export class NativeAgentExecutor implements AgentExecutor {
       );
       const webSearch = codeWebSearchFor(policy, request.profile);
       if (webSearch) provider.providerOptions = withCodexWebSearch(provider.providerOptions);
+      if (request.freshSession || request.transport)
+        provider.providerOptions = withCodexRecovery(provider.providerOptions, request);
       // Only a known window stops the attempt here; for a model nothing names, the 128k default is
       // a guess, and the provider's own rejection of an oversized input is handled by the scheduler.
       const window = knownModelContextWindow(request.profile.model);
@@ -1910,6 +1912,21 @@ export function codeWebSearchFor(
 /** Provider options with Codex's web search on, read by the Codex adapter (`codexWebSearch`). */
 export function withCodexWebSearch(options: ProviderOptions): ProviderOptions {
   return { ...options, codex: { ...options.codex, webSearch: true } };
+}
+
+/** The recovery ladder's session and transport rungs, read by the Codex adapter (#1877). */
+export function withCodexRecovery(
+  options: ProviderOptions,
+  request: Pick<ExecutionRequest, "freshSession" | "transport">,
+): ProviderOptions {
+  return {
+    ...options,
+    codex: {
+      ...options.codex,
+      ...(request.freshSession ? { freshThread: true } : {}),
+      ...(request.transport ? { transport: request.transport } : {}),
+    },
+  };
 }
 
 export function sentEffort(

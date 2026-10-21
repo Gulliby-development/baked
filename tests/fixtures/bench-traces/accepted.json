@@ -50,5 +50,9 @@
   "R57/zonevet-update.sqlite.gz#de1d71df-f7c5-4a77-8569-a525388efaa5": {
     "newApprovalDeclines": 1,
     "reason": "#1707: the trace was exported before the export kept the file names a request names, so the pyproject.toml edit its request named (requestedManifestEdits) replays as an unnamed manifest edit. A trace exported from #1707 on keeps them."
+  },
+  "R56/hdrlens.sqlite.gz#e33af6d1-8f43-4b2f-913f-9a24839b71ba": {
+    "newRecoveries": 1,
+    "reason": "#1877: the analyze attempt that stalled on codex/gpt-6.1-sol now takes the recovery ladder's fresh-session rung at once instead of the provider wait."
   }
 }

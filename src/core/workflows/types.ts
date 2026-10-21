@@ -639,6 +639,12 @@ export interface ExecutionRequest {
   formatHints?: string;
   /** Reasoning effort from the attempt's model route; unset keeps the configured default. */
   effort?: RouteEffort;
+  /**
+   * Set by the recovery ladder of a stalled call (#1877): every step starts a new provider
+   * session, and the call runs on Codex's `exec` transport instead of its app-server.
+   */
+  freshSession?: true;
+  transport?: "exec";
 }
 export interface ExecutionResponse {
   output: unknown;

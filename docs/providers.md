@@ -103,7 +103,7 @@ Model turns run in a Codex home of BAKED's own (`codex-home` under the BAKED dat
 
 Images attached to a message go into the turn's input next to its text, as data URLs. With `codex exec` they are written to temporary files and passed with `--image`.
 
-The native tools need a Codex CLI with the app-server `dynamicTools` API (checked with 0.162). If `codex app-server` cannot start or open a thread, the step runs as a separate `codex exec` instead, which asks for tool calls as JSON and shows output when the step finishes. Set `BAKED_CODEX_TRANSPORT=exec` to always use `codex exec`. BAKED finds `codex` as described in [Finding the CLIs](#finding-the-clis); `BAKED_CODEX_PATH` points it at another executable.
+The native tools need a Codex CLI with the app-server `dynamicTools` API (checked with 0.162). If `codex app-server` cannot start or open a thread, the step runs as a separate `codex exec` instead, which asks for tool calls as JSON and shows output when the step finishes. Set `BAKED_CODEX_TRANSPORT=exec` to always use `codex exec`. A workflow attempt whose call stalled moves to a fresh thread per step and then to `codex exec` by itself, as the first rungs of its recovery ladder ([runtime](workflows/runtime.md#stalls-deadlines-and-automatic-resume)). BAKED finds `codex` as described in [Finding the CLIs](#finding-the-clis); `BAKED_CODEX_PATH` points it at another executable.
 
 ## Finding the CLIs
 
@@ -136,7 +136,7 @@ Workflow runs use the same chains for routes that have no fallback models of the
 
 - Each model gets `retry.maxTransientRetries` attempts (default 3) with exponential backoff before the next one is tried. After the last fallback the chain starts again from the primary, at most 3 cycles, then the original error is raised.
 - Transient means overload, 429, 5xx, rate limits, timeouts and connection errors. A 403 counts only when its body mentions overload or a rate limit. 401, invalid requests and unknown models fail at once.
-- Stalled streams are retried on the same model by the watchdog (`/watchdog`), not by fallback.
+- Stalled streams are retried on the same model by the watchdog (`/watchdog`), not by fallback. In a workflow run a stalled call climbs a recovery ladder instead: a fresh session, the other Codex transport, a lower effort, then the next model of the route ([runtime](workflows/runtime.md#stalls-deadlines-and-automatic-resume)).
 - `Ctrl+X` stops the loop immediately.
 
 Workflow agents have their own fallback settings in `modelRouting` ([runtime guide](workflows/runtime.md#effort-and-fallback-models)).

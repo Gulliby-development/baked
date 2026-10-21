@@ -400,6 +400,20 @@ export function codexWebSearch(
   return providerOptions?.codex?.webSearch === true;
 }
 
+/**
+ * The recovery ladder's rungs for a stalled call (#1877): `freshThread` sends every step as a new
+ * thread turn instead of resuming a suspended tool call; `transport: "exec"` runs the call on
+ * `codex exec` instead of the app-server.
+ */
+export function codexRecovery(
+  providerOptions: Record<string, Record<string, unknown> | undefined> | undefined,
+): { freshThread: boolean; exec: boolean } {
+  return {
+    freshThread: providerOptions?.codex?.freshThread === true,
+    exec: providerOptions?.codex?.transport === "exec",
+  };
+}
+
 export function codexConfigArgs(config: Record<string, string | boolean | number>): string[] {
   return Object.entries(config).flatMap(([key, value]) => [
     "--config",
