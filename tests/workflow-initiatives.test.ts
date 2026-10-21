@@ -51,6 +51,7 @@ import { WorkflowFault } from "../src/core/workflows/errors.js";
 import { acceptedContract } from "../src/core/workflows/dependencies.js";
 import { mergedBase } from "../src/core/workflows/worktree.js";
 import { PLACEHOLDER_SHARE } from "../src/core/workflows/initiatives/estimate.js";
+import { criticalPathText } from "../src/core/workflows/initiatives/view-model.js";
 import {
   assignFeatureWorkflows,
   lightenSmallLeaves,
@@ -1595,6 +1596,52 @@ describe("initiative runtime", () => {
       // finitec takes the slot finite frees while perm and chainc still run.
       expect(executor.events.indexOf("start:finitec")).toBeLessThan(executor.events.indexOf("end:perm"));
       expect(executor.maxActive).toBeLessThanOrEqual(3);
+    }, 120_000);
+  });
+
+  // Bench round 55, routeshadow (#1822): six independent features after a serial head ran two at
+  // a time; replaying the measured durations, a third slot saved 12 percent of the wall time.
+  describe("slots from the plan's width (#1822)", () => {
+    const wide = plan([
+      feature("base"),
+      ...["m1", "m2", "m3", "m4", "m5", "m6"].map((id) => feature(id, ["base"])),
+      feature("front", ["m1", "m2", "m3", "m4", "m5", "m6"]),
+    ]);
+    const narrow = plan([feature("a"), feature("b"), feature("c", ["a", "b"])]);
+
+    async function slots(split: InitiativePlan, workflows: { maxParallelRuns?: number; parallelRunsFromPlan?: boolean }) {
+      const t = setup(split);
+      repository(t.root);
+      Object.assign(t.workflows.config.workflows ?? {}, workflows);
+      await t.start({ plan: split, policy: { ...policy, executionMode: "worktree" }, featureAutoApproval: { maxTasks: 5, maxFiles: 5 } });
+      return { t, view: await t.approveSplit() };
+    }
+
+    test("off, the cap is the slot count whatever the plan", async () => {
+      expect((await slots(wide, {})).view.parallelRuns).toBe(2);
+      expect((await slots(narrow, { maxParallelRuns: 4 })).view.parallelRuns).toBe(4);
+    });
+
+    test("on, a six-wide plan takes the default ceiling of 3 or the configured cap", async () => {
+      const { view } = await slots(wide, { parallelRunsFromPlan: true });
+      expect(view.parallelRuns).toBe(3);
+      expect(view.criticalPath?.width).toBe(6);
+      expect(criticalPathText(view)).toContain("with 3 at once (plan width 6)");
+      expect((await slots(wide, { parallelRunsFromPlan: true, maxParallelRuns: 2 })).view.parallelRuns).toBe(2);
+      expect((await slots(wide, { parallelRunsFromPlan: true, maxParallelRuns: 8 })).view.parallelRuns).toBe(6);
+    });
+
+    test("on, a plan two wide starts two even under a higher cap", async () => {
+      expect((await slots(narrow, { parallelRunsFromPlan: true, maxParallelRuns: 4 })).view.parallelRuns).toBe(2);
+    });
+
+    test("on, three of the six middle features implement at once and the run completes", async () => {
+      const { t } = await slots(wide, { parallelRunsFromPlan: true });
+      t.executor.rendezvous = 4;
+      t.executor.rendezvousMs = 1500;
+      const view = await t.drive();
+      expect(view.status).toBe("completed");
+      expect(t.executor.maxActive).toBe(3);
     }, 120_000);
   });
 

@@ -1222,6 +1222,8 @@ export const DeliveryConfigSchema = z
 /** Runs that may execute in one workspace at once when `workflows.maxParallelRuns` is unset. */
 export const DEFAULT_MAX_PARALLEL_RUNS = 2;
 export const MAX_PARALLEL_RUNS = 8;
+/** The cap when `workflows.parallelRunsFromPlan` is on and `maxParallelRuns` is unset (#1822). */
+export const PLAN_PARALLEL_RUNS = 3;
 export const WorkflowConfigSchema = z
   .object({
     enabled: z.boolean().default(true),
@@ -1236,6 +1238,12 @@ export const WorkflowConfigSchema = z
      * side by side; inline runs share the working copy and still take turns.
      */
     maxParallelRuns: z.number().int().min(1).max(MAX_PARALLEL_RUNS).optional(),
+    /**
+     * An initiative whose features run in worktrees starts as many at once as its plan's widest
+     * group of independent features, up to `maxParallelRuns` (3 when unset), instead of always the
+     * cap (#1822). Off by default.
+     */
+    parallelRunsFromPlan: z.boolean().optional(),
     /**
      * Deadlines and stall limits (milliseconds): a tool call that never returns, a model attempt
      * with no progress, and how often a stalled run resumes by itself. Defaults in `stall.ts`.
@@ -1256,6 +1264,18 @@ export const WorkflowConfigSchema = z
       .optional(),
   })
   .strict();
+/**
+ * The runs that may execute in one workspace at once: `maxParallelRuns`, else 3 when the slot
+ * count comes from the plan and 2 otherwise.
+ */
+export function parallelRunCap(config: {
+  workflows?: { maxParallelRuns?: number; parallelRunsFromPlan?: boolean };
+}): number {
+  return (
+    config.workflows?.maxParallelRuns ??
+    (config.workflows?.parallelRunsFromPlan ? PLAN_PARALLEL_RUNS : DEFAULT_MAX_PARALLEL_RUNS)
+  );
+}
 /** Workflows are on unless a configuration layer turns them off with `workflows.enabled: false`. */
 export function workflowsEnabled(config: { workflows?: { enabled?: boolean } }): boolean {
   return config.workflows?.enabled !== false;

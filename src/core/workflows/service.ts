@@ -119,13 +119,13 @@ import {
 } from "./scheduler.js";
 import {
   type CommandIdentity,
-  DEFAULT_MAX_PARALLEL_RUNS,
   type Decision,
   executionModeOf,
   generatedPaths,
   Hash,
   PolicySchema,
   ProfileSchema,
+  parallelRunCap,
   ResearchSchema,
   type Review,
   type RunPolicy,
@@ -1021,7 +1021,7 @@ export class NativeWorkflowService implements WorkflowService {
     const primary = !this.primaryBusy;
     if (primary) this.primaryBusy = true;
     const scheduler = primary ? this.scheduler : this.lane();
-    scheduler.maxParallelRuns = this.config.workflows?.maxParallelRuns ?? DEFAULT_MAX_PARALLEL_RUNS;
+    scheduler.maxParallelRuns = parallelRunCap(this.config);
     const promise = scheduler
       .drive(runId, controller.signal)
       .then(() => this.store.snapshot(runId));
