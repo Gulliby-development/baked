@@ -282,9 +282,10 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
 describe("initiative feature ranges replay against what the features used (#1806)", () => {
   // At each initiative's first replayed start, how many features used less than the low end of
   // the range the current estimate gives them, and more than its high end. The path floor's low
-  // end at the first quartile of 91 earlier features put 26 of 92 below their range; from the
-  // lowest rate, 22 (R54 lanewalk, not yet in the corpus, had 11 of 12 below).
-  test("no more than a quarter of the features start below their range", () => {
+  // end at the first quartile of the earlier features' rates put 37 of 104 below their range,
+  // 11 of R54 lanewalk's 12 among them as the round recorded; from the lowest rate, 29 and 7.
+  test("no more features start below their range than the lowest-rate floor allows", () => {
+    let lanewalk = 0;
     let below = 0;
     let above = 0;
     let features = 0;
@@ -309,11 +310,13 @@ describe("initiative feature ranges replay against what the features used (#1806
           if (tokens === undefined) continue;
           features++;
           if (tokens < f.low) below++;
+          if (tokens < f.low && path.endsWith("lanewalk.sqlite.gz")) lanewalk++;
           if (tokens > f.high) above++;
         }
     }
-    expect(features).toBeGreaterThanOrEqual(92);
-    expect(below).toBeLessThanOrEqual(22);
+    expect(features).toBeGreaterThanOrEqual(104);
+    expect(below).toBeLessThanOrEqual(29);
+    expect(lanewalk).toBeLessThanOrEqual(7);
     expect(above).toBeLessThanOrEqual(25);
   }, 600000);
 });
